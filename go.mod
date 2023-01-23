@@ -1,4 +1,4 @@
-module foo
+module github.com/v2rayA/dae
 
 go 1.19
 

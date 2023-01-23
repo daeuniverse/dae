@@ -7,9 +7,9 @@ package routing
 
 import (
 	"fmt"
-	"foo/common/assets"
-	"foo/common/consts"
-	"foo/pkg/geodata"
+	"github.com/v2rayA/dae/common/assets"
+	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/pkg/geodata"
 	"github.com/sirupsen/logrus"
 	"net/netip"
 	"sort"

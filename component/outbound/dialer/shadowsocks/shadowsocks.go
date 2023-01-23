@@ -3,9 +3,9 @@ package shadowsocks
 import (
 	"encoding/base64"
 	"fmt"
-	"foo/common"
-	"foo/component/outbound/dialer"
-	"foo/component/outbound/dialer/transport/simpleobfs"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/dialer/transport/simpleobfs"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/shadowsocks"
 	"gopkg.in/yaml.v3"

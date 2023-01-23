@@ -8,8 +8,8 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"foo/common/consts"
-	"foo/pkg/pool"
+	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/pkg/pool"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/netip"

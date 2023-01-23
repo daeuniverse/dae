@@ -7,7 +7,7 @@ package routing
 
 import (
 	"fmt"
-	"foo/common/consts"
+	"github.com/v2rayA/dae/common/consts"
 	"github.com/antlr/antlr4/runtime/Go/antlr"
 	"github.com/v2rayA/RoutingA-dist/go/routingA"
 	"strconv"

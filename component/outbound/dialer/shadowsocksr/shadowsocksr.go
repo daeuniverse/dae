@@ -3,8 +3,8 @@ package shadowsocksr
 import (
 	"encoding/base64"
 	"fmt"
-	"foo/common"
-	"foo/component/outbound/dialer"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	ssr "github.com/v2rayA/shadowsocksR/client"
 	"gopkg.in/yaml.v3"
 	"net"

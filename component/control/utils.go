@@ -6,7 +6,7 @@
 package control
 
 import (
-	"foo/common"
+	"github.com/v2rayA/dae/common"
 	"github.com/cilium/ebpf"
 	"net/netip"
 )

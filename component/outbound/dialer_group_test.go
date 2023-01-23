@@ -6,9 +6,9 @@
 package outbound
 
 import (
-	"foo/common/consts"
-	"foo/component/outbound/dialer"
-	"foo/pkg/logger"
+	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/pkg/logger"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"testing"
 	"time"

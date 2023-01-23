@@ -6,12 +6,12 @@
 package outbound
 
 import (
-	_ "foo/component/outbound/dialer/http"
-	_ "foo/component/outbound/dialer/shadowsocks"
-	_ "foo/component/outbound/dialer/shadowsocksr"
-	_ "foo/component/outbound/dialer/socks"
-	_ "foo/component/outbound/dialer/trojan"
-	_ "foo/component/outbound/dialer/v2ray"
+	_ "github.com/v2rayA/dae/component/outbound/dialer/http"
+	_ "github.com/v2rayA/dae/component/outbound/dialer/shadowsocks"
+	_ "github.com/v2rayA/dae/component/outbound/dialer/shadowsocksr"
+	_ "github.com/v2rayA/dae/component/outbound/dialer/socks"
+	_ "github.com/v2rayA/dae/component/outbound/dialer/trojan"
+	_ "github.com/v2rayA/dae/component/outbound/dialer/v2ray"
 	_ "github.com/mzz2017/softwind/protocol/shadowsocks"
 	_ "github.com/mzz2017/softwind/protocol/trojanc"
 	_ "github.com/mzz2017/softwind/protocol/vless"

@@ -6,7 +6,7 @@
 package control
 
 import (
-	"foo/common/consts"
+	"github.com/v2rayA/dae/common/consts"
 	"strings"
 )
 

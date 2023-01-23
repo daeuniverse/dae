@@ -8,8 +8,8 @@
 package main
 
 import (
-	"foo/component/control"
-	"foo/pkg/logger"
+	"github.com/v2rayA/dae/component/control"
+	"github.com/v2rayA/dae/pkg/logger"
 	"os"
 	"os/signal"
 	"syscall"

@@ -7,9 +7,9 @@ package control
 
 import (
 	"fmt"
-	"foo/common"
-	"foo/common/consts"
-	"foo/component/routing"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/routing"
 	"github.com/cilium/ebpf"
 	"net/netip"
 	"strconv"

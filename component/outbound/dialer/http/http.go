@@ -2,7 +2,7 @@ package http
 
 import (
 	"fmt"
-	"foo/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/protocol/http"
 	"gopkg.in/yaml.v3"
 	"net"

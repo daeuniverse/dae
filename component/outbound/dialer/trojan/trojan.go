@@ -2,10 +2,10 @@ package trojan
 
 import (
 	"fmt"
-	"foo/common"
-	"foo/component/outbound/dialer"
-	"foo/component/outbound/dialer/transport/tls"
-	"foo/component/outbound/dialer/transport/ws"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/dialer/transport/tls"
+	"github.com/v2rayA/dae/component/outbound/dialer/transport/ws"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/transport/grpc"
 	"gopkg.in/yaml.v3"

@@ -6,7 +6,7 @@
 package dialer
 
 import (
-	"foo/common/consts"
+	"github.com/v2rayA/dae/common/consts"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 	"sync"

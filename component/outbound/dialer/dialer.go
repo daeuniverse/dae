@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"foo/common/consts"
+	"github.com/v2rayA/dae/common/consts"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"

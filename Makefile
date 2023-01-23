@@ -10,11 +10,16 @@ CLANG ?= clang
 STRIP ?= llvm-strip
 CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
 
-.PHONY: generate
+.PHONY: ebpf dae
+
+all: ebpf dae
 
 # $BPF_CLANG is used in go:generate invocations.
-generate: export BPF_CLANG := $(CLANG)
-generate: export BPF_STRIP := $(STRIP)
-generate: export BPF_CFLAGS := $(CFLAGS)
-generate:
+ebpf: export BPF_CLANG := $(CLANG)
+ebpf: export BPF_STRIP := $(STRIP)
+ebpf: export BPF_CFLAGS := $(CFLAGS)
+ebpf:
 	go generate ./component/control/...
+
+dae: ebpf
+	go build -ldflags "-s -w" .

@@ -2,7 +2,7 @@ package socks
 
 import (
 	"fmt"
-	"foo/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/nadoo/glider/proxy"
 	"github.com/nadoo/glider/proxy/socks4"
 	"github.com/nadoo/glider/proxy/socks5"

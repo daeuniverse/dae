@@ -7,8 +7,8 @@ package control
 
 import (
 	"fmt"
-	"foo/common"
-	"foo/common/consts"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/common/consts"
 	"github.com/cilium/ebpf"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"

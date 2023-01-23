@@ -7,8 +7,8 @@ package outbound
 
 import (
 	"fmt"
-	"foo/common/consts"
-	"foo/component/outbound/dialer"
+	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 	"net"
