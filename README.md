@@ -10,7 +10,6 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 ## TODO
 
-1. Control plane does not support MAC and other matching yet.
 1. Dns upstream. Check dns upstream and source loop (whether upstream is also a client of us) and remind user to add source rule.
-1. Routing performance optimization.
+1. Domain routing performance optimization.
 1. ...

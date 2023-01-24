@@ -7,6 +7,7 @@ package routing
 
 import (
 	"fmt"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"net/netip"
 	"strings"
@@ -20,7 +21,7 @@ type MatcherBuilder interface {
 	AddPort(values [][2]int, outbound string)
 	AddSource(values []netip.Prefix, outbound string)
 	AddSourcePort(values [][2]int, outbound string)
-	AddNetwork(values consts.NetworkType, outbound string)
+	AddL4Proto(values consts.L4ProtoType, outbound string)
 	AddIpVersion(values consts.IpVersion, outbound string)
 	AddMac(values [][6]byte, outbound string)
 	AddFinal(outbound string)
@@ -66,14 +67,66 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []RoutingRule, finalOutbo
 				}
 				builder.AddAnyBefore(key, paramValueGroup, outbound)
 				switch f.Name {
-				case "domain":
+				case consts.Function_Domain:
 					builder.AddDomain(key, paramValueGroup, outbound)
-				case "ip":
+				case consts.Function_Ip, consts.Function_SourceIp:
 					cidrs, err := ParsePrefixes(paramValueGroup)
 					if err != nil {
 						return err
 					}
-					builder.AddIp(cidrs, outbound)
+					if f.Name == consts.Function_Ip {
+						builder.AddIp(cidrs, outbound)
+					} else {
+						builder.AddSource(cidrs, outbound)
+					}
+				case consts.Function_Mac:
+					var macAddrs [][6]byte
+					for _, v := range paramValueGroup {
+						mac, err := common.ParseMac(v)
+						if err != nil {
+							return err
+						}
+						macAddrs = append(macAddrs, mac)
+					}
+					builder.AddMac(macAddrs, outbound)
+				case consts.Function_Port, consts.Function_SourcePort:
+					var portRanges [][2]int
+					for _, v := range paramValueGroup {
+						portRange, err := common.ParsePortRange(v)
+						if err != nil {
+							return err
+						}
+						portRanges = append(portRanges, portRange)
+					}
+					if f.Name == consts.Function_Port {
+						builder.AddPort(portRanges, outbound)
+					} else {
+						builder.AddSourcePort(portRanges, outbound)
+					}
+				case consts.Function_L4Proto:
+					var l4protoType consts.L4ProtoType
+					for _, v := range paramValueGroup {
+						switch v {
+						case "tcp":
+							l4protoType |= consts.L4ProtoType_TCP
+						case "udp":
+							l4protoType |= consts.L4ProtoType_UDP
+						}
+					}
+					builder.AddL4Proto(l4protoType, outbound)
+				case consts.Function_IpVersion:
+					var ipVersion consts.IpVersion
+					for _, v := range paramValueGroup {
+						switch v {
+						case "4":
+							ipVersion |= consts.IpVersion_4
+						case "6":
+							ipVersion |= consts.IpVersion_6
+						}
+					}
+					builder.AddIpVersion(ipVersion, outbound)
+				default:
+					return fmt.Errorf("unsupported function name: %v", f.Name)
 				}
 				builder.AddAnyAfter(key, paramValueGroup, outbound)
 			}
@@ -92,7 +145,7 @@ func (d *DefaultMatcherBuilder) AddIp(values []netip.Prefix, outbound string)   
 func (d *DefaultMatcherBuilder) AddPort(values [][2]int, outbound string)                  {}
 func (d *DefaultMatcherBuilder) AddSource(values []netip.Prefix, outbound string)          {}
 func (d *DefaultMatcherBuilder) AddSourcePort(values [][2]int, outbound string)            {}
-func (d *DefaultMatcherBuilder) AddNetwork(values consts.NetworkType, outbound string)     {}
+func (d *DefaultMatcherBuilder) AddL4Proto(values consts.L4ProtoType, outbound string)     {}
 func (d *DefaultMatcherBuilder) AddIpVersion(values consts.IpVersion, outbound string)     {}
 func (d *DefaultMatcherBuilder) AddMac(values [][6]byte, outbound string)                  {}
 func (d *DefaultMatcherBuilder) AddFinal(outbound string)                                  {}

@@ -162,15 +162,15 @@ enum __attribute__((__packed__)) ROUTING_TYPE {
   ROUTING_TYPE_SOURCE_IP_SET,
   ROUTING_TYPE_PORT,
   ROUTING_TYPE_SOURCE_PORT,
-  ROUTING_TYPE_NETWORK,
+  ROUTING_TYPE_L4PROTO,
   ROUTING_TYPE_IPVERSION,
   ROUTING_TYPE_MAC,
   ROUTING_TYPE_FINAL,
 };
-enum __attribute__((__packed__)) NETWORK_TYPE {
-  NETWORK_TYPE_TCP = 1,
-  NETWORK_TYPE_UDP = 2,
-  NETWORK_TYPE_TCP_UDP = 3,
+enum __attribute__((__packed__)) L4PROTO_TYPE {
+  L4PROTO_TYPE_TCP = 1,
+  L4PROTO_TYPE_UDP = 2,
+  L4PROTO_TYPE_TCP_UDP = 3,
 };
 enum __attribute__((__packed__)) IP_VERSION {
   IPVERSION_4 = 1,
@@ -187,7 +187,7 @@ struct routing {
 
     __u32 index;
     struct port_range port_range;
-    enum NETWORK_TYPE network_type;
+    enum L4PROTO_TYPE l4proto_type;
     enum IP_VERSION ip_version;
   };
   enum ROUTING_TYPE type;
@@ -740,7 +740,7 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 // Do not use __always_inline here because this function is too heavy.
 static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
                     __be32 daddr[4], __be32 mac[4]) {
-#define _network flag[0]
+#define _l4proto flag[0]
 #define _ipversion flag[1]
   // // Get len of routings and epoch from param_map.
   // __u32 *routings_len = bpf_map_lookup_elem(&param_map, &routings_len_key);
@@ -754,7 +754,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
   // Define variables for further use.
   __u16 h_dport;
   __u16 h_sport;
-  if (_network == NETWORK_TYPE_TCP) {
+  if (_l4proto == L4PROTO_TYPE_TCP) {
     h_dport = bpf_ntohs(((struct tcphdr *)l4_hdr)->dest);
     h_sport = bpf_ntohs(((struct tcphdr *)l4_hdr)->source);
   } else {
@@ -762,8 +762,9 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
     h_sport = bpf_ntohs(((struct udphdr *)l4_hdr)->source);
   }
   // Modify DNS upstream for routing.
-  if (h_dport == 53 && _network == NETWORK_TYPE_UDP) {
-    struct ip_port* upstream = bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
+  if (h_dport == 53 && _l4proto == L4PROTO_TYPE_UDP) {
+    struct ip_port *upstream =
+        bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
     if (!upstream) {
       return -EFAULT;
     }
@@ -777,6 +778,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
   __builtin_memcpy(lpm_key_saddr.data, saddr, IPV6_BYTE_LENGTH);
   __builtin_memcpy(lpm_key_daddr.data, daddr, IPV6_BYTE_LENGTH);
   __builtin_memcpy(lpm_key_mac.data, mac, IPV6_BYTE_LENGTH);
+  bpf_printk("mac: %pI6", mac);
 
   struct map_lpm_type *lpm;
   struct routing *routing;
@@ -842,8 +844,8 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
           h_sport > routing->port_range.port_end) {
         bad_rule = true;
       }
-    } else if (routing->type == ROUTING_TYPE_NETWORK) {
-      if (!(_network & routing->network_type)) {
+    } else if (routing->type == ROUTING_TYPE_L4PROTO) {
+      if (!(_l4proto & routing->l4proto_type)) {
         bad_rule = true;
       }
     } else if (routing->type == ROUTING_TYPE_IPVERSION) {
@@ -867,7 +869,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       // Decide whether to hit.
       if (!bad_rule) {
         if (routing->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
-            _network == NETWORK_TYPE_UDP) {
+            _l4proto == L4PROTO_TYPE_UDP) {
           // DNS packet should go through control plane.
           return OUTBOUND_CONTROL_PLANE_DIRECT;
         }
@@ -879,7 +881,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
   bpf_printk(
       "Did coder forget to sync common/consts/ebpf.go with enum ROUTING_TYPE?");
   return -EPERM;
-#undef _network
+#undef _l4proto
 #undef _ip_version
 }
 
@@ -918,12 +920,12 @@ int tproxy_ingress(struct __sk_buff *skb) {
   if (iph) {
     saddr[0] = 0;
     saddr[1] = 0;
-    saddr[2] = bpf_ntohl(0xffff);
+    saddr[2] = bpf_htonl(0x0000ffff);
     saddr[3] = iph->saddr;
 
     daddr[0] = 0;
     daddr[1] = 0;
-    daddr[2] = bpf_ntohl(0xffff);
+    daddr[2] = bpf_htonl(0x0000ffff);
     daddr[3] = iph->daddr;
   } else if (ipv6h) {
     __builtin_memcpy(daddr, &ipv6h->daddr, IPV6_BYTE_LENGTH);
@@ -968,15 +970,19 @@ int tproxy_ingress(struct __sk_buff *skb) {
     if (unlikely(tcp_state_syn)) {
       // New TCP connection.
       // bpf_printk("[%X]New Connection", bpf_ntohl(tcph->seq));
-      __u8 flag[2] = {NETWORK_TYPE_TCP}; // TCP
+      __u8 flag[2] = {L4PROTO_TYPE_TCP}; // TCP
       if (ipv6h) {
         flag[1] = IPVERSION_6;
       } else {
         flag[1] = IPVERSION_4;
       }
-      __be32 mac[4];
-      __builtin_memset(mac, 0, IPV6_BYTE_LENGTH);
-      __builtin_memcpy(mac, ethh->h_source, sizeof(ethh->h_source));
+      __be32 mac[4] = {
+          0,
+          0,
+          bpf_htonl((ethh->h_source[0] << 8) + (ethh->h_source[1])),
+          bpf_htonl((ethh->h_source[2] << 24) + (ethh->h_source[3] << 16) +
+                    (ethh->h_source[4] << 8) + (ethh->h_source[5])),
+      };
       if ((ret = routing(flag, tcph, saddr, daddr, mac)) < 0) {
         bpf_printk("shot routing: %ld", ret);
         return TC_ACT_SHOT;
@@ -1031,15 +1037,19 @@ int tproxy_ingress(struct __sk_buff *skb) {
     new_hdr.port = udph->dest;
 
     // Routing. It decides if we redirect traffic to control plane.
-    __u8 flag[2] = {NETWORK_TYPE_UDP};
+    __u8 flag[2] = {L4PROTO_TYPE_UDP};
     if (ipv6h) {
       flag[1] = IPVERSION_6;
     } else {
       flag[1] = IPVERSION_4;
     }
-    __be32 mac[4];
-    __builtin_memset(mac, 0, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(mac, ethh->h_source, sizeof(ethh->h_source));
+    __be32 mac[4] = {
+        0,
+        0,
+        bpf_htonl((ethh->h_source[0] << 8) + (ethh->h_source[1])),
+        bpf_htonl((ethh->h_source[2] << 24) + (ethh->h_source[3] << 16) +
+                  (ethh->h_source[4] << 8) + (ethh->h_source[5])),
+    };
     if ((ret = routing(flag, udph, saddr, daddr, mac)) < 0) {
       bpf_printk("shot routing: %ld", ret);
       return TC_ACT_SHOT;
@@ -1131,12 +1141,12 @@ int tproxy_egress(struct __sk_buff *skb) {
   if (iph) {
     saddr[0] = 0;
     saddr[1] = 0;
-    saddr[2] = bpf_ntohl(0xffff);
+    saddr[2] = bpf_htonl(0x0000ffff);
     saddr[3] = iph->saddr;
 
     daddr[0] = 0;
     daddr[1] = 0;
-    daddr[2] = bpf_ntohl(0xffff);
+    daddr[2] = bpf_htonl(0x0000ffff);
     daddr[3] = iph->daddr;
   } else if (ipv6h) {
     __builtin_memcpy(daddr, ipv6h->daddr.in6_u.u6_addr32, IPV6_BYTE_LENGTH);

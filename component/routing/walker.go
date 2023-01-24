@@ -131,11 +131,10 @@ func (s *RoutingAWalker) parseFunctionPrototype(ctx *routingA.FunctionPrototypeC
 	// Validate function name and param keys.
 	for _, param := range params {
 		switch funcName {
-		case "domain":
+		case consts.Function_Domain:
 			switch param.Key {
-			case "", "domain", consts.RoutingDomain_Suffix,
+			case "", consts.RoutingDomain_Suffix,
 				consts.RoutingDomain_Keyword,
-				"contains",
 				consts.RoutingDomain_Full,
 				consts.RoutingDomain_Regex,
 				"geosite":
@@ -143,14 +142,14 @@ func (s *RoutingAWalker) parseFunctionPrototype(ctx *routingA.FunctionPrototypeC
 				s.reportKeyUnsupportedError(ctx, param.Key, funcName)
 				return nil
 			}
-		case "ip":
+		case consts.Function_Ip, consts.Function_SourceIp:
 			switch param.Key {
 			case "", "geoip":
 			default:
 				s.reportKeyUnsupportedError(ctx, param.Key, funcName)
 				return nil
 			}
-		case "port", "source", "sourcePort", "network", "ipVersion":
+		case consts.Function_Port, consts.Function_SourcePort, consts.Function_Mac, consts.Function_L4Proto, consts.Function_IpVersion:
 			if param.Key != "" {
 				s.reportKeyUnsupportedError(ctx, param.Key, funcName)
 				return nil

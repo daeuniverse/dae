@@ -40,7 +40,7 @@ const (
 	RoutingType_SourceIpSet
 	RoutingType_Port
 	RoutingType_SourcePort
-	RoutingType_Network
+	RoutingType_L4Proto
 	RoutingType_IpVersion
 	RoutingType_Mac
 	RoutingType_Final
@@ -71,12 +71,12 @@ const (
 	MaxRoutingLen = 96
 )
 
-type NetworkType uint8
+type L4ProtoType uint8
 
 const (
-	NetworkType_TCP     NetworkType = 1
-	NetworkType_UDP     NetworkType = 2
-	NetworkType_TCP_UDP NetworkType = 3
+	L4ProtoType_TCP     L4ProtoType = 1
+	L4ProtoType_UDP     L4ProtoType = 2
+	L4ProtoType_TCP_UDP L4ProtoType = 3
 )
 
 type IpVersion uint8

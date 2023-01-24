@@ -8,7 +8,10 @@ package common
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -77,4 +80,43 @@ func SetValue(values *url.Values, key string, value string) {
 		return
 	}
 	values.Set(key, value)
+}
+
+func ParseMac(mac string) (addr [6]byte, err error) {
+	fields := strings.SplitN(mac, ":", 6)
+	if len(fields) != 6 {
+		return addr, fmt.Errorf("invalid mac: %v", mac)
+	}
+	for i, field := range fields {
+		v, err := hex.DecodeString(field)
+		if err != nil {
+			return addr, fmt.Errorf("parse mac %v: %w", mac, err)
+		}
+		if len(v) != 1 {
+			return addr, fmt.Errorf("invalid mac: %v", mac)
+		}
+		addr[i] = v[0]
+	}
+	return addr, nil
+}
+
+func ParsePortRange(pr string) (portRange [2]int, err error) {
+	fields := strings.SplitN(pr, "-", 2)
+	for i, field := range fields {
+		if field == "" {
+			return portRange, fmt.Errorf("bad port range: %v", pr)
+		}
+		port, err := strconv.Atoi(field)
+		if err != nil {
+			return portRange, err
+		}
+		if port < 0 || port > 0xffff {
+			return portRange, fmt.Errorf("port %v exceeds uint16 range", port)
+		}
+		portRange[i] = port
+	}
+	if len(fields) == 1 {
+		portRange[1] = portRange[0]
+	}
+	return portRange, nil
 }

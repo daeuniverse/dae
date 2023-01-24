@@ -74,6 +74,27 @@ func (b *RoutingMatcherBuilder) AddDomain(key string, values []string, outbound 
 	})
 }
 
+func (b *RoutingMatcherBuilder) AddMac(macAddrs [][6]byte, outbound string) {
+	if b.err != nil {
+		return
+	}
+	var addr16 [16]byte
+	values := make([]netip.Prefix, 0, len(macAddrs))
+	for _, mac := range macAddrs {
+		copy(addr16[10:], mac[:])
+		prefix := netip.PrefixFrom(netip.AddrFrom16(addr16), 128)
+		values = append(values, prefix)
+	}
+	lpmTrieIndex := len(b.SimulatedLpmTries)
+	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
+	b.rules = append(b.rules, bpfRouting{
+		Type:     uint8(consts.RoutingType_Mac),
+		Value:    uint32(lpmTrieIndex),
+		Outbound: b.OutboundToId(outbound),
+	})
+
+}
+
 func (b *RoutingMatcherBuilder) AddIp(values []netip.Prefix, outbound string) {
 	if b.err != nil {
 		return
@@ -83,6 +104,41 @@ func (b *RoutingMatcherBuilder) AddIp(values []netip.Prefix, outbound string) {
 	b.rules = append(b.rules, bpfRouting{
 		Type:     uint8(consts.RoutingType_IpSet),
 		Value:    uint32(lpmTrieIndex),
+		Outbound: b.OutboundToId(outbound),
+	})
+}
+
+func (b *RoutingMatcherBuilder) AddSource(values []netip.Prefix, outbound string) {
+	if b.err != nil {
+		return
+	}
+	lpmTrieIndex := len(b.SimulatedLpmTries)
+	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
+	b.rules = append(b.rules, bpfRouting{
+		Type:     uint8(consts.RoutingType_SourceIpSet),
+		Value:    uint32(lpmTrieIndex),
+		Outbound: b.OutboundToId(outbound),
+	})
+}
+
+func (b *RoutingMatcherBuilder) AddL4Proto(values consts.L4ProtoType, outbound string) {
+	if b.err != nil {
+		return
+	}
+	b.rules = append(b.rules, bpfRouting{
+		Type:     uint8(consts.RoutingType_L4Proto),
+		Value:    uint32(values),
+		Outbound: b.OutboundToId(outbound),
+	})
+}
+
+func (b *RoutingMatcherBuilder) AddIpVersion(values consts.IpVersion, outbound string) {
+	if b.err != nil {
+		return
+	}
+	b.rules = append(b.rules, bpfRouting{
+		Type:     uint8(consts.RoutingType_IpVersion),
+		Value:    uint32(values),
 		Outbound: b.OutboundToId(outbound),
 	})
 }
