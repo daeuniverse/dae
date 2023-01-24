@@ -82,8 +82,8 @@ github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 h1:RWengNIwukTxcDr9
 github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826/go.mod h1:TaXosZuwdSHYgviHp1DAtfrULt5eUgsSMsZf+YrPgl8=
 github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B90M=
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
-github.com/nadoo/glider v0.16.2 h1:lF+Bj+Q58UwFcO4cna0lSjemxaN0bc96OdIOndcFNJM=
-github.com/nadoo/glider v0.16.2/go.mod h1:TfmgWSCINk+zrgiu4AW09Z5+4pzTXJdPq4+ifIV2ALw=
+github.com/mzz2017/softwind v0.0.0-20230124072602-aabc556ba332 h1:wIHkkJcBo3ln0cdl607LAg+O8yj7oLQ3FIlBhLfWxUo=
+github.com/mzz2017/softwind v0.0.0-20230124072602-aabc556ba332/go.mod h1:K1nXwtBokwEsfOfdT/5zV6R8QabGkyhcR0iuTrRZcYY=
 github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e h1:fD57ERR4JtEqsWbfPhv4DMiApHyliiK5xCTNVSPiaAs=
 github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e/go.mod h1:zD1mROLANZcx1PVRCS0qkT7pwLkGfwJo4zjcN/Tysno=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

@@ -3,9 +3,8 @@ package socks
 import (
 	"fmt"
 	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/nadoo/glider/proxy"
-	"github.com/nadoo/glider/proxy/socks4"
-	"github.com/nadoo/glider/proxy/socks5"
+	//"github.com/mzz2017/softwind/protocol/socks4"
+	"github.com/mzz2017/softwind/protocol/socks5"
 	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
@@ -14,8 +13,8 @@ import (
 
 func init() {
 	dialer.FromLinkRegister("socks", NewSocks) // socks -> socks5
-	dialer.FromLinkRegister("socks4", NewSocks)
-	dialer.FromLinkRegister("socks4a", NewSocks)
+	//dialer.FromLinkRegister("socks4", NewSocks)
+	//dialer.FromLinkRegister("socks4a", NewSocks)
 	dialer.FromLinkRegister("socks5", NewSocks)
 	dialer.FromClashRegister("socks5", NewSocks5FromClashObj)
 }
@@ -49,17 +48,17 @@ func (s *Socks) Dialer() (*dialer.Dialer, error) {
 	link := s.ExportToURL()
 	switch s.Protocol {
 	case "", "socks", "socks5":
-		d, err := socks5.NewSocks5Dialer(link, &proxy.Direct{})
+		d, err := socks5.NewSocks5Dialer(link, dialer.FullconeDirectDialer)
 		if err != nil {
 			return nil, err
 		}
 		return dialer.NewDialer(d, true, s.Name, s.Protocol, link), nil
-	case "socks4", "socks4a":
-		d, err := socks4.NewSocks4Dialer(link, &proxy.Direct{})
-		if err != nil {
-			return nil, err
-		}
-		return dialer.NewDialer(d, false, s.Name, s.Protocol, link), nil
+	//case "socks4", "socks4a":
+	//	d, err := socks4.NewSocks4Dialer(link, &proxy.Direct{})
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//	return dialer.NewDialer(d, false, s.Name, s.Protocol, link), nil
 	default:
 		return nil, fmt.Errorf("unexpected protocol: %v", s.Protocol)
 	}

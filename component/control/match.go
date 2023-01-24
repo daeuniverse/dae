@@ -7,6 +7,7 @@ package control
 
 import (
 	"github.com/v2rayA/dae/common/consts"
+	"regexp"
 	"strings"
 )
 
@@ -29,7 +30,12 @@ func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxRouti
 					hit = true
 				}
 			case consts.RoutingDomain_Regex:
-				c.log.Warnln("MatchDomainBitmap does not support regex yet")
+				// FIXME: too slow
+				for _, d := range s.Domains {
+					if regexp.MustCompile(d).MatchString(strings.ToLower(domain)) {
+						hit = true
+					}
+				}
 			}
 			if hit {
 				bitmap[s.RuleIndex/32] |= 1 << (s.RuleIndex % 32)

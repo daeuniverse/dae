@@ -9,8 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20221204151826-2987e0b05820
-	github.com/nadoo/glider v0.16.2
+	github.com/mzz2017/softwind v0.0.0-20230124072602-aabc556ba332
 	github.com/sirupsen/logrus v1.9.0
 	github.com/v2fly/v2ray-core/v5 v5.2.1
 	github.com/v2rayA/RoutingA-dist/go/routingA v0.0.0-20230124054934-e2204d89186f
@@ -43,4 +42,4 @@ require (
 	google.golang.org/grpc v1.51.0 // indirect
 )
 
-replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
+//replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
