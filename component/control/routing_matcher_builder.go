@@ -7,10 +7,10 @@ package control
 
 import (
 	"fmt"
+	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/routing"
-	"github.com/cilium/ebpf"
 	"net/netip"
 	"strconv"
 )
@@ -88,6 +88,9 @@ func (b *RoutingMatcherBuilder) AddIp(values []netip.Prefix, outbound string) {
 }
 
 func (b *RoutingMatcherBuilder) AddFinal(outbound string) {
+	if b.err != nil {
+		return
+	}
 	b.Final = outbound
 	b.rules = append(b.rules, bpfRouting{
 		Type:     uint8(consts.RoutingType_Final),

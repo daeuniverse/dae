@@ -111,26 +111,6 @@ retry_load:
 	//}
 
 	/**/
-
-	rules, final, err := routing.Parse(routingA)
-	if err != nil {
-		return nil, fmt.Errorf("routingA error:\n%w", err)
-	}
-	if rules, err = routing.ApplyRulesOptimizers(rules,
-		&routing.RefineFunctionParamKeyOptimizer{},
-		&routing.DatReaderOptimizer{Logger: log},
-		&routing.MergeAndSortRulesOptimizer{},
-		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
-		return nil, fmt.Errorf("ApplyRulesOptimizers error: \n %w", err)
-	}
-	if log.IsLevelEnabled(logrus.TraceLevel) {
-		var debugBuilder strings.Builder
-		for _, rule := range rules {
-			debugBuilder.WriteString(rule.String(true))
-		}
-		log.Tracef("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), final)
-	}
 	// TODO:
 	d, err := dialer.NewFromLink("socks5://localhost:1080#proxy")
 	if err != nil {
@@ -158,6 +138,27 @@ retry_load:
 		outboundName2Id[o.Name] = uint8(i)
 	}
 	builder := NewRoutingMatcherBuilder(outboundName2Id, &bpf)
+
+	// Routing.
+	rules, final, err := routing.Parse(routingA)
+	if err != nil {
+		return nil, fmt.Errorf("routingA error:\n%w", err)
+	}
+	if rules, err = routing.ApplyRulesOptimizers(rules,
+		&routing.RefineFunctionParamKeyOptimizer{},
+		&routing.DatReaderOptimizer{Logger: log},
+		&routing.MergeAndSortRulesOptimizer{},
+		&routing.DeduplicateParamsOptimizer{},
+	); err != nil {
+		return nil, fmt.Errorf("ApplyRulesOptimizers error: \n %w", err)
+	}
+	if log.IsLevelEnabled(logrus.TraceLevel) {
+		var debugBuilder strings.Builder
+		for _, rule := range rules {
+			debugBuilder.WriteString(rule.String(true))
+		}
+		log.Tracef("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), final)
+	}
 	if err := routing.ApplyMatcherBuilder(builder, rules, final); err != nil {
 		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
 	}

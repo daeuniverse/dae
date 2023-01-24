@@ -47,7 +47,7 @@
 #define IPV6_MAX_EXTENSIONS 4
 
 #define OUTBOUND_DIRECT 0
-#define OUTBOUND_CONTROL_PLANE_ROUTE 0xFE
+#define OUTBOUND_CONTROL_PLANE_DIRECT 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
 
 enum {
@@ -753,10 +753,6 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
     h_dport = bpf_ntohs(((struct udphdr *)l4_hdr)->dest);
     h_sport = bpf_ntohs(((struct udphdr *)l4_hdr)->source);
   }
-  // Redirect all DNS packet to control plane.
-  if (_network == NETWORK_TYPE_UDP && h_dport == 53) {
-    return OUTBOUND_CONTROL_PLANE_ROUTE;
-  }
   struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac, *lpm_key;
   lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
   lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
@@ -775,7 +771,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
   /// this branch will never hit.
   // if (domain_routing && domain_routing->epoch != *epoch) {
   //   // Dirty (epoch dismatch) traffic should be routed by the control plane.
-  //   return OUTBOUND_CONTROL_PLANE_ROUTE;
+  //   return OUTBOUND_CONTROL_PLANE_DIRECT;
   // }
 
 #pragma unroll
@@ -790,10 +786,10 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
     }
     /// NOTICE: switch is not implemented efficiently by clang yet.
     if (likely(routing->type == ROUTING_TYPE_IP_SET)) {
-      lpm_key = &lpm_key_saddr;
+      lpm_key = &lpm_key_daddr;
       goto lookup_lpm;
     } else if (routing->type == ROUTING_TYPE_SOURCE_IP_SET) {
-      lpm_key = &lpm_key_daddr;
+      lpm_key = &lpm_key_saddr;
     lookup_lpm:
       lpm = bpf_map_lookup_elem(&lpm_array_map, &routing->index);
       if (unlikely(!lpm)) {
@@ -802,6 +798,9 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       if (!bpf_map_lookup_elem(lpm, lpm_key)) {
         // Routing not hit.
         bad_rule = true;
+        bpf_printk("index: %u not hit", routing->index);
+      } else {
+        bpf_printk("index: %u hit", routing->index);
       }
     } else if (routing->type == ROUTING_TYPE_DOMAIN_SET) {
       // Bottleneck of insns limit.
@@ -842,7 +841,8 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       lpm_key = &lpm_key_mac;
       goto lookup_lpm;
     } else if (routing->type == ROUTING_TYPE_FINAL) {
-      return routing->outbound;
+      // Redirect all DNS packet to control plane.
+      bad_rule = false;
     } else {
       return -EINVAL;
     }
@@ -852,11 +852,18 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       // Tail of a rule (line).
       // Decide whether to hit.
       if (!bad_rule) {
+        if (routing->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
+            _network == NETWORK_TYPE_UDP) {
+              // DNS packet should go through control plane.
+          return OUTBOUND_CONTROL_PLANE_DIRECT;
+        }
         return routing->outbound;
       }
       bad_rule = false;
     }
   }
+  bpf_printk(
+      "Did coder forget to sync common/consts/ebpf.go with enum ROUTING_TYPE?");
   return -EPERM;
 #undef _network
 #undef _ip_version

@@ -50,17 +50,17 @@ const (
 type OutboundIndex uint8
 
 const (
-	OutboundDirect            OutboundIndex = 0
-	OutboundControlPlaneRoute OutboundIndex = 0xFE
-	OutboundLogicalAnd        OutboundIndex = 0xFF
+	OutboundDirect             OutboundIndex = 0
+	OutboundControlPlaneDirect OutboundIndex = 0xFE
+	OutboundLogicalAnd         OutboundIndex = 0xFF
 )
 
 func (i OutboundIndex) String() string {
 	switch i {
 	case OutboundDirect:
 		return "direct"
-	case OutboundControlPlaneRoute:
-		return "<Control Plane Route>"
+	case OutboundControlPlaneDirect:
+		return "<Control Plane Direct>"
 	case OutboundLogicalAnd:
 		return "<AND>"
 	default:

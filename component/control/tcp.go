@@ -37,11 +37,10 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 
 	switch consts.OutboundIndex(value.Outbound) {
 	case consts.OutboundDirect:
-	case consts.OutboundControlPlaneRoute:
-		// FIXME: check and re-route.
+	case consts.OutboundControlPlaneDirect:
 		value.Outbound = uint8(consts.OutboundDirect)
 		c.log.Debugf("outbound: %v => %v",
-			consts.OutboundControlPlaneRoute.String(),
+			consts.OutboundControlPlaneDirect.String(),
 			consts.OutboundIndex(value.Outbound).String(),
 		)
 	default:

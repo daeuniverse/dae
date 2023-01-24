@@ -91,12 +91,11 @@ func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS b
 func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort netip.AddrPort, addrHdr *AddrHdr) (err error) {
 	switch consts.OutboundIndex(addrHdr.Outbound) {
 	case consts.OutboundDirect:
-	case consts.OutboundControlPlaneRoute:
-		// FIXME: check and re-route.
+	case consts.OutboundControlPlaneDirect:
 		addrHdr.Outbound = uint8(consts.OutboundDirect)
 
 		c.log.Debugf("outbound: %v => %v",
-			consts.OutboundControlPlaneRoute.String(),
+			consts.OutboundControlPlaneDirect.String(),
 			consts.OutboundIndex(addrHdr.Outbound).String(),
 		)
 	default:

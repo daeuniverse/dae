@@ -6,8 +6,8 @@
 package control
 
 import (
-	"github.com/v2rayA/dae/common"
 	"github.com/cilium/ebpf"
+	"github.com/v2rayA/dae/common"
 	"net/netip"
 )
 
@@ -17,7 +17,13 @@ type bpfLpmKey struct {
 }
 
 func (o *bpfObjects) NewLpmMap(keys []bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
-	m, err = o.UnusedLpmType.Clone()
+	m, err = ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.LPMTrie,
+		Flags:      o.UnusedLpmType.Flags(),
+		MaxEntries: o.UnusedLpmType.MaxEntries(),
+		KeySize:    o.UnusedLpmType.KeySize(),
+		ValueSize:  o.UnusedLpmType.ValueSize(),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -35,10 +41,10 @@ func swap16(a uint16) uint16 {
 
 func cidrToBpfLpmKey(prefix netip.Prefix) bpfLpmKey {
 	bits := prefix.Bits()
-	ip := prefix.Addr().As16()
 	if prefix.Addr().Is4() {
 		bits += 96
 	}
+	ip := prefix.Addr().As16()
 	return bpfLpmKey{
 		PrefixLen: uint32(bits),
 		Data:      common.Ipv6ByteSliceToUint32Array(ip[:]),
