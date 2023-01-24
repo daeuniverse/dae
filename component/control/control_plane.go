@@ -44,7 +44,9 @@ type ControlPlane struct {
 	// mutex protects the dnsCache.
 	mutex    sync.Mutex
 	dnsCache map[string]*dnsCache
-	epoch    uint32
+	// Deprecated
+	epoch       uint32
+	dnsUpstream netip.AddrPort
 
 	deferFuncs []func() error
 }
@@ -92,12 +94,12 @@ retry_load:
 	if err := bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-	var epoch uint32
-	bpf.ParamMap.Lookup(consts.EpochKey, &epoch)
-	epoch++
-	if err := bpf.ParamMap.Update(consts.EpochKey, epoch, ebpf.UpdateAny); err != nil {
-		return nil, err
-	}
+	//var epoch uint32
+	//bpf.ParamMap.Lookup(consts.EpochKey, &epoch)
+	//epoch++
+	//if err := bpf.ParamMap.Update(consts.EpochKey, epoch, ebpf.UpdateAny); err != nil {
+	//	return nil, err
+	//}
 	//if err := bpf.ParamMap.Update(consts.InterfaceIpParamOff, binary.LittleEndian.Uint32([]byte{172, 17, 0, 1}), ebpf.UpdateAny); err != nil { // 172.17.0.1
 	//	return nil, err
 	//}
@@ -109,6 +111,16 @@ retry_load:
 	//	log.Println(err)
 	//	return
 	//}
+
+	cfDnsAddr := netip.AddrFrom4([4]byte{1, 1, 1, 1})
+	cfDnsAddr16 := cfDnsAddr.As16()
+	cfDnsPort := uint16(53)
+	if err := bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
+		Ip:   common.Ipv6ByteSliceToUint32Array(cfDnsAddr16[:]),
+		Port: swap16(cfDnsPort),
+	}, ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
 
 	/**/
 	// TODO:
@@ -177,8 +189,9 @@ retry_load:
 		Final:              final,
 		mutex:              sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
-		epoch:              epoch,
-		deferFuncs:         []func() error{bpf.Close},
+		dnsUpstream:        netip.AddrPortFrom(cfDnsAddr, cfDnsPort),
+		//epoch:              epoch,
+		deferFuncs: []func() error{bpf.Close},
 	}, nil
 }
 

@@ -58,7 +58,7 @@ enum {
 #define OUTBOUND_LOGICAL_AND 0xFF
 
 // Param keys:
-static const __u32 ips_len_key __attribute__((unused, deprecated)) = 0;
+static const __u32 zero_key = 0;
 static const __u32 tproxy_port_key = 1;
 static const __u32 disable_l4_tx_checksum_key = 2;
 static const __u32 disable_l4_rx_checksum_key = 3;
@@ -109,6 +109,14 @@ struct {
   __uint(max_entries, MAX_PARAM_LEN);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } param_map SEC(".maps");
+
+// Dns upstream:
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __type(key, __u32);
+  __type(value, struct ip_port);
+  __uint(max_entries, 1);
+} dns_upstream_map SEC(".maps");
 
 // Interface Ips:
 struct if_ip {
@@ -753,6 +761,15 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
     h_dport = bpf_ntohs(((struct udphdr *)l4_hdr)->dest);
     h_sport = bpf_ntohs(((struct udphdr *)l4_hdr)->source);
   }
+  // Modify DNS upstream for routing.
+  if (h_dport == 53 && _network == NETWORK_TYPE_UDP) {
+    struct ip_port* upstream = bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
+    if (!upstream) {
+      return -EFAULT;
+    }
+    h_dport = bpf_ntohs(upstream->port);
+    __builtin_memcpy(daddr, upstream->ip, IPV6_BYTE_LENGTH);
+  }
   struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac, *lpm_key;
   lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
   lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
@@ -798,9 +815,6 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       if (!bpf_map_lookup_elem(lpm, lpm_key)) {
         // Routing not hit.
         bad_rule = true;
-        bpf_printk("index: %u not hit", routing->index);
-      } else {
-        bpf_printk("index: %u hit", routing->index);
       }
     } else if (routing->type == ROUTING_TYPE_DOMAIN_SET) {
       // Bottleneck of insns limit.
@@ -854,7 +868,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       if (!bad_rule) {
         if (routing->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
             _network == NETWORK_TYPE_UDP) {
-              // DNS packet should go through control plane.
+          // DNS packet should go through control plane.
           return OUTBOUND_CONTROL_PLANE_DIRECT;
         }
         return routing->outbound;

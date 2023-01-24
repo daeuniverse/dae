@@ -76,13 +76,16 @@ func sendPktWithHdr(data []byte, from netip.AddrPort, lConn *net.UDPConn, to net
 	return err
 }
 
-func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS bool) UdpHandler {
+func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort) UdpHandler {
 	return func(data []byte, from netip.AddrPort) (err error) {
 		if isDNS {
 			data, err = c.DnsRespHandler(data)
 			if err != nil {
 				c.log.Warnf("DnsRespHandler: %v", err)
 			}
+		}
+		if dummyFrom != nil {
+			from = *dummyFrom
 		}
 		return sendPktWithHdr(data, from, lConn, to)
 	}
@@ -104,9 +107,11 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 	dnsMessage, natTimeout := ChooseNatTimeout(data)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
+	var dummyFrom *netip.AddrPort
+	dest := addrHdr.Dest
 	if isDns {
 		if resp := c.LookupDnsRespCache(dnsMessage); resp != nil {
-			if err = sendPktWithHdr(resp, addrHdr.Dest, lConn, lAddrPort); err != nil {
+			if err = sendPktWithHdr(resp, dest, lConn, lAddrPort); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
 			q := dnsMessage.Questions[0]
@@ -115,28 +120,33 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			)
 			return nil
 		} else {
+			c.log.Debugf("Modify dns target %v to upstream: %v", addrHdr.Dest.String(), c.dnsUpstream.String())
+			// Modify dns target to upstream.
+			// NOTICE: Routing was calculated in advance by the eBPF program.
+			dummyFrom = &addrHdr.Dest
+			dest = c.dnsUpstream
 			q := dnsMessage.Questions[0]
 			c.log.Debugf("UDP(DNS) %v <-[%v]-> %v: %v %v",
-				lAddrPort.String(), outbound.Name, addrHdr.Dest.String(), q.Name, q.Type,
+				lAddrPort.String(), outbound.Name, dest.String(), q.Name, q.Type,
 			)
 		}
 	} else {
 		// TODO: Set-up ip to domain mapping and show domain if possible.
 		c.log.Infof("UDP %v <-[%v]-> %v",
-			lAddrPort.String(), outbound.Name, addrHdr.Dest.String(),
+			lAddrPort.String(), outbound.Name, dest.String(),
 		)
 	}
 	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{
-		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns),
+		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns, dummyFrom),
 		NatTimeout: natTimeout,
 		Dialer:     outbound,
-		Target:     addrHdr.Dest,
+		Target:     dest,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to GetOrCreate: %w", err)
 	}
 	//log.Printf("WriteToUDPAddrPort->%v", dest)
-	_, err = ue.WriteToUDPAddrPort(data, addrHdr.Dest)
+	_, err = ue.WriteToUDPAddrPort(data, dest)
 	if err != nil {
 		return fmt.Errorf("failed to write UDP packet req: %w", err)
 	}

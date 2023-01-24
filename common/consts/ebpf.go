@@ -16,8 +16,7 @@ const (
 type ParamKey uint32
 
 const (
-	// Deprecated:
-	IpsLenKey ParamKey = iota
+	ZeroKey ParamKey = iota
 	BigEndianTproxyPortKey
 	DisableL4TxChecksumKey
 	DisableL4RxChecksumKey
