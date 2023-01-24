@@ -7,9 +7,9 @@ package routing
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/common/consts"
-	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"github.com/v2rayA/RoutingA-dist/go/routingA"
+	"github.com/v2rayA/dae/common/consts"
 	"strconv"
 	"strings"
 )
@@ -120,7 +120,7 @@ func (s *RoutingAWalker) reportKeyUnsupportedError(ctx interface{}, keyName, fun
 func (s *RoutingAWalker) parseFunctionPrototype(ctx *routingA.FunctionPrototypeContext) *Function {
 	children := ctx.GetChildren()
 	funcName := children[0].(*antlr.TerminalNodeImpl).GetText()
-	paramList := children[2].(*routingA.ParameterListContext)
+	paramList := children[2].(*routingA.OptParameterListContext)
 	children = paramList.GetChildren()
 	if len(children) == 0 {
 		s.ReportError(ctx, ErrorType_Unsupported, "empty parameter list")
@@ -145,8 +145,7 @@ func (s *RoutingAWalker) parseFunctionPrototype(ctx *routingA.FunctionPrototypeC
 			}
 		case "ip":
 			switch param.Key {
-			case "",
-				"geoip":
+			case "", "geoip":
 			default:
 				s.reportKeyUnsupportedError(ctx, param.Key, funcName)
 				return nil
@@ -203,15 +202,21 @@ func (s *RoutingAWalker) EnterDeclaration(ctx *routingA.DeclarationContext) {
 
 func (s *RoutingAWalker) EnterRoutingRule(ctx *routingA.RoutingRuleContext) {
 	children := ctx.GetChildren()
-	left, ok := children[0].(*routingA.FunctionPrototypeExpressionContext)
+	left, ok := children[0].(*routingA.RoutingRuleLeftContext)
 	if !ok {
-		s.ReportError(ctx, ErrorType_Unsupported)
+		s.ReportError(ctx, ErrorType_Unsupported, "not *RoutingRuleLeftContext: "+ctx.GetText())
 		return
 	}
 	outbound := children[2].(*routingA.Bare_literalContext).GetText()
 	// Parse functions.
 	var andFunctions []*Function
 	children = left.GetChildren()
+	functionList, ok := children[1].(*routingA.FunctionPrototypeExpressionContext)
+	if !ok {
+		s.ReportError(ctx, ErrorType_Unsupported, "not *FunctionPrototypeExpressionContext: "+ctx.GetText())
+		return
+	}
+	children = functionList.GetChildren()
 	for _, child := range children {
 		// And rules.
 		if child, ok := child.(*routingA.FunctionPrototypeContext); ok {

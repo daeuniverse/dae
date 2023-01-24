@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/v2rayA/dae/common/consts"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common/consts"
 	"golang.org/x/net/proxy"
 	"net"
 	"net/http"
@@ -132,13 +132,13 @@ func (d *Dialer) Test(timeout time.Duration, url string) (ok bool, err error) {
 			// No error.
 			latency := time.Since(start)
 			// FIXME: Use log instead of logrus.
-			logrus.Debugf("Connectivity Test: %v: %v", d.name, latency)
+			logrus.Debugf("Connectivity Test <%v>: %v", d.name, latency)
 			d.Latencies10.AppendLatency(latency)
 			alive = true
 		} else {
 			// Append timeout if there is any error or unexpected status code.
 			if err != nil {
-				logrus.Debugf("Test [%v]: %v", d.name, err.Error())
+				logrus.Debugf("Connectivity Test <%v>: %v", d.name, err.Error())
 			}
 			d.Latencies10.AppendLatency(timeout)
 		}

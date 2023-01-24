@@ -12,7 +12,8 @@ CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
 
 .PHONY: ebpf dae
 
-all: ebpf dae
+dae: ebpf
+	go build -ldflags "-s -w" .
 
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)
@@ -20,6 +21,3 @@ ebpf: export BPF_STRIP := $(STRIP)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf:
 	go generate ./component/control/...
-
-dae: ebpf
-	go build -ldflags "-s -w" .

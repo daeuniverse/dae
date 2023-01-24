@@ -16,7 +16,7 @@ import (
 
 func GetLocationAsset(filename string) (path string, err error) {
 	// FIXME:
-	folder := "xray"
+	folder := "dae"
 	location := os.Getenv("DAE_LOCATION_ASSET")
 	// check if DAE_LOCATION_ASSET is set
 	if location != "" {

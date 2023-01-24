@@ -9,15 +9,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/rlimit"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/routing"
 	"github.com/v2rayA/dae/pkg/pool"
-	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/rlimit"
-	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"net"
@@ -66,11 +66,11 @@ retry_load:
 	}); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			prefix := "use pinned map "
-			iPrefix := strings.Index(err.Error(), prefix)
-			if iPrefix == -1 {
+			_, after, ok := strings.Cut(err.Error(), prefix)
+			if !ok {
 				return nil, fmt.Errorf("loading objects: bad format: %w", err)
 			}
-			mapName := strings.SplitN(err.Error()[iPrefix+len(prefix):], ":", 2)[0]
+			mapName, _, _ := strings.Cut(after, ":")
 			_ = os.Remove(filepath.Join(pinPath, mapName))
 			log.Warnf("New map format was incompatible with existing map %v, and the old one was removed.", mapName)
 			goto retry_load
@@ -114,7 +114,7 @@ retry_load:
 
 	rules, final, err := routing.Parse(routingA)
 	if err != nil {
-		return nil, fmt.Errorf("routingA error: \n %w", err)
+		return nil, fmt.Errorf("routingA error:\n%w", err)
 	}
 	if rules, err = routing.ApplyRulesOptimizers(rules,
 		&routing.RefineFunctionParamKeyOptimizer{},
@@ -132,7 +132,7 @@ retry_load:
 		log.Tracef("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), final)
 	}
 	// TODO:
-	d, err := dialer.NewFromLink("socks5://localhost:1080")
+	d, err := dialer.NewFromLink("socks5://localhost:1080#proxy")
 	if err != nil {
 		return nil, err
 	}

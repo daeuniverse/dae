@@ -7,10 +7,10 @@ package routing
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/assets"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/pkg/geodata"
-	"github.com/sirupsen/logrus"
 	"net/netip"
 	"sort"
 	"strings"
@@ -210,6 +210,9 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	}
 	if err != nil {
 		return nil, err
+	}
+	if geoIp.InverseMatch {
+		return nil, fmt.Errorf("not support inverse match yet")
 	}
 	for _, item := range geoIp.Cidr {
 		ip, ok := netip.AddrFromSlice(item.Ip)
