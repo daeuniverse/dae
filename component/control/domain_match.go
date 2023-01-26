@@ -12,7 +12,7 @@ import (
 )
 
 func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxRoutingLen / 32]uint32) {
-	// FIXME: high performance implementation.
+	// TODO: high performance implementation.
 	for _, s := range c.SimulatedDomainSet {
 		for _, d := range s.Domains {
 			var hit bool

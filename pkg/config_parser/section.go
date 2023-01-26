@@ -1,0 +1,187 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) since 2023, mzz2017 (mzz@tuta.io). All rights reserved.
+ */
+
+package config_parser
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+type ItemType int
+
+const (
+	ItemType_RoutingRule ItemType = iota
+	ItemType_Param
+	ItemType_Section
+)
+
+func (t ItemType) String() string {
+	switch t {
+	case ItemType_RoutingRule:
+		return "RoutingRule"
+	case ItemType_Param:
+		return "Param"
+	case ItemType_Section:
+		return "Section"
+	default:
+		return "<Unknown>"
+	}
+}
+
+func NewRoutingRuleItem(rule *RoutingRule) *Item {
+	return &Item{
+		Type:  ItemType_RoutingRule,
+		Value: rule,
+	}
+}
+
+func NewParamItem(param *Param) *Item {
+	return &Item{
+		Type:  ItemType_Param,
+		Value: param,
+	}
+}
+
+func NewSectionItem(section *Section) *Item {
+	return &Item{
+		Type:  ItemType_Param,
+		Value: section,
+	}
+}
+
+type Item struct {
+	Type  ItemType
+	Value interface{}
+}
+
+func (i *Item) String() string {
+	var builder strings.Builder
+	builder.WriteString("type: " + i.Type.String() + "\n")
+	var content string
+	switch val := i.Value.(type) {
+	case *RoutingRule:
+		content = val.String(false)
+	case *Param:
+		content = val.String()
+	case *Section:
+		content = val.String()
+	default:
+		return "<Unknown>\n"
+	}
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = "\t" + lines[i]
+	}
+	builder.WriteString(strings.Join(lines, "\n"))
+	return builder.String()
+}
+
+type Section struct {
+	Name  string
+	Items []*Item
+}
+
+func (s *Section) String() string {
+	var builder strings.Builder
+	builder.WriteString("section: " + s.Name + "\n")
+	var strItemList []string
+	for _, item := range s.Items {
+		lines := strings.Split(item.String(), "\n")
+		for i := range lines {
+			lines[i] = "\t" + lines[i]
+		}
+		strItemList = append(strItemList, strings.Join(lines, "\n"))
+	}
+	builder.WriteString(strings.Join(strItemList, "\n"))
+	return builder.String()
+}
+
+type Param struct {
+	Key          string
+	Val          string
+	AndFunctions []*Function
+}
+
+func (p *Param) String() string {
+	if p.Key == "" {
+		return p.Val
+	}
+	if p.AndFunctions != nil {
+		a := paramAndFunctions{
+			Key:          p.Key,
+			AndFunctions: p.AndFunctions,
+		}
+		return a.String()
+	}
+	return p.Key + ": " + p.Val
+}
+
+type Function struct {
+	Name   string
+	Params []*Param
+}
+
+func (f *Function) String() string {
+	var builder strings.Builder
+	builder.WriteString(f.Name + "(")
+	var strParamList []string
+	for _, p := range f.Params {
+		strParamList = append(strParamList, p.String())
+	}
+	builder.WriteString(strings.Join(strParamList, ", "))
+	builder.WriteString(")")
+	return builder.String()
+}
+
+type paramAndFunctions struct {
+	Key          string
+	AndFunctions []*Function
+}
+
+func (p *paramAndFunctions) String() string {
+	var builder strings.Builder
+	builder.WriteString(p.Key + ": ")
+	var strFunctionList []string
+	for _, f := range p.AndFunctions {
+		strFunctionList = append(strFunctionList, f.String())
+	}
+	builder.WriteString(strings.Join(strFunctionList, " && "))
+	return builder.String()
+}
+
+type RoutingRule struct {
+	AndFunctions []*Function
+	Outbound     string
+}
+
+func (r *RoutingRule) String(calcN bool) string {
+	var builder strings.Builder
+	var n int
+	for _, f := range r.AndFunctions {
+		if builder.Len() != 0 {
+			builder.WriteString(" && ")
+		}
+		var paramBuilder strings.Builder
+		n += len(f.Params)
+		for _, p := range f.Params {
+			if paramBuilder.Len() != 0 {
+				paramBuilder.WriteString(", ")
+			}
+			if p.Key != "" {
+				paramBuilder.WriteString(p.Key + ": " + p.Val)
+			} else {
+				paramBuilder.WriteString(p.Val)
+			}
+		}
+		builder.WriteString(fmt.Sprintf("%v(%v)", f.Name, paramBuilder.String()))
+	}
+	builder.WriteString(" -> " + r.Outbound)
+	if calcN {
+		builder.WriteString(" [n = " + strconv.Itoa(n) + "]")
+	}
+	return builder.String()
+}

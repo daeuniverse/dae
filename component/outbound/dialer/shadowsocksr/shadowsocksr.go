@@ -3,10 +3,10 @@ package shadowsocksr
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	ssr "github.com/v2rayA/shadowsocksR/client"
-	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
 	"strconv"
@@ -16,7 +16,6 @@ import (
 func init() {
 	dialer.FromLinkRegister("shadowsocksr", NewShadowsocksR)
 	dialer.FromLinkRegister("ssr", NewShadowsocksR)
-	dialer.FromClashRegister("ssr", NewShadowsocksRFromClashObj)
 }
 
 type ShadowsocksR struct {
@@ -32,23 +31,15 @@ type ShadowsocksR struct {
 	Protocol   string `json:"protocol"`
 }
 
-func NewShadowsocksR(link string) (*dialer.Dialer, error) {
+func NewShadowsocksR(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	s, err := ParseSSRURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer()
+	return s.Dialer(log)
 }
 
-func NewShadowsocksRFromClashObj(o *yaml.Node) (*dialer.Dialer, error) {
-	s, err := ParseClash(o)
-	if err != nil {
-		return nil, err
-	}
-	return s.Dialer()
-}
-
-func (s *ShadowsocksR) Dialer() (*dialer.Dialer, error) {
+func (s *ShadowsocksR) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 	u := url.URL{
 		Scheme: "ssr",
 		User:   url.UserPassword(s.Cipher, s.Password),
@@ -60,42 +51,11 @@ func (s *ShadowsocksR) Dialer() (*dialer.Dialer, error) {
 			"obfs_param":     []string{s.ObfsParam},
 		}.Encode(),
 	}
-	d, err := ssr.NewSSR(u.String(), dialer.SymmetricDirect, nil)
+	d, err := ssr.NewSSR(u.String(), dialer.SymmetricDirect, nil) // SSR Proxy does not support full-cone.
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, false, s.Name, s.Protocol, s.ExportToURL()), nil
-}
-
-func ParseClash(o *yaml.Node) (data *ShadowsocksR, err error) {
-	type ShadowSocksROption struct {
-		Name          string `yaml:"name"`
-		Server        string `yaml:"server"`
-		Port          int    `yaml:"port"`
-		Password      string `yaml:"password"`
-		Cipher        string `yaml:"cipher"`
-		Obfs          string `yaml:"obfs"`
-		ObfsParam     string `yaml:"obfs-param,omitempty"`
-		Protocol      string `yaml:"protocol"`
-		ProtocolParam string `yaml:"protocol-param,omitempty"`
-		UDP           bool   `yaml:"udp,omitempty"`
-	}
-	var option ShadowSocksROption
-	if err = o.Decode(&option); err != nil {
-		return nil, err
-	}
-	return &ShadowsocksR{
-		Name:       option.Name,
-		Server:     option.Server,
-		Port:       option.Port,
-		Password:   option.Password,
-		Cipher:     option.Cipher,
-		Proto:      option.Protocol,
-		ProtoParam: option.ProtocolParam,
-		Obfs:       option.Obfs,
-		ObfsParam:  option.ObfsParam,
-		Protocol:   "shadowsocksr",
-	}, nil
+	return dialer.NewDialer(d, log, false, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSRURL(u string) (data *ShadowsocksR, err error) {

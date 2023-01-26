@@ -16,7 +16,7 @@ type bpfLpmKey struct {
 	Data      [4]uint32
 }
 
-func (o *bpfObjects) NewLpmMap(keys []bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
+func (o *bpfObjects) newLpmMap(keys []bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
 	m, err = ebpf.NewMap(&ebpf.MapSpec{
 		Type:       ebpf.LPMTrie,
 		Flags:      o.UnusedLpmType.Flags(),

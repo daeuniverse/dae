@@ -7,9 +7,9 @@ package control
 
 import (
 	"fmt"
+	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
-	"github.com/cilium/ebpf"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"strings"
@@ -53,7 +53,6 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
 		vals = append(vals, bpfDomainRouting{
 			Bitmap: cache.DomainBitmap,
-			Epoch:  c.epoch,
 		})
 	}
 	if _, err := c.bpf.DomainRoutingMap.BatchUpdate(keys, vals, &ebpf.BatchOptions{

@@ -2,10 +2,10 @@ package socks
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	//"github.com/mzz2017/softwind/protocol/socks4"
 	"github.com/mzz2017/softwind/protocol/socks5"
-	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
 	"strconv"
@@ -16,7 +16,6 @@ func init() {
 	//dialer.FromLinkRegister("socks4", NewSocks)
 	//dialer.FromLinkRegister("socks4a", NewSocks)
 	dialer.FromLinkRegister("socks5", NewSocks)
-	dialer.FromClashRegister("socks5", NewSocks5FromClashObj)
 }
 
 type Socks struct {
@@ -28,31 +27,23 @@ type Socks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewSocks(link string) (*dialer.Dialer, error) {
+func NewSocks(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	s, err := ParseSocksURL(link)
 	if err != nil {
 		return nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer()
+	return s.Dialer(log)
 }
 
-func NewSocks5FromClashObj(o *yaml.Node) (*dialer.Dialer, error) {
-	s, err := ParseClashSocks5(o)
-	if err != nil {
-		return nil, err
-	}
-	return s.Dialer()
-}
-
-func (s *Socks) Dialer() (*dialer.Dialer, error) {
+func (s *Socks) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 	link := s.ExportToURL()
 	switch s.Protocol {
 	case "", "socks", "socks5":
-		d, err := socks5.NewSocks5Dialer(link, dialer.FullconeDirectDialer)
+		d, err := socks5.NewSocks5Dialer(link, dialer.FullconeDirect) // Socks5 Proxy supports full-cone.
 		if err != nil {
 			return nil, err
 		}
-		return dialer.NewDialer(d, true, s.Name, s.Protocol, link), nil
+		return dialer.NewDialer(d, log, true, s.Name, s.Protocol, link), nil
 	//case "socks4", "socks4a":
 	//	d, err := socks4.NewSocks4Dialer(link, &proxy.Direct{})
 	//	if err != nil {
@@ -62,37 +53,6 @@ func (s *Socks) Dialer() (*dialer.Dialer, error) {
 	default:
 		return nil, fmt.Errorf("unexpected protocol: %v", s.Protocol)
 	}
-}
-
-func ParseClashSocks5(o *yaml.Node) (data *Socks, err error) {
-	type Socks5Option struct {
-		Name           string `yaml:"name"`
-		Server         string `yaml:"server"`
-		Port           int    `yaml:"port"`
-		UserName       string `yaml:"username,omitempty"`
-		Password       string `yaml:"password,omitempty"`
-		TLS            bool   `yaml:"tls,omitempty"`
-		UDP            bool   `yaml:"udp,omitempty"`
-		SkipCertVerify bool   `yaml:"skip-cert-verify,omitempty"`
-	}
-	var option Socks5Option
-	if err = o.Decode(&option); err != nil {
-		return nil, err
-	}
-	if option.TLS {
-		return nil, fmt.Errorf("%w: tls=true", dialer.UnexpectedFieldErr)
-	}
-	if option.SkipCertVerify {
-		return nil, fmt.Errorf("%w: skip-cert-verify=true", dialer.UnexpectedFieldErr)
-	}
-	return &Socks{
-		Name:     option.Name,
-		Server:   option.Server,
-		Port:     option.Port,
-		Username: option.UserName,
-		Password: option.Password,
-		Protocol: "socks5",
-	}, nil
 }
 
 func ParseSocksURL(link string) (data *Socks, err error) {

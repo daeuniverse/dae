@@ -10,6 +10,9 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 ## TODO
 
-1. Dns upstream. Check dns upstream and source loop (whether upstream is also a client of us) and remind user to add source rule.
+1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
+1. Support not operator for RoutingA rule.
+1. DisableL4Checksum by link.
+1. Config file.
 1. ...

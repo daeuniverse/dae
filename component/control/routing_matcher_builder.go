@@ -20,6 +20,7 @@ type DomainSet struct {
 	RuleIndex int
 	Domains   []string
 }
+
 type RoutingMatcherBuilder struct {
 	*routing.DefaultMatcherBuilder
 	outboundName2Id    map[string]uint8
@@ -74,7 +75,7 @@ func (b *RoutingMatcherBuilder) AddDomain(key string, values []string, outbound 
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddMac(macAddrs [][6]byte, outbound string) {
+func (b *RoutingMatcherBuilder) AddSourceMac(macAddrs [][6]byte, outbound string) {
 	if b.err != nil {
 		return
 	}
@@ -108,7 +109,7 @@ func (b *RoutingMatcherBuilder) AddIp(values []netip.Prefix, outbound string) {
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddSource(values []netip.Prefix, outbound string) {
+func (b *RoutingMatcherBuilder) AddSourceIp(values []netip.Prefix, outbound string) {
 	if b.err != nil {
 		return
 	}
@@ -166,9 +167,9 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 			keys = append(keys, cidrToBpfLpmKey(cidr))
 			values = append(values, 1)
 		}
-		m, err := b.bpf.NewLpmMap(keys, values)
+		m, err := b.bpf.newLpmMap(keys, values)
 		if err != nil {
-			return fmt.Errorf("NewLpmMap: %w", err)
+			return fmt.Errorf("newLpmMap: %w", err)
 		}
 		// ebpf.Map cannot be BatchUpdate
 		if err = b.bpf.LpmArrayMap.Update(uint32(i), m, ebpf.UpdateAny); err != nil {
@@ -177,16 +178,18 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 		}
 		m.Close()
 	}
-	// Update routings.
+	// Write routings.
+	// Final rule MUST be the last.
+	if b.rules[len(b.rules)-1].Type != uint8(consts.RoutingType_Final) {
+		b.err = fmt.Errorf("final rule MUST be the last")
+		return b.err
+	}
 	routingsLen := uint32(len(b.rules))
 	routingsKeys := common.ARangeU32(routingsLen)
 	if _, err = b.bpf.RoutingMap.BatchUpdate(routingsKeys, b.rules, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return fmt.Errorf("BatchUpdate: %w", err)
-	}
-	if err = b.bpf.ParamMap.Update(consts.RoutingsLenKey, routingsLen, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("Update: %w", err)
 	}
 	return nil
 }

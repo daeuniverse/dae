@@ -2,9 +2,9 @@ package http
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/protocol/http"
-	"gopkg.in/yaml.v3"
+	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"net"
 	"net/url"
 	"strconv"
@@ -13,7 +13,6 @@ import (
 func init() {
 	dialer.FromLinkRegister("http", NewHTTP)
 	dialer.FromLinkRegister("https", NewHTTP)
-	dialer.FromClashRegister("http", NewSocks5FromClashObj)
 }
 
 type HTTP struct {
@@ -26,20 +25,12 @@ type HTTP struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewHTTP(link string) (*dialer.Dialer, error) {
+func NewHTTP(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	s, err := ParseHTTPURL(link)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", dialer.InvalidParameterErr, err)
 	}
-	return s.Dialer()
-}
-
-func NewSocks5FromClashObj(o *yaml.Node) (*dialer.Dialer, error) {
-	s, err := ParseClash(o)
-	if err != nil {
-		return nil, err
-	}
-	return s.Dialer()
+	return s.Dialer(log)
 }
 
 func ParseHTTPURL(link string) (data *HTTP, err error) {
@@ -71,46 +62,13 @@ func ParseHTTPURL(link string) (data *HTTP, err error) {
 	}, nil
 }
 
-func ParseClash(o *yaml.Node) (data *HTTP, err error) {
-	type HttpOption struct {
-		Name           string `yaml:"name"`
-		Server         string `yaml:"server"`
-		Port           int    `yaml:"port"`
-		UserName       string `yaml:"username,omitempty"`
-		Password       string `yaml:"password,omitempty"`
-		TLS            bool   `yaml:"tls,omitempty"`
-		SNI            string `yaml:"sni,omitempty"`
-		SkipCertVerify bool   `yaml:"skip-cert-verify,omitempty"`
-	}
-	var option HttpOption
-	if err = o.Decode(&option); err != nil {
-		return nil, err
-	}
-	scheme := "http"
-	if option.TLS {
-		scheme = "https"
-	}
-	if option.SkipCertVerify {
-		return nil, fmt.Errorf("%w: skip-cert-verify=true", dialer.UnexpectedFieldErr)
-	}
-	return &HTTP{
-		Name:     option.Name,
-		Server:   option.Server,
-		Port:     option.Port,
-		Username: option.UserName,
-		Password: option.Password,
-		SNI:      option.SNI,
-		Protocol: scheme,
-	}, nil
-}
-
-func (s *HTTP) Dialer() (*dialer.Dialer, error) {
+func (s *HTTP) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 	u := s.URL()
-	d, err := http.NewHTTPProxy(&u, dialer.SymmetricDirect)
+	d, err := http.NewHTTPProxy(&u, dialer.SymmetricDirect) // HTTP Proxy does not support full-cone.
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, false, s.Name, s.Protocol, u.String()), nil
+	return dialer.NewDialer(d, log, false, s.Name, s.Protocol, u.String()), nil
 }
 
 func (s *HTTP) URL() url.URL {

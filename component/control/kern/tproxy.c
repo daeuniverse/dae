@@ -1,30 +1,23 @@
+// +build ignore
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  * Copyright (c) since 2022, mzz2017 (mzz@tuta.io). All rights reserved.
  */
-
 #include <asm-generic/errno-base.h>
-#include <iproute2/bpf_elf.h>
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/in.h>
 #include <linux/in6.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
-#include <linux/kernel.h>
 #include <linux/pkt_cls.h>
 #include <linux/tcp.h>
-#include <linux/types.h>
 #include <linux/udp.h>
-#include <net/if.h>
 #include <stdbool.h>
 
-#include <bpf/bpf_endian.h>
-#include <bpf/bpf_helpers.h>
-#include <sys/cdefs.h>
-#include <sys/types.h>
+#include "bpf_endian.h"
+#include "bpf_helpers.h"
 
-// #include "addr.h"
 
 // #define likely(x) x
 // #define unlikely(x) x
@@ -41,12 +34,15 @@
 
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 128
-#define MAX_ROUTING_LEN 96
+#define MAX_ROUTING_LEN (32 * 3)
 #define MAX_LPM_SIZE 20480
+//#define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_ROUTING_LEN + 8)
+#define MAX_DEST_MAPPING_NUM (65536 * 2)
 #define IPV6_MAX_EXTENSIONS 4
 
 #define OUTBOUND_DIRECT 0
+#define OUTBOUND_BLOCK 1
 #define OUTBOUND_CONTROL_PLANE_DIRECT 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
 
@@ -62,10 +58,6 @@ static const __u32 zero_key = 0;
 static const __u32 tproxy_port_key = 1;
 static const __u32 disable_l4_tx_checksum_key = 2;
 static const __u32 disable_l4_rx_checksum_key = 3;
-static const __u32 epoch_key __attribute__((unused, deprecated)) = 4;
-static const __u32 routings_len_key __attribute__((unused, deprecated)) = 5;
-
-static __be32 unspecific_ipv6[4] __attribute__((__unused__)) = {0, 0, 0, 0};
 
 struct ip_port {
   __be32 ip[4];
@@ -96,7 +88,7 @@ struct {
                                 // enough for identifier. And UDP client
                                 // side does not care it (full-cone).
   __type(value, struct ip_port_outbound); // Original target.
-  __uint(max_entries, 0xFF << 2);
+  __uint(max_entries, MAX_DEST_MAPPING_NUM);
   /// NOTICE: It MUST be pinned.
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } dst_map SEC(".maps");
@@ -132,7 +124,7 @@ struct {
   __uint(max_entries, MAX_INTERFACE_NUM);
   /// NOTICE: No persistence.
   // __uint(pinning, LIBBPF_PIN_BY_NAME);
-} ifindex_ip_map SEC(".maps");
+} ifindex_tproxy_ip_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -145,12 +137,12 @@ struct map_lpm_type {
   __uint(max_entries, MAX_LPM_SIZE);
   __uint(key_size, sizeof(struct lpm_key));
   __uint(value_size, sizeof(__u32));
-} unused_lpm_type SEC(".maps");
+} unused_lpm_type SEC(".maps"), host_ip_lpm SEC(".maps");
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
   __uint(key_size, sizeof(__u32));
   __uint(max_entries, MAX_LPM_NUM);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  // __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct map_lpm_type);
 } lpm_array_map SEC(".maps");
 
@@ -199,16 +191,11 @@ struct {
   __type(key, __u32);
   __type(value, struct routing);
   __uint(max_entries, MAX_ROUTING_LEN);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  // __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_map SEC(".maps");
 
 struct domain_routing {
   __u32 bitmap[MAX_ROUTING_LEN / 32];
-  /// DEPRECATED: Epoch is the epoch at the write time. Every time the control
-  /// plane restarts, epoch += 1. It was deprecated because long connection will
-  /// keep their states by persistent dst_map (we only need to know if it is a
-  /// old connection).
-  __u32 epoch;
 };
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -220,7 +207,7 @@ struct {
 
 // Functions:
 
-static __always_inline bool equal_ipv6(__be32 x[4], __be32 y[4]) {
+static __always_inline bool equal_ipv6_format(__be32 x[4], __be32 y[4]) {
 #if __clang_major__ >= 10
   return ((__be64 *)x)[0] == ((__be64 *)y)[0] &&
          ((__be64 *)x)[1] == ((__be64 *)y)[1];
@@ -248,7 +235,7 @@ static __always_inline long rewrite_ip(struct __sk_buff *skb, bool is_ipv6,
                                        __u8 proto, __u8 ihl, __be32 old_ip[4],
                                        __be32 new_ip[4], bool is_dest) {
   // Nothing to do.
-  if (equal_ipv6(old_ip, new_ip)) {
+  if (equal_ipv6_format(old_ip, new_ip)) {
     return 0;
   }
   // bpf_printk("%pI6->%pI6", old_ip, new_ip);
@@ -486,28 +473,26 @@ parse_transport(struct __sk_buff *skb, struct ethhdr **ethh, struct iphdr **iph,
 }
 
 static __always_inline long ip_is_host(bool is_ipv6, __u32 ifindex,
-                                       __be32 ip[4],
-                                       __be32 (*first_interface_ip)[4]) {
-  struct if_ip *if_ip = bpf_map_lookup_elem(&ifindex_ip_map, &ifindex);
-  if (unlikely(!if_ip)) {
-    return -1;
+                                       __be32 ip[4], __be32 tproxy_ip[4]) {
+  if (tproxy_ip) {
+    struct if_ip *if_ip = bpf_map_lookup_elem(&ifindex_tproxy_ip_map, &ifindex);
+    if (unlikely(!if_ip)) {
+      return -1;
+    }
+    if (!is_ipv6 && (*if_ip).hasIp4) {
+      __builtin_memcpy(tproxy_ip, (*if_ip).ip4, IPV6_BYTE_LENGTH);
+    } else if (is_ipv6 && (*if_ip).hasIp6) {
+      __builtin_memcpy(tproxy_ip, (*if_ip).ip6, IPV6_BYTE_LENGTH);
+    } else {
+      // Should TC_ACT_OK outer.
+      return -EFAULT;
+    }
   }
-  __u32 host_ip[4];
-  if (!is_ipv6 && (*if_ip).hasIp4) {
-    __builtin_memcpy(host_ip, (*if_ip).ip4, IPV6_BYTE_LENGTH);
-  } else if (is_ipv6 && (*if_ip).hasIp6) {
-    __builtin_memcpy(host_ip, (*if_ip).ip6, IPV6_BYTE_LENGTH);
-  } else {
-    // Should TC_ACT_OK outer.
-    return -EFAULT;
-  }
-  if (first_interface_ip) {
-    __builtin_memcpy(*first_interface_ip, host_ip, IPV6_BYTE_LENGTH);
-  }
-  if (equal_ipv6(ip, host_ip)) {
-    return 1;
-  }
-  return 0;
+
+  struct lpm_key lpm_key;
+  lpm_key.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+  __builtin_memcpy(lpm_key.data, ip, IPV6_BYTE_LENGTH);
+  return bpf_map_lookup_elem(&host_ip_lpm, &lpm_key) ? 1 : 0;
 }
 
 static __always_inline long adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
@@ -597,9 +582,9 @@ static __always_inline long encap_after_udp_hdr(struct __sk_buff *skb,
                                                 __be16 iphdr_tot_len,
                                                 void *newhdr, __u32 newhdrlen) {
   if (unlikely(newhdrlen % 4 != 0)) {
-    bpf_trace_printk("encap_after_udp_hdr: unexpected newhdrlen value %u :must "
-                     "be a multiple of 4",
-                     newhdrlen);
+    bpf_printk("encap_after_udp_hdr: unexpected newhdrlen value %u :must "
+               "be a multiple of 4",
+               newhdrlen);
     return -EINVAL;
   }
 
@@ -664,10 +649,9 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
                                                __be16 iphdr_tot_len, void *to,
                                                __u32 decap_hdrlen) {
   if (unlikely(decap_hdrlen % 4 != 0)) {
-    bpf_trace_printk(
-        "encap_after_udp_hdr: unexpected decap_hdrlen value %u :must "
-        "be a multiple of 4",
-        decap_hdrlen);
+    bpf_printk("encap_after_udp_hdr: unexpected decap_hdrlen value %u :must "
+               "be a multiple of 4",
+               decap_hdrlen);
     return -EINVAL;
   }
   long ret = 0;
@@ -742,15 +726,7 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
                     __be32 daddr[4], __be32 mac[4]) {
 #define _l4proto flag[0]
 #define _ipversion flag[1]
-  // // Get len of routings and epoch from param_map.
-  // __u32 *routings_len = bpf_map_lookup_elem(&param_map, &routings_len_key);
-  // if (!routings_len) {
-  //   return -EINVAL;
-  // }
-  // __u32 *epoch = bpf_map_lookup_elem(&param_map, &epoch_key);
-  // if (!epoch) {
-  //   return -EINVAL;
-  // }
+
   // Define variables for further use.
   __u16 h_dport;
   __u16 h_sport;
@@ -785,13 +761,6 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
   // Rule is like: domain(domain:baidu.com) && port(443) -> proxy
   bool bad_rule = false;
   struct domain_routing *domain_routing;
-
-  /// DEPRECATED: Epoch was deprecated and domain_routing_map was unpinned, thus
-  /// this branch will never hit.
-  // if (domain_routing && domain_routing->epoch != *epoch) {
-  //   // Dirty (epoch dismatch) traffic should be routed by the control plane.
-  //   return OUTBOUND_CONTROL_PLANE_DIRECT;
-  // }
 
 #pragma unroll
   for (__u32 key = 0; key < MAX_ROUTING_LEN; key++) {
@@ -895,6 +864,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
   struct udphdr *udph;
   __sum16 bak_cksm;
   __u8 ihl;
+  bool tcp_state_syn;
   long ret = parse_transport(skb, &ethh, &iph, &ipv6h, &tcph, &udph, &ihl);
   if (ret) {
     bpf_printk("parse_transport: %ld", ret);
@@ -906,13 +876,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
 
   // Backup for further use.
   __u8 l4_proto;
-  if (tcph) {
-    l4_proto = IPPROTO_TCP;
-  } else if (udph) {
-    l4_proto = IPPROTO_UDP;
-  } else {
-    return TC_ACT_OK;
-  }
+  __be16 ip_tot_len = 0;
 
   // Parse saddr and daddr as ipv6 format.
   __be32 saddr[4];
@@ -927,6 +891,8 @@ int tproxy_ingress(struct __sk_buff *skb) {
     daddr[1] = 0;
     daddr[2] = bpf_htonl(0x0000ffff);
     daddr[3] = iph->daddr;
+
+    ip_tot_len = iph->tot_len;
   } else if (ipv6h) {
     __builtin_memcpy(daddr, &ipv6h->daddr, IPV6_BYTE_LENGTH);
     __builtin_memcpy(saddr, &ipv6h->saddr, IPV6_BYTE_LENGTH);
@@ -935,8 +901,8 @@ int tproxy_ingress(struct __sk_buff *skb) {
   }
 
   // If this packet is sent to this host, accept it.
-  __u32 first_interface_ip[4];
-  long to_host = ip_is_host(ipv6h, skb->ifindex, daddr, &first_interface_ip);
+  __u32 tproxy_ip[4];
+  long to_host = ip_is_host(ipv6h, skb->ifindex, daddr, tproxy_ip);
   if (to_host < 0) { // error
     // bpf_printk("to_host: %ld", to_host);
     return TC_ACT_OK;
@@ -946,7 +912,6 @@ int tproxy_ingress(struct __sk_buff *skb) {
       // To host:53. Process it.
     } else {
       // To host. Accept.
-      /// FIXME: all host ip.
       return TC_ACT_OK;
     }
   }
@@ -958,8 +923,9 @@ int tproxy_ingress(struct __sk_buff *skb) {
 
   if (tcph) {
     // Backup for further use.
+    l4_proto = IPPROTO_TCP;
     bak_cksm = tcph->check;
-    bool tcp_state_syn = tcph->syn && !tcph->ack;
+    tcp_state_syn = tcph->syn && !tcph->ack;
     struct ip_port_proto key_src;
     __builtin_memset(&key_src, 0, sizeof(key_src));
     __builtin_memcpy(key_src.ip, saddr, IPV6_BYTE_LENGTH);
@@ -1003,6 +969,8 @@ int tproxy_ingress(struct __sk_buff *skb) {
     bpf_printk("tcp: outbound: %u, %pI6", outbound, daddr);
     if (outbound == OUTBOUND_DIRECT) {
       return TC_ACT_OK;
+    } else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+      return TC_ACT_SHOT;
     } else {
       // Rewrite to control plane.
 
@@ -1017,8 +985,8 @@ int tproxy_ingress(struct __sk_buff *skb) {
 
       __u32 *dst_ip = daddr;
       __u16 dst_port = tcph->dest;
-      if ((ret = rewrite_ip(skb, ipv6h, IPPROTO_TCP, ihl, dst_ip,
-                            first_interface_ip, true))) {
+      if ((ret = rewrite_ip(skb, ipv6h, IPPROTO_TCP, ihl, dst_ip, tproxy_ip,
+                            true))) {
         bpf_printk("Shot IP: %ld", ret);
         return TC_ACT_SHOT;
       }
@@ -1031,6 +999,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
   } else if (udph) {
     // Backup for further use.
     bak_cksm = udph->check;
+    l4_proto = IPPROTO_UDP;
     struct ip_port_outbound new_hdr;
     __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
     __builtin_memcpy(new_hdr.ip, daddr, IPV6_BYTE_LENGTH);
@@ -1059,18 +1028,19 @@ int tproxy_ingress(struct __sk_buff *skb) {
 
     if (new_hdr.outbound == OUTBOUND_DIRECT) {
       return TC_ACT_OK;
+    } else if (unlikely(new_hdr.outbound == OUTBOUND_BLOCK)) {
+      return TC_ACT_SHOT;
     } else {
       // Rewrite to control plane.
 
       // Encap a header to transmit fullcone tuple.
-      __be16 ip_tot_len = iph ? iph->tot_len : 0;
       encap_after_udp_hdr(skb, ipv6h, ihl, ip_tot_len, &new_hdr,
                           sizeof(new_hdr));
 
       // Rewrite udp dst ip.
       // bpf_printk("rewrite dst ip from %pI4", &ori_dst.ip);
-      if ((ret = rewrite_ip(skb, ipv6h, IPPROTO_UDP, ihl, new_hdr.ip,
-                            first_interface_ip, true))) {
+      if ((ret = rewrite_ip(skb, ipv6h, IPPROTO_UDP, ihl, new_hdr.ip, tproxy_ip,
+                            true))) {
         bpf_printk("Shot IP: %ld", ret);
         return TC_ACT_SHOT;
       }
@@ -1129,6 +1099,7 @@ int tproxy_egress(struct __sk_buff *skb) {
   struct tcphdr *tcph;
   struct udphdr *udph;
   __sum16 bak_cksm;
+  __u8 l4_proto;
   __u8 ihl;
   long ret = parse_transport(skb, &ethh, &iph, &ipv6h, &tcph, &udph, &ihl);
   if (ret) {
@@ -1138,6 +1109,7 @@ int tproxy_egress(struct __sk_buff *skb) {
   // Parse saddr and daddr as ipv6 format.
   __be32 saddr[4];
   __be32 daddr[4];
+  __be16 ip_tot_len = 0;
   if (iph) {
     saddr[0] = 0;
     saddr[1] = 0;
@@ -1148,6 +1120,8 @@ int tproxy_egress(struct __sk_buff *skb) {
     daddr[1] = 0;
     daddr[2] = bpf_htonl(0x0000ffff);
     daddr[3] = iph->daddr;
+
+    ip_tot_len = iph->tot_len;
   } else if (ipv6h) {
     __builtin_memcpy(daddr, ipv6h->daddr.in6_u.u6_addr32, IPV6_BYTE_LENGTH);
     __builtin_memcpy(saddr, ipv6h->saddr.in6_u.u6_addr32, IPV6_BYTE_LENGTH);
@@ -1160,23 +1134,17 @@ int tproxy_egress(struct __sk_buff *skb) {
   if (!tproxy_port) {
     return TC_ACT_OK;
   }
-  long from_host = ip_is_host(ipv6h, skb->ifindex, saddr, NULL);
-  if (!(from_host == 1)) {
-    // Not from localhost.
+  __be32 tproxy_ip[4];
+  ret = ip_is_host(ipv6h, skb->ifindex, saddr, tproxy_ip);
+  if (!(ret == 1)) {
+    return TC_ACT_OK;
+  }
+  if (!equal_ipv6_format(saddr, tproxy_ip)) {
     return TC_ACT_OK;
   }
 
-  // Backup for further use.
-  __u8 l4_proto;
   if (tcph) {
     l4_proto = IPPROTO_TCP;
-  } else if (udph) {
-    l4_proto = IPPROTO_UDP;
-  } else {
-    return TC_ACT_OK;
-  }
-
-  if (tcph) {
     if (tcph->source != *tproxy_port) {
       return TC_ACT_OK;
     }
@@ -1216,6 +1184,7 @@ int tproxy_egress(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     }
   } else if (udph) {
+    l4_proto = IPPROTO_UDP;
     if (udph->source != *tproxy_port) {
       return TC_ACT_OK;
     }
@@ -1233,7 +1202,6 @@ int tproxy_egress(struct __sk_buff *skb) {
     // Get source ip/port from our packet header.
 
     // Decap header to get fullcone tuple.
-    __be16 ip_tot_len = iph ? iph->tot_len : 0;
     decap_after_udp_hdr(skb, ipv6h, ihl, ip_tot_len, &ori_src, sizeof(ori_src));
 
     // Rewrite udp src ip
@@ -1274,7 +1242,7 @@ int tproxy_egress(struct __sk_buff *skb) {
       if (*disable_l4_checksum == DISABLE_L4_CHECKSUM_POLICY_SET_ZERO) {
         bak_cksm = 0;
       }
-      bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, 2, 0);
+      bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
     }
   }
   return TC_ACT_OK;

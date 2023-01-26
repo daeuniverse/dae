@@ -42,31 +42,31 @@ type ControlPlane struct {
 	Final              string
 
 	// mutex protects the dnsCache.
-	mutex    sync.Mutex
-	dnsCache map[string]*dnsCache
-	// Deprecated
-	epoch       uint32
+	mutex       sync.Mutex
+	dnsCache    map[string]*dnsCache
 	dnsUpstream netip.AddrPort
 
 	deferFuncs []func() error
 }
 
-func NewControlPlane(log *logrus.Logger, routingA string) (*ControlPlane, error) {
+func NewControlPlane(log *logrus.Logger, dialerGroups []*outbound.DialerGroup, routingA string) (*ControlPlane, error) {
 	// Allow the current process to lock memory for eBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	os.MkdirAll(pinPath, 0755)
+
 	// Load pre-compiled programs and maps into the kernel.
 	var bpf bpfObjects
-retry_load:
+retryLoadBpf:
 	if err := loadBpfObjects(&bpf, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
 	}); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
+			// Map property is incompatible. Remove the old map and try again.
 			prefix := "use pinned map "
 			_, after, ok := strings.Cut(err.Error(), prefix)
 			if !ok {
@@ -75,72 +75,35 @@ retry_load:
 			mapName, _, _ := strings.Cut(after, ":")
 			_ = os.Remove(filepath.Join(pinPath, mapName))
 			log.Warnf("New map format was incompatible with existing map %v, and the old one was removed.", mapName)
-			goto retry_load
+			goto retryLoadBpf
 		}
 		return nil, fmt.Errorf("loading objects: %w", err)
 	}
 
-	// Flush dst_map.
-	//_ = os.Remove(filepath.Join(pinPath, "dst_map"))
-	//if err := bpf.ParamMap.Update(consts.IpsLenKey, uint32(1), ebpf.UpdateAny); err != nil {
-	//	return nil, err
-	//}
-	//if err := bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(swap16(tproxyPort)), ebpf.UpdateAny); err != nil {
-	//	return nil, err
-	//}
+	// Write params.
 	if err := bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
 	if err := bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-	//var epoch uint32
-	//bpf.ParamMap.Lookup(consts.EpochKey, &epoch)
-	//epoch++
-	//if err := bpf.ParamMap.Update(consts.EpochKey, epoch, ebpf.UpdateAny); err != nil {
-	//	return nil, err
-	//}
-	//if err := bpf.ParamMap.Update(consts.InterfaceIpParamOff, binary.LittleEndian.Uint32([]byte{172, 17, 0, 1}), ebpf.UpdateAny); err != nil { // 172.17.0.1
-	//	return nil, err
-	//}
-	//if err := bpf.ParamMap.Update(InterfaceIpParamOff+1, binary.LittleEndian.Uint32([]byte{10, 249, 40, 166}), ebpf.UpdateAny); err != nil { // 10.249.40.166
-	//	log.Println(err)
-	//	return
-	//}
-	//if err := bpf.ParamMap.Update(InterfaceIpParamOff+2, binary.LittleEndian.Uint32([]byte{10, 250, 52, 180}), ebpf.UpdateAny); err != nil { // 10.250.52.180
-	//	log.Println(err)
-	//	return
-	//}
 
-	cfDnsAddr := netip.AddrFrom4([4]byte{1, 1, 1, 1})
-	cfDnsAddr16 := cfDnsAddr.As16()
-	cfDnsPort := uint16(53)
-	if err := bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
-		Ip:   common.Ipv6ByteSliceToUint32Array(cfDnsAddr16[:]),
-		Port: swap16(cfDnsPort),
-	}, ebpf.UpdateAny); err != nil {
-		return nil, err
-	}
-
-	/**/
-	// TODO:
-	d, err := dialer.NewFromLink("socks5://localhost:1080#proxy")
-	if err != nil {
-		return nil, err
-	}
+	// DialerGroups (outbounds).
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(log, consts.OutboundDirect.String(),
-			[]*dialer.Dialer{dialer.FullconeDirectDialer},
+			[]*dialer.Dialer{dialer.NewDirectDialer(log, true)},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
 			}),
-		outbound.NewDialerGroup(log, "proxy",
-			[]*dialer.Dialer{d},
+		outbound.NewDialerGroup(log, consts.OutboundBlock.String(),
+			[]*dialer.Dialer{dialer.NewBlockDialer(log)},
 			outbound.DialerSelectionPolicy{
-				Policy: consts.DialerSelectionPolicy_MinAverage10Latencies,
+				Policy:     consts.DialerSelectionPolicy_Fixed,
+				FixedIndex: 0,
 			}),
 	}
+	outbounds = append(outbounds, dialerGroups...)
 	// Generate outboundName2Id from outbounds.
 	if len(outbounds) > 0xff {
 		return nil, fmt.Errorf("too many outbounds")
@@ -177,7 +140,17 @@ retry_load:
 	if err := builder.Build(); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.Build: %w", err)
 	}
-	/**/
+
+	// DNS upstream.
+	cfDnsAddr := netip.AddrFrom4([4]byte{1, 1, 1, 1})
+	cfDnsAddr16 := cfDnsAddr.As16()
+	cfDnsPort := uint16(53)
+	if err := bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
+		Ip:   common.Ipv6ByteSliceToUint32Array(cfDnsAddr16[:]),
+		Port: swap16(cfDnsPort),
+	}, ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
 
 	return &ControlPlane{
 		log:                log,
@@ -190,8 +163,7 @@ retry_load:
 		mutex:              sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
 		dnsUpstream:        netip.AddrPortFrom(cfDnsAddr, cfDnsPort),
-		//epoch:              epoch,
-		deferFuncs: []func() error{bpf.Close},
+		deferFuncs:         []func() error{bpf.Close},
 	}, nil
 }
 
@@ -235,8 +207,25 @@ func (c *ControlPlane) BindLink(ifname string) error {
 			break
 		}
 	}
-	if err := c.bpf.IfindexIpMap.Update(uint32(link.Attrs().Index), linkIp, ebpf.UpdateAny); err != nil {
+	if err := c.bpf.IfindexTproxyIpMap.Update(uint32(link.Attrs().Index), linkIp, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update IfindexIpsMap: %w", err)
+	}
+	// FIXME: not only this link ip.
+	if linkIp.HasIp4 {
+		if err := c.bpf.HostIpLpm.Update(bpfLpmKey{
+			PrefixLen: 128,
+			Data:      linkIp.Ip4,
+		}, uint32(1), ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update IfindexIpsMap: %w", err)
+		}
+	}
+	if linkIp.HasIp6 {
+		if err := c.bpf.HostIpLpm.Update(bpfLpmKey{
+			PrefixLen: 128,
+			Data:      linkIp.Ip6,
+		}, uint32(1), ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update IfindexIpsMap: %w", err)
+		}
 	}
 
 	// Insert qdisc and filters.

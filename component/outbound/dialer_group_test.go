@@ -6,10 +6,10 @@
 package outbound
 
 import (
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/pkg/logger"
-	"github.com/mzz2017/softwind/pkg/fastrand"
 	"testing"
 	"time"
 )
@@ -17,8 +17,8 @@ import (
 func TestDialerGroup_Select_Fixed(t *testing.T) {
 	log := logger.NewLogger(2)
 	dialers := []*dialer.Dialer{
-		dialer.SymmetricDirectDialer,
-		dialer.FullconeDirectDialer,
+		dialer.NewDirectDialer(log, true),
+		dialer.NewDirectDialer(log, false),
 	}
 	fixedIndex := 1
 	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
@@ -51,16 +51,16 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	log := logger.NewLogger(2)
 	dialers := []*dialer.Dialer{
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
 	}
 	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
@@ -114,11 +114,11 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 func TestDialerGroup_Select_Random(t *testing.T) {
 	log := logger.NewLogger(2)
 	dialers := []*dialer.Dialer{
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
 	}
 	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
@@ -147,11 +147,11 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 func TestDialerGroup_SetAlive(t *testing.T) {
 	log := logger.NewLogger(2)
 	dialers := []*dialer.Dialer{
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
-		dialer.NewDialer(dialer.SymmetricDirect, true, "direct", "direct", ""),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(log, false),
 	}
 	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,

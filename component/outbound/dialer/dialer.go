@@ -24,6 +24,8 @@ var (
 )
 
 type Dialer struct {
+	log *logrus.Logger
+
 	proxy.Dialer
 	supportUDP bool
 	name       string
@@ -40,16 +42,17 @@ type Dialer struct {
 }
 
 // NewDialer is for register in general.
-func NewDialer(dialer proxy.Dialer, supportUDP bool, name string, protocol string, link string) *Dialer {
-	d := newDialer(dialer, supportUDP, name, protocol, link)
+func NewDialer(dialer proxy.Dialer, log *logrus.Logger, supportUDP bool, name string, protocol string, link string) *Dialer {
+	d := newDialer(dialer, log, supportUDP, name, protocol, link)
 	go d.aliveBackground()
 	return d
 }
 
 // newDialer does not run background tasks.
-func newDialer(dialer proxy.Dialer, supportUDP bool, name string, protocol string, link string) *Dialer {
+func newDialer(dialer proxy.Dialer, log *logrus.Logger, supportUDP bool, name string, protocol string, link string) *Dialer {
 	d := &Dialer{
 		Dialer:      dialer,
+		log:         log,
 		supportUDP:  supportUDP,
 		name:        name,
 		protocol:    protocol,
@@ -132,13 +135,13 @@ func (d *Dialer) Test(timeout time.Duration, url string) (ok bool, err error) {
 			// No error.
 			latency := time.Since(start)
 			// FIXME: Use log instead of logrus.
-			logrus.Debugf("Connectivity Test <%v>: %v", d.name, latency)
+			d.log.Debugf("Connectivity Test <%v>: %v", d.name, latency)
 			d.Latencies10.AppendLatency(latency)
 			alive = true
 		} else {
 			// Append timeout if there is any error or unexpected status code.
 			if err != nil {
-				logrus.Debugf("Connectivity Test <%v>: %v", d.name, err.Error())
+				d.log.Debugf("Connectivity Test <%v>: %v", d.name, err.Error())
 			}
 			d.Latencies10.AppendLatency(timeout)
 		}

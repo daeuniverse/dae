@@ -19,14 +19,14 @@ type MatcherBuilder interface {
 	AddDomain(key string, values []string, outbound string)
 	AddIp(values []netip.Prefix, outbound string)
 	AddPort(values [][2]int, outbound string)
-	AddSource(values []netip.Prefix, outbound string)
+	AddSourceIp(values []netip.Prefix, outbound string)
 	AddSourcePort(values [][2]int, outbound string)
 	AddL4Proto(values consts.L4ProtoType, outbound string)
 	AddIpVersion(values consts.IpVersion, outbound string)
-	AddMac(values [][6]byte, outbound string)
+	AddSourceMac(values [][6]byte, outbound string)
 	AddFinal(outbound string)
-	AddAnyBefore(key string, values []string, outbound string)
-	AddAnyAfter(key string, values []string, outbound string)
+	AddAnyBefore(function string, key string, values []string, outbound string)
+	AddAnyAfter(function string, key string, values []string, outbound string)
 	Build() (err error)
 }
 
@@ -65,7 +65,7 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []RoutingRule, finalOutbo
 				if iFunc == len(rule.AndFunctions)-1 {
 					outbound = rule.Outbound
 				}
-				builder.AddAnyBefore(key, paramValueGroup, outbound)
+				builder.AddAnyBefore(f.Name, key, paramValueGroup, outbound)
 				switch f.Name {
 				case consts.Function_Domain:
 					builder.AddDomain(key, paramValueGroup, outbound)
@@ -77,7 +77,7 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []RoutingRule, finalOutbo
 					if f.Name == consts.Function_Ip {
 						builder.AddIp(cidrs, outbound)
 					} else {
-						builder.AddSource(cidrs, outbound)
+						builder.AddSourceIp(cidrs, outbound)
 					}
 				case consts.Function_Mac:
 					var macAddrs [][6]byte
@@ -88,7 +88,7 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []RoutingRule, finalOutbo
 						}
 						macAddrs = append(macAddrs, mac)
 					}
-					builder.AddMac(macAddrs, outbound)
+					builder.AddSourceMac(macAddrs, outbound)
 				case consts.Function_Port, consts.Function_SourcePort:
 					var portRanges [][2]int
 					for _, v := range paramValueGroup {
@@ -128,27 +128,29 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []RoutingRule, finalOutbo
 				default:
 					return fmt.Errorf("unsupported function name: %v", f.Name)
 				}
-				builder.AddAnyAfter(key, paramValueGroup, outbound)
+				builder.AddAnyAfter(f.Name, key, paramValueGroup, outbound)
 			}
 		}
 	}
-	builder.AddAnyBefore("", nil, finalOutbound)
+	builder.AddAnyBefore("final", "", nil, finalOutbound)
 	builder.AddFinal(finalOutbound)
-	builder.AddAnyAfter("", nil, finalOutbound)
+	builder.AddAnyAfter("final", "", nil, finalOutbound)
 	return nil
 }
 
 type DefaultMatcherBuilder struct{}
 
-func (d *DefaultMatcherBuilder) AddDomain(values []string, outbound string)                {}
-func (d *DefaultMatcherBuilder) AddIp(values []netip.Prefix, outbound string)              {}
-func (d *DefaultMatcherBuilder) AddPort(values [][2]int, outbound string)                  {}
-func (d *DefaultMatcherBuilder) AddSource(values []netip.Prefix, outbound string)          {}
-func (d *DefaultMatcherBuilder) AddSourcePort(values [][2]int, outbound string)            {}
-func (d *DefaultMatcherBuilder) AddL4Proto(values consts.L4ProtoType, outbound string)     {}
-func (d *DefaultMatcherBuilder) AddIpVersion(values consts.IpVersion, outbound string)     {}
-func (d *DefaultMatcherBuilder) AddMac(values [][6]byte, outbound string)                  {}
-func (d *DefaultMatcherBuilder) AddFinal(outbound string)                                  {}
-func (d *DefaultMatcherBuilder) AddAnyBefore(key string, values []string, outbound string) {}
-func (d *DefaultMatcherBuilder) AddAnyAfter(key string, values []string, outbound string)  {}
-func (d *DefaultMatcherBuilder) Build() (err error)                                        { return nil }
+func (d *DefaultMatcherBuilder) AddDomain(values []string, outbound string)            {}
+func (d *DefaultMatcherBuilder) AddIp(values []netip.Prefix, outbound string)          {}
+func (d *DefaultMatcherBuilder) AddPort(values [][2]int, outbound string)              {}
+func (d *DefaultMatcherBuilder) AddSource(values []netip.Prefix, outbound string)      {}
+func (d *DefaultMatcherBuilder) AddSourcePort(values [][2]int, outbound string)        {}
+func (d *DefaultMatcherBuilder) AddL4Proto(values consts.L4ProtoType, outbound string) {}
+func (d *DefaultMatcherBuilder) AddIpVersion(values consts.IpVersion, outbound string) {}
+func (d *DefaultMatcherBuilder) AddMac(values [][6]byte, outbound string)              {}
+func (d *DefaultMatcherBuilder) AddFinal(outbound string)                              {}
+func (d *DefaultMatcherBuilder) AddAnyBefore(function string, key string, values []string, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddAnyAfter(function string, key string, values []string, outbound string) {
+}
+func (d *DefaultMatcherBuilder) Build() (err error) { return nil }

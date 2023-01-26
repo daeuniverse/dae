@@ -19,6 +19,7 @@ func NewLogger(verbose int) *logrus.Logger {
 	default:
 		level = logrus.TraceLevel
 	}
+
 	log.SetLevel(level)
 
 	return log

@@ -3,12 +3,12 @@ package shadowsocks
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/v2rayA/dae/common"
-	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/v2rayA/dae/component/outbound/dialer/transport/simpleobfs"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/shadowsocks"
-	"gopkg.in/yaml.v3"
+	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/transport/simpleobfs"
 	"net"
 	"net/url"
 	"strconv"
@@ -21,7 +21,6 @@ func init() {
 
 	dialer.FromLinkRegister("shadowsocks", NewShadowsocksFromLink)
 	dialer.FromLinkRegister("ss", NewShadowsocksFromLink)
-	dialer.FromClashRegister("ss", NewShadowsocksFromClashObj)
 }
 
 type Shadowsocks struct {
@@ -35,23 +34,15 @@ type Shadowsocks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewShadowsocksFromLink(link string) (*dialer.Dialer, error) {
+func NewShadowsocksFromLink(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	s, err := ParseSSURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer()
+	return s.Dialer(log)
 }
 
-func NewShadowsocksFromClashObj(o *yaml.Node) (*dialer.Dialer, error) {
-	s, err := ParseClash(o)
-	if err != nil {
-		return nil, err
-	}
-	return s.Dialer()
-}
-
-func (s *Shadowsocks) Dialer() (*dialer.Dialer, error) {
+func (s *Shadowsocks) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 	// FIXME: support plain/none.
 	switch s.Cipher {
 	case "aes-256-gcm", "aes-128-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305":
@@ -59,7 +50,7 @@ func (s *Shadowsocks) Dialer() (*dialer.Dialer, error) {
 		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
 	}
 	supportUDP := s.UDP
-	d := dialer.SymmetricDirect
+	d := dialer.FullconeDirect // Shadowsocks Proxy supports full-cone.
 	d, err := protocol.NewDialer("shadowsocks", d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Cipher:       s.Cipher,
@@ -86,46 +77,7 @@ func (s *Shadowsocks) Dialer() (*dialer.Dialer, error) {
 		}
 		supportUDP = false
 	}
-	return dialer.NewDialer(d, supportUDP, s.Name, s.Protocol, s.ExportToURL()), nil
-}
-
-func ParseClash(o *yaml.Node) (data *Shadowsocks, err error) {
-	type simpleObfsOption struct {
-		Mode string `obfs:"mode,omitempty"`
-		Host string `obfs:"host,omitempty"`
-	}
-	type ShadowSocksOption struct {
-		Name       string           `yaml:"name"`
-		Server     string           `yaml:"server"`
-		Port       int              `yaml:"port"`
-		Password   string           `yaml:"password"`
-		Cipher     string           `yaml:"cipher"`
-		UDP        bool             `yaml:"udp,omitempty"`
-		Plugin     string           `yaml:"plugin,omitempty"`
-		PluginOpts simpleObfsOption `yaml:"plugin-opts,omitempty"`
-	}
-	var option ShadowSocksOption
-	if err = o.Decode(&option); err != nil {
-		return nil, err
-	}
-	data = &Shadowsocks{
-		Name:     option.Name,
-		Server:   option.Server,
-		Port:     option.Port,
-		Password: option.Password,
-		Cipher:   option.Cipher,
-		UDP:      option.UDP,
-		Protocol: "shadowsocks",
-	}
-	if option.Plugin == "obfs" {
-		data.Plugin.Name = "simple-obfs"
-		data.Plugin.Opts.Obfs = option.PluginOpts.Mode
-		data.Plugin.Opts.Host = data.Plugin.Opts.Host
-		if data.Plugin.Opts.Host == "" {
-			data.Plugin.Opts.Host = "bing.com"
-		}
-	}
-	return data, nil
+	return dialer.NewDialer(d, log, supportUDP, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSURL(u string) (data *Shadowsocks, err error) {

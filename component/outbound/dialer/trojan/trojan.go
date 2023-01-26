@@ -2,13 +2,13 @@ package trojan
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/common"
-	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/v2rayA/dae/component/outbound/dialer/transport/tls"
-	"github.com/v2rayA/dae/component/outbound/dialer/transport/ws"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/transport/grpc"
-	"gopkg.in/yaml.v3"
+	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/transport/tls"
+	"github.com/v2rayA/dae/component/outbound/transport/ws"
 	"net"
 	"net/url"
 	"strconv"
@@ -18,7 +18,6 @@ import (
 func init() {
 	dialer.FromLinkRegister("trojan", NewTrojan)
 	dialer.FromLinkRegister("trojan-go", NewTrojan)
-	dialer.FromClashRegister("trojan", NewTrojanFromClashObj)
 }
 
 type Trojan struct {
@@ -36,24 +35,16 @@ type Trojan struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewTrojan(link string) (*dialer.Dialer, error) {
+func NewTrojan(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	s, err := ParseTrojanURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer()
+	return s.Dialer(log)
 }
 
-func NewTrojanFromClashObj(o *yaml.Node) (*dialer.Dialer, error) {
-	s, err := ParseClash(o)
-	if err != nil {
-		return nil, err
-	}
-	return s.Dialer()
-}
-
-func (s *Trojan) Dialer() (*dialer.Dialer, error) {
-	d := dialer.SymmetricDirect
+func (s *Trojan) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
+	d := dialer.FullconeDirect // Trojan Proxy supports full-cone.
 	u := url.URL{
 		Scheme: "tls",
 		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
@@ -111,7 +102,7 @@ func (s *Trojan) Dialer() (*dialer.Dialer, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, true, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, log, true, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseTrojanURL(u string) (data *Trojan, err error) {
@@ -158,53 +149,6 @@ func ParseTrojanURL(u string) (data *Trojan, err error) {
 		data.AllowInsecure = false
 	}
 	return data, nil
-}
-
-func ParseClash(o *yaml.Node) (data *Trojan, err error) {
-	type WSOptions struct {
-		Path                string            `yaml:"path,omitempty"`
-		Headers             map[string]string `yaml:"headers,omitempty"`
-		MaxEarlyData        int               `yaml:"max-early-data,omitempty"`
-		EarlyDataHeaderName string            `yaml:"early-data-header-name,omitempty"`
-	}
-	type GrpcOptions struct {
-		GrpcServiceName string `proxy:"grpc-service-name,omitempty"`
-	}
-	type TrojanOption struct {
-		Name           string      `yaml:"name"`
-		Server         string      `yaml:"server"`
-		Port           int         `yaml:"port"`
-		Password       string      `yaml:"password"`
-		ALPN           []string    `yaml:"alpn,omitempty"`
-		SNI            string      `yaml:"sni,omitempty"`
-		SkipCertVerify bool        `yaml:"skip-cert-verify,omitempty"`
-		UDP            bool        `yaml:"udp,omitempty"`
-		Network        string      `yaml:"network,omitempty"`
-		GrpcOpts       GrpcOptions `yaml:"grpc-opts,omitempty"`
-		WSOpts         WSOptions   `yaml:"ws-opts,omitempty"`
-	}
-	var option TrojanOption
-	if err = o.Decode(&option); err != nil {
-		return nil, err
-	}
-	proto := "trojan"
-	if option.Network != "" && option.Network != "origin" {
-		proto = "trojan-go"
-	}
-	return &Trojan{
-		Name:          option.Name,
-		Server:        option.Server,
-		Port:          option.Port,
-		Password:      option.Password,
-		Sni:           option.SNI,
-		Type:          option.Network,
-		Encryption:    "",
-		Host:          option.WSOpts.Headers["Host"],
-		Path:          option.WSOpts.Path,
-		AllowInsecure: option.SkipCertVerify,
-		ServiceName:   option.GrpcOpts.GrpcServiceName,
-		Protocol:      proto,
-	}, nil
 }
 
 func (t *Trojan) ExportToURL() string {

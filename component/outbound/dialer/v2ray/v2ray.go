@@ -3,25 +3,24 @@ package v2ray
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/v2rayA/dae/common"
-	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/v2rayA/dae/component/outbound/dialer/transport/tls"
-	"github.com/v2rayA/dae/component/outbound/dialer/transport/ws"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/transport/grpc"
-	"gopkg.in/yaml.v3"
+	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/outbound/transport/tls"
+	"github.com/v2rayA/dae/component/outbound/transport/ws"
+	"golang.org/x/net/proxy"
 	"net"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
 func init() {
 	dialer.FromLinkRegister("vmess", NewV2Ray)
 	dialer.FromLinkRegister("vless", NewV2Ray)
-	dialer.FromClashRegister("vmess", NewVMessFromClashObj)
 }
 
 type V2Ray struct {
@@ -43,7 +42,7 @@ type V2Ray struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewV2Ray(link string) (*dialer.Dialer, error) {
+func NewV2Ray(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	var (
 		s   *V2Ray
 		err error
@@ -65,21 +64,19 @@ func NewV2Ray(link string) (*dialer.Dialer, error) {
 	default:
 		return nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer()
+	return s.Dialer(log)
 }
 
-func NewVMessFromClashObj(o *yaml.Node) (*dialer.Dialer, error) {
-	s, err := ParseClashVMess(o)
-	if err != nil {
-		return nil, err
+func (s *V2Ray) Dialer(log *logrus.Logger) (data *dialer.Dialer, err error) {
+	var d proxy.Dialer
+	switch s.Protocol {
+	case "vmess":
+		d = dialer.FullconeDirect // VMess Proxy supports full-cone.
+	case "vless":
+		d = dialer.SymmetricDirect // VLESS Proxy does not yet support full-cone by softwind.
+	default:
+		return nil, fmt.Errorf("V2Ray.Dialer: unexpected protocol: %v", s.Protocol)
 	}
-	return s.Dialer()
-}
-
-func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
-	var (
-		d = dialer.SymmetricDirect
-	)
 
 	switch strings.ToLower(s.Net) {
 	case "ws":
@@ -151,91 +148,9 @@ func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, true, s.Ps, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, log, true, s.Ps, s.Protocol, s.ExportToURL()), nil
 }
 
-func ParseClashVMess(o *yaml.Node) (data *V2Ray, err error) {
-	type WSOptions struct {
-		Path                string            `yaml:"path,omitempty"`
-		Headers             map[string]string `yaml:"headers,omitempty"`
-		MaxEarlyData        int               `yaml:"max-early-data,omitempty"`
-		EarlyDataHeaderName string            `yaml:"early-data-header-name,omitempty"`
-	}
-	type GrpcOptions struct {
-		GrpcServiceName string `proxy:"grpc-service-name,omitempty"`
-	}
-	type HTTP2Options struct {
-		Host []string `proxy:"host,omitempty"`
-		Path string   `proxy:"path,omitempty"`
-	}
-	type VmessOption struct {
-		Name           string       `yaml:"name"`
-		Server         string       `yaml:"server"`
-		Port           int          `yaml:"port"`
-		UUID           string       `yaml:"uuid"`
-		AlterID        int          `yaml:"alterId"`
-		Cipher         string       `yaml:"cipher"`
-		UDP            bool         `yaml:"udp,omitempty"`
-		Network        string       `yaml:"network,omitempty"`
-		TLS            bool         `yaml:"tls,omitempty"`
-		SkipCertVerify bool         `yaml:"skip-cert-verify,omitempty"`
-		ServerName     string       `yaml:"servername,omitempty"`
-		HTTPOpts       interface{}  `yaml:"http-opts,omitempty"`
-		HTTP2Opts      HTTP2Options `yaml:"h2-opts,omitempty"`
-		GrpcOpts       GrpcOptions  `yaml:"grpc-opts,omitempty"`
-		WSOpts         WSOptions    `yaml:"ws-opts,omitempty"`
-	}
-	var option VmessOption
-	if err = o.Decode(&option); err != nil {
-		return nil, err
-	}
-
-	if option.Network == "" {
-		option.Network = "tcp"
-	}
-	var (
-		path string
-		host string
-		alpn string
-	)
-	switch option.Network {
-	case "ws":
-		path = option.WSOpts.Path
-		host = option.WSOpts.Headers["Host"]
-		alpn = "http/1.1"
-	case "grpc":
-		path = option.GrpcOpts.GrpcServiceName
-	case "h2":
-		host = strings.Join(option.HTTP2Opts.Host, ",")
-		path = option.HTTP2Opts.Path
-		alpn = "h2"
-	case "http":
-		// TODO
-	}
-	s := &V2Ray{
-		Ps:            option.Name,
-		Add:           option.Server,
-		Port:          strconv.Itoa(option.Port),
-		ID:            option.UUID,
-		Aid:           strconv.Itoa(option.AlterID),
-		Net:           option.Network,
-		Type:          "none", // FIXME
-		Host:          host,
-		SNI:           option.ServerName,
-		Path:          path,
-		AllowInsecure: false,
-		Alpn:          alpn,
-		V:             "2",
-		Protocol:      "vmess",
-	}
-	if option.SkipCertVerify {
-		return nil, fmt.Errorf("%w: skip-cert-verify=true", dialer.UnexpectedFieldErr)
-	}
-	if option.TLS {
-		s.TLS = "tls"
-	}
-	return s, nil
-}
 func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	u, err := url.Parse(vless)
 	if err != nil {

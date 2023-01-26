@@ -7,9 +7,9 @@ package outbound
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 	"net"
 )
@@ -21,6 +21,7 @@ type DialerSelectionPolicy struct {
 
 type DialerGroup struct {
 	proxy.Dialer
+	block *dialer.Dialer
 
 	log  *logrus.Logger
 	Name string
@@ -58,6 +59,7 @@ func NewDialerGroup(log *logrus.Logger, name string, dialers []*dialer.Dialer, p
 		log:                      log,
 		Name:                     name,
 		Dialers:                  dialers,
+		block:                    dialer.NewBlockDialer(log),
 		AliveDialerSet:           a,
 		registeredAliveDialerSet: registeredAliveDialerSet,
 		selectionPolicy:          &p,
@@ -89,9 +91,8 @@ func (g *DialerGroup) Select() (*dialer.Dialer, error) {
 		d := g.AliveDialerSet.GetRand()
 		if d == nil {
 			// No alive dialer.
-			// TODO: Should we throw an error to block the connection in this condition?
-			g.log.Warnf("No alive dialer in DialerGroup %v, use DIRECT. It may cause IP leaking.", g.Name)
-			return dialer.FullconeDirectDialer, nil
+			g.log.Warnf("No alive dialer in DialerGroup %v, use \"block\".", g.Name)
+			return g.block, nil
 		}
 		return d, nil
 
@@ -105,9 +106,8 @@ func (g *DialerGroup) Select() (*dialer.Dialer, error) {
 		d := g.AliveDialerSet.GetMinLatency()
 		if d == nil {
 			// No alive dialer.
-			// TODO: Should we throw an error to block the connection in this condition?
-			g.log.Warnf("No alive dialer in DialerGroup %v, use DIRECT. It may cause IP leaking.", g.Name)
-			return dialer.FullconeDirectDialer, nil
+			g.log.Warnf("No alive dialer in DialerGroup %v, use \"block\".", g.Name)
+			return g.block, nil
 		}
 		return d, nil
 

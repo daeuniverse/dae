@@ -8,51 +8,19 @@
 package main
 
 import (
-	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae/component/control"
-	"github.com/v2rayA/dae/pkg/logger"
+	"github.com/json-iterator/go/extra"
+	"github.com/v2rayA/dae/cmd"
+	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+	"time"
 )
 
 func main() {
-	const (
-		tproxyPort = 12345
-		ifname     = "docker0"
-	)
-	logrus.SetLevel(logrus.DebugLevel)
-	log := logger.NewLogger(2)
-	log.Println("Running")
-	t, err := control.NewControlPlane(log, `
-default:proxy
-#sip(172.17.0.2)->proxy
-#mac("02:42:ac:11:00:02")->proxy
-#ipversion(4)->proxy
-#l4proto(tcp)->proxy
-ip(119.29.29.29) -> proxy
-ip(223.5.5.5) -> direct
-ip(geoip:cn) -> direct
-domain(geosite:cn, suffix:"ip.sb") -> direct
-ip("91.105.192.0/23","91.108.4.0/22","91.108.8.0/21","91.108.16.0/21","91.108.56.0/22","95.161.64.0/20","149.154.160.0/20","185.76.151.0/24")->proxy
-domain(geosite:category-scholar-!cn, geosite:category-scholar-cn)->direct
-`)
-	if err != nil {
-		panic(err)
+	extra.RegisterFuzzyDecoders()
+
+	http.DefaultClient.Timeout = 30 * time.Second
+	if err := cmd.Execute(); err != nil {
+		os.Exit(1)
 	}
-	if err = t.BindLink(ifname); err != nil {
-		panic(err)
-	}
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL)
-	go func() {
-		if err := t.ListenAndServe(tproxyPort); err != nil {
-			log.Errorln("ListenAndServe:", err)
-			sigs <- nil
-		}
-	}()
-	<-sigs
-	if e := t.Close(); e != nil {
-		log.Errorln("Close control plane:", err)
-	}
+	os.Exit(0)
 }

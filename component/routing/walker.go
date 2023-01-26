@@ -184,7 +184,7 @@ func (s *RoutingAWalker) EnterDeclaration(ctx *routingA.DeclarationContext) {
 	switch valueCtx := children[2].(type) {
 	case *routingA.LiteralContext:
 		value := getValueFromLiteral(valueCtx)
-		if key == "default" {
+		if key == consts.Declaration_Final {
 			s.FinalOutbound = value
 		} else {
 			s.ReportError(ctx, ErrorType_Unsupported)
@@ -201,6 +201,7 @@ func (s *RoutingAWalker) EnterDeclaration(ctx *routingA.DeclarationContext) {
 
 func (s *RoutingAWalker) EnterRoutingRule(ctx *routingA.RoutingRuleContext) {
 	children := ctx.GetChildren()
+	//logrus.Debugln(ctx.GetText(), children)
 	left, ok := children[0].(*routingA.RoutingRuleLeftContext)
 	if !ok {
 		s.ReportError(ctx, ErrorType_Unsupported, "not *RoutingRuleLeftContext: "+ctx.GetText())

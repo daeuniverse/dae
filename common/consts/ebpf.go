@@ -20,8 +20,6 @@ const (
 	BigEndianTproxyPortKey
 	DisableL4TxChecksumKey
 	DisableL4RxChecksumKey
-	EpochKey
-	RoutingsLenKey
 )
 
 type DisableL4ChecksumPolicy uint32
@@ -50,6 +48,7 @@ type OutboundIndex uint8
 
 const (
 	OutboundDirect             OutboundIndex = 0
+	OutboundBlock              OutboundIndex = 1
 	OutboundControlPlaneDirect OutboundIndex = 0xFE
 	OutboundLogicalAnd         OutboundIndex = 0xFF
 )
@@ -58,6 +57,8 @@ func (i OutboundIndex) String() string {
 	switch i {
 	case OutboundDirect:
 		return "direct"
+	case OutboundBlock:
+		return "block"
 	case OutboundControlPlaneDirect:
 		return "<Control Plane Direct>"
 	case OutboundLogicalAnd:

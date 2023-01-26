@@ -19,4 +19,6 @@ const (
 	Function_Mac        = "mac"
 	Function_L4Proto    = "l4proto"
 	Function_IpVersion  = "ipversion"
+
+	Declaration_Final = "final"
 )
