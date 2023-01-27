@@ -13,11 +13,11 @@ import (
 )
 
 type Global struct {
-	TproxyPort       uint16        `mapstructure:"tproxy_port" default:"12345"`
-	CheckUrl         string        `mapstructure:"check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
-	CheckInterval    time.Duration `mapstructure:"check_interval" default:"15s"`
-	DnsUpstream      string        `mapstructure:"dns_upstream" default:"208.67.222.222:5353"`
-	IngressInterface string        `mapstructure:"ingress_interface" required:""`
+	TproxyPort    uint16        `mapstructure:"tproxy_port" default:"12345"`
+	CheckUrl      string        `mapstructure:"check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
+	CheckInterval time.Duration `mapstructure:"check_interval" default:"15s"`
+	DnsUpstream   string        `mapstructure:"dns_upstream" default:"208.67.222.222:5353"`
+	LanInterface  string        `mapstructure:"lan_interface" required:""`
 }
 
 type Group struct {

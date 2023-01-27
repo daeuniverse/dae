@@ -70,7 +70,7 @@ func Run() (err error) {
 	}
 
 	// Bind to link.
-	if err = t.BindLink(param.Global.IngressInterface); err != nil {
+	if err = t.BindLink(param.Global.LanInterface); err != nil {
 		return err
 	}
 
