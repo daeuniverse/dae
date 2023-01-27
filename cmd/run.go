@@ -29,7 +29,7 @@ var (
 )
 
 func init() {
-	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "dae.conf", "config file (default is dae.conf)")
+	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "dae.conf", "config file")
 }
 
 func Run() (err error) {

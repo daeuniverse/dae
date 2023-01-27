@@ -3,18 +3,18 @@ package cmd
 import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var (
-	v       *viper.Viper
 	Version = "unknown"
-	verbose int
 	rootCmd = &cobra.Command{
 		Use:     "dae [flags] [command [argument ...]]",
 		Short:   "dae is a lightweight and high-performance transparent proxy solution.",
 		Long:    `dae is a lightweight and high-performance transparent proxy solution.`,
 		Version: Version,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
 	}
 )
 
