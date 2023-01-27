@@ -7,25 +7,26 @@ package routing
 
 import (
 	"fmt"
+	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/assets"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/pkg/config_parser"
 	"github.com/v2rayA/dae/pkg/geodata"
 	"net/netip"
 	"sort"
 	"strings"
 )
-import "github.com/mohae/deepcopy"
 
 type RulesOptimizer interface {
-	Optimize(rules []RoutingRule) ([]RoutingRule, error)
+	Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error)
 }
 
-func DeepCloneRules(rules []RoutingRule) (newRules []RoutingRule) {
-	return deepcopy.Copy(rules).([]RoutingRule)
+func DeepCloneRules(rules []*config_parser.RoutingRule) (newRules []*config_parser.RoutingRule) {
+	return deepcopy.Copy(rules).([]*config_parser.RoutingRule)
 }
 
-func ApplyRulesOptimizers(rules []RoutingRule, optimizers ...RulesOptimizer) ([]RoutingRule, error) {
+func ApplyRulesOptimizers(rules []*config_parser.RoutingRule, optimizers ...RulesOptimizer) ([]*config_parser.RoutingRule, error) {
 	rules = DeepCloneRules(rules)
 	var err error
 	for _, opt := range optimizers {
@@ -39,7 +40,7 @@ func ApplyRulesOptimizers(rules []RoutingRule, optimizers ...RulesOptimizer) ([]
 type RefineFunctionParamKeyOptimizer struct {
 }
 
-func (o *RefineFunctionParamKeyOptimizer) Optimize(rules []RoutingRule) ([]RoutingRule, error) {
+func (o *RefineFunctionParamKeyOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
 	for _, rule := range rules {
 		for _, function := range rule.AndFunctions {
 			for _, param := range function.Params {
@@ -63,7 +64,7 @@ func (o *RefineFunctionParamKeyOptimizer) Optimize(rules []RoutingRule) ([]Routi
 type MergeAndSortRulesOptimizer struct {
 }
 
-func (o *MergeAndSortRulesOptimizer) Optimize(rules []RoutingRule) ([]RoutingRule, error) {
+func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
 	if len(rules) == 0 {
 		return rules, nil
 	}
@@ -74,7 +75,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []RoutingRule) ([]RoutingRul
 		})
 	}
 	// Merge singleton rules with the same outbound.
-	var newRules []RoutingRule
+	var newRules []*config_parser.RoutingRule
 	mergingRule := rules[0]
 	for i := 1; i < len(rules); i++ {
 		if len(mergingRule.AndFunctions) == 1 &&
@@ -123,20 +124,20 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []RoutingRule) ([]RoutingRul
 type DeduplicateParamsOptimizer struct {
 }
 
-func deduplicateParams(list []*Param) []*Param {
-	res := make([]*Param, 0, len(list))
-	m := make(map[Param]struct{})
+func deduplicateParams(list []*config_parser.Param) []*config_parser.Param {
+	res := make([]*config_parser.Param, 0, len(list))
+	m := make(map[string]struct{})
 	for _, v := range list {
-		if _, ok := m[*v]; ok {
+		if _, ok := m[v.String(true)]; ok {
 			continue
 		}
-		m[*v] = struct{}{}
+		m[v.String(true)] = struct{}{}
 		res = append(res, v)
 	}
 	return res
 }
 
-func (o *DeduplicateParamsOptimizer) Optimize(rules []RoutingRule) ([]RoutingRule, error) {
+func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
 	for _, rule := range rules {
 		for _, f := range rule.AndFunctions {
 			f.Params = deduplicateParams(f.Params)
@@ -149,7 +150,7 @@ type DatReaderOptimizer struct {
 	Logger *logrus.Logger
 }
 
-func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params []*Param, err error) {
+func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params []*config_parser.Param, err error) {
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
@@ -167,25 +168,25 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 		switch item.Type {
 		case geodata.Domain_Full:
 			// Full.
-			params = append(params, &Param{
+			params = append(params, &config_parser.Param{
 				Key: consts.RoutingDomain_Full,
 				Val: item.Value,
 			})
 		case geodata.Domain_RootDomain:
 			// Suffix.
-			params = append(params, &Param{
+			params = append(params, &config_parser.Param{
 				Key: consts.RoutingDomain_Suffix,
 				Val: item.Value,
 			})
 		case geodata.Domain_Plain:
 			// Keyword.
-			params = append(params, &Param{
+			params = append(params, &config_parser.Param{
 				Key: consts.RoutingDomain_Keyword,
 				Val: item.Value,
 			})
 		case geodata.Domain_Regex:
 			// Regex.
-			params = append(params, &Param{
+			params = append(params, &config_parser.Param{
 				Key: consts.RoutingDomain_Regex,
 				Val: item.Value,
 			})
@@ -194,7 +195,7 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	return params, nil
 }
 
-func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*Param, err error) {
+func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*config_parser.Param, err error) {
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
@@ -219,7 +220,7 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 		if !ok {
 			return nil, fmt.Errorf("bad geoip file: %v", filename)
 		}
-		params = append(params, &Param{
+		params = append(params, &config_parser.Param{
 			Key: "",
 			Val: netip.PrefixFrom(ip, int(item.Prefix)).String(),
 		})
@@ -227,14 +228,14 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	return params, nil
 }
 
-func (o *DatReaderOptimizer) Optimize(rules []RoutingRule) ([]RoutingRule, error) {
+func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
 	var err error
 	for _, rule := range rules {
 		for _, f := range rule.AndFunctions {
-			var newParams []*Param
+			var newParams []*config_parser.Param
 			for _, param := range f.Params {
 				// Parse this param and replace it with more.
-				var params []*Param
+				var params []*config_parser.Param
 				switch param.Key {
 				case "geosite":
 					params, err = o.loadGeoSite("geosite", param.Val)
@@ -250,7 +251,7 @@ func (o *DatReaderOptimizer) Optimize(rules []RoutingRule) ([]RoutingRule, error
 					}
 				default:
 					// Keep this param.
-					params = []*Param{param}
+					params = []*config_parser.Param{param}
 				}
 				if err != nil {
 					return nil, err

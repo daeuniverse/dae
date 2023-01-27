@@ -2,7 +2,6 @@ package socks
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	//"github.com/mzz2017/softwind/protocol/socks4"
 	"github.com/mzz2017/softwind/protocol/socks5"
@@ -27,15 +26,15 @@ type Socks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewSocks(log *logrus.Logger, link string) (*dialer.Dialer, error) {
+func NewSocks(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseSocksURL(link)
 	if err != nil {
 		return nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer(log)
+	return s.Dialer(option)
 }
 
-func (s *Socks) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
+func (s *Socks) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
 	link := s.ExportToURL()
 	switch s.Protocol {
 	case "", "socks", "socks5":
@@ -43,7 +42,7 @@ func (s *Socks) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 		if err != nil {
 			return nil, err
 		}
-		return dialer.NewDialer(d, log, true, s.Name, s.Protocol, link), nil
+		return dialer.NewDialer(d, option, true, s.Name, s.Protocol, link), nil
 	//case "socks4", "socks4a":
 	//	d, err := socks4.NewSocks4Dialer(link, &proxy.Direct{})
 	//	if err != nil {

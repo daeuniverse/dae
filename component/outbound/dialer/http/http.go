@@ -3,7 +3,6 @@ package http
 import (
 	"fmt"
 	"github.com/mzz2017/softwind/protocol/http"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"net"
 	"net/url"
@@ -25,12 +24,12 @@ type HTTP struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewHTTP(log *logrus.Logger, link string) (*dialer.Dialer, error) {
+func NewHTTP(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseHTTPURL(link)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", dialer.InvalidParameterErr, err)
 	}
-	return s.Dialer(log)
+	return s.Dialer(option)
 }
 
 func ParseHTTPURL(link string) (data *HTTP, err error) {
@@ -62,13 +61,13 @@ func ParseHTTPURL(link string) (data *HTTP, err error) {
 	}, nil
 }
 
-func (s *HTTP) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
+func (s *HTTP) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
 	u := s.URL()
 	d, err := http.NewHTTPProxy(&u, dialer.SymmetricDirect) // HTTP Proxy does not support full-cone.
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, log, false, s.Name, s.Protocol, u.String()), nil
+	return dialer.NewDialer(d, option, false, s.Name, s.Protocol, u.String()), nil
 }
 
 func (s *HTTP) URL() url.URL {

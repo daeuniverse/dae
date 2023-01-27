@@ -8,8 +8,8 @@ package config_parser
 import (
 	"fmt"
 	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae-config-dist/go/dae_config"
-	"log"
 	"strconv"
 )
 
@@ -99,6 +99,9 @@ func (w *Walker) parseFunctionPrototype(ctx *dae_config.FunctionPrototypeContext
 }
 
 func (w *Walker) ReportError(ctx interface{}, errorType ErrorType, target ...string) {
+	if _, ok := ctx.(*antlr.ErrorNodeImpl); ok {
+		return
+	}
 	//debug.PrintStack()
 	bCtx := BaseContext(ctx)
 	tgt := strconv.Quote(bCtx.GetStart().GetText())
@@ -124,6 +127,9 @@ func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 		}
 	case *dae_config.FunctionPrototypeExpressionContext:
 		andFunctions := w.parseFunctionPrototypeExpression(valueCtx, nil)
+		if andFunctions == nil {
+			return nil
+		}
 		return &Param{
 			Key:          key,
 			AndFunctions: andFunctions,
@@ -138,9 +144,22 @@ func (w *Walker) parseFunctionPrototypeExpression(ctx dae_config.IFunctionProtot
 	children := ctx.GetChildren()
 	for _, child := range children {
 		// And rules.
-		if child, ok := child.(*dae_config.FunctionPrototypeContext); ok {
+		switch child := child.(type) {
+		case *dae_config.FunctionPrototypeContext:
 			function := w.parseFunctionPrototype(child, verifier)
+			if function == nil {
+				return
+			}
 			andFunctions = append(andFunctions, function)
+		case *dae_config.FunctionPrototypeExpressionContext:
+			funcs := w.parseFunctionPrototypeExpression(child, verifier)
+			if funcs != nil {
+				andFunctions = append(andFunctions, funcs...)
+			}
+		case *antlr.TerminalNodeImpl:
+		default:
+			w.ReportError(child, ErrorType_Unsupported)
+			return nil
 		}
 	}
 	return andFunctions
@@ -203,7 +222,7 @@ func (p *routingRuleOrDeclarationOrLiteralOrExpressionListParser) Parse(ctx dae_
 		case dae_config.IRoutingRuleOrDeclarationOrLiteralOrExpressionListContext:
 			p.Parse(elem)
 		default:
-			log.Printf("? %v", elem.(*dae_config.ExpressionContext))
+			logrus.Debugf("? %T", elem)
 			p.Walker.ReportError(elem, ErrorType_Unsupported)
 			return
 		}

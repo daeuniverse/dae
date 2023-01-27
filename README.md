@@ -8,11 +8,27 @@ In order to improve the traffic diversion performance as much as possible, dae r
 
 As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely. In the initial conception, dae will serve soft router users first, and may also serve desktop users later.
 
+## Usage
+
+Build:
+```shell
+git clone https://github.com/v2rayA/dae.git
+cd dae
+make
+```
+
+Run:
+```shell
+./dae run -c example.conf
+```
+
+See [example.conf](https://github.com/v2rayA/dae/blob/main/example.conf).
+
 ## TODO
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
 1. Support not operator for RoutingA rule.
 1. DisableL4Checksum by link.
-1. Config file.
+1. Handle the case that nodes do not support UDP.
 1. ...

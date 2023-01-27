@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/pkg/config_parser"
 	"net/netip"
 	"strings"
 )
@@ -30,7 +31,7 @@ type MatcherBuilder interface {
 	Build() (err error)
 }
 
-func GroupParamValuesByKey(params []*Param) map[string][]string {
+func GroupParamValuesByKey(params []*config_parser.Param) map[string][]string {
 	groups := make(map[string][]string)
 	for _, param := range params {
 		groups[param.Key] = append(groups[param.Key], param.Val)
@@ -53,7 +54,7 @@ func ParsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
 	return cidrs, nil
 }
 
-func ApplyMatcherBuilder(builder MatcherBuilder, rules []RoutingRule, finalOutbound string) (err error) {
+func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingRule, finalOutbound string) (err error) {
 	for _, rule := range rules {
 		// rule is like: domain(domain:baidu.com) && port(443) -> proxy
 		for iFunc, f := range rule.AndFunctions {

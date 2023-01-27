@@ -14,14 +14,22 @@ import (
 	"time"
 )
 
+const (
+	testCheckUrl = "https://connectivitycheck.gstatic.com/generate_204"
+)
+
 func TestDialerGroup_Select_Fixed(t *testing.T) {
 	log := logger.NewLogger(2)
+	option := &dialer.GlobalOption{
+		Log:      log,
+		CheckUrl: testCheckUrl,
+	}
 	dialers := []*dialer.Dialer{
-		dialer.NewDirectDialer(log, true),
-		dialer.NewDirectDialer(log, false),
+		dialer.NewDirectDialer(option, true),
+		dialer.NewDirectDialer(option, false),
 	}
 	fixedIndex := 1
-	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
+	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: fixedIndex,
 	})
@@ -50,19 +58,23 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 
 func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	log := logger.NewLogger(2)
-	dialers := []*dialer.Dialer{
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
+	option := &dialer.GlobalOption{
+		Log:      log,
+		CheckUrl: testCheckUrl,
 	}
-	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
+	dialers := []*dialer.Dialer{
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+	}
+	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
 	})
 
@@ -113,14 +125,18 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 
 func TestDialerGroup_Select_Random(t *testing.T) {
 	log := logger.NewLogger(2)
-	dialers := []*dialer.Dialer{
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
+	option := &dialer.GlobalOption{
+		Log:      log,
+		CheckUrl: testCheckUrl,
 	}
-	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
+	dialers := []*dialer.Dialer{
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+	}
+	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
 	})
 	count := make([]int, len(dialers))
@@ -146,14 +162,18 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 
 func TestDialerGroup_SetAlive(t *testing.T) {
 	log := logger.NewLogger(2)
-	dialers := []*dialer.Dialer{
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
-		dialer.NewDirectDialer(log, false),
+	option := &dialer.GlobalOption{
+		Log:      log,
+		CheckUrl: testCheckUrl,
 	}
-	g := NewDialerGroup(log, "test-group", dialers, DialerSelectionPolicy{
+	dialers := []*dialer.Dialer{
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+		dialer.NewDirectDialer(option, false),
+	}
+	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
 	})
 	zeroTarget := 3

@@ -66,7 +66,7 @@ func (i *Item) String() string {
 	case *RoutingRule:
 		content = val.String(false)
 	case *Param:
-		content = val.String()
+		content = val.String(false)
 	case *Section:
 		content = val.String()
 	default:
@@ -101,12 +101,15 @@ func (s *Section) String() string {
 }
 
 type Param struct {
-	Key          string
+	// Key may be empty.
+	Key string
+
+	// Either Val or AndFunctions is empty.
 	Val          string
 	AndFunctions []*Function
 }
 
-func (p *Param) String() string {
+func (p *Param) String(compact bool) string {
 	if p.Key == "" {
 		return p.Val
 	}
@@ -115,9 +118,13 @@ func (p *Param) String() string {
 			Key:          p.Key,
 			AndFunctions: p.AndFunctions,
 		}
-		return a.String()
+		return a.String(compact)
 	}
-	return p.Key + ": " + p.Val
+	if compact {
+		return p.Key + ":" + p.Val
+	} else {
+		return p.Key + ": " + p.Val
+	}
 }
 
 type Function struct {
@@ -125,14 +132,18 @@ type Function struct {
 	Params []*Param
 }
 
-func (f *Function) String() string {
+func (f *Function) String(compact bool) string {
 	var builder strings.Builder
 	builder.WriteString(f.Name + "(")
 	var strParamList []string
 	for _, p := range f.Params {
-		strParamList = append(strParamList, p.String())
+		strParamList = append(strParamList, p.String(compact))
 	}
-	builder.WriteString(strings.Join(strParamList, ", "))
+	if compact {
+		builder.WriteString(strings.Join(strParamList, ","))
+	} else {
+		builder.WriteString(strings.Join(strParamList, ", "))
+	}
 	builder.WriteString(")")
 	return builder.String()
 }
@@ -142,14 +153,22 @@ type paramAndFunctions struct {
 	AndFunctions []*Function
 }
 
-func (p *paramAndFunctions) String() string {
+func (p *paramAndFunctions) String(compact bool) string {
 	var builder strings.Builder
-	builder.WriteString(p.Key + ": ")
+	if compact {
+		builder.WriteString(p.Key + ":")
+	} else {
+		builder.WriteString(p.Key + ": ")
+	}
 	var strFunctionList []string
 	for _, f := range p.AndFunctions {
-		strFunctionList = append(strFunctionList, f.String())
+		strFunctionList = append(strFunctionList, f.String(compact))
 	}
-	builder.WriteString(strings.Join(strFunctionList, " && "))
+	if compact {
+		builder.WriteString(strings.Join(strFunctionList, "&&"))
+	} else {
+		builder.WriteString(strings.Join(strFunctionList, " && "))
+	}
 	return builder.String()
 }
 

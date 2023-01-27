@@ -97,11 +97,10 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		}
 
 		udpConn, err := createOption.Dialer.Dial("udp", createOption.Target.String())
-		//udpConn, err := net.ListenUDP("udp", nil)
 		if err != nil {
 			return nil, err
 		}
-		p.pool[lAddr] = &UdpEndpoint{
+		ue = &UdpEndpoint{
 			conn: udpConn.(net.PacketConn),
 			deadlineTimer: time.AfterFunc(createOption.NatTimeout, func() {
 				p.mu.Lock()
@@ -114,7 +113,7 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			handler:    createOption.Handler,
 			NatTimeout: createOption.NatTimeout,
 		}
-		ue = p.pool[lAddr]
+		p.pool[lAddr] = ue
 		// Receive UDP messages.
 		go ue.start()
 	} else {

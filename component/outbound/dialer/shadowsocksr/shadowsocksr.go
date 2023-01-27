@@ -3,7 +3,6 @@ package shadowsocksr
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	ssr "github.com/v2rayA/shadowsocksR/client"
@@ -31,15 +30,15 @@ type ShadowsocksR struct {
 	Protocol   string `json:"protocol"`
 }
 
-func NewShadowsocksR(log *logrus.Logger, link string) (*dialer.Dialer, error) {
+func NewShadowsocksR(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseSSRURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer(log)
+	return s.Dialer(option)
 }
 
-func (s *ShadowsocksR) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
+func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
 	u := url.URL{
 		Scheme: "ssr",
 		User:   url.UserPassword(s.Cipher, s.Password),
@@ -55,7 +54,7 @@ func (s *ShadowsocksR) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, log, false, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, false, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSRURL(u string) (data *ShadowsocksR, err error) {

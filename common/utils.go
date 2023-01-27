@@ -11,8 +11,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
+	"time"
+)
+
+var (
+	ErrOverlayHierarchicalKey = fmt.Errorf("overlay hierarchical key")
 )
 
 func CloneStrings(slice []string) []string {
@@ -119,4 +125,151 @@ func ParsePortRange(pr string) (portRange [2]int, err error) {
 		portRange[1] = portRange[0]
 	}
 	return portRange, nil
+}
+
+func SetValueHierarchicalMap(m map[string]interface{}, key string, val interface{}) error {
+	keys := strings.Split(key, ".")
+	lastKey := keys[len(keys)-1]
+	keys = keys[:len(keys)-1]
+	p := &m
+	for _, key := range keys {
+		if v, ok := (*p)[key]; ok {
+			vv, ok := v.(map[string]interface{})
+			if !ok {
+				return ErrOverlayHierarchicalKey
+			}
+			p = &vv
+		} else {
+			(*p)[key] = make(map[string]interface{})
+			vv := (*p)[key].(map[string]interface{})
+			p = &vv
+		}
+	}
+	(*p)[lastKey] = val
+	return nil
+}
+
+func SetValueHierarchicalStruct(m interface{}, key string, val string) error {
+	ifv, err := GetValueHierarchicalStruct(m, key)
+	if err != nil {
+		return err
+	}
+	if !FuzzyDecode(ifv.Addr().Interface(), val) {
+		return fmt.Errorf("type does not match: type \"%v\" and value \"%v\"", ifv.Kind(), val)
+	}
+	return nil
+}
+
+func GetValueHierarchicalStruct(m interface{}, key string) (reflect.Value, error) {
+	keys := strings.Split(key, ".")
+	ifv := reflect.Indirect(reflect.ValueOf(m))
+	ift := ifv.Type()
+	lastK := ""
+	for _, k := range keys {
+		found := false
+		if ift.Kind() == reflect.Struct {
+			for i := 0; i < ifv.NumField(); i++ {
+				name, ok := ift.Field(i).Tag.Lookup("mapstructure")
+				if ok && name == k {
+					found = true
+					ifv = ifv.Field(i)
+					ift = ifv.Type()
+					lastK = k
+					break
+				}
+			}
+		}
+		if !found {
+			return reflect.Value{}, fmt.Errorf(`unexpected key "%v": "%v" (%v type) has no member "%v"`, key, lastK, ift.Kind().String(), k)
+		}
+	}
+	return ifv, nil
+}
+
+func FuzzyDecode(to interface{}, val string) bool {
+	v := reflect.Indirect(reflect.ValueOf(to))
+	switch v.Kind() {
+	case reflect.Int:
+		i, err := strconv.ParseInt(val, 10, strconv.IntSize)
+		if err != nil {
+			return false
+		}
+		v.SetInt(i)
+	case reflect.Int8:
+		i, err := strconv.ParseInt(val, 10, 8)
+		if err != nil {
+			return false
+		}
+		v.SetInt(i)
+	case reflect.Int16:
+		i, err := strconv.ParseInt(val, 10, 16)
+		if err != nil {
+			return false
+		}
+		v.SetInt(i)
+	case reflect.Int32:
+		i, err := strconv.ParseInt(val, 10, 32)
+		if err != nil {
+			return false
+		}
+		v.SetInt(i)
+	case reflect.Int64:
+		switch v.Interface().(type) {
+		case time.Duration:
+			duration, err := time.ParseDuration(val)
+			if err != nil {
+				return false
+			}
+			v.Set(reflect.ValueOf(duration))
+		default:
+			i, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return false
+			}
+			v.SetInt(i)
+		}
+	case reflect.Uint:
+		i, err := strconv.ParseUint(val, 10, strconv.IntSize)
+		if err != nil {
+			return false
+		}
+		v.SetUint(i)
+	case reflect.Uint8:
+		i, err := strconv.ParseUint(val, 10, 8)
+		if err != nil {
+			return false
+		}
+		v.SetUint(i)
+	case reflect.Uint16:
+		i, err := strconv.ParseUint(val, 10, 16)
+		if err != nil {
+			return false
+		}
+		v.SetUint(i)
+	case reflect.Uint32:
+		i, err := strconv.ParseUint(val, 10, 32)
+		if err != nil {
+			return false
+		}
+		v.SetUint(i)
+	case reflect.Uint64:
+		i, err := strconv.ParseUint(val, 10, 64)
+		if err != nil {
+			return false
+		}
+		v.SetUint(i)
+	case reflect.Bool:
+		if val == "true" || val == "1" {
+			v.SetBool(true)
+		} else if val == "false" || val == "0" {
+			v.SetBool(false)
+		} else {
+			return false
+		}
+	case reflect.String:
+		v.SetString(val)
+	default:
+		return false
+	}
+	return true
 }

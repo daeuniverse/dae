@@ -6,7 +6,6 @@
 package dialer
 
 import (
-	"github.com/sirupsen/logrus"
 	"net"
 )
 
@@ -16,6 +15,6 @@ func (*blockDialer) Dial(network string, addr string) (c net.Conn, err error) {
 	return nil, net.ErrClosed
 }
 
-func NewBlockDialer(log *logrus.Logger) *Dialer {
-	return newDialer(&blockDialer{}, log, true, "block", "block", "")
+func NewBlockDialer(option *GlobalOption) *Dialer {
+	return newDialer(&blockDialer{}, option, true, "block", "block", "")
 }

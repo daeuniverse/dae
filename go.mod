@@ -9,12 +9,11 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230124072602-aabc556ba332
+	github.com/mzz2017/softwind v0.0.0-20230127172609-05c5264aa6a4
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
 	github.com/spf13/viper v1.15.0
-	github.com/v2rayA/RoutingA-dist/go/routingA v0.0.0-20230124191403-ef9c0530cb53
-	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230126180746-eae2d0e30c27
+	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230127154011-4f61520cc0b7
 	github.com/v2rayA/shadowsocksR v1.0.4
 	github.com/vishvananda/netlink v1.1.0
 	golang.org/x/net v0.5.0
@@ -56,7 +55,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
+//replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
 
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
 //replace github.com/v2rayA/RoutingA-dist/go/routingA => /home/mzz/antlrProjects/RoutingA-antlr4/build/go/routingA

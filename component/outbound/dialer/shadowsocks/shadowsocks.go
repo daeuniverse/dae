@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/shadowsocks"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/outbound/transport/simpleobfs"
@@ -34,15 +33,15 @@ type Shadowsocks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewShadowsocksFromLink(log *logrus.Logger, link string) (*dialer.Dialer, error) {
+func NewShadowsocksFromLink(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseSSURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer(log)
+	return s.Dialer(option)
 }
 
-func (s *Shadowsocks) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
+func (s *Shadowsocks) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
 	// FIXME: support plain/none.
 	switch s.Cipher {
 	case "aes-256-gcm", "aes-128-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305":
@@ -77,7 +76,7 @@ func (s *Shadowsocks) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 		}
 		supportUDP = false
 	}
-	return dialer.NewDialer(d, log, supportUDP, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, supportUDP, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSURL(u string) (data *Shadowsocks, err error) {

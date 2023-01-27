@@ -17,6 +17,8 @@ import (
 	"github.com/v2rayA/dae/component/outbound"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/routing"
+	"github.com/v2rayA/dae/config"
+	"github.com/v2rayA/dae/pkg/config_parser"
 	"github.com/v2rayA/dae/pkg/pool"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -49,9 +51,16 @@ type ControlPlane struct {
 	deferFuncs []func() error
 }
 
-func NewControlPlane(log *logrus.Logger, dialerGroups []*outbound.DialerGroup, routingA string) (*ControlPlane, error) {
+func NewControlPlane(
+	log *logrus.Logger,
+	nodes []string,
+	groups []config.Group,
+	routingA *config.Routing,
+	dnsUpstream string,
+	checkUrl string,
+) (c *ControlPlane, err error) {
 	// Allow the current process to lock memory for eBPF resources.
-	if err := rlimit.RemoveMemlock(); err != nil {
+	if err = rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
@@ -60,7 +69,7 @@ func NewControlPlane(log *logrus.Logger, dialerGroups []*outbound.DialerGroup, r
 	// Load pre-compiled programs and maps into the kernel.
 	var bpf bpfObjects
 retryLoadBpf:
-	if err := loadBpfObjects(&bpf, &ebpf.CollectionOptions{
+	if err = loadBpfObjects(&bpf, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
@@ -81,29 +90,48 @@ retryLoadBpf:
 	}
 
 	// Write params.
-	if err := bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
+	if err = bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-	if err := bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
+	if err = bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
 
 	// DialerGroups (outbounds).
+	option := &dialer.GlobalOption{
+		Log:      log,
+		CheckUrl: checkUrl,
+	}
 	outbounds := []*outbound.DialerGroup{
-		outbound.NewDialerGroup(log, consts.OutboundDirect.String(),
-			[]*dialer.Dialer{dialer.NewDirectDialer(log, true)},
+		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
+			[]*dialer.Dialer{dialer.NewDirectDialer(option, true)},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
 			}),
-		outbound.NewDialerGroup(log, consts.OutboundBlock.String(),
-			[]*dialer.Dialer{dialer.NewBlockDialer(log)},
+		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
+			[]*dialer.Dialer{dialer.NewBlockDialer(option)},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
 			}),
 	}
-	outbounds = append(outbounds, dialerGroups...)
+
+	// Filter out groups.
+	dialerSet := outbound.NewDialerSetFromLinks(option, nodes)
+	for _, group := range groups {
+		dialers, err := dialerSet.Filter(group.Param.Filter)
+		if err != nil {
+			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
+		}
+		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group.Param)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
+		}
+		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy)
+		outbounds = append(outbounds, dialerGroup)
+	}
+
 	// Generate outboundName2Id from outbounds.
 	if len(outbounds) > 0xff {
 		return nil, fmt.Errorf("too many outbounds")
@@ -115,11 +143,8 @@ retryLoadBpf:
 	builder := NewRoutingMatcherBuilder(outboundName2Id, &bpf)
 
 	// Routing.
-	rules, final, err := routing.Parse(routingA)
-	if err != nil {
-		return nil, fmt.Errorf("routingA error:\n%w", err)
-	}
-	if rules, err = routing.ApplyRulesOptimizers(rules,
+	var rules []*config_parser.RoutingRule
+	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
 		&routing.RefineFunctionParamKeyOptimizer{},
 		&routing.DatReaderOptimizer{Logger: log},
 		&routing.MergeAndSortRulesOptimizer{},
@@ -130,24 +155,26 @@ retryLoadBpf:
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		var debugBuilder strings.Builder
 		for _, rule := range rules {
-			debugBuilder.WriteString(rule.String(true))
+			debugBuilder.WriteString(rule.String(true) + "\n")
 		}
-		log.Tracef("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), final)
+		log.Tracef("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), routingA.Final)
 	}
-	if err := routing.ApplyMatcherBuilder(builder, rules, final); err != nil {
+	if err = routing.ApplyMatcherBuilder(builder, rules, routingA.Final); err != nil {
 		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
 	}
-	if err := builder.Build(); err != nil {
+	if err = builder.Build(); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.Build: %w", err)
 	}
 
 	// DNS upstream.
-	cfDnsAddr := netip.AddrFrom4([4]byte{1, 1, 1, 1})
-	cfDnsAddr16 := cfDnsAddr.As16()
-	cfDnsPort := uint16(53)
-	if err := bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
-		Ip:   common.Ipv6ByteSliceToUint32Array(cfDnsAddr16[:]),
-		Port: swap16(cfDnsPort),
+	dnsAddrPort, err := netip.ParseAddrPort(dnsUpstream)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DNS upstream: %v: %w", dnsUpstream, err)
+	}
+	dnsAddr16 := dnsAddrPort.Addr().As16()
+	if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
+		Ip:   common.Ipv6ByteSliceToUint32Array(dnsAddr16[:]),
+		Port: swap16(dnsAddrPort.Port()),
 	}, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
@@ -159,10 +186,10 @@ retryLoadBpf:
 		bpf:                &bpf,
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
 		SimulatedDomainSet: builder.SimulatedDomainSet,
-		Final:              final,
+		Final:              routingA.Final,
 		mutex:              sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
-		dnsUpstream:        netip.AddrPortFrom(cfDnsAddr, cfDnsPort),
+		dnsUpstream:        dnsAddrPort,
 		deferFuncs:         []func() error{bpf.Close},
 	}, nil
 }
@@ -248,10 +275,13 @@ func (c *ControlPlane) BindLink(ifname string) error {
 		}
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		return netlink.QdiscDel(qdisc)
+		if err := netlink.QdiscDel(qdisc); err != nil {
+			return fmt.Errorf("QdiscDel: %w", err)
+		}
+		return nil
 	})
 
-	filter := &netlink.BpfFilter{
+	filterIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_INGRESS,
@@ -263,12 +293,9 @@ func (c *ControlPlane) BindLink(ifname string) error {
 		Name:         consts.AppName + "_ingress",
 		DirectAction: true,
 	}
-	if err := netlink.FilterAdd(filter); err != nil {
+	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return netlink.FilterDel(filter)
-	})
 	filterEgress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
@@ -284,9 +311,6 @@ func (c *ControlPlane) BindLink(ifname string) error {
 	if err := netlink.FilterAdd(filterEgress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return netlink.FilterDel(filter)
-	})
 	return nil
 }
 

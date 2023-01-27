@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae/common/consts"
 	"golang.org/x/net/proxy"
 	"net"
 	"net/http"
@@ -18,14 +17,13 @@ import (
 )
 
 var (
-	ConnectivityTestFailedErr = fmt.Errorf("connectivity test failed")
+	ConnectivityTestFailedErr = fmt.Errorf("Connectivity Check failed")
 	UnexpectedFieldErr        = fmt.Errorf("unexpected field")
 	InvalidParameterErr       = fmt.Errorf("invalid parameters")
 )
 
 type Dialer struct {
-	log *logrus.Logger
-
+	*GlobalOption
 	proxy.Dialer
 	supportUDP bool
 	name       string
@@ -41,23 +39,28 @@ type Dialer struct {
 	ticker   *time.Ticker
 }
 
+type GlobalOption struct {
+	Log      *logrus.Logger
+	CheckUrl string
+}
+
 // NewDialer is for register in general.
-func NewDialer(dialer proxy.Dialer, log *logrus.Logger, supportUDP bool, name string, protocol string, link string) *Dialer {
-	d := newDialer(dialer, log, supportUDP, name, protocol, link)
+func NewDialer(dialer proxy.Dialer, option *GlobalOption, supportUDP bool, name string, protocol string, link string) *Dialer {
+	d := newDialer(dialer, option, supportUDP, name, protocol, link)
 	go d.aliveBackground()
 	return d
 }
 
 // newDialer does not run background tasks.
-func newDialer(dialer proxy.Dialer, log *logrus.Logger, supportUDP bool, name string, protocol string, link string) *Dialer {
+func newDialer(dialer proxy.Dialer, option *GlobalOption, supportUDP bool, name string, protocol string, link string) *Dialer {
 	d := &Dialer{
-		Dialer:      dialer,
-		log:         log,
-		supportUDP:  supportUDP,
-		name:        name,
-		protocol:    protocol,
-		link:        link,
-		Latencies10: NewLatenciesN(10),
+		Dialer:       dialer,
+		GlobalOption: option,
+		supportUDP:   supportUDP,
+		name:         name,
+		protocol:     protocol,
+		link:         link,
+		Latencies10:  NewLatenciesN(10),
 		// Set a very big cycle to wait for init.
 		ticker:            time.NewTicker(time.Hour),
 		aliveDialerSetSet: make(map[*AliveDialerSet]int),
@@ -68,8 +71,8 @@ func newDialer(dialer proxy.Dialer, log *logrus.Logger, supportUDP bool, name st
 func (d *Dialer) aliveBackground() {
 	timeout := 10 * time.Second
 	cycle := 15 * time.Second
-	// Test once immediately.
-	go d.Test(timeout, consts.TestUrl)
+	// Check once immediately.
+	go d.Check(timeout, d.CheckUrl)
 
 	// Sleep to avoid avalanche.
 	time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
@@ -79,7 +82,7 @@ func (d *Dialer) aliveBackground() {
 	for range d.ticker.C {
 		// No need to test if there is no dialer selection policy using its latency.
 		if len(d.aliveDialerSetSet) > 0 {
-			d.Test(timeout, consts.TestUrl)
+			d.Check(timeout, d.CheckUrl)
 		}
 	}
 }
@@ -124,7 +127,7 @@ func (d *Dialer) Link() string {
 	return d.link
 }
 
-func (d *Dialer) Test(timeout time.Duration, url string) (ok bool, err error) {
+func (d *Dialer) Check(timeout time.Duration, url string) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
 	defer cancel()
 	start := time.Now()
@@ -134,14 +137,13 @@ func (d *Dialer) Test(timeout time.Duration, url string) (ok bool, err error) {
 		if ok && err == nil {
 			// No error.
 			latency := time.Since(start)
-			// FIXME: Use log instead of logrus.
-			d.log.Debugf("Connectivity Test <%v>: %v", d.name, latency)
+			d.Log.Debugf("Connectivity Check [%v]: %v", d.name, latency)
 			d.Latencies10.AppendLatency(latency)
 			alive = true
 		} else {
 			// Append timeout if there is any error or unexpected status code.
 			if err != nil {
-				d.log.Debugf("Connectivity Test <%v>: %v", d.name, err.Error())
+				d.Log.Debugf("Connectivity Check [%v]: %v", d.name, err.Error())
 			}
 			d.Latencies10.AppendLatency(timeout)
 		}

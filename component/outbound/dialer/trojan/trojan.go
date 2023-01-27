@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/transport/grpc"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/outbound/transport/tls"
@@ -35,15 +34,15 @@ type Trojan struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewTrojan(log *logrus.Logger, link string) (*dialer.Dialer, error) {
+func NewTrojan(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseTrojanURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer(log)
+	return s.Dialer(option)
 }
 
-func (s *Trojan) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
+func (s *Trojan) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
 	d := dialer.FullconeDirect // Trojan Proxy supports full-cone.
 	u := url.URL{
 		Scheme: "tls",
@@ -102,7 +101,7 @@ func (s *Trojan) Dialer(log *logrus.Logger) (*dialer.Dialer, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, log, true, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, true, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseTrojanURL(u string) (data *Trojan, err error) {

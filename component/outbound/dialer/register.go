@@ -7,11 +7,10 @@ package dialer
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"net/url"
 )
 
-type FromLinkCreator func(log *logrus.Logger, link string) (dialer *Dialer, err error)
+type FromLinkCreator func(option *GlobalOption, link string) (dialer *Dialer, err error)
 
 var fromLinkCreators = make(map[string]FromLinkCreator)
 
@@ -19,13 +18,13 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 	fromLinkCreators[name] = creator
 }
 
-func NewFromLink(log *logrus.Logger, link string) (dialer *Dialer, err error) {
+func NewFromLink(option *GlobalOption, link string) (dialer *Dialer, err error) {
 	u, err := url.Parse(link)
 	if err != nil {
 		return nil, err
 	}
 	if creator, ok := fromLinkCreators[u.Scheme]; ok {
-		return creator(log, link)
+		return creator(option, link)
 	} else {
 		return nil, fmt.Errorf("unexpected link type: %v", u.Scheme)
 	}

@@ -5,10 +5,6 @@
 
 package consts
 
-const (
-	TestUrl = "https://connectivitycheck.gstatic.com/generate_204"
-)
-
 type DialerSelectionPolicy string
 
 const (

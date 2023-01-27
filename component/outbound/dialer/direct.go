@@ -1,7 +1,6 @@
 package dialer
 
 import (
-	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 	"net"
 )
@@ -9,23 +8,23 @@ import (
 var SymmetricDirect = newDirect(false)
 var FullconeDirect = newDirect(true)
 
-func NewDirectDialer(log *logrus.Logger, fullcone bool) *Dialer {
+func NewDirectDialer(option *GlobalOption, fullcone bool) *Dialer {
 	if fullcone {
-		return newDialer(FullconeDirect, log, true, "direct", "direct", "")
+		return newDialer(FullconeDirect, option, true, "direct", "direct", "")
 	} else {
-		return newDialer(SymmetricDirect, log, true, "direct", "direct", "")
+		return newDialer(SymmetricDirect, option, true, "direct", "direct", "")
 	}
 }
 
 type direct struct {
 	proxy.Dialer
-	netDialer net.Dialer
+	netDialer *net.Dialer
 	fullCone  bool
 }
 
 func newDirect(fullCone bool) proxy.Dialer {
 	return &direct{
-		netDialer: net.Dialer{},
+		netDialer: &net.Dialer{},
 		fullCone:  fullCone,
 	}
 }

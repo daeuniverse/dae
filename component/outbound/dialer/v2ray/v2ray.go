@@ -6,7 +6,6 @@ import (
 	jsoniter "github.com/json-iterator/go"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/transport/grpc"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/outbound/transport/tls"
@@ -42,7 +41,7 @@ type V2Ray struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewV2Ray(log *logrus.Logger, link string) (*dialer.Dialer, error) {
+func NewV2Ray(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
 	var (
 		s   *V2Ray
 		err error
@@ -64,10 +63,10 @@ func NewV2Ray(log *logrus.Logger, link string) (*dialer.Dialer, error) {
 	default:
 		return nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer(log)
+	return s.Dialer(option)
 }
 
-func (s *V2Ray) Dialer(log *logrus.Logger) (data *dialer.Dialer, err error) {
+func (s *V2Ray) Dialer(option *dialer.GlobalOption) (data *dialer.Dialer, err error) {
 	var d proxy.Dialer
 	switch s.Protocol {
 	case "vmess":
@@ -148,7 +147,7 @@ func (s *V2Ray) Dialer(log *logrus.Logger) (data *dialer.Dialer, err error) {
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, log, true, s.Ps, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, true, s.Ps, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseVlessURL(vless string) (data *V2Ray, err error) {
