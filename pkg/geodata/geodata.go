@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2023, mzz2017 (mzz@tuta.io). All rights reserved.
+ * Copyright (c) since 2023, mzz2017 <mzz@tuta.io>
  */
 
 // Modified from https://github.com/v2fly/v2ray-core/blob/42b166760b2ba8d984e514b830fcd44e23728e43/infra/conf/geodata/memconservative

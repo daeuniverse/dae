@@ -1,7 +1,7 @@
 // +build ignore
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, mzz2017 (mzz@tuta.io). All rights reserved.
+ * Copyright (c) since 2022, mzz2017 <mzz@tuta.io>
  */
 #include <asm-generic/errno-base.h>
 #include <linux/bpf.h>
