@@ -90,11 +90,10 @@ jobs:
 
       - name: Build dae
         run: |
-          make OUTPUT=dae-$ASSET_NAME VERSION=${{ steps.get_version.outputs.VERSION }} CGO_ENABLED=$CGO_ENABLED
+          make OUTPUT=dae-$ASSET_NAME VERSION=${{ steps.get_version.outputs.VERSION }}
           upx dae-$ASSET_NAME
 
       - name: Smoking test
-        if: matrix.goarch == 'amd64'
         run: ./dae-$ASSET_NAME --version
 
       - name: Signature

@@ -31,4 +31,7 @@ ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP := $(STRIP)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf:
-	go generate ./component/control/...
+	unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
+    go generate ./component/control/...
