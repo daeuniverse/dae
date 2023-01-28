@@ -2,7 +2,7 @@
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, mzz2017 <mzz@tuta.io>
+ * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
  */
 
 package main
