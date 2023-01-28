@@ -18,6 +18,8 @@ type Walker struct {
 	parser antlr.Parser
 
 	Sections []*Section
+
+	hasLexerError bool
 }
 
 func NewWalker(parser antlr.Parser) *Walker {
@@ -249,7 +251,14 @@ func (w *Walker) parseExpression(exp dae_config.IExpressionContext) *Section {
 	}
 }
 
+func (w *Walker) VisitErrorNode(node antlr.ErrorNode) {
+	w.hasLexerError = true
+}
+
 func (w *Walker) EnterProgramStructureBlcok(ctx *dae_config.ProgramStructureBlcokContext) {
+	if w.hasLexerError {
+		return
+	}
 	section := w.parseExpression(ctx.Expression())
 	if section == nil {
 		return

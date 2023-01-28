@@ -98,7 +98,7 @@ func readConfig() (params *config.Params, err error) {
 	}
 	sections, err := config_parser.Parse(string(b))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("\n%w", err)
 	}
 	if params, err = config.New(sections); err != nil {
 		return nil, err
