@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  release:
+    types: [ prereleased ]
+  push:
+    branches:
+      - main
+      - v*
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/*.yml"
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/*.yml"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        goos: [ linux ]
+        goarch: [ amd64, arm64,  ]
+        include:
+          # BEGIN Linux ARM 5 6 7
+          - goos: linux
+            goarch: arm
+            goarm: 7
+          - goos: linux
+            goarch: arm
+            goarm: 6
+          - goos: linux
+            goarch: arm
+            goarm: 5
+          # END Linux ARM 5 6 7
+      fail-fast: false
+
+    runs-on: ubuntu-22.04
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      CGO_ENABLED: 0
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Get the version
+        id: get_version
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$REF" == "refs/tags/v"* ]]; then
+            tag=$(git describe --tags $(git rev-list --tags --max-count=1))
+            version=${tag}
+          else
+            date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
+            count=$(git rev-list --count HEAD)
+            commit=$(git rev-parse --short HEAD)
+            version="unstable-$date.r${count}.$commit"
+          fi
+          echo ::set-output name=VERSION::"$version"
+          echo "VERSION=$version" >> $GITHUB_ENV
+
+      - name: Show workflow information
+        id: get_filename
+        run: |
+          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM\"].friendlyName" -r < install/friendly-filenames.json)
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
+          echo "::set-output name=ASSET_NAME::$_NAME"
+          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          stable: true
+          go-version: '1.19'
+
+      - name: Get project dependencies
+        run: go mod download
+
+      - name: Build dae
+        run: |
+          make OUTPUT=dae-$ASSET_NAME VERSION=${{ steps.get_version.outputs.VERSION }} CGO_ENABLED=$CGO_ENABLED
+          upx dae-$ASSET_NAME
+
+      - name: Smoking test
+        if: matrix.goarch == 'amd64'
+        run: ./dae-$ASSET_NAME --version
+
+      - name: Signature
+        run: |
+          FILE=./dae-$ASSET_NAME
+          DGST=$FILE.dgst
+          md5sum        $FILE | awk '{print $1}' >>$DGST
+          shasum -a 1   $FILE | awk '{print $1}' >>$DGST
+          shasum -a 256 $FILE | awk '{print $1}' >>$DGST
+          shasum -a 512 $FILE | awk '{print $1}' >>$DGST
+      - name: Upload files to Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
+          path: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
+
+      - name: Upload files to GitHub release
+        uses: svenstaro/upload-release-action@v2
+        if: github.event_name == 'release'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file_glob: true
+          file: ./dae-${{ steps.get_filename.outputs.ASSET_NAME }}*
+          overwrite: true
+          tag: ${{ github.ref }}
