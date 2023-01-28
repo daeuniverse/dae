@@ -84,13 +84,16 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 	var (
 		latency    time.Duration
 		hasLatency bool
+		minPolicy  bool
 	)
 
 	switch a.selectionPolicy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
 		latency, hasLatency = dialer.Latencies10.LastLatency()
+		minPolicy = true
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
 		latency, hasLatency = dialer.Latencies10.AvgLatency()
+		minPolicy = true
 	}
 
 	if alive {
@@ -128,8 +131,9 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			// This dialer is already not alive.
 		}
 	}
-	oldBestDialer := a.minLatency.dialer
+
 	if hasLatency {
+		oldBestDialer := a.minLatency.dialer
 		// Calc minLatency.
 		a.dialerToLatency[dialer] = latency
 		if latency < a.minLatency.latency {
@@ -144,7 +148,7 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			a.log.Infof("Group [%v] switched dialer to <%v> (%v): %v", a.dialerGroupName, a.minLatency.dialer.Name(), a.selectionPolicy, a.minLatency.latency)
 		}
 	} else {
-		if alive && a.minLatency.dialer == nil {
+		if alive && minPolicy && a.minLatency.dialer == nil {
 			// Use first dialer if no dialer has alive state.
 			a.minLatency.dialer = dialer
 			a.log.Infof("Group [%v] switched dialer to <%v>", a.dialerGroupName, a.minLatency.dialer.Name())

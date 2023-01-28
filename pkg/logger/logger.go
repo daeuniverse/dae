@@ -16,6 +16,8 @@ func NewLogger(verbose int) *logrus.Logger {
 		level = logrus.WarnLevel
 	case 1:
 		level = logrus.InfoLevel
+	case 2:
+		level = logrus.DebugLevel
 	default:
 		level = logrus.TraceLevel
 	}
