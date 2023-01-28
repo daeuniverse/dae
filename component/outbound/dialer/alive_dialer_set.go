@@ -6,9 +6,9 @@
 package dialer
 
 import (
-	"github.com/v2rayA/dae/common/consts"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common/consts"
 	"sync"
 	"time"
 )
@@ -22,7 +22,8 @@ type minLatency struct {
 //
 // It is thread-safe.
 type AliveDialerSet struct {
-	log *logrus.Logger
+	log             *logrus.Logger
+	dialerGroupName string
 
 	mu                      sync.Mutex
 	dialerToIndex           map[*Dialer]int // *Dialer -> index of inorderedAliveDialerSet
@@ -35,12 +36,14 @@ type AliveDialerSet struct {
 
 func NewAliveDialerSet(
 	log *logrus.Logger,
+	dialerGroupName string,
 	selectionPolicy consts.DialerSelectionPolicy,
 	dialers []*Dialer,
 	setAlive bool,
 ) *AliveDialerSet {
 	a := &AliveDialerSet{
 		log:                     log,
+		dialerGroupName:         dialerGroupName,
 		dialerToIndex:           make(map[*Dialer]int),
 		dialerToLatency:         make(map[*Dialer]time.Duration),
 		inorderedAliveDialerSet: make([]*Dialer, 0, len(dialers)),
@@ -49,10 +52,6 @@ func NewAliveDialerSet(
 			// Initiate the latency with a very big value.
 			latency: time.Hour,
 		},
-	}
-	if setAlive && len(dialers) > 0 {
-		// Use first dialer if no dialer has alive state.
-		a.minLatency.dialer = dialers[0]
 	}
 	for _, d := range dialers {
 		a.dialerToIndex[d] = -1
@@ -129,8 +128,9 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			// This dialer is already not alive.
 		}
 	}
-
+	oldBestDialer := a.minLatency.dialer
 	if hasLatency {
+		// Calc minLatency.
 		a.dialerToLatency[dialer] = latency
 		if latency < a.minLatency.latency {
 			a.minLatency.latency = latency
@@ -139,6 +139,15 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			a.minLatency.latency = time.Hour
 			a.minLatency.dialer = nil
 			a.calcMinLatency()
+		}
+		if a.minLatency.dialer != oldBestDialer {
+			a.log.Infof("Group [%v] switched dialer to <%v> (%v): %v", a.dialerGroupName, a.minLatency.dialer.Name(), a.selectionPolicy, a.minLatency.latency)
+		}
+	} else {
+		if alive && a.minLatency.dialer == nil {
+			// Use first dialer if no dialer has alive state.
+			a.minLatency.dialer = dialer
+			a.log.Infof("Group [%v] switched dialer to <%v>", a.dialerGroupName, a.minLatency.dialer.Name())
 		}
 	}
 }

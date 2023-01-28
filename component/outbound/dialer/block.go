@@ -16,5 +16,5 @@ func (*blockDialer) Dial(network string, addr string) (c net.Conn, err error) {
 }
 
 func NewBlockDialer(option *GlobalOption) *Dialer {
-	return newDialer(&blockDialer{}, option, true, "block", "block", "")
+	return NewDialer(&blockDialer{}, option, InstanceOption{Check: false}, true, "block", "block", "")
 }

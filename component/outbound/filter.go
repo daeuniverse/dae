@@ -7,7 +7,6 @@ package outbound
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	"regexp"
@@ -31,7 +30,7 @@ type DialerSet struct {
 func NewDialerSetFromLinks(option *dialer.GlobalOption, nodes []string) *DialerSet {
 	s := &DialerSet{Dialers: make([]*dialer.Dialer, 0, len(nodes))}
 	for _, node := range nodes {
-		d, err := dialer.NewFromLink(option, node)
+		d, err := dialer.NewFromLink(option, dialer.InstanceOption{Check: false}, node)
 		if err != nil {
 			option.Log.Infof("failed to parse node: %v: %v", node, err)
 			continue
@@ -56,7 +55,7 @@ func hit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, er
 				switch param.Key {
 				case FilterKey_Name_Regex:
 					matched, _ := regexp.MatchString(param.Val, dialer.Name())
-					logrus.Warnln(param.Val, matched, dialer.Name())
+					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
 						break

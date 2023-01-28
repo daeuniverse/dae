@@ -41,7 +41,7 @@ type V2Ray struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewV2Ray(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
+func NewV2Ray(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
 	var (
 		s   *V2Ray
 		err error
@@ -63,10 +63,10 @@ func NewV2Ray(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) 
 	default:
 		return nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer(option)
+	return s.Dialer(option, iOption)
 }
 
-func (s *V2Ray) Dialer(option *dialer.GlobalOption) (data *dialer.Dialer, err error) {
+func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (data *dialer.Dialer, err error) {
 	var d proxy.Dialer
 	switch s.Protocol {
 	case "vmess":
@@ -147,7 +147,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption) (data *dialer.Dialer, err er
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, true, s.Ps, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, true, s.Ps, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseVlessURL(vless string) (data *V2Ray, err error) {

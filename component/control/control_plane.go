@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type ControlPlane struct {
@@ -58,6 +59,7 @@ func NewControlPlane(
 	routingA *config.Routing,
 	dnsUpstream string,
 	checkUrl string,
+	checkInterval time.Duration,
 ) (c *ControlPlane, err error) {
 	// Allow the current process to lock memory for eBPF resources.
 	if err = rlimit.RemoveMemlock(); err != nil {
@@ -110,10 +112,12 @@ retryLoadBpf:
 	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_UDP), int32(0), ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
+
 	// DialerGroups (outbounds).
 	option := &dialer.GlobalOption{
-		Log:      log,
-		CheckUrl: checkUrl,
+		Log:           log,
+		CheckUrl:      checkUrl,
+		CheckInterval: checkInterval,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
@@ -133,14 +137,26 @@ retryLoadBpf:
 	// Filter out groups.
 	dialerSet := outbound.NewDialerSetFromLinks(option, nodes)
 	for _, group := range groups {
-		dialers, err := dialerSet.Filter(group.Param.Filter)
-		if err != nil {
-			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
-		}
+		// Parse policy.
 		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group.Param)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
 		}
+		// Filter nodes.
+		dialers, err := dialerSet.Filter(group.Param.Filter)
+		if err != nil {
+			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
+		}
+		// Convert node links to dialers.
+		log.Infof(`Group "%v" node list:`, group.Name)
+		for _, d := range dialers {
+			log.Infoln("\t" + d.Name())
+			d.ActiveCheck()
+		}
+		if len(dialers) == 0 {
+			log.Infoln("\t<Empty>")
+		}
+		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy)
 		outbounds = append(outbounds, dialerGroup)
 	}

@@ -13,7 +13,6 @@ import (
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	"golang.org/x/net/proxy"
-	"log"
 	"net"
 	"strconv"
 )
@@ -84,8 +83,9 @@ type DialerGroup struct {
 }
 
 func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.Dialer, p DialerSelectionPolicy) *DialerGroup {
+	log := option.Log
 	var registeredAliveDialerSet bool
-	a := dialer.NewAliveDialerSet(option.Log, p.Policy, dialers, true)
+	a := dialer.NewAliveDialerSet(log, name, p.Policy, dialers, true)
 
 	switch p.Policy {
 	case consts.DialerSelectionPolicy_Random,
@@ -105,7 +105,7 @@ func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.
 	}
 
 	return &DialerGroup{
-		log:                      option.Log,
+		log:                      log,
 		Name:                     name,
 		Dialers:                  dialers,
 		block:                    dialer.NewBlockDialer(option),
@@ -170,6 +170,6 @@ func (g *DialerGroup) Dial(network string, addr string) (c net.Conn, err error) 
 	if err != nil {
 		return nil, err
 	}
-	g.log.Tracef("Group [%v] dial using [%v]", g.Name, d.Name())
+	g.log.Tracef("Group [%v] dial using <%v>", g.Name, d.Name())
 	return d.Dial(network, addr)
 }

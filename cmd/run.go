@@ -64,6 +64,7 @@ func Run() (err error) {
 		&param.Routing,
 		param.Global.DnsUpstream,
 		param.Global.CheckUrl,
+		param.Global.CheckInterval,
 	)
 	if err != nil {
 		return err

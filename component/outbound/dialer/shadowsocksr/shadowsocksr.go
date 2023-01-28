@@ -30,15 +30,15 @@ type ShadowsocksR struct {
 	Protocol   string `json:"protocol"`
 }
 
-func NewShadowsocksR(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
+func NewShadowsocksR(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseSSRURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer(option)
+	return s.Dialer(option, iOption)
 }
 
-func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
+func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
 	u := url.URL{
 		Scheme: "ssr",
 		User:   url.UserPassword(s.Cipher, s.Password),
@@ -54,7 +54,7 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, erro
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, false, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, false, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSRURL(u string) (data *ShadowsocksR, err error) {

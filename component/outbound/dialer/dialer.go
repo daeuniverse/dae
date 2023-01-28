@@ -24,6 +24,7 @@ var (
 
 type Dialer struct {
 	*GlobalOption
+	instanceOption InstanceOption
 	proxy.Dialer
 	supportUDP bool
 	name       string
@@ -40,37 +41,48 @@ type Dialer struct {
 }
 
 type GlobalOption struct {
-	Log      *logrus.Logger
-	CheckUrl string
+	Log           *logrus.Logger
+	CheckUrl      string
+	CheckInterval time.Duration
+}
+
+type InstanceOption struct {
+	Check bool
 }
 
 // NewDialer is for register in general.
-func NewDialer(dialer proxy.Dialer, option *GlobalOption, supportUDP bool, name string, protocol string, link string) *Dialer {
-	d := newDialer(dialer, option, supportUDP, name, protocol, link)
-	go d.aliveBackground()
-	return d
-}
-
-// newDialer does not run background tasks.
-func newDialer(dialer proxy.Dialer, option *GlobalOption, supportUDP bool, name string, protocol string, link string) *Dialer {
+func NewDialer(dialer proxy.Dialer, option *GlobalOption, iOption InstanceOption, supportUDP bool, name string, protocol string, link string) *Dialer {
 	d := &Dialer{
-		Dialer:       dialer,
-		GlobalOption: option,
-		supportUDP:   supportUDP,
-		name:         name,
-		protocol:     protocol,
-		link:         link,
-		Latencies10:  NewLatenciesN(10),
+		Dialer:         dialer,
+		GlobalOption:   option,
+		instanceOption: iOption,
+		supportUDP:     supportUDP,
+		name:           name,
+		protocol:       protocol,
+		link:           link,
+		Latencies10:    NewLatenciesN(10),
 		// Set a very big cycle to wait for init.
 		ticker:            time.NewTicker(time.Hour),
 		aliveDialerSetSet: make(map[*AliveDialerSet]int),
 	}
+	if iOption.Check {
+		go d.aliveBackground()
+	}
 	return d
+}
+func (d *Dialer) ActiveCheck() {
+	d.tickerMu.Lock()
+	defer d.tickerMu.Unlock()
+	if d.instanceOption.Check {
+		return
+	}
+	d.instanceOption.Check = true
+	go d.aliveBackground()
 }
 
 func (d *Dialer) aliveBackground() {
 	timeout := 10 * time.Second
-	cycle := 15 * time.Second
+	cycle := d.CheckInterval
 	// Check once immediately.
 	go d.Check(timeout, d.CheckUrl)
 
@@ -137,13 +149,14 @@ func (d *Dialer) Check(timeout time.Duration, url string) (ok bool, err error) {
 		if ok && err == nil {
 			// No error.
 			latency := time.Since(start)
-			d.Log.Debugf("Connectivity Check [%v]: %v", d.name, latency)
 			d.Latencies10.AppendLatency(latency)
+			avg, _ := d.Latencies10.AvgLatency()
+			d.Log.Debugf("Connectivity Check <%v>: last: %v, avg_10: %v", d.name, latency, avg)
 			alive = true
 		} else {
 			// Append timeout if there is any error or unexpected status code.
 			if err != nil {
-				d.Log.Debugf("Connectivity Check [%v]: %v", d.name, err.Error())
+				d.Log.Debugf("Connectivity Check <%v>: %v", d.name, err.Error())
 			}
 			d.Latencies10.AppendLatency(timeout)
 		}

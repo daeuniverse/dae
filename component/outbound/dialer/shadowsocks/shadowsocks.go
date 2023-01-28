@@ -33,15 +33,15 @@ type Shadowsocks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewShadowsocksFromLink(option *dialer.GlobalOption, link string) (*dialer.Dialer, error) {
+func NewShadowsocksFromLink(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
 	s, err := ParseSSURL(link)
 	if err != nil {
 		return nil, err
 	}
-	return s.Dialer(option)
+	return s.Dialer(option, iOption)
 }
 
-func (s *Shadowsocks) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error) {
+func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
 	// FIXME: support plain/none.
 	switch s.Cipher {
 	case "aes-256-gcm", "aes-128-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305":
@@ -76,7 +76,7 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption) (*dialer.Dialer, error
 		}
 		supportUDP = false
 	}
-	return dialer.NewDialer(d, option, supportUDP, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, supportUDP, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSURL(u string) (data *Shadowsocks, err error) {

@@ -10,9 +10,9 @@ var FullconeDirect = newDirect(true)
 
 func NewDirectDialer(option *GlobalOption, fullcone bool) *Dialer {
 	if fullcone {
-		return newDialer(FullconeDirect, option, true, "direct", "direct", "")
+		return NewDialer(FullconeDirect, option, InstanceOption{Check: false}, true, "direct", "direct", "")
 	} else {
-		return newDialer(SymmetricDirect, option, true, "direct", "direct", "")
+		return NewDialer(SymmetricDirect, option, InstanceOption{Check: false}, true, "direct", "direct", "")
 	}
 }
 
