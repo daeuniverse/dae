@@ -379,7 +379,7 @@ handle_ipv6_extensions(void *data, void *data_end, __u32 hdr,
                        struct tcphdr **tcph, struct udphdr **udph, __u8 *ihl) {
   __u8 hdr_length = 0;
   __s32 *p_s32;
-  __u8 nexthdr;
+  __u8 nexthdr = 0;
   *ihl = sizeof(struct ipv6hdr) / 4;
   // We only process TCP and UDP traffic.
 
@@ -395,6 +395,7 @@ handle_ipv6_extensions(void *data, void *data_end, __u32 hdr,
     if (!(p_s32 = bpf_map_lookup_elem(&ipproto_hdrsize_map, &hdr))) {
       return 1;
     }
+
     switch (*p_s32) {
     case -1:
       if ((void *)((__u8 *)data + 2) > data_end) {
@@ -410,7 +411,7 @@ handle_ipv6_extensions(void *data, void *data_end, __u32 hdr,
       nexthdr = *(__u8 *)data;
       break;
     case 4:
-      hdr_length = *p_s32;
+      hdr_length = 4;
       goto special_n1;
     case 0:
       if (hdr == IPPROTO_TCP) {
@@ -433,6 +434,9 @@ handle_ipv6_extensions(void *data, void *data_end, __u32 hdr,
         }
       }
       return 0;
+    default:
+      // Unknown hdr.
+      return 1;
     }
   }
   bpf_printk("exceeds IPV6_MAX_EXTENSIONS limit");
@@ -836,8 +840,7 @@ static long routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
           *p_u32 > routing->port_range.port_end) {
         bad_rule = true;
       }
-    } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map,
-                                            &key))) {
+    } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map, &key))) {
       if (!(*p_u32 & routing->__value)) {
         bad_rule = true;
       }

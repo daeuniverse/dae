@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"github.com/v2rayA/dae/cmd/infra"
+	"github.com/v2rayA/dae/cmd/internal"
 	"github.com/v2rayA/dae/component/control"
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/pkg/config_parser"
@@ -43,13 +43,13 @@ func Run() (err error) {
 	}
 
 	// Require "sudo" if necessary.
-	infra.AutoSu()
+	internal.AutoSu()
 
 	// Resolve subscriptions to nodes.
 	nodeList := make([]string, len(param.Node))
 	copy(nodeList, param.Node)
 	for _, sub := range param.Subscription {
-		nodes, err := infra.ResolveSubscription(log, sub)
+		nodes, err := internal.ResolveSubscription(log, sub)
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 		}

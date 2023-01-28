@@ -186,7 +186,7 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	}
 	routingsLen := uint32(len(b.rules))
 	routingsKeys := common.ARangeU32(routingsLen)
-	if _, err = b.bpf.RoutingMap.BatchUpdate(routingsKeys, b.rules, &ebpf.BatchOptions{
+	if _, err = BatchUpdate(b.bpf.RoutingMap, routingsKeys, b.rules, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return fmt.Errorf("BatchUpdate: %w", err)

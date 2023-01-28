@@ -1,4 +1,4 @@
-package infra
+package internal
 
 import (
 	"fmt"
