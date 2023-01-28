@@ -43,6 +43,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, nodes []string) *DialerS
 func hit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, err error) {
 	// Example
 	// filter: name(regex:'^.*hk.*$', keyword:'sg') && name(keyword:'disney')
+	// filter: !name(regex: 'HK|TW|SG') && name(keyword: disney)
 
 	// And
 	for _, filter := range filters {
@@ -74,7 +75,8 @@ func hit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, er
 		default:
 			return false, fmt.Errorf(`unsupported filter input type: "%v"`, filter.Name)
 		}
-		if !subFilterHit {
+
+		if subFilterHit == filter.Not {
 			return false, nil
 		}
 	}

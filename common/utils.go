@@ -106,7 +106,7 @@ func ParseMac(mac string) (addr [6]byte, err error) {
 	return addr, nil
 }
 
-func ParsePortRange(pr string) (portRange [2]int, err error) {
+func ParsePortRange(pr string) (portRange [2]uint16, err error) {
 	fields := strings.SplitN(pr, "-", 2)
 	for i, field := range fields {
 		if field == "" {
@@ -119,7 +119,7 @@ func ParsePortRange(pr string) (portRange [2]int, err error) {
 		if port < 0 || port > 0xffff {
 			return portRange, fmt.Errorf("port %v exceeds uint16 range", port)
 		}
-		portRange[i] = port
+		portRange[i] = uint16(port)
 	}
 	if len(fields) == 1 {
 		portRange[1] = portRange[0]

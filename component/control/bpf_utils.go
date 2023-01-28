@@ -6,6 +6,7 @@
 package control
 
 import (
+	"encoding/binary"
 	"fmt"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
@@ -17,6 +18,18 @@ import (
 type _bpfLpmKey struct {
 	PrefixLen uint32
 	Data      [4]uint32
+}
+
+type _bpfPortRange struct {
+	PortStart uint16
+	PortEnd   uint16
+}
+
+func (r _bpfPortRange) Encode() uint32 {
+	var b [4]byte
+	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
+	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)
+	return binary.BigEndian.Uint32(b[:])
 }
 
 func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {

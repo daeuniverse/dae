@@ -15,28 +15,32 @@ import (
 )
 
 var FakeOutbound_AND = consts.OutboundLogicalAnd.String()
+var FakeOutbound_OR = consts.OutboundLogicalOr.String()
 
 type MatcherBuilder interface {
-	AddDomain(key string, values []string, outbound string)
-	AddIp(values []netip.Prefix, outbound string)
-	AddPort(values [][2]int, outbound string)
-	AddSourceIp(values []netip.Prefix, outbound string)
-	AddSourcePort(values [][2]int, outbound string)
-	AddL4Proto(values consts.L4ProtoType, outbound string)
-	AddIpVersion(values consts.IpVersion, outbound string)
-	AddSourceMac(values [][6]byte, outbound string)
+	AddDomain(f *config_parser.Function, key string, values []string, outbound string)
+	AddIp(f *config_parser.Function, values []netip.Prefix, outbound string)
+	AddPort(f *config_parser.Function, values [][2]uint16, outbound string)
+	AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound string)
+	AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound string)
+	AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string)
+	AddIpVersion(f *config_parser.Function, values consts.IpVersion, outbound string)
+	AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string)
 	AddFinal(outbound string)
-	AddAnyBefore(function string, key string, values []string, outbound string)
-	AddAnyAfter(function string, key string, values []string, outbound string)
+	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string)
+	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string)
 	Build() (err error)
 }
 
-func GroupParamValuesByKey(params []*config_parser.Param) map[string][]string {
+func GroupParamValuesByKey(params []*config_parser.Param) (keyToValues map[string][]string, keyOrder []string) {
 	groups := make(map[string][]string)
 	for _, param := range params {
+		if _, ok := groups[param.Key]; !ok {
+			keyOrder = append(keyOrder, param.Key)
+		}
 		groups[param.Key] = append(groups[param.Key], param.Val)
 	}
-	return groups
+	return groups, keyOrder
 }
 
 func ParsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
@@ -59,26 +63,31 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 		// rule is like: domain(domain:baidu.com) && port(443) -> proxy
 		for iFunc, f := range rule.AndFunctions {
 			// f is like: domain(domain:baidu.com)
-			paramValueGroups := GroupParamValuesByKey(f.Params)
-			for key, paramValueGroup := range paramValueGroups {
+			paramValueGroups, keyOrder := GroupParamValuesByKey(f.Params)
+			for jMatchSet, key := range keyOrder {
+				paramValueGroup := paramValueGroups[key]
 				// Preprocess the outbound and pass FakeOutbound_AND to all but the last function.
-				outbound := FakeOutbound_AND
-				if iFunc == len(rule.AndFunctions)-1 {
-					outbound = rule.Outbound
+				outbound := FakeOutbound_OR
+				if jMatchSet == len(keyOrder)-1 {
+					outbound = FakeOutbound_AND
+					if iFunc == len(rule.AndFunctions)-1 {
+						outbound = rule.Outbound
+					}
 				}
-				builder.AddAnyBefore(f.Name, key, paramValueGroup, outbound)
+
+				builder.AddAnyBefore(f, key, paramValueGroup, outbound)
 				switch f.Name {
 				case consts.Function_Domain:
-					builder.AddDomain(key, paramValueGroup, outbound)
+					builder.AddDomain(f, key, paramValueGroup, outbound)
 				case consts.Function_Ip, consts.Function_SourceIp:
 					cidrs, err := ParsePrefixes(paramValueGroup)
 					if err != nil {
 						return err
 					}
 					if f.Name == consts.Function_Ip {
-						builder.AddIp(cidrs, outbound)
+						builder.AddIp(f, cidrs, outbound)
 					} else {
-						builder.AddSourceIp(cidrs, outbound)
+						builder.AddSourceIp(f, cidrs, outbound)
 					}
 				case consts.Function_Mac:
 					var macAddrs [][6]byte
@@ -89,9 +98,9 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 						}
 						macAddrs = append(macAddrs, mac)
 					}
-					builder.AddSourceMac(macAddrs, outbound)
+					builder.AddSourceMac(f, macAddrs, outbound)
 				case consts.Function_Port, consts.Function_SourcePort:
-					var portRanges [][2]int
+					var portRanges [][2]uint16
 					for _, v := range paramValueGroup {
 						portRange, err := common.ParsePortRange(v)
 						if err != nil {
@@ -100,9 +109,9 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 						portRanges = append(portRanges, portRange)
 					}
 					if f.Name == consts.Function_Port {
-						builder.AddPort(portRanges, outbound)
+						builder.AddPort(f, portRanges, outbound)
 					} else {
-						builder.AddSourcePort(portRanges, outbound)
+						builder.AddSourcePort(f, portRanges, outbound)
 					}
 				case consts.Function_L4Proto:
 					var l4protoType consts.L4ProtoType
@@ -114,7 +123,7 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 							l4protoType |= consts.L4ProtoType_UDP
 						}
 					}
-					builder.AddL4Proto(l4protoType, outbound)
+					builder.AddL4Proto(f, l4protoType, outbound)
 				case consts.Function_IpVersion:
 					var ipVersion consts.IpVersion
 					for _, v := range paramValueGroup {
@@ -125,33 +134,46 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 							ipVersion |= consts.IpVersion_6
 						}
 					}
-					builder.AddIpVersion(ipVersion, outbound)
+					builder.AddIpVersion(f, ipVersion, outbound)
 				default:
 					return fmt.Errorf("unsupported function name: %v", f.Name)
 				}
-				builder.AddAnyAfter(f.Name, key, paramValueGroup, outbound)
+				builder.AddAnyAfter(f, key, paramValueGroup, outbound)
 			}
 		}
 	}
-	builder.AddAnyBefore("final", "", nil, finalOutbound)
+	builder.AddAnyBefore(&config_parser.Function{
+		Name: "final",
+	}, "", nil, finalOutbound)
 	builder.AddFinal(finalOutbound)
-	builder.AddAnyAfter("final", "", nil, finalOutbound)
+	builder.AddAnyAfter(&config_parser.Function{
+		Name: "final",
+	}, "", nil, finalOutbound)
 	return nil
 }
 
-type DefaultMatcherBuilder struct{}
-
-func (d *DefaultMatcherBuilder) AddDomain(values []string, outbound string)            {}
-func (d *DefaultMatcherBuilder) AddIp(values []netip.Prefix, outbound string)          {}
-func (d *DefaultMatcherBuilder) AddPort(values [][2]int, outbound string)              {}
-func (d *DefaultMatcherBuilder) AddSource(values []netip.Prefix, outbound string)      {}
-func (d *DefaultMatcherBuilder) AddSourcePort(values [][2]int, outbound string)        {}
-func (d *DefaultMatcherBuilder) AddL4Proto(values consts.L4ProtoType, outbound string) {}
-func (d *DefaultMatcherBuilder) AddIpVersion(values consts.IpVersion, outbound string) {}
-func (d *DefaultMatcherBuilder) AddMac(values [][6]byte, outbound string)              {}
-func (d *DefaultMatcherBuilder) AddFinal(outbound string)                              {}
-func (d *DefaultMatcherBuilder) AddAnyBefore(function string, key string, values []string, outbound string) {
+type DefaultMatcherBuilder struct {
 }
-func (d *DefaultMatcherBuilder) AddAnyAfter(function string, key string, values []string, outbound string) {
+
+func (d *DefaultMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddIp(f *config_parser.Function, values []netip.Prefix, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersion, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddFinal(outbound string) {}
+func (d *DefaultMatcherBuilder) AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string) {
 }
 func (d *DefaultMatcherBuilder) Build() (err error) { return nil }

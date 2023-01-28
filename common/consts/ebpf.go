@@ -6,9 +6,8 @@
 package consts
 
 const (
-	AppName           = "dae"
-	MaxInterfaceIpNum = 8
-	BpfPinRoot        = "/sys/fs/bpf"
+	AppName    = "dae"
+	BpfPinRoot = "/sys/fs/bpf"
 
 	AddrHdrSize = 20
 )
@@ -49,7 +48,8 @@ type OutboundIndex uint8
 const (
 	OutboundDirect             OutboundIndex = 0
 	OutboundBlock              OutboundIndex = 1
-	OutboundControlPlaneDirect OutboundIndex = 0xFE
+	OutboundControlPlaneDirect OutboundIndex = 0xFD
+	OutboundLogicalOr          OutboundIndex = 0xFE
 	OutboundLogicalAnd         OutboundIndex = 0xFF
 )
 
@@ -61,6 +61,8 @@ func (i OutboundIndex) String() string {
 		return "block"
 	case OutboundControlPlaneDirect:
 		return "<Control Plane Direct>"
+	case OutboundLogicalOr:
+		return "<OR>"
 	case OutboundLogicalAnd:
 		return "<AND>"
 	default:

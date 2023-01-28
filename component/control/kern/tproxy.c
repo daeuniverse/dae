@@ -42,15 +42,16 @@
 
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
-#define OUTBOUND_CONTROL_PLANE_DIRECT 0xFE
+#define OUTBOUND_CONTROL_PLANE_DIRECT 0xFD
+#define OUTBOUND_LOGICAL_OR 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
+#define OUTBOUND_LOGICAL_MASK 0xFE
 
 enum {
   DISABLE_L4_CHECKSUM_POLICY_ENABLE_L4_CHECKSUM,
   DISABLE_L4_CHECKSUM_POLICY_RESTORE,
   DISABLE_L4_CHECKSUM_POLICY_SET_ZERO,
 };
-#define OUTBOUND_LOGICAL_AND 0xFF
 
 // Param keys:
 static const __u32 zero_key = 0;
@@ -208,7 +209,17 @@ struct port_range {
   __u16 port_start;
   __u16 port_end;
 };
-struct routing {
+
+/*
+ Look at following rule:
+
+ domain(geosite:cn, suffix: google.com) && l4proto(tcp) -> my_group
+
+ pseudocode: domain(geosite:cn || suffix:google.com) && l4proto(tcp) -> my_group
+
+ A match_set can be: IP set geosite:cn, suffix google.com, tcp proto
+ */
+struct match_set {
   union {
     __u32 __value; // Placeholder for bpf2go.
 
@@ -218,13 +229,13 @@ struct routing {
     enum IP_VERSION ip_version;
   };
   enum ROUTING_TYPE type;
-  __u8 outbound; // 255 means logical AND. 254 means dirty. User-defined value
-                 // range is [0, 253].
+  bool not ;     // A subrule flag (this is not a match_set flag).
+  __u8 outbound; // User-defined value range is [0, 252].
 };
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __type(key, __u32);
-  __type(value, struct routing);
+  __type(value, struct match_set);
   __uint(max_entries, MAX_ROUTING_LEN);
   // __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_map SEC(".maps");
@@ -809,42 +820,45 @@ static long routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
   bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY);
 
   struct map_lpm_type *lpm;
-  struct routing *routing;
-  // Rule is like: domain(domain:baidu.com) && port(443) -> proxy
+  struct match_set *match_set;
+  // Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
+  // proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
+  // set is like: suffix:baidu.com
   bool bad_rule = false;
+  bool good_subrule = false;
   struct domain_routing *domain_routing;
   __u32 *p_u32;
 
 #pragma unroll
   for (__u32 i = 0; i < MAX_ROUTING_LEN; i++) {
     __u32 k = i; // Clone to pass code checker.
-    routing = bpf_map_lookup_elem(&routing_map, &k);
-    if (!routing) {
+    match_set = bpf_map_lookup_elem(&routing_map, &k);
+    if (!match_set) {
       return -EFAULT;
     }
-    if (bad_rule) {
+    if (bad_rule || good_subrule) {
       goto before_next_loop;
     }
-    key = (key & (__u32)0) | (__u32)routing->type;
+    key = (key & (__u32)0) | (__u32)match_set->type;
     if ((lpm_key = bpf_map_lookup_elem(&lpm_key_map, &key))) {
-      lpm = bpf_map_lookup_elem(&lpm_array_map, &routing->index);
+      lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
       if (unlikely(!lpm)) {
         return -EFAULT;
       }
-      if (!bpf_map_lookup_elem(lpm, lpm_key)) {
-        // Routing not hit.
-        bad_rule = true;
+      if (bpf_map_lookup_elem(lpm, lpm_key)) {
+        // match_set hits.
+        good_subrule = true;
       }
     } else if ((p_u32 = bpf_map_lookup_elem(&h_port_map, &key))) {
-      if (*p_u32 < routing->port_range.port_start ||
-          *p_u32 > routing->port_range.port_end) {
-        bad_rule = true;
+      if (*p_u32 >= match_set->port_range.port_start &&
+          *p_u32 <= match_set->port_range.port_end) {
+        good_subrule = true;
       }
     } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map, &key))) {
-      if (!(*p_u32 & routing->__value)) {
-        bad_rule = true;
+      if (*p_u32 & match_set->__value) {
+        good_subrule = true;
       }
-    } else if (routing->type == ROUTING_TYPE_DOMAIN_SET) {
+    } else if (match_set->type == ROUTING_TYPE_DOMAIN_SET) {
       // Bottleneck of insns limit.
       // We fixed it by invoking bpf_map_lookup_elem here.
 
@@ -852,31 +866,46 @@ static long routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
       domain_routing = bpf_map_lookup_elem(&domain_routing_map, daddr);
       if (!domain_routing) {
         // No domain corresponding to IP.
-        bad_rule = true;
         goto before_next_loop;
       }
 
       // We use key instead of k to pass checker.
-      if (!((domain_routing->bitmap[i / 32] >> (i % 32)) & 1)) {
-        bad_rule = true;
+      if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
+        good_subrule = true;
       }
-    } else if (routing->type == ROUTING_TYPE_FINAL) {
-      bad_rule = false;
+    } else if (match_set->type == ROUTING_TYPE_FINAL) {
+      good_subrule = true;
     } else {
       return -EINVAL;
     }
 
   before_next_loop:
-    if (routing->outbound != OUTBOUND_LOGICAL_AND) {
+    if (match_set->outbound != OUTBOUND_LOGICAL_OR && !bad_rule) {
+      // This match_set reaches the end of subrule.
+      // We are now at end of rule, or next match_set belongs to another
+      // subrule.
+      if (good_subrule == match_set->not ) {
+        // This subrule does not hit.
+        bad_rule = true;
+      } else {
+        // This subrule hits.
+        // Reset the good_subrule flag.
+        good_subrule = false;
+      }
+    }
+    if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
+        OUTBOUND_LOGICAL_MASK) {
       // Tail of a rule (line).
       // Decide whether to hit.
       if (!bad_rule) {
-        if (routing->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
+        if (match_set->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
             _l4proto == L4PROTO_TYPE_UDP) {
           // DNS packet should go through control plane.
           return OUTBOUND_CONTROL_PLANE_DIRECT;
         }
-        return routing->outbound;
+        // bpf_printk("match_set->type: %d, match_set->not: %d", match_set->type,
+        //            match_set->not );
+        return match_set->outbound;
       }
       bad_rule = false;
     }

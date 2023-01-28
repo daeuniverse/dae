@@ -129,6 +129,7 @@ func (p *Param) String(compact bool) string {
 
 type Function struct {
 	Name   string
+	Not    bool
 	Params []*Param
 }
 

@@ -26,6 +26,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,11 +71,18 @@ func NewControlPlane(
 
 	// Load pre-compiled programs and maps into the kernel.
 	var bpf bpfObjects
+	var ProgramOptions ebpf.ProgramOptions
+	if log.IsLevelEnabled(logrus.TraceLevel) {
+		ProgramOptions = ebpf.ProgramOptions{
+			LogLevel: ebpf.LogLevelStats,
+		}
+	}
 retryLoadBpf:
 	if err = loadBpfObjects(&bpf, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
+		Programs: ProgramOptions,
 	}); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.
@@ -88,7 +96,17 @@ retryLoadBpf:
 			log.Warnf("New map format was incompatible with existing map %v, and the old one was removed.", mapName)
 			goto retryLoadBpf
 		}
-		return nil, fmt.Errorf("loading objects: %w", err)
+		// Get detailed log from ebpf.internal.*VerifierError
+		if log.IsLevelEnabled(logrus.TraceLevel) {
+			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
+				if log := v.FieldByName("Log"); log.IsValid() {
+					if strSlice, ok := log.Interface().([]string); ok {
+						err = fmt.Errorf("%v", strings.Join(strSlice, "\n"))
+					}
+				}
+			}
+		}
+		return nil, fmt.Errorf("loading objects: %v", err)
 	}
 	// Write params.
 	if err = bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
