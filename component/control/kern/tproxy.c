@@ -966,7 +966,6 @@ int tproxy_ingress(struct __sk_buff *skb) {
     key_src.port = tcph->source;
     key_src.proto = l4_proto;
     __u8 outbound;
-    // No record. No DNS requests before.
     if (unlikely(tcp_state_syn)) {
       // New TCP connection.
       // bpf_printk("[%X]New Connection", bpf_ntohl(tcph->seq));

@@ -54,17 +54,6 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 	}
 }
 
-// A utility to convert the values to proper strings.
-func int8ToStr(arr []int8) string {
-	b := make([]byte, 0, len(arr))
-	for _, v := range arr {
-		if v == 0x00 {
-			break
-		}
-		b = append(b, byte(v))
-	}
-	return string(b)
-}
 func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	var old bool
 	version, e := internal.KernelVersion()
