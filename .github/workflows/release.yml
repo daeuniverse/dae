@@ -90,26 +90,30 @@ jobs:
 
       - name: Build dae
         run: |
-          make OUTPUT=dae-$ASSET_NAME VERSION=${{ steps.get_version.outputs.VERSION }}
-          upx dae-$ASSET_NAME
+          mkdir -p ./build/
+          make OUTPUT=build/dae-$ASSET_NAME VERSION=${{ steps.get_version.outputs.VERSION }}
 
       - name: Smoking test
         if: matrix.goarch == 'amd64'
-        run: ./dae-$ASSET_NAME --version
+        run: ./build/dae-$ASSET_NAME --version
 
-      - name: Signature
+      - name: Create ZIP archive and Signature
         run: |
-          FILE=./dae-$ASSET_NAME
+          pushd build || exit 1
+          zip -9vr ../dae-$ASSET_NAME.zip .
+          popd || exit 1
+          FILE=./dae-$ASSET_NAME.zip
           DGST=$FILE.dgst
           md5sum        $FILE | awk '{print $1}' >>$DGST
           shasum -a 1   $FILE | awk '{print $1}' >>$DGST
           shasum -a 256 $FILE | awk '{print $1}' >>$DGST
           shasum -a 512 $FILE | awk '{print $1}' >>$DGST
+
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v2
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
-          path: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
+          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
+          path: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
 
       - name: Upload files to GitHub release
         uses: svenstaro/upload-release-action@v2
@@ -117,6 +121,6 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file_glob: true
-          file: ./dae-${{ steps.get_filename.outputs.ASSET_NAME }}*
+          file: ./dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
           overwrite: true
           tag: ${{ github.ref }}
