@@ -1,5 +1,5 @@
 {
-  "linux-386": { "friendlyName": "linux-32" },
+  "linux-386": { "friendlyName": "linux-x86_32" },
   "linux-amd64": { "friendlyName": "linux-x86_64" },
   "linux-arm5": { "friendlyName": "linux-armv5" },
   "linux-arm6": { "friendlyName": "linux-armv6" },
