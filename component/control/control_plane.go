@@ -88,7 +88,6 @@ retryLoadBpf:
 		}
 		return nil, fmt.Errorf("loading objects: %w", err)
 	}
-
 	// Write params.
 	if err = bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
@@ -96,7 +95,21 @@ retryLoadBpf:
 	if err = bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_HOPOPTS), int32(-1), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_ROUTING), int32(-1), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_FRAGMENT), int32(4), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_TCP), int32(0), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_UDP), int32(0), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
 	// DialerGroups (outbounds).
 	option := &dialer.GlobalOption{
 		Log:      log,
@@ -239,7 +252,7 @@ func (c *ControlPlane) BindLink(ifname string) error {
 	}
 	// FIXME: not only this link ip.
 	if linkIp.HasIp4 {
-		if err := c.bpf.HostIpLpm.Update(bpfLpmKey{
+		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
 			Data:      linkIp.Ip4,
 		}, uint32(1), ebpf.UpdateAny); err != nil {
@@ -247,7 +260,7 @@ func (c *ControlPlane) BindLink(ifname string) error {
 		}
 	}
 	if linkIp.HasIp6 {
-		if err := c.bpf.HostIpLpm.Update(bpfLpmKey{
+		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
 			Data:      linkIp.Ip6,
 		}, uint32(1), ebpf.UpdateAny); err != nil {

@@ -18,7 +18,6 @@
 #include "bpf_endian.h"
 #include "bpf_helpers.h"
 
-
 // #define likely(x) x
 // #define unlikely(x) x
 #define likely(x) __builtin_expect((x), 1)
@@ -102,6 +101,42 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } param_map SEC(".maps");
 
+// LPM key:
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u32);
+  __type(value, struct lpm_key);
+  __uint(max_entries, 3);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} lpm_key_map SEC(".maps");
+
+// h_sport, h_dport:
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(max_entries, 2);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} h_port_map SEC(".maps");
+
+// l4proto, ipversion:
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u64);
+  __type(value, __u32);
+  __uint(max_entries, 2);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} l4proto_ipversion_map SEC(".maps");
+
+// IPPROTO to hdr_size
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u32);
+  __type(value, __s32);
+  __uint(max_entries, 5);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ipproto_hdrsize_map SEC(".maps");
+
 // Dns upstream:
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -147,7 +182,7 @@ struct {
 } lpm_array_map SEC(".maps");
 
 // Array of routing:
-enum __attribute__((__packed__)) ROUTING_TYPE {
+enum ROUTING_TYPE {
   /// WARNING: MUST SYNC WITH common/consts/ebpf.go.
   ROUTING_TYPE_DOMAIN_SET,
   ROUTING_TYPE_IP_SET,
@@ -159,12 +194,12 @@ enum __attribute__((__packed__)) ROUTING_TYPE {
   ROUTING_TYPE_MAC,
   ROUTING_TYPE_FINAL,
 };
-enum __attribute__((__packed__)) L4PROTO_TYPE {
+enum L4PROTO_TYPE {
   L4PROTO_TYPE_TCP = 1,
   L4PROTO_TYPE_UDP = 2,
   L4PROTO_TYPE_TCP_UDP = 3,
 };
-enum __attribute__((__packed__)) IP_VERSION {
+enum IP_VERSION {
   IPVERSION_4 = 1,
   IPVERSION_6 = 2,
   IPVERSION_X = 3,
@@ -340,14 +375,15 @@ static __always_inline long rewrite_port(struct __sk_buff *skb, __u8 proto,
 }
 
 static __always_inline long
-handle_ipv6_extensions(void *data, void *data_end, __u8 hdr,
+handle_ipv6_extensions(void *data, void *data_end, __u32 hdr,
                        struct tcphdr **tcph, struct udphdr **udph, __u8 *ihl) {
   __u8 hdr_length = 0;
+  __s32 *p_s32;
   __u8 nexthdr;
   *ihl = sizeof(struct ipv6hdr) / 4;
   // We only process TCP and UDP traffic.
 
-  // #pragma unroll
+#pragma unroll
   for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++,
            data = (__u8 *)data + hdr_length, hdr = nexthdr,
            *ihl += hdr_length / 4) {
@@ -355,54 +391,48 @@ handle_ipv6_extensions(void *data, void *data_end, __u8 hdr,
       bpf_printk("IPv6 extension length is not multiples of 4");
       return 1;
     }
-    switch (hdr) {
-    case IPPROTO_HOPOPTS:
-    case IPPROTO_ROUTING:
-    case IPPROTO_FRAGMENT:
-      if (hdr == IPPROTO_FRAGMENT) {
-        hdr_length = 4;
-      } else {
-        if ((void *)((__u8 *)data + 2) > data_end) {
-          bpf_printk("not a valid IPv6 packet");
-          return -EFAULT;
-        }
-        hdr_length = *((__u8 *)data + 1);
+    // See component/control/control_plane.go.
+    if (!(p_s32 = bpf_map_lookup_elem(&ipproto_hdrsize_map, &hdr))) {
+      return 1;
+    }
+    switch (*p_s32) {
+    case -1:
+      if ((void *)((__u8 *)data + 2) > data_end) {
+        bpf_printk("not a valid IPv6 packet");
+        return -EFAULT;
       }
+      hdr_length = *((__u8 *)data + 1);
+    special_n1:
       if ((void *)((__u8 *)data + hdr_length) > data_end) {
         bpf_printk("not a valid IPv6 packet");
         return -EFAULT;
       }
       nexthdr = *(__u8 *)data;
       break;
-    case IPPROTO_TCP:
-      // Upper layer;
-      // Skip ipv4hdr and options to get tcphdr.
-      *tcph = (struct tcphdr *)data;
-      // Should be complete tcphdr.
-      if ((void *)(*tcph + 1) > data_end) {
-        bpf_printk("not a valid TCP packet");
-        return -EFAULT;
+    case 4:
+      hdr_length = *p_s32;
+      goto special_n1;
+    case 0:
+      if (hdr == IPPROTO_TCP) {
+        // Upper layer;
+        // Skip ipv4hdr and options to get tcphdr.
+        *tcph = (struct tcphdr *)data;
+        // Should be complete tcphdr.
+        if ((void *)(*tcph + 1) > data_end) {
+          bpf_printk("not a valid TCP packet");
+          return -EFAULT;
+        }
+      } else {
+        // Upper layer;
+        // Skip ipv4hdr and options to get tcphdr.
+        *udph = (struct udphdr *)data;
+        // Should be complete udphdr.
+        if ((void *)(*udph + 1) > data_end) {
+          bpf_printk("not a valid UDP packet");
+          return -EFAULT;
+        }
       }
       return 0;
-    case IPPROTO_UDP:
-      // Upper layer;
-      // Skip ipv4hdr and options to get tcphdr.
-      *udph = (struct udphdr *)data;
-      // Should be complete udphdr.
-      if ((void *)(*udph + 1) > data_end) {
-        bpf_printk("not a valid UDP packet");
-        return -EFAULT;
-      }
-      return 0;
-    case IPPROTO_ICMPV6:
-      // Upper layer;
-    case IPPROTO_NONE:
-      // No more extension.
-      return 1;
-    default:
-      // Unsupported ipv6 extention header;
-      bpf_printk("unsupported protocol: %u", hdr);
-      return 1;
     }
   }
   bpf_printk("exceeds IPV6_MAX_EXTENSIONS limit");
@@ -722,10 +752,17 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 // Do not use __always_inline here because this function is too heavy.
-static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
+static long routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
                     __be32 daddr[4], __be32 mac[4]) {
 #define _l4proto flag[0]
 #define _ipversion flag[1]
+#define _hash flag[2]
+  /// TODO: BPF_MAP_UPDATE_BATCH
+  // To avoid racing.
+  __u64 key = ((__u64)_hash << 32) + ROUTING_TYPE_L4PROTO;
+  bpf_map_update_elem(&l4proto_ipversion_map, &key, &_l4proto, BPF_ANY);
+  key = ROUTING_TYPE_IPVERSION;
+  bpf_map_update_elem(&l4proto_ipversion_map, &key, &_ipversion, BPF_ANY);
 
   // Define variables for further use.
   __u16 h_dport;
@@ -737,6 +774,11 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
     h_dport = bpf_ntohs(((struct udphdr *)l4_hdr)->dest);
     h_sport = bpf_ntohs(((struct udphdr *)l4_hdr)->source);
   }
+  key = ROUTING_TYPE_SOURCE_PORT;
+  bpf_map_update_elem(&h_port_map, &key, &h_sport, BPF_ANY);
+  key = ROUTING_TYPE_PORT;
+  bpf_map_update_elem(&h_port_map, &key, &h_dport, BPF_ANY);
+
   // Modify DNS upstream for routing.
   if (h_dport == 53 && _l4proto == L4PROTO_TYPE_UDP) {
     struct ip_port *upstream =
@@ -754,17 +796,24 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
   __builtin_memcpy(lpm_key_saddr.data, saddr, IPV6_BYTE_LENGTH);
   __builtin_memcpy(lpm_key_daddr.data, daddr, IPV6_BYTE_LENGTH);
   __builtin_memcpy(lpm_key_mac.data, mac, IPV6_BYTE_LENGTH);
-  bpf_printk("mac: %pI6", mac);
+  // bpf_printk("mac: %pI6", mac);
+  key = (key & (__u32)0) | (__u32)ROUTING_TYPE_IP_SET;
+  bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_daddr, BPF_ANY);
+  key = (key & (__u32)0) | (__u32)ROUTING_TYPE_SOURCE_IP_SET;
+  bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_saddr, BPF_ANY);
+  key = (key & (__u32)0) | (__u32)ROUTING_TYPE_MAC;
+  bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY);
 
   struct map_lpm_type *lpm;
   struct routing *routing;
   // Rule is like: domain(domain:baidu.com) && port(443) -> proxy
   bool bad_rule = false;
   struct domain_routing *domain_routing;
+  __u32 *p_u32;
 
 #pragma unroll
-  for (__u32 key = 0; key < MAX_ROUTING_LEN; key++) {
-    __u32 k = key; // Clone to pass code checker.
+  for (__u32 i = 0; i < MAX_ROUTING_LEN; i++) {
+    __u32 k = i; // Clone to pass code checker.
     routing = bpf_map_lookup_elem(&routing_map, &k);
     if (!routing) {
       return -EFAULT;
@@ -772,19 +821,24 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
     if (bad_rule) {
       goto before_next_loop;
     }
-    /// NOTICE: switch is not implemented efficiently by clang yet.
-    if (likely(routing->type == ROUTING_TYPE_IP_SET)) {
-      lpm_key = &lpm_key_daddr;
-      goto lookup_lpm;
-    } else if (routing->type == ROUTING_TYPE_SOURCE_IP_SET) {
-      lpm_key = &lpm_key_saddr;
-    lookup_lpm:
+    key = (key & (__u32)0) | (__u32)routing->type;
+    if ((lpm_key = bpf_map_lookup_elem(&lpm_key_map, &key))) {
       lpm = bpf_map_lookup_elem(&lpm_array_map, &routing->index);
       if (unlikely(!lpm)) {
         return -EFAULT;
       }
       if (!bpf_map_lookup_elem(lpm, lpm_key)) {
         // Routing not hit.
+        bad_rule = true;
+      }
+    } else if ((p_u32 = bpf_map_lookup_elem(&h_port_map, &key))) {
+      if (*p_u32 < routing->port_range.port_start ||
+          *p_u32 > routing->port_range.port_end) {
+        bad_rule = true;
+      }
+    } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map,
+                                            &key))) {
+      if (!(*p_u32 & routing->__value)) {
         bad_rule = true;
       }
     } else if (routing->type == ROUTING_TYPE_DOMAIN_SET) {
@@ -800,33 +854,10 @@ static long routing(__u8 flag[2], void *l4_hdr, __be32 saddr[4],
       }
 
       // We use key instead of k to pass checker.
-      if (!((domain_routing->bitmap[key / 32] >> (key % 32)) & 1)) {
+      if (!((domain_routing->bitmap[i / 32] >> (i % 32)) & 1)) {
         bad_rule = true;
       }
-    } else if (routing->type == ROUTING_TYPE_PORT) {
-      if (h_dport < routing->port_range.port_start ||
-          h_dport > routing->port_range.port_end) {
-        bad_rule = true;
-      }
-    } else if (routing->type == ROUTING_TYPE_SOURCE_PORT) {
-      if (h_sport < routing->port_range.port_start ||
-          h_sport > routing->port_range.port_end) {
-        bad_rule = true;
-      }
-    } else if (routing->type == ROUTING_TYPE_L4PROTO) {
-      if (!(_l4proto & routing->l4proto_type)) {
-        bad_rule = true;
-      }
-    } else if (routing->type == ROUTING_TYPE_IPVERSION) {
-      if (!(_ipversion & routing->ip_version)) {
-        bad_rule = true;
-      }
-    } else if (routing->type == ROUTING_TYPE_MAC) {
-      /// FIXME: Bottleneck of insns limit. Reason: don't know.
-      lpm_key = &lpm_key_mac;
-      goto lookup_lpm;
     } else if (routing->type == ROUTING_TYPE_FINAL) {
-      // Redirect all DNS packet to control plane.
       bad_rule = false;
     } else {
       return -EINVAL;
@@ -936,12 +967,13 @@ int tproxy_ingress(struct __sk_buff *skb) {
     if (unlikely(tcp_state_syn)) {
       // New TCP connection.
       // bpf_printk("[%X]New Connection", bpf_ntohl(tcph->seq));
-      __u8 flag[2] = {L4PROTO_TYPE_TCP}; // TCP
+      __u32 flag[3] = {L4PROTO_TYPE_TCP}; // TCP
       if (ipv6h) {
         flag[1] = IPVERSION_6;
       } else {
         flag[1] = IPVERSION_4;
       }
+      flag[2] = skb->hash;
       __be32 mac[4] = {
           0,
           0,
@@ -1006,12 +1038,13 @@ int tproxy_ingress(struct __sk_buff *skb) {
     new_hdr.port = udph->dest;
 
     // Routing. It decides if we redirect traffic to control plane.
-    __u8 flag[2] = {L4PROTO_TYPE_UDP};
+    __u32 flag[3] = {L4PROTO_TYPE_UDP};
     if (ipv6h) {
       flag[1] = IPVERSION_6;
     } else {
       flag[1] = IPVERSION_4;
     }
+    flag[2] = skb->hash;
     __be32 mac[4] = {
         0,
         0,

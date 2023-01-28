@@ -70,7 +70,7 @@ func (b *RoutingMatcherBuilder) AddDomain(key string, values []string, outbound 
 		Domains:   values,
 	})
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_DomainSet),
+		Type:     uint32(consts.RoutingType_DomainSet),
 		Outbound: b.OutboundToId(outbound),
 	})
 }
@@ -89,7 +89,7 @@ func (b *RoutingMatcherBuilder) AddSourceMac(macAddrs [][6]byte, outbound string
 	lpmTrieIndex := len(b.SimulatedLpmTries)
 	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_Mac),
+		Type:     uint32(consts.RoutingType_Mac),
 		Value:    uint32(lpmTrieIndex),
 		Outbound: b.OutboundToId(outbound),
 	})
@@ -103,7 +103,7 @@ func (b *RoutingMatcherBuilder) AddIp(values []netip.Prefix, outbound string) {
 	lpmTrieIndex := len(b.SimulatedLpmTries)
 	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_IpSet),
+		Type:     uint32(consts.RoutingType_IpSet),
 		Value:    uint32(lpmTrieIndex),
 		Outbound: b.OutboundToId(outbound),
 	})
@@ -116,7 +116,7 @@ func (b *RoutingMatcherBuilder) AddSourceIp(values []netip.Prefix, outbound stri
 	lpmTrieIndex := len(b.SimulatedLpmTries)
 	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_SourceIpSet),
+		Type:     uint32(consts.RoutingType_SourceIpSet),
 		Value:    uint32(lpmTrieIndex),
 		Outbound: b.OutboundToId(outbound),
 	})
@@ -127,7 +127,7 @@ func (b *RoutingMatcherBuilder) AddL4Proto(values consts.L4ProtoType, outbound s
 		return
 	}
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_L4Proto),
+		Type:     uint32(consts.RoutingType_L4Proto),
 		Value:    uint32(values),
 		Outbound: b.OutboundToId(outbound),
 	})
@@ -138,7 +138,7 @@ func (b *RoutingMatcherBuilder) AddIpVersion(values consts.IpVersion, outbound s
 		return
 	}
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_IpVersion),
+		Type:     uint32(consts.RoutingType_IpVersion),
 		Value:    uint32(values),
 		Outbound: b.OutboundToId(outbound),
 	})
@@ -150,7 +150,7 @@ func (b *RoutingMatcherBuilder) AddFinal(outbound string) {
 	}
 	b.Final = outbound
 	b.rules = append(b.rules, bpfRouting{
-		Type:     uint8(consts.RoutingType_Final),
+		Type:     uint32(consts.RoutingType_Final),
 		Outbound: b.OutboundToId(outbound),
 	})
 }
@@ -161,7 +161,7 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	}
 	// Update lpm_array_map.
 	for i, cidrs := range b.SimulatedLpmTries {
-		var keys []bpfLpmKey
+		var keys []_bpfLpmKey
 		var values []uint32
 		for _, cidr := range cidrs {
 			keys = append(keys, cidrToBpfLpmKey(cidr))
@@ -180,7 +180,7 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	}
 	// Write routings.
 	// Final rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != uint8(consts.RoutingType_Final) {
+	if b.rules[len(b.rules)-1].Type != uint32(consts.RoutingType_Final) {
 		b.err = fmt.Errorf("final rule MUST be the last")
 		return b.err
 	}

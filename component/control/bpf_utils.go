@@ -11,12 +11,12 @@ import (
 	"net/netip"
 )
 
-type bpfLpmKey struct {
+type _bpfLpmKey struct {
 	PrefixLen uint32
 	Data      [4]uint32
 }
 
-func (o *bpfObjects) newLpmMap(keys []bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
+func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
 	m, err = ebpf.NewMap(&ebpf.MapSpec{
 		Type:       ebpf.LPMTrie,
 		Flags:      o.UnusedLpmType.Flags(),
@@ -39,13 +39,13 @@ func swap16(a uint16) uint16 {
 	return (a >> 8) + ((a & 0xFF) << 8)
 }
 
-func cidrToBpfLpmKey(prefix netip.Prefix) bpfLpmKey {
+func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 	bits := prefix.Bits()
 	if prefix.Addr().Is4() {
 		bits += 96
 	}
 	ip := prefix.Addr().As16()
-	return bpfLpmKey{
+	return _bpfLpmKey{
 		PrefixLen: uint32(bits),
 		Data:      common.Ipv6ByteSliceToUint32Array(ip[:]),
 	}
