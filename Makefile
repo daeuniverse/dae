@@ -8,6 +8,7 @@
 # Pin the default clang to a stable version.
 CLANG ?= clang
 STRIP ?= llvm-strip
+OUTPUT ?= dae
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
 
 # Get version from .git.
@@ -23,11 +24,14 @@ endif
 .PHONY: ebpf dae
 
 dae: ebpf
-	go build -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION)" .
+	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION)" .
 
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP := $(STRIP)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf:
-	go generate ./component/control/...
+	unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
+    go generate ./component/control/...

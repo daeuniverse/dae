@@ -1,0 +1,13 @@
+{
+  "linux-386": { "friendlyName": "linux-x86_32" },
+  "linux-amd64": { "friendlyName": "linux-x86_64" },
+  "linux-arm5": { "friendlyName": "linux-armv5" },
+  "linux-arm6": { "friendlyName": "linux-armv6" },
+  "linux-arm7": { "friendlyName": "linux-armv7" },
+  "linux-arm64": { "friendlyName": "linux-arm64" },
+  "linux-mips64le": { "friendlyName": "linux-mips64le" },
+  "linux-mips64": { "friendlyName": "linux-mips64" },
+  "linux-mipsle": { "friendlyName": "linux-mips32le" },
+  "linux-mips": { "friendlyName": "linux-mips32" },
+  "linux-riscv64": { "friendlyName": "linux-riscv64" }
+}
