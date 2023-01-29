@@ -33,10 +33,10 @@
 
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 128
-#define MAX_ROUTING_LEN (32 * 3)
+#define MAX_MATCH_SET_LEN (32 * 3)
 #define MAX_LPM_SIZE 20480
 //#define MAX_LPM_SIZE 20480
-#define MAX_LPM_NUM (MAX_ROUTING_LEN + 8)
+#define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DEST_MAPPING_NUM (65536 * 2)
 #define IPV6_MAX_EXTENSIONS 4
 
@@ -48,9 +48,9 @@
 #define OUTBOUND_LOGICAL_MASK 0xFE
 
 enum {
-  DISABLE_L4_CHECKSUM_POLICY_ENABLE_L4_CHECKSUM,
-  DISABLE_L4_CHECKSUM_POLICY_RESTORE,
-  DISABLE_L4_CHECKSUM_POLICY_SET_ZERO,
+  DisableL4ChecksumPolicy_EnableL4Checksum,
+  DisableL4ChecksumPolicy_Restore,
+  DisableL4ChecksumPolicy_SetZero,
 };
 
 // Param keys:
@@ -182,28 +182,27 @@ struct {
   __array(values, struct map_lpm_type);
 } lpm_array_map SEC(".maps");
 
-// Array of routing:
-enum ROUTING_TYPE {
+enum __attribute__((packed)) MatchType {
   /// WARNING: MUST SYNC WITH common/consts/ebpf.go.
-  ROUTING_TYPE_DOMAIN_SET,
-  ROUTING_TYPE_IP_SET,
-  ROUTING_TYPE_SOURCE_IP_SET,
-  ROUTING_TYPE_PORT,
-  ROUTING_TYPE_SOURCE_PORT,
-  ROUTING_TYPE_L4PROTO,
-  ROUTING_TYPE_IPVERSION,
-  ROUTING_TYPE_MAC,
-  ROUTING_TYPE_FINAL,
+  MatchType_DomainSet,
+  MatchType_IpSet,
+  MatchType_SourceIpSet,
+  MatchType_Port,
+  MatchType_SourcePort,
+  MatchType_L4Proto,
+  MatchType_IpVersion,
+  MatchType_Mac,
+  MatchType_Final,
 };
-enum L4PROTO_TYPE {
-  L4PROTO_TYPE_TCP = 1,
-  L4PROTO_TYPE_UDP = 2,
-  L4PROTO_TYPE_TCP_UDP = 3,
+enum L4ProtoType {
+  L4ProtoType_TCP = 1,
+  L4ProtoType_UDP = 2,
+  L4ProtoType_X = 3,
 };
-enum IP_VERSION {
-  IPVERSION_4 = 1,
-  IPVERSION_6 = 2,
-  IPVERSION_X = 3,
+enum IpVersion {
+  IpVersion_4 = 1,
+  IpVersion_6 = 2,
+  IpVersion_X = 3,
 };
 struct port_range {
   __u16 port_start;
@@ -211,7 +210,7 @@ struct port_range {
 };
 
 /*
- Look at following rule:
+ Rule is like as following:
 
  domain(geosite:cn, suffix: google.com) && l4proto(tcp) -> my_group
 
@@ -225,10 +224,10 @@ struct match_set {
 
     __u32 index;
     struct port_range port_range;
-    enum L4PROTO_TYPE l4proto_type;
-    enum IP_VERSION ip_version;
+    enum L4ProtoType l4proto_type;
+    enum IpVersion ip_version;
   };
-  enum ROUTING_TYPE type;
+  enum MatchType type;
   bool not ;     // A subrule flag (this is not a match_set flag).
   __u8 outbound; // User-defined value range is [0, 252].
 };
@@ -236,12 +235,12 @@ struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __type(key, __u32);
   __type(value, struct match_set);
-  __uint(max_entries, MAX_ROUTING_LEN);
+  __uint(max_entries, MAX_MATCH_SET_LEN);
   // __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_map SEC(".maps");
 
 struct domain_routing {
-  __u32 bitmap[MAX_ROUTING_LEN / 32];
+  __u32 bitmap[MAX_MATCH_SET_LEN / 32];
 };
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -773,13 +772,13 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
 #define _ipversion flag[1]
 #define _hash flag[2]
   /// TODO: BPF_MAP_UPDATE_BATCH ?
-  __u32 key = ROUTING_TYPE_L4PROTO;
+  __u32 key = MatchType_L4Proto;
   int ret;
   if ((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_l4proto,
                                  BPF_ANY))) {
     return ret;
   };
-  key = ROUTING_TYPE_IPVERSION;
+  key = MatchType_IpVersion;
   if ((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_ipversion,
                                  BPF_ANY))) {
     return ret;
@@ -788,24 +787,24 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
   // Define variables for further use.
   __u16 h_dport;
   __u16 h_sport;
-  if (_l4proto == L4PROTO_TYPE_TCP) {
+  if (_l4proto == L4ProtoType_TCP) {
     h_dport = bpf_ntohs(((struct tcphdr *)l4_hdr)->dest);
     h_sport = bpf_ntohs(((struct tcphdr *)l4_hdr)->source);
   } else {
     h_dport = bpf_ntohs(((struct udphdr *)l4_hdr)->dest);
     h_sport = bpf_ntohs(((struct udphdr *)l4_hdr)->source);
   }
-  key = ROUTING_TYPE_SOURCE_PORT;
+  key = MatchType_SourcePort;
   if ((ret = bpf_map_update_elem(&h_port_map, &key, &h_sport, BPF_ANY))) {
     return ret;
   };
-  key = ROUTING_TYPE_PORT;
+  key = MatchType_Port;
   if ((ret = bpf_map_update_elem(&h_port_map, &key, &h_dport, BPF_ANY))) {
     return ret;
   };
 
   // Modify DNS upstream for routing.
-  if (h_dport == 53 && _l4proto == L4PROTO_TYPE_UDP) {
+  if (h_dport == 53 && _l4proto == L4ProtoType_UDP) {
     struct ip_port *upstream =
         bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
     if (!upstream) {
@@ -822,17 +821,17 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
   __builtin_memcpy(lpm_key_daddr.data, daddr, IPV6_BYTE_LENGTH);
   __builtin_memcpy(lpm_key_mac.data, mac, IPV6_BYTE_LENGTH);
   // bpf_printk("mac: %pI6", mac);
-  key = ROUTING_TYPE_IP_SET;
+  key = MatchType_IpSet;
   if ((ret =
            bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_daddr, BPF_ANY))) {
     return ret;
   };
-  key = ROUTING_TYPE_SOURCE_IP_SET;
+  key = MatchType_SourceIpSet;
   if ((ret =
            bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_saddr, BPF_ANY))) {
     return ret;
   };
-  key = ROUTING_TYPE_MAC;
+  key = MatchType_Mac;
   if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY))) {
     return ret;
   };
@@ -849,7 +848,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
   __u16 *p_u16;
 
 #pragma unroll
-  for (__u32 i = 0; i < MAX_ROUTING_LEN; i++) {
+  for (__u32 i = 0; i < MAX_MATCH_SET_LEN; i++) {
     __u32 k = i; // Clone to pass code checker.
     match_set = bpf_map_lookup_elem(&routing_map, &k);
     if (!match_set) {
@@ -896,7 +895,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
       if (*p_u32 & match_set->__value) {
         good_subrule = true;
       }
-    } else if (match_set->type == ROUTING_TYPE_DOMAIN_SET) {
+    } else if (match_set->type == MatchType_DomainSet) {
       // bpf_printk("CHECK: domain, match_set->type: %u, not: %d, "
       //            "outbound: %u",
       //            match_set->type, match_set->not, match_set->outbound);
@@ -914,7 +913,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
       if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
         good_subrule = true;
       }
-    } else if (match_set->type == ROUTING_TYPE_FINAL) {
+    } else if (match_set->type == MatchType_Final) {
       // bpf_printk("CHECK: hit final");
       good_subrule = true;
     } else {
@@ -947,7 +946,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
         // bpf_printk("MATCHED: match_set->type: %u, match_set->not: %d",
         //            match_set->type, match_set->not );
         if (match_set->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
-            _l4proto == L4PROTO_TYPE_UDP) {
+            _l4proto == L4ProtoType_UDP) {
           // DNS packet should go through control plane.
           return OUTBOUND_CONTROL_PLANE_DIRECT;
         }
@@ -1044,11 +1043,11 @@ int tproxy_ingress(struct __sk_buff *skb) {
     if (unlikely(tcp_state_syn)) {
       // New TCP connection.
       // bpf_printk("[%X]New Connection", bpf_ntohl(tcph->seq));
-      __u32 flag[3] = {L4PROTO_TYPE_TCP}; // TCP
+      __u32 flag[3] = {L4ProtoType_TCP}; // TCP
       if (ipv6h) {
-        flag[1] = IPVERSION_6;
+        flag[1] = IpVersion_6;
       } else {
-        flag[1] = IPVERSION_4;
+        flag[1] = IpVersion_4;
       }
       flag[2] = skb->hash;
       __be32 mac[4] = {
@@ -1117,11 +1116,11 @@ int tproxy_ingress(struct __sk_buff *skb) {
     new_hdr.port = udph->dest;
 
     // Routing. It decides if we redirect traffic to control plane.
-    __u32 flag[3] = {L4PROTO_TYPE_UDP};
+    __u32 flag[3] = {L4ProtoType_UDP};
     if (ipv6h) {
-      flag[1] = IPVERSION_6;
+      flag[1] = IpVersion_6;
     } else {
-      flag[1] = IPVERSION_4;
+      flag[1] = IpVersion_4;
     }
     flag[2] = skb->hash;
     __be32 mac[4] = {
@@ -1183,7 +1182,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
     if (*disable_l4_checksum) {
       __u32 l4_cksm_off = l4_checksum_off(l4_proto, ihl);
       // Restore the checksum or set it zero.
-      if (*disable_l4_checksum == DISABLE_L4_CHECKSUM_POLICY_SET_ZERO) {
+      if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
         bak_cksm = 0;
       }
       bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
@@ -1351,7 +1350,7 @@ int tproxy_egress(struct __sk_buff *skb) {
     if (*disable_l4_checksum) {
       __u32 l4_cksm_off = l4_checksum_off(l4_proto, ihl);
       // Restore the checksum or set it zero.
-      if (*disable_l4_checksum == DISABLE_L4_CHECKSUM_POLICY_SET_ZERO) {
+      if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
         bak_cksm = 0;
       }
       bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);

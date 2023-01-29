@@ -19,10 +19,10 @@ make
 
 Run:
 ```shell
-./dae run -c example.conf
+./dae run -c example.dae
 ```
 
-See [example.conf](https://github.com/v2rayA/dae/blob/main/example.conf).
+See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
 
 ## TODO
 

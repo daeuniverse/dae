@@ -8,8 +8,8 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/mzz2017/softwind/pool"
 	"github.com/v2rayA/dae/common/consts"
-	"github.com/v2rayA/dae/pkg/pool"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/netip"

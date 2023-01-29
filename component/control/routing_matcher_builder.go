@@ -74,7 +74,7 @@ func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string,
 		Domains:   values,
 	})
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_DomainSet),
+		Type:     uint8(consts.RoutingType_DomainSet),
 		Not:      f.Not,
 		Outbound: b.OutboundToId(outbound),
 	})
@@ -94,7 +94,7 @@ func (b *RoutingMatcherBuilder) AddSourceMac(f *config_parser.Function, macAddrs
 	lpmTrieIndex := len(b.SimulatedLpmTries)
 	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_Mac),
+		Type:     uint8(consts.RoutingType_Mac),
 		Value:    uint32(lpmTrieIndex),
 		Not:      f.Not,
 		Outbound: b.OutboundToId(outbound),
@@ -109,7 +109,7 @@ func (b *RoutingMatcherBuilder) AddIp(f *config_parser.Function, values []netip.
 	lpmTrieIndex := len(b.SimulatedLpmTries)
 	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_IpSet),
+		Type:     uint8(consts.RoutingType_IpSet),
 		Value:    uint32(lpmTrieIndex),
 		Not:      f.Not,
 		Outbound: b.OutboundToId(outbound),
@@ -123,7 +123,7 @@ func (b *RoutingMatcherBuilder) AddPort(f *config_parser.Function, values [][2]u
 			outbound = _outbound
 		}
 		b.rules = append(b.rules, bpfMatchSet{
-			Type: uint32(consts.RoutingType_Port),
+			Type: uint8(consts.RoutingType_Port),
 			Value: _bpfPortRange{
 				PortStart: value[0],
 				PortEnd:   value[1],
@@ -141,7 +141,7 @@ func (b *RoutingMatcherBuilder) AddSourceIp(f *config_parser.Function, values []
 	lpmTrieIndex := len(b.SimulatedLpmTries)
 	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_SourceIpSet),
+		Type:     uint8(consts.RoutingType_SourceIpSet),
 		Value:    uint32(lpmTrieIndex),
 		Not:      f.Not,
 		Outbound: b.OutboundToId(outbound),
@@ -155,7 +155,7 @@ func (b *RoutingMatcherBuilder) AddSourcePort(f *config_parser.Function, values 
 			outbound = _outbound
 		}
 		b.rules = append(b.rules, bpfMatchSet{
-			Type: uint32(consts.RoutingType_SourcePort),
+			Type: uint8(consts.RoutingType_SourcePort),
 			Value: _bpfPortRange{
 				PortStart: value[0],
 				PortEnd:   value[1],
@@ -171,7 +171,7 @@ func (b *RoutingMatcherBuilder) AddL4Proto(f *config_parser.Function, values con
 		return
 	}
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_L4Proto),
+		Type:     uint8(consts.RoutingType_L4Proto),
 		Value:    uint32(values),
 		Not:      f.Not,
 		Outbound: b.OutboundToId(outbound),
@@ -183,7 +183,7 @@ func (b *RoutingMatcherBuilder) AddIpVersion(f *config_parser.Function, values c
 		return
 	}
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_IpVersion),
+		Type:     uint8(consts.RoutingType_IpVersion),
 		Value:    uint32(values),
 		Not:      f.Not,
 		Outbound: b.OutboundToId(outbound),
@@ -196,7 +196,7 @@ func (b *RoutingMatcherBuilder) AddFinal(outbound string) {
 	}
 	b.Final = outbound
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint32(consts.RoutingType_Final),
+		Type:     uint8(consts.RoutingType_Final),
 		Outbound: b.OutboundToId(outbound),
 	})
 }
@@ -226,7 +226,7 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	}
 	// Write routings.
 	// Final rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != uint32(consts.RoutingType_Final) {
+	if b.rules[len(b.rules)-1].Type != uint8(consts.RoutingType_Final) {
 		b.err = fmt.Errorf("final rule MUST be the last")
 		return b.err
 	}
@@ -239,4 +239,3 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	}
 	return nil
 }
-

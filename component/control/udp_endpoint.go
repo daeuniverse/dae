@@ -7,7 +7,7 @@ package control
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/pkg/pool"
+	"github.com/mzz2017/softwind/pool"
 	"golang.org/x/net/proxy"
 	"net"
 	"net/netip"

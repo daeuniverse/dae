@@ -29,7 +29,7 @@ const (
 	DisableL4ChecksumPolicy_SetZero
 )
 
-type RoutingType uint32
+type RoutingType uint8
 
 const (
 	RoutingType_DomainSet RoutingType = iota
