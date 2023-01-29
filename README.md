@@ -28,7 +28,6 @@ See [example.conf](https://github.com/v2rayA/dae/blob/main/example.conf).
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
-1. Support not operator for RoutingA rule.
 1. DisableL4Checksum by link.
 1. Handle the case that nodes do not support UDP.
 1. ...
