@@ -7,6 +7,7 @@ package routing
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/pkg/config_parser"
@@ -60,6 +61,8 @@ func ParsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
 
 func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingRule, finalOutbound string) (err error) {
 	for _, rule := range rules {
+		logrus.Debugln("[rule]", rule.String(true))
+
 		// rule is like: domain(domain:baidu.com) && port(443) -> proxy
 		for iFunc, f := range rule.AndFunctions {
 			// f is like: domain(domain:baidu.com)
@@ -73,6 +76,15 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 					if iFunc == len(rule.AndFunctions)-1 {
 						outbound = rule.Outbound
 					}
+				}
+
+				{
+					// Debug
+					symNot := ""
+					if f.Not {
+						symNot = "!"
+					}
+					logrus.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, outbound)
 				}
 
 				builder.AddAnyBefore(f, key, paramValueGroup, outbound)

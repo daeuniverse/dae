@@ -145,7 +145,11 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			a.calcMinLatency()
 		}
 		if a.minLatency.dialer != oldBestDialer {
-			a.log.Infof("Group [%v] switched dialer to <%v> (%v): %v", a.dialerGroupName, a.minLatency.dialer.Name(), a.selectionPolicy, a.minLatency.latency)
+			newDialerName := "<null>"
+			if a.minLatency.dialer != nil {
+				newDialerName = a.minLatency.dialer.Name()
+			}
+			a.log.Infof("Group [%v] switched dialer to <%v> (%v): %v", a.dialerGroupName, newDialerName, a.selectionPolicy, a.minLatency.latency)
 		}
 	} else {
 		if alive && minPolicy && a.minLatency.dialer == nil {

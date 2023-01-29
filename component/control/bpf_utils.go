@@ -27,8 +27,8 @@ type _bpfPortRange struct {
 
 func (r _bpfPortRange) Encode() uint32 {
 	var b [4]byte
-	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
-	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)
+	binary.BigEndian.PutUint16(b[:2], r.PortStart)
+	binary.BigEndian.PutUint16(b[2:], r.PortEnd)
 	return binary.BigEndian.Uint32(b[:])
 }
 

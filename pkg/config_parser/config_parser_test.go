@@ -74,6 +74,8 @@ group {
 }
 
 routing {
+    sip(192.168.0.0/24) && !sip(192.168.0.252/30) -> direct
+
     domain(geosite:category-ads) -> block
     domain(geosite:disney) -> disney
     domain(geosite:netflix) -> netflix

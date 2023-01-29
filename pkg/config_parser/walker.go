@@ -185,20 +185,16 @@ func (w *Walker) parseFunctionPrototypeExpression(ctx dae_config.IFunctionProtot
 func (w *Walker) parseRoutingRule(ctx dae_config.IRoutingRuleContext) *RoutingRule {
 	children := ctx.GetChildren()
 	//logrus.Debugln(ctx.GetText(), children)
-	left, ok := children[0].(*dae_config.RoutingRuleLeftContext)
-	if !ok {
-		w.ReportError(ctx, ErrorType_Unsupported, "not *RoutingRuleLeftContext: "+ctx.GetText())
-		return nil
-	}
-	outbound := children[2].(*dae_config.Bare_literalContext).GetText()
-	// Parse functions.
-	children = left.GetChildren()
-	functionList, ok := children[1].(*dae_config.FunctionPrototypeExpressionContext)
+	functionList, ok := children[0].(*dae_config.FunctionPrototypeExpressionContext)
 	if !ok {
 		w.ReportError(ctx, ErrorType_Unsupported, "not *FunctionPrototypeExpressionContext: "+ctx.GetText())
 		return nil
 	}
+	// Parse functions.
 	andFunctions := w.parseFunctionPrototypeExpression(functionList, nil)
+
+	// Parse outbound.
+	outbound := children[2].(*dae_config.Bare_literalContext).GetText()
 	return &RoutingRule{
 		AndFunctions: andFunctions,
 		Outbound:     outbound,

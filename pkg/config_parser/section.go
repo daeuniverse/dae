@@ -135,6 +135,9 @@ type Function struct {
 
 func (f *Function) String(compact bool) string {
 	var builder strings.Builder
+	if f.Not {
+		builder.WriteString("!")
+	}
 	builder.WriteString(f.Name + "(")
 	var strParamList []string
 	for _, p := range f.Params {
@@ -181,27 +184,28 @@ type RoutingRule struct {
 func (r *RoutingRule) String(calcN bool) string {
 	var builder strings.Builder
 	var n int
-	for _, f := range r.AndFunctions {
-		if builder.Len() != 0 {
+	for i, f := range r.AndFunctions {
+		if i != 0 {
 			builder.WriteString(" && ")
 		}
 		var paramBuilder strings.Builder
 		n += len(f.Params)
-		for _, p := range f.Params {
-			if paramBuilder.Len() != 0 {
-				paramBuilder.WriteString(", ")
-			}
-			if p.Key != "" {
-				paramBuilder.WriteString(p.Key + ": " + p.Val)
-			} else {
-				paramBuilder.WriteString(p.Val)
+		if calcN {
+			paramBuilder.WriteString("[n = " + strconv.Itoa(n) + "]")
+		} else {
+			for j, param := range f.Params {
+				if j != 0 {
+					paramBuilder.WriteString(", ")
+				}
+				paramBuilder.WriteString(param.String(false))
 			}
 		}
-		builder.WriteString(fmt.Sprintf("%v(%v)", f.Name, paramBuilder.String()))
+		symNot := ""
+		if f.Not {
+			symNot = "!"
+		}
+		builder.WriteString(fmt.Sprintf("%v%v(%v)", symNot, f.Name, paramBuilder.String()))
 	}
 	builder.WriteString(" -> " + r.Outbound)
-	if calcN {
-		builder.WriteString(" [n = " + strconv.Itoa(n) + "]")
-	}
 	return builder.String()
 }

@@ -116,8 +116,12 @@ func (b *RoutingMatcherBuilder) AddIp(f *config_parser.Function, values []netip.
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, outbound string) {
-	for _, value := range values {
+func (b *RoutingMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, _outbound string) {
+	for i, value := range values {
+		outbound := routing.FakeOutbound_OR
+		if i == len(values)-1 {
+			outbound = _outbound
+		}
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint32(consts.RoutingType_Port),
 			Value: _bpfPortRange{
@@ -144,8 +148,12 @@ func (b *RoutingMatcherBuilder) AddSourceIp(f *config_parser.Function, values []
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound string) {
-	for _, value := range values {
+func (b *RoutingMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, _outbound string) {
+	for i, value := range values {
+		outbound := routing.FakeOutbound_OR
+		if i == len(values)-1 {
+			outbound = _outbound
+		}
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint32(consts.RoutingType_SourcePort),
 			Value: _bpfPortRange{
@@ -232,6 +240,3 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	return nil
 }
 
-//func (b *RoutingMatcherBuilder) AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string) {
-//	logrus.Debugln(f.Not, f.Name, key, outbound)
-//}

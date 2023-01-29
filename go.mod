@@ -12,7 +12,7 @@ require (
 	github.com/mzz2017/softwind v0.0.0-20230127172609-05c5264aa6a4
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
-	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230127154011-4f61520cc0b7
+	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230129030458-867b50f6cc67
 	github.com/v2rayA/shadowsocksR v1.0.4
 	github.com/vishvananda/netlink v1.1.0
 	golang.org/x/net v0.5.0

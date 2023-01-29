@@ -93,10 +93,10 @@ retryLoadBpf:
 			}
 			mapName, _, _ := strings.Cut(after, ":")
 			_ = os.Remove(filepath.Join(pinPath, mapName))
-			log.Warnf("New map format was incompatible with existing map %v, and the old one was removed.", mapName)
+			log.Infof("Incompatible new map format with existing map %v detected; removed the old one.", mapName)
 			goto retryLoadBpf
 		}
-		// Get detailed log from ebpf.internal.*VerifierError
+		// Get detailed log from ebpf.internal.(*VerifierError)
 		if log.IsLevelEnabled(logrus.TraceLevel) {
 			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
 				if log := v.FieldByName("Log"); log.IsValid() {
@@ -199,12 +199,12 @@ retryLoadBpf:
 	); err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error: \n %w", err)
 	}
-	if log.IsLevelEnabled(logrus.TraceLevel) {
+	if log.IsLevelEnabled(logrus.DebugLevel) {
 		var debugBuilder strings.Builder
 		for _, rule := range rules {
 			debugBuilder.WriteString(rule.String(true) + "\n")
 		}
-		log.Tracef("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), routingA.Final)
+		log.Debugf("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), routingA.Final)
 	}
 	if err = routing.ApplyMatcherBuilder(builder, rules, routingA.Final); err != nil {
 		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
