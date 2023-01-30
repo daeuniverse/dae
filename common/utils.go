@@ -42,6 +42,13 @@ func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 	return ip
 }
 
+func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
+	for j := 0; j < 4; j++ {
+		ip = binary.LittleEndian.AppendUint32(ip, _ip[j])
+	}
+	return ip
+}
+
 func Deduplicate(list []string) []string {
 	res := make([]string, 0, len(list))
 	m := make(map[string]struct{})

@@ -81,7 +81,7 @@ func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS b
 		if isDNS {
 			data, err = c.DnsRespHandler(data)
 			if err != nil {
-				c.log.Warnf("DnsRespHandler: %v", err)
+				c.log.Debugf("DnsRespHandler: %v", err)
 			}
 		}
 		if dummyFrom != nil {

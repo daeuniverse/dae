@@ -6,7 +6,6 @@
 package control
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
@@ -29,9 +28,11 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}, &value); err != nil {
 		return fmt.Errorf("reading map: key %v: %w", rAddr.String(), err)
 	}
-	var dstIP [4]byte
-	binary.LittleEndian.PutUint32(dstIP[:], value.Ip[3])
-	dst := netip.AddrPortFrom(netip.AddrFrom4(dstIP), swap16(value.Port))
+	dstSlice, ok := netip.AddrFromSlice(common.Ipv6Uint32ArrayToByteSlice(value.Ip))
+	if !ok {
+		return fmt.Errorf("failed to parse dest ip: %v", value.Ip)
+	}
+	dst := netip.AddrPortFrom(dstSlice, swap16(value.Port))
 
 	switch consts.OutboundIndex(value.Outbound) {
 	case consts.OutboundDirect:

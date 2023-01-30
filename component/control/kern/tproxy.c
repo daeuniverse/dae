@@ -894,8 +894,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
         good_subrule = true;
       }
     } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map, &key))) {
-      // bpf_printk("CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d,
-      // "
+      // bpf_printk("CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d,"
       //            "outbound: %u",
       //            match_set->type, match_set->not, match_set->outbound);
       if (*p_u32 & match_set->__value) {
@@ -930,6 +929,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
     }
 
   before_next_loop:
+    // bpf_printk("good_subrule: %d, bad_rule: %d", good_subrule, bad_rule);
     if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
       // This match_set reaches the end of subrule.
       // We are now at end of rule, or next match_set belongs to another
@@ -943,7 +943,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
       // Reset good_subrule.
       good_subrule = false;
     }
-
+    // bpf_printk("_bad_rule: %d", bad_rule);
     if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
         OUTBOUND_LOGICAL_MASK) {
       // Tail of a rule (line).
@@ -962,7 +962,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
     }
   }
   bpf_printk(
-      "Did coder forget to sync common/consts/ebpf.go with enum ROUTING_TYPE?");
+      "No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
   return -EPERM;
 #undef _l4proto
 #undef _ip_version
@@ -1629,11 +1629,14 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   } else {
     return TC_ACT_OK;
   }
+  __be16 sport;
   __be16 dport;
   if (tcph) {
+    sport = tcph->source;
     dport = tcph->dest;
     l4_proto = IPPROTO_TCP;
   } else if (udph) {
+    sport = udph->source;
     dport = udph->dest;
     l4_proto = IPPROTO_UDP;
   } else {
@@ -1647,7 +1650,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // sender and its ip is right host ip.
     // saddr is host ip and right sender ip.
     // dport is sender sport. See (1).
-    // bpf_printk("should send to origin: %pI6:%u", saddr, bpf_ntohs(dport));
+    // bpf_printk("[%u]should send to origin: %pI6:%u", l4_proto, saddr,
+    //            bpf_ntohs(dport));
 
     if (tcph) {
       // Lookup original dest as sip and sport.
@@ -1671,23 +1675,18 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       }
 
       // Rewrite sip and sport.
-      __u32 *src_ip = saddr;
-      __u16 src_port = tcph->source;
-      if (rewrite_ip(skb, ipv6h, IPPROTO_TCP, ihl, src_ip, original_dst->ip,
+      if (rewrite_ip(skb, ipv6h, IPPROTO_TCP, ihl, saddr, original_dst->ip,
                      false) < 0) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
-      if (rewrite_port(skb, IPPROTO_TCP, ihl, src_port, original_dst->port,
+      if (rewrite_port(skb, IPPROTO_TCP, ihl, sport, original_dst->port,
                        false) < 0) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
     } else if (udph) {
 
-      // Backup for further use.
-      __u32 *src_ip = saddr;
-      __u16 src_port = udph->source;
       /// NOTICE: Actually, we do not need symmetrical headers in client and
       /// server. We use it for convinience. This behavior may change in the
       /// future. Outbound here is useless and redundant.
@@ -1701,14 +1700,14 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
                           sizeof(ori_src));
 
       // Rewrite udp src ip
-      if ((ret = rewrite_ip(skb, ipv6h, IPPROTO_UDP, ihl, src_ip, ori_src.ip,
+      if ((ret = rewrite_ip(skb, ipv6h, IPPROTO_UDP, ihl, saddr, ori_src.ip,
                             false))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src port
-      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, src_port, ori_src.port,
+      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, sport, ori_src.port,
                               false))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
@@ -1761,10 +1760,10 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     }
   }
 
-  // __u32 l4_cksm_off = l4_checksum_off(l4_proto, ihl);
-  // // Restore the checksum or set it zero.
-  // __sum16 bak_cksm = 0;
-  // bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
+  __u32 l4_cksm_off = l4_checksum_off(l4_proto, ihl);
+  // Restore the checksum or set it zero.
+  __sum16 bak_cksm = 0;
+  bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
   return TC_ACT_OK;
 }
 

@@ -18,7 +18,7 @@ func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxRouti
 			var hit bool
 			switch s.Key {
 			case consts.RoutingDomain_Suffix:
-				if strings.HasSuffix(domain, d) {
+				if domain == d || strings.HasSuffix(domain, "."+d) {
 					hit = true
 				}
 			case consts.RoutingDomain_Full:
@@ -34,6 +34,7 @@ func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxRouti
 				for _, d := range s.Domains {
 					if regexp.MustCompile(d).MatchString(strings.ToLower(domain)) {
 						hit = true
+						break
 					}
 				}
 			}
