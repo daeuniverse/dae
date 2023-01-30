@@ -49,6 +49,7 @@ group {
 routing {
     # See routing.md for full examples.
 
+    ip(geoip:private) -> direct
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
     final: my_group

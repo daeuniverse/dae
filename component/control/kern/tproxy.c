@@ -1571,7 +1571,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         encap_after_udp_hdr(skb, ipv6h, ihl, ipv4_tot_len, &new_hdr,
                             sizeof(new_hdr));
 
-        // Redirect.
+        // Redirect from egress to ingress.
         if ((ret = bpf_redirect(skb->ifindex, BPF_F_INGRESS)) == TC_ACT_SHOT) {
           bpf_printk("Shot bpf_redirect: %d", ret);
           return TC_ACT_SHOT;
