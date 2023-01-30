@@ -142,13 +142,13 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
 		c.mutex.Unlock()
-		cache.Deadline = time.Now().Add(time.Duration(ttl) * time.Second)
+		cache.Deadline = time.Now().Add(time.Duration(ttl)*time.Second + DnsNatTimeout)
 		cache.Answers = msg.Answers
 	} else {
 		cache = &dnsCache{
 			DomainBitmap: c.MatchDomainBitmap(strings.TrimSuffix(fqdn, ".")),
 			Answers:      msg.Answers,
-			Deadline:     time.Now().Add(time.Duration(ttl) * time.Second),
+			Deadline:     time.Now().Add(time.Duration(ttl)*time.Second + DnsNatTimeout),
 		}
 		c.dnsCache[cacheKey] = cache
 		c.mutex.Unlock()
