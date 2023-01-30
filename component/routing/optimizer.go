@@ -241,7 +241,7 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 					params, err = o.loadGeoSite("geosite", param.Val)
 				case "geoip":
 					params, err = o.loadGeoIp("geoip", param.Val)
-				case "dat":
+				case "ext":
 					fields := strings.SplitN(param.Val, ":", 2)
 					switch f.Name {
 					case consts.Function_Domain:

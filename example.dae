@@ -8,11 +8,16 @@ global {
 
     # Now only support UDP and IP:Port.
     # Please make sure DNS traffic will go through and be forwarded by dae.
+    # The request to dns upstream follows routing defined below.
     dns_upstream: '1.1.1.1:53'
 
-    # The ingress (LAN) interface to bind.
+    # The LAN interface to bind.
+    # Use it if you only want to proxy LAN instead of localhost.
     # Now only support one interface.
-    lan_interface: docker0
+    # lan_interface: docker0
+
+    # The WAN interface to bind.
+    # Use it if you only want to proxy localhost.
     wan_interface: wlp5s0
 }
 
@@ -24,13 +29,14 @@ subscription {
 node {
     # Add your node links here.
     # Support socks5, http, https, ss, ssr, vmess, vless, trojan, trojan-go
+    'socks5://localhost:1080'
     'ss://LINK'
 }
 
 group {
     my_group {
         # Pass node links as input of lua script filter.
-        filter: name(keyword: HK)
+        filter: name(keyword: HK, keyword: SH)
 
         # Randomly select a node from the group for every connection.
         # policy: random
@@ -38,33 +44,11 @@ group {
         # Select the first node from the group for every connection.
         policy: fixed(0)
     }
-
-    disney {
-        # Pass node names as input of keyword/regex filter.
-        filter: name(regex:'HK|SG|TW', keyword:'JP') && !name(keyword:'GCP')
-
-        # Select the node with min average of the last 10 latencies from the group for every connection.
-        policy: min_avg10
-    }
-
-    netflix {
-        # Pass node names as input of keyword filter.
-        filter: name(keyword:AWS)
-
-        # Select the node with min last latency from the group for every connection.
-        policy: min
-    }
 }
 
 routing {
-    #ip(geoip:private)->direct
-    !port(80) -> my_group
-    sport(123) -> direct
-    sip(192.168.0.0/24) && !sip(192.168.0.252/30) -> direct
-    domain(geosite:category-ads) -> block
-    l4proto(udp) && mac('02:42:ac:11:00:03') -> my_group
-    domain(geosite:disney) -> disney
-    domain(geosite:netflix) -> netflix
+    # See routing.md for full examples.
+
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
     final: my_group
