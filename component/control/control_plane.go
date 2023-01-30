@@ -20,6 +20,7 @@ import (
 	"github.com/v2rayA/dae/component/routing"
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/pkg/config_parser"
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"net"
@@ -221,7 +222,7 @@ retryLoadBpf:
 	dnsAddr16 := dnsAddrPort.Addr().As16()
 	if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
 		Ip:   common.Ipv6ByteSliceToUint32Array(dnsAddr16[:]),
-		Port: swap16(dnsAddrPort.Port()),
+		Port: internal.Htons(dnsAddrPort.Port()),
 	}, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
@@ -367,7 +368,16 @@ func (c *ControlPlane) BindWan(ifname string) error {
 		return err
 	}
 
-	// Insert qdisc and filters.
+	//// Insert SrcPidMapper.
+	//sock, err := internal.OpenRawSock(link.Attrs().Index)
+	//if err != nil {
+	//	return fmt.Errorf("failed to open raw sock: %v: %w", ifname, err)
+	//}
+	//if err = unix.SetsockoptInt(sock, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, c.bpf.bpfPrograms.SrcPidMapper.FD()); err != nil {
+	//	return fmt.Errorf("failed to attach SrcPidMapper")
+	//}
+
+	// Insert qdisc and tc filters.
 	qdisc := &netlink.GenericQdisc{
 		QdiscAttrs: netlink.QdiscAttrs{
 			LinkIndex: link.Attrs().Index,
@@ -446,7 +456,8 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	defer lConn.Close()
 
 	// Serve.
-	if err := c.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(swap16(port)), ebpf.UpdateAny); err != nil {
+
+	if err := c.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(internal.Htons(port)), ebpf.UpdateAny); err != nil {
 		return err
 	}
 

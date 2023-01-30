@@ -11,6 +11,7 @@ import (
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"net"
 	"net/netip"
 	"time"
@@ -24,7 +25,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	var value bpfIpPortOutbound
 	if err := c.bpf.TcpDstMap.Lookup(bpfIpPort{
 		Ip:   common.Ipv6ByteSliceToUint32Array(ip6[:]),
-		Port: swap16(rAddr.Port()),
+		Port: internal.Htons(rAddr.Port()),
 	}, &value); err != nil {
 		return fmt.Errorf("reading map: key %v: %w", rAddr.String(), err)
 	}
@@ -32,7 +33,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	if !ok {
 		return fmt.Errorf("failed to parse dest ip: %v", value.Ip)
 	}
-	dst := netip.AddrPortFrom(dstSlice, swap16(value.Port))
+	dst := netip.AddrPortFrom(dstSlice, internal.Htons(value.Port))
 
 	switch consts.OutboundIndex(value.Outbound) {
 	case consts.OutboundDirect:

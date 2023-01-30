@@ -51,10 +51,6 @@ func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map,
 	return m, nil
 }
 
-func swap16(a uint16) uint16 {
-	return (a >> 8) + ((a & 0xFF) << 8)
-}
-
 func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 	bits := prefix.Bits()
 	if prefix.Addr().Is4() {
