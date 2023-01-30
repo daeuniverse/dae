@@ -17,7 +17,7 @@ global {
     # lan_interface: docker0
 
     # The WAN interface to bind.
-    # Use it if you only want to proxy localhost.
+    # Use it if you want to proxy localhost.
     wan_interface: wlp5s0
 }
 
