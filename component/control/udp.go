@@ -103,6 +103,9 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 		)
 	default:
 	}
+	if int(addrHdr.Outbound) >= len(c.outbounds) {
+		return fmt.Errorf("outbound %v out of range", addrHdr.Outbound)
+	}
 	outbound := c.outbounds[addrHdr.Outbound]
 	dnsMessage, natTimeout := ChooseNatTimeout(data)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.

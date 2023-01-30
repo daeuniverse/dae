@@ -70,9 +70,19 @@ func Run() (err error) {
 		return err
 	}
 
-	// Bind to link.
-	if err = t.BindLink(param.Global.LanInterface); err != nil {
-		return err
+	// Bind to links.
+	if param.Global.LanInterface == "" && param.Global.WanInterface == "" {
+		return fmt.Errorf("LanInterface and WanInterface cannot both be empty")
+	}
+	if param.Global.LanInterface != "" {
+		if err = t.BindLan(param.Global.LanInterface); err != nil {
+			return fmt.Errorf("BindLan: %v: %w", param.Global.LanInterface, err)
+		}
+	}
+	if param.Global.WanInterface != "" {
+		if err = t.BindWan(param.Global.WanInterface); err != nil {
+			return fmt.Errorf("BindWan: %v: %w", param.Global.WanInterface, err)
+		}
 	}
 
 	// Serve tproxy TCP/UDP server util signals.

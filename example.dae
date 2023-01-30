@@ -13,6 +13,7 @@ global {
     # The ingress (LAN) interface to bind.
     # Now only support one interface.
     lan_interface: docker0
+    wan_interface: wlp5s0
 }
 
 # subscription will be resolved as nodes and merged into node pool below.
@@ -23,7 +24,6 @@ subscription {
 node {
     # Add your node links here.
     # Support socks5, http, https, ss, ssr, vmess, vless, trojan, trojan-go
-    'socks5://127.0.0.1:1080#HK'
     'ss://LINK'
 }
 

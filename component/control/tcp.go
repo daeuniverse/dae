@@ -12,7 +12,6 @@ import (
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
-	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
 	"time"
@@ -24,10 +23,9 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	ip6 := rAddr.Addr().As16()
 
 	var value bpfIpPortOutbound
-	if err := c.bpf.DstMap.Lookup(bpfIpPortProto{
-		Ip:    common.Ipv6ByteSliceToUint32Array(ip6[:]),
-		Port:  swap16(rAddr.Port()),
-		Proto: unix.IPPROTO_TCP,
+	if err := c.bpf.TcpDstMap.Lookup(bpfIpPort{
+		Ip:   common.Ipv6ByteSliceToUint32Array(ip6[:]),
+		Port: swap16(rAddr.Port()),
 	}, &value); err != nil {
 		return fmt.Errorf("reading map: key %v: %w", rAddr.String(), err)
 	}

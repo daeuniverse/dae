@@ -3,6 +3,8 @@ package dialer
 import (
 	"golang.org/x/net/proxy"
 	"net"
+	"runtime"
+	"syscall"
 )
 
 var SymmetricDirect = newDirect(false)
@@ -24,8 +26,10 @@ type direct struct {
 
 func newDirect(fullCone bool) proxy.Dialer {
 	return &direct{
-		netDialer: &net.Dialer{},
-		fullCone:  fullCone,
+		netDialer: &net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
+			return SoMarkControl(c)
+		}},
+		fullCone: fullCone,
 	}
 }
 
@@ -36,6 +40,11 @@ func (d *direct) Dial(network, addr string) (c net.Conn, err error) {
 	case "udp":
 		if d.fullCone {
 			conn, err := net.ListenUDP(network, nil)
+			raw, err := conn.SyscallConn()
+			if err != nil {
+				return nil, err
+			}
+			_ = SoMarkControl(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -78,4 +87,27 @@ func (c *directUDPConn) WriteToUDP(b []byte, addr *net.UDPAddr) (int, error) {
 		return c.Write(b)
 	}
 	return c.UDPConn.WriteToUDP(b, addr)
+}
+
+var fwmarkIoctl int
+
+func init() {
+	switch runtime.GOOS {
+	case "linux", "android":
+		fwmarkIoctl = 36 /* unix.SO_MARK */
+	case "freebsd":
+		fwmarkIoctl = 0x1015 /* unix.SO_USER_COOKIE */
+	case "openbsd":
+		fwmarkIoctl = 0x1021 /* unix.SO_RTABLE */
+	}
+}
+
+func SoMarkControl(c syscall.RawConn) error {
+	return c.Control(func(fd uintptr) {
+		//TODO: force to set 0xff. any chances to customize this value?
+		err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, fwmarkIoctl, 0x80)
+		if err != nil {
+			return
+		}
+	})
 }

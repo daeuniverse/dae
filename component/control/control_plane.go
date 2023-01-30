@@ -124,10 +124,10 @@ retryLoadBpf:
 	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_FRAGMENT), int32(4), ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_TCP), int32(0), ebpf.UpdateAny); err != nil {
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_TCP), int32(-2), ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_UDP), int32(0), ebpf.UpdateAny); err != nil {
+	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_UDP), int32(-2), ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
 
@@ -241,7 +241,7 @@ retryLoadBpf:
 	}, nil
 }
 
-func (c *ControlPlane) BindLink(ifname string) error {
+func (c *ControlPlane) BindLan(ifname string) error {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
@@ -356,6 +356,74 @@ func (c *ControlPlane) BindLink(ifname string) error {
 		DirectAction: true,
 	}
 	if err := netlink.FilterAdd(filterEgress); err != nil {
+		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	return nil
+}
+
+func (c *ControlPlane) BindWan(ifname string) error {
+	link, err := netlink.LinkByName(ifname)
+	if err != nil {
+		return err
+	}
+
+	// Insert qdisc and filters.
+	qdisc := &netlink.GenericQdisc{
+		QdiscAttrs: netlink.QdiscAttrs{
+			LinkIndex: link.Attrs().Index,
+			Handle:    netlink.MakeHandle(0xffff, 0),
+			Parent:    netlink.HANDLE_CLSACT,
+		},
+		QdiscType: "clsact",
+	}
+	if err := netlink.QdiscAdd(qdisc); err != nil {
+		if os.IsExist(err) {
+			_ = netlink.QdiscDel(qdisc)
+			err = netlink.QdiscAdd(qdisc)
+		}
+
+		if err != nil {
+			return fmt.Errorf("cannot add clsact qdisc: %w", err)
+		}
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := netlink.QdiscDel(qdisc); err != nil {
+			return fmt.Errorf("QdiscDel: %w", err)
+		}
+		return nil
+	})
+
+	filterEgress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Handle:    netlink.MakeHandle(0, 1),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  0,
+		},
+		Fd:           c.bpf.bpfPrograms.TproxyWanEgress.FD(),
+		Name:         consts.AppName + "_egress",
+		DirectAction: true,
+	}
+
+	if err := netlink.FilterAdd(filterEgress); err != nil {
+		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+	}
+
+	filterIngress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0, 1),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  0,
+		},
+		Fd:           c.bpf.bpfPrograms.TproxyWanIngress.FD(),
+		Name:         consts.AppName + "_ingress",
+		DirectAction: true,
+	}
+
+	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	return nil
