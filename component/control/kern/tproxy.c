@@ -1887,52 +1887,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   return TC_ACT_OK;
 }
 
-// Get sockfd bind addr.
-SEC("kprobe/sys_bind")
-int src_pid_mapper(struct pt_regs *ctx) {
-  struct sockaddr_in *in = (struct sockaddr_in *)PT_REGS_PARM2(ctx);
-  struct sockaddr_in6 *in6 = NULL;
-  __kernel_sa_family_t family = 0;
-
-  int ret = bpf_core_read_user(&family, sizeof(family), &in->sin_family);
-  if (ret) {
-    if (ret == -EFAULT) {
-      bpf_printk("sys_bind: Failed to read data from memory. Maybe data is in "
-                 "swap space.",
-                 ret);
-    } else {
-      bpf_printk("sys_bind: %d", ret);
-    }
-    return 0;
-  }
-
-  struct ip_port_proto src_key;
-  __builtin_memset(&src_key, 0, sizeof(src_key));
-
-  if (family == AF_INET6) {
-    in6 = (struct sockaddr_in6 *)in;
-    in = NULL;
-    bpf_core_read_user(src_key.ip, sizeof(src_key.ip), &in6->sin6_addr);
-    bpf_core_read_user(&src_key.port, sizeof(src_key.port), &in6->sin6_port);
-  } else if (family == AF_INET) {
-    bpf_core_read_user(&src_key.ip[3], sizeof(src_key.ip[3]), &in->sin_addr);
-    src_key.ip[2] = bpf_htonl(0x0000ffff);
-    bpf_core_read_user(&src_key.port, sizeof(src_key.port), &in->sin_port);
-  } else {
-    bpf_printk("family: %d", family);
-    return 0;
-  }
-
-  __u32 pid = bpf_get_current_pid_tgid() >> 32;
-  if ((ret = bpf_map_update_elem(&src_pid_map, &src_key, &pid, BPF_ANY))) {
-    bpf_printk("socket_pid_mapper: failed update map: %d", ret);
-    return 0;
-  }
-  bpf_printk("socket_pid_mapper: %pI6:%u -> %u", src_key.ip,
-             bpf_ntohs(src_key.port), pid);
-  return 0;
-}
-
 static int __always_inline build_key_by_sk(struct sock *sk,
                                            struct ip_port_proto *src_key) {
 
@@ -1990,7 +1944,7 @@ static int __always_inline update_map_elem_by_sk(struct sock *sk) {
   struct pid_pname val;
   __builtin_memset(&val, 0, sizeof(struct pid_pname));
   val.pid = bpf_get_current_pid_tgid() >> 32;
-//  struct task_struct *t = (void *)bpf_get_current_task();
+  //  struct task_struct *t = (void *)bpf_get_current_task();
   if ((ret = bpf_get_current_comm(val.pname, sizeof(val.pname)))) {
     return ret;
   }
