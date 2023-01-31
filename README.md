@@ -14,6 +14,7 @@ Build:
 ```shell
 git clone https://github.com/v2rayA/dae.git
 cd dae
+git submodule update --init --recursive
 make
 ```
 

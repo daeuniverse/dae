@@ -1,6 +1,16 @@
 name: Release
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/*.yml"
   release:
     types: [ prereleased ]
   pull_request:
@@ -78,7 +88,9 @@ jobs:
           sudo apt-get update -y && sudo apt-get install -y clang llvm gcc-multilib
 
       - name: Get project dependencies
-        run: go mod download
+        run: |
+          git submodule update --init --recursive
+          go mod download
 
       - name: Build dae
         run: |
