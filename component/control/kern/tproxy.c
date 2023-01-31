@@ -6,10 +6,9 @@
 #include "headers/if_ether_defs.h"
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
-#include "headers/vmlinux.h" // Use "make ebpf" to generate.
+#include "headers/vmlinux.h"
 
 #include <asm-generic/errno-base.h>
-// #include <linux/bpf.h>
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
