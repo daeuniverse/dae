@@ -526,7 +526,7 @@ parse_transport(struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
         return -EFAULT;
       }
     } else {
-      bpf_printk("IP but not TCP/UDP packet: protocol is %u", iph->protocol);
+      // bpf_printk("IP but not TCP/UDP packet: protocol is %u", iph->protocol);
       return 1;
     }
     *ihl = iph->ihl;
