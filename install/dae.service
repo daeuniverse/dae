@@ -1,0 +1,16 @@
+[Unit]
+Description=v2rayA Service
+Documentation=https://github.com/v2rayA/dae
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+LimitNPROC=500
+LimitNOFILE=1000000
+ExecStart=/usr/bin/dae run -c /etc/dae/config.dae
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
