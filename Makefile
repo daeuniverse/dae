@@ -10,13 +10,7 @@ CLANG ?= clang
 STRIP ?= llvm-strip
 OUTPUT ?= dae
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
-GOARCH ?=
-
-ifneq ($(GOARCH),)
-	TARGET ?= $(GOARCH)
-else
-	TARGET ?= bpfel,bpfeb
-endif
+TARGET ?= bpfel,bpfeb
 
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
