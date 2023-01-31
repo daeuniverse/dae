@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/mzz2017/softwind/pool"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
@@ -117,10 +118,12 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			if err = sendPktWithHdr(resp, dest, lConn, lAddrPort); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
-			q := dnsMessage.Questions[0]
-			c.log.Debugf("UDP(DNS) %v <-[%v]-> Cache: %v %v",
-				lAddrPort.String(), outbound.Name, q.Name, q.Type,
-			)
+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
+				q := dnsMessage.Questions[0]
+				c.log.Debugf("UDP(DNS) %v <-[%v]-> Cache: %v %v",
+					lAddrPort.String(), outbound.Name, q.Name, q.Type,
+				)
+			}
 			return nil
 		} else {
 			c.log.Debugf("Modify dns target %v to upstream: %v", addrHdr.Dest.String(), c.dnsUpstream.String())
@@ -128,10 +131,13 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			// NOTICE: Routing was calculated in advance by the eBPF program.
 			dummyFrom = &addrHdr.Dest
 			dest = c.dnsUpstream
-			q := dnsMessage.Questions[0]
-			c.log.Debugf("UDP(DNS) %v <-[%v]-> %v: %v %v",
-				lAddrPort.String(), outbound.Name, dest.String(), q.Name, q.Type,
-			)
+
+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
+				q := dnsMessage.Questions[0]
+				c.log.Debugf("UDP(DNS) %v <-[%v]-> %v: %v %v",
+					lAddrPort.String(), outbound.Name, dest.String(), q.Name, q.Type,
+				)
+			}
 		}
 	} else {
 		// TODO: Set-up ip to domain mapping and show domain if possible.

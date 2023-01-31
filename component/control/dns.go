@@ -64,6 +64,9 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 }
 
 func (c *ControlPlane) LookupDnsRespCache(msg *dnsmessage.Message) (resp []byte) {
+	if len(msg.Questions) == 0 {
+		return nil
+	}
 	q := msg.Questions[0]
 	if msg.Response {
 		return nil
@@ -101,7 +104,7 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 	}
 
 	// Check healthy.
-	if !msg.Response || msg.RCode != dnsmessage.RCodeSuccess {
+	if !msg.Response || msg.RCode != dnsmessage.RCodeSuccess || len(msg.Questions) == 0 {
 		return data, nil
 	}
 	// Check req type.

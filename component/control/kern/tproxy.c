@@ -960,7 +960,7 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_ProcessName) {
-      if ((equal_ipv6_format(match_set->pname, _pname))){
+      if ((equal_ipv6_format(match_set->pname, _pname))) {
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_Final) {
@@ -1990,6 +1990,7 @@ static int __always_inline update_map_elem_by_sk(struct sock *sk) {
   struct pid_pname val;
   __builtin_memset(&val, 0, sizeof(struct pid_pname));
   val.pid = bpf_get_current_pid_tgid() >> 32;
+//  struct task_struct *t = (void *)bpf_get_current_task();
   if ((ret = bpf_get_current_comm(val.pname, sizeof(val.pname)))) {
     return ret;
   }
