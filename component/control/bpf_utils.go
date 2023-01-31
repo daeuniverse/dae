@@ -95,3 +95,37 @@ func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.B
 		return vKeys.Len(), nil
 	}
 }
+
+type bpfObjectsLan struct {
+	// NOTICE: Consider to update me if any program added.
+	TproxyEgress  *ebpf.Program `ebpf:"tproxy_egress"`
+	TproxyIngress *ebpf.Program `ebpf:"tproxy_ingress"`
+
+	bpfMaps
+}
+
+func AssignBpfPrograms(to *bpfObjects, from interface{}) {
+	vTo := reflect.Indirect(reflect.ValueOf(to))
+	vFrom := reflect.Indirect(reflect.ValueOf(from))
+	tFrom := vFrom.Type()
+	// programs
+	for i := 0; i < vFrom.NumField(); i++ {
+		fieldFrom := vFrom.Field(i)
+		structFieldFrom := tFrom.Field(i)
+		if structFieldFrom.Type != reflect.TypeOf(&ebpf.Program{}) {
+			continue
+		}
+		fieldTo := vTo.FieldByName(structFieldFrom.Name)
+		fieldTo.Set(fieldFrom)
+	}
+
+	// bpfMaps
+	vFrom = vFrom.FieldByName("bpfMaps")
+	tFrom = vFrom.Type()
+	for i := 0; i < vFrom.NumField(); i++ {
+		fieldFrom := vFrom.Field(i)
+		structFieldFrom := tFrom.Field(i)
+		fieldTo := vTo.FieldByName(structFieldFrom.Name)
+		fieldTo.Set(fieldFrom)
+	}
+}

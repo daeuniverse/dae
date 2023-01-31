@@ -50,7 +50,7 @@ func (b *RoutingMatcherBuilder) OutboundToId(outbound string) uint8 {
 		var ok bool
 		outboundId, ok = b.outboundName2Id[outbound]
 		if !ok {
-			b.err = fmt.Errorf("%v not in outboundName2Id", strconv.Quote(outbound))
+			b.err = fmt.Errorf("%v not defined in group", strconv.Quote(outbound))
 		}
 	}
 	return outboundId

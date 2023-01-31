@@ -38,6 +38,8 @@ import (
 type ControlPlane struct {
 	log *logrus.Logger
 
+	kernelVersion *internal.Version
+
 	// TODO: add mutex?
 	outbounds       []*outbound.DialerGroup
 	outboundName2Id map[string]uint8
@@ -64,6 +66,11 @@ func NewControlPlane(
 	checkUrl string,
 	checkInterval time.Duration,
 ) (c *ControlPlane, err error) {
+	kernelVersion, e := internal.KernelVersion()
+	if e != nil {
+		return nil, fmt.Errorf("failed to get kernel version: %w", e)
+	}
+
 	// Allow the current process to lock memory for eBPF resources.
 	if err = rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
@@ -73,14 +80,20 @@ func NewControlPlane(
 
 	// Load pre-compiled programs and maps into the kernel.
 	var bpf bpfObjects
+	var bpfLan bpfObjectsLan
 	var ProgramOptions ebpf.ProgramOptions
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		ProgramOptions = ebpf.ProgramOptions{
 			LogLevel: ebpf.LogLevelStats,
 		}
 	}
+	var obj interface{} = &bpf
+	if kernelVersion.Less(consts.FtraceFeatureVersion) {
+		// Trick. Replace the beams with rotten timbers.
+		obj = &bpfLan
+	}
 retryLoadBpf:
-	if err = loadBpfObjects(&bpf, &ebpf.CollectionOptions{
+	if err = loadBpfObjects(obj, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
@@ -110,6 +123,11 @@ retryLoadBpf:
 		}
 		return nil, fmt.Errorf("loading objects: %v", err)
 	}
+	if kernelVersion.Less(consts.FtraceFeatureVersion) {
+		// Reverse takeover.
+		AssignBpfPrograms(&bpf, &bpfLan)
+	}
+
 	// Write params.
 	if err = bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
@@ -235,6 +253,7 @@ retryLoadBpf:
 
 	return &ControlPlane{
 		log:                log,
+		kernelVersion:      &kernelVersion,
 		outbounds:          outbounds,
 		outboundName2Id:    outboundName2Id,
 		bpf:                &bpf,
@@ -369,20 +388,15 @@ func (c *ControlPlane) BindLan(ifname string) error {
 }
 
 func (c *ControlPlane) BindWan(ifname string) error {
+	if c.kernelVersion.Less(consts.FtraceFeatureVersion) {
+		// Not support ftrace (fentry/fexit).
+		// PID bypass needs it.
+		return fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", c.kernelVersion.String(), consts.FtraceFeatureVersion.String())
+	}
+
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
-	}
-
-	version, e := internal.KernelVersion()
-	if e != nil {
-		return fmt.Errorf("BindWan: failed to get kernel version: %w", e)
-	}
-	ftraceFeatureVersion := internal.Version{5, 5, 0}
-	if version.Less(ftraceFeatureVersion) {
-		// Not support ftrace (fentry/fexit).
-		// PID bypass needs it.
-		return fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v", version.String(), ftraceFeatureVersion.String())
 	}
 
 	// Set-up SrcPidMapper.

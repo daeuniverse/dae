@@ -5,6 +5,8 @@
 
 package consts
 
+import internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+
 const (
 	AppName    = "dae"
 	BpfPinRoot = "/sys/fs/bpf"
@@ -93,3 +95,5 @@ const (
 	IpVersion_6 IpVersion = 2
 	IpVersion_X IpVersion = 3
 )
+
+var FtraceFeatureVersion = internal.Version{5, 5, 0}
