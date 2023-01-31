@@ -48,6 +48,9 @@ group {
 
 routing {
     # See routing.md for full examples.
+    ip(1.1.1.1) && port(53) -> my_group
+    pname(firefox) && domain(ip.sb) -> direct
+    pname(curl) && domain(ip.sb) -> my_group
 
     ip(geoip:private) -> direct
     ip(geoip:cn) -> direct

@@ -194,6 +194,7 @@ enum __attribute__((packed)) MatchType {
   MatchType_L4Proto,
   MatchType_IpVersion,
   MatchType_Mac,
+  MatchType_ProcessName,
   MatchType_Final,
 };
 enum L4ProtoType {
@@ -228,6 +229,7 @@ struct match_set {
     struct port_range port_range;
     enum L4ProtoType l4proto_type;
     enum IpVersionType ip_version;
+    __u32 pname[TASK_COMM_LEN / 4];
   };
   enum MatchType type;
   bool not ;     // A subrule flag (this is not a match_set flag).
@@ -565,8 +567,8 @@ static __always_inline int get_tproxy_ip(__u8 ipversion, __u32 ifindex,
   return 0;
 }
 
-static __always_inline int ip_is_host(bool ipversion, __u32 ifindex, __be32 ip[4],
-                                      __be32 tproxy_ip[4]) {
+static __always_inline int ip_is_host(bool ipversion, __u32 ifindex,
+                                      __be32 ip[4], __be32 tproxy_ip[4]) {
   if (tproxy_ip) {
     int ret;
     if ((ret = get_tproxy_ip(ipversion, ifindex, tproxy_ip))) {
@@ -807,11 +809,11 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 // Do not use __always_inline here because this function is too heavy.
-static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
+static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
                    __be32 daddr[4], __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
-#define _from_localhost flag[2]
+#define _pname &flag[2]
 
   int ret;
 
@@ -957,6 +959,10 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
       if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
         good_subrule = true;
       }
+    } else if (match_set->type == MatchType_ProcessName) {
+      if ((equal_ipv6_format(match_set->pname, _pname))){
+        good_subrule = true;
+      }
     } else if (match_set->type == MatchType_Final) {
       // bpf_printk("CHECK: hit final");
       good_subrule = true;
@@ -1005,7 +1011,7 @@ static int routing(__u32 flag[3], void *l4_hdr, __be32 saddr[4],
   return -EPERM;
 #undef _l4proto_type
 #undef _ipversion_type
-#undef _from_localhost
+#undef _pname
 }
 
 // Do DNAT.
@@ -1027,7 +1033,6 @@ int tproxy_ingress(struct __sk_buff *skb) {
     bpf_printk("parse_transport: %d", ret);
     return TC_ACT_OK;
   }
-  
 
   // Backup for further use.
   __be16 ipv4_tot_len = 0;
@@ -1085,13 +1090,12 @@ int tproxy_ingress(struct __sk_buff *skb) {
     if (unlikely(tcp_state_syn)) {
       // New TCP connection.
       // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
-      __u32 flag[3] = {L4ProtoType_TCP}; // TCP
+      __u32 flag[6] = {L4ProtoType_TCP}; // TCP
       if (ipversion == 6) {
         flag[1] = IpVersionType_6;
       } else {
         flag[1] = IpVersionType_4;
       }
-      flag[2] = false;
       __be32 mac[4] = {
           0,
           0,
@@ -1159,13 +1163,12 @@ int tproxy_ingress(struct __sk_buff *skb) {
     new_hdr.port = udph.dest;
 
     // Routing. It decides if we redirect traffic to control plane.
-    __u32 flag[3] = {L4ProtoType_UDP};
+    __u32 flag[6] = {L4ProtoType_UDP};
     if (ipversion == 6) {
       flag[1] = IpVersionType_6;
     } else {
       flag[1] = IpVersionType_4;
     }
-    flag[2] = false;
     __be32 mac[4] = {
         0,
         0,
@@ -1259,7 +1262,6 @@ int tproxy_egress(struct __sk_buff *skb) {
   if (ret) {
     return TC_ACT_OK;
   }
-  
 
   // Parse saddr and daddr as ipv6 format.
   __be32 saddr[4];
@@ -1456,7 +1458,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   if (ret) {
     return TC_ACT_OK;
   }
-  
 
   __be16 sport;
   if (l4proto == IPPROTO_TCP) {
@@ -1566,13 +1567,15 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       if (unlikely(tcp_state_syn)) {
         // New TCP connection.
         // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
-        __u32 flag[3] = {L4ProtoType_TCP}; // TCP
+        __u32 flag[6] = {L4ProtoType_TCP}; // TCP
         if (ipversion == 6) {
           flag[1] = IpVersionType_6;
         } else {
           flag[1] = IpVersionType_4;
         }
-        flag[2] = true;
+        if (pid_pname) {
+          __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
+        }
         __be32 mac[4] = {
             0,
             0,
@@ -1646,13 +1649,15 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       new_hdr.port = udph.dest;
 
       // Routing. It decides if we redirect traffic to control plane.
-      __u32 flag[3] = {L4ProtoType_UDP};
+      __u32 flag[6] = {L4ProtoType_UDP};
       if (ipversion == 6) {
         flag[1] = IpVersionType_6;
       } else {
         flag[1] = IpVersionType_4;
       }
-      flag[2] = true;
+      if (pid_pname) {
+        __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
+      }
       __be32 mac[4] = {
           0,
           0,
@@ -1719,7 +1724,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   if (ret) {
     return TC_ACT_OK;
   }
-  
 
   // bpf_printk("bpf_ntohs(*(__u16 *)&ethh.h_source[4]): %u",
   //            bpf_ntohs(*(__u16 *)&ethh.h_source[4]));
@@ -1857,8 +1861,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // bpf_printk("should send to: %pI6:%u", tproxy_ip,
     // bpf_ntohs(*tproxy_port));
 
-    if ((ret =
-             rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip, true))) {
+    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip,
+                          true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }

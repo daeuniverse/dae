@@ -10,6 +10,8 @@ const (
 	BpfPinRoot = "/sys/fs/bpf"
 
 	AddrHdrSize = 20
+
+	TaskCommLen = 16
 )
 
 type ParamKey uint32
@@ -33,15 +35,16 @@ const (
 type RoutingType uint8
 
 const (
-	RoutingType_DomainSet RoutingType = iota
-	RoutingType_IpSet
-	RoutingType_SourceIpSet
-	RoutingType_Port
-	RoutingType_SourcePort
-	RoutingType_L4Proto
-	RoutingType_IpVersion
-	RoutingType_Mac
-	RoutingType_Final
+	MatchType_DomainSet RoutingType = iota
+	MatchType_IpSet
+	MatchType_SourceIpSet
+	MatchType_Port
+	MatchType_SourcePort
+	MatchType_L4Proto
+	MatchType_IpVersion
+	MatchType_Mac
+	MatchType_ProcessName
+	MatchType_Final
 )
 
 type OutboundIndex uint8

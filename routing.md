@@ -34,9 +34,6 @@ port(10080-30000) -> direct
 sport(38563) -> direct
 sport(10080-30000) -> direct
 
-# Source MAC rule
-mac('02:42:ac:11:00:02') -> direct
-
 # Level 4 protocol rule:
 l4proto(tcp) -> my_group
 l4proto(udp) -> direct
@@ -44,6 +41,12 @@ l4proto(udp) -> direct
 # IP version rule:
 ipversion(4) -> block
 ipversion(6) -> ipv6_group
+
+# Source MAC rule
+mac('02:42:ac:11:00:02') -> direct
+
+# Process Name rule (Only support local process)
+pname(curl) -> direct
 
 # Multiple domains rule
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group

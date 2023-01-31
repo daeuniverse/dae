@@ -11,14 +11,15 @@ const (
 	RoutingDomain_Suffix  = "suffix"
 	RoutingDomain_Regex   = "regex"
 
-	Function_Domain     = "domain"
-	Function_Ip         = "ip"
-	Function_SourceIp   = "sip"
-	Function_Port       = "port"
-	Function_SourcePort = "sport"
-	Function_Mac        = "mac"
-	Function_L4Proto    = "l4proto"
-	Function_IpVersion  = "ipversion"
+	Function_Domain      = "domain"
+	Function_Ip          = "ip"
+	Function_SourceIp    = "sip"
+	Function_Port        = "port"
+	Function_SourcePort  = "sport"
+	Function_L4Proto     = "l4proto"
+	Function_IpVersion   = "ipversion"
+	Function_Mac         = "mac"
+	Function_ProcessName = "pname"
 
 	Declaration_Final = "final"
 )

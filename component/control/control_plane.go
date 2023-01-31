@@ -213,7 +213,7 @@ retryLoadBpf:
 		}
 		log.Debugf("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), routingA.Final)
 	}
-	if err = routing.ApplyMatcherBuilder(builder, rules, routingA.Final); err != nil {
+	if err = routing.ApplyMatcherBuilder(log, builder, rules, routingA.Final); err != nil {
 		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
 	}
 	if err = builder.Build(); err != nil {

@@ -27,6 +27,7 @@ type MatcherBuilder interface {
 	AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string)
 	AddIpVersion(f *config_parser.Function, values consts.IpVersion, outbound string)
 	AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string)
+	AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string)
 	AddFinal(outbound string)
 	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string)
 	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string)
@@ -59,9 +60,15 @@ func ParsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
 	return cidrs, nil
 }
 
-func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingRule, finalOutbound string) (err error) {
+func ToProcessName(processName string) (procName [consts.TaskCommLen]byte) {
+	n := []byte(processName)
+	copy(procName[:], n)
+	return procName
+}
+
+func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*config_parser.RoutingRule, finalOutbound string) (err error) {
 	for _, rule := range rules {
-		logrus.Debugln("[rule]", rule.String(true))
+		log.Debugln("[rule]", rule.String(true))
 
 		// rule is like: domain(domain:baidu.com) && port(443) -> proxy
 		for iFunc, f := range rule.AndFunctions {
@@ -84,7 +91,7 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 					if f.Not {
 						symNot = "!"
 					}
-					logrus.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, outbound)
+					log.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, outbound)
 				}
 
 				builder.AddAnyBefore(f, key, paramValueGroup, outbound)
@@ -147,6 +154,15 @@ func ApplyMatcherBuilder(builder MatcherBuilder, rules []*config_parser.RoutingR
 						}
 					}
 					builder.AddIpVersion(f, ipVersion, outbound)
+				case consts.Function_ProcessName:
+					var procNames [][consts.TaskCommLen]byte
+					for _, v := range paramValueGroup {
+						if len([]byte(v)) > consts.TaskCommLen {
+							log.Infof(`pname routing: trim "%v" to "%v" because it is too long.`, v, string([]byte(v)[:consts.TaskCommLen]))
+						}
+						procNames = append(procNames, ToProcessName(v))
+					}
+					builder.AddProcessName(f, procNames, outbound)
 				default:
 					return fmt.Errorf("unsupported function name: %v", f.Name)
 				}
@@ -185,6 +201,8 @@ func (d *DefaultMatcherBuilder) AddSourceMac(f *config_parser.Function, values [
 }
 func (d *DefaultMatcherBuilder) AddFinal(outbound string) {}
 func (d *DefaultMatcherBuilder) AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string) {
+}
+func (d *DefaultMatcherBuilder) AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string) {
 }
 func (d *DefaultMatcherBuilder) AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string) {
 }
