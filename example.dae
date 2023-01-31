@@ -21,11 +21,12 @@ global {
     wan_interface: wlp5s0
 }
 
-# subscription will be resolved as nodes and merged into node pool below.
+# Subscriptions defined here will be resolved as nodes and merged as a part of global node pool.
 subscription {
     # Add your subscription links here.
 }
 
+# Nodes defined here will be merged as a part of global node pool.
 node {
     # Add your node links here.
     # Support socks5, http, https, ss, ssr, vmess, vless, trojan, trojan-go
@@ -35,19 +36,33 @@ node {
 
 group {
     my_group {
-        # Pass node links as input of lua script filter.
-        filter: name(keyword: HK, keyword: SH)
+        # Filter nodes from global node pool defined by subscription and node section above.
+        # Pass node names as input of keyword/regex filter.
+        filter: name(regex:'HK|SG|TW', keyword:'JP', keyword: SH) && !name(keyword:"GCP")
 
         # Randomly select a node from the group for every connection.
         # policy: random
 
+        # Select the node with min last latency from the group for every connection.
+        # policy: min
+
         # Select the first node from the group for every connection.
         policy: fixed(0)
+    }
+
+    group2 {
+        # Filter nodes from global node pool defined by subscription and node section above.
+        # Pass node names as input of keyword/regex filter.
+        filter: name(keyword: netflix)
+
+        # Select the node with min average of the last 10 latencies from the group for every connection.
+        policy: min_avg10
     }
 }
 
 routing {
     # See routing.md for full examples.
+
     ip(1.1.1.1) && port(53) -> my_group
     pname(firefox) && domain(ip.sb) -> direct # pname like firefox not works yet [ FIXME ]
     pname(curl) && domain(ip.sb) -> my_group

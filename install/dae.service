@@ -1,5 +1,5 @@
 [Unit]
-Description=v2rayA Service
+Description=dae Service
 Documentation=https://github.com/v2rayA/dae
 After=network.target
 Wants=network.target
