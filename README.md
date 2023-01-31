@@ -8,6 +8,26 @@ In order to improve the traffic diversion performance as much as possible, dae r
 
 As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely. In the initial conception, dae will serve soft router users first, and may also serve desktop users later.
 
+## Linux Kernel Version Requirement
+
+Use `uname -r` to check the kernel version on your machine.
+
+**Bind to LAN: >= 5.2**
+
+You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
+
+This feature requires the kernel version of machine on which dae install >= 5.2.
+
+Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
+
+**Bind to WAN: >= 5.5**
+
+You need bind dae to WAN interface, if you want dae to provide network service for local programs.
+
+This feature requires kernel version of the machine >= 5.5.
+
+Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
+
 ## Usage
 
 Build:

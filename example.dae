@@ -14,10 +14,12 @@ global {
     # The LAN interface to bind.
     # Use it if you only want to proxy LAN instead of localhost.
     # Now only support one interface.
+    # Require Linux kernel >= 5.2
     # lan_interface: docker0
 
     # The WAN interface to bind.
     # Use it if you want to proxy localhost.
+    # Require Linux kernel >= 5.5
     wan_interface: wlp5s0
 }
 
