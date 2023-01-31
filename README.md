@@ -32,5 +32,4 @@ See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
 1. Handle the case that nodes do not support UDP.
 1. L4Checksum problem.
 1. Config support list like: `wan_interface: [wlp5s0, eth0]`.
-1. Fix problem that node address cannot be domain.
 1. ...

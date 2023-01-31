@@ -10,6 +10,7 @@ CLANG ?= clang
 STRIP ?= llvm-strip
 OUTPUT ?= dae
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
+GOARCH ?= amd64
 
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
@@ -30,6 +31,7 @@ dae: ebpf
 ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP := $(STRIP)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
+ebpf: export BPF_GOARCH := $(GOARCH)
 ebpf:
 	unset GOOS && \
     unset GOARCH && \

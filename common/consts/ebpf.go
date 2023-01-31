@@ -19,6 +19,7 @@ const (
 	BigEndianTproxyPortKey
 	DisableL4TxChecksumKey
 	DisableL4RxChecksumKey
+	ControlPlaneOidKey
 )
 
 type DisableL4ChecksumPolicy uint32

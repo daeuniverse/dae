@@ -2,6 +2,7 @@
 .idea
 *.o
 *.tmp
-bpf_bpfeb.go
-bpf_bpfel.go
+bpf_bpfeb*.go
+bpf_bpfel*.go
 dae
+vmlinux.h

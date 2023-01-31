@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
+	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
@@ -116,6 +117,11 @@ retryLoadBpf:
 	if err = bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
+	// Write tproxy (control plane) PID.
+	if err = bpf.ParamMap.Update(consts.ControlPlaneOidKey, uint32(os.Getpid()), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+	// Write ip_proto to hdr_size map for IPv6 extension extraction.
 	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_HOPOPTS), int32(-1), ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
@@ -368,14 +374,89 @@ func (c *ControlPlane) BindWan(ifname string) error {
 		return err
 	}
 
-	//// Insert SrcPidMapper.
-	//sock, err := internal.OpenRawSock(link.Attrs().Index)
-	//if err != nil {
-	//	return fmt.Errorf("failed to open raw sock: %v: %w", ifname, err)
-	//}
-	//if err = unix.SetsockoptInt(sock, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, c.bpf.bpfPrograms.SrcPidMapper.FD()); err != nil {
-	//	return fmt.Errorf("failed to attach SrcPidMapper")
-	//}
+	version, e := internal.KernelVersion()
+	if e != nil {
+		return fmt.Errorf("BindWan: failed to get kernel version: %w", e)
+	}
+	ftraceFeatureVersion := internal.Version{5, 5, 0}
+	if version.Less(ftraceFeatureVersion) {
+		// Not support ftrace (fentry/fexit).
+		// PID bypass needs it.
+		return fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v", version.String(), ftraceFeatureVersion.String())
+	}
+
+	// Set-up SrcPidMapper.
+	// Attach programs to support pname routing.
+
+	// ipv4 tcp/udp: send
+	inetSendPrepare, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
+		Program: c.bpf.InetSendPrepare,
+	})
+	if err != nil {
+		return fmt.Errorf("AttachTracing InetSendPrepare: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := inetSendPrepare.Close(); err != nil {
+			return fmt.Errorf("inetSendPrepare.Close(): %w", err)
+		}
+		return nil
+	})
+
+	// ipv4 tcp/udp: listen
+	inetBind, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
+		Program: c.bpf.InetBind,
+	})
+	if err != nil {
+		return fmt.Errorf("AttachTracing InetBind: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := inetBind.Close(); err != nil {
+			return fmt.Errorf("inetBind.Close(): %w", err)
+		}
+		return nil
+	})
+
+	// ipv4 udp: sendto/sendmsg
+	inetAutoBind, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
+		Program: c.bpf.InetAutobind,
+	})
+	if err != nil {
+		return fmt.Errorf("AttachTracing InetAutobind: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := inetAutoBind.Close(); err != nil {
+			return fmt.Errorf("inetAutoBind.Close(): %w", err)
+		}
+		return nil
+	})
+
+	// ipv4 tcp: connect
+	tcpConnect, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
+		Program: c.bpf.TcpConnect,
+	})
+	if err != nil {
+		return fmt.Errorf("AttachTracing TcpConnect: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := tcpConnect.Close(); err != nil {
+			return fmt.Errorf("inetStreamConnect.Close(): %w", err)
+		}
+		return nil
+	})
+
+	// ipv6 tcp/udp: listen
+	inet6Bind, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
+		Program: c.bpf.Inet6Bind,
+	})
+	if err != nil {
+		return fmt.Errorf("AttachTracing Inet6Bind: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := inet6Bind.Close(); err != nil {
+			return fmt.Errorf("inet6Bind.Close(): %w", err)
+		}
+		return nil
+	})
 
 	// Insert qdisc and tc filters.
 	qdisc := &netlink.GenericQdisc{

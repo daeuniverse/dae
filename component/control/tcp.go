@@ -6,7 +6,6 @@
 package control
 
 import (
-	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/v2rayA/dae/common"
@@ -14,6 +13,7 @@ import (
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -57,11 +57,13 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 	defer rConn.Close()
 	if err = RelayTCP(lConn, rConn); err != nil {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil // ignore i/o timeout
+		switch {
+		case strings.HasSuffix(err.Error(), "write: broken pipe"),
+			strings.HasSuffix(err.Error(), "i/o timeout"):
+			return nil // ignore
+		default:
+			return fmt.Errorf("handleTCP relay error: %w", err)
 		}
-		return fmt.Errorf("handleTCP relay error: %w", err)
 	}
 	return nil
 }
