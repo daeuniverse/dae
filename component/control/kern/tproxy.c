@@ -43,7 +43,7 @@
 
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 128
-#define MAX_MATCH_SET_LEN (32 * 4)
+#define MAX_MATCH_SET_LEN (32 * 3)
 #define MAX_LPM_SIZE 20480
 //#define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
@@ -285,7 +285,8 @@ struct {
 
 // Functions:
 
-static __always_inline bool equal_ipv6_format(__be32 x[4], __be32 y[4]) {
+static __always_inline bool equal_ipv6_format(const __be32 x[4],
+                                              const __be32 y[4]) {
 #if __clang_major__ >= 10
   return ((__be64 *)x)[0] == ((__be64 *)y)[0] &&
          ((__be64 *)x)[1] == ((__be64 *)y)[1];
@@ -815,8 +816,9 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 // Do not use __always_inline here because this function is too heavy.
-static int routing(__u32 flag[7], void *l4_hdr, __be32 saddr[4],
-                   __be32 daddr[4], __be32 mac[4]) {
+static int routing(const __u32 flag[6], const void *l4_hdr,
+                   const __be32 saddr[4], const __be32 _daddr[4],
+                   const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
@@ -857,6 +859,7 @@ static int routing(__u32 flag[7], void *l4_hdr, __be32 saddr[4],
   };
 
   // Modify DNS upstream for routing.
+  __u32 daddr[4];
   if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
     struct ip_port *upstream =
         bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
@@ -865,6 +868,8 @@ static int routing(__u32 flag[7], void *l4_hdr, __be32 saddr[4],
     }
     h_dport = bpf_ntohs(upstream->port);
     __builtin_memcpy(daddr, upstream->ip, IPV6_BYTE_LENGTH);
+  } else {
+    __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
   }
   struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac, *lpm_key;
   lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
