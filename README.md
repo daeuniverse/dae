@@ -1,14 +1,33 @@
 # dae
 
-<img src="https://github.com/v2rayA/dae/blob/main/logo.png" border="0" width="20%">
+<img src="https://github.com/v2rayA/dae/blob/main/logo.png" border="0" width="25%">
 
 ***dae***, means goose, is a lightweight and high-performance transparent proxy solution.
 
 In order to improve the traffic diversion performance as much as possible, dae runs the transparent proxy and traffic diversion suite in the linux kernel by eBPF. Therefore, we have the opportunity to make the direct traffic bypass the forwarding by proxy application and achieve true direct traffic through. Under such a magic trick, there is almost no performance loss and additional resource consumption for direct traffic.
 
-As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely. In the initial conception, dae will serve soft router users first, and may also serve desktop users later.
+As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely.
 
-## Linux Kernel Version Requirement
+## Usage
+
+Build:
+```shell
+git clone https://github.com/v2rayA/dae.git
+cd dae
+git submodule update --init
+make
+```
+
+Run:
+```shell
+./dae run -c example.dae
+```
+
+See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
+
+## Linux Kernel Requirement
+
+### Kernel Version
 
 Use `uname -r` to check the kernel version on your machine.
 
@@ -28,22 +47,38 @@ This feature requires kernel version of the machine >= 5.5.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
-## Usage
+### Kernel Configuration Item
 
-Build:
+Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
+
+Use following commands to check the kernel configuration items on your machine.
+
 ```shell
-git clone https://github.com/v2rayA/dae.git
-cd dae
-git submodule update --init --recursive
-make
+zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)
 ```
 
-Run:
-```shell
-./dae run -c example.dae
+**Bind to LAN**
+
+```
+CONFIG_DEBUG_INFO_BTF
 ```
 
-See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
+**Bind to WAN**:
+
+```
+CONFIG_DEBUG_INFO_BTF
+
+CONFIG_FUNCTION_TRACER
+CONFIG_FUNCTION_GRAPH_TRACER
+CONFIG_STACK_TRACER
+CONFIG_DYNAMIC_FTRACE
+```
+
+Check them using command like:
+
+```shell
+(zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)) | grep -E '(CONFIG_DEBUG_INFO_BTF|CONFIG_STACK_TRACER|CONFIG_FUNCTION_TRACER|CONFIG_FUNCTION_GRAPH_TRACER|CONFIG_STACK_TRACER|CONFIG_DYNAMIC_FTRACE)='
+```
 
 ## TODO
 
