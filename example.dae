@@ -11,14 +11,13 @@ global {
     # The request to dns upstream follows routing defined below.
     dns_upstream: '1.1.1.1:53'
 
-    # The LAN interface to bind.
-    # Use it if you only want to proxy LAN instead of localhost.
-    # Now only support one interface.
-    # Require Linux kernel >= 5.2
+    # The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.
+    # Multiple interfaces split by ",".
+    # Require Linux kernel >= 5.2.
     # lan_interface: docker0
 
-    # The WAN interface to bind.
-    # Use it if you want to proxy localhost.
+    # The WAN interface to bind. Use it if you want to proxy localhost
+    # Multiple interfaces split by ","
     # Require Linux kernel >= 5.5
     wan_interface: wlp5s0
 }

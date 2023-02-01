@@ -11,6 +11,7 @@ import (
 	"github.com/v2rayA/dae/pkg/logger"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -81,13 +82,19 @@ func Run() (err error) {
 
 	// Bind to links.
 	if param.Global.LanInterface != "" {
-		if err = t.BindLan(param.Global.LanInterface); err != nil {
-			return fmt.Errorf("BindLan: %v: %w", param.Global.LanInterface, err)
+		ifnames := strings.Split(param.Global.LanInterface, ",")
+		for _, ifname := range ifnames {
+			if err = t.BindLan(ifname); err != nil {
+				return fmt.Errorf("BindLan: %v: %w", ifname, err)
+			}
 		}
 	}
 	if param.Global.WanInterface != "" {
-		if err = t.BindWan(param.Global.WanInterface); err != nil {
-			return fmt.Errorf("BindWan: %v: %w", param.Global.WanInterface, err)
+		ifnames := strings.Split(param.Global.WanInterface, ",")
+		for _, ifname := range ifnames {
+			if err = t.BindWan(ifname); err != nil {
+				return fmt.Errorf("BindWan: %v: %w", ifname, err)
+			}
 		}
 	}
 

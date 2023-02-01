@@ -76,8 +76,8 @@ github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/
 github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO+kdMU+MU=
 github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
-github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230129030458-867b50f6cc67 h1:BKYTwtvnzg/QQG5uQmWNHDu07KmkrfdpZ98pAOvZf0g=
-github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230129030458-867b50f6cc67/go.mod h1:JiTWeZybOkBfCqv/fy5jbFhXTxuLlyrI76gRNazz2sU=
+github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1 h1:Ke91ZtZItOO8/SK8nhZ1tXfXcUxj4Meq5pET/L9bHII=
+github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1/go.mod h1:JiTWeZybOkBfCqv/fy5jbFhXTxuLlyrI76gRNazz2sU=
 github.com/v2rayA/shadowsocksR v1.0.4 h1:65Ltdy+I/DnlkQTJj+R+X85zhZ63ORE1Roy+agAcF/s=
 github.com/v2rayA/shadowsocksR v1.0.4/go.mod h1:CyOhDLy8/AKedsi16xRYAMmkxSCH1ukJPaacaTdRfQg=
 github.com/vishvananda/netlink v1.1.0 h1:1iyaYNBLmP6L0220aDnYQpo1QEV4t4hJ+xEEhhJH8j0=

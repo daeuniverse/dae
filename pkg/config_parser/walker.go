@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae-config-dist/go/dae_config"
 	"strconv"
+	"strings"
 )
 
 type Walker struct {
@@ -132,15 +133,29 @@ func (w *Walker) declarationFunctionVerifier(function *Function, ctx interface{}
 	return true
 }
 
+type literalExpressionParser struct {
+	literals []string
+}
+
+func (p *literalExpressionParser) Parse(ctx *dae_config.LiteralExpressionContext) {
+	children := ctx.GetChildren()
+	p.literals = append(p.literals, getValueFromLiteral(children[0].(*dae_config.LiteralContext)))
+	if len(children) == 1 {
+		return
+	}
+	p.Parse(children[2].(*dae_config.LiteralExpressionContext))
+}
+
 func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 	children := ctx.GetChildren()
 	key := children[0].(*antlr.TerminalNodeImpl).GetText()
 	switch valueCtx := children[2].(type) {
-	case *dae_config.LiteralContext:
-		value := getValueFromLiteral(valueCtx)
+	case *dae_config.LiteralExpressionContext:
+		parser := literalExpressionParser{}
+		parser.Parse(valueCtx)
 		return &Param{
 			Key: key,
-			Val: value,
+			Val: strings.Join(parser.literals, ","), // TODO: Do we just check grammar and trim spaces and put it back?
 		}
 	case *dae_config.FunctionPrototypeExpressionContext:
 		andFunctions := w.parseFunctionPrototypeExpression(valueCtx, w.declarationFunctionVerifier)
