@@ -15,6 +15,15 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+// #define __DEBUG_ROUTING
+// #define __PRINT_ROUTING_RESULT
+// #define __REMOVE_BPF_PRINTK
+
+#ifdef __REMOVE_BPF_PRINTK
+#undef bpf_printk
+#define bpf_printk(...) (void)0
+#endif
+
 // #define likely(x) x
 // #define unlikely(x) x
 #define likely(x) __builtin_expect((x), 1)
@@ -899,18 +908,24 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
     }
     if (bad_rule || good_subrule) {
       key = match_set->type;
-      // bpf_printk("key(match_set->type): %llu", key);
-      // bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", bad_rule,
-      //            good_subrule);
+#ifdef __DEBUG_ROUTING
+      bpf_printk("key(match_set->type): %llu", key);
+      bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", bad_rule,
+                 good_subrule);
+#endif
       goto before_next_loop;
     }
     key = match_set->type;
-    // bpf_printk("key(match_set->type): %llu", key);
+#ifdef __DEBUG_ROUTING
+    bpf_printk("key(match_set->type): %llu", key);
+#endif
     if ((lpm_key = bpf_map_lookup_elem(&lpm_key_map, &key))) {
-      // bpf_printk(
-      //     "CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
-      //     match_set->type, match_set->not, match_set->outbound);
-      // bpf_printk("\tip: %pI6", lpm_key->data);
+#ifdef __DEBUG_ROUTING
+      bpf_printk(
+          "CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
+          match_set->type, match_set->not, match_set->outbound);
+      bpf_printk("\tip: %pI6", lpm_key->data);
+#endif
       lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
       if (unlikely(!lpm)) {
         return -EFAULT;
@@ -920,30 +935,33 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
         good_subrule = true;
       }
     } else if ((p_u16 = bpf_map_lookup_elem(&h_port_map, &key))) {
-      // bpf_printk(
-      //     "CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
-      //     match_set->type, match_set->not, match_set->outbound);
-      // bpf_printk("\tport: %u, range: [%u, %u]", *p_u16,
-      //            match_set->port_range.port_start,
-      //            match_set->port_range.port_end);
+#ifdef __DEBUG_ROUTING
+      bpf_printk(
+          "CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
+          match_set->type, match_set->not, match_set->outbound);
+      bpf_printk("\tport: %u, range: [%u, %u]", *p_u16,
+                 match_set->port_range.port_start,
+                 match_set->port_range.port_end);
+#endif
       if (*p_u16 >= match_set->port_range.port_start &&
           *p_u16 <= match_set->port_range.port_end) {
         good_subrule = true;
       }
     } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map, &key))) {
-      // bpf_printk("CHECK: l4proto_ipversion_map, match_set->type: %u, not:
-      // %d,"
-      //            "outbound: %u",
-      //            match_set->type, match_set->not, match_set->outbound);
+#ifdef __DEBUG_ROUTING
+      bpf_printk("CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d, "
+                 "outbound: %u",
+                 match_set->type, match_set->not, match_set->outbound);
+#endif
       if (*p_u32 & match_set->__value) {
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_DomainSet) {
-      // bpf_printk("CHECK: domain, match_set->type: %u, not: %d, "
-      //            "outbound: %u",
-      //            match_set->type, match_set->not, match_set->outbound);
-      // Bottleneck of insns limit.
-      // We fixed it by invoking bpf_map_lookup_elem here.
+#ifdef __DEBUG_ROUTING
+      bpf_printk("CHECK: domain, match_set->type: %u, not: %d, "
+                 "outbound: %u",
+                 match_set->type, match_set->not, match_set->outbound);
+#endif
 
       // Get domain routing bitmap.
       domain_routing = bpf_map_lookup_elem(&domain_routing_map, daddr);
@@ -961,17 +979,23 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_Final) {
-      // bpf_printk("CHECK: hit final");
+#ifdef __DEBUG_ROUTING
+      bpf_printk("CHECK: hit final");
+#endif
       good_subrule = true;
     } else {
-      // bpf_printk("CHECK: <unknown>, match_set->type: %u, not: %d, "
-      //            "outbound: %u",
-      //            match_set->type, match_set->not, match_set->outbound);
+#ifdef __DEBUG_ROUTING
+      bpf_printk("CHECK: <unknown>, match_set->type: %u, not: %d, "
+                 "outbound: %u",
+                 match_set->type, match_set->not, match_set->outbound);
+#endif
       return -EINVAL;
     }
 
   before_next_loop:
-    // bpf_printk("good_subrule: %d, bad_rule: %d", good_subrule, bad_rule);
+#ifdef __DEBUG_ROUTING
+    bpf_printk("good_subrule: %d, bad_rule: %d", good_subrule, bad_rule);
+#endif
     if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
       // This match_set reaches the end of subrule.
       // We are now at end of rule, or next match_set belongs to another
@@ -985,14 +1009,18 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
       // Reset good_subrule.
       good_subrule = false;
     }
-    // bpf_printk("_bad_rule: %d", bad_rule);
+#ifdef __DEBUG_ROUTING
+    bpf_printk("_bad_rule: %d", bad_rule);
+#endif
     if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
         OUTBOUND_LOGICAL_MASK) {
       // Tail of a rule (line).
       // Decide whether to hit.
       if (!bad_rule) {
-        // bpf_printk("MATCHED: match_set->type: %u, match_set->not: %d",
-        //            match_set->type, match_set->not );
+#ifdef __DEBUG_ROUTING
+        bpf_printk("MATCHED: match_set->type: %u, match_set->not: %d",
+                   match_set->type, match_set->not );
+#endif
         if (match_set->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
             _l4proto_type == L4ProtoType_UDP) {
           // DNS packet should go through control plane.
@@ -1106,10 +1134,11 @@ int tproxy_ingress(struct __sk_buff *skb) {
       }
 
       outbound = ret;
-
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
       // Print only new connection.
-      // bpf_printk("tcp(lan): outbound: %u, %pI6:%u", outbound, daddr,
-      //            bpf_ntohs(key_src.port));
+      bpf_printk("tcp(lan): outbound: %u, %pI6:%u", outbound, daddr,
+                 bpf_ntohs(key_src.port));
+#endif
     } else {
       // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
       // The TCP connection exists.
@@ -1178,8 +1207,11 @@ int tproxy_ingress(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     }
     new_hdr.outbound = ret;
-    // bpf_printk("udp(lan): outbound: %u, %pI6:%u", new_hdr.outbound, daddr,
-    //            bpf_ntohs(new_hdr.port));
+
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+    bpf_printk("udp(lan): outbound: %u, %pI6:%u", new_hdr.outbound, daddr,
+               bpf_ntohs(new_hdr.port));
+#endif
 
     if (new_hdr.outbound == OUTBOUND_DIRECT) {
       return TC_ACT_OK;
@@ -1590,9 +1622,11 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
         outbound = ret;
 
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
         // Print only new connection.
-        // bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound, daddr,
-        //            bpf_ntohs(key_src.port));
+        bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound, daddr,
+                   bpf_ntohs(key_src.port));
+#endif
       } else {
         // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
         // The TCP connection exists.
@@ -1670,8 +1704,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
       }
       new_hdr.outbound = ret;
-      // bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound, daddr,
-      //            bpf_ntohs(new_hdr.port));
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+      bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound, daddr,
+                 bpf_ntohs(new_hdr.port));
+#endif
 
       if (new_hdr.outbound == OUTBOUND_DIRECT) {
         return TC_ACT_OK;
