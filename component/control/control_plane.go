@@ -65,6 +65,7 @@ func NewControlPlane(
 	dnsUpstream string,
 	checkUrl string,
 	checkInterval time.Duration,
+	onlyBindLanInterface bool,
 ) (c *ControlPlane, err error) {
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -80,7 +81,6 @@ func NewControlPlane(
 
 	// Load pre-compiled programs and maps into the kernel.
 	var bpf bpfObjects
-	var bpfLan bpfObjectsLan
 	var ProgramOptions ebpf.ProgramOptions
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		ProgramOptions = ebpf.ProgramOptions{
@@ -88,9 +88,9 @@ func NewControlPlane(
 		}
 	}
 	var obj interface{} = &bpf
-	if kernelVersion.Less(consts.FtraceFeatureVersion) {
+	if kernelVersion.Less(consts.FtraceFeatureVersion) || onlyBindLanInterface {
 		// Trick. Replace the beams with rotten timbers.
-		obj = &bpfLan
+		obj = &bpfObjectsLan{}
 	}
 retryLoadBpf:
 	if err = loadBpfObjects(obj, &ebpf.CollectionOptions{
@@ -123,9 +123,9 @@ retryLoadBpf:
 		}
 		return nil, fmt.Errorf("loading objects: %v", err)
 	}
-	if kernelVersion.Less(consts.FtraceFeatureVersion) {
+	if _, ok := obj.(*bpfObjects); !ok {
 		// Reverse takeover.
-		AssignBpfObjects(&bpf, &bpfLan)
+		AssignBpfObjects(&bpf, obj)
 	}
 
 	// Write params.

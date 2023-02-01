@@ -56,7 +56,12 @@ func Run() (err error) {
 		nodeList = append(nodeList, nodes...)
 	}
 
+	if param.Global.LanInterface == "" && param.Global.WanInterface == "" {
+		return fmt.Errorf("LanInterface and WanInterface cannot both be empty")
+	}
+
 	// New ControlPlane.
+	onlyBindLanInterface := param.Global.WanInterface == ""
 	t, err := control.NewControlPlane(
 		log,
 		nodeList,
@@ -65,15 +70,13 @@ func Run() (err error) {
 		param.Global.DnsUpstream,
 		param.Global.CheckUrl,
 		param.Global.CheckInterval,
+		onlyBindLanInterface,
 	)
 	if err != nil {
 		return err
 	}
 
 	// Bind to links.
-	if param.Global.LanInterface == "" && param.Global.WanInterface == "" {
-		return fmt.Errorf("LanInterface and WanInterface cannot both be empty")
-	}
 	if param.Global.LanInterface != "" {
 		if err = t.BindLan(param.Global.LanInterface); err != nil {
 			return fmt.Errorf("BindLan: %v: %w", param.Global.LanInterface, err)
