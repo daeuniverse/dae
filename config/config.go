@@ -17,8 +17,8 @@ type Global struct {
 	CheckUrl      string        `mapstructure:"check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
 	CheckInterval time.Duration `mapstructure:"check_interval" default:"15s"`
 	DnsUpstream   string        `mapstructure:"dns_upstream" default:"1.1.1.1:53"`
-	LanInterface  string        `mapstructure:"lan_interface"`
-	WanInterface  string        `mapstructure:"wan_interface"`
+	LanInterface  []string      `mapstructure:"lan_interface"`
+	WanInterface  []string      `mapstructure:"wan_interface"`
 }
 
 type Group struct {

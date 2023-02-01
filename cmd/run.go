@@ -11,7 +11,6 @@ import (
 	"github.com/v2rayA/dae/pkg/logger"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 )
 
@@ -60,12 +59,12 @@ func Run() (err error) {
 		nodeList = append(nodeList, nodes...)
 	}
 
-	if param.Global.LanInterface == "" && param.Global.WanInterface == "" {
+	if len(param.Global.LanInterface) == 0 && len(param.Global.WanInterface) == 0 {
 		return fmt.Errorf("LanInterface and WanInterface cannot both be empty")
 	}
 
 	// New ControlPlane.
-	onlyBindLanInterface := param.Global.WanInterface == ""
+	onlyBindLanInterface := len(param.Global.WanInterface) == 0
 	t, err := control.NewControlPlane(
 		log,
 		nodeList,
@@ -81,20 +80,14 @@ func Run() (err error) {
 	}
 
 	// Bind to links.
-	if param.Global.LanInterface != "" {
-		ifnames := strings.Split(param.Global.LanInterface, ",")
-		for _, ifname := range ifnames {
-			if err = t.BindLan(ifname); err != nil {
-				return fmt.Errorf("BindLan: %v: %w", ifname, err)
-			}
+	for _, ifname := range param.Global.LanInterface {
+		if err = t.BindLan(ifname); err != nil {
+			return fmt.Errorf("BindLan: %v: %w", ifname, err)
 		}
 	}
-	if param.Global.WanInterface != "" {
-		ifnames := strings.Split(param.Global.WanInterface, ",")
-		for _, ifname := range ifnames {
-			if err = t.BindWan(ifname); err != nil {
-				return fmt.Errorf("BindWan: %v: %w", ifname, err)
-			}
+	for _, ifname := range param.Global.WanInterface {
+		if err = t.BindWan(ifname); err != nil {
+			return fmt.Errorf("BindWan: %v: %w", ifname, err)
 		}
 	}
 

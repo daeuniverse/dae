@@ -111,10 +111,18 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				}
 			} else {
 				// String value.
-				if field.Val.Kind() == reflect.Interface {
+				switch field.Val.Kind() {
+				case reflect.Interface:
 					// Field is interface{}, we can assign.
 					field.Val.Set(reflect.ValueOf(itemVal.Val))
-				} else {
+				case reflect.Slice:
+					// Field is not interface{}, we can decode.
+					vPointerNew := reflect.New(field.Val.Type().Elem())
+					if !common.FuzzyDecode(vPointerNew.Interface(), itemVal.Val) {
+						return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().Elem().String())
+					}
+					field.Val.Set(reflect.Append(field.Val, vPointerNew.Elem()))
+				default:
 					// Field is not interface{}, we can decode.
 					if !common.FuzzyDecode(field.Val.Addr().Interface(), itemVal.Val) {
 						return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().String())
