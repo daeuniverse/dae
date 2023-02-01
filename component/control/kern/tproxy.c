@@ -1548,6 +1548,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       if ((skb->mark & 0x80) == 0x80) {
         bpf_printk("No pid_pname found. But it should not happen: %pI6:%u (%u)",
                    saddr, bpf_ntohs(sport), l4proto);
+        return TC_ACT_OK;
       }
     }
 
