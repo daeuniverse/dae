@@ -98,8 +98,24 @@ func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.B
 
 type bpfObjectsLan struct {
 	// NOTICE: Consider to update me if any program added.
+	//bpfPrograms
 	TproxyEgress  *ebpf.Program `ebpf:"tproxy_egress"`
 	TproxyIngress *ebpf.Program `ebpf:"tproxy_ingress"`
+
+	bpfMaps
+}
+
+type bpfObjectsWan struct {
+	// NOTICE: Consider to update me if any program added.
+	//bpfPrograms
+	Inet6Bind        *ebpf.Program `ebpf:"inet6_bind"`
+	InetAutobind     *ebpf.Program `ebpf:"inet_autobind"`
+	InetBind         *ebpf.Program `ebpf:"inet_bind"`
+	InetRelease      *ebpf.Program `ebpf:"inet_release"`
+	InetSendPrepare  *ebpf.Program `ebpf:"inet_send_prepare"`
+	TcpConnect       *ebpf.Program `ebpf:"tcp_connect"`
+	TproxyWanEgress  *ebpf.Program `ebpf:"tproxy_wan_egress"`
+	TproxyWanIngress *ebpf.Program `ebpf:"tproxy_wan_ingress"`
 
 	bpfMaps
 }

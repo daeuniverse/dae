@@ -64,7 +64,8 @@ func Run() (err error) {
 	}
 
 	// New ControlPlane.
-	onlyBindLanInterface := len(param.Global.WanInterface) == 0
+	bindLan := len(param.Global.LanInterface) != 0
+	bindWan := len(param.Global.WanInterface) != 0
 	t, err := control.NewControlPlane(
 		log,
 		nodeList,
@@ -73,7 +74,8 @@ func Run() (err error) {
 		param.Global.DnsUpstream,
 		param.Global.CheckUrl,
 		param.Global.CheckInterval,
-		onlyBindLanInterface,
+		bindLan,
+		bindWan,
 	)
 	if err != nil {
 		return err

@@ -65,11 +65,20 @@ func NewControlPlane(
 	dnsUpstream string,
 	checkUrl string,
 	checkInterval time.Duration,
-	onlyBindLanInterface bool,
+	bindLan bool,
+	bindWan bool,
 ) (c *ControlPlane, err error) {
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
 		return nil, fmt.Errorf("failed to get kernel version: %w", e)
+	}
+	if kernelVersion.Less(consts.BasicFeatureVersion) {
+		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v", c.kernelVersion.String(), consts.BasicFeatureVersion.String())
+	}
+	if bindWan && kernelVersion.Less(consts.FtraceFeatureVersion) {
+		// Not support ftrace (fentry/fexit).
+		// PID bypass needs it.
+		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", c.kernelVersion.String(), consts.FtraceFeatureVersion.String())
 	}
 
 	// Allow the current process to lock memory for eBPF resources.
@@ -87,10 +96,13 @@ func NewControlPlane(
 			LogLevel: ebpf.LogLevelStats,
 		}
 	}
-	var obj interface{} = &bpf
-	if kernelVersion.Less(consts.FtraceFeatureVersion) || onlyBindLanInterface {
+	var obj interface{} = &bpf // Bind both LAN and WAN.
+	if bindLan && !bindWan {
 		// Trick. Replace the beams with rotten timbers.
 		obj = &bpfObjectsLan{}
+	} else if !bindLan && bindWan {
+		// Trick. Replace the beams with rotten timbers.
+		obj = &bpfObjectsWan{}
 	}
 retryLoadBpf:
 	if err = loadBpfObjects(obj, &ebpf.CollectionOptions{
@@ -388,12 +400,6 @@ func (c *ControlPlane) BindLan(ifname string) error {
 }
 
 func (c *ControlPlane) BindWan(ifname string) error {
-	if c.kernelVersion.Less(consts.FtraceFeatureVersion) {
-		// Not support ftrace (fentry/fexit).
-		// PID bypass needs it.
-		return fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", c.kernelVersion.String(), consts.FtraceFeatureVersion.String())
-	}
-
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err

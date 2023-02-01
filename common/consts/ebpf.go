@@ -96,4 +96,5 @@ const (
 	IpVersion_X IpVersion = 3
 )
 
+var BasicFeatureVersion = internal.Version{5, 2, 0}
 var FtraceFeatureVersion = internal.Version{5, 5, 0}
