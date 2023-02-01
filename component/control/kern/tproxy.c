@@ -43,7 +43,7 @@
 
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 128
-#define MAX_MATCH_SET_LEN (32 * 3)
+#define MAX_MATCH_SET_LEN (32 * 4)
 #define MAX_LPM_SIZE 20480
 //#define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
@@ -815,11 +815,12 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 // Do not use __always_inline here because this function is too heavy.
-static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
+static int routing(__u32 flag[7], void *l4_hdr, __be32 saddr[4],
                    __be32 daddr[4], __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
+#define _is_wan flag[2]
 
   int ret;
 
@@ -883,10 +884,13 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
            bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_saddr, BPF_ANY))) {
     return ret;
   };
-  key = MatchType_Mac;
-  if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY))) {
-    return ret;
-  };
+  if (!_is_wan) {
+    key = MatchType_Mac;
+    if ((ret =
+             bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY))) {
+      return ret;
+    };
+  }
 
   struct map_lpm_type *lpm;
   struct match_set *match_set;
@@ -907,8 +911,8 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
       return -EFAULT;
     }
     if (bad_rule || good_subrule) {
-      key = match_set->type;
 #ifdef __DEBUG_ROUTING
+      key = match_set->type;
       bpf_printk("key(match_set->type): %llu", key);
       bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", bad_rule,
                  good_subrule);
@@ -974,7 +978,7 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
       if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
         good_subrule = true;
       }
-    } else if (match_set->type == MatchType_ProcessName) {
+    } else if (_is_wan && match_set->type == MatchType_ProcessName) {
       if ((equal_ipv6_format(match_set->pname, _pname))) {
         good_subrule = true;
       }
@@ -1037,6 +1041,7 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
 #undef _l4proto_type
 #undef _ipversion_type
 #undef _pname
+#undef _is_wan
 }
 
 // Do DNAT.

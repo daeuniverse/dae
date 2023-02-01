@@ -17,7 +17,7 @@ sudo tc filter del dev $wan ingress
 sudo tc filter del dev $wan egress
 sudo tc filter add dev $lan ingress bpf direct-action obj foo.o sec tc/ingress
 sudo tc filter add dev $lan egress bpf direct-action obj foo.o sec tc/egress
-sudo tc filter add dev $wan ingress bpf direct-action obj foo.o sec tc/wan_ingress
-sudo tc filter add dev $wan egress bpf direct-action obj foo.o sec tc/wan_egress
+# sudo tc filter add dev $wan ingress bpf direct-action obj foo.o sec tc/wan_ingress
+# sudo tc filter add dev $wan egress bpf direct-action obj foo.o sec tc/wan_egress
 
 exit 0
