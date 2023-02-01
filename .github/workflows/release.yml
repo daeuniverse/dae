@@ -120,7 +120,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-          path: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
+          path: build/*
 
       - name: Upload files to GitHub release
         uses: svenstaro/upload-release-action@v2

@@ -285,7 +285,8 @@ struct {
 
 // Functions:
 
-static __always_inline bool equal_ipv6_format(__be32 x[4], __be32 y[4]) {
+static __always_inline bool equal_ipv6_format(const __be32 x[4],
+                                              const __be32 y[4]) {
 #if __clang_major__ >= 10
   return ((__be64 *)x)[0] == ((__be64 *)y)[0] &&
          ((__be64 *)x)[1] == ((__be64 *)y)[1];
@@ -417,7 +418,7 @@ static __always_inline int rewrite_port(struct __sk_buff *skb, __u8 proto,
   return 0;
 }
 
-static __always_inline int handle_ipv6_extensions(struct __sk_buff *skb,
+static __always_inline int handle_ipv6_extensions(const struct __sk_buff *skb,
                                                   __u32 offset, __u32 hdr,
                                                   struct tcphdr *tcph,
                                                   struct udphdr *udph,
@@ -460,6 +461,7 @@ static __always_inline int handle_ipv6_extensions(struct __sk_buff *skb,
     case -2:
       *l4proto = hdr;
       if (hdr == IPPROTO_TCP) {
+        __builtin_memset(tcph, 0, sizeof(struct udphdr));
         // Upper layer;
         if ((ret = bpf_skb_load_bytes(skb, offset, tcph,
                                       sizeof(struct tcphdr)))) {
@@ -467,6 +469,7 @@ static __always_inline int handle_ipv6_extensions(struct __sk_buff *skb,
           return -EFAULT;
         }
       } else if (hdr == IPPROTO_UDP) {
+        __builtin_memset(tcph, 0, sizeof(struct tcphdr));
         // Upper layer;
         if ((ret = bpf_skb_load_bytes(skb, offset, udph,
                                       sizeof(struct udphdr)))) {
@@ -489,9 +492,10 @@ static __always_inline int handle_ipv6_extensions(struct __sk_buff *skb,
 }
 
 static __always_inline int
-parse_transport(struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
-                struct ipv6hdr *ipv6h, struct tcphdr *tcph, struct udphdr *udph,
-                __u8 *ihl, __u8 *ipversion, __u8 *l4proto) {
+parse_transport(const struct __sk_buff *skb, struct ethhdr *ethh,
+                struct iphdr *iph, struct ipv6hdr *ipv6h, struct tcphdr *tcph,
+                struct udphdr *udph, __u8 *ihl, __u8 *ipversion,
+                __u8 *l4proto) {
 
   __u32 offset = 0;
   int ret = bpf_skb_load_bytes(skb, offset, ethh, sizeof(struct ethhdr));
@@ -502,10 +506,6 @@ parse_transport(struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
   // Skip ethhdr for next hdr.
   offset += sizeof(struct ethhdr);
 
-  __builtin_memset(iph, 0, sizeof(struct iphdr));
-  __builtin_memset(ipv6h, 0, sizeof(struct ipv6hdr));
-  __builtin_memset(tcph, 0, sizeof(struct tcphdr));
-  __builtin_memset(udph, 0, sizeof(struct udphdr));
   *ihl = 0;
   *ipversion = 0;
   *l4proto = 0;
@@ -513,6 +513,7 @@ parse_transport(struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
   // bpf_printk("parse_transport: h_proto: %u ? %u %u", eth->h_proto,
   //            bpf_htons(ETH_P_IP), bpf_htons(ETH_P_IPV6));
   if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
+    __builtin_memset(ipv6h, 0, sizeof(struct ipv6hdr));
     *ipversion = 4;
 
     if ((ret = bpf_skb_load_bytes(skb, offset, iph, sizeof(struct iphdr)))) {
@@ -524,12 +525,14 @@ parse_transport(struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
     // We only process TCP and UDP traffic.
     *l4proto = iph->protocol;
     if (iph->protocol == IPPROTO_TCP) {
+      __builtin_memset(udph, 0, sizeof(struct udphdr));
       if ((ret =
                bpf_skb_load_bytes(skb, offset, tcph, sizeof(struct tcphdr)))) {
         // Not a complete tcphdr.
         return -EFAULT;
       }
     } else if (iph->protocol == IPPROTO_UDP) {
+      __builtin_memset(tcph, 0, sizeof(struct tcphdr));
       if ((ret =
                bpf_skb_load_bytes(skb, offset, udph, sizeof(struct udphdr)))) {
         // Not a complete tcphdr.
@@ -542,6 +545,7 @@ parse_transport(struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
     *ihl = iph->ihl;
     return 0;
   } else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
+    __builtin_memset(iph, 0, sizeof(struct iphdr));
     *ipversion = 6;
 
     if ((ret =
@@ -576,7 +580,7 @@ static __always_inline int get_tproxy_ip(__u8 ipversion, __u32 ifindex,
 }
 
 static __always_inline int ip_is_host(__u8 ipversion, __u32 ifindex,
-                                      __be32 ip[4], __be32 tproxy_ip[4]) {
+                                      const __be32 ip[4], __be32 tproxy_ip[4]) {
   if (tproxy_ip) {
     int ret;
     if ((ret = get_tproxy_ip(ipversion, ifindex, tproxy_ip))) {
@@ -691,7 +695,6 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
 
   // Backup for further use.
   struct udphdr reserved_udphdr;
-  __builtin_memset(&reserved_udphdr, 0, sizeof(reserved_udphdr));
   if ((ret = bpf_skb_load_bytes(skb, ip_off + ipp_len, &reserved_udphdr,
                                 sizeof(reserved_udphdr)))) {
     bpf_printk("bpf_skb_load_bytes: %d", ret);
@@ -761,7 +764,6 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 
   // Backup for further use.
   struct udphdr reserved_udphdr;
-  __builtin_memset(&reserved_udphdr, 0, sizeof(reserved_udphdr));
   if ((ret = bpf_skb_load_bytes(skb, ip_off + ipp_len, &reserved_udphdr,
                                 sizeof(struct udphdr)))) {
     bpf_printk("bpf_skb_load_bytes: %d", ret);
@@ -815,11 +817,13 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 // Do not use __always_inline here because this function is too heavy.
-static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
-                   __be32 daddr[4], __be32 mac[4]) {
+static int __attribute__((noinline))
+routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
+        const __be32 _daddr[4], const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
+#define _is_wan flag[2]
 
   int ret;
 
@@ -856,6 +860,7 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
   };
 
   // Modify DNS upstream for routing.
+  __u32 daddr[4];
   if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
     struct ip_port *upstream =
         bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
@@ -864,6 +869,8 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
     }
     h_dport = bpf_ntohs(upstream->port);
     __builtin_memcpy(daddr, upstream->ip, IPV6_BYTE_LENGTH);
+  } else {
+    __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
   }
   struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac, *lpm_key;
   lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
@@ -883,10 +890,13 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
            bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_saddr, BPF_ANY))) {
     return ret;
   };
-  key = MatchType_Mac;
-  if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY))) {
-    return ret;
-  };
+  if (!_is_wan) {
+    key = MatchType_Mac;
+    if ((ret =
+             bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY))) {
+      return ret;
+    };
+  }
 
   struct map_lpm_type *lpm;
   struct match_set *match_set;
@@ -907,8 +917,8 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
       return -EFAULT;
     }
     if (bad_rule || good_subrule) {
-      key = match_set->type;
 #ifdef __DEBUG_ROUTING
+      key = match_set->type;
       bpf_printk("key(match_set->type): %llu", key);
       bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", bad_rule,
                  good_subrule);
@@ -974,7 +984,7 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
       if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
         good_subrule = true;
       }
-    } else if (match_set->type == MatchType_ProcessName) {
+    } else if (_is_wan && match_set->type == MatchType_ProcessName) {
       if ((equal_ipv6_format(match_set->pname, _pname))) {
         good_subrule = true;
       }
@@ -1037,6 +1047,7 @@ static int routing(__u32 flag[6], void *l4_hdr, __be32 saddr[4],
 #undef _l4proto_type
 #undef _ipversion_type
 #undef _pname
+#undef _is_wan
 }
 
 // Do DNAT.
@@ -1160,7 +1171,6 @@ int tproxy_ingress(struct __sk_buff *skb) {
 
       if (unlikely(tcp_state_syn)) {
         struct ip_port_outbound value_dst;
-        __builtin_memset(&value_dst, 0, sizeof(value_dst));
         __builtin_memcpy(value_dst.ip, daddr, IPV6_BYTE_LENGTH);
         value_dst.port = tcph.dest;
         value_dst.outbound = outbound;
@@ -1340,7 +1350,6 @@ int tproxy_egress(struct __sk_buff *skb) {
 
     // Lookup original dest.
     struct ip_port key_dst;
-    __builtin_memset(&key_dst, 0, sizeof(key_dst));
     __builtin_memcpy(key_dst.ip, daddr, IPV6_BYTE_LENGTH);
     key_dst.port = tcph.dest;
     struct ip_port_outbound *original_dst =
@@ -1377,7 +1386,6 @@ int tproxy_egress(struct __sk_buff *skb) {
     /// server. We use it for convinience. This behavior may change in the
     /// future. Outbound here is useless and redundant.
     struct ip_port_outbound ori_src;
-    __builtin_memset(&ori_src, 0, sizeof(ori_src));
 
     // Get source ip/port from our packet header.
 
@@ -1557,7 +1565,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
     // Prepare key.
     struct ip_port_proto src_key;
-    __builtin_memset(&src_key, 0, sizeof(struct ip_port_proto));
     src_key.proto = l4proto;
     __builtin_memcpy(src_key.ip, saddr, IPV6_BYTE_LENGTH);
     src_key.port = sport;
@@ -1590,7 +1597,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       // Backup for further use.
       tcp_state_syn = tcph.syn && !tcph.ack;
       struct ip_port key_src;
-      __builtin_memset(&key_src, 0, sizeof(key_src));
       // Use daddr as key in WAN because tproxy (control plane) also lookups the
       // map element using income client ip (that is daddr).
       __builtin_memcpy(key_src.ip, daddr, IPV6_BYTE_LENGTH);
@@ -1648,7 +1654,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
         if (unlikely(tcp_state_syn)) {
           struct ip_port_outbound value_dst;
-          __builtin_memset(&value_dst, 0, sizeof(value_dst));
           __builtin_memcpy(value_dst.ip, daddr, IPV6_BYTE_LENGTH);
           value_dst.port = tcph.dest;
           value_dst.outbound = outbound;
@@ -1678,7 +1683,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     } else if (l4proto == IPPROTO_UDP) {
       // Backup for further use.
       struct ip_port_outbound new_hdr;
-      __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
       __builtin_memcpy(new_hdr.ip, daddr, IPV6_BYTE_LENGTH);
       new_hdr.port = udph.dest;
 
@@ -1820,7 +1824,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     if (l4proto == IPPROTO_TCP) {
       // Lookup original dest as sip and sport.
       struct ip_port key_dst;
-      __builtin_memset(&key_dst, 0, sizeof(key_dst));
       // Use daddr as key in WAN because tproxy (control plane) also lookups the
       // map element using income client ip (that is daddr).
       __builtin_memcpy(key_dst.ip, daddr, sizeof(key_dst.ip));
@@ -1851,7 +1854,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       /// server. We use it for convinience. This behavior may change in the
       /// future. Outbound here is useless and redundant.
       struct ip_port_outbound ori_src;
-      __builtin_memset(&ori_src, 0, sizeof(ori_src));
 
       // Get source ip/port from our packet header.
 
