@@ -1054,7 +1054,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
     __builtin_memcpy(saddr, &ipv6h.saddr, IPV6_BYTE_LENGTH);
   }
 
-  // If this packet is sent to this host, accept it.
+  // If this packet is sent to this host and not a DNS packet, accept it.
   __u32 tproxy_ip[4];
   int to_host = ip_is_host(ipversion, skb->ifindex, daddr, tproxy_ip);
   if (to_host < 0) { // error
@@ -1063,7 +1063,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
   }
   if (to_host == 1) {
     if (l4proto == IPPROTO_UDP && udph.dest == 53) {
-      // To host:53. Process it.
+      // To udp:host:53. Process it.
     } else {
       // To host. Accept.
       return TC_ACT_OK;
@@ -1773,8 +1773,11 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // If a client sent a packet at the begining, let's say the client is
     // sender and its ip is right host ip.
     // saddr is host ip and right sender ip.
-    // dport is sender sport. See (1).
-    // bpf_printk("[%u]should send to origin: %pI6:%u", l4proto, saddr,
+    // Now when tproxy responses, dport is sender's sport. See (1) below. daddr
+    // is original dest ip (target address).
+
+    // bpf_printk("[%u]should send to origin: %pI6:%u",
+    // l4proto, saddr,
     //            bpf_ntohs(dport));
 
     if (l4proto == IPPROTO_TCP) {
@@ -1843,7 +1846,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       //   bpf_printk("%02x", t);
       // }
     }
-    // Rewrite dip.
+    // Rewrite dip to host ip.
     if (rewrite_ip(skb, ipversion, l4proto, ihl, daddr, saddr, true) < 0) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
@@ -1964,7 +1967,7 @@ static int __always_inline update_map_elem_by_sk(struct sock *sk) {
   return 0;
 }
 
-// Get sip, sport to pid, pname mapping.
+// Remove sip, sport to pid, pname mapping.
 // kernel 5.5+
 // IPv4/IPv6 TCP/UDP send.
 SEC("fexit/inet_release")
@@ -1992,7 +1995,6 @@ int BPF_PROG(inet_send_prepare, struct sock *sk, int ret) {
   if (unlikely(ret)) {
     return 0;
   }
-  /// TODO: inet_release
   update_map_elem_by_sk(sk);
   return 0;
 }
@@ -2006,7 +2008,6 @@ int BPF_PROG(inet_bind, struct socket *sock, struct sockaddr *uaddr,
   if (ret) {
     return 0;
   }
-  /// TODO: inet_release
   update_map_elem_by_sk(sock->sk);
   return 0;
 }
@@ -2018,7 +2019,6 @@ int BPF_PROG(inet_bind, struct socket *sock, struct sockaddr *uaddr,
 // https://github.com/torvalds/linux/blob/62fb9874f5da54fdb243003b386128037319b219/net/ipv4/tcp_output.c#L3820
 SEC("fentry/tcp_connect")
 int BPF_PROG(tcp_connect, struct sock *sk) {
-  /// TODO: inet4_release
   update_map_elem_by_sk(sk);
   return 0;
 }
@@ -2031,7 +2031,6 @@ int BPF_PROG(inet_autobind, struct sock *sk, int ret) {
   if (ret) {
     return 0;
   }
-  /// TODO: inet4_release
   update_map_elem_by_sk(sk);
   return 0;
 }
@@ -2045,7 +2044,6 @@ int BPF_PROG(inet6_bind, struct socket *sock, struct sockaddr *uaddr,
   if (ret) {
     return 0;
   }
-  /// TODO: inet6_release
   update_map_elem_by_sk(sock->sk);
   return 0;
 }

@@ -121,12 +121,12 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
 				c.log.Debugf("UDP(DNS) %v <-[%v]-> Cache: %v %v",
-					lAddrPort.String(), outbound.Name, q.Name, q.Type,
+					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, q.Name, q.Type,
 				)
 			}
 			return nil
 		} else {
-			c.log.Debugf("Modify dns target %v to upstream: %v", addrHdr.Dest.String(), c.dnsUpstream.String())
+			c.log.Debugf("Modify dns target %v to upstream: %v", RefineAddrPortToShow(dest), c.dnsUpstream)
 			// Modify dns target to upstream.
 			// NOTICE: Routing was calculated in advance by the eBPF program.
 			dummyFrom = &addrHdr.Dest
@@ -135,14 +135,14 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
 				c.log.Debugf("UDP(DNS) %v <-[%v]-> %v: %v %v",
-					lAddrPort.String(), outbound.Name, dest.String(), q.Name, q.Type,
+					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, RefineAddrPortToShow(dest), q.Name, q.Type,
 				)
 			}
 		}
 	} else {
 		// TODO: Set-up ip to domain mapping and show domain if possible.
 		c.log.Infof("UDP %v <-[%v]-> %v",
-			lAddrPort.String(), outbound.Name, dest.String(),
+			RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, RefineAddrPortToShow(dest),
 		)
 	}
 	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{

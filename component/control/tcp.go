@@ -47,7 +47,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 	outbound := c.outbounds[value.Outbound]
 	// TODO: Set-up ip to domain mapping and show domain if possible.
-	c.log.Infof("TCP: %v <-[%v]-> %v", lConn.RemoteAddr(), outbound.Name, dst.String())
+	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
+	c.log.Infof("TCP: %v <-[%v]-> %v", RefineSourceToShow(src, dst.Addr()), outbound.Name, RefineAddrPortToShow(dst))
 	if value.Outbound < 0 || int(value.Outbound) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", value.Outbound, len(c.outbounds)-1)
 	}
