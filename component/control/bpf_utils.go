@@ -104,7 +104,7 @@ type bpfObjectsLan struct {
 	bpfMaps
 }
 
-func AssignBpfPrograms(to *bpfObjects, from interface{}) {
+func AssignBpfObjects(to *bpfObjects, from interface{}) {
 	vTo := reflect.Indirect(reflect.ValueOf(to))
 	vFrom := reflect.Indirect(reflect.ValueOf(from))
 	tFrom := vFrom.Type()

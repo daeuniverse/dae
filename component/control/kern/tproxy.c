@@ -566,7 +566,7 @@ static __always_inline int get_tproxy_ip(__u8 ipversion, __u32 ifindex,
   return 0;
 }
 
-static __always_inline int ip_is_host(bool ipversion, __u32 ifindex,
+static __always_inline int ip_is_host(__u8 ipversion, __u32 ifindex,
                                       __be32 ip[4], __be32 tproxy_ip[4]) {
   if (tproxy_ip) {
     int ret;

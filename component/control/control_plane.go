@@ -125,7 +125,7 @@ retryLoadBpf:
 	}
 	if kernelVersion.Less(consts.FtraceFeatureVersion) {
 		// Reverse takeover.
-		AssignBpfPrograms(&bpf, &bpfLan)
+		AssignBpfObjects(&bpf, &bpfLan)
 	}
 
 	// Write params.
@@ -581,7 +581,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	go func() {
 		defer cancel()
 		for {
-			var buf [65536]byte
+			var buf [65535]byte
 			n, lAddrPort, err := lConn.ReadFromUDPAddrPort(buf[:])
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
