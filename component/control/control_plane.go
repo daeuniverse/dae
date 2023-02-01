@@ -133,7 +133,13 @@ retryLoadBpf:
 				}
 			}
 		}
-		return nil, fmt.Errorf("loading objects: %v", err)
+		err := fmt.Errorf("loading objects: %w", err)
+		if IsNotSupportFtraceError(err) {
+			err = fmt.Errorf("%w: Maybe your kernel has no ftrace support. Make sure the kernel config items are on: CONFIG_FUNCTION_TRACER, CONFIG_FUNCTION_GRAPH_TRACER, CONFIG_STACK_TRACER, CONFIG_DYNAMIC_FTRACE", err)
+		} else if IsNoBtfError(err) {
+			err = fmt.Errorf("%w: Make sure the kernel config item is on: CONFIG_DEBUG_INFO_BTF", err)
+		}
+		return nil, err
 	}
 	if _, ok := obj.(*bpfObjects); !ok {
 		// Reverse takeover.

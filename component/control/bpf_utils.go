@@ -12,7 +12,9 @@ import (
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/pkg/ebpf_internal"
 	"net/netip"
+	"os"
 	"reflect"
+	"strings"
 )
 
 type _bpfLpmKey struct {
@@ -97,7 +99,7 @@ func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.B
 }
 
 type bpfObjectsLan struct {
-	// NOTICE: Consider to update me if any program added.
+	// FIXME: Consider to update me if any program added.
 	//bpfPrograms
 	TproxyEgress  *ebpf.Program `ebpf:"tproxy_egress"`
 	TproxyIngress *ebpf.Program `ebpf:"tproxy_ingress"`
@@ -106,7 +108,7 @@ type bpfObjectsLan struct {
 }
 
 type bpfObjectsWan struct {
-	// NOTICE: Consider to update me if any program added.
+	// FIXME: Consider to update me if any program added.
 	//bpfPrograms
 	Inet6Bind        *ebpf.Program `ebpf:"inet6_bind"`
 	InetAutobind     *ebpf.Program `ebpf:"inet_autobind"`
@@ -118,6 +120,19 @@ type bpfObjectsWan struct {
 	TproxyWanIngress *ebpf.Program `ebpf:"tproxy_wan_ingress"`
 
 	bpfMaps
+}
+
+func IsNotSupportFtraceError(err error) bool {
+	// FATA[0001] loading objects: field Inet6Bind: program
+	// inet6_bind: load program: invalid argument
+	return strings.HasSuffix(err.Error(), os.ErrInvalid.Error()) && strings.Contains(err.Error(),
+		"field Inet6Bind: program") // FIXME: Consider to update me if any program added.
+}
+
+func IsNoBtfError(err error) bool {
+	// FATA[0001] loading objects: field Inet6Bind: program inet6_bind:
+	// apply CO-RE relocations: load kernel spec: no BTF found for kernel version 5.15.90: not supported
+	return strings.Contains(err.Error(), "no BTF found for kernel version")
 }
 
 func AssignBpfObjects(to *bpfObjects, from interface{}) {
