@@ -222,7 +222,7 @@ retryLoadBpf:
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
-		return nil, fmt.Errorf("ApplyRulesOptimizers error: \n %w", err)
+		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
 	if log.IsLevelEnabled(logrus.DebugLevel) {
 		var debugBuilder strings.Builder

@@ -7,15 +7,17 @@ package assets
 
 import (
 	"errors"
+	"fmt"
 	"github.com/adrg/xdg"
+	"github.com/sirupsen/logrus"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
-func GetLocationAsset(filename string) (path string, err error) {
-	// FIXME:
+func GetLocationAsset(log *logrus.Logger, filename string) (path string, err error) {
 	folder := "dae"
 	location := os.Getenv("DAE_LOCATION_ASSET")
 	// check if DAE_LOCATION_ASSET is set
@@ -32,41 +34,45 @@ func GetLocationAsset(filename string) (path string, err error) {
 				filepath.Join("/usr/share", folder, filename),
 			)
 		}
+		searchDirs := make([]string, len(searchPaths))
+		for i := range searchDirs {
+			searchDirs[i] = filepath.Dir(searchPaths[i])
+		}
+		log.Debugf(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
 		for _, searchPath := range searchPaths {
 			if _, err = os.Stat(searchPath); err != nil && errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
+			log.Debugf(`Found "%v" at %v`, filename, searchPath)
 			// return the first path that exists
 			return searchPath, nil
 		}
-		// or download asset into DAE_LOCATION_ASSET
-		return searchPaths[0], nil
+		return "", fmt.Errorf("%v: %w in [%v]", filename, os.ErrNotExist, strings.Join(searchDirs, ", "))
 	} else {
 		if runtime.GOOS != "windows" {
 			// search XDG data directories on non windows platform
-			// symlink all assets into XDG_RUNTIME_DIR
+			searchDirs := append([]string{xdg.DataHome}, xdg.DataDirs...)
+			for i := range searchDirs {
+				searchDirs[i] = filepath.Join(searchDirs[i], folder)
+			}
+			log.Debugf(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
 			relpath := filepath.Join(folder, filename)
 			fullpath, err := xdg.SearchDataFile(relpath)
 			if err != nil {
-				fullpath, err = xdg.DataFile(relpath)
-				if err != nil {
-					return "", err
-				}
+				return "", fmt.Errorf("%v: %w in [%v]", filename, os.ErrNotExist, strings.Join(searchDirs, ", "))
 			}
-			runtimepath, err := xdg.RuntimeFile(filepath.Join(folder, filename))
-			if err != nil {
-				return "", err
-			}
-			os.Remove(runtimepath)
-			err = os.Symlink(fullpath, runtimepath)
-			if err != nil {
-				return "", err
-			}
-			return fullpath, err
+			log.Debugf(`Found "%v" at %v`, filename, fullpath)
+			return fullpath, nil
 		} else {
-			// fallback to the old behavior of using only config dir on Windows
-			// FIXME: conf.GetEnvironmentConfig().Config
-			return filepath.Join("./", filename), nil
+			// fallback to the old behavior of using only current dir on Windows
+			path := filepath.Join("./", filename)
+			if absPath, e := filepath.Abs(path); e == nil {
+				path = absPath
+			}
+			if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("%v: %w in %v", filename, os.ErrNotExist, path)
+			}
+			return path, nil
 		}
 	}
 }

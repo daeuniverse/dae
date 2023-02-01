@@ -154,7 +154,7 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := assets.GetLocationAsset(filename)
+	filePath, err := assets.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
 		return nil, err
@@ -199,7 +199,7 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := assets.GetLocationAsset(filename)
+	filePath, err := assets.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
 		return nil, err
