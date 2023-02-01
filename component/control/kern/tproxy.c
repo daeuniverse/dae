@@ -816,9 +816,9 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 // Do not use __always_inline here because this function is too heavy.
-static int routing(const __u32 flag[6], const void *l4_hdr,
-                   const __be32 saddr[4], const __be32 _daddr[4],
-                   const __be32 mac[4]) {
+static int __attribute__((noinline))
+routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
+        const __be32 _daddr[4], const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
