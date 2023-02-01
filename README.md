@@ -49,7 +49,7 @@ Note that if you bind dae to WAN only, dae only provide network service for loca
 
 ### Kernel Configuration Item
 
-Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
+Usually, mainstream desktop distributions have these items turned on. But on embedded Linux distributions like OpenWRT, Armbian, etc, in order to reduce kernel size, some items are turned off by default. You need to re-compile the kernel and turn them on.
 
 Use following commands to check the kernel configuration items on your machine.
 
