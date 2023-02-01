@@ -21,6 +21,9 @@ var (
 		Use:   "run",
 		Short: "Run dae in the foreground",
 		Run: func(cmd *cobra.Command, args []string) {
+			if cfgFile == "" {
+				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
+			}
 			if err := Run(); err != nil {
 				logrus.Fatalln(err)
 			}
@@ -29,7 +32,7 @@ var (
 )
 
 func init() {
-	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "config.dae", "config file")
+	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 }
 
 func Run() (err error) {

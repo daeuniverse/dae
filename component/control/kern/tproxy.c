@@ -689,9 +689,8 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
     return ret;
   }
   // Add room for new udp payload header.
-  if ((ret = bpf_skb_adjust_room(skb, newhdrlen, BPF_ADJ_ROOM_NET,
-                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
-    bpf_printk("UDP ADJUST ROOM: %d", ret);
+  if ((ret = bpf_skb_adjust_room(skb, newhdrlen, BPF_ADJ_ROOM_NET, 0))) {
+    bpf_printk("UDP ADJUST ROOM(encap): %d", ret);
     return ret;
   }
   // Move the new room to the front of the UDP payload.
@@ -776,9 +775,8 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
   }
 
   // Adjust room to decap the header.
-  if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET,
-                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
-    bpf_printk("UDP ADJUST ROOM: %d", ret);
+  if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET, 0))) {
+    bpf_printk("UDP ADJUST ROOM(decap): %d", ret);
     return ret;
   }
 
@@ -1191,8 +1189,10 @@ int tproxy_ingress(struct __sk_buff *skb) {
       // Rewrite to control plane.
 
       // Encap a header to transmit fullcone tuple.
-      encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &new_hdr,
-                          sizeof(new_hdr));
+      if ((ret = encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
+                                     &new_hdr, sizeof(new_hdr)))) {
+        return TC_ACT_SHOT;
+      }
 
       // Rewrite udp dst ip.
       // bpf_printk("rewrite dst ip from %pI4", &ori_dst.ip);
@@ -1692,8 +1692,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         };
 
         // Encap a header to transmit fullcone tuple.
-        encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &new_hdr,
-                            sizeof(new_hdr));
+        if ((ret = encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
+                                       &new_hdr, sizeof(new_hdr)))) {
+          return TC_ACT_SHOT;
+        }
 
         // Redirect from egress to ingress.
         if ((ret = bpf_redirect(skb->ifindex, BPF_F_INGRESS)) == TC_ACT_SHOT) {
