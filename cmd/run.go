@@ -64,8 +64,6 @@ func Run() (err error) {
 	}
 
 	// New ControlPlane.
-	bindLan := len(param.Global.LanInterface) != 0
-	bindWan := len(param.Global.WanInterface) != 0
 	t, err := control.NewControlPlane(
 		log,
 		nodeList,
@@ -74,23 +72,11 @@ func Run() (err error) {
 		param.Global.DnsUpstream,
 		param.Global.CheckUrl,
 		param.Global.CheckInterval,
-		bindLan,
-		bindWan,
+		param.Global.LanInterface,
+		param.Global.WanInterface,
 	)
 	if err != nil {
 		return err
-	}
-
-	// Bind to links.
-	for _, ifname := range param.Global.LanInterface {
-		if err = t.BindLan(ifname); err != nil {
-			return fmt.Errorf("BindLan: %v: %w", ifname, err)
-		}
-	}
-	for _, ifname := range param.Global.WanInterface {
-		if err = t.BindWan(ifname); err != nil {
-			return fmt.Errorf("BindWan: %v: %w", ifname, err)
-		}
 	}
 
 	// Serve tproxy TCP/UDP server util signals.

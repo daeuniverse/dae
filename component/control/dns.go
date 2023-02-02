@@ -17,7 +17,7 @@ import (
 )
 
 type dnsCache struct {
-	DomainBitmap [consts.MaxRoutingLen / 32]uint32
+	DomainBitmap [consts.MaxMatchSetLen / 32]uint32
 	Answers      []dnsmessage.Resource
 	Deadline     time.Time
 }

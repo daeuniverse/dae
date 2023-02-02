@@ -1,0 +1,21 @@
+// Code is generated; DO NOT EDIT.
+
+package control
+
+import "github.com/cilium/ebpf"
+
+type bpfObjectsLan struct {
+{{- range .LanProgFields }}
+    {{ .Name }}    *ebpf.Program `ebpf:"{{ .Ebpf }}"`
+{{- end }}
+
+bpfMaps
+}
+
+type bpfObjectsWan struct {
+{{- range .WanProgFields }}
+    {{ .Name }}    *ebpf.Program `ebpf:"{{ .Ebpf }}"`
+{{- end }}
+
+bpfMaps
+}

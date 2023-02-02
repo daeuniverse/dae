@@ -36,7 +36,8 @@ func newDirect(fullCone bool) proxy.Dialer {
 func (d *direct) Dial(network, addr string) (c net.Conn, err error) {
 	switch network {
 	case "tcp":
-		return d.netDialer.Dial(network, addr)
+		conn, err := d.netDialer.Dial(network, addr)
+		return conn, err
 	case "udp":
 		if d.fullCone {
 			conn, err := net.ListenUDP(network, nil)

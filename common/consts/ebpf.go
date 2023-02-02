@@ -77,7 +77,7 @@ func (i OutboundIndex) String() string {
 }
 
 const (
-	MaxRoutingLen = 96
+	MaxMatchSetLen = 32 * 3
 )
 
 type L4ProtoType uint8
@@ -88,13 +88,14 @@ const (
 	L4ProtoType_TCP_UDP L4ProtoType = 3
 )
 
-type IpVersion uint8
+type IpVersionType uint8
 
 const (
-	IpVersion_4 IpVersion = 1
-	IpVersion_6 IpVersion = 2
-	IpVersion_X IpVersion = 3
+	IpVersion_4 IpVersionType = 1
+	IpVersion_6 IpVersionType = 2
+	IpVersion_X IpVersionType = 3
 )
 
 var BasicFeatureVersion = internal.Version{5, 2, 0}
 var FtraceFeatureVersion = internal.Version{5, 5, 0}
+var CgGetPidFeatureVersion = internal.Version{5, 7, 0}

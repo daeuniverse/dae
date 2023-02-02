@@ -135,7 +135,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
 				c.log.Debugf("UDP(DNS) %v <-[%v]-> %v: %v %v",
-					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, RefineAddrPortToShow(dest), q.Name, q.Type,
+					RefineSourceToShow(lAddrPort, addrHdr.Dest.Addr()), outbound.Name, RefineAddrPortToShow(dest), q.Name, q.Type,
 				)
 			}
 		}

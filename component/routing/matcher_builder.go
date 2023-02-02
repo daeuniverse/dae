@@ -25,7 +25,7 @@ type MatcherBuilder interface {
 	AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound string)
 	AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound string)
 	AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string)
-	AddIpVersion(f *config_parser.Function, values consts.IpVersion, outbound string)
+	AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string)
 	AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string)
 	AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string)
 	AddFinal(outbound string)
@@ -144,7 +144,7 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 					}
 					builder.AddL4Proto(f, l4protoType, outbound)
 				case consts.Function_IpVersion:
-					var ipVersion consts.IpVersion
+					var ipVersion consts.IpVersionType
 					for _, v := range paramValueGroup {
 						switch v {
 						case "4":
@@ -195,7 +195,7 @@ func (d *DefaultMatcherBuilder) AddSourcePort(f *config_parser.Function, values 
 }
 func (d *DefaultMatcherBuilder) AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string) {
 }
-func (d *DefaultMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersion, outbound string) {
+func (d *DefaultMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string) {
 }
 func (d *DefaultMatcherBuilder) AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string) {
 }

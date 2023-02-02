@@ -3,17 +3,23 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
  */
-#include "headers/if_ether_defs.h"
-#include "headers/pkt_cls_defs.h"
-#include "headers/socket_defs.h"
-#include "headers/vmlinux.h"
-
 #include <asm-generic/errno-base.h>
+#include <errno.h>
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/in.h>
+#include <linux/in6.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/pkt_cls.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 
-#include <bpf/bpf_core_read.h>
+#include <stdbool.h>
+#include <sys/socket.h>
+
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -57,11 +63,6 @@
 #define OUTBOUND_LOGICAL_OR 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
 #define OUTBOUND_LOGICAL_MASK 0xFE
-
-/* Current network namespace */
-enum {
-  BPF_F_CURRENT_NETNS = (-1L),
-};
 
 enum {
   DisableL4ChecksumPolicy_EnableL4Checksum,
@@ -276,12 +277,12 @@ struct pid_pname {
 
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
-  __type(key, struct ip_port_proto);
+  __type(key, __u64);
   __type(value, struct pid_pname);
   __uint(max_entries, MAX_SRC_PID_PNAME_MAPPING_NUM);
   /// NOTICE: No persistence.
-  // __uint(pinning, LIBBPF_PIN_BY_NAME);
-} src_pid_map SEC(".maps");
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} cookie_pid_map SEC(".maps");
 
 // Functions:
 
@@ -872,28 +873,26 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
   } else {
     __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
   }
-  struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac, *lpm_key;
-  lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-  lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-  lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-  __builtin_memcpy(lpm_key_saddr.data, saddr, IPV6_BYTE_LENGTH);
-  __builtin_memcpy(lpm_key_daddr.data, daddr, IPV6_BYTE_LENGTH);
-  __builtin_memcpy(lpm_key_mac.data, mac, IPV6_BYTE_LENGTH);
+  struct lpm_key lpm_key_instance, *lpm_key;
+  lpm_key_instance.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+  __builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
   // bpf_printk("mac: %pI6", mac);
   key = MatchType_IpSet;
-  if ((ret =
-           bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_daddr, BPF_ANY))) {
+  if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
+                                 BPF_ANY))) {
     return ret;
   };
+  __builtin_memcpy(lpm_key_instance.data, saddr, IPV6_BYTE_LENGTH);
   key = MatchType_SourceIpSet;
-  if ((ret =
-           bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_saddr, BPF_ANY))) {
+  if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
+                                 BPF_ANY))) {
     return ret;
   };
   if (!_is_wan) {
+    __builtin_memcpy(lpm_key_instance.data, mac, IPV6_BYTE_LENGTH);
     key = MatchType_Mac;
-    if ((ret =
-             bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_mac, BPF_ANY))) {
+    if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
+                                   BPF_ANY))) {
       return ret;
     };
   }
@@ -1052,7 +1051,7 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
 
 // Do DNAT.
 SEC("tc/ingress")
-int tproxy_ingress(struct __sk_buff *skb) {
+int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct ethhdr ethh;
   struct iphdr iph;
   struct ipv6hdr ipv6h;
@@ -1277,6 +1276,57 @@ int tproxy_ingress(struct __sk_buff *skb) {
   return TC_ACT_OK;
 }
 
+// Cookie will change after the first packet, so we just use it for
+// handshake.
+static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
+                                                 struct pid_pname **p) {
+
+  struct pid_pname *pid_pname;
+  __u64 cookie = bpf_get_socket_cookie(skb);
+  pid_pname = bpf_map_lookup_elem(&cookie_pid_map, &cookie);
+  if (pid_pname) {
+    if (p) {
+      // Assign.
+      *p = pid_pname;
+    }
+    // Get tproxy pid and compare if they are equal.
+    __u32 *pid_tproxy;
+    if (!(pid_tproxy =
+              bpf_map_lookup_elem(&param_map, &control_plane_pid_key))) {
+      bpf_printk("control_plane_pid is not set.");
+      return false;
+    }
+    return pid_pname->pid == *pid_tproxy;
+  } else {
+    if (p) {
+      *p = NULL;
+    }
+    if ((skb->mark & 0x80) == 0x80) {
+      bpf_printk("No pid_pname found. But it should not happen");
+      /*
+      if (l4proto == IPPROTO_TCP) {
+        if (tcph.syn && !tcph.ack) {
+          bpf_printk("No pid_pname found. But it should not happen: local:%u "
+                     "(%u)[%llu]",
+                     bpf_ntohs(sport), l4proto, cookie);
+        } else {
+          bpf_printk("No pid_pname found. But it should not happen: (Old "
+                     "Connection): local:%u "
+                     "(%u)[%llu]",
+                     bpf_ntohs(sport), l4proto, cookie);
+        }
+      } else {
+        bpf_printk("No pid_pname found. But it should not happen: local:%u "
+                   "(%u)[%llu]",
+                   bpf_ntohs(sport), l4proto, cookie);
+      }
+      */
+      return true;
+    }
+    return false;
+  }
+}
+
 /**
   FIXME: We can do packet modification as early as possible (for example, at
   lwt point) to avoid weird checksum offload problems by docker, etc. They do
@@ -1289,7 +1339,7 @@ int tproxy_ingress(struct __sk_buff *skb) {
 */
 // Do SNAT.
 SEC("tc/egress")
-int tproxy_egress(struct __sk_buff *skb) {
+int tproxy_lan_egress(struct __sk_buff *skb) {
   struct ethhdr ethh;
   struct iphdr iph;
   struct ipv6hdr ipv6h;
@@ -1350,6 +1400,7 @@ int tproxy_egress(struct __sk_buff *skb) {
 
     // Lookup original dest.
     struct ip_port key_dst;
+    __builtin_memset(&key_dst, 0, sizeof(key_dst));
     __builtin_memcpy(key_dst.ip, daddr, IPV6_BYTE_LENGTH);
     key_dst.port = tcph.dest;
     struct ip_port_outbound *original_dst =
@@ -1390,8 +1441,10 @@ int tproxy_egress(struct __sk_buff *skb) {
     // Get source ip/port from our packet header.
 
     // Decap header to get fullcone tuple.
-    decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
-                        sizeof(ori_src));
+    if ((ret = decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
+                                   sizeof(ori_src)))) {
+      return TC_ACT_SHOT;
+    }
 
     // Rewrite udp src ip
     if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl, src_ip, ori_src.ip,
@@ -1433,39 +1486,6 @@ int tproxy_egress(struct __sk_buff *skb) {
     bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
   }
   return TC_ACT_OK;
-}
-
-// This function will modify the content of src_key.
-static __always_inline struct pid_pname *
-lookup_src_pid_map(__u8 ipversion, struct ip_port_proto *src_key) {
-  // Lookup twice or third. First for unspecific address, second for interface
-  // address.
-
-  // Lookup pid in src_pid_map.
-  struct pid_pname *pid_pname;
-  if ((pid_pname = bpf_map_lookup_elem(&src_pid_map, src_key))) {
-    return pid_pname;
-  }
-
-  // Second look-up.
-  // Set to unspecific address.
-  if (ipversion == 6) {
-    __builtin_memset(src_key, 0, sizeof(struct ip_port_proto));
-  } else {
-    src_key->ip[3] = 0;
-  }
-  if ((pid_pname = bpf_map_lookup_elem(&src_pid_map, src_key))) {
-    return pid_pname;
-  }
-  if (ipversion == 6) {
-    return NULL;
-  }
-
-  // Third look-up for IPv4 packet.
-  // Lookup IPv6 unspecific address.
-  // https://github.com/torvalds/linux/blob/62fb9874f5da54fdb243003b386128037319b219/net/ipv4/af_inet.c#L475
-  src_key->ip[2] = 0;
-  return bpf_map_lookup_elem(&src_pid_map, src_key);
 }
 
 __u8 special_mac_to_tproxy[6] = {2, 0, 2, 3, 0, 0};
@@ -1563,40 +1583,11 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   } else {
     // Normal packets.
 
-    // Prepare key.
-    struct ip_port_proto src_key;
-    src_key.proto = l4proto;
-    __builtin_memcpy(src_key.ip, saddr, IPV6_BYTE_LENGTH);
-    src_key.port = sport;
-
-    struct pid_pname *pid_pname = lookup_src_pid_map(ipversion, &src_key);
-    if (pid_pname) {
-      // Get tproxy pid and compare if they are equal.
-      __u32 *pid_tproxy;
-      if (!(pid_tproxy =
-                bpf_map_lookup_elem(&param_map, &control_plane_pid_key))) {
-        bpf_printk("control_plane_pid is not set.");
-        return TC_ACT_SHOT;
-      }
-      if (pid_pname->pid == *pid_tproxy) {
-        // Control plane to direct.
-        // bpf_printk("Control plane to direct.");
-        return TC_ACT_OK;
-      }
-    } else {
-      if ((skb->mark & 0x80) == 0x80) {
-        bpf_printk("No pid_pname found. But it should not happen: %pI6:%u (%u)",
-                   saddr, bpf_ntohs(sport), l4proto);
-        return TC_ACT_OK;
-      }
-    }
-
-    // Not from tproxy; from other processes.
-
     if (l4proto == IPPROTO_TCP) {
       // Backup for further use.
       tcp_state_syn = tcph.syn && !tcph.ack;
       struct ip_port key_src;
+      __builtin_memset(&key_src, 0, sizeof(key_src));
       // Use daddr as key in WAN because tproxy (control plane) also lookups the
       // map element using income client ip (that is daddr).
       __builtin_memcpy(key_src.ip, daddr, IPV6_BYTE_LENGTH);
@@ -1610,6 +1601,11 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
           flag[1] = IpVersionType_6;
         } else {
           flag[1] = IpVersionType_4;
+        }
+        struct pid_pname *pid_pname;
+        if (pid_is_control_plane(skb, &pid_pname)) {
+          // From control plane. Direct.
+          return TC_ACT_OK;
         }
         if (pid_pname) {
           __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
@@ -1654,6 +1650,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
         if (unlikely(tcp_state_syn)) {
           struct ip_port_outbound value_dst;
+          __builtin_memset(&value_dst, 0, sizeof(value_dst));
           __builtin_memcpy(value_dst.ip, daddr, IPV6_BYTE_LENGTH);
           value_dst.port = tcph.dest;
           value_dst.outbound = outbound;
@@ -1683,6 +1680,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     } else if (l4proto == IPPROTO_UDP) {
       // Backup for further use.
       struct ip_port_outbound new_hdr;
+      __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
       __builtin_memcpy(new_hdr.ip, daddr, IPV6_BYTE_LENGTH);
       new_hdr.port = udph.dest;
 
@@ -1692,6 +1690,11 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         flag[1] = IpVersionType_6;
       } else {
         flag[1] = IpVersionType_4;
+      }
+      struct pid_pname *pid_pname;
+      if (pid_is_control_plane(skb, &pid_pname)) {
+        // From control plane. Direct.
+        return TC_ACT_OK;
       }
       if (pid_pname) {
         __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
@@ -1824,9 +1827,10 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     if (l4proto == IPPROTO_TCP) {
       // Lookup original dest as sip and sport.
       struct ip_port key_dst;
+      __builtin_memset(&key_dst, 0, sizeof(key_dst));
       // Use daddr as key in WAN because tproxy (control plane) also lookups the
       // map element using income client ip (that is daddr).
-      __builtin_memcpy(key_dst.ip, daddr, sizeof(key_dst.ip));
+      __builtin_memcpy(key_dst.ip, daddr, IPV6_BYTE_LENGTH);
       key_dst.port = tcph.dest;
       struct ip_port_outbound *original_dst =
           bpf_map_lookup_elem(&tcp_dst_map, &key_dst);
@@ -1858,8 +1862,10 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // Get source ip/port from our packet header.
 
       // Decap header to get fullcone tuple.
-      decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
-                          sizeof(ori_src));
+      if ((ret = decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
+                                     &ori_src, sizeof(ori_src)))) {
+        return TC_ACT_SHOT;
+      }
 
       // Rewrite udp src ip
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl, saddr, ori_src.ip,
@@ -1894,9 +1900,9 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // Should send the packet to tproxy.
 
     // Get tproxy ip and port.
-    __be32 tproxy_ip[4];
     // saddr should be tproxy ip.
-    __builtin_memcpy(tproxy_ip, saddr, sizeof(tproxy_ip));
+    __be32 *tproxy_ip = saddr;
+    // __builtin_memcpy(tproxy_ip, saddr, sizeof(tproxy_ip));
     __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
     if (!tproxy_port) {
       return TC_ACT_OK;
@@ -1930,58 +1936,12 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   return TC_ACT_OK;
 }
 
-static int __always_inline build_key_by_sk(struct sock *sk,
-                                           struct ip_port_proto *src_key) {
-
-  // Build key.
-  __builtin_memset(src_key, 0, sizeof(struct ip_port_proto));
-
-  __u16 sk_type = BPF_CORE_READ(sk, sk_type);
-  if (sk_type == SOCK_STREAM) {
-    src_key->proto = IPPROTO_TCP;
-    // bpf_printk("TCP bind");
-  } else if (sk_type == SOCK_DGRAM) {
-    src_key->proto = IPPROTO_UDP;
-    // bpf_printk("UDP bind");
-  } else if (sk_type == SOCK_RAW) {
-    __u16 sk_proto = BPF_CORE_READ(sk, sk_protocol);
-    if (sk_proto == IPPROTO_TCP) {
-      src_key->proto = IPPROTO_TCP;
-      // bpf_printk("RAW TCP bind");
-    } else if (sk_proto == IPPROTO_TCP) {
-      src_key->proto = IPPROTO_UDP;
-      // bpf_printk("RAW UDP bind");
-    } else {
-      return -ERANGE;
-    }
-  } else {
-    return -ERANGE;
+static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
+  if (!cookie) {
+    bpf_printk("zero cookie");
+    return -EINVAL;
   }
-  struct inet_sock *inet = (struct inet_sock *)sk;
-  unsigned short family = BPF_CORE_READ(sk, __sk_common.skc_family);
-  if (family == AF_INET) {
-    src_key->ip[2] = bpf_htonl(0x0000ffff);
-    src_key->ip[3] = BPF_CORE_READ(inet, inet_saddr);
-  } else if (family == AF_INET6) {
-    BPF_CORE_READ_INTO(&src_key->ip, inet, pinet6, saddr.in6_u.u6_addr32);
-  } else {
-    if (family == AF_UNSPEC) {
-      bpf_printk("oh shit AF_UNSPEC");
-    }
-    return -ERANGE;
-  }
-  src_key->port = BPF_CORE_READ(inet, inet_sport);
-  return 0;
-}
-
-static int __always_inline update_map_elem_by_sk(struct sock *sk) {
   int ret;
-
-  // Build key.
-  struct ip_port_proto src_key;
-  if ((ret = build_key_by_sk(sk, &src_key))) {
-    return ret;
-  }
 
   // Build value.
   struct pid_pname val;
@@ -1993,97 +1953,53 @@ static int __always_inline update_map_elem_by_sk(struct sock *sk) {
   }
 
   // Update map.
-  /// TODO: We can use BPF_NOEXIST here to improve the performance.
-  ///   But will the socket be released after processes dead abnormally?
-  if ((ret = bpf_map_update_elem(&src_pid_map, &src_key, &val, BPF_ANY))) {
+  if ((ret =
+           bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_NOEXIST))) {
     // bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
     return ret;
   }
 
-  // bpf_printk("setup_mapping_from_sk: %pI6:%u (%d)", src_key.ip,
-  //            bpf_ntohs(src_key.port), src_key.proto);
-  // bpf_printk("setup_mapping_from_sk: -> %s (%d)", val.pname, val.pid);
+  bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val.pname, val.pid);
   return 0;
 }
 
-// Remove sip, sport to pid, pname mapping.
-// kernel 5.5+
-// IPv4/IPv6 TCP/UDP send.
-SEC("fexit/inet_release")
-int BPF_PROG(inet_release, struct sock *sk, int ret) {
-  if (unlikely(ret)) {
-    return 0;
+// Create cookie to pid, pname mapping.
+SEC("cgroup/sock_create")
+int tproxy_wan_cg_sock_create(struct bpf_sock *sk) {
+  update_map_elem_by_cookie(bpf_get_socket_cookie(sk));
+  return 1;
+}
+// Remove cookie to pid, pname mapping.
+SEC("cgroup/sock_release")
+int tproxy_wan_cg_sock_release(struct bpf_sock *sk) {
+  __u64 cookie = bpf_get_socket_cookie(sk);
+  if (!cookie) {
+    bpf_printk("zero cookie");
+    return 1;
   }
-  // Build key.
-  struct ip_port_proto src_key;
-  if ((ret = build_key_by_sk(sk, &src_key))) {
-    return 0;
-  }
-  if ((ret = bpf_map_delete_elem(&src_pid_map, &src_key))) {
-    // bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
-    return 0;
-  }
-  return 0;
+  bpf_map_delete_elem(&cookie_pid_map, &cookie);
+  return 1;
 }
 
-// Get sip, sport to pid, pname mapping.
-// kernel 5.5+
-// IPv4/IPv6 TCP/UDP send.
-SEC("fexit/inet_send_prepare")
-int BPF_PROG(inet_send_prepare, struct sock *sk, int ret) {
-  if (unlikely(ret)) {
-    return 0;
-  }
-  update_map_elem_by_sk(sk);
-  return 0;
-}
+// SEC("cgroup/connect4")
+// int tproxy_wan_cg_connect4(struct bpf_sock_addr *ctx) {
+//   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+//   return 1;
+// }
+// SEC("cgroup/connect6")
+// int tproxy_wan_cg_connect6(struct bpf_sock_addr *ctx) {
+//   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+//   return 1;
+// }
+// SEC("cgroup/sendmsg4")
+// int tproxy_wan_cg_sendmsg4(struct bpf_sock_addr *ctx) {
+//   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+//   return 1;
+// }
+// SEC("cgroup/sendmsg6")
+// int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx) {
+//   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+//   return 1;
+// }
 
-// Get sip, sport to pid, pname mapping.
-// kernel 5.5+
-// IPv4 TCP/UDP listen.
-SEC("fexit/inet_bind")
-int BPF_PROG(inet_bind, struct socket *sock, struct sockaddr *uaddr,
-             int addr_len, int ret) {
-  if (ret) {
-    return 0;
-  }
-  update_map_elem_by_sk(sock->sk);
-  return 0;
-}
-
-// Get sip, sport to pid, pname mapping.
-// kernel 5.5+
-// IPv4 TCP connect.
-// We use fentry because it "Build a SYN and send it off".
-// https://github.com/torvalds/linux/blob/62fb9874f5da54fdb243003b386128037319b219/net/ipv4/tcp_output.c#L3820
-SEC("fentry/tcp_connect")
-int BPF_PROG(tcp_connect, struct sock *sk) {
-  update_map_elem_by_sk(sk);
-  return 0;
-}
-
-// Get sip, sport to pid, pname mapping.
-// kernel 5.5+
-// IPv4 UDP sendto/sendmsg.
-SEC("fexit/inet_autobind")
-int BPF_PROG(inet_autobind, struct sock *sk, int ret) {
-  if (ret) {
-    return 0;
-  }
-  update_map_elem_by_sk(sk);
-  return 0;
-}
-
-// Get sip, sport to pid, pname mapping.
-// kernel 5.5+
-// IPv6 TCP/UDP listen.
-SEC("fexit/inet6_bind")
-int BPF_PROG(inet6_bind, struct socket *sock, struct sockaddr *uaddr,
-             int addr_len, int ret) {
-  if (ret) {
-    return 0;
-  }
-  update_map_elem_by_sk(sock->sk);
-  return 0;
-}
 SEC("license") const char __license[] = "Dual BSD/GPL";

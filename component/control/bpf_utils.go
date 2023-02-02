@@ -6,7 +6,9 @@
 package control
 
 import (
+	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
@@ -98,43 +100,6 @@ func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.B
 	}
 }
 
-type bpfObjectsLan struct {
-	// FIXME: Consider to update me if any program added.
-	//bpfPrograms
-	TproxyEgress  *ebpf.Program `ebpf:"tproxy_egress"`
-	TproxyIngress *ebpf.Program `ebpf:"tproxy_ingress"`
-
-	bpfMaps
-}
-
-type bpfObjectsWan struct {
-	// FIXME: Consider to update me if any program added.
-	//bpfPrograms
-	Inet6Bind        *ebpf.Program `ebpf:"inet6_bind"`
-	InetAutobind     *ebpf.Program `ebpf:"inet_autobind"`
-	InetBind         *ebpf.Program `ebpf:"inet_bind"`
-	InetRelease      *ebpf.Program `ebpf:"inet_release"`
-	InetSendPrepare  *ebpf.Program `ebpf:"inet_send_prepare"`
-	TcpConnect       *ebpf.Program `ebpf:"tcp_connect"`
-	TproxyWanEgress  *ebpf.Program `ebpf:"tproxy_wan_egress"`
-	TproxyWanIngress *ebpf.Program `ebpf:"tproxy_wan_ingress"`
-
-	bpfMaps
-}
-
-func IsNotSupportFtraceError(err error) bool {
-	// FATA[0001] loading objects: field Inet6Bind: program
-	// inet6_bind: load program: invalid argument
-	return strings.HasSuffix(err.Error(), os.ErrInvalid.Error()) && strings.Contains(err.Error(),
-		"field Inet6Bind: program") // FIXME: Consider to update me if any program added.
-}
-
-func IsNoBtfError(err error) bool {
-	// FATA[0001] loading objects: field Inet6Bind: program inet6_bind:
-	// apply CO-RE relocations: load kernel spec: no BTF found for kernel version 5.15.90: not supported
-	return strings.Contains(err.Error(), "no BTF found for kernel version")
-}
-
 func AssignBpfObjects(to *bpfObjects, from interface{}) {
 	vTo := reflect.Indirect(reflect.ValueOf(to))
 	vFrom := reflect.Indirect(reflect.ValueOf(from))
@@ -159,4 +124,26 @@ func AssignBpfObjects(to *bpfObjects, from interface{}) {
 		fieldTo := vTo.FieldByName(structFieldFrom.Name)
 		fieldTo.Set(fieldFrom)
 	}
+}
+
+// detectCgroupPath returns the first-found mount point of type cgroup2
+// and stores it in the cgroupPath global variable.
+// Copied from https://github.com/cilium/ebpf/blob/v0.10.0/examples/cgroup_skb/main.go
+func detectCgroupPath() (string, error) {
+	f, err := os.Open("/proc/mounts")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		// example fields: cgroup2 /sys/fs/cgroup/unified cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
+		fields := strings.Split(scanner.Text(), " ")
+		if len(fields) >= 3 && fields[2] == "cgroup2" {
+			return fields[1], nil
+		}
+	}
+
+	return "", errors.New("cgroup2 not mounted")
 }

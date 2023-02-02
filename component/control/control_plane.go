@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
-	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
@@ -22,7 +21,6 @@ import (
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
-	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
@@ -36,14 +34,12 @@ import (
 )
 
 type ControlPlane struct {
-	log *logrus.Logger
-
-	kernelVersion *internal.Version
+	*ControlPlaneCore
+	deferFuncs []func() error
 
 	// TODO: add mutex?
 	outbounds       []*outbound.DialerGroup
 	outboundName2Id map[string]uint8
-	bpf             *bpfObjects
 
 	SimulatedLpmTries  [][]netip.Prefix
 	SimulatedDomainSet []DomainSet
@@ -53,8 +49,6 @@ type ControlPlane struct {
 	mutex       sync.Mutex
 	dnsCache    map[string]*dnsCache
 	dnsUpstream netip.AddrPort
-
-	deferFuncs []func() error
 }
 
 func NewControlPlane(
@@ -65,8 +59,8 @@ func NewControlPlane(
 	dnsUpstream string,
 	checkUrl string,
 	checkInterval time.Duration,
-	bindLan bool,
-	bindWan bool,
+	lanInterface []string,
+	wanInterface []string,
 ) (c *ControlPlane, err error) {
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -74,11 +68,6 @@ func NewControlPlane(
 	}
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v", c.kernelVersion.String(), consts.BasicFeatureVersion.String())
-	}
-	if bindWan && kernelVersion.Less(consts.FtraceFeatureVersion) {
-		// Not support ftrace (fentry/fexit).
-		// PID bypass needs it.
-		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", c.kernelVersion.String(), consts.FtraceFeatureVersion.String())
 	}
 
 	// Allow the current process to lock memory for eBPF resources.
@@ -89,18 +78,22 @@ func NewControlPlane(
 	os.MkdirAll(pinPath, 0755)
 
 	// Load pre-compiled programs and maps into the kernel.
+	log.Infof("Loading eBPF programs and maps into the kernel")
 	var bpf bpfObjects
 	var ProgramOptions ebpf.ProgramOptions
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		ProgramOptions = ebpf.ProgramOptions{
-			LogLevel: ebpf.LogLevelStats,
+			LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
 		}
 	}
-	var obj interface{} = &bpf // Bind both LAN and WAN.
-	if bindLan && !bindWan {
-		// Trick. Replace the beams with rotten timbers.
+
+	// Trick. Replace the beams with rotten timbers to reduce the loading.
+	var obj interface{} = &bpf // Bind to both LAN and WAN.
+	if len(lanInterface) > 0 && len(wanInterface) == 0 {
+		// Only bind LAN.
 		obj = &bpfObjectsLan{}
-	} else if !bindLan && bindWan {
+	} else if len(wanInterface) == 0 && len(wanInterface) > 0 {
+		// Only bind to WAN.
 		// Trick. Replace the beams with rotten timbers.
 		obj = &bpfObjectsWan{}
 	}
@@ -126,20 +119,14 @@ retryLoadBpf:
 		// Get detailed log from ebpf.internal.(*VerifierError)
 		if log.IsLevelEnabled(logrus.TraceLevel) {
 			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
-				if log := v.FieldByName("Log"); log.IsValid() {
-					if strSlice, ok := log.Interface().([]string); ok {
-						err = fmt.Errorf("%v", strings.Join(strSlice, "\n"))
+				if _log := v.FieldByName("Log"); _log.IsValid() {
+					if strSlice, ok := _log.Interface().([]string); ok {
+						log.Traceln(strings.Join(strSlice, "\n"))
 					}
 				}
 			}
 		}
-		err := fmt.Errorf("loading objects: %w", err)
-		if IsNotSupportFtraceError(err) {
-			err = fmt.Errorf("%w: Maybe your kernel has no ftrace support. Make sure the kernel config items are on: CONFIG_FUNCTION_TRACER, CONFIG_FUNCTION_GRAPH_TRACER, CONFIG_STACK_TRACER, CONFIG_DYNAMIC_FTRACE", err)
-		} else if IsNoBtfError(err) {
-			err = fmt.Errorf("%w: Make sure the kernel config item is on: CONFIG_DEBUG_INFO_BTF", err)
-		}
-		return nil, err
+		return nil, fmt.Errorf("loading objects: %w", err)
 	}
 	if _, ok := obj.(*bpfObjects); !ok {
 		// Reverse takeover.
@@ -172,6 +159,25 @@ retryLoadBpf:
 	}
 	if err = bpf.IpprotoHdrsizeMap.Update(uint32(unix.IPPROTO_UDP), int32(-2), ebpf.UpdateAny); err != nil {
 		return nil, err
+	}
+
+	core := &ControlPlaneCore{
+		log:           log,
+		deferFuncs:    []func() error{bpf.Close},
+		bpf:           &bpf,
+		kernelVersion: &kernelVersion,
+	}
+
+	// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
+	for _, ifname := range lanInterface {
+		if err = core.BindLan(ifname); err != nil {
+			return nil, fmt.Errorf("BindLan: %v: %w", ifname, err)
+		}
+	}
+	for _, ifname := range wanInterface {
+		if err = core.BindWan(ifname); err != nil {
+			return nil, fmt.Errorf("BindWan: %v: %w", ifname, err)
+		}
 	}
 
 	// DialerGroups (outbounds).
@@ -270,280 +276,17 @@ retryLoadBpf:
 	}
 
 	return &ControlPlane{
-		log:                log,
-		kernelVersion:      &kernelVersion,
+		ControlPlaneCore:   core,
+		deferFuncs:         nil,
 		outbounds:          outbounds,
 		outboundName2Id:    outboundName2Id,
-		bpf:                &bpf,
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
 		SimulatedDomainSet: builder.SimulatedDomainSet,
 		Final:              routingA.Final,
 		mutex:              sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
 		dnsUpstream:        dnsAddrPort,
-		deferFuncs:         []func() error{bpf.Close},
 	}, nil
-}
-
-func (c *ControlPlane) BindLan(ifname string) error {
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return err
-	}
-	// Insert an elem into IfindexIpsMap.
-	// TODO: We should monitor IP change of the link.
-	ipnets, err := netlink.AddrList(link, netlink.FAMILY_ALL)
-	if err != nil {
-		return err
-	}
-	// TODO: If we monitor IP change of the link, we should remove code below.
-	if len(ipnets) == 0 {
-		return fmt.Errorf("interface %v has no ip", ifname)
-	}
-	var linkIp bpfIfIp
-	for _, ipnet := range ipnets {
-		ip, ok := netip.AddrFromSlice(ipnet.IP)
-		if !ok {
-			continue
-		}
-		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			continue
-		}
-		if (ip.Is6() && linkIp.HasIp6) ||
-			(ip.Is4() && linkIp.HasIp4) {
-			continue
-		}
-		ip6format := ip.As16()
-		if ip.Is4() {
-			linkIp.HasIp4 = true
-			linkIp.Ip4 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
-		} else {
-			linkIp.HasIp6 = true
-			linkIp.Ip6 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
-		}
-		if linkIp.HasIp4 && linkIp.HasIp6 {
-			break
-		}
-	}
-	if err := c.bpf.IfindexTproxyIpMap.Update(uint32(link.Attrs().Index), linkIp, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update IfindexIpsMap: %w", err)
-	}
-	// FIXME: not only this link ip.
-	if linkIp.HasIp4 {
-		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
-			PrefixLen: 128,
-			Data:      linkIp.Ip4,
-		}, uint32(1), ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("update IfindexIpsMap: %w", err)
-		}
-	}
-	if linkIp.HasIp6 {
-		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
-			PrefixLen: 128,
-			Data:      linkIp.Ip6,
-		}, uint32(1), ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("update IfindexIpsMap: %w", err)
-		}
-	}
-
-	// Insert qdisc and filters.
-	qdisc := &netlink.GenericQdisc{
-		QdiscAttrs: netlink.QdiscAttrs{
-			LinkIndex: link.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Parent:    netlink.HANDLE_CLSACT,
-		},
-		QdiscType: "clsact",
-	}
-	if err := netlink.QdiscAdd(qdisc); err != nil {
-		if os.IsExist(err) {
-			_ = netlink.QdiscDel(qdisc)
-			err = netlink.QdiscAdd(qdisc)
-		}
-
-		if err != nil {
-			return fmt.Errorf("cannot add clsact qdisc: %w", err)
-		}
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.QdiscDel(qdisc); err != nil {
-			return fmt.Errorf("QdiscDel: %w", err)
-		}
-		return nil
-	})
-
-	filterIngress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0, 1),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyIngress.FD(),
-		Name:         consts.AppName + "_ingress",
-		DirectAction: true,
-	}
-	if err := netlink.FilterAdd(filterIngress); err != nil {
-		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
-	}
-	filterEgress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0, 1),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyEgress.FD(),
-		Name:         consts.AppName + "_egress",
-		DirectAction: true,
-	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
-		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
-	}
-	return nil
-}
-
-func (c *ControlPlane) BindWan(ifname string) error {
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return err
-	}
-
-	// Set-up SrcPidMapper.
-	// Attach programs to support pname routing.
-
-	// ipv4 tcp/udp: send
-	inetSendPrepare, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
-		Program: c.bpf.InetSendPrepare,
-	})
-	if err != nil {
-		return fmt.Errorf("AttachTracing InetSendPrepare: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := inetSendPrepare.Close(); err != nil {
-			return fmt.Errorf("inetSendPrepare.Close(): %w", err)
-		}
-		return nil
-	})
-
-	// ipv4 tcp/udp: listen
-	inetBind, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
-		Program: c.bpf.InetBind,
-	})
-	if err != nil {
-		return fmt.Errorf("AttachTracing InetBind: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := inetBind.Close(); err != nil {
-			return fmt.Errorf("inetBind.Close(): %w", err)
-		}
-		return nil
-	})
-
-	// ipv4 udp: sendto/sendmsg
-	inetAutoBind, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
-		Program: c.bpf.InetAutobind,
-	})
-	if err != nil {
-		return fmt.Errorf("AttachTracing InetAutobind: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := inetAutoBind.Close(); err != nil {
-			return fmt.Errorf("inetAutoBind.Close(): %w", err)
-		}
-		return nil
-	})
-
-	// ipv4 tcp: connect
-	tcpConnect, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
-		Program: c.bpf.TcpConnect,
-	})
-	if err != nil {
-		return fmt.Errorf("AttachTracing TcpConnect: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := tcpConnect.Close(); err != nil {
-			return fmt.Errorf("inetStreamConnect.Close(): %w", err)
-		}
-		return nil
-	})
-
-	// ipv6 tcp/udp: listen
-	inet6Bind, err := ciliumLink.AttachTracing(ciliumLink.TracingOptions{
-		Program: c.bpf.Inet6Bind,
-	})
-	if err != nil {
-		return fmt.Errorf("AttachTracing Inet6Bind: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := inet6Bind.Close(); err != nil {
-			return fmt.Errorf("inet6Bind.Close(): %w", err)
-		}
-		return nil
-	})
-
-	// Insert qdisc and tc filters.
-	qdisc := &netlink.GenericQdisc{
-		QdiscAttrs: netlink.QdiscAttrs{
-			LinkIndex: link.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Parent:    netlink.HANDLE_CLSACT,
-		},
-		QdiscType: "clsact",
-	}
-	if err := netlink.QdiscAdd(qdisc); err != nil {
-		if os.IsExist(err) {
-			_ = netlink.QdiscDel(qdisc)
-			err = netlink.QdiscAdd(qdisc)
-		}
-
-		if err != nil {
-			return fmt.Errorf("cannot add clsact qdisc: %w", err)
-		}
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.QdiscDel(qdisc); err != nil {
-			return fmt.Errorf("QdiscDel: %w", err)
-		}
-		return nil
-	})
-
-	filterEgress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0, 1),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyWanEgress.FD(),
-		Name:         consts.AppName + "_egress",
-		DirectAction: true,
-	}
-
-	if err := netlink.FilterAdd(filterEgress); err != nil {
-		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
-	}
-
-	filterIngress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0, 1),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyWanIngress.FD(),
-		Name:         consts.AppName + "_ingress",
-		DirectAction: true,
-	}
-
-	if err := netlink.FilterAdd(filterIngress); err != nil {
-		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
-	}
-	return nil
 }
 
 func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
@@ -632,5 +375,5 @@ func (c *ControlPlane) Close() (err error) {
 			}
 		}
 	}
-	return err
+	return c.ControlPlaneCore.Close()
 }

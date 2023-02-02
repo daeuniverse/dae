@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxRoutingLen / 32]uint32) {
+func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxMatchSetLen / 32]uint32) {
 	// TODO: high performance implementation.
 	for _, s := range c.SimulatedDomainSet {
 		for _, d := range s.Domains {

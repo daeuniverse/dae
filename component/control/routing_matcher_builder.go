@@ -179,7 +179,7 @@ func (b *RoutingMatcherBuilder) AddL4Proto(f *config_parser.Function, values con
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersion, outbound string) {
+func (b *RoutingMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string) {
 	if b.err != nil {
 		return
 	}

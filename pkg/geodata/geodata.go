@@ -49,7 +49,7 @@ func UnmarshalGeoIp(log *logrus.Logger, filepath, code string) (*GeoIP, error) {
 		return nil, err
 	}
 
-	return nil, fmt.Errorf("country code %v not found in %v", code, filepath)
+	return nil, fmt.Errorf("code %v not found in %v", code, filepath)
 }
 
 func UnmarshalGeoSite(log *logrus.Logger, filepath, code string) (*GeoSite, error) {
@@ -63,7 +63,7 @@ func UnmarshalGeoSite(log *logrus.Logger, filepath, code string) (*GeoSite, erro
 		return &geosite, nil
 
 	case errCodeNotFound:
-		return nil, fmt.Errorf("list %V not found in %v", code, filepath)
+		return nil, fmt.Errorf("code %v not found in %v", code, filepath)
 
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
 		errInvalidGeodataFile, errInvalidGeodataVarintLength:
@@ -86,5 +86,5 @@ func UnmarshalGeoSite(log *logrus.Logger, filepath, code string) (*GeoSite, erro
 		return nil, err
 	}
 
-	return nil, fmt.Errorf("list %v not found in %v", code, filepath)
+	return nil, fmt.Errorf("code %v not found in %v", code, filepath)
 }

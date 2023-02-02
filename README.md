@@ -39,46 +39,13 @@ This feature requires the kernel version of machine on which dae install >= 5.2.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-**Bind to WAN: >= 5.5**
+**Bind to WAN: >= 5.7**
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
-This feature requires kernel version of the machine >= 5.5.
+This feature requires kernel version of the machine >= 5.2.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
-
-### Kernel Configuration Item
-
-Usually, mainstream desktop distributions have these items turned on. But on embedded Linux distributions like OpenWRT, Armbian, etc, in order to reduce kernel size, some items are turned off by default. You need to re-compile the kernel and turn them on.
-
-Use following commands to check the kernel configuration items on your machine.
-
-```shell
-zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)
-```
-
-**Bind to LAN**
-
-```
-CONFIG_DEBUG_INFO_BTF
-```
-
-**Bind to WAN**:
-
-```
-CONFIG_DEBUG_INFO_BTF
-
-CONFIG_FUNCTION_TRACER
-CONFIG_FUNCTION_GRAPH_TRACER
-CONFIG_STACK_TRACER
-CONFIG_DYNAMIC_FTRACE
-```
-
-Check them using command like:
-
-```shell
-(zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)) | grep -E '(CONFIG_DEBUG_INFO_BTF|CONFIG_STACK_TRACER|CONFIG_FUNCTION_TRACER|CONFIG_FUNCTION_GRAPH_TRACER|CONFIG_STACK_TRACER|CONFIG_DYNAMIC_FTRACE)='
-```
 
 ## TODO
 
