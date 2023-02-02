@@ -29,11 +29,19 @@ type _bpfPortRange struct {
 	PortEnd   uint16
 }
 
-func (r _bpfPortRange) Encode() uint32 {
-	var b [4]byte
-	binary.BigEndian.PutUint16(b[:2], r.PortStart)
-	binary.BigEndian.PutUint16(b[2:], r.PortEnd)
-	return binary.BigEndian.Uint32(b[:])
+type _bpfMatchSet struct {
+	// TODO: Need sync with C code.
+	Value    [16]byte
+	Type     uint8
+	Not      bool
+	Outbound uint8
+	_        [1]byte
+}
+
+func (r _bpfPortRange) Encode() (b [16]byte) {
+	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
+	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)
+	return b
 }
 
 func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {

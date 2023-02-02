@@ -3,20 +3,17 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
  */
-#include <asm-generic/errno-base.h>
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/in.h>
-#include <linux/in6.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/pkt_cls.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
-#include <stdbool.h>
+#include "headers/if_ether_defs.h"
+#include "headers/pkt_cls_defs.h"
+#include "headers/socket_defs.h"
+#include "headers/vmlinux.h"
 
+#include <asm-generic/errno-base.h>
+
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -53,6 +50,8 @@
 #define MAX_DST_MAPPING_NUM (65536 * 2)
 #define MAX_SRC_PID_PNAME_MAPPING_NUM (65536)
 #define IPV6_MAX_EXTENSIONS 4
+#define MAX_ARG_LEN_TO_PROBE 192
+#define MAX_ARG_SCANNER_BUFFER_SIZE (TASK_COMM_LEN * 4)
 
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
@@ -229,6 +228,7 @@ struct port_range {
  */
 struct match_set {
   union {
+    /// NOTICE: MUST sync with component/control/bpf_utils.go.
     __u32 __value; // Placeholder for bpf2go.
 
     __u32 index;
@@ -827,13 +827,13 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
 
   /// TODO: BPF_MAP_UPDATE_BATCH ?
   __u32 key = MatchType_L4Proto;
-  if ((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_l4proto_type,
-                                 BPF_ANY))) {
+  if (unlikely((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key,
+                                          &_l4proto_type, BPF_ANY)))) {
     return ret;
   };
   key = MatchType_IpVersion;
-  if ((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_ipversion_type,
-                                 BPF_ANY))) {
+  if (unlikely((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key,
+                                          &_ipversion_type, BPF_ANY)))) {
     return ret;
   };
 
@@ -849,11 +849,13 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
   }
 
   key = MatchType_SourcePort;
-  if ((ret = bpf_map_update_elem(&h_port_map, &key, &h_sport, BPF_ANY))) {
+  if (unlikely(
+          (ret = bpf_map_update_elem(&h_port_map, &key, &h_sport, BPF_ANY)))) {
     return ret;
   };
   key = MatchType_Port;
-  if ((ret = bpf_map_update_elem(&h_port_map, &key, &h_dport, BPF_ANY))) {
+  if (unlikely(
+          (ret = bpf_map_update_elem(&h_port_map, &key, &h_dport, BPF_ANY)))) {
     return ret;
   };
 
@@ -862,7 +864,7 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
   if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
     struct ip_port *upstream =
         bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
-    if (!upstream) {
+    if (unlikely(!upstream)) {
       return -EFAULT;
     }
     h_dport = bpf_ntohs(upstream->port);
@@ -875,21 +877,21 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
   __builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
   // bpf_printk("mac: %pI6", mac);
   key = MatchType_IpSet;
-  if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
-                                 BPF_ANY))) {
+  if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
+                                          BPF_ANY)))) {
     return ret;
   };
   __builtin_memcpy(lpm_key_instance.data, saddr, IPV6_BYTE_LENGTH);
   key = MatchType_SourceIpSet;
-  if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
-                                 BPF_ANY))) {
+  if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
+                                          BPF_ANY)))) {
     return ret;
   };
   if (!_is_wan) {
     __builtin_memcpy(lpm_key_instance.data, mac, IPV6_BYTE_LENGTH);
     key = MatchType_Mac;
-    if ((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
-                                   BPF_ANY))) {
+    if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key,
+                                            &lpm_key_instance, BPF_ANY)))) {
       return ret;
     };
   }
@@ -909,7 +911,7 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
   for (__u32 i = 0; i < MAX_MATCH_SET_LEN; i++) {
     __u32 k = i; // Clone to pass code checker.
     match_set = bpf_map_lookup_elem(&routing_map, &k);
-    if (!match_set) {
+    if (unlikely(!match_set)) {
       return -EFAULT;
     }
     if (bad_rule || good_subrule) {
@@ -980,8 +982,8 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
       if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
         good_subrule = true;
       }
-    } else if (_is_wan && match_set->type == MatchType_ProcessName) {
-      if ((equal_ipv6_format(match_set->pname, _pname))) {
+    } else if (match_set->type == MatchType_ProcessName) {
+      if (_is_wan && equal_ipv6_format(match_set->pname, _pname)) {
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_Final) {
@@ -1298,7 +1300,7 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
     if (p) {
       *p = NULL;
     }
-    if ((skb->mark & 0x80) == 0x80) {
+    if ((skb->mark & 0x100) == 0x100) {
       bpf_printk("No pid_pname found. But it should not happen");
       /*
       if (l4proto == IPPROTO_TCP) {
@@ -1934,7 +1936,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 }
 
 static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
-  if (!cookie) {
+  if (unlikely(!cookie)) {
     bpf_printk("zero cookie");
     return -EINVAL;
   }
@@ -1943,15 +1945,60 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
   // Build value.
   struct pid_pname val;
   __builtin_memset(&val, 0, sizeof(struct pid_pname));
-  val.pid = bpf_get_current_pid_tgid() >> 32;
-  //  struct task_struct *t = (void *)bpf_get_current_task();
-  if ((ret = bpf_get_current_comm(val.pname, sizeof(val.pname)))) {
-    return ret;
+  char buf[MAX_ARG_SCANNER_BUFFER_SIZE] = {0};
+  struct task_struct *current = (void *)bpf_get_current_task();
+  unsigned long arg_start = BPF_CORE_READ(current, mm, arg_start);
+  unsigned long arg_end = BPF_CORE_READ(current, mm, arg_end);
+  unsigned long arg_len = arg_end - arg_start;
+  if (arg_len > MAX_ARG_LEN_TO_PROBE) {
+    arg_len = MAX_ARG_LEN_TO_PROBE;
   }
 
+  /**
+  For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
+  We extract "sddm-helper" from it.
+  */
+  unsigned long loc, j;
+  unsigned long last_slash = -1;
+#pragma unroll
+  for (loc = 0, j = 0; j < MAX_ARG_LEN_TO_PROBE;
+       ++j, loc = ((loc + 1) & (MAX_ARG_SCANNER_BUFFER_SIZE - 1))) {
+    // volatile unsigned long k = j; // Cheat to unroll.
+    // if (arg_start + k >= arg_end) {
+    if (unlikely(arg_start + j >= arg_end)) {
+      break;
+    }
+    if (unlikely(loc == 0)) {
+      /// WANRING: Do NOT use bpf_core_read_user_str, it will bring terminator
+      /// 0.
+      // __builtin_memset(&buf, 0, MAX_ARG_SCANNER_BUFFER_SIZE);
+      unsigned long to_read = arg_end - (arg_start + j);
+      if (to_read >= MAX_ARG_SCANNER_BUFFER_SIZE) {
+        to_read = MAX_ARG_SCANNER_BUFFER_SIZE;
+      } else {
+        buf[to_read] = 0;
+      }
+      bpf_core_read_user(&buf, to_read, arg_start + j);
+    }
+    if (unlikely(buf[loc] == '/')) {
+      last_slash = j;
+    } else if (unlikely(buf[loc] == ' ' || buf[loc] == 0)) {
+      break;
+    }
+  }
+  ++last_slash;
+  unsigned long length_cpy = j - last_slash;
+  if (length_cpy > TASK_COMM_LEN) {
+    length_cpy = TASK_COMM_LEN;
+  }
+  bpf_core_read_user(&val.pname, length_cpy, arg_start + last_slash);
+  val.pid = bpf_get_current_pid_tgid() >> 32;
+  // bpf_printk("a start_end: %lu %lu", arg_start, arg_end);
+  // bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);
+
   // Update map.
-  if ((ret =
-           bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_NOEXIST))) {
+  if (unlikely(ret = bpf_map_update_elem(&cookie_pid_map, &cookie, &val,
+                                         BPF_NOEXIST))) {
     // bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
     return ret;
   }
@@ -1970,7 +2017,7 @@ int tproxy_wan_cg_sock_create(struct bpf_sock *sk) {
 SEC("cgroup/sock_release")
 int tproxy_wan_cg_sock_release(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
-  if (!cookie) {
+  if (unlikely(!cookie)) {
     bpf_printk("zero cookie");
     return 1;
   }

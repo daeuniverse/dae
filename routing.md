@@ -45,7 +45,7 @@ ipversion(6) -> ipv6_group
 # Source MAC rule
 mac('02:42:ac:11:00:02') -> direct
 
-# Process Name rule (Only support local process)
+# Process Name rule (only support local process)
 pname(curl) -> direct
 
 # Multiple domains rule

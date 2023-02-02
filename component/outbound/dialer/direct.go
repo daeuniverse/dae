@@ -106,7 +106,7 @@ func init() {
 func SoMarkControl(c syscall.RawConn) error {
 	return c.Control(func(fd uintptr) {
 		//TODO: force to set 0xff. any chances to customize this value?
-		err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, fwmarkIoctl, 0x80)
+		err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, fwmarkIoctl, 0x100)
 		if err != nil {
 			return
 		}

@@ -83,7 +83,8 @@ func NewControlPlane(
 	var ProgramOptions ebpf.ProgramOptions
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		ProgramOptions = ebpf.ProgramOptions{
-			LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
+			LogLevel: ebpf.LogLevelBranch | ebpf.LogLevelStats,
+			//LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
 		}
 	}
 
@@ -92,7 +93,7 @@ func NewControlPlane(
 	if len(lanInterface) > 0 && len(wanInterface) == 0 {
 		// Only bind LAN.
 		obj = &bpfObjectsLan{}
-	} else if len(wanInterface) == 0 && len(wanInterface) > 0 {
+	} else if len(lanInterface) == 0 && len(wanInterface) > 0 {
 		// Only bind to WAN.
 		// Trick. Replace the beams with rotten timbers.
 		obj = &bpfObjectsWan{}
