@@ -4,7 +4,6 @@
  * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
  */
 #include <asm-generic/errno-base.h>
-#include <errno.h>
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/in.h>
