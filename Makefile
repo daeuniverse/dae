@@ -32,6 +32,9 @@ clean-ebpf:
 		rm -f component/control/bpf_bpf*.o
 
 bpf_objects:
+	unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
 	if [ ! -f component/control/bpf_objects_wan_lan.go ]; then \
 		go run github.com/v2rayA/dae/cmd/internal/generate_bpf_objects/dummy -o component/control/bpf_objects_wan_lan.go; \
 	fi
