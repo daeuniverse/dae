@@ -98,4 +98,4 @@ const (
 
 var BasicFeatureVersion = internal.Version{5, 2, 0}
 var FtraceFeatureVersion = internal.Version{5, 5, 0}
-var CgGetPidFeatureVersion = internal.Version{5, 7, 0}
+var CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}

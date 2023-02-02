@@ -1992,7 +1992,7 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     length_cpy = TASK_COMM_LEN;
   }
   bpf_core_read_user(&val.pname, length_cpy, arg_start + last_slash);
-  val.pid = bpf_get_current_pid_tgid() >> 32;
+  val.pid = BPF_CORE_READ(current, tgid);
   // bpf_printk("a start_end: %lu %lu", arg_start, arg_end);
   // bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);
 
