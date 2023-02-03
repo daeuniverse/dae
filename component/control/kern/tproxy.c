@@ -338,16 +338,16 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
     __be32 _new_ip = new_ip[3];
 
     int ret;
-    __sum16 test;
-    bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
-    bpf_printk("rewrite ip before: %x, %pI4->%pI4", test, &_old_ip, &_new_ip);
+    // __sum16 test;
+    // bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
+    // bpf_printk("rewrite ip before: %x, %pI4->%pI4", test, &_old_ip, &_new_ip);
     if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, _old_ip, _new_ip,
                                    l4flags | sizeof(_new_ip)))) {
       bpf_printk("bpf_l4_csum_replace: %d", ret);
       return ret;
     }
-    bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
-    bpf_printk("rewrite ip after: %x", test);
+    // bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
+    // bpf_printk("rewrite ip after: %x", test);
 
     if ((ret = bpf_l3_csum_replace(skb, IPV4_CSUM_OFF, _old_ip, _new_ip,
                                    sizeof(_new_ip)))) {
@@ -418,19 +418,19 @@ static __always_inline int rewrite_port(struct __sk_buff *skb, __u8 proto,
   // bpf_printk("%u -> %u", bpf_ntohs(old_port), bpf_ntohs(new_port));
 
   int ret;
-  __sum16 test;
-  if (!bpf_skb_load_bytes(skb, cksm_off, &test, sizeof(test))) {
-    bpf_printk("rewrite port before: %x, %u->%u", test, bpf_ntohs(old_port),
-               bpf_ntohs(new_port));
-  }
+  // __sum16 test;
+  // if (!bpf_skb_load_bytes(skb, cksm_off, &test, sizeof(test))) {
+  //   bpf_printk("rewrite port before: %x, %u->%u", test, bpf_ntohs(old_port),
+  //              bpf_ntohs(new_port));
+  // }
   if ((ret = bpf_l4_csum_replace(skb, cksm_off, old_port, new_port,
                                  l4flags | sizeof(new_port)))) {
     bpf_printk("bpf_l4_csum_replace: %d", ret);
     return ret;
   }
-  if (!bpf_skb_load_bytes(skb, cksm_off, &test, sizeof(test))) {
-    bpf_printk("rewrite port aftetr: %x", test);
-  }
+  // if (!bpf_skb_load_bytes(skb, cksm_off, &test, sizeof(test))) {
+  //   bpf_printk("rewrite port aftetr: %x", test);
+  // }
 
   if ((ret = bpf_skb_store_bytes(skb, port_off, &new_port, sizeof(new_port),
                                  0))) {
