@@ -69,8 +69,10 @@ enum {
 // Param keys:
 static const __u32 zero_key = 0;
 static const __u32 tproxy_port_key = 1;
-static const __u32 disable_l4_tx_checksum_key = 2;
-static const __u32 disable_l4_rx_checksum_key = 3;
+static const __u32 disable_l4_tx_checksum_key
+    __attribute__((unused, deprecated)) = 2;
+static const __u32 disable_l4_rx_checksum_key
+    __attribute__((unused, deprecated)) = 3;
 static const __u32 control_plane_pid_key = 4;
 
 struct ip_port {
@@ -290,6 +292,25 @@ struct {
 
 // Functions:
 
+#define CHECKSUM_NONE 0
+#define CHECKSUM_UNNECESSARY 1
+#define CHECKSUM_COMPLETE 2
+#define CHECKSUM_PARTIAL 3
+
+#define CHECKSUM_NONE_OR_PARTIAL 256
+
+static __always_inline __u16 bpf_get_ipsummed(struct __sk_buff *skb) {
+  __s64 csum = bpf_csum_update(skb, 0);
+  if (csum >= 0) {
+    return CHECKSUM_COMPLETE;
+  }
+  long csum_level = bpf_csum_level(skb, BPF_CSUM_LEVEL_QUERY);
+  if (csum_level != -EACCES) {
+    return CHECKSUM_UNNECESSARY;
+  }
+  return CHECKSUM_NONE_OR_PARTIAL;
+}
+
 static __always_inline bool equal_ipv6_format(const __be32 x[4],
                                               const __be32 y[4]) {
 #if __clang_major__ >= 10
@@ -340,7 +361,8 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
     int ret;
     // __sum16 test;
     // bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
-    // bpf_printk("rewrite ip before: %x, %pI4->%pI4", test, &_old_ip, &_new_ip);
+    // bpf_printk("rewrite ip before: %x, %pI4->%pI4", test, &_old_ip,
+    // &_new_ip);
     if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, _old_ip, _new_ip,
                                    l4flags | sizeof(_new_ip)))) {
       bpf_printk("bpf_l4_csum_replace: %d", ret);
@@ -722,7 +744,8 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
     return ret;
   }
   // Add room for new udp payload header.
-  if ((ret = bpf_skb_adjust_room(skb, newhdrlen, BPF_ADJ_ROOM_NET, 0))) {
+  if ((ret = bpf_skb_adjust_room(skb, newhdrlen, BPF_ADJ_ROOM_NET,
+                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
     bpf_printk("UDP ADJUST ROOM(encap): %d", ret);
     return ret;
   }
@@ -807,7 +830,8 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
   }
 
   // Adjust room to decap the header.
-  if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET, 0))) {
+  if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET,
+                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
     bpf_printk("UDP ADJUST ROOM(decap): %d", ret);
     return ret;
   }
@@ -1079,7 +1103,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct ipv6hdr ipv6h;
   struct tcphdr tcph;
   struct udphdr udph;
-  __sum16 bak_cksm = 0;
+  //  __sum16 bak_cksm = 0;
   __u8 ihl;
   __u8 ipversion;
   __u8 l4proto;
@@ -1137,7 +1161,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
   if (l4proto == IPPROTO_TCP) {
     // Backup for further use.
-    bak_cksm = tcph.check;
+    // bak_cksm = tcph.check;
     tcp_state_syn = tcph.syn && !tcph.ack;
     struct ip_port key_src;
     __builtin_memset(&key_src, 0, sizeof(key_src));
@@ -1213,7 +1237,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
     }
   } else if (l4proto == IPPROTO_UDP) {
     // Backup for further use.
-    bak_cksm = udph.check;
+    // bak_cksm = udph.check;
     struct ip_port_outbound new_hdr;
     __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
     __builtin_memcpy(new_hdr.ip, daddr, IPV6_BYTE_LENGTH);
@@ -1281,20 +1305,22 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   //   bpf_skb_load_bytes(skb, i, &t, 1);
   //   bpf_printk("%02x", t);
   // }
-  __u8 *disable_l4_checksum =
-      bpf_map_lookup_elem(&param_map, &disable_l4_rx_checksum_key);
-  if (!disable_l4_checksum) {
-    bpf_printk("Forgot to set disable_l4_checksum?");
-    return TC_ACT_SHOT;
-  }
-  if (*disable_l4_checksum) {
-    __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
-    // Restore the checksum or set it zero.
-    if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
-      bak_cksm = 0;
-    }
-    bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
-  }
+
+  // Do not disable checksum in rx.
+  // __u8 *disable_l4_checksum =
+  //     bpf_map_lookup_elem(&param_map, &disable_l4_rx_checksum_key);
+  // if (!disable_l4_checksum) {
+  //   bpf_printk("Forgot to set disable_l4_checksum?");
+  //   return TC_ACT_SHOT;
+  // }
+  // if (*disable_l4_checksum) {
+  //   __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
+  //   // Restore the checksum or set it zero.
+  //   if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
+  //     bak_cksm = 0;
+  //   }
+  //   bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
+  // }
   return TC_ACT_OK;
 }
 
@@ -1376,6 +1402,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
 
+  bpf_printk("ipsummed: %d", bpf_get_ipsummed(skb));
   // Parse saddr and daddr as ipv6 format.
   __be32 saddr[4];
   __be32 daddr[4];
@@ -1416,7 +1443,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
 
-  __sum16 bak_cksm = 0;
+  // __sum16 bak_cksm = 0;
 
   if (l4proto == IPPROTO_TCP) {
 
@@ -1435,7 +1462,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     }
 
     // Backup for further use.
-    bak_cksm = tcph.check;
+    // bak_cksm = tcph.check;
 
     __u32 *src_ip = saddr;
     __u16 src_port = tcph.source;
@@ -1452,7 +1479,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
   } else if (l4proto == IPPROTO_UDP) {
 
     // Backup for further use.
-    bak_cksm = udph.check;
+    // bak_cksm = udph.check;
     __u32 *src_ip = saddr;
     __u16 src_port = udph.source;
     /// NOTICE: Actually, we do not need symmetrical headers in client and
@@ -1493,20 +1520,20 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     // }
   }
 
-  __u8 *disable_l4_checksum =
-      bpf_map_lookup_elem(&param_map, &disable_l4_tx_checksum_key);
-  if (!disable_l4_checksum) {
-    bpf_printk("Forgot to set disable_l4_checksum?");
-    return TC_ACT_SHOT;
-  }
-  if (*disable_l4_checksum) {
-    __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
-    // Restore the checksum or set it zero.
-    if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
-      bak_cksm = 0;
-    }
-    bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
-  }
+  // __u8 *disable_l4_checksum =
+  //     bpf_map_lookup_elem(&param_map, &disable_l4_tx_checksum_key);
+  // if (!disable_l4_checksum) {
+  //   bpf_printk("Forgot to set disable_l4_checksum?");
+  //   return TC_ACT_SHOT;
+  // }
+  // if (*disable_l4_checksum) {
+  //   __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
+  //   // Restore the checksum or set it zero.
+  //   if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
+  //     bak_cksm = 0;
+  //   }
+  //   bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
+  // }
   return TC_ACT_OK;
 }
 
@@ -1964,10 +1991,10 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   //   }
   // }
 
-  __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
-  // Set checksum zero.
-  __sum16 bak_cksm = 0;
-  bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
+  // __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
+  // // Set checksum zero.
+  // __sum16 bak_cksm = 0;
+  // bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
   return TC_ACT_OK;
 }
 

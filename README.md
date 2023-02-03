@@ -31,19 +31,19 @@ See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
 
 Use `uname -r` to check the kernel version on your machine.
 
-**Bind to LAN: >= 5.2**
+**Bind to LAN: >= 5.8**
 
 You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
 
-This feature requires the kernel version of machine on which dae install >= 5.2.
+This feature requires the kernel version of machine on which dae install >= 5.8.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-**Bind to WAN: >= 5.7**
+**Bind to WAN: >= 5.8**
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
-This feature requires kernel version of the machine >= 5.7.
+This feature requires kernel version of the machine >= 5.8.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 

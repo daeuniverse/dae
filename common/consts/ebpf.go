@@ -97,7 +97,7 @@ const (
 )
 
 var (
-	BasicFeatureVersion          = internal.Version{5, 2, 0}
+	BasicFeatureVersion          = internal.Version{5, 8, 0} // Checksum related needs 5.8
 	FtraceFeatureVersion         = internal.Version{5, 5, 0}
 	CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}
 )
