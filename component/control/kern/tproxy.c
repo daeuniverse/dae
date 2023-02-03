@@ -1978,7 +1978,10 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
       } else {
         buf[to_read] = 0;
       }
-      bpf_core_read_user(&buf, to_read, arg_start + j);
+      if ((ret = bpf_core_read_user(&buf, to_read, arg_start + j))) {
+        bpf_printk("failed to read process name: %d", ret);
+        return ret;
+      }
     }
     if (unlikely(buf[loc] == '/')) {
       last_slash = j;
@@ -1991,7 +1994,11 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
   if (length_cpy > TASK_COMM_LEN) {
     length_cpy = TASK_COMM_LEN;
   }
-  bpf_core_read_user(&val.pname, length_cpy, arg_start + last_slash);
+  if ((ret = bpf_core_read_user(&val.pname, length_cpy,
+                                arg_start + last_slash))) {
+    bpf_printk("failed to read process name: %d", ret);
+    return ret;
+  }
   val.pid = BPF_CORE_READ(current, tgid);
   // bpf_printk("a start_end: %lu %lu", arg_start, arg_end);
   // bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);

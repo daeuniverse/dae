@@ -164,11 +164,6 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 }
 
 func (c *ControlPlaneCore) BindWan(ifname string) error {
-	if c.kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
-		return fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", c.kernelVersion.String(),
-			consts.CgSocketCookieFeatureVersion.String())
-	}
-
 	c.log.Infof("Bind to WAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
