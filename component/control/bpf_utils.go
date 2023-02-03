@@ -29,15 +29,6 @@ type _bpfPortRange struct {
 	PortEnd   uint16
 }
 
-type _bpfMatchSet struct {
-	// TODO: Need sync with C code.
-	Value    [16]byte
-	Type     uint8
-	Not      bool
-	Outbound uint8
-	_        [1]byte
-}
-
 func (r _bpfPortRange) Encode() (b [16]byte) {
 	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
 	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)

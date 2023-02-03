@@ -58,7 +58,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	if len(ipnets) == 0 {
 		return fmt.Errorf("interface %v has no ip", ifname)
 	}
-	var linkIp bpfIfIp
+	var linkIp bpfIfParams
 	for _, ipnet := range ipnets {
 		ip, ok := netip.AddrFromSlice(ipnet.IP)
 		if !ok {
@@ -67,27 +67,27 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			continue
 		}
-		if (ip.Is6() && linkIp.HasIp6) ||
-			(ip.Is4() && linkIp.HasIp4) {
+		if (ip.Is6() && (linkIp.Flag&consts.IfFlag_HasIp6) > 0) ||
+			(ip.Is4() && (linkIp.Flag&consts.IfFlag_HasIp4) > 0) {
 			continue
 		}
 		ip6format := ip.As16()
 		if ip.Is4() {
-			linkIp.HasIp4 = true
+			linkIp.Flag |= consts.IfFlag_HasIp4
 			linkIp.Ip4 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
 		} else {
-			linkIp.HasIp6 = true
+			linkIp.Flag |= consts.IfFlag_HasIp6
 			linkIp.Ip6 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
 		}
-		if linkIp.HasIp4 && linkIp.HasIp6 {
+		if (linkIp.Flag&consts.IfFlag_HasIp4) > 0 && (linkIp.Flag&consts.IfFlag_HasIp6) > 0 {
 			break
 		}
 	}
-	if err := c.bpf.IfindexTproxyIpMap.Update(uint32(link.Attrs().Index), linkIp, ebpf.UpdateAny); err != nil {
+	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), linkIp, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 	// FIXME: not only this link ip.
-	if linkIp.HasIp4 {
+	if (linkIp.Flag & consts.IfFlag_HasIp4) > 0 {
 		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
 			Data:      linkIp.Ip4,
@@ -95,7 +95,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 			return fmt.Errorf("update IfindexIpsMap: %w", err)
 		}
 	}
-	if linkIp.HasIp6 {
+	if (linkIp.Flag & consts.IfFlag_HasIp6) > 0 {
 		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
 			Data:      linkIp.Ip6,

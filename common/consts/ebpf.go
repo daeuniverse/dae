@@ -96,6 +96,16 @@ const (
 	IpVersion_X IpVersionType = 3
 )
 
-var BasicFeatureVersion = internal.Version{5, 2, 0}
-var FtraceFeatureVersion = internal.Version{5, 5, 0}
-var CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}
+var (
+	BasicFeatureVersion          = internal.Version{5, 2, 0}
+	FtraceFeatureVersion         = internal.Version{5, 5, 0}
+	CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}
+)
+
+const (
+	IfFlag_HasIp4 = 1 << iota
+	IfFlag_HasIp6
+	IfFlag_RxCksmOffload
+	IfFlag_TxL3CksmOffload
+	IfFlag_TxL4CksmOffload
+)
