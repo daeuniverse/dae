@@ -106,6 +106,6 @@ const (
 	IfFlag_HasIp4 = 1 << iota
 	IfFlag_HasIp6
 	IfFlag_RxCksmOffload
-	IfFlag_TxL3CksmOffload
-	IfFlag_TxL4CksmOffload
+	IfFlag_TxL4CksmIp4Offload
+	IfFlag_TxL4CksmIp6Offload
 )

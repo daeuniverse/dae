@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
+	"github.com/safchain/ethtool"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
@@ -42,23 +43,17 @@ func (c *ControlPlaneCore) Close() (err error) {
 	return err
 }
 
-func (c *ControlPlaneCore) BindLan(ifname string) error {
-	c.log.Infof("Bind to LAN: %v", ifname)
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return err
-	}
-	// Insert an elem into IfindexIpsMap.
+func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	// TODO: We should monitor IP change of the link.
 	ipnets, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 	if err != nil {
-		return err
+		return bpfIfParams{}, err
 	}
 	// TODO: If we monitor IP change of the link, we should remove code below.
 	if len(ipnets) == 0 {
-		return fmt.Errorf("interface %v has no ip", ifname)
+		return bpfIfParams{}, fmt.Errorf("interface %v has no ip", link.Attrs().Name)
 	}
-	var linkIp bpfIfParams
+	// Get first Ip4 and Ip6.
 	for _, ipnet := range ipnets {
 		ip, ok := netip.AddrFromSlice(ipnet.IP)
 		if !ok {
@@ -67,38 +62,75 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			continue
 		}
-		if (ip.Is6() && (linkIp.Flag&consts.IfFlag_HasIp6) > 0) ||
-			(ip.Is4() && (linkIp.Flag&consts.IfFlag_HasIp4) > 0) {
+		if (ip.Is6() && (ifParams.Flag&consts.IfFlag_HasIp6) > 0) ||
+			(ip.Is4() && (ifParams.Flag&consts.IfFlag_HasIp4) > 0) {
 			continue
 		}
 		ip6format := ip.As16()
 		if ip.Is4() {
-			linkIp.Flag |= consts.IfFlag_HasIp4
-			linkIp.Ip4 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
+			ifParams.Flag |= consts.IfFlag_HasIp4
+			ifParams.Ip4 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
 		} else {
-			linkIp.Flag |= consts.IfFlag_HasIp6
-			linkIp.Ip6 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
+			ifParams.Flag |= consts.IfFlag_HasIp6
+			ifParams.Ip6 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
 		}
-		if (linkIp.Flag&consts.IfFlag_HasIp4) > 0 && (linkIp.Flag&consts.IfFlag_HasIp6) > 0 {
+		if (ifParams.Flag&consts.IfFlag_HasIp4) > 0 && (ifParams.Flag&consts.IfFlag_HasIp6) > 0 {
 			break
 		}
 	}
-	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), linkIp, ebpf.UpdateAny); err != nil {
+	// Get link offload features.
+	et, err := ethtool.NewEthtool()
+	if err != nil {
+		return bpfIfParams{}, err
+	}
+	features, err := et.Features(link.Attrs().Name)
+	if err != nil {
+		return bpfIfParams{}, err
+	}
+	if features["tx-checksum-ip-generic"] {
+		ifParams.Flag |= consts.IfFlag_TxL4CksmIp4Offload
+		ifParams.Flag |= consts.IfFlag_TxL4CksmIp6Offload
+	}
+	if features["tx-checksum-ipv4"] {
+		ifParams.Flag |= consts.IfFlag_TxL4CksmIp4Offload
+	}
+	if features["tx-checksum-ipv6"] {
+		ifParams.Flag |= consts.IfFlag_TxL4CksmIp6Offload
+	}
+	if features["rx-checksum"] {
+		ifParams.Flag |= consts.IfFlag_RxCksmOffload
+	}
+	return ifParams, nil
+}
+
+func (c *ControlPlaneCore) BindLan(ifname string) error {
+	c.log.Infof("Bind to LAN: %v", ifname)
+	link, err := netlink.LinkByName(ifname)
+	if err != nil {
+		return err
+	}
+
+	/// Insert an elem into IfindexParamsMap.
+	ifParams, err := getIfParamsFromLink(link)
+	if err != nil {
+		return err
+	}
+	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 	// FIXME: not only this link ip.
-	if (linkIp.Flag & consts.IfFlag_HasIp4) > 0 {
+	if (ifParams.Flag & consts.IfFlag_HasIp4) > 0 {
 		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
-			Data:      linkIp.Ip4,
+			Data:      ifParams.Ip4,
 		}, uint32(1), ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update IfindexIpsMap: %w", err)
 		}
 	}
-	if (linkIp.Flag & consts.IfFlag_HasIp6) > 0 {
+	if (ifParams.Flag & consts.IfFlag_HasIp6) > 0 {
 		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
-			Data:      linkIp.Ip6,
+			Data:      ifParams.Ip6,
 		}, uint32(1), ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update IfindexIpsMap: %w", err)
 		}
@@ -168,6 +200,14 @@ func (c *ControlPlaneCore) BindWan(ifname string) error {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
+	}
+	/// Insert an elem into IfindexParamsMap.
+	ifParams, err := getIfParamsFromLink(link)
+	if err != nil {
+		return err
+	}
+	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 
 	/// Set-up SrcPidMapper.
