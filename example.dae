@@ -8,6 +8,7 @@ global {
 
     # Now only support UDP and IP:Port.
     # Please make sure DNS traffic will go through and be forwarded by dae.
+    # The upstream DNS answer MUST NOT be polluted.
     # The request to dns upstream follows routing defined below.
     dns_upstream: '8.8.8.8:53'
 
@@ -62,7 +63,7 @@ group {
 routing {
     # See routing.md for full examples.
 
-    ip(8.8.8.8) && port(53) -> direct
+    ip(8.8.8.8, 1.1.1.1) && port(53) -> my_group
 
     pname(firefox) && domain(ip.sb) -> direct
     pname(curl) && domain(ip.sb) -> my_group

@@ -18,6 +18,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 type _bpfLpmKey struct {
@@ -67,16 +68,22 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 	}
 }
 
+var (
+	CheckBatchUpdateFeatureOnce sync.Once
+	SimulateBatchUpdate         bool
+)
+
 func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
-	var old bool
-	version, e := internal.KernelVersion()
-	if e != nil || version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
-		old = true
-	}
-	if m.Type() == ebpf.LPMTrie && version.Less(consts.UserspaceBatchUpdateLpmTrieFeatureVersion) {
-		old = true
-	}
-	if !old {
+	CheckBatchUpdateFeatureOnce.Do(func() {
+		version, e := internal.KernelVersion()
+		if e != nil || version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
+			SimulateBatchUpdate = true
+		}
+		if m.Type() == ebpf.LPMTrie && version.Less(consts.UserspaceBatchUpdateLpmTrieFeatureVersion) {
+			SimulateBatchUpdate = true
+		}
+	})
+	if !SimulateBatchUpdate {
 		return m.BatchUpdate(keys, values, opts)
 	} else {
 		vKeys := reflect.ValueOf(keys)

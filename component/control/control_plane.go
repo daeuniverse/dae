@@ -90,7 +90,7 @@ func NewControlPlane(
 	log.Infof("Loading eBPF programs and maps into the kernel")
 	var bpf bpfObjects
 	var ProgramOptions ebpf.ProgramOptions
-	if log.IsLevelEnabled(logrus.TraceLevel) {
+	if log.Level == logrus.PanicLevel {
 		ProgramOptions = ebpf.ProgramOptions{
 			LogLevel: ebpf.LogLevelBranch | ebpf.LogLevelStats,
 			//LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
@@ -127,11 +127,11 @@ retryLoadBpf:
 			goto retryLoadBpf
 		}
 		// Get detailed log from ebpf.internal.(*VerifierError)
-		if log.IsLevelEnabled(logrus.TraceLevel) {
+		if log.Level == logrus.PanicLevel {
 			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
 				if _log := v.FieldByName("Log"); _log.IsValid() {
 					if strSlice, ok := _log.Interface().([]string); ok {
-						log.Traceln(strings.Join(strSlice, "\n"))
+						log.Panicln(strings.Join(strSlice, "\n"))
 					}
 				}
 			}

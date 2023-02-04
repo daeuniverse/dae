@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/cilium/ebpf"
+	"github.com/mohae/deepcopy"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"golang.org/x/net/dns/dnsmessage"
@@ -26,7 +28,15 @@ type dnsCache struct {
 }
 
 func (c *dnsCache) FillInto(req *dnsmessage.Message) {
-	req.Answers = c.Answers
+	req.Answers = deepcopy.Copy(c.Answers).([]dnsmessage.Resource)
+	// Align question and answer Name.
+	if len(req.Questions) > 0 {
+		q := req.Questions[0]
+		if len(req.Answers) > 0 &&
+			strings.EqualFold(req.Answers[0].Header.Name.String(), q.Name.String()) {
+			req.Answers[0].Header.Name.Data = q.Name.Data
+		}
+	}
 	req.RCode = dnsmessage.RCodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true
@@ -137,9 +147,8 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 		return data, nil
 	}
 	q := msg.Questions[0]
-	// If first answer is CNAME type, replace the Name with flipping-backed Name.
+	// Align question and answer Name.
 	if len(msg.Answers) > 0 &&
-		msg.Answers[0].Header.Type == dnsmessage.TypeCNAME &&
 		strings.EqualFold(msg.Answers[0].Header.Name.String(), q.Name.String()) {
 		msg.Answers[0].Header.Name.Data = q.Name.Data
 	}
@@ -174,6 +183,10 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 	}
 
 	// Update dnsCache.
+	c.log.WithFields(logrus.Fields{
+		"qname": q.Name,
+		"ans":   msg.Answers,
+	}).Tracef("Update DNS record cache")
 	c.mutex.Lock()
 	fqdn := strings.ToLower(q.Name.String())
 	cacheKey := fqdn + q.Type.String()
