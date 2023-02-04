@@ -97,15 +97,10 @@ const (
 )
 
 var (
-	BasicFeatureVersion          = internal.Version{5, 8, 0} // Checksum related needs 5.8
+	BasicFeatureVersion = internal.Version{5, 2, 0}
+	// Deprecated: Ftrace does not support arm64 yet (Linux 6.2).
 	FtraceFeatureVersion         = internal.Version{5, 5, 0}
+	BatchUpdateFeatureVersion    = internal.Version{5, 6, 0}
 	CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}
-)
-
-const (
-	IfFlag_HasIp4 = 1 << iota
-	IfFlag_HasIp6
-	IfFlag_RxCksmOffload
-	IfFlag_TxL4CksmIp4Offload
-	IfFlag_TxL4CksmIp6Offload
+	ChecksumFeatureVersion       = internal.Version{5, 8, 0}
 )

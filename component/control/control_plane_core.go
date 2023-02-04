@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 	"net/netip"
 	"os"
+	"regexp"
 )
 
 type ControlPlaneCore struct {
@@ -43,13 +44,12 @@ func (c *ControlPlaneCore) Close() (err error) {
 	return err
 }
 
-func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
+func getifParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	// TODO: We should monitor IP change of the link.
 	ipnets, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 	if err != nil {
 		return bpfIfParams{}, err
 	}
-	// TODO: If we monitor IP change of the link, we should remove code below.
 	if len(ipnets) == 0 {
 		return bpfIfParams{}, fmt.Errorf("interface %v has no ip", link.Attrs().Name)
 	}
@@ -62,19 +62,19 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			continue
 		}
-		if (ip.Is6() && (ifParams.Flag&consts.IfFlag_HasIp6) > 0) ||
-			(ip.Is4() && (ifParams.Flag&consts.IfFlag_HasIp4) > 0) {
+		if (ip.Is6() && ifParams.HasIp6) ||
+			(ip.Is4() && ifParams.HasIp4) {
 			continue
 		}
 		ip6format := ip.As16()
 		if ip.Is4() {
-			ifParams.Flag |= consts.IfFlag_HasIp4
+			ifParams.HasIp4 = true
 			ifParams.Ip4 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
 		} else {
-			ifParams.Flag |= consts.IfFlag_HasIp6
+			ifParams.HasIp6 = true
 			ifParams.Ip6 = common.Ipv6ByteSliceToUint32Array(ip6format[:])
 		}
-		if (ifParams.Flag&consts.IfFlag_HasIp4) > 0 && (ifParams.Flag&consts.IfFlag_HasIp6) > 0 {
+		if ifParams.HasIp4 && ifParams.HasIp6 {
 			break
 		}
 	}
@@ -83,22 +83,28 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	if err != nil {
 		return bpfIfParams{}, err
 	}
+	defer et.Close()
 	features, err := et.Features(link.Attrs().Name)
 	if err != nil {
 		return bpfIfParams{}, err
 	}
 	if features["tx-checksum-ip-generic"] {
-		ifParams.Flag |= consts.IfFlag_TxL4CksmIp4Offload
-		ifParams.Flag |= consts.IfFlag_TxL4CksmIp6Offload
+		ifParams.TxL4CksmIp4Offload = true
+		ifParams.TxL4CksmIp6Offload = true
 	}
 	if features["tx-checksum-ipv4"] {
-		ifParams.Flag |= consts.IfFlag_TxL4CksmIp4Offload
+		ifParams.TxL4CksmIp4Offload = true
 	}
 	if features["tx-checksum-ipv6"] {
-		ifParams.Flag |= consts.IfFlag_TxL4CksmIp6Offload
+		ifParams.TxL4CksmIp6Offload = true
 	}
 	if features["rx-checksum"] {
-		ifParams.Flag |= consts.IfFlag_RxCksmOffload
+		ifParams.RxCksmOffload = true
+	}
+	switch {
+	case regexp.MustCompile(`^docker\d+$`).MatchString(link.Attrs().Name):
+		ifParams.UseNonstandardOffloadAlgorithm = true
+	default:
 	}
 	return ifParams, nil
 }
@@ -111,15 +117,18 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	}
 
 	/// Insert an elem into IfindexParamsMap.
-	ifParams, err := getIfParamsFromLink(link)
+	ifParams, err := getifParamsFromLink(link)
 	if err != nil {
+		return err
+	}
+	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
 	}
 	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 	// FIXME: not only this link ip.
-	if (ifParams.Flag & consts.IfFlag_HasIp4) > 0 {
+	if ifParams.HasIp4 {
 		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
 			Data:      ifParams.Ip4,
@@ -127,7 +136,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 			return fmt.Errorf("update IfindexIpsMap: %w", err)
 		}
 	}
-	if (ifParams.Flag & consts.IfFlag_HasIp6) > 0 {
+	if ifParams.HasIp6 {
 		if err := c.bpf.HostIpLpm.Update(_bpfLpmKey{
 			PrefixLen: 128,
 			Data:      ifParams.Ip6,
@@ -202,8 +211,11 @@ func (c *ControlPlaneCore) BindWan(ifname string) error {
 		return err
 	}
 	/// Insert an elem into IfindexParamsMap.
-	ifParams, err := getIfParamsFromLink(link)
+	ifParams, err := getifParamsFromLink(link)
 	if err != nil {
+		return err
+	}
+	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
 	}
 	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {

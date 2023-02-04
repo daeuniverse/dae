@@ -159,16 +159,13 @@ struct {
 struct if_params {
   __be32 ip4[4];
   __be32 ip6[4];
-  union {
-    __u8 __flag; // Placeholder for bpf2go.
 
-    __u8 has_ip4 : 1;
-    __u8 has_ip6 : 1;
-    __u8 rx_cksm_offload : 1;
-    __u8 tx_l4_cksm_ip4_offload : 1;
-    __u8 tx_l4_cksm_ip6_offload : 1;
-    __u8 __padding : 3;
-  };
+  bool has_ip4;
+  bool has_ip6;
+  bool rx_cksm_offload;
+  bool tx_l4_cksm_ip4_offload;
+  bool tx_l4_cksm_ip6_offload;
+  bool use_nonstandard_offload_algorithm;
 };
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -1144,6 +1141,9 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   if (unlikely(!ifparams)) {
     return -1;
   }
+  // Never disable checksum in rx.
+  bool disable_checksum = false;
+
   // If this packet is sent to this host and not a DNS packet, accept it.
   __u32 tproxy_ip[4];
   int to_host = ip_is_host(ipversion, ifparams, daddr, tproxy_ip);
@@ -1231,12 +1231,12 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
       __u32 *dst_ip = daddr;
       __u16 dst_port = tcph.dest;
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_TCP, ihl, dst_ip, tproxy_ip,
-                            true, true))) {
+                            true, !disable_checksum))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
       if ((ret = rewrite_port(skb, IPPROTO_TCP, ihl, dst_port, *tproxy_port,
-                              true, true))) {
+                              true, !disable_checksum))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1282,22 +1282,23 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
       // Rewrite to control plane.
 
       // Encap a header to transmit fullcone tuple.
-      if ((ret = encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
-                                     &new_hdr, sizeof(new_hdr), true))) {
+      if ((ret =
+               encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &new_hdr,
+                                   sizeof(new_hdr), !disable_checksum))) {
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp dst ip.
       // bpf_printk("rewrite dst ip from %pI4", &ori_dst.ip);
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl, new_hdr.ip,
-                            tproxy_ip, true, true))) {
+                            tproxy_ip, true, !disable_checksum))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp dst port.
       if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, new_hdr.port, *tproxy_port,
-                              true, true))) {
+                              true, !disable_checksum))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1312,21 +1313,14 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   //   bpf_printk("%02x", t);
   // }
 
-  // Do not disable checksum in rx.
-  // __u8 *disable_l4_checksum =
-  //     bpf_map_lookup_elem(&param_map, &disable_l4_rx_checksum_key);
-  // if (!disable_l4_checksum) {
-  //   bpf_printk("Forgot to set disable_l4_checksum?");
-  //   return TC_ACT_SHOT;
-  // }
-  // if (*disable_l4_checksum) {
-  //   __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
-  //   // Restore the checksum or set it zero.
-  //   if (*disable_l4_checksum == DisableL4ChecksumPolicy_SetZero) {
-  //     bak_cksm = 0;
-  //   }
-  //   bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
-  // }
+  // Disable checksum.
+  if (disable_checksum) {
+    // Set checksum zero.
+    __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
+    __sum16 bak_cksm = 0;
+    bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
+    bpf_csum_level(skb, BPF_CSUM_LEVEL_RESET);
+  }
   return TC_ACT_OK;
 }
 
@@ -1445,6 +1439,9 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     return -1;
   }
 
+  bool disable_checksum = ipversion == 4 ? ifparams->tx_l4_cksm_ip4_offload
+                                         : ifparams->tx_l4_cksm_ip6_offload;
+
   // If not from tproxy, accept it.
   __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
   if (!tproxy_port || *tproxy_port != sport) {
@@ -1479,17 +1476,13 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
 
     __u32 *src_ip = saddr;
     __u16 src_port = tcph.source;
-    if ((ret = rewrite_ip(
-             skb, ipversion, IPPROTO_TCP, ihl, src_ip, original_dst->ip, false,
-             ipversion == 4 ? !ifparams->tx_l4_cksm_ip4_offload
-                            : !ifparams->tx_l4_cksm_ip6_offload))) {
+    if ((ret = rewrite_ip(skb, ipversion, IPPROTO_TCP, ihl, src_ip,
+                          original_dst->ip, false, !disable_checksum))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
-    if ((ret = rewrite_port(
-             skb, IPPROTO_TCP, ihl, src_port, original_dst->port, false,
-             ipversion == 4 ? !ifparams->tx_l4_cksm_ip4_offload
-                            : !ifparams->tx_l4_cksm_ip6_offload))) {
+    if ((ret = rewrite_port(skb, IPPROTO_TCP, ihl, src_port, original_dst->port,
+                            false, !disable_checksum))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -1507,27 +1500,21 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     // Get source ip/port from our packet header.
 
     // Decap header to get fullcone tuple.
-    if ((ret = decap_after_udp_hdr(
-             skb, ipversion, ihl, ipv4_tot_len, &ori_src, sizeof(ori_src),
-             ipversion == 4 ? !ifparams->tx_l4_cksm_ip4_offload
-                            : !ifparams->tx_l4_cksm_ip6_offload))) {
+    if ((ret = decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
+                                   sizeof(ori_src), !disable_checksum))) {
       return TC_ACT_SHOT;
     }
 
     // Rewrite udp src ip
-    if ((ret = rewrite_ip(
-             skb, ipversion, IPPROTO_UDP, ihl, src_ip, ori_src.ip, false,
-             ipversion == 4 ? !ifparams->tx_l4_cksm_ip4_offload
-                            : !ifparams->tx_l4_cksm_ip6_offload))) {
+    if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl, src_ip, ori_src.ip,
+                          false, !disable_checksum))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
 
     // Rewrite udp src port
-    if ((ret = rewrite_port(
-             skb, IPPROTO_UDP, ihl, src_port, ori_src.port, false,
-             ipversion == 4 ? !ifparams->tx_l4_cksm_ip4_offload
-                            : !ifparams->tx_l4_cksm_ip6_offload))) {
+    if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, src_port, ori_src.port,
+                            false, !disable_checksum))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -1543,8 +1530,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     // }
   }
 
-  if ((ipversion == 4 && ifparams->tx_l4_cksm_ip4_offload) ||
-      (ipversion == 6 && ifparams->tx_l4_cksm_ip6_offload)) {
+  if (disable_checksum) {
     __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
     // Set checksum zero to pass.
     __sum16 bak_cksm = 0;
@@ -1556,6 +1542,24 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
 
 __u8 special_mac_to_tproxy[6] = {2, 0, 2, 3, 0, 0};
 __u8 special_mac_from_tproxy[6] = {2, 0, 2, 3, 0, 1};
+
+static __always_inline bool wan_disable_checksum(const __u32 ifindex,
+                                                 const __u8 ipversion) {
+
+  struct if_params *ifparams =
+      bpf_map_lookup_elem(&ifindex_params_map, &ifindex);
+  if (unlikely(!ifparams)) {
+    return -1;
+  }
+  bool tx_offloaded = (ipversion == 4 && ifparams->tx_l4_cksm_ip4_offload) ||
+                      (ipversion == 6 && ifparams->tx_l4_cksm_ip6_offload);
+  // If tx offloaded, we get bad checksum of packets because we redirect packet
+  // before the NIC processing. So we have no choice but disable l4 checksum.
+
+  bool disable_l4_checksum = tx_offloaded;
+
+  return disable_l4_checksum;
+}
 
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
@@ -1788,13 +1792,12 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
       };
 
+      bool disable_l4_checksum = wan_disable_checksum(skb->ifindex, ipversion);
       // Encap a header to transmit fullcone tuple.
-      if ((ret = encap_after_udp_hdr(
-               skb, ipversion, ihl, ipv4_tot_len, &new_hdr, sizeof(new_hdr),
-               //  ipversion == 4 ? !ifparams->tx_l4_cksm_ip4_offload
-               //                 : !ifparams->tx_l4_cksm_ip6_offload))) {
-               true // True because it is a part of ingress link.
-               ))) {
+      if ((ret = encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
+                                     &new_hdr, sizeof(new_hdr),
+                                     // It is a part of ingress link.
+                                     !disable_l4_checksum))) {
         return TC_ACT_SHOT;
       }
     }
@@ -1875,14 +1878,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
 
-  __u32 ifindex = skb->ifindex;
-  struct if_params *ifparams =
-      bpf_map_lookup_elem(&ifindex_params_map, &ifindex);
-  if (unlikely(!ifparams)) {
-    return -1;
-  }
-  bool tx_offloaded = (ipversion == 4 && ifparams->tx_l4_cksm_ip4_offload) ||
-                      (ipversion == 6 && ifparams->tx_l4_cksm_ip6_offload);
+  bool disable_l4_checksum = wan_disable_checksum(skb->ifindex, ipversion);
 
   // // Print packet in hex for debugging (checksum or something else).
   // if (dport == bpf_htons(8443)) {
@@ -1925,12 +1921,12 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
       // Rewrite sip and sport.
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_TCP, ihl, saddr,
-                            original_dst->ip, false, !tx_offloaded))) {
+                            original_dst->ip, false, !disable_l4_checksum))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
       if ((ret = rewrite_port(skb, IPPROTO_TCP, ihl, sport, original_dst->port,
-                              false, !tx_offloaded))) {
+                              false, !disable_l4_checksum))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1944,21 +1940,22 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // Get source ip/port from our packet header.
 
       // Decap header to get fullcone tuple.
-      if ((ret = decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
-                                     &ori_src, sizeof(ori_src), !tx_offloaded))) {
+      if ((ret =
+               decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
+                                   sizeof(ori_src), !disable_l4_checksum))) {
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src ip
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl, saddr, ori_src.ip,
-                            false, !tx_offloaded))) {
+                            false, !disable_l4_checksum))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src port
       if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, sport, ori_src.port, false,
-                              !tx_offloaded))) {
+                              !disable_l4_checksum))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1975,7 +1972,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     }
     // Rewrite dip to host ip.
     if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, saddr, true,
-                          !tx_offloaded))) {
+                          !disable_l4_checksum))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -1994,14 +1991,14 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // bpf_ntohs(*tproxy_port));
 
     if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip, true,
-                          !tx_offloaded))) {
+                          !disable_l4_checksum))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
 
     // Rewrite dst port.
     if ((ret = rewrite_port(skb, l4proto, ihl, dport, *tproxy_port, true,
-                            !tx_offloaded))) {
+                            !disable_l4_checksum))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -2009,7 +2006,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // (1) Use daddr as saddr to pass NIC verification. Notice that we do not
     // modify the <sport> so tproxy will send packet to it.
     if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, saddr, daddr, false,
-                          !tx_offloaded))) {
+                          !disable_l4_checksum))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -2024,11 +2021,12 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   //     bpf_printk("%02x", t);
   //   }
   // }
-  if (tx_offloaded) {
+  if (disable_l4_checksum) {
     __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
     // Set checksum zero.
     __sum16 bak_cksm = 0;
     bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
+    bpf_csum_level(skb, BPF_CSUM_LEVEL_RESET);
   }
 
   return TC_ACT_OK;
