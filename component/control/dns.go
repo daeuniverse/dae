@@ -132,12 +132,18 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 		return nil, fmt.Errorf("unpack dns pkt: %w", err)
 	}
 	FlipDnsQuestionCase(&msg)
-	// Check healthy.
+	// Check healthy resp.
 	if !msg.Response || msg.RCode != dnsmessage.RCodeSuccess || len(msg.Questions) == 0 {
 		return data, nil
 	}
-	// Check req type.
 	q := msg.Questions[0]
+	// If first answer is CNAME type, replace the Name with flipping-backed Name.
+	if len(msg.Answers) > 0 &&
+		msg.Answers[0].Header.Type == dnsmessage.TypeCNAME &&
+		strings.EqualFold(msg.Answers[0].Header.Name.String(), q.Name.String()) {
+		msg.Answers[0].Header.Name.Data = q.Name.Data
+	}
+	// Check req type.
 	switch q.Type {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 	default:
