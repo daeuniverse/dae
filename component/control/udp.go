@@ -141,8 +141,11 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 		}
 	} else {
 		// TODO: Set-up ip to domain mapping and show domain if possible.
-		c.log.Infof("UDP %v <-[%v]-> %v",
-			RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, RefineAddrPortToShow(dest),
+		c.log.WithFields(logrus.Fields{
+			"l4proto":  "UDP",
+			"outbound": outbound.Name,
+		}).Infof("%v <-> %v",
+			RefineSourceToShow(lAddrPort, dest.Addr()), RefineAddrPortToShow(dest),
 		)
 	}
 	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{

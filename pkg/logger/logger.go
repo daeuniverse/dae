@@ -5,7 +5,10 @@
 
 package logger
 
-import "github.com/sirupsen/logrus"
+import (
+	"github.com/sirupsen/logrus"
+	prefixed "github.com/x-cray/logrus-prefixed-formatter"
+)
 
 func NewLogger(verbose int) *logrus.Logger {
 	log := logrus.New()
@@ -23,6 +26,10 @@ func NewLogger(verbose int) *logrus.Logger {
 	}
 
 	log.SetLevel(level)
+	log.SetFormatter(&prefixed.TextFormatter{
+		FullTimestamp:   true,
+		TimestampFormat: "Jan 02 15:04:05",
+	})
 
 	return log
 }

@@ -8,6 +8,7 @@ package control
 import (
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
@@ -48,7 +49,10 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	outbound := c.outbounds[value.Outbound]
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	c.log.Infof("TCP: %v <-[%v]-> %v", RefineSourceToShow(src, dst.Addr()), outbound.Name, RefineAddrPortToShow(dst))
+	c.log.WithFields(logrus.Fields{
+		"l4proto":  "TCP",
+		"outbound": outbound.Name,
+	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), RefineAddrPortToShow(dst))
 	if value.Outbound < 0 || int(value.Outbound) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", value.Outbound, len(c.outbounds)-1)
 	}

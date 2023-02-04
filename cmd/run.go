@@ -39,14 +39,14 @@ func Run() (err error) {
 	logrus.SetLevel(logrus.DebugLevel)
 	log := logger.NewLogger(2)
 
+	// Require "sudo" if necessary.
+	internal.AutoSu()
+
 	// Read config from --config cfgFile.
 	param, err := readConfig()
 	if err != nil {
 		return fmt.Errorf("readConfig: %w", err)
 	}
-
-	// Require "sudo" if necessary.
-	internal.AutoSu()
 
 	// Resolve subscriptions to nodes.
 	nodeList := make([]string, len(param.Node))

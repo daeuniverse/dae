@@ -146,16 +146,25 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 		}
 		if a.minLatency.dialer != oldBestDialer {
 			if a.minLatency.dialer != nil {
-				a.log.Infof("Group [%v] switched dialer to <%v> (%v): %v", a.dialerGroupName, a.minLatency.dialer.Name(), a.selectionPolicy, a.minLatency.latency)
+				a.log.WithFields(logrus.Fields{
+					string(a.selectionPolicy): a.minLatency.latency,
+					"group":                   a.dialerGroupName,
+					"dialer":                  a.minLatency.dialer.Name(),
+				}).Infof("Group re-selects dialer")
 			} else {
-				a.log.Infof("Group [%v] has no dialer alive", a.dialerGroupName)
+				a.log.WithFields(logrus.Fields{
+					"group": a.dialerGroupName,
+				}).Infof("Group has no dialer alive")
 			}
 		}
 	} else {
 		if alive && minPolicy && a.minLatency.dialer == nil {
-			// Use first dialer if no dialer has alive state.
+			// Use first dialer if no dialer has alive state (usually happen at the very beginning).
 			a.minLatency.dialer = dialer
-			a.log.Infof("Group [%v] switched dialer to <%v>", a.dialerGroupName, a.minLatency.dialer.Name())
+			a.log.WithFields(logrus.Fields{
+				"group":  a.dialerGroupName,
+				"dialer": a.minLatency.dialer.Name(),
+			}).Infof("Group re-selects dialer")
 		}
 	}
 }

@@ -151,7 +151,7 @@ func (d *Dialer) Check(timeout time.Duration, url string) (ok bool, err error) {
 			latency := time.Since(start)
 			d.Latencies10.AppendLatency(latency)
 			avg, _ := d.Latencies10.AvgLatency()
-			d.Log.Debugf("Connectivity Check <%v>: last: %v, avg_10: %v", d.name, latency, avg)
+			d.Log.WithField("node", d.name).WithField("last", latency.Truncate(time.Millisecond)).WithField("avg_10", avg.Truncate(time.Millisecond)).Debugf("Connectivity Check")
 			alive = true
 		} else {
 			// Append timeout if there is any error or unexpected status code.
