@@ -71,43 +71,57 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 var (
 	CheckBatchUpdateFeatureOnce sync.Once
 	SimulateBatchUpdate         bool
+	SimulateBatchUpdateLpmTrie  bool
 )
 
 func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	CheckBatchUpdateFeatureOnce.Do(func() {
 		version, e := internal.KernelVersion()
-		if e != nil || version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
+		if e != nil {
+			SimulateBatchUpdate = true
+			SimulateBatchUpdateLpmTrie = true
+			return
+		}
+		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
 			SimulateBatchUpdate = true
 		}
-		if m.Type() == ebpf.LPMTrie && version.Less(consts.UserspaceBatchUpdateLpmTrieFeatureVersion) {
-			SimulateBatchUpdate = true
+		if version.Less(consts.UserspaceBatchUpdateLpmTrieFeatureVersion) {
+			SimulateBatchUpdateLpmTrie = true
 		}
 	})
-	if !SimulateBatchUpdate {
-		return m.BatchUpdate(keys, values, opts)
-	} else {
-		vKeys := reflect.ValueOf(keys)
-		if vKeys.Kind() != reflect.Slice {
-			return 0, fmt.Errorf("keys must be slice")
-		}
-		vVals := reflect.ValueOf(values)
-		if vVals.Kind() != reflect.Slice {
-			return 0, fmt.Errorf("values must be slice")
-		}
-		length := vKeys.Len()
-		if vVals.Len() != length {
-			return 0, fmt.Errorf("keys and values must have same length")
-		}
 
-		for i := 0; i < length; i++ {
-			vKey := vKeys.Index(i)
-			vVal := vVals.Index(i)
-			if err = m.Update(vKey.Interface(), vVal.Interface(), ebpf.MapUpdateFlags(opts.ElemFlags)); err != nil {
-				return i, err
-			}
-		}
-		return vKeys.Len(), nil
+	simulate := SimulateBatchUpdate
+	if m.Type() == ebpf.LPMTrie {
+		simulate = SimulateBatchUpdateLpmTrie
 	}
+
+	if !simulate {
+		// Genuine BatchUpdate
+		return m.BatchUpdate(keys, values, opts)
+	}
+
+	// Simulate
+	vKeys := reflect.ValueOf(keys)
+	if vKeys.Kind() != reflect.Slice {
+		return 0, fmt.Errorf("keys must be slice")
+	}
+	vVals := reflect.ValueOf(values)
+	if vVals.Kind() != reflect.Slice {
+		return 0, fmt.Errorf("values must be slice")
+	}
+	length := vKeys.Len()
+	if vVals.Len() != length {
+		return 0, fmt.Errorf("keys and values must have same length")
+	}
+
+	for i := 0; i < length; i++ {
+		vKey := vKeys.Index(i)
+		vVal := vVals.Index(i)
+		if err = m.Update(vKey.Interface(), vVal.Interface(), ebpf.MapUpdateFlags(opts.ElemFlags)); err != nil {
+			return i, err
+		}
+	}
+	return vKeys.Len(), nil
 }
 
 func AssignBpfObjects(to *bpfObjects, from interface{}) {

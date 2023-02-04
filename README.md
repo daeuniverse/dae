@@ -51,8 +51,9 @@ Note that if you bind dae to WAN only, dae only provide network service for loca
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
-1. Handle the case that nodes do not support UDP.
-1. Handle the case that nodes do not support IPv6.
-1. L4Checksum problem.
+1. Handle the case that nodes do not support UDP by adding `filter: l4proto_out(tcp, udp)`, and filter out those nodes support both TCP and UDP. Thus we can use routing to handle it.
+1. Handle the case that nodes do not support IPv6 by adding `filter: ipversion_out(4, 6)`, and filter out those nodes support both IPv4 and IPv6. Thus we can use routing to handle it.
+1. L4Checksum problem. Maybe it is hard to solve.
 1. MACv2 extension extraction.
+1. Log to userspace.
 1. ...
