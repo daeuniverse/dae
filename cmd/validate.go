@@ -7,7 +7,6 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"os"
 )
@@ -18,7 +17,8 @@ var (
 		Short: "Validate dae config",
 		Run: func(cmd *cobra.Command, args []string) {
 			if cfgFile == "" {
-				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
+				fmt.Println("Argument \"--config\" or \"-c\" is required but not provided.")
+				os.Exit(1)
 			}
 			// Read config from --config cfgFile.
 			_, err := readConfig(cfgFile)
