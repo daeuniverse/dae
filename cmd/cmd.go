@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -25,21 +24,5 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(runCmd)
-}
-
-func NewLogger(verbose int) *logrus.Logger {
-	log := logrus.New()
-
-	var level logrus.Level
-	switch verbose {
-	case 0:
-		level = logrus.WarnLevel
-	case 1:
-		level = logrus.InfoLevel
-	default:
-		level = logrus.TraceLevel
-	}
-	log.SetLevel(level)
-
-	return log
+	rootCmd.AddCommand(validateCmd)
 }

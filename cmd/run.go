@@ -45,7 +45,7 @@ func Run(log *logrus.Logger) (err error) {
 	internal.AutoSu()
 
 	// Read config from --config cfgFile.
-	param, err := readConfig()
+	param, err := readConfig(cfgFile)
 	if err != nil {
 		return fmt.Errorf("readConfig: %w", err)
 	}
@@ -100,7 +100,7 @@ func Run(log *logrus.Logger) (err error) {
 	return nil
 }
 
-func readConfig() (params *config.Params, err error) {
+func readConfig(cfgFile string) (params *config.Params, err error) {
 	b, err := os.ReadFile(cfgFile)
 	if err != nil {
 		return nil, err
