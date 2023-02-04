@@ -7,6 +7,7 @@ package control
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
@@ -84,9 +85,21 @@ func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS b
 		if isDNS {
 			data, err = c.DnsRespHandler(data)
 			if err != nil {
+				if errors.Is(err, SuspectedRushAnswerError) {
+					if from.Addr().IsPrivate() {
+						// Additional record OPT may not be supported by home router.
+						// And we should trust home devices even if they make rush-answer.
+						c.log.Tracef("DnsRespHandler: received %v", err)
+						err = nil
+						goto sendToClient
+					}
+					// Reject DNS rush-answer.
+					return err
+				}
 				c.log.Debugf("DnsRespHandler: %v", err)
 			}
 		}
+	sendToClient:
 		if dummyFrom != nil {
 			from = *dummyFrom
 		}
@@ -117,6 +130,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 	dest := addrHdr.Dest
 	if isDns {
 		if resp := c.LookupDnsRespCache(dnsMessage); resp != nil {
+			// Send cache to client directly.
 			if err = sendPktWithHdr(resp, dest, lConn, lAddrPort); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
@@ -127,18 +141,25 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 				)
 			}
 			return nil
-		} else {
-			c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(dest), c.dnsUpstream)
-			// Modify dns target to upstream.
-			// NOTICE: Routing was calculated in advance by the eBPF program.
-			dummyFrom = &addrHdr.Dest
-			dest = c.dnsUpstream
+		}
 
-			// Flip dns question to reduce dns pollution.
-			FlipDnsQuestionCase(dnsMessage)
-			if data, err = dnsMessage.Pack(); err != nil {
-				return fmt.Errorf("pack flipped dns packet: %w", err)
-			}
+		// Need to make a DNS request.
+		c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(dest), c.dnsUpstream)
+		// Modify dns target to upstream.
+		// NOTICE: Routing was calculated in advance by the eBPF program.
+		dummyFrom = &addrHdr.Dest
+		dest = c.dnsUpstream
+
+		// Flip dns question to reduce dns pollution.
+		FlipDnsQuestionCase(dnsMessage)
+		// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
+		// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
+		// Note that additional record OPT may not be supported by home router either.
+		_, _ = EnsureAdditionalOpt(dnsMessage, true)
+
+		// Re-pack DNS packet.
+		if data, err = dnsMessage.Pack(); err != nil {
+			return fmt.Errorf("pack flipped dns packet: %w", err)
 		}
 	}
 

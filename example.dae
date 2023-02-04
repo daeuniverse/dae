@@ -17,7 +17,7 @@ global {
     # lan_interface: docker0
 
     # The WAN interface to bind. Use it if you want to proxy localhost
-    # Multiple interfaces split by ","
+    # Multiple interfaces split by ",".
     wan_interface: wlp5s0
 }
 
@@ -63,7 +63,8 @@ group {
 routing {
     # See routing.md for full examples.
 
-    ip(8.8.8.8, 1.1.1.1) && port(53) -> my_group
+    # dae arms DNS rush-answer filter so we can use 8.8.8.8 regardless of DNS pollution.
+    ip(8.8.8.8) && port(53) -> direct
 
     pname(firefox) && domain(ip.sb) -> direct
     pname(curl) && domain(ip.sb) -> my_group

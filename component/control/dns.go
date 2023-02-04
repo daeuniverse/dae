@@ -7,6 +7,7 @@ package control
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
 	"github.com/mohae/deepcopy"
@@ -19,6 +20,11 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+)
+
+var (
+	SuspectedRushAnswerError     = fmt.Errorf("suspected DNS rush-answer")
+	NotAdapableQuestionTypeError = fmt.Errorf("not adaptable question type")
 )
 
 type dnsCache struct {
@@ -135,23 +141,79 @@ func FlipDnsQuestionCase(dm *dnsmessage.Message) {
 	}
 }
 
+// EnsureAdditionalOpt makes sure there is additional record OPT in the request.
+func EnsureAdditionalOpt(dm *dnsmessage.Message, isReqAdd bool) (bool, error) {
+	// Check healthy resp.
+	if isReqAdd == dm.Response || dm.RCode != dnsmessage.RCodeSuccess || len(dm.Questions) == 0 {
+		return false, NotAdapableQuestionTypeError
+	}
+	q := dm.Questions[0]
+	switch q.Type {
+	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+	default:
+		return false, NotAdapableQuestionTypeError
+	}
+
+	for _, ad := range dm.Additionals {
+		if ad.Header.Type == dnsmessage.TypeOPT {
+			// Already has additional record OPT.
+			return true, nil
+		}
+	}
+	if !isReqAdd {
+		return false, nil
+	}
+	// Add one.
+	dm.Additionals = append(dm.Additionals, dnsmessage.Resource{
+		Header: dnsmessage.ResourceHeader{
+			Name:  dnsmessage.MustNewName("."),
+			Type:  dnsmessage.TypeOPT,
+			Class: 512, TTL: 0, Length: 0,
+		},
+		Body: &dnsmessage.OPTResource{
+			Options: nil,
+		},
+	})
+	return false, nil
+}
+
 // DnsRespHandler handle DNS resp. This function should be invoked when cache miss.
 func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 	var msg dnsmessage.Message
 	if err = msg.Unpack(data); err != nil {
 		return nil, fmt.Errorf("unpack dns pkt: %w", err)
 	}
+	defer func() {
+		if err == nil {
+			exist, e := EnsureAdditionalOpt(&msg, false)
+			if e != nil && !errors.Is(e, NotAdapableQuestionTypeError) {
+				c.log.Warnf("EnsureAdditionalOpt: %v", e)
+			}
+			if e == nil && !exist {
+				// Additional record OPT in the request was ensured, and in normal case the resp should also set it.
+				// This DNS packet may be a rush-answer, and we should reject it.
+				// Note that additional record OPT may not be supported by home router either.
+				err = SuspectedRushAnswerError
+			}
+		}
+	}()
 	FlipDnsQuestionCase(&msg)
 	// Check healthy resp.
 	if !msg.Response || msg.RCode != dnsmessage.RCodeSuccess || len(msg.Questions) == 0 {
 		return data, nil
 	}
 	q := msg.Questions[0]
-	// Align question and answer Name.
+	// Align Name.
 	if len(msg.Answers) > 0 &&
 		strings.EqualFold(msg.Answers[0].Header.Name.String(), q.Name.String()) {
 		msg.Answers[0].Header.Name.Data = q.Name.Data
 	}
+	for i := range msg.Additionals {
+		if strings.EqualFold(msg.Additionals[i].Header.Name.String(), q.Name.String()) {
+			msg.Additionals[i].Header.Name.Data = q.Name.Data
+		}
+	}
+
 	// Check req type.
 	switch q.Type {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:

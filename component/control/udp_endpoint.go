@@ -6,6 +6,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/v2rayA/dae/component/outbound/dialer"
@@ -40,6 +41,9 @@ func (ue *UdpEndpoint) start() {
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 		if err = ue.handler(buf[:n], from.(*net.UDPAddr).AddrPort()); err != nil {
+			if errors.Is(err, SuspectedRushAnswerError) {
+				continue
+			}
 			break
 		}
 	}
