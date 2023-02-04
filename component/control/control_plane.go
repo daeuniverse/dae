@@ -66,12 +66,17 @@ func NewControlPlane(
 	if e != nil {
 		return nil, fmt.Errorf("failed to get kernel version: %w", e)
 	}
-	if kernelVersion.Less(consts.BasicFeatureVersion) {
-		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v", c.kernelVersion.String(), consts.BasicFeatureVersion.String())
+	// Must judge version from high to low to reduce the number of user upgrading kernel.
+	if kernelVersion.Less(consts.ChecksumFeatureVersion) {
+		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again", kernelVersion.String(),
+			consts.ChecksumFeatureVersion.String())
 	}
 	if len(wanInterface) > 0 && kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", kernelVersion.String(),
 			consts.CgSocketCookieFeatureVersion.String())
+	}
+	if kernelVersion.Less(consts.BasicFeatureVersion) {
+		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v", c.kernelVersion.String(), consts.BasicFeatureVersion.String())
 	}
 
 	// Allow the current process to lock memory for eBPF resources.
