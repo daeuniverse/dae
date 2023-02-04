@@ -32,6 +32,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mzz2017/disk-bloom v1.0.1 // indirect
+	github.com/safchain/ethtool v0.2.0 // indirect
 	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.8.1 // indirect

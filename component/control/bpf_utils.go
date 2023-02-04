@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/pkg/ebpf_internal"
 	"net/netip"
 	"os"
@@ -27,15 +28,6 @@ type _bpfLpmKey struct {
 type _bpfPortRange struct {
 	PortStart uint16
 	PortEnd   uint16
-}
-
-type _bpfMatchSet struct {
-	// TODO: Need sync with C code.
-	Value    [16]byte
-	Type     uint8
-	Not      bool
-	Outbound uint8
-	_        [1]byte
 }
 
 func (r _bpfPortRange) Encode() (b [16]byte) {
@@ -78,7 +70,7 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	var old bool
 	version, e := internal.KernelVersion()
-	if e != nil || version.Less(internal.Version{5, 6, 0}) {
+	if e != nil || version.Less(consts.BatchUpdateFeatureVersion) {
 		old = true
 	}
 	if !old {
@@ -154,4 +146,16 @@ func detectCgroupPath() (string, error) {
 	}
 
 	return "", errors.New("cgroup2 not mounted")
+}
+
+func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err error) {
+	if !p.TxL4CksmIp4Offload ||
+		!p.TxL4CksmIp6Offload {
+		// Need calc checksum on CPU. And need BPF_F_ADJ_ROOM_NO_CSUM_RESET.
+		if version.Less(consts.ChecksumFeatureVersion) {
+			return fmt.Errorf("your NIC does not support checksum offload and your kernel version %v does not support related BPF features; expect >=%v; upgrade your kernel and try again", version.String(),
+				consts.ChecksumFeatureVersion.String())
+		}
+	}
+	return nil
 }

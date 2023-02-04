@@ -96,6 +96,11 @@ const (
 	IpVersion_X IpVersionType = 3
 )
 
-var BasicFeatureVersion = internal.Version{5, 2, 0}
-var FtraceFeatureVersion = internal.Version{5, 5, 0}
-var CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}
+var (
+	BasicFeatureVersion = internal.Version{5, 2, 0}
+	// Deprecated: Ftrace does not support arm64 yet (Linux 6.2).
+	FtraceFeatureVersion         = internal.Version{5, 5, 0}
+	BatchUpdateFeatureVersion    = internal.Version{5, 6, 0}
+	CgSocketCookieFeatureVersion = internal.Version{5, 7, 0}
+	ChecksumFeatureVersion       = internal.Version{5, 8, 0}
+)

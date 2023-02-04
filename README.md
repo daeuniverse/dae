@@ -31,19 +31,19 @@ See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
 
 Use `uname -r` to check the kernel version on your machine.
 
-**Bind to LAN: >= 5.2**
+**Bind to LAN: >= 5.8**
 
 You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
 
-This feature requires the kernel version of machine on which dae install >= 5.2.
+This feature requires the kernel version of machine on which dae install >= 5.8.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-**Bind to WAN: >= 5.7**
+**Bind to WAN: >= 5.8**
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
-This feature requires kernel version of the machine >= 5.7.
+This feature requires kernel version of the machine >= 5.8.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
@@ -54,7 +54,7 @@ Usually, mainstream desktop distributions have these items turned on. But in ord
 Use following commands to check the kernel configuration items on your machine.
 
 ```shell
-zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)
+zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
 **Bind to LAN**
@@ -72,14 +72,13 @@ CONFIG_DEBUG_INFO_BTF
 Check them using command like:
 
 ```shell
-(zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)) | grep 'CONFIG_DEBUG_INFO_BTF='
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep 'CONFIG_DEBUG_INFO_BTF='
 ```
 
 ## TODO
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
-1. DisableL4Checksum by link.
 1. Handle the case that nodes do not support UDP.
 1. Handle the case that nodes do not support IPv6.
 1. L4Checksum problem.
