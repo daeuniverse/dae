@@ -6,14 +6,14 @@
 #include "headers/if_ether_defs.h"
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
+#include "headers/bpf_probe_read.h"
 #include "headers/vmlinux.h"
 
 #include <asm-generic/errno-base.h>
 
-#include <bpf/bpf_core_read.h>
+// #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -2044,8 +2044,8 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
   __builtin_memset(&val, 0, sizeof(struct pid_pname));
   char buf[MAX_ARG_SCANNER_BUFFER_SIZE] = {0};
   struct task_struct *current = (void *)bpf_get_current_task();
-  unsigned long arg_start = BPF_CORE_READ(current, mm, arg_start);
-  unsigned long arg_end = BPF_CORE_READ(current, mm, arg_end);
+  unsigned long arg_start = BPF_PROBE_READ_KERNEL(current, mm, arg_start);
+  unsigned long arg_end = BPF_PROBE_READ_KERNEL(current, mm, arg_end);
   unsigned long arg_len = arg_end - arg_start;
   if (arg_len > MAX_ARG_LEN_TO_PROBE) {
     arg_len = MAX_ARG_LEN_TO_PROBE;
@@ -2075,7 +2075,8 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
       } else {
         buf[to_read] = 0;
       }
-      if ((ret = bpf_core_read_user(&buf, to_read, arg_start + j))) {
+      if ((ret = bpf_probe_read_user(&buf, to_read,
+                                     (const void *)(arg_start + j)))) {
         bpf_printk("failed to read process name: %d", ret);
         return ret;
       }
@@ -2091,12 +2092,12 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
   if (length_cpy > TASK_COMM_LEN) {
     length_cpy = TASK_COMM_LEN;
   }
-  if ((ret = bpf_core_read_user(&val.pname, length_cpy,
-                                arg_start + last_slash))) {
+  if ((ret = bpf_probe_read_user(&val.pname, length_cpy,
+                                 (const void *)(arg_start + last_slash)))) {
     bpf_printk("failed to read process name: %d", ret);
     return ret;
   }
-  val.pid = BPF_CORE_READ(current, tgid);
+  bpf_probe_read_kernel(&val.pid, sizeof(val.pid), &current->tgid);
   // bpf_printk("a start_end: %lu %lu", arg_start, arg_end);
   // bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);
 

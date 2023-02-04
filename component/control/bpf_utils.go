@@ -70,7 +70,10 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	var old bool
 	version, e := internal.KernelVersion()
-	if e != nil || version.Less(consts.BatchUpdateFeatureVersion) {
+	if e != nil || version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
+		old = true
+	}
+	if m.Type() == ebpf.LPMTrie && version.Less(consts.UserspaceBatchUpdateLpmTrieFeatureVersion) {
 		old = true
 	}
 	if !old {

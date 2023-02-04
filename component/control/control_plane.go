@@ -177,6 +177,11 @@ retryLoadBpf:
 		bpf:           &bpf,
 		kernelVersion: &kernelVersion,
 	}
+	defer func() {
+		if err != nil {
+			_ = core.Close()
+		}
+	}()
 
 	// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	for _, ifname := range lanInterface {
