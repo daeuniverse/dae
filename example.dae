@@ -62,7 +62,7 @@ group {
 routing {
     # See routing.md for full examples.
 
-    pname(dae) && ip(8.8.8.8) && port(53) -> direct
+    ip(8.8.8.8) && port(53) -> direct
 
     pname(firefox) && domain(ip.sb) -> direct
     pname(curl) && domain(ip.sb) -> my_group
