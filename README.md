@@ -47,34 +47,6 @@ This feature requires kernel version of the machine >= 5.8.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
-### Kernel Configuration Item
-
-Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
-
-Use following commands to check the kernel configuration items on your machine.
-
-```shell
-zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
-```
-
-**Bind to LAN**
-
-```
-CONFIG_DEBUG_INFO_BTF
-```
-
-**Bind to WAN**:
-
-```
-CONFIG_DEBUG_INFO_BTF
-```
-
-Check them using command like:
-
-```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep 'CONFIG_DEBUG_INFO_BTF='
-```
-
 ## TODO
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
