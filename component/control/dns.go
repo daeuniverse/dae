@@ -6,11 +6,14 @@
 package control
 
 import (
+	"encoding/binary"
 	"fmt"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"golang.org/x/net/dns/dnsmessage"
+	"hash/fnv"
+	"math/rand"
 	"net/netip"
 	"strings"
 	"time"
@@ -96,13 +99,39 @@ func (c *ControlPlane) LookupDnsRespCache(msg *dnsmessage.Message) (resp []byte)
 	return nil
 }
 
+// FlipDnsQuestionCase is used to reduce dns pollution.
+func FlipDnsQuestionCase(dm *dnsmessage.Message) {
+	if len(dm.Questions) == 0 {
+		return
+	}
+	q := &dm.Questions[0]
+	// For reproducibility, we use dm.ID as input and add some entropy to make the results more discrete.
+	h := fnv.New64()
+	var buf [4]byte
+	binary.BigEndian.PutUint16(buf[:], dm.ID)
+	h.Write(buf[:2])
+	binary.BigEndian.PutUint32(buf[:], 20230204) // entropy
+	h.Write(buf[:])
+	r := rand.New(rand.NewSource(int64(h.Sum64())))
+	perm := r.Perm(int(q.Name.Length))
+	for i := 0; i < int(q.Name.Length/3); i++ {
+		j := perm[i]
+		// Upper to lower; lower to upper.
+		if q.Name.Data[j] >= 'a' && q.Name.Data[j] <= 'z' {
+			q.Name.Data[j] -= 'a' - 'A'
+		} else if q.Name.Data[j] >= 'A' && q.Name.Data[j] <= 'Z' {
+			q.Name.Data[j] += 'a' - 'A'
+		}
+	}
+}
+
 // DnsRespHandler handle DNS resp. This function should be invoked when cache miss.
 func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 	var msg dnsmessage.Message
 	if err = msg.Unpack(data); err != nil {
 		return nil, fmt.Errorf("unpack dns pkt: %w", err)
 	}
-
+	FlipDnsQuestionCase(&msg)
 	// Check healthy.
 	if !msg.Response || msg.RCode != dnsmessage.RCodeSuccess || len(msg.Questions) == 0 {
 		return data, nil
@@ -140,8 +169,8 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 
 	// Update dnsCache.
 	c.mutex.Lock()
-	fqdn := q.Name.String()
-	cacheKey := strings.ToLower(fqdn) + q.Type.String()
+	fqdn := strings.ToLower(q.Name.String())
+	cacheKey := fqdn + q.Type.String()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
 		c.mutex.Unlock()

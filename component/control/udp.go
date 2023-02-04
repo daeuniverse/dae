@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -122,7 +123,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
 				c.log.Tracef("UDP(DNS) %v <-[%v]-> Cache: %v %v",
-					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, q.Name, q.Type,
+					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, strings.ToLower(q.Name.String()), q.Type,
 				)
 			}
 			return nil
@@ -132,6 +133,12 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			// NOTICE: Routing was calculated in advance by the eBPF program.
 			dummyFrom = &addrHdr.Dest
 			dest = c.dnsUpstream
+
+			// Flip dns question to reduce dns pollution.
+			FlipDnsQuestionCase(dnsMessage)
+			if data, err = dnsMessage.Pack(); err != nil {
+				return fmt.Errorf("pack flipped dns packet: %w", err)
+			}
 		}
 	}
 
@@ -159,7 +166,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			"l4proto":  "UDP(DNS)",
 			"outbound": outbound.Name,
 			"dialer":   d.Name(),
-			"qname":    q.Name,
+			"qname":    strings.ToLower(q.Name.String()),
 			"qtype":    q.Type,
 		}).Infof("%v <-> %v",
 			RefineSourceToShow(lAddrPort, dest.Addr()), RefineAddrPortToShow(dest),
