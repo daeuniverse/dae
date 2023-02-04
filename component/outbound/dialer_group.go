@@ -117,6 +117,5 @@ func (g *DialerGroup) Dial(network string, addr string) (c net.Conn, err error) 
 	if err != nil {
 		return nil, err
 	}
-	g.log.Tracef("Group [%v] dial using <%v>", g.Name, d.Name())
 	return d.Dial(network, addr)
 }

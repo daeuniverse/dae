@@ -164,7 +164,7 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			a.log.WithFields(logrus.Fields{
 				"group":  a.dialerGroupName,
 				"dialer": a.minLatency.dialer.Name(),
-			}).Infof("Group re-selects dialer")
+			}).Infof("Group selects dialer")
 		}
 	}
 }

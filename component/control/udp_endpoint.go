@@ -8,7 +8,7 @@ package control
 import (
 	"fmt"
 	"github.com/mzz2017/softwind/pool"
-	"golang.org/x/net/proxy"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"net"
 	"net/netip"
 	"sync"
@@ -24,6 +24,8 @@ type UdpEndpoint struct {
 	deadlineTimer *time.Timer
 	handler       UdpHandler
 	NatTimeout    time.Duration
+
+	Dialer *dialer.Dialer
 }
 
 func (ue *UdpEndpoint) start() {
@@ -67,7 +69,7 @@ type UdpEndpointPool struct {
 type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
-	Dialer     proxy.Dialer
+	DialerFunc func() (*dialer.Dialer, error)
 	// Target is useful only if the underlay does not support Full-cone.
 	Target netip.AddrPort
 }
@@ -96,7 +98,12 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			return nil, fmt.Errorf("createOption.Handler cannot be nil")
 		}
 
-		udpConn, err := createOption.Dialer.Dial("udp", createOption.Target.String())
+		d, err := createOption.DialerFunc()
+		if err != nil {
+			return nil, err
+		}
+
+		udpConn, err := d.Dial("udp", createOption.Target.String())
 		if err != nil {
 			return nil, err
 		}
@@ -112,6 +119,7 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			}),
 			handler:    createOption.Handler,
 			NatTimeout: createOption.NatTimeout,
+			Dialer:     d,
 		}
 		p.pool[lAddr] = ue
 		// Receive UDP messages.

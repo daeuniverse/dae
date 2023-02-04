@@ -11,6 +11,7 @@ import (
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/netip"
@@ -120,42 +121,58 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			}
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
-				c.log.Debugf("UDP(DNS) %v <-[%v]-> Cache: %v %v",
+				c.log.Tracef("UDP(DNS) %v <-[%v]-> Cache: %v %v",
 					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, q.Name, q.Type,
 				)
 			}
 			return nil
 		} else {
-			c.log.Debugf("Modify dns target %v to upstream: %v", RefineAddrPortToShow(dest), c.dnsUpstream)
+			c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(dest), c.dnsUpstream)
 			// Modify dns target to upstream.
 			// NOTICE: Routing was calculated in advance by the eBPF program.
 			dummyFrom = &addrHdr.Dest
 			dest = c.dnsUpstream
-
-			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
-				q := dnsMessage.Questions[0]
-				c.log.Debugf("UDP(DNS) %v <-[%v]-> %v: %v %v",
-					RefineSourceToShow(lAddrPort, addrHdr.Dest.Addr()), outbound.Name, RefineAddrPortToShow(dest), q.Name, q.Type,
-				)
-			}
 		}
+	}
+
+	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{
+		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns, dummyFrom),
+		NatTimeout: natTimeout,
+		DialerFunc: func() (*dialer.Dialer, error) {
+			newDialer, err := outbound.Select()
+			if err != nil {
+				return nil, fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
+			}
+			return newDialer, nil
+		},
+		Target: dest,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to GetOrCreate: %w", err)
+	}
+	// This is real dialer.
+	d := ue.Dialer
+
+	if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
+		q := dnsMessage.Questions[0]
+		c.log.WithFields(logrus.Fields{
+			"l4proto":  "UDP(DNS)",
+			"outbound": outbound.Name,
+			"dialer":   d.Name(),
+			"qname":    q.Name,
+			"qtype":    q.Type,
+		}).Infof("%v <-> %v",
+			RefineSourceToShow(lAddrPort, dest.Addr()), RefineAddrPortToShow(dest),
+		)
 	} else {
 		// TODO: Set-up ip to domain mapping and show domain if possible.
 		c.log.WithFields(logrus.Fields{
 			"l4proto":  "UDP",
 			"outbound": outbound.Name,
+			"dialer":   d.Name(),
 		}).Infof("%v <-> %v",
 			RefineSourceToShow(lAddrPort, dest.Addr()), RefineAddrPortToShow(dest),
 		)
-	}
-	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{
-		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns, dummyFrom),
-		NatTimeout: natTimeout,
-		Dialer:     outbound,
-		Target:     dest,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to GetOrCreate: %w", err)
 	}
 	//log.Printf("WriteToUDPAddrPort->%v", dest)
 	_, err = ue.WriteToUDPAddrPort(data, dest)

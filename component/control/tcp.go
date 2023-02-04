@@ -49,14 +49,19 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	outbound := c.outbounds[value.Outbound]
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	c.log.WithFields(logrus.Fields{
-		"l4proto":  "TCP",
-		"outbound": outbound.Name,
-	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), RefineAddrPortToShow(dst))
 	if value.Outbound < 0 || int(value.Outbound) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", value.Outbound, len(c.outbounds)-1)
 	}
-	rConn, err := outbound.Dial("tcp", dst.String())
+	dialer, err := outbound.Select()
+	if err != nil {
+		return fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
+	}
+	c.log.WithFields(logrus.Fields{
+		"l4proto":  "TCP",
+		"outbound": outbound.Name,
+		"dialer":   dialer.Name(),
+	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), RefineAddrPortToShow(dst))
+	rConn, err := dialer.Dial("tcp", dst.String())
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
