@@ -40,7 +40,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneDirect:
 		value.Outbound = uint8(consts.OutboundDirect)
-		c.log.Debugf("outbound: %v => %v",
+		c.log.Tracef("outbound: %v => %v",
 			consts.OutboundControlPlaneDirect.String(),
 			consts.OutboundIndex(value.Outbound).String(),
 		)

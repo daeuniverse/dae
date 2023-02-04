@@ -100,7 +100,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 	case consts.OutboundControlPlaneDirect:
 		addrHdr.Outbound = uint8(consts.OutboundDirect)
 
-		c.log.Debugf("outbound: %v => %v",
+		c.log.Tracef("outbound: %v => %v",
 			consts.OutboundControlPlaneDirect.String(),
 			consts.OutboundIndex(addrHdr.Outbound).String(),
 		)
