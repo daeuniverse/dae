@@ -54,7 +54,7 @@ Usually, mainstream desktop distributions have these items turned on. But in ord
 Use following commands to check the kernel configuration items on your machine.
 
 ```shell
-zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)
+zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
 **Bind to LAN**
@@ -72,14 +72,13 @@ CONFIG_DEBUG_INFO_BTF
 Check them using command like:
 
 ```shell
-(zcat /proc/config.gz || cat /boot/config || cat /boot/config-$(uname -r)) | grep 'CONFIG_DEBUG_INFO_BTF='
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep 'CONFIG_DEBUG_INFO_BTF='
 ```
 
 ## TODO
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
-1. DisableL4Checksum by link.
 1. Handle the case that nodes do not support UDP.
 1. Handle the case that nodes do not support IPv6.
 1. L4Checksum problem.
