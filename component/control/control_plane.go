@@ -69,6 +69,10 @@ func NewControlPlane(
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v", c.kernelVersion.String(), consts.BasicFeatureVersion.String())
 	}
+	if len(wanInterface) > 0 && kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
+		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", kernelVersion.String(),
+			consts.CgSocketCookieFeatureVersion.String())
+	}
 
 	// Allow the current process to lock memory for eBPF resources.
 	if err = rlimit.RemoveMemlock(); err != nil {
@@ -83,7 +87,8 @@ func NewControlPlane(
 	var ProgramOptions ebpf.ProgramOptions
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		ProgramOptions = ebpf.ProgramOptions{
-			LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
+			LogLevel: ebpf.LogLevelBranch | ebpf.LogLevelStats,
+			//LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
 		}
 	}
 
@@ -92,7 +97,7 @@ func NewControlPlane(
 	if len(lanInterface) > 0 && len(wanInterface) == 0 {
 		// Only bind LAN.
 		obj = &bpfObjectsLan{}
-	} else if len(wanInterface) == 0 && len(wanInterface) > 0 {
+	} else if len(lanInterface) == 0 && len(wanInterface) > 0 {
 		// Only bind to WAN.
 		// Trick. Replace the beams with rotten timbers.
 		obj = &bpfObjectsWan{}

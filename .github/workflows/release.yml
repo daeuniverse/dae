@@ -92,6 +92,7 @@ jobs:
 
       - name: Get project dependencies
         run: |
+          git submodule update --init --recursive
           go mod download
 
       - name: Build dae
