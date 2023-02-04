@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	cfgFile string
+	cfgFile          string
+	disableTimestamp bool
 
 	runCmd = &cobra.Command{
 		Use:   "run",
@@ -24,7 +25,9 @@ var (
 			if cfgFile == "" {
 				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
 			}
-			if err := Run(); err != nil {
+			logrus.SetLevel(logrus.DebugLevel)
+			log := logger.NewLogger(2, disableTimestamp)
+			if err := Run(log); err != nil {
 				logrus.Fatalln(err)
 			}
 		},
@@ -33,11 +36,10 @@ var (
 
 func init() {
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
+	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
 }
 
-func Run() (err error) {
-	logrus.SetLevel(logrus.DebugLevel)
-	log := logger.NewLogger(2)
+func Run(log *logrus.Logger) (err error) {
 
 	// Require "sudo" if necessary.
 	internal.AutoSu()
@@ -57,6 +59,9 @@ func Run() (err error) {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 		}
 		nodeList = append(nodeList, nodes...)
+	}
+	if len(nodeList) == 0 {
+		return fmt.Errorf("no node found, which could because all subscription resolving failed")
 	}
 
 	if len(param.Global.LanInterface) == 0 && len(param.Global.WanInterface) == 0 {

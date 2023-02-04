@@ -24,7 +24,7 @@ import (
 
 var (
 	SuspectedRushAnswerError     = fmt.Errorf("suspected DNS rush-answer")
-	NotAdapableQuestionTypeError = fmt.Errorf("not adaptable question type")
+	UnsupportedQuestionTypeError = fmt.Errorf("unsupported question type")
 )
 
 type dnsCache struct {
@@ -145,13 +145,13 @@ func FlipDnsQuestionCase(dm *dnsmessage.Message) {
 func EnsureAdditionalOpt(dm *dnsmessage.Message, isReqAdd bool) (bool, error) {
 	// Check healthy resp.
 	if isReqAdd == dm.Response || dm.RCode != dnsmessage.RCodeSuccess || len(dm.Questions) == 0 {
-		return false, NotAdapableQuestionTypeError
+		return false, UnsupportedQuestionTypeError
 	}
 	q := dm.Questions[0]
 	switch q.Type {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 	default:
-		return false, NotAdapableQuestionTypeError
+		return false, UnsupportedQuestionTypeError
 	}
 
 	for _, ad := range dm.Additionals {
@@ -186,7 +186,7 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 	defer func() {
 		if err == nil {
 			exist, e := EnsureAdditionalOpt(&msg, false)
-			if e != nil && !errors.Is(e, NotAdapableQuestionTypeError) {
+			if e != nil && !errors.Is(e, UnsupportedQuestionTypeError) {
 				c.log.Warnf("EnsureAdditionalOpt: %v", e)
 			}
 			if e == nil && !exist {

@@ -10,7 +10,7 @@ import (
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 )
 
-func NewLogger(verbose int) *logrus.Logger {
+func NewLogger(verbose int, disableTimestamp bool) *logrus.Logger {
 	log := logrus.New()
 
 	var level logrus.Level
@@ -27,8 +27,9 @@ func NewLogger(verbose int) *logrus.Logger {
 
 	log.SetLevel(level)
 	log.SetFormatter(&prefixed.TextFormatter{
-		FullTimestamp:   true,
-		TimestampFormat: "Jan 02 15:04:05",
+		DisableTimestamp: disableTimestamp,
+		FullTimestamp:    true,
+		TimestampFormat:  "Jan 02 15:04:05",
 	})
 
 	return log
