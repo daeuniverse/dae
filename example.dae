@@ -34,6 +34,7 @@ node {
     'ss://LINK'
 }
 
+# Node group (outbound).
 group {
     my_group {
         # Filter nodes from global node pool defined by subscription and node section above.
@@ -60,8 +61,10 @@ group {
     }
 }
 
+# See routing.md for full examples.
 routing {
-    # See routing.md for full examples.
+    ip(geoip:private, 240.0.0.0/4, 'ff00::/8') -> direct # Put me at the first place. Or you know what you're doing.
+    # Write your rules below.
 
     # dae arms DNS rush-answer filter so we can use 8.8.8.8 regardless of DNS pollution.
     ip(8.8.8.8) && port(53) -> direct
@@ -69,7 +72,6 @@ routing {
     pname(firefox) && domain(ip.sb) -> direct
     pname(curl) && domain(ip.sb) -> my_group
 
-    ip(geoip:private) -> direct
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
     final: my_group
