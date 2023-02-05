@@ -17,6 +17,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 clang >= 10
 llvm >= 10
 golang >= 1.18
+make
 ```
 
 **Build**
@@ -25,8 +26,8 @@ git clone https://github.com/v2rayA/dae.git
 cd dae
 git submodule update --init
 # Minimal dependency build:
-make GOFLAGS="-buildvcs=false" CGO_ENABLED=0
-# Or normally build:
+make GOFLAGS="-buildvcs=false" CC=clang
+# Or normal build:
 # make
 ```
 

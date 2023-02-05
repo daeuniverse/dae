@@ -41,13 +41,12 @@ func (d *direct) Dial(network, addr string) (c net.Conn, err error) {
 	case "udp":
 		if d.fullCone {
 			conn, err := net.ListenUDP(network, nil)
-			raw, err := conn.SyscallConn()
 			if err != nil {
 				return nil, err
 			}
-			_ = SoMarkControl(raw)
-			if err != nil {
-				return nil, err
+			raw, e := conn.SyscallConn()
+			if e == nil {
+				_ = SoMarkControl(raw)
 			}
 			return &directUDPConn{UDPConn: conn, FullCone: true}, nil
 		} else {
