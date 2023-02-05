@@ -8,9 +8,9 @@
 # Pin the default clang to a stable version.
 CLANG ?= clang
 STRIP ?= llvm-strip
-OUTPUT ?= dae
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
 TARGET ?= bpfel,bpfeb
+OUTPUT ?= dae
 
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)

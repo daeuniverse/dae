@@ -43,8 +43,9 @@ func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 }
 
 func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
+	ip = make([]byte, 16)
 	for j := 0; j < 4; j++ {
-		ip = binary.LittleEndian.AppendUint32(ip, _ip[j])
+		binary.LittleEndian.PutUint32(ip[j*4:], _ip[j])
 	}
 	return ip
 }

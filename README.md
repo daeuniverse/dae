@@ -10,15 +10,42 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 ## Usage
 
-Build:
+### Build
+
+**Make Dependencies**
+```
+clang >= 10
+llvm >= 10
+golang >= 1.18
+```
+
+**Build**
 ```shell
 git clone https://github.com/v2rayA/dae.git
 cd dae
 git submodule update --init
-make
+# Minimal dependency build:
+make GOFLAGS="-buildvcs=false" CGO_ENABLED=0
+# Or normally build:
+# make
 ```
 
-Run:
+### Run
+
+**Runtime Dependencies**
+
+Download [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest) to `/usr/local/share/dae/`.
+
+```
+mkdir -p /usr/local/share/dae/
+pushd /usr/local/share/dae/
+curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
+curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
+popd
+```
+
+**Run**
+
 ```shell
 ./dae run -c example.dae
 ```
@@ -51,8 +78,8 @@ Note that if you bind dae to WAN only, dae only provide network service for loca
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 1. Domain routing performance optimization.
-1. Handle the case that nodes do not support UDP by adding `filter: l4proto_out(tcp, udp)`, and filter out those nodes support both TCP and UDP. Thus we can use routing to handle it.
-1. Handle the case that nodes do not support IPv6 by adding `filter: ipversion_out(4, 6)`, and filter out those nodes support both IPv4 and IPv6. Thus we can use routing to handle it.
+1. Handle the case that nodes do not support UDP.
+1. Handle the case that nodes do not support IPv6.
 1. L4Checksum problem. Maybe it is hard to solve.
 1. MACv2 extension extraction.
 1. Log to userspace.
