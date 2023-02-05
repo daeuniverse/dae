@@ -80,26 +80,23 @@ func sendPktWithHdr(data []byte, from netip.AddrPort, lConn *net.UDPConn, to net
 	return err
 }
 
-func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort) UdpHandler {
+func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort, validateRushAns bool) UdpHandler {
 	return func(data []byte, from netip.AddrPort) (err error) {
+		// Do not return conn-unrelated err in this func.
+
 		if isDNS {
-			data, err = c.DnsRespHandler(data)
+			data, err = c.DnsRespHandler(data, validateRushAns)
 			if err != nil {
 				if errors.Is(err, SuspectedRushAnswerError) {
-					if from.Addr().IsPrivate() {
-						// Additional record OPT may not be supported by home router.
-						// And we should trust home devices even if they make rush-answer.
-						c.log.Tracef("DnsRespHandler: received %v", err)
-						err = nil
-						goto sendToClient
-					}
 					// Reject DNS rush-answer.
 					return err
 				}
 				c.log.Debugf("DnsRespHandler: %v", err)
+				if data == nil {
+					return nil
+				}
 			}
 		}
-	sendToClient:
 		if dummyFrom != nil {
 			from = *dummyFrom
 		}
@@ -163,8 +160,12 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 		}
 	}
 
+	// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
+	// Because additional record OPT may not be supported by home router.
+	// So se should trust home devices even if they make rush-answer (or looks like).
+	validateRushAns := addrHdr.Outbound == uint8(consts.OutboundDirect) && !dest.Addr().IsPrivate()
 	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{
-		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns, dummyFrom),
+		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns, dummyFrom, validateRushAns),
 		NatTimeout: natTimeout,
 		DialerFunc: func() (*dialer.Dialer, error) {
 			newDialer, err := outbound.Select()

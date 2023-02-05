@@ -177,31 +177,32 @@ func EnsureAdditionalOpt(dm *dnsmessage.Message, isReqAdd bool) (bool, error) {
 	return false, nil
 }
 
+type RscWrapper struct {
+	Rsc dnsmessage.Resource
+}
+
+func (w RscWrapper) String() string {
+	return fmt.Sprintf("%v: %v", w.Rsc.Header.GoString(), w.Rsc.Body.GoString())
+}
+func FormatDnsRsc(ans []dnsmessage.Resource) (w []string) {
+	for _, a := range ans {
+		w = append(w, RscWrapper{Rsc: a}.String())
+	}
+	return w
+}
+
 // DnsRespHandler handle DNS resp. This function should be invoked when cache miss.
-func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
+func (c *ControlPlane) DnsRespHandler(data []byte, validateRushAns bool) (newData []byte, err error) {
 	var msg dnsmessage.Message
 	if err = msg.Unpack(data); err != nil {
 		return nil, fmt.Errorf("unpack dns pkt: %w", err)
 	}
-	defer func() {
-		if err == nil {
-			exist, e := EnsureAdditionalOpt(&msg, false)
-			if e != nil && !errors.Is(e, UnsupportedQuestionTypeError) {
-				c.log.Warnf("EnsureAdditionalOpt: %v", e)
-			}
-			if e == nil && !exist {
-				// Additional record OPT in the request was ensured, and in normal case the resp should also set it.
-				// This DNS packet may be a rush-answer, and we should reject it.
-				// Note that additional record OPT may not be supported by home router either.
-				err = SuspectedRushAnswerError
-			}
-		}
-	}()
-	FlipDnsQuestionCase(&msg)
 	// Check healthy resp.
-	if !msg.Response || msg.RCode != dnsmessage.RCodeSuccess || len(msg.Questions) == 0 {
+	if !msg.Response || len(msg.Questions) == 0 {
 		return data, nil
 	}
+
+	FlipDnsQuestionCase(&msg)
 	q := msg.Questions[0]
 	// Align Name.
 	if len(msg.Answers) > 0 &&
@@ -213,12 +214,22 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 			msg.Additionals[i].Header.Name.Data = q.Name.Data
 		}
 	}
+	for i := range msg.Authorities {
+		if strings.EqualFold(msg.Authorities[i].Header.Name.String(), q.Name.String()) {
+			msg.Authorities[i].Header.Name.Data = q.Name.Data
+		}
+	}
+
+	// Check suc resp.
+	if msg.RCode != dnsmessage.RCodeSuccess {
+		return msg.Pack()
+	}
 
 	// Check req type.
 	switch q.Type {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 	default:
-		return data, nil
+		return msg.Pack()
 	}
 
 	// Set ttl.
@@ -244,10 +255,25 @@ func (c *ControlPlane) DnsRespHandler(data []byte) (newData []byte, err error) {
 		return msg.Pack()
 	}
 
+	if validateRushAns {
+		exist, e := EnsureAdditionalOpt(&msg, false)
+		if e != nil && !errors.Is(e, UnsupportedQuestionTypeError) {
+			c.log.Warnf("EnsureAdditionalOpt: %v", e)
+		}
+		if e == nil && !exist {
+			// Additional record OPT in the request was ensured, and in normal case the resp should also set it.
+			// This DNS packet may be a rush-answer, and we should reject it.
+			return nil, SuspectedRushAnswerError
+		}
+	}
+
 	// Update dnsCache.
 	c.log.WithFields(logrus.Fields{
 		"qname": q.Name,
-		"ans":   msg.Answers,
+		"rcode": msg.RCode,
+		"ans":   FormatDnsRsc(msg.Answers),
+		"auth":  FormatDnsRsc(msg.Authorities),
+		"addi":  FormatDnsRsc(msg.Additionals),
 	}).Tracef("Update DNS record cache")
 	c.mutex.Lock()
 	fqdn := strings.ToLower(q.Name.String())
