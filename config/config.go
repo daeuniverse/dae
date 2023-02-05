@@ -14,6 +14,7 @@ import (
 
 type Global struct {
 	TproxyPort    uint16        `mapstructure:"tproxy_port" default:"12345"`
+	LogLevel      string        `mapstructure:"log_level" default:"info"`
 	CheckUrl      string        `mapstructure:"check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
 	CheckInterval time.Duration `mapstructure:"check_interval" default:"15s"`
 	DnsUpstream   string        `mapstructure:"dns_upstream" default:"1.1.1.1:53"`

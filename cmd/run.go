@@ -25,9 +25,16 @@ var (
 			if cfgFile == "" {
 				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
 			}
-			logrus.SetLevel(logrus.DebugLevel)
-			log := logger.NewLogger(2, disableTimestamp)
-			if err := Run(log); err != nil {
+
+			// Read config from --config cfgFile.
+			param, err := readConfig(cfgFile)
+			if err != nil {
+				logrus.Fatalln("readConfig: %w", err)
+			}
+
+			log := logger.NewLogger(param.Global.LogLevel, disableTimestamp)
+			logrus.SetLevel(log.Level)
+			if err := Run(log, param); err != nil {
 				logrus.Fatalln(err)
 			}
 		},
@@ -39,16 +46,10 @@ func init() {
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
 }
 
-func Run(log *logrus.Logger) (err error) {
+func Run(log *logrus.Logger, param *config.Params) (err error) {
 
 	// Require "sudo" if necessary.
 	internal.AutoSu()
-
-	// Read config from --config cfgFile.
-	param, err := readConfig(cfgFile)
-	if err != nil {
-		return fmt.Errorf("readConfig: %w", err)
-	}
 
 	// Resolve subscriptions to nodes.
 	nodeList := make([]string, len(param.Node))

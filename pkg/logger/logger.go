@@ -10,19 +10,12 @@ import (
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 )
 
-func NewLogger(verbose int, disableTimestamp bool) *logrus.Logger {
+func NewLogger(logLevel string, disableTimestamp bool) *logrus.Logger {
 	log := logrus.New()
 
-	var level logrus.Level
-	switch verbose {
-	case 0:
-		level = logrus.WarnLevel
-	case 1:
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
 		level = logrus.InfoLevel
-	case 2:
-		level = logrus.DebugLevel
-	default:
-		level = logrus.TraceLevel
 	}
 
 	log.SetLevel(level)
