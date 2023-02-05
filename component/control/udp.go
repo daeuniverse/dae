@@ -89,6 +89,9 @@ func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS b
 			if err != nil {
 				if errors.Is(err, SuspectedRushAnswerError) {
 					// Reject DNS rush-answer.
+					c.log.WithFields(logrus.Fields{
+						"from": from,
+					}).Tracef("DNS rush-answer rejected")
 					return err
 				}
 				c.log.Debugf("DnsRespHandler: %v", err)

@@ -12,9 +12,9 @@
 #include "headers/vmlinux.h"
 
 // #include <bpf/bpf_core_read.h>
-#include "headers/bpf_probe_read.h"
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
+#include "headers/bpf_probe_read.h"
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -290,8 +290,7 @@ struct {
 
 // Functions:
 
-static __always_inline bool equal_ipv6_format(const __be32 x[4],
-                                              const __be32 y[4]) {
+static __always_inline bool equal16(const __be32 x[4], const __be32 y[4]) {
 #if __clang_major__ >= 10
   return ((__be64 *)x)[0] == ((__be64 *)y)[0] &&
          ((__be64 *)x)[1] == ((__be64 *)y)[1];
@@ -315,12 +314,51 @@ static __always_inline __u32 l4_checksum_off(__u8 proto, __u8 ihl) {
   return ETH_HLEN + ihl * 4 + l4_checksum_rel_off(proto);
 }
 
+static __always_inline int bpf_update_offload_l4cksm_32(struct __sk_buff *skb,
+                                                        __u32 l4_cksm_off,
+                                                        __be32 old,
+                                                        __be32 new) {
+  int ret;
+  __sum16 cksm;
+  if ((ret = bpf_skb_load_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm)))) {
+    return ret;
+  }
+  //  bpf_printk("before: %x", bpf_ntohs(cksm));
+  cksm =
+      bpf_htons(bpf_ntohs(cksm) + bpf_ntohs(*(__be16 *)&new) +
+                bpf_ntohs(*((__be16 *)&new + 1)) - bpf_ntohs(*(__be16 *)&old) -
+                bpf_ntohs(*((__be16 *)&old + 1)));
+  if ((ret = bpf_skb_store_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm), 0))) {
+    return ret;
+  }
+  //  bpf_printk("after: %x", bpf_ntohs(cksm));
+  return 0;
+}
+
+static __always_inline int bpf_update_offload_l4cksm_16(struct __sk_buff *skb,
+                                                        __u32 l4_cksm_off,
+                                                        __be16 old,
+                                                        __be16 new) {
+  int ret;
+  __sum16 cksm;
+  if ((ret = bpf_skb_load_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm)))) {
+    return ret;
+  }
+  //  bpf_printk("before: %x", bpf_ntohs(cksm));
+  cksm = bpf_htons(bpf_ntohs(cksm) + bpf_ntohs(new) - bpf_ntohs(old));
+  if ((ret = bpf_skb_store_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm), 0))) {
+    return ret;
+  }
+  //  bpf_printk("after: %x", bpf_ntohs(cksm));
+  return 0;
+}
+
 static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
                                       __u8 proto, __u8 ihl, __be32 old_ip[4],
                                       __be32 new_ip[4], bool is_dest,
                                       bool calc_l4_cksm) {
   // Nothing to do.
-  if (equal_ipv6_format(old_ip, new_ip)) {
+  if (equal16(old_ip, new_ip)) {
     return 0;
   }
   // bpf_printk("%pI6->%pI6", old_ip, new_ip);
@@ -348,6 +386,13 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
       if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, _old_ip, _new_ip,
                                      l4flags | sizeof(_new_ip)))) {
         bpf_printk("bpf_l4_csum_replace: %d", ret);
+        return ret;
+      }
+    } else {
+      // NIC checksum offload path. But problem remains. FIXME.
+      if ((ret = bpf_update_offload_l4cksm_32(skb, l4_cksm_off, _old_ip,
+                                              _new_ip))) {
+        bpf_printk("bpf_update_offload_cksm_32: %d", ret);
         return ret;
       }
     }
@@ -646,8 +691,8 @@ static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
 
   // Calculate checksum and store the new value.
   int ret;
+  __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
   if (calc_l4_cksm) {
-    __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
     // replace twice because len exists both pseudo hdr and hdr.
     if ((ret = bpf_l4_csum_replace(
              skb, udp_csum_off, oldlen, newlen,
@@ -659,6 +704,13 @@ static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
     if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, oldlen, newlen,
                                    sizeof(oldlen) | BPF_F_MARK_MANGLED_0))) {
       bpf_printk("bpf_l4_csum_replace newudplen: %d", ret);
+      return ret;
+    }
+  } else {
+    // NIC checksum offload path. But problem remains. FIXME.
+    if ((ret =
+             bpf_update_offload_l4cksm_16(skb, udp_csum_off, oldlen, newlen))) {
+      bpf_printk("bpf_update_offload_cksm: %d", ret);
       return ret;
     }
   }
@@ -1028,7 +1080,7 @@ routing(const __u32 flag[6], const void *l4_hdr, const __be32 saddr[4],
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_ProcessName) {
-      if (_is_wan && equal_ipv6_format(match_set->pname, _pname)) {
+      if (_is_wan && equal16(match_set->pname, _pname)) {
         good_subrule = true;
       }
     } else if (match_set->type == MatchType_Final) {
@@ -1437,7 +1489,8 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
   struct if_params *ifparams =
       bpf_map_lookup_elem(&ifindex_params_map, &ifindex);
   if (unlikely(!ifparams)) {
-    return -1;
+    bpf_printk("no ifparams found for ifindex %u", ifindex);
+    return TC_ACT_OK;
   }
 
   bool disable_checksum = ipversion == 4 ? ifparams->tx_l4_cksm_ip4_offload
@@ -1450,7 +1503,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
   }
   __be32 tproxy_ip[4];
   ret = ip_is_host(ipversion, ifparams, saddr, tproxy_ip);
-  if (!(ret == 1) || !equal_ipv6_format(saddr, tproxy_ip)) {
+  if (!(ret == 1) || !equal16(saddr, tproxy_ip)) {
     return TC_ACT_OK;
   }
 

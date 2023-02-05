@@ -263,6 +263,11 @@ func (c *ControlPlane) DnsRespHandler(data []byte, validateRushAns bool) (newDat
 		if e == nil && !exist {
 			// Additional record OPT in the request was ensured, and in normal case the resp should also set it.
 			// This DNS packet may be a rush-answer, and we should reject it.
+			c.log.WithFields(logrus.Fields{
+				"ques": q,
+				"addi": FormatDnsRsc(msg.Additionals),
+				"ans":  FormatDnsRsc(msg.Answers),
+			}).Traceln("DNS rush-answer detected")
 			return nil, SuspectedRushAnswerError
 		}
 	}

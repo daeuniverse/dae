@@ -29,7 +29,7 @@ var (
 			// Read config from --config cfgFile.
 			param, err := readConfig(cfgFile)
 			if err != nil {
-				logrus.Fatalln("readConfig: %w", err)
+				logrus.Fatalln("readConfig:", err)
 			}
 
 			log := logger.NewLogger(param.Global.LogLevel, disableTimestamp)
