@@ -1179,12 +1179,12 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
   /**
   ip rule add fwmark 0x80000000/0x80000000 table 2023
-  ip route add local 0.0.0.0/0 dev lo table 2023
+  ip route add local default dev lo table 2023
   ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
   ip -6 route add local ::/0 dev lo table 2023
 
   ip rule del fwmark 0x80000000/0x80000000 table 2023
-  ip route del local 0.0.0.0/0 dev lo table 2023
+  ip route del local default dev lo table 2023
   ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
   ip -6 route del local ::/0 dev lo table 2023
   */

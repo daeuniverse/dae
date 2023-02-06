@@ -121,7 +121,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	var output []byte
 	if output, err = exec.Command("sh", "-c", `
   ip rule add fwmark 0x80000000/0x80000000 table 2023
-  ip route add local 0.0.0.0/0 dev lo table 2023
+  ip route add local default dev lo table 2023
   ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
   ip -6 route add local ::/0 dev lo table 2023
 `).CombinedOutput(); err != nil {
@@ -130,7 +130,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return exec.Command("sh", "-c", `
   ip rule del fwmark 0x80000000/0x80000000 table 2023
-  ip route del local 0.0.0.0/0 dev lo table 2023
+  ip route del local default dev lo table 2023
   ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
   ip -6 route del local ::/0 dev lo table 2023
 `).Run()
