@@ -9,48 +9,36 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
-	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+	"golang.org/x/sys/unix"
 	"net"
-	"net/netip"
 	"strings"
 	"time"
 )
 
 func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
-	rAddr := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	ip6 := rAddr.Addr().As16()
-
-	var value bpfIpPortOutbound
-	if err := c.bpf.TcpDstMap.Lookup(bpfIpPort{
-		Ip:   common.Ipv6ByteSliceToUint32Array(ip6[:]),
-		Port: internal.Htons(rAddr.Port()),
-	}, &value); err != nil {
-		return fmt.Errorf("reading map: key %v: %w", rAddr.String(), err)
+	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
+	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
+	outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
+	if err != nil {
+		return fmt.Errorf("RetrieveOutboundIndex: %w", err)
 	}
-	dstSlice, ok := netip.AddrFromSlice(common.Ipv6Uint32ArrayToByteSlice(value.Ip))
-	if !ok {
-		return fmt.Errorf("failed to parse dest ip: %v", value.Ip)
-	}
-	dst := netip.AddrPortFrom(dstSlice, internal.Htons(value.Port))
 
-	switch consts.OutboundIndex(value.Outbound) {
+	switch consts.OutboundIndex(outboundIndex) {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneDirect:
-		value.Outbound = uint8(consts.OutboundDirect)
+		outboundIndex = consts.OutboundDirect
 		c.log.Tracef("outbound: %v => %v",
 			consts.OutboundControlPlaneDirect.String(),
-			consts.OutboundIndex(value.Outbound).String(),
+			consts.OutboundIndex(outboundIndex).String(),
 		)
 	default:
 	}
-	outbound := c.outbounds[value.Outbound]
+	outbound := c.outbounds[outboundIndex]
 	// TODO: Set-up ip to domain mapping and show domain if possible.
-	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	if value.Outbound < 0 || int(value.Outbound) >= len(c.outbounds) {
-		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", value.Outbound, len(c.outbounds)-1)
+	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
+		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	dialer, err := outbound.Select()
 	if err != nil {

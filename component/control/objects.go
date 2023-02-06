@@ -70,6 +70,7 @@ func generate(output string) error {
 
 func GenerateObjects(output string) {
 	if err := generate(output); err != nil {
+		fmt.Println(err.Error())
 		os.Exit(1)
 	}
 }

@@ -14,9 +14,11 @@ import (
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -80,7 +82,20 @@ func sendPktWithHdr(data []byte, from netip.AddrPort, lConn *net.UDPConn, to net
 	return err
 }
 
-func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort, validateRushAns bool) UdpHandler {
+func sendPktBind(data []byte, from netip.AddrPort, to netip.AddrPort) error {
+	d := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
+		return dialer.BindControl(c, from)
+	}}
+	conn, err := d.Dial("udp", to.String())
+	if err != nil {
+		return err
+	}
+	uConn := conn.(*net.UDPConn)
+	_, err = uConn.Write(data)
+	return err
+}
+
+func (c *ControlPlane) RelayToUDP(to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort, validateRushAns bool) UdpHandler {
 	return func(data []byte, from netip.AddrPort) (err error) {
 		// Do not return conn-unrelated err in this func.
 
@@ -103,52 +118,57 @@ func (c *ControlPlane) RelayToUDP(lConn *net.UDPConn, to netip.AddrPort, isDNS b
 		if dummyFrom != nil {
 			from = *dummyFrom
 		}
-		return sendPktWithHdr(data, from, lConn, to)
+
+		return sendPktBind(data, from, to)
 	}
 }
 
-func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort netip.AddrPort, addrHdr *AddrHdr) (err error) {
-	switch consts.OutboundIndex(addrHdr.Outbound) {
+func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort) (err error) {
+	outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
+	if err != nil {
+		return fmt.Errorf("RetrieveOutboundIndex: %w", err)
+	}
+	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneDirect:
-		addrHdr.Outbound = uint8(consts.OutboundDirect)
+		outboundIndex = consts.OutboundDirect
 
 		c.log.Tracef("outbound: %v => %v",
 			consts.OutboundControlPlaneDirect.String(),
-			consts.OutboundIndex(addrHdr.Outbound).String(),
+			outboundIndex.String(),
 		)
 	default:
 	}
-	if int(addrHdr.Outbound) >= len(c.outbounds) {
-		return fmt.Errorf("outbound %v out of range", addrHdr.Outbound)
+	if int(outboundIndex) >= len(c.outbounds) {
+		return fmt.Errorf("outbound %v out of range", outboundIndex)
 	}
-	outbound := c.outbounds[addrHdr.Outbound]
+	outbound := c.outbounds[outboundIndex]
 	dnsMessage, natTimeout := ChooseNatTimeout(data)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
 	var dummyFrom *netip.AddrPort
-	dest := addrHdr.Dest
+	destToSend := dst
 	if isDns {
 		if resp := c.LookupDnsRespCache(dnsMessage); resp != nil {
 			// Send cache to client directly.
-			if err = sendPktWithHdr(resp, dest, lConn, lAddrPort); err != nil {
+			if err = sendPktBind(resp, destToSend, src); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
 				c.log.Tracef("UDP(DNS) %v <-[%v]-> Cache: %v %v",
-					RefineSourceToShow(lAddrPort, dest.Addr()), outbound.Name, strings.ToLower(q.Name.String()), q.Type,
+					RefineSourceToShow(src, destToSend.Addr()), outbound.Name, strings.ToLower(q.Name.String()), q.Type,
 				)
 			}
 			return nil
 		}
 
 		// Need to make a DNS request.
-		c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(dest), c.dnsUpstream)
+		c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(destToSend), c.dnsUpstream)
 		// Modify dns target to upstream.
 		// NOTICE: Routing was calculated in advance by the eBPF program.
-		dummyFrom = &addrHdr.Dest
-		dest = c.dnsUpstream
+		dummyFrom = &dst
+		destToSend = c.dnsUpstream
 
 		// Flip dns question to reduce dns pollution.
 		FlipDnsQuestionCase(dnsMessage)
@@ -166,9 +186,9 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 	// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
 	// Because additional record OPT may not be supported by home router.
 	// So se should trust home devices even if they make rush-answer (or looks like).
-	validateRushAns := addrHdr.Outbound == uint8(consts.OutboundDirect) && !dest.Addr().IsPrivate()
-	ue, err := DefaultUdpEndpointPool.GetOrCreate(lAddrPort, &UdpEndpointOptions{
-		Handler:    c.RelayToUDP(lConn, lAddrPort, isDns, dummyFrom, validateRushAns),
+	validateRushAns := outboundIndex == consts.OutboundDirect && !destToSend.Addr().IsPrivate()
+	ue, err := DefaultUdpEndpointPool.GetOrCreate(src, &UdpEndpointOptions{
+		Handler:    c.RelayToUDP(src, isDns, dummyFrom, validateRushAns),
 		NatTimeout: natTimeout,
 		DialerFunc: func() (*dialer.Dialer, error) {
 			newDialer, err := outbound.Select()
@@ -177,7 +197,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			}
 			return newDialer, nil
 		},
-		Target: dest,
+		Target: destToSend,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to GetOrCreate: %w", err)
@@ -194,7 +214,7 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			"qname":    strings.ToLower(q.Name.String()),
 			"qtype":    q.Type,
 		}).Infof("%v <-> %v",
-			RefineSourceToShow(lAddrPort, dest.Addr()), RefineAddrPortToShow(dest),
+			RefineSourceToShow(src, destToSend.Addr()), RefineAddrPortToShow(destToSend),
 		)
 	} else {
 		// TODO: Set-up ip to domain mapping and show domain if possible.
@@ -203,11 +223,11 @@ func (c *ControlPlane) handlePkt(data []byte, lConn *net.UDPConn, lAddrPort neti
 			"outbound": outbound.Name,
 			"dialer":   d.Name(),
 		}).Infof("%v <-> %v",
-			RefineSourceToShow(lAddrPort, dest.Addr()), RefineAddrPortToShow(dest),
+			RefineSourceToShow(src, destToSend.Addr()), RefineAddrPortToShow(destToSend),
 		)
 	}
-	//log.Printf("WriteToUDPAddrPort->%v", dest)
-	_, err = ue.WriteToUDPAddrPort(data, dest)
+	//log.Printf("WriteToUDPAddrPort->%v", destToSend)
+	_, err = ue.WriteToUDPAddrPort(data, destToSend)
 	if err != nil {
 		return fmt.Errorf("failed to write UDP packet req: %w", err)
 	}

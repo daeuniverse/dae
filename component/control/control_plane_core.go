@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 	"net/netip"
 	"os"
+	"os/exec"
 	"regexp"
 )
 
@@ -115,7 +116,23 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	if err != nil {
 		return err
 	}
-
+	/// Insert ip rule / ip route.
+	if err = exec.Command("sh", "-c", `
+  ip rule add fwmark 0x80000000/0x80000000 table 2023
+  ip route add local 0.0.0.0/0 dev lo table 2023
+  ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
+  ip -6 route add local ::/0 dev lo table 2023
+`).Run(); err != nil {
+		return err
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		return exec.Command("sh", "-c", `
+  ip rule del fwmark 0x80000000/0x80000000 table 2023
+  ip route del local 0.0.0.0/0 dev lo table 2023
+  ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
+  ip -6 route del local ::/0 dev lo table 2023
+`).Run()
+	})
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getifParamsFromLink(link)
 	if err != nil {

@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
@@ -30,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -68,15 +70,24 @@ func NewControlPlane(
 	}
 	// Must judge version from high to low to reduce the number of user upgrading kernel.
 	if kernelVersion.Less(consts.ChecksumFeatureVersion) {
-		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again", kernelVersion.String(),
+		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
+			kernelVersion.String(),
 			consts.ChecksumFeatureVersion.String())
 	}
 	if len(wanInterface) > 0 && kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
-		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again", kernelVersion.String(),
+		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
+			kernelVersion.String(),
 			consts.CgSocketCookieFeatureVersion.String())
 	}
+	if len(lanInterface) > 0 && c.kernelVersion.Less(consts.SkAssignFeatureVersion) {
+		return nil, fmt.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
+			c.kernelVersion.String(),
+			consts.SkAssignFeatureVersion.String())
+	}
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
-		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v", c.kernelVersion.String(), consts.BasicFeatureVersion.String())
+		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v",
+			c.kernelVersion.String(),
+			consts.BasicFeatureVersion.String())
 	}
 
 	// Allow the current process to lock memory for eBPF resources.
@@ -127,11 +138,11 @@ retryLoadBpf:
 			goto retryLoadBpf
 		}
 		// Get detailed log from ebpf.internal.(*VerifierError)
-		if log.Level == logrus.PanicLevel {
+		if log.Level == logrus.FatalLevel {
 			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
 				if _log := v.FieldByName("Log"); _log.IsValid() {
 					if strSlice, ok := _log.Interface().([]string); ok {
-						log.Panicln(strings.Join(strSlice, "\n"))
+						log.Fatalln(strings.Join(strSlice, "\n"))
 					}
 				}
 			}
@@ -306,19 +317,22 @@ retryLoadBpf:
 
 func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	// Listen.
-	listener, err := net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(int(port)))
+	var listenConfig = net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return dialer.TproxyControl(c)
+		},
+	}
+	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", "[::1]:"+strconv.Itoa(int(port)))
 	if err != nil {
 		return fmt.Errorf("listenTCP: %w", err)
 	}
-	defer listener.Close()
-	lConn, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.IP{0, 0, 0, 0},
-		Port: int(port),
-	})
+	defer tcpListener.Close()
+	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", "[::1]:"+strconv.Itoa(int(port)))
 	if err != nil {
 		return fmt.Errorf("listenUDP: %w", err)
 	}
-	defer lConn.Close()
+	defer packetConn.Close()
+	udpConn := packetConn.(*net.UDPConn)
 
 	// Serve.
 
@@ -334,7 +348,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	go func() {
 		defer cancel()
 		for {
-			lconn, err := listener.Accept()
+			lconn, err := tcpListener.Accept()
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
 					c.log.Errorf("Error when accept: %v", err)
@@ -352,26 +366,30 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 		defer cancel()
 		for {
 			var buf [65535]byte
-			n, lAddrPort, err := lConn.ReadFromUDPAddrPort(buf[:])
+			var oob [120]byte // Size for original dest
+			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf[:], oob[:])
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
-					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", lAddrPort.String(), err)
+					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
 				}
 				break
 			}
-			addrHdr, dataOffset, err := ParseAddrHdr(buf[:n])
-			if err != nil {
-				c.log.Warnf("No AddrPort presented")
+			dst := RetrieveOriginalDest(oob[:oobn])
+			if !dst.IsValid() {
+				c.log.WithFields(logrus.Fields{
+					"source": src.String(),
+					"oob":    hex.EncodeToString(oob[:oobn]),
+				}).Warnf("Failed to retrieve original dest")
 				continue
 			}
-			newBuf := pool.Get(n - dataOffset)
-			copy(newBuf, buf[dataOffset:n])
-			go func(data []byte, lConn *net.UDPConn, lAddrPort netip.AddrPort, addrHdr *AddrHdr) {
-				if e := c.handlePkt(newBuf, lConn, lAddrPort, addrHdr); e != nil {
+			newBuf := pool.Get(n)
+			copy(newBuf, buf[:n])
+			go func(data []byte, src, dst netip.AddrPort) {
+				if e := c.handlePkt(newBuf, src, dst); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 				pool.Put(newBuf)
-			}(newBuf, lConn, lAddrPort, addrHdr)
+			}(newBuf, src, dst)
 		}
 	}()
 	<-ctx.Done()

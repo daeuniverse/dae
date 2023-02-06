@@ -57,6 +57,8 @@ const (
 	OutboundControlPlaneDirect OutboundIndex = 0xFD
 	OutboundLogicalOr          OutboundIndex = 0xFE
 	OutboundLogicalAnd         OutboundIndex = 0xFF
+
+	OutboundLogicalMax = OutboundLogicalAnd
 )
 
 func (i OutboundIndex) String() string {
@@ -102,6 +104,11 @@ var (
 	FtraceFeatureVersion                      = internal.Version{5, 5, 0}
 	UserspaceBatchUpdateFeatureVersion        = internal.Version{5, 6, 0}
 	CgSocketCookieFeatureVersion              = internal.Version{5, 7, 0}
+	SkAssignFeatureVersion                    = internal.Version{5, 7, 0}
 	ChecksumFeatureVersion                    = internal.Version{5, 8, 0}
 	UserspaceBatchUpdateLpmTrieFeatureVersion = internal.Version{5, 13, 0}
+)
+
+const (
+	TproxyMark uint32 = 0x80000000
 )
