@@ -98,18 +98,19 @@ func bindAddr(fd uintptr, addrPort netip.AddrPort) error {
 
 	var sockAddr syscall.Sockaddr
 
-	switch addr := addrPort.Addr().AsSlice(); len(addr) {
-	case 4:
+	addr := addrPort.Addr()
+	switch {
+	case addr.Is4() || addr.Is4In6():
 		a4 := &syscall.SockaddrInet4{
 			Port: int(addrPort.Port()),
 		}
-		copy(a4.Addr[:], addr)
+		a4.Addr = addr.As4()
 		sockAddr = a4
-	case 16:
+	case addr.Is6():
 		a6 := &syscall.SockaddrInet6{
 			Port: int(addrPort.Port()),
 		}
-		copy(a6.Addr[:], addr)
+		a6.Addr = addr.As16()
 		sockAddr = a6
 	default:
 		return fmt.Errorf("unexpected length of ip")

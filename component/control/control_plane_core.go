@@ -6,6 +6,7 @@
 package control
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -117,13 +118,14 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 		return err
 	}
 	/// Insert ip rule / ip route.
-	if err = exec.Command("sh", "-c", `
+	var output []byte
+	if output, err = exec.Command("sh", "-c", `
   ip rule add fwmark 0x80000000/0x80000000 table 2023
   ip route add local 0.0.0.0/0 dev lo table 2023
   ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
   ip -6 route add local ::/0 dev lo table 2023
-`).Run(); err != nil {
-		return err
+`).CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %v", err, string(bytes.TrimSpace(output)))
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return exec.Command("sh", "-c", `

@@ -102,7 +102,7 @@ func (c *ControlPlane) RelayToUDP(to netip.AddrPort, isDNS bool, dummyFrom *neti
 		if isDNS {
 			data, err = c.DnsRespHandler(data, validateRushAns)
 			if err != nil {
-				if errors.Is(err, SuspectedRushAnswerError) {
+				if validateRushAns && errors.Is(err, SuspectedRushAnswerError) {
 					// Reject DNS rush-answer.
 					c.log.WithFields(logrus.Fields{
 						"from": from,
@@ -164,11 +164,13 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort) (err erro
 		}
 
 		// Need to make a DNS request.
-		c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(destToSend), c.dnsUpstream)
-		// Modify dns target to upstream.
-		// NOTICE: Routing was calculated in advance by the eBPF program.
-		dummyFrom = &dst
-		destToSend = c.dnsUpstream
+		if c.dnsUpstream.IsValid() {
+			c.log.Tracef("Modify dns target %v to upstream: %v", RefineAddrPortToShow(destToSend), c.dnsUpstream)
+			// Modify dns target to upstream.
+			// NOTICE: Routing was calculated in advance by the eBPF program.
+			dummyFrom = &dst
+			destToSend = c.dnsUpstream
+		}
 
 		// Flip dns question to reduce dns pollution.
 		FlipDnsQuestionCase(dnsMessage)

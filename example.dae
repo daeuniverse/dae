@@ -9,7 +9,7 @@ global {
     check_url: 'https://connectivitycheck.gstatic.com/generate_204'
     check_interval: 30s
 
-    # Now only support UDP and IP:Port.
+    # Now only support UDP and format IP:Port. Empty value '' indicates as-is.
     # Please make sure DNS traffic will go through and be forwarded by dae.
     # The upstream DNS answer MUST NOT be polluted.
     # The request to dns upstream follows routing defined below.

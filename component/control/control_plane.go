@@ -289,16 +289,27 @@ retryLoadBpf:
 	}
 
 	// DNS upstream.
-	dnsAddrPort, err := netip.ParseAddrPort(dnsUpstream)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse DNS upstream: %v: %w", dnsUpstream, err)
-	}
-	dnsAddr16 := dnsAddrPort.Addr().As16()
-	if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
-		Ip:   common.Ipv6ByteSliceToUint32Array(dnsAddr16[:]),
-		Port: internal.Htons(dnsAddrPort.Port()),
-	}, ebpf.UpdateAny); err != nil {
-		return nil, err
+	var dnsAddrPort netip.AddrPort
+	if dnsUpstream != "" {
+		dnsAddrPort, err = netip.ParseAddrPort(dnsUpstream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse DNS upstream: \"%v\": %w", dnsUpstream, err)
+		}
+		dnsAddr16 := dnsAddrPort.Addr().As16()
+		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
+			Ip:   common.Ipv6ByteSliceToUint32Array(dnsAddr16[:]),
+			Port: internal.Htons(dnsAddrPort.Port()),
+		}, ebpf.UpdateAny); err != nil {
+			return nil, err
+		}
+	} else {
+		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
+			Ip: [4]uint32{},
+			// Zero port indicates no element, because bpf_map_lookup_elem cannot return 0 for map_type_array.
+			Port: 0,
+		}, ebpf.UpdateAny); err != nil {
+			return nil, err
+		}
 	}
 
 	return &ControlPlane{

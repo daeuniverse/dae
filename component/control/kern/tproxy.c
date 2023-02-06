@@ -914,9 +914,13 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #define _is_wan flag[2]
 
   int ret;
+  struct lpm_key lpm_key_instance, *lpm_key;
+  __u32 key = MatchType_L4Proto;
+  __u16 h_dport;
+  __u16 h_sport;
+  __u32 daddr[4];
 
   /// TODO: BPF_MAP_UPDATE_BATCH ?
-  __u32 key = MatchType_L4Proto;
   if (unlikely((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key,
                                           &_l4proto_type, BPF_ANY)))) {
     return ret;
@@ -927,9 +931,7 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
     return ret;
   };
 
-  // Define variables for further use.
-  __u16 h_dport;
-  __u16 h_sport;
+  // Variables for further use.
   if (_l4proto_type == L4ProtoType_TCP) {
     h_dport = bpf_ntohs(((struct tcphdr *)l4hdr)->dest);
     h_sport = bpf_ntohs(((struct tcphdr *)l4hdr)->source);
@@ -950,22 +952,21 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
   };
 
   // Modify DNS upstream for routing.
-  __u32 daddr[4];
   if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
     struct ip_port *upstream =
         bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
-    if (unlikely(!upstream)) {
-      return -EFAULT;
+    if (upstream && upstream->port != 0) {
+      h_dport = bpf_ntohs(upstream->port);
+      __builtin_memcpy(daddr, upstream->ip, IPV6_BYTE_LENGTH);
+    } else {
+      __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
     }
-    h_dport = bpf_ntohs(upstream->port);
-    __builtin_memcpy(daddr, upstream->ip, IPV6_BYTE_LENGTH);
   } else {
     __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
   }
-  struct lpm_key lpm_key_instance, *lpm_key;
   lpm_key_instance.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
   __builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
-  // bpf_printk("mac: %pI6", mac);
+  bpf_printk("daddr: %pI6", daddr);
   key = MatchType_IpSet;
   if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
                                           BPF_ANY)))) {
@@ -1138,7 +1139,6 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #undef _is_wan
 }
 
-// Do DNAT.
 SEC("tc/ingress")
 int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct ethhdr ethh;
@@ -1189,6 +1189,8 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   ip -6 rule del fwmark 0x80000000/0x80000000 table 1000
   ip -6 route del local ::/0 dev lo table 1000
   */
+
+  // Socket lookup and assign skb to existing socket connection.
   struct bpf_sock_tuple tuple = {0};
   __u32 tuple_size;
   if (ipversion == 4) {

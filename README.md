@@ -95,4 +95,6 @@ Note that if you bind dae to WAN only, dae only provide network service for loca
 
 1. Log to userspace.
 
+1. DNS upstream support tcp://
+
 1. ...
