@@ -1178,15 +1178,15 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   }
 
   /**
-  ip rule add fwmark 0x80000000/0x80000000 table 1000
-  ip route add local 0.0.0.0/0 dev lo table 1000
-  ip -6 rule add fwmark 0x80000000/0x80000000 table 1000
-  ip -6 route add local ::/0 dev lo table 1000
+  ip rule add fwmark 0x80000000/0x80000000 table 2023
+  ip route add local 0.0.0.0/0 dev lo table 2023
+  ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
+  ip -6 route add local ::/0 dev lo table 2023
 
-  ip rule del fwmark 0x80000000/0x80000000 table 1000
-  ip route del local 0.0.0.0/0 dev lo table 1000
-  ip -6 rule del fwmark 0x80000000/0x80000000 table 1000
-  ip -6 route del local ::/0 dev lo table 1000
+  ip rule del fwmark 0x80000000/0x80000000 table 2023
+  ip route del local 0.0.0.0/0 dev lo table 2023
+  ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
+  ip -6 route del local ::/0 dev lo table 2023
   */
   struct bpf_sock_tuple tuple = {0};
   __u32 tuple_size;
@@ -1196,44 +1196,41 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   void *l4hdr;
 
   // Socket lookup and assign skb to existing socket connection.
-  if ((bpf_map_lookup_elem(&routing_tuples_map, &tuples))) {
-    // Should be old connection.
-    is_old_conn = true;
+  if (ipversion == 4) {
+    tuple.ipv4.daddr = tuples.dst.ip[3];
+    tuple.ipv4.saddr = tuples.src.ip[3];
+    tuple.ipv4.dport = tuples.dst.port;
+    tuple.ipv4.sport = tuples.src.port;
+    tuple_size = sizeof(tuple.ipv4);
+  } else {
+    __builtin_memcpy(tuple.ipv6.daddr, tuples.dst.ip, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(tuple.ipv6.saddr, tuples.src.ip, IPV6_BYTE_LENGTH);
+    tuple.ipv6.dport = tuples.dst.port;
+    tuple.ipv6.sport = tuples.src.port;
+    tuple_size = sizeof(tuple.ipv6);
+  }
 
-    if (ipversion == 4) {
-      tuple.ipv4.daddr = tuples.dst.ip[3];
-      tuple.ipv4.saddr = tuples.src.ip[3];
-      tuple.ipv4.dport = tuples.dst.port;
-      tuple.ipv4.sport = tuples.src.port;
-      tuple_size = sizeof(tuple.ipv4);
-    } else {
-      __builtin_memcpy(tuple.ipv6.daddr, tuples.dst.ip, IPV6_BYTE_LENGTH);
-      __builtin_memcpy(tuple.ipv6.saddr, tuples.src.ip, IPV6_BYTE_LENGTH);
-      tuple.ipv6.dport = tuples.dst.port;
-      tuple.ipv6.sport = tuples.src.port;
-      tuple_size = sizeof(tuple.ipv6);
+  if (l4proto == IPPROTO_TCP) {
+    // TCP.
+    if (tcph.syn && !tcph.ack) {
+      goto new_connection;
     }
 
-    if (l4proto == IPPROTO_TCP) {
-      // TCP.
-      if (tcph.syn && !tcph.ack) {
-        goto new_connection;
-      }
-
-      sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-      if (sk) {
-        if (sk->state != BPF_TCP_LISTEN) {
-          goto assign;
-        }
-        bpf_sk_release(sk);
-      }
-    } else {
-      // UDP.
-
-      sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-      if (sk) {
+    sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+    if (sk) {
+      if (sk->state != BPF_TCP_LISTEN) {
+        is_old_conn = true;
         goto assign;
       }
+      bpf_sk_release(sk);
+    }
+  } else {
+    // UDP.
+
+    sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+    if (sk) {
+      is_old_conn = true;
+      goto assign;
     }
   }
 
