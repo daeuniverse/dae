@@ -111,10 +111,10 @@ jobs:
           popd || exit 1
           FILE=./dae-$ASSET_NAME.zip
           DGST=$FILE.dgst
-          md5sum        $FILE | awk '{print $1}' >>$DGST
-          shasum -a 1   $FILE | awk '{print $1}' >>$DGST
-          shasum -a 256 $FILE | awk '{print $1}' >>$DGST
-          shasum -a 512 $FILE | awk '{print $1}' >>$DGST
+          md5sum        $FILE >>$DGST
+          shasum -a 1   $FILE >>$DGST
+          shasum -a 256 $FILE >>$DGST
+          shasum -a 512 $FILE >>$DGST
 
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v3

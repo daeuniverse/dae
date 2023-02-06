@@ -124,7 +124,7 @@ func (c *ControlPlane) RelayToUDP(to netip.AddrPort, isDNS bool, dummyFrom *neti
 }
 
 func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort) (err error) {
-	outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
+	outboundIndex, _, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
 	if err != nil {
 		return fmt.Errorf("RetrieveOutboundIndex: %w", err)
 	}

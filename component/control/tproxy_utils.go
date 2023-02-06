@@ -16,12 +16,11 @@ import (
 	"syscall"
 )
 
-func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4proto uint8) (consts.OutboundIndex, error) {
+func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4proto uint8) (outboundIndex consts.OutboundIndex, tuples *bpfTuples, err error) {
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
 
-	var outboundIndex uint32
-	if err := c.bpf.RoutingTuplesMap.Lookup(bpfTuples{
+	tuples = &bpfTuples{
 		Src: bpfIpPort{
 			Ip:   common.Ipv6ByteSliceToUint32Array(srcIp6[:]),
 			Port: internal.Htons(src.Port()),
@@ -31,13 +30,16 @@ func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4prot
 			Port: internal.Htons(dst.Port()),
 		},
 		L4proto: l4proto,
-	}, &outboundIndex); err != nil {
-		return 0, fmt.Errorf("reading map: key %v: %w", src.String(), err)
 	}
-	if outboundIndex > uint32(consts.OutboundLogicalMax) {
-		return 0, fmt.Errorf("bad outbound index")
+
+	var _outboundIndex uint32
+	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &_outboundIndex); err != nil {
+		return 0, nil, fmt.Errorf("reading map: key %v: %w", src.String(), err)
 	}
-	return consts.OutboundIndex(outboundIndex), nil
+	if _outboundIndex > uint32(consts.OutboundLogicalMax) {
+		return 0, nil, fmt.Errorf("bad outbound index")
+	}
+	return consts.OutboundIndex(_outboundIndex), tuples, nil
 }
 
 func RetrieveOriginalDest(oob []byte) netip.AddrPort {

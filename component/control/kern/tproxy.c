@@ -966,7 +966,6 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
   }
   lpm_key_instance.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
   __builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
-  bpf_printk("daddr: %pI6", daddr);
   key = MatchType_IpSet;
   if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
                                           BPF_ANY)))) {
@@ -1189,52 +1188,63 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   ip -6 rule del fwmark 0x80000000/0x80000000 table 1000
   ip -6 route del local ::/0 dev lo table 1000
   */
-
-  // Socket lookup and assign skb to existing socket connection.
   struct bpf_sock_tuple tuple = {0};
   __u32 tuple_size;
-  if (ipversion == 4) {
-    tuple.ipv4.daddr = tuples.dst.ip[3];
-    tuple.ipv4.saddr = tuples.src.ip[3];
-    tuple.ipv4.dport = tuples.dst.port;
-    tuple.ipv4.sport = tuples.src.port;
-    tuple_size = sizeof(tuple.ipv4);
-  } else {
-    __builtin_memcpy(tuple.ipv6.daddr, tuples.dst.ip, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(tuple.ipv6.saddr, tuples.src.ip, IPV6_BYTE_LENGTH);
-    tuple.ipv6.dport = tuples.dst.port;
-    tuple.ipv6.sport = tuples.src.port;
-    tuple_size = sizeof(tuple.ipv6);
-  }
-
   struct bpf_sock *sk;
-  bool is_old_conn = false;
+  bool is_old_conn;
+  __u32 flag[6] = {0};
+  void *l4hdr;
 
-  if (l4proto == IPPROTO_TCP) {
-    // TCP.
+  // Socket lookup and assign skb to existing socket connection.
+  if ((bpf_map_lookup_elem(&routing_tuples_map, &tuples))) {
+    // Should be old connection.
+    is_old_conn = true;
 
-    sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-    if (sk) {
-      if (sk->state != BPF_TCP_LISTEN) {
-        // Old connection.
-        is_old_conn = true;
+    if (ipversion == 4) {
+      tuple.ipv4.daddr = tuples.dst.ip[3];
+      tuple.ipv4.saddr = tuples.src.ip[3];
+      tuple.ipv4.dport = tuples.dst.port;
+      tuple.ipv4.sport = tuples.src.port;
+      tuple_size = sizeof(tuple.ipv4);
+    } else {
+      __builtin_memcpy(tuple.ipv6.daddr, tuples.dst.ip, IPV6_BYTE_LENGTH);
+      __builtin_memcpy(tuple.ipv6.saddr, tuples.src.ip, IPV6_BYTE_LENGTH);
+      tuple.ipv6.dport = tuples.dst.port;
+      tuple.ipv6.sport = tuples.src.port;
+      tuple_size = sizeof(tuple.ipv6);
+    }
+
+    if (l4proto == IPPROTO_TCP) {
+      // TCP.
+      if (tcph.syn && !tcph.ack) {
+        goto new_connection;
+      }
+
+      sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+      if (sk) {
+        if (sk->state != BPF_TCP_LISTEN) {
+          goto assign;
+        }
+        bpf_sk_release(sk);
+      }
+    } else {
+      // UDP.
+
+      sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+      if (sk) {
         goto assign;
       }
-      bpf_sk_release(sk);
-    }
-  } else {
-    // UDP.
-
-    sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-    if (sk) {
-      goto assign;
     }
   }
 
-  // Routing for new connection.
-  __u32 flag[6] = {0}; // TCP
-  void *l4hdr;
+// Routing for new connection.
+new_connection:
   if (l4proto == IPPROTO_TCP) {
+    if (!(tcph.syn && !tcph.ack)) {
+      // Not a new TCP connection.
+      // Perhaps single-arm.
+      return TC_ACT_OK;
+    }
     l4hdr = &tcph;
     flag[0] = L4ProtoType_TCP;
   } else {

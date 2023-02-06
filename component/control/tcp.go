@@ -20,7 +20,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
+	outboundIndex, _, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
 		return fmt.Errorf("RetrieveOutboundIndex: %w", err)
 	}

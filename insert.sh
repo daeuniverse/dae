@@ -13,8 +13,8 @@ sudo rm -rf /sys/fs/bpf/tc/globals/*
 clang -O2 -g -Wall -Werror -c component/control/kern/tproxy.c -target bpf -D__TARGET_ARCH_x86 -o foo.o
 sudo tc filter del dev $lan ingress
 sudo tc filter del dev $lan egress
-sudo tc filter del dev $wan ingress
-sudo tc filter del dev $wan egress
+# sudo tc filter del dev $wan ingress
+# sudo tc filter del dev $wan egress
 sudo tc filter add dev $lan ingress bpf direct-action obj foo.o sec tc/ingress
 # sudo tc filter add dev $lan egress bpf direct-action obj foo.o sec tc/egress
 # sudo tc filter add dev $wan ingress bpf direct-action obj foo.o sec tc/wan_ingress
