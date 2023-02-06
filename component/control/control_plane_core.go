@@ -203,21 +203,6 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	filterEgress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0, 1),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyLanEgress.FD(),
-		Name:         consts.AppName + "_egress",
-		DirectAction: true,
-	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
-		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
-	}
 	return nil
 }
 

@@ -79,9 +79,9 @@ func NewControlPlane(
 			kernelVersion.String(),
 			consts.CgSocketCookieFeatureVersion.String())
 	}
-	if len(lanInterface) > 0 && c.kernelVersion.Less(consts.SkAssignFeatureVersion) {
+	if len(lanInterface) > 0 && kernelVersion.Less(consts.SkAssignFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
-			c.kernelVersion.String(),
+			kernelVersion.String(),
 			consts.SkAssignFeatureVersion.String())
 	}
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
