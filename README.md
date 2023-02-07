@@ -17,6 +17,56 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 1. Automatically switch nodes according to policy.
 1. Support full-cone NAT for shadowsocks, vmess, and trojan(-go).
 
+## Linux Kernel Requirement
+
+### Kernel Version
+
+Use `uname -r` to check the kernel version on your machine.
+
+**Bind to LAN: >= 5.8**
+
+You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
+
+This feature requires the kernel version of machine on which dae install >= 5.8.
+
+Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
+
+**Bind to WAN: >= 5.8**
+
+You need bind dae to WAN interface, if you want dae to provide network service for local programs.
+
+This feature requires kernel version of the machine >= 5.8.
+
+Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
+
+### Kernel Configuration Item
+
+Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
+
+Use following commands to check the kernel configuration items on your machine.
+
+```shell
+zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
+```
+
+**Bind to LAN**
+
+```
+CONFIG_DEBUG_INFO_BTF
+```
+
+**Bind to WAN**:
+
+```
+CONFIG_DEBUG_INFO_BTF
+```
+
+Check them using command like:
+
+```shell
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep 'CONFIG_DEBUG_INFO_BTF='
+```
+
 ## Usage
 
 ### Build
@@ -39,28 +89,6 @@ make GOFLAGS="-buildvcs=false" CC=clang
 # Or normal build:
 # make
 ```
-
-## Linux Kernel Requirement
-
-### Kernel Version
-
-Use `uname -r` to check the kernel version on your machine.
-
-**Bind to LAN: >= 5.8**
-
-You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
-
-This feature requires the kernel version of machine on which dae install >= 5.8.
-
-Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
-
-**Bind to WAN: >= 5.8**
-
-You need bind dae to WAN interface, if you want dae to provide network service for local programs.
-
-This feature requires kernel version of the machine >= 5.8.
-
-Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
 ### Run
 
@@ -91,19 +119,11 @@ See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
 1. Domain routing performance optimization.
 
 1. Handle the case that nodes do not support UDP.
-
 1. Handle the case that nodes do not support IPv6.
-
 1. WAN L4Checksum problem.
-
    If the NIC checksumming offload is enabled, the Linux network stack will make a simple checksum a packet when it is sent out from local. When NIC discovers that the source IP of the packet is the local IP of the NIC, it will checksum it complete this checksum.
-
    But the problem is, after the Linux network stack, before entering the network card, we modify the source IP of this packet, causing the Linux network stack to only make a simple checksum, and the NIC also assumes that this packet is not sent from local, so no further checksum completing.
-
 1. MACv2 extension extraction.
-
 1. Log to userspace.
-
 1. DNS upstream support tcp://
-
 1. ...

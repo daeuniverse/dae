@@ -95,7 +95,9 @@ func NewControlPlane(
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
-	os.MkdirAll(pinPath, 0755)
+	if err := os.MkdirAll(pinPath, 0755); !os.IsExist(err) {
+		return nil, err
+	}
 
 	// Load pre-compiled programs and maps into the kernel.
 	log.Infof("Loading eBPF programs and maps into the kernel")
