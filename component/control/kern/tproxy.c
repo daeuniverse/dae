@@ -74,9 +74,18 @@ enum {
   DisableL4ChecksumPolicy_SetZero,
 };
 
+// Sockmap:
+struct {
+  __uint(type, BPF_MAP_TYPE_SOCKMAP);
+  __type(key, __u32);   // 0 is tcp, 1 is udp.
+  __type(value, __u64); // fd of socket.
+  __uint(max_entries, 2);
+} listen_socket_map SEC(".maps");
+
 // Param keys:
 static const __u32 zero_key = 0;
 static const __u32 tproxy_port_key = 1;
+static const __u32 one_key = 1;
 static const __u32 disable_l4_tx_checksum_key
     __attribute__((unused, deprecated)) = 2;
 static const __u32 disable_l4_rx_checksum_key
@@ -1191,7 +1200,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct bpf_sock_tuple tuple = {0};
   __u32 tuple_size;
   struct bpf_sock *sk;
-  bool is_old_conn;
+  bool is_old_conn = false;
   __u32 flag[6] = {0};
   void *l4hdr;
 
@@ -1288,28 +1297,20 @@ new_connection:
   }
 
   // Assign to control plane.
-  __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
-  if (!tproxy_port) {
-    bpf_printk("shot tproxy port not set: %d", ret);
-    return TC_ACT_SHOT;
-  }
-  __builtin_memset(&tuple, 0, sizeof(tuple));
-  tuple.ipv6.daddr[3] = bpf_htonl(0x00000001);
-  tuple.ipv6.dport = *tproxy_port;
 
   if (l4proto == IPPROTO_TCP) {
     // TCP.
-
-    sk = bpf_skc_lookup_tcp(skb, &tuple, sizeof(tuple), BPF_F_CURRENT_NETNS, 0);
+    sk = bpf_map_lookup_elem(&listen_socket_map, &zero_key);
     if (!sk || sk->state != BPF_TCP_LISTEN) {
-      bpf_printk("shot tproxy not listen: %d", ret);
+      bpf_printk("shot tcp tproxy not listen: %d", ret);
       goto sk_shot;
     }
   } else {
     // UDP.
 
-    sk = bpf_sk_lookup_udp(skb, &tuple, sizeof(tuple), BPF_F_CURRENT_NETNS, 0);
+    sk = bpf_map_lookup_elem(&listen_socket_map, &one_key);
     if (!sk) {
+      bpf_printk("shot udp tproxy not listen: %d", ret);
       goto sk_shot;
     }
   }
