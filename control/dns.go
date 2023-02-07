@@ -245,10 +245,12 @@ func (c *ControlPlane) DnsRespHandler(data []byte, validateRushAns bool) (newDat
 
 	// Check if there is any A/AAAA record.
 	var hasIpRecord bool
+loop:
 	for i := range msg.Answers {
 		switch msg.Answers[i].Header.Type {
 		case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 			hasIpRecord = true
+			break loop
 		}
 	}
 	if !hasIpRecord {

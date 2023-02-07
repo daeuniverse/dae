@@ -28,15 +28,15 @@ dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION)" .
 
 clean-ebpf: 
-	rm -f component/control/bpf_bpf*.go && \
-		rm -f component/control/bpf_bpf*.o
+	rm -f control/bpf_bpf*.go && \
+		rm -f control/bpf_bpf*.o
 
 bpf_objects:
 	unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
-	if [ ! -f component/control/bpf_objects_wan_lan.go ]; then \
-		go run github.com/v2rayA/dae/cmd/internal/generate_bpf_objects/dummy -o component/control/bpf_objects_wan_lan.go; \
+	if [ ! -f control/bpf_objects_wan_lan.go ]; then \
+		go run github.com/v2rayA/dae/cmd/internal/generate_bpf_objects/dummy -o control/bpf_objects_wan_lan.go; \
 	fi
 
 # $BPF_CLANG is used in go:generate invocations.
@@ -48,4 +48,4 @@ ebpf: clean-ebpf bpf_objects
 	unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
-    go generate ./component/control/control.go
+    go generate ./control/control.go

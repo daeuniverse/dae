@@ -546,7 +546,7 @@ static __always_inline int handle_ipv6_extensions(const struct __sk_buff *skb,
       bpf_printk("IPv6 extension length is not multiples of 4");
       return 1;
     }
-    // See component/control/control_plane.go.
+    // See control/control_plane.go.
     if (!(p_s32 = bpf_map_lookup_elem(&ipproto_hdrsize_map, &hdr))) {
       return 1;
     }

@@ -8,7 +8,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/v2rayA/dae/component/control"
+	"github.com/v2rayA/dae/control"
 	"os"
 )
 
