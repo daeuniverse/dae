@@ -100,12 +100,12 @@ func NewControlPlane(
 	// Load pre-compiled programs and maps into the kernel.
 	log.Infof("Loading eBPF programs and maps into the kernel")
 	var bpf bpfObjects
-	var ProgramOptions ebpf.ProgramOptions
+	var ProgramOptions = ebpf.ProgramOptions{
+		KernelTypes: nil,
+	}
 	if log.Level == logrus.PanicLevel {
-		ProgramOptions = ebpf.ProgramOptions{
-			LogLevel: ebpf.LogLevelBranch | ebpf.LogLevelStats,
-			//LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats,
-		}
+		ProgramOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
+		// ProgramOptions.LogLevel = ebpf.LogLevelInstruction | ebpf.LogLevelStats
 	}
 
 	// Trick. Replace the beams with rotten timbers to reduce the loading.
@@ -146,6 +146,9 @@ retryLoadBpf:
 					}
 				}
 			}
+		}
+		if strings.Contains(err.Error(), "no BTF found for kernel version") {
+			err = fmt.Errorf("%w: maybe installing the linux-headers package will solve it", err)
 		}
 		return nil, fmt.Errorf("loading objects: %w", err)
 	}
