@@ -345,8 +345,30 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	defer packetConn.Close()
 	udpConn := packetConn.(*net.UDPConn)
 
-	// Serve.
-
+	/// Serve.
+	// TCP socket.
+	tcpFile, err := tcpListener.(*net.TCPListener).File()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve copy of the underlying TCP connection file")
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		return tcpFile.Close()
+	})
+	if err := c.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
+		return err
+	}
+	// UDP socket.
+	udpFile, err := udpConn.File()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		return udpFile.Close()
+	})
+	if err := c.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+		return err
+	}
+	// Port.
 	if err := c.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(internal.Htons(port)), ebpf.UpdateAny); err != nil {
 		return err
 	}

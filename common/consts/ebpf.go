@@ -24,6 +24,8 @@ const (
 	DisableL4TxChecksumKey
 	DisableL4RxChecksumKey
 	ControlPlaneOidKey
+
+	OneKey ParamKey = 1
 )
 
 type DisableL4ChecksumPolicy uint32

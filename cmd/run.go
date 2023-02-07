@@ -26,6 +26,9 @@ var (
 				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
 			}
 
+			// Require "sudo" if necessary.
+			internal.AutoSu()
+
 			// Read config from --config cfgFile.
 			param, err := readConfig(cfgFile)
 			if err != nil {
@@ -47,9 +50,6 @@ func init() {
 }
 
 func Run(log *logrus.Logger, param *config.Params) (err error) {
-
-	// Require "sudo" if necessary.
-	internal.AutoSu()
 
 	// Resolve subscriptions to nodes.
 	nodeList := make([]string, len(param.Node))
