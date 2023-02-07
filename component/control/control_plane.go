@@ -95,7 +95,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
-	if err := os.MkdirAll(pinPath, 0755); !os.IsExist(err) {
+	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		return nil, err
 	}
 
