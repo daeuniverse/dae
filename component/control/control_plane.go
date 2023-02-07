@@ -316,7 +316,7 @@ retryLoadBpf:
 		}
 	}
 
-	listenIp := "[::1]"
+	listenIp := "::1"
 	if len(wanInterface) > 0 {
 		listenIp = "0.0.0.0"
 	}
