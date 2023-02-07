@@ -14,7 +14,6 @@ import (
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"golang.org/x/net/dns/dnsmessage"
-	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
 	"strings"
@@ -123,11 +122,7 @@ func (c *ControlPlane) RelayToUDP(to netip.AddrPort, isDNS bool, dummyFrom *neti
 	}
 }
 
-func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort) (err error) {
-	outboundIndex, _, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
-	if err != nil {
-		return fmt.Errorf("RetrieveOutboundIndex: %w", err)
-	}
+func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundIndex consts.OutboundIndex) (err error) {
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneDirect:

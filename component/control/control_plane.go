@@ -7,7 +7,6 @@ package control
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
@@ -38,6 +37,7 @@ import (
 type ControlPlane struct {
 	*ControlPlaneCore
 	deferFuncs []func() error
+	listenIp   string
 
 	// TODO: add mutex?
 	outbounds       []*outbound.DialerGroup
@@ -193,16 +193,15 @@ retryLoadBpf:
 			_ = core.Close()
 		}
 	}()
-
 	// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	for _, ifname := range lanInterface {
-		if err = core.BindLan(ifname); err != nil {
-			return nil, fmt.Errorf("BindLan: %v: %w", ifname, err)
+		if err = core.bindLan(ifname); err != nil {
+			return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
 		}
 	}
 	for _, ifname := range wanInterface {
-		if err = core.BindWan(ifname); err != nil {
-			return nil, fmt.Errorf("BindWan: %v: %w", ifname, err)
+		if err = core.bindWan(ifname); err != nil {
+			return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 		}
 	}
 
@@ -312,9 +311,14 @@ retryLoadBpf:
 		}
 	}
 
+	listenIp := "[::1]"
+	if len(wanInterface) > 0 {
+		listenIp = "0.0.0.0"
+	}
 	return &ControlPlane{
 		ControlPlaneCore:   core,
 		deferFuncs:         nil,
+		listenIp:           listenIp,
 		outbounds:          outbounds,
 		outboundName2Id:    outboundName2Id,
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
@@ -333,12 +337,13 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 			return dialer.TproxyControl(c)
 		},
 	}
-	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", "[::1]:"+strconv.Itoa(int(port)))
+	listenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
+	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listenTCP: %w", err)
 	}
 	defer tcpListener.Close()
-	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", "[::1]:"+strconv.Itoa(int(port)))
+	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listenUDP: %w", err)
 	}
@@ -408,21 +413,30 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 				break
 			}
 			dst := RetrieveOriginalDest(oob[:oobn])
-			if !dst.IsValid() {
-				c.log.WithFields(logrus.Fields{
-					"source": src.String(),
-					"oob":    hex.EncodeToString(oob[:oobn]),
-				}).Warnf("Failed to retrieve original dest")
-				continue
+			var newBuf []byte
+			outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
+			if err != nil {
+				// WAN. Old method.
+				addrHdr, dataOffset, err := ParseAddrHdr(buf[:n])
+				if err != nil {
+					c.log.Warnf("No AddrPort presented")
+					continue
+				}
+				newBuf = pool.Get(n - dataOffset)
+				copy(newBuf, buf[dataOffset:n])
+				outboundIndex = consts.OutboundIndex(addrHdr.Outbound)
+				src = netip.AddrPortFrom(dst.Addr(), src.Port())
+				dst = addrHdr.Dest
+			} else {
+				newBuf = pool.Get(n)
+				copy(newBuf, buf[:n])
 			}
-			newBuf := pool.Get(n)
-			copy(newBuf, buf[:n])
-			go func(data []byte, src, dst netip.AddrPort) {
-				if e := c.handlePkt(newBuf, src, dst); e != nil {
+			go func(data []byte, src, dst netip.AddrPort, outboundIndex consts.OutboundIndex) {
+				if e := c.handlePkt(newBuf, src, dst, outboundIndex); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 				pool.Put(newBuf)
-			}(newBuf, src, dst)
+			}(newBuf, src, dst, outboundIndex)
 		}
 	}()
 	<-ctx.Done()

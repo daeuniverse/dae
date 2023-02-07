@@ -18,6 +18,7 @@
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
+// #define __PRINT_SETUP_PROCESS_CONNNECTION
 // #define __REMOVE_BPF_PRINTK
 
 #ifdef __REMOVE_BPF_PRINTK
@@ -130,6 +131,8 @@ struct {
   __type(key, struct tuples);
   __type(value, __u32); // outbound
   __uint(max_entries, MAX_DST_MAPPING_NUM);
+  /// NOTICE: It MUST be pinned.
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_tuples_map SEC(".maps");
 
 // Params:
@@ -1197,6 +1200,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
   ip -6 route del local ::/0 dev lo table 2023
   */
+  // Socket lookup and assign skb to existing socket connection.
   struct bpf_sock_tuple tuple = {0};
   __u32 tuple_size;
   struct bpf_sock *sk;
@@ -1204,7 +1208,6 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   __u32 flag[6] = {0};
   void *l4hdr;
 
-  // Socket lookup and assign skb to existing socket connection.
   if (ipversion == 4) {
     tuple.ipv4.daddr = tuples.dst.ip[3];
     tuple.ipv4.saddr = tuples.src.ip[3];
@@ -1963,7 +1966,9 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     return ret;
   }
 
+#ifdef __PRINT_SETUP_PROCESS_CONNNECTION
   bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val.pname, val.pid);
+#endif
   return 0;
 }
 

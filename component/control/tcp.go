@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -20,12 +23,27 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	outboundIndex, _, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
+	outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
-		return fmt.Errorf("RetrieveOutboundIndex: %w", err)
+		// WAN. Old method.
+		var value bpfIpPortOutbound
+		ip6 := src.Addr().As16()
+		if e := c.bpf.TcpDstMap.Lookup(bpfIpPort{
+			Ip:   common.Ipv6ByteSliceToUint32Array(ip6[:]),
+			Port: internal.Htons(src.Port()),
+		}, &value); e != nil {
+			return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
+		}
+		outboundIndex = consts.OutboundIndex(value.Outbound)
+
+		dstAddr, ok := netip.AddrFromSlice(common.Ipv6Uint32ArrayToByteSlice(value.Ip))
+		if !ok {
+			return fmt.Errorf("failed to parse dest ip: %v", value.Ip)
+		}
+		dst = netip.AddrPortFrom(dstAddr, internal.Htons(value.Port))
 	}
 
-	switch consts.OutboundIndex(outboundIndex) {
+	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneDirect:
 		outboundIndex = consts.OutboundDirect

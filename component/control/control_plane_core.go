@@ -111,7 +111,7 @@ func getifParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	return ifParams, nil
 }
 
-func (c *ControlPlaneCore) BindLan(ifname string) error {
+func (c *ControlPlaneCore) bindLan(ifname string) error {
 	c.log.Infof("Bind to LAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -123,7 +123,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
   ip rule add fwmark 0x80000000/0x80000000 table 2023
   ip route add local default dev lo table 2023
   ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
-  ip -6 route add local ::/0 dev lo table 2023
+  ip -6 route add local default dev lo table 2023
 `).CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %v", err, string(bytes.TrimSpace(output)))
 	}
@@ -132,7 +132,7 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
   ip rule del fwmark 0x80000000/0x80000000 table 2023
   ip route del local default dev lo table 2023
   ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
-  ip -6 route del local ::/0 dev lo table 2023
+  ip -6 route del local default dev lo table 2023
 `).Run()
 	})
 	/// Insert an elem into IfindexParamsMap.
@@ -208,11 +208,14 @@ func (c *ControlPlaneCore) BindLan(ifname string) error {
 	return nil
 }
 
-func (c *ControlPlaneCore) BindWan(ifname string) error {
+func (c *ControlPlaneCore) bindWan(ifname string) error {
 	c.log.Infof("Bind to WAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
+	}
+	if link.Attrs().Index == consts.LoopbackIfIndex {
+		return fmt.Errorf("cannot bind to loopback interface")
 	}
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getifParamsFromLink(link)

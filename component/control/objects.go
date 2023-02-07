@@ -41,7 +41,7 @@ func generate(output string) error {
 				Ebpf: structField.Tag.Get("ebpf"),
 			})
 		default:
-			return fmt.Errorf("unexpected prefix, should be TproxyWan or TproxyLan: %v", structField.Name)
+			return fmt.Errorf("unexpected program name which should begin with TproxyWan or TproxyLan, but get: %v", structField.Name)
 		}
 	}
 
