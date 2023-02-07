@@ -10,7 +10,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 **Features**
 
-1. `Real direct` traffic split implementation (need ipforward on).
+1. `Real direct` traffic split implementation (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
 1. Split traffic by process name in local host.
 1. Split traffic by MAC address in LAN.
 1. Split traffic with invert match rules.
