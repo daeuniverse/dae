@@ -10,11 +10,11 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 **Features**
 
-1. `Real direct` traffic split implementation (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
-1. Split traffic by process name in local host.
-1. Split traffic by MAC address in LAN.
-1. Split traffic with invert match rules.
-1. Automatically switch nodes according to policy.
+1. Implement `Real direct` traffic split (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
+1. Support to split traffic by process name in local host.
+1. Support to split traffic by MAC address in LAN.
+1. Support to split traffic with invert match rules.
+1. Support to automatically switch nodes according to policy.
 1. Support full-cone NAT for shadowsocks, vmess, and trojan(-go).
 
 ## Linux Kernel Requirement
