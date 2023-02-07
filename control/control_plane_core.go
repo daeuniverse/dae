@@ -46,7 +46,7 @@ func (c *ControlPlaneCore) Close() (err error) {
 	return err
 }
 
-func getifParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
+func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	// TODO: We should monitor IP change of the link.
 	ipnets, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 	if err != nil {
@@ -136,7 +136,7 @@ func (c *ControlPlaneCore) bindLan(ifname string) error {
 `).Run()
 	})
 	/// Insert an elem into IfindexParamsMap.
-	ifParams, err := getifParamsFromLink(link)
+	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
 		return err
 	}
@@ -218,7 +218,7 @@ func (c *ControlPlaneCore) bindWan(ifname string) error {
 		return fmt.Errorf("cannot bind to loopback interface")
 	}
 	/// Insert an elem into IfindexParamsMap.
-	ifParams, err := getifParamsFromLink(link)
+	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
 		return err
 	}

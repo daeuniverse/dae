@@ -20,7 +20,7 @@ type ProgField struct {
 	Ebpf string
 }
 
-//go:embed objects.tmpl
+//go:embed bpf_subobjects.tmpl
 var tmpl []byte
 
 func generate(output string) error {
