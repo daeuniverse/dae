@@ -40,28 +40,6 @@ make GOFLAGS="-buildvcs=false" CC=clang
 # make
 ```
 
-### Run
-
-**Runtime Dependencies**
-
-Download [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest) to `/usr/local/share/dae/`.
-
-```
-mkdir -p /usr/local/share/dae/
-pushd /usr/local/share/dae/
-curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
-curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
-popd
-```
-
-**Run**
-
-```shell
-./dae run -c example.dae
-```
-
-See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
-
 ## Linux Kernel Requirement
 
 ### Kernel Version
@@ -84,6 +62,28 @@ This feature requires kernel version of the machine >= 5.8.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
+### Run
+
+**Runtime Dependencies**
+
+Download [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest) to `/usr/local/share/dae/`.
+
+```
+mkdir -p /usr/local/share/dae/
+pushd /usr/local/share/dae/
+curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
+curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
+popd
+```
+
+**Run**
+
+```shell
+./dae run -c example.dae
+```
+
+See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
+
 ## TODO
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
@@ -94,7 +94,7 @@ Note that if you bind dae to WAN only, dae only provide network service for loca
 
 1. Handle the case that nodes do not support IPv6.
 
-1. L4Checksum problem.
+1. WAN L4Checksum problem.
 
    If the NIC checksumming offload is enabled, the Linux network stack will make a simple checksum a packet when it is sent out from local. When NIC discovers that the source IP of the packet is the local IP of the NIC, it will checksum it complete this checksum.
 
