@@ -43,7 +43,7 @@ Note that if you bind dae to WAN only, dae only provide network service for loca
 
 Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
 
-Use following commands to check the kernel configuration items on your machine.
+Use following command to show kernel configuration items on your machine.
 
 ```shell
 zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
