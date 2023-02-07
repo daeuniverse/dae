@@ -8,6 +8,15 @@ In order to improve the traffic split performance as much as possible, dae runs 
 
 As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely.
 
+**Features**
+
+1. `Real direct` traffic split implementation (need ipforward on).
+1. Split traffic by process name in local host.
+1. Split traffic by MAC address in LAN.
+1. Split traffic with invert match rules.
+1. Automatically switch nodes according to policy.
+1. Support full-cone NAT for shadowsocks, vmess, and trojan(-go).
+
 ## Usage
 
 ### Build

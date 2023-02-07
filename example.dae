@@ -47,11 +47,11 @@ group {
         # Randomly select a node from the group for every connection.
         # policy: random
 
-        # Select the node with min last latency from the group for every connection.
-        # policy: min
-
         # Select the first node from the group for every connection.
-        policy: fixed(0)
+        # policy: fixed(0)
+
+        # Select the node with min last latency from the group for every connection.
+        policy: min
     }
 
     group2 {
