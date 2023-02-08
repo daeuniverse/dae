@@ -147,7 +147,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, true, s.Ps, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption,  s.Ps, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseVlessURL(vless string) (data *V2Ray, err error) {

@@ -58,7 +58,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
-	dialer, err := outbound.Select()
+	dialer, err := outbound.Select(consts.L4ProtoStr_TCP, consts.IpVersionFromAddr(dst.Addr()))
 	if err != nil {
 		return fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
 	}

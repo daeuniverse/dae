@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/v2rayA/dae/config"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -21,6 +20,11 @@ import (
 var (
 	ErrOverlayHierarchicalKey = fmt.Errorf("overlay hierarchical key")
 )
+
+type UrlOrEmpty struct {
+	Url   *url.URL
+	Empty bool
+}
 
 func CloneStrings(slice []string) []string {
 	c := make([]string, len(slice))
@@ -279,9 +283,9 @@ func FuzzyDecode(to interface{}, val string) bool {
 		v.SetString(val)
 	case reflect.Struct:
 		switch v.Interface().(type) {
-		case config.UrlOrEmpty:
+		case UrlOrEmpty:
 			if val == "" {
-				v.Set(reflect.ValueOf(config.UrlOrEmpty{
+				v.Set(reflect.ValueOf(UrlOrEmpty{
 					Url:   nil,
 					Empty: true,
 				}))
@@ -290,7 +294,7 @@ func FuzzyDecode(to interface{}, val string) bool {
 				if err != nil {
 					return false
 				}
-				v.Set(reflect.ValueOf(config.UrlOrEmpty{
+				v.Set(reflect.ValueOf(UrlOrEmpty{
 					Url:   u,
 					Empty: false,
 				}))

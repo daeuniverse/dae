@@ -54,7 +54,7 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, false, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSRURL(u string) (data *ShadowsocksR, err error) {

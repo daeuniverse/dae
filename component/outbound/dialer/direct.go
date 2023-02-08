@@ -10,9 +10,9 @@ var FullconeDirect = newDirect(true)
 
 func NewDirectDialer(option *GlobalOption, fullcone bool) *Dialer {
 	if fullcone {
-		return NewDialer(FullconeDirect, option, InstanceOption{Check: false}, true, "direct", "direct", "")
+		return NewDialer(FullconeDirect, option, InstanceOption{CheckEnabled: false}, "direct", "direct", "")
 	} else {
-		return NewDialer(SymmetricDirect, option, InstanceOption{Check: false}, true, "direct", "direct", "")
+		return NewDialer(SymmetricDirect, option, InstanceOption{CheckEnabled: false}, "direct", "direct", "")
 	}
 }
 
@@ -25,7 +25,7 @@ type direct struct {
 func newDirect(fullCone bool) proxy.Dialer {
 	return &direct{
 		netDialer: &net.Dialer{},
-		fullCone: fullCone,
+		fullCone:  fullCone,
 	}
 }
 

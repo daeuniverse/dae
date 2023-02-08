@@ -30,7 +30,7 @@ type DialerSet struct {
 func NewDialerSetFromLinks(option *dialer.GlobalOption, nodes []string) *DialerSet {
 	s := &DialerSet{Dialers: make([]*dialer.Dialer, 0, len(nodes))}
 	for _, node := range nodes {
-		d, err := dialer.NewFromLink(option, dialer.InstanceOption{Check: false}, node)
+		d, err := dialer.NewFromLink(option, dialer.InstanceOption{CheckEnabled: false}, node)
 		if err != nil {
 			option.Log.Infof("failed to parse node: %v: %v", node, err)
 			continue
@@ -40,7 +40,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, nodes []string) *DialerS
 	return s
 }
 
-func hit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, err error) {
+func filterHit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, err error) {
 	// Example
 	// filter: name(regex:'^.*hk.*$', keyword:'sg') && name(keyword:'disney')
 	// filter: !name(regex: 'HK|TW|SG') && name(keyword: disney)
@@ -85,7 +85,7 @@ func hit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, er
 
 func (s *DialerSet) Filter(filters []*config_parser.Function) (dialers []*dialer.Dialer, err error) {
 	for _, d := range s.Dialers {
-		hit, err := hit(d, filters)
+		hit, err := filterHit(d, filters)
 		if err != nil {
 			return nil, err
 		}
