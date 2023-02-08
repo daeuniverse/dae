@@ -6,7 +6,6 @@
 package control
 
 import (
-	"bytes"
 	"fmt"
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -16,10 +15,9 @@ import (
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	"net"
 	"os"
-	"os/exec"
 	"regexp"
-	"strings"
 )
 
 type ControlPlaneCore struct {
@@ -119,30 +117,111 @@ func (c *ControlPlaneCore) delQdisc(ifname string) error {
 
 func (c *ControlPlaneCore) setupRoutingPolicy() (err error) {
 	/// Insert ip rule / ip route.
-	// TODO: Refactor me with netlink.
-	var output []byte
-	cleanFunc := func() error {
-		return exec.Command("sh", "-c", `
-  ip rule del fwmark 0x80000000/0x80000000 table 2023
-  ip route del local default dev lo table 2023
-  ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
-  ip -6 route del local default dev lo table 2023
-`).Run()
-	}
-tryAgain:
-	if output, err = exec.Command("sh", "-c", `
-  ip rule add fwmark 0x80000000/0x80000000 table 2023
-  ip route add local default dev lo table 2023
-  ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
-  ip -6 route add local default dev lo table 2023
-`).CombinedOutput(); err != nil {
-		if strings.Contains(string(output), "File exists") {
-			_ = cleanFunc()
-			goto tryAgain
+	const table = 2023
+
+	/** ip table
+	ip route add local default dev lo table 2023
+	ip -6 route add local default dev lo table 2023
+	*/
+	routes := []netlink.Route{{
+		Scope:     unix.RT_SCOPE_HOST,
+		LinkIndex: consts.LoopbackIfIndex,
+		Dst: &net.IPNet{
+			IP:   []byte{0, 0, 0, 0},
+			Mask: net.CIDRMask(0, 32),
+		},
+		Table: table,
+		Type:  unix.RTN_LOCAL,
+	}, {
+		Scope:     unix.RT_SCOPE_HOST,
+		LinkIndex: consts.LoopbackIfIndex,
+		Dst: &net.IPNet{
+			IP:   []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+			Mask: net.CIDRMask(0, 128),
+		},
+		Table: table,
+		Type:  unix.RTN_LOCAL,
+	}}
+	cleanRoutes := func() error {
+		var errs error
+		for _, route := range routes {
+			if e := netlink.RouteDel(&route); e != nil {
+				if errs != nil {
+					errs = fmt.Errorf("%w; %v", errs, e)
+				} else {
+					errs = e
+				}
+			}
 		}
-		return fmt.Errorf("%w: %v", err, string(bytes.TrimSpace(output)))
+		if errs != nil {
+			return fmt.Errorf("IpRouteDel(lo): %w", errs)
+		}
+		return nil
 	}
-	c.deferFuncs = append(c.deferFuncs, cleanFunc)
+tryRouteAddAgain:
+	for _, route := range routes {
+		if err = netlink.RouteAdd(&route); err != nil {
+			if os.IsExist(err) {
+				_ = cleanRoutes()
+				goto tryRouteAddAgain
+			}
+			return fmt.Errorf("IpRouteAdd: %w", err)
+		}
+	}
+	c.deferFuncs = append(c.deferFuncs, cleanRoutes)
+
+	/** ip rule
+	ip rule add fwmark 0x80000000/0x80000000 table 2023
+	ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
+	*/
+	rules := []netlink.Rule{{
+		SuppressIfgroup:   -1,
+		SuppressPrefixlen: -1,
+		Priority:          -1,
+		Goto:              -1,
+		Flow:              -1,
+		Family:            unix.AF_INET,
+		Table:             table,
+		Mark:              int(consts.TproxyMark),
+		Mask:              int(consts.TproxyMark),
+	}, {
+		SuppressIfgroup:   -1,
+		SuppressPrefixlen: -1,
+		Priority:          -1,
+		Goto:              -1,
+		Flow:              -1,
+		Family:            unix.AF_INET6,
+		Table:             table,
+		Mark:              int(consts.TproxyMark),
+		Mask:              int(consts.TproxyMark),
+	}}
+	cleanRules := func() error {
+		var errs error
+		for _, rule := range rules {
+			if e := netlink.RuleDel(&rule); e != nil {
+				if errs != nil {
+					errs = fmt.Errorf("%w; %v", errs, e)
+				} else {
+					errs = e
+				}
+			}
+		}
+		if errs != nil {
+			return fmt.Errorf("IpRuleDel: %w", errs)
+		}
+		return nil
+	}
+tryRuleAddAgain:
+	for _, rule := range rules {
+		if err = netlink.RuleAdd(&rule); err != nil {
+			if os.IsExist(err) {
+				_ = cleanRules()
+				goto tryRuleAddAgain
+			}
+			return fmt.Errorf("IpRuleAdd: %w", err)
+		}
+	}
+	c.deferFuncs = append(c.deferFuncs, cleanRules)
 	return nil
 }
 
