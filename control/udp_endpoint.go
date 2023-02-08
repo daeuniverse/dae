@@ -86,7 +86,19 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 	}
 }
 
-func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, err error) {
+func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ue, ok := p.pool[lAddr]; ok {
+		if ue != udpEndpoint {
+			return fmt.Errorf("target udp endpoint is not in the pool")
+		}
+		ue.Close()
+		delete(p.pool, lAddr)
+	}
+	return nil
+}
+func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ue, ok := p.pool[lAddr]
@@ -99,17 +111,17 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			createOption.NatTimeout = DefaultNatTimeout
 		}
 		if createOption.Handler == nil {
-			return nil, fmt.Errorf("createOption.Handler cannot be nil")
+			return nil, true, fmt.Errorf("createOption.Handler cannot be nil")
 		}
 
 		d, err := createOption.DialerFunc()
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 
 		udpConn, err := d.Dial("udp", createOption.Target.String())
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		ue = &UdpEndpoint{
 			conn: udpConn.(net.PacketConn),
@@ -128,11 +140,12 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		p.pool[lAddr] = ue
 		// Receive UDP messages.
 		go ue.start()
+		isNew = true
 	} else {
 		// Postpone the deadline.
 		ue.mu.Lock()
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 	}
-	return ue, nil
+	return ue, isNew, nil
 }

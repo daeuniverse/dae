@@ -21,16 +21,8 @@ type Dialer struct {
 	protocol string
 	link     string
 
-	tcp4Latencies10     *LatenciesN
-	tcp6Latencies10     *LatenciesN
-	udp4Latencies10     *LatenciesN
-	udp6Latencies10     *LatenciesN
-	aliveDialerSetSetMu sync.Mutex
-	// aliveDialerSetSet uses reference counting.
-	tcp4AliveDialerSetSet AliveDialerSetSet
-	tcp6AliveDialerSetSet AliveDialerSetSet
-	udp4AliveDialerSetSet AliveDialerSetSet
-	udp6AliveDialerSetSet AliveDialerSetSet
+	collectionFineMu sync.Mutex
+	collections      [4]*collection
 
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
@@ -51,23 +43,20 @@ type AliveDialerSetSet map[*AliveDialerSet]int
 
 // NewDialer is for register in general.
 func NewDialer(dialer proxy.Dialer, option *GlobalOption, iOption InstanceOption, name string, protocol string, link string) *Dialer {
+	var collections [4]*collection
+	for i := range collections {
+		collections[i] = newCollection()
+	}
 	d := &Dialer{
-		Dialer:          dialer,
-		GlobalOption:    option,
-		instanceOption:  iOption,
-		name:            name,
-		protocol:        protocol,
-		link:            link,
-		tcp4Latencies10: NewLatenciesN(10),
-		tcp6Latencies10: NewLatenciesN(10),
-		udp4Latencies10: NewLatenciesN(10),
-		udp6Latencies10: NewLatenciesN(10),
+		GlobalOption:   option,
+		instanceOption: iOption,
+		Dialer:         dialer,
+		name:           name,
+		protocol:       protocol,
+		link:           link,
+		collections:    collections,
 		// Set a very big cycle to wait for init.
-		ticker:                time.NewTicker(time.Hour),
-		tcp4AliveDialerSetSet: make(AliveDialerSetSet),
-		tcp6AliveDialerSetSet: make(AliveDialerSetSet),
-		udp4AliveDialerSetSet: make(AliveDialerSetSet),
-		udp6AliveDialerSetSet: make(AliveDialerSetSet),
+		ticker: time.NewTicker(time.Hour),
 	}
 	if iOption.CheckEnabled {
 		go d.aliveBackground()
