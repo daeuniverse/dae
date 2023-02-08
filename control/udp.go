@@ -207,10 +207,9 @@ getNew:
 	// If the udp endpoint has been not alive, remove it from pool and get a new one.
 	if !isNew && !ue.Dialer.MustGetAlive(l4proto, ipversion) {
 		c.log.WithFields(logrus.Fields{
-			"src":       src.String(),
-			"l4proto":   l4proto,
-			"ipversion": ipversion,
-			"dialer":    ue.Dialer.Name(),
+			"src":     src.String(),
+			"network": string(l4proto) + string(ipversion),
+			"dialer":  ue.Dialer.Name(),
 		}).Debugln("Old udp endpoint is not alive and removed")
 		_ = DefaultUdpEndpointPool.Remove(src, ue)
 		goto getNew
@@ -223,7 +222,7 @@ getNew:
 		if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 			q := dnsMessage.Questions[0]
 			c.log.WithFields(logrus.Fields{
-				"l4proto":  "UDP(DNS)",
+				"network":  string(l4proto) + string(ipversion) + "(DNS)",
 				"outbound": outbound.Name,
 				"dialer":   d.Name(),
 				"qname":    strings.ToLower(q.Name.String()),
@@ -234,7 +233,7 @@ getNew:
 		} else {
 			// TODO: Set-up ip to domain mapping and show domain if possible.
 			c.log.WithFields(logrus.Fields{
-				"l4proto":  "UDP",
+				"network":  string(l4proto) + string(ipversion),
 				"outbound": outbound.Name,
 				"dialer":   d.Name(),
 			}).Infof("%v <-> %v",

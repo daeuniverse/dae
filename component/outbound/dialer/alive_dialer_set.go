@@ -111,16 +111,14 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 		if index >= 0 {
 			// This dialer is already alive.
 		} else {
-			// Not alive -> alive.
-			defer a.aliveChangeCallback(true)
+			// Dialer: not alive -> alive.
 			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
 			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
 		}
 	} else {
 		index := a.dialerToIndex[dialer]
 		if index >= 0 {
-			// Alive -> not alive.
-			defer a.aliveChangeCallback(false)
+			// Dialer: alive -> not alive.
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {
 				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))
@@ -158,16 +156,22 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 		}
 		if a.minLatency.dialer != oldBestDialer {
 			if a.minLatency.dialer != nil {
+				re := "re-"
+				if oldBestDialer == nil {
+					defer a.aliveChangeCallback(true)
+					re = ""
+				}
 				a.log.WithFields(logrus.Fields{
 					string(a.selectionPolicy): a.minLatency.latency,
 					"group":                   a.dialerGroupName,
-					"l4proto":                 a.l4proto,
+					"network":                 string(a.l4proto) + string(a.ipversion),
 					"dialer":                  a.minLatency.dialer.Name(),
-				}).Infof("Group re-selects dialer")
+				}).Infof("Group %vselects dialer", re)
 			} else {
+				defer a.aliveChangeCallback(false)
 				a.log.WithFields(logrus.Fields{
 					"group":   a.dialerGroupName,
-					"l4proto": a.l4proto,
+					"network": string(a.l4proto) + string(a.ipversion),
 				}).Infof("Group has no dialer alive")
 			}
 		}
@@ -177,7 +181,7 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			a.minLatency.dialer = dialer
 			a.log.WithFields(logrus.Fields{
 				"group":   a.dialerGroupName,
-				"l4proto": a.l4proto,
+				"network": string(a.l4proto) + string(a.ipversion),
 				"dialer":  a.minLatency.dialer.Name(),
 			}).Infof("Group selects dialer")
 		}

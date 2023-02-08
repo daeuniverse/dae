@@ -58,12 +58,14 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
-	dialer, err := outbound.Select(consts.L4ProtoStr_TCP, consts.IpVersionFromAddr(dst.Addr()))
+	l4proto := consts.L4ProtoStr_TCP
+	ipversion := consts.IpVersionFromAddr(dst.Addr())
+	dialer, err := outbound.Select(l4proto, ipversion)
 	if err != nil {
 		return fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
 	}
 	c.log.WithFields(logrus.Fields{
-		"l4proto":  "TCP",
+		"network":  string(l4proto) + string(ipversion),
 		"outbound": outbound.Name,
 		"dialer":   dialer.Name(),
 	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), RefineAddrPortToShow(dst))

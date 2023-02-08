@@ -261,6 +261,9 @@ func (d *Dialer) Check(timeout time.Duration,
 	} else {
 		// Append timeout if there is any error or unexpected status code.
 		if err != nil {
+			if strings.Contains(err.Error(), "network is unreachable") {
+				err = fmt.Errorf("network is unreachable")
+			}
 			d.Log.WithFields(logrus.Fields{
 				// Add a space to ensure alphabetical order is first.
 				"network": string(opts.L4proto) + string(opts.IpVersion),
