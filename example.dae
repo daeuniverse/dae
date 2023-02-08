@@ -6,7 +6,9 @@ global {
     log_level: info
 
     # Node connectivity check.
-    tcp_check_url: 'https://connectivitycheck.gstatic.com/generate_204'
+    # Url and dns should have both IPv4 and IPv6.
+    tcp_check_url: 'http://cp.cloudflare.com'
+    udp_check_dns: 'cloudflare-dns.com:53'
     check_interval: 30s
 
     # Now only support udp://IP:Port. Empty value '' indicates as-is.

@@ -67,7 +67,7 @@ func (s *HTTP) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, false, s.Name, s.Protocol, u.String()), nil
+	return dialer.NewDialer(d, option, iOption,  s.Name, s.Protocol, u.String()), nil
 }
 
 func (s *HTTP) URL() url.URL {

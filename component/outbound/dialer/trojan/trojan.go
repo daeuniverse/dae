@@ -101,7 +101,7 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, true, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption,  s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseTrojanURL(u string) (data *Trojan, err error) {

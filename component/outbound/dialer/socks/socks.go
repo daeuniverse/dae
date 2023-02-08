@@ -42,7 +42,7 @@ func (s *Socks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 		if err != nil {
 			return nil, err
 		}
-		return dialer.NewDialer(d, option, iOption, true, s.Name, s.Protocol, link), nil
+		return dialer.NewDialer(d, option, iOption,  s.Name, s.Protocol, link), nil
 	//case "socks4", "socks4a":
 	//	d, err := socks4.NewSocks4Dialer(link, &proxy.Direct{})
 	//	if err != nil {

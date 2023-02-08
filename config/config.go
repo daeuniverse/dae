@@ -7,26 +7,21 @@ package config
 
 import (
 	"fmt"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/pkg/config_parser"
-	"net/url"
 	"reflect"
 	"time"
 )
 
-type UrlOrEmpty struct {
-	Url   *url.URL
-	Empty bool
-}
-
 type Global struct {
-	TproxyPort    uint16        `mapstructure:"tproxy_port" default:"12345"`
-	LogLevel      string        `mapstructure:"log_level" default:"info"`
-	TcpCheckUrl   string        `mapstructure:"tcp_check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
-	UdpCheckDns   string        `mapstructure:"udp_check_dns" default:"8.8.8.8:53"`
-	CheckInterval time.Duration `mapstructure:"check_interval" default:"15s"`
-	DnsUpstream   UrlOrEmpty    `mapstructure:"dns_upstream" require:""`
-	LanInterface  []string      `mapstructure:"lan_interface"`
-	WanInterface  []string      `mapstructure:"wan_interface"`
+	TproxyPort    uint16            `mapstructure:"tproxy_port" default:"12345"`
+	LogLevel      string            `mapstructure:"log_level" default:"info"`
+	TcpCheckUrl   string            `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com"`
+	UdpCheckDns   string            `mapstructure:"udp_check_dns" default:"cloudflare-dns.com:53"`
+	CheckInterval time.Duration     `mapstructure:"check_interval" default:"30s"`
+	DnsUpstream   common.UrlOrEmpty `mapstructure:"dns_upstream" require:""`
+	LanInterface  []string          `mapstructure:"lan_interface"`
+	WanInterface  []string          `mapstructure:"wan_interface"`
 }
 
 type Group struct {

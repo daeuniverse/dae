@@ -184,11 +184,13 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 	// Because additional record OPT may not be supported by home router.
 	// So se should trust home devices even if they make rush-answer (or looks like).
 	validateRushAns := outboundIndex == consts.OutboundDirect && !destToSend.Addr().IsPrivate()
+
+	// Get udp endpoint.
 	ue, err := DefaultUdpEndpointPool.GetOrCreate(src, &UdpEndpointOptions{
 		Handler:    c.RelayToUDP(src, isDns, dummyFrom, validateRushAns),
 		NatTimeout: natTimeout,
 		DialerFunc: func() (*dialer.Dialer, error) {
-			newDialer, err := outbound.Select()
+			newDialer, err := outbound.Select(consts.L4ProtoStr_UDP, consts.IpVersionFromAddr(dst.Addr()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
 			}

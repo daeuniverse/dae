@@ -1,9 +1,9 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) since 2023, mzz2017 <mzz@tuta.io>
  */
 
-package dialer
+package netutils
 
 import (
 	"context"

@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type ControlPlane struct {
@@ -186,10 +187,21 @@ func NewControlPlane(
 	}
 
 	/// DialerGroups (outbounds).
+	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+	defer cancel()
+	tcpCheckOption, err := dialer.ParseTcpCheckOption(ctx, global.TcpCheckUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
+	}
+	udpCheckOption, err := dialer.ParseUdpCheckOption(ctx, global.UdpCheckDns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse udp_check_dns: %w", err)
+	}
 	option := &dialer.GlobalOption{
-		Log:           log,
-		CheckUrl:      global.TcpCheckUrl,
-		CheckInterval: global.CheckInterval,
+		Log:            log,
+		TcpCheckOption: tcpCheckOption,
+		UdpCheckOption: udpCheckOption,
+		CheckInterval:  global.CheckInterval,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
@@ -214,7 +226,7 @@ func NewControlPlane(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
 		}
-		// Filter nodes.
+		// Filter nodes with user given filters.
 		dialers, err := dialerSet.Filter(group.Param.Filter)
 		if err != nil {
 			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
@@ -223,7 +235,8 @@ func NewControlPlane(
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
 			log.Infoln("\t" + d.Name())
-			d.ActiveCheck()
+			// We only activate check of nodes that have a group.
+			d.ActivateCheck()
 		}
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
