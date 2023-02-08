@@ -67,7 +67,7 @@ func NewAliveDialerSet(
 		a.dialerToIndex[d] = -1
 	}
 	for _, d := range dialers {
-		a.SetAlive(d, setAlive)
+		a.NotifyLatencyChange(d, setAlive)
 	}
 	return a
 }
@@ -87,8 +87,8 @@ func (a *AliveDialerSet) GetMinLatency() *Dialer {
 	return a.minLatency.dialer
 }
 
-// SetAlive should be invoked when dialer every time latency and alive state changes.
-func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
+// NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.
+func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var (
@@ -143,21 +143,25 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 	}
 
 	if hasLatency {
-		oldBestDialer := a.minLatency.dialer
+		bakOldBestDialer := a.minLatency.dialer
 		// Calc minLatency.
 		a.dialerToLatency[dialer] = latency
-		if latency < a.minLatency.latency {
+		if alive && latency < a.minLatency.latency {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
 			a.minLatency.latency = time.Hour
 			a.minLatency.dialer = nil
 			a.calcMinLatency()
+			// Now `a.minLatency.dialer` will be nil if there is no alive dialer.
 		}
-		if a.minLatency.dialer != oldBestDialer {
-			if a.minLatency.dialer != nil {
+		currentAlive := a.minLatency.dialer != nil
+		// If best dialer changed.
+		if a.minLatency.dialer != bakOldBestDialer {
+			if currentAlive {
 				re := "re-"
-				if oldBestDialer == nil {
+				if bakOldBestDialer == nil {
+					// Not alive -> alive
 					defer a.aliveChangeCallback(true)
 					re = ""
 				}
@@ -168,6 +172,7 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 					"dialer":                  a.minLatency.dialer.Name(),
 				}).Infof("Group %vselects dialer", re)
 			} else {
+				// Alive -> not alive
 				defer a.aliveChangeCallback(false)
 				a.log.WithFields(logrus.Fields{
 					"group":   a.dialerGroupName,
