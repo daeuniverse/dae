@@ -206,6 +206,12 @@ getNew:
 	}
 	// If the udp endpoint has been not alive, remove it from pool and get a new one.
 	if !isNew && !ue.Dialer.MustGetAlive(l4proto, ipversion) {
+		c.log.WithFields(logrus.Fields{
+			"src":       src.String(),
+			"l4proto":   l4proto,
+			"ipversion": ipversion,
+			"dialer":    ue.Dialer.Name(),
+		}).Debugln("Old udp endpoint is not alive and removed")
 		_ = DefaultUdpEndpointPool.Remove(src, ue)
 		goto getNew
 	}

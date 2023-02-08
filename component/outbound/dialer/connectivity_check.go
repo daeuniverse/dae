@@ -39,7 +39,7 @@ func newCollection() *collection {
 	return &collection{
 		AliveDialerSetSet: make(AliveDialerSetSet),
 		Latencies10:       NewLatenciesN(10),
-		Alive:             false,
+		Alive:             true,
 	}
 }
 
@@ -270,6 +270,7 @@ func (d *Dialer) Check(timeout time.Duration,
 		}
 		latencies10 := collection.Latencies10
 		latencies10.AppendLatency(timeout)
+		collection.Alive = false
 	}
 	// Inform DialerGroups to update state.
 	// We use lock because AliveDialerSetSet is a reference of that in collection.
