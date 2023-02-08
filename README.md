@@ -14,8 +14,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 1. Support to split traffic by process name in local host.
 1. Support to split traffic by MAC address in LAN.
 1. Support to split traffic with invert match rules.
-1. Support to automatically switch nodes according to policy.
-1. Support to automatically test TCP/UDP/IPv4/IPv6 latency, and then use the best nodes for corresponding traffic according to user-defined policy.
+1. Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
 1. Support full-cone NAT for shadowsocks, vmess, socks5 and trojan(-go).
 
 ## Linux Kernel Requirement
@@ -116,11 +115,7 @@ See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
 ## TODO
 
 1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
-
 1. Domain routing performance optimization.
-
-1. Handle the case that nodes do not support UDP.
-1. Handle the case that nodes do not support IPv6.
 1. WAN L4Checksum problem.
    If the NIC checksumming offload is enabled, the Linux network stack will make a simple checksum a packet when it is sent out from local. When NIC discovers that the source IP of the packet is the local IP of the NIC, it will checksum it complete this checksum.
    But the problem is, after the Linux network stack, before entering the network card, we modify the source IP of this packet, causing the Linux network stack to only make a simple checksum, and the NIC also assumes that this packet is not sent from local, so no further checksum completing.
