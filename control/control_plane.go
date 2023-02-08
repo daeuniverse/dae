@@ -29,7 +29,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 )
 
 type ControlPlane struct {
@@ -56,11 +55,7 @@ func NewControlPlane(
 	nodes []string,
 	groups []config.Group,
 	routingA *config.Routing,
-	dnsUpstream string,
-	checkUrl string,
-	checkInterval time.Duration,
-	lanInterface []string,
-	wanInterface []string,
+	global *config.Global,
 ) (c *ControlPlane, err error) {
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -73,12 +68,12 @@ func NewControlPlane(
 			kernelVersion.String(),
 			consts.ChecksumFeatureVersion.String())
 	}
-	if len(wanInterface) > 0 && kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
+	if len(global.WanInterface) > 0 && kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
 			kernelVersion.String(),
 			consts.CgSocketCookieFeatureVersion.String())
 	}
-	if len(lanInterface) > 0 && kernelVersion.Less(consts.SkAssignFeatureVersion) {
+	if len(global.LanInterface) > 0 && kernelVersion.Less(consts.SkAssignFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
 			kernelVersion.String(),
 			consts.SkAssignFeatureVersion.String())
@@ -117,8 +112,8 @@ func NewControlPlane(
 	if err = selectivelyLoadBpfObjects(log, &bpf, &loadBpfOptions{
 		PinPath:           pinPath,
 		CollectionOptions: collectionOpts,
-		BindLan:           len(lanInterface) > 0,
-		BindWan:           len(wanInterface) > 0,
+		BindLan:           len(global.LanInterface) > 0,
+		BindWan:           len(global.WanInterface) > 0,
 	}); err != nil {
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
@@ -164,26 +159,26 @@ func NewControlPlane(
 	}()
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Add clsact qdisc
-	for _, ifname := range common.Deduplicate(append(append([]string{}, lanInterface...), wanInterface...)) {
+	for _, ifname := range common.Deduplicate(append(append([]string{}, global.LanInterface...), global.WanInterface...)) {
 		_ = core.addQdisc(ifname)
 	}
 	// Bind to LAN
-	if len(lanInterface) > 0 {
+	if len(global.LanInterface) > 0 {
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
-		for _, ifname := range lanInterface {
+		for _, ifname := range global.LanInterface {
 			if err = core.bindLan(ifname); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
 			}
 		}
 	}
 	// Bind to WAN
-	if len(wanInterface) > 0 {
+	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
 			return nil, err
 		}
-		for _, ifname := range wanInterface {
+		for _, ifname := range global.WanInterface {
 			if err = core.bindWan(ifname); err != nil {
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}
@@ -193,8 +188,8 @@ func NewControlPlane(
 	/// DialerGroups (outbounds).
 	option := &dialer.GlobalOption{
 		Log:           log,
-		CheckUrl:      checkUrl,
-		CheckInterval: checkInterval,
+		CheckUrl:      global.TcpCheckUrl,
+		CheckInterval: global.CheckInterval,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
@@ -273,10 +268,9 @@ func NewControlPlane(
 
 	/// DNS upstream.
 	var dnsAddrPort netip.AddrPort
-	if dnsUpstream != "" {
-		dnsAddrPort, err = netip.ParseAddrPort(dnsUpstream)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse DNS upstream: \"%v\": %w", dnsUpstream, err)
+	if !global.DnsUpstream.Empty {
+		if dnsAddrPort, err = resolveDnsUpstream(global.DnsUpstream.Url); err != nil {
+			return nil, err
 		}
 		dnsAddr16 := dnsAddrPort.Addr().As16()
 		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
@@ -286,6 +280,7 @@ func NewControlPlane(
 			return nil, err
 		}
 	} else {
+		// Empty.
 		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
 			Ip: [4]uint32{},
 			// Zero port indicates no element, because bpf_map_lookup_elem cannot return 0 for map_type_array.
@@ -297,7 +292,7 @@ func NewControlPlane(
 
 	/// Listen address.
 	listenIp := "::1"
-	if len(wanInterface) > 0 {
+	if len(global.WanInterface) > 0 {
 		listenIp = "0.0.0.0"
 	}
 	return &ControlPlane{

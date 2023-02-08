@@ -8,16 +8,23 @@ package config
 import (
 	"fmt"
 	"github.com/v2rayA/dae/pkg/config_parser"
+	"net/url"
 	"reflect"
 	"time"
 )
 
+type UrlOrEmpty struct {
+	Url   *url.URL
+	Empty bool
+}
+
 type Global struct {
 	TproxyPort    uint16        `mapstructure:"tproxy_port" default:"12345"`
 	LogLevel      string        `mapstructure:"log_level" default:"info"`
-	CheckUrl      string        `mapstructure:"check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
+	TcpCheckUrl   string        `mapstructure:"tcp_check_url" default:"https://connectivitycheck.gstatic.com/generate_204"`
+	UdpCheckDns   string        `mapstructure:"udp_check_dns" default:"8.8.8.8:53"`
 	CheckInterval time.Duration `mapstructure:"check_interval" default:"15s"`
-	DnsUpstream   string        `mapstructure:"dns_upstream" require:""`
+	DnsUpstream   UrlOrEmpty    `mapstructure:"dns_upstream" require:""`
 	LanInterface  []string      `mapstructure:"lan_interface"`
 	WanInterface  []string      `mapstructure:"wan_interface"`
 }
@@ -81,13 +88,13 @@ func New(sections []*config_parser.Section) (params *Params, err error) {
 		if !ok {
 			return nil, fmt.Errorf("no parser is specified in field %v", structField.Name)
 		}
-		parserFunc, ok := ParserMap[parserName]
+		parser, ok := ParserMap[parserName]
 		if !ok {
 			return nil, fmt.Errorf("unknown parser %v in field %v", parserName, structField.Name)
 		}
 
 		// Parse section and unmarshal to field.
-		if err := parserFunc(field.Addr(), section.Val); err != nil {
+		if err := parser(field.Addr(), section.Val); err != nil {
 			return nil, fmt.Errorf("failed to parse \"%v\": %w", sectionName, err)
 		}
 		section.Parsed = true

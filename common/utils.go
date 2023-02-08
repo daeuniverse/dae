@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/v2rayA/dae/config"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -276,6 +277,27 @@ func FuzzyDecode(to interface{}, val string) bool {
 		}
 	case reflect.String:
 		v.SetString(val)
+	case reflect.Struct:
+		switch v.Interface().(type) {
+		case config.UrlOrEmpty:
+			if val == "" {
+				v.Set(reflect.ValueOf(config.UrlOrEmpty{
+					Url:   nil,
+					Empty: true,
+				}))
+			} else {
+				u, err := url.Parse(val)
+				if err != nil {
+					return false
+				}
+				v.Set(reflect.ValueOf(config.UrlOrEmpty{
+					Url:   u,
+					Empty: false,
+				}))
+			}
+		default:
+			return false
+		}
 	default:
 		return false
 	}

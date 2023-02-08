@@ -75,11 +75,7 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 		nodeList,
 		param.Group,
 		&param.Routing,
-		param.Global.DnsUpstream,
-		param.Global.CheckUrl,
-		param.Global.CheckInterval,
-		param.Global.LanInterface,
-		param.Global.WanInterface,
+		&param.Global,
 	)
 	if err != nil {
 		return err
