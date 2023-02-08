@@ -74,7 +74,7 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 			Bitmap: cache.DomainBitmap,
 		})
 	}
-	if _, err := BatchUpdate(c.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
+	if _, err := BatchUpdate(c.core.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return err

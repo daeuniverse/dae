@@ -284,7 +284,7 @@ func (d *Dialer) Check(timeout time.Duration,
 				"network": string(opts.ResultLogger.L4proto) + string(opts.ResultLogger.IpVersion),
 				"node":    d.name,
 				"err":     err.Error(),
-			}).Debugln("Connectivity Check")
+			}).Debugln("Connectivity Check Failed")
 		}
 		opts.ResultLogger.LatencyN.AppendLatency(timeout)
 	}

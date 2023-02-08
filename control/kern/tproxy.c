@@ -74,6 +74,21 @@ enum {
   DisableL4ChecksumPolicy_SetZero,
 };
 
+// Outbound Connectivity Map:
+
+struct outbound_connectivity_query {
+  __u8 outbound;
+  __u8 l4proto;
+  __u8 ipversion;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, struct outbound_connectivity_query);
+  __type(value, __u32);             // true, false
+  __uint(max_entries, 256 * 2 * 2); // outbound * l4proto * ipversion
+} outbound_connectivity_map SEC(".maps");
+
 // Sockmap:
 struct {
   __uint(type, BPF_MAP_TYPE_SOCKMAP);
@@ -1286,6 +1301,18 @@ new_connection:
     goto block;
   }
 
+  // Check outbound connectivity in specific ipversion and l4proto.
+  struct outbound_connectivity_query q = {0};
+  q.outbound = outbound;
+  q.ipversion = ipversion;
+  q.l4proto = l4proto;
+  __u32 *alive;
+  alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+  if (alive && *alive == 0) {
+    // Outbound is not alive.
+    goto block;
+  }
+
   // Save routing result.
   if ((ret = bpf_map_update_elem(&routing_tuples_map, &tuples, &outbound,
                                  BPF_ANY))) {
@@ -1591,6 +1618,18 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
       // Rewrite to control plane.
 
+      // Check outbound connectivity in specific ipversion and l4proto.
+      struct outbound_connectivity_query q = {0};
+      q.outbound = outbound;
+      q.ipversion = ipversion;
+      q.l4proto = l4proto;
+      __u32 *alive;
+      alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+      if (alive && *alive == 0) {
+        // Outbound is not alive.
+        return TC_ACT_SHOT;
+      }
+
       if (unlikely(tcp_state_syn)) {
         struct ip_port_outbound value_dst;
         __builtin_memset(&value_dst, 0, sizeof(value_dst));
@@ -1659,6 +1698,18 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
 
       // Rewrite to control plane.
+
+      // Check outbound connectivity in specific ipversion and l4proto.
+      struct outbound_connectivity_query q = {0};
+      q.outbound = new_hdr.outbound;
+      q.ipversion = ipversion;
+      q.l4proto = l4proto;
+      __u32 *alive;
+      alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+      if (alive && *alive == 0) {
+        // Outbound is not alive.
+        return TC_ACT_SHOT;
+      }
 
       // Write mac.
       if ((ret =
