@@ -15,9 +15,54 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
 
-func GetLocationAsset(log *logrus.Logger, filename string) (path string, err error) {
+const CacheTimeout = 5 * time.Second
+
+type CacheItem struct {
+	Filename string
+	Path     string
+
+	CacheDeadline time.Time
+}
+
+type LocationFinder struct {
+	mu sync.Mutex
+	m  map[string]CacheItem
+}
+
+func NewLocationFinder() *LocationFinder {
+	return &LocationFinder{
+		mu: sync.Mutex{},
+		m:  map[string]CacheItem{},
+	}
+}
+
+func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (path string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if item, ok := c.m[filename]; ok && time.Now().Before(item.CacheDeadline) {
+		return item.Path, nil
+	}
+	defer func() {
+		if err == nil {
+			c.m[filename] = CacheItem{
+				Filename:      filename,
+				Path:          path,
+				CacheDeadline: time.Now().Add(CacheTimeout),
+			}
+			time.AfterFunc(CacheTimeout, func() {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				if item, ok := c.m[filename]; ok && time.Now().After(item.CacheDeadline) {
+					delete(c.m, filename)
+				}
+			})
+		}
+	}()
+
 	folder := "dae"
 	location := os.Getenv("DAE_LOCATION_ASSET")
 	// check if DAE_LOCATION_ASSET is set
@@ -76,3 +121,5 @@ func GetLocationAsset(log *logrus.Logger, filename string) (path string, err err
 		}
 	}
 }
+
+var DefaultLocationFinder = NewLocationFinder()
