@@ -186,11 +186,14 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 	validateRushAns := outboundIndex == consts.OutboundDirect && !destToSend.Addr().IsPrivate()
 
 	// Get udp endpoint.
-	ue, err := DefaultUdpEndpointPool.GetOrCreate(src, &UdpEndpointOptions{
+	l4proto := consts.L4ProtoStr_UDP
+	ipversion := consts.IpVersionFromAddr(dst.Addr())
+getNew:
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(src, &UdpEndpointOptions{
 		Handler:    c.RelayToUDP(src, isDns, dummyFrom, validateRushAns),
 		NatTimeout: natTimeout,
 		DialerFunc: func() (*dialer.Dialer, error) {
-			newDialer, err := outbound.Select(consts.L4ProtoStr_UDP, consts.IpVersionFromAddr(dst.Addr()))
+			newDialer, err := outbound.Select(l4proto, ipversion)
 			if err != nil {
 				return nil, fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
 			}
@@ -200,6 +203,11 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 	})
 	if err != nil {
 		return fmt.Errorf("failed to GetOrCreate: %w", err)
+	}
+	// If the udp endpoint has been not alive, remove it from pool and get a new one.
+	if !isNew && !ue.Dialer.MustGetAlive(l4proto, ipversion) {
+		_ = DefaultUdpEndpointPool.Remove(src, ue)
+		goto getNew
 	}
 	// This is real dialer.
 	d := ue.Dialer

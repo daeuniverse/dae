@@ -28,6 +28,49 @@ var (
 	BootstrapDns = netip.MustParseAddrPort("223.5.5.5:53")
 )
 
+type collection struct {
+	// AliveDialerSetSet uses reference counting.
+	AliveDialerSetSet AliveDialerSetSet
+	Latencies10       *LatenciesN
+	Alive             bool
+}
+
+func newCollection() *collection {
+	return &collection{
+		AliveDialerSetSet: make(AliveDialerSetSet),
+		Latencies10:       NewLatenciesN(10),
+		Alive:             false,
+	}
+}
+
+func (d *Dialer) mustGetCollection(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) *collection {
+	switch l4proto {
+	case consts.L4ProtoStr_TCP:
+		switch ipversion {
+		case consts.IpVersionStr_4:
+			return d.collections[0]
+		case consts.IpVersionStr_6:
+			return d.collections[1]
+		}
+	case consts.L4ProtoStr_UDP:
+		switch ipversion {
+		case consts.IpVersionStr_4:
+			return d.collections[2]
+		case consts.IpVersionStr_6:
+			return d.collections[3]
+		}
+	}
+	panic("invalid param")
+}
+
+func (d *Dialer) MustGetLatencies10(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) *LatenciesN {
+	return d.mustGetCollection(l4proto, ipversion).Latencies10
+}
+
+func (d *Dialer) MustGetAlive(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) bool {
+	return d.mustGetCollection(l4proto, ipversion).Alive
+}
+
 type Ip46 struct {
 	Ip4 netip.Addr
 	Ip6 netip.Addr
@@ -101,15 +144,9 @@ func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheck
 }
 
 type CheckOption struct {
-	ResultLogger LatencyLogger
-	CheckFunc    func(ctx context.Context) (ok bool, err error)
-}
-
-type LatencyLogger struct {
-	L4proto           consts.L4ProtoStr
-	IpVersion         consts.IpVersionStr
-	LatencyN          *LatenciesN
-	AliveDialerSetSet AliveDialerSetSet
+	L4proto   consts.L4ProtoStr
+	IpVersion consts.IpVersionStr
+	CheckFunc func(ctx context.Context) (ok bool, err error)
 }
 
 func (d *Dialer) ActivateCheck() {
@@ -126,45 +163,29 @@ func (d *Dialer) aliveBackground() {
 	timeout := 10 * time.Second
 	cycle := d.CheckInterval
 	tcp4CheckOpt := &CheckOption{
-		ResultLogger: LatencyLogger{
-			L4proto:           consts.L4ProtoStr_TCP,
-			IpVersion:         consts.IpVersionStr_4,
-			LatencyN:          d.tcp4Latencies10,
-			AliveDialerSetSet: d.tcp4AliveDialerSetSet,
-		},
+		L4proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionStr_4,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
 			return d.HttpCheck(ctx, d.TcpCheckOption.Url, d.TcpCheckOption.Ip4)
 		},
 	}
 	tcp6CheckOpt := &CheckOption{
-		ResultLogger: LatencyLogger{
-			L4proto:           consts.L4ProtoStr_TCP,
-			IpVersion:         consts.IpVersionStr_6,
-			LatencyN:          d.tcp6Latencies10,
-			AliveDialerSetSet: d.tcp6AliveDialerSetSet,
-		},
+		L4proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionStr_6,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
 			return d.HttpCheck(ctx, d.TcpCheckOption.Url, d.TcpCheckOption.Ip6)
 		},
 	}
 	udp4CheckOpt := &CheckOption{
-		ResultLogger: LatencyLogger{
-			L4proto:           consts.L4ProtoStr_UDP,
-			IpVersion:         consts.IpVersionStr_4,
-			LatencyN:          d.udp4Latencies10,
-			AliveDialerSetSet: d.udp4AliveDialerSetSet,
-		},
+		L4proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
 			return d.DnsCheck(ctx, netip.AddrPortFrom(d.UdpCheckOption.Ip4, d.UdpCheckOption.DnsPort))
 		},
 	}
 	udp6CheckOpt := &CheckOption{
-		ResultLogger: LatencyLogger{
-			L4proto:           consts.L4ProtoStr_UDP,
-			IpVersion:         consts.IpVersionStr_6,
-			LatencyN:          d.udp6Latencies10,
-			AliveDialerSetSet: d.udp6AliveDialerSetSet,
-		},
+		L4proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
 			return d.DnsCheck(ctx, netip.AddrPortFrom(d.UdpCheckOption.Ip4, d.UdpCheckOption.DnsPort))
 		},
@@ -182,73 +203,33 @@ func (d *Dialer) aliveBackground() {
 	d.tickerMu.Unlock()
 	for range d.ticker.C {
 		// No need to test if there is no dialer selection policy using its latency.
-		if len(d.tcp4AliveDialerSetSet) > 0 {
+		if len(d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_4).AliveDialerSetSet) > 0 {
 			go d.Check(timeout, tcp4CheckOpt)
 		}
-		if len(d.tcp6AliveDialerSetSet) > 0 {
+		if len(d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_6).AliveDialerSetSet) > 0 {
 			go d.Check(timeout, tcp6CheckOpt)
 		}
-		if len(d.udp4AliveDialerSetSet) > 0 {
+		if len(d.mustGetCollection(consts.L4ProtoStr_UDP, consts.IpVersionStr_4).AliveDialerSetSet) > 0 {
 			go d.Check(timeout, udp4CheckOpt)
 		}
-		if len(d.udp6AliveDialerSetSet) > 0 {
+		if len(d.mustGetCollection(consts.L4ProtoStr_UDP, consts.IpVersionStr_6).AliveDialerSetSet) > 0 {
 			go d.Check(timeout, udp6CheckOpt)
 		}
 	}
 }
 
-func (d *Dialer) mustGetAliveDialerSetSet(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) AliveDialerSetSet {
-	switch l4proto {
-	case consts.L4ProtoStr_TCP:
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			return d.tcp4AliveDialerSetSet
-		case consts.IpVersionStr_6:
-			return d.tcp6AliveDialerSetSet
-		}
-	case consts.L4ProtoStr_UDP:
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			return d.udp4AliveDialerSetSet
-		case consts.IpVersionStr_6:
-			return d.udp6AliveDialerSetSet
-		}
-	}
-	panic("invalid param")
-}
-
-func (d *Dialer) MustGetLatencies10(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) *LatenciesN {
-	switch l4proto {
-	case consts.L4ProtoStr_TCP:
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			return d.tcp4Latencies10
-		case consts.IpVersionStr_6:
-			return d.tcp6Latencies10
-		}
-	case consts.L4ProtoStr_UDP:
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			return d.udp4Latencies10
-		case consts.IpVersionStr_6:
-			return d.udp6Latencies10
-		}
-	}
-	panic("invalid param")
-}
-
 // RegisterAliveDialerSet is thread-safe.
 func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet, l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) {
-	d.aliveDialerSetSetMu.Lock()
-	d.mustGetAliveDialerSetSet(l4proto, ipversion)[a]++
-	d.aliveDialerSetSetMu.Unlock()
+	d.collectionFineMu.Lock()
+	d.mustGetCollection(l4proto, ipversion).AliveDialerSetSet[a]++
+	d.collectionFineMu.Unlock()
 }
 
 // UnregisterAliveDialerSet is thread-safe.
 func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet, l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) {
-	d.aliveDialerSetSetMu.Lock()
-	defer d.aliveDialerSetSetMu.Unlock()
-	setSet := d.mustGetAliveDialerSetSet(l4proto, ipversion)
+	d.collectionFineMu.Lock()
+	defer d.collectionFineMu.Unlock()
+	setSet := d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_4).AliveDialerSetSet
 	setSet[a]--
 	if setSet[a] <= 0 {
 		delete(setSet, a)
@@ -262,38 +243,41 @@ func (d *Dialer) Check(timeout time.Duration,
 	defer cancel()
 	start := time.Now()
 	// Calc latency.
-	var alive bool
+	collection := d.mustGetCollection(opts.L4proto, opts.IpVersion)
 	if ok, err = opts.CheckFunc(ctx); ok && err == nil {
 		// No error.
 		latency := time.Since(start)
-		opts.ResultLogger.LatencyN.AppendLatency(latency)
-		avg, _ := opts.ResultLogger.LatencyN.AvgLatency()
+		latencies10 := d.mustGetCollection(opts.L4proto, opts.IpVersion).Latencies10
+		latencies10.AppendLatency(latency)
+		avg, _ := latencies10.AvgLatency()
 		d.Log.WithFields(logrus.Fields{
 			// Add a space to ensure alphabetical order is first.
-			"network": string(opts.ResultLogger.L4proto) + string(opts.ResultLogger.IpVersion),
+			"network": string(opts.L4proto) + string(opts.IpVersion),
 			"node":    d.name,
 			"last":    latency.Truncate(time.Millisecond),
 			"avg_10":  avg.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")
-		alive = true
+		collection.Alive = true
 	} else {
 		// Append timeout if there is any error or unexpected status code.
 		if err != nil {
 			d.Log.WithFields(logrus.Fields{
 				// Add a space to ensure alphabetical order is first.
-				"network": string(opts.ResultLogger.L4proto) + string(opts.ResultLogger.IpVersion),
+				"network": string(opts.L4proto) + string(opts.IpVersion),
 				"node":    d.name,
 				"err":     err.Error(),
 			}).Debugln("Connectivity Check Failed")
 		}
-		opts.ResultLogger.LatencyN.AppendLatency(timeout)
+		latencies10 := collection.Latencies10
+		latencies10.AppendLatency(timeout)
 	}
 	// Inform DialerGroups to update state.
-	d.aliveDialerSetSetMu.Lock()
-	for a := range opts.ResultLogger.AliveDialerSetSet {
-		a.SetAlive(d, alive)
+	// We use lock because AliveDialerSetSet is a reference of that in collection.
+	d.collectionFineMu.Lock()
+	for a := range collection.AliveDialerSetSet {
+		a.SetAlive(d, collection.Alive)
 	}
-	d.aliveDialerSetSetMu.Unlock()
+	d.collectionFineMu.Unlock()
 	return ok, err
 }
 
