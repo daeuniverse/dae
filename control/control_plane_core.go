@@ -171,8 +171,8 @@ tryRouteAddAgain:
 	c.deferFuncs = append(c.deferFuncs, cleanRoutes)
 
 	/** ip rule
-	ip rule add fwmark 0x80000000/0x80000000 table 2023
-	ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
+	ip rule add fwmark 0x8000000/0x8000000 table 2023
+	ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
 	*/
 	rules := []netlink.Rule{{
 		SuppressIfgroup:   -1,
