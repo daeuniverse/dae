@@ -125,7 +125,7 @@ func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersi
 		if d == nil {
 			// No alive dialer.
 			g.log.WithFields(logrus.Fields{
-				"l4proto": l4proto,
+				"network": string(l4proto) + string(ipversion),
 				"group":   g.Name,
 			}).Warnf("No alive dialer in DialerGroup, use \"block\".")
 			return g.block, nil
@@ -143,7 +143,7 @@ func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersi
 		if d == nil {
 			// No alive dialer.
 			g.log.WithFields(logrus.Fields{
-				"l4proto": l4proto,
+				"network": string(l4proto) + string(ipversion),
 				"group":   g.Name,
 			}).Warnf("No alive dialer in DialerGroup, use \"block\".")
 			return g.block, nil
