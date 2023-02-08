@@ -33,7 +33,9 @@ import (
 )
 
 type ControlPlane struct {
-	*ControlPlaneCore
+	log *logrus.Logger
+
+	core       *ControlPlaneCore
 	deferFuncs []func() error
 	listenIp   string
 
@@ -81,7 +83,7 @@ func NewControlPlane(
 	}
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v",
-			c.kernelVersion.String(),
+			kernelVersion.String(),
 			consts.BasicFeatureVersion.String())
 	}
 
@@ -209,13 +211,13 @@ func NewControlPlane(
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}),
+			}, core.OutboundAliveChangeCallback(0)),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
 			[]*dialer.Dialer{dialer.NewBlockDialer(option)},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}),
+			}, core.OutboundAliveChangeCallback(1)),
 	}
 
 	// Filter out groups.
@@ -242,17 +244,20 @@ func NewControlPlane(
 			log.Infoln("\t<Empty>")
 		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy)
+		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy, core.OutboundAliveChangeCallback(uint8(len(outbounds))))
 		outbounds = append(outbounds, dialerGroup)
 	}
 
 	/// Routing.
 	// Generate outboundName2Id from outbounds.
-	if len(outbounds) > 0xff {
+	if len(outbounds) > int(consts.OutboundUserDefinedMax) {
 		return nil, fmt.Errorf("too many outbounds")
 	}
 	outboundName2Id := make(map[string]uint8)
 	for i, o := range outbounds {
+		if _, exist := outboundName2Id[o.Name]; exist {
+			return nil, fmt.Errorf("duplicated outbound name: %v", o.Name)
+		}
 		outboundName2Id[o.Name] = uint8(i)
 	}
 	builder := NewRoutingMatcherBuilder(outboundName2Id, &bpf)
@@ -309,7 +314,8 @@ func NewControlPlane(
 		listenIp = "0.0.0.0"
 	}
 	return &ControlPlane{
-		ControlPlaneCore:   core,
+		log:                log,
+		core:               core,
 		deferFuncs:         nil,
 		listenIp:           listenIp,
 		outbounds:          outbounds,
@@ -352,7 +358,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return tcpFile.Close()
 	})
-	if err := c.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
+	if err := c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return err
 	}
 	// UDP socket.
@@ -363,11 +369,11 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return udpFile.Close()
 	})
-	if err := c.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+	if err := c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return err
 	}
 	// Port.
-	if err := c.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(internal.Htons(port)), ebpf.UpdateAny); err != nil {
+	if err := c.core.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(internal.Htons(port)), ebpf.UpdateAny); err != nil {
 		return err
 	}
 
@@ -407,7 +413,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 			}
 			dst := RetrieveOriginalDest(oob[:oobn])
 			var newBuf []byte
-			outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
+			outboundIndex, err := c.core.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
 			if err != nil {
 				// WAN. Old method.
 				addrHdr, dataOffset, err := ParseAddrHdr(buf[:n])
@@ -448,5 +454,5 @@ func (c *ControlPlane) Close() (err error) {
 			}
 		}
 	}
-	return c.ControlPlaneCore.Close()
+	return c.core.Close()
 }

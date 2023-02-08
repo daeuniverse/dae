@@ -36,7 +36,7 @@ func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4prot
 	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &_outboundIndex); err != nil {
 		return 0, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
 	}
-	if _outboundIndex > uint32(consts.OutboundLogicalMax) {
+	if _outboundIndex > uint32(consts.OutboundMax) {
 		return 0, fmt.Errorf("bad outbound index")
 	}
 	return consts.OutboundIndex(_outboundIndex), nil

@@ -60,7 +60,8 @@ const (
 	OutboundLogicalOr          OutboundIndex = 0xFE
 	OutboundLogicalAnd         OutboundIndex = 0xFF
 
-	OutboundLogicalMax = OutboundLogicalAnd
+	OutboundMax            = OutboundLogicalAnd
+	OutboundUserDefinedMax = OutboundControlPlaneDirect - 1
 )
 
 func (i OutboundIndex) String() string {

@@ -27,6 +27,8 @@ type AliveDialerSet struct {
 	l4proto         consts.L4ProtoStr
 	ipversion       consts.IpVersionStr
 
+	aliveChangeCallback func(alive bool)
+
 	mu                      sync.Mutex
 	dialerToIndex           map[*Dialer]int // *Dialer -> index of inorderedAliveDialerSet
 	dialerToLatency         map[*Dialer]time.Duration
@@ -43,6 +45,7 @@ func NewAliveDialerSet(
 	ipversion consts.IpVersionStr,
 	selectionPolicy consts.DialerSelectionPolicy,
 	dialers []*Dialer,
+	aliveChangeCallback func(alive bool),
 	setAlive bool,
 ) *AliveDialerSet {
 	a := &AliveDialerSet{
@@ -50,6 +53,7 @@ func NewAliveDialerSet(
 		dialerGroupName:         dialerGroupName,
 		l4proto:                 l4proto,
 		ipversion:               ipversion,
+		aliveChangeCallback:     aliveChangeCallback,
 		dialerToIndex:           make(map[*Dialer]int),
 		dialerToLatency:         make(map[*Dialer]time.Duration),
 		inorderedAliveDialerSet: make([]*Dialer, 0, len(dialers)),
@@ -108,6 +112,7 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 			// This dialer is already alive.
 		} else {
 			// Not alive -> alive.
+			defer a.aliveChangeCallback(true)
 			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
 			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
 		}
@@ -115,6 +120,7 @@ func (a *AliveDialerSet) SetAlive(dialer *Dialer, alive bool) {
 		index := a.dialerToIndex[dialer]
 		if index >= 0 {
 			// Alive -> not alive.
+			defer a.aliveChangeCallback(false)
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {
 				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))

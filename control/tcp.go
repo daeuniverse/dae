@@ -23,12 +23,12 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	outboundIndex, err := c.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
+	outboundIndex, err := c.core.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
 		// WAN. Old method.
 		var value bpfIpPortOutbound
 		ip6 := src.Addr().As16()
-		if e := c.bpf.TcpDstMap.Lookup(bpfIpPort{
+		if e := c.core.bpf.TcpDstMap.Lookup(bpfIpPort{
 			Ip:   common.Ipv6ByteSliceToUint32Array(ip6[:]),
 			Port: internal.Htons(src.Port()),
 		}, &value); e != nil {
