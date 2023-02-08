@@ -279,7 +279,7 @@ func (d *Dialer) Check(timeout time.Duration,
 	// We use lock because AliveDialerSetSet is a reference of that in collection.
 	d.collectionFineMu.Lock()
 	for a := range collection.AliveDialerSetSet {
-		a.SetAlive(d, collection.Alive)
+		a.NotifyLatencyChange(d, collection.Alive)
 	}
 	d.collectionFineMu.Unlock()
 	return ok, err

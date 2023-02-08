@@ -125,7 +125,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 				jMinLatency = j
 				minLatency = latency
 			}
-			g.AliveTcp4DialerSet.SetAlive(d, alive)
+			g.AliveTcp4DialerSet.NotifyLatencyChange(d, alive)
 		}
 		d, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
 		if err != nil {
@@ -219,7 +219,7 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 		Policy: consts.DialerSelectionPolicy_Random,
 	})
 	zeroTarget := 3
-	g.AliveTcp4DialerSet.SetAlive(dialers[zeroTarget], false)
+	g.AliveTcp4DialerSet.NotifyLatencyChange(dialers[zeroTarget], false)
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
 		d, err := g.Select(consts.L4ProtoStr_UDP, consts.IpVersionStr_4)
