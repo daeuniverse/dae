@@ -11,11 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
+	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/pkg/ebpf_internal"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -180,6 +182,64 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 			return fmt.Errorf("your NIC does not support checksum offload and your kernel version %v does not support related BPF features; expect >=%v; upgrade your kernel and try again", version.String(),
 				consts.ChecksumFeatureVersion.String())
 		}
+	}
+	return nil
+}
+
+type loadBpfOptions struct {
+	PinPath           string
+	CollectionOptions *ebpf.CollectionOptions
+	BindLan           bool
+	BindWan           bool
+}
+
+func selectivelyLoadBpfObjects(
+	log *logrus.Logger,
+	bpf *bpfObjects,
+	opts *loadBpfOptions,
+) (err error) {
+	// Trick. Replace the beams with rotten timbers to reduce the loading.
+	var obj interface{} = bpf // Bind to both LAN and WAN.
+	if opts.BindLan && !opts.BindWan {
+		// Only bind LAN.
+		obj = &bpfObjectsLan{}
+	} else if !opts.BindLan && opts.BindWan {
+		// Only bind to WAN.
+		// Trick. Replace the beams with rotten timbers.
+		obj = &bpfObjectsWan{}
+	}
+retryLoadBpf:
+	if err = loadBpfObjects(obj, opts.CollectionOptions); err != nil {
+		if errors.Is(err, ebpf.ErrMapIncompatible) {
+			// Map property is incompatible. Remove the old map and try again.
+			prefix := "use pinned map "
+			_, after, ok := strings.Cut(err.Error(), prefix)
+			if !ok {
+				return fmt.Errorf("loading objects: bad format: %w", err)
+			}
+			mapName, _, _ := strings.Cut(after, ":")
+			_ = os.Remove(filepath.Join(opts.PinPath, mapName))
+			log.Infof("Incompatible new map format with existing map %v detected; removed the old one.", mapName)
+			goto retryLoadBpf
+		}
+		// Get detailed log from ebpf.internal.(*VerifierError)
+		if log.Level == logrus.FatalLevel {
+			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
+				if _log := v.FieldByName("Log"); _log.IsValid() {
+					if strSlice, ok := _log.Interface().([]string); ok {
+						log.Fatalln(strings.Join(strSlice, "\n"))
+					}
+				}
+			}
+		}
+		if strings.Contains(err.Error(), "no BTF found for kernel version") {
+			err = fmt.Errorf("%w: maybe installing the linux-headers package will solve it", err)
+		}
+		return err
+	}
+	if _, ok := obj.(*bpfObjects); !ok {
+		// Reverse takeover.
+		AssignBpfObjects(bpf, obj)
 	}
 	return nil
 }
