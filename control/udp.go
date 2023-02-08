@@ -212,26 +212,29 @@ getNew:
 	// This is real dialer.
 	d := ue.Dialer
 
-	if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
-		q := dnsMessage.Questions[0]
-		c.log.WithFields(logrus.Fields{
-			"l4proto":  "UDP(DNS)",
-			"outbound": outbound.Name,
-			"dialer":   d.Name(),
-			"qname":    strings.ToLower(q.Name.String()),
-			"qtype":    q.Type,
-		}).Infof("%v <-> %v",
-			RefineSourceToShow(src, destToSend.Addr()), RefineAddrPortToShow(destToSend),
-		)
-	} else {
-		// TODO: Set-up ip to domain mapping and show domain if possible.
-		c.log.WithFields(logrus.Fields{
-			"l4proto":  "UDP",
-			"outbound": outbound.Name,
-			"dialer":   d.Name(),
-		}).Infof("%v <-> %v",
-			RefineSourceToShow(src, destToSend.Addr()), RefineAddrPortToShow(destToSend),
-		)
+	if isNew {
+		// Only print routing for new connection to avoid the log exploded (Quic and BT).
+		if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
+			q := dnsMessage.Questions[0]
+			c.log.WithFields(logrus.Fields{
+				"l4proto":  "UDP(DNS)",
+				"outbound": outbound.Name,
+				"dialer":   d.Name(),
+				"qname":    strings.ToLower(q.Name.String()),
+				"qtype":    q.Type,
+			}).Infof("%v <-> %v",
+				RefineSourceToShow(src, destToSend.Addr()), RefineAddrPortToShow(destToSend),
+			)
+		} else {
+			// TODO: Set-up ip to domain mapping and show domain if possible.
+			c.log.WithFields(logrus.Fields{
+				"l4proto":  "UDP",
+				"outbound": outbound.Name,
+				"dialer":   d.Name(),
+			}).Infof("%v <-> %v",
+				RefineSourceToShow(src, destToSend.Addr()), RefineAddrPortToShow(destToSend),
+			)
+		}
 	}
 	//log.Printf("WriteToUDPAddrPort->%v", destToSend)
 	_, err = ue.WriteToUDPAddrPort(data, destToSend)
