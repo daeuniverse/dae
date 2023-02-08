@@ -1,3 +1,0 @@
-[submodule "control/kern/headers"]
-	path = control/kern/headers
-	url = https://github.com/v2rayA/dae_bpf_headers
