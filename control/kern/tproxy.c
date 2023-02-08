@@ -62,7 +62,7 @@
 #define OUTBOUND_LOGICAL_AND 0xFF
 #define OUTBOUND_LOGICAL_MASK 0xFE
 
-#define TPROXY_MARK 0x80000000
+#define TPROXY_MARK 0x8000000
 
 #define ESOCKTNOSUPPORT 94 /* Socket type not supported */
 
@@ -1199,14 +1199,14 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   }
 
   /**
-  ip rule add fwmark 0x80000000/0x80000000 table 2023
+  ip rule add fwmark 0x8000000/0x8000000 table 2023
   ip route add local default dev lo table 2023
-  ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
+  ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
   ip -6 route add local default dev lo table 2023
 
-  ip rule del fwmark 0x80000000/0x80000000 table 2023
+  ip rule del fwmark 0x8000000/0x8000000 table 2023
   ip route del local default dev lo table 2023
-  ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
+  ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
   ip -6 route del local default dev lo table 2023
   */
   // Socket lookup and assign skb to existing socket connection.
