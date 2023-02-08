@@ -11,10 +11,9 @@
 #include "headers/socket_defs.h"
 #include "headers/vmlinux.h"
 
-// #include <bpf/bpf_core_read.h>
+#include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
-#include "headers/bpf_core_read.h"
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -190,11 +189,6 @@ struct {
 
 // Interface Ips:
 struct if_params {
-  __be32 ip4[4];
-  __be32 ip6[4];
-
-  bool has_ip4;
-  bool has_ip6;
   bool rx_cksm_offload;
   bool tx_l4_cksm_ip4_offload;
   bool tx_l4_cksm_ip6_offload;
@@ -220,7 +214,7 @@ struct map_lpm_type {
   __uint(max_entries, MAX_LPM_SIZE);
   __uint(key_size, sizeof(struct lpm_key));
   __uint(value_size, sizeof(__u32));
-} unused_lpm_type SEC(".maps"), host_ip_lpm SEC(".maps");
+} unused_lpm_type SEC(".maps");
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
   __uint(key_size, sizeof(__u32));
@@ -1193,12 +1187,12 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   ip rule add fwmark 0x80000000/0x80000000 table 2023
   ip route add local default dev lo table 2023
   ip -6 rule add fwmark 0x80000000/0x80000000 table 2023
-  ip -6 route add local ::/0 dev lo table 2023
+  ip -6 route add local default dev lo table 2023
 
   ip rule del fwmark 0x80000000/0x80000000 table 2023
   ip route del local default dev lo table 2023
   ip -6 rule del fwmark 0x80000000/0x80000000 table 2023
-  ip -6 route del local ::/0 dev lo table 2023
+  ip -6 route del local default dev lo table 2023
   */
   // Socket lookup and assign skb to existing socket connection.
   struct bpf_sock_tuple tuple = {0};
@@ -1446,13 +1440,28 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
 
-  __be16 sport;
-  if (l4proto == IPPROTO_TCP) {
-    sport = tcph.source;
-  } else if (l4proto == IPPROTO_UDP) {
-    sport = udph.source;
+  // Backup for further use.
+  __be16 ipv4_tot_len = 0;
+  struct tuples tuples = {0};
+  tuples.l4proto = l4proto;
+  if (ipversion == 4) {
+    tuples.src.ip[2] = bpf_htonl(0x0000ffff);
+    tuples.src.ip[3] = iph.saddr;
+
+    tuples.dst.ip[2] = bpf_htonl(0x0000ffff);
+    tuples.dst.ip[3] = iph.daddr;
+
+    ipv4_tot_len = iph.tot_len;
   } else {
-    return TC_ACT_OK;
+    __builtin_memcpy(tuples.dst.ip, &ipv6h.daddr, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(tuples.src.ip, &ipv6h.saddr, IPV6_BYTE_LENGTH);
+  }
+  if (l4proto == IPPROTO_TCP) {
+    tuples.src.port = tcph.source;
+    tuples.dst.port = tcph.dest;
+  } else {
+    tuples.src.port = udph.source;
+    tuples.dst.port = udph.dest;
   }
 
   // We should know if this packet is from tproxy.
@@ -1462,29 +1471,41 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   if (!tproxy_port) {
     return TC_ACT_OK;
   }
-  bool tproxy_response = *tproxy_port == sport;
-
-  // Backup for further use.
-  __be16 ipv4_tot_len = 0;
-
-  // Parse saddr and daddr as ipv6 format.
-  __be32 saddr[4];
-  __be32 daddr[4];
-  if (ipversion == 4) {
-    saddr[0] = 0;
-    saddr[1] = 0;
-    saddr[2] = bpf_htonl(0x0000ffff);
-    saddr[3] = iph.saddr;
-
-    daddr[0] = 0;
-    daddr[1] = 0;
-    daddr[2] = bpf_htonl(0x0000ffff);
-    daddr[3] = iph.daddr;
-
-    ipv4_tot_len = iph.tot_len;
-  } else {
-    __builtin_memcpy(daddr, &ipv6h.daddr, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(saddr, &ipv6h.saddr, IPV6_BYTE_LENGTH);
+  bool tproxy_response = *tproxy_port == tuples.src.port;
+  // Double check to avoid bind wan and lan to one interface.
+  if (tproxy_response && l4proto == IPPROTO_TCP) {
+    // If it is a TCP first handshake, it is not a tproxy response.
+    if (tcph.syn && !tcph.syn) {
+      tproxy_response = false;
+      // Abnormal.
+      return TC_ACT_SHOT;
+    } else {
+      // If there is an existing socket on localhost, it is not a tproxy
+      // response.
+      struct bpf_sock_tuple tuple = {0};
+      __u32 tuple_size;
+      if (ipversion == 4) {
+        tuple.ipv4.daddr = tuples.dst.ip[3];
+        tuple.ipv4.saddr = tuples.src.ip[3];
+        tuple.ipv4.dport = tuples.dst.port;
+        tuple.ipv4.sport = tuples.src.port;
+        tuple_size = sizeof(tuple.ipv4);
+      } else {
+        __builtin_memcpy(tuple.ipv6.daddr, tuples.dst.ip, IPV6_BYTE_LENGTH);
+        __builtin_memcpy(tuple.ipv6.saddr, tuples.src.ip, IPV6_BYTE_LENGTH);
+        tuple.ipv6.dport = tuples.dst.port;
+        tuple.ipv6.sport = tuples.src.port;
+        tuple_size = sizeof(tuple.ipv6);
+      }
+      struct bpf_sock *sk =
+          bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+      if (sk) {
+        // Not a tproxy response.
+        tproxy_response = false;
+        bpf_sk_release(sk);
+        return TC_ACT_OK;
+      }
+    }
   }
 
   if (tproxy_response) {
@@ -1511,7 +1532,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       __builtin_memset(&key_src, 0, sizeof(key_src));
       // Use daddr as key in WAN because tproxy (control plane) also lookups the
       // map element using income client ip (that is daddr).
-      __builtin_memcpy(key_src.ip, daddr, IPV6_BYTE_LENGTH);
+      __builtin_memcpy(key_src.ip, tuples.dst.ip, IPV6_BYTE_LENGTH);
       key_src.port = tcph.source;
       __u8 outbound;
       if (unlikely(tcp_state_syn)) {
@@ -1538,7 +1559,8 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
             bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
                       (ethh.h_source[4] << 8) + (ethh.h_source[5])),
         };
-        if ((ret = routing(flag, &tcph, saddr, daddr, mac)) < 0) {
+        if ((ret = routing(flag, &tcph, tuples.src.ip, tuples.dst.ip, mac)) <
+            0) {
           bpf_printk("shot routing: %d", ret);
           return TC_ACT_SHOT;
         }
@@ -1572,7 +1594,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       if (unlikely(tcp_state_syn)) {
         struct ip_port_outbound value_dst;
         __builtin_memset(&value_dst, 0, sizeof(value_dst));
-        __builtin_memcpy(value_dst.ip, daddr, IPV6_BYTE_LENGTH);
+        __builtin_memcpy(value_dst.ip, tuples.dst.ip, IPV6_BYTE_LENGTH);
         value_dst.port = tcph.dest;
         value_dst.outbound = outbound;
         // bpf_printk("UPDATE: %pI6:%u", key_src.ip, bpf_ntohs(key_src.port));
@@ -1595,7 +1617,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       // Backup for further use.
       struct ip_port_outbound new_hdr;
       __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
-      __builtin_memcpy(new_hdr.ip, daddr, IPV6_BYTE_LENGTH);
+      __builtin_memcpy(new_hdr.ip, tuples.dst.ip, IPV6_BYTE_LENGTH);
       new_hdr.port = udph.dest;
 
       // Routing. It decides if we redirect traffic to control plane.
@@ -1620,7 +1642,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
           bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
                     (ethh.h_source[4] << 8) + (ethh.h_source[5])),
       };
-      if ((ret = routing(flag, &udph, saddr, daddr, mac)) < 0) {
+      if ((ret = routing(flag, &udph, tuples.src.ip, tuples.dst.ip, mac)) < 0) {
         bpf_printk("shot routing: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1700,7 +1722,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   // Tproxy related.
   __u16 tproxy_typ = bpf_ntohs(*(__u16 *)&ethh.h_source[4]);
   if (*(__u32 *)&ethh.h_source[0] != bpf_htonl(0x02000203) || tproxy_typ > 1) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
   }
   bool tproxy_response = tproxy_typ == 1;
 
@@ -1773,7 +1795,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       if (!original_dst) {
         bpf_printk("[%X]Bad Connection: to: %pI6:%u", bpf_ntohl(tcph.seq),
                    key_dst.ip, bpf_ntohs(key_dst.port));
-        // Do not impact previous connections.
         return TC_ACT_SHOT;
       }
 
@@ -1933,7 +1954,7 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
         buf[to_read] = 0;
       }
       if ((ret = bpf_core_read_user(&buf, to_read,
-                                     (const void *)(arg_start + j)))) {
+                                    (const void *)(arg_start + j)))) {
         bpf_printk("failed to read process name: %d", ret);
         return ret;
       }
@@ -1950,7 +1971,7 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     length_cpy = TASK_COMM_LEN;
   }
   if ((ret = bpf_core_read_user(&val.pname, length_cpy,
-                                 (const void *)(arg_start + last_slash)))) {
+                                (const void *)(arg_start + last_slash)))) {
     bpf_printk("failed to read process name: %d", ret);
     return ret;
   }

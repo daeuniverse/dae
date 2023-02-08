@@ -198,15 +198,31 @@ retryLoadBpf:
 			_ = core.Close()
 		}
 	}()
-	// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
-	for _, ifname := range lanInterface {
-		if err = core.bindLan(ifname); err != nil {
-			return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
+	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
+	// Add clsact qdisc
+	for _, ifname := range common.Deduplicate(append(append([]string{}, lanInterface...), wanInterface...)) {
+		_ = core.addQdisc(ifname)
+	}
+	// Bind to LAN
+	if len(lanInterface) > 0 {
+		if err = core.setupRoutingPolicy(); err != nil {
+			return nil, err
+		}
+		for _, ifname := range lanInterface {
+			if err = core.bindLan(ifname); err != nil {
+				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
+			}
 		}
 	}
-	for _, ifname := range wanInterface {
-		if err = core.bindWan(ifname); err != nil {
-			return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
+	// Bind to WAN
+	if len(wanInterface) > 0 {
+		if err = core.setupSkPidMonitor(); err != nil {
+			return nil, err
+		}
+		for _, ifname := range wanInterface {
+			if err = core.bindWan(ifname); err != nil {
+				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
+			}
 		}
 	}
 
