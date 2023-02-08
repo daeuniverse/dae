@@ -15,7 +15,8 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 1. Support to split traffic by MAC address in LAN.
 1. Support to split traffic with invert match rules.
 1. Support to automatically switch nodes according to policy.
-1. Support full-cone NAT for shadowsocks, vmess, and trojan(-go).
+1. Support to automatically test TCP/UDP/IPv4/IPv6 latency, and then use the best nodes for corresponding traffic according to user-defined policy.
+1. Support full-cone NAT for shadowsocks, vmess, socks5 and trojan(-go).
 
 ## Linux Kernel Requirement
 
