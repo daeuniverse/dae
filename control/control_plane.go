@@ -287,7 +287,7 @@ func NewControlPlane(
 	/// DNS upstream.
 	var dnsUpstream *DnsUpstraem
 	if !global.DnsUpstream.Empty {
-		if dnsUpstream, err = resolveDnsUpstream(ctx, global.DnsUpstream.Url); err != nil {
+		if dnsUpstream, err = ResolveDnsUpstream(ctx, global.DnsUpstream.Url); err != nil {
 			return nil, err
 		}
 		ip4in6 := dnsUpstream.Ip4.As16()

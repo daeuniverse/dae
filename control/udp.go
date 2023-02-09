@@ -296,6 +296,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
+		defer conn.Close()
 
 		_ = conn.SetDeadline(time.Now().Add(natTimeout))
 		// We should write two byte length in the front of TCP DNS request.
@@ -324,7 +325,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 		}
 	}
 
-	if isNew {
+	if isNew || isDns {
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
 		if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 			q := dnsMessage.Questions[0]

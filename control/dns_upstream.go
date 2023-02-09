@@ -29,7 +29,7 @@ type DnsUpstraem struct {
 	*netutils.Ip46
 }
 
-func resolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstraem, err error) {
+func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstraem, err error) {
 	var _port string
 	switch DnsUpstreamScheme(dnsUpstream.Scheme) {
 	case DnsUpstreamScheme_TCP, DnsUpstreamScheme_UDP, DnsUpstreamScheme_TCP_UDP:
