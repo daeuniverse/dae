@@ -13,7 +13,28 @@ import (
 	"golang.org/x/net/proxy"
 	"net/netip"
 	"strings"
+	"sync"
+	"time"
 )
+
+var (
+	systemDnsMu sync.Mutex
+	systemDns   netip.AddrPort
+)
+
+func SystemDns() (dns netip.AddrPort, err error) {
+	systemDnsMu.Lock()
+	defer systemDnsMu.Unlock()
+	if !systemDns.IsValid() {
+		dnsConf := dnsReadConfig("/etc/resolv.conf")
+		if len(dnsConf.servers) == 0 {
+			err = fmt.Errorf("no valid dns server in /etc/resolv.conf")
+			return netip.AddrPort{}, err
+		}
+		systemDns = netip.MustParseAddrPort(dnsConf.servers[0])
+	}
+	return systemDns, nil
+}
 
 func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type) (addrs []netip.Addr, err error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
@@ -61,7 +82,23 @@ func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host 
 	if err != nil {
 		return nil, err
 	}
-	ch := make(chan error, 1)
+	ch := make(chan error, 2)
+	go func() {
+		// Resend every 3 seconds.
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				time.Sleep(3 * time.Second)
+			}
+			_, err := c.Write(b)
+			if err != nil {
+				ch <- err
+				return
+			}
+		}
+	}()
 	go func() {
 		buf := pool.Get(512)
 		n, err := c.Read(buf)

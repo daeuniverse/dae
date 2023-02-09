@@ -74,6 +74,16 @@ enum {
   DisableL4ChecksumPolicy_SetZero,
 };
 
+// Param keys:
+static const __u32 zero_key = 0;
+static const __u32 tproxy_port_key = 1;
+static const __u32 one_key = 1;
+static const __u32 disable_l4_tx_checksum_key
+    __attribute__((unused, deprecated)) = 2;
+static const __u32 disable_l4_rx_checksum_key
+    __attribute__((unused, deprecated)) = 3;
+static const __u32 control_plane_pid_key = 4;
+
 // Outbound Connectivity Map:
 
 struct outbound_connectivity_query {
@@ -97,15 +107,8 @@ struct {
   __uint(max_entries, 2);
 } listen_socket_map SEC(".maps");
 
-// Param keys:
-static const __u32 zero_key = 0;
-static const __u32 tproxy_port_key = 1;
-static const __u32 one_key = 1;
-static const __u32 disable_l4_tx_checksum_key
-    __attribute__((unused, deprecated)) = 2;
-static const __u32 disable_l4_rx_checksum_key
-    __attribute__((unused, deprecated)) = 3;
-static const __u32 control_plane_pid_key = 4;
+/// TODO: Remove items from the dst_map by conntrack.
+// Dest map:
 
 struct ip_port {
   __be32 ip[4];
@@ -125,8 +128,6 @@ struct tuples {
   __u8 l4proto;
 };
 
-/// TODO: Remove items from the dst_map by conntrack.
-// Dest map:
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __type(key,
@@ -195,10 +196,19 @@ struct {
 } ipproto_hdrsize_map SEC(".maps");
 
 // Dns upstream:
+
+struct dns_upstream {
+  __be32 ip4[4];
+  __be32 ip6[4];
+  bool hasIp4;
+  bool hasIp6;
+  __be16 port;
+};
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __type(key, __u32);
-  __type(value, struct ip_port);
+  __type(value, struct dns_upstream);
+  /// FIXME: l4proto is always udp.
   __uint(max_entries, 1);
 } dns_upstream_map SEC(".maps");
 
@@ -974,11 +984,22 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
   // Modify DNS upstream for routing.
   if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
-    struct ip_port *upstream =
+    struct dns_upstream *upstream =
         bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
     if (upstream && upstream->port != 0) {
       h_dport = bpf_ntohs(upstream->port);
-      __builtin_memcpy(daddr, upstream->ip, IPV6_BYTE_LENGTH);
+      if (_ipversion_type == IpVersionType_4 && upstream->hasIp4) {
+        __builtin_memcpy(daddr, upstream->ip4, IPV6_BYTE_LENGTH);
+      } else if (_ipversion_type == IpVersionType_6 && upstream->hasIp6) {
+        __builtin_memcpy(daddr, upstream->ip6, IPV6_BYTE_LENGTH);
+      } else if (upstream->hasIp4) {
+        __builtin_memcpy(daddr, upstream->ip4, IPV6_BYTE_LENGTH);
+      } else if (upstream->hasIp6) {
+        __builtin_memcpy(daddr, upstream->ip6, IPV6_BYTE_LENGTH);
+      } else {
+        bpf_printk("bad dns upstream; use as-is.");
+        __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
+      }
     } else {
       __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
     }
