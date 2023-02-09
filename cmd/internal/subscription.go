@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/sirupsen/logrus"
@@ -9,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -80,26 +84,71 @@ func resolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 	return nodes, nil
 }
 
-func ResolveSubscription(log *logrus.Logger, subscription string) (nodes []string, err error) {
+func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
+	if u.Host == "" {
+		return nil, fmt.Errorf("not support absolute path")
+	}
+	/// Relative location.
+	// Make sure path safety.
+	path := filepath.Join(configDir, u.Host, u.Path)
+	if err = common.IsFileInSubDir(path, configDir); err != nil {
+		return nil, err
+	}
+	/// Read and resolve
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	// Resolve the first line instruction.
+	fReader := bufio.NewReader(f)
+	b, err = fReader.Peek(1)
+	if err != nil {
+		return nil, err
+	}
+	if string(b[0]) == "@" {
+		// Instruction line. But not support yet.
+		_, _, err = fReader.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	b, err = io.ReadAll(fReader)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(b), err
+}
+
+func ResolveSubscription(log *logrus.Logger, configDir string, subscription string) (nodes []string, err error) {
 	u, err := url.Parse(subscription)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
 	}
+	log.Debugf("ResolveSubscription: %v", subscription)
+	var (
+		b    []byte
+		resp *http.Response
+	)
 	switch u.Scheme {
 	case "file":
-		// TODO
+		b, err = resolveFile(u, configDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve file: %w", err)
+		}
+		goto resolve
 	default:
 	}
-	log.Debugf("ResolveSubscription: %v", subscription)
-	resp, err := http.Get(subscription)
+	resp, err = http.Get(subscription)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	b, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
+resolve:
 	if nodes, err = resolveSubscriptionAsSIP008(log, b); err == nil {
 		return nodes, nil
 	} else {

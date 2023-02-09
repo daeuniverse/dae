@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -306,4 +307,19 @@ func FuzzyDecode(to interface{}, val string) bool {
 		return false
 	}
 	return true
+}
+
+func IsFileInSubDir(filePath string, dir string) (err error) {
+	fileDir := filepath.Dir(filePath)
+	if len(dir) == 0 {
+		return fmt.Errorf("bad dir: %v", dir)
+	}
+	rel, err := filepath.Rel(dir, fileDir)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("file is out of scope: %v", rel)
+	}
+	return nil
 }

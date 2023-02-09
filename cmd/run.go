@@ -11,6 +11,7 @@ import (
 	"github.com/v2rayA/dae/pkg/logger"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 )
 
@@ -55,7 +56,7 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	nodeList := make([]string, len(param.Node))
 	copy(nodeList, param.Node)
 	for _, sub := range param.Subscription {
-		nodes, err := internal.ResolveSubscription(log, sub)
+		nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), sub)
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 		}
