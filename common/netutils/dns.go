@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -81,7 +82,23 @@ func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host 
 	if err != nil {
 		return nil, err
 	}
-	ch := make(chan error, 1)
+	ch := make(chan error, 2)
+	go func() {
+		// Resend every 3 seconds.
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				time.Sleep(3 * time.Second)
+			}
+			_, err := c.Write(b)
+			if err != nil {
+				ch <- err
+				return
+			}
+		}
+	}()
 	go func() {
 		buf := pool.Get(512)
 		n, err := c.Read(buf)
