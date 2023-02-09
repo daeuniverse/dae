@@ -20,20 +20,50 @@ import (
 )
 
 var (
-	systemDnsMu sync.Mutex
-	systemDns   netip.AddrPort
+	systemDnsMu              sync.Mutex
+	systemDns                netip.AddrPort
+	systemDnsNextUpdateAfter time.Time
 )
+
+func TryUpdateSystemDns() (err error) {
+	systemDnsMu.Lock()
+	err = tryUpdateSystemDns()
+	systemDnsMu.Unlock()
+	return err
+}
+
+// TryUpdateSystemDns1s will update system DNS if 1 second has elapsed since the last TryUpdateSystemDns1s call.
+func TryUpdateSystemDns1s() (err error) {
+	systemDnsMu.Lock()
+	defer systemDnsMu.Unlock()
+	if time.Now().Before(systemDnsNextUpdateAfter) {
+		return fmt.Errorf("update too quickly")
+	}
+	err = tryUpdateSystemDns()
+	if err != nil {
+		return err
+	}
+	systemDnsNextUpdateAfter = time.Now().Add(time.Second)
+	return nil
+}
+
+func tryUpdateSystemDns() (err error) {
+	dnsConf := dnsReadConfig("/etc/resolv.conf")
+	if len(dnsConf.servers) == 0 {
+		err = fmt.Errorf("no valid dns server in /etc/resolv.conf")
+		return err
+	}
+	systemDns = netip.MustParseAddrPort(dnsConf.servers[0])
+	return nil
+}
 
 func SystemDns() (dns netip.AddrPort, err error) {
 	systemDnsMu.Lock()
 	defer systemDnsMu.Unlock()
 	if !systemDns.IsValid() {
-		dnsConf := dnsReadConfig("/etc/resolv.conf")
-		if len(dnsConf.servers) == 0 {
-			err = fmt.Errorf("no valid dns server in /etc/resolv.conf")
+		if err = tryUpdateSystemDns(); err != nil {
 			return netip.AddrPort{}, err
 		}
-		systemDns = netip.MustParseAddrPort(dnsConf.servers[0])
 	}
 	return systemDns, nil
 }

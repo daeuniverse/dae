@@ -1,6 +1,7 @@
 package dialer
 
 import (
+	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
@@ -26,13 +27,16 @@ type Dialer struct {
 
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
+	checkCh  chan time.Time
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 type GlobalOption struct {
-	Log            *logrus.Logger
-	TcpCheckOption *TcpCheckOption
-	UdpCheckOption *UdpCheckOption
-	CheckInterval  time.Duration
+	Log               *logrus.Logger
+	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
+	UdpCheckOptionRaw UdpCheckOptionRaw // Lazy parse
+	CheckInterval     time.Duration
 }
 
 type InstanceOption struct {
@@ -47,16 +51,21 @@ func NewDialer(dialer proxy.Dialer, option *GlobalOption, iOption InstanceOption
 	for i := range collections {
 		collections[i] = newCollection()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
-		GlobalOption:   option,
-		instanceOption: iOption,
-		Dialer:         dialer,
-		name:           name,
-		protocol:       protocol,
-		link:           link,
-		collections:    collections,
-		// Set a very big cycle to wait for init.
-		ticker: time.NewTicker(time.Hour),
+		GlobalOption:     option,
+		instanceOption:   iOption,
+		Dialer:           dialer,
+		name:             name,
+		protocol:         protocol,
+		link:             link,
+		collectionFineMu: sync.Mutex{},
+		collections:      collections,
+		tickerMu:         sync.Mutex{},
+		ticker:           nil,
+		checkCh:          make(chan time.Time, 1),
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 	if iOption.CheckEnabled {
 		go d.aliveBackground()
@@ -65,9 +74,13 @@ func NewDialer(dialer proxy.Dialer, option *GlobalOption, iOption InstanceOption
 }
 
 func (d *Dialer) Close() error {
+	d.cancel()
 	d.tickerMu.Lock()
-	d.ticker.Stop()
+	if d.ticker != nil {
+		d.ticker.Stop()
+	}
 	d.tickerMu.Unlock()
+	close(d.checkCh)
 	return nil
 }
 

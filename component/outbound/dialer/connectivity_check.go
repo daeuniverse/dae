@@ -21,6 +21,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,6 +78,11 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = netutils.TryUpdateSystemDns1s()
+		}
+	}()
 
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -103,6 +109,11 @@ func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheck
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = netutils.TryUpdateSystemDns1s()
+		}
+	}()
 
 	host, _port, err := net.SplitHostPort(dnsHostPort)
 	if err != nil {
@@ -121,6 +132,48 @@ func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheck
 		DnsPort: uint16(port),
 		Ip46:    ip46,
 	}, nil
+}
+
+type TcpCheckOptionRaw struct {
+	opt *TcpCheckOption
+	mu  sync.Mutex
+	Raw string
+}
+
+func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.opt == nil {
+		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		defer cancel()
+		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
+		}
+		c.opt = tcpCheckOption
+	}
+	return c.opt, nil
+}
+
+type UdpCheckOptionRaw struct {
+	opt *UdpCheckOption
+	mu  sync.Mutex
+	Raw string
+}
+
+func (c *UdpCheckOptionRaw) Option() (opt *UdpCheckOption, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.opt == nil {
+		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		defer cancel()
+		udpCheckOption, err := ParseUdpCheckOption(ctx, c.Raw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
+		}
+		c.opt = udpCheckOption
+	}
+	return c.opt, nil
 }
 
 type CheckOption struct {
@@ -146,28 +199,44 @@ func (d *Dialer) aliveBackground() {
 		L4proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStr_4,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
-			return d.HttpCheck(ctx, d.TcpCheckOption.Url, d.TcpCheckOption.Ip4)
+			opt, err := d.TcpCheckOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			return d.HttpCheck(ctx, opt.Url, opt.Ip4)
 		},
 	}
 	tcp6CheckOpt := &CheckOption{
 		L4proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStr_6,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
-			return d.HttpCheck(ctx, d.TcpCheckOption.Url, d.TcpCheckOption.Ip6)
+			opt, err := d.TcpCheckOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			return d.HttpCheck(ctx, opt.Url, opt.Ip6)
 		},
 	}
 	udp4CheckOpt := &CheckOption{
 		L4proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStr_4,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
-			return d.DnsCheck(ctx, netip.AddrPortFrom(d.UdpCheckOption.Ip4, d.UdpCheckOption.DnsPort))
+			opt, err := d.UdpCheckOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort))
 		},
 	}
 	udp6CheckOpt := &CheckOption{
 		L4proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStr_6,
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
-			return d.DnsCheck(ctx, netip.AddrPortFrom(d.UdpCheckOption.Ip4, d.UdpCheckOption.DnsPort))
+			opt, err := d.UdpCheckOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort))
 		},
 	}
 	// Check once immediately.
@@ -176,25 +245,72 @@ func (d *Dialer) aliveBackground() {
 	go d.Check(timeout, tcp6CheckOpt)
 	go d.Check(timeout, udp6CheckOpt)
 
-	// Sleep to avoid avalanche.
-	time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
-	d.tickerMu.Lock()
-	d.ticker.Reset(cycle)
-	d.tickerMu.Unlock()
-	for range d.ticker.C {
+	ctx, cancel := context.WithCancel(d.ctx)
+	defer cancel()
+	go func() {
+		/// Splice ticker.C to checkCh.
+		// Sleep to avoid avalanche.
+		time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
+		d.tickerMu.Lock()
+		d.ticker = time.NewTicker(cycle)
+		d.tickerMu.Unlock()
+		for t := range d.ticker.C {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				d.checkCh <- t
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for range d.checkCh {
 		// No need to test if there is no dialer selection policy using its latency.
 		if len(d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_4).AliveDialerSetSet) > 0 {
-			go d.Check(timeout, tcp4CheckOpt)
+			wg.Add(1)
+			go func() {
+				d.Check(timeout, tcp4CheckOpt)
+				wg.Done()
+			}()
 		}
 		if len(d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_6).AliveDialerSetSet) > 0 {
-			go d.Check(timeout, tcp6CheckOpt)
+			wg.Add(1)
+			go func() {
+				d.Check(timeout, tcp6CheckOpt)
+				wg.Done()
+			}()
 		}
 		if len(d.mustGetCollection(consts.L4ProtoStr_UDP, consts.IpVersionStr_4).AliveDialerSetSet) > 0 {
-			go d.Check(timeout, udp4CheckOpt)
+			wg.Add(1)
+			go func() {
+				d.Check(timeout, udp4CheckOpt)
+				wg.Done()
+			}()
 		}
 		if len(d.mustGetCollection(consts.L4ProtoStr_UDP, consts.IpVersionStr_6).AliveDialerSetSet) > 0 {
-			go d.Check(timeout, udp6CheckOpt)
+			wg.Add(1)
+			go func() {
+				d.Check(timeout, udp6CheckOpt)
+				wg.Done()
+			}()
 		}
+		// Wait to block the loop.
+		wg.Wait()
+	}
+}
+
+// NotifyCheck will succeed only when CheckEnabled is true.
+func (d *Dialer) NotifyCheck() {
+	select {
+	case <-d.ctx.Done():
+		return
+	default:
+	}
+
+	select {
+	// If fail to push elem to chan, the check is in process.
+	case d.checkCh <- time.Now():
+	default:
 	}
 }
 

@@ -51,7 +51,7 @@ type ControlPlane struct {
 	// mutex protects the dnsCache.
 	mutex       sync.Mutex
 	dnsCache    map[string]*dnsCache
-	dnsUpstream *DnsUpstraem
+	dnsUpstream DnsUpstreamRaw
 }
 
 func NewControlPlane(
@@ -191,21 +191,11 @@ func NewControlPlane(
 	}
 
 	/// DialerGroups (outbounds).
-	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
-	defer cancel()
-	tcpCheckOption, err := dialer.ParseTcpCheckOption(ctx, global.TcpCheckUrl)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
-	}
-	udpCheckOption, err := dialer.ParseUdpCheckOption(ctx, global.UdpCheckDns)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse udp_check_dns: %w", err)
-	}
 	option := &dialer.GlobalOption{
-		Log:            log,
-		TcpCheckOption: tcpCheckOption,
-		UdpCheckOption: udpCheckOption,
-		CheckInterval:  global.CheckInterval,
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl},
+		UdpCheckOptionRaw: dialer.UdpCheckOptionRaw{Raw: global.UdpCheckDns},
+		CheckInterval:     global.CheckInterval,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
@@ -286,92 +276,13 @@ func NewControlPlane(
 		return nil, fmt.Errorf("RoutingMatcherBuilder.Build: %w", err)
 	}
 
-	/// DNS upstream.
-	var dnsUpstream *DnsUpstraem
-	if !global.DnsUpstream.Empty {
-		if dnsUpstream, err = ResolveDnsUpstream(ctx, global.DnsUpstream.Url); err != nil {
-			return nil, err
-		}
-		ip4in6 := dnsUpstream.Ip4.As16()
-		ip6 := dnsUpstream.Ip6.As16()
-		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
-			Ip4:    common.Ipv6ByteSliceToUint32Array(ip4in6[:]),
-			Ip6:    common.Ipv6ByteSliceToUint32Array(ip6[:]),
-			HasIp4: dnsUpstream.Ip4.IsValid(),
-			HasIp6: dnsUpstream.Ip6.IsValid(),
-			Port:   internal.Htons(dnsUpstream.Port),
-		}, ebpf.UpdateAny); err != nil {
-			return nil, err
-		}
-		defer func() {
-			// Update dns cache to support domain routing for hostname of dns_upstream.
-			if err == nil {
-				// Ten years later.
-				deadline := time.Now().Add(24 * time.Hour * 365 * 10)
-				fqdn := dnsUpstream.Hostname
-				if !strings.HasSuffix(fqdn, ".") {
-					fqdn = fqdn + "."
-				}
-
-				if dnsUpstream.Ip4.IsValid() {
-					typ := dnsmessage.TypeA
-					answers := []dnsmessage.Resource{{
-						Header: dnsmessage.ResourceHeader{
-							Name:  dnsmessage.MustNewName(fqdn),
-							Type:  typ,
-							Class: dnsmessage.ClassINET,
-							TTL:   0, // Must be zero.
-						},
-						Body: &dnsmessage.AResource{
-							A: dnsUpstream.Ip4.As4(),
-						},
-					}}
-					if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
-						c = nil
-						return
-					}
-				}
-
-				if dnsUpstream.Ip6.IsValid() {
-					typ := dnsmessage.TypeAAAA
-					answers := []dnsmessage.Resource{{
-						Header: dnsmessage.ResourceHeader{
-							Name:  dnsmessage.MustNewName(fqdn),
-							Type:  typ,
-							Class: dnsmessage.ClassINET,
-							TTL:   0, // Must be zero.
-						},
-						Body: &dnsmessage.AAAAResource{
-							AAAA: dnsUpstream.Ip6.As16(),
-						},
-					}}
-					if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
-						c = nil
-						return
-					}
-				}
-			}
-		}()
-	} else {
-		// Empty string. As-is.
-		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
-			Ip4:    [4]uint32{},
-			Ip6:    [4]uint32{},
-			HasIp4: false,
-			HasIp6: false,
-			// Zero port indicates no element, because bpf_map_lookup_elem cannot return 0 for map_type_array.
-			Port: 0,
-		}, ebpf.UpdateAny); err != nil {
-			return nil, err
-		}
-	}
-
 	/// Listen address.
 	listenIp := "::1"
 	if len(global.WanInterface) > 0 {
 		listenIp = "0.0.0.0"
 	}
-	return &ControlPlane{
+
+	c = &ControlPlane{
 		log:                log,
 		core:               core,
 		deferFuncs:         nil,
@@ -383,8 +294,95 @@ func NewControlPlane(
 		Final:              routingA.Final,
 		mutex:              sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
-		dnsUpstream:        dnsUpstream,
-	}, nil
+		dnsUpstream: DnsUpstreamRaw{
+			Raw:                global.DnsUpstream,
+			FinishInitCallback: nil,
+		},
+	}
+	c.dnsUpstream.FinishInitCallback = c.finishInitDnsUpstreamResolve
+	return c, nil
+}
+
+func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUpstream *DnsUpstream) (err error) {
+	///  Notify dialers to check.
+	for _, out := range c.outbounds {
+		for _, d := range out.Dialers {
+			d.NotifyCheck()
+		}
+	}
+
+	/// Updates dns cache to support domain routing for hostname of dns_upstream.
+	if !raw.Empty {
+		ip4in6 := dnsUpstream.Ip4.As16()
+		ip6 := dnsUpstream.Ip6.As16()
+		if err = c.core.bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
+			Ip4:    common.Ipv6ByteSliceToUint32Array(ip4in6[:]),
+			Ip6:    common.Ipv6ByteSliceToUint32Array(ip6[:]),
+			HasIp4: dnsUpstream.Ip4.IsValid(),
+			HasIp6: dnsUpstream.Ip6.IsValid(),
+			Port:   internal.Htons(dnsUpstream.Port),
+		}, ebpf.UpdateAny); err != nil {
+			return err
+		}
+		/// Update dns cache to support domain routing for hostname of dns_upstream.
+		// Ten years later.
+		deadline := time.Now().Add(24 * time.Hour * 365 * 10)
+		fqdn := dnsUpstream.Hostname
+		if !strings.HasSuffix(fqdn, ".") {
+			fqdn = fqdn + "."
+		}
+
+		if dnsUpstream.Ip4.IsValid() {
+			typ := dnsmessage.TypeA
+			answers := []dnsmessage.Resource{{
+				Header: dnsmessage.ResourceHeader{
+					Name:  dnsmessage.MustNewName(fqdn),
+					Type:  typ,
+					Class: dnsmessage.ClassINET,
+					TTL:   0, // Must be zero.
+				},
+				Body: &dnsmessage.AResource{
+					A: dnsUpstream.Ip4.As4(),
+				},
+			}}
+			if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
+				c = nil
+				return
+			}
+		}
+
+		if dnsUpstream.Ip6.IsValid() {
+			typ := dnsmessage.TypeAAAA
+			answers := []dnsmessage.Resource{{
+				Header: dnsmessage.ResourceHeader{
+					Name:  dnsmessage.MustNewName(fqdn),
+					Type:  typ,
+					Class: dnsmessage.ClassINET,
+					TTL:   0, // Must be zero.
+				},
+				Body: &dnsmessage.AAAAResource{
+					AAAA: dnsUpstream.Ip6.As16(),
+				},
+			}}
+			if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
+				c = nil
+				return
+			}
+		}
+	} else {
+		// Empty string. As-is.
+		if err = c.core.bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
+			Ip4:    [4]uint32{},
+			Ip6:    [4]uint32{},
+			HasIp4: false,
+			HasIp6: false,
+			// Zero port indicates no element, because bpf_map_lookup_elem cannot return 0 for map_type_array.
+			Port: 0,
+		}, ebpf.UpdateAny); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *ControlPlane) ListenAndServe(port uint16) (err error) {

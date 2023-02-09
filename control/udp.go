@@ -179,13 +179,17 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 
 	// For DNS request, modify dst to dns upstream.
 	// NOTICE: We might modify l4proto and ipversion.
-	if isDns && c.dnsUpstream != nil {
+	dnsUpstream, err := c.dnsUpstream.Upstream()
+	if err != nil {
+		return err
+	}
+	if isDns && dnsUpstream != nil {
 		// Modify dns target to upstream.
 		// NOTICE: Routing was calculated in advance by the eBPF program.
 
 		/// Choose the best l4proto and ipversion.
 		// Get available ipversions and l4protos for DNS upstream.
-		ipversions, l4protos := c.dnsUpstream.SupportedNetworks()
+		ipversions, l4protos := dnsUpstream.SupportedNetworks()
 		var (
 			bestDialer  *dialer.Dialer
 			bestLatency time.Duration
@@ -219,9 +223,9 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 		}
 		switch ipversion {
 		case consts.IpVersionStr_4:
-			bestTarget = netip.AddrPortFrom(c.dnsUpstream.Ip4, c.dnsUpstream.Port)
+			bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
 		case consts.IpVersionStr_6:
-			bestTarget = netip.AddrPortFrom(c.dnsUpstream.Ip6, c.dnsUpstream.Port)
+			bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
 		}
 		dialerForNew = bestDialer
 		dummyFrom = &dst
