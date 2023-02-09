@@ -8,9 +8,11 @@ package netutils
 import (
 	"context"
 	"fmt"
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/proxy"
+	"math"
 	"net/netip"
 	"strings"
 	"sync"
@@ -53,7 +55,14 @@ func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host 
 		return nil, fmt.Errorf("only support to lookup A/AAAA record")
 	}
 	// Build DNS req.
-	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{})
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{
+		ID:               uint16(fastrand.Intn(math.MaxUint16 + 1)),
+		Response:         false,
+		OpCode:           0,
+		Truncated:        false,
+		RecursionDesired: true,
+		Authoritative:    false,
+	})
 	if err = builder.StartQuestions(); err != nil {
 		return nil, err
 	}

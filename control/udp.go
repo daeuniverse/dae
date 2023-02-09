@@ -194,7 +194,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 		c.log.WithFields(logrus.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
-		}).Debugln("Choose DNS path")
+		}).Traceln("Choose DNS path")
 		// Get the min latency path.
 		for _, ver := range ipversions {
 			for _, proto := range l4protos {
@@ -208,7 +208,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 					"ver":      ver,
 					"proto":    proto,
 					"outbound": outbound.Name,
-				}).Debugln("Choice")
+				}).Traceln("Choice")
 				if bestDialer == nil || latency < bestLatency {
 					bestDialer = d
 					bestLatency = latency
