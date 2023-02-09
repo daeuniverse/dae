@@ -14,14 +14,15 @@ import (
 )
 
 type Global struct {
-	TproxyPort    uint16            `mapstructure:"tproxy_port" default:"12345"`
-	LogLevel      string            `mapstructure:"log_level" default:"info"`
-	TcpCheckUrl   string            `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com"`
-	UdpCheckDns   string            `mapstructure:"udp_check_dns" default:"cloudflare-dns.com:53"`
-	CheckInterval time.Duration     `mapstructure:"check_interval" default:"30s"`
-	DnsUpstream   common.UrlOrEmpty `mapstructure:"dns_upstream" require:""`
-	LanInterface  []string          `mapstructure:"lan_interface"`
-	WanInterface  []string          `mapstructure:"wan_interface"`
+	TproxyPort     uint16            `mapstructure:"tproxy_port" default:"12345"`
+	LogLevel       string            `mapstructure:"log_level" default:"info"`
+	TcpCheckUrl    string            `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com"`
+	UdpCheckDns    string            `mapstructure:"udp_check_dns" default:"cloudflare-dns.com:53"`
+	CheckInterval  time.Duration     `mapstructure:"check_interval" default:"30s"`
+	CheckTolerance time.Duration     `mapstructure:"check_tolerance" default:"0"`
+	DnsUpstream    common.UrlOrEmpty `mapstructure:"dns_upstream" require:""`
+	LanInterface   []string          `mapstructure:"lan_interface"`
+	WanInterface   []string          `mapstructure:"wan_interface"`
 }
 
 type Group struct {

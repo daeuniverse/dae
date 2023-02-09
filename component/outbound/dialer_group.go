@@ -39,10 +39,10 @@ type DialerGroup struct {
 func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.Dialer, p DialerSelectionPolicy, aliveChangeCallback func(alive bool, l4proto uint8, ipversion uint8)) *DialerGroup {
 	log := option.Log
 	var registeredAliveDialerSet bool
-	aliveTcp4DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_TCP, consts.IpVersionStr_4, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_TCP, 4) }, true)
-	aliveTcp6DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_TCP, consts.IpVersionStr_6, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_TCP, 6) }, true)
-	aliveUdp4DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_UDP, consts.IpVersionStr_4, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_UDP, 4) }, true)
-	aliveUdp6DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_UDP, consts.IpVersionStr_6, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_UDP, 6) }, true)
+	aliveTcp4DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_TCP, consts.IpVersionStr_4, option.CheckTolerance, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_TCP, 4) }, true)
+	aliveTcp6DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_TCP, consts.IpVersionStr_6, option.CheckTolerance, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_TCP, 6) }, true)
+	aliveUdp4DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_UDP, consts.IpVersionStr_4, option.CheckTolerance, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_UDP, 4) }, true)
+	aliveUdp6DialerSet := dialer.NewAliveDialerSet(log, name, consts.L4ProtoStr_UDP, consts.IpVersionStr_6, option.CheckTolerance, p.Policy, dialers, func(alive bool) { aliveChangeCallback(alive, unix.IPPROTO_UDP, 6) }, true)
 
 	switch p.Policy {
 	case consts.DialerSelectionPolicy_Random,

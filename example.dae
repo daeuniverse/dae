@@ -10,6 +10,8 @@ global {
     tcp_check_url: 'http://cp.cloudflare.com'
     udp_check_dns: 'dns.google:53'
     check_interval: 30s
+    # Group will switch node only when new_latency <= old_latency - tolerance
+    check_tolerance: 50ms
 
     # Value can be scheme://host:port or empty string ''.
     # The scheme can be tcp/udp/tcp+udp. Empty string '' indicates as-is.
