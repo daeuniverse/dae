@@ -29,7 +29,7 @@ func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(aliv
 			"alive":       alive,
 			"network":     fmt.Sprintf("%v+%v", FormatL4Proto(l4proto), ipversion),
 			"outbound_id": outbound,
-		}).Tracef("Outbound alive state changed, notify the kernel program.")
+		}).Warnf("Outbound alive state changed, notify the kernel program.")
 
 		value := uint32(0)
 		if alive {

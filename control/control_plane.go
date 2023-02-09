@@ -122,6 +122,18 @@ func NewControlPlane(
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
 
+	core := &ControlPlaneCore{
+		log:           log,
+		deferFuncs:    []func() error{bpf.Close},
+		bpf:           &bpf,
+		kernelVersion: &kernelVersion,
+	}
+	defer func() {
+		if err != nil {
+			_ = core.Close()
+		}
+	}()
+
 	// Write params.
 	if err = bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
 		return nil, err
@@ -150,17 +162,6 @@ func NewControlPlane(
 		return nil, err
 	}
 
-	core := &ControlPlaneCore{
-		log:           log,
-		deferFuncs:    []func() error{bpf.Close},
-		bpf:           &bpf,
-		kernelVersion: &kernelVersion,
-	}
-	defer func() {
-		if err != nil {
-			_ = core.Close()
-		}
-	}()
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Add clsact qdisc
 	for _, ifname := range common.Deduplicate(append(append([]string{}, global.LanInterface...), global.WanInterface...)) {
