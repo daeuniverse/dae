@@ -37,6 +37,8 @@ func SystemDns() (dns netip.AddrPort, err error) {
 }
 
 func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type) (addrs []netip.Addr, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if addr, err := netip.ParseAddr(host); err == nil {
 		if (addr.Is4() || addr.Is4In6()) && typ == dnsmessage.TypeA {
 			return []netip.Addr{addr}, nil
