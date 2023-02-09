@@ -196,6 +196,7 @@ func NewControlPlane(
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl},
 		UdpCheckOptionRaw: dialer.UdpCheckOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
+		CheckTolerance:    global.CheckTolerance,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),

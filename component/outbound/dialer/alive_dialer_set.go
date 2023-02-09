@@ -26,6 +26,7 @@ type AliveDialerSet struct {
 	dialerGroupName string
 	l4proto         consts.L4ProtoStr
 	ipversion       consts.IpVersionStr
+	tolerance       time.Duration
 
 	aliveChangeCallback func(alive bool)
 
@@ -43,6 +44,7 @@ func NewAliveDialerSet(
 	dialerGroupName string,
 	l4proto consts.L4ProtoStr,
 	ipversion consts.IpVersionStr,
+	tolerance time.Duration,
 	selectionPolicy consts.DialerSelectionPolicy,
 	dialers []*Dialer,
 	aliveChangeCallback func(alive bool),
@@ -53,6 +55,7 @@ func NewAliveDialerSet(
 		dialerGroupName:         dialerGroupName,
 		l4proto:                 l4proto,
 		ipversion:               ipversion,
+		tolerance:               tolerance,
 		aliveChangeCallback:     aliveChangeCallback,
 		dialerToIndex:           make(map[*Dialer]int),
 		dialerToLatency:         make(map[*Dialer]time.Duration),
@@ -146,14 +149,19 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		bakOldBestDialer := a.minLatency.dialer
 		// Calc minLatency.
 		a.dialerToLatency[dialer] = latency
-		if alive && latency < a.minLatency.latency {
+		if alive && latency <= a.minLatency.latency-a.tolerance {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
-			a.minLatency.latency = time.Hour
-			a.minLatency.dialer = nil
-			a.calcMinLatency()
-			// Now `a.minLatency.dialer` will be nil if there is no alive dialer.
+			if latency > a.minLatency.latency {
+				// Latency increases.
+				a.minLatency.latency = time.Hour
+				a.minLatency.dialer = nil
+				a.calcMinLatency()
+				// Now `a.minLatency.dialer` will be nil if there is no alive dialer.
+			} else {
+				a.minLatency.latency = latency
+			}
 		}
 		currentAlive := a.minLatency.dialer != nil
 		// If best dialer changed.
@@ -169,7 +177,8 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					string(a.selectionPolicy): a.minLatency.latency,
 					"group":                   a.dialerGroupName,
 					"network":                 string(a.l4proto) + string(a.ipversion),
-					"dialer":                  a.minLatency.dialer.Name(),
+					"new dialer":              a.minLatency.dialer.Name(),
+					"old dialer":              bakOldBestDialer.Name(),
 				}).Infof("Group %vselects dialer", re)
 			} else {
 				// Alive -> not alive
@@ -195,8 +204,11 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 
 func (a *AliveDialerSet) calcMinLatency() {
 	for _, d := range a.inorderedAliveDialerSet {
-		latency := a.dialerToLatency[d]
-		if latency < a.minLatency.latency {
+		latency, ok := a.dialerToLatency[d]
+		if !ok {
+			continue
+		}
+		if latency <= a.minLatency.latency-a.tolerance {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = d
 		}

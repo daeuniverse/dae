@@ -37,6 +37,7 @@ type GlobalOption struct {
 	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	UdpCheckOptionRaw UdpCheckOptionRaw // Lazy parse
 	CheckInterval     time.Duration
+	CheckTolerance    time.Duration
 }
 
 type InstanceOption struct {
