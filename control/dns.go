@@ -282,27 +282,36 @@ loop:
 		"auth":  FormatDnsRsc(msg.Authorities),
 		"addi":  FormatDnsRsc(msg.Additionals),
 	}).Tracef("Update DNS record cache")
+	if err = c.UpdateDnsCache(q.Name.String(), q.Type, msg.Answers, time.Now().Add(time.Duration(ttl)*time.Second+DnsNatTimeout)); err != nil {
+		return nil, err
+	}
+	// Pack to get newData.
+	return msg.Pack()
+}
+
+func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers []dnsmessage.Resource, deadline time.Time) (err error) {
 	c.mutex.Lock()
-	fqdn := strings.ToLower(q.Name.String())
-	cacheKey := fqdn + q.Type.String()
+	fqdn := strings.ToLower(host)
+	if !strings.HasSuffix(fqdn, ".") {
+		fqdn += "."
+	}
+	cacheKey := fqdn + typ.String()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
 		c.mutex.Unlock()
-		cache.Deadline = time.Now().Add(time.Duration(ttl)*time.Second + DnsNatTimeout)
-		cache.Answers = msg.Answers
+		cache.Deadline = deadline
+		cache.Answers = answers
 	} else {
 		cache = &dnsCache{
 			DomainBitmap: c.MatchDomainBitmap(strings.TrimSuffix(fqdn, ".")),
-			Answers:      msg.Answers,
-			Deadline:     time.Now().Add(time.Duration(ttl)*time.Second + DnsNatTimeout),
+			Answers:      answers,
+			Deadline:     deadline,
 		}
 		c.dnsCache[cacheKey] = cache
 		c.mutex.Unlock()
 	}
 	if err = c.BatchUpdateDomainRouting(cache); err != nil {
-		return nil, fmt.Errorf("BatchUpdateDomainRouting: %w", err)
+		return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
 	}
-
-	// Pack to get newData.
-	return msg.Pack()
+	return nil
 }

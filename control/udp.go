@@ -185,7 +185,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 
 		/// Choose the best l4proto and ipversion.
 		// Get available ipversions and l4protos for DNS upstream.
-		ipversions, l4protos := c.dnsUpstream.Network()
+		ipversions, l4protos := c.dnsUpstream.SupportedNetworks()
 		var (
 			bestDialer  *dialer.Dialer
 			bestLatency time.Duration
@@ -325,6 +325,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 		}
 	}
 
+	// Print log.
 	if isNew || isDns {
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
 		if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {

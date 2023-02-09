@@ -20,6 +20,7 @@ import (
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
@@ -301,8 +302,57 @@ func NewControlPlane(
 		}, ebpf.UpdateAny); err != nil {
 			return nil, err
 		}
+		defer func() {
+			// Update dns cache to support domain routing for hostname of dns_upstream.
+			if err == nil {
+				// Ten years later.
+				deadline := time.Now().Add(24 * time.Hour * 365 * 10)
+				fqdn := dnsUpstream.Hostname
+				if !strings.HasSuffix(fqdn, ".") {
+					fqdn = fqdn + "."
+				}
+
+				if dnsUpstream.Ip4.IsValid() {
+					typ := dnsmessage.TypeA
+					answers := []dnsmessage.Resource{{
+						Header: dnsmessage.ResourceHeader{
+							Name:  dnsmessage.MustNewName(fqdn),
+							Type:  typ,
+							Class: dnsmessage.ClassINET,
+							TTL:   0, // Must be zero.
+						},
+						Body: &dnsmessage.AResource{
+							A: dnsUpstream.Ip4.As4(),
+						},
+					}}
+					if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
+						c = nil
+						return
+					}
+				}
+
+				if dnsUpstream.Ip6.IsValid() {
+					typ := dnsmessage.TypeAAAA
+					answers := []dnsmessage.Resource{{
+						Header: dnsmessage.ResourceHeader{
+							Name:  dnsmessage.MustNewName(fqdn),
+							Type:  typ,
+							Class: dnsmessage.ClassINET,
+							TTL:   0, // Must be zero.
+						},
+						Body: &dnsmessage.AAAAResource{
+							AAAA: dnsUpstream.Ip6.As16(),
+						},
+					}}
+					if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
+						c = nil
+						return
+					}
+				}
+			}
+		}()
 	} else {
-		// Empty.
+		// Empty string. As-is.
 		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
 			Ip4:    [4]uint32{},
 			Ip6:    [4]uint32{},

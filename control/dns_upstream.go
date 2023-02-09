@@ -24,8 +24,9 @@ const (
 )
 
 type DnsUpstraem struct {
-	Scheme DnsUpstreamScheme
-	Port   uint16
+	Scheme   DnsUpstreamScheme
+	Hostname string
+	Port     uint16
 	*netutils.Ip46
 }
 
@@ -54,13 +55,14 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 		return nil, fmt.Errorf("dns_upstream has no record")
 	}
 	return &DnsUpstraem{
-		Scheme: DnsUpstreamScheme(dnsUpstream.Scheme),
-		Port:   uint16(port),
-		Ip46:   ip46,
+		Scheme:   DnsUpstreamScheme(dnsUpstream.Scheme),
+		Hostname: hostname,
+		Port:     uint16(port),
+		Ip46:     ip46,
 	}, nil
 }
 
-func (u *DnsUpstraem) Network() (ipversions []consts.IpVersionStr, l4protos []consts.L4ProtoStr) {
+func (u *DnsUpstraem) SupportedNetworks() (ipversions []consts.IpVersionStr, l4protos []consts.L4ProtoStr) {
 	if u.Ip4.IsValid() && u.Ip6.IsValid() {
 		ipversions = []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
 	} else {
@@ -76,7 +78,8 @@ func (u *DnsUpstraem) Network() (ipversions []consts.IpVersionStr, l4protos []co
 	case DnsUpstreamScheme_UDP:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP}
 	case DnsUpstreamScheme_TCP_UDP:
-		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP}
+		// UDP first.
+		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
 	}
 	return ipversions, l4protos
 }
