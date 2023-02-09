@@ -11,11 +11,14 @@ global {
     udp_check_dns: 'cloudflare-dns.com:53'
     check_interval: 30s
 
-    # Now only support udp://IP:Port. Empty value '' indicates as-is.
+    # Value can be scheme://host:port or empty string ''.
+    # The scheme can be tcp/udp/tcp+udp. Empty string '' indicates as-is.
+    # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
+    # IPv4 or IPv6 to use according to group policy (such as min latency policy).
     # Please make sure DNS traffic will go through and be forwarded by dae.
     # The upstream DNS answer MUST NOT be polluted.
     # The request to dns upstream follows routing defined below.
-    dns_upstream: 'udp://8.8.8.8:53'
+    dns_upstream: 'tcp+udp://dns.google:53'
 
     # The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.
     # Multiple interfaces split by ",".

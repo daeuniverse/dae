@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 )
 
 type DialerGroup struct {
@@ -95,9 +96,9 @@ func (g *DialerGroup) SetSelectionPolicy(policy DialerSelectionPolicy) {
 }
 
 // Select selects a dialer from group according to selectionPolicy.
-func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) (*dialer.Dialer, error) {
+func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) (d *dialer.Dialer, latency time.Duration, err error) {
 	if len(g.Dialers) == 0 {
-		return nil, fmt.Errorf("no dialer in this group")
+		return nil, 0, fmt.Errorf("no dialer in this group")
 	}
 	var a *dialer.AliveDialerSet
 	switch l4proto {
@@ -116,7 +117,7 @@ func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersi
 			a = g.AliveUdp6DialerSet
 		}
 	default:
-		return nil, fmt.Errorf("DialerGroup.Select: unexpected l4proto type: %v", l4proto)
+		return nil, 0, fmt.Errorf("DialerGroup.Select: unexpected l4proto type: %v", l4proto)
 	}
 
 	switch g.selectionPolicy.Policy {
@@ -128,30 +129,30 @@ func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersi
 				"network": string(l4proto) + string(ipversion),
 				"group":   g.Name,
 			}).Warnf("No alive dialer in DialerGroup, use \"block\".")
-			return g.block, nil
+			return g.block, 0, nil
 		}
-		return d, nil
+		return d, 0, nil
 
 	case consts.DialerSelectionPolicy_Fixed:
 		if g.selectionPolicy.FixedIndex < 0 || g.selectionPolicy.FixedIndex >= len(g.Dialers) {
-			return nil, fmt.Errorf("selected dialer index is out of range")
+			return nil, 0, fmt.Errorf("selected dialer index is out of range")
 		}
-		return g.Dialers[g.selectionPolicy.FixedIndex], nil
+		return g.Dialers[g.selectionPolicy.FixedIndex], 0, nil
 
 	case consts.DialerSelectionPolicy_MinLastLatency, consts.DialerSelectionPolicy_MinAverage10Latencies:
-		d := a.GetMinLatency()
+		d, latency := a.GetMinLatency()
 		if d == nil {
 			// No alive dialer.
 			g.log.WithFields(logrus.Fields{
 				"network": string(l4proto) + string(ipversion),
 				"group":   g.Name,
 			}).Warnf("No alive dialer in DialerGroup, use \"block\".")
-			return g.block, nil
+			return g.block, 0, nil
 		}
-		return d, nil
+		return d, latency, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported DialerSelectionPolicy: %v", g.selectionPolicy)
+		return nil, 0, fmt.Errorf("unsupported DialerSelectionPolicy: %v", g.selectionPolicy)
 	}
 }
 
@@ -164,9 +165,9 @@ func (g *DialerGroup) Dial(network string, addr string) (c net.Conn, err error) 
 	ipversion := consts.IpVersionFromAddr(ipAddr)
 	switch {
 	case strings.HasPrefix(network, "tcp"):
-		d, err = g.Select(consts.L4ProtoStr_TCP, ipversion)
+		d, _, err = g.Select(consts.L4ProtoStr_TCP, ipversion)
 	case strings.HasPrefix(network, "udp"):
-		d, err = g.Select(consts.L4ProtoStr_UDP, ipversion)
+		d, _, err = g.Select(consts.L4ProtoStr_UDP, ipversion)
 	default:
 		return nil, fmt.Errorf("unexpected network: %v", network)
 	}

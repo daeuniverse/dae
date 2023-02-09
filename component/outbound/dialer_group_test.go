@@ -44,9 +44,9 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: fixedIndex,
-	})
+	}, func(alive bool, l4proto uint8, ipversion uint8) {})
 	for i := 0; i < 10; i++ {
-		d, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	fixedIndex = 0
 	g.selectionPolicy.FixedIndex = fixedIndex
 	for i := 0; i < 10; i++ {
-		d, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
-	})
+	}, func(alive bool, l4proto uint8, ipversion uint8) {})
 
 	// Test 1000 times.
 	for i := 0; i < 1000; i++ {
@@ -127,7 +127,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 			}
 			g.AliveTcp4DialerSet.NotifyLatencyChange(d, alive)
 		}
-		d, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,10 +170,10 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
-	})
+	}, func(alive bool, l4proto uint8, ipversion uint8) {})
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
-		d, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,12 +217,12 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
-	})
+	}, func(alive bool, l4proto uint8, ipversion uint8) {})
 	zeroTarget := 3
 	g.AliveTcp4DialerSet.NotifyLatencyChange(dialers[zeroTarget], false)
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
-		d, err := g.Select(consts.L4ProtoStr_UDP, consts.IpVersionStr_4)
+		d, _, err := g.Select(consts.L4ProtoStr_UDP, consts.IpVersionStr_4)
 		if err != nil {
 			t.Fatal(err)
 		}

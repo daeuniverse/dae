@@ -83,8 +83,8 @@ func (a *AliveDialerSet) GetRand() *Dialer {
 }
 
 // GetMinLatency acquires correct selectionPolicy.
-func (a *AliveDialerSet) GetMinLatency() *Dialer {
-	return a.minLatency.dialer
+func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
+	return a.minLatency.dialer, a.minLatency.latency
 }
 
 // NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.

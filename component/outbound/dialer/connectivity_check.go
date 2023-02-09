@@ -71,35 +71,9 @@ func (d *Dialer) MustGetAlive(l4proto consts.L4ProtoStr, ipversion consts.IpVers
 	return d.mustGetCollection(l4proto, ipversion).Alive
 }
 
-type Ip46 struct {
-	Ip4 netip.Addr
-	Ip6 netip.Addr
-}
-
-func ParseIp46(ctx context.Context, host string) (ipv46 *Ip46, err error) {
-	addrs4, err := netutils.ResolveNetip(ctx, SymmetricDirect, BootstrapDns, host, dnsmessage.TypeA)
-	if err != nil {
-		return nil, err
-	}
-	if len(addrs4) == 0 {
-		return nil, fmt.Errorf("domain \"%v\" has no ipv4 record", host)
-	}
-	addrs6, err := netutils.ResolveNetip(ctx, SymmetricDirect, BootstrapDns, host, dnsmessage.TypeAAAA)
-	if err != nil {
-		return nil, err
-	}
-	if len(addrs6) == 0 {
-		return nil, fmt.Errorf("domain \"%v\" has no ipv6 record", host)
-	}
-	return &Ip46{
-		Ip4: addrs4[0],
-		Ip6: addrs6[0],
-	}, nil
-}
-
 type TcpCheckOption struct {
 	Url *netutils.URL
-	*Ip46
+	*netutils.Ip46
 }
 
 func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOption, err error) {
@@ -107,7 +81,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := ParseIp46(ctx, u.Hostname())
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, BootstrapDns, u.Hostname(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +94,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 type UdpCheckOption struct {
 	DnsHost string
 	DnsPort uint16
-	*Ip46
+	*netutils.Ip46
 }
 
 func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheckOption, err error) {
@@ -132,7 +106,7 @@ func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheck
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := ParseIp46(ctx, host)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, BootstrapDns, host, true)
 	if err != nil {
 		return nil, err
 	}

@@ -50,7 +50,7 @@ type ControlPlane struct {
 	// mutex protects the dnsCache.
 	mutex       sync.Mutex
 	dnsCache    map[string]*dnsCache
-	dnsUpstream netip.AddrPort
+	dnsUpstream *DnsUpstraem
 }
 
 func NewControlPlane(
@@ -189,7 +189,7 @@ func NewControlPlane(
 	}
 
 	/// DialerGroups (outbounds).
-	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
 	defer cancel()
 	tcpCheckOption, err := dialer.ParseTcpCheckOption(ctx, global.TcpCheckUrl)
 	if err != nil {
@@ -285,22 +285,29 @@ func NewControlPlane(
 	}
 
 	/// DNS upstream.
-	var dnsAddrPort netip.AddrPort
+	var dnsUpstream *DnsUpstraem
 	if !global.DnsUpstream.Empty {
-		if dnsAddrPort, err = resolveDnsUpstream(global.DnsUpstream.Url); err != nil {
+		if dnsUpstream, err = resolveDnsUpstream(ctx, global.DnsUpstream.Url); err != nil {
 			return nil, err
 		}
-		dnsAddr16 := dnsAddrPort.Addr().As16()
-		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
-			Ip:   common.Ipv6ByteSliceToUint32Array(dnsAddr16[:]),
-			Port: internal.Htons(dnsAddrPort.Port()),
+		ip4in6 := dnsUpstream.Ip4.As16()
+		ip6 := dnsUpstream.Ip6.As16()
+		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
+			Ip4:    common.Ipv6ByteSliceToUint32Array(ip4in6[:]),
+			Ip6:    common.Ipv6ByteSliceToUint32Array(ip6[:]),
+			HasIp4: dnsUpstream.Ip4.IsValid(),
+			HasIp6: dnsUpstream.Ip6.IsValid(),
+			Port:   internal.Htons(dnsUpstream.Port),
 		}, ebpf.UpdateAny); err != nil {
 			return nil, err
 		}
 	} else {
 		// Empty.
-		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfIpPort{
-			Ip: [4]uint32{},
+		if err = bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
+			Ip4:    [4]uint32{},
+			Ip6:    [4]uint32{},
+			HasIp4: false,
+			HasIp6: false,
 			// Zero port indicates no element, because bpf_map_lookup_elem cannot return 0 for map_type_array.
 			Port: 0,
 		}, ebpf.UpdateAny); err != nil {
@@ -325,7 +332,7 @@ func NewControlPlane(
 		Final:              routingA.Final,
 		mutex:              sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
-		dnsUpstream:        dnsAddrPort,
+		dnsUpstream:        dnsUpstream,
 	}, nil
 }
 

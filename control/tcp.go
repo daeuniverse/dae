@@ -60,7 +60,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 	l4proto := consts.L4ProtoStr_TCP
 	ipversion := consts.IpVersionFromAddr(dst.Addr())
-	dialer, err := outbound.Select(l4proto, ipversion)
+	dialer, _, err := outbound.Select(l4proto, ipversion)
 	if err != nil {
 		return fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
 	}
