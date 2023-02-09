@@ -121,6 +121,5 @@ See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
    But the problem is, after the Linux network stack, before entering the network card, we modify the source IP of this packet, causing the Linux network stack to only make a simple checksum, and the NIC also assumes that this packet is not sent from local, so no further checksum completing.
 1. MACv2 extension extraction.
 1. Log to userspace.
-1. Support include section.
 1. Subscription section supports key. And support to filter by subscription key.
 1. ...
