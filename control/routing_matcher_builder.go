@@ -240,7 +240,7 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 		if err != nil {
 			return fmt.Errorf("newLpmMap: %w", err)
 		}
-		// ebpf.Map cannot be BatchUpdate
+		// We cannot invoke BpfMapBatchUpdate when value is ebpf.Map.
 		if err = b.bpf.LpmArrayMap.Update(uint32(i), m, ebpf.UpdateAny); err != nil {
 			m.Close()
 			return fmt.Errorf("Update: %w", err)
@@ -255,10 +255,10 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 	}
 	routingsLen := uint32(len(b.rules))
 	routingsKeys := common.ARangeU32(routingsLen)
-	if _, err = BatchUpdate(b.bpf.RoutingMap, routingsKeys, b.rules, &ebpf.BatchOptions{
+	if _, err = BpfMapBatchUpdate(b.bpf.RoutingMap, routingsKeys, b.rules, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
-		return fmt.Errorf("BatchUpdate: %w", err)
+		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
 	return nil
 }

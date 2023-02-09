@@ -81,6 +81,15 @@ func resolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 }
 
 func ResolveSubscription(log *logrus.Logger, subscription string) (nodes []string, err error) {
+	u, err := url.Parse(subscription)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
+	}
+	switch u.Scheme {
+	case "file":
+		// TODO
+	default:
+	}
 	log.Debugf("ResolveSubscription: %v", subscription)
 	resp, err := http.Get(subscription)
 	if err != nil {

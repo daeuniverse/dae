@@ -50,7 +50,7 @@ func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map,
 	if err != nil {
 		return nil, err
 	}
-	if _, err = BatchUpdate(m, keys, values, &ebpf.BatchOptions{
+	if _, err = BpfMapBatchUpdate(m, keys, values, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ var (
 	SimulateBatchUpdateLpmTrie  bool
 )
 
-func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
+func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	CheckBatchUpdateFeatureOnce.Do(func() {
 		version, e := internal.KernelVersion()
 		if e != nil {
@@ -98,7 +98,7 @@ func BatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.B
 	}
 
 	if !simulate {
-		// Genuine BatchUpdate
+		// Genuine BpfMapBatchUpdate
 		return m.BatchUpdate(keys, values, opts)
 	}
 

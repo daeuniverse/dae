@@ -38,9 +38,10 @@ func (c *dnsCache) FillInto(req *dnsmessage.Message) {
 	// Align question and answer Name.
 	if len(req.Questions) > 0 {
 		q := req.Questions[0]
-		if len(req.Answers) > 0 &&
-			strings.EqualFold(req.Answers[0].Header.Name.String(), q.Name.String()) {
-			req.Answers[0].Header.Name.Data = q.Name.Data
+		for i := range req.Answers {
+			if strings.EqualFold(req.Answers[i].Header.Name.String(), q.Name.String()) {
+				req.Answers[i].Header.Name.Data = q.Name.Data
+			}
 		}
 	}
 	req.RCode = dnsmessage.RCodeSuccess
@@ -64,7 +65,7 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 	}
 
 	// Update bpf map.
-	// Construct keys and vals, and BatchUpdate.
+	// Construct keys and vals, and BpfMapBatchUpdate.
 	var keys [][4]uint32
 	var vals []bpfDomainRouting
 	for _, ip := range ips {
@@ -74,7 +75,7 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 			Bitmap: cache.DomainBitmap,
 		})
 	}
-	if _, err := BatchUpdate(c.core.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
+	if _, err := BpfMapBatchUpdate(c.core.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return err
@@ -205,9 +206,10 @@ func (c *ControlPlane) DnsRespHandler(data []byte, validateRushAns bool) (newDat
 	FlipDnsQuestionCase(&msg)
 	q := msg.Questions[0]
 	// Align Name.
-	if len(msg.Answers) > 0 &&
-		strings.EqualFold(msg.Answers[0].Header.Name.String(), q.Name.String()) {
-		msg.Answers[0].Header.Name.Data = q.Name.Data
+	for i := range msg.Answers {
+		if strings.EqualFold(msg.Answers[i].Header.Name.String(), q.Name.String()) {
+			msg.Answers[i].Header.Name.Data = q.Name.Data
+		}
 	}
 	for i := range msg.Additionals {
 		if strings.EqualFold(msg.Additionals[i].Header.Name.String(), q.Name.String()) {
