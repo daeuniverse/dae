@@ -21,7 +21,7 @@ var (
 				os.Exit(1)
 			}
 			// Read config from --config cfgFile.
-			_, err := readConfig(cfgFile)
+			_, _, err := readConfig(cfgFile)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)

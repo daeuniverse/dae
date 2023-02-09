@@ -48,7 +48,7 @@ type Params struct {
 	Routing      Routing  `mapstructure:"routing" parser:"RoutingRuleAndParamParser"`
 }
 
-// New params from sections. This func assumes merging (section "include") and deduplication for sections has been executed.
+// New params from sections. This func assumes merging (section "include") and deduplication for section names has been executed.
 func New(sections []*config_parser.Section) (params *Params, err error) {
 	// Set up name to section for further use.
 	type Section struct {
@@ -96,8 +96,11 @@ func New(sections []*config_parser.Section) (params *Params, err error) {
 		section.Parsed = true
 	}
 
-	// Report unknown. Not "unused" because we assume deduplication has been executed before this func.
+	// Report unknown. Not "unused" because we assume section name deduplication has been executed before this func.
 	for name, section := range nameToSection {
+		if section.Val.Name == "include" {
+			continue
+		}
 		if !section.Parsed {
 			return nil, fmt.Errorf("unknown section: %v", name)
 		}

@@ -7,11 +7,11 @@ import (
 	"github.com/v2rayA/dae/cmd/internal"
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/control"
-	"github.com/v2rayA/dae/pkg/config_parser"
 	"github.com/v2rayA/dae/pkg/logger"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -31,13 +31,15 @@ var (
 			internal.AutoSu()
 
 			// Read config from --config cfgFile.
-			param, err := readConfig(cfgFile)
+			param, includes, err := readConfig(cfgFile)
 			if err != nil {
 				logrus.Fatalln("readConfig:", err)
 			}
 
 			log := logger.NewLogger(param.Global.LogLevel, disableTimestamp)
 			logrus.SetLevel(log.Level)
+
+			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			if err := Run(log, param); err != nil {
 				logrus.Fatalln(err)
 			}
@@ -98,17 +100,14 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	return nil
 }
 
-func readConfig(cfgFile string) (params *config.Params, err error) {
-	b, err := os.ReadFile(cfgFile)
+func readConfig(cfgFile string) (params *config.Params, entries []string, err error) {
+	merger := config.NewMerger(cfgFile)
+	sections, entries, err := merger.Merge()
 	if err != nil {
-		return nil, err
-	}
-	sections, err := config_parser.Parse(string(b))
-	if err != nil {
-		return nil, fmt.Errorf("\n%w", err)
+		return nil, nil, err
 	}
 	if params, err = config.New(sections); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return params, nil
+	return params, entries, nil
 }

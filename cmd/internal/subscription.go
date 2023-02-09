@@ -91,13 +91,24 @@ func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	/// Relative location.
 	// Make sure path is secure.
 	path := filepath.Join(configDir, u.Host, u.Path)
-	if err = common.IsFileInSubDir(path, configDir); err != nil {
+	if err = common.EnsureFileInSubDir(path, configDir); err != nil {
 		return nil, err
 	}
 	/// Read and resolve
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
+	}
+	// Check file access.
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.IsDir() {
+		return nil, fmt.Errorf("subscription file cannot be a directory: %v", path)
+	}
+	if fi.Mode()&0037 > 0 {
+		return nil, fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, path)
 	}
 	// Resolve the first line instruction.
 	fReader := bufio.NewReader(f)
@@ -134,7 +145,7 @@ func ResolveSubscription(log *logrus.Logger, configDir string, subscription stri
 	case "file":
 		b, err = resolveFile(u, configDir)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve file: %w", err)
+			return nil, err
 		}
 		goto resolve
 	default:

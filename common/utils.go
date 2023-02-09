@@ -309,7 +309,7 @@ func FuzzyDecode(to interface{}, val string) bool {
 	return true
 }
 
-func IsFileInSubDir(filePath string, dir string) (err error) {
+func EnsureFileInSubDir(filePath string, dir string) (err error) {
 	fileDir := filepath.Dir(filePath)
 	if len(dir) == 0 {
 		return fmt.Errorf("bad dir: %v", dir)
@@ -322,4 +322,20 @@ func IsFileInSubDir(filePath string, dir string) (err error) {
 		return fmt.Errorf("file is out of scope: %v", rel)
 	}
 	return nil
+}
+
+func MapKeys(m interface{}) (keys []string, err error) {
+	v := reflect.ValueOf(m)
+	if v.Kind() != reflect.Map {
+		return nil, fmt.Errorf("MapKeys requires map[string]*")
+	}
+	if v.Type().Key().Kind() != reflect.String {
+		return nil, fmt.Errorf("MapKeys requires map[string]*")
+	}
+	_keys := v.MapKeys()
+	keys = make([]string, 0, len(_keys))
+	for _, k := range _keys {
+		keys = append(keys, k.String())
+	}
+	return keys, nil
 }
