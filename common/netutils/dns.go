@@ -13,7 +13,27 @@ import (
 	"golang.org/x/net/proxy"
 	"net/netip"
 	"strings"
+	"sync"
 )
+
+var (
+	systemDnsMu sync.Mutex
+	systemDns   netip.AddrPort
+)
+
+func SystemDns() (dns netip.AddrPort, err error) {
+	systemDnsMu.Lock()
+	defer systemDnsMu.Unlock()
+	if !systemDns.IsValid() {
+		dnsConf := dnsReadConfig("/etc/resolv.conf")
+		if len(dnsConf.servers) == 0 {
+			err = fmt.Errorf("no valid dns server in /etc/resolv.conf")
+			return netip.AddrPort{}, err
+		}
+		systemDns = netip.MustParseAddrPort(dnsConf.servers[0])
+	}
+	return systemDns, nil
+}
 
 func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type) (addrs []netip.Addr, err error) {
 	if addr, err := netip.ParseAddr(host); err == nil {

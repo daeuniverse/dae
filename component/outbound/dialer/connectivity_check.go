@@ -24,10 +24,6 @@ import (
 	"time"
 )
 
-var (
-	BootstrapDns = netip.MustParseAddrPort("223.5.5.5:53")
-)
-
 type collection struct {
 	// AliveDialerSetSet uses reference counting.
 	AliveDialerSetSet AliveDialerSetSet
@@ -77,11 +73,16 @@ type TcpCheckOption struct {
 }
 
 func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOption, err error) {
+	systemDns, err := netutils.SystemDns()
+	if err != nil {
+		return nil, err
+	}
+
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, BootstrapDns, u.Hostname(), true)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, u.Hostname(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +99,11 @@ type UdpCheckOption struct {
 }
 
 func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheckOption, err error) {
+	systemDns, err := netutils.SystemDns()
+	if err != nil {
+		return nil, err
+	}
+
 	host, _port, err := net.SplitHostPort(dnsHostPort)
 	if err != nil {
 		return nil, err
@@ -106,7 +112,7 @@ func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheck
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, BootstrapDns, host, true)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, host, true)
 	if err != nil {
 		return nil, err
 	}

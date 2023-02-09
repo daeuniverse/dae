@@ -42,12 +42,16 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 		return nil, fmt.Errorf("dns_upstream now only supports auto://, udp://, tcp:// and empty string (as-is)")
 	}
 
+	systemDns, err := netutils.SystemDns()
+	if err != nil {
+		return nil, err
+	}
 	port, err := strconv.ParseUint(dnsUpstream.Port(), 10, 16)
 	if err != nil {
 		return nil, fmt.Errorf("parse dns_upstream port: %v", err)
 	}
 	hostname := dnsUpstream.Hostname()
-	ip46, err := netutils.ParseIp46(ctx, dialer.SymmetricDirect, dialer.BootstrapDns, hostname, false)
+	ip46, err := netutils.ParseIp46(ctx, dialer.SymmetricDirect, systemDns, hostname, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve dns_upstream")
 	}
