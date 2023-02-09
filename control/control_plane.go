@@ -300,7 +300,11 @@ func NewControlPlane(
 			FinishInitCallback: nil,
 		},
 	}
+
+	/// DNS upstream
 	c.dnsUpstream.FinishInitCallback = c.finishInitDnsUpstreamResolve
+	// Try to invoke once to avoid dns leaking at the very beginning.
+	_, _ = c.dnsUpstream.Upstream()
 	return c, nil
 }
 
