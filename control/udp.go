@@ -203,11 +203,12 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 					continue
 				}
 				c.log.WithFields(logrus.Fields{
+					"name":     d.Name(),
 					"latency":  latency,
 					"ver":      ver,
 					"proto":    proto,
 					"outbound": outbound.Name,
-				}).Debugln("Choose")
+				}).Debugln("Choice")
 				if bestDialer == nil || latency < bestLatency {
 					bestDialer = d
 					bestLatency = latency

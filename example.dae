@@ -8,7 +8,7 @@ global {
     # Node connectivity check.
     # Url and dns should have both IPv4 and IPv6.
     tcp_check_url: 'http://cp.cloudflare.com'
-    udp_check_dns: 'cloudflare-dns.com:53'
+    udp_check_dns: 'dns.google:53'
     check_interval: 30s
 
     # Value can be scheme://host:port or empty string ''.
