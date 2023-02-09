@@ -195,7 +195,10 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 
 func (a *AliveDialerSet) calcMinLatency() {
 	for _, d := range a.inorderedAliveDialerSet {
-		latency := a.dialerToLatency[d]
+		latency, ok := a.dialerToLatency[d]
+		if !ok {
+			continue
+		}
 		if latency < a.minLatency.latency {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = d

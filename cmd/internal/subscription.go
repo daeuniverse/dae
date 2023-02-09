@@ -89,7 +89,7 @@ func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
 		return nil, fmt.Errorf("not support absolute path")
 	}
 	/// Relative location.
-	// Make sure path safety.
+	// Make sure path is secure.
 	path := filepath.Join(configDir, u.Host, u.Path)
 	if err = common.IsFileInSubDir(path, configDir); err != nil {
 		return nil, err
