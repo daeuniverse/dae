@@ -215,7 +215,7 @@ func NewControlPlane(
 				FixedIndex: 0,
 			}, core.OutboundAliveChangeCallback(0)),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
-			[]*dialer.Dialer{dialer.NewBlockDialer(option)},
+			[]*dialer.Dialer{dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,

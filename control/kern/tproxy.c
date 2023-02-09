@@ -1329,8 +1329,9 @@ new_connection:
   q.l4proto = l4proto;
   __u32 *alive;
   alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-  if (alive && *alive == 0) {
-    // Outbound is not alive.
+  if (alive && *alive == 0 &&
+      !(l4proto == IPPROTO_UDP && tuples.dst.port == bpf_htons(53))) {
+    // Outbound is not alive. Dns is an exception.
     goto block;
   }
 
@@ -1646,8 +1647,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       q.l4proto = l4proto;
       __u32 *alive;
       alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-      if (alive && *alive == 0) {
-        // Outbound is not alive.
+      if (alive && *alive == 0 &&
+          !(l4proto == IPPROTO_UDP && tuples.dst.port == bpf_htons(53))) {
+        // Outbound is not alive. Dns is an exception.
         return TC_ACT_SHOT;
       }
 
@@ -1727,8 +1729,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       q.l4proto = l4proto;
       __u32 *alive;
       alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-      if (alive && *alive == 0) {
-        // Outbound is not alive.
+      if (alive && *alive == 0 &&
+          !(l4proto == IPPROTO_UDP && tuples.dst.port == bpf_htons(53))) {
+        // Outbound is not alive. Dns is an exception.
         return TC_ACT_SHOT;
       }
 

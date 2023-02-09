@@ -65,10 +65,14 @@ func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.
 	}
 
 	return &DialerGroup{
-		log:                      log,
-		Name:                     name,
-		Dialers:                  dialers,
-		block:                    dialer.NewBlockDialer(option),
+		log:     log,
+		Name:    name,
+		Dialers: dialers,
+		block: dialer.NewBlockDialer(option, func() {
+			log.WithFields(logrus.Fields{
+				"group": name,
+			}).Warnf("No alive dialer for given nerwork in DialerGroup, use \"block\".")
+		}),
 		AliveTcp4DialerSet:       aliveTcp4DialerSet,
 		AliveTcp6DialerSet:       aliveTcp6DialerSet,
 		AliveUdp4DialerSet:       aliveUdp4DialerSet,
@@ -125,11 +129,7 @@ func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersi
 		d := a.GetRand()
 		if d == nil {
 			// No alive dialer.
-			g.log.WithFields(logrus.Fields{
-				"network": string(l4proto) + string(ipversion),
-				"group":   g.Name,
-			}).Warnf("No alive dialer in DialerGroup, use \"block\".")
-			return g.block, 0, nil
+			return g.block, time.Hour, nil
 		}
 		return d, 0, nil
 
@@ -143,11 +143,7 @@ func (g *DialerGroup) Select(l4proto consts.L4ProtoStr, ipversion consts.IpVersi
 		d, latency := a.GetMinLatency()
 		if d == nil {
 			// No alive dialer.
-			g.log.WithFields(logrus.Fields{
-				"network": string(l4proto) + string(ipversion),
-				"group":   g.Name,
-			}).Warnf("No alive dialer in DialerGroup, use \"block\".")
-			return g.block, 0, nil
+			return g.block, time.Hour, nil
 		}
 		return d, latency, nil
 

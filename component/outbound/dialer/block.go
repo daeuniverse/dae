@@ -9,12 +9,15 @@ import (
 	"net"
 )
 
-type blockDialer struct{}
+type blockDialer struct {
+	DialCallback func()
+}
 
-func (*blockDialer) Dial(network string, addr string) (c net.Conn, err error) {
+func (d *blockDialer) Dial(network string, addr string) (c net.Conn, err error) {
+	d.DialCallback()
 	return nil, net.ErrClosed
 }
 
-func NewBlockDialer(option *GlobalOption) *Dialer {
-	return NewDialer(&blockDialer{}, option, InstanceOption{CheckEnabled: false}, "block", "block", "")
+func NewBlockDialer(option *GlobalOption, dialCallback func()) *Dialer {
+	return NewDialer(&blockDialer{DialCallback: dialCallback}, option, InstanceOption{CheckEnabled: false}, "block", "block", "")
 }

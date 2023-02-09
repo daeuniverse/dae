@@ -6,7 +6,6 @@
 package control
 
 import (
-	"fmt"
 	"github.com/cilium/ebpf"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -27,7 +26,7 @@ func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(aliv
 	return func(alive bool, l4proto uint8, ipversion uint8) {
 		c.log.WithFields(logrus.Fields{
 			"alive":       alive,
-			"network":     fmt.Sprintf("%v+%v", FormatL4Proto(l4proto), ipversion),
+			"network":     FormatL4Proto(l4proto) + strconv.Itoa(int(ipversion)),
 			"outbound_id": outbound,
 		}).Warnf("Outbound alive state changed, notify the kernel program.")
 
