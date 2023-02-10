@@ -32,8 +32,12 @@ global {
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of global node pool.
+# Support to give subscription a tag and filter nodes from given subscription in group section.
 subscription {
     # Add your subscription links here.
+    my_sub: 'https://www.example.com/subscription/link'
+    another_sub: 'https://example.com/another_sub'
+    'https://example.com/no_tag_link'
 }
 
 # Nodes defined here will be merged as a part of global node pool.
@@ -64,7 +68,7 @@ group {
     group2 {
         # Filter nodes from global node pool defined by subscription and node section above.
         # Pass node names as input of keyword/regex filter.
-        filter: name(keyword: netflix)
+        filter: subtag(regex: '^my_', another_sub) && name(keyword: netflix)
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
