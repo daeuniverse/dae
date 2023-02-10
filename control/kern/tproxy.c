@@ -1618,7 +1618,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
         // Print only new connection.
-        bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound, daddr,
+        bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound, tuples.dst.ip,
                    bpf_ntohs(key_src.port));
 #endif
       } else {
@@ -1710,7 +1710,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
       new_hdr.outbound = ret;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-      bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound, daddr,
+      bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound, tuples.dst.ip,
                  bpf_ntohs(new_hdr.port));
 #endif
 
