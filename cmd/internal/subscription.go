@@ -94,7 +94,7 @@ func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if err = common.EnsureFileInSubDir(path, configDir); err != nil {
 		return nil, err
 	}
-	/// Read and resolve
+	/// Read and resolve.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -131,10 +131,25 @@ func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
-func ResolveSubscription(log *logrus.Logger, configDir string, subscription string) (nodes []string, err error) {
+func ResolveSubscription(log *logrus.Logger, configDir string, subscription string) (tag string, nodes []string, err error) {
+	/// Get tag.
+	iColon := strings.Index(subscription, ":")
+	if iColon == -1 {
+		goto parseUrl
+	}
+	// If first colon is like "://" in "scheme://linkbody", no tag is present.
+	if strings.HasPrefix(subscription[iColon:], "://") {
+		goto parseUrl
+	}
+	// Else tag is the part before colon.
+	tag = subscription[:iColon]
+	subscription = subscription[iColon+1:]
+
+	/// Parse url.
+parseUrl:
 	u, err := url.Parse(subscription)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
+		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
 	}
 	log.Debugf("ResolveSubscription: %v", subscription)
 	var (
@@ -145,25 +160,25 @@ func ResolveSubscription(log *logrus.Logger, configDir string, subscription stri
 	case "file":
 		b, err = resolveFile(u, configDir)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		goto resolve
 	default:
 	}
 	resp, err = http.Get(subscription)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	b, err = io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 resolve:
 	if nodes, err = resolveSubscriptionAsSIP008(log, b); err == nil {
-		return nodes, nil
+		return tag, nodes, nil
 	} else {
 		log.Debugln(err)
 	}
-	return resolveSubscriptionAsBase64(log, b), nil
+	return tag, resolveSubscriptionAsBase64(log, b), nil
 }
