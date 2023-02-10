@@ -106,7 +106,7 @@ type DnsUpstreamRaw struct {
 	init               bool
 }
 
-func (u *DnsUpstreamRaw) Upstream() (_ *DnsUpstream, err error) {
+func (u *DnsUpstreamRaw) GetUpstream() (_ *DnsUpstream, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if !u.init {

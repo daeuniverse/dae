@@ -54,17 +54,22 @@ func init() {
 
 func Run(log *logrus.Logger, param *config.Params) (err error) {
 
+	/// Get tag -> nodeList mapping.
+	tagToNodeList := map[string][]string{}
+	if len(param.Node) > 0 {
+		tagToNodeList[""] = append(tagToNodeList[""], param.Node...)
+	}
 	// Resolve subscriptions to nodes.
-	nodeList := make([]string, len(param.Node))
-	copy(nodeList, param.Node)
 	for _, sub := range param.Subscription {
-		nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), sub)
+		tag, nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), sub)
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 		}
-		nodeList = append(nodeList, nodes...)
+		if len(nodes) > 0 {
+			tagToNodeList[tag] = append(tagToNodeList[tag], nodes...)
+		}
 	}
-	if len(nodeList) == 0 {
+	if len(tagToNodeList) == 0 {
 		return fmt.Errorf("no node found, which could because all subscription resolving failed")
 	}
 
@@ -75,7 +80,7 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	// New ControlPlane.
 	t, err := control.NewControlPlane(
 		log,
-		nodeList,
+		tagToNodeList,
 		param.Group,
 		&param.Routing,
 		&param.Global,

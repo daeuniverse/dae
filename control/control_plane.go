@@ -56,7 +56,7 @@ type ControlPlane struct {
 
 func NewControlPlane(
 	log *logrus.Logger,
-	nodes []string,
+	tagToNodeList map[string][]string,
 	groups []config.Group,
 	routingA *config.Routing,
 	global *config.Global,
@@ -214,7 +214,7 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
-	dialerSet := outbound.NewDialerSetFromLinks(option, nodes)
+	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	for _, group := range groups {
 		// Parse policy.
 		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group.Param)
@@ -304,7 +304,7 @@ func NewControlPlane(
 	/// DNS upstream
 	c.dnsUpstream.FinishInitCallback = c.finishInitDnsUpstreamResolve
 	// Try to invoke once to avoid dns leaking at the very beginning.
-	_, _ = c.dnsUpstream.Upstream()
+	_, _ = c.dnsUpstream.GetUpstream()
 	return c, nil
 }
 

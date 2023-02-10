@@ -179,7 +179,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 
 	// For DNS request, modify dst to dns upstream.
 	// NOTICE: We might modify l4proto and ipversion.
-	dnsUpstream, err := c.dnsUpstream.Upstream()
+	dnsUpstream, err := c.dnsUpstream.GetUpstream()
 	if err != nil {
 		return err
 	}
