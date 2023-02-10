@@ -78,7 +78,10 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 						break
 					}
 				case "":
-					return false, fmt.Errorf(`key of "filter: %v()" cannot be empty`, filter.Name)
+					if dialer.Name() == param.Val {
+						subFilterHit = true
+						break
+					}
 				default:
 					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
 				}

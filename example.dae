@@ -68,7 +68,7 @@ group {
     group2 {
         # Filter nodes from global node pool defined by subscription and node section above.
         # Pass node names as input of keyword/regex filter.
-        filter: subtag(regex: '^my_', another_sub) && name(keyword: netflix)
+        filter: subtag(regex: '^my_', another_sub) && !name(keyword: 'ExpireAt:')
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
