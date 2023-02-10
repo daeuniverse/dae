@@ -6,6 +6,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"github.com/v2rayA/dae/common"
@@ -13,6 +14,7 @@ import (
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 	"net/netip"
+	"os"
 	"syscall"
 )
 
@@ -59,4 +61,26 @@ func RetrieveOriginalDest(oob []byte) netip.AddrPort {
 		}
 	}
 	return netip.AddrPort{}
+}
+
+func checkIpforward(ifname string, ipversion consts.IpVersionStr) error {
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(bytes.TrimSpace(b), []byte("1")) {
+		return nil
+	}
+	return fmt.Errorf("ipforward on %v is off: %v", ifname, path)
+}
+
+func CheckIpforward(ifname string) error {
+	if err := checkIpforward(ifname, consts.IpVersionStr_4); err != nil {
+		return err
+	}
+	if err := checkIpforward(ifname, consts.IpVersionStr_6); err != nil {
+		return err
+	}
+	return nil
 }

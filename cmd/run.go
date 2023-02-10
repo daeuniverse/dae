@@ -105,14 +105,14 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	return nil
 }
 
-func readConfig(cfgFile string) (params *config.Params, entries []string, err error) {
+func readConfig(cfgFile string) (params *config.Params, includes []string, err error) {
 	merger := config.NewMerger(cfgFile)
-	sections, entries, err := merger.Merge()
+	sections, includes, err := merger.Merge()
 	if err != nil {
 		return nil, nil, err
 	}
 	if params, err = config.New(sections); err != nil {
 		return nil, nil, err
 	}
-	return params, entries, nil
+	return params, includes, nil
 }

@@ -226,6 +226,10 @@ tryRuleAddAgain:
 }
 
 func (c *ControlPlaneCore) bindLan(ifname string) error {
+	err := CheckIpforward(ifname)
+	if err != nil {
+		return err
+	}
 	c.log.Infof("Bind to LAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
