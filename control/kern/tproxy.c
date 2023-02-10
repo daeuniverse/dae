@@ -47,7 +47,6 @@
 #define MAX_INTERFACE_NUM 128
 #define MAX_MATCH_SET_LEN (32 * 3)
 #define MAX_LPM_SIZE 20480
-//#define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 2)
 #define MAX_SRC_PID_PNAME_MAPPING_NUM (65536)
@@ -365,49 +364,9 @@ static __always_inline __u32 l4_checksum_off(__u8 proto, __u8 ihl) {
   return ETH_HLEN + ihl * 4 + l4_checksum_rel_off(proto);
 }
 
-static __always_inline int bpf_update_offload_l4cksm_32(struct __sk_buff *skb,
-                                                        __u32 l4_cksm_off,
-                                                        __be32 old,
-                                                        __be32 new) {
-  int ret;
-  __sum16 cksm;
-  if ((ret = bpf_skb_load_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm)))) {
-    return ret;
-  }
-  //  bpf_printk("before: %x", bpf_ntohs(cksm));
-  cksm =
-      bpf_htons(bpf_ntohs(cksm) + bpf_ntohs(*(__be16 *)&new) +
-                bpf_ntohs(*((__be16 *)&new + 1)) - bpf_ntohs(*(__be16 *)&old) -
-                bpf_ntohs(*((__be16 *)&old + 1)));
-  if ((ret = bpf_skb_store_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm), 0))) {
-    return ret;
-  }
-  //  bpf_printk("after: %x", bpf_ntohs(cksm));
-  return 0;
-}
-
-static __always_inline int bpf_update_offload_l4cksm_16(struct __sk_buff *skb,
-                                                        __u32 l4_cksm_off,
-                                                        __be16 old,
-                                                        __be16 new) {
-  int ret;
-  __sum16 cksm;
-  if ((ret = bpf_skb_load_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm)))) {
-    return ret;
-  }
-  //  bpf_printk("before: %x", bpf_ntohs(cksm));
-  cksm = bpf_htons(bpf_ntohs(cksm) + bpf_ntohs(new) - bpf_ntohs(old));
-  if ((ret = bpf_skb_store_bytes(skb, l4_cksm_off, &cksm, sizeof(cksm), 0))) {
-    return ret;
-  }
-  //  bpf_printk("after: %x", bpf_ntohs(cksm));
-  return 0;
-}
-
 static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
                                       __u8 proto, __u8 ihl, __be32 old_ip[4],
-                                      __be32 new_ip[4], bool is_dest,
-                                      bool calc_l4_cksm) {
+                                      __be32 new_ip[4], bool is_dest) {
   // Nothing to do.
   if (equal16(old_ip, new_ip)) {
     return 0;
@@ -427,25 +386,16 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
 
     __be32 _old_ip = old_ip[3];
     __be32 _new_ip = new_ip[3];
-    if (calc_l4_cksm) {
 
-      int ret;
-      // __sum16 test;
-      // bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
-      // bpf_printk("rewrite ip before: %x, %pI4->%pI4", test, &_old_ip,
-      // &_new_ip);
-      if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, _old_ip, _new_ip,
-                                     l4flags | sizeof(_new_ip)))) {
-        bpf_printk("bpf_l4_csum_replace: %d", ret);
-        return ret;
-      }
-    } else {
-      // NIC checksum offload path. But problem remains. FIXME.
-      if ((ret = bpf_update_offload_l4cksm_32(skb, l4_cksm_off, _old_ip,
-                                              _new_ip))) {
-        bpf_printk("bpf_update_offload_cksm_32: %d", ret);
-        return ret;
-      }
+    int ret;
+    // __sum16 test;
+    // bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
+    // bpf_printk("rewrite ip before: %x, %pI4->%pI4", test, &_old_ip,
+    // &_new_ip);
+    if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, _old_ip, _new_ip,
+                                   l4flags | sizeof(_new_ip)))) {
+      bpf_printk("bpf_l4_csum_replace: %d", ret);
+      return ret;
     }
     // bpf_skb_load_bytes(skb, l4_cksm_off, &test, sizeof(test));
     // bpf_printk("rewrite ip after: %x", test);
@@ -464,13 +414,11 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
     }
   } else {
 
-    if (calc_l4_cksm) {
-      __s64 cksm =
-          bpf_csum_diff(old_ip, IPV6_BYTE_LENGTH, new_ip, IPV6_BYTE_LENGTH, 0);
-      if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, 0, cksm, l4flags))) {
-        bpf_printk("bpf_l4_csum_replace: %d", ret);
-        return ret;
-      }
+    __s64 cksm =
+        bpf_csum_diff(old_ip, IPV6_BYTE_LENGTH, new_ip, IPV6_BYTE_LENGTH, 0);
+    if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, 0, cksm, l4flags))) {
+      bpf_printk("bpf_l4_csum_replace: %d", ret);
+      return ret;
     }
     // bpf_printk("%pI6 -> %pI6", old_ip, new_ip);
 
@@ -487,8 +435,7 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
 
 static __always_inline int rewrite_port(struct __sk_buff *skb, __u8 proto,
                                         __u8 ihl, __be16 old_port,
-                                        __be16 new_port, bool is_dest,
-                                        bool calc_l4_cksm) {
+                                        __be16 new_port, bool is_dest) {
   // Nothing to do.
   if (old_port == new_port) {
     return 0;
@@ -528,12 +475,11 @@ static __always_inline int rewrite_port(struct __sk_buff *skb, __u8 proto,
   //   bpf_printk("rewrite port before: %x, %u->%u", test, bpf_ntohs(old_port),
   //              bpf_ntohs(new_port));
   // }
-  if (calc_l4_cksm) {
-    if ((ret = bpf_l4_csum_replace(skb, cksm_off, old_port, new_port,
-                                   l4flags | sizeof(new_port)))) {
-      bpf_printk("bpf_l4_csum_replace: %d", ret);
-      return ret;
-    }
+
+  if ((ret = bpf_l4_csum_replace(skb, cksm_off, old_port, new_port,
+                                 l4flags | sizeof(new_port)))) {
+    bpf_printk("bpf_l4_csum_replace: %d", ret);
+    return ret;
   }
   // if (!bpf_skb_load_bytes(skb, cksm_off, &test, sizeof(test))) {
   //   bpf_printk("rewrite port aftetr: %x", test);
@@ -693,8 +639,7 @@ parse_transport(const struct __sk_buff *skb, struct ethhdr *ethh,
 }
 
 static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
-                                          __u32 ihl, __u16 len_diff,
-                                          bool calc_l4_cksm) {
+                                          __u32 ihl, __u16 len_diff) {
   if (unlikely(!len_diff)) {
     return 0;
   }
@@ -716,28 +661,21 @@ static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
   // Calculate checksum and store the new value.
   int ret;
   __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
-  if (calc_l4_cksm) {
-    // replace twice because len exists both pseudo hdr and hdr.
-    if ((ret = bpf_l4_csum_replace(
-             skb, udp_csum_off, oldlen, newlen,
-             sizeof(oldlen) | BPF_F_PSEUDO_HDR | // udp len is in the pseudo hdr
-                 BPF_F_MARK_MANGLED_0))) {
-      bpf_printk("bpf_l4_csum_replace newudplen: %d", ret);
-      return ret;
-    }
-    if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, oldlen, newlen,
-                                   sizeof(oldlen) | BPF_F_MARK_MANGLED_0))) {
-      bpf_printk("bpf_l4_csum_replace newudplen: %d", ret);
-      return ret;
-    }
-  } else {
-    // NIC checksum offload path. But problem remains. FIXME.
-    if ((ret =
-             bpf_update_offload_l4cksm_16(skb, udp_csum_off, oldlen, newlen))) {
-      bpf_printk("bpf_update_offload_cksm: %d", ret);
-      return ret;
-    }
+
+  // replace twice because len exists both pseudo hdr and hdr.
+  if ((ret = bpf_l4_csum_replace(
+           skb, udp_csum_off, oldlen, newlen,
+           sizeof(oldlen) | BPF_F_PSEUDO_HDR | // udp len is in the pseudo hdr
+               BPF_F_MARK_MANGLED_0))) {
+    bpf_printk("bpf_l4_csum_replace newudplen: %d", ret);
+    return ret;
   }
+  if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, oldlen, newlen,
+                                 sizeof(oldlen) | BPF_F_MARK_MANGLED_0))) {
+    bpf_printk("bpf_l4_csum_replace newudplen: %d", ret);
+    return ret;
+  }
+
   if ((ret = bpf_skb_store_bytes(
            skb, (__u32)ETH_HLEN + ihl * 4 + offsetof(struct udphdr, len),
            &newlen, sizeof(oldlen), 0))) {
@@ -786,8 +724,7 @@ static __always_inline int adjust_ipv4_len(struct __sk_buff *skb, __u16 oldlen,
 static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
                                                __u8 ipversion, __u8 ihl,
                                                __be16 iphdr_tot_len,
-                                               void *newhdr, __u32 newhdrlen,
-                                               bool calc_l4_cksm) {
+                                               void *newhdr, __u32 newhdrlen) {
   if (unlikely(newhdrlen % 4 != 0)) {
     bpf_printk("encap_after_udp_hdr: unexpected newhdrlen value %u :must "
                "be a multiple of 4",
@@ -810,8 +747,7 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
   }
   // Add room for new udp payload header.
   if ((ret = bpf_skb_adjust_room(skb, newhdrlen, BPF_ADJ_ROOM_NET,
-                                 calc_l4_cksm ? BPF_F_ADJ_ROOM_NO_CSUM_RESET
-                                              : 0))) {
+                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
     bpf_printk("UDP ADJUST ROOM(encap): %d", ret);
     return ret;
   }
@@ -831,21 +767,19 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
   }
 
   // Rewrite udp len.
-  if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, newhdrlen,
-                            calc_l4_cksm))) {
+  if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, newhdrlen))) {
     bpf_printk("adjust_udp_len: %d", ret);
     return ret;
   }
 
   // Rewrite udp payload.
-  if (calc_l4_cksm) {
-    __u32 l4_cksm_off = l4_checksum_off(IPPROTO_UDP, ihl);
-    __s64 cksm = bpf_csum_diff(NULL, 0, newhdr, newhdrlen, 0);
-    if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, 0, cksm,
-                                   BPF_F_MARK_MANGLED_0))) {
-      bpf_printk("bpf_l4_csum_replace 2: %d", ret);
-      return ret;
-    }
+
+  __u32 l4_cksm_off = l4_checksum_off(IPPROTO_UDP, ihl);
+  __s64 cksm = bpf_csum_diff(NULL, 0, newhdr, newhdrlen, 0);
+  if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, 0, cksm,
+                                 BPF_F_MARK_MANGLED_0))) {
+    bpf_printk("bpf_l4_csum_replace 2: %d", ret);
+    return ret;
   }
   if ((ret = bpf_skb_store_bytes(skb, udp_payload_off, newhdr, newhdrlen, 0))) {
     bpf_printk("bpf_skb_store_bytes 2: %d", ret);
@@ -857,8 +791,7 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
 static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
                                                __u8 ipversion, __u8 ihl,
                                                __be16 ipv4hdr_tot_len, void *to,
-                                               __u32 decap_hdrlen,
-                                               bool calc_l4_cksm) {
+                                               __u32 decap_hdrlen) {
   if (unlikely(decap_hdrlen % 4 != 0)) {
     bpf_printk("encap_after_udp_hdr: unexpected decap_hdrlen value %u :must "
                "be a multiple of 4",
@@ -901,8 +834,7 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
 
   // Adjust room to decap the header.
   if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET,
-                                 calc_l4_cksm ? BPF_F_ADJ_ROOM_NO_CSUM_RESET
-                                              : 0))) {
+                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
     bpf_printk("UDP ADJUST ROOM(decap): %d", ret);
     return ret;
   }
@@ -916,21 +848,19 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
   }
 
   // Rewrite udp len.
-  if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, -decap_hdrlen,
-                            calc_l4_cksm))) {
+  if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, -decap_hdrlen))) {
     bpf_printk("adjust_udp_len: %d", ret);
     return ret;
   }
 
   // Rewrite udp checksum.
-  if (calc_l4_cksm) {
-    __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
-    __s64 cksm = bpf_csum_diff(to, decap_hdrlen, 0, 0, 0);
-    if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, 0, cksm,
-                                   BPF_F_MARK_MANGLED_0))) {
-      bpf_printk("bpf_l4_csum_replace 2: %d", ret);
-      return ret;
-    }
+
+  __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
+  __s64 cksm = bpf_csum_diff(to, decap_hdrlen, 0, 0, 0);
+  if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, 0, cksm,
+                                 BPF_F_MARK_MANGLED_0))) {
+    bpf_printk("bpf_l4_csum_replace 2: %d", ret);
+    return ret;
   }
   return 0;
 }
@@ -1444,24 +1374,6 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 __u8 special_mac_to_tproxy[6] = {2, 0, 2, 3, 0, 0};
 __u8 special_mac_from_tproxy[6] = {2, 0, 2, 3, 0, 1};
 
-static __always_inline bool wan_disable_checksum(const __u32 ifindex,
-                                                 const __u8 ipversion) {
-
-  struct if_params *ifparams =
-      bpf_map_lookup_elem(&ifindex_params_map, &ifindex);
-  if (unlikely(!ifparams)) {
-    return -1;
-  }
-  bool tx_offloaded = (ipversion == 4 && ifparams->tx_l4_cksm_ip4_offload) ||
-                      (ipversion == 6 && ifparams->tx_l4_cksm_ip6_offload);
-  // If tx offloaded, we get bad checksum of packets because we redirect packet
-  // before the NIC processing. So we have no choice but disable l4 checksum.
-
-  bool disable_l4_checksum = tx_offloaded;
-
-  return disable_l4_checksum;
-}
-
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
 SEC("tc/wan_egress")
@@ -1710,8 +1622,8 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
       new_hdr.outbound = ret;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-      bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound, tuples.dst.ip,
-                 bpf_ntohs(new_hdr.port));
+      bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound,
+                 tuples.dst.ip, bpf_ntohs(new_hdr.port));
 #endif
 
       if (new_hdr.outbound == OUTBOUND_DIRECT) {
@@ -1747,12 +1659,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
       };
 
-      bool disable_l4_checksum = wan_disable_checksum(skb->ifindex, ipversion);
       // Encap a header to transmit fullcone tuple.
       if ((ret = encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
-                                     &new_hdr, sizeof(new_hdr),
-                                     // It is a part of ingress link.
-                                     !disable_l4_checksum))) {
+                                     &new_hdr, sizeof(new_hdr)))) {
         return TC_ACT_SHOT;
       }
     }
@@ -1833,8 +1742,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
 
-  bool disable_l4_checksum = wan_disable_checksum(skb->ifindex, ipversion);
-
   // // Print packet in hex for debugging (checksum or something else).
   // if (dport == bpf_htons(8443)) {
   //   bpf_printk("PRINT BEFORE PACKET");
@@ -1875,12 +1782,12 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
       // Rewrite sip and sport.
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_TCP, ihl, saddr,
-                            original_dst->ip, false, !disable_l4_checksum))) {
+                            original_dst->ip, false))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
       if ((ret = rewrite_port(skb, IPPROTO_TCP, ihl, sport, original_dst->port,
-                              false, !disable_l4_checksum))) {
+                              false))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1896,20 +1803,19 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // Decap header to get fullcone tuple.
       if ((ret =
                decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
-                                   sizeof(ori_src), !disable_l4_checksum))) {
+                                   sizeof(ori_src)))) {
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src ip
       if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl, saddr, ori_src.ip,
-                            false, !disable_l4_checksum))) {
+                            false))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src port
-      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, sport, ori_src.port, false,
-                              !disable_l4_checksum))) {
+      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, sport, ori_src.port, false))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1925,8 +1831,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // }
     }
     // Rewrite dip to host ip.
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, saddr, true,
-                          !disable_l4_checksum))) {
+    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, saddr, true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -1944,23 +1849,20 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // bpf_printk("should send to: %pI6:%u", tproxy_ip,
     // bpf_ntohs(*tproxy_port));
 
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip, true,
-                          !disable_l4_checksum))) {
+    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip, true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
 
     // Rewrite dst port.
-    if ((ret = rewrite_port(skb, l4proto, ihl, dport, *tproxy_port, true,
-                            !disable_l4_checksum))) {
+    if ((ret = rewrite_port(skb, l4proto, ihl, dport, *tproxy_port, true))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
 
     // (1) Use daddr as saddr to pass NIC verification. Notice that we do not
     // modify the <sport> so tproxy will send packet to it.
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, saddr, daddr, false,
-                          !disable_l4_checksum))) {
+    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, saddr, daddr, false))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
@@ -1975,13 +1877,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   //     bpf_printk("%02x", t);
   //   }
   // }
-  if (disable_l4_checksum) {
-    __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
-    // Set checksum zero.
-    __sum16 bak_cksm = 0;
-    bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
-    bpf_csum_level(skb, BPF_CSUM_LEVEL_RESET);
-  }
 
   return TC_ACT_OK;
 }
