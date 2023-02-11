@@ -153,14 +153,14 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
+			a.minLatency.latency = latency
 			if !alive || latency > a.minLatency.latency {
 				// Latency increases.
-				a.minLatency.latency = time.Hour
-				a.minLatency.dialer = nil
+				if !alive {
+					a.minLatency.dialer = nil
+				}
 				a.calcMinLatency()
 				// Now `a.minLatency.dialer` will be nil if there is no alive dialer.
-			} else {
-				a.minLatency.latency = latency
 			}
 		}
 		currentAlive := a.minLatency.dialer != nil
@@ -207,14 +207,23 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 }
 
 func (a *AliveDialerSet) calcMinLatency() {
+	var minLatency = time.Hour
+	var minDialer *Dialer
 	for _, d := range a.inorderedAliveDialerSet {
 		latency, ok := a.dialerToLatency[d]
 		if !ok {
 			continue
 		}
-		if latency <= a.minLatency.latency-a.tolerance {
-			a.minLatency.latency = latency
-			a.minLatency.dialer = d
+		if latency < minLatency {
+			minLatency = latency
+			minDialer = d
 		}
+	}
+	if a.minLatency.dialer == nil {
+		a.minLatency.latency = minLatency
+		a.minLatency.dialer = minDialer
+	} else if minDialer != nil && minLatency <= a.minLatency.latency-a.tolerance {
+		a.minLatency.latency = minLatency
+		a.minLatency.dialer = minDialer
 	}
 }
