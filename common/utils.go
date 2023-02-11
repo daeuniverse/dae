@@ -276,12 +276,11 @@ func FuzzyDecode(to interface{}, val string) bool {
 		switch strings.ToLower(val) {
 		case "true", "1", "y", "yes":
 			v.SetBool(true)
-			return true
 		case "false", "0", "n", "no":
 			v.SetBool(false)
-			return true
+		default:
+			return false
 		}
-		return false
 	case reflect.String:
 		v.SetString(val)
 	case reflect.Struct:
