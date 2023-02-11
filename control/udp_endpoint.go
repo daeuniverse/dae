@@ -124,6 +124,9 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		if err != nil {
 			return nil, true, err
 		}
+		if _, ok = udpConn.(net.PacketConn); !ok {
+			return nil, true, fmt.Errorf("protocol does not support udp")
+		}
 		ue = &UdpEndpoint{
 			conn: udpConn.(net.PacketConn),
 			deadlineTimer: time.AfterFunc(createOption.NatTimeout, func() {
