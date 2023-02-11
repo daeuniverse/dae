@@ -82,6 +82,7 @@ static const __u32 disable_l4_tx_checksum_key
 static const __u32 disable_l4_rx_checksum_key
     __attribute__((unused, deprecated)) = 3;
 static const __u32 control_plane_pid_key = 4;
+static const __u32 control_plane_nat_direct_key = 5;
 
 // Outbound Connectivity Map:
 
@@ -339,6 +340,34 @@ struct {
 } cookie_pid_map SEC(".maps");
 
 // Functions:
+
+static void __always_inline get_tuples(struct tuples *tuples,
+                                       const struct iphdr *iph,
+                                       const struct ipv6hdr *ipv6h,
+                                       const struct tcphdr *tcph,
+                                       const struct udphdr *udph,
+                                       __u8 ipversion, __u8 l4proto) {
+  __builtin_memset(tuples, 0, sizeof(*tuples));
+  tuples->l4proto = l4proto;
+  if (ipversion == 4) {
+    tuples->src.ip[2] = bpf_htonl(0x0000ffff);
+    tuples->src.ip[3] = iph->saddr;
+
+    tuples->dst.ip[2] = bpf_htonl(0x0000ffff);
+    tuples->dst.ip[3] = iph->daddr;
+
+  } else {
+    __builtin_memcpy(tuples->dst.ip, &ipv6h->daddr, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(tuples->src.ip, &ipv6h->saddr, IPV6_BYTE_LENGTH);
+  }
+  if (l4proto == IPPROTO_TCP) {
+    tuples->src.port = tcph->source;
+    tuples->dst.port = tcph->dest;
+  } else {
+    tuples->src.port = udph->source;
+    tuples->dst.port = udph->dest;
+  }
+}
 
 static __always_inline bool equal16(const __be32 x[4], const __be32 y[4]) {
 #if __clang_major__ >= 10
@@ -1128,26 +1157,8 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   }
 
   // Prepare five tuples.
-  struct tuples tuples = {0};
-  tuples.l4proto = l4proto;
-  if (ipversion == 4) {
-    tuples.src.ip[2] = bpf_htonl(0x0000ffff);
-    tuples.src.ip[3] = iph.saddr;
-
-    tuples.dst.ip[2] = bpf_htonl(0x0000ffff);
-    tuples.dst.ip[3] = iph.daddr;
-
-  } else {
-    __builtin_memcpy(tuples.dst.ip, &ipv6h.daddr, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(tuples.src.ip, &ipv6h.saddr, IPV6_BYTE_LENGTH);
-  }
-  if (l4proto == IPPROTO_TCP) {
-    tuples.src.port = tcph.source;
-    tuples.dst.port = tcph.dest;
-  } else {
-    tuples.src.port = udph.source;
-    tuples.dst.port = udph.dest;
-  }
+  struct tuples tuples;
+  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
 
   /**
   ip rule add fwmark 0x8000000/0x8000000 table 2023
@@ -1165,7 +1176,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   __u32 tuple_size;
   struct bpf_sock *sk;
   bool is_old_conn = false;
-  __u32 flag[6] = {0};
+  __u32 flag[6];
   void *l4hdr;
 
   if (ipversion == 4) {
@@ -1208,6 +1219,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
 // Routing for new connection.
 new_connection:
+  __builtin_memset(flag, 0, sizeof(flag));
   if (l4proto == IPPROTO_TCP) {
     if (!(tcph.syn && !tcph.ack)) {
       // Not a new TCP connection.
@@ -1247,6 +1259,12 @@ new_connection:
   }
 #endif
   if (outbound == OUTBOUND_DIRECT) {
+    __u32 *nat;
+    if ((nat =
+             bpf_map_lookup_elem(&param_map, &control_plane_nat_direct_key)) &&
+        *nat) {
+      goto control_plane_tproxy;
+    }
     goto direct;
   } else if (unlikely(outbound == OUTBOUND_BLOCK)) {
     goto block;
@@ -1265,6 +1283,7 @@ new_connection:
     goto block;
   }
 
+control_plane_tproxy:
   // Save routing result.
   if ((ret = bpf_map_update_elem(&routing_tuples_map, &tuples, &outbound,
                                  BPF_ANY))) {
@@ -1402,28 +1421,8 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   }
 
   // Backup for further use.
-  __be16 ipv4_tot_len = 0;
-  struct tuples tuples = {0};
-  tuples.l4proto = l4proto;
-  if (ipversion == 4) {
-    tuples.src.ip[2] = bpf_htonl(0x0000ffff);
-    tuples.src.ip[3] = iph.saddr;
-
-    tuples.dst.ip[2] = bpf_htonl(0x0000ffff);
-    tuples.dst.ip[3] = iph.daddr;
-
-    ipv4_tot_len = iph.tot_len;
-  } else {
-    __builtin_memcpy(tuples.dst.ip, &ipv6h.daddr, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(tuples.src.ip, &ipv6h.saddr, IPV6_BYTE_LENGTH);
-  }
-  if (l4proto == IPPROTO_TCP) {
-    tuples.src.port = tcph.source;
-    tuples.dst.port = tcph.dest;
-  } else {
-    tuples.src.port = udph.source;
-    tuples.dst.port = udph.dest;
-  }
+  struct tuples tuples;
+  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
 
   // We should know if this packet is from tproxy.
   // We do not need to check the source ip because we have skipped packets not
@@ -1461,7 +1460,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       struct bpf_sock *sk =
           bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
       if (sk) {
-        // Not a tproxy response.
+        // Not a tproxy WAN response. It is a tproxy LAN response.
         tproxy_response = false;
         bpf_sk_release(sk);
         return TC_ACT_OK;
@@ -1660,8 +1659,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       };
 
       // Encap a header to transmit fullcone tuple.
-      if ((ret = encap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
-                                     &new_hdr, sizeof(new_hdr)))) {
+      if ((ret = encap_after_udp_hdr(skb, ipversion, ihl,
+                                     ipversion == 4 ? iph.tot_len : 0, &new_hdr,
+                                     sizeof(new_hdr)))) {
         return TC_ACT_SHOT;
       }
     }
@@ -1801,9 +1801,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // Get source ip/port from our packet header.
 
       // Decap header to get fullcone tuple.
-      if ((ret =
-               decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len, &ori_src,
-                                   sizeof(ori_src)))) {
+      if ((ret = decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
+                                     &ori_src, sizeof(ori_src)))) {
         return TC_ACT_SHOT;
       }
 
@@ -1815,7 +1814,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       }
 
       // Rewrite udp src port
-      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, sport, ori_src.port, false))) {
+      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, sport, ori_src.port,
+                              false))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1849,7 +1849,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // bpf_printk("should send to: %pI6:%u", tproxy_ip,
     // bpf_ntohs(*tproxy_port));
 
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip, true))) {
+    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, daddr, tproxy_ip,
+                          true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }

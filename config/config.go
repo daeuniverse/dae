@@ -22,6 +22,7 @@ type Global struct {
 	CheckTolerance time.Duration     `mapstructure:"check_tolerance" default:"0"`
 	DnsUpstream    common.UrlOrEmpty `mapstructure:"dns_upstream" require:""`
 	LanInterface   []string          `mapstructure:"lan_interface"`
+	LanNatDirect   bool              `mapstructure:"lan_nat_direct" require:""`
 	WanInterface   []string          `mapstructure:"wan_interface"`
 }
 

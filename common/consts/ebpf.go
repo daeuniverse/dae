@@ -23,7 +23,8 @@ const (
 	BigEndianTproxyPortKey
 	DisableL4TxChecksumKey
 	DisableL4RxChecksumKey
-	ControlPlaneOidKey
+	ControlPlanePidKey
+	ControlPlaneNatDirectKey
 
 	OneKey ParamKey = 1
 )

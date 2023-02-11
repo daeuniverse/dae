@@ -273,13 +273,15 @@ func FuzzyDecode(to interface{}, val string) bool {
 		}
 		v.SetUint(i)
 	case reflect.Bool:
-		if val == "true" || val == "1" {
+		switch strings.ToLower(val) {
+		case "true", "1", "y", "yes":
 			v.SetBool(true)
-		} else if val == "false" || val == "0" {
+			return true
+		case "false", "0", "n", "no":
 			v.SetBool(false)
-		} else {
-			return false
+			return true
 		}
+		return false
 	case reflect.String:
 		v.SetString(val)
 	case reflect.Struct:

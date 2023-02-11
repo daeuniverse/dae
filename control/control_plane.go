@@ -135,14 +135,16 @@ func NewControlPlane(
 	}()
 
 	// Write params.
-	if err = bpf.ParamMap.Update(consts.DisableL4TxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
+	var lanNatDirect uint32
+	if global.LanNatDirect {
+		lanNatDirect = 1
+	} else {
+		lanNatDirect = 0
+	}
+	if err = bpf.ParamMap.Update(consts.ControlPlaneNatDirectKey, lanNatDirect, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
-	if err = bpf.ParamMap.Update(consts.DisableL4RxChecksumKey, consts.DisableL4ChecksumPolicy_SetZero, ebpf.UpdateAny); err != nil {
-		return nil, err
-	}
-	// Write tproxy (control plane) PID.
-	if err = bpf.ParamMap.Update(consts.ControlPlaneOidKey, uint32(os.Getpid()), ebpf.UpdateAny); err != nil {
+	if err = bpf.ParamMap.Update(consts.ControlPlanePidKey, uint32(os.Getpid()), ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
 	// Write ip_proto to hdr_size mapping for IPv6 extension extraction (it is just for eBPF code insns optimization).
