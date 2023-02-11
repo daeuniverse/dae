@@ -29,9 +29,10 @@ global {
     # SNAT for incoming connection to avoid MAC learning.
     # Set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding
     # performance for direct traffic.
+    # This option does not affect direct traffic performance of WAN.
     lan_nat_direct: true
 
-    # The WAN interface to bind. Use it if you want to proxy localhost
+    # The WAN interface to bind. Use it if you want to proxy localhost.
     # Multiple interfaces split by ",".
     wan_interface: wlp5s0
 }
