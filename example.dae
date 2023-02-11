@@ -1,24 +1,28 @@
 global {
-    # tproxy port to listen.
+    # tproxy port to listen at.
     tproxy_port: 12345
 
-    # Log level: error, warn, info, debug, trace
+    # Log level: error, warn, info, debug, trace.
     log_level: info
 
     # Node connectivity check.
-    # Url and DNS should have both IPv4 and IPv6.
+    # URL and DNS should have both IPv4 and IPv6 if you want to check both.
     tcp_check_url: 'http://cp.cloudflare.com'
+
+    # This DNS will be used to check UDP connectivity of nodes.
     udp_check_dns: 'dns.google:53'
+
     check_interval: 30s
-    # Group will switch node only when new_latency <= old_latency - tolerance
+
+    # Group will switch node only when new_latency <= old_latency - tolerance.
     check_tolerance: 50ms
 
     # Value can be scheme://host:port or empty string ''.
     # The scheme can be tcp/udp/tcp+udp. Empty string '' indicates as-is.
     # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
     # IPv4 or IPv6 to use according to group policy (such as min latency policy).
-    # Please make sure DNS traffic will go through and be forwarded by dae.
-    # The upstream DNS answer MUST NOT be polluted.
+    # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
+    # The upstream DNS answer MUST NOT be polluted, so domestic public DNS is not recommended.
     # The request to DNS upstream follows the routing defined below.
     dns_upstream: 'tcp+udp://dns.google:53'
 
@@ -95,6 +99,6 @@ routing {
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
 
-    # Define final as the fallback outbound
+    # Define final as the fallback outbound.
     final: my_group
 }
