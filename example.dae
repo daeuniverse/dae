@@ -6,7 +6,7 @@ global {
     log_level: info
 
     # Node connectivity check.
-    # Url and dns should have both IPv4 and IPv6.
+    # Url and DNS should have both IPv4 and IPv6.
     tcp_check_url: 'http://cp.cloudflare.com'
     udp_check_dns: 'dns.google:53'
     check_interval: 30s
@@ -19,20 +19,25 @@ global {
     # IPv4 or IPv6 to use according to group policy (such as min latency policy).
     # Please make sure DNS traffic will go through and be forwarded by dae.
     # The upstream DNS answer MUST NOT be polluted.
-    # The request to dns upstream follows routing defined below.
+    # The request to DNS upstream follows the routing defined below.
     dns_upstream: 'tcp+udp://dns.google:53'
 
     # The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.
     # Multiple interfaces split by ",".
     # lan_interface: docker0
 
+    # SNAT for incoming connection to avoid MAC learning.
+    # Set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding
+    # performance for direct traffic.
+    lan_nat_direct: true
+
     # The WAN interface to bind. Use it if you want to proxy localhost
     # Multiple interfaces split by ",".
     wan_interface: wlp5s0
 }
 
-# Subscriptions defined here will be resolved as nodes and merged as a part of global node pool.
-# Support to give subscription a tag and filter nodes from given subscription in group section.
+# Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
+# Support to give the subscription a tag, and filter nodes from a given subscription in the group section.
 subscription {
     # Add your subscription links here.
     my_sub: 'https://www.example.com/subscription/link'
@@ -40,7 +45,7 @@ subscription {
     'https://example.com/no_tag_link'
 }
 
-# Nodes defined here will be merged as a part of global node pool.
+# Nodes defined here will be merged as a part of the global node pool.
 node {
     # Add your node links here.
     # Support socks5, http, https, ss, ssr, vmess, vless, trojan, trojan-go
@@ -51,7 +56,7 @@ node {
 # Node group (outbound).
 group {
     my_group {
-        # Filter nodes from global node pool defined by subscription and node section above.
+        # Filter nodes from the global node pool defined by the subscription and node section above.
         # Pass node names as input of keyword/regex filter.
         filter: name(regex:'HK|SG|TW', keyword:'JP', keyword: SH) && !name(keyword:"GCP")
 
@@ -66,7 +71,7 @@ group {
     }
 
     group2 {
-        # Filter nodes from global node pool defined by subscription and node section above.
+        # Filter nodes from the global node pool defined by the subscription and node section above.
         # Pass node names as input of keyword/regex filter.
         filter: subtag(regex: '^my_', another_sub) && !name(keyword: 'ExpireAt:')
 
