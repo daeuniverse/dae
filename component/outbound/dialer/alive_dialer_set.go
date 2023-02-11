@@ -168,17 +168,21 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		if a.minLatency.dialer != bakOldBestDialer {
 			if currentAlive {
 				re := "re-"
+				var oldDialerName string
 				if bakOldBestDialer == nil {
 					// Not alive -> alive
 					defer a.aliveChangeCallback(true)
 					re = ""
+					oldDialerName = "<nil>"
+				} else {
+					oldDialerName = bakOldBestDialer.Name()
 				}
 				a.log.WithFields(logrus.Fields{
 					string(a.selectionPolicy): a.minLatency.latency,
 					"group":                   a.dialerGroupName,
 					"network":                 string(a.l4proto) + string(a.ipversion),
 					"new dialer":              a.minLatency.dialer.Name(),
-					"old dialer":              bakOldBestDialer.Name(),
+					"old dialer":              oldDialerName,
 				}).Infof("Group %vselects dialer", re)
 			} else {
 				// Alive -> not alive
