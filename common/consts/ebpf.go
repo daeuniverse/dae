@@ -5,7 +5,10 @@
 
 package consts
 
-import internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+import (
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+	"strconv"
+)
 
 const (
 	AppName    = "dae"
@@ -78,7 +81,7 @@ func (i OutboundIndex) String() string {
 	case OutboundLogicalAnd:
 		return "<AND>"
 	default:
-		return ""
+		return strconv.Itoa(int(i))
 	}
 }
 

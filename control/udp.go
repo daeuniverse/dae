@@ -137,7 +137,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 	default:
 	}
 	if int(outboundIndex) >= len(c.outbounds) {
-		return fmt.Errorf("outbound %v out of range", outboundIndex)
+		return fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	outbound := c.outbounds[outboundIndex]
 	dnsMessage, natTimeout := ChooseNatTimeout(data)
