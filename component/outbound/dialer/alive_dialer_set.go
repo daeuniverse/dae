@@ -153,7 +153,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
-			if latency > a.minLatency.latency {
+			if !alive || latency > a.minLatency.latency {
 				// Latency increases.
 				a.minLatency.latency = time.Hour
 				a.minLatency.dialer = nil

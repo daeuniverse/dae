@@ -48,16 +48,8 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 	default:
 		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
 	}
+	var err error
 	d := dialer.FullconeDirect // Shadowsocks Proxy supports full-cone.
-	d, err := protocol.NewDialer("shadowsocks", d, protocol.Header{
-		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
-		Cipher:       s.Cipher,
-		Password:     s.Password,
-		IsClient:     true,
-	})
-	if err != nil {
-		return nil, err
-	}
 	switch s.Plugin.Name {
 	case "simple-obfs":
 		uSimpleObfs := url.URL{
@@ -74,7 +66,16 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 			return nil, err
 		}
 	}
-	return dialer.NewDialer(d, option, iOption,  s.Name, s.Protocol, s.ExportToURL()), nil
+	d, err = protocol.NewDialer("shadowsocks", d, protocol.Header{
+		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
+		Cipher:       s.Cipher,
+		Password:     s.Password,
+		IsClient:     true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return dialer.NewDialer(d, option, iOption, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseSSURL(u string) (data *Shadowsocks, err error) {
