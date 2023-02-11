@@ -72,4 +72,8 @@ domain(geosite:geolocation-!cn) &&
             geosite:category-scholar-!cn,
             geosite:category-scholar-cn
         ) -> my_group
+
+# Customized DAT file
+domain(ext:"yourdatfile.dat:yourtag")->direct
+ip(ext:"yourdatfile.dat:yourtag")->direct
 ```
