@@ -2,7 +2,7 @@
 
 <img src="https://github.com/v2rayA/dae/blob/main/logo.png" border="0" width="25%">
 
-***dae***, means goose, is a lightweight and high-performance transparent proxy solution.
+**_dae_**, means goose, is a lightweight and high-performance transparent proxy solution.
 
 In order to improve the traffic split performance as much as possible, dae runs the transparent proxy and traffic split suite in the linux kernel by eBPF. Therefore, we have the opportunity to make the direct traffic bypass the forwarding by proxy application and achieve true direct traffic through. Under such a magic trick, there is almost no performance loss and additional resource consumption for direct traffic.
 
@@ -67,12 +67,25 @@ Check them using command like:
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep 'CONFIG_DEBUG_INFO_BTF='
 ```
 
+### Enable IP Forwarding
+
+By default, any latest Linux distributions will have IP Forwarding `disabled`. In the case where we need to up a Linux router/gateway or a VPN server or simply a plain dial-in server, then we must need to enable forwarding. Do the followings to have `ip-forwarding` feature enabled:
+
+```shell
+sudo tee /etc/sysctl.d/dae.conf<<EOF
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+sudo sysctl --system
+```
+
 ## Usage
 
 ### Build
 
 **Make Dependencies**
-```
+
+```shell
 clang >= 10
 llvm >= 10
 golang >= 1.18
@@ -80,6 +93,7 @@ make
 ```
 
 **Build**
+
 ```shell
 git clone https://github.com/v2rayA/dae.git
 cd dae
