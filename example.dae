@@ -1,5 +1,6 @@
 global {
-    # tproxy port to listen at.
+    # tproxy port to listen at. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.
+    # In normal case, you do not need to use it.
     tproxy_port: 12345
 
     # Log level: error, warn, info, debug, trace.
