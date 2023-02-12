@@ -72,7 +72,7 @@ Check them using command like:
 By default, any latest Linux distributions will have IP Forwarding `disabled`. In the case where we need to up a Linux router/gateway or a VPN server or simply a plain dial-in server, then we must need to enable forwarding. Do the followings to have `ip-forwarding` feature enabled:
 
 ```shell
-sudo cat >>/etc/sysctl.d/dae.conf<<EOF
+sudo tee /etc/sysctl.d/dae.conf<<EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 EOF
