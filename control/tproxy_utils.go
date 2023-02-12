@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
@@ -23,14 +22,10 @@ func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4prot
 	dstIp6 := dst.Addr().As16()
 
 	tuples := &bpfTuples{
-		Src: bpfIpPort{
-			Ip:   common.Ipv6ByteSliceToUint32Array(srcIp6[:]),
-			Port: internal.Htons(src.Port()),
-		},
-		Dst: bpfIpPort{
-			Ip:   common.Ipv6ByteSliceToUint32Array(dstIp6[:]),
-			Port: internal.Htons(dst.Port()),
-		},
+		Sip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: srcIp6},
+		Sport:   internal.Htons(src.Port()),
+		Dip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: dstIp6},
+		Dport:   internal.Htons(dst.Port()),
 		L4proto: l4proto,
 	}
 

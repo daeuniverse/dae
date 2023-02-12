@@ -48,6 +48,11 @@ func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 	return ip
 }
 
+func Ipv6ByteSliceToUint8Array(_ip []byte) (ip [16]uint8) {
+	copy(ip[:], _ip)
+	return ip
+}
+
 func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
 	ip = make([]byte, 16)
 	for j := 0; j < 4; j++ {

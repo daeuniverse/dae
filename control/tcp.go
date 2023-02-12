@@ -30,7 +30,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		var value bpfIpPortOutbound
 		ip6 := src.Addr().As16()
 		if e := c.core.bpf.TcpDstMap.Lookup(bpfIpPort{
-			Ip:   common.Ipv6ByteSliceToUint32Array(ip6[:]),
+			Ip:   struct{ U6Addr8 [16]uint8 }{U6Addr8: ip6},
 			Port: internal.Htons(src.Port()),
 		}, &value); e != nil {
 			return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
