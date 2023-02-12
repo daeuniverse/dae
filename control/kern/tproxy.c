@@ -2062,5 +2062,25 @@ int tproxy_wan_cg_sock_release(struct bpf_sock *sk) {
   bpf_map_delete_elem(&cookie_pid_map, &cookie);
   return 1;
 }
+SEC("cgroup/connect4")
+int tproxy_wan_cg_connect4(struct bpf_sock_addr *ctx) {
+  update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+  return 1;
+}
+SEC("cgroup/connect6")
+int tproxy_wan_cg_connect6(struct bpf_sock_addr *ctx) {
+  update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+  return 1;
+}
+SEC("cgroup/sendmsg4")
+int tproxy_wan_cg_sendmsg4(struct bpf_sock_addr *ctx) {
+  update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+  return 1;
+}
+SEC("cgroup/sendmsg6")
+int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx) {
+  update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+  return 1;
+}
 
 SEC("license") const char __license[] = "Dual BSD/GPL";
