@@ -291,17 +291,11 @@ func NewControlPlane(
 		return nil, fmt.Errorf("RoutingMatcherBuilder.Build: %w", err)
 	}
 
-	/// Listen address.
-	listenIp := "::1"
-	if len(global.WanInterface) > 0 {
-		listenIp = "0.0.0.0"
-	}
-
 	c = &ControlPlane{
 		log:                log,
 		core:               core,
 		deferFuncs:         nil,
-		listenIp:           listenIp,
+		listenIp:           "0.0.0.0",
 		outbounds:          outbounds,
 		outboundName2Id:    outboundName2Id,
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
@@ -486,9 +480,10 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 				}
 				break
 			}
-			dst := RetrieveOriginalDest(oob[:oobn])
+			pktDst := RetrieveOriginalDest(oob[:oobn])
 			var newBuf []byte
-			outboundIndex, err := c.core.RetrieveOutboundIndex(src, dst, unix.IPPROTO_UDP)
+			var realDst netip.AddrPort
+			outboundIndex, err := c.core.RetrieveOutboundIndex(src, pktDst, unix.IPPROTO_UDP)
 			if err != nil {
 				// WAN. Old method.
 				addrHdr, dataOffset, err := ParseAddrHdr(buf[:n])
@@ -499,18 +494,19 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 				newBuf = pool.Get(n - dataOffset)
 				copy(newBuf, buf[dataOffset:n])
 				outboundIndex = consts.OutboundIndex(addrHdr.Outbound)
-				src = netip.AddrPortFrom(dst.Addr(), src.Port())
-				dst = addrHdr.Dest
+				src = netip.AddrPortFrom(addrHdr.Dest.Addr(), src.Port())
+				realDst = addrHdr.Dest
 			} else {
 				newBuf = pool.Get(n)
 				copy(newBuf, buf[:n])
+				realDst = pktDst
 			}
-			go func(data []byte, src, dst netip.AddrPort, outboundIndex consts.OutboundIndex) {
-				if e := c.handlePkt(newBuf, src, dst, outboundIndex); e != nil {
+			go func(data []byte, src, pktDst, realDst netip.AddrPort, outboundIndex consts.OutboundIndex) {
+				if e := c.handlePkt(udpConn, newBuf, src, pktDst, realDst, outboundIndex); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 				pool.Put(newBuf)
-			}(newBuf, src, dst, outboundIndex)
+			}(newBuf, src, pktDst, realDst, outboundIndex)
 		}
 	}()
 	<-ctx.Done()

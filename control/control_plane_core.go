@@ -273,6 +273,32 @@ func (c *ControlPlaneCore) bindLan(ifname string) error {
 		}
 		return nil
 	})
+
+	// Insert filters.
+	filterEgress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Handle:    netlink.MakeHandle(0x2023, 1),
+			Protocol:  unix.ETH_P_ALL,
+			// Priority should be front of WAN's
+			Priority: 1,
+		},
+		Fd:           c.bpf.bpfPrograms.TproxyLanEgress.FD(),
+		Name:         consts.AppName + "_lan_egress",
+		DirectAction: true,
+	}
+	// Remove and add.
+	_ = netlink.FilterDel(filterEgress)
+	if err := netlink.FilterAdd(filterEgress); err != nil {
+		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := netlink.FilterDel(filterEgress); err != nil {
+			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
+		}
+		return nil
+	})
 	return nil
 }
 
@@ -343,9 +369,9 @@ func (c *ControlPlaneCore) bindWan(ifname string) error {
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 1),
+			Handle:    netlink.MakeHandle(0x2023, 2),
 			Protocol:  unix.ETH_P_ALL,
-			Priority:  1,
+			Priority:  2,
 		},
 		Fd:           c.bpf.bpfPrograms.TproxyWanEgress.FD(),
 		Name:         consts.AppName + "_wan_egress",

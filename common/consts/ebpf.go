@@ -120,3 +120,8 @@ const (
 	TproxyMark      uint32 = 0x8000000
 	LoopbackIfIndex        = 1
 )
+
+const (
+	IsWan = 0
+	IsLan = 1
+)

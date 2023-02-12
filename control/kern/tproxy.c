@@ -61,6 +61,9 @@
 #define OUTBOUND_LOGICAL_AND 0xFF
 #define OUTBOUND_LOGICAL_MASK 0xFE
 
+#define IS_WAN 0
+#define IS_LAN 1
+
 #define TPROXY_MARK 0x8000000
 
 #define ESOCKTNOSUPPORT 94 /* Socket type not supported */
@@ -820,7 +823,8 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
 static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
                                                __u8 ipversion, __u8 ihl,
                                                __be16 ipv4hdr_tot_len, void *to,
-                                               __u32 decap_hdrlen) {
+                                               __u32 decap_hdrlen,
+                                               bool (*prevent_pop)(void *to)) {
   if (unlikely(decap_hdrlen % 4 != 0)) {
     bpf_printk("encap_after_udp_hdr: unexpected decap_hdrlen value %u :must "
                "be a multiple of 4",
@@ -861,35 +865,37 @@ static __always_inline int decap_after_udp_hdr(struct __sk_buff *skb,
     return ret;
   }
 
-  // Adjust room to decap the header.
-  if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET,
-                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
-    bpf_printk("UDP ADJUST ROOM(decap): %d", ret);
-    return ret;
-  }
-
-  // Rewrite ip len.
-  if (ipversion == 4) {
-    if ((ret = adjust_ipv4_len(skb, ipv4hdr_tot_len, -decap_hdrlen))) {
-      bpf_printk("adjust_ip_len: %d", ret);
+  if (prevent_pop == NULL || !prevent_pop(to)) {
+    // Adjust room to decap the header.
+    if ((ret = bpf_skb_adjust_room(skb, -decap_hdrlen, BPF_ADJ_ROOM_NET,
+                                   BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
+      bpf_printk("UDP ADJUST ROOM(decap): %d", ret);
       return ret;
     }
-  }
 
-  // Rewrite udp len.
-  if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, -decap_hdrlen))) {
-    bpf_printk("adjust_udp_len: %d", ret);
-    return ret;
-  }
+    // Rewrite ip len.
+    if (ipversion == 4) {
+      if ((ret = adjust_ipv4_len(skb, ipv4hdr_tot_len, -decap_hdrlen))) {
+        bpf_printk("adjust_ip_len: %d", ret);
+        return ret;
+      }
+    }
 
-  // Rewrite udp checksum.
+    // Rewrite udp len.
+    if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, -decap_hdrlen))) {
+      bpf_printk("adjust_udp_len: %d", ret);
+      return ret;
+    }
 
-  __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
-  __s64 cksm = bpf_csum_diff(to, decap_hdrlen, 0, 0, 0);
-  if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, 0, cksm,
-                                 BPF_F_MARK_MANGLED_0))) {
-    bpf_printk("bpf_l4_csum_replace 2: %d", ret);
-    return ret;
+    // Rewrite udp checksum.
+
+    __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
+    __s64 cksm = bpf_csum_diff(to, decap_hdrlen, 0, 0, 0);
+    if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, 0, cksm,
+                                   BPF_F_MARK_MANGLED_0))) {
+      bpf_printk("bpf_l4_csum_replace 2: %d", ret);
+      return ret;
+    }
   }
   return 0;
 }
@@ -1139,6 +1145,69 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #undef _is_wan
 }
 
+static bool __always_inline is_not_to_lan(void *_ori_src) {
+  struct ip_port_outbound *ori_src = _ori_src;
+  return ori_src->outbound == IS_WAN;
+}
+
+// SNAT for UDP packet.
+SEC("tc/egress")
+int tproxy_lan_egress(struct __sk_buff *skb) {
+  if (skb->ingress_ifindex != NOWHERE_IFINDEX) {
+    return TC_ACT_PIPE;
+  }
+  struct ethhdr ethh;
+  struct iphdr iph;
+  struct ipv6hdr ipv6h;
+  struct tcphdr tcph;
+  struct udphdr udph;
+  __u8 ihl;
+  __u8 ipversion;
+  __u8 l4proto;
+  int ret = parse_transport(skb, &ethh, &iph, &ipv6h, &tcph, &udph, &ihl,
+                            &ipversion, &l4proto);
+  if (ret) {
+    bpf_printk("parse_transport: %d", ret);
+    return TC_ACT_OK;
+  }
+  if (l4proto != IPPROTO_UDP) {
+    return TC_ACT_PIPE;
+  }
+
+  __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
+  if (!tproxy_port) {
+    return TC_ACT_PIPE;
+  }
+  struct tuples tuples;
+  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
+  if (*tproxy_port != tuples.src.port) {
+    return TC_ACT_PIPE;
+  }
+  bpf_printk("SAME");
+
+  struct ip_port_outbound ori_src;
+  if ((ret = decap_after_udp_hdr(skb, ipversion, ihl,
+                                 ipversion == 4 ? iph.tot_len : 0, &ori_src,
+                                 sizeof(ori_src), is_not_to_lan))) {
+    return TC_ACT_SHOT;
+  }
+  if (is_not_to_lan(&ori_src)) {
+    return TC_ACT_PIPE;
+  }
+  if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, tuples.src.ip, ori_src.ip,
+                        false))) {
+    return TC_ACT_SHOT;
+  }
+  if ((ret = rewrite_port(skb, l4proto, ihl, tuples.src.port, ori_src.port,
+                          false))) {
+    return TC_ACT_SHOT;
+  }
+  // bpf_printk("from %pI6 to %pI6", tuples.src.ip, ori_src.ip);
+  // bpf_printk("from %u to %u", bpf_ntohs(tuples.src.port),
+  //            bpf_ntohs(ori_src.port));
+  return TC_ACT_OK;
+}
+
 SEC("tc/ingress")
 int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct ethhdr ethh;
@@ -1208,7 +1277,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
       bpf_sk_release(sk);
     }
   } else {
-    // UDP.
+    // UDP. Accept local listening.
 
     sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
     if (sk) {
@@ -1529,8 +1598,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
         // Print only new connection.
+        bpf_printk("tcp(wan): from %pI6:%u", tuples.src.ip,
+                   bpf_ntohs(tuples.src.port));
         bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound, tuples.dst.ip,
-                   bpf_ntohs(key_src.port));
+                   bpf_ntohs(tuples.dst.port));
 #endif
       } else {
         // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
@@ -1621,8 +1692,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
       new_hdr.outbound = ret;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+      bpf_printk("udp(wan): from %pI6:%u", tuples.src.ip,
+                 bpf_ntohs(tuples.src.port));
       bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound,
-                 tuples.dst.ip, bpf_ntohs(new_hdr.port));
+                 tuples.dst.ip, bpf_ntohs(tuples.dst.port));
 #endif
 
       if (new_hdr.outbound == OUTBOUND_DIRECT) {
@@ -1802,7 +1875,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
       // Decap header to get fullcone tuple.
       if ((ret = decap_after_udp_hdr(skb, ipversion, ihl, ipv4_tot_len,
-                                     &ori_src, sizeof(ori_src)))) {
+                                     &ori_src, sizeof(ori_src), NULL))) {
         return TC_ACT_SHOT;
       }
 

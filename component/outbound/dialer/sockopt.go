@@ -78,7 +78,7 @@ func BindControl(c syscall.RawConn, lAddrPort netip.AddrPort) error {
 			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
 		}
 		if err := bindAddr(fd, lAddrPort); err != nil {
-			sockOptErr = fmt.Errorf("error bindAddr: %w", err)
+			sockOptErr = fmt.Errorf("error bindAddr %v: %w", lAddrPort.String(), err)
 		}
 	})
 	if controlErr != nil {
