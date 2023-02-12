@@ -69,8 +69,8 @@ github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 h1:RWengNIwukTxcDr9
 github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826/go.mod h1:TaXosZuwdSHYgviHp1DAtfrULt5eUgsSMsZf+YrPgl8=
 github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B90M=
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
-github.com/mzz2017/softwind v0.0.0-20230210023945-506610874f4c h1:NoVnf5PsBMiuZRq+XewAWq61dgypkGfNpPZzDjw9bgY=
-github.com/mzz2017/softwind v0.0.0-20230210023945-506610874f4c/go.mod h1:K1nXwtBokwEsfOfdT/5zV6R8QabGkyhcR0iuTrRZcYY=
+github.com/mzz2017/softwind v0.0.0-20230212082815-dee826918b06 h1:cdXO7ciiP2ubeayuHQIWEK3eai/bNW4dAbNgyu8C558=
+github.com/mzz2017/softwind v0.0.0-20230212082815-dee826918b06/go.mod h1:K1nXwtBokwEsfOfdT/5zV6R8QabGkyhcR0iuTrRZcYY=
 github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e/go.mod h1:zD1mROLANZcx1PVRCS0qkT7pwLkGfwJo4zjcN/Tysno=
 github.com/nxadm/tail v1.4.4/go.mod h1:kenIhsEOeOJmVchQTgglprH7qJGnHDVpk1VPCcaMI8A=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
