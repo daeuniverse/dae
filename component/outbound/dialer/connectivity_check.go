@@ -25,6 +25,20 @@ import (
 	"time"
 )
 
+type NetworkType struct {
+	L4Proto   consts.L4ProtoStr
+	IpVersion consts.IpVersionStr
+	IsDns     bool
+}
+
+func (t *NetworkType) String() string {
+	if t.IsDns {
+		return string(t.L4Proto) + string(t.IpVersion) + "(DNS)"
+	} else {
+		return string(t.L4Proto) + string(t.IpVersion)
+	}
+}
+
 type collection struct {
 	// AliveDialerSetSet uses reference counting.
 	AliveDialerSetSet AliveDialerSetSet
@@ -40,32 +54,45 @@ func newCollection() *collection {
 	}
 }
 
-func (d *Dialer) mustGetCollection(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) *collection {
-	switch l4proto {
-	case consts.L4ProtoStr_TCP:
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			return d.collections[0]
-		case consts.IpVersionStr_6:
-			return d.collections[1]
+func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
+	if typ.IsDns {
+		switch typ.L4Proto {
+		case consts.L4ProtoStr_TCP:
+			switch typ.IpVersion {
+			case consts.IpVersionStr_4:
+				return d.collections[0]
+			case consts.IpVersionStr_6:
+				return d.collections[1]
+			}
+		case consts.L4ProtoStr_UDP:
+			switch typ.IpVersion {
+			case consts.IpVersionStr_4:
+				return d.collections[2]
+			case consts.IpVersionStr_6:
+				return d.collections[3]
+			}
 		}
-	case consts.L4ProtoStr_UDP:
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			return d.collections[2]
-		case consts.IpVersionStr_6:
-			return d.collections[3]
+	} else {
+		switch typ.L4Proto {
+		case consts.L4ProtoStr_TCP:
+			switch typ.IpVersion {
+			case consts.IpVersionStr_4:
+				return d.collections[4]
+			case consts.IpVersionStr_6:
+				return d.collections[5]
+			}
+		case consts.L4ProtoStr_UDP:
 		}
 	}
 	panic("invalid param")
 }
 
-func (d *Dialer) MustGetLatencies10(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) *LatenciesN {
-	return d.mustGetCollection(l4proto, ipversion).Latencies10
+func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
+	return d.mustGetCollection(typ).Latencies10
 }
 
-func (d *Dialer) MustGetAlive(l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) bool {
-	return d.mustGetCollection(l4proto, ipversion).Alive
+func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
+	return d.mustGetCollection(typ).Alive
 }
 
 type TcpCheckOption struct {
@@ -88,7 +115,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, u.Hostname(), true)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, u.Hostname(), true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -98,13 +125,13 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	}, nil
 }
 
-type UdpCheckOption struct {
+type CheckDnsOption struct {
 	DnsHost string
 	DnsPort uint16
 	*netutils.Ip46
 }
 
-func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheckOption, err error) {
+func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDnsOption, err error) {
 	systemDns, err := netutils.SystemDns()
 	if err != nil {
 		return nil, err
@@ -123,11 +150,11 @@ func ParseUdpCheckOption(ctx context.Context, dnsHostPort string) (opt *UdpCheck
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, host, true)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, host, true, false)
 	if err != nil {
 		return nil, err
 	}
-	return &UdpCheckOption{
+	return &CheckDnsOption{
 		DnsHost: host,
 		DnsPort: uint16(port),
 		Ip46:    ip46,
@@ -155,19 +182,19 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	return c.opt, nil
 }
 
-type UdpCheckOptionRaw struct {
-	opt *UdpCheckOption
+type CheckDnsOptionRaw struct {
+	opt *CheckDnsOption
 	mu  sync.Mutex
 	Raw string
 }
 
-func (c *UdpCheckOptionRaw) Option() (opt *UdpCheckOption, err error) {
+func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
-		udpCheckOption, err := ParseUdpCheckOption(ctx, c.Raw)
+		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
 		}
@@ -177,9 +204,8 @@ func (c *UdpCheckOptionRaw) Option() (opt *UdpCheckOption, err error) {
 }
 
 type CheckOption struct {
-	L4proto   consts.L4ProtoStr
-	IpVersion consts.IpVersionStr
-	CheckFunc func(ctx context.Context) (ok bool, err error)
+	networkType *NetworkType
+	CheckFunc   func(ctx context.Context) (ok bool, err error)
 }
 
 func (d *Dialer) ActivateCheck() {
@@ -196,8 +222,11 @@ func (d *Dialer) aliveBackground() {
 	timeout := 10 * time.Second
 	cycle := d.CheckInterval
 	tcp4CheckOpt := &CheckOption{
-		L4proto:   consts.L4ProtoStr_TCP,
-		IpVersion: consts.IpVersionStr_4,
+		networkType: &NetworkType{
+			L4Proto:   consts.L4ProtoStr_TCP,
+			IpVersion: consts.IpVersionStr_4,
+			IsDns:     false,
+		},
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
 			opt, err := d.TcpCheckOptionRaw.Option()
 			if err != nil {
@@ -207,8 +236,11 @@ func (d *Dialer) aliveBackground() {
 		},
 	}
 	tcp6CheckOpt := &CheckOption{
-		L4proto:   consts.L4ProtoStr_TCP,
-		IpVersion: consts.IpVersionStr_6,
+		networkType: &NetworkType{
+			L4Proto:   consts.L4ProtoStr_TCP,
+			IpVersion: consts.IpVersionStr_6,
+			IsDns:     false,
+		},
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
 			opt, err := d.TcpCheckOptionRaw.Option()
 			if err != nil {
@@ -217,33 +249,75 @@ func (d *Dialer) aliveBackground() {
 			return d.HttpCheck(ctx, opt.Url, opt.Ip6)
 		},
 	}
-	udp4CheckOpt := &CheckOption{
-		L4proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
+	tcp4CheckDnsOpt := &CheckOption{
+		networkType: &NetworkType{
+			L4Proto:   consts.L4ProtoStr_TCP,
+			IpVersion: consts.IpVersionStr_4,
+			IsDns:     true,
+		},
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
-			opt, err := d.UdpCheckOptionRaw.Option()
+			opt, err := d.CheckDnsOptionRaw.Option()
 			if err != nil {
 				return false, err
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort))
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), true)
 		},
 	}
-	udp6CheckOpt := &CheckOption{
-		L4proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
+	tcp6CheckDnsOpt := &CheckOption{
+		networkType: &NetworkType{
+			L4Proto:   consts.L4ProtoStr_TCP,
+			IpVersion: consts.IpVersionStr_6,
+			IsDns:     true,
+		},
 		CheckFunc: func(ctx context.Context) (ok bool, err error) {
-			opt, err := d.UdpCheckOptionRaw.Option()
+			opt, err := d.CheckDnsOptionRaw.Option()
 			if err != nil {
 				return false, err
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort))
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), true)
 		},
+	}
+	udp4CheckDnsOpt := &CheckOption{
+		networkType: &NetworkType{
+			L4Proto:   consts.L4ProtoStr_UDP,
+			IpVersion: consts.IpVersionStr_4,
+			IsDns:     true,
+		},
+		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+			opt, err := d.CheckDnsOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), false)
+		},
+	}
+	udp6CheckDnsOpt := &CheckOption{
+		networkType: &NetworkType{
+			L4Proto:   consts.L4ProtoStr_UDP,
+			IpVersion: consts.IpVersionStr_6,
+			IsDns:     true,
+		},
+		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+			opt, err := d.CheckDnsOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), false)
+		},
+	}
+	var CheckOpts = []*CheckOption{
+		tcp4CheckOpt,
+		tcp6CheckOpt,
+		udp4CheckDnsOpt,
+		udp6CheckDnsOpt,
+		tcp4CheckDnsOpt,
+		tcp6CheckDnsOpt,
 	}
 	// Check once immediately.
-	go d.Check(timeout, tcp4CheckOpt)
-	go d.Check(timeout, udp4CheckOpt)
-	go d.Check(timeout, tcp6CheckOpt)
-	go d.Check(timeout, udp6CheckOpt)
+	for i := range CheckOpts {
+		opt := CheckOpts[i]
+		go d.Check(timeout, opt)
+	}
 
 	ctx, cancel := context.WithCancel(d.ctx)
 	defer cancel()
@@ -266,33 +340,14 @@ func (d *Dialer) aliveBackground() {
 	var wg sync.WaitGroup
 	for range d.checkCh {
 		// No need to test if there is no dialer selection policy using its latency.
-		if len(d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_4).AliveDialerSetSet) > 0 {
-			wg.Add(1)
-			go func() {
-				d.Check(timeout, tcp4CheckOpt)
-				wg.Done()
-			}()
-		}
-		if len(d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_6).AliveDialerSetSet) > 0 {
-			wg.Add(1)
-			go func() {
-				d.Check(timeout, tcp6CheckOpt)
-				wg.Done()
-			}()
-		}
-		if len(d.mustGetCollection(consts.L4ProtoStr_UDP, consts.IpVersionStr_4).AliveDialerSetSet) > 0 {
-			wg.Add(1)
-			go func() {
-				d.Check(timeout, udp4CheckOpt)
-				wg.Done()
-			}()
-		}
-		if len(d.mustGetCollection(consts.L4ProtoStr_UDP, consts.IpVersionStr_6).AliveDialerSetSet) > 0 {
-			wg.Add(1)
-			go func() {
-				d.Check(timeout, udp6CheckOpt)
-				wg.Done()
-			}()
+		for _, opt := range CheckOpts {
+			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) > 0 {
+				wg.Add(1)
+				go func(opt *CheckOption) {
+					d.Check(timeout, opt)
+					wg.Done()
+				}(opt)
+			}
 		}
 		// Wait to block the loop.
 		wg.Wait()
@@ -315,17 +370,23 @@ func (d *Dialer) NotifyCheck() {
 }
 
 // RegisterAliveDialerSet is thread-safe.
-func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet, l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) {
+func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
+	if a == nil {
+		return
+	}
 	d.collectionFineMu.Lock()
-	d.mustGetCollection(l4proto, ipversion).AliveDialerSetSet[a]++
+	d.mustGetCollection(a.CheckTyp).AliveDialerSetSet[a]++
 	d.collectionFineMu.Unlock()
 }
 
 // UnregisterAliveDialerSet is thread-safe.
-func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet, l4proto consts.L4ProtoStr, ipversion consts.IpVersionStr) {
+func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
+	if a == nil {
+		return
+	}
 	d.collectionFineMu.Lock()
 	defer d.collectionFineMu.Unlock()
-	setSet := d.mustGetCollection(consts.L4ProtoStr_TCP, consts.IpVersionStr_4).AliveDialerSetSet
+	setSet := d.mustGetCollection(a.CheckTyp).AliveDialerSetSet
 	setSet[a]--
 	if setSet[a] <= 0 {
 		delete(setSet, a)
@@ -339,16 +400,15 @@ func (d *Dialer) Check(timeout time.Duration,
 	defer cancel()
 	start := time.Now()
 	// Calc latency.
-	collection := d.mustGetCollection(opts.L4proto, opts.IpVersion)
+	collection := d.mustGetCollection(opts.networkType)
 	if ok, err = opts.CheckFunc(ctx); ok && err == nil {
 		// No error.
 		latency := time.Since(start)
-		latencies10 := d.mustGetCollection(opts.L4proto, opts.IpVersion).Latencies10
+		latencies10 := d.mustGetCollection(opts.networkType).Latencies10
 		latencies10.AppendLatency(latency)
 		avg, _ := latencies10.AvgLatency()
 		d.Log.WithFields(logrus.Fields{
-			// Add a space to ensure alphabetical order is first.
-			"network": string(opts.L4proto) + string(opts.IpVersion),
+			"network": opts.networkType.String(),
 			"node":    d.name,
 			"last":    latency.Truncate(time.Millisecond),
 			"avg_10":  avg.Truncate(time.Millisecond),
@@ -361,8 +421,7 @@ func (d *Dialer) Check(timeout time.Duration,
 				err = fmt.Errorf("network is unreachable")
 			}
 			d.Log.WithFields(logrus.Fields{
-				// Add a space to ensure alphabetical order is first.
-				"network": string(opts.L4proto) + string(opts.IpVersion),
+				"network": opts.networkType.String(),
 				"node":    d.name,
 				"err":     err.Error(),
 			}).Debugln("Connectivity Check Failed")
@@ -412,8 +471,8 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr) 
 	return resp.StatusCode >= 200 && resp.StatusCode < 400, nil
 }
 
-func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort) (ok bool, err error) {
-	addrs, err := netutils.ResolveNetip(ctx, d, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA)
+func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort, tcp bool) (ok bool, err error) {
+	addrs, err := netutils.ResolveNetip(ctx, d, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, tcp)
 	if err != nil {
 		return false, err
 	}

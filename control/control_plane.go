@@ -193,12 +193,20 @@ func NewControlPlane(
 	}
 
 	/// DialerGroups (outbounds).
+	checkDnsTcp := false
+	if !global.DnsUpstream.Empty {
+		if scheme, _, _, err := ParseDnsUpstream(global.DnsUpstream.Url); err == nil &&
+			scheme.ContainsTcp() {
+			checkDnsTcp = true
+		}
+	}
 	option := &dialer.GlobalOption{
 		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl},
-		UdpCheckOptionRaw: dialer.UdpCheckOptionRaw{Raw: global.UdpCheckDns},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
+		CheckDnsTcp:       checkDnsTcp,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),

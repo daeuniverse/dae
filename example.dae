@@ -6,10 +6,12 @@ global {
     log_level: info
 
     # Node connectivity check.
-    # URL and DNS should have both IPv4 and IPv6 if you want to check both.
+    # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     tcp_check_url: 'http://cp.cloudflare.com'
 
-    # This DNS will be used to check UDP connectivity of nodes.
+    # This DNS will be used to check UDP connectivity. And if dns_upstream below contains tcp, it also be used to check
+    # TCP DNS connectivity of nodes.
+    # Host of DNS should have both IPv4 and IPv6 if you have double stack in local.
     udp_check_dns: 'dns.google:53'
 
     check_interval: 30s

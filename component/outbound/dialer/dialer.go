@@ -23,7 +23,7 @@ type Dialer struct {
 	link     string
 
 	collectionFineMu sync.Mutex
-	collections      [4]*collection
+	collections      [6]*collection
 
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
@@ -35,9 +35,10 @@ type Dialer struct {
 type GlobalOption struct {
 	Log               *logrus.Logger
 	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
-	UdpCheckOptionRaw UdpCheckOptionRaw // Lazy parse
+	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
+	CheckDnsTcp       bool
 }
 
 type InstanceOption struct {
@@ -48,7 +49,7 @@ type AliveDialerSetSet map[*AliveDialerSet]int
 
 // NewDialer is for register in general.
 func NewDialer(dialer proxy.Dialer, option *GlobalOption, iOption InstanceOption, name string, protocol string, link string) *Dialer {
-	var collections [4]*collection
+	var collections [6]*collection
 	for i := range collections {
 		collections[i] = newCollection()
 	}

@@ -24,8 +24,7 @@ type minLatency struct {
 type AliveDialerSet struct {
 	log             *logrus.Logger
 	dialerGroupName string
-	l4proto         consts.L4ProtoStr
-	ipversion       consts.IpVersionStr
+	CheckTyp        *NetworkType
 	tolerance       time.Duration
 
 	aliveChangeCallback func(alive bool)
@@ -42,8 +41,7 @@ type AliveDialerSet struct {
 func NewAliveDialerSet(
 	log *logrus.Logger,
 	dialerGroupName string,
-	l4proto consts.L4ProtoStr,
-	ipversion consts.IpVersionStr,
+	networkType *NetworkType,
 	tolerance time.Duration,
 	selectionPolicy consts.DialerSelectionPolicy,
 	dialers []*Dialer,
@@ -53,8 +51,7 @@ func NewAliveDialerSet(
 	a := &AliveDialerSet{
 		log:                     log,
 		dialerGroupName:         dialerGroupName,
-		l4proto:                 l4proto,
-		ipversion:               ipversion,
+		CheckTyp:                networkType,
 		tolerance:               tolerance,
 		aliveChangeCallback:     aliveChangeCallback,
 		dialerToIndex:           make(map[*Dialer]int),
@@ -102,10 +99,10 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 
 	switch a.selectionPolicy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
-		latency, hasLatency = dialer.MustGetLatencies10(a.l4proto, a.ipversion).LastLatency()
+		latency, hasLatency = dialer.MustGetLatencies10(a.CheckTyp).LastLatency()
 		minPolicy = true
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		latency, hasLatency = dialer.MustGetLatencies10(a.l4proto, a.ipversion).AvgLatency()
+		latency, hasLatency = dialer.MustGetLatencies10(a.CheckTyp).AvgLatency()
 		minPolicy = true
 	}
 
@@ -180,7 +177,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				a.log.WithFields(logrus.Fields{
 					string(a.selectionPolicy): a.minLatency.latency,
 					"group":                   a.dialerGroupName,
-					"network":                 string(a.l4proto) + string(a.ipversion),
+					"network":                 a.CheckTyp.String(),
 					"new dialer":              a.minLatency.dialer.Name(),
 					"old dialer":              oldDialerName,
 				}).Infof("Group %vselects dialer", re)
@@ -189,7 +186,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				defer a.aliveChangeCallback(false)
 				a.log.WithFields(logrus.Fields{
 					"group":   a.dialerGroupName,
-					"network": string(a.l4proto) + string(a.ipversion),
+					"network": a.CheckTyp.String(),
 				}).Infof("Group has no dialer alive")
 			}
 		}
@@ -199,7 +196,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			a.minLatency.dialer = dialer
 			a.log.WithFields(logrus.Fields{
 				"group":   a.dialerGroupName,
-				"network": string(a.l4proto) + string(a.ipversion),
+				"network": a.CheckTyp.String(),
 				"dialer":  a.minLatency.dialer.Name(),
 			}).Infof("Group selects dialer")
 		}

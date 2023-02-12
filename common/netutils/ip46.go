@@ -18,8 +18,8 @@ type Ip46 struct {
 	Ip6 netip.Addr
 }
 
-func ParseIp46(ctx context.Context, dialer proxy.Dialer, dns netip.AddrPort, host string, must46 bool) (ipv46 *Ip46, err error) {
-	addrs4, err := ResolveNetip(ctx, dialer, dns, host, dnsmessage.TypeA)
+func ParseIp46(ctx context.Context, dialer proxy.Dialer, dns netip.AddrPort, host string, must46 bool, tcp bool) (ipv46 *Ip46, err error) {
+	addrs4, err := ResolveNetip(ctx, dialer, dns, host, dnsmessage.TypeA, tcp)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func ParseIp46(ctx context.Context, dialer proxy.Dialer, dns netip.AddrPort, hos
 			addrs4 = []netip.Addr{{}}
 		}
 	}
-	addrs6, err := ResolveNetip(ctx, dialer, dns, host, dnsmessage.TypeAAAA)
+	addrs6, err := ResolveNetip(ctx, dialer, dns, host, dnsmessage.TypeAAAA, tcp)
 	if err != nil {
 		return nil, err
 	}

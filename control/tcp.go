@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 	"net"
@@ -58,18 +59,21 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
-	l4proto := consts.L4ProtoStr_TCP
-	ipversion := consts.IpVersionFromAddr(dst.Addr())
-	dialer, _, err := outbound.Select(l4proto, ipversion)
+	networkType := &dialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
+		IsDns:     false,
+	}
+	d, _, err := outbound.Select(networkType)
 	if err != nil {
-		return fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
+		return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
 	c.log.WithFields(logrus.Fields{
-		"network":  string(l4proto) + string(ipversion),
+		"network":  networkType.String(),
 		"outbound": outbound.Name,
-		"dialer":   dialer.Name(),
+		"dialer":   d.Name(),
 	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), RefineAddrPortToShow(dst))
-	rConn, err := dialer.Dial("tcp", dst.String())
+	rConn, err := d.Dial("tcp", dst.String())
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}

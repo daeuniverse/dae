@@ -6,7 +6,6 @@
 package outbound
 
 import (
-	"context"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
@@ -20,21 +19,21 @@ const (
 	testUdpCheckDns = "https://connectivitycheck.gstatic.com/generate_204"
 )
 
+var TestNetworkType = &dialer.NetworkType{
+	L4Proto:   consts.L4ProtoStr_TCP,
+	IpVersion: consts.IpVersionStr_4,
+	IsDns:     false,
+}
+
 func TestDialerGroup_Select_Fixed(t *testing.T) {
 	log := logger.NewLogger("trace", false)
-	topt, err := dialer.ParseTcpCheckOption(context.TODO(), testTcpCheckUrl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	uopt, err := dialer.ParseUdpCheckOption(context.TODO(), testUdpCheckDns)
-	if err != nil {
-		t.Fatal(err)
-	}
 	option := &dialer.GlobalOption{
-		Log:            log,
-		TcpCheckOption: topt,
-		UdpCheckOption: uopt,
-		CheckInterval:  15 * time.Second,
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		CheckInterval:     15 * time.Second,
+		CheckTolerance:    0,
+		CheckDnsTcp:       false,
 	}
 	dialers := []*dialer.Dialer{
 		dialer.NewDirectDialer(option, true),
@@ -44,9 +43,9 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: fixedIndex,
-	}, func(alive bool, l4proto uint8, ipversion uint8) {})
+	}, func(alive bool, networkType *dialer.NetworkType) {})
 	for i := 0; i < 10; i++ {
-		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(TestNetworkType)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +57,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	fixedIndex = 0
 	g.selectionPolicy.FixedIndex = fixedIndex
 	for i := 0; i < 10; i++ {
-		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(TestNetworkType)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,19 +69,12 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 
 func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	log := logger.NewLogger("trace", false)
-	topt, err := dialer.ParseTcpCheckOption(context.TODO(), testTcpCheckUrl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	uopt, err := dialer.ParseUdpCheckOption(context.TODO(), testUdpCheckDns)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	option := &dialer.GlobalOption{
-		Log:            log,
-		TcpCheckOption: topt,
-		UdpCheckOption: uopt,
-		CheckInterval:  15 * time.Second,
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		CheckInterval:     15 * time.Second,
 	}
 	dialers := []*dialer.Dialer{
 		dialer.NewDirectDialer(option, false),
@@ -98,7 +90,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
-	}, func(alive bool, l4proto uint8, ipversion uint8) {})
+	}, func(alive bool, networkType *dialer.NetworkType) {})
 
 	// Test 1000 times.
 	for i := 0; i < 1000; i++ {
@@ -120,14 +112,14 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 				latency = time.Duration(fastrand.Int63n(int64(1000 * time.Millisecond)))
 				alive = true
 			}
-			d.MustGetLatencies10(consts.L4ProtoStr_TCP, consts.IpVersionStr_4).AppendLatency(latency)
+			d.MustGetLatencies10(TestNetworkType).AppendLatency(latency)
 			if jMinLatency == -1 || latency < minLatency {
 				jMinLatency = j
 				minLatency = latency
 			}
-			g.AliveTcp4DialerSet.NotifyLatencyChange(d, alive)
+			g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(d, alive)
 		}
-		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(TestNetworkType)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,19 +139,12 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 
 func TestDialerGroup_Select_Random(t *testing.T) {
 	log := logger.NewLogger("trace", false)
-	topt, err := dialer.ParseTcpCheckOption(context.TODO(), testTcpCheckUrl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	uopt, err := dialer.ParseUdpCheckOption(context.TODO(), testUdpCheckDns)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	option := &dialer.GlobalOption{
-		Log:            log,
-		TcpCheckOption: topt,
-		UdpCheckOption: uopt,
-		CheckInterval:  15 * time.Second,
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		CheckInterval:     15 * time.Second,
 	}
 	dialers := []*dialer.Dialer{
 		dialer.NewDirectDialer(option, false),
@@ -170,10 +155,10 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
-	}, func(alive bool, l4proto uint8, ipversion uint8) {})
+	}, func(alive bool, networkType *dialer.NetworkType) {})
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
-		d, _, err := g.Select(consts.L4ProtoStr_TCP, consts.IpVersionStr_4)
+		d, _, err := g.Select(TestNetworkType)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,19 +179,12 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 
 func TestDialerGroup_SetAlive(t *testing.T) {
 	log := logger.NewLogger("trace", false)
-	topt, err := dialer.ParseTcpCheckOption(context.TODO(), testTcpCheckUrl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	uopt, err := dialer.ParseUdpCheckOption(context.TODO(), testUdpCheckDns)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	option := &dialer.GlobalOption{
-		Log:            log,
-		TcpCheckOption: topt,
-		UdpCheckOption: uopt,
-		CheckInterval:  15 * time.Second,
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		CheckInterval:     15 * time.Second,
 	}
 	dialers := []*dialer.Dialer{
 		dialer.NewDirectDialer(option, false),
@@ -217,12 +195,12 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
-	}, func(alive bool, l4proto uint8, ipversion uint8) {})
+	}, func(alive bool, networkType *dialer.NetworkType) {})
 	zeroTarget := 3
-	g.AliveTcp4DialerSet.NotifyLatencyChange(dialers[zeroTarget], false)
+	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[zeroTarget], false)
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
-		d, _, err := g.Select(consts.L4ProtoStr_UDP, consts.IpVersionStr_4)
+		d, _, err := g.Select(TestNetworkType)
 		if err != nil {
 			t.Fatal(err)
 		}

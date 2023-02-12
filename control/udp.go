@@ -198,19 +198,24 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 		c.log.WithFields(logrus.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
+			"src":        src.String(),
 		}).Traceln("Choose DNS path")
 		// Get the min latency path.
+		networkType := dialer.NetworkType{
+			IsDns: isDns,
+		}
 		for _, ver := range ipversions {
 			for _, proto := range l4protos {
-				d, latency, err := outbound.Select(proto, ver)
+				networkType.L4Proto = proto
+				networkType.IpVersion = ver
+				d, latency, err := outbound.Select(&networkType)
 				if err != nil {
 					continue
 				}
 				c.log.WithFields(logrus.Fields{
 					"name":     d.Name(),
 					"latency":  latency,
-					"ver":      ver,
-					"proto":    proto,
+					"network":  networkType.String(),
 					"outbound": outbound.Name,
 				}).Traceln("Choice")
 				if bestDialer == nil || latency < bestLatency {
@@ -236,10 +241,15 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 			"Network":  string(l4proto) + string(ipversion),
 		}).Traceln("Modify DNS target")
 	}
+	networkType := &dialer.NetworkType{
+		L4Proto:   l4proto,
+		IpVersion: ipversion,
+		IsDns:     true,
+	}
 	if dialerForNew == nil {
-		dialerForNew, _, err = outbound.Select(l4proto, ipversion)
+		dialerForNew, _, err = outbound.Select(networkType)
 		if err != nil {
-			return fmt.Errorf("failed to select dialer from group %v: %w", outbound.Name, err)
+			return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 		}
 	}
 
@@ -271,7 +281,7 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 			return fmt.Errorf("failed to GetOrCreate: %w", err)
 		}
 		// If the udp endpoint has been not alive, remove it from pool and get a new one.
-		if !isNew && !ue.Dialer.MustGetAlive(l4proto, ipversion) {
+		if !isNew && !ue.Dialer.MustGetAlive(networkType) {
 			c.log.WithFields(logrus.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
 				"network": string(l4proto) + string(ipversion),
@@ -305,27 +315,33 @@ func (c *ControlPlane) handlePkt(data []byte, src, dst netip.AddrPort, outboundI
 
 		_ = conn.SetDeadline(time.Now().Add(natTimeout))
 		// We should write two byte length in the front of TCP DNS request.
-		bLen := pool.Get(2)
-		defer pool.Put(bLen)
-		binary.BigEndian.PutUint16(bLen, uint16(len(data)))
-		_, err = conn.Write(bLen)
+		bReq := pool.Get(2 + len(data))
+		defer pool.Put(bReq)
+		binary.BigEndian.PutUint16(bReq, uint16(len(data)))
+		copy(bReq[2:], data)
+		_, err = conn.Write(bReq)
 		if err != nil {
-			return fmt.Errorf("failed to write DNS req length: %w", err)
-		}
-		if _, err = conn.Write(data); err != nil {
-			return fmt.Errorf("failed to write DNS req payload: %w", err)
+			return fmt.Errorf("failed to write DNS req: %w", err)
 		}
 
 		// Read two byte length.
-		if _, err = io.ReadFull(conn, bLen); err != nil {
+		if _, err = io.ReadFull(conn, bReq[:2]); err != nil {
 			return fmt.Errorf("failed to read DNS resp payload length: %w", err)
 		}
-		buf := pool.Get(int(binary.BigEndian.Uint16(bLen)))
-		defer pool.Put(buf)
-		if _, err = io.ReadFull(conn, buf); err != nil {
+		respLen := int(binary.BigEndian.Uint16(bReq))
+		// Try to reuse the buf.
+		var buf []byte
+		if len(bReq) < respLen {
+			buf = pool.Get(respLen)
+			defer pool.Put(buf)
+		} else {
+			buf = bReq
+		}
+		var n int
+		if n, err = conn.Read(buf[:respLen]); err != nil {
 			return fmt.Errorf("failed to read DNS resp payload: %w", err)
 		}
-		if err = udpHandler(buf, destToSend); err != nil {
+		if err = udpHandler(buf[:n], destToSend); err != nil {
 			return fmt.Errorf("failed to write DNS resp to client: %w", err)
 		}
 	}

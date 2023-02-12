@@ -8,6 +8,7 @@ package control
 import (
 	"github.com/cilium/ebpf"
 	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"golang.org/x/sys/unix"
 	"strconv"
 )
@@ -22,11 +23,11 @@ func FormatL4Proto(l4proto uint8) string {
 	return strconv.Itoa(int(l4proto))
 }
 
-func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, l4proto uint8, ipversion uint8) {
-	return func(alive bool, l4proto uint8, ipversion uint8) {
+func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, networkType *dialer.NetworkType) {
+	return func(alive bool, networkType *dialer.NetworkType) {
 		c.log.WithFields(logrus.Fields{
 			"alive":       alive,
-			"network":     FormatL4Proto(l4proto) + strconv.Itoa(int(ipversion)),
+			"network":     networkType.String(),
 			"outbound_id": outbound,
 		}).Warnf("Outbound alive state changed, notify the kernel program.")
 
@@ -36,8 +37,8 @@ func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(aliv
 		}
 		_ = c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
 			Outbound:  outbound,
-			L4proto:   l4proto,
-			Ipversion: ipversion,
+			L4proto:   networkType.L4Proto.ToL4Proto(),
+			Ipversion: networkType.IpVersion.ToIpVersion(),
 		}, value, ebpf.UpdateAny)
 	}
 }

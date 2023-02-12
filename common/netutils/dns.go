@@ -7,11 +7,13 @@ package netutils
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/proxy"
+	"io"
 	"math"
 	"net/netip"
 	"strings"
@@ -68,7 +70,7 @@ func SystemDns() (dns netip.AddrPort, err error) {
 	return systemDns, nil
 }
 
-func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type) (addrs []netip.Addr, err error) {
+func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (addrs []netip.Addr, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if addr, err := netip.ParseAddr(host); err == nil {
@@ -111,10 +113,23 @@ func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host 
 	if err != nil {
 		return nil, err
 	}
+	if tcp {
+		buf := pool.Get(2 + len(b))
+		defer pool.Put(buf)
+		binary.BigEndian.PutUint16(buf, uint16(len(b)))
+		copy(buf[2:], b)
+		b = buf
+	}
 
 	// Dial and write.
+	var network string
+	if tcp {
+		network = "tcp"
+	} else {
+		network = "udp"
+	}
 	cd := ContextDialer{d}
-	c, err := cd.DialContext(ctx, "udp", dns.String())
+	c, err := cd.DialContext(ctx, network, dns.String())
 	if err != nil {
 		return nil, err
 	}
@@ -124,24 +139,40 @@ func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host 
 		return nil, err
 	}
 	ch := make(chan error, 2)
-	go func() {
-		// Resend every 3 seconds.
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				time.Sleep(3 * time.Second)
+	if !tcp {
+		go func() {
+			// Resend every 3 seconds for UDP.
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					time.Sleep(3 * time.Second)
+				}
+				_, err := c.Write(b)
+				if err != nil {
+					ch <- err
+					return
+				}
 			}
-			_, err := c.Write(b)
+		}()
+	}
+	go func() {
+		buf := pool.Get(512)
+		defer pool.Put(buf)
+		if tcp {
+			_, err := io.ReadFull(c, buf[:2])
 			if err != nil {
 				ch <- err
 				return
 			}
+			n := binary.BigEndian.Uint16(buf)
+			if n > 512 {
+				ch <- fmt.Errorf("too big dns resp")
+				return
+			}
+			buf = buf[:n]
 		}
-	}()
-	go func() {
-		buf := pool.Get(512)
 		n, err := c.Read(buf)
 		if err != nil {
 			ch <- err

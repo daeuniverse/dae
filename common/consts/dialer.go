@@ -5,7 +5,10 @@
 
 package consts
 
-import "net/netip"
+import (
+	"golang.org/x/sys/unix"
+	"net/netip"
+)
 
 type DialerSelectionPolicy string
 
@@ -27,12 +30,32 @@ const (
 	L4ProtoStr_UDP L4ProtoStr = "udp"
 )
 
+func (l L4ProtoStr) ToL4Proto() uint8 {
+	switch l {
+	case L4ProtoStr_TCP:
+		return unix.IPPROTO_TCP
+	case L4ProtoStr_UDP:
+		return unix.IPPROTO_IDP
+	}
+	panic("unsupported l4proto")
+}
+
 type IpVersionStr string
 
 const (
 	IpVersionStr_4 IpVersionStr = "4"
 	IpVersionStr_6 IpVersionStr = "6"
 )
+
+func (v IpVersionStr) ToIpVersion() uint8 {
+	switch v {
+	case IpVersionStr_4:
+		return 4
+	case IpVersionStr_6:
+		return 6
+	}
+	panic("unsupported ipversion")
+}
 
 func IpVersionFromAddr(addr netip.Addr) IpVersionStr {
 	var ipversion IpVersionStr

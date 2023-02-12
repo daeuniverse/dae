@@ -26,6 +26,16 @@ const (
 	DnsUpstreamScheme_TCP_UDP DnsUpstreamScheme = "tcp+udp"
 )
 
+func (s DnsUpstreamScheme) ContainsTcp() bool {
+	switch s {
+	case DnsUpstreamScheme_TCP,
+		DnsUpstreamScheme_TCP_UDP:
+		return true
+	default:
+		return false
+	}
+}
+
 type DnsUpstream struct {
 	Scheme   DnsUpstreamScheme
 	Hostname string
@@ -33,16 +43,30 @@ type DnsUpstream struct {
 	*netutils.Ip46
 }
 
-func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstream, err error) {
-	var _port string
-	switch DnsUpstreamScheme(dnsUpstream.Scheme) {
+func ParseDnsUpstream(dnsUpstream *url.URL) (scheme DnsUpstreamScheme, hostname string, port uint16, err error) {
+	var __port string
+	switch scheme = DnsUpstreamScheme(dnsUpstream.Scheme); scheme {
 	case DnsUpstreamScheme_TCP, DnsUpstreamScheme_UDP, DnsUpstreamScheme_TCP_UDP:
-		_port = dnsUpstream.Port()
-		if _port == "" {
-			_port = "53"
+		__port = dnsUpstream.Port()
+		if __port == "" {
+			__port = "53"
 		}
 	default:
-		return nil, fmt.Errorf("dns_upstream now only supports auto://, udp://, tcp:// and empty string (as-is)")
+		return "", "", 0, fmt.Errorf("unexpected dns_upstream format")
+	}
+	_port, err := strconv.ParseUint(dnsUpstream.Port(), 10, 16)
+	port = uint16(_port)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("parse dns_upstream port: %v", err)
+	}
+	hostname = dnsUpstream.Hostname()
+	return scheme, hostname, port, nil
+}
+
+func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstream, err error) {
+	scheme, hostname, port, err := ParseDnsUpstream(dnsUpstream)
+	if err != nil {
+		return nil, err
 	}
 
 	systemDns, err := netutils.SystemDns()
@@ -55,22 +79,18 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 		}
 	}()
 
-	port, err := strconv.ParseUint(dnsUpstream.Port(), 10, 16)
-	if err != nil {
-		return nil, fmt.Errorf("parse dns_upstream port: %v", err)
-	}
-	hostname := dnsUpstream.Hostname()
-	ip46, err := netutils.ParseIp46(ctx, dialer.SymmetricDirect, systemDns, hostname, false)
+	ip46, err := netutils.ParseIp46(ctx, dialer.SymmetricDirect, systemDns, hostname, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve dns_upstream: %w", err)
 	}
 	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 		return nil, fmt.Errorf("dns_upstream has no record")
 	}
+
 	return &DnsUpstream{
-		Scheme:   DnsUpstreamScheme(dnsUpstream.Scheme),
+		Scheme:   scheme,
 		Hostname: hostname,
-		Port:     uint16(port),
+		Port:     port,
 		Ip46:     ip46,
 	}, nil
 }
