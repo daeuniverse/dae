@@ -7,8 +7,8 @@ package dialer
 
 import (
 	"fmt"
+	"github.com/v2rayA/dae/common"
 	"net/url"
-	"strings"
 )
 
 type FromLinkCreator func(gOption *GlobalOption, iOption InstanceOption, link string) (dialer *Dialer, err error)
@@ -21,20 +21,7 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (dialer *Dialer, err error) {
 	/// Get overwritten name.
-	var overwrittenName string
-	iColon := strings.Index(link, ":")
-	if iColon == -1 {
-		goto parseUrl
-	}
-	// If first colon is like "://" in "scheme://linkbody", no tag is present.
-	if strings.HasPrefix(link[iColon:], "://") {
-		goto parseUrl
-	}
-	// Else tag is the part before colon.
-	overwrittenName = link[:iColon]
-	link = link[iColon+1:]
-
-parseUrl:
+	overwrittenName, link := common.GetTagFromLinkLikePlaintext(link)
 	u, err := url.Parse(link)
 	if err != nil {
 		return nil, err

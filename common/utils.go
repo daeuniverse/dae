@@ -340,3 +340,16 @@ func MapKeys(m interface{}) (keys []string, err error) {
 	}
 	return keys, nil
 }
+
+func GetTagFromLinkLikePlaintext(link string) (tag string, afterTag string) {
+	iColon := strings.Index(link, ":")
+	if iColon == -1 {
+		return "", link
+	}
+	// If first colon is like "://" in "scheme://linkbody", no tag is present.
+	if strings.HasPrefix(link[iColon:], "://") {
+		return "", link
+	}
+	// Else tag is the part before colon.
+	return link[:iColon], link[iColon+1:]
+}

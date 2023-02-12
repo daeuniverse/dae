@@ -133,20 +133,9 @@ func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
 
 func ResolveSubscription(log *logrus.Logger, configDir string, subscription string) (tag string, nodes []string, err error) {
 	/// Get tag.
-	iColon := strings.Index(subscription, ":")
-	if iColon == -1 {
-		goto parseUrl
-	}
-	// If first colon is like "://" in "scheme://linkbody", no tag is present.
-	if strings.HasPrefix(subscription[iColon:], "://") {
-		goto parseUrl
-	}
-	// Else tag is the part before colon.
-	tag = subscription[:iColon]
-	subscription = subscription[iColon+1:]
+	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
 	/// Parse url.
-parseUrl:
 	u, err := url.Parse(subscription)
 	if err != nil {
 		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
