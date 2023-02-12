@@ -353,3 +353,11 @@ func GetTagFromLinkLikePlaintext(link string) (tag string, afterTag string) {
 	// Else tag is the part before colon.
 	return link[:iColon], link[iColon+1:]
 }
+
+func BoolToString(b bool) string {
+	if b {
+		return "1"
+	} else {
+		return "0"
+	}
+}

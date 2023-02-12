@@ -18,10 +18,7 @@ type Global struct {
 	LogLevel   string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
-	// We use TcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for non-direct and non-DNS packets.
-	TcpCheckUrl string `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com"`
-	// We use UdpCheckDns to check (tcp/udp)*(ipv4/ipv6) connectivity for DNS packets,
-	// and udp*(ipv4/ipv6) connectivity for all other types of packets.
+	TcpCheckUrl    string            `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com"`
 	UdpCheckDns    string            `mapstructure:"udp_check_dns" default:"dns.google:53"`
 	CheckInterval  time.Duration     `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance time.Duration     `mapstructure:"check_tolerance" default:"0"`
@@ -29,6 +26,7 @@ type Global struct {
 	LanInterface   []string          `mapstructure:"lan_interface"`
 	LanNatDirect   bool              `mapstructure:"lan_nat_direct" required:""`
 	WanInterface   []string          `mapstructure:"wan_interface"`
+	AllowInsecure  bool              `mapstructure:"allow_insecure" default:"false"`
 }
 
 type Group struct {

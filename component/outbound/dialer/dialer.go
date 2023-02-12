@@ -39,10 +39,11 @@ type GlobalOption struct {
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
 	CheckDnsTcp       bool
+	AllowInsecure     bool
 }
 
 type InstanceOption struct {
-	CheckEnabled bool
+	CheckEnabled  bool
 }
 
 type AliveDialerSetSet map[*AliveDialerSet]int

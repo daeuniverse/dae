@@ -35,7 +35,7 @@ type Trojan struct {
 }
 
 func NewTrojan(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
-	s, err := ParseTrojanURL(link)
+	s, err := ParseTrojanURL(link, option)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,8 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 		Scheme: "tls",
 		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		RawQuery: url.Values{
-			"sni": []string{s.Sni},
+			"sni":           []string{s.Sni},
+			"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
 		}.Encode(),
 	}
 	var err error
@@ -65,8 +66,8 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 			Scheme: "ws",
 			Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 			RawQuery: url.Values{
-				"host": []string{s.Host},
-				"path": []string{s.Path},
+				"host":          []string{s.Host},
+				"path":          []string{s.Path},
 			}.Encode(),
 		}
 		if d, err = ws.NewWs(u.String(), d); err != nil {
@@ -78,9 +79,10 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:  &protocol.DialerConverter{Dialer: d},
-			ServiceName: serviceName,
-			ServerName:  s.Sni,
+			NextDialer:    &protocol.DialerConverter{Dialer: d},
+			ServiceName:   serviceName,
+			ServerName:    s.Sni,
+			AllowInsecure: s.AllowInsecure,
 		}
 	}
 	if strings.HasPrefix(s.Encryption, "ss;") {
@@ -101,17 +103,20 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption,  s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 
-func ParseTrojanURL(u string) (data *Trojan, err error) {
+func ParseTrojanURL(u string, option *dialer.GlobalOption) (data *Trojan, err error) {
 	//trojan://password@server:port#escape(remarks)
 	t, err := url.Parse(u)
 	if err != nil {
 		err = fmt.Errorf("invalid trojan format")
 		return
 	}
-	allowInsecure := t.Query().Get("allowInsecure")
+	allowInsecure, _ := strconv.ParseBool(t.Query().Get("allowInsecure"))
+	if !allowInsecure && option.AllowInsecure {
+		allowInsecure = true
+	}
 	sni := t.Query().Get("peer")
 	if sni == "" {
 		sni = t.Query().Get("sni")
@@ -129,7 +134,7 @@ func ParseTrojanURL(u string) (data *Trojan, err error) {
 		Port:          port,
 		Password:      t.User.Username(),
 		Sni:           sni,
-		AllowInsecure: allowInsecure == "1" || allowInsecure == "true",
+		AllowInsecure: allowInsecure,
 		Protocol:      "trojan",
 	}
 	if t.Query().Get("type") != "" {
@@ -145,7 +150,6 @@ func ParseTrojanURL(u string) (data *Trojan, err error) {
 		if data.Type == "grpc" && data.ServiceName == "" {
 			data.ServiceName = data.Path
 		}
-		data.AllowInsecure = false
 	}
 	return data, nil
 }

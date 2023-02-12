@@ -48,7 +48,7 @@ func NewV2Ray(option *dialer.GlobalOption, iOption dialer.InstanceOption, link s
 	)
 	switch {
 	case strings.HasPrefix(link, "vmess://"):
-		s, err = ParseVmessURL(link)
+		s, err = ParseVmessURL(link, option)
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +56,7 @@ func NewV2Ray(option *dialer.GlobalOption, iOption dialer.InstanceOption, link s
 			return nil, fmt.Errorf("%w: aid: %v, we only support AEAD encryption", dialer.UnexpectedFieldErr, s.Aid)
 		}
 	case strings.HasPrefix(link, "vless://"):
-		s, err = ParseVlessURL(link)
+		s, err = ParseVlessURL(link, option)
 		if err != nil {
 			return nil, err
 		}
@@ -92,8 +92,9 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			Host:   net.JoinHostPort(s.Add, s.Port),
 			Path:   s.Path,
 			RawQuery: url.Values{
-				"host": []string{s.Host},
-				"sni":  []string{sni},
+				"host":          []string{s.Host},
+				"sni":           []string{sni},
+				"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
 			}.Encode(),
 		}
 		d, err = ws.NewWs(u.String(), d)
@@ -110,7 +111,8 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 				Scheme: "tls",
 				Host:   net.JoinHostPort(s.Add, s.Port),
 				RawQuery: url.Values{
-					"sni": []string{sni},
+					"sni":           []string{sni},
+					"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
 				}.Encode(),
 			}
 			d, err = tls.NewTls(u.String(), d)
@@ -131,9 +133,10 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:  &protocol.DialerConverter{Dialer: d},
-			ServiceName: serviceName,
-			ServerName:  sni,
+			NextDialer:    &protocol.DialerConverter{Dialer: d},
+			ServiceName:   serviceName,
+			ServerName:    sni,
+			AllowInsecure: s.AllowInsecure,
 		}
 	default:
 		return nil, fmt.Errorf("%w: network: %v", dialer.UnexpectedFieldErr, s.Net)
@@ -147,10 +150,10 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 	}); err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption,  s.Ps, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, s.Ps, s.Protocol, s.ExportToURL()), nil
 }
 
-func ParseVlessURL(vless string) (data *V2Ray, err error) {
+func ParseVlessURL(vless string, option *dialer.GlobalOption) (data *V2Ray, err error) {
 	u, err := url.Parse(vless)
 	if err != nil {
 		return nil, err
@@ -188,10 +191,13 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if data.Type == "mkcp" || data.Type == "kcp" {
 		data.Path = u.Query().Get("seed")
 	}
+	if option.AllowInsecure {
+		data.AllowInsecure = true
+	}
 	return data, nil
 }
 
-func ParseVmessURL(vmess string) (data *V2Ray, err error) {
+func ParseVmessURL(vmess string, option *dialer.GlobalOption) (data *V2Ray, err error) {
 	var info V2Ray
 	// perform base64 decoding and unmarshal to VmessInfo
 	raw, err := common.Base64StdDecode(vmess[8:])
@@ -265,6 +271,9 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 		info.Aid = "0"
 	}
 	info.Protocol = "vmess"
+	if option.AllowInsecure {
+		info.AllowInsecure = true
+	}
 	return &info, nil
 }
 

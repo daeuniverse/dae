@@ -42,6 +42,9 @@ global {
     # The WAN interface to bind. Use it if you want to proxy localhost.
     # Multiple interfaces split by ",".
     wan_interface: wlp5s0
+
+    # Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.
+    allow_insecure: false
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.

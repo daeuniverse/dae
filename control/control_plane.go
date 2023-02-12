@@ -200,6 +200,9 @@ func NewControlPlane(
 			checkDnsTcp = true
 		}
 	}
+	if global.AllowInsecure {
+		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
+	}
 	option := &dialer.GlobalOption{
 		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl},
@@ -207,6 +210,7 @@ func NewControlPlane(
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       checkDnsTcp,
+		AllowInsecure:     global.AllowInsecure,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),

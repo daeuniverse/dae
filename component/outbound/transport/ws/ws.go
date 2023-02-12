@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // Ws is a base Ws struct
@@ -40,18 +41,17 @@ func NewWs(s string, d proxy.Dialer) (*Ws, error) {
 	wsUrl := url.URL{
 		Scheme: u.Scheme,
 		Host:   u.Host,
-		Path:   u.Path,
 	}
-	t.wsAddr = wsUrl.String()
+	t.wsAddr = wsUrl.String() + u.Path
 	t.wsDialer = &websocket.Dialer{
-		NetDial:      d.Dial,
+		NetDial: d.Dial,
 		//Subprotocols: []string{"binary"},
 	}
 	if u.Scheme == "wss" {
-		if u.Query().Get("sni") != "" {
-			t.wsDialer.TLSClientConfig = &tls.Config{
-				ServerName: u.Query().Get("sni"),
-			}
+		skipVerify, _ := strconv.ParseBool(u.Query().Get("allowInsecure"))
+		t.wsDialer.TLSClientConfig = &tls.Config{
+			ServerName:         u.Query().Get("sni"),
+			InsecureSkipVerify: skipVerify,
 		}
 	}
 	return t, nil
