@@ -148,15 +148,18 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		realSrc = netip.AddrPortFrom(pktDst.Addr(), src.Port())
 	}
 
+	mustDirect := false
 	switch outboundIndex {
 	case consts.OutboundDirect:
+	case consts.OutboundMustDirect:
+		mustDirect = true
+		fallthrough
 	case consts.OutboundControlPlaneDirect:
-		outboundIndex = consts.OutboundDirect
-
 		c.log.Tracef("outbound: %v => %v",
-			consts.OutboundControlPlaneDirect.String(),
 			outboundIndex.String(),
+			consts.OutboundDirect.String(),
 		)
+		outboundIndex = consts.OutboundDirect
 	default:
 	}
 	if int(outboundIndex) >= len(c.outbounds) {
@@ -206,11 +209,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	if err != nil {
 		return err
 	}
-	if isDns && dnsUpstream != nil {
+	if isDns && dnsUpstream != nil && !mustDirect {
 		// Modify dns target to upstream.
 		// NOTICE: Routing was calculated in advance by the eBPF program.
 
-		/// Choose the best l4proto and ipversion.
+		/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
 		// Get available ipversions and l4protos for DNS upstream.
 		ipversions, l4protos := dnsUpstream.SupportedNetworks()
 		var (

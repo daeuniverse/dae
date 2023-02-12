@@ -15,6 +15,7 @@ import (
 	"strings"
 )
 
+var FakeOutbound_MUST_DIRECT = consts.OutboundMustDirect.String()
 var FakeOutbound_AND = consts.OutboundLogicalAnd.String()
 var FakeOutbound_OR = consts.OutboundLogicalOr.String()
 

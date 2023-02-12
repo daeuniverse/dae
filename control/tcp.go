@@ -46,12 +46,14 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 
 	switch outboundIndex {
 	case consts.OutboundDirect:
+	case consts.OutboundMustDirect:
+		fallthrough
 	case consts.OutboundControlPlaneDirect:
-		outboundIndex = consts.OutboundDirect
 		c.log.Tracef("outbound: %v => %v",
-			consts.OutboundControlPlaneDirect.String(),
-			consts.OutboundIndex(outboundIndex).String(),
+			outboundIndex.String(),
+			consts.OutboundDirect.String(),
 		)
+		outboundIndex = consts.OutboundDirect
 	default:
 	}
 	outbound := c.outbounds[outboundIndex]

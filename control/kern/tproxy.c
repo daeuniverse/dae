@@ -56,6 +56,7 @@
 
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
+#define OUTBOUND_MUST_DIRECT 0xFC
 #define OUTBOUND_CONTROL_PLANE_DIRECT 0xFD
 #define OUTBOUND_LOGICAL_OR 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
@@ -1331,7 +1332,7 @@ new_connection:
                tuples.dst.ip, bpf_ntohs(tuples.dst.port));
   }
 #endif
-  if (outbound == OUTBOUND_DIRECT) {
+  if (outbound == OUTBOUND_DIRECT || outbound == OUTBOUND_MUST_DIRECT) {
     __u32 *nat;
     if ((nat =
              bpf_map_lookup_elem(&param_map, &control_plane_nat_direct_key)) &&

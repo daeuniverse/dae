@@ -42,6 +42,8 @@ func NewRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *bpfObjects)
 func (b *RoutingMatcherBuilder) OutboundToId(outbound string) uint8 {
 	var outboundId uint8
 	switch outbound {
+	case routing.FakeOutbound_MUST_DIRECT:
+		outboundId = uint8(consts.OutboundMustDirect)
 	case routing.FakeOutbound_AND:
 		outboundId = uint8(consts.OutboundLogicalAnd)
 	case routing.FakeOutbound_OR:
