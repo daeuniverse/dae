@@ -32,7 +32,7 @@ type Group struct {
 }
 
 type GroupParam struct {
-	Filter []*config_parser.Function `mapstructure:"filter" required:""`
+	Filter []*config_parser.Function `mapstructure:"filter"`
 	Policy interface{}               `mapstructure:"policy" required:""`
 }
 

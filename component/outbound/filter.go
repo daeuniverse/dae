@@ -51,6 +51,11 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 }
 
 func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, err error) {
+	if len(filters) == 0 {
+		// No filter.
+		return true, nil
+	}
+
 	// Example
 	// filter: name(regex:'^.*hk.*$', keyword:'sg') && name(keyword:'disney')
 	// filter: !name(regex: 'HK|TW|SG') && name(keyword: disney)
