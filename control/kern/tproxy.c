@@ -1195,7 +1195,6 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
   if (*tproxy_port != tuples.src.port) {
     return TC_ACT_PIPE;
   }
-  bpf_printk("SAME");
 
   struct ip_port_outbound ori_src;
   if ((ret = decap_after_udp_hdr(skb, ipversion, ihl,
@@ -1969,8 +1968,12 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     bpf_printk("zero cookie");
     return -EINVAL;
   }
-  int ret;
+  if (bpf_map_lookup_elem(&cookie_pid_map, &cookie)) {
+    // Cookie to pid mapping already exists.
+    return 0;
+  }
 
+  int ret;
   // Build value.
   struct pid_pname val;
   __builtin_memset(&val, 0, sizeof(struct pid_pname));

@@ -10,9 +10,9 @@ global {
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     tcp_check_url: 'http://cp.cloudflare.com'
 
-    # This DNS will be used to check UDP connectivity. And if dns_upstream below contains tcp, it also be used to check
+    # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
     # TCP DNS connectivity of nodes.
-    # Host of DNS should have both IPv4 and IPv6 if you have double stack in local.
+    # This DNS should have both IPv4 and IPv6 if you have double stack in local.
     udp_check_dns: 'dns.google:53'
 
     check_interval: 30s
@@ -93,7 +93,8 @@ group {
 
 # See routing.md for full examples.
 routing {
-    ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it first unless you know what you're doing.
+    pname(dnsmasq, systemd-resolved) -> must_direct # Traffic of DNS in local must be direct to avoid loop when binding to WAN.
+    ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in front unless you know what you're doing.
     # Write your rules below.
 
     # dae arms DNS rush-answer filter so we can use dns.google regardless of DNS pollution.

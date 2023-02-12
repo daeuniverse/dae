@@ -79,7 +79,7 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 		}
 	}()
 
-	ip46, err := netutils.ParseIp46(ctx, dialer.SymmetricDirect, systemDns, hostname, false, false)
+	ip46, err := netutils.ParseIp46(ctx, dialer.SymmetricDirect, systemDns, hostname, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve dns_upstream: %w", err)
 	}

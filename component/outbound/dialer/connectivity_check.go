@@ -115,7 +115,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, u.Hostname(), true, false)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, u.Hostname(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, host, true, false)
+	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, host, false)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 
 type CheckOption struct {
 	networkType *NetworkType
-	CheckFunc   func(ctx context.Context) (ok bool, err error)
+	CheckFunc   func(ctx context.Context, typ *NetworkType) (ok bool, err error)
 }
 
 func (d *Dialer) ActivateCheck() {
@@ -227,10 +227,17 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     false,
 		},
-		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
 			opt, err := d.TcpCheckOptionRaw.Option()
 			if err != nil {
 				return false, err
+			}
+			if !opt.Ip4.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.TcpCheckOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no record.")
+				return false, nil
 			}
 			return d.HttpCheck(ctx, opt.Url, opt.Ip4)
 		},
@@ -241,10 +248,17 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     false,
 		},
-		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
 			opt, err := d.TcpCheckOptionRaw.Option()
 			if err != nil {
 				return false, err
+			}
+			if !opt.Ip6.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.TcpCheckOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no record.")
+				return false, nil
 			}
 			return d.HttpCheck(ctx, opt.Url, opt.Ip6)
 		},
@@ -255,10 +269,17 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
 			opt, err := d.CheckDnsOptionRaw.Option()
 			if err != nil {
 				return false, err
+			}
+			if !opt.Ip4.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.CheckDnsOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no record.")
+				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), true)
 		},
@@ -269,10 +290,17 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
 			opt, err := d.CheckDnsOptionRaw.Option()
 			if err != nil {
 				return false, err
+			}
+			if !opt.Ip6.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.CheckDnsOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no record.")
+				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), true)
 		},
@@ -283,10 +311,17 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
 			opt, err := d.CheckDnsOptionRaw.Option()
 			if err != nil {
 				return false, err
+			}
+			if !opt.Ip4.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.CheckDnsOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no record.")
+				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), false)
 		},
@@ -297,10 +332,17 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context) (ok bool, err error) {
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
 			opt, err := d.CheckDnsOptionRaw.Option()
 			if err != nil {
 				return false, err
+			}
+			if !opt.Ip6.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.CheckDnsOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no record.")
+				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), false)
 		},
@@ -401,7 +443,7 @@ func (d *Dialer) Check(timeout time.Duration,
 	start := time.Now()
 	// Calc latency.
 	collection := d.mustGetCollection(opts.networkType)
-	if ok, err = opts.CheckFunc(ctx); ok && err == nil {
+	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
 		// No error.
 		latency := time.Since(start)
 		latencies10 := d.mustGetCollection(opts.networkType).Latencies10
