@@ -124,7 +124,10 @@ const (
 	LoopbackIfIndex        = 1
 )
 
+type LanWanFlag uint8
+
 const (
-	IsWan = 0
-	IsLan = 1
+	LanWanFlag_IsWan LanWanFlag = iota
+	LanWanFlag_IsLan
+	LanWanFlag_NotApplicable
 )

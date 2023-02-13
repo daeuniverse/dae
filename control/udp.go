@@ -72,10 +72,10 @@ func (hdr *AddrHdr) ToBytesFromPool() []byte {
 	return buf
 }
 
-func sendPktWithHdrWithFlag(data []byte, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag uint8) error {
+func sendPktWithHdrWithFlag(data []byte, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
 	hdr := AddrHdr{
 		Dest:     from,
-		Outbound: lanWanFlag, // Pass some message to the kernel program.
+		Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
 	}
 	bHdr := hdr.ToBytesFromPool()
 	defer pool.Put(bHdr)
@@ -89,7 +89,7 @@ func sendPktWithHdrWithFlag(data []byte, from netip.AddrPort, lConn *net.UDPConn
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn, lanWanFlag uint8) (err error) {
+func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn, lanWanFlag consts.LanWanFlag) (err error) {
 	d := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
 		return dialer.BindControl(c, from)
 	}}
@@ -108,7 +108,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	return err
 }
 
-func (c *ControlPlane) WriteToUDP(lanWanFlag uint8, lConn *net.UDPConn, realTo, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort, validateRushAnsFunc func(from netip.AddrPort) bool) UdpHandler {
+func (c *ControlPlane) WriteToUDP(lanWanFlag consts.LanWanFlag, lConn *net.UDPConn, realTo, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort, validateRushAnsFunc func(from netip.AddrPort) bool) UdpHandler {
 	return func(data []byte, from netip.AddrPort) (err error) {
 		// Do not return conn-unrelated err in this func.
 
@@ -137,14 +137,14 @@ func (c *ControlPlane) WriteToUDP(lanWanFlag uint8, lConn *net.UDPConn, realTo, 
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, outboundIndex consts.OutboundIndex) (err error) {
-	var lanWanFlag uint8
+	var lanWanFlag consts.LanWanFlag
 	var realSrc netip.AddrPort
 	useAssign := pktDst == realDst // Use sk_assign instead of modify target ip/port.
 	if useAssign {
-		lanWanFlag = consts.IsLan
+		lanWanFlag = consts.LanWanFlag_IsLan
 		realSrc = src
 	} else {
-		lanWanFlag = consts.IsWan
+		lanWanFlag = consts.LanWanFlag_IsWan
 		// From localhost, so dst IP is src IP.
 		realSrc = netip.AddrPortFrom(pktDst.Addr(), src.Port())
 	}
@@ -181,7 +181,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 				q := dnsMessage.Questions[0]
 				c.log.Tracef("UDP(DNS) %v <-[%v]-> Cache: %v %v",
-					RefineSourceToShow(src, realDst.Addr()), outbound.Name, strings.ToLower(q.Name.String()), q.Type,
+					RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), outbound.Name, strings.ToLower(q.Name.String()), q.Type,
 				)
 			}
 			return nil
@@ -225,7 +225,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		c.log.WithFields(logrus.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
-			"src":        src.String(),
+			"src":        realSrc.String(),
 		}).Traceln("Choose DNS path")
 		// Get the min latency path.
 		networkType := dialer.NetworkType{
@@ -300,7 +300,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if retry > MaxRetry {
 			return fmt.Errorf("touch max retry limit")
 		}
-		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(src, &UdpEndpointOptions{
+		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 			Handler:    udpHandler,
 			NatTimeout: natTimeout,
 			DialerFunc: func() (*dialer.Dialer, error) {
@@ -314,12 +314,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// If the udp endpoint has been not alive, remove it from pool and get a new one.
 		if !isNew && !ue.Dialer.MustGetAlive(networkType) {
 			c.log.WithFields(logrus.Fields{
-				"src":     RefineSourceToShow(src, realDst.Addr()),
+				"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
 				"network": networkType.String(),
 				"dialer":  ue.Dialer.Name(),
 				"retry":   retry,
 			}).Debugln("Old udp endpoint was not alive and removed.")
-			_ = DefaultUdpEndpointPool.Remove(src, ue)
+			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 			retry++
 			goto getNew
 		}
@@ -336,7 +336,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				"err":     err.Error(),
 				"retry":   retry,
 			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
-			_ = DefaultUdpEndpointPool.Remove(src, ue)
+			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 			retry++
 			goto getNew
 		}
@@ -400,7 +400,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				"qname":    strings.ToLower(q.Name.String()),
 				"qtype":    q.Type,
 			}).Infof("%v <-> %v",
-				RefineSourceToShow(src, realDst.Addr()), RefineAddrPortToShow(destToSend),
+				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
 			)
 		} else {
 			// TODO: Set-up ip to domain mapping and show domain if possible.
@@ -409,7 +409,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				"outbound": outbound.Name,
 				"dialer":   realDialer.Name(),
 			}).Infof("%v <-> %v",
-				RefineSourceToShow(src, realDst.Addr()), RefineAddrPortToShow(destToSend),
+				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
 			)
 		}
 	}

@@ -74,7 +74,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		"network":  networkType.String(),
 		"outbound": outbound.Name,
 		"dialer":   d.Name(),
-	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), RefineAddrPortToShow(dst))
+	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
 	rConn, err := d.Dial("tcp", dst.String())
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
