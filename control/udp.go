@@ -309,7 +309,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			Target: destToSend,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to GetOrCreate (%v): %w", outbound.GetSelectionPolicy(), err)
+			return fmt.Errorf("failed to GetOrCreate (policy: %v): %w", outbound.GetSelectionPolicy(), err)
 		}
 		// If the udp endpoint has been not alive, remove it from pool and get a new one.
 		if !isNew && !ue.Dialer.MustGetAlive(networkType) {
@@ -396,6 +396,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			c.log.WithFields(logrus.Fields{
 				"network":  string(l4proto) + string(ipversion) + "(DNS)",
 				"outbound": outbound.Name,
+				"policy":   outbound.GetSelectionPolicy(),
 				"dialer":   realDialer.Name(),
 				"qname":    strings.ToLower(q.Name.String()),
 				"qtype":    q.Type,
@@ -407,6 +408,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			c.log.WithFields(logrus.Fields{
 				"network":  string(l4proto) + string(ipversion),
 				"outbound": outbound.Name,
+				"policy":   outbound.GetSelectionPolicy(),
 				"dialer":   realDialer.Name(),
 			}).Infof("%v <-> %v",
 				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),

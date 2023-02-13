@@ -73,6 +73,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	c.log.WithFields(logrus.Fields{
 		"network":  networkType.String(),
 		"outbound": outbound.Name,
+		"policy":   outbound.GetSelectionPolicy(),
 		"dialer":   d.Name(),
 	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
 	rConn, err := d.Dial("tcp", dst.String())

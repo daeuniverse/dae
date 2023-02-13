@@ -6,9 +6,11 @@
 package dialer
 
 import (
+	"fmt"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
+	"strings"
 	"sync"
 	"time"
 )
@@ -87,6 +89,19 @@ func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
 	return a.minLatency.dialer, a.minLatency.latency
 }
 
+func (a *AliveDialerSet) printLatencies() {
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("%v (%v):\n", a.dialerGroupName, a.CheckTyp.String()))
+	for _, d := range a.inorderedAliveDialerSet {
+		latency, ok := a.dialerToLatency[d]
+		if !ok {
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("%v: %v\n", d.Name(), latency.String()))
+	}
+	a.log.Traceln(builder.String())
+}
+
 // NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.
 func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	a.mu.Lock()
@@ -146,7 +161,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		bakOldBestDialer := a.minLatency.dialer
 		// Calc minLatency.
 		a.dialerToLatency[dialer] = latency
-		if alive && latency <= a.minLatency.latency-a.tolerance {
+		if alive &&
+			latency <= a.minLatency.latency && // To avoid arithmetic overflow.
+			latency <= a.minLatency.latency-a.tolerance {
 			a.minLatency.latency = latency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
@@ -189,6 +206,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					"network": a.CheckTyp.String(),
 				}).Infof("Group has no dialer alive")
 			}
+			if a.log.IsLevelEnabled(logrus.TraceLevel) {
+				a.printLatencies()
+			}
 		}
 	} else {
 		if alive && minPolicy && a.minLatency.dialer == nil {
@@ -219,7 +239,9 @@ func (a *AliveDialerSet) calcMinLatency() {
 	if a.minLatency.dialer == nil {
 		a.minLatency.latency = minLatency
 		a.minLatency.dialer = minDialer
-	} else if minDialer != nil && minLatency <= a.minLatency.latency-a.tolerance {
+	} else if minDialer != nil &&
+		minLatency <= a.minLatency.latency && // To avoid arithmetic overflow.
+		minLatency <= a.minLatency.latency-a.tolerance {
 		a.minLatency.latency = minLatency
 		a.minLatency.dialer = minDialer
 	}
