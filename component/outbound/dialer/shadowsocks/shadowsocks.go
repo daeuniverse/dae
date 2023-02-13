@@ -8,6 +8,7 @@ import (
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/outbound/transport/simpleobfs"
+	"golang.org/x/net/proxy"
 	"net"
 	"net/url"
 	"strconv"
@@ -49,22 +50,35 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
 	}
 	var err error
-	d := dialer.FullconeDirect // Shadowsocks Proxy supports full-cone.
+	var d proxy.Dialer
 	switch s.Plugin.Name {
 	case "simple-obfs":
+		d = dialer.SymmetricDirect // Simple-obfs does not supports UDP.
+		switch s.Plugin.Opts.Obfs {
+		case "http", "tls":
+		default:
+			return nil, fmt.Errorf("unsupported obfs %v of plugin %v", s.Plugin.Opts.Obfs, s.Plugin.Name)
+		}
+		host := s.Plugin.Opts.Host
+		if host == "" {
+			host = "cloudflare.com"
+		}
+		path := s.Plugin.Opts.Path
 		uSimpleObfs := url.URL{
 			Scheme: "simple-obfs",
 			Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 			RawQuery: url.Values{
 				"obfs": []string{s.Plugin.Opts.Obfs},
-				"host": []string{s.Plugin.Opts.Host},
-				"uri":  []string{s.Plugin.Opts.Path},
+				"host": []string{host},
+				"uri":  []string{path},
 			}.Encode(),
 		}
 		d, err = simpleobfs.NewSimpleObfs(uSimpleObfs.String(), d)
 		if err != nil {
 			return nil, err
 		}
+	default:
+		d = dialer.FullconeDirect // Shadowsocks Proxy supports full-cone.
 	}
 	d, err = protocol.NewDialer("shadowsocks", d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),

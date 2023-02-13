@@ -66,18 +66,19 @@ func (s *SimpleObfs) Dial(network, addr string) (c net.Conn, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("[simpleobfs]: dial to %s: %w", s.addr, err)
 	}
+
+	host, port, err := net.SplitHostPort(s.addr)
+	if err != nil {
+		return nil, err
+	}
+	if s.host != "" {
+		host = s.host
+	}
 	switch s.obfstype {
 	case HTTP:
-		rs := strings.Split(s.addr, ":")
-		var port string
-		if len(rs) == 1 {
-			port = "80"
-		} else {
-			port = rs[1]
-		}
-		c = NewHTTPObfs(rc, rs[0], port, s.path)
+		c = NewHTTPObfs(rc, host, port, s.path)
 	case TLS:
-		c = NewTLSObfs(rc, s.host)
+		c = NewTLSObfs(rc, host)
 	}
 	return c, err
 }

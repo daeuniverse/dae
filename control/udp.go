@@ -276,7 +276,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	if dialerForNew == nil {
 		dialerForNew, _, err = outbound.Select(networkType)
 		if err != nil {
-			return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
+			return fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.String()[:4], isDns, realSrc.String(), err)
 		}
 	}
 
@@ -309,7 +309,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			Target: destToSend,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to GetOrCreate: %w", err)
+			return fmt.Errorf("failed to GetOrCreate (%v): %w", outbound.GetSelectionPolicy(), err)
 		}
 		// If the udp endpoint has been not alive, remove it from pool and get a new one.
 		if !isNew && !ue.Dialer.MustGetAlive(networkType) {

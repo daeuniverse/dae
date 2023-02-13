@@ -152,6 +152,10 @@ func (g *DialerGroup) SetSelectionPolicy(policy DialerSelectionPolicy) {
 	g.selectionPolicy = &policy
 }
 
+func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy) {
+	return g.selectionPolicy.Policy
+}
+
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
 	if typ.IsDns {
 		switch typ.L4Proto {

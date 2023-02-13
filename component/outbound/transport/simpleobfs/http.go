@@ -6,12 +6,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // HTTPObfs is shadowsocks http simple-obfs implementation
@@ -24,9 +25,13 @@ type HTTPObfs struct {
 	offset        int
 	firstRequest  bool
 	firstResponse bool
+	wMu           sync.Mutex
+	rMu           sync.Mutex
 }
 
 func (ho *HTTPObfs) Read(b []byte) (int, error) {
+	ho.rMu.Lock()
+	defer ho.rMu.Unlock()
 	if ho.buf != nil {
 		n := copy(b, ho.buf[ho.offset:])
 		ho.offset += n
@@ -64,17 +69,18 @@ func (ho *HTTPObfs) Read(b []byte) (int, error) {
 }
 
 func (ho *HTTPObfs) Write(b []byte) (int, error) {
+	ho.wMu.Lock()
+	defer ho.wMu.Unlock()
 	if ho.firstRequest {
-		randBytes := make([]byte, 16)
-		rand.Read(randBytes)
 		req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s%s", ho.host, ho.path), bytes.NewBuffer(b[:]))
-		req.Header.Set("User-Agent", fmt.Sprintf("curl/7.%d.%d", rand.Int()%54, rand.Int()%2))
+		req.Header.Set("User-Agent", fmt.Sprintf("curl/7.%d.%d", fastrand.Rand().Int()%87, fastrand.Rand().Int()%2))
 		req.Header.Set("Upgrade", "websocket")
 		req.Header.Set("Connection", "Upgrade")
-		req.Host = ho.host
 		if ho.port != "80" {
 			req.Host = fmt.Sprintf("%s:%s", ho.host, ho.port)
 		}
+		randBytes := make([]byte, 16)
+		fastrand.Read(randBytes)
 		req.Header.Set("Sec-WebSocket-Key", base64.URLEncoding.EncodeToString(randBytes))
 		req.ContentLength = int64(len(b))
 		err := req.Write(ho.Conn)
