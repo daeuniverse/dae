@@ -25,6 +25,7 @@ import (
 const (
 	DefaultNatTimeout = 3 * time.Minute
 	DnsNatTimeout     = 17 * time.Second // RFC 5452
+	MaxRetry          = 2
 )
 
 var (
@@ -294,7 +295,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	case consts.L4ProtoStr_UDP:
 		// Get udp endpoint.
 		var ue *UdpEndpoint
+		retry := 0
 	getNew:
+		if retry > MaxRetry {
+			return fmt.Errorf("touch max retry limit")
+		}
 		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(src, &UdpEndpointOptions{
 			Handler:    udpHandler,
 			NatTimeout: natTimeout,
@@ -310,10 +315,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if !isNew && !ue.Dialer.MustGetAlive(networkType) {
 			c.log.WithFields(logrus.Fields{
 				"src":     RefineSourceToShow(src, realDst.Addr()),
-				"network": string(l4proto) + string(ipversion),
+				"network": networkType.String(),
 				"dialer":  ue.Dialer.Name(),
-			}).Debugln("Old udp endpoint is not alive and removed")
+				"retry":   retry,
+			}).Debugln("Old udp endpoint was not alive and removed.")
 			_ = DefaultUdpEndpointPool.Remove(src, ue)
+			retry++
 			goto getNew
 		}
 		// This is real dialer.
@@ -322,7 +329,16 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		//log.Printf("WriteToUDPAddrPort->%v", destToSend)
 		_, err = ue.WriteToUDPAddrPort(data, destToSend)
 		if err != nil {
-			return fmt.Errorf("failed to write UDP packet req: %w", err)
+			c.log.WithFields(logrus.Fields{
+				"to":      destToSend.String(),
+				"from":    realSrc.String(),
+				"network": networkType.String(),
+				"err":     err.Error(),
+				"retry":   retry,
+			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+			_ = DefaultUdpEndpointPool.Remove(src, ue)
+			retry++
+			goto getNew
 		}
 	case consts.L4ProtoStr_TCP:
 		// MUST be DNS.
