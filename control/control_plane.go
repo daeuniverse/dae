@@ -94,6 +94,9 @@ func NewControlPlane(
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
+		if os.IsNotExist(err) {
+			c.log.Warnln("Perhaps you are in a container environment (docker/lxc). If so, please use higher virtualization (kvm/qemu). Or you could just try to mount /sys and give privilege and try again.")
+		}
 		return nil, err
 	}
 
