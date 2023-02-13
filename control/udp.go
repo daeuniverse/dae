@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"golang.org/x/net/dns/dnsmessage"
@@ -287,7 +288,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
 		// Because additional record OPT may not be supported by home router.
 		// So se should trust home devices even if they make rush-answer (or looks like).
-		return outboundIndex == consts.OutboundDirect && !from.Addr().IsPrivate()
+		return outboundIndex == consts.OutboundDirect && !common.ConvergeIp(from.Addr()).IsPrivate()
 	})
 
 	// Dial and send.

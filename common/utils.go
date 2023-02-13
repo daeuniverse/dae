@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"reflect"
@@ -365,4 +366,11 @@ func BoolToString(b bool) string {
 	} else {
 		return "0"
 	}
+}
+
+func ConvergeIp(addr netip.Addr) netip.Addr {
+	if addr.Is4In6() {
+		addr = netip.AddrFrom4(addr.As4())
+	}
+	return addr
 }
