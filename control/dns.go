@@ -50,6 +50,29 @@ func (c *dnsCache) FillInto(req *dnsmessage.Message) {
 	req.Truncated = false
 }
 
+func (c *dnsCache) IncludeIp(ip netip.Addr) bool {
+	ip = common.ConvergeIp(ip)
+	for _, ans := range c.Answers {
+		switch body := ans.Body.(type) {
+		case *dnsmessage.AResource:
+			if !ip.Is4() {
+				continue
+			}
+			if netip.AddrFrom4(body.A) == ip {
+				return true
+			}
+		case *dnsmessage.AAAAResource:
+			if !ip.Is6() {
+				continue
+			}
+			if netip.AddrFrom16(body.AAAA) == ip {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
 // be invoked every A/AAAA-record lookup.
 func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
@@ -83,6 +106,22 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 	return nil
 }
 
+func (c *ControlPlane) lookupDnsRespCache(domain string, t dnsmessage.Type) (cache *dnsCache) {
+	now := time.Now()
+
+	// To fqdn.
+	if !strings.HasSuffix(domain, ".") {
+		domain = domain + "."
+	}
+	c.dnsCacheMu.Lock()
+	cache, ok := c.dnsCache[strings.ToLower(domain)+t.String()]
+	c.dnsCacheMu.Unlock()
+	if ok && cache.Deadline.After(now) {
+		return cache
+	}
+	return nil
+}
+
 func (c *ControlPlane) LookupDnsRespCache(msg *dnsmessage.Message) (resp []byte) {
 	if len(msg.Questions) == 0 {
 		return nil
@@ -96,12 +135,8 @@ func (c *ControlPlane) LookupDnsRespCache(msg *dnsmessage.Message) (resp []byte)
 	default:
 		return nil
 	}
-	now := time.Now()
-	c.mutex.Lock()
-	cache, ok := c.dnsCache[strings.ToLower(q.Name.String())+q.Type.String()]
-	c.mutex.Unlock()
-	if ok && cache.Deadline.After(now) {
-		//c.log.Debugln("DNS cache hit:", q.Name, q.Type)
+	cache := c.lookupDnsRespCache(q.Name.String(), q.Type)
+	if cache != nil {
 		cache.FillInto(msg)
 		b, err := msg.Pack()
 		if err != nil {
@@ -292,7 +327,7 @@ loop:
 }
 
 func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers []dnsmessage.Resource, deadline time.Time) (err error) {
-	c.mutex.Lock()
+	c.dnsCacheMu.Lock()
 	fqdn := strings.ToLower(host)
 	if !strings.HasSuffix(fqdn, ".") {
 		fqdn += "."
@@ -300,7 +335,7 @@ func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers 
 	cacheKey := fqdn + typ.String()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
-		c.mutex.Unlock()
+		c.dnsCacheMu.Unlock()
 		cache.Deadline = deadline
 		cache.Answers = answers
 	} else {
@@ -310,7 +345,7 @@ func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers 
 			Deadline:     deadline,
 		}
 		c.dnsCache[cacheKey] = cache
-		c.mutex.Unlock()
+		c.dnsCacheMu.Unlock()
 	}
 	if err = c.BatchUpdateDomainRouting(cache); err != nil {
 		return fmt.Errorf("BatchUpdateDomainRouting: %w", err)

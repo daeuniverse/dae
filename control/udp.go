@@ -14,6 +14,7 @@ import (
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/sniffing"
 	"golang.org/x/net/dns/dnsmessage"
 	"io"
 	"net"
@@ -140,6 +141,7 @@ func (c *ControlPlane) WriteToUDP(lanWanFlag consts.LanWanFlag, lConn *net.UDPCo
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, outboundIndex consts.OutboundIndex) (err error) {
 	var lanWanFlag consts.LanWanFlag
 	var realSrc netip.AddrPort
+	var domain string
 	useAssign := pktDst == realDst // Use sk_assign instead of modify target ip/port.
 	if useAssign {
 		lanWanFlag = consts.LanWanFlag_IsLan
@@ -199,6 +201,15 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if data, err = dnsMessage.Pack(); err != nil {
 			return fmt.Errorf("pack flipped dns packet: %w", err)
 		}
+	} else {
+		// Sniff Quic
+		sniffer := sniffing.NewPacketSniffer(data)
+		domain, err = sniffer.SniffQuic()
+		if err != nil && !sniffing.IsSniffingError(err) {
+			sniffer.Close()
+			return err
+		}
+		sniffer.Close()
 	}
 
 	l4proto := consts.L4ProtoStr_UDP
@@ -277,7 +288,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	if dialerForNew == nil {
 		dialerForNew, _, err = outbound.Select(networkType)
 		if err != nil {
-			return fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.String()[:4], isDns, realSrc.String(), err)
+			return fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
 		}
 	}
 
@@ -307,6 +318,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			DialerFunc: func() (*dialer.Dialer, error) {
 				return dialerForNew, nil
 			},
+			// FIXME: how to write domain into UDP tunnel?
 			Target: destToSend,
 		})
 		if err != nil {
@@ -332,6 +344,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if err != nil {
 			c.log.WithFields(logrus.Fields{
 				"to":      destToSend.String(),
+				"domain":  domain,
 				"from":    realSrc.String(),
 				"network": networkType.String(),
 				"err":     err.Error(),
@@ -346,11 +359,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if !isDns {
 			return fmt.Errorf("UDP to TCP only support DNS request")
 		}
+		isNew = true
 		realDialer = dialerForNew
 
 		// We can block because we are in a coroutine.
 
-		conn, err := dialerForNew.Dial("tcp", destToSend.String())
+		conn, err := dialerForNew.Dial("tcp", c.ChooseDialTarget(outboundIndex, destToSend, domain))
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
@@ -411,6 +425,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				"outbound": outbound.Name,
 				"policy":   outbound.GetSelectionPolicy(),
 				"dialer":   realDialer.Name(),
+				"domain":   domain,
 			}).Infof("%v <-> %v",
 				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
 			)

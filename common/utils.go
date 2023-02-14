@@ -6,10 +6,13 @@
 package common
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -373,4 +376,20 @@ func ConvergeIp(addr netip.Addr) netip.Addr {
 		addr = netip.AddrFrom4(addr.As4())
 	}
 	return addr
+}
+
+func NewGcm(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func AddrToDnsType(addr netip.Addr) dnsmessage.Type {
+	if addr.Is4() {
+		return dnsmessage.TypeA
+	} else {
+		return dnsmessage.TypeAAAA
+	}
 }

@@ -33,10 +33,14 @@ type NetworkType struct {
 
 func (t *NetworkType) String() string {
 	if t.IsDns {
-		return string(t.L4Proto) + string(t.IpVersion) + "(DNS)"
+		return t.StringWithoutDns() + "(DNS)"
 	} else {
-		return string(t.L4Proto) + string(t.IpVersion)
+		return t.StringWithoutDns()
 	}
+}
+
+func (t *NetworkType) StringWithoutDns() string {
+	return string(t.L4Proto) + string(t.IpVersion)
 }
 
 type collection struct {

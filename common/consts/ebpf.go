@@ -8,6 +8,7 @@ package consts
 import (
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -84,8 +85,12 @@ func (i OutboundIndex) String() string {
 	case OutboundLogicalAnd:
 		return "<AND>"
 	default:
-		return strconv.Itoa(int(i))
+		return "<index: " + strconv.Itoa(int(i)) + ">"
 	}
+}
+
+func (i OutboundIndex) IsReserved() bool {
+	return !strings.HasPrefix(i.String(), "<index: ")
 }
 
 const (

@@ -9,7 +9,7 @@ global {
     # Node connectivity check.
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     # Considering traffic consumption, it is recommended to choose a site with anycast IP and less response.
-    tcp_check_url: 'http://detectportal.firefox.com/success.txt'
+    tcp_check_url: 'http://keep-alv.google.com/generate_204'
 
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
     # TCP DNS connectivity of nodes.
@@ -46,6 +46,15 @@ global {
 
     # Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.
     allow_insecure: false
+
+    # Experimental function. Optional values are:
+    # 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path
+    #     respectively, and makes the IP version requested by the application meet expectations. For example, if you
+    #     use curl -4 ip.sb, you will request IPv4 via proxy and get a IPv4 echo. And curl -6 ip.sb will request IPv6.
+    # 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent
+    #     if have impure DNS environment. This policy does not impact routing. That is to say, domain reset will be
+    #     after traffic split.
+    dial_mode: domain
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
