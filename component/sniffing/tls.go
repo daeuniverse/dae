@@ -37,8 +37,8 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 		return "", NotApplicableError
 	}
 
-	search := s.buf[5:]
 	length := int(binary.BigEndian.Uint16(s.buf[3:5]))
+	search := s.buf[5:]
 	if len(search) < length {
 		return "", NotApplicableError
 	}
@@ -102,7 +102,7 @@ func findSniExtension(search quicutils.Locator) (string, error) {
 	i := 0
 	var b []byte
 	for {
-		if i+4 < search.Len() {
+		if i+4 >= search.Len() {
 			return "", NotApplicableError
 		}
 		b = search.Range(i, i+4)

@@ -42,7 +42,7 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 	nextBlock := s.buf
 	isQuic := false
 	for {
-		d, nextBlock, err := sniffQuicBlock(nextBlock)
+		d, nextBlock, err = sniffQuicBlock(nextBlock)
 		if err == nil {
 			return d, nil
 		}

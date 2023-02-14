@@ -49,9 +49,11 @@ type ControlPlane struct {
 	Final              string
 
 	// mutex protects the dnsCache.
-	mutex       sync.Mutex
+	dnsCacheMu  sync.Mutex
 	dnsCache    map[string]*dnsCache
 	dnsUpstream DnsUpstreamRaw
+
+	dialMode consts.DialMode
 }
 
 func NewControlPlane(
@@ -294,6 +296,8 @@ func NewControlPlane(
 		return nil, fmt.Errorf("RoutingMatcherBuilder.Build: %w", err)
 	}
 
+	dialMode, err := consts.ParseDialMode(global.DialMode)
+
 	c = &ControlPlane{
 		log:                log,
 		core:               core,
@@ -304,12 +308,13 @@ func NewControlPlane(
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
 		SimulatedDomainSet: builder.SimulatedDomainSet,
 		Final:              routingA.Final,
-		mutex:              sync.Mutex{},
+		dnsCacheMu:         sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
 		dnsUpstream: DnsUpstreamRaw{
 			Raw:                global.DnsUpstream,
 			FinishInitCallback: nil,
 		},
+		dialMode: dialMode,
 	}
 
 	/// DNS upstream
@@ -399,6 +404,41 @@ func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUp
 		}
 	}
 	return nil
+}
+
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string) {
+	mode := consts.DialMode_Ip
+	if c.dialMode == consts.DialMode_Domain &&
+		!outbound.IsReserved() && // Direct, block, etc. should be skipped.
+		domain != "" {
+		dstIp := common.ConvergeIp(dst.Addr())
+		cache := c.lookupDnsRespCache(domain, common.AddrToDnsType(dstIp))
+		if cache != nil && cache.IncludeIp(dstIp) {
+			mode = consts.DialMode_Domain
+		}
+		if cache == nil {
+			c.log.WithFields(logrus.Fields{
+				"domain": domain,
+			}).Debugln("cache miss")
+		} else if !cache.IncludeIp(dstIp) {
+			c.log.WithFields(logrus.Fields{
+				"domain":  domain,
+				"addr":    dstIp,
+				"records": FormatDnsRsc(cache.Answers),
+			}).Debugln("record miss")
+		}
+	}
+	switch mode {
+	case consts.DialMode_Ip:
+		dialTarget = dst.String()
+	case consts.DialMode_Domain:
+		dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
+		c.log.WithFields(logrus.Fields{
+			"from": dst.String(),
+			"to":   dialTarget,
+		}).Debugln("Reset dial target to domain")
+	}
+	return dialTarget
 }
 
 func (c *ControlPlane) ListenAndServe(port uint16) (err error) {

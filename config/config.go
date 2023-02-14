@@ -27,6 +27,7 @@ type Global struct {
 	LanNatDirect   bool              `mapstructure:"lan_nat_direct" required:""`
 	WanInterface   []string          `mapstructure:"wan_interface"`
 	AllowInsecure  bool              `mapstructure:"allow_insecure" default:"false"`
+	DialMode       string            `mapstructure:"dial_mode" default:"domain"`
 }
 
 type Group struct {

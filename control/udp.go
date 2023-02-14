@@ -318,6 +318,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			DialerFunc: func() (*dialer.Dialer, error) {
 				return dialerForNew, nil
 			},
+			// FIXME: how to write domain into UDP tunnel?
 			Target: destToSend,
 		})
 		if err != nil {
@@ -363,7 +364,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 		// We can block because we are in a coroutine.
 
-		conn, err := dialerForNew.Dial("tcp", destToSend.String())
+		conn, err := dialerForNew.Dial("tcp", c.ChooseDialTarget(outboundIndex, destToSend, domain))
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
