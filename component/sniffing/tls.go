@@ -47,10 +47,13 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 
 func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	boundary := 39
+	if search.Len() < boundary {
+		return "", NotApplicableError
+	}
 	// Transport Layer Security (TLS) Extensions: Extension Definitions
 	// https://www.rfc-editor.org/rfc/rfc6066#page-5
 	b := search.Range(0, 6)
-	if b[0] != HandShakeType_Hello || search.Len() < boundary {
+	if b[0] != HandShakeType_Hello {
 		return "", NotApplicableError
 	}
 
@@ -99,6 +102,9 @@ func findSniExtension(search quicutils.Locator) (string, error) {
 	i := 0
 	var b []byte
 	for {
+		if i+4 < search.Len() {
+			return "", NotApplicableError
+		}
 		b = search.Range(i, i+4)
 		typ := binary.BigEndian.Uint16(b)
 		extLength := int(binary.BigEndian.Uint16(b[2:]))

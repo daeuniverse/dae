@@ -95,14 +95,20 @@ func sniffQuicBlock(buf []byte) (d string, next []byte, err error) {
 	if len(buf) < boundary {
 		return "", nil, NotApplicableError
 	}
-	tokenLength, n := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
+	tokenLength, n, err := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
+	if err != nil {
+		return "", nil, NotApplicableError
+	}
 	boundary = boundary - quicutils.MaxVarintLen64 + n      // Correct boundary.
 	boundary += int(tokenLength) + quicutils.MaxVarintLen64 // Next fields may have quic.MaxVarintLen64 bytes length
 	if len(buf) < boundary {
 		return "", nil, NotApplicableError
 	}
 	// https://datatracker.ietf.org/doc/html/rfc9000#name-variable-length-integer-enc
-	length, n := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
+	length, n, err := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
+	if err != nil {
+		return "", nil, NotApplicableError
+	}
 	boundary = boundary - quicutils.MaxVarintLen64 + n // Correct boundary.
 	blockEnd := boundary + int(length)
 	if len(buf) < blockEnd {

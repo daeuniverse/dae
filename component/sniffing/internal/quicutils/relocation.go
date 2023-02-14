@@ -96,7 +96,10 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 	if len(remainder) == 0 {
 		return nil, 0, fmt.Errorf("frame has no length: %w", OutOfRangeError)
 	}
-	frameType, nextField := BigEndianUvarint(remainder[:])
+	frameType, nextField, err := BigEndianUvarint(remainder[:])
+	if err != nil {
+		return nil, 0, err
+	}
 	switch frameType {
 	case Quic_FrameType_Ping:
 		return nil, nextField, nil
@@ -105,10 +108,16 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 		}
 		return nil, nextField, nil
 	case Quic_FrameType_Crypto:
-		offset, n := BigEndianUvarint(remainder[nextField:])
+		offset, n, err := BigEndianUvarint(remainder[nextField:])
+		if err != nil {
+			return nil, 0, err
+		}
 		nextField += n
 
-		length, n := BigEndianUvarint(remainder[nextField:])
+		length, n, err := BigEndianUvarint(remainder[nextField:])
+		if err != nil {
+			return nil, 0, err
+		}
 		nextField += n
 
 		return &CryptoFrameOffset{
