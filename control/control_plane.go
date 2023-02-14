@@ -416,17 +416,6 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		if cache != nil && cache.IncludeIp(dstIp) {
 			mode = consts.DialMode_Domain
 		}
-		if cache == nil {
-			c.log.WithFields(logrus.Fields{
-				"domain": domain,
-			}).Debugln("cache miss")
-		} else if !cache.IncludeIp(dstIp) {
-			c.log.WithFields(logrus.Fields{
-				"domain":  domain,
-				"addr":    dstIp,
-				"records": FormatDnsRsc(cache.Answers),
-			}).Debugln("record miss")
-		}
 	}
 	switch mode {
 	case consts.DialMode_Ip:
