@@ -12,6 +12,7 @@ import (
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/v2rayA/dae/component/sniffing"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 	"net"
@@ -20,8 +21,23 @@ import (
 	"time"
 )
 
+const (
+	TcpSniffBufSize = 4096
+)
+
 func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
+
+	// Sniff target domain.
+	sniffer := sniffing.NewConnSniffer(lConn, TcpSniffBufSize)
+	domain, err := sniffer.SniffTcp()
+	if err != nil && !sniffing.IsSniffingError(err) {
+		return err
+	}
+	// ConnSniffer should be used later, so we cannot close it now.
+	defer sniffer.Close()
+
+	// Get tuples and outbound.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
 	outboundIndex, err := c.core.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
@@ -75,13 +91,17 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		"outbound": outbound.Name,
 		"policy":   outbound.GetSelectionPolicy(),
 		"dialer":   d.Name(),
+		"domain":   domain,
 	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
+
+	// Dial and relay.
 	rConn, err := d.Dial("tcp", dst.String())
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()
-	if err = RelayTCP(lConn, rConn); err != nil {
+
+	if err = RelayTCP(sniffer, rConn); err != nil {
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"):
