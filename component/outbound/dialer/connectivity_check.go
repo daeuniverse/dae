@@ -463,8 +463,11 @@ func (d *Dialer) Check(timeout time.Duration,
 	} else {
 		// Append timeout if there is any error or unexpected status code.
 		if err != nil {
-			if strings.Contains(err.Error(), "network is unreachable") {
+			if strings.HasSuffix(err.Error(), "network is unreachable") {
 				err = fmt.Errorf("network is unreachable")
+			} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
+				strings.HasSuffix(err.Error(), "non-IPv4 address") {
+				err = fmt.Errorf("IPv%v is not supported", opts.networkType.IpVersion)
 			}
 			d.Log.WithFields(logrus.Fields{
 				"network": opts.networkType.String(),
