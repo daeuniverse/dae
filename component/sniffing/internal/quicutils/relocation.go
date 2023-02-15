@@ -8,6 +8,7 @@ package quicutils
 import (
 	"fmt"
 	"github.com/mzz2017/softwind/pool"
+	"io/fs"
 	"sort"
 )
 
@@ -124,6 +125,8 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 			UpperAppOffset: int(offset),
 			Data:           remainder[nextField : nextField+int(length)],
 		}, nextField + int(length), nil
+	case Quic_FrameType_ConnectionClose, Quic_FrameType_ConnectionClose2:
+		return nil, 0, fmt.Errorf("connection closed: %w", fs.ErrClosed)
 	default:
 		return nil, 0, fmt.Errorf("%w: %v", UnknownFrameTypeError, frameType)
 	}

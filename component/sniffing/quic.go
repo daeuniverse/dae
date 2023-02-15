@@ -9,6 +9,7 @@ import (
 	"errors"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/v2rayA/dae/component/sniffing/internal/quicutils"
+	"io/fs"
 )
 
 const (
@@ -53,6 +54,10 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 				return "", NotFoundError
 			}
 			return "", err
+		}
+		if errors.Is(err, fs.ErrClosed) {
+			// ConnectionClose sniffed.
+			return "", NotFoundError
 		}
 		// Error is not NotApplicableError, should be quic block.
 		isQuic = true
@@ -127,10 +132,10 @@ func sniffQuicBlock(buf []byte) (d string, next []byte, err error) {
 	firstByte := header[0]
 	rawPacketNumber := pool.Get(quicutils.MaxPacketNumberLength)
 	copy(rawPacketNumber, header[boundary-quicutils.MaxPacketNumberLength:])
-	defer pool.Put(rawPacketNumber)
 	defer func() {
 		header[0] = firstByte
 		copy(header[boundary-quicutils.MaxPacketNumberLength:], rawPacketNumber)
+		pool.Put(rawPacketNumber)
 	}()
 	plaintext, err := quicutils.DecryptQuicFromPool_(header, blockEnd, destConnId)
 	if err != nil {
@@ -141,6 +146,9 @@ func sniffQuicBlock(buf []byte) (d string, next []byte, err error) {
 	// After here, we should not return NotApplicableError.
 	// And we should return nextFrame.
 	if d, err = extractSniFromQuicPayload(plaintext); err != nil {
+		if errors.Is(err, fs.ErrClosed) {
+			return "", nil, err
+		}
 		return "", buf[blockEnd:], NotFoundError
 	}
 	return d, buf[blockEnd:], nil

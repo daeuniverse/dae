@@ -103,7 +103,7 @@ func findSniExtension(search quicutils.Locator) (string, error) {
 	var b []byte
 	for {
 		if i+4 >= search.Len() {
-			return "", NotApplicableError
+			return "", NotFoundError
 		}
 		b = search.Range(i, i+4)
 		typ := binary.BigEndian.Uint16(b)

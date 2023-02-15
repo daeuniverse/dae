@@ -5,12 +5,21 @@
 
 package sniffing
 
-import "bytes"
+import (
+	"bytes"
+	"unicode"
+)
 
 func (s *Sniffer) SniffHttp() (d string, err error) {
+	// First byte should be printable.
+	if len(s.buf) == 0 || !unicode.IsPrint(rune(s.buf[0])) {
+		return "", NotApplicableError
+	}
+
+	// Search method.
 	search := s.buf
-	if len(search) > 20 {
-		search = search[:20]
+	if len(search) > 12 {
+		search = search[:12]
 	}
 	method, _, found := bytes.Cut(search, []byte(" "))
 	if !found {
@@ -21,6 +30,10 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 	default:
 		return "", NotApplicableError
 	}
+
+	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
+
+	// Search Host.
 	search = s.buf
 	prefix := []byte("Host: ")
 	_, afterHostKey, found := bytes.Cut(search, prefix)
