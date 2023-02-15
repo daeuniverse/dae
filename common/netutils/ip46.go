@@ -7,8 +7,8 @@ package netutils
 
 import (
 	"context"
+	"github.com/mzz2017/softwind/netproxy"
 	"golang.org/x/net/dns/dnsmessage"
-	"golang.org/x/net/proxy"
 	"net/netip"
 )
 
@@ -17,7 +17,7 @@ type Ip46 struct {
 	Ip6 netip.Addr
 }
 
-func ParseIp46(ctx context.Context, dialer proxy.Dialer, dns netip.AddrPort, host string, tcp bool) (ipv46 *Ip46, err error) {
+func ParseIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, tcp bool) (ipv46 *Ip46, err error) {
 	addrs4, err := ResolveNetip(ctx, dialer, dns, host, dnsmessage.TypeA, tcp)
 	if err != nil {
 		return nil, err

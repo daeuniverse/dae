@@ -5,9 +5,9 @@ package simpleobfs
 import (
 	"bytes"
 	"encoding/binary"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"io"
-	"net"
 	"sync"
 	"time"
 )
@@ -18,7 +18,7 @@ const (
 
 // TLSObfs is shadowsocks tls simple-obfs implementation
 type TLSObfs struct {
-	net.Conn
+	netproxy.Conn
 	server        string
 	remain        int
 	firstRequest  bool
@@ -112,7 +112,7 @@ func (to *TLSObfs) write(b []byte) (int, error) {
 }
 
 // NewTLSObfs return a SimpleObfs
-func NewTLSObfs(conn net.Conn, server string) net.Conn {
+func NewTLSObfs(conn netproxy.Conn, server string) netproxy.Conn {
 	return &TLSObfs{
 		Conn:          conn,
 		server:        server,

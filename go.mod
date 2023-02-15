@@ -52,7 +52,7 @@ require (
 	google.golang.org/grpc v1.52.0 // indirect
 )
 
-//replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
+replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
 
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
 //replace github.com/v2rayA/RoutingA-dist/go/routingA => /home/mzz/antlrProjects/RoutingA-antlr4/build/go/routingA

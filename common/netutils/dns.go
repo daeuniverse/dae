@@ -9,10 +9,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
 	"golang.org/x/net/dns/dnsmessage"
-	"golang.org/x/net/proxy"
 	"io"
 	"math"
 	"net/netip"
@@ -70,7 +70,7 @@ func SystemDns() (dns netip.AddrPort, err error) {
 	return systemDns, nil
 }
 
-func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (addrs []netip.Addr, err error) {
+func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (addrs []netip.Addr, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if addr, err := netip.ParseAddr(host); err == nil {
@@ -122,14 +122,13 @@ func ResolveNetip(ctx context.Context, d proxy.Dialer, dns netip.AddrPort, host 
 	}
 
 	// Dial and write.
-	var network string
+	cd := &netproxy.ContextDialer{Dialer: d}
+	var c netproxy.Conn
 	if tcp {
-		network = "tcp"
+		c, err = cd.DialTcpContext(ctx, dns.String())
 	} else {
-		network = "udp"
+		c, err = cd.DialUdpContext(ctx, dns.String())
 	}
-	cd := ContextDialer{d}
-	c, err := cd.DialContext(ctx, network, dns.String())
 	if err != nil {
 		return nil, err
 	}

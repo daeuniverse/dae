@@ -4,7 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"github.com/gorilla/websocket"
-	"golang.org/x/net/proxy"
+	"github.com/mzz2017/softwind/netproxy"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,14 +13,14 @@ import (
 
 // Ws is a base Ws struct
 type Ws struct {
-	dialer   proxy.Dialer
+	dialer   netproxy.Dialer
 	wsAddr   string
 	header   http.Header
 	wsDialer *websocket.Dialer
 }
 
 // NewWs returns a Ws infra.
-func NewWs(s string, d proxy.Dialer) (*Ws, error) {
+func NewWs(s string, d netproxy.Dialer) (*Ws, error) {
 	u, err := url.Parse(s)
 	if err != nil {
 		return nil, fmt.Errorf("NewWs: %w", err)
@@ -44,7 +44,17 @@ func NewWs(s string, d proxy.Dialer) (*Ws, error) {
 	}
 	t.wsAddr = wsUrl.String() + u.Path
 	t.wsDialer = &websocket.Dialer{
-		NetDial: d.Dial,
+		NetDial: func(network, addr string) (net.Conn, error) {
+			c, err := d.DialTcp(addr)
+			if err != nil {
+				return nil, err
+			}
+			return &netproxy.FakeNetConn{
+				Conn:  c,
+				LAddr: nil,
+				RAddr: nil,
+			}, nil
+		},
 		//Subprotocols: []string{"binary"},
 	}
 	if u.Scheme == "wss" {
@@ -57,8 +67,12 @@ func NewWs(s string, d proxy.Dialer) (*Ws, error) {
 	return t, nil
 }
 
-// Dial connects to the address addr on the network net via the infra.
-func (s *Ws) Dial(network, addr string) (net.Conn, error) {
+func (s *Ws) DialUdp(addr string) (netproxy.PacketConn, error) {
+	return nil, fmt.Errorf("%w: ws+udp", netproxy.UnsupportedTunnelTypeError)
+}
+
+// DialTcp connects to the address addr on the network net via the infra.
+func (s *Ws) DialTcp(addr string) (netproxy.Conn, error) {
 	rc, _, err := s.wsDialer.Dial(s.wsAddr, s.header)
 	if err != nil {
 		return nil, fmt.Errorf("[Ws]: dial to %s: %w", s.wsAddr, err)

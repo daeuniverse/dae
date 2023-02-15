@@ -301,8 +301,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// So se should trust home devices even if they make rush-answer (or looks like).
 		return outboundIndex == consts.OutboundDirect && !common.ConvergeIp(from.Addr()).IsPrivate()
 	})
-
 	// Dial and send.
+	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
+	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
+	destToSend = netip.AddrPortFrom(common.ConvergeIp(destToSend.Addr()), destToSend.Port())
+	tgtToSend := c.ChooseDialTarget(outboundIndex, destToSend, domain)
 	switch l4proto {
 	case consts.L4ProtoStr_UDP:
 		// Get udp endpoint.
@@ -318,14 +321,14 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			DialerFunc: func() (*dialer.Dialer, error) {
 				return dialerForNew, nil
 			},
-			// FIXME: how to write domain into UDP tunnel?
-			Target: destToSend,
+			Target: tgtToSend,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to GetOrCreate (policy: %v): %w", outbound.GetSelectionPolicy(), err)
 		}
+
 		// If the udp endpoint has been not alive, remove it from pool and get a new one.
-		if !isNew && !ue.Dialer.MustGetAlive(networkType) {
+		if !isNew && outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
 			c.log.WithFields(logrus.Fields{
 				"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
 				"network": networkType.String(),
@@ -339,8 +342,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// This is real dialer.
 		realDialer = ue.Dialer
 
-		//log.Printf("WriteToUDPAddrPort->%v", destToSend)
-		_, err = ue.WriteToUDPAddrPort(data, destToSend)
+		_, err = ue.WriteTo(data, tgtToSend)
 		if err != nil {
 			c.log.WithFields(logrus.Fields{
 				"to":      destToSend.String(),
@@ -364,7 +366,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 		// We can block because we are in a coroutine.
 
-		conn, err := dialerForNew.Dial("tcp", c.ChooseDialTarget(outboundIndex, destToSend, domain))
+		conn, err := dialerForNew.DialTcp(tgtToSend)
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}

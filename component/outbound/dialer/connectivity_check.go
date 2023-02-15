@@ -9,7 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/common/netutils"
@@ -119,7 +121,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, u.Hostname(), false)
+	ip46, err := netutils.ParseIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +156,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := netutils.ParseIp46(ctx, SymmetricDirect, systemDns, host, false)
+	ip46, err := netutils.ParseIp46(ctx, direct.SymmetricDirect, systemDns, host, false)
 	if err != nil {
 		return nil, err
 	}
@@ -477,6 +479,7 @@ func (d *Dialer) Check(timeout time.Duration,
 		}
 		latencies10 := collection.Latencies10
 		latencies10.AppendLatency(timeout)
+		logrus.Debugln("NOT ALIVE")
 		collection.Alive = false
 	}
 	// Inform DialerGroups to update state.
@@ -491,12 +494,20 @@ func (d *Dialer) Check(timeout time.Duration,
 
 func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr) (ok bool, err error) {
 	// HTTP(S) check.
-	cd := netutils.ContextDialer{d.Dialer}
+	cd := &netproxy.ContextDialer{Dialer: d.Dialer}
 	cli := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
 				// Force to dial "ip".
-				return cd.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), u.Port()))
+				conn, err := cd.DialTcpContext(ctx, net.JoinHostPort(ip.String(), u.Port()))
+				if err != nil {
+					return nil, err
+				}
+				return &netproxy.FakeNetConn{
+					Conn:  conn,
+					LAddr: nil,
+					RAddr: nil,
+				}, nil
 			},
 		},
 	}

@@ -6,10 +6,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,7 +17,7 @@ import (
 
 // HTTPObfs is shadowsocks http simple-obfs implementation
 type HTTPObfs struct {
-	net.Conn
+	netproxy.Conn
 	host          string
 	port          string
 	path          string
@@ -92,7 +92,7 @@ func (ho *HTTPObfs) Write(b []byte) (int, error) {
 }
 
 // NewHTTPObfs return a HTTPObfs
-func NewHTTPObfs(conn net.Conn, host string, port string, path string) net.Conn {
+func NewHTTPObfs(conn netproxy.Conn, host string, port string, path string) netproxy.Conn {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}

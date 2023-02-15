@@ -3,6 +3,7 @@ package shadowsocksr
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	ssr "github.com/v2rayA/shadowsocksR/client"
@@ -50,7 +51,7 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 			"obfs_param":     []string{s.ObfsParam},
 		}.Encode(),
 	}
-	d, err := ssr.NewSSR(u.String(), dialer.SymmetricDirect, nil) // SSR Proxy does not support full-cone.
+	d, err := ssr.NewSSR(u.String(), direct.SymmetricDirect, nil) // SSR Proxy does not support full-cone.
 	if err != nil {
 		return nil, err
 	}

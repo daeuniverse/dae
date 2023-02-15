@@ -3,8 +3,8 @@ package dialer
 import (
 	"context"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/proxy"
 	"sync"
 	"time"
 )
@@ -17,7 +17,7 @@ var (
 type Dialer struct {
 	*GlobalOption
 	instanceOption InstanceOption
-	proxy.Dialer
+	netproxy.Dialer
 	name     string
 	protocol string
 	link     string
@@ -43,13 +43,13 @@ type GlobalOption struct {
 }
 
 type InstanceOption struct {
-	CheckEnabled  bool
+	CheckEnabled bool
 }
 
 type AliveDialerSetSet map[*AliveDialerSet]int
 
 // NewDialer is for register in general.
-func NewDialer(dialer proxy.Dialer, option *GlobalOption, iOption InstanceOption, name string, protocol string, link string) *Dialer {
+func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, name string, protocol string, link string) *Dialer {
 	var collections [6]*collection
 	for i := range collections {
 		collections[i] = newCollection()

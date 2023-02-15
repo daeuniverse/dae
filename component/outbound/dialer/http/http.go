@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/protocol/http"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
@@ -66,7 +67,7 @@ func ParseHTTPURL(link string, option *dialer.GlobalOption) (data *HTTP, err err
 
 func (s *HTTP) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
 	u := s.URL()
-	d, err := http.NewHTTPProxy(&u, dialer.SymmetricDirect) // HTTP Proxy does not support full-cone.
+	d, err := http.NewHTTPProxy(&u, direct.SymmetricDirect) // HTTP Proxy does not support full-cone.
 	if err != nil {
 		return nil, err
 	}

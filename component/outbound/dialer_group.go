@@ -7,17 +7,17 @@ package outbound
 
 import (
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
-	"golang.org/x/net/proxy"
 	"time"
 )
 
 var NoAliveDialerError = fmt.Errorf("no alive dialer")
 
 type DialerGroup struct {
-	proxy.Dialer
+	netproxy.Dialer
 
 	log  *logrus.Logger
 	Name string

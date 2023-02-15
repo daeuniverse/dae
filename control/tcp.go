@@ -7,6 +7,7 @@ package control
 
 import (
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
@@ -95,7 +96,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
 
 	// Dial and relay.
-	rConn, err := d.Dial("tcp", c.ChooseDialTarget(outboundIndex, dst, domain))
+	rConn, err := d.DialTcp(c.ChooseDialTarget(outboundIndex, dst, domain))
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
@@ -117,7 +118,7 @@ type WriteCloser interface {
 	CloseWrite() error
 }
 
-func RelayTCP(lConn, rConn net.Conn) (err error) {
+func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 	eCh := make(chan error, 1)
 	go func() {
 		_, e := io.Copy(rConn, lConn)
