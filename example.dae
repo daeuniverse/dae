@@ -103,8 +103,8 @@ group {
 
 # See routing.md for full examples.
 routing {
-    pname(NetworkManager, dnsmasq, systemd-resolved) -> must_direct # Traffic of DNS in local must be direct to avoid loop and bad network connectivity check when binding to WAN.
-    ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in front unless you know what you're doing.
+    pname(NetworkManager, dnsmasq, systemd-resolved) -> must_direct # Traffic of domain name server and network manager in local must be direct to avoid loop and bad network connectivity check when binding to WAN.
+    ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being forwarded by the proxy.
     # Write your rules below.
 
     # dae arms DNS rush-answer filter so we can use dns.google regardless of DNS pollution.
