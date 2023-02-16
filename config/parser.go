@@ -10,6 +10,7 @@ import (
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	"reflect"
+	"strings"
 )
 
 // Parser is section items parser
@@ -117,11 +118,14 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 					field.Val.Set(reflect.ValueOf(itemVal.Val))
 				case reflect.Slice:
 					// Field is not interface{}, we can decode.
-					vPointerNew := reflect.New(field.Val.Type().Elem())
-					if !common.FuzzyDecode(vPointerNew.Interface(), itemVal.Val) {
-						return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().Elem().String())
+					values := strings.Split(itemVal.Val, ",")
+					for _, value := range values {
+						vPointerNew := reflect.New(field.Val.Type().Elem())
+						if !common.FuzzyDecode(vPointerNew.Interface(), value) {
+							return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().Elem().String())
+						}
+						field.Val.Set(reflect.Append(field.Val, vPointerNew.Elem()))
 					}
-					field.Val.Set(reflect.Append(field.Val, vPointerNew.Elem()))
 				default:
 					// Field is not interface{}, we can decode.
 					if !common.FuzzyDecode(field.Val.Addr().Interface(), itemVal.Val) {
