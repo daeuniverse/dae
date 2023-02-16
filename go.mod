@@ -9,14 +9,14 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230213075606-e58b03d6ac4b
+	github.com/mzz2017/softwind v0.0.0-20230216124837-9fa31cdd116a
 	github.com/safchain/ethtool v0.0.0-20230116090318-67cc41908669
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
 	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1
-	github.com/v2rayA/shadowsocksR v1.0.4
 	github.com/vishvananda/netlink v1.1.0
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
+	golang.org/x/crypto v0.5.0
 	golang.org/x/net v0.5.0
 	golang.org/x/sys v0.4.0
 	google.golang.org/protobuf v1.28.1
@@ -44,7 +44,6 @@ require (
 	github.com/stretchr/testify v1.8.1 // indirect
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
 	gitlab.com/yawning/chacha20.git v0.0.0-20190903091407-6d1cb28dc72c // indirect
-	golang.org/x/crypto v0.5.0 // indirect
 	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
 	golang.org/x/term v0.4.0 // indirect
 	golang.org/x/text v0.6.0 // indirect
@@ -52,7 +51,7 @@ require (
 	google.golang.org/grpc v1.52.0 // indirect
 )
 
-replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
+//replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
 
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
 //replace github.com/v2rayA/RoutingA-dist/go/routingA => /home/mzz/antlrProjects/RoutingA-antlr4/build/go/routingA
