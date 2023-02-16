@@ -27,7 +27,7 @@ func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(aliv
 	return func(alive bool, networkType *dialer.NetworkType) {
 		c.log.WithFields(logrus.Fields{
 			"alive":       alive,
-			"network":     networkType.String(),
+			"network":     networkType.StringWithoutDns(),
 			"outbound_id": outbound,
 		}).Warnf("Outbound alive state changed, notify the kernel program.")
 

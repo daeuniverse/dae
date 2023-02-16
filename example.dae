@@ -103,15 +103,12 @@ group {
 
 # See routing.md for full examples.
 routing {
-    pname(dnsmasq, systemd-resolved) -> must_direct # Traffic of DNS in local must be direct to avoid loop when binding to WAN.
+    pname(NetworkManager, dnsmasq, systemd-resolved) -> must_direct # Traffic of DNS in local must be direct to avoid loop and bad network connectivity check when binding to WAN.
     ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in front unless you know what you're doing.
     # Write your rules below.
 
     # dae arms DNS rush-answer filter so we can use dns.google regardless of DNS pollution.
     domain(full:dns.google) && port(53) -> direct
-
-    pname(firefox) && domain(ip.sb) -> direct
-    pname(curl) && domain(ip.sb) -> my_group
 
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
