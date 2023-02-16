@@ -26,9 +26,9 @@ func FormatL4Proto(l4proto uint8) string {
 func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, networkType *dialer.NetworkType) {
 	return func(alive bool, networkType *dialer.NetworkType) {
 		c.log.WithFields(logrus.Fields{
-			"alive":       alive,
-			"network":     networkType.StringWithoutDns(),
-			"outbound_id": outbound,
+			"alive":    alive,
+			"network":  networkType.StringWithoutDns(),
+			"outbound": c.outboundId2Name[outbound],
 		}).Warnf("Outbound alive state changed, notify the kernel program.")
 
 		value := uint32(0)

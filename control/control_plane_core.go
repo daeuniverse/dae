@@ -21,9 +21,10 @@ import (
 )
 
 type ControlPlaneCore struct {
-	log        *logrus.Logger
-	deferFuncs []func() error
-	bpf        *bpfObjects
+	log             *logrus.Logger
+	deferFuncs      []func() error
+	bpf             *bpfObjects
+	outboundId2Name map[uint8]string
 
 	kernelVersion *internal.Version
 }

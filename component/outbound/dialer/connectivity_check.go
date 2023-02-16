@@ -517,7 +517,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr) 
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		return strconv.Itoa(resp.StatusCode) == strings.TrimPrefix(page, "generate_"), nil
 	}
-	return resp.StatusCode >= 200 && resp.StatusCode < 400, nil
+	return resp.StatusCode >= 200 && resp.StatusCode < 500, nil
 }
 
 func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort, tcp bool) (ok bool, err error) {

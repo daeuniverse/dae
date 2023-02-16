@@ -41,8 +41,7 @@ type ControlPlane struct {
 	listenIp   string
 
 	// TODO: add mutex?
-	outbounds       []*outbound.DialerGroup
-	outboundName2Id map[string]uint8
+	outbounds []*outbound.DialerGroup
 
 	SimulatedLpmTries  [][]netip.Prefix
 	SimulatedDomainSet []DomainSet
@@ -266,12 +265,15 @@ func NewControlPlane(
 		return nil, fmt.Errorf("too many outbounds")
 	}
 	outboundName2Id := make(map[string]uint8)
+	outboundId2Name := make(map[uint8]string)
 	for i, o := range outbounds {
 		if _, exist := outboundName2Id[o.Name]; exist {
 			return nil, fmt.Errorf("duplicated outbound name: %v", o.Name)
 		}
 		outboundName2Id[o.Name] = uint8(i)
+		outboundId2Name[uint8(i)] = o.Name
 	}
+	core.outboundId2Name = outboundId2Name
 	builder := NewRoutingMatcherBuilder(outboundName2Id, &bpf)
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
@@ -304,7 +306,6 @@ func NewControlPlane(
 		deferFuncs:         nil,
 		listenIp:           "0.0.0.0",
 		outbounds:          outbounds,
-		outboundName2Id:    outboundName2Id,
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
 		SimulatedDomainSet: builder.SimulatedDomainSet,
 		Final:              routingA.Final,
