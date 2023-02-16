@@ -10,13 +10,14 @@ import "fmt"
 type DialMode string
 
 const (
-	DialMode_Ip     DialMode = "ip"
-	DialMode_Domain DialMode = "domain"
+	DialMode_Ip         DialMode = "ip"
+	DialMode_Domain     DialMode = "domain"
+	DialMode_DomainPlus DialMode = "domain+"
 )
 
 func ParseDialMode(mode string) (DialMode, error) {
 	switch mode {
-	case "ip", "domain":
+	case "ip", "domain", "domain+":
 		return DialMode(mode), nil
 	default:
 		return "", fmt.Errorf("unsupported dial mode: %v", mode)

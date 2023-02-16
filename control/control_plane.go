@@ -408,15 +408,20 @@ func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUp
 
 func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string) {
 	mode := consts.DialMode_Ip
-	if c.dialMode == consts.DialMode_Domain &&
-		!outbound.IsReserved() && // Direct, block, etc. should be skipped.
-		domain != "" {
-		dstIp := common.ConvergeIp(dst.Addr())
-		cache := c.lookupDnsRespCache(domain, common.AddrToDnsType(dstIp))
-		if cache != nil && cache.IncludeIp(dstIp) {
+
+	if !outbound.IsReserved() && domain != "" {
+		switch c.dialMode {
+		case consts.DialMode_Domain:
+			dstIp := common.ConvergeIp(dst.Addr())
+			cache := c.lookupDnsRespCache(domain, common.AddrToDnsType(dstIp))
+			if cache != nil && cache.IncludeIp(dstIp) {
+				mode = consts.DialMode_Domain
+			}
+		case consts.DialMode_DomainPlus:
 			mode = consts.DialMode_Domain
 		}
 	}
+
 	switch mode {
 	case consts.DialMode_Ip:
 		dialTarget = dst.String()
