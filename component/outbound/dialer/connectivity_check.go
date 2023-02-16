@@ -479,7 +479,6 @@ func (d *Dialer) Check(timeout time.Duration,
 		}
 		latencies10 := collection.Latencies10
 		latencies10.AppendLatency(timeout)
-		logrus.Debugln("NOT ALIVE")
 		collection.Alive = false
 	}
 	// Inform DialerGroups to update state.

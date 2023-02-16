@@ -126,6 +126,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		if index >= 0 {
 			// This dialer is already alive.
 		} else {
+			logrus.WithFields(logrus.Fields{
+				"dialer": dialer.Name(),
+			}).Warnln("NOT ALIVE -> ALIVE:")
 			// Dialer: not alive -> alive.
 			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
 			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
@@ -133,6 +136,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	} else {
 		index := a.dialerToIndex[dialer]
 		if index >= 0 {
+			logrus.WithFields(logrus.Fields{
+				"dialer": dialer.Name(),
+			}).Warnln("ALIVE -> NOT ALIVE:")
 			// Dialer: alive -> not alive.
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {

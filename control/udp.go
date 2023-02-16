@@ -176,7 +176,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	var dummyFrom *netip.AddrPort
 	destToSend := realDst
 	if isDns {
-		if resp := c.LookupDnsRespCache(dnsMessage); resp != nil {
+		if resp := c.LookupDnsRespCache_(dnsMessage); resp != nil {
 			// Send cache to client directly.
 			if err = sendPkt(resp, destToSend, realSrc, src, lConn, lanWanFlag); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
@@ -397,7 +397,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			buf = bReq
 		}
 		var n int
-		if n, err = conn.Read(buf[:respLen]); err != nil {
+		if n, err = io.ReadFull(conn, buf[:respLen]); err != nil {
 			return fmt.Errorf("failed to read DNS resp payload: %w", err)
 		}
 		if err = udpHandler(buf[:n], destToSend); err != nil {
