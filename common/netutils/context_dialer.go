@@ -7,12 +7,11 @@ package netutils
 
 import (
 	"context"
-	"golang.org/x/net/proxy"
 	"net"
 )
 
 type ContextDialer struct {
-	Dialer proxy.Dialer
+	Dialer net.Dialer
 }
 
 func (d *ContextDialer) DialContext(ctx context.Context, network, addr string) (c net.Conn, err error) {

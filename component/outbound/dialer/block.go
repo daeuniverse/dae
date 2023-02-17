@@ -6,6 +6,7 @@
 package dialer
 
 import (
+	"github.com/mzz2017/softwind/netproxy"
 	"net"
 )
 
@@ -13,7 +14,11 @@ type blockDialer struct {
 	DialCallback func()
 }
 
-func (d *blockDialer) Dial(network string, addr string) (c net.Conn, err error) {
+func (d *blockDialer) DialTcp(addr string) (c netproxy.Conn, err error) {
+	d.DialCallback()
+	return nil, net.ErrClosed
+}
+func (d *blockDialer) DialUdp(addr string) (c netproxy.PacketConn, err error) {
 	d.DialCallback()
 	return nil, net.ErrClosed
 }

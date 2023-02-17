@@ -2,7 +2,7 @@ package simpleobfs
 
 import (
 	"fmt"
-	"golang.org/x/net/proxy"
+	"github.com/mzz2017/softwind/netproxy"
 	"net"
 	"net/url"
 	"strings"
@@ -17,7 +17,7 @@ const (
 
 // SimpleObfs is a base http-obfs struct
 type SimpleObfs struct {
-	dialer   proxy.Dialer
+	dialer   netproxy.Dialer
 	obfstype ObfsType
 	addr     string
 	path     string
@@ -25,7 +25,7 @@ type SimpleObfs struct {
 }
 
 // NewSimpleobfs returns a simpleobfs proxy.
-func NewSimpleObfs(s string, d proxy.Dialer) (*SimpleObfs, error) {
+func NewSimpleObfs(s string, d netproxy.Dialer) (*SimpleObfs, error) {
 	u, err := url.Parse(s)
 	if err != nil {
 		return nil, fmt.Errorf("simpleobfs: %w", err)
@@ -56,13 +56,13 @@ func NewSimpleObfs(s string, d proxy.Dialer) (*SimpleObfs, error) {
 	return t, nil
 }
 
-// Dial connects to the address addr on the network net via the proxy.
-func (s *SimpleObfs) Dial(network, addr string) (c net.Conn, err error) {
-	if network == "udp" {
-		return nil, fmt.Errorf("simple-obfs does not support UDP")
-	}
+func (s *SimpleObfs) DialUdp(addr string) (conn netproxy.PacketConn, err error) {
+	return nil, fmt.Errorf("%w: simpleobfs+udp", netproxy.UnsupportedTunnelTypeError)
+}
+// DialTcp connects to the address addr on the network net via the proxy.
+func (s *SimpleObfs) DialTcp(addr string) (c netproxy.Conn, err error) {
 
-	rc, err := s.dialer.Dial("tcp", s.addr)
+	rc, err := s.dialer.DialTcp(s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("[simpleobfs]: dial to %s: %w", s.addr, err)
 	}

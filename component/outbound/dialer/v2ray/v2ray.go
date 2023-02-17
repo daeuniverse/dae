@@ -4,13 +4,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	jsoniter "github.com/json-iterator/go"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/transport/grpc"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/outbound/transport/tls"
 	"github.com/v2rayA/dae/component/outbound/transport/ws"
-	"golang.org/x/net/proxy"
 	"net"
 	"net/url"
 	"regexp"
@@ -67,12 +68,12 @@ func NewV2Ray(option *dialer.GlobalOption, iOption dialer.InstanceOption, link s
 }
 
 func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (data *dialer.Dialer, err error) {
-	var d proxy.Dialer
+	var d netproxy.Dialer
 	switch s.Protocol {
 	case "vmess":
-		d = dialer.FullconeDirect // VMess Proxy supports full-cone.
+		d = direct.FullconeDirect // VMess Proxy supports full-cone.
 	case "vless":
-		d = dialer.SymmetricDirect // VLESS Proxy does not yet support full-cone by softwind.
+		d = direct.SymmetricDirect // VLESS Proxy does not yet support full-cone by softwind.
 	default:
 		return nil, fmt.Errorf("V2Ray.Dialer: unexpected protocol: %v", s.Protocol)
 	}
@@ -133,7 +134,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:    &protocol.DialerConverter{Dialer: d},
+			NextDialer:    &netproxy.ContextDialer{Dialer: d},
 			ServiceName:   serviceName,
 			ServerName:    sni,
 			AllowInsecure: s.AllowInsecure,
@@ -147,6 +148,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 		Cipher:       "aes-128-gcm",
 		Password:     s.ID,
 		IsClient:     true,
+		//ShouldFullCone: true,
 	}); err != nil {
 		return nil, err
 	}

@@ -3,12 +3,13 @@ package shadowsocks
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/protocol/shadowsocks"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/outbound/transport/simpleobfs"
-	"golang.org/x/net/proxy"
 	"net"
 	"net/url"
 	"strconv"
@@ -50,10 +51,10 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
 	}
 	var err error
-	var d proxy.Dialer
+	var d netproxy.Dialer
 	switch s.Plugin.Name {
 	case "simple-obfs":
-		d = dialer.SymmetricDirect // Simple-obfs does not supports UDP.
+		d = direct.SymmetricDirect // Simple-obfs does not supports UDP.
 		switch s.Plugin.Opts.Obfs {
 		case "http", "tls":
 		default:
@@ -78,7 +79,7 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 			return nil, err
 		}
 	default:
-		d = dialer.FullconeDirect // Shadowsocks Proxy supports full-cone.
+		d = direct.FullconeDirect // Shadowsocks Proxy supports full-cone.
 	}
 	d, err = protocol.NewDialer("shadowsocks", d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),

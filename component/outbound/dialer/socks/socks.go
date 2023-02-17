@@ -2,6 +2,7 @@ package socks
 
 import (
 	"fmt"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	//"github.com/mzz2017/softwind/protocol/socks4"
 	"github.com/mzz2017/softwind/protocol/socks5"
@@ -38,7 +39,7 @@ func (s *Socks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 	link := s.ExportToURL()
 	switch s.Protocol {
 	case "", "socks", "socks5":
-		d, err := socks5.NewSocks5Dialer(link, dialer.FullconeDirect) // Socks5 Proxy supports full-cone.
+		d, err := socks5.NewSocks5Dialer(link, direct.FullconeDirect) // Socks5 Proxy supports full-cone.
 		if err != nil {
 			return nil, err
 		}

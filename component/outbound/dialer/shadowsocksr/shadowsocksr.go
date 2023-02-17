@@ -3,9 +3,13 @@ package shadowsocksr
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/mzz2017/softwind/protocol"
+	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/protocol/shadowsocks_stream"
+	"github.com/mzz2017/softwind/transport/shadowsocksr/obfs"
+	"github.com/mzz2017/softwind/transport/shadowsocksr/proto"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
-	ssr "github.com/v2rayA/shadowsocksR/client"
 	"net"
 	"net/url"
 	"strconv"
@@ -39,21 +43,34 @@ func NewShadowsocksR(option *dialer.GlobalOption, iOption dialer.InstanceOption,
 }
 
 func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	u := url.URL{
-		Scheme: "ssr",
-		User:   url.UserPassword(s.Cipher, s.Password),
-		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
-		RawQuery: url.Values{
-			"protocol":       []string{s.Proto},
-			"protocol_param": []string{s.ProtoParam},
-			"obfs":           []string{s.Obfs},
-			"obfs_param":     []string{s.ObfsParam},
-		}.Encode(),
-	}
-	d, err := ssr.NewSSR(u.String(), dialer.SymmetricDirect, nil) // SSR Proxy does not support full-cone.
+	d := direct.SymmetricDirect
+	obfsDialer, err := obfs.NewDialer(d, &obfs.ObfsParam{
+		ObfsHost:  s.Server,
+		ObfsPort:  uint16(s.Port),
+		Obfs:      s.Obfs,
+		ObfsParam: s.ObfsParam,
+	})
 	if err != nil {
 		return nil, err
 	}
+	d = obfsDialer
+	d, err = shadowsocks_stream.NewDialer(d, protocol.Header{
+		ProxyAddress:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
+		Cipher:         s.Cipher,
+		Password:       s.Password,
+		IsClient:       true,
+		ShouldFullCone: false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d = &proto.Dialer{
+		NextDialer:    d,
+		Protocol:      s.Proto,
+		ProtocolParam: s.ProtoParam,
+		ObfsOverhead:  obfsDialer.ObfsOverhead(),
+	}
+
 	return dialer.NewDialer(d, option, iOption, s.Name, s.Protocol, s.ExportToURL()), nil
 }
 

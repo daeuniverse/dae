@@ -2,7 +2,9 @@ package trojan
 
 import (
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/transport/grpc"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/component/outbound/dialer"
@@ -43,7 +45,7 @@ func NewTrojan(option *dialer.GlobalOption, iOption dialer.InstanceOption, link 
 }
 
 func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	d := dialer.FullconeDirect // Trojan Proxy supports full-cone.
+	d := direct.FullconeDirect // Trojan Proxy supports full-cone.
 	u := url.URL{
 		Scheme: "tls",
 		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
@@ -66,8 +68,8 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 			Scheme: "ws",
 			Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 			RawQuery: url.Values{
-				"host":          []string{s.Host},
-				"path":          []string{s.Path},
+				"host": []string{s.Host},
+				"path": []string{s.Path},
 			}.Encode(),
 		}
 		if d, err = ws.NewWs(u.String(), d); err != nil {
@@ -79,7 +81,7 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:    &protocol.DialerConverter{Dialer: d},
+			NextDialer:    &netproxy.ContextDialer{Dialer: d},
 			ServiceName:   serviceName,
 			ServerName:    s.Sni,
 			AllowInsecure: s.AllowInsecure,

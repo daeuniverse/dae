@@ -431,7 +431,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		c.log.WithFields(logrus.Fields{
 			"from": dst.String(),
 			"to":   dialTarget,
-		}).Debugln("Reset dial target to domain")
+		}).Debugln("Rewrite dial target to domain")
 	}
 	return dialTarget
 }

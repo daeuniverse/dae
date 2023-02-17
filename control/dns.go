@@ -122,7 +122,7 @@ func (c *ControlPlane) lookupDnsRespCache(domain string, t dnsmessage.Type) (cac
 	return nil
 }
 
-func (c *ControlPlane) LookupDnsRespCache(msg *dnsmessage.Message) (resp []byte) {
+func (c *ControlPlane) LookupDnsRespCache_(msg *dnsmessage.Message) (resp []byte) {
 	if len(msg.Questions) == 0 {
 		return nil
 	}
@@ -140,6 +140,7 @@ func (c *ControlPlane) LookupDnsRespCache(msg *dnsmessage.Message) (resp []byte)
 		cache.FillInto(msg)
 		b, err := msg.Pack()
 		if err != nil {
+			c.log.Warnf("failed to pack: %v", err)
 			return nil
 		}
 		if err = c.BatchUpdateDomainRouting(cache); err != nil {

@@ -8,9 +8,9 @@ package control
 import (
 	"errors"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/v2rayA/dae/component/outbound/dialer"
-	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -19,7 +19,7 @@ import (
 type UdpHandler func(data []byte, from netip.AddrPort) error
 
 type UdpEndpoint struct {
-	conn net.PacketConn
+	conn netproxy.PacketConn
 	// mu protects deadlineTimer
 	mu            sync.Mutex
 	deadlineTimer *time.Timer
@@ -40,7 +40,7 @@ func (ue *UdpEndpoint) start() {
 		ue.mu.Lock()
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
-		if err = ue.handler(buf[:n], from.(*net.UDPAddr).AddrPort()); err != nil {
+		if err = ue.handler(buf[:n], from); err != nil {
 			if errors.Is(err, SuspectedRushAnswerError) {
 				continue
 			}
@@ -52,8 +52,8 @@ func (ue *UdpEndpoint) start() {
 	ue.mu.Unlock()
 }
 
-func (ue *UdpEndpoint) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error) {
-	return ue.conn.WriteTo(b, net.UDPAddrFromAddrPort(addr))
+func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
+	return ue.conn.WriteTo(b, addr)
 }
 
 func (ue *UdpEndpoint) Close() error {
@@ -75,7 +75,7 @@ type UdpEndpointOptions struct {
 	NatTimeout time.Duration
 	DialerFunc func() (*dialer.Dialer, error)
 	// Target is useful only if the underlay does not support Full-cone.
-	Target netip.AddrPort
+	Target string
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -100,6 +100,7 @@ func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint)
 }
 
 func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
+	// TODO: fine-grained lock.
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ue, ok := p.pool[lAddr]
@@ -120,15 +121,15 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			return nil, true, err
 		}
 
-		udpConn, err := d.Dial("udp", createOption.Target.String())
+		udpConn, err := d.DialUdp(createOption.Target)
 		if err != nil {
 			return nil, true, err
 		}
-		if _, ok = udpConn.(net.PacketConn); !ok {
+		if _, ok = udpConn.(netproxy.PacketConn); !ok {
 			return nil, true, fmt.Errorf("protocol does not support udp")
 		}
 		ue = &UdpEndpoint{
-			conn: udpConn.(net.PacketConn),
+			conn: udpConn.(netproxy.PacketConn),
 			deadlineTimer: time.AfterFunc(createOption.NatTimeout, func() {
 				p.mu.Lock()
 				defer p.mu.Unlock()

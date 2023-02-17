@@ -3,14 +3,13 @@ package tls
 import (
 	"crypto/tls"
 	"fmt"
-	"golang.org/x/net/proxy"
-	"net"
+	"github.com/mzz2017/softwind/netproxy"
 	"net/url"
 )
 
 // Tls is a base Tls struct
 type Tls struct {
-	dialer     proxy.Dialer
+	dialer     netproxy.Dialer
 	addr       string
 	serverName string
 	skipVerify bool
@@ -18,7 +17,7 @@ type Tls struct {
 }
 
 // NewTls returns a Tls infra.
-func NewTls(s string, d proxy.Dialer) (*Tls, error) {
+func NewTls(s string, d netproxy.Dialer) (*Tls, error) {
 	u, err := url.Parse(s)
 	if err != nil {
 		return nil, fmt.Errorf("NewTls: %w", err)
@@ -48,13 +47,20 @@ func NewTls(s string, d proxy.Dialer) (*Tls, error) {
 	return t, nil
 }
 
-func (s *Tls) Dial(network, addr string) (conn net.Conn, err error) {
-	rc, err := s.dialer.Dial("tcp", addr)
+func (s *Tls) DialUdp(addr string) (conn netproxy.PacketConn, err error) {
+	return nil, fmt.Errorf("%w: tls+udp", netproxy.UnsupportedTunnelTypeError)
+}
+func (s *Tls) DialTcp(addr string) (conn netproxy.Conn, err error) {
+	rc, err := s.dialer.DialTcp(addr)
 	if err != nil {
 		return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
 	}
 
-	tlsConn := tls.Client(rc, s.tlsConfig)
+	tlsConn := tls.Client(&netproxy.FakeNetConn{
+		Conn:  rc,
+		LAddr: nil,
+		RAddr: nil,
+	}, s.tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
 		return nil, err
 	}
