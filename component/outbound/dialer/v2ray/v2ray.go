@@ -148,7 +148,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 		Cipher:       "aes-128-gcm",
 		Password:     s.ID,
 		IsClient:     true,
-		//ShouldFullCone: true,
+		//Flags:        protocol.Flags_VMess_UsePacketAddr,
 	}); err != nil {
 		return nil, err
 	}

@@ -44,12 +44,6 @@ func NewShadowsocksFromLink(option *dialer.GlobalOption, iOption dialer.Instance
 }
 
 func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	// FIXME: support plain/none.
-	switch s.Cipher {
-	case "aes-256-gcm", "aes-128-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305":
-	default:
-		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
-	}
 	var err error
 	var d netproxy.Dialer
 	switch s.Plugin.Name {
@@ -81,7 +75,16 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 	default:
 		d = direct.FullconeDirect // Shadowsocks Proxy supports full-cone.
 	}
-	d, err = protocol.NewDialer("shadowsocks", d, protocol.Header{
+	var nextDialerName string
+	switch s.Cipher {
+	case "aes-256-gcm", "aes-128-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305":
+		nextDialerName = "shadowsocks"
+	case "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "aes-128-ofb", "aes-192-ofb", "aes-256-ofb", "des-cfb", "bf-cfb", "cast5-cfb", "rc4-md5", "rc4-md5-6", "chacha20", "chacha20-ietf", "salsa20", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb", "idea-cfb", "rc2-cfb", "seed-cfb", "rc4", "none", "plain":
+		nextDialerName = "shadowsocks_stream"
+	default:
+		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
+	}
+	d, err = protocol.NewDialer(nextDialerName, d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Cipher:       s.Cipher,
 		Password:     s.Password,

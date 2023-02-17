@@ -55,11 +55,10 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 	}
 	d = obfsDialer
 	d, err = shadowsocks_stream.NewDialer(d, protocol.Header{
-		ProxyAddress:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
-		Cipher:         s.Cipher,
-		Password:       s.Password,
-		IsClient:       true,
-		ShouldFullCone: false,
+		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
+		Cipher:       s.Cipher,
+		Password:     s.Password,
+		IsClient:     true,
 	})
 	if err != nil {
 		return nil, err
