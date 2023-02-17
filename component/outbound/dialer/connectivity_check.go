@@ -361,11 +361,6 @@ func (d *Dialer) aliveBackground() {
 		tcp4CheckDnsOpt,
 		tcp6CheckDnsOpt,
 	}
-	// Check once immediately.
-	for i := range CheckOpts {
-		opt := CheckOpts[i]
-		go d.Check(timeout, opt)
-	}
 
 	ctx, cancel := context.WithCancel(d.ctx)
 	defer cancel()
