@@ -272,7 +272,7 @@ enum __attribute__((packed)) MatchType {
   MatchType_IpVersion,
   MatchType_Mac,
   MatchType_ProcessName,
-  MatchType_Final,
+  MatchType_Fallback,
 };
 enum L4ProtoType {
   L4ProtoType_TCP = 1,
@@ -1106,9 +1106,9 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
       if (_is_wan && equal16(match_set->pname, _pname)) {
         good_subrule = true;
       }
-    } else if (match_set->type == MatchType_Final) {
+    } else if (match_set->type == MatchType_Fallback) {
 #ifdef __DEBUG_ROUTING
-      bpf_printk("CHECK: hit final");
+      bpf_printk("CHECK: hit fallback");
 #endif
       good_subrule = true;
     } else {

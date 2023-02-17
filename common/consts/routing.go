@@ -21,5 +21,5 @@ const (
 	Function_Mac         = "mac"
 	Function_ProcessName = "pname"
 
-	Declaration_Final = "final"
+	Declaration_Fallback = "fallback"
 )

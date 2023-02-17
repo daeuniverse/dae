@@ -81,7 +81,7 @@ routing {
     domain(geosite:netflix) -> netflix
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
-    final: my_group
+    fallback: my_group
 }
 `)
 	if err != nil {

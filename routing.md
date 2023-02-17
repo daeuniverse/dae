@@ -5,8 +5,8 @@
 ```shell
 # Built-in outbounds: block, direct
 
-# If no rule matches, traffic will go through the outbound defined by final.
-final: my_group
+# If no rule matches, traffic will go through the outbound defined by fallback.
+fallback: my_group
 
 # Domain rule
 domain(suffix: v2raya.org) -> my_group

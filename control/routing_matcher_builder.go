@@ -30,7 +30,7 @@ type RoutingMatcherBuilder struct {
 	rules              []bpfMatchSet
 	SimulatedLpmTries  [][]netip.Prefix
 	SimulatedDomainSet []DomainSet
-	Final              string
+	Fallback           string
 
 	err error
 }
@@ -215,13 +215,13 @@ func (b *RoutingMatcherBuilder) AddProcessName(f *config_parser.Function, values
 	}
 }
 
-func (b *RoutingMatcherBuilder) AddFinal(outbound string) {
+func (b *RoutingMatcherBuilder) AddFallback(outbound string) {
 	if b.err != nil {
 		return
 	}
-	b.Final = outbound
+	b.Fallback = outbound
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint8(consts.MatchType_Final),
+		Type:     uint8(consts.MatchType_Fallback),
 		Outbound: b.OutboundToId(outbound),
 	})
 }
@@ -250,9 +250,9 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 		m.Close()
 	}
 	// Write routings.
-	// Final rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Final) {
-		b.err = fmt.Errorf("final rule MUST be the last")
+	// Fallback rule MUST be the last.
+	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
+		b.err = fmt.Errorf("fallback rule MUST be the last")
 		return b.err
 	}
 	routingsLen := uint32(len(b.rules))

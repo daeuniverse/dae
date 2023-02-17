@@ -53,7 +53,7 @@ const (
 	MatchType_IpVersion
 	MatchType_Mac
 	MatchType_ProcessName
-	MatchType_Final
+	MatchType_Fallback
 )
 
 type OutboundIndex uint8

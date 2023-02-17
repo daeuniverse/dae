@@ -29,7 +29,7 @@ type MatcherBuilder interface {
 	AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string)
 	AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string)
 	AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string)
-	AddFinal(outbound string)
+	AddFallback(outbound string)
 	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string)
 	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string)
 	Build() (err error)
@@ -67,7 +67,7 @@ func ToProcessName(processName string) (procName [consts.TaskCommLen]byte) {
 	return procName
 }
 
-func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*config_parser.RoutingRule, finalOutbound string) (err error) {
+func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*config_parser.RoutingRule, fallbackOutbound string) (err error) {
 	for _, rule := range rules {
 		log.Debugln("[rule]", rule.String(true))
 
@@ -172,12 +172,12 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 		}
 	}
 	builder.AddAnyBefore(&config_parser.Function{
-		Name: "final",
-	}, "", nil, finalOutbound)
-	builder.AddFinal(finalOutbound)
+		Name: "fallback",
+	}, "", nil, fallbackOutbound)
+	builder.AddFallback(fallbackOutbound)
 	builder.AddAnyAfter(&config_parser.Function{
-		Name: "final",
-	}, "", nil, finalOutbound)
+		Name: "fallback",
+	}, "", nil, fallbackOutbound)
 	return nil
 }
 
@@ -200,7 +200,7 @@ func (d *DefaultMatcherBuilder) AddIpVersion(f *config_parser.Function, values c
 }
 func (d *DefaultMatcherBuilder) AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string) {
 }
-func (d *DefaultMatcherBuilder) AddFinal(outbound string) {}
+func (d *DefaultMatcherBuilder) AddFallback(outbound string) {}
 func (d *DefaultMatcherBuilder) AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string) {
 }
 func (d *DefaultMatcherBuilder) AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string) {

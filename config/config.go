@@ -41,8 +41,9 @@ type GroupParam struct {
 }
 
 type Routing struct {
-	Rules []*config_parser.RoutingRule `mapstructure:"_"`
-	Final string                       `mapstructure:"final" required:""`
+	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
+	Fallback string                       `mapstructure:"fallback"`
+	Final    string                       `mapstructure:"final"`
 }
 
 type Params struct {
@@ -108,6 +109,13 @@ func New(sections []*config_parser.Section) (params *Params, err error) {
 		}
 		if !section.Parsed {
 			return nil, fmt.Errorf("unknown section: %v", name)
+		}
+	}
+
+	// Apply config patches.
+	for _, patch := range patches {
+		if err = patch(params); err != nil {
+			return nil, err
 		}
 	}
 	return params, nil

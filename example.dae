@@ -118,6 +118,5 @@ routing {
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
 
-    # Define final as the fallback outbound.
-    final: my_group
+    fallback: my_group
 }

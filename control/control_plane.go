@@ -45,7 +45,7 @@ type ControlPlane struct {
 
 	SimulatedLpmTries  [][]netip.Prefix
 	SimulatedDomainSet []DomainSet
-	Final              string
+	Fallback           string
 
 	// mutex protects the dnsCache.
 	dnsCacheMu  sync.Mutex
@@ -289,9 +289,9 @@ func NewControlPlane(
 		for _, rule := range rules {
 			debugBuilder.WriteString(rule.String(true) + "\n")
 		}
-		log.Debugf("RoutingA:\n%vfinal: %v\n", debugBuilder.String(), routingA.Final)
+		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
-	if err = routing.ApplyMatcherBuilder(log, builder, rules, routingA.Final); err != nil {
+	if err = routing.ApplyMatcherBuilder(log, builder, rules, routingA.Fallback); err != nil {
 		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
 	}
 	if err = builder.Build(); err != nil {
@@ -308,7 +308,7 @@ func NewControlPlane(
 		outbounds:          outbounds,
 		SimulatedLpmTries:  builder.SimulatedLpmTries,
 		SimulatedDomainSet: builder.SimulatedDomainSet,
-		Final:              routingA.Final,
+		Fallback:           routingA.Fallback,
 		dnsCacheMu:         sync.Mutex{},
 		dnsCache:           make(map[string]*dnsCache),
 		dnsUpstream: DnsUpstreamRaw{
