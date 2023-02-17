@@ -96,6 +96,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
 
 	// Dial and relay.
+	dst = netip.AddrPortFrom(common.ConvergeIp(dst.Addr()), dst.Port())
 	rConn, err := d.DialTcp(c.ChooseDialTarget(outboundIndex, dst, domain))
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
