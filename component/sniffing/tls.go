@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"github.com/v2rayA/dae/component/sniffing/internal/quicutils"
+	"strings"
 )
 
 const (
@@ -114,22 +115,27 @@ func findSniExtension(search quicutils.Locator) (string, error) {
 			return "", NotApplicableError
 		}
 		if typ == TlsExtension_ServerName {
-			b = search.Range(i+4, i+9)
+			b = search.Range(i+4, i+6)
 			sniLen := int(binary.BigEndian.Uint16(b))
-			if extLength != sniLen+2 {
+			if extLength < sniLen+2 {
 				return "", NotApplicableError
 			}
-			// There may be multiple server names, we only pick the first.
-			if b[2] != TlsExtension_ServerNameType_HostName {
-				return "", NotApplicableError
+			// Search HostName type SNI.
+			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += indicatorLen {
+				b = search.Range(j, j+3)
+				indicatorLen = int(binary.BigEndian.Uint16(b[1:]))
+				if b[0] != TlsExtension_ServerNameType_HostName {
+					continue
+				}
+				if j+3+indicatorLen > iNextField {
+					return "", NotApplicableError
+				}
+				b = search.Range(j+3, j+3+indicatorLen)
+				// An SNI value may not include a trailing dot.
+				// https://tools.ietf.org/html/rfc6066#section-3
+				// But we accept it here.
+				return strings.TrimSuffix(string(b), "."), nil
 			}
-			snLen := int(binary.BigEndian.Uint16(b[3:]))
-			if i+9+snLen > iNextField {
-				return "", NotApplicableError
-			}
-			b = search.Range(i+9, i+9+snLen)
-			sni := string(b)
-			return sni, nil
 		}
 		i = iNextField
 	}
