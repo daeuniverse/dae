@@ -41,8 +41,15 @@ func (n *Ahocorasick) AddSet(bitIndex int, patterns []string, typ consts.Routing
 		}
 	case consts.RoutingDomainKey_Suffix:
 		for _, d := range patterns {
-			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], []byte("."+strings.TrimPrefix(d, ".")+"$"))
-			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], []byte("^"+d+"$"))
+			if strings.HasPrefix(d, ".") {
+				// abc.example.com
+				n.toBuild[bitIndex] = append(n.toBuild[bitIndex], []byte(d+"$"))
+			} else {
+				// xxx.example.com
+				n.toBuild[bitIndex] = append(n.toBuild[bitIndex], []byte("."+d+"$"))
+				// example.com
+				n.toBuild[bitIndex] = append(n.toBuild[bitIndex], []byte("^"+d+"$"))
+			}
 		}
 	case consts.RoutingDomainKey_Keyword:
 		for _, d := range patterns {
@@ -68,16 +75,23 @@ func (n *Ahocorasick) MatchDomainBitmap(domain string) (bitmap []uint32) {
 		N++
 	}
 	bitmap = make([]uint32, N)
+	// Domain should not contain ^ or $.
 	if strings.ContainsAny(domain, "^$") {
 		return bitmap
 	}
+	// Add magic chars as head and tail.
 	domain = "^" + strings.ToLower(strings.TrimSuffix(domain, ".")) + "$"
 	for _, i := range n.validIndexes {
 		if hits := n.matchers[i].MatchThreadSafe([]byte(domain)); len(hits) > 0 {
 			bitmap[i/32] |= 1 << (i % 32)
 		}
 	}
+	// Regex matching is independent.
 	for _, i := range n.validRegexpIndexes {
+		if bitmap[i/32]&(1<<(i%32)) > 0 {
+			// Already matched.
+			continue
+		}
 		for _, r := range n.regexp[i] {
 			if r.MatchString(domain) {
 				bitmap[i/32] |= 1 << (i % 32)
