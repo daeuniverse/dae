@@ -13,10 +13,11 @@ import (
 type DialerSelectionPolicy string
 
 const (
-	DialerSelectionPolicy_Random                DialerSelectionPolicy = "random"
-	DialerSelectionPolicy_Fixed                 DialerSelectionPolicy = "fixed"
-	DialerSelectionPolicy_MinAverage10Latencies DialerSelectionPolicy = "min_avg10"
-	DialerSelectionPolicy_MinLastLatency        DialerSelectionPolicy = "min"
+	DialerSelectionPolicy_Random                    DialerSelectionPolicy = "random"
+	DialerSelectionPolicy_Fixed                     DialerSelectionPolicy = "fixed"
+	DialerSelectionPolicy_MinAverage10Latencies     DialerSelectionPolicy = "min_avg10"
+	DialerSelectionPolicy_MinMovingAverageLatencies DialerSelectionPolicy = "min_moving_avg"
+	DialerSelectionPolicy_MinLastLatency            DialerSelectionPolicy = "min"
 )
 
 const (

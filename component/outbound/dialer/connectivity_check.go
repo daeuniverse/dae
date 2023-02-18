@@ -49,6 +49,7 @@ type collection struct {
 	// AliveDialerSetSet uses reference counting.
 	AliveDialerSetSet AliveDialerSetSet
 	Latencies10       *LatenciesN
+	MovingAverage     time.Duration
 	Alive             bool
 }
 
@@ -91,10 +92,6 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 		}
 	}
 	panic("invalid param")
-}
-
-func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
-	return d.mustGetCollection(typ).Latencies10
 }
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
@@ -447,16 +444,18 @@ func (d *Dialer) Check(timeout time.Duration,
 	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
 		// No error.
 		latency := time.Since(start)
-		latencies10 := d.mustGetCollection(opts.networkType).Latencies10
-		latencies10.AppendLatency(latency)
-		avg, _ := latencies10.AvgLatency()
+		collection.Latencies10.AppendLatency(latency)
+		avg, _ := collection.Latencies10.AvgLatency()
+		collection.MovingAverage = (collection.MovingAverage + latency) / 2
+		collection.Alive = true
+
 		d.Log.WithFields(logrus.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.name,
 			"last":    latency.Truncate(time.Millisecond),
 			"avg_10":  avg.Truncate(time.Millisecond),
+			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")
-		collection.Alive = true
 	} else {
 		// Append timeout if there is any error or unexpected status code.
 		if err != nil {
@@ -472,8 +471,8 @@ func (d *Dialer) Check(timeout time.Duration,
 				"err":     err.Error(),
 			}).Debugln("Connectivity Check Failed")
 		}
-		latencies10 := collection.Latencies10
-		latencies10.AppendLatency(timeout)
+		collection.Latencies10.AppendLatency(timeout)
+		collection.MovingAverage = (collection.MovingAverage + timeout) / 2
 		collection.Alive = false
 	}
 	// Inform DialerGroups to update state.

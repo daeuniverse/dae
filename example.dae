@@ -93,7 +93,10 @@ group {
         # policy: fixed(0)
 
         # Select the node with min last latency from the group for every connection.
-        policy: min
+        # policy: min
+
+        # Select the node with min moving average of latencies from the group for every connection.
+        policy: min_moving_avg
     }
 
     group2 {
