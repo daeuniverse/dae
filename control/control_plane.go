@@ -26,6 +26,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -322,6 +323,9 @@ func NewControlPlane(
 	c.dnsUpstream.FinishInitCallback = c.finishInitDnsUpstreamResolve
 	// Try to invoke once to avoid dns leaking at the very beginning.
 	_, _ = c.dnsUpstream.GetUpstream()
+
+	// Call GC to release memory.
+	runtime.GC()
 	return c, nil
 }
 

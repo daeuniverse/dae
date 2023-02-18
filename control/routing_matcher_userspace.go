@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/Asphaltt/lpmtrie"
+	"github.com/cilium/ebpf"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/routing"
 	"net"
@@ -16,7 +18,7 @@ import (
 )
 
 type RoutingMatcher struct {
-	lpms          []lpmtrie.LpmTrie
+	lpmArrayMap   *ebpf.Map
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
 	matches []bpfMatchSet
@@ -37,18 +39,18 @@ func (m *RoutingMatcher) Match(
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
 		return 0, fmt.Errorf("bad address length")
 	}
-	lpmKeys := make([]*lpmtrie.Key, consts.MatchType_Mac+1)
-	lpmKeys[consts.MatchType_IpSet] = &lpmtrie.Key{
+	lpmKeys := make([]*_bpfLpmKey, consts.MatchType_Mac+1)
+	lpmKeys[consts.MatchType_IpSet] = &_bpfLpmKey{
 		PrefixLen: 128,
-		Data:      destAddr,
+		Data:      common.Ipv6ByteSliceToUint32Array(destAddr),
 	}
-	lpmKeys[consts.MatchType_SourceIpSet] = &lpmtrie.Key{
+	lpmKeys[consts.MatchType_SourceIpSet] = &_bpfLpmKey{
 		PrefixLen: 128,
-		Data:      sourceAddr,
+		Data:      common.Ipv6ByteSliceToUint32Array(sourceAddr),
 	}
-	lpmKeys[consts.MatchType_Mac] = &lpmtrie.Key{
+	lpmKeys[consts.MatchType_Mac] = &_bpfLpmKey{
 		PrefixLen: 128,
-		Data:      mac,
+		Data:      common.Ipv6ByteSliceToUint32Array(mac),
 	}
 	var domainMatchBitmap []uint32
 	if domain != "" {
@@ -63,11 +65,18 @@ func (m *RoutingMatcher) Match(
 		}
 		switch consts.MatchType(match.Type) {
 		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
-			lpmIndex := int(binary.LittleEndian.Uint16(match.Value[:]))
-			_, hit := m.lpms[lpmIndex].Lookup(*lpmKeys[int(match.Type)])
-			if hit {
-				goodSubrule = true
+			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
+			var lpm *ebpf.Map
+			if err = m.lpmArrayMap.Lookup(lpmIndex, &lpm); err != nil {
+				break
 			}
+			var v uint32
+			if err = lpm.Lookup(*lpmKeys[int(match.Type)], &v); err != nil {
+				_ = lpm.Close()
+				break
+			}
+			_ = lpm.Close()
+			goodSubrule = true
 		case consts.MatchType_DomainSet:
 			if domainMatchBitmap != nil && (domainMatchBitmap[i/32]>>(i%32))&1 > 0 {
 				goodSubrule = true

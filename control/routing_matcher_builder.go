@@ -8,7 +8,6 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/Asphaltt/lpmtrie"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
@@ -26,7 +25,6 @@ type RoutingMatcherBuilder struct {
 	rules              []bpfMatchSet
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
-	Fallback           string
 
 	err error
 }
@@ -215,7 +213,6 @@ func (b *RoutingMatcherBuilder) AddFallback(outbound string) {
 	if b.err != nil {
 		return
 	}
-	b.Fallback = outbound
 	b.rules = append(b.rules, bpfMatchSet{
 		Type:     uint8(consts.MatchType_Fallback),
 		Outbound: b.OutboundToId(outbound),
@@ -266,18 +263,6 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		return nil, b.err
 	}
 	var m RoutingMatcher
-	// Update lpms.
-	m.lpms = make([]lpmtrie.LpmTrie, len(b.simulatedLpmTries))
-	for i, cidrs := range b.simulatedLpmTries {
-		lpm, err := lpmtrie.New(128)
-		if err != nil {
-			return nil, err
-		}
-		for _, cidr := range cidrs {
-			lpm.Update(cidrToLpmTrieKey(cidr), 1)
-		}
-		m.lpms[i] = lpm
-	}
 	// Build domainMatcher
 	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
