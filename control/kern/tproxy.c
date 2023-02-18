@@ -65,6 +65,8 @@
 #define IS_WAN 0
 #define IS_LAN 1
 
+#define TPROXY_MARK 0x8000000
+
 #define ESOCKTNOSUPPORT 94 /* Socket type not supported */
 
 enum { BPF_F_CURRENT_NETNS = -1 };
@@ -1218,8 +1220,8 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
                         ori_src.ip, false, true))) {
     return TC_ACT_SHOT;
   }
-  if ((ret = rewrite_port(skb, l4proto, ihl, tuples.sport, ori_src.port, false,
-                          true))) {
+  if ((ret = rewrite_port(skb, l4proto, ihl, tuples.sport, ori_src.port,
+                          false, true))) {
     return TC_ACT_SHOT;
   }
   disable_l4_checksum(skb, l4proto, ihl);
@@ -1326,8 +1328,8 @@ new_connection:
       bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
                 (ethh.h_source[4] << 8) + (ethh.h_source[5])),
   };
-  if ((ret = routing(flag, l4hdr, tuples.sip.u6_addr32, tuples.dip.u6_addr32,
-                     mac)) < 0) {
+  if ((ret = routing(flag, l4hdr, tuples.sip.u6_addr32,
+                     tuples.dip.u6_addr32, mac)) < 0) {
     bpf_printk("shot routing: %d", ret);
     return TC_ACT_SHOT;
   }
@@ -1394,10 +1396,7 @@ control_plane_tproxy:
   }
 
 assign:
-  if ((ret = bpf_skb_change_type(skb, 0))) {
-    bpf_printk("failed to change type");
-    goto sk_shot;
-  }
+  skb->mark = TPROXY_MARK;
   ret = bpf_sk_assign(skb, sk, 0);
   bpf_sk_release(sk);
   if (ret) {
@@ -1802,30 +1801,36 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   __u16 tproxy_typ = bpf_ntohs(*(__u16 *)&ethh.h_source[4]);
   if (*(__u32 *)&ethh.h_source[0] != bpf_htonl(0x02000203) || tproxy_typ > 1) {
     // Check for security. Reject packets that is UDP and sent to tproxy port.
-    __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
-    if (!tproxy_port) {
-      goto accept;
-    }
-    if (unlikely(*tproxy_port == tuples.dport)) {
-      struct bpf_sock_tuple tuple = {0};
-      __u32 tuple_size;
-
-      if (ipversion == 4) {
-        tuple.ipv4.daddr = tuples.dip.u6_addr32[3];
-        tuple.ipv4.dport = tuples.dport;
-        tuple_size = sizeof(tuple.ipv4);
-      } else {
-        __builtin_memcpy(tuple.ipv6.daddr, &tuples.dip, IPV6_BYTE_LENGTH);
-        tuple.ipv6.dport = tuples.dport;
-        tuple_size = sizeof(tuple.ipv6);
+    if (l4proto == IPPROTO_UDP) {
+      __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
+      if (!tproxy_port) {
+        goto accept;
       }
+      if (unlikely(*tproxy_port == tuples.dport)) {
+        struct bpf_sock_tuple tuple = {0};
+        __u32 tuple_size;
 
-      struct bpf_sock *sk =
-          bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-      if (sk) {
-        // Scope is host.
-        bpf_sk_release(sk);
-        return TC_ACT_SHOT;
+        if (ipversion == 4) {
+          tuple.ipv4.daddr = tuples.dip.u6_addr32[3];
+          tuple.ipv4.saddr = tuples.sip.u6_addr32[3];
+          tuple.ipv4.dport = tuples.dport;
+          tuple.ipv4.sport = tuples.sport;
+          tuple_size = sizeof(tuple.ipv4);
+        } else {
+          __builtin_memcpy(tuple.ipv6.daddr, &tuples.dip, IPV6_BYTE_LENGTH);
+          __builtin_memcpy(tuple.ipv6.saddr, &tuples.sip, IPV6_BYTE_LENGTH);
+          tuple.ipv6.dport = tuples.dport;
+          tuple.ipv6.sport = tuples.sport;
+          tuple_size = sizeof(tuple.ipv6);
+        }
+
+        struct bpf_sock *sk =
+            bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+        if (sk) {
+          // Scope is host.
+          bpf_sk_release(sk);
+          return TC_ACT_SHOT;
+        }
       }
     }
   accept:
@@ -1900,15 +1905,16 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       }
 
       // Rewrite udp src ip
-      if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl,
-                            tuples.sip.u6_addr32, ori_src.ip, false, true))) {
+      if ((ret =
+               rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl,
+                          tuples.sip.u6_addr32, ori_src.ip, false, true))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src port
-      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, tuples.sport, ori_src.port,
-                              false, true))) {
+      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, tuples.sport,
+                              ori_src.port, false, true))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1950,8 +1956,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     }
 
     // Rewrite dst port.
-    if ((ret = rewrite_port(skb, l4proto, ihl, tuples.dport, *tproxy_port, true,
-                            true))) {
+    if ((ret = rewrite_port(skb, l4proto, ihl, tuples.dport, *tproxy_port,
+                            true, true))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
