@@ -113,6 +113,12 @@ func (n *Ahocorasick) Build() error {
 		n.matchers[i] = ahocorasick.NewMatcher(toBuild)
 		n.validIndexes = append(n.validIndexes, i)
 	}
+	for i := range n.regexp {
+		if len(n.regexp[i]) == 0 {
+			continue
+		}
+		n.validRegexpIndexes = append(n.validRegexpIndexes, i)
+	}
 	// Release it.
 	n.toBuild = nil
 	return nil
