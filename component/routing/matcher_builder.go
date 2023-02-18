@@ -32,7 +32,6 @@ type MatcherBuilder interface {
 	AddFallback(outbound string)
 	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string)
 	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string)
-	Build() (err error)
 }
 
 func GroupParamValuesByKey(params []*config_parser.Param) (keyToValues map[string][]string, keyOrder []string) {
@@ -207,4 +206,3 @@ func (d *DefaultMatcherBuilder) AddProcessName(f *config_parser.Function, values
 }
 func (d *DefaultMatcherBuilder) AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string) {
 }
-func (d *DefaultMatcherBuilder) Build() (err error) { return nil }

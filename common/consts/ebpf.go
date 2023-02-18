@@ -41,10 +41,10 @@ const (
 	DisableL4ChecksumPolicy_SetZero
 )
 
-type RoutingType uint8
+type MatchType uint8
 
 const (
-	MatchType_DomainSet RoutingType = iota
+	MatchType_DomainSet MatchType = iota
 	MatchType_IpSet
 	MatchType_SourceIpSet
 	MatchType_Port
@@ -65,6 +65,7 @@ const (
 	OutboundControlPlaneDirect OutboundIndex = 0xFD
 	OutboundLogicalOr          OutboundIndex = 0xFE
 	OutboundLogicalAnd         OutboundIndex = 0xFF
+	OutboundLogicalMask        OutboundIndex = 0xFE
 
 	OutboundMax            = OutboundLogicalAnd
 	OutboundUserDefinedMax = OutboundMustDirect - 1

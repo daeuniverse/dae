@@ -8,6 +8,7 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/Asphaltt/lpmtrie"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
@@ -62,11 +63,11 @@ func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string,
 	if b.err != nil {
 		return
 	}
-	switch key {
-	case consts.RoutingDomain_Regex,
-		consts.RoutingDomain_Full,
-		consts.RoutingDomain_Keyword,
-		consts.RoutingDomain_Suffix:
+	switch consts.RoutingDomainKey(key) {
+	case consts.RoutingDomainKey_Regex,
+		consts.RoutingDomainKey_Full,
+		consts.RoutingDomainKey_Keyword,
+		consts.RoutingDomainKey_Suffix:
 	default:
 		b.err = fmt.Errorf("AddDomain: unsupported key: %v", key)
 		return
@@ -226,7 +227,7 @@ func (b *RoutingMatcherBuilder) AddFallback(outbound string) {
 	})
 }
 
-func (b *RoutingMatcherBuilder) Build() (err error) {
+func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	if b.err != nil {
 		return b.err
 	}
@@ -263,4 +264,35 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
 	return nil
+}
+
+func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+	var m RoutingMatcher
+	// Update lpms.
+	m.lpms = make([]lpmtrie.LpmTrie, len(b.SimulatedLpmTries))
+	for i, cidrs := range b.SimulatedLpmTries {
+		lpm, err := lpmtrie.New(128)
+		if err != nil {
+			return nil, err
+		}
+		for _, cidr := range cidrs {
+			lpm.Update(cidrToLpmTrieKey(cidr), 1)
+		}
+		m.lpms[i] = lpm
+	}
+	// Build domainMatcher
+	// TODO
+
+	// Write routings.
+	// Fallback rule MUST be the last.
+	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
+		b.err = fmt.Errorf("fallback rule MUST be the last")
+		return nil, b.err
+	}
+	m.matches = b.rules
+
+	return &m, nil
 }

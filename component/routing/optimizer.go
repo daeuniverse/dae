@@ -49,9 +49,9 @@ func (o *RefineFunctionParamKeyOptimizer) Optimize(rules []*config_parser.Routin
 					// Rewrite to authoritative key name.
 					switch param.Key {
 					case "", "domain":
-						param.Key = consts.RoutingDomain_Suffix
+						param.Key = consts.RoutingDomainKey_Suffix
 					case "contains":
-						param.Key = consts.RoutingDomain_Keyword
+						param.Key = consts.RoutingDomainKey_Keyword
 					default:
 					}
 				}
@@ -169,25 +169,25 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 		case geodata.Domain_Full:
 			// Full.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Full,
+				Key: consts.RoutingDomainKey_Full,
 				Val: item.Value,
 			})
 		case geodata.Domain_RootDomain:
 			// Suffix.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Suffix,
+				Key: consts.RoutingDomainKey_Suffix,
 				Val: item.Value,
 			})
 		case geodata.Domain_Plain:
 			// Keyword.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Keyword,
+				Key: consts.RoutingDomainKey_Keyword,
 				Val: item.Value,
 			})
 		case geodata.Domain_Regex:
 			// Regex.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Regex,
+				Key: consts.RoutingDomainKey_Regex,
 				Val: item.Value,
 			})
 		}

@@ -17,19 +17,19 @@ func (c *ControlPlane) MatchDomainBitmap(domain string) (bitmap [consts.MaxMatch
 		for _, d := range s.Domains {
 			var hit bool
 			switch s.Key {
-			case consts.RoutingDomain_Suffix:
+			case consts.RoutingDomainKey_Suffix:
 				if domain == d || strings.HasSuffix(domain, "."+d) {
 					hit = true
 				}
-			case consts.RoutingDomain_Full:
+			case consts.RoutingDomainKey_Full:
 				if strings.EqualFold(domain, d) {
 					hit = true
 				}
-			case consts.RoutingDomain_Keyword:
+			case consts.RoutingDomainKey_Keyword:
 				if strings.Contains(strings.ToLower(domain), strings.ToLower(d)) {
 					hit = true
 				}
-			case consts.RoutingDomain_Regex:
+			case consts.RoutingDomainKey_Regex:
 				// FIXME: too slow
 				for _, d := range s.Domains {
 					if regexp.MustCompile(d).MatchString(strings.ToLower(domain)) {

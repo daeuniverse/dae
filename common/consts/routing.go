@@ -5,11 +5,13 @@
 
 package consts
 
+type RoutingDomainKey string
+
 const (
-	RoutingDomain_Full    = "full"
-	RoutingDomain_Keyword = "keyword"
-	RoutingDomain_Suffix  = "suffix"
-	RoutingDomain_Regex   = "regex"
+	RoutingDomainKey_Full    RoutingDomainKey = "full"
+	RoutingDomainKey_Keyword RoutingDomainKey = "keyword"
+	RoutingDomainKey_Suffix RoutingDomainKey = "suffix"
+	RoutingDomainKey_Regex  RoutingDomainKey = "regex"
 
 	Function_Domain      = "domain"
 	Function_Ip          = "ip"

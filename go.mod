@@ -23,6 +23,7 @@ require (
 )
 
 require (
+	github.com/Asphaltt/lpmtrie v0.0.0-20220205153150-3d814250b8ab // indirect
 	github.com/dgryski/go-camellia v0.0.0-20191119043421-69a8a13fb23d // indirect
 	github.com/dgryski/go-idea v0.0.0-20170306091226-d2fb45a411fb // indirect
 	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect

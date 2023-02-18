@@ -48,6 +48,12 @@ func (r _bpfPortRange) Encode() (b [16]byte) {
 	return b
 }
 
+func ParsePortRange(b []byte) (portStart, portEnd uint16) {
+	portStart = binary.LittleEndian.Uint16(b[:2])
+	portEnd = binary.LittleEndian.Uint16(b[2:])
+	return portStart, portEnd
+}
+
 func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
 	m, err = ebpf.NewMap(&ebpf.MapSpec{
 		Type:       ebpf.LPMTrie,
