@@ -255,6 +255,9 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	}); err != nil {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
+
+	// Release.
+	b.simulatedLpmTries = nil
 	return nil
 }
 
@@ -280,5 +283,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	}
 	m.matches = b.rules
 
+	// Release.
+	b.simulatedDomainSet = nil
 	return &m, nil
 }

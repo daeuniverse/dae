@@ -283,6 +283,7 @@ func NewControlPlane(
 	); err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
+	routingA.Rules = nil // Release.
 	if log.IsLevelEnabled(logrus.DebugLevel) {
 		var debugBuilder strings.Builder
 		for _, rule := range rules {
