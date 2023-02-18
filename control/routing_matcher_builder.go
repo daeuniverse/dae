@@ -279,7 +279,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		m.lpms[i] = lpm
 	}
 	// Build domainMatcher
-	m.domainMatcher = domain_matcher.NewAhocorasickSuccinctset(consts.MaxMatchSetLen)
+	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		m.domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

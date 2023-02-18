@@ -47,6 +47,7 @@ require (
 	github.com/openacid/errors v0.8.1 // indirect
 	github.com/openacid/low v0.1.22-0.20210130164417-01334eb50af8 // indirect
 	github.com/openacid/must v0.1.3 // indirect
+	github.com/openacid/testkeys v0.1.7 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
@@ -60,7 +61,6 @@ require (
 	google.golang.org/grpc v1.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
 
 //replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
 //replace github.com/cloudflare/ahocorasick => /home/mzz/goProjects/ahocorasick

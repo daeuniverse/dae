@@ -195,14 +195,14 @@ func BenchmarkGoRegexpNfa(b *testing.B) {
 	runBenchmark(b, nfa)
 }
 
-func BenchmarkAhocorasickSuccinctset(b *testing.B) {
+func BenchmarkAhocorasickSlimtrie(b *testing.B) {
 	b.StopTimer()
 	logrus.SetLevel(logrus.WarnLevel)
 	simulatedDomainSet, err := getDomain()
 	if err != nil {
 		b.Fatal(err)
 	}
-	ahocorasick := NewAhocorasickSuccinctset(consts.MaxMatchSetLen)
+	ahocorasick := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range simulatedDomainSet {
 		ahocorasick.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

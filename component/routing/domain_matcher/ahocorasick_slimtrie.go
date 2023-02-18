@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-type AhocorasickSuccinctset struct {
+type AhocorasickSlimtrie struct {
 	validAcIndexes     []int
 	validTrieIndexes   []int
 	validRegexpIndexes []int
@@ -29,8 +29,8 @@ type AhocorasickSuccinctset struct {
 	err         error
 }
 
-func NewAhocorasickSuccinctset(bitLength int) *AhocorasickSuccinctset {
-	return &AhocorasickSuccinctset{
+func NewAhocorasickSlimtrie(bitLength int) *AhocorasickSlimtrie {
+	return &AhocorasickSlimtrie{
 		ac:          make([]*ahocorasick.Matcher, bitLength),
 		trie:        make([]*trie.SlimTrie, bitLength),
 		regexp:      make([][]*regexp.Regexp, bitLength),
@@ -38,7 +38,7 @@ func NewAhocorasickSuccinctset(bitLength int) *AhocorasickSuccinctset {
 		toBuildTrie: make([][]string, bitLength),
 	}
 }
-func (n *AhocorasickSuccinctset) AddSet(bitIndex int, patterns []string, typ consts.RoutingDomainKey) {
+func (n *AhocorasickSlimtrie) AddSet(bitIndex int, patterns []string, typ consts.RoutingDomainKey) {
 	if n.err != nil {
 		return
 	}
@@ -80,7 +80,7 @@ func (n *AhocorasickSuccinctset) AddSet(bitIndex int, patterns []string, typ con
 		return
 	}
 }
-func (n *AhocorasickSuccinctset) MatchDomainBitmap(domain string) (bitmap []uint32) {
+func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32) {
 	N := len(n.ac) / 32
 	if len(n.ac)%32 != 0 {
 		N++
@@ -147,7 +147,7 @@ func ToSuffixTrieStrings(s []string) []string {
 	}
 	return to
 }
-func (n *AhocorasickSuccinctset) Build() (err error) {
+func (n *AhocorasickSlimtrie) Build() (err error) {
 	if n.err != nil {
 		return n.err
 	}
@@ -167,13 +167,18 @@ func (n *AhocorasickSuccinctset) Build() (err error) {
 	}
 
 	// Build succinct trie.
+	trueValue := true
 	for i, toBuild := range n.toBuildTrie {
 		if len(toBuild) == 0 {
 			continue
 		}
 		toBuild = ToSuffixTrieStrings(toBuild)
 		sort.Strings(toBuild)
-		n.trie[i], err = trie.NewSlimTrie(encode.I8{}, toBuild, nil)
+		n.trie[i], err = trie.NewSlimTrie(encode.Dummy{}, toBuild, nil, trie.Opt{
+			DedupValue: &trueValue,
+			// Set opt to complete to avoid false positive.
+			Complete: &trueValue,
+		})
 		if err != nil {
 			return err
 		}
