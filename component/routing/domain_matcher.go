@@ -8,8 +8,7 @@ package routing
 import "github.com/v2rayA/dae/common/consts"
 
 type DomainMatcher interface {
-	SetBitLength(length int)
-	AddSet(bitIndex int, domains []string, typ consts.RoutingDomainKey)
+	AddSet(bitIndex int, patterns []string, typ consts.RoutingDomainKey)
 	Build() error
 	MatchDomainBitmap(domain string) (bitmap []uint32)
 }

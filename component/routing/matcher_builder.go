@@ -19,6 +19,12 @@ var FakeOutbound_MUST_DIRECT = consts.OutboundMustDirect.String()
 var FakeOutbound_AND = consts.OutboundLogicalAnd.String()
 var FakeOutbound_OR = consts.OutboundLogicalOr.String()
 
+type DomainSet struct {
+	Key       consts.RoutingDomainKey
+	RuleIndex int
+	Domains   []string
+}
+
 type MatcherBuilder interface {
 	AddDomain(f *config_parser.Function, key string, values []string, outbound string)
 	AddIp(f *config_parser.Function, values []netip.Prefix, outbound string)

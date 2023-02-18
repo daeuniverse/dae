@@ -49,6 +49,8 @@ type ControlPlane struct {
 	dnsUpstream DnsUpstreamRaw
 
 	dialMode consts.DialMode
+
+	routingMatcher *RoutingMatcher
 }
 
 func NewControlPlane(
@@ -293,6 +295,10 @@ func NewControlPlane(
 	if err = builder.BuildKernspace(); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
+	routingMatcher, err := builder.BuildUserspace()
+	if err != nil {
+		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	}
 
 	dialMode, err := consts.ParseDialMode(global.DialMode)
 
@@ -308,7 +314,8 @@ func NewControlPlane(
 			Raw:                global.DnsUpstream,
 			FinishInitCallback: nil,
 		},
-		dialMode: dialMode,
+		dialMode:       dialMode,
+		routingMatcher: routingMatcher,
 	}
 
 	/// DNS upstream
