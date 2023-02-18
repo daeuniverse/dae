@@ -175,9 +175,6 @@ func NewControlPlane(
 	}
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
-		if err = core.setupRoutingPolicy(); err != nil {
-			return nil, err
-		}
 		for _, ifname := range global.LanInterface {
 			if err = core.bindLan(ifname); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
