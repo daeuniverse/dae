@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package control
@@ -46,6 +46,12 @@ func (r _bpfPortRange) Encode() (b [16]byte) {
 	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
 	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)
 	return b
+}
+
+func ParsePortRange(b []byte) (portStart, portEnd uint16) {
+	portStart = binary.LittleEndian.Uint16(b[:2])
+	portEnd = binary.LittleEndian.Uint16(b[2:])
+	return portStart, portEnd
 }
 
 func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {

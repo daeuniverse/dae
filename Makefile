@@ -1,6 +1,6 @@
 #
 #  SPDX-License-Identifier: AGPL-3.0-only
-#  Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+#  Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
 #
 
 # The development version of clang is distributed as the 'clang' binary,

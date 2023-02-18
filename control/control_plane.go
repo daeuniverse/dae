@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package control
@@ -43,16 +43,14 @@ type ControlPlane struct {
 	// TODO: add mutex?
 	outbounds []*outbound.DialerGroup
 
-	SimulatedLpmTries  [][]netip.Prefix
-	SimulatedDomainSet []DomainSet
-	Fallback           string
-
 	// mutex protects the dnsCache.
 	dnsCacheMu  sync.Mutex
 	dnsCache    map[string]*dnsCache
 	dnsUpstream DnsUpstreamRaw
 
 	dialMode consts.DialMode
+
+	routingMatcher *RoutingMatcher
 }
 
 func NewControlPlane(
@@ -294,28 +292,30 @@ func NewControlPlane(
 	if err = routing.ApplyMatcherBuilder(log, builder, rules, routingA.Fallback); err != nil {
 		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
 	}
-	if err = builder.Build(); err != nil {
-		return nil, fmt.Errorf("RoutingMatcherBuilder.Build: %w", err)
+	if err = builder.BuildKernspace(); err != nil {
+		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	}
+	routingMatcher, err := builder.BuildUserspace()
+	if err != nil {
+		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 
 	dialMode, err := consts.ParseDialMode(global.DialMode)
 
 	c = &ControlPlane{
-		log:                log,
-		core:               core,
-		deferFuncs:         nil,
-		listenIp:           "0.0.0.0",
-		outbounds:          outbounds,
-		SimulatedLpmTries:  builder.SimulatedLpmTries,
-		SimulatedDomainSet: builder.SimulatedDomainSet,
-		Fallback:           routingA.Fallback,
-		dnsCacheMu:         sync.Mutex{},
-		dnsCache:           make(map[string]*dnsCache),
+		log:        log,
+		core:       core,
+		deferFuncs: nil,
+		listenIp:   "0.0.0.0",
+		outbounds:  outbounds,
+		dnsCacheMu: sync.Mutex{},
+		dnsCache:   make(map[string]*dnsCache),
 		dnsUpstream: DnsUpstreamRaw{
 			Raw:                global.DnsUpstream,
 			FinishInitCallback: nil,
 		},
-		dialMode: dialMode,
+		dialMode:       dialMode,
+		routingMatcher: routingMatcher,
 	}
 
 	/// DNS upstream

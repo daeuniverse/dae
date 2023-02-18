@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package routing
@@ -19,6 +19,12 @@ var FakeOutbound_MUST_DIRECT = consts.OutboundMustDirect.String()
 var FakeOutbound_AND = consts.OutboundLogicalAnd.String()
 var FakeOutbound_OR = consts.OutboundLogicalOr.String()
 
+type DomainSet struct {
+	Key       consts.RoutingDomainKey
+	RuleIndex int
+	Domains   []string
+}
+
 type MatcherBuilder interface {
 	AddDomain(f *config_parser.Function, key string, values []string, outbound string)
 	AddIp(f *config_parser.Function, values []netip.Prefix, outbound string)
@@ -32,7 +38,6 @@ type MatcherBuilder interface {
 	AddFallback(outbound string)
 	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string)
 	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string)
-	Build() (err error)
 }
 
 func GroupParamValuesByKey(params []*config_parser.Param) (keyToValues map[string][]string, keyOrder []string) {
@@ -207,4 +212,3 @@ func (d *DefaultMatcherBuilder) AddProcessName(f *config_parser.Function, values
 }
 func (d *DefaultMatcherBuilder) AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string) {
 }
-func (d *DefaultMatcherBuilder) Build() (err error) { return nil }

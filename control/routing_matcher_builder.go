@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package control
@@ -8,28 +8,24 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/Asphaltt/lpmtrie"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/routing"
+	"github.com/v2rayA/dae/component/routing/domain_matcher"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	"net/netip"
 	"strconv"
 )
-
-type DomainSet struct {
-	Key       string
-	RuleIndex int
-	Domains   []string
-}
 
 type RoutingMatcherBuilder struct {
 	*routing.DefaultMatcherBuilder
 	outboundName2Id    map[string]uint8
 	bpf                *bpfObjects
 	rules              []bpfMatchSet
-	SimulatedLpmTries  [][]netip.Prefix
-	SimulatedDomainSet []DomainSet
+	simulatedLpmTries  [][]netip.Prefix
+	simulatedDomainSet []routing.DomainSet
 	Fallback           string
 
 	err error
@@ -62,17 +58,17 @@ func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string,
 	if b.err != nil {
 		return
 	}
-	switch key {
-	case consts.RoutingDomain_Regex,
-		consts.RoutingDomain_Full,
-		consts.RoutingDomain_Keyword,
-		consts.RoutingDomain_Suffix:
+	switch consts.RoutingDomainKey(key) {
+	case consts.RoutingDomainKey_Regex,
+		consts.RoutingDomainKey_Full,
+		consts.RoutingDomainKey_Keyword,
+		consts.RoutingDomainKey_Suffix:
 	default:
 		b.err = fmt.Errorf("AddDomain: unsupported key: %v", key)
 		return
 	}
-	b.SimulatedDomainSet = append(b.SimulatedDomainSet, DomainSet{
-		Key:       key,
+	b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
+		Key:       consts.RoutingDomainKey(key),
 		RuleIndex: len(b.rules),
 		Domains:   values,
 	})
@@ -94,8 +90,8 @@ func (b *RoutingMatcherBuilder) AddSourceMac(f *config_parser.Function, macAddrs
 		prefix := netip.PrefixFrom(netip.AddrFrom16(addr16), 128)
 		values = append(values, prefix)
 	}
-	lpmTrieIndex := len(b.SimulatedLpmTries)
-	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
+	lpmTrieIndex := len(b.simulatedLpmTries)
+	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
 	set := bpfMatchSet{
 		Value:    [16]byte{},
 		Type:     uint8(consts.MatchType_Mac),
@@ -111,8 +107,8 @@ func (b *RoutingMatcherBuilder) AddIp(f *config_parser.Function, values []netip.
 	if b.err != nil {
 		return
 	}
-	lpmTrieIndex := len(b.SimulatedLpmTries)
-	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
+	lpmTrieIndex := len(b.simulatedLpmTries)
+	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
 	set := bpfMatchSet{
 		Value:    [16]byte{},
 		Type:     uint8(consts.MatchType_IpSet),
@@ -145,8 +141,8 @@ func (b *RoutingMatcherBuilder) AddSourceIp(f *config_parser.Function, values []
 	if b.err != nil {
 		return
 	}
-	lpmTrieIndex := len(b.SimulatedLpmTries)
-	b.SimulatedLpmTries = append(b.SimulatedLpmTries, values)
+	lpmTrieIndex := len(b.simulatedLpmTries)
+	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
 	set := bpfMatchSet{
 		Value:    [16]byte{},
 		Type:     uint8(consts.MatchType_SourceIpSet),
@@ -226,12 +222,12 @@ func (b *RoutingMatcherBuilder) AddFallback(outbound string) {
 	})
 }
 
-func (b *RoutingMatcherBuilder) Build() (err error) {
+func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	if b.err != nil {
 		return b.err
 	}
 	// Update lpm_array_map.
-	for i, cidrs := range b.SimulatedLpmTries {
+	for i, cidrs := range b.simulatedLpmTries {
 		var keys []_bpfLpmKey
 		var values []uint32
 		for _, cidr := range cidrs {
@@ -263,4 +259,41 @@ func (b *RoutingMatcherBuilder) Build() (err error) {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
 	return nil
+}
+
+func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+	var m RoutingMatcher
+	// Update lpms.
+	m.lpms = make([]lpmtrie.LpmTrie, len(b.simulatedLpmTries))
+	for i, cidrs := range b.simulatedLpmTries {
+		lpm, err := lpmtrie.New(128)
+		if err != nil {
+			return nil, err
+		}
+		for _, cidr := range cidrs {
+			lpm.Update(cidrToLpmTrieKey(cidr), 1)
+		}
+		m.lpms[i] = lpm
+	}
+	// Build domainMatcher
+	m.domainMatcher = domain_matcher.NewAhocorasick(consts.MaxMatchSetLen)
+	for _, domains := range b.simulatedDomainSet {
+		m.domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+	}
+	if err = m.domainMatcher.Build(); err != nil {
+		return nil, err
+	}
+
+	// Write routings.
+	// Fallback rule MUST be the last.
+	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
+		b.err = fmt.Errorf("fallback rule MUST be the last")
+		return nil, b.err
+	}
+	m.matches = b.rules
+
+	return &m, nil
 }

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package routing
@@ -49,9 +49,9 @@ func (o *RefineFunctionParamKeyOptimizer) Optimize(rules []*config_parser.Routin
 					// Rewrite to authoritative key name.
 					switch param.Key {
 					case "", "domain":
-						param.Key = consts.RoutingDomain_Suffix
+						param.Key = string(consts.RoutingDomainKey_Suffix)
 					case "contains":
-						param.Key = consts.RoutingDomain_Keyword
+						param.Key = string(consts.RoutingDomainKey_Keyword)
 					default:
 					}
 				}
@@ -169,25 +169,25 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 		case geodata.Domain_Full:
 			// Full.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Full,
+				Key: string(consts.RoutingDomainKey_Full),
 				Val: item.Value,
 			})
 		case geodata.Domain_RootDomain:
 			// Suffix.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Suffix,
+				Key: string(consts.RoutingDomainKey_Suffix),
 				Val: item.Value,
 			})
 		case geodata.Domain_Plain:
 			// Keyword.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Keyword,
+				Key: string(consts.RoutingDomainKey_Keyword),
 				Val: item.Value,
 			})
 		case geodata.Domain_Regex:
 			// Regex.
 			params = append(params, &config_parser.Param{
-				Key: consts.RoutingDomain_Regex,
+				Key: string(consts.RoutingDomainKey_Regex),
 				Val: item.Value,
 			})
 		}

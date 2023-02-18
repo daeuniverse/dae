@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package control
@@ -13,7 +13,6 @@ import (
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
-	"github.com/v2rayA/dae/common/consts"
 	"golang.org/x/net/dns/dnsmessage"
 	"hash/fnv"
 	"math/rand"
@@ -28,7 +27,7 @@ var (
 )
 
 type dnsCache struct {
-	DomainBitmap [consts.MaxMatchSetLen / 32]uint32
+	DomainBitmap []uint32
 	Answers      []dnsmessage.Resource
 	Deadline     time.Time
 }
@@ -95,8 +94,12 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 		ip6 := ip.As16()
 		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
 		vals = append(vals, bpfDomainRouting{
-			Bitmap: cache.DomainBitmap,
+			Bitmap: [3]uint32{},
 		})
+		if len(cache.DomainBitmap) != len(vals[len(vals)-1].Bitmap) {
+			return fmt.Errorf("domain bitmap length not sync with kern program")
+		}
+		copy(vals[len(vals)-1].Bitmap[:], cache.DomainBitmap)
 	}
 	if _, err := BpfMapBatchUpdate(c.core.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
@@ -341,7 +344,7 @@ func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers 
 		cache.Answers = answers
 	} else {
 		cache = &dnsCache{
-			DomainBitmap: c.MatchDomainBitmap(strings.TrimSuffix(fqdn, ".")),
+			DomainBitmap: c.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
 			Answers:      answers,
 			Deadline:     deadline,
 		}

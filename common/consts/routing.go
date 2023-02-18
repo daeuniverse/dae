@@ -1,15 +1,17 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) since 2022, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
 package consts
 
+type RoutingDomainKey string
+
 const (
-	RoutingDomain_Full    = "full"
-	RoutingDomain_Keyword = "keyword"
-	RoutingDomain_Suffix  = "suffix"
-	RoutingDomain_Regex   = "regex"
+	RoutingDomainKey_Full    RoutingDomainKey = "full"
+	RoutingDomainKey_Keyword RoutingDomainKey = "keyword"
+	RoutingDomainKey_Suffix RoutingDomainKey = "suffix"
+	RoutingDomainKey_Regex  RoutingDomainKey = "regex"
 
 	Function_Domain      = "domain"
 	Function_Ip          = "ip"

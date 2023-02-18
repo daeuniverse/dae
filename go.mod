@@ -3,9 +3,11 @@ module github.com/v2rayA/dae
 go 1.18
 
 require (
+	github.com/Asphaltt/lpmtrie v0.0.0-20220205153150-3d814250b8ab
 	github.com/adrg/xdg v0.4.0
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20221202181307-76fa05c21b12
 	github.com/cilium/ebpf v0.10.0
+	github.com/cloudflare/ahocorasick v0.0.0-20210425175752-730270c3e184
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
