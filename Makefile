@@ -28,11 +28,11 @@ dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION)" .
 
 clean-ebpf: 
-	rm -f control/bpf_bpf*.go && \
+	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
 
 bpf_objects:
-	unset GOOS && \
+	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
 	if [ ! -f control/bpf_objects_wan_lan.go ]; then \
@@ -45,7 +45,7 @@ ebpf: export BPF_STRIP := $(STRIP)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: clean-ebpf bpf_objects
-	unset GOOS && \
+	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
     go generate ./control/control.go
