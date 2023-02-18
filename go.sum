@@ -132,8 +132,8 @@ github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/
 github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO+kdMU+MU=
 github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
-github.com/v2rayA/ahocorasick-domain v0.0.0-20230218133743-71484cb9a7a1 h1:9rmVkH/MsdM/NLLY9r7wqCP/zNbwTijGjwCyR88PbyA=
-github.com/v2rayA/ahocorasick-domain v0.0.0-20230218133743-71484cb9a7a1/go.mod h1:mWch8I826zic/bKaCyE9ZZbWtFgEW0ox3EQ0NGm5DGw=
+github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8 h1:2Liq3JvM/acVQZ7Gq9U5PpznMzlFRPYMPQxC2yXSi74=
+github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8/go.mod h1:mWch8I826zic/bKaCyE9ZZbWtFgEW0ox3EQ0NGm5DGw=
 github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1 h1:Ke91ZtZItOO8/SK8nhZ1tXfXcUxj4Meq5pET/L9bHII=
 github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1/go.mod h1:JiTWeZybOkBfCqv/fy5jbFhXTxuLlyrI76gRNazz2sU=
 github.com/vishvananda/netlink v1.1.0 h1:1iyaYNBLmP6L0220aDnYQpo1QEV4t4hJ+xEEhhJH8j0=

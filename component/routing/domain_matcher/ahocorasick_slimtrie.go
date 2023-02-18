@@ -111,7 +111,7 @@ func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32)
 			// Already matched.
 			continue
 		}
-		if hits := n.ac[i].MatchThreadSafe([]byte(domain)); len(hits) > 0 {
+		if n.ac[i].Contains([]byte(domain)) {
 			bitmap[i/32] |= 1 << (i % 32)
 		}
 	}
