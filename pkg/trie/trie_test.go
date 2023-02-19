@@ -8,7 +8,7 @@ package trie
 import "testing"
 
 func TestTrie(t *testing.T) {
-	trie := NewTrie([]string{
+	trie, err := NewTrie([]string{
 		"moc.cbatnetnoc.",
 		"moc.cbatnetnoc^",
 		"nc.",
@@ -95,6 +95,9 @@ func TestTrie(t *testing.T) {
 		"zk.ytamlacbci.",
 		"zk.ytamlacbci^",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !(trie.HasPrefix("nc.tset^") == true) {
 		t.Fatal("^test.cn")
 	}

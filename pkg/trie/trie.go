@@ -1,7 +1,62 @@
-// Package succinct is modified from https://github.com/openacid/succinct/blob/loc100/sskv.go.
+// Package trie is modified from https://github.com/openacid/succinct/blob/loc100/sskv.go.
+// Slower than about 50% but more memory saving.
+
 package trie
 
-import "math/bits"
+import (
+	"fmt"
+	"github.com/v2rayA/dae/common/bitlist"
+	"math/bits"
+)
+
+var table = [256]byte{
+	97:  0, // 'a'
+	98:  1,
+	99:  2,
+	100: 3,
+	101: 4,
+	102: 5,
+	103: 6,
+	104: 7,
+	105: 8,
+	106: 9,
+	107: 10,
+	108: 11,
+	109: 12,
+	110: 13,
+	111: 14,
+	112: 15,
+	113: 16,
+	114: 17,
+	115: 18,
+	116: 19,
+	117: 20,
+	118: 21,
+	119: 22,
+	120: 23,
+	121: 24,
+	122: 25,
+	'-': 26,
+	'.': 27,
+	'^': 28,
+	'$': 29,
+	'1': 30,
+	'2': 31,
+	'3': 32,
+	'4': 33,
+	'5': 34,
+	'6': 35,
+	'7': 36,
+	'8': 37,
+	'9': 38,
+	'0': 39,
+}
+
+const N = 40
+
+func IsValidChar(b byte) bool {
+	return table[b] > 0 || b == 'a'
+}
 
 // Trie is a succinct, sorted and static string set impl with compacted trie as
 // storage. The space cost is about half lower than the original data.
@@ -45,14 +100,25 @@ import "math/bits"
 //	leaves: 0001001111
 type Trie struct {
 	leaves, labelBitmap []uint64
-	labels              []byte
 	ranks, selects      []int32
+	labels              *bitlist.CompactBitList
+	ranksBL, selectsBL  *bitlist.CompactBitList
 }
 
 // NewTrie creates a new *Trie struct, from a slice of sorted strings.
-func NewTrie(keys []string) *Trie {
+func NewTrie(keys []string) (*Trie, error) {
+
+	// Check chars.
+	for _, key := range keys {
+		for _, c := range []byte(key) {
+			if !IsValidChar(c) {
+				return nil, fmt.Errorf("char out of range: %c", c)
+			}
+		}
+	}
 
 	ss := &Trie{}
+	ss.labels = bitlist.NewCompactBitList(bits.Len8(N))
 	lIdx := 0
 
 	type qElt struct{ s, e, col int }
@@ -76,7 +142,7 @@ func NewTrie(keys []string) *Trie {
 			}
 
 			queue = append(queue, qElt{frm, j, elt.col + 1})
-			ss.labels = append(ss.labels, keys[frm][elt.col])
+			ss.labels.Append(uint64(table[keys[frm][elt.col]]))
 			setBit(&ss.labelBitmap, lIdx, 0)
 			lIdx++
 		}
@@ -86,7 +152,32 @@ func NewTrie(keys []string) *Trie {
 	}
 
 	ss.init()
-	return ss
+
+	// Tighten.
+	ss.labels.Tighten()
+
+	leaves := make([]uint64, len(ss.leaves))
+	copy(leaves, ss.leaves)
+	ss.leaves = leaves
+
+	labelBitmap := make([]uint64, len(ss.labelBitmap))
+	copy(labelBitmap, ss.labelBitmap)
+	ss.labelBitmap = labelBitmap
+
+	ss.ranksBL = bitlist.NewCompactBitList(bits.Len64(uint64(ss.ranks[len(ss.ranks)-1])))
+	ss.selectsBL = bitlist.NewCompactBitList(bits.Len64(uint64(ss.selects[len(ss.selects)-1])))
+	for _, v := range ss.ranks {
+		ss.ranksBL.Append(uint64(v))
+	}
+	for _, v := range ss.selects {
+		ss.selectsBL.Append(uint64(v))
+	}
+	ss.ranksBL.Tighten()
+	ss.selectsBL.Tighten()
+	ss.ranks = nil
+	ss.selects = nil
+
+	return ss, nil
 }
 
 // HasPrefix query for a word and return whether a prefix of the word is in the Trie.
@@ -95,6 +186,9 @@ func (ss *Trie) HasPrefix(word string) bool {
 	nodeId, bmIdx := 0, 0
 
 	for i := 0; i < len(word); i++ {
+		if getBit(ss.leaves, nodeId) != 0 {
+			return true
+		}
 		c := word[i]
 		for ; ; bmIdx++ {
 			if getBit(ss.labelBitmap, bmIdx) != 0 {
@@ -102,21 +196,18 @@ func (ss *Trie) HasPrefix(word string) bool {
 				return false
 			}
 
-			if ss.labels[bmIdx-nodeId] == c {
+			if byte(ss.labels.Get(bmIdx-nodeId)) == table[c] {
 				break
 			}
 		}
 
 		// go to next level
 
-		nodeId = countZeros(ss.labelBitmap, ss.ranks, bmIdx+1)
-		if getBit(ss.leaves, nodeId) != 0 {
-			return true
-		}
-		bmIdx = selectIthOne(ss.labelBitmap, ss.ranks, ss.selects, nodeId-1) + 1
+		nodeId = countZeros(ss.labelBitmap, ss.ranksBL, bmIdx+1)
+		bmIdx = selectIthOne(ss.labelBitmap, ss.ranksBL, ss.selectsBL, nodeId-1) + 1
 	}
 
-	return false
+	return getBit(ss.leaves, nodeId) != 0
 }
 
 func setBit(bm *[]uint64, i int, v int) {
@@ -155,8 +246,8 @@ func (ss *Trie) init() {
 //
 //	countZeros("010010", 4) == 3
 //	//          012345
-func countZeros(bm []uint64, ranks []int32, i int) int {
-	return i - int(ranks[i>>6]) - bits.OnesCount64(bm[i>>6]&(1<<uint(i&63)-1))
+func countZeros(bm []uint64, ranks *bitlist.CompactBitList, i int) int {
+	return i - int(ranks.Get(i>>6)) - bits.OnesCount64(bm[i>>6]&(1<<uint(i&63)-1))
 }
 
 // selectIthOne returns the index of the i-th "1" in a bitmap, on behalf of rank
@@ -165,9 +256,9 @@ func countZeros(bm []uint64, ranks []int32, i int) int {
 //
 //	selectIthOne("010010", 1) == 4
 //	//            012345
-func selectIthOne(bm []uint64, ranks, selects []int32, i int) int {
-	base := int(selects[i>>6] & ^63)
-	findIthOne := i - int(ranks[base>>6])
+func selectIthOne(bm []uint64, ranks, selects *bitlist.CompactBitList, i int) int {
+	base := int(selects.Get(i>>6)) & ^63
+	findIthOne := i - int(ranks.Get(base>>6))
 
 	for i := base >> 6; i < len(bm); i++ {
 		bitIdx := 0

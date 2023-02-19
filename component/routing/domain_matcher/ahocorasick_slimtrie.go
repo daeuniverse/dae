@@ -173,7 +173,7 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 		}
 		toBuild = ToSuffixTrieStrings(toBuild)
 		sort.Strings(toBuild)
-		n.trie[i] = trie.NewTrie(toBuild)
+		n.trie[i], err = trie.NewTrie(toBuild)
 		if err != nil {
 			return err
 		}
