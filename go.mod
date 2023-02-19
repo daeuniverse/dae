@@ -11,7 +11,6 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
 	github.com/mzz2017/softwind v0.0.0-20230217170818-542cba31602f
-	github.com/openacid/slim v0.5.11
 	github.com/safchain/ethtool v0.0.0-20230116090318-67cc41908669
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
@@ -20,14 +19,13 @@ require (
 	github.com/vishvananda/netlink v1.1.0
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.5.0
+	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e
 	golang.org/x/net v0.5.0
 	golang.org/x/sys v0.4.0
 	google.golang.org/protobuf v1.28.1
 )
 
 require (
-	github.com/blang/semver v3.5.1+incompatible // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-camellia v0.0.0-20191119043421-69a8a13fb23d // indirect
 	github.com/dgryski/go-idea v0.0.0-20170306091226-d2fb45a411fb // indirect
 	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect
@@ -44,22 +42,15 @@ require (
 	github.com/mzz2017/disk-bloom v1.0.1 // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.26.0 // indirect
-	github.com/openacid/errors v0.8.1 // indirect
-	github.com/openacid/low v0.1.22-0.20210130164417-01334eb50af8 // indirect
-	github.com/openacid/must v0.1.3 // indirect
-	github.com/openacid/testkeys v0.1.7 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.8.1 // indirect
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
 	gitlab.com/yawning/chacha20.git v0.0.0-20190903091407-6d1cb28dc72c // indirect
-	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
 	golang.org/x/term v0.4.0 // indirect
 	golang.org/x/text v0.6.0 // indirect
 	google.golang.org/genproto v0.0.0-20221227171554-f9683d7f8bef // indirect
 	google.golang.org/grpc v1.52.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 //replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind

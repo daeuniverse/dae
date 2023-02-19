@@ -6,6 +6,7 @@
 package domain_matcher
 
 import (
+	"fmt"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/routing"
 	"regexp"
@@ -17,18 +18,31 @@ type Bruteforce struct {
 	err                error
 }
 
-func NewBruteforce(simulatedDomainSet []routing.DomainSet) *Bruteforce {
+func NewBruteforce(bitLength int) *Bruteforce {
 	return &Bruteforce{
-		simulatedDomainSet: simulatedDomainSet,
+		simulatedDomainSet: make([]routing.DomainSet, bitLength),
 	}
 }
 func (n *Bruteforce) AddSet(bitIndex int, patterns []string, typ consts.RoutingDomainKey) {
+	if n.err != nil {
+		return
+	}
+	if len(n.simulatedDomainSet[bitIndex].Domains) != 0 {
+		n.err = fmt.Errorf("duplicated RuleIndex: %v", bitIndex)
+		return
+	}
+	n.simulatedDomainSet[bitIndex] = routing.DomainSet{
+		Key:       typ,
+		RuleIndex: bitIndex,
+		Domains:   patterns,
+	}
 }
 func (n *Bruteforce) MatchDomainBitmap(domain string) (bitmap []uint32) {
 	N := len(n.simulatedDomainSet) / 32
 	if len(n.simulatedDomainSet)%32 != 0 {
 		N++
 	}
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 	bitmap = make([]uint32, N)
 	for _, s := range n.simulatedDomainSet {
 		for _, d := range s.Domains {
@@ -52,6 +66,7 @@ func (n *Bruteforce) MatchDomainBitmap(domain string) (bitmap []uint32) {
 				}
 			}
 			if hit {
+				//logrus.Traceln(d, s.Key, "matched given", domain)
 				bitmap[s.RuleIndex/32] |= 1 << (s.RuleIndex % 32)
 				break
 			}

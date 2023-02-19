@@ -372,7 +372,7 @@ func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUp
 					A: dnsUpstream.Ip4.As4(),
 				},
 			}}
-			if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
+			if err = c.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 				c = nil
 				return
 			}
@@ -391,7 +391,7 @@ func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUp
 					AAAA: dnsUpstream.Ip6.As16(),
 				},
 			}}
-			if err = c.UpdateDnsCache(fqdn, typ, answers, deadline); err != nil {
+			if err = c.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 				c = nil
 				return
 			}

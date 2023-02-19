@@ -331,12 +331,19 @@ loop:
 }
 
 func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers []dnsmessage.Resource, deadline time.Time) (err error) {
-	c.dnsCacheMu.Lock()
-	fqdn := strings.ToLower(host)
-	if !strings.HasSuffix(fqdn, ".") {
-		fqdn += "."
+	var fqdn string
+	if strings.HasSuffix(host, ".") {
+		fqdn = host
+		host = host[:len(host)-1]
+	} else {
+		fqdn = host + "."
+	}
+	// Bypass pure IP.
+	if _, err = netip.ParseAddr(host); err == nil {
+		return nil
 	}
 	cacheKey := fqdn + typ.String()
+	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
 		c.dnsCacheMu.Unlock()

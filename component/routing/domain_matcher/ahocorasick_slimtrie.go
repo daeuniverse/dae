@@ -7,10 +7,9 @@ package domain_matcher
 
 import (
 	"fmt"
-	"github.com/openacid/slim/encode"
-	"github.com/openacid/slim/trie"
 	"github.com/v2rayA/ahocorasick-domain"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/pkg/trie"
 	"regexp"
 	"sort"
 	"strings"
@@ -21,7 +20,7 @@ type AhocorasickSlimtrie struct {
 	validTrieIndexes   []int
 	validRegexpIndexes []int
 	ac                 []*ahocorasick.Matcher
-	trie               []*trie.SlimTrie
+	trie               []*trie.Trie
 	regexp             [][]*regexp.Regexp
 
 	toBuildAc   [][][]byte
@@ -32,7 +31,7 @@ type AhocorasickSlimtrie struct {
 func NewAhocorasickSlimtrie(bitLength int) *AhocorasickSlimtrie {
 	return &AhocorasickSlimtrie{
 		ac:          make([]*ahocorasick.Matcher, bitLength),
-		trie:        make([]*trie.SlimTrie, bitLength),
+		trie:        make([]*trie.Trie, bitLength),
 		regexp:      make([][]*regexp.Regexp, bitLength),
 		toBuildAc:   make([][][]byte, bitLength),
 		toBuildTrie: make([][]string, bitLength),
@@ -86,8 +85,7 @@ func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32)
 		N++
 	}
 	bitmap = make([]uint32, N)
-	// Add magic chars as head and tail.
-	domain = "^" + strings.ToLower(strings.TrimSuffix(domain, ".")) + "$"
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 	// Domain should consist of 'a'-'z' and '.' and '-'
 	for _, b := range []byte(domain) {
 		if !ahocorasick.IsValidChar(b) {
@@ -95,23 +93,25 @@ func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32)
 		}
 	}
 	// Suffix matching.
-	suffixTrieDomain := ToSuffixTrieString(domain)
+	suffixTrieDomain := ToSuffixTrieString("^" + domain)
 	for _, i := range n.validTrieIndexes {
 		if bitmap[i/32]&(1<<(i%32)) > 0 {
 			// Already matched.
 			continue
 		}
-		if _, ok := n.trie[i].Get(suffixTrieDomain); ok {
+		if n.trie[i].HasPrefix(suffixTrieDomain) {
 			bitmap[i/32] |= 1 << (i % 32)
 		}
 	}
 	// Keyword matching.
+	// Add magic chars as head and tail.
+	acDomain := "^" + domain + "$"
 	for _, i := range n.validAcIndexes {
 		if bitmap[i/32]&(1<<(i%32)) > 0 {
 			// Already matched.
 			continue
 		}
-		if n.ac[i].Contains([]byte(domain)) {
+		if n.ac[i].Contains([]byte(acDomain)) {
 			bitmap[i/32] |= 1 << (i % 32)
 		}
 	}
@@ -167,18 +167,13 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 	}
 
 	// Build succinct trie.
-	trueValue := true
 	for i, toBuild := range n.toBuildTrie {
 		if len(toBuild) == 0 {
 			continue
 		}
 		toBuild = ToSuffixTrieStrings(toBuild)
 		sort.Strings(toBuild)
-		n.trie[i], err = trie.NewSlimTrie(encode.Dummy{}, toBuild, nil, trie.Opt{
-			DedupValue: &trueValue,
-			// Set opt to complete to avoid false positive.
-			Complete: &trueValue,
-		})
+		n.trie[i] = trie.NewTrie(toBuild)
 		if err != nil {
 			return err
 		}

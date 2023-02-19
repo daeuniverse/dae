@@ -172,7 +172,13 @@ func BenchmarkBruteforce(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	bf := NewBruteforce(simulatedDomainSet)
+	bf := NewBruteforce(consts.MaxMatchSetLen)
+	for _, domains := range simulatedDomainSet {
+		bf.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+	}
+	if err = bf.Build(); err != nil {
+		b.Fatal(err)
+	}
 	b.StartTimer()
 	runBenchmark(b, bf)
 }
