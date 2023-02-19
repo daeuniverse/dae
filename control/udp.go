@@ -35,7 +35,7 @@ var (
 	UnspecifiedAddr6 = netip.AddrFrom16([16]byte{})
 )
 
-func ChooseNatTimeout(data []byte) (dmsg *dnsmessage.Message, timeout time.Duration) {
+func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Message, timeout time.Duration) {
 	var dnsmsg dnsmessage.Message
 	if err := dnsmsg.Unpack(data); err == nil {
 		//log.Printf("DEBUG: lookup %v", dnsmsg.Questions[0].Name)
@@ -125,7 +125,9 @@ func (c *ControlPlane) WriteToUDP(lanWanFlag consts.LanWanFlag, lConn *net.UDPCo
 					}).Tracef("DNS rush-answer rejected")
 					return err
 				}
-				c.log.Debugf("DnsRespHandler: %v", err)
+				if c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.Debugf("DnsRespHandler: %v", err)
+				}
 				if data == nil {
 					return nil
 				}
@@ -159,10 +161,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		mustDirect = true
 		fallthrough
 	case consts.OutboundControlPlaneDirect:
-		c.log.Tracef("outbound: %v => %v",
-			outboundIndex.String(),
-			consts.OutboundDirect.String(),
-		)
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.Tracef("outbound: %v => %v",
+				outboundIndex.String(),
+				consts.OutboundDirect.String(),
+			)
+		}
 		outboundIndex = consts.OutboundDirect
 	default:
 	}
@@ -170,7 +174,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		return fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	outbound := c.outbounds[outboundIndex]
-	dnsMessage, natTimeout := ChooseNatTimeout(data)
+	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
+	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
 	var dummyFrom *netip.AddrPort
@@ -234,11 +239,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			bestLatency time.Duration
 			bestTarget  netip.AddrPort
 		)
-		c.log.WithFields(logrus.Fields{
-			"ipversions": ipversions,
-			"l4protos":   l4protos,
-			"src":        realSrc.String(),
-		}).Traceln("Choose DNS path")
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"ipversions": ipversions,
+				"l4protos":   l4protos,
+				"src":        realSrc.String(),
+			}).Traceln("Choose DNS path")
+		}
 		// Get the min latency path.
 		networkType := dialer.NetworkType{
 			IsDns: isDns,
@@ -251,12 +258,14 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				if err != nil {
 					continue
 				}
-				c.log.WithFields(logrus.Fields{
-					"name":     d.Name(),
-					"latency":  latency,
-					"network":  networkType.String(),
-					"outbound": outbound.Name,
-				}).Traceln("Choice")
+				if c.log.IsLevelEnabled(logrus.TraceLevel) {
+					c.log.WithFields(logrus.Fields{
+						"name":     d.Name(),
+						"latency":  latency,
+						"network":  networkType.String(),
+						"outbound": outbound.Name,
+					}).Traceln("Choice")
+				}
 				if bestDialer == nil || latency < bestLatency {
 					bestDialer = d
 					bestLatency = latency
@@ -274,11 +283,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		dialerForNew = bestDialer
 		dummyFrom = &realDst
 		destToSend = bestTarget
-		c.log.WithFields(logrus.Fields{
-			"Original": RefineAddrPortToShow(realDst),
-			"New":      destToSend,
-			"Network":  string(l4proto) + string(ipversion),
-		}).Traceln("Modify DNS target")
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"Original": RefineAddrPortToShow(realDst),
+				"New":      destToSend,
+				"Network":  string(l4proto) + string(ipversion),
+			}).Traceln("Modify DNS target")
+		}
 	}
 	networkType := &dialer.NetworkType{
 		L4Proto:   l4proto,
@@ -329,12 +340,15 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 		// If the udp endpoint has been not alive, remove it from pool and get a new one.
 		if !isNew && outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
-			c.log.WithFields(logrus.Fields{
-				"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
-				"network": networkType.String(),
-				"dialer":  ue.Dialer.Name(),
-				"retry":   retry,
-			}).Debugln("Old udp endpoint was not alive and removed.")
+
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
+					"network": networkType.String(),
+					"dialer":  ue.Dialer.Name(),
+					"retry":   retry,
+				}).Debugln("Old udp endpoint was not alive and removed.")
+			}
 			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 			retry++
 			goto getNew
@@ -344,14 +358,16 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 		_, err = ue.WriteTo(data, tgtToSend)
 		if err != nil {
-			c.log.WithFields(logrus.Fields{
-				"to":      destToSend.String(),
-				"domain":  domain,
-				"from":    realSrc.String(),
-				"network": networkType.String(),
-				"err":     err.Error(),
-				"retry":   retry,
-			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"to":      destToSend.String(),
+					"domain":  domain,
+					"from":    realSrc.String(),
+					"network": networkType.String(),
+					"err":     err.Error(),
+					"retry":   retry,
+				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+			}
 			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 			retry++
 			goto getNew
@@ -420,8 +436,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			}).Infof("%v <-> %v",
 				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
 			)
-		} else {
-			// TODO: Set-up ip to domain mapping and show domain if possible.
+		} else if c.log.IsLevelEnabled(logrus.InfoLevel) {
 			c.log.WithFields(logrus.Fields{
 				"network":  string(l4proto) + string(ipversion),
 				"outbound": outbound.Name,

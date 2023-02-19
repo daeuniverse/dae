@@ -49,10 +49,11 @@
 #define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 2)
-#define MAX_SRC_PID_PNAME_MAPPING_NUM (65536)
-#define IPV6_MAX_EXTENSIONS 4
+#define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
+#define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN_TO_PROBE 192
 #define MAX_ARG_SCANNER_BUFFER_SIZE (TASK_COMM_LEN * 4)
+#define IPV6_MAX_EXTENSIONS 4
 
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
@@ -327,7 +328,7 @@ struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __type(key, __be32[4]);
   __type(value, struct domain_routing);
-  __uint(max_entries, 65535);
+  __uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
   /// NOTICE: No persistence.
   // __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_routing_map SEC(".maps");
@@ -347,7 +348,7 @@ struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __type(key, __u64);
   __type(value, struct pid_pname);
-  __uint(max_entries, MAX_SRC_PID_PNAME_MAPPING_NUM);
+  __uint(max_entries, MAX_COOKIE_PID_PNAME_MAPPING_NUM);
   /// NOTICE: No persistence.
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } cookie_pid_map SEC(".maps");

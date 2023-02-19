@@ -22,7 +22,7 @@ type UdpEndpoint struct {
 	conn netproxy.PacketConn
 	// mu protects deadlineTimer
 	mu            sync.Mutex
-	deadlineTimer *time.Timer
+	deadlineTimer *time.Timer // nil means UdpEndpoint was closed
 	handler       UdpHandler
 	NatTimeout    time.Duration
 
@@ -48,7 +48,7 @@ func (ue *UdpEndpoint) start() {
 		}
 	}
 	ue.mu.Lock()
-	ue.deadlineTimer.Stop()
+	ue.Close()
 	ue.mu.Unlock()
 }
 
@@ -56,13 +56,15 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	return ue.conn.WriteTo(b, addr)
 }
 
-func (ue *UdpEndpoint) Close() error {
+func (ue *UdpEndpoint) Close() (err error) {
 	ue.mu.Lock()
 	if ue.deadlineTimer != nil {
+		err = ue.conn.Close()
 		ue.deadlineTimer.Stop()
+		ue.deadlineTimer = nil
 	}
 	ue.mu.Unlock()
-	return ue.conn.Close()
+	return err
 }
 
 // UdpEndpointPool is a full-cone udp conn pool
@@ -149,7 +151,9 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 	} else {
 		// Postpone the deadline.
 		ue.mu.Lock()
-		ue.deadlineTimer.Reset(ue.NatTimeout)
+		if ue.deadlineTimer != nil {
+			ue.deadlineTimer.Reset(ue.NatTimeout)
+		}
 		ue.mu.Unlock()
 	}
 	return ue, isNew, nil

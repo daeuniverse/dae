@@ -85,6 +85,9 @@ func (c *ControlPlane) BatchUpdateDomainRouting(cache *dnsCache) error {
 			ips = append(ips, netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA))
 		}
 	}
+	if len(ips) == 0 {
+		return nil
+	}
 
 	// Update bpf map.
 	// Construct keys and vals, and BpfMapBatchUpdate.
@@ -316,13 +319,15 @@ loop:
 	}
 
 	// Update dnsCache.
-	c.log.WithFields(logrus.Fields{
-		"qname": q.Name,
-		"rcode": msg.RCode,
-		"ans":   FormatDnsRsc(msg.Answers),
-		"auth":  FormatDnsRsc(msg.Authorities),
-		"addi":  FormatDnsRsc(msg.Additionals),
-	}).Tracef("Update DNS record cache")
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"qname": q.Name,
+			"rcode": msg.RCode,
+			"ans":   FormatDnsRsc(msg.Answers),
+			"auth":  FormatDnsRsc(msg.Authorities),
+			"addi":  FormatDnsRsc(msg.Additionals),
+		}).Tracef("Update DNS record cache")
+	}
 	if err = c.UpdateDnsCache(q.Name.String(), q.Type, msg.Answers, time.Now().Add(time.Duration(ttl)*time.Second+DnsNatTimeout)); err != nil {
 		return nil, err
 	}

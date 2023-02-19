@@ -66,10 +66,12 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	case consts.OutboundMustDirect:
 		fallthrough
 	case consts.OutboundControlPlaneDirect:
-		c.log.Tracef("outbound: %v => %v",
-			outboundIndex.String(),
-			consts.OutboundDirect.String(),
-		)
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.Tracef("outbound: %v => %v",
+				outboundIndex.String(),
+				consts.OutboundDirect.String(),
+			)
+		}
 		outboundIndex = consts.OutboundDirect
 	default:
 	}
@@ -87,13 +89,16 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
-	c.log.WithFields(logrus.Fields{
-		"network":  networkType.String(),
-		"outbound": outbound.Name,
-		"policy":   outbound.GetSelectionPolicy(),
-		"dialer":   d.Name(),
-		"domain":   domain,
-	}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
+
+	if c.log.IsLevelEnabled(logrus.InfoLevel) {
+		c.log.WithFields(logrus.Fields{
+			"network":  networkType.String(),
+			"outbound": outbound.Name,
+			"policy":   outbound.GetSelectionPolicy(),
+			"dialer":   d.Name(),
+			"domain":   domain,
+		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
+	}
 
 	// Dial and relay.
 	dst = netip.AddrPortFrom(common.ConvergeIp(dst.Addr()), dst.Port())

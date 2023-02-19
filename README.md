@@ -49,22 +49,18 @@ Use following command to show kernel configuration items on your machine.
 zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
-**Bind to LAN**
-
+dae needs:
 ```
-CONFIG_DEBUG_INFO_BTF
+CONFIG_DEBUG_INFO_BTF=y
+CONFIG_NET_CLS_ACT=y
+CONFIG_NET_SCH_INGRESS=m
+CONFIG_NET_INGRESS=y
+CONFIG_NET_EGRESS=y
 ```
-
-**Bind to WAN**:
-
-```
-CONFIG_DEBUG_INFO_BTF
-```
-
 Check them using command like:
 
 ```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep 'CONFIG_DEBUG_INFO_BTF='
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO_BTF|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS)='
 ```
 
 ### Enable IP Forwarding

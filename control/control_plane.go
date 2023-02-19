@@ -523,33 +523,32 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 				}
 				break
 			}
-			pktDst := RetrieveOriginalDest(oob[:oobn])
-			var newBuf []byte
-			var realDst netip.AddrPort
-			outboundIndex, err := c.core.RetrieveOutboundIndex(src, pktDst, unix.IPPROTO_UDP)
-			if err != nil {
-				// WAN. Old method.
-				addrHdr, dataOffset, err := ParseAddrHdr(buf[:n])
+			newBuf := pool.Get(n)
+			copy(newBuf, buf[:n])
+			go func(data []byte, src netip.AddrPort) {
+				defer pool.Put(data)
+				var realDst netip.AddrPort
+				var outboundIndex consts.OutboundIndex
+				pktDst := RetrieveOriginalDest(oob[:oobn])
+				outboundIndex, err := c.core.RetrieveOutboundIndex(src, pktDst, unix.IPPROTO_UDP)
 				if err != nil {
-					c.log.Warnf("No AddrPort presented")
-					continue
+					// WAN. Old method.
+					addrHdr, dataOffset, err := ParseAddrHdr(data)
+					if err != nil {
+						c.log.Warnf("No AddrPort presented")
+						return
+					}
+					copy(data, data[dataOffset:])
+					outboundIndex = consts.OutboundIndex(addrHdr.Outbound)
+					src = netip.AddrPortFrom(addrHdr.Dest.Addr(), src.Port())
+					realDst = addrHdr.Dest
+				} else {
+					realDst = pktDst
 				}
-				newBuf = pool.Get(n - dataOffset)
-				copy(newBuf, buf[dataOffset:n])
-				outboundIndex = consts.OutboundIndex(addrHdr.Outbound)
-				src = netip.AddrPortFrom(addrHdr.Dest.Addr(), src.Port())
-				realDst = addrHdr.Dest
-			} else {
-				newBuf = pool.Get(n)
-				copy(newBuf, buf[:n])
-				realDst = pktDst
-			}
-			go func(data []byte, src, pktDst, realDst netip.AddrPort, outboundIndex consts.OutboundIndex) {
-				if e := c.handlePkt(udpConn, newBuf, src, pktDst, realDst, outboundIndex); e != nil {
+				if e := c.handlePkt(udpConn, data, src, pktDst, realDst, outboundIndex); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
-				pool.Put(newBuf)
-			}(newBuf, src, pktDst, realDst, outboundIndex)
+			}(newBuf, src)
 		}
 	}()
 	<-ctx.Done()

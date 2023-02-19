@@ -90,6 +90,9 @@ func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
 }
 
 func (a *AliveDialerSet) printLatencies() {
+	if !a.log.IsLevelEnabled(logrus.TraceLevel) {
+		return
+	}
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("%v (%v):\n", a.dialerGroupName, a.CheckTyp.String()))
 	for _, d := range a.inorderedAliveDialerSet {
