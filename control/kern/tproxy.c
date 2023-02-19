@@ -1614,8 +1614,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
         // Print only new connection.
-        bpf_printk("tcp(wan): from %pI6:%u", tuples.sip.u6_addr32,
-                   bpf_ntohs(tuples.sport));
+        __u32 pid = pid_pname ? pid_pname->pid : 0;
+        bpf_printk("tcp(wan): from %pI6:%u [PID %u]", tuples.sip.u6_addr32,
+                   bpf_ntohs(tuples.sport), pid);
         bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound,
                    tuples.dip.u6_addr32, bpf_ntohs(tuples.dport));
 #endif
@@ -1631,7 +1632,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         outbound = dst->outbound;
       }
 
-      if (outbound == OUTBOUND_DIRECT) {
+      if (outbound == OUTBOUND_DIRECT || outbound == OUTBOUND_MUST_DIRECT) {
         return TC_ACT_OK;
       } else if (unlikely(outbound == OUTBOUND_BLOCK)) {
         return TC_ACT_SHOT;
@@ -1710,13 +1711,14 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
       new_hdr.outbound = ret;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-      bpf_printk("udp(wan): from %pI6:%u", tuples.sip.u6_addr32,
-                 bpf_ntohs(tuples.sport));
+        __u32 pid = pid_pname ? pid_pname->pid : 0;
+      bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples.sip.u6_addr32,
+                 bpf_ntohs(tuples.sport), pid);
       bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound,
                  tuples.dip.u6_addr32, bpf_ntohs(tuples.dport));
 #endif
 
-      if (new_hdr.outbound == OUTBOUND_DIRECT) {
+      if (new_hdr.outbound == OUTBOUND_DIRECT || new_hdr.outbound == OUTBOUND_MUST_DIRECT) {
         return TC_ACT_OK;
       } else if (unlikely(new_hdr.outbound == OUTBOUND_BLOCK)) {
         return TC_ACT_SHOT;

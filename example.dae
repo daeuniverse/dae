@@ -32,7 +32,7 @@ global {
 
     # The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.
     # Multiple interfaces split by ",".
-    # lan_interface: docker0
+    #lan_interface: docker0
 
     # SNAT for incoming connection to avoid MAC learning.
     # Set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding
@@ -87,13 +87,13 @@ group {
         filter: name(regex:'HK|SG|TW', keyword:'JP', keyword: SH) && !name(keyword:"GCP")
 
         # Randomly select a node from the group for every connection.
-        # policy: random
+        #policy: random
 
         # Select the first node from the group for every connection.
-        # policy: fixed(0)
+        #policy: fixed(0)
 
         # Select the node with min last latency from the group for every connection.
-        # policy: min
+        #policy: min
 
         # Select the node with min moving average of latencies from the group for every connection.
         policy: min_moving_avg
@@ -101,7 +101,6 @@ group {
 
     group2 {
         # Filter nodes from the global node pool defined by the subscription and node section above.
-        # Pass node names as input of keyword/regex filter.
         filter: subtag(regex: '^my_', another_sub) && !name(keyword: 'ExpireAt:')
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
@@ -111,7 +110,7 @@ group {
 
 # See routing.md for full examples.
 routing {
-    pname(NetworkManager, dnsmasq, systemd-resolved) -> must_direct # Traffic of domain name server and network manager in local must be direct to avoid loop and bad network connectivity check when binding to WAN.
+    pname(NetworkManager, systemd-resolved) -> direct # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to WAN. However, if you set upstream (in section "global") to a DNS service in localhost (dnsmasq, adguard, etc.), to avoid loops, replace "direct" with "must_direct", which will not redirect DNS requests to dae.
     ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being forwarded by the proxy.
     # Write your rules below.
 
