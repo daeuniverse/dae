@@ -8,7 +8,7 @@ A `kernel` is the core of any operating system. Before you start calling Linux a
 
 Upgrading the Linux kernel is not easy; you must do this only if you find security errors or hardware interaction issues. If your system crashes, you might have to recover the whole system. Mostly, Linux distributions come with the most upgraded kernel. Upgrading the Linux kernel doesn’t delete or remove the previous kernel; it is kept inside the system.
 
-> **Notes**
+> **Note**
 > You should not upgrade your kernel manually unless you want some specific driver support. You can roll back to the older kernel from the recovery menu of your Linux system. However, you may need to upgrade the kernel for hardware issues or security issues.
 
 ### Preparation
@@ -17,7 +17,7 @@ Before you start upgrading your Linux kernel, you must know the Kernel’s `curr
 
 Various Linux distributions have different methods to upgrade the Linux kernel. This guide convers ways to upgrade the kernel to a desired version for most `Debian-based Linux`, `RedHar, Fedora based Linux`, and `Arch-based Linux` distributions.
 
-> **Notes**
+> **Note**
 > Since `Dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
 
 ### Upgrade Kernel on Debian-based Linux
