@@ -110,12 +110,25 @@ group {
 
 # See routing.md for full examples.
 routing {
-    pname(NetworkManager, systemd-resolved) -> direct # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to WAN. However, if you set upstream (in section "global") to a DNS service in localhost (dnsmasq, adguard, etc.), to avoid loops, replace "direct" with "must_direct", which will not redirect DNS requests to dae.
-    ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being forwarded by the proxy.
-    # Write your rules below.
+    ### Preset rules.
 
-    # dae arms DNS rush-answer filter so we can use dns.google regardless of DNS pollution.
-    domain(full:dns.google) && port(53) -> direct
+    # If you set upstream (in section "global") to a DNS service in localhost (dnsmasq, adguard, etc.), to avoid loops,
+    #pname(dnsmasq) -> must_direct
+
+    # add them and let them "must_direct", which will not redirect DNS requests to dae.
+    # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
+    # WAN.
+    pname(NetworkManager, systemd-resolved) -> direct
+
+    # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being
+    # forwarded by the proxy.
+    ip(224.0.0.0/3, 'ff00::/8') -> direct
+
+    # This line allows you to access private addresses directly instead of via your proxy. If you really want to access
+    # private addresses in your proxy host network, modify the below line.
+    ip(geoip:private) -> direct
+
+    ### Write your rules below.
 
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
