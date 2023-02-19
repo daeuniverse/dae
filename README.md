@@ -17,7 +17,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 1. Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
 1. Support full-cone NAT for shadowsocks, vmess, socks5 and trojan(-go).
 
-## Linux Kernel Requirement
+## Prerequisites
 
 ### Kernel Version
 
@@ -79,61 +79,19 @@ EOF
 sudo sysctl --system
 ```
 
-## Usage
+## Getting Started
 
-### Build
-
-**Make Dependencies**
-
-```shell
-clang >= 10
-llvm >= 10
-golang >= 1.18
-make
-```
-
-**Build**
-
-```shell
-git clone https://github.com/v2rayA/dae.git
-cd dae
-git submodule update --init
-# Minimal dependency build:
-make GOFLAGS="-buildvcs=false" CC=clang
-# Or normal build:
-# make
-```
-
-### Run
-
-**Runtime Dependencies**
-
-Download [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest) to `/usr/local/share/dae/`.
-
-```
-mkdir -p /usr/local/share/dae/
-pushd /usr/local/share/dae/
-curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
-curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
-popd
-```
-
-**Run**
-
-```shell
-./dae run -c example.dae
-```
-
-See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
+Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start using `Dae` right away!
 
 ## TODO
 
-1. Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
-1. WAN L4Checksum problem.
-   If the NIC checksumming offload is enabled, the Linux network stack will make a simple checksum a packet when it is sent out from local. When NIC discovers that the source IP of the packet is the local IP of the NIC, it will checksum it complete this checksum.
-   But the problem is, after the Linux network stack, before entering the network card, we modify the source IP of this packet, causing the Linux network stack to only make a simple checksum, and the NIC also assumes that this packet is not sent from local, so no further checksum completing.
-1. MACv2 extension extraction.
-1. Log to userspace.
-1. Protocol-oriented node features detecting (or filter), such as full-cone (especially VMess and VLESS).
-1. DNS traffic split.
-1. ...
+[ ] - Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
+[ ] - WAN L4Checksum problem.
+[ ] - If the NIC checksumming offload is enabled, the Linux network stack will make a simple checksum a packet when it is sent out from local. When NIC discovers that the source IP of the packet is the local IP of the NIC, it will checksum it complete this checksum.
+[ ] - But the problem is, after the Linux network stack, before entering the network card, we modify the source IP of this packet, causing the Linux network stack to only make a simple checksum, and the NIC also assumes that this packet is not sent from local, so no further checksum completing.
+[ ] - MACv2 extension extraction.
+[ ] - Log to userspace.
+[ ] - Protocol-oriented node features detecting (or filter), such as full-cone (especially VMess and VLESS).
+[ ] - DNS traffic split.
+[ ] - Add quick-start guide
+[ ] - ...
