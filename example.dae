@@ -113,9 +113,9 @@ routing {
     ### Preset rules.
 
     # If you set upstream (in section "global") to a DNS service in localhost (dnsmasq, adguard, etc.), to avoid loops,
+    # let them "must_direct", which makes DNS requests not redirect back to dae again.
     #pname(dnsmasq) -> must_direct
 
-    # add them and let them "must_direct", which will not redirect DNS requests to dae.
     # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
     # WAN.
     pname(NetworkManager, systemd-resolved) -> direct
