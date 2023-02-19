@@ -67,7 +67,7 @@ func checkIpforward(ifname string, ipversion consts.IpVersionStr) error {
 	if bytes.Equal(bytes.TrimSpace(b), []byte("1")) {
 		return nil
 	}
-	return fmt.Errorf("ipforward on %v is off: %v", ifname, path)
+	return fmt.Errorf("ipforward on %v is off: %v; see https://github.com/v2rayA/dae#enable-ip-forwarding", ifname, path)
 }
 
 func CheckIpforward(ifname string) error {
