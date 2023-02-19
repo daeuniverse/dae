@@ -2,7 +2,7 @@
 
 A `kernel` is the core of any operating system. Before you start calling Linux an operating system, you need to know the basic concept and Linux’s birth history. **_Linux is not an operating system; mainly, Linux is a kernel_**.
 
-## Upgrade Guide
+## How To Upgrade Linux Kernel On Various Distributions
 
 ### Disclaimer
 
@@ -22,9 +22,26 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 
 ### Upgrade Kernel on Debian-based Linux
 
-```bash
-sudo apt search linux-image
+Debian-based Linux distribution users can upgrade their Linux kernel upgrading the `linux-image-generic` to a desired version by making use of the [mainline](https://github.com/pimlie/ubuntu-mainline-kernel.sh) tool. It will update both `linux-image-generic` and `linux-headers-generic`.
 
+```bash
+sudo apt-add-repository -y ppa:cappelikan/ppa
+sudo apt update
+sudo apt install wget mainline
+wget https://raw.githubusercontent.com/pimlie/ubuntu-mainline-kernel.sh/master/ubuntu-mainline-kernel.sh
+chmod +x ubuntu-mainline-kernel.sh
+sudo install ubuntu-mainline-kernel.sh /usr/local/bin/
+
+# list available kernel patches
+ubuntu-mainline-kernel.sh -l
+ubuntu-mainline-kernel.sh -i <DESIRED VERSION>
+```
+
+Reboot to take effect
+
+```bash
+reboot
+uname -r
 ```
 
 ### Upgrade kernel on RedHat and Fedora Linux
@@ -36,6 +53,11 @@ Fedora and RedHat Linux users can install a specific version of Kernel on their 
 ```bash
 sudo yum update kernel
 sudo yum install kernel-{version}
+```
+
+Reboot to take effect
+
+```bash
 sudo reboot
 uname -r
 ```
