@@ -7,6 +7,18 @@
 
 Dae can be running as a daemon(systemd) service so that it can run at boot.
 
+## Prerequisites
+
+> **Note**
+> The config file is recommended to save under `/etc/dae`
+
+Download the sample config file
+
+```bash
+mkdir -p /etc/dae
+curl -L -o /etc/dae/config.dae https://github.com/v2rayA/dae/raw/main/example.dae
+```
+
 ## Setup
 
 ```bash
