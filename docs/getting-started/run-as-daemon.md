@@ -2,6 +2,9 @@
 
 [systemd](https://wiki.debian.org/systemd) allows you to create and manage services in extremely powerful and flexible ways.
 
+> **Note**
+> If your distribution's service manager is provided by systemd.
+
 Dae can be running as a daemon(systemd) service so that it can run at boot.
 
 ## Setup
