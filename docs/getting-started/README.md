@@ -38,21 +38,15 @@ make GOFLAGS="-buildvcs=false" CC=clang
 
 **Runtime Dependencies**
 
-Download [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest) to `/usr/local/share/dae/`.
+For traffic splitting, Dae relies the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
 
 ```shell
 mkdir -p /usr/local/share/dae/
 pushd /usr/local/share/dae/
 curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
 curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
+curl -L -o config.dae https://github.com/v2rayA/dae/raw/main/example.dae
 popd
-```
-
-**Data Dir**
-
-```shell
-sudo ln -s /usr/local/share/dae /etc/dae
-curl -L -o /usr/local/share/dae/config.dae https://github.com/v2rayA/dae/raw/main/example.dae
 ```
 
 **Run**
