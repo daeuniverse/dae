@@ -108,7 +108,7 @@ func (b *RoutingMatcherBuilder) OutboundToId(outbound string) uint8 {
 	return uint8(h.Sum64() & 0xFF)
 }
 
-func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound string) {
+func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -141,7 +141,7 @@ routing {
     ip(geoip:private) -> direct
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
-    final: my_group
+    fallback: my_group
 }`)
 	if err != nil {
 		return nil, err
