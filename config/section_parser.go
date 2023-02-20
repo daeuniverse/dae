@@ -136,10 +136,14 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			field.Set = true
 		case *config_parser.RoutingRule:
 			// Assign. "to" should have field "Rules".
-			field := to.FieldByName("Rules")
-			if !field.IsValid() {
+			structField, ok := to.Type().FieldByName("Rules")
+			if !ok || structField.Type != reflect.TypeOf([]*config_parser.RoutingRule{}) {
 				return fmt.Errorf("unexpected type: \"routing rule\": %v", itemVal.String(true))
 			}
+			if structField.Tag.Get("mapstructure") != "_" {
+				return fmt.Errorf("a []*RoutingRule field \"Rules\" with mapstructure:\"_\" is required in struct %v to parse section", to.Type().String())
+			}
+			field := to.FieldByName("Rules")
 			field.Set(reflect.Append(field, reflect.ValueOf(itemVal)))
 		default:
 			if _, ignore := ignoreTypeSet[reflect.TypeOf(itemVal)]; !ignore {
@@ -191,8 +195,8 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 					}
 			*/
 			// The struct should contain Name.
-			nameField, ok := elemType.FieldByName("Name")
-			if !ok || nameField.Type.Kind() != reflect.String {
+			nameStructField, ok := elemType.FieldByName("Name")
+			if !ok || nameStructField.Type.Kind() != reflect.String || nameStructField.Tag.Get("mapstructure") != "_" {
 				return fmt.Errorf("a string field \"Name\" with mapstructure:\"_\" is required in struct %v to parse section", to.Type().Elem().String())
 			}
 			// Scan sections.

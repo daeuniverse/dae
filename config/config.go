@@ -39,11 +39,11 @@ type Group struct {
 
 type DnsRequestRouting struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback interface{}                  `mapstructure:"fallback"`
+	Fallback interface{}                  `mapstructure:"fallback" required:""`
 }
 type DnsResponseRouting struct {
 	Rules   []*config_parser.RoutingRule `mapstructure:"_"`
-	Default interface{}                  `mapstructure:"default"`
+	Default interface{}                  `mapstructure:"default" required:""`
 }
 type Dns struct {
 	Upstream []string `mapstructure:"upstream" section_parser:"StringListParser"`
