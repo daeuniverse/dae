@@ -52,7 +52,7 @@ func (b *RoutingMatcherBuilder) OutboundToId(outbound string) uint8 {
 	return outboundId
 }
 
-func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound string) {
+func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -73,11 +73,12 @@ func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string,
 	b.rules = append(b.rules, bpfMatchSet{
 		Type:     uint8(consts.MatchType_DomainSet),
 		Not:      f.Not,
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound string) {
+func (b *RoutingMatcherBuilder) AddSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -94,14 +95,15 @@ func (b *RoutingMatcherBuilder) AddSourceMac(f *config_parser.Function, macAddrs
 		Value:    [16]byte{},
 		Type:     uint8(consts.MatchType_Mac),
 		Not:      f.Not,
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
 
 }
 
-func (b *RoutingMatcherBuilder) AddIp(f *config_parser.Function, values []netip.Prefix, outbound string) {
+func (b *RoutingMatcherBuilder) AddIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -111,17 +113,18 @@ func (b *RoutingMatcherBuilder) AddIp(f *config_parser.Function, values []netip.
 		Value:    [16]byte{},
 		Type:     uint8(consts.MatchType_IpSet),
 		Not:      f.Not,
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
 }
 
-func (b *RoutingMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, _outbound string) {
+func (b *RoutingMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, outbound *routing.Outbound) {
 	for i, value := range values {
-		outbound := routing.FakeOutbound_OR
+		outboundName := routing.FakeOutbound_OR
 		if i == len(values)-1 {
-			outbound = _outbound
+			outboundName = outbound.Name
 		}
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint8(consts.MatchType_Port),
@@ -130,12 +133,13 @@ func (b *RoutingMatcherBuilder) AddPort(f *config_parser.Function, values [][2]u
 				PortEnd:   value[1],
 			}.Encode(),
 			Not:      f.Not,
-			Outbound: b.OutboundToId(outbound),
+			Outbound: b.OutboundToId(outboundName),
+			Mark:     outbound.Mark,
 		})
 	}
 }
 
-func (b *RoutingMatcherBuilder) AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound string) {
+func (b *RoutingMatcherBuilder) AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -145,17 +149,18 @@ func (b *RoutingMatcherBuilder) AddSourceIp(f *config_parser.Function, values []
 		Value:    [16]byte{},
 		Type:     uint8(consts.MatchType_SourceIpSet),
 		Not:      f.Not,
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
 }
 
-func (b *RoutingMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, _outbound string) {
+func (b *RoutingMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound *routing.Outbound) {
 	for i, value := range values {
-		outbound := routing.FakeOutbound_OR
+		outboundName := routing.FakeOutbound_OR
 		if i == len(values)-1 {
-			outbound = _outbound
+			outboundName = outbound.Name
 		}
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint8(consts.MatchType_SourcePort),
@@ -164,12 +169,13 @@ func (b *RoutingMatcherBuilder) AddSourcePort(f *config_parser.Function, values 
 				PortEnd:   value[1],
 			}.Encode(),
 			Not:      f.Not,
-			Outbound: b.OutboundToId(outbound),
+			Outbound: b.OutboundToId(outboundName),
+			Mark:     outbound.Mark,
 		})
 	}
 }
 
-func (b *RoutingMatcherBuilder) AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string) {
+func (b *RoutingMatcherBuilder) AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -177,11 +183,12 @@ func (b *RoutingMatcherBuilder) AddL4Proto(f *config_parser.Function, values con
 		Value:    [16]byte{byte(values)},
 		Type:     uint8(consts.MatchType_L4Proto),
 		Not:      f.Not,
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string) {
+func (b *RoutingMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -189,33 +196,36 @@ func (b *RoutingMatcherBuilder) AddIpVersion(f *config_parser.Function, values c
 		Value:    [16]byte{byte(values)},
 		Type:     uint8(consts.MatchType_IpVersion),
 		Not:      f.Not,
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	})
 }
 
-func (b *RoutingMatcherBuilder) AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, _outbound string) {
+func (b *RoutingMatcherBuilder) AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound *routing.Outbound) {
 	for i, value := range values {
-		outbound := routing.FakeOutbound_OR
+		outboundName := routing.FakeOutbound_OR
 		if i == len(values)-1 {
-			outbound = _outbound
+			outboundName = outbound.Name
 		}
 		matchSet := bpfMatchSet{
 			Type:     uint8(consts.MatchType_ProcessName),
 			Not:      f.Not,
-			Outbound: b.OutboundToId(outbound),
+			Outbound: b.OutboundToId(outboundName),
+			Mark:     outbound.Mark,
 		}
 		copy(matchSet.Value[:], value[:])
 		b.rules = append(b.rules, matchSet)
 	}
 }
 
-func (b *RoutingMatcherBuilder) AddFallback(outbound string) {
+func (b *RoutingMatcherBuilder) AddFallback(outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
 	b.rules = append(b.rules, bpfMatchSet{
 		Type:     uint8(consts.MatchType_Fallback),
-		Outbound: b.OutboundToId(outbound),
+		Outbound: b.OutboundToId(outbound.Name),
+		Mark:     outbound.Mark,
 	})
 }
 

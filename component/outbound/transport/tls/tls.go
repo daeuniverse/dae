@@ -47,9 +47,25 @@ func NewTls(s string, d netproxy.Dialer) (*Tls, error) {
 	return t, nil
 }
 
+func (s *Tls) Dial(network, addr string) (c netproxy.Conn, err error) {
+	magicNetwork, err := netproxy.ParseMagicNetwork(network)
+	if err != nil {
+		return nil, err
+	}
+	switch magicNetwork.Network {
+	case "tcp":
+		return s.DialTcp(addr)
+	case "udp":
+		return s.DialUdp(addr)
+	default:
+		return nil, fmt.Errorf("%w: %v", netproxy.UnsupportedTunnelTypeError, network)
+	}
+}
+
 func (s *Tls) DialUdp(addr string) (conn netproxy.PacketConn, err error) {
 	return nil, fmt.Errorf("%w: tls+udp", netproxy.UnsupportedTunnelTypeError)
 }
+
 func (s *Tls) DialTcp(addr string) (conn netproxy.Conn, err error) {
 	rc, err := s.dialer.DialTcp(addr)
 	if err != nil {

@@ -6,12 +6,28 @@
 package dialer
 
 import (
+	"fmt"
 	"github.com/mzz2017/softwind/netproxy"
 	"net"
 )
 
 type blockDialer struct {
 	DialCallback func()
+}
+
+func (d *blockDialer) Dial(network, addr string) (c netproxy.Conn, err error) {
+	magicNetwork, err := netproxy.ParseMagicNetwork(network)
+	if err != nil {
+		return nil, err
+	}
+	switch magicNetwork.Network {
+	case "tcp":
+		return d.DialTcp(addr)
+	case "udp":
+		return d.DialUdp(addr)
+	default:
+		return nil, fmt.Errorf("%w: %v", netproxy.UnsupportedTunnelTypeError, network)
+	}
 }
 
 func (d *blockDialer) DialTcp(addr string) (c netproxy.Conn, err error) {

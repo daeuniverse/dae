@@ -10,12 +10,12 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230217170818-542cba31602f
+	github.com/mzz2017/softwind v0.0.0-20230220064728-6940dc11777f
 	github.com/safchain/ethtool v0.0.0-20230116090318-67cc41908669
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8
-	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1
+	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230219173344-413f12027632
 	github.com/vishvananda/netlink v1.1.0
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.5.0

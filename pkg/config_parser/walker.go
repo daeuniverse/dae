@@ -3,6 +3,8 @@
  * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
+// This file should trace https://github.com/v2rayA/dae-config-dist/blob/main/dae_config.g4.
+
 package config_parser
 
 import (
@@ -209,10 +211,18 @@ func (w *Walker) parseRoutingRule(ctx dae_config.IRoutingRuleContext) *RoutingRu
 	andFunctions := w.parseFunctionPrototypeExpression(functionList, nil)
 
 	// Parse outbound.
-	outbound := children[2].(*dae_config.Bare_literalContext).GetText()
+	outboundExpr := children[2].(*dae_config.OutboundExprContext)
+	var outbound *Function
+	if literal := outboundExpr.Bare_literal(); literal != nil {
+		outbound = &Function{Name: literal.GetText()}
+	} else if f := outboundExpr.FunctionPrototype(); f != nil {
+		outbound = w.parseFunctionPrototype(f.(*dae_config.FunctionPrototypeContext), nil)
+	} else {
+		panic("unknown outboundExpr")
+	}
 	return &RoutingRule{
 		AndFunctions: andFunctions,
-		Outbound:     outbound,
+		Outbound:     *outbound,
 	}
 }
 

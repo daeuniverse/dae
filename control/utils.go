@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/v2rayA/dae/common/consts"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
@@ -17,7 +18,7 @@ import (
 	"syscall"
 )
 
-func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4proto uint8) (outboundIndex consts.OutboundIndex, err error) {
+func (c *ControlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
 
@@ -29,14 +30,11 @@ func (c *ControlPlaneCore) RetrieveOutboundIndex(src, dst netip.AddrPort, l4prot
 		L4proto: l4proto,
 	}
 
-	var _outboundIndex uint32
-	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &_outboundIndex); err != nil {
-		return 0, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
+	var routingResult bpfRoutingResult
+	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &routingResult); err != nil {
+		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
 	}
-	if _outboundIndex > uint32(consts.OutboundMax) {
-		return 0, fmt.Errorf("bad outbound index")
-	}
-	return consts.OutboundIndex(_outboundIndex), nil
+	return &routingResult, nil
 }
 
 func RetrieveOriginalDest(oob []byte) netip.AddrPort {
@@ -67,7 +65,7 @@ func checkIpforward(ifname string, ipversion consts.IpVersionStr) error {
 	if bytes.Equal(bytes.TrimSpace(b), []byte("1")) {
 		return nil
 	}
-	return fmt.Errorf("ipforward on %v is off: %v", ifname, path)
+	return fmt.Errorf("ipforward on %v is off: %v; see https://github.com/v2rayA/dae#enable-ip-forwarding", ifname, path)
 }
 
 func CheckIpforward(ifname string) error {
@@ -78,4 +76,15 @@ func CheckIpforward(ifname string) error {
 		return err
 	}
 	return nil
+}
+
+func GetNetwork(network string, mark uint32) string {
+	if mark == 0 {
+		return network
+	} else {
+		return netproxy.MagicNetwork{
+			Network: network,
+			Mark:    mark,
+		}.Encode()
+	}
 }

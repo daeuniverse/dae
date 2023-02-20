@@ -68,8 +68,8 @@ github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 h1:RWengNIwukTxcDr9
 github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826/go.mod h1:TaXosZuwdSHYgviHp1DAtfrULt5eUgsSMsZf+YrPgl8=
 github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B90M=
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
-github.com/mzz2017/softwind v0.0.0-20230217170818-542cba31602f h1:zxc1LkGfczEwEdnOlaGbIhyVsoL9dWHEL2WQ4pPgC0c=
-github.com/mzz2017/softwind v0.0.0-20230217170818-542cba31602f/go.mod h1:V8GFOtdpTgzCJtCVXRqjmdDsY+PIhCCx4JpD0zq8Z7I=
+github.com/mzz2017/softwind v0.0.0-20230220064728-6940dc11777f h1:Lmwy7FFI0PrWw0TgoQYtDiZBlCd/VZ1hBlySauTVWj4=
+github.com/mzz2017/softwind v0.0.0-20230220064728-6940dc11777f/go.mod h1:V8GFOtdpTgzCJtCVXRqjmdDsY+PIhCCx4JpD0zq8Z7I=
 github.com/nxadm/tail v1.4.4/go.mod h1:kenIhsEOeOJmVchQTgglprH7qJGnHDVpk1VPCcaMI8A=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
 github.com/nxadm/tail v1.4.8/go.mod h1:+ncqLTQzXmGhMZNUePPaPqPvBxHAIsmXswZKocGu+AU=
@@ -109,8 +109,8 @@ github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKs
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8 h1:2Liq3JvM/acVQZ7Gq9U5PpznMzlFRPYMPQxC2yXSi74=
 github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8/go.mod h1:mWch8I826zic/bKaCyE9ZZbWtFgEW0ox3EQ0NGm5DGw=
-github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1 h1:Ke91ZtZItOO8/SK8nhZ1tXfXcUxj4Meq5pET/L9bHII=
-github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230201041341-1758ee5161c1/go.mod h1:JiTWeZybOkBfCqv/fy5jbFhXTxuLlyrI76gRNazz2sU=
+github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230219173344-413f12027632 h1:MJ6+M3MpiVMdiZn3An88ZFNeLcLiN7hTaPsd2bVyduI=
+github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230219173344-413f12027632/go.mod h1:JiTWeZybOkBfCqv/fy5jbFhXTxuLlyrI76gRNazz2sU=
 github.com/vishvananda/netlink v1.1.0 h1:1iyaYNBLmP6L0220aDnYQpo1QEV4t4hJ+xEEhhJH8j0=
 github.com/vishvananda/netlink v1.1.0/go.mod h1:cTgwzPIzzgDAYoQrMm0EdrjRUBkTqKYppBueQtXaqoE=
 github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df/go.mod h1:JP3t17pCcGlemwknint6hfoeCVQrEMVwxRLRjXpq+BU=

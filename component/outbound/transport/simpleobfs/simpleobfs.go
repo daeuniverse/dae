@@ -56,6 +56,22 @@ func NewSimpleObfs(s string, d netproxy.Dialer) (*SimpleObfs, error) {
 	return t, nil
 }
 
+
+func (s *SimpleObfs) Dial(network, addr string) (c netproxy.Conn, err error) {
+	magicNetwork, err := netproxy.ParseMagicNetwork(network)
+	if err != nil {
+		return nil, err
+	}
+	switch magicNetwork.Network {
+	case "tcp":
+		return s.DialTcp(addr)
+	case "udp":
+		return s.DialUdp(addr)
+	default:
+		return nil, fmt.Errorf("%w: %v", netproxy.UnsupportedTunnelTypeError, network)
+	}
+}
+
 func (s *SimpleObfs) DialUdp(addr string) (conn netproxy.PacketConn, err error) {
 	return nil, fmt.Errorf("%w: simpleobfs+udp", netproxy.UnsupportedTunnelTypeError)
 }

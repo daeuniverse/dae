@@ -47,6 +47,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Message, tim
 type AddrHdr struct {
 	Dest     netip.AddrPort
 	Outbound uint8
+	Mark     uint32
 }
 
 func ParseAddrHdr(data []byte) (hdr *AddrHdr, dataOffset int, err error) {
@@ -58,9 +59,11 @@ func ParseAddrHdr(data []byte) (hdr *AddrHdr, dataOffset int, err error) {
 	destAddr, _ := netip.AddrFromSlice(data[:ipSize])
 	port := binary.BigEndian.Uint16(data[ipSize:])
 	outbound := data[ipSize+2]
+	mark := binary.BigEndian.Uint32(data[ipSize+4:])
 	return &AddrHdr{
 		Dest:     netip.AddrPortFrom(destAddr, port),
 		Outbound: outbound,
+		Mark:     mark,
 	}, dataOffset, nil
 }
 
@@ -71,12 +74,14 @@ func (hdr *AddrHdr) ToBytesFromPool() []byte {
 	copy(buf, ip[:])
 	binary.BigEndian.PutUint16(buf[ipSize:], hdr.Dest.Port())
 	buf[ipSize+2] = hdr.Outbound
+	binary.BigEndian.PutUint32(buf[ipSize+4:], hdr.Mark)
 	return buf
 }
 
-func sendPktWithHdrWithFlag(data []byte, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
+func sendPktWithHdrWithFlag(data []byte, mark uint32, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
 	hdr := AddrHdr{
 		Dest:     from,
+		Mark:     mark,
 		Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
 	}
 	bHdr := hdr.ToBytesFromPool()
@@ -100,7 +105,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			// Port collision, use traditional method.
-			return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
+			return sendPktWithHdrWithFlag(data, 0, from, lConn, to, lanWanFlag)
 		}
 		return err
 	}
@@ -140,7 +145,7 @@ func (c *ControlPlane) WriteToUDP(lanWanFlag consts.LanWanFlag, lConn *net.UDPCo
 	}
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, outboundIndex consts.OutboundIndex) (err error) {
+func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult) (err error) {
 	var lanWanFlag consts.LanWanFlag
 	var realSrc netip.AddrPort
 	var domain string
@@ -155,6 +160,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 
 	mustDirect := false
+	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundMustDirect:
@@ -326,13 +332,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if retry > MaxRetry {
 			return fmt.Errorf("touch max retry limit")
 		}
+
 		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 			Handler:    udpHandler,
 			NatTimeout: natTimeout,
-			DialerFunc: func() (*dialer.Dialer, error) {
-				return dialerForNew, nil
-			},
-			Target: tgtToSend,
+			Dialer:     dialerForNew,
+			Network:    GetNetwork("udp", routingResult.Mark),
+			Target:     tgtToSend,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to GetOrCreate (policy: %v): %w", outbound.GetSelectionPolicy(), err)
@@ -382,7 +388,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 		// We can block because we are in a coroutine.
 
-		conn, err := dialerForNew.DialTcp(tgtToSend)
+		conn, err := dialerForNew.Dial(GetNetwork("tcp", routingResult.Mark), tgtToSend)
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
