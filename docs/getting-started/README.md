@@ -38,7 +38,7 @@ make GOFLAGS="-buildvcs=false" CC=clang
 
 **Runtime Dependencies**
 
-For traffic splitting, Dae relies the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
+For traffic splitting, Dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
 
 ```shell
 mkdir -p /usr/local/share/dae/
