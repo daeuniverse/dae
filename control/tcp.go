@@ -41,7 +41,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	// Get tuples and outbound.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	outboundIndex, err := c.core.RetrieveOutboundIndex(src, dst, unix.IPPROTO_TCP)
+	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
 		// WAN. Old method.
 		var value bpfIpPortOutbound
@@ -52,7 +52,10 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		}, &value); e != nil {
 			return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
 		}
-		outboundIndex = consts.OutboundIndex(value.Outbound)
+		routingResult = &bpfRoutingResult{
+			Mark:     value.Mark,
+			Outbound: value.Outbound,
+		}
 
 		dstAddr, ok := netip.AddrFromSlice(common.Ipv6Uint32ArrayToByteSlice(value.Ip))
 		if !ok {
@@ -60,6 +63,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		}
 		dst = netip.AddrPortFrom(dstAddr, internal.Htons(value.Port))
 	}
+	var outboundIndex = consts.OutboundIndex(routingResult.Outbound)
 
 	switch outboundIndex {
 	case consts.OutboundDirect:
@@ -102,7 +106,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 
 	// Dial and relay.
 	dst = netip.AddrPortFrom(common.ConvergeIp(dst.Addr()), dst.Port())
-	rConn, err := d.DialTcp(c.ChooseDialTarget(outboundIndex, dst, domain))
+	rConn, err := d.Dial(GetNetwork("tcp", routingResult.Mark), c.ChooseDialTarget(outboundIndex, dst, domain))
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}

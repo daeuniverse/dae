@@ -114,6 +114,7 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 		return nil, err
 	}
 	if tcp {
+		// Put DNS request length
 		buf := pool.Get(2 + len(b))
 		defer pool.Put(buf)
 		binary.BigEndian.PutUint16(buf, uint16(len(b)))
@@ -160,6 +161,7 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 		buf := pool.Get(512)
 		defer pool.Put(buf)
 		if tcp {
+			// Read DNS response length
 			_, err := io.ReadFull(c, buf[:2])
 			if err != nil {
 				ch <- err

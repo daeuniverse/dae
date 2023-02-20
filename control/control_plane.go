@@ -528,9 +528,9 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 			go func(data []byte, src netip.AddrPort) {
 				defer pool.Put(data)
 				var realDst netip.AddrPort
-				var outboundIndex consts.OutboundIndex
+				var routingResult *bpfRoutingResult
 				pktDst := RetrieveOriginalDest(oob[:oobn])
-				outboundIndex, err := c.core.RetrieveOutboundIndex(src, pktDst, unix.IPPROTO_UDP)
+				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
 				if err != nil {
 					// WAN. Old method.
 					addrHdr, dataOffset, err := ParseAddrHdr(data)
@@ -539,13 +539,16 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 						return
 					}
 					copy(data, data[dataOffset:])
-					outboundIndex = consts.OutboundIndex(addrHdr.Outbound)
+					routingResult = &bpfRoutingResult{
+						Mark:     addrHdr.Mark,
+						Outbound: addrHdr.Outbound,
+					}
 					src = netip.AddrPortFrom(addrHdr.Dest.Addr(), src.Port())
 					realDst = addrHdr.Dest
 				} else {
 					realDst = pktDst
 				}
-				if e := c.handlePkt(udpConn, data, src, pktDst, realDst, outboundIndex); e != nil {
+				if e := c.handlePkt(udpConn, data, src, pktDst, realDst, routingResult); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 			}(newBuf, src)

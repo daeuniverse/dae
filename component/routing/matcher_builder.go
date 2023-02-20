@@ -12,6 +12,7 @@ import (
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -25,19 +26,24 @@ type DomainSet struct {
 	Domains   []string
 }
 
+type Outbound struct {
+	Name string
+	Mark uint32
+}
+
 type MatcherBuilder interface {
-	AddDomain(f *config_parser.Function, key string, values []string, outbound string)
-	AddIp(f *config_parser.Function, values []netip.Prefix, outbound string)
-	AddPort(f *config_parser.Function, values [][2]uint16, outbound string)
-	AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound string)
-	AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound string)
-	AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string)
-	AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string)
-	AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string)
-	AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string)
-	AddFallback(outbound string)
-	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string)
-	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string)
+	AddDomain(f *config_parser.Function, key string, values []string, outbound *Outbound)
+	AddIp(f *config_parser.Function, values []netip.Prefix, outbound *Outbound)
+	AddPort(f *config_parser.Function, values [][2]uint16, outbound *Outbound)
+	AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *Outbound)
+	AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound *Outbound)
+	AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound *Outbound)
+	AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound *Outbound)
+	AddSourceMac(f *config_parser.Function, values [][6]byte, outbound *Outbound)
+	AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound *Outbound)
+	AddFallback(outbound *Outbound)
+	AddAnyBefore(f *config_parser.Function, key string, values []string, outbound *Outbound)
+	AddAnyAfter(f *config_parser.Function, key string, values []string, outbound *Outbound)
 }
 
 func GroupParamValuesByKey(params []*config_parser.Param) (keyToValues map[string][]string, keyOrder []string) {
@@ -72,9 +78,34 @@ func ToProcessName(processName string) (procName [consts.TaskCommLen]byte) {
 	return procName
 }
 
-func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*config_parser.RoutingRule, fallbackOutbound string) (err error) {
+func parseOutbound(rawOutbound *config_parser.Function) (outbound *Outbound, err error) {
+	outbound = &Outbound{
+		Name: rawOutbound.Name,
+		Mark: 0,
+	}
+	for _, p := range rawOutbound.Params {
+		switch p.Key {
+		case consts.OutboundParam_Mark:
+			var _mark uint64
+			_mark, err = strconv.ParseUint(p.Val, 0, 32)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse mark: %v", err)
+			}
+			outbound.Mark = uint32(_mark)
+		default:
+			return nil, fmt.Errorf("unknown outbound param: %v", p.Key)
+		}
+	}
+	return outbound, nil
+}
+
+func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*config_parser.RoutingRule, fallbackOutbound interface{}) (err error) {
 	for _, rule := range rules {
 		log.Debugln("[rule]", rule.String(true))
+		outbound, err := parseOutbound(&rule.Outbound)
+		if err != nil {
+			return err
+		}
 
 		// rule is like: domain(domain:baidu.com) && port(443) -> proxy
 		for iFunc, f := range rule.AndFunctions {
@@ -82,12 +113,15 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 			paramValueGroups, keyOrder := GroupParamValuesByKey(f.Params)
 			for jMatchSet, key := range keyOrder {
 				paramValueGroup := paramValueGroups[key]
-				// Preprocess the outbound and pass FakeOutbound_AND to all but the last function.
-				outbound := FakeOutbound_OR
+				// Preprocess the outbound.
+				overrideOutbound := &Outbound{
+					Name: FakeOutbound_OR,
+					Mark: outbound.Mark,
+				}
 				if jMatchSet == len(keyOrder)-1 {
-					outbound = FakeOutbound_AND
+					overrideOutbound.Name = FakeOutbound_AND
 					if iFunc == len(rule.AndFunctions)-1 {
-						outbound = rule.Outbound
+						overrideOutbound.Name = outbound.Name
 					}
 				}
 
@@ -97,22 +131,22 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 					if f.Not {
 						symNot = "!"
 					}
-					log.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, outbound)
+					log.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound)
 				}
 
-				builder.AddAnyBefore(f, key, paramValueGroup, outbound)
+				builder.AddAnyBefore(f, key, paramValueGroup, overrideOutbound)
 				switch f.Name {
 				case consts.Function_Domain:
-					builder.AddDomain(f, key, paramValueGroup, outbound)
+					builder.AddDomain(f, key, paramValueGroup, overrideOutbound)
 				case consts.Function_Ip, consts.Function_SourceIp:
 					cidrs, err := ParsePrefixes(paramValueGroup)
 					if err != nil {
 						return err
 					}
 					if f.Name == consts.Function_Ip {
-						builder.AddIp(f, cidrs, outbound)
+						builder.AddIp(f, cidrs, overrideOutbound)
 					} else {
-						builder.AddSourceIp(f, cidrs, outbound)
+						builder.AddSourceIp(f, cidrs, overrideOutbound)
 					}
 				case consts.Function_Mac:
 					var macAddrs [][6]byte
@@ -123,7 +157,7 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 						}
 						macAddrs = append(macAddrs, mac)
 					}
-					builder.AddSourceMac(f, macAddrs, outbound)
+					builder.AddSourceMac(f, macAddrs, overrideOutbound)
 				case consts.Function_Port, consts.Function_SourcePort:
 					var portRanges [][2]uint16
 					for _, v := range paramValueGroup {
@@ -134,9 +168,9 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 						portRanges = append(portRanges, portRange)
 					}
 					if f.Name == consts.Function_Port {
-						builder.AddPort(f, portRanges, outbound)
+						builder.AddPort(f, portRanges, overrideOutbound)
 					} else {
-						builder.AddSourcePort(f, portRanges, outbound)
+						builder.AddSourcePort(f, portRanges, overrideOutbound)
 					}
 				case consts.Function_L4Proto:
 					var l4protoType consts.L4ProtoType
@@ -148,7 +182,7 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 							l4protoType |= consts.L4ProtoType_UDP
 						}
 					}
-					builder.AddL4Proto(f, l4protoType, outbound)
+					builder.AddL4Proto(f, l4protoType, overrideOutbound)
 				case consts.Function_IpVersion:
 					var ipVersion consts.IpVersionType
 					for _, v := range paramValueGroup {
@@ -159,7 +193,7 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 							ipVersion |= consts.IpVersion_6
 						}
 					}
-					builder.AddIpVersion(f, ipVersion, outbound)
+					builder.AddIpVersion(f, ipVersion, overrideOutbound)
 				case consts.Function_ProcessName:
 					var procNames [][consts.TaskCommLen]byte
 					for _, v := range paramValueGroup {
@@ -168,47 +202,60 @@ func ApplyMatcherBuilder(log *logrus.Logger, builder MatcherBuilder, rules []*co
 						}
 						procNames = append(procNames, ToProcessName(v))
 					}
-					builder.AddProcessName(f, procNames, outbound)
+					builder.AddProcessName(f, procNames, overrideOutbound)
 				default:
 					return fmt.Errorf("unsupported function name: %v", f.Name)
 				}
-				builder.AddAnyAfter(f, key, paramValueGroup, outbound)
+				builder.AddAnyAfter(f, key, paramValueGroup, overrideOutbound)
 			}
 		}
 	}
+	var rawFallback *config_parser.Function
+	switch fallback := fallbackOutbound.(type) {
+	case string:
+		rawFallback = &config_parser.Function{Name: fallback}
+	case *config_parser.Function:
+		rawFallback = fallback
+	default:
+		return fmt.Errorf("unknown type of 'fallback' in section routing: %T", fallback)
+	}
+	fallback, err := parseOutbound(rawFallback)
+	if err != nil {
+		return err
+	}
 	builder.AddAnyBefore(&config_parser.Function{
 		Name: "fallback",
-	}, "", nil, fallbackOutbound)
-	builder.AddFallback(fallbackOutbound)
+	}, "", nil, fallback)
+	builder.AddFallback(fallback)
 	builder.AddAnyAfter(&config_parser.Function{
 		Name: "fallback",
-	}, "", nil, fallbackOutbound)
+	}, "", nil, fallback)
 	return nil
 }
 
 type DefaultMatcherBuilder struct {
 }
 
-func (d *DefaultMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound string) {
+func (d *DefaultMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddIp(f *config_parser.Function, values []netip.Prefix, outbound string) {
+func (d *DefaultMatcherBuilder) AddIp(f *config_parser.Function, values []netip.Prefix, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, outbound string) {
+func (d *DefaultMatcherBuilder) AddPort(f *config_parser.Function, values [][2]uint16, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound string) {
+func (d *DefaultMatcherBuilder) AddSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound string) {
+func (d *DefaultMatcherBuilder) AddSourcePort(f *config_parser.Function, values [][2]uint16, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound string) {
+func (d *DefaultMatcherBuilder) AddL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound string) {
+func (d *DefaultMatcherBuilder) AddIpVersion(f *config_parser.Function, values consts.IpVersionType, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddSourceMac(f *config_parser.Function, values [][6]byte, outbound string) {
+func (d *DefaultMatcherBuilder) AddSourceMac(f *config_parser.Function, values [][6]byte, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddFallback(outbound string) {}
-func (d *DefaultMatcherBuilder) AddAnyBefore(f *config_parser.Function, key string, values []string, outbound string) {
+func (d *DefaultMatcherBuilder) AddFallback(outbound *Outbound) {}
+func (d *DefaultMatcherBuilder) AddAnyBefore(f *config_parser.Function, key string, values []string, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound string) {
+func (d *DefaultMatcherBuilder) AddProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound *Outbound) {
 }
-func (d *DefaultMatcherBuilder) AddAnyAfter(f *config_parser.Function, key string, values []string, outbound string) {
+func (d *DefaultMatcherBuilder) AddAnyAfter(f *config_parser.Function, key string, values []string, outbound *Outbound) {
 }

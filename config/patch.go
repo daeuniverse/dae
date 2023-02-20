@@ -5,7 +5,10 @@
 
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/sirupsen/logrus"
+)
 
 type patch func(params *Params) error
 
@@ -15,11 +18,12 @@ var patches = []patch{
 
 func patchRoutingFallback(params *Params) error {
 	// We renamed final as fallback. So we apply this patch for compatibility with older users.
-	if params.Routing.Fallback == "" && params.Routing.Final != "" {
+	if params.Routing.Fallback == nil && params.Routing.Final != nil {
 		params.Routing.Fallback = params.Routing.Final
+		logrus.Warnln("Name 'final' in section routing was deprecated and will be removed in the future; please rename it as 'fallback'")
 	}
 	// Fallback is required.
-	if params.Routing.Fallback == "" {
+	if params.Routing.Fallback == nil {
 		return fmt.Errorf("fallback is required in routing")
 	}
 	return nil

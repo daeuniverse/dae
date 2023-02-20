@@ -42,8 +42,8 @@ type GroupParam struct {
 
 type Routing struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback string                       `mapstructure:"fallback"`
-	Final    string                       `mapstructure:"final"`
+	Fallback interface{}                  `mapstructure:"fallback"`
+	Final    interface{}                  `mapstructure:"final"`
 }
 
 type Params struct {

@@ -283,9 +283,9 @@ func FuzzyDecode(to interface{}, val string) bool {
 		v.SetUint(i)
 	case reflect.Bool:
 		switch strings.ToLower(val) {
-		case "true", "1", "y", "yes":
+		case "true", "t", "1", "y", "yes", "on":
 			v.SetBool(true)
-		case "false", "0", "n", "no":
+		case "false", "f", "0", "n", "no", "off":
 			v.SetBool(false)
 		default:
 			return false

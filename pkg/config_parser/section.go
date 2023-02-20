@@ -178,7 +178,7 @@ func (p *paramAndFunctions) String(compact bool) string {
 
 type RoutingRule struct {
 	AndFunctions []*Function
-	Outbound     string
+	Outbound     Function
 }
 
 func (r *RoutingRule) String(calcN bool) string {
@@ -206,6 +206,6 @@ func (r *RoutingRule) String(calcN bool) string {
 		}
 		builder.WriteString(fmt.Sprintf("%v%v(%v)", symNot, f.Name, paramBuilder.String()))
 	}
-	builder.WriteString(" -> " + r.Outbound)
+	builder.WriteString(" -> " + r.Outbound.String(true))
 	return builder.String()
 }

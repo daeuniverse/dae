@@ -67,6 +67,21 @@ func NewWs(s string, d netproxy.Dialer) (*Ws, error) {
 	return t, nil
 }
 
+func (s *Ws) Dial(network, addr string) (c netproxy.Conn, err error) {
+	magicNetwork, err := netproxy.ParseMagicNetwork(network)
+	if err != nil {
+		return nil, err
+	}
+	switch magicNetwork.Network {
+	case "tcp":
+		return s.DialTcp(addr)
+	case "udp":
+		return s.DialUdp(addr)
+	default:
+		return nil, fmt.Errorf("%w: %v", netproxy.UnsupportedTunnelTypeError, network)
+	}
+}
+
 func (s *Ws) DialUdp(addr string) (netproxy.PacketConn, error) {
 	return nil, fmt.Errorf("%w: ws+udp", netproxy.UnsupportedTunnelTypeError)
 }

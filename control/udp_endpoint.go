@@ -22,7 +22,7 @@ type UdpEndpoint struct {
 	conn netproxy.PacketConn
 	// mu protects deadlineTimer
 	mu            sync.Mutex
-	deadlineTimer *time.Timer // nil means UdpEndpoint was closed
+	deadlineTimer *time.Timer
 	handler       UdpHandler
 	NatTimeout    time.Duration
 
@@ -48,7 +48,7 @@ func (ue *UdpEndpoint) start() {
 		}
 	}
 	ue.mu.Lock()
-	ue.Close()
+	ue.deadlineTimer.Stop()
 	ue.mu.Unlock()
 }
 
@@ -56,15 +56,13 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	return ue.conn.WriteTo(b, addr)
 }
 
-func (ue *UdpEndpoint) Close() (err error) {
+func (ue *UdpEndpoint) Close() error {
 	ue.mu.Lock()
 	if ue.deadlineTimer != nil {
-		err = ue.conn.Close()
 		ue.deadlineTimer.Stop()
-		ue.deadlineTimer = nil
 	}
 	ue.mu.Unlock()
-	return err
+	return ue.conn.Close()
 }
 
 // UdpEndpointPool is a full-cone udp conn pool
@@ -75,7 +73,9 @@ type UdpEndpointPool struct {
 type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
-	DialerFunc func() (*dialer.Dialer, error)
+	Dialer     *dialer.Dialer
+	// Network is useful for MagicNetwork
+	Network string
 	// Target is useful only if the underlay does not support Full-cone.
 	Target string
 }
@@ -118,12 +118,7 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			return nil, true, fmt.Errorf("createOption.Handler cannot be nil")
 		}
 
-		d, err := createOption.DialerFunc()
-		if err != nil {
-			return nil, true, err
-		}
-
-		udpConn, err := d.DialUdp(createOption.Target)
+		udpConn, err := createOption.Dialer.Dial(createOption.Network, createOption.Target)
 		if err != nil {
 			return nil, true, err
 		}
@@ -142,7 +137,7 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			}),
 			handler:    createOption.Handler,
 			NatTimeout: createOption.NatTimeout,
-			Dialer:     d,
+			Dialer:     createOption.Dialer,
 		}
 		p.pool[lAddr] = ue
 		// Receive UDP messages.
@@ -151,9 +146,7 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 	} else {
 		// Postpone the deadline.
 		ue.mu.Lock()
-		if ue.deadlineTimer != nil {
-			ue.deadlineTimer.Reset(ue.NatTimeout)
-		}
+		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 	}
 	return ue, isNew, nil

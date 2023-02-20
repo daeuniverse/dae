@@ -10,8 +10,8 @@ type RoutingDomainKey string
 const (
 	RoutingDomainKey_Full    RoutingDomainKey = "full"
 	RoutingDomainKey_Keyword RoutingDomainKey = "keyword"
-	RoutingDomainKey_Suffix RoutingDomainKey = "suffix"
-	RoutingDomainKey_Regex  RoutingDomainKey = "regex"
+	RoutingDomainKey_Suffix  RoutingDomainKey = "suffix"
+	RoutingDomainKey_Regex   RoutingDomainKey = "regex"
 
 	Function_Domain      = "domain"
 	Function_Ip          = "ip"
@@ -24,4 +24,6 @@ const (
 	Function_ProcessName = "pname"
 
 	Declaration_Fallback = "fallback"
+
+	OutboundParam_Mark = "mark"
 )
