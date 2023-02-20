@@ -87,7 +87,7 @@ ip(ext:"yourdatfile.dat:yourtag")->direct
 
 # An example of redirecting Disney traffic to wg0 is given here.
 # You need set ip rule and ip table like this:
-# 1. Set all traffic with mark 0x800/0x800 will use route table 1145:
+# 1. Set all traffic with mark 0x800/0x800 to use route table 1145:
 # >> ip rule add fwmark 0x800/0x800 table 1145
 # >> ip -6 rule add fwmark 0x800/0x800 table 1145
 # 2. Set default route of route table 1145:
