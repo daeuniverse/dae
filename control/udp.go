@@ -220,58 +220,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// Modify dns target to upstream.
 		// NOTICE: Routing was calculated in advance by the eBPF program.
 
-		/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
-		// Get available ipversions and l4protos for DNS upstream.
-		ipversions, l4protos := dnsUpstream.SupportedNetworks()
-		var (
-			bestDialer  *dialer.Dialer
-			bestLatency time.Duration
-			bestTarget  netip.AddrPort
-		)
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
-				"ipversions": ipversions,
-				"l4protos":   l4protos,
-				"src":        realSrc.String(),
-			}).Traceln("Choose DNS path")
-		}
-		// Get the min latency path.
-		networkType := dialer.NetworkType{
-			IsDns: isDns,
-		}
-		for _, ver := range ipversions {
-			for _, proto := range l4protos {
-				networkType.L4Proto = proto
-				networkType.IpVersion = ver
-				d, latency, err := outbound.Select(&networkType)
-				if err != nil {
-					continue
-				}
-				if c.log.IsLevelEnabled(logrus.TraceLevel) {
-					c.log.WithFields(logrus.Fields{
-						"name":     d.Name(),
-						"latency":  latency,
-						"network":  networkType.String(),
-						"outbound": outbound.Name,
-					}).Traceln("Choice")
-				}
-				if bestDialer == nil || latency < bestLatency {
-					bestDialer = d
-					bestLatency = latency
-					l4proto = proto
-					ipversion = ver
-				}
-			}
-		}
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
-		case consts.IpVersionStr_6:
-			bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
-		}
-		dialerForNew = bestDialer
+		l4proto, ipversion, dialerForNew, destToSend = ChooseBestDnsDialer(c.log, dnsUpstream, outbound)
 		dummyFrom = &realDst
-		destToSend = bestTarget
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.WithFields(logrus.Fields{
 				"Original": RefineAddrPortToShow(realDst),

@@ -147,7 +147,7 @@ routing {
 		return nil, err
 	}
 	var r config.Routing
-	if err = config.RoutingRuleAndParamParser(reflect.ValueOf(&r), sections[0]); err != nil {
+	if err = config.SectionParser(reflect.ValueOf(&r), sections[0]); err != nil {
 		return nil, err
 	}
 	if rules, err = routing.ApplyRulesOptimizers(r.Rules,

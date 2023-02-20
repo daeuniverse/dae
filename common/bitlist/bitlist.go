@@ -24,7 +24,7 @@ func NewCompactBitList(unitBitSize int) *CompactBitList {
 	return &CompactBitList{
 		unitBitSize: unitBitSize,
 		size:        0,
-		b:           anybuffer.NewBuffer[uint16](1),
+		b:           anybuffer.NewBuffer[uint16](8),
 	}
 }
 

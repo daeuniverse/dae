@@ -31,8 +31,26 @@ type Global struct {
 }
 
 type Group struct {
-	Name  string
-	Param GroupParam
+	Name string `mapstructure:"_"`
+
+	Filter []*config_parser.Function `mapstructure:"filter"`
+	Policy interface{}               `mapstructure:"policy" required:""`
+}
+
+type DnsRequestRouting struct {
+	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
+	Fallback interface{}                  `mapstructure:"fallback"`
+}
+type DnsResponseRouting struct {
+	Rules   []*config_parser.RoutingRule `mapstructure:"_"`
+	Default interface{}                  `mapstructure:"default"`
+}
+type Dns struct {
+	Upstream []string `mapstructure:"upstream" section_parser:"StringListParser"`
+	Routing  struct {
+		Request  DnsRequestRouting  `mapstructure:"routing" section_parser:"RoutingRuleAndParamParser"`
+		Response DnsResponseRouting `mapstructure:"routing" section_parser:"RoutingRuleAndParamParser"`
+	} `mapstructure:"group" section_parser:"GroupParser"`
 }
 
 type GroupParam struct {
@@ -47,11 +65,12 @@ type Routing struct {
 }
 
 type Params struct {
-	Global       Global   `mapstructure:"global" parser:"ParamParser"`
-	Subscription []string `mapstructure:"subscription" parser:"StringListParser"`
-	Node         []string `mapstructure:"node" parser:"StringListParser"`
-	Group        []Group  `mapstructure:"group" parser:"GroupListParser"`
-	Routing      Routing  `mapstructure:"routing" parser:"RoutingRuleAndParamParser"`
+	Global       Global   `mapstructure:"global" required:""`
+	Subscription []string `mapstructure:"subscription"`
+	Node         []string `mapstructure:"node"`
+	Group        []Group  `mapstructure:"group" required:""`
+	Routing      Routing  `mapstructure:"routing" required:""`
+	Dns          Dns      `mapstructure:"dns"`
 }
 
 // New params from sections. This func assumes merging (section "include") and deduplication for section names has been executed.
@@ -82,21 +101,15 @@ func New(sections []*config_parser.Section) (params *Params, err error) {
 		}
 		section, ok := nameToSection[sectionName]
 		if !ok {
-			return nil, fmt.Errorf("section %v is required but not provided", sectionName)
-		}
-
-		// Find corresponding parser func.
-		parserName, ok := structField.Tag.Lookup("parser")
-		if !ok {
-			return nil, fmt.Errorf("no parser is specified in field %v", structField.Name)
-		}
-		parser, ok := ParserMap[parserName]
-		if !ok {
-			return nil, fmt.Errorf("unknown parser %v in field %v", parserName, structField.Name)
+			if _, required := structField.Tag.Lookup("required"); required {
+				return nil, fmt.Errorf("section %v is required but not provided", sectionName)
+			} else {
+				continue
+			}
 		}
 
 		// Parse section and unmarshal to field.
-		if err := parser(field.Addr(), section.Val); err != nil {
+		if err := SectionParser(field.Addr(), section.Val); err != nil {
 			return nil, fmt.Errorf("failed to parse \"%v\": %w", sectionName, err)
 		}
 		section.Parsed = true

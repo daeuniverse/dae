@@ -237,12 +237,12 @@ func NewControlPlane(
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	for _, group := range groups {
 		// Parse policy.
-		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group.Param)
+		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
 		}
 		// Filter nodes with user given filters.
-		dialers, err := dialerSet.Filter(group.Param.Filter)
+		dialers, err := dialerSet.Filter(group.Filter)
 		if err != nil {
 			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}

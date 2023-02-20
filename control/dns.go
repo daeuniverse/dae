@@ -13,6 +13,9 @@ import (
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
+	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/outbound"
+	"github.com/v2rayA/dae/component/outbound/dialer"
 	"golang.org/x/net/dns/dnsmessage"
 	"hash/fnv"
 	"math/rand"
@@ -367,4 +370,68 @@ func (c *ControlPlane) UpdateDnsCache(host string, typ dnsmessage.Type, answers 
 		return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
 	}
 	return nil
+}
+
+func ChooseBestDnsDialer(
+	log *logrus.Logger,
+	dnsUpstream *DnsUpstream,
+	outbound *outbound.DialerGroup,
+) (
+	l4proto consts.L4ProtoStr,
+	ipversion consts.IpVersionStr,
+	bestDialer *dialer.Dialer,
+	bestTarget netip.AddrPort,
+) {
+	/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
+	// Get available ipversions and l4protos for DNS upstream.
+	ipversions, l4protos := dnsUpstream.SupportedNetworks()
+	var (
+		bestLatency time.Duration
+	)
+	if log.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"ipversions":  ipversions,
+			"l4protos":    l4protos,
+			"dnsUpstream": dnsUpstream.String(),
+		}).Traceln("Choose DNS path")
+	}
+	// Get the min latency path.
+	networkType := dialer.NetworkType{
+		IsDns: true,
+	}
+	for _, ver := range ipversions {
+		for _, proto := range l4protos {
+			networkType.L4Proto = proto
+			networkType.IpVersion = ver
+			d, latency, err := outbound.Select(&networkType)
+			if err != nil {
+				continue
+			}
+			if log.IsLevelEnabled(logrus.TraceLevel) {
+				log.WithFields(logrus.Fields{
+					"name":     d.Name(),
+					"latency":  latency,
+					"network":  networkType.String(),
+					"outbound": outbound.Name,
+				}).Traceln("Choice")
+			}
+			if bestDialer == nil || latency < bestLatency {
+				bestDialer = d
+				bestLatency = latency
+				l4proto = proto
+				ipversion = ver
+
+				if bestLatency == 0 {
+					break
+				}
+			}
+		}
+	}
+	switch ipversion {
+	case consts.IpVersionStr_4:
+		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
+	case consts.IpVersionStr_6:
+		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
+	}
+	return l4proto, ipversion, bestDialer, bestTarget
 }

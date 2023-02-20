@@ -1,5 +1,5 @@
 // Package trie is modified from https://github.com/openacid/succinct/blob/loc100/sskv.go.
-// Slower than about 50% but more memory saving.
+// Slower than about 30% but more than 40% memory saving.
 
 package trie
 
@@ -118,7 +118,7 @@ func NewTrie(keys []string) (*Trie, error) {
 	}
 
 	ss := &Trie{}
-	ss.labels = bitlist.NewCompactBitList(bits.Len8(N))
+	ss.labels = bitlist.NewCompactBitList(bits.Len(N))
 	lIdx := 0
 
 	type qElt struct{ s, e, col int }

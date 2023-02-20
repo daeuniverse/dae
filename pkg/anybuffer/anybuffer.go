@@ -15,11 +15,12 @@ import (
 // license that can be found in the LICENSE file.
 
 var smallBufferSize = 16
+var defaultBufferSize = 64
 
 // A Buffer is a variable-sized buffer of bytes with Read and Write methods.
 // The zero value for Buffer is an empty buffer ready to use.
 type Buffer[T constraints.Unsigned] struct {
-	buf      []T    // contents are the bytes buf[off : len(buf)]
+	buf []T // contents are the bytes buf[off : len(buf)]
 }
 
 // ErrTooLarge is passed to panic if memory cannot be allocated to store data in a buffer.
@@ -158,7 +159,7 @@ func makeSlice[T constraints.Unsigned](n int) []T {
 // sufficient to initialize a Buffer.
 func NewBuffer[T constraints.Unsigned](size int) *Buffer[T] {
 	if size == 0 {
-		size = 512
+		size = defaultBufferSize
 	}
 	return &Buffer[T]{buf: make([]T, 0, size)}
 }

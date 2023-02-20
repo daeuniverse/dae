@@ -12,6 +12,7 @@ import (
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/common/netutils"
+	"net"
 	"net/url"
 	"strconv"
 	"sync"
@@ -115,6 +116,10 @@ func (u *DnsUpstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4p
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
 	}
 	return ipversions, l4protos
+}
+
+func (u *DnsUpstream) String() string {
+	return string(u.Scheme) + "://" + net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port)))
 }
 
 type DnsUpstreamRaw struct {

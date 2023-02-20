@@ -13,16 +13,6 @@ import (
 	"strings"
 )
 
-// Parser is section items parser
-type Parser func(to reflect.Value, section *config_parser.Section) error
-
-var ParserMap = map[string]Parser{
-	"StringListParser":          StringListParser,
-	"ParamParser":               ParamParser,
-	"GroupListParser":           GroupListParser,
-	"RoutingRuleAndParamParser": RoutingRuleAndParamParser,
-}
-
 func StringListParser(to reflect.Value, section *config_parser.Section) error {
 	if to.Kind() != reflect.Pointer {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
@@ -44,7 +34,7 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 	return nil
 }
 
-func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []reflect.Type) error {
+func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []reflect.Type) error {
 	if to.Kind() != reflect.Pointer {
 		return fmt.Errorf("ParamParser can only unmarshal section to *struct")
 	}
@@ -67,7 +57,7 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		// Set up key to field mapping.
 		key, ok := structField.Tag.Lookup("mapstructure")
 		if !ok {
-			return fmt.Errorf("field %v has no mapstructure tag", structField.Name)
+			return fmt.Errorf("field \"%v\" has no mapstructure tag", structField.Name)
 		}
 		if key == "_" {
 			// omit
@@ -95,11 +85,11 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		switch itemVal := item.Value.(type) {
 		case *config_parser.Param:
 			if itemVal.Key == "" {
-				return fmt.Errorf("section %v does not support text without a key: %v", section.Name, itemVal.String(true))
+				return fmt.Errorf("unsupported text without a key: %v", itemVal.String(true))
 			}
 			field, ok := keyToField[itemVal.Key]
 			if !ok {
-				return fmt.Errorf("section %v does not support key: %v", section.Name, itemVal.Key)
+				return fmt.Errorf("unexpected key: %v", itemVal.Key)
 			}
 			if itemVal.AndFunctions != nil {
 				// AndFunctions.
@@ -108,7 +98,7 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 					field.Val.Type() == reflect.TypeOf(itemVal.AndFunctions) {
 					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
 				} else {
-					return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().String())
+					return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 				}
 			} else {
 				// String value.
@@ -122,21 +112,38 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 					for _, value := range values {
 						vPointerNew := reflect.New(field.Val.Type().Elem())
 						if !common.FuzzyDecode(vPointerNew.Interface(), value) {
-							return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().Elem().String())
+							return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().Elem().String())
 						}
 						field.Val.Set(reflect.Append(field.Val, vPointerNew.Elem()))
 					}
 				default:
 					// Field is not interface{}, we can decode.
 					if !common.FuzzyDecode(field.Val.Addr().Interface(), itemVal.Val) {
-						return fmt.Errorf("failed to parse \"%v.%v\": value \"%v\" cannot be convert to %v", section.Name, itemVal.Key, itemVal.Val, field.Val.Type().String())
+						return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 					}
 				}
 			}
 			field.Set = true
+		case *config_parser.Section:
+			// Named section config item.
+			field, ok := keyToField[itemVal.Name]
+			if !ok {
+				return fmt.Errorf("unexpected key: %v", itemVal.Name)
+			}
+			if err := SectionParser(field.Val.Addr(), itemVal); err != nil {
+				return fmt.Errorf("failed to parse %v: %w", itemVal.Name, err)
+			}
+			field.Set = true
+		case *config_parser.RoutingRule:
+			// Assign. "to" should have field "Rules".
+			field := to.FieldByName("Rules")
+			if !field.IsValid() {
+				return fmt.Errorf("unexpected type: \"routing rule\": %v", itemVal.String(true))
+			}
+			field.Set(reflect.Append(field, reflect.ValueOf(itemVal)))
 		default:
 			if _, ignore := ignoreTypeSet[reflect.TypeOf(itemVal)]; !ignore {
-				return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.Type.String(), item.String())
+				return fmt.Errorf("unexpected type %v: %v", item.Type.String(), item.String())
 			}
 		}
 	}
@@ -155,76 +162,66 @@ func paramParser(to reflect.Value, section *config_parser.Section, ignoreType []
 	return nil
 }
 
-func ParamParser(to reflect.Value, section *config_parser.Section) error {
-	return paramParser(to, section, nil)
-}
-
-func GroupListParser(to reflect.Value, section *config_parser.Section) error {
+func SectionParser(to reflect.Value, section *config_parser.Section) error {
 	if to.Kind() != reflect.Pointer {
-		return fmt.Errorf("GroupListParser can only unmarshal section to *[]Group")
+		return fmt.Errorf("SectionParser can only unmarshal section to a pointer")
 	}
 	to = to.Elem()
-	if to.Type() != reflect.TypeOf([]Group{}) {
-		return fmt.Errorf("GroupListParser can only unmarshal section to *[]Group")
-	}
-
-	for _, item := range section.Items {
-		switch itemVal := item.Value.(type) {
-		case *config_parser.Section:
-			group := Group{
-				Name:  itemVal.Name,
-				Param: GroupParam{},
+	switch to.Kind() {
+	case reflect.Slice:
+		elemType := to.Type().Elem()
+		switch elemType.Kind() {
+		case reflect.String:
+			return StringListParser(to.Addr(), section)
+		case reflect.Struct:
+			// "to" is a section list (sections in section).
+			/**
+				to {
+					field1 {
+						...
+					}
+					field2 {
+						...
+					}
+				}
+			should be parsed to:
+				to []struct {
+						Name string `mapstructure: "_"`
+						...
+					}
+			*/
+			// The struct should contain Name.
+			nameField, ok := elemType.FieldByName("Name")
+			if !ok || nameField.Type.Kind() != reflect.String {
+				return fmt.Errorf("a string field \"Name\" with mapstructure:\"_\" is required in struct %v to parse section", to.Type().Elem().String())
 			}
-			paramVal := reflect.ValueOf(&group.Param)
-			if err := paramParser(paramVal, itemVal, nil); err != nil {
-				return fmt.Errorf("failed to parse \"%v\": %w", itemVal.Name, err)
+			// Scan sections.
+			for _, item := range section.Items {
+				elem := reflect.New(elemType).Elem()
+				switch itemVal := item.Value.(type) {
+				case *config_parser.Section:
+					elem.FieldByName("Name").SetString(itemVal.Name)
+					if err := SectionParser(elem.Addr(), itemVal); err != nil {
+						return fmt.Errorf("error when parse \"%v\": %w", itemVal.Name, err)
+					}
+					to.Set(reflect.Append(to, elem))
+				default:
+					return fmt.Errorf("unmatched type: %v -> %v", item.Type.String(), elemType)
+				}
 			}
-			to.Set(reflect.Append(to, reflect.ValueOf(group)))
+			return nil
 		default:
-			return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.Type.String(), item.String())
+			goto unsupported
 		}
-	}
-	return nil
-}
-
-func RoutingRuleAndParamParser(to reflect.Value, section *config_parser.Section) error {
-	if to.Kind() != reflect.Pointer {
-		return fmt.Errorf("RoutingRuleAndParamParser can only unmarshal section to *struct")
-	}
-	to = to.Elem()
-	if to.Kind() != reflect.Struct {
-		return fmt.Errorf("RoutingRuleAndParamParser can only unmarshal section to *struct")
+	case reflect.Struct:
+		// Section.
+		return ParamParser(to.Addr(), section, nil)
+	default:
+		goto unsupported
 	}
 
-	// Find the first  []*RoutingRule field to unmarshal.
-	targetType := reflect.TypeOf([]*config_parser.RoutingRule{})
-	var ruleTo *reflect.Value
-	for i := 0; i < to.NumField(); i++ {
-		field := to.Field(i)
+	panic("code should not reach here")
 
-		if field.Type() == targetType {
-			ruleTo = &field
-			break
-		}
-	}
-	if ruleTo == nil {
-		return fmt.Errorf(`no %v field found`, targetType.String())
-	}
-
-	// Parse and unmarshal list of RoutingRule to ruleTo.
-	for _, item := range section.Items {
-		switch itemVal := item.Value.(type) {
-		case *config_parser.RoutingRule:
-			ruleTo.Set(reflect.Append(*ruleTo, reflect.ValueOf(itemVal)))
-		case *config_parser.Param:
-			// pass
-		default:
-			return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.Type.String(), item.String())
-		}
-	}
-
-	// Parse Param.
-	return paramParser(to.Addr(), section,
-		[]reflect.Type{reflect.TypeOf(&config_parser.RoutingRule{})},
-	)
+unsupported:
+	return fmt.Errorf("unsupported section type %v", to.Type())
 }
