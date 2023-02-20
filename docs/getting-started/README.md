@@ -36,16 +36,24 @@ make GOFLAGS="-buildvcs=false" CC=clang
 
 ### Run
 
+**Config Dir**
+
+```shell
+mkdir -p /etc/dae
+curl -L -o /etc/dae/config.dae https://github.com/v2rayA/dae/raw/main/example.dae
+```
+
 **Runtime Dependencies**
 
-Download [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest) to `/usr/local/share/dae/`.
+For traffic splitting, Dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
 
-```
+```shell
 mkdir -p /usr/local/share/dae/
 pushd /usr/local/share/dae/
 curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
 curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
 popd
+
 ```
 
 **Run**
@@ -53,5 +61,7 @@ popd
 ```shell
 ./dae run -c example.dae
 ```
+
+Alternatively, you may run Dae as a daemon(systemd) service. Check out more details [HERE](./run-as-daemon.md).
 
 See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
