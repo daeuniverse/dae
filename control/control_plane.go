@@ -122,6 +122,9 @@ func NewControlPlane(
 		BindLan:           len(global.LanInterface) > 0,
 		BindWan:           len(global.WanInterface) > 0,
 	}); err != nil {
+		if log.Level == logrus.PanicLevel {
+			log.Panicln(err)
+		}
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
 

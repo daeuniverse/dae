@@ -49,6 +49,7 @@
 #define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 2)
+#define MAX_TGID_PNAME_MAPPING_NUM (8192)
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN_TO_PROBE 192
@@ -161,6 +162,16 @@ struct {
   /// NOTICE: It MUST be pinned, or connection may break.
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } tcp_dst_map
+    SEC(".maps"); // This map is only for old method (redirect mode in WAN).
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __type(key,
+         __u32);                           // tgid
+  __type(value, __u32[TASK_COMM_LEN / 4]); // process name.
+  __uint(max_entries, MAX_TGID_PNAME_MAPPING_NUM);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} tgid_pname_map
     SEC(".maps"); // This map is only for old method (redirect mode in WAN).
 
 struct {
@@ -1347,7 +1358,15 @@ new_connection:
   routing_result.mark = ret >> 8;
   __builtin_memcpy(routing_result.mac, ethh.h_source,
                    sizeof(routing_result.mac));
-  // No pid pname info in LAN.
+  /// NOTICE: No pid pname info for LAN packet.
+  // // Maybe this packet is also in the host (such as docker) ?
+  // // I tried and it is false.
+  // __u64 cookie = bpf_get_socket_cookie(skb);
+  // struct pid_pname *pid_pname = bpf_map_lookup_elem(&cookie_pid_map,
+  // &cookie); if (pid_pname) {
+  //   __builtin_memcpy(routing_result.pname, pid_pname->pname, TASK_COMM_LEN);
+  //   routing_result.pid = pid_pname->pid;
+  // }
 
   // Save routing result.
   if ((ret = bpf_map_update_elem(&routing_tuples_map, &tuples, &routing_result,
@@ -2024,7 +2043,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   return TC_ACT_OK;
 }
 
-static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
+static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
   if (unlikely(!cookie)) {
     bpf_printk("zero cookie");
     return -EINVAL;
@@ -2070,9 +2089,11 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
       } else {
         buf[to_read] = 0;
       }
-      if ((ret = bpf_core_read_user(&buf, to_read,
-                                    (const void *)(arg_start + j)))) {
-        bpf_printk("failed to read process name: %d", ret);
+      if ((ret = bpf_probe_read_user(&buf, to_read,
+                                     (const void *)(arg_start + j)))) {
+        // bpf_printk("failed to read process name.0: [%ld, %ld]", arg_start,
+        //            arg_end);
+        // bpf_printk("_failed to read process name.0: %ld %ld", j, to_read);
         return ret;
       }
     }
@@ -2087,9 +2108,9 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
   if (length_cpy > TASK_COMM_LEN) {
     length_cpy = TASK_COMM_LEN;
   }
-  if ((ret = bpf_core_read_user(&val.pname, length_cpy,
-                                (const void *)(arg_start + last_slash)))) {
-    bpf_printk("failed to read process name: %d", ret);
+  if ((ret = bpf_probe_read_user(&val.pname, length_cpy,
+                                 (const void *)(arg_start + last_slash)))) {
+    bpf_printk("failed to read process name.1: %d", ret);
     return ret;
   }
   if ((ret = bpf_core_read(&val.pid, sizeof(val.pid), &current->tgid))) {
@@ -2105,10 +2126,32 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     // bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
     return ret;
   }
+  bpf_map_update_elem(&tgid_pname_map, &val.pid, &val.pname, BPF_ANY);
 
 #ifdef __PRINT_SETUP_PROCESS_CONNNECTION
   bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val.pname, val.pid);
 #endif
+  return 0;
+}
+
+static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
+  int ret;
+  if ((ret = _update_map_elem_by_cookie(cookie))) {
+    // Fallback to only write pid to avoid loop due to packets sent by dae.
+    struct pid_pname val = {0};
+    val.pid = bpf_get_current_pid_tgid() >> 32;
+    __u32(*pname)[TASK_COMM_LEN] =
+        bpf_map_lookup_elem(&tgid_pname_map, &val.pid);
+    if (pname) {
+      __builtin_memcpy(val.pname, *pname, TASK_COMM_LEN);
+      ret = 0;
+      bpf_printk("fallback [retrieve pname]: %u", val.pid);
+    } else {
+      bpf_printk("failed [retrieve pname]: %u", val.pid);
+    }
+    bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_NOEXIST);
+    return ret;
+  }
   return 0;
 }
 
