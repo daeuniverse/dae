@@ -2075,7 +2075,10 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     bpf_printk("failed to read process name: %d", ret);
     return ret;
   }
-  bpf_core_read(&val.pid, sizeof(val.pid), &current->tgid);
+  if ((ret = bpf_core_read(&val.pid, sizeof(val.pid), &current->tgid))) {
+    bpf_printk("failed to read pid: %d", ret);
+    return ret;
+  }
   // bpf_printk("a start_end: %lu %lu", arg_start, arg_end);
   // bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);
 
