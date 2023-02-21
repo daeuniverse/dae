@@ -8,10 +8,11 @@ package control
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"github.com/mzz2017/softwind/netproxy"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
-	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 	"net/netip"
 	"os"
@@ -24,14 +25,14 @@ func (c *ControlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 
 	tuples := &bpfTuples{
 		Sip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: srcIp6},
-		Sport:   internal.Htons(src.Port()),
+		Sport:   common.Htons(src.Port()),
 		Dip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: dstIp6},
-		Dport:   internal.Htons(dst.Port()),
+		Dport:   common.Htons(dst.Port()),
 		L4proto: l4proto,
 	}
 
 	var routingResult bpfRoutingResult
-	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &routingResult); err != nil {
+	if err := c.bpf.RoutingTuplesMap.LookupAndDelete(tuples, &routingResult); err != nil {
 		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
 	}
 	return &routingResult, nil
@@ -87,4 +88,19 @@ func GetNetwork(network string, mark uint32) string {
 			Mark:    mark,
 		}.Encode()
 	}
+}
+
+func ProcessName2String(pname []uint8) string {
+	return string(bytes.TrimRight(pname[:], string([]byte{0})))
+}
+
+func Mac2String(mac []uint8) string {
+	ori := []byte(hex.EncodeToString(mac))
+	// Insert ":".
+	b := make([]byte, len(ori)/2*3)
+	for i, j := 0, 0; i < len(ori); i, j = i+2, j+3 {
+		copy(b[j:j+2], ori[i:i+2])
+		b[j+2] = ':'
+	}
+	return string(b)
 }

@@ -15,8 +15,6 @@ const (
 	AppName    = "dae"
 	BpfPinRoot = "/sys/fs/bpf"
 
-	AddrHdrSize = 24
-
 	TaskCommLen = 16
 )
 

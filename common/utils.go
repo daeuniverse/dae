@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 var (
@@ -392,4 +393,17 @@ func AddrToDnsType(addr netip.Addr) dnsmessage.Type {
 	} else {
 		return dnsmessage.TypeAAAA
 	}
+}
+
+// Htons converts the unsigned short integer hostshort from host byte order to network byte order.
+func Htons(i uint16) uint16 {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, i)
+	return *(*uint16)(unsafe.Pointer(&b[0]))
+}
+
+// Ntohs converts the unsigned short integer hostshort from host byte order to network byte order.
+func Ntohs(i uint16) uint16 {
+	bytes := *(*[2]byte)(unsafe.Pointer(&i))
+	return binary.BigEndian.Uint16(bytes[:])
 }

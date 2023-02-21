@@ -347,7 +347,7 @@ func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUp
 			Ip6:    common.Ipv6ByteSliceToUint32Array(ip6[:]),
 			HasIp4: dnsUpstream.Ip4.IsValid(),
 			HasIp6: dnsUpstream.Ip6.IsValid(),
-			Port:   internal.Htons(dnsUpstream.Port),
+			Port:   common.Htons(dnsUpstream.Port),
 		}, ebpf.UpdateAny); err != nil {
 			return err
 		}
@@ -485,7 +485,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 		return err
 	}
 	// Port.
-	if err := c.core.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(internal.Htons(port)), ebpf.UpdateAny); err != nil {
+	if err := c.core.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(common.Htons(port)), ebpf.UpdateAny); err != nil {
 		return err
 	}
 
@@ -535,16 +535,16 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 					// WAN. Old method.
 					addrHdr, dataOffset, err := ParseAddrHdr(data)
 					if err != nil {
-						c.log.Warnf("No AddrPort presented")
+						c.log.Warnf("No AddrPort presented: %v", err)
 						return
 					}
 					copy(data, data[dataOffset:])
-					routingResult = &bpfRoutingResult{
-						Mark:     addrHdr.Mark,
-						Outbound: addrHdr.Outbound,
-					}
-					src = netip.AddrPortFrom(addrHdr.Dest.Addr(), src.Port())
-					realDst = addrHdr.Dest
+					routingResult = &addrHdr.RoutingResult
+					__ip := common.Ipv6Uint32ArrayToByteSlice(addrHdr.Ip)
+					_ip, _ := netip.AddrFromSlice(__ip)
+					// Comment it because them SHOULD equal.
+					//src = netip.AddrPortFrom(_ip, src.Port())
+					realDst = netip.AddrPortFrom(_ip, addrHdr.Port)
 				} else {
 					realDst = pktDst
 				}

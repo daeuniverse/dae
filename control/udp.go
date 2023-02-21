@@ -7,8 +7,10 @@ package control
 
 import (
 	"encoding/binary"
+	"encoding/gob"
 	"errors"
 	"fmt"
+	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -44,52 +47,32 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Message, tim
 	return nil, DefaultNatTimeout
 }
 
-type AddrHdr struct {
-	Dest     netip.AddrPort
-	Outbound uint8
-	Mark     uint32
-}
-
-func ParseAddrHdr(data []byte) (hdr *AddrHdr, dataOffset int, err error) {
-	ipSize := 16
-	dataOffset = consts.AddrHdrSize
+func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err error) {
+	dataOffset = int(unsafe.Sizeof(bpfDstRoutingResult{}))
 	if len(data) < dataOffset {
 		return nil, 0, fmt.Errorf("data is too short to parse AddrHdr")
 	}
-	destAddr, _ := netip.AddrFromSlice(data[:ipSize])
-	port := binary.BigEndian.Uint16(data[ipSize:])
-	outbound := data[ipSize+2]
-	mark := binary.BigEndian.Uint32(data[ipSize+4:])
-	return &AddrHdr{
-		Dest:     netip.AddrPortFrom(destAddr, port),
-		Outbound: outbound,
-		Mark:     mark,
-	}, dataOffset, nil
-}
-
-func (hdr *AddrHdr) ToBytesFromPool() []byte {
-	ipSize := 16
-	buf := pool.GetZero(consts.AddrHdrSize) // byte align to a multiple of 4
-	ip := hdr.Dest.Addr().As16()
-	copy(buf, ip[:])
-	binary.BigEndian.PutUint16(buf[ipSize:], hdr.Dest.Port())
-	buf[ipSize+2] = hdr.Outbound
-	binary.BigEndian.PutUint32(buf[ipSize+4:], hdr.Mark)
-	return buf
+	_hdr := *(*bpfDstRoutingResult)(unsafe.Pointer(&data[0]))
+	_hdr.Port = common.Ntohs(_hdr.Port)
+	return &_hdr, dataOffset, nil
 }
 
 func sendPktWithHdrWithFlag(data []byte, mark uint32, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
-	hdr := AddrHdr{
-		Dest:     from,
-		Mark:     mark,
-		Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
+	hdr := bpfDstRoutingResult{
+		Ip:   common.Ipv6ByteSliceToUint32Array(from.Addr().AsSlice()),
+		Port: common.Htons(from.Port()),
+		RoutingResult: bpfRoutingResult{
+			Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
+		},
 	}
-	bHdr := hdr.ToBytesFromPool()
-	defer pool.Put(bHdr)
-	buf := pool.Get(len(bHdr) + len(data))
+	buf := pool.Get(int(unsafe.Sizeof(hdr)) + len(data))
 	defer pool.Put(buf)
-	copy(buf, bHdr)
-	copy(buf[len(bHdr):], data)
+	b := buffer.NewBufferFrom(buf)
+	defer b.Put()
+	if err := gob.NewEncoder(b).Encode(&hdr); err != nil {
+		return err
+	}
+	copy(buf[int(unsafe.Sizeof(hdr)):], data)
 	//log.Println("from", from, "to", to)
 	_, err := lConn.WriteToUDPAddrPort(buf, to)
 	return err
@@ -368,6 +351,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				c.log.WithFields(logrus.Fields{
 					"to":      destToSend.String(),
 					"domain":  domain,
+					"pid":     routingResult.Pid,
+					"pname":   ProcessName2String(routingResult.Pname[:]),
+					"mac":     Mac2String(routingResult.Mac[:]),
 					"from":    realSrc.String(),
 					"network": networkType.String(),
 					"err":     err.Error(),
@@ -439,16 +425,25 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				"dialer":   realDialer.Name(),
 				"qname":    strings.ToLower(q.Name.String()),
 				"qtype":    q.Type,
+				"pid":      routingResult.Pid,
+				"pname":    ProcessName2String(routingResult.Pname[:]),
+				"mac":      Mac2String(routingResult.Mac[:]),
 			}).Infof("%v <-> %v",
 				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
 			)
 		} else if c.log.IsLevelEnabled(logrus.InfoLevel) {
+			if isDns && len(dnsMessage.Questions) > 0 {
+				domain = strings.ToLower(dnsMessage.Questions[0].Name.String())
+			}
 			c.log.WithFields(logrus.Fields{
 				"network":  string(l4proto) + string(ipversion),
 				"outbound": outbound.Name,
 				"policy":   outbound.GetSelectionPolicy(),
 				"dialer":   realDialer.Name(),
 				"domain":   domain,
+				"pid":      routingResult.Pid,
+				"pname":    ProcessName2String(routingResult.Pname[:]),
+				"mac":      Mac2String(routingResult.Mac[:]),
 			}).Infof("%v <-> %v",
 				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
 			)

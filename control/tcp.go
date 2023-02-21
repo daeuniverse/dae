@@ -14,7 +14,6 @@ import (
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/sniffing"
-	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
@@ -44,24 +43,21 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
 		// WAN. Old method.
-		var value bpfIpPortOutbound
+		var value bpfDstRoutingResult
 		ip6 := src.Addr().As16()
 		if e := c.core.bpf.TcpDstMap.Lookup(bpfIpPort{
 			Ip:   struct{ U6Addr8 [16]uint8 }{U6Addr8: ip6},
-			Port: internal.Htons(src.Port()),
+			Port: common.Htons(src.Port()),
 		}, &value); e != nil {
 			return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
 		}
-		routingResult = &bpfRoutingResult{
-			Mark:     value.Mark,
-			Outbound: value.Outbound,
-		}
+		routingResult = &value.RoutingResult
 
 		dstAddr, ok := netip.AddrFromSlice(common.Ipv6Uint32ArrayToByteSlice(value.Ip))
 		if !ok {
 			return fmt.Errorf("failed to parse dest ip: %v", value.Ip)
 		}
-		dst = netip.AddrPortFrom(dstAddr, internal.Htons(value.Port))
+		dst = netip.AddrPortFrom(dstAddr, common.Htons(value.Port))
 	}
 	var outboundIndex = consts.OutboundIndex(routingResult.Outbound)
 
@@ -101,6 +97,9 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 			"policy":   outbound.GetSelectionPolicy(),
 			"dialer":   d.Name(),
 			"domain":   domain,
+			"pid":      routingResult.Pid,
+			"pname":    ProcessName2String(routingResult.Pname[:]),
+			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
 	}
 

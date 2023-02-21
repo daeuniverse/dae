@@ -127,12 +127,18 @@ struct ip_port {
   __be16 port;
 };
 
-struct ip_port_outbound {
+struct routing_result {
+  __u32 mark;
+  __u8 mac[6];
+  __u8 outbound;
+  __u8 pname[TASK_COMM_LEN];
+  __u32 pid;
+};
+
+struct dst_routing_result {
   __be32 ip[4];
   __be16 port;
-  __u8 outbound;
-  __u8 unused;
-  __u32 mark;
+  struct routing_result routing_result;
 };
 
 struct tuples {
@@ -150,17 +156,12 @@ struct {
                           // (source ip, source port, tcp) is
                           // enough for identifier. And UDP client
                           // side does not care it (full-cone).
-  __type(value, struct ip_port_outbound); // Original target.
+  __type(value, struct dst_routing_result); // Original target.
   __uint(max_entries, MAX_DST_MAPPING_NUM);
   /// NOTICE: It MUST be pinned.
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } tcp_dst_map
     SEC(".maps"); // This map is only for old method (redirect mode in WAN).
-
-struct routing_result {
-  __u32 mark;
-  __u8 outbound;
-};
 
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1180,8 +1181,8 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 }
 
 static bool __always_inline is_not_to_lan(void *_ori_src) {
-  struct ip_port_outbound *ori_src = _ori_src;
-  return ori_src->outbound == IS_WAN;
+  struct dst_routing_result *ori_src = _ori_src;
+  return ori_src->routing_result.outbound == IS_WAN;
 }
 
 // SNAT for UDP packet.
@@ -1218,7 +1219,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     return TC_ACT_PIPE;
   }
 
-  struct ip_port_outbound ori_src;
+  struct dst_routing_result ori_src;
   if ((ret = decap_after_udp_hdr(skb, ipversion, ihl,
                                  ipversion == 4 ? iph.tot_len : 0, &ori_src,
                                  sizeof(ori_src), is_not_to_lan, true))) {
@@ -1347,6 +1348,10 @@ new_connection:
   struct routing_result routing_result = {0};
   routing_result.outbound = ret;
   routing_result.mark = ret >> 8;
+  __builtin_memcpy(routing_result.mac, ethh.h_source,
+                   sizeof(routing_result.mac));
+  // No pid pname info in LAN.
+
   // Save routing result.
   if ((ret = bpf_map_update_elem(&routing_tuples_map, &tuples, &routing_result,
                                  BPF_ANY))) {
@@ -1597,6 +1602,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       key_src.port = tcph.source;
       __u8 outbound;
       __u32 mark;
+      struct pid_pname *pid_pname = NULL;
       if (unlikely(tcp_state_syn)) {
         // New TCP connection.
         // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
@@ -1606,7 +1612,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         } else {
           flag[1] = IpVersionType_4;
         }
-        struct pid_pname *pid_pname;
         if (pid_is_control_plane(skb, &pid_pname)) {
           // From control plane. Direct.
           return TC_ACT_OK;
@@ -1641,14 +1646,14 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       } else {
         // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
         // The TCP connection exists.
-        struct ip_port_outbound *dst =
+        struct dst_routing_result *dst =
             bpf_map_lookup_elem(&tcp_dst_map, &key_src);
         if (!dst) {
           // Do not impact previous connections.
           return TC_ACT_OK;
         }
-        outbound = dst->outbound;
-        mark = dst->mark;
+        outbound = dst->routing_result.outbound;
+        mark = dst->routing_result.mark;
       }
 
       if ((outbound == OUTBOUND_DIRECT || outbound == OUTBOUND_MUST_DIRECT) &&
@@ -1675,15 +1680,22 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       }
 
       if (unlikely(tcp_state_syn)) {
-        struct ip_port_outbound value_dst;
-        __builtin_memset(&value_dst, 0, sizeof(value_dst));
-        __builtin_memcpy(value_dst.ip, &tuples.dip, IPV6_BYTE_LENGTH);
-        value_dst.port = tcph.dest;
-        value_dst.outbound = outbound;
-        value_dst.mark = mark;
+        struct dst_routing_result routing_info;
+        __builtin_memset(&routing_info, 0, sizeof(routing_info));
+        __builtin_memcpy(routing_info.ip, &tuples.dip, IPV6_BYTE_LENGTH);
+        routing_info.port = tcph.dest;
+        routing_info.routing_result.outbound = outbound;
+        routing_info.routing_result.mark = mark;
+        __builtin_memcpy(routing_info.routing_result.mac, ethh.h_source,
+                         sizeof(ethh.h_source));
+        if (pid_pname) {
+          __builtin_memcpy(routing_info.routing_result.pname, pid_pname->pname,
+                           TASK_COMM_LEN);
+          routing_info.routing_result.pid = pid_pname->pid;
+        }
         // bpf_printk("UPDATE: %pI6:%u", key_src.ip.u6_addr32,
         // bpf_ntohs(key_src.port));
-        bpf_map_update_elem(&tcp_dst_map, &key_src, &value_dst, BPF_ANY);
+        bpf_map_update_elem(&tcp_dst_map, &key_src, &routing_info, BPF_ANY);
       }
 
       // Write mac.
@@ -1699,11 +1711,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       };
 
     } else if (l4proto == IPPROTO_UDP) {
-      // Backup for further use.
-      struct ip_port_outbound new_hdr;
-      __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
-      __builtin_memcpy(new_hdr.ip, &tuples.dip, IPV6_BYTE_LENGTH);
-      new_hdr.port = udph.dest;
 
       // Routing. It decides if we redirect traffic to control plane.
       __u32 flag[6] = {L4ProtoType_UDP};
@@ -1732,8 +1739,20 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         bpf_printk("shot routing: %d", ret);
         return TC_ACT_SHOT;
       }
-      new_hdr.outbound = ret;
-      new_hdr.mark = ret >> 8;
+      // Construct new hdr to encap.
+      struct dst_routing_result new_hdr;
+      __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
+      __builtin_memcpy(new_hdr.ip, &tuples.dip, IPV6_BYTE_LENGTH);
+      new_hdr.port = udph.dest;
+      new_hdr.routing_result.outbound = ret;
+      new_hdr.routing_result.mark = ret >> 8;
+      __builtin_memcpy(new_hdr.routing_result.mac, ethh.h_source,
+                       sizeof(ethh.h_source));
+      if (pid_pname) {
+        __builtin_memcpy(new_hdr.routing_result.pname, pid_pname->pname,
+                         TASK_COMM_LEN);
+        new_hdr.routing_result.pid = pid_pname->pid;
+      }
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
       __u32 pid = pid_pname ? pid_pname->pid : 0;
       bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples.sip.u6_addr32,
@@ -1742,13 +1761,13 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                  tuples.dip.u6_addr32, bpf_ntohs(tuples.dport));
 #endif
 
-      if ((new_hdr.outbound == OUTBOUND_DIRECT ||
-           new_hdr.outbound == OUTBOUND_MUST_DIRECT) &&
-          new_hdr.mark == 0 // If mark is not zero, we should re-route it, so we
+      if ((new_hdr.routing_result.outbound == OUTBOUND_DIRECT ||
+           new_hdr.routing_result.outbound == OUTBOUND_MUST_DIRECT) &&
+          new_hdr.routing_result.mark == 0 // If mark is not zero, we should re-route it, so we
                             // send it to control plane in WAN.
       ) {
         return TC_ACT_OK;
-      } else if (unlikely(new_hdr.outbound == OUTBOUND_BLOCK)) {
+      } else if (unlikely(new_hdr.routing_result.outbound == OUTBOUND_BLOCK)) {
         return TC_ACT_SHOT;
       }
 
@@ -1756,7 +1775,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
       // Check outbound connectivity in specific ipversion and l4proto.
       struct outbound_connectivity_query q = {0};
-      q.outbound = new_hdr.outbound;
+      q.outbound = new_hdr.routing_result.outbound;
       q.ipversion = ipversion;
       q.l4proto = l4proto;
       __u32 *alive;
@@ -1892,7 +1911,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // map element using income client ip (that is daddr).
       __builtin_memcpy(&key_dst.ip, &tuples.dip, IPV6_BYTE_LENGTH);
       key_dst.port = tcph.dest;
-      struct ip_port_outbound *original_dst =
+      struct dst_routing_result *original_dst =
           bpf_map_lookup_elem(&tcp_dst_map, &key_dst);
       if (!original_dst) {
         bpf_printk("[%X]Bad Connection: to: %pI6:%u", bpf_ntohl(tcph.seq),
@@ -1917,7 +1936,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       /// NOTICE: Actually, we do not need symmetrical headers in client and
       /// server. We use it for convinience. This behavior may change in the
       /// future. Outbound here is useless and redundant.
-      struct ip_port_outbound ori_src;
+      struct dst_routing_result ori_src;
 
       // Get source ip/port from our packet header.
 
