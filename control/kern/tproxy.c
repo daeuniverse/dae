@@ -158,7 +158,7 @@ struct {
                           // side does not care it (full-cone).
   __type(value, struct dst_routing_result); // Original target.
   __uint(max_entries, MAX_DST_MAPPING_NUM);
-  /// NOTICE: It MUST be pinned.
+  /// NOTICE: It MUST be pinned, or connection may break.
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } tcp_dst_map
     SEC(".maps"); // This map is only for old method (redirect mode in WAN).
@@ -187,7 +187,6 @@ struct {
   __type(key, __u32);
   __type(value, struct lpm_key);
   __uint(max_entries, 3);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
 } lpm_key_map SEC(".maps");
 
 // h_sport, h_dport:
@@ -196,7 +195,6 @@ struct {
   __type(key, __u32);
   __type(value, __u16);
   __uint(max_entries, 2);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
 } h_port_map SEC(".maps");
 
 // l4proto, ipversion:
@@ -205,7 +203,6 @@ struct {
   __type(key, __u32);
   __type(value, __u32);
   __uint(max_entries, 2);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
 } l4proto_ipversion_map SEC(".maps");
 
 // IPPROTO to hdr_size
@@ -1763,8 +1760,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
       if ((new_hdr.routing_result.outbound == OUTBOUND_DIRECT ||
            new_hdr.routing_result.outbound == OUTBOUND_MUST_DIRECT) &&
-          new_hdr.routing_result.mark == 0 // If mark is not zero, we should re-route it, so we
-                            // send it to control plane in WAN.
+          new_hdr.routing_result.mark ==
+              0 // If mark is not zero, we should re-route it, so we
+                // send it to control plane in WAN.
       ) {
         return TC_ACT_OK;
       } else if (unlikely(new_hdr.routing_result.outbound == OUTBOUND_BLOCK)) {

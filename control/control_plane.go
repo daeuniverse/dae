@@ -533,9 +533,10 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
 				if err != nil {
 					// WAN. Old method.
+					lastErr := err
 					addrHdr, dataOffset, err := ParseAddrHdr(data)
 					if err != nil {
-						c.log.Warnf("No AddrPort presented: %v", err)
+						c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
 						return
 					}
 					copy(data, data[dataOffset:])

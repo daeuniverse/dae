@@ -32,7 +32,7 @@ func (c *ControlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 	}
 
 	var routingResult bpfRoutingResult
-	if err := c.bpf.RoutingTuplesMap.LookupAndDelete(tuples, &routingResult); err != nil {
+	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &routingResult); err != nil {
 		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
 	}
 	return &routingResult, nil
@@ -97,10 +97,12 @@ func ProcessName2String(pname []uint8) string {
 func Mac2String(mac []uint8) string {
 	ori := []byte(hex.EncodeToString(mac))
 	// Insert ":".
-	b := make([]byte, len(ori)/2*3)
+	b := make([]byte, len(ori)/2*3-1)
 	for i, j := 0, 0; i < len(ori); i, j = i+2, j+3 {
 		copy(b[j:j+2], ori[i:i+2])
-		b[j+2] = ':'
+		if j+2 < len(b) {
+			b[j+2] = ':'
+		}
 	}
 	return string(b)
 }
