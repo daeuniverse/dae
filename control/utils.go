@@ -41,6 +41,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	); err != nil {
 		return 0, 0, err
 	}
+
 	return outboundIndex, mark, nil
 }
 

@@ -611,6 +611,10 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			if err != nil {
 				return nil, err
 			}
+			// Already "must direct".
+			if outboundIndex == consts.OutboundMustDirect {
+				outboundIndex = consts.OutboundDirect
+			}
 			if int(outboundIndex) >= len(c.outbounds) {
 				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
 			}
