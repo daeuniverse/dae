@@ -81,13 +81,9 @@ Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start u
 
 ## TODO
 
-- [ ] Check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
-- [ ] WAN L4Checksum problem.
-- [ ] If the NIC checksumming offload is enabled, the Linux network stack will make a simple checksum a packet when it is sent out from local. When NIC discovers that the source IP of the packet is the local IP of the NIC, it will checksum it complete this checksum.
-- [ ] But the problem is, after the Linux network stack, before entering the network card, we modify the source IP of this packet, causing the Linux network stack to only make a simple checksum, and the NIC also assumes that this packet is not sent from local, so no further checksum completing.
+- [ ] Automatically check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
 - [ ] MACv2 extension extraction.
 - [ ] Log to userspace.
 - [ ] Protocol-oriented node features detecting (or filter), such as full-cone (especially VMess and VLESS).
-- [ ] DNS traffic split.
 - [ ] Add quick-start guide
 - [ ] ...
