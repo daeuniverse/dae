@@ -94,7 +94,6 @@ var TestSample = []string{
 }
 
 type RoutingMatcherBuilder struct {
-	*routing.DefaultMatcherBuilder
 	outboundName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
 	Fallback           string
@@ -118,7 +117,7 @@ func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string,
 		consts.RoutingDomainKey_Keyword,
 		consts.RoutingDomainKey_Suffix:
 	default:
-		b.err = fmt.Errorf("AddDomain: unsupported key: %v", key)
+		b.err = fmt.Errorf("addDomain: unsupported key: %v", key)
 		return
 	}
 	b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
@@ -132,22 +131,16 @@ func getDomain() (simulatedDomainSet []routing.DomainSet, err error) {
 	var rules []*config_parser.RoutingRule
 	sections, err := config_parser.Parse(`
 routing {
-    pname(NetworkManager, dnsmasq, systemd-resolved) -> must_direct # Traffic of DNS in local must be direct to avoid loop when binding to WAN.
-    pname(sogou-qimpanel, sogou-qimpanel-watchdog) -> block
-    ip(geoip:private, 224.0.0.0/3, 'ff00::/8') -> direct # Put it in front unless you know what you're doing.
 	domain(geosite:bing)->us
-    domain(full:dns.google) && port(53) -> direct
+    domain(full:dns.google) -> direct
 	domain(geosite:category-ads-all) -> block
-    ip(geoip:private) -> direct
-    ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
-    fallback: my_group
 }`)
 	if err != nil {
 		return nil, err
 	}
 	var r config.Routing
-	if err = config.RoutingRuleAndParamParser(reflect.ValueOf(&r), sections[0]); err != nil {
+	if err = config.SectionParser(reflect.ValueOf(&r), sections[0]); err != nil {
 		return nil, err
 	}
 	if rules, err = routing.ApplyRulesOptimizers(r.Rules,
@@ -159,8 +152,13 @@ routing {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
 	builder := RoutingMatcherBuilder{}
-	if err = routing.ApplyMatcherBuilder(logrus.StandardLogger(), &builder, rules, r.Fallback); err != nil {
-		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
+	rb := routing.NewRulesBuilder(logrus.StandardLogger())
+	rb.RegisterFunctionParser("domain", func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) (err error) {
+		builder.AddDomain(f, key, paramValueGroup, overrideOutbound)
+		return nil
+	})
+	if err = rb.Apply(rules); err != nil {
+		return nil, fmt.Errorf("Apply: %w", err)
 	}
 	return builder.simulatedDomainSet, nil
 }

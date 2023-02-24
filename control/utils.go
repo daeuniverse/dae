@@ -19,6 +19,32 @@ import (
 	"syscall"
 )
 
+func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, err error) {
+	var ipVersion consts.IpVersionType
+	if dst.Addr().Is4() || dst.Addr().Is4In6() {
+		ipVersion = consts.IpVersion_4
+	} else {
+		ipVersion = consts.IpVersion_6
+	}
+	bSrc := src.Addr().As16()
+	bDst := dst.Addr().As16()
+	if outboundIndex, mark, err = c.routingMatcher.Match(
+		bSrc[:],
+		bDst[:],
+		src.Port(),
+		dst.Port(),
+		ipVersion,
+		l4proto,
+		domain,
+		routingResult.Pname,
+		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
+	); err != nil {
+		return 0, 0, err
+	}
+
+	return outboundIndex, mark, nil
+}
+
 func (c *ControlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
@@ -79,7 +105,7 @@ func CheckIpforward(ifname string) error {
 	return nil
 }
 
-func GetNetwork(network string, mark uint32) string {
+func MagicNetwork(network string, mark uint32) string {
 	if mark == 0 {
 		return network
 	} else {

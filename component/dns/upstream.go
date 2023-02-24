@@ -3,68 +3,68 @@
  * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
  */
 
-package control
+package dns
 
 import (
 	"context"
 	"fmt"
 	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/common/netutils"
+	"net"
 	"net/url"
 	"strconv"
 	"sync"
 	"time"
 )
 
-type DnsUpstreamScheme string
+type UpstreamScheme string
 
 const (
-	DnsUpstreamScheme_TCP     DnsUpstreamScheme = "tcp"
-	DnsUpstreamScheme_UDP     DnsUpstreamScheme = "udp"
-	DnsUpstreamScheme_TCP_UDP DnsUpstreamScheme = "tcp+udp"
+	UpstreamScheme_TCP     UpstreamScheme = "tcp"
+	UpstreamScheme_UDP     UpstreamScheme = "udp"
+	UpstreamScheme_TCP_UDP UpstreamScheme = "tcp+udp"
 )
 
-func (s DnsUpstreamScheme) ContainsTcp() bool {
+func (s UpstreamScheme) ContainsTcp() bool {
 	switch s {
-	case DnsUpstreamScheme_TCP,
-		DnsUpstreamScheme_TCP_UDP:
+	case UpstreamScheme_TCP,
+		UpstreamScheme_TCP_UDP:
 		return true
 	default:
 		return false
 	}
 }
 
-type DnsUpstream struct {
-	Scheme   DnsUpstreamScheme
-	Hostname string
-	Port     uint16
-	*netutils.Ip46
-}
-
-func ParseDnsUpstream(dnsUpstream *url.URL) (scheme DnsUpstreamScheme, hostname string, port uint16, err error) {
+func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, err error) {
 	var __port string
-	switch scheme = DnsUpstreamScheme(dnsUpstream.Scheme); scheme {
-	case DnsUpstreamScheme_TCP, DnsUpstreamScheme_UDP, DnsUpstreamScheme_TCP_UDP:
-		__port = dnsUpstream.Port()
+	switch scheme = UpstreamScheme(raw.Scheme); scheme {
+	case UpstreamScheme_TCP, UpstreamScheme_UDP, UpstreamScheme_TCP_UDP:
+		__port = raw.Port()
 		if __port == "" {
 			__port = "53"
 		}
 	default:
 		return "", "", 0, fmt.Errorf("unexpected dns_upstream format")
 	}
-	_port, err := strconv.ParseUint(dnsUpstream.Port(), 10, 16)
-	port = uint16(_port)
+	_port, err := strconv.ParseUint(__port, 10, 16)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("parse dns_upstream port: %v", err)
+		return "", "", 0, fmt.Errorf("failed to parse dns_upstream port: %v", err)
 	}
-	hostname = dnsUpstream.Hostname()
+	port = uint16(_port)
+	hostname = raw.Hostname()
 	return scheme, hostname, port, nil
 }
 
-func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstream, err error) {
-	scheme, hostname, port, err := ParseDnsUpstream(dnsUpstream)
+type Upstream struct {
+	Scheme   UpstreamScheme
+	Hostname string
+	Port     uint16
+	*netutils.Ip46
+}
+
+func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err error) {
+	scheme, hostname, port, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 		}
 	}()
 
-	ip46, err := netutils.ParseIp46(ctx, direct.SymmetricDirect, systemDns, hostname, false)
+	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve dns_upstream: %w", err)
 	}
@@ -87,7 +87,7 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 		return nil, fmt.Errorf("dns_upstream has no record")
 	}
 
-	return &DnsUpstream{
+	return &Upstream{
 		Scheme:   scheme,
 		Hostname: hostname,
 		Port:     port,
@@ -95,7 +95,7 @@ func ResolveDnsUpstream(ctx context.Context, dnsUpstream *url.URL) (up *DnsUpstr
 	}, nil
 }
 
-func (u *DnsUpstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4protos []consts.L4ProtoStr) {
+func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4protos []consts.L4ProtoStr) {
 	if u.Ip4.IsValid() && u.Ip6.IsValid() {
 		ipversions = []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
 	} else {
@@ -106,27 +106,31 @@ func (u *DnsUpstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4p
 		}
 	}
 	switch u.Scheme {
-	case DnsUpstreamScheme_TCP:
+	case UpstreamScheme_TCP:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_TCP}
-	case DnsUpstreamScheme_UDP:
+	case UpstreamScheme_UDP:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP}
-	case DnsUpstreamScheme_TCP_UDP:
+	case UpstreamScheme_TCP_UDP:
 		// UDP first.
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
 	}
 	return ipversions, l4protos
 }
 
-type DnsUpstreamRaw struct {
-	Raw common.UrlOrEmpty
+func (u *Upstream) String() string {
+	return string(u.Scheme) + "://" + net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port)))
+}
+
+type UpstreamResolver struct {
+	Raw *url.URL
 	// FinishInitCallback may be invoked again if err is not nil
-	FinishInitCallback func(raw common.UrlOrEmpty, upstream *DnsUpstream) (err error)
+	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
 	mu                 sync.Mutex
-	upstream           *DnsUpstream
+	upstream           *Upstream
 	init               bool
 }
 
-func (u *DnsUpstreamRaw) GetUpstream() (_ *DnsUpstream, err error) {
+func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if !u.init {
@@ -141,12 +145,8 @@ func (u *DnsUpstreamRaw) GetUpstream() (_ *DnsUpstream, err error) {
 		}()
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
-		if !u.Raw.Empty {
-			if u.upstream, err = ResolveDnsUpstream(ctx, u.Raw.Url); err != nil {
-				return nil, fmt.Errorf("failed to init dns upstream: %v", err)
-			}
-		} else {
-			// Empty string. As-is.
+		if u.upstream, err = NewUpstream(ctx, u.Raw); err != nil {
+			return nil, fmt.Errorf("failed to init dns upstream: %v", err)
 		}
 	}
 	return u.upstream, nil

@@ -118,7 +118,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := netutils.ParseIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), false)
+	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := netutils.ParseIp46(ctx, direct.SymmetricDirect, systemDns, host, false)
+	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, false)
 	if err != nil {
 		return nil, err
 	}
@@ -407,6 +407,10 @@ func (d *Dialer) NotifyCheck() {
 	case d.checkCh <- time.Now():
 	default:
 	}
+}
+
+func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
+	return d.mustGetCollection(typ).Latencies10
 }
 
 // RegisterAliveDialerSet is thread-safe.

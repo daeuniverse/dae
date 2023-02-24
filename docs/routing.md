@@ -1,4 +1,4 @@
-# routing
+# Routing
 
 ## Examples:
 

@@ -7,21 +7,18 @@ package control
 
 import (
 	"encoding/binary"
-	"encoding/gob"
 	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
-	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/sniffing"
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/net/dns/dnsmessage"
-	"io"
 	"net"
 	"net/netip"
-	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -33,16 +30,13 @@ const (
 	MaxRetry          = 2
 )
 
-var (
-	UnspecifiedAddr4 = netip.AddrFrom4([4]byte{})
-	UnspecifiedAddr6 = netip.AddrFrom16([16]byte{})
-)
-
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Message, timeout time.Duration) {
-	var dnsmsg dnsmessage.Message
-	if err := dnsmsg.Unpack(data); err == nil {
-		//log.Printf("DEBUG: lookup %v", dnsmsg.Questions[0].Name)
-		return &dnsmsg, DnsNatTimeout
+	if sniffDns {
+		var dnsmsg dnsmessage.Message
+		if err := dnsmsg.Unpack(data); err == nil {
+			//log.Printf("DEBUG: lookup %v", dnsmsg.Questions[0].Name)
+			return &dnsmsg, DnsNatTimeout
+		}
 	}
 	return nil, DefaultNatTimeout
 }
@@ -57,29 +51,34 @@ func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err er
 	return &_hdr, dataOffset, nil
 }
 
-func sendPktWithHdrWithFlag(data []byte, mark uint32, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
+func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
+	realFrom16 := realFrom.Addr().As16()
 	hdr := bpfDstRoutingResult{
-		Ip:   common.Ipv6ByteSliceToUint32Array(from.Addr().AsSlice()),
-		Port: common.Htons(from.Port()),
+		Ip:   common.Ipv6ByteSliceToUint32Array(realFrom16[:]),
+		Port: common.Htons(realFrom.Port()),
 		RoutingResult: bpfRoutingResult{
 			Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
 		},
 	}
-	buf := pool.Get(int(unsafe.Sizeof(hdr)) + len(data))
-	defer pool.Put(buf)
-	b := buffer.NewBufferFrom(buf)
+	// Do not put this 'buf' because it has been taken by buffer.
+	b := buffer.NewBuffer(int(unsafe.Sizeof(hdr)) + len(data))
 	defer b.Put()
-	if err := gob.NewEncoder(b).Encode(&hdr); err != nil {
+	// Use internal.NativeEndian due to already big endian.
+	if err := binary.Write(b, internal.NativeEndian, hdr); err != nil {
 		return err
 	}
-	copy(buf[int(unsafe.Sizeof(hdr)):], data)
-	//log.Println("from", from, "to", to)
-	_, err := lConn.WriteToUDPAddrPort(buf, to)
+	b.Write(data)
+	//logrus.Debugln("sendPktWithHdrWithFlag: from", realFrom, "to", to)
+	_, err := lConn.WriteToUDPAddrPort(b.Bytes(), to)
 	return err
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn, lanWanFlag consts.LanWanFlag) (err error) {
+	if lanWanFlag == consts.LanWanFlag_IsWan {
+		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
+	}
+
 	d := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
 		return dialer.BindControl(c, from)
 	}}
@@ -88,7 +87,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			// Port collision, use traditional method.
-			return sendPktWithHdrWithFlag(data, 0, from, lConn, to, lanWanFlag)
+			return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 		}
 		return err
 	}
@@ -96,36 +95,6 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	uConn := conn.(*net.UDPConn)
 	_, err = uConn.Write(data)
 	return err
-}
-
-func (c *ControlPlane) WriteToUDP(lanWanFlag consts.LanWanFlag, lConn *net.UDPConn, realTo, to netip.AddrPort, isDNS bool, dummyFrom *netip.AddrPort, validateRushAnsFunc func(from netip.AddrPort) bool) UdpHandler {
-	return func(data []byte, from netip.AddrPort) (err error) {
-		// Do not return conn-unrelated err in this func.
-
-		if isDNS {
-			validateRushAns := validateRushAnsFunc(from)
-			data, err = c.DnsRespHandler(data, validateRushAns)
-			if err != nil {
-				if validateRushAns && errors.Is(err, SuspectedRushAnswerError) {
-					// Reject DNS rush-answer.
-					c.log.WithFields(logrus.Fields{
-						"from": from,
-					}).Tracef("DNS rush-answer rejected")
-					return err
-				}
-				if c.log.IsLevelEnabled(logrus.DebugLevel) {
-					c.log.Debugf("DnsRespHandler: %v", err)
-				}
-				if data == nil {
-					return nil
-				}
-			}
-		}
-		if dummyFrom != nil {
-			from = *dummyFrom
-		}
-		return sendPkt(data, from, realTo, to, lConn, lanWanFlag)
-	}
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult) (err error) {
@@ -142,60 +111,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		realSrc = netip.AddrPortFrom(pktDst.Addr(), src.Port())
 	}
 
-	mustDirect := false
-	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
-	switch outboundIndex {
-	case consts.OutboundDirect:
-	case consts.OutboundMustDirect:
-		mustDirect = true
-		fallthrough
-	case consts.OutboundControlPlaneDirect:
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.Tracef("outbound: %v => %v",
-				outboundIndex.String(),
-				consts.OutboundDirect.String(),
-			)
-		}
-		outboundIndex = consts.OutboundDirect
-	default:
-	}
-	if int(outboundIndex) >= len(c.outbounds) {
-		return fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
-	}
-	outbound := c.outbounds[outboundIndex]
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
-	var dummyFrom *netip.AddrPort
-	destToSend := realDst
-	if isDns {
-		if resp := c.LookupDnsRespCache_(dnsMessage); resp != nil {
-			// Send cache to client directly.
-			if err = sendPkt(resp, destToSend, realSrc, src, lConn, lanWanFlag); err != nil {
-				return fmt.Errorf("failed to write cached DNS resp: %w", err)
-			}
-			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
-				q := dnsMessage.Questions[0]
-				c.log.Tracef("UDP(DNS) %v <-[%v]-> Cache: %v %v",
-					RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), outbound.Name, strings.ToLower(q.Name.String()), q.Type,
-				)
-			}
-			return nil
-		}
-
-		// Flip dns question to reduce dns pollution.
-		FlipDnsQuestionCase(dnsMessage)
-		// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
-		// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
-		// Note that additional record OPT may not be supported by home router either.
-		_, _ = EnsureAdditionalOpt(dnsMessage, true)
-
-		// Re-pack DNS packet.
-		if data, err = dnsMessage.Pack(); err != nil {
-			return fmt.Errorf("pack flipped dns packet: %w", err)
-		}
-	} else {
+	if !isDns {
 		// Sniff Quic
 		sniffer := sniffing.NewPacketSniffer(data)
 		domain, err = sniffer.SniffQuic()
@@ -206,247 +126,137 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		sniffer.Close()
 	}
 
-	l4proto := consts.L4ProtoStr_UDP
-	ipversion := consts.IpVersionFromAddr(realDst.Addr())
-	var dialerForNew *dialer.Dialer
+	// Get outbound.
+	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
+	switch outboundIndex {
+	case consts.OutboundDirect:
+	case consts.OutboundMustDirect:
+		outboundIndex = consts.OutboundDirect
+		isDns = false // Regard as plain traffic.
+	case consts.OutboundControlPlaneRouting:
+		if isDns {
+			// Routing of DNS packets are managed by DNS controller.
+			break
+		}
 
-	// For DNS request, modify realDst to dns upstream.
-	// NOTICE: We might modify l4proto and ipversion.
-	dnsUpstream, err := c.dnsUpstream.GetUpstream()
-	if err != nil {
-		return err
+		if outboundIndex, routingResult.Mark, err = c.Route(realSrc, realDst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
+			return err
+		}
+		routingResult.Outbound = uint8(outboundIndex)
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.Tracef("outbound: %v => %v",
+				consts.OutboundControlPlaneRouting.String(),
+				outboundIndex.String(),
+			)
+		}
+	default:
 	}
-	if isDns && dnsUpstream != nil && !mustDirect {
-		// Modify dns target to upstream.
-		// NOTICE: Routing was calculated in advance by the eBPF program.
+	if isDns {
+		return c.dnsController.Handle_(dnsMessage, &udpRequest{
+			lanWanFlag:    lanWanFlag,
+			realSrc:       realSrc,
+			realDst:       realDst,
+			src:           src,
+			lConn:         lConn,
+			routingResult: routingResult,
+		})
+	}
 
-		/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
-		// Get available ipversions and l4protos for DNS upstream.
-		ipversions, l4protos := dnsUpstream.SupportedNetworks()
-		var (
-			bestDialer  *dialer.Dialer
-			bestLatency time.Duration
-			bestTarget  netip.AddrPort
-		)
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
-				"ipversions": ipversions,
-				"l4protos":   l4protos,
-				"src":        realSrc.String(),
-			}).Traceln("Choose DNS path")
-		}
-		// Get the min latency path.
-		networkType := dialer.NetworkType{
-			IsDns: isDns,
-		}
-		for _, ver := range ipversions {
-			for _, proto := range l4protos {
-				networkType.L4Proto = proto
-				networkType.IpVersion = ver
-				d, latency, err := outbound.Select(&networkType)
-				if err != nil {
-					continue
-				}
-				if c.log.IsLevelEnabled(logrus.TraceLevel) {
-					c.log.WithFields(logrus.Fields{
-						"name":     d.Name(),
-						"latency":  latency,
-						"network":  networkType.String(),
-						"outbound": outbound.Name,
-					}).Traceln("Choice")
-				}
-				if bestDialer == nil || latency < bestLatency {
-					bestDialer = d
-					bestLatency = latency
-					l4proto = proto
-					ipversion = ver
-				}
-			}
-		}
-		switch ipversion {
-		case consts.IpVersionStr_4:
-			bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
-		case consts.IpVersionStr_6:
-			bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
-		}
-		dialerForNew = bestDialer
-		dummyFrom = &realDst
-		destToSend = bestTarget
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
-				"Original": RefineAddrPortToShow(realDst),
-				"New":      destToSend,
-				"Network":  string(l4proto) + string(ipversion),
-			}).Traceln("Modify DNS target")
-		}
+	if int(outboundIndex) >= len(c.outbounds) {
+		return fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
+	outbound := c.outbounds[outboundIndex]
+
+	// Select dialer from outbound (dialer group).
 	networkType := &dialer.NetworkType{
-		L4Proto:   l4proto,
-		IpVersion: ipversion,
-		IsDns:     true,
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
+		IsDns:     true, // UDP relies on DNS check result.
 	}
-	if dialerForNew == nil {
-		dialerForNew, _, err = outbound.Select(networkType)
-		if err != nil {
-			return fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
-		}
+	dialerForNew, _, err := outbound.Select(networkType)
+	if err != nil {
+		return fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
 	}
 
-	var isNew bool
-	var realDialer *dialer.Dialer
-
-	udpHandler := c.WriteToUDP(lanWanFlag, lConn, realSrc, src, isDns, dummyFrom, func(from netip.AddrPort) bool {
-		// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
-		// Because additional record OPT may not be supported by home router.
-		// So se should trust home devices even if they make rush-answer (or looks like).
-		return outboundIndex == consts.OutboundDirect && !common.ConvergeIp(from.Addr()).IsPrivate()
-	})
 	// Dial and send.
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
-	destToSend = netip.AddrPortFrom(common.ConvergeIp(destToSend.Addr()), destToSend.Port())
-	tgtToSend := c.ChooseDialTarget(outboundIndex, destToSend, domain)
-	switch l4proto {
-	case consts.L4ProtoStr_UDP:
-		// Get udp endpoint.
-		var ue *UdpEndpoint
-		retry := 0
-	getNew:
-		if retry > MaxRetry {
-			return fmt.Errorf("touch max retry limit")
-		}
+	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
+	dialTarget := c.ChooseDialTarget(outboundIndex, realDst, domain)
 
-		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
-			Handler:    udpHandler,
-			NatTimeout: natTimeout,
-			Dialer:     dialerForNew,
-			Network:    GetNetwork("udp", routingResult.Mark),
-			Target:     tgtToSend,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to GetOrCreate (policy: %v): %w", outbound.GetSelectionPolicy(), err)
-		}
+	// Get udp endpoint.
+	var ue *UdpEndpoint
+	retry := 0
+getNew:
+	if retry > MaxRetry {
+		return fmt.Errorf("touch max retry limit")
+	}
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
+		// Handler handles response packets and send it to the client.
+		Handler: func(data []byte, from netip.AddrPort) (err error) {
+			// Do not return conn-unrelated err in this func.
+			return sendPkt(data, from, realSrc, src, lConn, lanWanFlag)
+		},
+		NatTimeout: natTimeout,
+		Dialer:     dialerForNew,
+		Network:    MagicNetwork("udp", routingResult.Mark),
+		Target:     dialTarget,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to GetOrCreate (policy: %v): %w", outbound.GetSelectionPolicy(), err)
+	}
 
-		// If the udp endpoint has been not alive, remove it from pool and get a new one.
-		if !isNew && outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
+	// If the udp endpoint has been not alive, remove it from pool and get a new one.
+	if !isNew && outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
 
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
-					"network": networkType.String(),
-					"dialer":  ue.Dialer.Name(),
-					"retry":   retry,
-				}).Debugln("Old udp endpoint was not alive and removed.")
-			}
-			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
-			retry++
-			goto getNew
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
+				"network": networkType.String(),
+				"dialer":  ue.Dialer.Name(),
+				"retry":   retry,
+			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
-		// This is real dialer.
-		realDialer = ue.Dialer
+		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
+		retry++
+		goto getNew
+	}
 
-		_, err = ue.WriteTo(data, tgtToSend)
-		if err != nil {
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"to":      destToSend.String(),
-					"domain":  domain,
-					"pid":     routingResult.Pid,
-					"pname":   ProcessName2String(routingResult.Pname[:]),
-					"mac":     Mac2String(routingResult.Mac[:]),
-					"from":    realSrc.String(),
-					"network": networkType.String(),
-					"err":     err.Error(),
-					"retry":   retry,
-				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
-			}
-			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
-			retry++
-			goto getNew
+	_, err = ue.WriteTo(data, dialTarget)
+	if err != nil {
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"to":      realDst.String(),
+				"domain":  domain,
+				"pid":     routingResult.Pid,
+				"pname":   ProcessName2String(routingResult.Pname[:]),
+				"mac":     Mac2String(routingResult.Mac[:]),
+				"from":    realSrc.String(),
+				"network": networkType.StringWithoutDns(),
+				"err":     err.Error(),
+				"retry":   retry,
+			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 		}
-	case consts.L4ProtoStr_TCP:
-		// MUST be DNS.
-		if !isDns {
-			return fmt.Errorf("UDP to TCP only support DNS request")
-		}
-		isNew = true
-		realDialer = dialerForNew
-
-		// We can block because we are in a coroutine.
-
-		conn, err := dialerForNew.Dial(GetNetwork("tcp", routingResult.Mark), tgtToSend)
-		if err != nil {
-			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
-		}
-		defer conn.Close()
-
-		_ = conn.SetDeadline(time.Now().Add(natTimeout))
-		// We should write two byte length in the front of TCP DNS request.
-		bReq := pool.Get(2 + len(data))
-		defer pool.Put(bReq)
-		binary.BigEndian.PutUint16(bReq, uint16(len(data)))
-		copy(bReq[2:], data)
-		_, err = conn.Write(bReq)
-		if err != nil {
-			return fmt.Errorf("failed to write DNS req: %w", err)
-		}
-
-		// Read two byte length.
-		if _, err = io.ReadFull(conn, bReq[:2]); err != nil {
-			return fmt.Errorf("failed to read DNS resp payload length: %w", err)
-		}
-		respLen := int(binary.BigEndian.Uint16(bReq))
-		// Try to reuse the buf.
-		var buf []byte
-		if len(bReq) < respLen {
-			buf = pool.Get(respLen)
-			defer pool.Put(buf)
-		} else {
-			buf = bReq
-		}
-		var n int
-		if n, err = io.ReadFull(conn, buf[:respLen]); err != nil {
-			return fmt.Errorf("failed to read DNS resp payload: %w", err)
-		}
-		if err = udpHandler(buf[:n], destToSend); err != nil {
-			return fmt.Errorf("failed to write DNS resp to client: %w", err)
-		}
+		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
+		retry++
+		goto getNew
 	}
 
 	// Print log.
-	if isNew || isDns {
-		// Only print routing for new connection to avoid the log exploded (Quic and BT).
-		if isDns && c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
-			q := dnsMessage.Questions[0]
-			c.log.WithFields(logrus.Fields{
-				"network":  string(l4proto) + string(ipversion) + "(DNS)",
+	// Only print routing for new connection to avoid the log exploded (Quic and BT).
+	if isNew {
+		if c.log.IsLevelEnabled(logrus.InfoLevel) {
+			fields := logrus.Fields{
+				"network":  networkType.StringWithoutDns(),
 				"outbound": outbound.Name,
 				"policy":   outbound.GetSelectionPolicy(),
-				"dialer":   realDialer.Name(),
-				"qname":    strings.ToLower(q.Name.String()),
-				"qtype":    q.Type,
-				"pid":      routingResult.Pid,
-				"pname":    ProcessName2String(routingResult.Pname[:]),
-				"mac":      Mac2String(routingResult.Mac[:]),
-			}).Infof("%v <-> %v",
-				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
-			)
-		} else if c.log.IsLevelEnabled(logrus.InfoLevel) {
-			if isDns && len(dnsMessage.Questions) > 0 {
-				domain = strings.ToLower(dnsMessage.Questions[0].Name.String())
-			}
-			c.log.WithFields(logrus.Fields{
-				"network":  string(l4proto) + string(ipversion),
-				"outbound": outbound.Name,
-				"policy":   outbound.GetSelectionPolicy(),
-				"dialer":   realDialer.Name(),
+				"dialer":   ue.Dialer.Name(),
 				"domain":   domain,
 				"pid":      routingResult.Pid,
 				"pname":    ProcessName2String(routingResult.Pname[:]),
 				"mac":      Mac2String(routingResult.Mac[:]),
-			}).Infof("%v <-> %v",
-				RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(destToSend),
-			)
+			}
+			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(realDst))
 		}
 	}
 

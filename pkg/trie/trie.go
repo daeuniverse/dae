@@ -1,5 +1,5 @@
 // Package trie is modified from https://github.com/openacid/succinct/blob/loc100/sskv.go.
-// Slower than about 50% but more memory saving.
+// Slower than about 30% but more than 40% memory saving.
 
 package trie
 
@@ -9,53 +9,30 @@ import (
 	"math/bits"
 )
 
-var table = [256]byte{
-	97:  0, // 'a'
-	98:  1,
-	99:  2,
-	100: 3,
-	101: 4,
-	102: 5,
-	103: 6,
-	104: 7,
-	105: 8,
-	106: 9,
-	107: 10,
-	108: 11,
-	109: 12,
-	110: 13,
-	111: 14,
-	112: 15,
-	113: 16,
-	114: 17,
-	115: 18,
-	116: 19,
-	117: 20,
-	118: 21,
-	119: 22,
-	120: 23,
-	121: 24,
-	122: 25,
-	'-': 26,
-	'.': 27,
-	'^': 28,
-	'$': 29,
-	'1': 30,
-	'2': 31,
-	'3': 32,
-	'4': 33,
-	'5': 34,
-	'6': 35,
-	'7': 36,
-	'8': 37,
-	'9': 38,
-	'0': 39,
+type ValidChars struct {
+	table    [256]byte
+	n        uint16
+	zeroChar byte
 }
 
-const N = 40
+func NewValidChars(validChars []byte) (v *ValidChars) {
+	v = new(ValidChars)
+	for _, c := range validChars {
+		if v.n == 0 {
+			v.zeroChar = c
+		}
+		v.table[c] = byte(v.n)
+		v.n++
+	}
+	return v
+}
 
-func IsValidChar(b byte) bool {
-	return table[b] > 0 || b == 'a'
+func (v *ValidChars) Size() int {
+	return int(v.n)
+}
+
+func (v *ValidChars) IsValidChar(c byte) bool {
+	return v.table[c] > 0 || c == v.zeroChar
 }
 
 // Trie is a succinct, sorted and static string set impl with compacted trie as
@@ -103,22 +80,26 @@ type Trie struct {
 	ranks, selects      []int32
 	labels              *bitlist.CompactBitList
 	ranksBL, selectsBL  *bitlist.CompactBitList
+
+	chars *ValidChars
 }
 
 // NewTrie creates a new *Trie struct, from a slice of sorted strings.
-func NewTrie(keys []string) (*Trie, error) {
+func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
 
 	// Check chars.
 	for _, key := range keys {
 		for _, c := range []byte(key) {
-			if !IsValidChar(c) {
+			if !chars.IsValidChar(c) {
 				return nil, fmt.Errorf("char out of range: %c", c)
 			}
 		}
 	}
 
-	ss := &Trie{}
-	ss.labels = bitlist.NewCompactBitList(bits.Len8(N))
+	ss := &Trie{
+		chars:  chars,
+		labels: bitlist.NewCompactBitList(bits.Len(uint(chars.Size()))),
+	}
 	lIdx := 0
 
 	type qElt struct{ s, e, col int }
@@ -142,7 +123,7 @@ func NewTrie(keys []string) (*Trie, error) {
 			}
 
 			queue = append(queue, qElt{frm, j, elt.col + 1})
-			ss.labels.Append(uint64(table[keys[frm][elt.col]]))
+			ss.labels.Append(uint64(chars.table[keys[frm][elt.col]]))
 			setBit(&ss.labelBitmap, lIdx, 0)
 			lIdx++
 		}
@@ -190,13 +171,16 @@ func (ss *Trie) HasPrefix(word string) bool {
 			return true
 		}
 		c := word[i]
+		if !ss.chars.IsValidChar(c) {
+			return false
+		}
 		for ; ; bmIdx++ {
 			if getBit(ss.labelBitmap, bmIdx) != 0 {
 				// no more labels in this node
 				return false
 			}
 
-			if byte(ss.labels.Get(bmIdx-nodeId)) == table[c] {
+			if byte(ss.labels.Get(bmIdx-nodeId)) == ss.chars.table[c] {
 				break
 			}
 		}

@@ -19,7 +19,7 @@ type DialerSelectionPolicy struct {
 	FixedIndex int
 }
 
-func NewDialerSelectionPolicyFromGroupParam(param *config.GroupParam) (policy *DialerSelectionPolicy, err error) {
+func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *DialerSelectionPolicy, err error) {
 	switch val := param.Policy.(type) {
 	case string:
 		switch consts.DialerSelectionPolicy(val) {

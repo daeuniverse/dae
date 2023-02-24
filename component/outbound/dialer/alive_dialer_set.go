@@ -90,11 +90,8 @@ func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
 }
 
 func (a *AliveDialerSet) printLatencies() {
-	if !a.log.IsLevelEnabled(logrus.TraceLevel) {
-		return
-	}
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("%v (%v):\n", a.dialerGroupName, a.CheckTyp.String()))
+	builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", a.dialerGroupName, a.CheckTyp.String()))
 	for _, d := range a.inorderedAliveDialerSet {
 		latency, ok := a.dialerToLatency[d]
 		if !ok {
@@ -210,9 +207,13 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					string(a.selectionPolicy): a.minLatency.latency,
 					"group":                   a.dialerGroupName,
 					"network":                 a.CheckTyp.String(),
-					"new dialer":              a.minLatency.dialer.Name(),
-					"old dialer":              oldDialerName,
+					"new_dialer":              a.minLatency.dialer.Name(),
+					"old_dialer":              oldDialerName,
 				}).Infof("Group %vselects dialer", re)
+
+				if a.log.IsLevelEnabled(logrus.TraceLevel) {
+					a.printLatencies()
+				}
 			} else {
 				// Alive -> not alive
 				defer a.aliveChangeCallback(false)
@@ -220,9 +221,6 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					"group":   a.dialerGroupName,
 					"network": a.CheckTyp.String(),
 				}).Infof("Group has no dialer alive")
-			}
-			if a.log.IsLevelEnabled(logrus.TraceLevel) {
-				a.printLatencies()
 			}
 		}
 	} else {

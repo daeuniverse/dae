@@ -8,13 +8,11 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/Asphaltt/lpmtrie"
 	"github.com/cilium/ebpf"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/routing"
 	"net"
-	"net/netip"
 )
 
 type RoutingMatcher struct {
@@ -33,11 +31,11 @@ func (m *RoutingMatcher) Match(
 	ipVersion consts.IpVersionType,
 	l4proto consts.L4ProtoType,
 	domain string,
-	processName string,
+	processName [16]uint8,
 	mac []byte,
-) (outboundIndex consts.OutboundIndex, err error) {
+) (outboundIndex consts.OutboundIndex, mark uint32, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
-		return 0, fmt.Errorf("bad address length")
+		return 0, 0, fmt.Errorf("bad address length")
 	}
 	lpmKeys := make([]*_bpfLpmKey, consts.MatchType_Mac+1)
 	lpmKeys[consts.MatchType_IpSet] = &_bpfLpmKey{
@@ -68,11 +66,13 @@ func (m *RoutingMatcher) Match(
 			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
 			var lpm *ebpf.Map
 			if err = m.lpmArrayMap.Lookup(lpmIndex, &lpm); err != nil {
+				//logrus.Debugln("m.lpmArrayMap.Lookup:", err)
 				break
 			}
 			var v uint32
 			if err = lpm.Lookup(*lpmKeys[int(match.Type)], &v); err != nil {
 				_ = lpm.Close()
+				//logrus.Debugln("lpm.Lookup:", err, lpmKeys[int(match.Type)], match.Type, destAddr)
 				break
 			}
 			_ = lpm.Close()
@@ -104,13 +104,13 @@ func (m *RoutingMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_ProcessName:
-			if processName != "" && string(match.Value[:]) == processName {
+			if processName[0] != 0 && match.Value == processName {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:
 			goodSubrule = true
 		default:
-			return 0, fmt.Errorf("unknown match type: %v", match.Type)
+			return 0, 0, fmt.Errorf("unknown match type: %v", match.Type)
 		}
 	beforeNextLoop:
 		outbound := consts.OutboundIndex(match.Outbound)
@@ -133,27 +133,10 @@ func (m *RoutingMatcher) Match(
 			// Tail of a rule (line).
 			// Decide whether to hit.
 			if !badRule {
-				if outbound == consts.OutboundDirect && destPort == 53 &&
-					l4proto == consts.L4ProtoType_UDP {
-					// DNS packet should go through control plane.
-					return consts.OutboundControlPlaneDirect, nil
-				}
-				return outbound, nil
+				return outbound, match.Mark, nil
 			}
 			badRule = false
 		}
 	}
-	return 0, fmt.Errorf("no match set hit")
-}
-
-func cidrToLpmTrieKey(prefix netip.Prefix) lpmtrie.Key {
-	bits := prefix.Bits()
-	if prefix.Addr().Is4() {
-		bits += 96
-	}
-	ip := prefix.Addr().As16()
-	return lpmtrie.Key{
-		PrefixLen: bits,
-		Data:      ip[:],
-	}
+	return 0, 0, fmt.Errorf("no match set hit")
 }

@@ -27,6 +27,7 @@ const (
 	DisableL4RxChecksumKey
 	ControlPlanePidKey
 	ControlPlaneNatDirectKey
+	ControlPlaneDnsRoutingKey
 
 	OneKey ParamKey = 1
 )
@@ -52,18 +53,22 @@ const (
 	MatchType_Mac
 	MatchType_ProcessName
 	MatchType_Fallback
+
+	MatchType_Upstream
+	MatchType_QType
 )
 
 type OutboundIndex uint8
 
 const (
-	OutboundDirect             OutboundIndex = 0
-	OutboundBlock              OutboundIndex = 1
-	OutboundMustDirect         OutboundIndex = 0xFC
-	OutboundControlPlaneDirect OutboundIndex = 0xFD
-	OutboundLogicalOr          OutboundIndex = 0xFE
-	OutboundLogicalAnd         OutboundIndex = 0xFF
-	OutboundLogicalMask        OutboundIndex = 0xFE
+	OutboundDirect OutboundIndex = iota
+	OutboundBlock
+
+	OutboundMustDirect          OutboundIndex = 0xFC
+	OutboundControlPlaneRouting OutboundIndex = 0xFD
+	OutboundLogicalOr           OutboundIndex = 0xFE
+	OutboundLogicalAnd          OutboundIndex = 0xFF
+	OutboundLogicalMask         OutboundIndex = 0xFE
 
 	OutboundMax            = OutboundLogicalAnd
 	OutboundUserDefinedMax = OutboundMustDirect - 1
@@ -77,8 +82,8 @@ func (i OutboundIndex) String() string {
 		return "block"
 	case OutboundMustDirect:
 		return "must_direct"
-	case OutboundControlPlaneDirect:
-		return "<Control Plane Direct>"
+	case OutboundControlPlaneRouting:
+		return "<Control Plane Routing>"
 	case OutboundLogicalOr:
 		return "<OR>"
 	case OutboundLogicalAnd:

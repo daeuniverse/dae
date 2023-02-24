@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/component/dns"
 	"github.com/v2rayA/dae/component/outbound"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/routing"
@@ -24,9 +25,9 @@ import (
 	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,10 +45,8 @@ type ControlPlane struct {
 	// TODO: add mutex?
 	outbounds []*outbound.DialerGroup
 
-	// mutex protects the dnsCache.
-	dnsCacheMu  sync.Mutex
-	dnsCache    map[string]*dnsCache
-	dnsUpstream DnsUpstreamRaw
+	dnsController    *DnsController
+	onceNetworkReady sync.Once
 
 	dialMode consts.DialMode
 
@@ -60,6 +59,7 @@ func NewControlPlane(
 	groups []config.Group,
 	routingA *config.Routing,
 	global *config.Global,
+	dnsConfig *config.Dns,
 ) (c *ControlPlane, err error) {
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -199,13 +199,6 @@ func NewControlPlane(
 	}
 
 	/// DialerGroups (outbounds).
-	checkDnsTcp := false
-	if !global.DnsUpstream.Empty {
-		if scheme, _, _, err := ParseDnsUpstream(global.DnsUpstream.Url); err == nil &&
-			scheme.ContainsTcp() {
-			checkDnsTcp = true
-		}
-	}
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
@@ -215,7 +208,7 @@ func NewControlPlane(
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
-		CheckDnsTcp:       checkDnsTcp,
+		CheckDnsTcp:       true,
 		AllowInsecure:     global.AllowInsecure,
 	}
 	outbounds := []*outbound.DialerGroup{
@@ -237,12 +230,12 @@ func NewControlPlane(
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	for _, group := range groups {
 		// Parse policy.
-		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group.Param)
+		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
 		}
 		// Filter nodes with user given filters.
-		dialers, err := dialerSet.Filter(group.Param.Filter)
+		dialers, err := dialerSet.Filter(group.Filter)
 		if err != nil {
 			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}
@@ -276,7 +269,7 @@ func NewControlPlane(
 		outboundId2Name[uint8(i)] = o.Name
 	}
 	core.outboundId2Name = outboundId2Name
-	builder := NewRoutingMatcherBuilder(outboundName2Id, &bpf)
+	// Apply rules optimizers.
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
 		&routing.RefineFunctionParamKeyOptimizer{},
@@ -294,121 +287,134 @@ func NewControlPlane(
 		}
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
-	if err = routing.ApplyMatcherBuilder(log, builder, rules, routingA.Fallback); err != nil {
-		return nil, fmt.Errorf("ApplyMatcherBuilder: %w", err)
+	// Parse rules and build.
+	builder, err := NewRoutingMatcherBuilder(log, rules, outboundName2Id, &bpf, routingA.Fallback)
+	if err != nil {
+		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
 	if err = builder.BuildKernspace(); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
-	routingMatcher, err := builder.BuildUserspace()
+	routingMatcher, err := builder.BuildUserspace(core.bpf.LpmArrayMap)
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 
+	/// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)
+	if err != nil {
+		return nil, err
+	}
 
 	c = &ControlPlane{
-		log:        log,
-		core:       core,
-		deferFuncs: nil,
-		listenIp:   "0.0.0.0",
-		outbounds:  outbounds,
-		dnsCacheMu: sync.Mutex{},
-		dnsCache:   make(map[string]*dnsCache),
-		dnsUpstream: DnsUpstreamRaw{
-			Raw:                global.DnsUpstream,
-			FinishInitCallback: nil,
-		},
+		log:            log,
+		core:           core,
+		deferFuncs:     nil,
+		listenIp:       "0.0.0.0",
+		outbounds:      outbounds,
 		dialMode:       dialMode,
 		routingMatcher: routingMatcher,
 	}
 
-	/// DNS upstream
-	c.dnsUpstream.FinishInitCallback = c.finishInitDnsUpstreamResolve
-	// Try to invoke once to avoid dns leaking at the very beginning.
-	_, _ = c.dnsUpstream.GetUpstream()
+	/// DNS upstream.
+	dnsUpstream, err := dns.New(log, dnsConfig, &dns.NewOption{
+		UpstreamReadyCallback: c.dnsUpstreamReadyCallback,
+	})
+	if err != nil {
+		return nil, err
+	}
 
-	// Call GC to release memory.
-	runtime.GC()
+	/// Dns controller.
+	c.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
+		Log: log,
+		CacheAccessCallback: func(cache *DnsCache) (err error) {
+			// Write mappings into eBPF map:
+			// IP record (from dns lookup) -> domain routing
+			if err = core.BatchUpdateDomainRouting(cache); err != nil {
+				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
+			}
+			return nil
+		},
+		NewCache: func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error) {
+			return &DnsCache{
+				DomainBitmap: c.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
+				Answers:      answers,
+				Deadline:     deadline,
+			}, nil
+		},
+		BestDialerChooser: c.chooseBestDnsDialer,
+	})
+
 	return c, nil
 }
 
-func (c *ControlPlane) finishInitDnsUpstreamResolve(raw common.UrlOrEmpty, dnsUpstream *DnsUpstream) (err error) {
+func (c *ControlPlane) dnsUpstreamReadyCallback(raw *url.URL, dnsUpstream *dns.Upstream) (err error) {
 	///  Notify dialers to check.
-	for _, out := range c.outbounds {
-		for _, d := range out.Dialers {
-			d.NotifyCheck()
+	c.onceNetworkReady.Do(func() {
+		for _, out := range c.outbounds {
+			for _, d := range out.Dialers {
+				d.NotifyCheck()
+			}
 		}
+		if dnsUpstream != nil {
+			// Control plane DNS routing.
+			if err = c.core.bpf.ParamMap.Update(consts.ControlPlaneDnsRoutingKey, uint32(1), ebpf.UpdateAny); err != nil {
+				return
+			}
+		} else {
+			// As-is.
+			if err = c.core.bpf.ParamMap.Update(consts.ControlPlaneDnsRoutingKey, uint32(0), ebpf.UpdateAny); err != nil {
+				return
+			}
+		}
+	})
+	if err != nil {
+		return err
+	}
+	if dnsUpstream == nil {
+		return nil
 	}
 
 	/// Updates dns cache to support domain routing for hostname of dns_upstream.
-	if !raw.Empty {
-		ip4in6 := dnsUpstream.Ip4.As16()
-		ip6 := dnsUpstream.Ip6.As16()
-		if err = c.core.bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
-			Ip4:    common.Ipv6ByteSliceToUint32Array(ip4in6[:]),
-			Ip6:    common.Ipv6ByteSliceToUint32Array(ip6[:]),
-			HasIp4: dnsUpstream.Ip4.IsValid(),
-			HasIp6: dnsUpstream.Ip6.IsValid(),
-			Port:   common.Htons(dnsUpstream.Port),
-		}, ebpf.UpdateAny); err != nil {
+	// Ten years later.
+	deadline := time.Now().Add(time.Hour * 24 * 365 * 10)
+	fqdn := dnsUpstream.Hostname
+	if !strings.HasSuffix(fqdn, ".") {
+		fqdn = fqdn + "."
+	}
+
+	if dnsUpstream.Ip4.IsValid() {
+		typ := dnsmessage.TypeA
+		answers := []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{
+				Name:  dnsmessage.MustNewName(fqdn),
+				Type:  typ,
+				Class: dnsmessage.ClassINET,
+				TTL:   0, // Must be zero.
+			},
+			Body: &dnsmessage.AResource{
+				A: dnsUpstream.Ip4.As4(),
+			},
+		}}
+		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 			return err
 		}
-		/// Update dns cache to support domain routing for hostname of dns_upstream.
-		// Ten years later.
-		deadline := time.Now().Add(24 * time.Hour * 365 * 10)
-		fqdn := dnsUpstream.Hostname
-		if !strings.HasSuffix(fqdn, ".") {
-			fqdn = fqdn + "."
-		}
+	}
 
-		if dnsUpstream.Ip4.IsValid() {
-			typ := dnsmessage.TypeA
-			answers := []dnsmessage.Resource{{
-				Header: dnsmessage.ResourceHeader{
-					Name:  dnsmessage.MustNewName(fqdn),
-					Type:  typ,
-					Class: dnsmessage.ClassINET,
-					TTL:   0, // Must be zero.
-				},
-				Body: &dnsmessage.AResource{
-					A: dnsUpstream.Ip4.As4(),
-				},
-			}}
-			if err = c.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
-				c = nil
-				return
-			}
-		}
-
-		if dnsUpstream.Ip6.IsValid() {
-			typ := dnsmessage.TypeAAAA
-			answers := []dnsmessage.Resource{{
-				Header: dnsmessage.ResourceHeader{
-					Name:  dnsmessage.MustNewName(fqdn),
-					Type:  typ,
-					Class: dnsmessage.ClassINET,
-					TTL:   0, // Must be zero.
-				},
-				Body: &dnsmessage.AAAAResource{
-					AAAA: dnsUpstream.Ip6.As16(),
-				},
-			}}
-			if err = c.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
-				c = nil
-				return
-			}
-		}
-	} else {
-		// Empty string. As-is.
-		if err = c.core.bpf.DnsUpstreamMap.Update(consts.ZeroKey, bpfDnsUpstream{
-			Ip4:    [4]uint32{},
-			Ip6:    [4]uint32{},
-			HasIp4: false,
-			HasIp6: false,
-			// Zero port indicates no element, because bpf_map_lookup_elem cannot return 0 for map_type_array.
-			Port: 0,
-		}, ebpf.UpdateAny); err != nil {
+	if dnsUpstream.Ip6.IsValid() {
+		typ := dnsmessage.TypeAAAA
+		answers := []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{
+				Name:  dnsmessage.MustNewName(fqdn),
+				Type:  typ,
+				Class: dnsmessage.ClassINET,
+				TTL:   0, // Must be zero.
+			},
+			Body: &dnsmessage.AAAAResource{
+				AAAA: dnsUpstream.Ip6.As16(),
+			},
+		}}
+		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 			return err
 		}
 	}
@@ -421,9 +427,8 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
-			dstIp := common.ConvergeIp(dst.Addr())
-			cache := c.lookupDnsRespCache(domain, common.AddrToDnsType(dstIp))
-			if cache != nil && cache.IncludeIp(dstIp) {
+			cache := c.dnsController.LookupDnsRespCache(domain, common.AddrToDnsType(dst.Addr()))
+			if cache != nil && cache.IncludeIp(dst.Addr()) {
 				mode = consts.DialMode_Domain
 			}
 		case consts.DialMode_DomainPlus:
@@ -552,7 +557,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 				} else {
 					realDst = pktDst
 				}
-				if e := c.handlePkt(udpConn, data, src, pktDst, realDst, routingResult); e != nil {
+				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 			}(newBuf, src)
@@ -560,6 +565,103 @@ func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
 	}()
 	<-ctx.Done()
 	return nil
+}
+
+func (c *ControlPlane) chooseBestDnsDialer(
+	req *udpRequest,
+	dnsUpstream *dns.Upstream,
+) (*dialArgument, error) {
+	/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
+	// Get available ipversions and l4protos for DNS upstream.
+	ipversions, l4protos := dnsUpstream.SupportedNetworks()
+	var (
+		bestLatency  time.Duration
+		l4proto      consts.L4ProtoStr
+		ipversion    consts.IpVersionStr
+		bestDialer   *dialer.Dialer
+		bestOutbound *outbound.DialerGroup
+		bestTarget   netip.AddrPort
+		dialMark     uint32
+	)
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"ipversions": ipversions,
+			"l4protos":   l4protos,
+			"upstream":   dnsUpstream.String(),
+		}).Traceln("Choose DNS path")
+	}
+	// Get the min latency path.
+	networkType := dialer.NetworkType{
+		IsDns: true,
+	}
+	for _, ver := range ipversions {
+		for _, proto := range l4protos {
+			networkType.L4Proto = proto
+			networkType.IpVersion = ver
+			var dAddr netip.Addr
+			switch ver {
+			case consts.IpVersionStr_4:
+				dAddr = dnsUpstream.Ip4
+			case consts.IpVersionStr_6:
+				dAddr = dnsUpstream.Ip6
+			default:
+				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
+			}
+			outboundIndex, mark, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), "", proto.ToL4ProtoType(), req.routingResult)
+			if err != nil {
+				return nil, err
+			}
+			// Already "must direct".
+			if outboundIndex == consts.OutboundMustDirect {
+				outboundIndex = consts.OutboundDirect
+			}
+			if int(outboundIndex) >= len(c.outbounds) {
+				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
+			}
+			dialerGroup := c.outbounds[outboundIndex]
+			d, latency, err := dialerGroup.Select(&networkType)
+			if err != nil {
+				continue
+			}
+			//if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			//	c.log.WithFields(logrus.Fields{
+			//		"name":     d.Name(),
+			//		"latency":  latency,
+			//		"network":  networkType.String(),
+			//		"outbound": dialerGroup.Name,
+			//	}).Traceln("Choice")
+			//}
+			if bestDialer == nil || latency < bestLatency {
+				bestDialer = d
+				bestOutbound = dialerGroup
+				bestLatency = latency
+				l4proto = proto
+				ipversion = ver
+				dialMark = mark
+
+				if bestLatency == 0 {
+					break
+				}
+			}
+		}
+	}
+	if bestDialer == nil {
+		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
+	}
+	switch ipversion {
+	case consts.IpVersionStr_4:
+		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
+	case consts.IpVersionStr_6:
+		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
+	}
+	return &dialArgument{
+		l4proto:      l4proto,
+		ipversion:    ipversion,
+		bestDialer:   bestDialer,
+		bestOutbound: bestOutbound,
+		bestTarget:   bestTarget,
+		mark:         dialMark,
+	}, nil
 }
 
 func (c *ControlPlane) Close() (err error) {

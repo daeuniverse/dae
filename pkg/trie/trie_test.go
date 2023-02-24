@@ -94,7 +94,7 @@ func TestTrie(t *testing.T) {
 		"zib.fmc^",
 		"zk.ytamlacbci.",
 		"zk.ytamlacbci^",
-	})
+	}, NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +109,9 @@ func TestTrie(t *testing.T) {
 	}
 	if !(trie.HasPrefix("nc.^") == true) {
 		t.Fatal("^.cn")
+	}
+	if !(trie.HasPrefix("nc._") == true) {
+		t.Fatal("_.cn")
 	}
 	if !(trie.HasPrefix("n") == false) {
 		t.Fatal("n")

@@ -15,6 +15,8 @@ import (
 	"strings"
 )
 
+var ValidDomainChars = trie.NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^"))
+
 type AhocorasickSlimtrie struct {
 	validAcIndexes     []int
 	validTrieIndexes   []int
@@ -173,7 +175,7 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 		}
 		toBuild = ToSuffixTrieStrings(toBuild)
 		sort.Strings(toBuild)
-		n.trie[i], err = trie.NewTrie(toBuild)
+		n.trie[i], err = trie.NewTrie(toBuild, ValidDomainChars)
 		if err != nil {
 			return err
 		}

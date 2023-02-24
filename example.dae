@@ -21,15 +21,6 @@ global {
     # Group will switch node only when new_latency <= old_latency - tolerance.
     check_tolerance: 50ms
 
-    # Value can be scheme://host:port or empty string ''.
-    # The scheme can be tcp/udp/tcp+udp. Empty string '' indicates as-is.
-    # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
-    # IPv4 or IPv6 to use according to group policy (such as min latency policy).
-    # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
-    # The upstream DNS answer MUST NOT be polluted, so domestic public DNS is not recommended.
-    # The request to DNS upstream follows the routing defined below.
-    dns_upstream: 'udp://dns.alidns.com:53'
-
     # The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.
     # Multiple interfaces split by ",".
     #lan_interface: docker0
@@ -79,6 +70,28 @@ node {
     'ss://LINK'
 }
 
+# See more at https://github.com/v2rayA/dae/blob/main/docs/dns.md.
+dns {
+    upstream {
+        # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.
+        # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
+        # IPv4 or IPv6 to use according to group policy (such as min latency policy).
+        # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
+        # If dial_mode is "ip", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.
+
+        alidns: 'udp://dns.alidns.com:53'
+        googledns: 'tcp+udp://dns.google:53'
+    }
+    request {
+        fallback: asis
+    }
+    response {
+        upstream(googledns) -> accept
+        !qname(geosite:cn) && ip(geoip:private) -> googledns
+        fallback: accept
+    }
+}
+
 # Node group (outbound).
 group {
     my_group {
@@ -108,7 +121,7 @@ group {
     }
 }
 
-# See routing.md for full examples.
+# See https://github.com/v2rayA/dae/blob/main/docs/routing.md for full examples.
 routing {
     ### Preset rules.
 

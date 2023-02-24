@@ -23,7 +23,9 @@ const (
 	Function_Mac         = "mac"
 	Function_ProcessName = "pname"
 
-	Declaration_Fallback = "fallback"
+	Function_QName    = "qname"
+	Function_QType    = "qtype"
+	Function_Upstream = "upstream"
 
 	OutboundParam_Mark = "mark"
 )
