@@ -250,7 +250,7 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 				case "ext":
 					fields := strings.SplitN(param.Val, ":", 2)
 					switch f.Name {
-					case consts.Function_Domain:
+					case consts.Function_Domain, consts.Function_QName:
 						params, err = o.loadGeoSite(fields[0], fields[1])
 					case consts.Function_Ip:
 						params, err = o.loadGeoIp(fields[0], fields[1])
