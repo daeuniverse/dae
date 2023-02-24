@@ -37,15 +37,21 @@ func ApplyRulesOptimizers(rules []*config_parser.RoutingRule, optimizers ...Rule
 	return rules, err
 }
 
-type RefineFunctionParamKeyOptimizer struct {
+type AliasOptimizer struct {
 }
 
-func (o *RefineFunctionParamKeyOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
+func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
 	for _, rule := range rules {
 		for _, function := range rule.AndFunctions {
+			switch function.Name {
+			case "dport":
+				function.Name = consts.Function_Port
+			case "dip":
+				function.Name = consts.Function_Ip
+			}
 			for _, param := range function.Params {
 				switch function.Name {
-				case "domain":
+				case consts.Function_Domain:
 					// Rewrite to authoritative key name.
 					switch param.Key {
 					case "", "domain":
@@ -92,7 +98,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 	// Sort ParamList.
 	for i := range newRules {
 		for _, function := range newRules[i].AndFunctions {
-			if function.Name == "ip" {
+			if function.Name == consts.Function_Ip || function.Name == consts.Function_SourceIp {
 				// Sort by IPv4, IPv6, vals.
 				sort.SliceStable(function.Params, func(i, j int) bool {
 					vi, vj := 4, 4

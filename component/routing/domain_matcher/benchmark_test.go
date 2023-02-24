@@ -144,7 +144,7 @@ routing {
 		return nil, err
 	}
 	if rules, err = routing.ApplyRulesOptimizers(r.Rules,
-		&routing.RefineFunctionParamKeyOptimizer{},
+		&routing.AliasOptimizer{},
 		&routing.DatReaderOptimizer{Logger: logrus.StandardLogger()},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},

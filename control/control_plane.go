@@ -272,7 +272,7 @@ func NewControlPlane(
 	// Apply rules optimizers.
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
-		&routing.RefineFunctionParamKeyOptimizer{},
+		&routing.AliasOptimizer{},
 		&routing.DatReaderOptimizer{Logger: log},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},

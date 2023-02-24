@@ -21,17 +21,17 @@ domain(geosite:category-ads) -> block
 domain(geosite:cn)->direct
 
 ### Dest IP rule
-ip(8.8.8.8) -> direct
-ip(101.97.0.0/16) -> direct
-ip(geoip:private) -> direct
+dip(8.8.8.8) -> direct
+dip(101.97.0.0/16) -> direct
+dip(geoip:private) -> direct
 
 ### Source IP rule
 sip(192.168.0.0/24) -> my_group
 sip(192.168.50.0/24) -> direct
 
 ### Dest port rule
-port(80) -> direct
-port(10080-30000) -> direct
+dport(80) -> direct
+dport(10080-30000) -> direct
 
 ### Source port rule
 sport(38563) -> direct
@@ -54,14 +54,14 @@ pname(curl) -> direct
 ### Multiple domains rule
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group
 ### Multiple IP rule
-ip(geoip:cn, geoip:private) -> direct
-ip(9.9.9.9, 223.5.5.5) -> direct
+dip(geoip:cn, geoip:private) -> direct
+dip(9.9.9.9, 223.5.5.5) -> direct
 sip(192.168.0.6, 192.168.0.10, 192.168.0.15) -> direct
 
 ### 'And' rule
-ip(geoip:cn) && port(80) -> direct
-ip(8.8.8.8) && l4proto(tcp) && port(1-1023, 8443) -> my_group
-ip(1.1.1.1) && sip(10.0.0.1, 172.20.0.0/16) -> direct
+dip(geoip:cn) && dport(80) -> direct
+dip(8.8.8.8) && l4proto(tcp) && dport(1-1023, 8443) -> my_group
+dip(1.1.1.1) && sip(10.0.0.1, 172.20.0.0/16) -> direct
 
 ### 'Not' rule
 !domain(geosite:google-scholar,
@@ -78,7 +78,7 @@ domain(geosite:geolocation-!cn) &&
 
 ### Customized DAT file
 domain(ext:"yourdatfile.dat:yourtag")->direct
-ip(ext:"yourdatfile.dat:yourtag")->direct
+dip(ext:"yourdatfile.dat:yourtag")->direct
 
 ### Mark for direct/must_direct outbound
 # Mark is useful when you want to redirect traffic to specific interface (such as wireguard) or other advanced uses.
