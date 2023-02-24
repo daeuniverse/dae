@@ -30,16 +30,13 @@ const (
 	MaxRetry          = 2
 )
 
-var (
-	UnspecifiedAddr4 = netip.AddrFrom4([4]byte{})
-	UnspecifiedAddr6 = netip.AddrFrom16([16]byte{})
-)
-
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Message, timeout time.Duration) {
-	var dnsmsg dnsmessage.Message
-	if err := dnsmsg.Unpack(data); err == nil {
-		//log.Printf("DEBUG: lookup %v", dnsmsg.Questions[0].Name)
-		return &dnsmsg, DnsNatTimeout
+	if sniffDns {
+		var dnsmsg dnsmessage.Message
+		if err := dnsmsg.Unpack(data); err == nil {
+			//log.Printf("DEBUG: lookup %v", dnsmsg.Questions[0].Name)
+			return &dnsmsg, DnsNatTimeout
+		}
 	}
 	return nil, DefaultNatTimeout
 }
