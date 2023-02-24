@@ -66,11 +66,13 @@ func (m *RoutingMatcher) Match(
 			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
 			var lpm *ebpf.Map
 			if err = m.lpmArrayMap.Lookup(lpmIndex, &lpm); err != nil {
+				//logrus.Debugln("m.lpmArrayMap.Lookup:", err)
 				break
 			}
 			var v uint32
 			if err = lpm.Lookup(*lpmKeys[int(match.Type)], &v); err != nil {
 				_ = lpm.Close()
+				//logrus.Debugln("lpm.Lookup:", err, lpmKeys[int(match.Type)], match.Type, destAddr)
 				break
 			}
 			_ = lpm.Close()

@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"net/url"
@@ -48,7 +49,7 @@ func ARangeU32(n uint32) []uint32 {
 
 func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 	for j := 0; j < 16; j += 4 {
-		ip[j/4] = binary.LittleEndian.Uint32(_ip[j : j+4])
+		ip[j/4] = internal.NativeEndian.Uint32(_ip[j : j+4])
 	}
 	return ip
 }
@@ -61,7 +62,7 @@ func Ipv6ByteSliceToUint8Array(_ip []byte) (ip [16]uint8) {
 func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
 	ip = make([]byte, 16)
 	for j := 0; j < 4; j++ {
-		binary.LittleEndian.PutUint32(ip[j*4:], _ip[j])
+		internal.NativeEndian.PutUint32(ip[j*4:], _ip[j])
 	}
 	return ip
 }

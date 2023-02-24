@@ -598,7 +598,16 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		for _, proto := range l4protos {
 			networkType.L4Proto = proto
 			networkType.IpVersion = ver
-			outboundIndex, mark, err := c.Route(req.realSrc, req.realDst, "", proto.ToL4ProtoType(), req.routingResult)
+			var dAddr netip.Addr
+			switch ver {
+			case consts.IpVersionStr_4:
+				dAddr = dnsUpstream.Ip4
+			case consts.IpVersionStr_6:
+				dAddr = dnsUpstream.Ip6
+			default:
+				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
+			}
+			outboundIndex, mark, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), "", proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
 			}

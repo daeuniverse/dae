@@ -3,18 +3,26 @@
 package internal
 
 import (
-	"github.com/v2rayA/dae/common"
+	"encoding/binary"
 	"syscall"
+	"unsafe"
 )
 
+// Htons converts the unsigned short integer hostshort from host byte order to network byte order.
+func Htons(i uint16) uint16 {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, i)
+	return *(*uint16)(unsafe.Pointer(&b[0]))
+}
+
 func OpenRawSock(index int) (int, error) {
-	sock, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, int(common.Htons(syscall.ETH_P_ALL)))
+	sock, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, int(Htons(syscall.ETH_P_ALL)))
 	if err != nil {
 		return 0, err
 	}
 	sll := syscall.SockaddrLinklayer{
 		Ifindex:  index,
-		Protocol: common.Htons(syscall.ETH_P_ALL),
+		Protocol: Htons(syscall.ETH_P_ALL),
 	}
 	if err := syscall.Bind(sock, &sll); err != nil {
 		return 0, err

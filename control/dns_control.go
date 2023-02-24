@@ -329,12 +329,6 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 	}
 
 	upstreamName := "asis"
-	if upstream != nil {
-		upstreamName = upstream.String()
-	}
-
-	// For DNS request, modify realDst to dns upstream.
-	// NOTICE: We might modify l4proto and ipversion.
 	if upstream == nil {
 		// As-is.
 
@@ -351,7 +345,11 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			Port:     req.realDst.Port(),
 			Ip46:     &ip46,
 		}
+	} else {
+		upstreamName = upstream.String()
 	}
+
+	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
 	dialArgument, err := c.bestDialerChooser(req, upstream)
 	if err != nil {
 		return err
@@ -422,7 +420,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			// Wait for response.
 			n, err := conn.Read(respBuf)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Name(), err)
 			}
 			respMsg, err = dnsRespHandler(respBuf[:n], dialArgument.bestTarget)
 			if err != nil {
