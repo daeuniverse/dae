@@ -8,6 +8,7 @@ package sniffing
 import (
 	"github.com/mzz2017/softwind/pool"
 	"io"
+	"sync"
 )
 
 type Sniffer struct {
@@ -15,12 +16,13 @@ type Sniffer struct {
 	buf    []byte
 	bufAt  int
 	stream bool
+	readMu sync.Mutex
 }
 
 func NewStreamSniffer(r io.Reader, bufSize int) *Sniffer {
 	s := &Sniffer{
 		r:      r,
-		buf:    pool.Get(bufSize),
+		buf:    make([]byte, bufSize),
 		stream: true,
 	}
 	return s
@@ -37,6 +39,8 @@ func NewPacketSniffer(data []byte) *Sniffer {
 type sniff func() (d string, err error)
 
 func (s *Sniffer) SniffTcp() (d string, err error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 	if s.stream {
 		n, err := s.r.Read(s.buf)
 		if err != nil {
@@ -65,6 +69,8 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 }
 
 func (s *Sniffer) Read(p []byte) (n int, err error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 	if s.buf != nil && s.bufAt < len(s.buf) {
 		// Read buf first.
 		n = copy(p, s.buf[s.bufAt:])
@@ -84,6 +90,5 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 }
 
 func (s *Sniffer) Close() (err error) {
-	// DO NOT use pool.Put() here because Close() may not interrupt the reading, which will modify the value of the pool buffer.
 	return nil
 }

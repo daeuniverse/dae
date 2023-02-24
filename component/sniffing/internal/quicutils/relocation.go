@@ -157,7 +157,7 @@ func (r *CryptoFrameRelocation) BytesFromPool() []byte {
 		return pool.Get(0)
 	}
 	right := r.o[len(r.o)-1]
-	return r.copyBytes(0, 0, len(r.o)-1, len(right.Data)-1, r.length)
+	return r.copyBytesToPool(0, 0, len(r.o)-1, len(right.Data)-1, r.length)
 }
 
 // RangeFromPool copy bytes from iUpperAppOffset to jUpperAppOffset.
@@ -191,11 +191,11 @@ func (r *CryptoFrameRelocation) RangeFromPool(i, j int) []byte {
 		}
 	}
 
-	return r.copyBytes(iOuter, iInner, jOuter, jInner, j-i+1)
+	return r.copyBytesToPool(iOuter, iInner, jOuter, jInner, j-i+1)
 }
 
-// copyBytes copy bytes including i and j.
-func (r *CryptoFrameRelocation) copyBytes(iOuter, iInner, jOuter, jInner, size int) []byte {
+// copyBytesToPool copy bytes including i and j.
+func (r *CryptoFrameRelocation) copyBytesToPool(iOuter, iInner, jOuter, jInner, size int) []byte {
 	b := pool.Get(size)
 	//io := r.o[iOuter]
 	k := 0

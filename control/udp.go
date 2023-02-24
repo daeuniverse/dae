@@ -54,16 +54,17 @@ func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err er
 	return &_hdr, dataOffset, nil
 }
 
-func sendPktWithHdrWithFlag(data []byte, mark uint32, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
+func sendPktWithHdrWithFlag(data []byte, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
+	from16 := from.Addr().As16()
 	hdr := bpfDstRoutingResult{
-		Ip:   common.Ipv6ByteSliceToUint32Array(from.Addr().AsSlice()),
+		Ip:   common.Ipv6ByteSliceToUint32Array(from16[:]),
 		Port: common.Htons(from.Port()),
 		RoutingResult: bpfRoutingResult{
 			Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
 		},
 	}
+	// Do not put this 'buf' because it has been taken by buffer.
 	buf := pool.Get(int(unsafe.Sizeof(hdr)) + len(data))
-	defer pool.Put(buf)
 	b := buffer.NewBufferFrom(buf)
 	defer b.Put()
 	if err := gob.NewEncoder(b).Encode(&hdr); err != nil {
@@ -77,6 +78,10 @@ func sendPktWithHdrWithFlag(data []byte, mark uint32, from netip.AddrPort, lConn
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn, lanWanFlag consts.LanWanFlag) (err error) {
+	if lanWanFlag == consts.LanWanFlag_IsWan {
+		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
+	}
+
 	d := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
 		return dialer.BindControl(c, from)
 	}}
@@ -85,7 +90,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			// Port collision, use traditional method.
-			return sendPktWithHdrWithFlag(data, 0, from, lConn, to, lanWanFlag)
+			return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 		}
 		return err
 	}
