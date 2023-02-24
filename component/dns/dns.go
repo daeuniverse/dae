@@ -120,13 +120,20 @@ func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstream *Upstream, err er
 	if msg.Response {
 		return nil, fmt.Errorf("DNS request expected but DNS response received")
 	}
-	if len(msg.Questions) == 0 {
-		return nil, fmt.Errorf("no DNS question")
-	}
+
 	// Prepare routing.
-	q := msg.Questions[0]
+	var qname string
+	var qtype dnsmessage.Type
+	if len(msg.Questions) == 0 {
+		qname = ""
+		qtype = 0
+	} else {
+		q := msg.Questions[0]
+		qname = q.Name.String()
+		qtype = q.Type
+	}
 	// Route.
-	upstreamIndex, err := s.reqMatcher.Match(q.Name.String(), q.Type)
+	upstreamIndex, err := s.reqMatcher.Match(qname, qtype)
 	if err != nil {
 		return nil, err
 	}
@@ -149,25 +156,33 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Message, fromUpstream *Upstream) (u
 	if !msg.Response {
 		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
 	}
-	if len(msg.Questions) == 0 {
-		return 0, nil, fmt.Errorf("no DNS question")
-	}
+
 	// Prepare routing.
-	q := msg.Questions[0]
+	var qname string
+	var qtype dnsmessage.Type
 	var ips []netip.Addr
-	for _, ans := range msg.Answers {
-		switch body := ans.Body.(type) {
-		case *dnsmessage.AResource:
-			ips = append(ips, netip.AddrFrom4(body.A))
-		case *dnsmessage.AAAAResource:
-			ips = append(ips, netip.AddrFrom16(body.AAAA))
+	if len(msg.Questions) == 0 {
+		qname = ""
+		qtype = 0
+	} else {
+		q := msg.Questions[0]
+		qname = q.Name.String()
+		qtype = q.Type
+		for _, ans := range msg.Answers {
+			switch body := ans.Body.(type) {
+			case *dnsmessage.AResource:
+				ips = append(ips, netip.AddrFrom4(body.A))
+			case *dnsmessage.AAAAResource:
+				ips = append(ips, netip.AddrFrom16(body.AAAA))
+			}
 		}
 	}
+
 	s.upstream2IndexMu.Lock()
 	from := s.upstream2Index[fromUpstream]
 	s.upstream2IndexMu.Unlock()
 	// Route.
-	upstreamIndex, err = s.respMatcher.Match(q.Name.String(), q.Type, ips, consts.DnsRequestOutboundIndex(from))
+	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, consts.DnsRequestOutboundIndex(from))
 	if err != nil {
 		return 0, nil, err
 	}

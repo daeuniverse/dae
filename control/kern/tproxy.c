@@ -1545,7 +1545,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
           bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
       if (sk) {
         // Not a tproxy WAN response. It is a tproxy LAN response.
-        tproxy_response = false;
         bpf_sk_release(sk);
         return TC_ACT_OK;
       }
@@ -1630,7 +1629,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         struct dst_routing_result *dst =
             bpf_map_lookup_elem(&tcp_dst_map, &key_src);
         if (!dst) {
-          // Do not impact previous connections.
+          // Do not impact previous connections and server connections.
           return TC_ACT_OK;
         }
         outbound = dst->routing_result.outbound;

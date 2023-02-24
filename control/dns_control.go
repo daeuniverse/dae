@@ -312,7 +312,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 		c.log.WithFields(logrus.Fields{
 			"question": dnsMessage.Questions,
 			"upstream": upstreamName,
-		}).Traceln("Request DNS upstream")
+		}).Traceln("Request to DNS upstream")
 	}
 
 	// Re-pack DNS packet.
