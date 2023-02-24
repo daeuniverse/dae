@@ -31,7 +31,7 @@ func (m *RoutingMatcher) Match(
 	ipVersion consts.IpVersionType,
 	l4proto consts.L4ProtoType,
 	domain string,
-	processName string,
+	processName [16]uint8,
 	mac []byte,
 ) (outboundIndex consts.OutboundIndex, mark uint32, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
@@ -104,7 +104,7 @@ func (m *RoutingMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_ProcessName:
-			if processName != "" && string(match.Value[:]) == processName {
+			if processName[0] != 0 && match.Value == processName {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:

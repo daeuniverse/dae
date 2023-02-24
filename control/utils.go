@@ -36,7 +36,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		ipVersion,
 		l4proto,
 		domain,
-		ProcessName2String(routingResult.Pname[:]),
+		routingResult.Pname,
 		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
 	); err != nil {
 		return 0, 0, err
