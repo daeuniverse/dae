@@ -16,6 +16,7 @@ type patch func(params *Params) error
 var patches = []patch{
 	patchRoutingFallback,
 	patchEmptyDns,
+	patchDeprecatedGlobalDnsUpstream,
 }
 
 func patchRoutingFallback(params *Params) error {
@@ -37,6 +38,13 @@ func patchEmptyDns(params *Params) error {
 	}
 	if params.Dns.Routing.Response.Fallback == nil {
 		params.Dns.Routing.Response.Fallback = consts.DnsResponseOutboundIndex_Accept.String()
+	}
+	return nil
+}
+
+func patchDeprecatedGlobalDnsUpstream(params *Params) error {
+	if params.Global.DnsUpstream != "<empty>" {
+		return fmt.Errorf("'global.dns_upstream' was deprecated, please refer to the latest examples and docs for help")
 	}
 	return nil
 }

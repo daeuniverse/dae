@@ -199,13 +199,6 @@ func NewControlPlane(
 	}
 
 	/// DialerGroups (outbounds).
-	checkDnsTcp := false
-	if !global.DnsUpstream.Empty {
-		if scheme, _, _, err := dns.ParseRawUpstream(global.DnsUpstream.Url); err == nil &&
-			scheme.ContainsTcp() {
-			checkDnsTcp = true
-		}
-	}
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
@@ -215,7 +208,7 @@ func NewControlPlane(
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
-		CheckDnsTcp:       checkDnsTcp,
+		CheckDnsTcp:       true,
 		AllowInsecure:     global.AllowInsecure,
 	}
 	outbounds := []*outbound.DialerGroup{
