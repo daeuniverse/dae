@@ -6,16 +6,16 @@
 package control
 
 import (
-	"encoding/gob"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
-	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/component/outbound/dialer"
 	"github.com/v2rayA/dae/component/sniffing"
+	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/netip"
@@ -54,25 +54,25 @@ func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err er
 	return &_hdr, dataOffset, nil
 }
 
-func sendPktWithHdrWithFlag(data []byte, from netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
-	from16 := from.Addr().As16()
+func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
+	realFrom16 := realFrom.Addr().As16()
 	hdr := bpfDstRoutingResult{
-		Ip:   common.Ipv6ByteSliceToUint32Array(from16[:]),
-		Port: common.Htons(from.Port()),
+		Ip:   common.Ipv6ByteSliceToUint32Array(realFrom16[:]),
+		Port: common.Htons(realFrom.Port()),
 		RoutingResult: bpfRoutingResult{
 			Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
 		},
 	}
 	// Do not put this 'buf' because it has been taken by buffer.
-	buf := pool.Get(int(unsafe.Sizeof(hdr)) + len(data))
-	b := buffer.NewBufferFrom(buf)
+	b := buffer.NewBuffer(int(unsafe.Sizeof(hdr)) + len(data))
 	defer b.Put()
-	if err := gob.NewEncoder(b).Encode(&hdr); err != nil {
+	// Use internal.NativeEndian due to already big endian.
+	if err := binary.Write(b, internal.NativeEndian, hdr); err != nil {
 		return err
 	}
-	copy(buf[int(unsafe.Sizeof(hdr)):], data)
-	//log.Println("from", from, "to", to)
-	_, err := lConn.WriteToUDPAddrPort(buf, to)
+	b.Write(data)
+	//logrus.Debugln("sendPktWithHdrWithFlag: from", realFrom, "to", to)
+	_, err := lConn.WriteToUDPAddrPort(b.Bytes(), to)
 	return err
 }
 

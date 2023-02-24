@@ -1556,6 +1556,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     // Packets from tproxy port.
     // We need to redirect it to original port.
 
+    // bpf_printk("tproxy_response: %pI6:%u", tuples.dip.u6_addr32,
+    // bpf_ntohs(tuples.dport));
+
     // Write mac.
     if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
                                    ethh.h_source, sizeof(ethh.h_source), 0))) {
@@ -1940,7 +1943,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
         return TC_ACT_SHOT;
       }
 
-      // bpf_printk("real from: %pI4:%u", &ori_src.ip, bpf_ntohs(ori_src.port));
+      // bpf_printk("real from: %pI6:%u", ori_src.ip, bpf_ntohs(ori_src.port));
 
       // Print packet in hex for debugging (checksum or something else).
       // bpf_printk("UDP EGRESS OK");
