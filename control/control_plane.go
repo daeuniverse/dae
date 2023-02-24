@@ -641,6 +641,9 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			}
 		}
 	}
+	if bestDialer == nil {
+		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
+	}
 	switch ipversion {
 	case consts.IpVersionStr_4:
 		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
