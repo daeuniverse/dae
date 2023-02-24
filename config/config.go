@@ -7,7 +7,6 @@ package config
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/pkg/config_parser"
 	"reflect"
 	"time"
@@ -22,12 +21,24 @@ type Global struct {
 	UdpCheckDns    string            `mapstructure:"udp_check_dns" default:"dns.google:53"`
 	CheckInterval  time.Duration     `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance time.Duration     `mapstructure:"check_tolerance" default:"0"`
-	DnsUpstream    common.UrlOrEmpty `mapstructure:"dns_upstream" default:""`
 	LanInterface   []string          `mapstructure:"lan_interface"`
 	LanNatDirect   bool              `mapstructure:"lan_nat_direct" default:"true"`
 	WanInterface   []string          `mapstructure:"wan_interface"`
 	AllowInsecure  bool              `mapstructure:"allow_insecure" default:"false"`
 	DialMode       string            `mapstructure:"dial_mode" default:"domain"`
+}
+
+type FunctionOrString interface{}
+
+func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function) {
+	switch fs := fs.(type) {
+	case string:
+		return &config_parser.Function{Name: fs}
+	case *config_parser.Function:
+		return fs
+	default:
+		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+	}
 }
 
 type Group struct {
@@ -39,29 +50,24 @@ type Group struct {
 
 type DnsRequestRouting struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback interface{}                  `mapstructure:"fallback" required:""`
+	Fallback FunctionOrString             `mapstructure:"fallback" required:""`
 }
 type DnsResponseRouting struct {
-	Rules   []*config_parser.RoutingRule `mapstructure:"_"`
-	Default interface{}                  `mapstructure:"default" required:""`
+	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
+	Fallback FunctionOrString             `mapstructure:"fallback" required:""`
 }
 type Dns struct {
-	Upstream []string `mapstructure:"upstream" section_parser:"StringListParser"`
+	Upstream []string `mapstructure:"upstream"`
 	Routing  struct {
-		Request  DnsRequestRouting  `mapstructure:"routing" section_parser:"RoutingRuleAndParamParser"`
-		Response DnsResponseRouting `mapstructure:"routing" section_parser:"RoutingRuleAndParamParser"`
-	} `mapstructure:"group" section_parser:"GroupParser"`
-}
-
-type GroupParam struct {
-	Filter []*config_parser.Function `mapstructure:"filter"`
-	Policy interface{}               `mapstructure:"policy" required:""`
+		Request  DnsRequestRouting  `mapstructure:"request"`
+		Response DnsResponseRouting `mapstructure:"response"`
+	} `mapstructure:"routing"`
 }
 
 type Routing struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback interface{}                  `mapstructure:"fallback"`
-	Final    interface{}                  `mapstructure:"final"`
+	Fallback FunctionOrString             `mapstructure:"fallback"`
+	Final    FunctionOrString             `mapstructure:"final"`
 }
 
 type Params struct {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -84,10 +85,14 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 		param.Group,
 		&param.Routing,
 		&param.Global,
+		&param.Dns,
 	)
 	if err != nil {
 		return err
 	}
+
+	// Call GC to release memory.
+	runtime.GC()
 
 	// Serve tproxy TCP/UDP server util signals.
 	sigs := make(chan os.Signal, 1)

@@ -181,7 +181,7 @@ type RoutingRule struct {
 	Outbound     Function
 }
 
-func (r *RoutingRule) String(calcN bool) string {
+func (r *RoutingRule) String(replaceParamWithN bool) string {
 	var builder strings.Builder
 	var n int
 	for i, f := range r.AndFunctions {
@@ -190,7 +190,7 @@ func (r *RoutingRule) String(calcN bool) string {
 		}
 		var paramBuilder strings.Builder
 		n += len(f.Params)
-		if calcN {
+		if replaceParamWithN {
 			paramBuilder.WriteString("[n = " + strconv.Itoa(n) + "]")
 		} else {
 			for j, param := range f.Params {

@@ -3,14 +3,13 @@ module github.com/v2rayA/dae
 go 1.18
 
 require (
-	github.com/Asphaltt/lpmtrie v0.0.0-20220205153150-3d814250b8ab
 	github.com/adrg/xdg v0.4.0
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20221202181307-76fa05c21b12
 	github.com/cilium/ebpf v0.10.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230220064728-6940dc11777f
+	github.com/mzz2017/softwind v0.0.0-20230224125402-d460ce1c5b4b
 	github.com/safchain/ethtool v0.0.0-20230116090318-67cc41908669
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1

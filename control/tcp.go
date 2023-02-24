@@ -59,20 +59,27 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		}
 		dst = netip.AddrPortFrom(dstAddr, common.Htons(value.Port))
 	}
+	src = common.ConvergeAddrPort(src)
+	dst = common.ConvergeAddrPort(dst)
+
 	var outboundIndex = consts.OutboundIndex(routingResult.Outbound)
 
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundMustDirect:
-		fallthrough
-	case consts.OutboundControlPlaneDirect:
+		outboundIndex = consts.OutboundDirect
+	case consts.OutboundControlPlaneRouting:
+		if outboundIndex, routingResult.Mark, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
+			return err
+		}
+		routingResult.Outbound = uint8(outboundIndex)
+
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.Tracef("outbound: %v => %v",
+				consts.OutboundControlPlaneRouting.String(),
 				outboundIndex.String(),
-				consts.OutboundDirect.String(),
 			)
 		}
-		outboundIndex = consts.OutboundDirect
 	default:
 	}
 	outbound := c.outbounds[outboundIndex]
@@ -104,8 +111,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 
 	// Dial and relay.
-	dst = netip.AddrPortFrom(common.ConvergeIp(dst.Addr()), dst.Port())
-	rConn, err := d.Dial(GetNetwork("tcp", routingResult.Mark), c.ChooseDialTarget(outboundIndex, dst, domain))
+	rConn, err := d.Dial(MagicNetwork("tcp", routingResult.Mark), c.ChooseDialTarget(outboundIndex, dst, domain))
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}

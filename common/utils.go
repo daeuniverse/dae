@@ -372,11 +372,18 @@ func BoolToString(b bool) string {
 	}
 }
 
-func ConvergeIp(addr netip.Addr) netip.Addr {
+func ConvergeAddr(addr netip.Addr) netip.Addr {
 	if addr.Is4In6() {
 		addr = netip.AddrFrom4(addr.As4())
 	}
 	return addr
+}
+
+func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
+	if addrPort.Addr().Is4In6() {
+		return netip.AddrPortFrom(netip.AddrFrom4(addrPort.Addr().As4()), addrPort.Port())
+	}
+	return addrPort
 }
 
 func NewGcm(key []byte) (cipher.AEAD, error) {

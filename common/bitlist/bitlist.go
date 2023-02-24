@@ -28,7 +28,7 @@ func NewCompactBitList(unitBitSize int) *CompactBitList {
 	}
 }
 
-// Set is not optimized yet.
+// Set function is not optimized yet.
 func (m *CompactBitList) Set(iUnit int, v uint64) {
 	if bits.Len64(v) > m.unitBitSize {
 		panic(fmt.Sprintf("value %v exceeds unit bit size", v))

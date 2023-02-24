@@ -11,11 +11,14 @@ import (
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/safchain/ethtool"
 	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
 	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 	"net"
+	"net/netip"
 	"os"
 	"regexp"
 )
@@ -413,5 +416,44 @@ func (c *ControlPlaneCore) bindWan(ifname string) error {
 		}
 		return nil
 	})
+	return nil
+}
+
+// BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
+// be invoked every A/AAAA-record lookup.
+func (c *ControlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
+	// Parse ips from DNS resp answers.
+	var ips []netip.Addr
+	for _, ans := range cache.Answers {
+		switch ans.Header.Type {
+		case dnsmessage.TypeA:
+			ips = append(ips, netip.AddrFrom4(ans.Body.(*dnsmessage.AResource).A))
+		case dnsmessage.TypeAAAA:
+			ips = append(ips, netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA))
+		}
+	}
+	if len(ips) == 0 {
+		return nil
+	}
+
+	// Update bpf map.
+	// Construct keys and vals, and BpfMapBatchUpdate.
+	var keys [][4]uint32
+	var vals []bpfDomainRouting
+	for _, ip := range ips {
+		ip6 := ip.As16()
+		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+		r := bpfDomainRouting{}
+		if len(cache.DomainBitmap) != len(r.Bitmap) {
+			return fmt.Errorf("domain bitmap length not sync with kern program")
+		}
+		copy(r.Bitmap[:], cache.DomainBitmap)
+		vals = append(vals, r)
+	}
+	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
+		ElemFlags: uint64(ebpf.UpdateAny),
+	}); err != nil {
+		return err
+	}
 	return nil
 }

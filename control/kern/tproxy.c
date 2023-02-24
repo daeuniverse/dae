@@ -59,7 +59,7 @@
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
 #define OUTBOUND_MUST_DIRECT 0xFC
-#define OUTBOUND_CONTROL_PLANE_DIRECT 0xFD
+#define OUTBOUND_CONTROL_PLANE_ROUTING 0xFD
 #define OUTBOUND_LOGICAL_OR 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
 #define OUTBOUND_LOGICAL_MASK 0xFE
@@ -89,6 +89,7 @@ static const __u32 disable_l4_rx_checksum_key
     __attribute__((unused, deprecated)) = 3;
 static const __u32 control_plane_pid_key = 4;
 static const __u32 control_plane_nat_direct_key = 5;
+static const __u32 control_plane_dns_routing_key = 6;
 
 // Outbound Connectivity Map:
 
@@ -224,23 +225,6 @@ struct {
   __uint(max_entries, 5);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ipproto_hdrsize_map SEC(".maps");
-
-// Dns upstream:
-
-struct dns_upstream {
-  __be32 ip4[4];
-  __be32 ip6[4];
-  bool hasIp4;
-  bool hasIp6;
-  __be16 port;
-};
-struct {
-  __uint(type, BPF_MAP_TYPE_ARRAY);
-  __type(key, __u32);
-  __type(value, struct dns_upstream);
-  /// FIXME: l4proto is always udp.
-  __uint(max_entries, 1);
-} dns_upstream_map SEC(".maps");
 
 // Interface Ips:
 struct if_params {
@@ -946,7 +930,7 @@ decap_after_udp_hdr(struct __sk_buff *skb, __u8 ipversion, __u8 ihl,
 // low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
 static __s64 __attribute__((noinline))
 routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
-        const __be32 _daddr[4], const __be32 mac[4]) {
+        const __be32 daddr[4], const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
@@ -957,7 +941,6 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
   __u32 key = MatchType_L4Proto;
   __u16 h_dport;
   __u16 h_sport;
-  __u32 daddr[4];
 
   /// TODO: BPF_MAP_UPDATE_BATCH ?
   if (unlikely((ret = bpf_map_update_elem(&l4proto_ipversion_map, &key,
@@ -992,27 +975,11 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
   // Modify DNS upstream for routing.
   if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
-    struct dns_upstream *upstream =
-        bpf_map_lookup_elem(&dns_upstream_map, &zero_key);
-    if (upstream && upstream->port != 0) {
-      h_dport = bpf_ntohs(upstream->port);
-      if (_ipversion_type == IpVersionType_4 && upstream->hasIp4) {
-        __builtin_memcpy(daddr, upstream->ip4, IPV6_BYTE_LENGTH);
-      } else if (_ipversion_type == IpVersionType_6 && upstream->hasIp6) {
-        __builtin_memcpy(daddr, upstream->ip6, IPV6_BYTE_LENGTH);
-      } else if (upstream->hasIp4) {
-        __builtin_memcpy(daddr, upstream->ip4, IPV6_BYTE_LENGTH);
-      } else if (upstream->hasIp6) {
-        __builtin_memcpy(daddr, upstream->ip6, IPV6_BYTE_LENGTH);
-      } else {
-        bpf_printk("bad dns upstream; use as-is.");
-        __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
-      }
-    } else {
-      __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
+    __u32 *control_plane_dns_routing =
+        bpf_map_lookup_elem(&param_map, &control_plane_dns_routing_key);
+    if (control_plane_dns_routing && *control_plane_dns_routing) {
+      return OUTBOUND_CONTROL_PLANE_ROUTING;
     }
-  } else {
-    __builtin_memcpy(daddr, _daddr, IPV6_BYTE_LENGTH);
   }
   lpm_key_instance.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
   __builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
@@ -1169,11 +1136,6 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
         bpf_printk("MATCHED: match_set->type: %u, match_set->not: %d",
                    match_set->type, match_set->not );
 #endif
-        if (match_set->outbound == OUTBOUND_DIRECT && h_dport == 53 &&
-            _l4proto_type == L4ProtoType_UDP) {
-          // DNS packet should go through control plane.
-          return OUTBOUND_CONTROL_PLANE_DIRECT | (match_set->mark << 8);
-        }
         return match_set->outbound | (match_set->mark << 8);
       }
       bad_rule = false;
