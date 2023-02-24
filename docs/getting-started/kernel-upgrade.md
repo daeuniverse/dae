@@ -18,7 +18,7 @@ Before you start upgrading your Linux kernel, you must know the Kernel’s `curr
 Various Linux distributions have different methods to upgrade the Linux kernel. This guide convers ways to upgrade the kernel to a desired version for most `Debian-based Linux`, `RedHar, Fedora based Linux`, and `Arch-based Linux` distributions.
 
 > **Note**
-> Since `Dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
+> Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
 
 ### Upgrade Kernel on Debian-based Linux
 

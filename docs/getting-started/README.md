@@ -38,7 +38,7 @@ make GOFLAGS="-buildvcs=false" CC=clang
 
 **Runtime Dependencies**
 
-For traffic splitting, Dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
+For traffic splitting, dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
 
 ```shell
 mkdir -p /usr/local/share/dae/
@@ -62,5 +62,5 @@ After fine tuning, run dae:
 ./dae run -c example.dae
 ```
 
-Alternatively, you may run Dae as a daemon(systemd) service. Check out more details [HERE](./run-as-daemon.md).
+Alternatively, you may run dae as a daemon(systemd) service. Check out more details [HERE](./run-as-daemon.md).
 

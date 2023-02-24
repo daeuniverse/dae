@@ -78,7 +78,11 @@ sudo sysctl --system
 
 ## Getting Started
 
-Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start using `Dae` right away!
+Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start using `dae` right away!
+
+## Known Issues
+
+1. If you setup dae and also a shadowsocks server (or any UDP servers) on the same machine in public network, such as a VPS, don't forget to add `sport(your server ports) -> must_direct` rule for your UDP server port. Because states of UDP are hard to maintain, all outgoing UDP packets will potentially be proxied (depends on your routing), including traffic to your client. This is not what we want to see. `must_direct` means all traffic including DNS traffic will be direct.
 
 ## TODO
 
