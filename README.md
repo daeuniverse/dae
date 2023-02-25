@@ -64,17 +64,22 @@ Check them using command like:
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO_BTF|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS)='
 ```
 
-### Enable IP Forwarding
+### Kernel Parameters
 
-By default, any latest Linux distributions will have IP Forwarding `disabled`. In the case where we need to up a Linux router/gateway or a VPN server or simply a plain dial-in server, then we must need to enable forwarding. Do the followings to have `ip-forwarding` feature enabled:
+If you set up dae as a router or other intermediate device, you need to adjust some linux kernel parameters to make everything work fine. By default, the latest Linux distributions have IP Forwarding `disabled`. In the case where we need to up a Linux router/gateway or a VPN server or simply a plain dial-in server, then we need to enable forwarding. Moreover, in order to keep our gateway position and keep correct downstream route table, we should disable `send-redirects`. Do the followings to adjust linux kernel parameters:
 
 ```shell
-sudo tee /etc/sysctl.d/dae.conf<<EOF
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
+export lan_ifname=docker0
+sudo tee /etc/sysctl.d/60-dae-$lan_ifname.conf << EOF
+net.ipv4.conf.$lan_ifname.forwarding = 1
+net.ipv6.conf.$lan_ifname.forwarding = 1
+net.ipv4.conf.$lan_ifname.send_redirects = 0
+net.ipv6.conf.$lan_ifname.send_redirects = 0
 EOF
 sudo sysctl --system
 ```
+
+Please modify `docker0` to your LAN interface.
 
 ## Getting Started
 
@@ -82,7 +87,7 @@ Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start u
 
 ## Known Issues
 
-1. If you setup dae and also a shadowsocks server (or any UDP servers) on the same machine in public network, such as a VPS, don't forget to add `l4proto(udp) && sport(your server ports) -> must_direct` rule for your UDP server port. Because states of UDP are hard to maintain, all outgoing UDP packets will potentially be proxied (depends on your routing), including traffic to your client. That is not what we want to see. `must_direct` makes all traffic from this port including DNS traffic direct.
+1. If you setup dae and also a shadowsocks server (or any UDP servers) on the same machine in public network, such as a VPS, don't forget to add `l4proto(udp) && sport(your server ports) -> must_direct` rule for your UDP server port. Because states of UDP are hard to maintain, all outgoing UDP packets will potentially be proxied (depends on your routing), including traffic to your client. This behaviour is not what we want to see. `must_direct` makes all traffic from this port including DNS traffic direct.
 
 ## TODO
 

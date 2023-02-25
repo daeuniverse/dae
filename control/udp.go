@@ -69,12 +69,23 @@ func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDP
 	}
 	b.Write(data)
 	//logrus.Debugln("sendPktWithHdrWithFlag: from", realFrom, "to", to)
+	if ipversion := consts.IpVersionFromAddr(to.Addr()); consts.IpVersionFromAddr(lConn.LocalAddr().(*net.UDPAddr).AddrPort().Addr()) != ipversion {
+		// ip versions unmatched.
+		if ipversion == consts.IpVersionStr_4 {
+			// 4 to 6
+			to = netip.AddrPortFrom(netip.AddrFrom16(to.Addr().As16()), to.Port())
+		} else {
+			// Shouldn't happen.
+			return fmt.Errorf("unmatched ipversions")
+		}
+	}
 	_, err := lConn.WriteToUDPAddrPort(b.Bytes(), to)
 	return err
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn, lanWanFlag consts.LanWanFlag) (err error) {
+
 	if lanWanFlag == consts.LanWanFlag_IsWan {
 		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 	}

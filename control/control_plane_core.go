@@ -236,8 +236,10 @@ func (c *ControlPlaneCore) bindLan(ifname string) error {
 	if err != nil {
 		return err
 	}
-	err = CheckIpforward(ifname)
-	if err != nil {
+	if err = CheckIpforward(ifname); err != nil {
+		return err
+	}
+	if err = CheckSendRedirects(ifname); err != nil {
 		return err
 	}
 	/// Insert an elem into IfindexParamsMap.

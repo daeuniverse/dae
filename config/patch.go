@@ -15,6 +15,7 @@ type patch func(params *Config) error
 var patches = []patch{
 	patchEmptyDns,
 	patchDeprecatedGlobalDnsUpstream,
+	patchDeprecatedLanNatDirect,
 }
 
 func patchEmptyDns(params *Config) error {
@@ -32,5 +33,12 @@ func patchDeprecatedGlobalDnsUpstream(params *Config) error {
 		return fmt.Errorf("'global.dns_upstream' was deprecated, please refer to the latest examples and docs for help")
 	}
 	params.Global.DnsUpstream = ""
+	return nil
+}
+
+func patchDeprecatedLanNatDirect(params *Config) error {
+	if params.Global.LanNatDirect != false {
+		return fmt.Errorf("'global.lan_nat_direct' was deprecated; please remove it")
+	}
 	return nil
 }

@@ -23,10 +23,11 @@ type Global struct {
 	CheckTolerance time.Duration `mapstructure:"check_tolerance" default:"0"`
 	DnsUpstream    string        `mapstructure:"dns_upstream" default:"<empty>"`
 	LanInterface   []string      `mapstructure:"lan_interface"`
-	LanNatDirect   bool          `mapstructure:"lan_nat_direct" default:"true"`
-	WanInterface   []string      `mapstructure:"wan_interface"`
-	AllowInsecure  bool          `mapstructure:"allow_insecure" default:"false"`
-	DialMode       string        `mapstructure:"dial_mode" default:"domain"`
+	// Deprecated:
+	LanNatDirect  bool     `mapstructure:"lan_nat_direct" default:"false"`
+	WanInterface  []string `mapstructure:"wan_interface"`
+	AllowInsecure bool     `mapstructure:"allow_insecure" default:"false"`
+	DialMode      string   `mapstructure:"dial_mode" default:"domain"`
 }
 
 type FunctionOrString interface{}
