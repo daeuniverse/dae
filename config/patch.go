@@ -7,29 +7,14 @@ package config
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
 )
 
 type patch func(params *Config) error
 
 var patches = []patch{
-	patchRoutingFallback,
 	patchEmptyDns,
 	patchDeprecatedGlobalDnsUpstream,
-}
-
-func patchRoutingFallback(params *Config) error {
-	// We renamed final as fallback. So we apply this patch for compatibility with older users.
-	if params.Routing.Fallback == nil && params.Routing.Final != nil {
-		params.Routing.Fallback = params.Routing.Final
-		logrus.Warnln("Name 'final' in section routing was deprecated and will be removed in the future; please rename it as 'fallback'")
-	}
-	// Fallback is required.
-	if params.Routing.Fallback == nil {
-		return fmt.Errorf("fallback is required in routing")
-	}
-	return nil
 }
 
 func patchEmptyDns(params *Config) error {

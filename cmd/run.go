@@ -58,11 +58,13 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
 	if len(conf.Node) > 0 {
-		tagToNodeList[""] = append(tagToNodeList[""], conf.Node...)
+		for _, node := range conf.Node {
+			tagToNodeList[""] = append(tagToNodeList[""], string(node))
+		}
 	}
 	// Resolve subscriptions to nodes.
 	for _, sub := range conf.Subscription {
-		tag, nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), sub)
+		tag, nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 		}

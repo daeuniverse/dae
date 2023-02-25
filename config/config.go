@@ -83,7 +83,6 @@ type Dns struct {
 type Routing struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
 	Fallback FunctionOrString             `mapstructure:"fallback"`
-	Final    FunctionOrString             `mapstructure:"final"`
 }
 
 type Config struct {
