@@ -254,6 +254,8 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 						params, err = o.loadGeoSite(fields[0], fields[1])
 					case consts.Function_Ip:
 						params, err = o.loadGeoIp(fields[0], fields[1])
+					default:
+						return nil, fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
 					}
 				default:
 					// Keep this param.
