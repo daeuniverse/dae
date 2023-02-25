@@ -19,7 +19,7 @@ type Outline struct {
 type OutlineElem struct {
 	Name      string         `json:"name,omitempty"`
 	Mapping   string         `json:"mapping,omitempty"`
-	Kind      string         `json:"kind,omitempty"`
+	IsArray   bool           `json:"isArray,omitempty"`
 	Type      string         `json:"type,omitempty"`
 	ElemType  string         `json:"elemType,omitempty"`
 	Desc      string         `json:"desc,omitempty"`
@@ -27,12 +27,13 @@ type OutlineElem struct {
 }
 
 func ExportOutline() *Outline {
-	exporter := outlineExporter{
-		leaves: make(map[string]struct{}),
-	}
 	// Get structure.
 	t := reflect.TypeOf(Params{})
-	structure := exporter.exportStruct(t, SectionSummaryDesc)
+	exporter := outlineExporter{
+		leaves:       make(map[string]struct{}),
+		pktPathScope: t.PkgPath(),
+	}
+	structure := exporter.exportStruct(t, SectionSummaryDesc, false)
 	// Get leaves.
 	var leaves []string
 	for k := range exporter.leaves {
@@ -55,10 +56,11 @@ func ExportOutlineJson() string {
 }
 
 type outlineExporter struct {
-	leaves map[string]struct{}
+	leaves       map[string]struct{}
+	pktPathScope string
 }
 
-func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc) (outlines []*OutlineElem) {
+func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritSource bool) (outlines []*OutlineElem) {
 	for i := 0; i < t.NumField(); i++ {
 		section := t.Field(i)
 		// Parse desc.
@@ -66,25 +68,32 @@ func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc) (outline
 		if descSource != nil {
 			desc = descSource[section.Tag.Get("mapstructure")]
 		}
-		// Parse children.
-		var children []*OutlineElem
-		switch section.Type.Kind() {
-		case reflect.Struct:
-			nextDescSource := SectionDescription[section.Tag.Get("desc")]
-			children = e.exportStruct(section.Type, nextDescSource)
-		}
 		// Parse elem type.
-		var kind string
+		var isArray bool
 		var typ reflect.Type
 		switch section.Type.Kind() {
-		case reflect.Array, reflect.Slice:
+		case reflect.Slice, reflect.Array:
 			typ = section.Type.Elem()
-			kind = "array"
+			isArray = true
 		default:
 			typ = section.Type
 		}
 		if typ.Kind() == reflect.Pointer {
 			typ = typ.Elem()
+		}
+		// Parse children.
+		var children []*OutlineElem
+		switch typ.Kind() {
+		case reflect.Struct:
+			var nextDescSource Desc
+			if inheritSource {
+				nextDescSource = descSource
+			} else {
+				nextDescSource = SectionDescription[section.Tag.Get("desc")]
+			}
+			if typ.PkgPath() == "" || typ.PkgPath() == e.pktPathScope {
+				children = e.exportStruct(typ, nextDescSource, true)
+			}
 		}
 		if len(children) == 0 {
 			// Record leaves.
@@ -93,7 +102,7 @@ func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc) (outline
 		outlines = append(outlines, &OutlineElem{
 			Name:      section.Name,
 			Mapping:   section.Tag.Get("mapstructure"),
-			Kind:      kind,
+			IsArray:   isArray,
 			Type:      typ.String(),
 			Desc:      desc,
 			Structure: children,
