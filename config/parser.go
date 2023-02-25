@@ -18,19 +18,18 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
 	to = to.Elem()
-	if to.Type() != reflect.TypeOf([]string{}) {
+	if to.Type() != reflect.TypeOf([]string{}) &&
+		!(to.Kind() == reflect.Slice && to.Type().Elem().Kind() == reflect.String) {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
-	var list []string
 	for _, item := range section.Items {
 		switch itemVal := item.Value.(type) {
 		case *config_parser.Param:
-			list = append(list, itemVal.String(true))
+			to.Set(reflect.Append(to, reflect.ValueOf(itemVal.String(true, false)).Convert(to.Type().Elem())))
 		default:
-			return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.Type.String(), item.String())
+			return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.Type.String(), item.String(false, false))
 		}
 	}
-	to.Set(reflect.ValueOf(list))
 	return nil
 }
 
@@ -85,7 +84,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		switch itemVal := item.Value.(type) {
 		case *config_parser.Param:
 			if itemVal.Key == "" {
-				return fmt.Errorf("unsupported text without a key: %v", itemVal.String(true))
+				return fmt.Errorf("unsupported text without a key: %v", itemVal.String(true, false))
 			}
 			field, ok := keyToField[itemVal.Key]
 			if !ok {
@@ -138,7 +137,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			// Assign. "to" should have field "Rules".
 			structField, ok := to.Type().FieldByName("Rules")
 			if !ok || structField.Type != reflect.TypeOf([]*config_parser.RoutingRule{}) {
-				return fmt.Errorf("unexpected type: \"routing rule\": %v", itemVal.String(true))
+				return fmt.Errorf("unexpected type: \"routing rule\": %v", itemVal.String(true, false, false))
 			}
 			if structField.Tag.Get("mapstructure") != "_" {
 				return fmt.Errorf("a []*RoutingRule field \"Rules\" with mapstructure:\"_\" is required in struct %v to parse section", to.Type().String())
@@ -147,7 +146,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			field.Set(reflect.Append(field, reflect.ValueOf(itemVal)))
 		default:
 			if _, ignore := ignoreTypeSet[reflect.TypeOf(itemVal)]; !ignore {
-				return fmt.Errorf("unexpected type %v: %v", item.Type.String(), item.String())
+				return fmt.Errorf("unexpected type %v: %v", item.Type.String(), item.String(false, false))
 			}
 		}
 	}

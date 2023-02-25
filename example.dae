@@ -82,13 +82,15 @@ dns {
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
     }
-    request {
-        fallback: asis
-    }
-    response {
-        upstream(googledns) -> accept
-        !qname(geosite:cn) && ip(geoip:private) -> googledns
-        fallback: accept
+    routing {
+        request {
+                fallback: asis
+        }
+        response {
+            upstream(googledns) -> accept
+            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            fallback: accept
+        }
     }
 }
 

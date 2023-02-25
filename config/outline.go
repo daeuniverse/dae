@@ -12,6 +12,7 @@ import (
 )
 
 type Outline struct {
+	Version   string         `json:"version"`
 	Leaves    []string       `json:"leaves"`
 	Structure []*OutlineElem `json:"structure"`
 }
@@ -26,15 +27,15 @@ type OutlineElem struct {
 	Structure []*OutlineElem `json:"structure,omitempty"`
 }
 
-func ExportOutline() *Outline {
+func ExportOutline(version string) *Outline {
 	// Get structure.
-	t := reflect.TypeOf(Params{})
+	t := reflect.TypeOf(Config{})
 	exporter := outlineExporter{
-		leaves:       make(map[string]struct{}),
-		pktPathScope: t.PkgPath(),
+		leaves:       make(map[string]reflect.Type),
+		pkgPathScope: t.PkgPath(),
 	}
 	structure := exporter.exportStruct(t, SectionSummaryDesc, false)
-	// Get leaves.
+	// Get string type leaves.
 	var leaves []string
 	for k := range exporter.leaves {
 		leaves = append(leaves, k)
@@ -42,13 +43,14 @@ func ExportOutline() *Outline {
 	sort.Strings(leaves)
 
 	return &Outline{
+		Version:   version,
 		Leaves:    leaves,
 		Structure: structure,
 	}
 }
 
-func ExportOutlineJson() string {
-	b, err := jsoniter.MarshalIndent(ExportOutline(), "", "  ")
+func ExportOutlineJson(version string) string {
+	b, err := jsoniter.MarshalIndent(ExportOutline(version), "", "  ")
 	if err != nil {
 		panic(err)
 	}
@@ -56,8 +58,8 @@ func ExportOutlineJson() string {
 }
 
 type outlineExporter struct {
-	leaves       map[string]struct{}
-	pktPathScope string
+	leaves       map[string]reflect.Type
+	pkgPathScope string
 }
 
 func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritSource bool) (outlines []*OutlineElem) {
@@ -72,7 +74,7 @@ func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritS
 		var isArray bool
 		var typ reflect.Type
 		switch section.Type.Kind() {
-		case reflect.Slice, reflect.Array:
+		case reflect.Slice:
 			typ = section.Type.Elem()
 			isArray = true
 		default:
@@ -91,13 +93,13 @@ func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritS
 			} else {
 				nextDescSource = SectionDescription[section.Tag.Get("desc")]
 			}
-			if typ.PkgPath() == "" || typ.PkgPath() == e.pktPathScope {
+			if typ.PkgPath() == "" || typ.PkgPath() == e.pkgPathScope {
 				children = e.exportStruct(typ, nextDescSource, true)
 			}
 		}
 		if len(children) == 0 {
 			// Record leaves.
-			e.leaves[typ.String()] = struct{}{}
+			e.leaves[typ.String()] = typ
 		}
 		outlines = append(outlines, &OutlineElem{
 			Name:      section.Name,

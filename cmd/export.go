@@ -21,7 +21,7 @@ var (
 	exportOutlineCmd = &cobra.Command{
 		Use: "outline",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(config.ExportOutlineJson())
+			fmt.Println(config.ExportOutlineJson(Version))
 		},
 	}
 )

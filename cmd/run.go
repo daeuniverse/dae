@@ -32,16 +32,16 @@ var (
 			internal.AutoSu()
 
 			// Read config from --config cfgFile.
-			param, includes, err := readConfig(cfgFile)
+			conf, includes, err := readConfig(cfgFile)
 			if err != nil {
 				logrus.Fatalln("readConfig:", err)
 			}
 
-			log := logger.NewLogger(param.Global.LogLevel, disableTimestamp)
+			log := logger.NewLogger(conf.Global.LogLevel, disableTimestamp)
 			logrus.SetLevel(log.Level)
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			if err := Run(log, param); err != nil {
+			if err := Run(log, conf); err != nil {
 				logrus.Fatalln(err)
 			}
 		},
@@ -53,15 +53,15 @@ func init() {
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
 }
 
-func Run(log *logrus.Logger, param *config.Params) (err error) {
+func Run(log *logrus.Logger, conf *config.Config) (err error) {
 
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
-	if len(param.Node) > 0 {
-		tagToNodeList[""] = append(tagToNodeList[""], param.Node...)
+	if len(conf.Node) > 0 {
+		tagToNodeList[""] = append(tagToNodeList[""], conf.Node...)
 	}
 	// Resolve subscriptions to nodes.
-	for _, sub := range param.Subscription {
+	for _, sub := range conf.Subscription {
 		tag, nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), sub)
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
@@ -74,7 +74,7 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 		return fmt.Errorf("no node found, which could because all subscription resolving failed")
 	}
 
-	if len(param.Global.LanInterface) == 0 && len(param.Global.WanInterface) == 0 {
+	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
 		return fmt.Errorf("LanInterface and WanInterface cannot both be empty")
 	}
 
@@ -82,10 +82,10 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	t, err := control.NewControlPlane(
 		log,
 		tagToNodeList,
-		param.Group,
-		&param.Routing,
-		&param.Global,
-		&param.Dns,
+		conf.Group,
+		&conf.Routing,
+		&conf.Global,
+		&conf.Dns,
 	)
 	if err != nil {
 		return err
@@ -98,7 +98,7 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL)
 	go func() {
-		if err := t.ListenAndServe(param.Global.TproxyPort); err != nil {
+		if err := t.ListenAndServe(conf.Global.TproxyPort); err != nil {
 			log.Errorln("ListenAndServe:", err)
 			sigs <- nil
 		}
@@ -110,14 +110,14 @@ func Run(log *logrus.Logger, param *config.Params) (err error) {
 	return nil
 }
 
-func readConfig(cfgFile string) (params *config.Params, includes []string, err error) {
+func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
 	merger := config.NewMerger(cfgFile)
 	sections, includes, err := merger.Merge()
 	if err != nil {
 		return nil, nil, err
 	}
-	if params, err = config.New(sections); err != nil {
+	if conf, err = config.New(sections); err != nil {
 		return nil, nil, err
 	}
-	return params, includes, nil
+	return conf, includes, nil
 }

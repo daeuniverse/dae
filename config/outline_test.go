@@ -10,5 +10,5 @@ import (
 )
 
 func TestExportOutline(t *testing.T) {
-	t.Log(ExportOutlineJson())
+	t.Log(ExportOutlineJson("test"))
 }
