@@ -283,7 +283,7 @@ func NewControlPlane(
 	if log.IsLevelEnabled(logrus.DebugLevel) {
 		var debugBuilder strings.Builder
 		for _, rule := range rules {
-			debugBuilder.WriteString(rule.String(true) + "\n")
+			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
 		}
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}

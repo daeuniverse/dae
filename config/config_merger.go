@@ -132,10 +132,10 @@ func (m *Merger) dfsMerge(entry string, fatherEntry string) (err error) {
 	for _, include := range includes {
 		switch v := include.Value.(type) {
 		case *config_parser.Param:
-			nextEntry := v.String(true)
+			nextEntry := v.String(true, false)
 			patterEntries = append(patterEntries, filepath.Join(m.entryDir, nextEntry))
 		default:
-			return fmt.Errorf("unsupported include grammar in %v: %v", entry, include.String())
+			return fmt.Errorf("unsupported include grammar in %v: %v", entry, include.String(false, false))
 		}
 	}
 	// DFS and merge children recursively.

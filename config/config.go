@@ -42,11 +42,24 @@ func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function)
 	}
 }
 
+type FunctionListOrString interface{}
+
+func FunctionListOrStringToFunction(fs FunctionListOrString) (f []*config_parser.Function) {
+	switch fs := fs.(type) {
+	case string:
+		return []*config_parser.Function{{Name: fs}}
+	case []*config_parser.Function:
+		return fs
+	default:
+		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+	}
+}
+
 type Group struct {
 	Name string `mapstructure:"_"`
 
 	Filter []*config_parser.Function `mapstructure:"filter"`
-	Policy interface{}               `mapstructure:"policy" required:""`
+	Policy FunctionListOrString      `mapstructure:"policy" required:""`
 }
 
 type DnsRequestRouting struct {
@@ -57,31 +70,32 @@ type DnsResponseRouting struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
 	Fallback FunctionOrString             `mapstructure:"fallback" required:""`
 }
+type DnsRouting struct {
+	Request  DnsRequestRouting  `mapstructure:"request"`
+	Response DnsResponseRouting `mapstructure:"response"`
+}
+type KeyableString string
 type Dns struct {
-	Upstream []string `mapstructure:"upstream"`
-	Routing  struct {
-		Request  DnsRequestRouting  `mapstructure:"request"`
-		Response DnsResponseRouting `mapstructure:"response"`
-	} `mapstructure:"routing"`
+	Upstream []KeyableString `mapstructure:"upstream"`
+	Routing  DnsRouting      `mapstructure:"routing"`
 }
 
 type Routing struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
 	Fallback FunctionOrString             `mapstructure:"fallback"`
-	Final    FunctionOrString             `mapstructure:"final"`
 }
 
-type Params struct {
-	Global       Global   `mapstructure:"global" required:""`
-	Subscription []string `mapstructure:"subscription"`
-	Node         []string `mapstructure:"node"`
-	Group        []Group  `mapstructure:"group" required:""`
-	Routing      Routing  `mapstructure:"routing" required:""`
-	Dns          Dns      `mapstructure:"dns"`
+type Config struct {
+	Global       Global          `mapstructure:"global" required:"" desc:"GlobalDesc"`
+	Subscription []KeyableString `mapstructure:"subscription"`
+	Node         []KeyableString `mapstructure:"node"`
+	Group        []Group         `mapstructure:"group" required:"" desc:"GroupDesc"`
+	Routing      Routing         `mapstructure:"routing" required:""`
+	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
 }
 
 // New params from sections. This func assumes merging (section "include") and deduplication for section names has been executed.
-func New(sections []*config_parser.Section) (params *Params, err error) {
+func New(sections []*config_parser.Section) (conf *Config, err error) {
 	// Set up name to section for further use.
 	type Section struct {
 		Val    *config_parser.Section
@@ -92,9 +106,9 @@ func New(sections []*config_parser.Section) (params *Params, err error) {
 		nameToSection[section.Name] = &Section{Val: section}
 	}
 
-	params = &Params{}
+	conf = &Config{}
 	// Use specified parser to parse corresponding section.
-	_val := reflect.ValueOf(params)
+	_val := reflect.ValueOf(conf)
 	val := _val.Elem()
 	typ := val.Type()
 	for i := 0; i < val.NumField(); i++ {
@@ -134,9 +148,9 @@ func New(sections []*config_parser.Section) (params *Params, err error) {
 
 	// Apply config patches.
 	for _, patch := range patches {
-		if err = patch(params); err != nil {
+		if err = patch(conf); err != nil {
 			return nil, err
 		}
 	}
-	return params, nil
+	return conf, nil
 }

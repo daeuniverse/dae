@@ -26,8 +26,8 @@ global {
     #lan_interface: docker0
 
     # SNAT for incoming connection to avoid MAC learning.
-    # Set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding
-    # performance for direct traffic.
+    # Always set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding
+    # performance for direct traffic in LAN mode.
     # This option does not affect direct traffic performance of WAN.
     lan_nat_direct: true
 
@@ -82,13 +82,15 @@ dns {
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
     }
-    request {
-        fallback: asis
-    }
-    response {
-        upstream(googledns) -> accept
-        !qname(geosite:cn) && ip(geoip:private) -> googledns
-        fallback: accept
+    routing {
+        request {
+                fallback: asis
+        }
+        response {
+            upstream(googledns) -> accept
+            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            fallback: accept
+        }
     }
 }
 

@@ -62,8 +62,8 @@ func (p *paramParser) parseParam(ctx *dae_config.ParameterContext) *Param {
 func (p *paramParser) parseNonEmptyParamList(ctx *dae_config.NonEmptyParameterListContext) {
 	children := ctx.GetChildren()
 	if len(children) == 3 {
-		p.list = append(p.list, p.parseParam(children[2].(*dae_config.ParameterContext)))
 		p.parseNonEmptyParamList(children[0].(*dae_config.NonEmptyParameterListContext))
+		p.list = append(p.list, p.parseParam(children[2].(*dae_config.ParameterContext)))
 	} else if len(children) == 1 {
 		p.list = append(p.list, p.parseParam(children[0].(*dae_config.ParameterContext)))
 	}

@@ -42,7 +42,7 @@ func (b *RulesBuilder) RegisterFunctionParser(funcName string, parser FunctionPa
 
 func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 	for _, rule := range rules {
-		b.log.Debugln("[rule]", rule.String(true))
+		b.log.Debugln("[rule]", rule.String(true, false, false))
 		outbound, err := ParseOutbound(&rule.Outbound)
 		if err != nil {
 			return err
@@ -80,7 +80,7 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 				}
 
 				if err = functionParser(b.log, f, key, paramValueGroup, overrideOutbound); err != nil {
-					return fmt.Errorf("failed to parse '%v': %w", f.String(false), err)
+					return fmt.Errorf("failed to parse '%v': %w", f.String(false, false, false), err)
 				}
 			}
 		}

@@ -46,7 +46,7 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 			return nil, fmt.Errorf("too many upstreams")
 		}
 
-		tag, link := common.GetTagFromLinkLikePlaintext(upstreamRaw)
+		tag, link := common.GetTagFromLinkLikePlaintext(string(upstreamRaw))
 		if tag == "" {
 			return nil, fmt.Errorf("%w: '%v' has no tag", BadUpstreamFormatError, upstreamRaw)
 		}

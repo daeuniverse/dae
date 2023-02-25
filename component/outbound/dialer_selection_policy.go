@@ -7,10 +7,8 @@ package outbound
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common/consts"
 	"github.com/v2rayA/dae/config"
-	"github.com/v2rayA/dae/pkg/config_parser"
 	"strconv"
 )
 
@@ -20,50 +18,38 @@ type DialerSelectionPolicy struct {
 }
 
 func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *DialerSelectionPolicy, err error) {
-	switch val := param.Policy.(type) {
-	case string:
-		switch consts.DialerSelectionPolicy(val) {
-		case consts.DialerSelectionPolicy_Random,
-			consts.DialerSelectionPolicy_MinAverage10Latencies,
-			consts.DialerSelectionPolicy_MinLastLatency,
-			consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-			return &DialerSelectionPolicy{
-				Policy: consts.DialerSelectionPolicy(val),
-			}, nil
-		case consts.DialerSelectionPolicy_Fixed:
-			return nil, fmt.Errorf("%v need to specify node index", val)
-		default:
-			return nil, fmt.Errorf("unexpected policy: %v", val)
+	fs := config.FunctionListOrStringToFunction(param.Policy)
+	if len(fs) > 1 || len(fs) == 0 {
+		return nil, fmt.Errorf("policy should be exact 1 function: got %v", len(fs))
+	}
+	f := fs[0]
+	switch fName := consts.DialerSelectionPolicy(f.Name); fName {
+	case consts.DialerSelectionPolicy_Random,
+		consts.DialerSelectionPolicy_MinAverage10Latencies,
+		consts.DialerSelectionPolicy_MinLastLatency,
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		return &DialerSelectionPolicy{
+			Policy: fName,
+		}, nil
+	case consts.DialerSelectionPolicy_Fixed:
+
+		if f.Not {
+			return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)
 		}
-	case []*config_parser.Function:
-		if len(val) > 1 || len(val) == 0 {
-			logrus.Debugf("%@", val)
-			return nil, fmt.Errorf("policy should be exact 1 function: got %v", len(val))
+		if len(f.Params) > 1 || f.Params[0].Key != "" {
+			return nil, fmt.Errorf(`invalid "%v" param format`, f.Name)
 		}
-		f := val[0]
-		switch consts.DialerSelectionPolicy(f.Name) {
-		case consts.DialerSelectionPolicy_Fixed:
-			// Should be like:
-			// policy: fixed(0)
-			if f.Not {
-				return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)
-			}
-			if len(f.Params) > 1 || f.Params[0].Key != "" {
-				return nil, fmt.Errorf(`invalid "%v" param format`, f.Name)
-			}
-			strIndex := f.Params[0].Val
-			index, err := strconv.Atoi(strIndex)
-			if len(f.Params) > 1 || f.Params[0].Key != "" {
-				return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
-			}
-			return &DialerSelectionPolicy{
-				Policy:     consts.DialerSelectionPolicy(f.Name),
-				FixedIndex: index,
-			}, nil
-		default:
-			return nil, fmt.Errorf("unexpected policy func: %v", f.Name)
+		strIndex := f.Params[0].Val
+		index, err := strconv.Atoi(strIndex)
+		if len(f.Params) > 1 || f.Params[0].Key != "" {
+			return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
 		}
+		return &DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy(f.Name),
+			FixedIndex: index,
+		}, nil
+
 	default:
-		return nil, fmt.Errorf("unexpected param.Policy.(type): %T", val)
+		return nil, fmt.Errorf("unexpected policy: %v", f.Name)
 	}
 }

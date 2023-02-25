@@ -87,7 +87,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 		if len(mergingRule.AndFunctions) == 1 &&
 			len(rules[i].AndFunctions) == 1 &&
 			mergingRule.AndFunctions[0].Name == rules[i].AndFunctions[0].Name &&
-			rules[i].Outbound.String(true) == mergingRule.Outbound.String(true) {
+			rules[i].Outbound.String(true, false, true) == mergingRule.Outbound.String(true, false, true) {
 			mergingRule.AndFunctions[0].Params = append(mergingRule.AndFunctions[0].Params, rules[i].AndFunctions[0].Params...)
 		} else {
 			newRules = append(newRules, mergingRule)
@@ -134,10 +134,10 @@ func deduplicateParams(list []*config_parser.Param) []*config_parser.Param {
 	res := make([]*config_parser.Param, 0, len(list))
 	m := make(map[string]struct{})
 	for _, v := range list {
-		if _, ok := m[v.String(true)]; ok {
+		if _, ok := m[v.String(true, false)]; ok {
 			continue
 		}
-		m[v.String(true)] = struct{}{}
+		m[v.String(true, false)] = struct{}{}
 		res = append(res, v)
 	}
 	return res
@@ -254,6 +254,8 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 						params, err = o.loadGeoSite(fields[0], fields[1])
 					case consts.Function_Ip:
 						params, err = o.loadGeoIp(fields[0], fields[1])
+					default:
+						return nil, fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
 					}
 				default:
 					// Keep this param.
