@@ -6,7 +6,7 @@
 
 Use `uname -r` to check the kernel version on your machine.
 
-> **Notes**
+> **Note**
 > If you find your kernel version is `< 5.8`, follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to the minimum required version.
 
 **Bind to LAN: >= 5.8**
@@ -49,7 +49,7 @@ Check them using command like:
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO_BTF|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS)='
 ```
 
-> **Notes**
+> **Note**
 > `Armbian` users can follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
 
 ## Kernel Parameters
