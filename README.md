@@ -18,68 +18,6 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 1. Support advanced DNS resolution process.
 1. Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 
-## Prerequisites
-
-### Kernel Version
-
-Use `uname -r` to check the kernel version on your machine.
-
-**Bind to LAN: >= 5.8**
-
-You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
-
-This feature requires the kernel version of machine on which dae install >= 5.8.
-
-Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
-
-**Bind to WAN: >= 5.8**
-
-You need bind dae to WAN interface, if you want dae to provide network service for local programs.
-
-This feature requires kernel version of the machine >= 5.8.
-
-Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
-
-### Kernel Configuration Item
-
-Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
-
-Use following command to show kernel configuration items on your machine.
-
-```shell
-zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
-```
-
-dae needs:
-```
-CONFIG_DEBUG_INFO_BTF=y
-CONFIG_NET_CLS_ACT=y
-CONFIG_NET_SCH_INGRESS=m
-CONFIG_NET_INGRESS=y
-CONFIG_NET_EGRESS=y
-```
-Check them using command like:
-
-```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO_BTF|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS)='
-```
-
-### Kernel Parameters
-
-If you set up dae as a router or other intermediate device, you need to adjust some linux kernel parameters to make everything work fine. By default, the latest Linux distributions have IP Forwarding `disabled`. In the case where we need to up a Linux router/gateway or a VPN server or simply a plain dial-in server, then we need to enable forwarding. Moreover, in order to keep our gateway position and keep correct downstream route table, we should disable `send-redirects`. Do the followings to adjust linux kernel parameters:
-
-```shell
-export lan_ifname=docker0
-sudo tee /etc/sysctl.d/60-dae-$lan_ifname.conf << EOF
-net.ipv4.conf.$lan_ifname.forwarding = 1
-net.ipv6.conf.$lan_ifname.forwarding = 1
-net.ipv4.conf.$lan_ifname.send_redirects = 0
-EOF
-sudo sysctl --system
-```
-
-Please modify `docker0` to your LAN interface.
-
 ## Getting Started
 
 Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start using `dae` right away!

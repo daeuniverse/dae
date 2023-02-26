@@ -20,30 +20,6 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 > **Note**
 > Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
 
-### Upgrade Kernel on Ubuntu
-
-Ubuntu users can upgrade their Linux kernel upgrading the `linux-image-generic` to a desired version by making use of the [mainline](https://github.com/pimlie/ubuntu-mainline-kernel.sh) tool. It will update both `linux-image-generic` and `linux-headers-generic`.
-
-```bash
-sudo apt-add-repository -y ppa:cappelikan/ppa
-sudo apt update
-sudo apt install wget mainline
-wget https://raw.githubusercontent.com/pimlie/ubuntu-mainline-kernel.sh/master/ubuntu-mainline-kernel.sh
-chmod +x ubuntu-mainline-kernel.sh
-sudo install ubuntu-mainline-kernel.sh /usr/local/bin/
-
-# list available kernel patches
-ubuntu-mainline-kernel.sh -l
-ubuntu-mainline-kernel.sh -i <DESIRED VERSION>
-```
-
-Reboot to take effect
-
-```bash
-reboot
-uname -r
-```
-
 ### Upgrade Kernel on other Debian-based Linux
 
 Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install any specific version kernel on your Linux system. After the installation is done, reboot your system to get the desired kernel on your Linux system.
@@ -52,7 +28,7 @@ Debian-based distributions like armbian can install a specific version of Kernel
 # Sync databases.
 sudo apt update
 # Search available kernel versions.
-apt-cache search linux-image
+apt-cache search ^linux-image$
 # Install specific image.
 sudo apt install <specific-linux-image>
 ```

@@ -92,7 +92,7 @@ func checkIpforward(ifname string, ipversion consts.IpVersionStr) error {
 	if bytes.Equal(bytes.TrimSpace(b), []byte("1")) {
 		return nil
 	}
-	return fmt.Errorf("ipforward on %v is off: %v; see https://github.com/v2rayA/dae#kernel-parameters", ifname, path)
+	return fmt.Errorf("ipforward on %v is off: %v; see docs of dae for help", ifname, path)
 }
 
 func CheckIpforward(ifname string) error {
@@ -114,7 +114,7 @@ func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
 	if bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
 		return nil
 	}
-	return fmt.Errorf("send_directs on %v is on: %v; see https://github.com/v2rayA/dae#kernel-parameters", ifname, path)
+	return fmt.Errorf("send_directs on %v is on: %v; see docs of dae for help", ifname, path)
 }
 
 func CheckSendRedirects(ifname string) error {
