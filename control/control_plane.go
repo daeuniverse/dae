@@ -405,22 +405,22 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(raw *url.URL, dnsUpstream *dns.U
 	return nil
 }
 
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string) {
-	mode := consts.DialMode_Ip
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, dialMode consts.DialMode) {
+	dialMode = consts.DialMode_Ip
 
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
 			cache := c.dnsController.LookupDnsRespCache(domain, common.AddrToDnsType(dst.Addr()))
 			if cache != nil && cache.IncludeIp(dst.Addr()) {
-				mode = consts.DialMode_Domain
+				dialMode = consts.DialMode_Domain
 			}
 		case consts.DialMode_DomainPlus:
-			mode = consts.DialMode_Domain
+			dialMode = consts.DialMode_Domain
 		}
 	}
 
-	switch mode {
+	switch dialMode {
 	case consts.DialMode_Ip:
 		dialTarget = dst.String()
 	case consts.DialMode_Domain:
@@ -430,7 +430,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
 	}
-	return dialTarget
+	return dialTarget, dialMode
 }
 
 func (c *ControlPlane) ListenAndServe(port uint16) (err error) {
