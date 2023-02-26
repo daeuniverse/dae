@@ -28,7 +28,7 @@ Debian-based distributions like armbian can install a specific version of Kernel
 # Sync databases.
 sudo apt update
 # Search available kernel versions.
-apt-cache search ^linux-image$
+apt-cache search ^linux-image
 # Install specific image.
 sudo apt install <specific-linux-image>
 ```
