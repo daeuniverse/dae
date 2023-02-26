@@ -87,10 +87,6 @@ func checkIpforward(ifname string, ipversion consts.IpVersionStr) error {
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Kernel does not support.
-			return nil
-		}
 		return err
 	}
 	if bytes.Equal(bytes.TrimSpace(b), []byte("1")) {
@@ -113,10 +109,6 @@ func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Kernel does not support.
-			return nil
-		}
 		return err
 	}
 	if bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
@@ -127,9 +119,6 @@ func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
 
 func CheckSendRedirects(ifname string) error {
 	if err := checkSendRedirects(ifname, consts.IpVersionStr_4); err != nil {
-		return err
-	}
-	if err := checkSendRedirects(ifname, consts.IpVersionStr_6); err != nil {
 		return err
 	}
 	return nil

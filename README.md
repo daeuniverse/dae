@@ -74,7 +74,6 @@ sudo tee /etc/sysctl.d/60-dae-$lan_ifname.conf << EOF
 net.ipv4.conf.$lan_ifname.forwarding = 1
 net.ipv6.conf.$lan_ifname.forwarding = 1
 net.ipv4.conf.$lan_ifname.send_redirects = 0
-net.ipv6.conf.$lan_ifname.send_redirects = 0
 EOF
 sudo sysctl --system
 ```
