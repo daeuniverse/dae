@@ -42,7 +42,7 @@ var GlobalDesc = Desc{
 	"check_interval":  "Interval of connectivity check for TCP and UDP",
 	"check_tolerance": "Group will switch node only when new_latency <= old_latency - tolerance.",
 	"lan_interface":   "The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.",
-	"lan_nat_direct":  "[Deprecated] SNAT for incoming connection to avoid MAC learning.\nAlways set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding performance for direct traffic in LAN mode.\nThis option does not affect direct traffic performance of WAN.",
+	"lan_nat_direct":  "[Deprecated] SNAT for incoming connection to avoid redirects.\nAlways set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding performance for direct traffic in LAN mode.\nThis option does not affect direct traffic performance of WAN.",
 	"wan_interface":   "The WAN interface to bind. Use it if you want to proxy localhost.",
 	"allow_insecure":  "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
 	"dial_mode": `Optional values of dial_mode are:

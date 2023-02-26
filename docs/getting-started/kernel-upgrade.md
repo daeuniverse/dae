@@ -20,9 +20,9 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 > **Note**
 > Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
 
-### Upgrade Kernel on Debian-based Linux
+### Upgrade Kernel on Ubuntu
 
-Debian-based Linux distribution users can upgrade their Linux kernel upgrading the `linux-image-generic` to a desired version by making use of the [mainline](https://github.com/pimlie/ubuntu-mainline-kernel.sh) tool. It will update both `linux-image-generic` and `linux-headers-generic`.
+Ubuntu users can upgrade their Linux kernel upgrading the `linux-image-generic` to a desired version by making use of the [mainline](https://github.com/pimlie/ubuntu-mainline-kernel.sh) tool. It will update both `linux-image-generic` and `linux-headers-generic`.
 
 ```bash
 sudo apt-add-repository -y ppa:cappelikan/ppa
@@ -44,6 +44,26 @@ reboot
 uname -r
 ```
 
+### Upgrade Kernel on other Debian-based Linux
+
+Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install any specific version kernel on your Linux system. After the installation is done, reboot your system to get the desired kernel on your Linux system.
+
+```shell
+# Sync databases.
+sudo apt update
+# Search available kernel versions.
+apt-cache search linux-image
+# Install specific image.
+sudo apt install <specific-linux-image>
+```
+
+Reboot to take effect:
+
+```shell
+sudo reboot
+uname -r
+```
+
 ### Upgrade kernel on RedHat and Fedora Linux
 
 Fedora, RedHat, and RedHat-based Linux distribution users can upgrade their Linux kernel manually by downloading the kernel from the repository.
@@ -51,11 +71,10 @@ Fedora, RedHat, and RedHat-based Linux distribution users can upgrade their Linu
 Fedora and RedHat Linux users can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install any specific version kernel on your Linux system. After the installation is done, reboot your system to get the desired kernel on your Linux system.
 
 ```bash
-sudo yum update kernel
-sudo yum install kernel-{version}
+sudo yum install kernel
 ```
 
-Reboot to take effect
+Reboot to take effect:
 
 ```bash
 sudo reboot
@@ -69,10 +88,13 @@ Arch and Arch-based Linux distributions have a `dynamic` variety of Linux kernel
 Manjaro and other Arch Linux distributions often offer kernel updates and upgrades via the conventional update manager. When you run the system updater on the Linux system, it checks for the latest kernels. You can use the following `pacman` command to check for the latest kernel on Arch Linux distributions.
 
 ```bash
-sudo pacman -Syu
+# Search available kernel images.
+pacman -Ss ^linux$
+# Install specific kernel image.
+pacman -S <specific-linux-image>
 ```
 
-If it finds a new kernel, it will notify you to download and install it. You can choose whether you want to get the latest kernel or not. Once you agree to install, reboot your system after the installation is finished. Then, you can check the kernel version to ensure whether the kernel is upgraded or not.
+Once you agree to install, reboot your system after the installation is finished. Then, you can check the kernel version to ensure whether the kernel is upgraded or not.
 
 ```bash
 sudo reboot
