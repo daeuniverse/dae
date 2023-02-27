@@ -45,7 +45,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	return outboundIndex, mark, nil
 }
 
-func (c *ControlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
+func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
 

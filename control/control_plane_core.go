@@ -23,16 +23,39 @@ import (
 	"regexp"
 )
 
-type ControlPlaneCore struct {
+var coreFlip = 0
+
+type controlPlaneCore struct {
 	log             *logrus.Logger
 	deferFuncs      []func() error
 	bpf             *bpfObjects
 	outboundId2Name map[uint8]string
 
 	kernelVersion *internal.Version
+
+	flip int
 }
 
-func (c *ControlPlaneCore) Close() (err error) {
+func newControlPlaneCore(log *logrus.Logger,
+	bpf *bpfObjects,
+	outboundId2Name map[uint8]string,
+	kernelVersion *internal.Version,
+	isReload bool,
+) *controlPlaneCore {
+	if isReload {
+		coreFlip = ((coreFlip & 1) ^ 1) & 1
+	}
+	return &controlPlaneCore{
+		log:             log,
+		deferFuncs:      []func() error{bpf.Close},
+		bpf:             bpf,
+		outboundId2Name: outboundId2Name,
+		kernelVersion:   kernelVersion,
+		flip:            coreFlip,
+	}
+}
+
+func (c *controlPlaneCore) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
@@ -79,7 +102,7 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	return ifParams, nil
 }
 
-func (c *ControlPlaneCore) addQdisc(ifname string) error {
+func (c *controlPlaneCore) addQdisc(ifname string) error {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
@@ -98,7 +121,7 @@ func (c *ControlPlaneCore) addQdisc(ifname string) error {
 	return nil
 }
 
-func (c *ControlPlaneCore) delQdisc(ifname string) error {
+func (c *controlPlaneCore) delQdisc(ifname string) error {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
@@ -119,9 +142,9 @@ func (c *ControlPlaneCore) delQdisc(ifname string) error {
 	return nil
 }
 
-func (c *ControlPlaneCore) setupRoutingPolicy() (err error) {
+func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 	/// Insert ip rule / ip route.
-	const table = 2023
+	var table = 2023 + c.flip
 
 	/** ip table
 	ip route add local default dev lo table 2023
@@ -229,7 +252,7 @@ tryRuleAddAgain:
 	return nil
 }
 
-func (c *ControlPlaneCore) bindLan(ifname string) error {
+func (c *controlPlaneCore) bindLan(ifname string) error {
 	c.log.Infof("Bind to LAN: %v", ifname)
 
 	link, err := netlink.LinkByName(ifname)
@@ -259,7 +282,7 @@ func (c *ControlPlaneCore) bindLan(ifname string) error {
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 2),
+			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
 			Protocol:  unix.ETH_P_ALL,
 			// Priority should be behind of WAN's
 			Priority: 2,
@@ -285,7 +308,7 @@ func (c *ControlPlaneCore) bindLan(ifname string) error {
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 1),
+			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
 			Protocol:  unix.ETH_P_ALL,
 			// Priority should be front of WAN's
 			Priority: 1,
@@ -308,7 +331,7 @@ func (c *ControlPlaneCore) bindLan(ifname string) error {
 	return nil
 }
 
-func (c *ControlPlaneCore) setupSkPidMonitor() error {
+func (c *controlPlaneCore) setupSkPidMonitor() error {
 	/// Set-up SrcPidMapper.
 	/// Attach programs to support pname routing.
 	// Get the first-mounted cgroupv2 path.
@@ -348,7 +371,7 @@ func (c *ControlPlaneCore) setupSkPidMonitor() error {
 	}
 	return nil
 }
-func (c *ControlPlaneCore) bindWan(ifname string) error {
+func (c *controlPlaneCore) bindWan(ifname string) error {
 	c.log.Infof("Bind to WAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -375,7 +398,7 @@ func (c *ControlPlaneCore) bindWan(ifname string) error {
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 2),
+			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  2,
 		},
@@ -399,7 +422,7 @@ func (c *ControlPlaneCore) bindWan(ifname string) error {
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 1),
+			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  1,
 		},
@@ -423,7 +446,7 @@ func (c *ControlPlaneCore) bindWan(ifname string) error {
 
 // BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
 // be invoked every A/AAAA-record lookup.
-func (c *ControlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
+func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 	// Parse ips from DNS resp answers.
 	var ips []netip.Addr
 	for _, ans := range cache.Answers {
@@ -458,4 +481,10 @@ func (c *ControlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 		return err
 	}
 	return nil
+}
+
+// EjectBpf will resect bpf from destroying life-cycle of control plane core.
+func (c *controlPlaneCore) EjectBpf() *bpfObjects {
+	c.deferFuncs = c.deferFuncs[1:]
+	return c.bpf
 }

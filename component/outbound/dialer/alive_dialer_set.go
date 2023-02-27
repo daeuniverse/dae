@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+const (
+	Init = 1 + iota
+	NotAlive
+)
+
 type minLatency struct {
 	latency time.Duration
 	dialer  *Dialer
@@ -66,7 +71,7 @@ func NewAliveDialerSet(
 		},
 	}
 	for _, d := range dialers {
-		a.dialerToIndex[d] = -1
+		a.dialerToIndex[d] = -Init
 	}
 	for _, d := range dialers {
 		a.NotifyLatencyChange(d, setAlive)
@@ -131,10 +136,13 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			// This dialer is already alive.
 		} else {
 			// Dialer: not alive -> alive.
-			a.log.WithFields(logrus.Fields{
-				"dialer":  dialer.Name(),
-				"network": a.CheckTyp.StringWithoutDns(),
-			}).Infoln("NOT ALIVE -> ALIVE:")
+			if index == -NotAlive {
+				a.log.WithFields(logrus.Fields{
+					"dialer":  dialer.Name(),
+					"group":   a.dialerGroupName,
+					"network": a.CheckTyp.StringWithoutDns(),
+				}).Infoln("NOT ALIVE -> ALIVE:")
+			}
 			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
 			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
 		}
@@ -144,13 +152,14 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			// Dialer: alive -> not alive.
 			a.log.WithFields(logrus.Fields{
 				"dialer":  dialer.Name(),
+				"group":   a.dialerGroupName,
 				"network": a.CheckTyp.StringWithoutDns(),
 			}).Infoln("ALIVE -> NOT ALIVE:")
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {
 				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))
 			}
-			a.dialerToIndex[dialer] = -1
+			a.dialerToIndex[dialer] = -NotAlive
 			if index < len(a.inorderedAliveDialerSet)-1 {
 				// Swap this element with the last element.
 				dialerToSwap := a.inorderedAliveDialerSet[len(a.inorderedAliveDialerSet)-1]

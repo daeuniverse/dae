@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/v2rayA/dae/cmd/internal"
@@ -55,6 +56,66 @@ func init() {
 
 func Run(log *logrus.Logger, conf *config.Config) (err error) {
 
+	// New ControlPlane.
+	c, err := newControlPlane(log, nil, conf)
+	if err != nil {
+		return err
+	}
+
+	// Serve tproxy TCP/UDP server util signals.
+	var listener *control.Listener
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1)
+	go func() {
+		if listener, err = c.ListenAndServe(conf.Global.TproxyPort); err != nil {
+			log.Errorln("ListenAndServe:", err)
+		}
+		sigs <- nil
+	}()
+	reloading := false
+loop:
+	for sig := range sigs {
+		switch sig {
+		case nil:
+			if reloading {
+				reloading = false
+				log.Warnln("[Reload] Serve")
+				go func() {
+					if err := c.Serve(listener); err != nil {
+						log.Errorln("ListenAndServe:", err)
+					}
+					sigs <- nil
+				}()
+			} else {
+				break loop
+			}
+		case syscall.SIGUSR1:
+			// Reload signal.
+			log.Warnln("[Reload] Received reload signal; prepare to reload")
+			obj := c.EjectBpf()
+			log.Warnln("[Reload] Load new control plane")
+			newC, err := newControlPlane(log, obj, conf)
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					"err": err,
+				}).Errorln("failed to reload")
+				continue
+			}
+			log.Warnln("[Reload] Stopped old control plane")
+			c.Close()
+			c = newC
+			reloading = true
+		default:
+			break loop
+		}
+	}
+	if e := c.Close(); e != nil {
+		return fmt.Errorf("close control plane: %w", e)
+	}
+	return nil
+}
+
+func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (c *control.ControlPlane, err error) {
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
 	if len(conf.Node) > 0 {
@@ -73,16 +134,18 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 		}
 	}
 	if len(tagToNodeList) == 0 {
-		return fmt.Errorf("no node found, which could because all subscription resolving failed")
+		return nil, fmt.Errorf("no node found, which could because all subscription resolving failed")
 	}
 
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
-		return fmt.Errorf("LanInterface and WanInterface cannot both be empty")
+		return nil, fmt.Errorf("LanInterface and WanInterface cannot both be empty")
 	}
 
-	// New ControlPlane.
-	t, err := control.NewControlPlane(
+	// Deep copy a conf to avoid modification.
+	conf = deepcopy.Copy(conf).(*config.Config)
+	c, err = control.NewControlPlane(
 		log,
+		bpf,
 		tagToNodeList,
 		conf.Group,
 		&conf.Routing,
@@ -90,26 +153,13 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 		&conf.Dns,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Call GC to release memory.
 	runtime.GC()
 
-	// Serve tproxy TCP/UDP server util signals.
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL)
-	go func() {
-		if err := t.ListenAndServe(conf.Global.TproxyPort); err != nil {
-			log.Errorln("ListenAndServe:", err)
-			sigs <- nil
-		}
-	}()
-	<-sigs
-	if e := t.Close(); e != nil {
-		return fmt.Errorf("close control plane: %w", e)
-	}
-	return nil
+	return c, nil
 }
 
 func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {

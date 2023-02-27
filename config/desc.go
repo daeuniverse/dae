@@ -35,7 +35,7 @@ var SectionDescription = map[string]Desc{
 }
 
 var GlobalDesc = Desc{
-	"tproxy_port":     "tproxy port to listen at. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.\nIn normal case, you do not need to use it.",
+	"tproxy_port":     "tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.\nIn normal case, you do not need to use it.",
 	"log_level":       "Log level: error, warn, info, debug, trace.",
 	"tcp_check_url":   "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
 	"udp_check_dns":   "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",

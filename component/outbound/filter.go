@@ -136,3 +136,13 @@ func (s *DialerSet) Filter(filters []*config_parser.Function) (dialers []*dialer
 	}
 	return dialers, nil
 }
+
+func (s *DialerSet) Close() error {
+	var err error
+	for _, d := range s.dialers {
+		if e := d.Close(); e != nil {
+			err = e
+		}
+	}
+	return err
+}
