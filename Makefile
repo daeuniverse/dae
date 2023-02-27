@@ -22,7 +22,7 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-.PHONY: clean-ebpf bpf_objects ebpf dae
+.PHONY: clean-ebpf ebpf dae
 
 dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION)" .
@@ -31,20 +31,12 @@ clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
 
-bpf_objects:
-	@unset GOOS && \
-    unset GOARCH && \
-    unset GOARM && \
-	if [ ! -f control/bpf_objects_wan_lan.go ]; then \
-		go run github.com/v2rayA/dae/cmd/internal/generate_bpf_objects/dummy -o control/bpf_objects_wan_lan.go; \
-	fi
-
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP := $(STRIP)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
-ebpf: clean-ebpf bpf_objects
+ebpf: clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \

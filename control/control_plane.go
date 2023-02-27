@@ -116,7 +116,7 @@ func NewControlPlane(
 		},
 		Programs: ProgramOptions,
 	}
-	if err = selectivelyLoadBpfObjects(log, &bpf, &loadBpfOptions{
+	if err = fullLoadBpfObjects(log, &bpf, &loadBpfOptions{
 		PinPath:           pinPath,
 		CollectionOptions: collectionOpts,
 		BindLan:           len(global.LanInterface) > 0,

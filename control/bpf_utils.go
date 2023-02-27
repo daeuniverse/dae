@@ -141,32 +141,6 @@ func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *
 	return vKeys.Len(), nil
 }
 
-func AssignBpfObjects(to *bpfObjects, from interface{}) {
-	vTo := reflect.Indirect(reflect.ValueOf(to))
-	vFrom := reflect.Indirect(reflect.ValueOf(from))
-	tFrom := vFrom.Type()
-	// programs
-	for i := 0; i < vFrom.NumField(); i++ {
-		fieldFrom := vFrom.Field(i)
-		structFieldFrom := tFrom.Field(i)
-		if structFieldFrom.Type != reflect.TypeOf(&ebpf.Program{}) {
-			continue
-		}
-		fieldTo := vTo.FieldByName(structFieldFrom.Name)
-		fieldTo.Set(fieldFrom)
-	}
-
-	// bpfMaps
-	vFrom = vFrom.FieldByName("bpfMaps")
-	tFrom = vFrom.Type()
-	for i := 0; i < vFrom.NumField(); i++ {
-		fieldFrom := vFrom.Field(i)
-		structFieldFrom := tFrom.Field(i)
-		fieldTo := vTo.FieldByName(structFieldFrom.Name)
-		fieldTo.Set(fieldFrom)
-	}
-}
-
 // detectCgroupPath returns the first-found mount point of type cgroup2
 // and stores it in the cgroupPath global variable.
 // Copied from https://github.com/cilium/ebpf/blob/v0.10.0/examples/cgroup_skb/main.go
@@ -208,23 +182,13 @@ type loadBpfOptions struct {
 	BindWan           bool
 }
 
-func selectivelyLoadBpfObjects(
+func fullLoadBpfObjects(
 	log *logrus.Logger,
 	bpf *bpfObjects,
 	opts *loadBpfOptions,
 ) (err error) {
-	// Trick. Replace the beams with rotten timbers to reduce the loading.
-	var obj interface{} = bpf // Bind to both LAN and WAN.
-	if opts.BindLan && !opts.BindWan {
-		// Only bind LAN.
-		obj = &bpfObjectsLan{}
-	} else if !opts.BindLan && opts.BindWan {
-		// Only bind to WAN.
-		// Trick. Replace the beams with rotten timbers.
-		obj = &bpfObjectsWan{}
-	}
 retryLoadBpf:
-	if err = loadBpfObjects(obj, opts.CollectionOptions); err != nil {
+	if err = loadBpfObjects(bpf, opts.CollectionOptions); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.
 			prefix := "use pinned map "
@@ -251,10 +215,6 @@ retryLoadBpf:
 			err = fmt.Errorf("%w: maybe installing the linux-headers package will solve it", err)
 		}
 		return err
-	}
-	if _, ok := obj.(*bpfObjects); !ok {
-		// Reverse takeover.
-		AssignBpfObjects(bpf, obj)
 	}
 	return nil
 }
