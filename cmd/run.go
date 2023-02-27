@@ -95,6 +95,7 @@ loop:
 		switch sig {
 		case nil:
 			if reloading {
+				// Serve.
 				reloading = false
 				log.Warnln("[Reload] Serve")
 				readyChan := make(chan bool, 1)
@@ -108,6 +109,7 @@ loop:
 				sdnotify.Ready()
 				log.Warnln("[Reload] Finished")
 			} else {
+				// Listening error.
 				break loop
 			}
 		case syscall.SIGUSR1:
@@ -115,6 +117,7 @@ loop:
 			log.Warnln("[Reload] Received reload signal; prepare to reload")
 			sdnotify.Reloading()
 
+			// Load new config.
 			log.Warnln("[Reload] Load new config")
 			conf, includes, err := readConfig(cfgFile)
 			if err != nil {
@@ -125,7 +128,11 @@ loop:
 				continue
 			}
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+			// New logger.
+			log = logger.NewLogger(conf.Global.LogLevel, disableTimestamp)
+			logrus.SetLevel(log.Level)
 
+			// New control plane.
 			obj := c.EjectBpf()
 			log.Warnln("[Reload] Load new control plane")
 			newC, err := newControlPlane(log, obj, conf)
