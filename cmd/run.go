@@ -14,13 +14,25 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 )
 
+const (
+	PidFilePath = "/var/run/dae.pid"
+)
+
+func init() {
+	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
+	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
+	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-runfile", "", false, "not generate /var/run/dae.pid")
+}
+
 var (
 	cfgFile          string
 	disableTimestamp bool
+	disableRunFile   bool
 
 	runCmd = &cobra.Command{
 		Use:   "run",
@@ -50,11 +62,6 @@ var (
 	}
 )
 
-func init() {
-	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
-	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
-}
-
 func Run(log *logrus.Logger, conf *config.Config) (err error) {
 
 	// New ControlPlane.
@@ -72,6 +79,9 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 		go func() {
 			<-readyChan
 			sdnotify.Ready()
+			if !disableRunFile {
+				_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
+			}
 		}()
 		if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
 			log.Errorln("ListenAndServe:", err)
@@ -124,6 +134,7 @@ loop:
 	if e := c.Close(); e != nil {
 		return fmt.Errorf("close control plane: %w", e)
 	}
+	_ = os.Remove(PidFilePath)
 	return nil
 }
 
@@ -136,17 +147,23 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 		}
 	}
 	// Resolve subscriptions to nodes.
+	resolvingfailed := false
 	for _, sub := range conf.Subscription {
 		tag, nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
+			resolvingfailed = true
 		}
 		if len(nodes) > 0 {
 			tagToNodeList[tag] = append(tagToNodeList[tag], nodes...)
 		}
 	}
 	if len(tagToNodeList) == 0 {
-		return nil, fmt.Errorf("no node found, which could because all subscription resolving failed")
+		if resolvingfailed {
+			log.Warnln("No node found because all subscription resolving failed.")
+		} else {
+			log.Warnln("No node found.")
+		}
 	}
 
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
