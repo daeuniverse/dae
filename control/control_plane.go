@@ -475,8 +475,13 @@ func (l *Listener) Close() error {
 	return err
 }
 
-func (c *ControlPlane) Serve(listener *Listener) (err error) {
-
+func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
+	sentReady := false
+	defer func() {
+		if !sentReady {
+			readyChan <- false
+		}
+	}()
 	udpConn := listener.packetConn.(*net.UDPConn)
 	/// Serve.
 	// TCP socket.
@@ -511,6 +516,8 @@ func (c *ControlPlane) Serve(listener *Listener) (err error) {
 		cancel()
 		return nil
 	})
+	sentReady = true
+	readyChan <- true
 	go func() {
 		defer cancel()
 		for {
@@ -586,7 +593,7 @@ func (c *ControlPlane) Serve(listener *Listener) (err error) {
 	return nil
 }
 
-func (c *ControlPlane) ListenAndServe(port uint16) (listener *Listener, err error) {
+func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
 	// Listen.
 	var listenConfig = net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -615,7 +622,7 @@ func (c *ControlPlane) ListenAndServe(port uint16) (listener *Listener, err erro
 	}()
 
 	// Serve
-	if err = c.Serve(listener); err != nil {
+	if err = c.Serve(readyChan, listener); err != nil {
 		return nil, fmt.Errorf("failed to serve: %w", err)
 	}
 

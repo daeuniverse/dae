@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
+	"github.com/mohae/deepcopy"
 	"github.com/safchain/ethtool"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
@@ -23,6 +24,7 @@ import (
 	"regexp"
 )
 
+// coreFlip should be 0 or 1
 var coreFlip = 0
 
 type controlPlaneCore struct {
@@ -33,7 +35,8 @@ type controlPlaneCore struct {
 
 	kernelVersion *internal.Version
 
-	flip int
+	flip     int
+	isReload bool
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -43,7 +46,7 @@ func newControlPlaneCore(log *logrus.Logger,
 	isReload bool,
 ) *controlPlaneCore {
 	if isReload {
-		coreFlip = ((coreFlip & 1) ^ 1) & 1
+		coreFlip = coreFlip&1 ^ 1
 	}
 	return &controlPlaneCore{
 		log:             log,
@@ -52,6 +55,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		outboundId2Name: outboundId2Name,
 		kernelVersion:   kernelVersion,
 		flip:            coreFlip,
+		isReload:        isReload,
 	}
 }
 
@@ -293,6 +297,12 @@ func (c *controlPlaneCore) bindLan(ifname string) error {
 	}
 	// Remove and add.
 	_ = netlink.FilterDel(filterIngress)
+	if !c.isReload {
+		// Clean up thoroughly.
+		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
+		filterIngressFlipped.FilterAttrs.Handle ^= 1
+		_ = netlink.FilterDel(filterIngressFlipped)
+	}
 	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
@@ -319,6 +329,12 @@ func (c *controlPlaneCore) bindLan(ifname string) error {
 	}
 	// Remove and add.
 	_ = netlink.FilterDel(filterEgress)
+	if !c.isReload {
+		// Clean up thoroughly.
+		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
+		filterEgressFlipped.FilterAttrs.Handle ^= 1
+		_ = netlink.FilterDel(filterEgressFlipped)
+	}
 	if err := netlink.FilterAdd(filterEgress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
@@ -406,8 +422,14 @@ func (c *controlPlaneCore) bindWan(ifname string) error {
 		Name:         consts.AppName + "_wan_egress",
 		DirectAction: true,
 	}
-	// Remove and add.
 	_ = netlink.FilterDel(filterEgress)
+	// Remove and add.
+	if !c.isReload {
+		// Clean up thoroughly.
+		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
+		filterEgressFlipped.FilterAttrs.Handle ^= 1
+		_ = netlink.FilterDel(filterEgressFlipped)
+	}
 	if err := netlink.FilterAdd(filterEgress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
@@ -430,8 +452,14 @@ func (c *controlPlaneCore) bindWan(ifname string) error {
 		Name:         consts.AppName + "_wan_ingress",
 		DirectAction: true,
 	}
-	// Remove and add.
 	_ = netlink.FilterDel(filterIngress)
+	// Remove and add.
+	if !c.isReload {
+		// Clean up thoroughly.
+		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
+		filterIngressFlipped.FilterAttrs.Handle ^= 1
+		_ = netlink.FilterDel(filterIngressFlipped)
+	}
 	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}

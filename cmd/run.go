@@ -68,8 +68,12 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1)
 	go func() {
-		sdnotify.Ready()
-		if listener, err = c.ListenAndServe(conf.Global.TproxyPort); err != nil {
+		readyChan := make(chan bool, 1)
+		go func() {
+			<-readyChan
+			sdnotify.Ready()
+		}()
+		if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
 			log.Errorln("ListenAndServe:", err)
 		}
 		sigs <- nil
@@ -82,13 +86,16 @@ loop:
 			if reloading {
 				reloading = false
 				log.Warnln("[Reload] Serve")
-				sdnotify.Ready()
+				readyChan := make(chan bool, 1)
 				go func() {
-					if err := c.Serve(listener); err != nil {
+					if err := c.Serve(readyChan, listener); err != nil {
 						log.Errorln("ListenAndServe:", err)
 					}
 					sigs <- nil
 				}()
+				<-readyChan
+				sdnotify.Ready()
+				log.Warnln("[Reload] Finished")
 			} else {
 				break loop
 			}
