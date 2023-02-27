@@ -150,7 +150,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 	}
 
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
-		return nil, fmt.Errorf("LanInterface and WanInterface cannot both be empty")
+		log.Warnln("No binding interface.")
 	}
 
 	// Deep copy a conf to avoid modification.

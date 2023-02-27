@@ -178,8 +178,6 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 type loadBpfOptions struct {
 	PinPath           string
 	CollectionOptions *ebpf.CollectionOptions
-	BindLan           bool
-	BindWan           bool
 }
 
 func fullLoadBpfObjects(

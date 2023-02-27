@@ -131,8 +131,6 @@ func NewControlPlane(
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
 			PinPath:           pinPath,
 			CollectionOptions: collectionOpts,
-			BindLan:           len(global.LanInterface) > 0,
-			BindWan:           len(global.WanInterface) > 0,
 		}); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)
