@@ -89,7 +89,8 @@ static const __u32 disable_l4_tx_checksum_key
 static const __u32 disable_l4_rx_checksum_key
     __attribute__((unused, deprecated)) = 3;
 static const __u32 control_plane_pid_key = 4;
-static const __u32 control_plane_nat_direct_key = 5;
+static const __u32 control_plane_nat_direct_key
+    __attribute__((unused, deprecated)) = 5;
 static const __u32 control_plane_dns_routing_key = 6;
 
 // Outbound Connectivity Map:
@@ -1358,13 +1359,6 @@ new_connection:
 #endif
   if (routing_result.outbound == OUTBOUND_DIRECT ||
       routing_result.outbound == OUTBOUND_MUST_DIRECT) {
-    __u32 *nat;
-    if ((nat =
-             bpf_map_lookup_elem(&param_map, &control_plane_nat_direct_key)) &&
-        *nat) {
-      // Do not mark if packet is sent to control_plane.
-      goto control_plane_tproxy;
-    }
     skb->mark = routing_result.mark;
     goto direct;
   } else if (unlikely(routing_result.outbound == OUTBOUND_BLOCK)) {
@@ -1383,8 +1377,6 @@ new_connection:
     // Outbound is not alive. Dns is an exception.
     goto block;
   }
-
-control_plane_tproxy:
 
   // Assign to control plane.
 

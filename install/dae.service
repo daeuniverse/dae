@@ -5,12 +5,13 @@ After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
 User=root
-LimitNPROC=500
-LimitNOFILE=1000000
+LimitNPROC=512
+LimitNOFILE=1048576
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
+ExecReload=/usr/bin/dae reload $MAINPID
 Restart=on-abnormal
 
 [Install]

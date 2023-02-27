@@ -23,7 +23,7 @@ func FormatL4Proto(l4proto uint8) string {
 	return strconv.Itoa(int(l4proto))
 }
 
-func (c *ControlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, networkType *dialer.NetworkType) {
+func (c *controlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, networkType *dialer.NetworkType) {
 	return func(alive bool, networkType *dialer.NetworkType) {
 		c.log.WithFields(logrus.Fields{
 			"alive":    alive,
