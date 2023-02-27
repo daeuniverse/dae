@@ -50,7 +50,8 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 		if tag == "" {
 			return nil, fmt.Errorf("%w: '%v' has no tag", BadUpstreamFormatError, upstreamRaw)
 		}
-		u, err := url.Parse(link)
+		var u *url.URL
+		u, err = url.Parse(link)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", BadUpstreamFormatError, err)
 		}
@@ -73,9 +74,6 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 		}
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
-		// Init immediately to avoid DNS leaking in the very beginning because param control_plane_dns_routing will
-		// be set in callback.
-		go r.GetUpstream()
 	}
 	// Optimize routings.
 	if dns.Routing.Request.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
@@ -117,6 +115,12 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 		}
 	}
 	return s, nil
+}
+
+func (s *Dns) InitUpstreams() {
+	for _, upstream := range s.upstream {
+		upstream.GetUpstream()
+	}
 }
 
 func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstream *Upstream, err error) {

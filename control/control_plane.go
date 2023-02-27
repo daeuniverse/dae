@@ -51,6 +51,9 @@ type ControlPlane struct {
 	dialMode consts.DialMode
 
 	routingMatcher *RoutingMatcher
+
+	closed chan struct{}
+	ready  chan struct{}
 }
 
 func NewControlPlane(
@@ -302,7 +305,14 @@ func NewControlPlane(
 		outbounds:      outbounds,
 		dialMode:       dialMode,
 		routingMatcher: routingMatcher,
+		closed:         make(chan struct{}),
+		ready:          make(chan struct{}),
 	}
+	defer func() {
+		if err != nil {
+			close(c.closed)
+		}
+	}()
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(log, dnsConfig, &dns.NewOption{
@@ -313,7 +323,7 @@ func NewControlPlane(
 	}
 
 	/// Dns controller.
-	c.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
+	if c.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
@@ -331,8 +341,14 @@ func NewControlPlane(
 			}, nil
 		},
 		BestDialerChooser: c.chooseBestDnsDialer,
-	})
+	}); err != nil {
+		return nil, err
+	}
+	// Init immediately to avoid DNS leaking in the very beginning because param control_plane_dns_routing will
+	// be set in callback.
+	dnsUpstream.InitUpstreams()
 
+	close(c.ready)
 	return c, nil
 }
 
@@ -342,6 +358,13 @@ func (c *ControlPlane) EjectBpf() *bpfObjects {
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(raw *url.URL, dnsUpstream *dns.Upstream) (err error) {
+	// Waiting for ready.
+	select {
+	case <-c.closed:
+		return nil
+	case <-c.ready:
+	}
+
 	///  Notify dialers to check.
 	c.onceNetworkReady.Do(func() {
 		for _, out := range c.outbounds {
@@ -736,5 +759,6 @@ func (c *ControlPlane) Close() (err error) {
 			}
 		}
 	}
+	close(c.closed)
 	return c.core.Close()
 }
