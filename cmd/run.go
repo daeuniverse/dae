@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -48,7 +47,9 @@ var (
 			// Read config from --config cfgFile.
 			conf, includes, err := readConfig(cfgFile)
 			if err != nil {
-				logrus.Fatalln("readConfig:", err)
+				logrus.WithFields(logrus.Fields{
+					"err": err,
+				}).Fatalln("Failed to read config")
 			}
 
 			log := logger.NewLogger(conf.Global.LogLevel, disableTimestamp)
@@ -111,15 +112,27 @@ loop:
 			}
 		case syscall.SIGUSR1:
 			// Reload signal.
-			sdnotify.Reloading()
 			log.Warnln("[Reload] Received reload signal; prepare to reload")
+			sdnotify.Reloading()
+
+			log.Warnln("[Reload] Load new config")
+			conf, includes, err := readConfig(cfgFile)
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					"err": err,
+				}).Errorln("Failed to reload")
+				sdnotify.Ready()
+				continue
+			}
+			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+
 			obj := c.EjectBpf()
 			log.Warnln("[Reload] Load new control plane")
 			newC, err := newControlPlane(log, obj, conf)
 			if err != nil {
 				log.WithFields(logrus.Fields{
 					"err": err,
-				}).Errorln("failed to reload")
+				}).Errorln("Failed to reload")
 				sdnotify.Ready()
 				continue
 			}
@@ -170,8 +183,6 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 		log.Warnln("No binding interface.")
 	}
 
-	// Deep copy a conf to avoid modification.
-	conf = deepcopy.Copy(conf).(*config.Config)
 	c, err = control.NewControlPlane(
 		log,
 		bpf,
