@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"github.com/mohae/deepcopy"
+	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/v2rayA/dae/cmd/internal"
@@ -67,6 +68,7 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1)
 	go func() {
+		sdnotify.Ready()
 		if listener, err = c.ListenAndServe(conf.Global.TproxyPort); err != nil {
 			log.Errorln("ListenAndServe:", err)
 		}
@@ -80,6 +82,7 @@ loop:
 			if reloading {
 				reloading = false
 				log.Warnln("[Reload] Serve")
+				sdnotify.Ready()
 				go func() {
 					if err := c.Serve(listener); err != nil {
 						log.Errorln("ListenAndServe:", err)
@@ -91,6 +94,7 @@ loop:
 			}
 		case syscall.SIGUSR1:
 			// Reload signal.
+			sdnotify.Reloading()
 			log.Warnln("[Reload] Received reload signal; prepare to reload")
 			obj := c.EjectBpf()
 			log.Warnln("[Reload] Load new control plane")
@@ -99,6 +103,7 @@ loop:
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("failed to reload")
+				sdnotify.Ready()
 				continue
 			}
 			log.Warnln("[Reload] Stopped old control plane")
@@ -155,7 +160,6 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 	if err != nil {
 		return nil, err
 	}
-
 	// Call GC to release memory.
 	runtime.GC()
 

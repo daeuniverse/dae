@@ -1378,8 +1378,6 @@ new_connection:
     goto block;
   }
 
-control_plane_tproxy:
-
   // Assign to control plane.
 
   if (l4proto == IPPROTO_TCP) {
