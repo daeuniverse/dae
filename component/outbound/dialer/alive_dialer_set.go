@@ -102,7 +102,7 @@ func (a *AliveDialerSet) printLatencies() {
 		if !ok {
 			continue
 		}
-		builder.WriteString(fmt.Sprintf("%v: %v\n", d.Name(), latency.String()))
+		builder.WriteString(fmt.Sprintf("%v: %v\n", d.property.Name, latency.String()))
 	}
 	a.log.Traceln(builder.String())
 }
@@ -138,7 +138,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			// Dialer: not alive -> alive.
 			if index == -NotAlive {
 				a.log.WithFields(logrus.Fields{
-					"dialer":  dialer.Name(),
+					"dialer":  dialer.property.Name,
 					"group":   a.dialerGroupName,
 					"network": a.CheckTyp.StringWithoutDns(),
 				}).Infoln("NOT ALIVE -> ALIVE:")
@@ -151,7 +151,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		if index >= 0 {
 			// Dialer: alive -> not alive.
 			a.log.WithFields(logrus.Fields{
-				"dialer":  dialer.Name(),
+				"dialer":  dialer.property.Name,
 				"group":   a.dialerGroupName,
 				"network": a.CheckTyp.StringWithoutDns(),
 			}).Infoln("ALIVE -> NOT ALIVE:")
@@ -210,13 +210,13 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					re = ""
 					oldDialerName = "<nil>"
 				} else {
-					oldDialerName = bakOldBestDialer.Name()
+					oldDialerName = bakOldBestDialer.property.Name
 				}
 				a.log.WithFields(logrus.Fields{
 					string(a.selectionPolicy): a.minLatency.latency,
 					"group":                   a.dialerGroupName,
 					"network":                 a.CheckTyp.String(),
-					"new_dialer":              a.minLatency.dialer.Name(),
+					"new_dialer":              a.minLatency.dialer.property.Name,
 					"old_dialer":              oldDialerName,
 				}).Infof("Group %vselects dialer", re)
 
@@ -239,7 +239,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			a.log.WithFields(logrus.Fields{
 				"group":   a.dialerGroupName,
 				"network": a.CheckTyp.String(),
-				"dialer":  a.minLatency.dialer.Name(),
+				"dialer":  a.minLatency.dialer.property.Name,
 			}).Infof("Group selects dialer")
 		}
 	}

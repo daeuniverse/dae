@@ -33,7 +33,7 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (di
 		}
 		// Overwrite node name using user given tag.
 		if overwrittenName != "" {
-			node.name = overwrittenName
+			node.property.Name = overwrittenName
 		}
 		return node, err
 	} else {

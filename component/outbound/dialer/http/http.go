@@ -71,7 +71,12 @@ func (s *HTTP) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption
 	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, s.Name, s.Protocol, u.String()), nil
+	return dialer.NewDialer(d, option, iOption, dialer.Property{
+		Name:     s.Name,
+		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
+		Protocol: s.Protocol,
+		Link:     u.String(),
+	}), nil
 }
 
 func (s *HTTP) URL() url.URL {

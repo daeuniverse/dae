@@ -40,5 +40,10 @@ func (d *blockDialer) DialUdp(addr string) (c netproxy.PacketConn, err error) {
 }
 
 func NewBlockDialer(option *GlobalOption, dialCallback func()) *Dialer {
-	return NewDialer(&blockDialer{DialCallback: dialCallback}, option, InstanceOption{CheckEnabled: false}, "block", "block", "")
+	return NewDialer(&blockDialer{DialCallback: dialCallback}, option, InstanceOption{CheckEnabled: false}, Property{
+		Name:     "block",
+		Address:  "",
+		Protocol: "",
+		Link:     "",
+	})
 }

@@ -1,4 +1,9 @@
-package internal
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2023, v2rayA Organization <team@v2raya.org>
+ */
+
+package subscription
 
 import (
 	"bufio"
@@ -35,7 +40,7 @@ type sip008Server struct {
 	PluginOpts string `json:"plugin_opts"`
 }
 
-func resolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) {
+func ResolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) {
 	log.Debugln("Try to resolve as base64")
 
 	// base64 decode
@@ -60,7 +65,7 @@ func resolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) 
 	return nodes
 }
 
-func resolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, err error) {
+func ResolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, err error) {
 	log.Debugln("Try to resolve as sip008")
 
 	var sip sip008
@@ -84,7 +89,7 @@ func resolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 	return nodes, nil
 }
 
-func resolveFile(u *url.URL, configDir string) (b []byte, err error) {
+func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("not support absolute path")
 	}
@@ -147,7 +152,7 @@ func ResolveSubscription(log *logrus.Logger, configDir string, subscription stri
 	)
 	switch u.Scheme {
 	case "file":
-		b, err = resolveFile(u, configDir)
+		b, err = ResolveFile(u, configDir)
 		if err != nil {
 			return "", nil, err
 		}
@@ -164,10 +169,10 @@ func ResolveSubscription(log *logrus.Logger, configDir string, subscription stri
 		return "", nil, err
 	}
 resolve:
-	if nodes, err = resolveSubscriptionAsSIP008(log, b); err == nil {
+	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
 		return tag, nodes, nil
 	} else {
 		log.Debugln(err)
 	}
-	return tag, resolveSubscriptionAsBase64(log, b), nil
+	return tag, ResolveSubscriptionAsBase64(log, b), nil
 }

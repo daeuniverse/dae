@@ -18,9 +18,7 @@ type Dialer struct {
 	*GlobalOption
 	instanceOption InstanceOption
 	netproxy.Dialer
-	name     string
-	protocol string
-	link     string
+	property Property
 
 	collectionFineMu sync.Mutex
 	collections      [6]*collection
@@ -46,10 +44,17 @@ type InstanceOption struct {
 	CheckEnabled bool
 }
 
+type Property struct {
+	Name     string
+	Address  string
+	Protocol string
+	Link     string
+}
+
 type AliveDialerSetSet map[*AliveDialerSet]int
 
 // NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, name string, protocol string, link string) *Dialer {
+func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property Property) *Dialer {
 	var collections [6]*collection
 	for i := range collections {
 		collections[i] = newCollection()
@@ -59,9 +64,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		GlobalOption:     option,
 		instanceOption:   iOption,
 		Dialer:           dialer,
-		name:             name,
-		protocol:         protocol,
-		link:             link,
+		property:         property,
 		collectionFineMu: sync.Mutex{},
 		collections:      collections,
 		tickerMu:         sync.Mutex{},
@@ -87,14 +90,6 @@ func (d *Dialer) Close() error {
 	return nil
 }
 
-func (d *Dialer) Name() string {
-	return d.name
-}
-
-func (d *Dialer) Protocol() string {
-	return d.protocol
-}
-
-func (d *Dialer) Link() string {
-	return d.link
+func (d *Dialer) Property() Property {
+	return d.property
 }

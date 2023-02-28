@@ -6,6 +6,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/v2rayA/dae/cmd/internal"
+	"github.com/v2rayA/dae/common/subscription"
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/control"
 	"github.com/v2rayA/dae/pkg/logger"
@@ -25,13 +26,13 @@ const (
 func init() {
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
-	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-runfile", "", false, "not generate /var/run/dae.pid")
+	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-pidfile", "", false, "not generate /var/run/dae.pid")
 }
 
 var (
 	cfgFile          string
 	disableTimestamp bool
-	disableRunFile   bool
+	disablePidFile   bool
 
 	runCmd = &cobra.Command{
 		Use:   "run",
@@ -80,7 +81,7 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 		go func() {
 			<-readyChan
 			sdnotify.Ready()
-			if !disableRunFile {
+			if !disablePidFile {
 				_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 			}
 		}()
@@ -169,7 +170,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
 	for _, sub := range conf.Subscription {
-		tag, nodes, err := internal.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
+		tag, nodes, err := subscription.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 			resolvingfailed = true

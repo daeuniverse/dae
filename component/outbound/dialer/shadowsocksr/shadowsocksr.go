@@ -70,7 +70,12 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 		ObfsOverhead:  obfsDialer.ObfsOverhead(),
 	}
 
-	return dialer.NewDialer(d, option, iOption, s.Name, s.Protocol, s.ExportToURL()), nil
+	return dialer.NewDialer(d, option, iOption, dialer.Property{
+		Name:     s.Name,
+		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
+		Protocol: s.Protocol,
+		Link:     s.ExportToURL(),
+	}), nil
 }
 
 func ParseSSRURL(u string) (data *ShadowsocksR, err error) {

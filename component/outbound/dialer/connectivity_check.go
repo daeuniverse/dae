@@ -455,7 +455,7 @@ func (d *Dialer) Check(timeout time.Duration,
 
 		d.Log.WithFields(logrus.Fields{
 			"network": opts.networkType.String(),
-			"node":    d.name,
+			"node":    d.property.Name,
 			"last":    latency.Truncate(time.Millisecond),
 			"avg_10":  avg.Truncate(time.Millisecond),
 			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
@@ -471,7 +471,7 @@ func (d *Dialer) Check(timeout time.Duration,
 			}
 			d.Log.WithFields(logrus.Fields{
 				"network": opts.networkType.String(),
-				"node":    d.name,
+				"node":    d.property.Name,
 				"err":     err.Error(),
 			}).Debugln("Connectivity Check Failed")
 		}

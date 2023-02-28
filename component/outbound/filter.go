@@ -71,19 +71,19 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterKey_Name_Regex:
-					matched, _ := regexp.MatchString(param.Val, dialer.Name())
+					matched, _ := regexp.MatchString(param.Val, dialer.Property().Name)
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
 						break
 					}
 				case FilterKey_Name_Keyword:
-					if strings.Contains(dialer.Name(), param.Val) {
+					if strings.Contains(dialer.Property().Name, param.Val) {
 						subFilterHit = true
 						break
 					}
 				case "":
-					if dialer.Name() == param.Val {
+					if dialer.Property().Name == param.Val {
 						subFilterHit = true
 						break
 					}

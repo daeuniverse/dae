@@ -103,7 +103,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 			"network":  networkType.String(),
 			"outbound": outbound.Name,
 			"policy":   outbound.GetSelectionPolicy(),
-			"dialer":   d.Name(),
+			"dialer":   d.Property().Name,
 			"domain":   domain,
 			"pid":      routingResult.Pid,
 			"pname":    ProcessName2String(routingResult.Pname[:]),

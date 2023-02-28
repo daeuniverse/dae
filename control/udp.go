@@ -224,7 +224,7 @@ getNew:
 			c.log.WithFields(logrus.Fields{
 				"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
 				"network": networkType.String(),
-				"dialer":  ue.Dialer.Name(),
+				"dialer":  ue.Dialer.Property().Name,
 				"retry":   retry,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
@@ -261,7 +261,7 @@ getNew:
 				"network":  networkType.StringWithoutDns(),
 				"outbound": outbound.Name,
 				"policy":   outbound.GetSelectionPolicy(),
-				"dialer":   ue.Dialer.Name(),
+				"dialer":   ue.Dialer.Property().Name,
 				"domain":   domain,
 				"pid":      routingResult.Pid,
 				"pname":    ProcessName2String(routingResult.Pname[:]),

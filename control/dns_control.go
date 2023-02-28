@@ -366,7 +366,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 		// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
 		// Because additional record OPT may not be supported by home router.
 		// So se should trust home devices even if they make rush-answer (or looks like).
-		return dialArgument.bestDialer.Name() == "direct" && !from.Addr().IsPrivate()
+		return dialArgument.bestDialer.Property().Name == "direct" && !from.Addr().IsPrivate()
 	})
 	// Dial and send.
 	var respMsg *dnsmessage.Message
@@ -420,7 +420,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			// Wait for response.
 			n, err := conn.Read(respBuf)
 			if err != nil {
-				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Name(), err)
+				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
 			}
 			respMsg, err = dnsRespHandler(respBuf[:n], dialArgument.bestTarget)
 			if err != nil {
@@ -530,7 +530,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			"network":  networkType.String(),
 			"outbound": dialArgument.bestOutbound.Name,
 			"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
-			"dialer":   dialArgument.bestDialer.Name(),
+			"dialer":   dialArgument.bestDialer.Property().Name,
 			"qname":    qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,

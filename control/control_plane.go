@@ -235,7 +235,7 @@ func NewControlPlane(
 		// Convert node links to dialers.
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
-			log.Infoln("\t" + d.Name())
+			log.Infoln("\t" + d.Property().Name)
 			// We only activate check of nodes that have a group.
 			d.ActivateCheck()
 		}
