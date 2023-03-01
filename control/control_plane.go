@@ -64,7 +64,9 @@ func NewControlPlane(
 	routingA *config.Routing,
 	global *config.Global,
 	dnsConfig *config.Dns,
-) (c *ControlPlane, err error) {
+) (*ControlPlane, error) {
+	var err error
+
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
 		return nil, fmt.Errorf("failed to get kernel version: %w", e)
@@ -101,7 +103,7 @@ func NewControlPlane(
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		if os.IsNotExist(err) {
-			c.log.Warnln("Perhaps you are in a container environment (docker/lxc). If so, please use higher virtualization (kvm/qemu). Or you could just try to mount /sys and give privilege and try again.")
+			log.Warnln("Perhaps you are in a container environment (docker/lxc). If so, please use higher virtualization (kvm/qemu). Or you could just try to mount /sys and give privilege and try again.")
 		}
 		return nil, err
 	}
@@ -297,7 +299,7 @@ func NewControlPlane(
 		return nil, err
 	}
 
-	c = &ControlPlane{
+	plane := &ControlPlane{
 		log:            log,
 		core:           core,
 		deferFuncs:     deferFuncs,
@@ -310,20 +312,20 @@ func NewControlPlane(
 	}
 	defer func() {
 		if err != nil {
-			close(c.closed)
+			close(plane.closed)
 		}
 	}()
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(log, dnsConfig, &dns.NewOption{
-		UpstreamReadyCallback: c.dnsUpstreamReadyCallback,
+		UpstreamReadyCallback: plane.dnsUpstreamReadyCallback,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	/// Dns controller.
-	if c.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
+	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
@@ -335,12 +337,12 @@ func NewControlPlane(
 		},
 		NewCache: func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error) {
 			return &DnsCache{
-				DomainBitmap: c.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
+				DomainBitmap: plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
 				Answers:      answers,
 				Deadline:     deadline,
 			}, nil
 		},
-		BestDialerChooser: c.chooseBestDnsDialer,
+		BestDialerChooser: plane.chooseBestDnsDialer,
 	}); err != nil {
 		return nil, err
 	}
@@ -348,8 +350,8 @@ func NewControlPlane(
 	// be set in callback.
 	go dnsUpstream.InitUpstreams()
 
-	close(c.ready)
-	return c, nil
+	close(plane.ready)
+	return plane, nil
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.

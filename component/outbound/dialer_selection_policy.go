@@ -18,7 +18,7 @@ type DialerSelectionPolicy struct {
 }
 
 func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *DialerSelectionPolicy, err error) {
-	fs := config.FunctionListOrStringToFunction(param.Policy)
+	fs := config.FunctionListOrStringToFunctionList(param.Policy)
 	if len(fs) > 1 || len(fs) == 0 {
 		return nil, fmt.Errorf("policy should be exact 1 function: got %v", len(fs))
 	}

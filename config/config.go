@@ -45,7 +45,7 @@ func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function)
 
 type FunctionListOrString interface{}
 
-func FunctionListOrStringToFunction(fs FunctionListOrString) (f []*config_parser.Function) {
+func FunctionListOrStringToFunctionList(fs FunctionListOrString) (f []*config_parser.Function) {
 	switch fs := fs.(type) {
 	case string:
 		return []*config_parser.Function{{Name: fs}}
