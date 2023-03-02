@@ -29,7 +29,7 @@ type DialerGroup struct {
 	selectionPolicy *DialerSelectionPolicy
 }
 
-func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.Dialer, p DialerSelectionPolicy, aliveChangeCallback func(alive bool, networkType *dialer.NetworkType)) *DialerGroup {
+func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.Dialer, p DialerSelectionPolicy, aliveChangeCallback func(alive bool, networkType *dialer.NetworkType, isInit bool)) *DialerGroup {
 	log := option.Log
 	var aliveDnsTcp4DialerSet *dialer.AliveDialerSet
 	var aliveDnsTcp6DialerSet *dialer.AliveDialerSet
@@ -54,8 +54,9 @@ func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.
 			log, name, networkType, option.CheckTolerance, p.Policy, dialers,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType) }
+				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
 			}(networkType), true)
+		aliveChangeCallback(true, networkType, true)
 
 		networkType = &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
@@ -66,8 +67,9 @@ func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.
 			log, name, networkType, option.CheckTolerance, p.Policy, dialers,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType) }
+				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
 			}(networkType), true)
+		aliveChangeCallback(true, networkType, true)
 
 		networkType = &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_UDP,
@@ -78,8 +80,9 @@ func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.
 			log, name, networkType, option.CheckTolerance, p.Policy, dialers,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType) }
+				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
 			}(networkType), true)
+		aliveChangeCallback(true, networkType, true)
 
 		networkType = &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_UDP,
@@ -90,8 +93,9 @@ func NewDialerGroup(option *dialer.GlobalOption, name string, dialers []*dialer.
 			log, name, networkType, option.CheckTolerance, p.Policy, dialers,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType) }
+				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
 			}(networkType), true)
+		aliveChangeCallback(true, networkType, true)
 
 		if option.CheckDnsTcp {
 			aliveDnsTcp4DialerSet = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
