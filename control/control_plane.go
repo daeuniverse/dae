@@ -155,6 +155,8 @@ func NewControlPlane(
 	)
 	defer func() {
 		if err != nil {
+			// Flip back.
+			core.Flip()
 			_ = core.Close()
 		}
 	}()
@@ -357,6 +359,9 @@ func NewControlPlane(
 // EjectBpf will resect bpf from destroying life-cycle of control plane.
 func (c *ControlPlane) EjectBpf() *bpfObjects {
 	return c.core.EjectBpf()
+}
+func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
+	c.core.InjectBpf(bpf)
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(raw *url.URL, dnsUpstream *dns.Upstream) (err error) {

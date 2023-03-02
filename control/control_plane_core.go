@@ -35,8 +35,9 @@ type controlPlaneCore struct {
 
 	kernelVersion *internal.Version
 
-	flip     int
-	isReload bool
+	flip       int
+	isReload   bool
+	bpfEjected bool
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -48,9 +49,13 @@ func newControlPlaneCore(log *logrus.Logger,
 	if isReload {
 		coreFlip = coreFlip&1 ^ 1
 	}
+	var deferFuncs []func() error
+	if !isReload {
+		deferFuncs = append(deferFuncs, bpf.Close)
+	}
 	return &controlPlaneCore{
 		log:             log,
-		deferFuncs:      []func() error{bpf.Close},
+		deferFuncs:      deferFuncs,
 		bpf:             bpf,
 		outboundId2Name: outboundId2Name,
 		kernelVersion:   kernelVersion,
@@ -59,6 +64,9 @@ func newControlPlaneCore(log *logrus.Logger,
 	}
 }
 
+func (c *controlPlaneCore) Flip() {
+	coreFlip = coreFlip&1 ^ 1
+}
 func (c *controlPlaneCore) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
@@ -513,6 +521,18 @@ func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
-	c.deferFuncs = c.deferFuncs[1:]
+	if !c.bpfEjected && !c.isReload {
+		c.deferFuncs = c.deferFuncs[1:]
+	}
+	c.bpfEjected = true
 	return c.bpf
+}
+
+// InjectBpf will inject bpf back.
+func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
+	if c.bpfEjected {
+		c.bpfEjected = false
+		c.deferFuncs = append([]func() error{bpf.Close}, c.deferFuncs...)
+	}
+	return
 }

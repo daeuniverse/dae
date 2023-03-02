@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -120,33 +121,46 @@ loop:
 
 			// Load new config.
 			log.Warnln("[Reload] Load new config")
-			conf, includes, err := readConfig(cfgFile)
+			newConf, includes, err := readConfig(cfgFile)
 			if err != nil {
 				log.WithFields(logrus.Fields{
 					"err": err,
-				}).Errorln("Failed to reload")
+				}).Errorln("[Reload] Failed to reload")
 				sdnotify.Ready()
 				continue
 			}
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			// New logger.
-			log = logger.NewLogger(conf.Global.LogLevel, disableTimestamp)
+			log = logger.NewLogger(newConf.Global.LogLevel, disableTimestamp)
 			logrus.SetLevel(log.Level)
 
 			// New control plane.
 			obj := c.EjectBpf()
 			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(log, obj, conf)
+			newC, err := newControlPlane(log, obj, newConf)
 			if err != nil {
 				log.WithFields(logrus.Fields{
 					"err": err,
-				}).Errorln("Failed to reload")
-				sdnotify.Ready()
-				continue
+				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
+				// Load last config back.
+				newC, err = newControlPlane(log, obj, conf)
+				if err != nil {
+					sdnotify.Stopping()
+					obj.Close()
+					c.Close()
+					log.WithFields(logrus.Fields{
+						"err": err,
+					}).Fatalln("[Reload] Failed to roll back configuration")
+				}
+				log.Warnln("[Reload] Last reload failed; rolled back configuration")
+			} else {
+				log.Warnln("[Reload] Stopped old control plane")
 			}
-			log.Warnln("[Reload] Stopped old control plane")
+			// Inject bpf objects into the new control plane life-cycle.
+			newC.InjectBpf(obj)
 			c.Close()
 			c = newC
+			conf = newConf
 			reloading = true
 		default:
 			break loop
@@ -160,6 +174,9 @@ loop:
 }
 
 func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (c *control.ControlPlane, err error) {
+	// Deep copy to prevent modification.
+	conf = deepcopy.Copy(conf).(*config.Config)
+
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
 	if len(conf.Node) > 0 {
