@@ -596,7 +596,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 						c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
 						return
 					}
-					copy(data, data[dataOffset:])
+					n := copy(data, data[dataOffset:])
+					data = data[:n]
 					routingResult = &addrHdr.RoutingResult
 					__ip := common.Ipv6Uint32ArrayToByteSlice(addrHdr.Ip)
 					_ip, _ := netip.AddrFromSlice(__ip)
