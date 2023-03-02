@@ -18,13 +18,14 @@ type Outline struct {
 }
 
 type OutlineElem struct {
-	Name      string         `json:"name,omitempty"`
-	Mapping   string         `json:"mapping,omitempty"`
-	IsArray   bool           `json:"isArray,omitempty"`
-	Type      string         `json:"type,omitempty"`
-	ElemType  string         `json:"elemType,omitempty"`
-	Desc      string         `json:"desc,omitempty"`
-	Structure []*OutlineElem `json:"structure,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Mapping      string         `json:"mapping,omitempty"`
+	IsArray      bool           `json:"isArray,omitempty"`
+	DefaultValue string         `json:"defaultValue,omitempty"`
+	Required     bool           `json:"required,omitempty"`
+	Type         string         `json:"type,omitempty"`
+	Desc         string         `json:"desc,omitempty"`
+	Structure    []*OutlineElem `json:"structure,omitempty"`
 }
 
 func ExportOutline(version string) *Outline {
@@ -101,13 +102,16 @@ func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritS
 			// Record leaves.
 			e.leaves[typ.String()] = typ
 		}
+		_, required := section.Tag.Lookup("required")
 		outlines = append(outlines, &OutlineElem{
-			Name:      section.Name,
-			Mapping:   section.Tag.Get("mapstructure"),
-			IsArray:   isArray,
-			Type:      typ.String(),
-			Desc:      desc,
-			Structure: children,
+			Name:         section.Name,
+			Mapping:      section.Tag.Get("mapstructure"),
+			IsArray:      isArray,
+			DefaultValue: section.Tag.Get("default"),
+			Required:     required,
+			Type:         typ.String(),
+			Desc:         desc,
+			Structure:    children,
 		})
 	}
 	return outlines

@@ -21,8 +21,9 @@ type Global struct {
 	UdpCheckDns    string        `mapstructure:"udp_check_dns" default:"dns.google:53"`
 	CheckInterval  time.Duration `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance time.Duration `mapstructure:"check_tolerance" default:"0"`
-	DnsUpstream    string        `mapstructure:"dns_upstream" default:"<empty>"`
-	LanInterface   []string      `mapstructure:"lan_interface"`
+	// Deprecated:
+	DnsUpstream  string   `mapstructure:"dns_upstream" default:"<empty>"`
+	LanInterface []string `mapstructure:"lan_interface"`
 	// Deprecated:
 	LanNatDirect  bool     `mapstructure:"lan_nat_direct" default:"false"`
 	WanInterface  []string `mapstructure:"wan_interface"`
