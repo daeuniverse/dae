@@ -17,9 +17,8 @@ import (
 
 // Marshal assume all tokens should be legal, and does not prevent injection attacks.
 func (c *Config) Marshal(indentSpace int) (b []byte, err error) {
-	m := marshaller{
-		indentSpace: indentSpace,
-		buf:         new(bytes.Buffer),
+	m := Marshaller{
+		IndentSpace: indentSpace,
 	}
 	// Root.
 	v := reflect.ValueOf(*c)
@@ -29,25 +28,29 @@ func (c *Config) Marshal(indentSpace int) (b []byte, err error) {
 		if !ok {
 			return nil, fmt.Errorf("section %v misses tag mapstructure", t.Field(i).Name)
 		}
-		if err = m.marshalSection(k, v.Field(i), 0); err != nil {
+		if err = m.MarshalSection(k, v.Field(i), 0); err != nil {
 			return nil, err
 		}
 	}
 	return m.buf.Bytes(), nil
 }
 
-type marshaller struct {
-	indentSpace int
-	buf         *bytes.Buffer
+type Marshaller struct {
+	IndentSpace int
+	buf         bytes.Buffer
 }
 
-func (m *marshaller) writeLine(depth int, line string) {
-	m.buf.Write(bytes.Repeat([]byte{' '}, depth*m.indentSpace))
+func (m *Marshaller) Bytes() []byte {
+	return m.buf.Bytes()
+}
+
+func (m *Marshaller) writeLine(depth int, line string) {
+	m.buf.Write(bytes.Repeat([]byte{' '}, depth*m.IndentSpace))
 	m.buf.WriteString(line)
 	m.buf.WriteString("\n")
 }
 
-func (m *marshaller) marshalStringList(from reflect.Value, depth int, keyable bool) (err error) {
+func (m *Marshaller) marshalStringList(from reflect.Value, depth int, keyable bool) (err error) {
 	for i := 0; i < from.Len(); i++ {
 		str := from.Index(i)
 		if keyable {
@@ -61,7 +64,7 @@ func (m *marshaller) marshalStringList(from reflect.Value, depth int, keyable bo
 	}
 	return nil
 }
-func (m *marshaller) marshalSection(name string, from reflect.Value, depth int) (err error) {
+func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) (err error) {
 	m.writeLine(depth, name+" {")
 	defer m.writeLine(depth, "}")
 
@@ -109,7 +112,7 @@ func (m *marshaller) marshalSection(name string, from reflect.Value, depth int) 
 				if nameField.Kind() != reflect.String {
 					return fmt.Errorf("name field of section should be string type")
 				}
-				if err = m.marshalSection(nameField.String(), item, depth+1); err != nil {
+				if err = m.MarshalSection(nameField.String(), item, depth+1); err != nil {
 					return err
 				}
 			}
@@ -130,7 +133,7 @@ unsupported:
 	return fmt.Errorf("unsupported section type %v", from.Type())
 }
 
-func (m *marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err error) {
+func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err error) {
 	if from.IsZero() {
 		// Do not marshal zero value.
 		return nil
@@ -183,7 +186,7 @@ func (m *marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 	}
 	return nil
 }
-func (m *marshaller) marshalParam(from reflect.Value, depth int) (err error) {
+func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 	if from.Kind() != reflect.Struct {
 		return fmt.Errorf("marshalParam can only marshal struct")
 	}
@@ -220,7 +223,7 @@ func (m *marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		// Section(s) field.
 		if field.Kind() == reflect.Struct || (field.Kind() == reflect.Slice &&
 			field.Type().Elem().Kind() == reflect.Struct) {
-			if err = m.marshalSection(key, field, depth); err != nil {
+			if err = m.MarshalSection(key, field, depth); err != nil {
 				return err
 			}
 			continue
