@@ -84,14 +84,14 @@ type Dns struct {
 
 type Routing struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback FunctionOrString             `mapstructure:"fallback"`
+	Fallback FunctionOrString             `mapstructure:"fallback" default:"direct"`
 }
 
 type Config struct {
 	Global       Global          `mapstructure:"global" required:"" desc:"GlobalDesc"`
 	Subscription []KeyableString `mapstructure:"subscription"`
 	Node         []KeyableString `mapstructure:"node"`
-	Group        []Group         `mapstructure:"group" required:"" desc:"GroupDesc"`
+	Group        []Group         `mapstructure:"group" desc:"GroupDesc"`
 	Routing      Routing         `mapstructure:"routing" required:""`
 	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
 }
