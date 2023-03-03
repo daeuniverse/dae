@@ -67,7 +67,13 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		// Fill in default value before parsing section.
 		defaultValue, ok := structField.Tag.Lookup("default")
 		if ok {
-			if !common.FuzzyDecode(field.Addr().Interface(), defaultValue) {
+			// Can we assign?
+			if field.Kind() == reflect.Interface ||
+				field.Type() == reflect.TypeOf(defaultValue) {
+				field.Set(reflect.ValueOf(defaultValue))
+
+				// Can we fuzzy decode?
+			} else if !common.FuzzyDecode(field.Addr().Interface(), defaultValue) {
 				return fmt.Errorf(`failed to decode default value of "%v"`, structField.Name)
 			}
 		}
