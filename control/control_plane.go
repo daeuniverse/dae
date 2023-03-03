@@ -294,7 +294,6 @@ func NewControlPlane(
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
-
 	/// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)
 	if err != nil {
@@ -325,7 +324,6 @@ func NewControlPlane(
 	if err != nil {
 		return nil, err
 	}
-
 	/// Dns controller.
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,

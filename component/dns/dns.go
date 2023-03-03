@@ -110,9 +110,7 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 	}
 	if len(dns.Upstream) == 0 {
 		// Immediately ready.
-		if err = opt.UpstreamReadyCallback(nil, nil); err != nil {
-			return nil, err
-		}
+		go opt.UpstreamReadyCallback(nil, nil)
 	}
 	return s, nil
 }
