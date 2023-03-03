@@ -1,8 +1,5 @@
 .vscode
 .idea
-*.o
 *.tmp
-bpf_bpfeb*.go
-bpf_bpfel*.go
 dae
 outline.json
