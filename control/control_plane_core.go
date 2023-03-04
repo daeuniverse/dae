@@ -181,10 +181,15 @@ func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 		Table: table,
 		Type:  unix.RTN_LOCAL,
 	}}
+	var badIpv6 bool
 	cleanRoutes := func() error {
 		var errs error
 		for _, route := range routes {
 			if e := netlink.RouteDel(&route); e != nil {
+				if len(route.Dst.IP) == net.IPv6len && badIpv6 {
+					// ipv6
+					continue
+				}
 				if errs != nil {
 					errs = fmt.Errorf("%w; %v", errs, e)
 				} else {
@@ -203,6 +208,12 @@ tryRouteAddAgain:
 			if os.IsExist(err) {
 				_ = cleanRoutes()
 				goto tryRouteAddAgain
+			}
+			if len(route.Dst.IP) == net.IPv6len {
+				// ipv6
+				c.log.Warnln("Bad IPv6 support. Perhaps your machine disabled IPv6.")
+				badIpv6 = true
+				continue
 			}
 			return fmt.Errorf("IpRouteAdd: %w", err)
 		}
