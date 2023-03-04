@@ -1,0 +1,11 @@
+version: "3"
+services:
+  dae:
+    privileged: true
+    network_mode: host
+    pid: host
+    build:
+      context: .
+    volumes:
+      - /sys:/sys
+      - /etc/dae:/etc/dae

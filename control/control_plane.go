@@ -143,7 +143,7 @@ func NewControlPlane(
 			return nil, fmt.Errorf("load eBPF objects: %w", err)
 		}
 	}
-
+	log.Infof("eBPF programs and maps loaded")
 	// outboundId2Name can be modified later.
 	outboundId2Name := make(map[uint8]string)
 	core := newControlPlaneCore(

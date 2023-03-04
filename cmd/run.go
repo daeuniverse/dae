@@ -205,7 +205,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 	}
 
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
-		log.Warnln("No binding interface.")
+		log.Warnln("No interface to bind.")
 	}
 
 	c, err = control.NewControlPlane(
