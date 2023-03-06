@@ -156,12 +156,18 @@ loop:
 			} else {
 				log.Warnln("[Reload] Stopped old control plane")
 			}
+
 			// Inject bpf objects into the new control plane life-cycle.
 			newC.InjectBpf(obj)
-			c.Close()
+
+			// Prepare new context.
+			oldC := c
 			c = newC
 			conf = newConf
 			reloading = true
+
+			// Ready to close.
+			oldC.Close()
 		default:
 			break loop
 		}
