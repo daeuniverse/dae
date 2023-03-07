@@ -61,7 +61,7 @@ node {
     # Add your node links here.
     # Support socks5, http, https, ss, ssr, vmess, vless, trojan, trojan-go
     'socks5://localhost:1080'
-    'ss://LINK'
+    mylink: 'ss://LINK'
 }
 
 # See more at https://github.com/v2rayA/dae/blob/main/docs/dns.md.
@@ -78,7 +78,7 @@ dns {
     }
     routing {
         request {
-                fallback: asis
+            fallback: asis
         }
         response {
             upstream(googledns) -> accept
@@ -91,9 +91,7 @@ dns {
 # Node group (outbound).
 group {
     my_group {
-        # Filter nodes from the global node pool defined by the subscription and node section above.
-        # Pass node names as input of keyword/regex filter.
-        filter: name(regex:'HK|SG|TW', keyword:'JP', keyword: SH) && !name(keyword:"GCP")
+        # No filter. Use all nodes.
 
         # Randomly select a node from the group for every connection.
         #policy: random
