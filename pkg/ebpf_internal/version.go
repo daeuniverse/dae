@@ -4,10 +4,8 @@ package internal
 
 import (
 	"fmt"
-	"sync"
-	"syscall"
-
 	"github.com/v2rayA/dae/pkg/ebpf_internal/internal/unix"
+	"sync"
 )
 
 const (
@@ -90,14 +88,24 @@ func (v Version) Kernel() uint32 {
 	return uint32(uint8(v[0]))<<16 | uint32(uint8(v[1]))<<8 | uint32(uint8(s))
 }
 
+// utsnameToString converts the utsname to a string and returns it.
+func utsnameToString(unameArray [65]byte) string {
+	var byteString [65]byte
+	var indexLength int
+	for ; unameArray[indexLength] != 0; indexLength++ {
+		byteString[indexLength] = unameArray[indexLength]
+	}
+	return string(byteString[:indexLength])
+}
+
 // KernelVersion returns the version of the currently running kernel.
 func KernelVersion() (Version, error) {
 	kernelVersion.once.Do(func() {
 		kernelVersion.version, kernelVersion.err = detectKernelVersion()
 		if kernelVersion.err != nil {
 			// Try syscall.
-			var utsname syscall.Utsname
-			if err := syscall.Uname(&utsname); err != nil {
+			var utsname unix.Utsname
+			if err := unix.Uname(&utsname); err != nil {
 				kernelVersion.err = fmt.Errorf("%w; %v", kernelVersion.err, err)
 				return
 			}
