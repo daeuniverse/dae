@@ -115,6 +115,7 @@ func KernelVersion() (Version, error) {
 				return
 			}
 			kernelVersion.version = version
+			kernelVersion.err = nil
 		}
 	})
 
