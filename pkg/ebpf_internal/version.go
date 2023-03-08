@@ -90,16 +90,6 @@ func (v Version) Kernel() uint32 {
 	return uint32(uint8(v[0]))<<16 | uint32(uint8(v[1]))<<8 | uint32(uint8(s))
 }
 
-// utsnameToString converts the utsname to a string and returns it.
-func utsnameToString(unameArray [65]int8) string {
-	var byteString [65]byte
-	var indexLength int
-	for ; unameArray[indexLength] != 0; indexLength++ {
-		byteString[indexLength] = uint8(unameArray[indexLength])
-	}
-	return string(byteString[:indexLength])
-}
-
 // KernelVersion returns the version of the currently running kernel.
 func KernelVersion() (Version, error) {
 	kernelVersion.once.Do(func() {
