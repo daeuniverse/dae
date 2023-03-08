@@ -20,7 +20,29 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 > **Note**
 > Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
 
-### Upgrade Kernel on other Debian-based Linux
+### Upgrade to BTF Kernel on Armbian Linux
+
+1. Backup your system using `clonezilla` or other tools.
+
+2. Check your board famlily:
+
+   ```shell
+   uname -r
+   ```
+
+3. Download corresponding kernel debs from [daeuniverse/armbian-kernel-btf-dist](https://github.com/daeuniverse/armbian-kernel-btf-dist/releases).
+
+4. Extract debs and install:
+
+   ```shell
+   tar -xvf <downloaded_kernel_pkg.tar>
+   dpkg -i linux-*.deb
+   ```
+
+5. Reboot your machine.
+
+
+### Upgrade Kernel on Debian-based Linux
 
 Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install any specific version kernel on your Linux system. After the installation is done, reboot your system to get the desired kernel on your Linux system.
 
