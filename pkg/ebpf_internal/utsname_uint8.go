@@ -1,4 +1,4 @@
-//go:build arm || arm64 || arm64be || armbe
+//go:build arm || arm64 || arm64be || armbe || riscv64
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
