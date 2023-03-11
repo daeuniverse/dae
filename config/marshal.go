@@ -45,6 +45,9 @@ func (m *Marshaller) Bytes() []byte {
 }
 
 func (m *Marshaller) writeLine(depth int, line string) {
+	if depth < 0 {
+		depth = 0
+	}
 	m.buf.Write(bytes.Repeat([]byte{' '}, depth*m.IndentSpace))
 	m.buf.WriteString(line)
 	m.buf.WriteString("\n")
