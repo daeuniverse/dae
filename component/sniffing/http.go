@@ -6,7 +6,9 @@
 package sniffing
 
 import (
+	"bufio"
 	"bytes"
+	"strings"
 	"unicode"
 )
 
@@ -34,15 +36,32 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
 
 	// Search Host.
-	search = s.buf
-	prefix := []byte("Host: ")
-	_, afterHostKey, found := bytes.Cut(search, prefix)
-	if !found {
-		return "", NotFoundError
+	scanner := bufio.NewScanner(bytes.NewReader(s.buf))
+	// \r\n
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		if i := bytes.Index(data, []byte("\r\n")); i >= 0 {
+			// We have a full newline-terminated line.
+			return i + 2, data[0:i], nil
+		}
+		// If we're at EOF, we have a final, non-terminated line. Return it.
+		if atEOF {
+			return len(data), data, nil
+		}
+		// Request more data.
+		return 0, nil, nil
+	})
+	for scanner.Scan() && len(scanner.Bytes()) > 0 {
+		key, value, found := bytes.Cut(scanner.Bytes(), []byte{':'})
+		if !found {
+			// Bad key value.
+			continue
+		}
+		if strings.EqualFold(string(key), "host") {
+			return strings.TrimSpace(string(value)), nil
+		}
 	}
-	host, _, found := bytes.Cut(afterHostKey, []byte("\r\n"))
-	if !found {
-		return "", NotFoundError
-	}
-	return string(host), nil
+	return "", NotFoundError
 }
