@@ -169,6 +169,7 @@ loop:
 			// Ready to close.
 			oldC.Close()
 		default:
+			log.Infof("Received signal: %v", sig.String())
 			break loop
 		}
 	}

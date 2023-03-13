@@ -103,13 +103,14 @@ func NewControlPlane(
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		if os.IsNotExist(err) {
-			log.Warnln("Perhaps you are in a container environment (lxc). If so, please use higher virtualization (kvm/qemu).")
+			log.Warnln("Perhaps you are in a container environment (such as lxc). If so, please use higher virtualization (kvm/qemu).")
 		}
 		return nil, err
 	}
 
 	/// Load pre-compiled programs and maps into the kernel.
-	log.Infof("Loading eBPF programs and maps into the kernel. The loading process may take up to 500MB memory, which will be freed after loading. Insufficient memory may cause loading failure.")
+	log.Infof("Loading eBPF programs and maps into the kernel.")
+	log.Infof("The loading process takes about 512MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	//var bpf bpfObjects
 	var ProgramOptions = ebpf.ProgramOptions{
 		KernelTypes: nil,
