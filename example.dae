@@ -41,9 +41,9 @@ global {
     #       if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will
     #       re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing.
     #       That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
-    # 3. "domain+". Based on domain mode but do not check the authenticity of sniffing result. It is useful for users
-    #       whose DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests
-    #       do not go through dae, dae cannot split traffic by domain.
+    # 3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose
+    #       DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not
+    #       go through dae, dae cannot split traffic by domain.
     dial_mode: domain
 }
 
