@@ -971,14 +971,6 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
     return ret;
   };
 
-  // Modify DNS upstream for routing.
-  if (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) {
-    __u32 *control_plane_dns_routing =
-        bpf_map_lookup_elem(&param_map, &control_plane_dns_routing_key);
-    if (control_plane_dns_routing && *control_plane_dns_routing) {
-      return OUTBOUND_CONTROL_PLANE_ROUTING;
-    }
-  }
   lpm_key_instance.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
   __builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
   key = MatchType_IpSet;
@@ -1134,6 +1126,17 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
         bpf_printk("MATCHED: match_set->type: %u, match_set->not: %d",
                    match_set->type, match_set->not );
 #endif
+
+        // DNS requests should routed by control plane if outbound is not
+        // must_direct.
+        if (match_set->outbound != OUTBOUND_MUST_DIRECT && h_dport == 53 &&
+            _l4proto_type == L4ProtoType_UDP) {
+          __u32 *control_plane_dns_routing =
+              bpf_map_lookup_elem(&param_map, &control_plane_dns_routing_key);
+          if (control_plane_dns_routing && *control_plane_dns_routing) {
+            return OUTBOUND_CONTROL_PLANE_ROUTING | (match_set->mark << 8);
+          }
+        }
         return match_set->outbound | (match_set->mark << 8);
       }
       bad_rule = false;
