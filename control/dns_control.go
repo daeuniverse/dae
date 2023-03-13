@@ -234,7 +234,7 @@ func (c *DnsController) UpdateDnsCache(host string, typ dnsmessage.Type, answers
 	return nil
 }
 
-func (c *DnsController) DnsRespHandlerFactory(req *udpRequest, validateRushAnsFunc func(from netip.AddrPort) bool) func(data []byte, from netip.AddrPort) (msg *dnsmessage.Message, err error) {
+func (c *DnsController) DnsRespHandlerFactory(validateRushAnsFunc func(from netip.AddrPort) bool) func(data []byte, from netip.AddrPort) (msg *dnsmessage.Message, err error) {
 	return func(data []byte, from netip.AddrPort) (msg *dnsmessage.Message, err error) {
 		// Do not return conn-unrelated err in this func.
 
@@ -362,11 +362,14 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 	}
 
 	// dnsRespHandler caches dns response and check rush answers.
-	dnsRespHandler := c.DnsRespHandlerFactory(req, func(from netip.AddrPort) bool {
+	dnsRespHandler := c.DnsRespHandlerFactory(func(from netip.AddrPort) bool {
 		// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
 		// Because additional record OPT may not be supported by home router.
 		// So se should trust home devices even if they make rush-answer (or looks like).
-		return dialArgument.bestDialer.Property().Name == "direct" && !from.Addr().IsPrivate()
+		return dialArgument.bestDialer.Property().Name == "direct" &&
+			!from.Addr().IsPrivate() &&
+			!from.Addr().IsLoopback() &&
+			!from.Addr().IsUnspecified()
 	})
 	// Dial and send.
 	var respMsg *dnsmessage.Message
