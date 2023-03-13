@@ -4,7 +4,7 @@ dae supports configuration reloading and program suspending, which can help you 
 
 **Reload**
 
-Generally, dae won't interrupt connections when reloading configuration. And it is very fast compared to restart.
+Generally, dae won't interrupt connections when reloading configuration. And reloading is much faster than restarting.
 
 Usage:
 
