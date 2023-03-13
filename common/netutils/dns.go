@@ -143,7 +143,8 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 					},
 				}, nil
 			}
-			return nil, fmt.Errorf("unknown type error")
+			// MUST No record.
+			return nil, nil
 		}
 	default:
 		return nil, fmt.Errorf("only support to lookup A/AAAA record")
