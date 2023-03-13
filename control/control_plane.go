@@ -11,9 +11,11 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/mzz2017/softwind/pool"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/dae/common"
 	"github.com/v2rayA/dae/common/consts"
+	"github.com/v2rayA/dae/common/netutils"
 	"github.com/v2rayA/dae/component/dns"
 	"github.com/v2rayA/dae/component/outbound"
 	"github.com/v2rayA/dae/component/outbound/dialer"
@@ -449,9 +451,21 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
-			cache := c.dnsController.LookupDnsRespCache(domain, common.AddrToDnsType(dst.Addr()))
-			if cache != nil && cache.IncludeIp(dst.Addr()) {
+			if cache := c.dnsController.LookupDnsRespCache(domain, common.AddrToDnsType(dst.Addr())); cache != nil {
+				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
+			} else {
+				// Lookup NS to make sure it is a real domain.
+				ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+				defer cancel()
+				systemDns, err := netutils.SystemDns()
+				if err == nil {
+					if records, err := netutils.ResolveNS(ctx, direct.SymmetricDirect, systemDns, domain, false); err == nil && len(records) > 0 {
+						// Has NX records. It is a real domain.
+						dialMode = consts.DialMode_Domain
+					}
+				}
+
 			}
 		case consts.DialMode_DomainPlus:
 			dialMode = consts.DialMode_Domain

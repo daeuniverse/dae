@@ -25,6 +25,8 @@ var (
 	systemDnsMu              sync.Mutex
 	systemDns                netip.AddrPort
 	systemDnsNextUpdateAfter time.Time
+
+	BadDnsAnsError = fmt.Errorf("bad dns answer")
 )
 
 func TryUpdateSystemDns() (err error) {
@@ -71,18 +73,78 @@ func SystemDns() (dns netip.AddrPort, err error) {
 }
 
 func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (addrs []netip.Addr, err error) {
+	resources, err := resolve(ctx, d, dns, host, typ, tcp)
+	if err != nil {
+		return nil, err
+	}
+	for _, ans := range resources {
+		if ans.Header.Type != typ {
+			continue
+		}
+		switch typ {
+		case dnsmessage.TypeA:
+			a, ok := ans.Body.(*dnsmessage.AResource)
+			if !ok {
+				return nil, BadDnsAnsError
+			}
+			addrs = append(addrs, netip.AddrFrom4(a.A))
+		case dnsmessage.TypeAAAA:
+			a, ok := ans.Body.(*dnsmessage.AAAAResource)
+			if !ok {
+				return nil, BadDnsAnsError
+			}
+			addrs = append(addrs, netip.AddrFrom16(a.AAAA))
+		}
+	}
+	return addrs, nil
+}
+
+func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, tcp bool) (records []string, err error) {
+	typ := dnsmessage.TypeNS
+	resources, err := resolve(ctx, d, dns, host, typ, tcp)
+	if err != nil {
+		return nil, err
+	}
+	for _, ans := range resources {
+		if ans.Header.Type != typ {
+			continue
+		}
+		ns, ok := ans.Body.(*dnsmessage.NSResource)
+		if !ok {
+			return nil, BadDnsAnsError
+		}
+		records = append(records, ns.NS.String())
+	}
+	return records, nil
+}
+
+func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (ans []dnsmessage.Resource, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if addr, err := netip.ParseAddr(host); err == nil {
-		if (addr.Is4() || addr.Is4In6()) && typ == dnsmessage.TypeA {
-			return []netip.Addr{addr}, nil
-		} else if addr.Is6() && typ == dnsmessage.TypeAAAA {
-			return []netip.Addr{addr}, nil
-		}
-		return nil, nil
-	}
 	switch typ {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+		if addr, err := netip.ParseAddr(host); err == nil {
+			if (addr.Is4() || addr.Is4In6()) && typ == dnsmessage.TypeA {
+				return []dnsmessage.Resource{
+					{
+						Header: dnsmessage.ResourceHeader{
+							Type: typ,
+						},
+						Body: &dnsmessage.AResource{A: addr.As4()},
+					},
+				}, nil
+			} else if addr.Is6() && typ == dnsmessage.TypeAAAA {
+				return []dnsmessage.Resource{
+					{
+						Header: dnsmessage.ResourceHeader{
+							Type: typ,
+						},
+						Body: &dnsmessage.AAAAResource{AAAA: addr.As16()},
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown type error")
+		}
 	default:
 		return nil, fmt.Errorf("only support to lookup A/AAAA record")
 	}
@@ -185,19 +247,7 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 			ch <- err
 			return
 		}
-		for _, ans := range msg.Answers {
-			if ans.Header.Type != typ {
-				continue
-			}
-			switch typ {
-			case dnsmessage.TypeA:
-				a := ans.Body.(*dnsmessage.AResource)
-				addrs = append(addrs, netip.AddrFrom4(a.A))
-			case dnsmessage.TypeAAAA:
-				a := ans.Body.(*dnsmessage.AAAAResource)
-				addrs = append(addrs, netip.AddrFrom16(a.AAAA))
-			}
-		}
+		ans = msg.Answers
 		ch <- nil
 	}()
 	select {
@@ -207,6 +257,6 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 		if err != nil {
 			return nil, err
 		}
-		return addrs, nil
+		return ans, nil
 	}
 }
