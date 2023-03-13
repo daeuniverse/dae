@@ -20,7 +20,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 ## Getting Started
 
-Please refer to [Quick Start Guide](./docs/getting-started/README.md) to start using `dae` right away!
+Please refer to [Quick Start Guide](./docs/getting-started) to start using `dae` right away!
 
 ## Known Issues
 
