@@ -83,9 +83,3 @@ You should configure dae as follows:
 
 4. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
 
-## 
-
-
-   ```
-
-   ```

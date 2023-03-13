@@ -399,7 +399,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			}
 		}()
 
-		_ = conn.SetDeadline(time.Now().Add(DnsNatTimeout))
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 		_, err = conn.Write(data)
 		if err != nil {
 			if c.log.IsLevelEnabled(logrus.DebugLevel) {
@@ -446,7 +446,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			}
 		}()
 
-		_ = conn.SetDeadline(time.Now().Add(DnsNatTimeout))
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 		// We should write two byte length in the front of TCP DNS request.
 		bReq := pool.Get(2 + len(data))
 		defer pool.Put(bReq)

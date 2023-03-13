@@ -27,5 +27,6 @@ var (
 )
 
 func init() {
+	rootCmd.AddCommand(exportCmd)
 	exportCmd.AddCommand(exportOutlineCmd)
 }

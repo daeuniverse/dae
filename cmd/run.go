@@ -10,6 +10,7 @@ import (
 	"github.com/v2rayA/dae/common/subscription"
 	"github.com/v2rayA/dae/config"
 	"github.com/v2rayA/dae/control"
+	"github.com/v2rayA/dae/pkg/config_parser"
 	"github.com/v2rayA/dae/pkg/logger"
 	"os"
 	"os/signal"
@@ -92,6 +93,7 @@ func Run(log *logrus.Logger, conf *config.Config) (err error) {
 		sigs <- nil
 	}()
 	reloading := false
+	isSuspend := false
 loop:
 	for sig := range sigs {
 		switch sig {
@@ -114,6 +116,9 @@ loop:
 				// Listening error.
 				break loop
 			}
+		case syscall.SIGHUP:
+			isSuspend = true
+			fallthrough
 		case syscall.SIGUSR1:
 			// Reload signal.
 			log.Warnln("[Reload] Received reload signal; prepare to reload")
@@ -121,15 +126,29 @@ loop:
 
 			// Load new config.
 			log.Warnln("[Reload] Load new config")
-			newConf, includes, err := readConfig(cfgFile)
-			if err != nil {
-				log.WithFields(logrus.Fields{
-					"err": err,
-				}).Errorln("[Reload] Failed to reload")
-				sdnotify.Ready()
-				continue
+			var newConf *config.Config
+			if isSuspend {
+				isSuspend = false
+				newConf, err = emptyConfig()
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"err": err,
+					}).Errorln("[Reload] Failed to reload")
+					sdnotify.Ready()
+					continue
+				}
+			} else {
+				var includes []string
+				newConf, includes, err = readConfig(cfgFile)
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"err": err,
+					}).Errorln("[Reload] Failed to reload")
+					sdnotify.Ready()
+					continue
+				}
+				log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			}
-			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			// New logger.
 			log = logger.NewLogger(newConf.Global.LogLevel, disableTimestamp)
 			logrus.SetLevel(log.Level)
@@ -243,4 +262,19 @@ func readConfig(cfgFile string) (conf *config.Config, includes []string, err err
 		return nil, nil, err
 	}
 	return conf, includes, nil
+}
+
+func emptyConfig() (conf *config.Config, err error) {
+	sections, err := config_parser.Parse(`global{} routing{}`)
+	if err != nil {
+		return nil, err
+	}
+	if conf, err = config.New(sections); err != nil {
+		return nil, err
+	}
+	return conf, nil
+}
+
+func init() {
+	rootCmd.AddCommand(runCmd)
 }

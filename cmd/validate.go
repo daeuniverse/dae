@@ -31,5 +31,7 @@ var (
 )
 
 func init() {
+	rootCmd.AddCommand(validateCmd)
+
 	validateCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 }

@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	reloadCmd = &cobra.Command{
-		Use: "reload [pid]",
+	suspendCmd = &cobra.Command{
+		Use: "suspend [pid]",
 		Run: func(cmd *cobra.Command, args []string) {
 			internal.AutoSu()
 			if len(args) == 0 {
@@ -33,7 +33,7 @@ var (
 				cmd.Help()
 				os.Exit(1)
 			}
-			if err = syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+			if err = syscall.Kill(pid, syscall.SIGHUP); err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
@@ -43,5 +43,5 @@ var (
 )
 
 func init() {
-	rootCmd.AddCommand(reloadCmd)
+	rootCmd.AddCommand(suspendCmd)
 }
