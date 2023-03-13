@@ -15,7 +15,7 @@ Upgrading the Linux kernel is not easy; you must do this only if you find securi
 
 Before you start upgrading your Linux kernel, you must know the Kernel’s `current version` running inside your host machine. You may do so by `uname -r`. In case of `eBPF`, the minimum required version is `>= 5.8`
 
-Various Linux distributions have different methods to upgrade the Linux kernel. This guide convers ways to upgrade the kernel to a desired version for most `Armbian Linux`, `Debian-based Linux`, `RedHar, Fedora based Linux`, and `Arch-based Linux` distributions.
+Various Linux distributions have different methods to upgrade the Linux kernel. This guide convers ways to upgrade the kernel to a desired version for most `Armbian Linux`, `Debian-based Linux`, `RedHat, Fedora based Linux`, and `Arch-based Linux` distributions.
 
 > **Note**
 > Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
