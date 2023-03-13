@@ -38,7 +38,7 @@ var (
 
 	runCmd = &cobra.Command{
 		Use:   "run",
-		Short: "Run dae in the foreground",
+		Short: "To run dae in the foreground.",
 		Run: func(cmd *cobra.Command, args []string) {
 			if cfgFile == "" {
 				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")

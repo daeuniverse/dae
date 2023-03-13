@@ -17,7 +17,8 @@ import (
 
 var (
 	suspendCmd = &cobra.Command{
-		Use: "suspend [pid]",
+		Use:   "suspend [pid]",
+		Short: "To suspend dae. This command puts dae into no-load state. Recover it by 'dae reload'.",
 		Run: func(cmd *cobra.Command, args []string) {
 			internal.AutoSu()
 			if len(args) == 0 {

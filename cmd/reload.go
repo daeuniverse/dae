@@ -17,7 +17,8 @@ import (
 
 var (
 	reloadCmd = &cobra.Command{
-		Use: "reload [pid]",
+		Use:   "reload [pid]",
+		Short: "To reload config file without interrupt connections.",
 		Run: func(cmd *cobra.Command, args []string) {
 			internal.AutoSu()
 			if len(args) == 0 {
