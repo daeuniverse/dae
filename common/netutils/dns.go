@@ -12,6 +12,7 @@ import (
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"io"
 	"math"
@@ -105,8 +106,10 @@ func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host 
 	if err != nil {
 		return nil, err
 	}
+	logrus.Println(host, len(resources))
 	for _, ans := range resources {
 		if ans.Header.Type != typ {
+			logrus.Println(host, ans.Header.Type)
 			continue
 		}
 		ns, ok := ans.Body.(*dnsmessage.NSResource)
@@ -147,7 +150,6 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 			return nil, nil
 		}
 	default:
-		return nil, fmt.Errorf("only support to lookup A/AAAA record")
 	}
 	// Build DNS req.
 	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{

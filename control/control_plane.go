@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/mzz2017/softwind/pool"
@@ -56,6 +57,9 @@ type ControlPlane struct {
 
 	closed chan struct{}
 	ready  chan struct{}
+
+	muRealDomainSet sync.RWMutex
+	realDomainSet   *bloom.BloomFilter
 }
 
 func NewControlPlane(
@@ -304,15 +308,19 @@ func NewControlPlane(
 	}
 
 	plane := &ControlPlane{
-		log:            log,
-		core:           core,
-		deferFuncs:     deferFuncs,
-		listenIp:       "0.0.0.0",
-		outbounds:      outbounds,
-		dialMode:       dialMode,
-		routingMatcher: routingMatcher,
-		closed:         make(chan struct{}),
-		ready:          make(chan struct{}),
+		log:              log,
+		core:             core,
+		deferFuncs:       deferFuncs,
+		listenIp:         "0.0.0.0",
+		outbounds:        outbounds,
+		dnsController:    nil,
+		onceNetworkReady: sync.Once{},
+		dialMode:         dialMode,
+		routingMatcher:   routingMatcher,
+		closed:           make(chan struct{}),
+		ready:            make(chan struct{}),
+		muRealDomainSet:  sync.RWMutex{},
+		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
 	}
 	defer func() {
 		if err != nil {
@@ -455,14 +463,26 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
 			} else {
-				// Lookup NS to make sure it is a real domain.
-				ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
-				defer cancel()
-				systemDns, err := netutils.SystemDns()
-				if err == nil {
-					if records, err := netutils.ResolveNS(ctx, direct.SymmetricDirect, systemDns, domain, false); err == nil && len(records) > 0 {
-						// Has NX records. It is a real domain.
-						dialMode = consts.DialMode_Domain
+				// Check if the domain is in real domain set (bloom filter).
+				c.muRealDomainSet.RLock()
+				if c.realDomainSet.TestString(domain) {
+					c.muRealDomainSet.RUnlock()
+					dialMode = consts.DialMode_Domain
+				} else {
+					c.muRealDomainSet.RUnlock()
+					// Lookup A/AAAA to make sure it is a real domain.
+					ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+					defer cancel()
+					systemDns, err := netutils.SystemDns()
+					if err == nil {
+						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, false, true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
+							// Has NS records. It is a real domain.
+							dialMode = consts.DialMode_Domain
+							// Add it to real domain set.
+							c.muRealDomainSet.Lock()
+							c.realDomainSet.AddString(domain)
+							c.muRealDomainSet.Unlock()
+						}
 					}
 				}
 

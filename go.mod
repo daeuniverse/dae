@@ -5,6 +5,7 @@ go 1.18
 require (
 	github.com/adrg/xdg v0.4.0
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20221202181307-76fa05c21b12
+	github.com/bits-and-blooms/bloom/v3 v3.3.1
 	github.com/cilium/ebpf v0.10.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
@@ -26,6 +27,7 @@ require (
 )
 
 require (
+	github.com/bits-and-blooms/bitset v1.3.1 // indirect
 	github.com/dgryski/go-camellia v0.0.0-20191119043421-69a8a13fb23d // indirect
 	github.com/dgryski/go-idea v0.0.0-20170306091226-d2fb45a411fb // indirect
 	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect
