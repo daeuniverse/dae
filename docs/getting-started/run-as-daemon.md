@@ -30,14 +30,14 @@ Download the sample config file:
 
 ```bash
 mkdir -p /etc/dae
-curl -L -o /etc/dae/config.dae https://github.com/v2rayA/dae/raw/main/example.dae
+curl -L -o /etc/dae/config.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 ```
 
 ## Setup
 
 ```bash
 # download the sample systemd.service
-sudo curl -L -o /etc/systemd/system/dae.service https://github.com/v2rayA/dae/raw/main/install/dae.service
+sudo curl -L -o /etc/systemd/system/dae.service https://github.com/daeuniverse/dae/raw/main/install/dae.service
 
 # reload and restart daemon to take effect
 sudo systemctl daemon-reload

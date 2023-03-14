@@ -1,12 +1,13 @@
-module github.com/v2rayA/dae
+module github.com/daeuniverse/dae
 
 go 1.18
 
 require (
 	github.com/adrg/xdg v0.4.0
-	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20221202181307-76fa05c21b12
+	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df
 	github.com/bits-and-blooms/bloom/v3 v3.3.1
 	github.com/cilium/ebpf v0.10.0
+	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230314065856-e49435a874d8
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
@@ -16,7 +17,6 @@ require (
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8
-	github.com/v2rayA/dae-config-dist/go/dae_config v0.0.0-20230219173344-413f12027632
 	github.com/vishvananda/netlink v1.1.0
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.5.0
@@ -58,5 +58,4 @@ require (
 //replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
 //replace github.com/cloudflare/ahocorasick => /home/mzz/goProjects/ahocorasick
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
-//replace github.com/v2rayA/RoutingA-dist/go/routingA => /home/mzz/antlrProjects/RoutingA-antlr4/build/go/routingA
-//replace github.com/v2rayA/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
+//replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config

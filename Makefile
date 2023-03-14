@@ -1,6 +1,6 @@
 #
 #  SPDX-License-Identifier: AGPL-3.0-only
-#  Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+#  Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
 #
 
 # The development version of clang is distributed as the 'clang' binary,
@@ -27,7 +27,7 @@ endif
 .PHONY: clean-ebpf ebpf dae
 
 dae: ebpf
-	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION) -X github.com/v2rayA/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
+	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
 
 clean-ebpf: 
 	@rm -f control/bpf_bpf*.go && \

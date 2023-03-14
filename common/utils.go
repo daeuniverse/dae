@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package common
@@ -12,7 +12,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"net/url"

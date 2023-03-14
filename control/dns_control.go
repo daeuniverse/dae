@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -12,11 +12,11 @@ import (
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae/common/consts"
-	"github.com/v2rayA/dae/common/netutils"
-	"github.com/v2rayA/dae/component/dns"
-	"github.com/v2rayA/dae/component/outbound"
-	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"golang.org/x/net/dns/dnsmessage"
 	"io"
 	"net"

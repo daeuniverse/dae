@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -14,16 +14,16 @@ import (
 	"github.com/mzz2017/softwind/pool"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae/common"
-	"github.com/v2rayA/dae/common/consts"
-	"github.com/v2rayA/dae/common/netutils"
-	"github.com/v2rayA/dae/component/dns"
-	"github.com/v2rayA/dae/component/outbound"
-	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/v2rayA/dae/component/routing"
-	"github.com/v2rayA/dae/config"
-	"github.com/v2rayA/dae/pkg/config_parser"
-	internal "github.com/v2rayA/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 	"net"

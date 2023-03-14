@@ -1,6 +1,6 @@
 [Unit]
 Description=dae Service
-Documentation=https://github.com/v2rayA/dae
+Documentation=https://github.com/daeuniverse/dae
 After=network-online.target docker.service
 Wants=network-online.target
 

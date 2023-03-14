@@ -5,7 +5,7 @@ package trie
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/common/bitlist"
+	"github.com/daeuniverse/dae/common/bitlist"
 	"math/bits"
 )
 

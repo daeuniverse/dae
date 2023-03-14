@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package outbound
@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae/common/consts"
-	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"time"
 )
 

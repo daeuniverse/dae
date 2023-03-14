@@ -3,7 +3,7 @@ package socks
 import (
 	"fmt"
 	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/v2rayA/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	//"github.com/mzz2017/softwind/protocol/socks4"
 	"github.com/mzz2017/softwind/protocol/socks5"
 	"net"

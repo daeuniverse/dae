@@ -1,6 +1,6 @@
 # dae
 
-<img src="https://github.com/v2rayA/dae/blob/main/logo.png" border="0" width="25%">
+<img src="https://github.com/daeuniverse/dae/blob/main/logo.png" border="0" width="25%">
 
 **_dae_**, means goose, is a high-performance transparent proxy solution.
 

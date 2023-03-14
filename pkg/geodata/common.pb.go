@@ -3,7 +3,7 @@
 package geodata
 
 import (
-	_ "github.com/v2rayA/dae/pkg/geodata/protoext"
+	_ "github.com/daeuniverse/dae/pkg/geodata/protoext"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/runtime/protoimpl"
 	"reflect"

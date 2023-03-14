@@ -16,7 +16,7 @@ dns {
         googledns: 'tcp+udp://dns.google:53'
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
-    # See https://github.com/v2rayA/dae/blob/main/docs/routing.md
+    # See https://github.com/daeuniverse/dae/blob/main/docs/routing.md
     request {
         # Built-in upstream in 'request': asis.
         # You can also use user-defined upstreams.

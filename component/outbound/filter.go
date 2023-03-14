@@ -1,14 +1,14 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package outbound
 
 import (
 	"fmt"
-	"github.com/v2rayA/dae/component/outbound/dialer"
-	"github.com/v2rayA/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	"regexp"
 	"strings"
 )

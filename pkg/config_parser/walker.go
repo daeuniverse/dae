@@ -1,9 +1,9 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
-// This file should trace https://github.com/v2rayA/dae-config-dist/blob/main/dae_config.g4.
+// This file should trace https://github.com/daeuniverse/dae-config-dist/blob/main/dae_config.g4.
 
 package config_parser
 
@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"github.com/sirupsen/logrus"
-	"github.com/v2rayA/dae-config-dist/go/dae_config"
+	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 	"strconv"
 	"strings"
 )

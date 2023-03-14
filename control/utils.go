@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -11,8 +11,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/mzz2017/softwind/netproxy"
-	"github.com/v2rayA/dae/common"
-	"github.com/v2rayA/dae/common/consts"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"golang.org/x/sys/unix"
 	"net/netip"
 	"os"

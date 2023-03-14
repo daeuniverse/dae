@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package config
@@ -10,9 +10,9 @@ type Desc map[string]string
 var SectionSummaryDesc = Desc{
 	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
 	"node":         "Nodes defined here will be merged as a part of the global node pool.",
-	"dns":          "See more at https://github.com/v2rayA/dae/blob/main/docs/dns.md.",
+	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/dns.md.",
 	"group":        "Node group. Groups defined here can be used as outbounds in section \"routing\".",
-	"routing": `Traffic follows this routing. See https://github.com/v2rayA/dae/blob/main/docs/routing.md for full examples.
+	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/routing.md for full examples.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
 Built-in outbound: direct, must_direct, block.
 Available functions: domain, sip, dip, sport, dport, ipversion, l4proto, pname, mac.

@@ -11,7 +11,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/v2rayA/dae/pkg/ebpf_internal/internal/unix"
+	"github.com/daeuniverse/dae/pkg/ebpf_internal/internal/unix"
 )
 
 var (

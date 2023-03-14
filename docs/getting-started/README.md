@@ -84,7 +84,7 @@ make
 **Build**
 
 ```shell
-git clone https://github.com/v2rayA/dae.git
+git clone https://github.com/daeuniverse/dae.git
 cd dae
 git submodule update --init
 # Minimal dependency build:
@@ -111,9 +111,9 @@ popd
 
 Download the example config file:
 ```shell
-curl -L -o example.dae https://github.com/v2rayA/dae/raw/main/example.dae
+curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 ```
-See [example.dae](https://github.com/v2rayA/dae/blob/main/example.dae).
+See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
 After fine tuning, run dae:
 ```shell

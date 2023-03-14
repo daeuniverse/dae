@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, v2rayA Organization <team@v2raya.org>
+ * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
  */
 
 package bitlist
@@ -8,7 +8,7 @@ package bitlist
 import (
 	"fmt"
 	"github.com/mzz2017/softwind/common"
-	"github.com/v2rayA/dae/pkg/anybuffer"
+	"github.com/daeuniverse/dae/pkg/anybuffer"
 	"math/bits"
 )
 
