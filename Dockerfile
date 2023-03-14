@@ -15,4 +15,6 @@ RUN wget -O /usr/local/share/dae/geosite.dat https://github.com/v2ray/domain-lis
 COPY --from=builder /build/dae /usr/local/bin
 COPY --from=builder /build/install/empty.dae /etc/dae/config.dae
 RUN chmod 0600 /etc/dae/config.dae
-CMD ["dae", "run", "-c", "/etc/dae/config.dae"]
+
+CMD ["dae"]
+ENTRYPOINT ["dae", "run", "-c", "/etc/dae/config.dae"]
