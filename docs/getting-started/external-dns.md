@@ -42,6 +42,7 @@ You should configure dae as follows:
    ```
 
 4. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
+5. If there is still a DNS issue and there are no warn/error logs, you have to change your listening port of external DNS (here is AdGuardHome) from 53 to non-53 port. See [#31](https://github.com/v2rayA/dae/issues/31#issuecomment-1467358364).
 
 ## External DNS on another machine in LAN
 
@@ -82,4 +83,4 @@ You should configure dae as follows:
    ```
 
 4. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
-
+5. If there is still a DNS issue and there are no warn/error logs, you have to change your listening port of external DNS (here is AdGuardHome) from 53 to non-53 port. See [#31](https://github.com/v2rayA/dae/issues/31#issuecomment-1467358364).
