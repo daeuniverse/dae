@@ -116,7 +116,7 @@ func NewControlPlane(
 
 	/// Load pre-compiled programs and maps into the kernel.
 	log.Infof("Loading eBPF programs and maps into the kernel.")
-	log.Infof("The loading process takes about 512MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
+	log.Infof("The loading process takes about 150MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	//var bpf bpfObjects
 	var ProgramOptions = ebpf.ProgramOptions{
 		KernelTypes: nil,
@@ -294,7 +294,7 @@ func NewControlPlane(
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
-	if err = builder.BuildKernspace(); err != nil {
+	if err = builder.BuildKernspace(log); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 	routingMatcher, err := builder.BuildUserspace(core.bpf.LpmArrayMap)

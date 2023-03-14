@@ -97,9 +97,23 @@ func (i OutboundIndex) IsReserved() bool {
 	return !strings.HasPrefix(i.String(), "<index: ")
 }
 
-const (
-	MaxMatchSetLen = 32 * 3
+var (
+	MaxMatchSetLen_ = ""
+	MaxMatchSetLen  = 32 * 2
 )
+
+func init() {
+	if MaxMatchSetLen_ != "" {
+		i, err := strconv.Atoi(MaxMatchSetLen_)
+		if err != nil {
+			panic(err)
+		}
+		MaxMatchSetLen = i
+	}
+	if MaxMatchSetLen%32 != 0 {
+		panic("MaxMatchSetLen should be a multiple of 32: " + strconv.Itoa(MaxMatchSetLen))
+	}
+}
 
 type L4ProtoType uint8
 

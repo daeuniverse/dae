@@ -279,7 +279,7 @@ func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
+func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	// Update lpm_array_map.
 	for i, cidrs := range b.simulatedLpmTries {
 		var keys []_bpfLpmKey
@@ -311,6 +311,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	}); err != nil {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
+	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
 
 	return nil
 }

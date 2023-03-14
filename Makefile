@@ -11,6 +11,8 @@ STRIP ?= llvm-strip
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
 TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
+MAX_MATCH_SET_LEN ?= 64
+CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
@@ -25,7 +27,7 @@ endif
 .PHONY: clean-ebpf ebpf dae
 
 dae: ebpf
-	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION)" .
+	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/v2rayA/dae/cmd.Version=$(VERSION) -X github.com/v2rayA/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
 
 clean-ebpf: 
 	@rm -f control/bpf_bpf*.go && \

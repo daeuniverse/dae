@@ -46,7 +46,9 @@
 
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 128
-#define MAX_MATCH_SET_LEN (32 * 3)
+#ifndef MAX_MATCH_SET_LEN
+#define MAX_MATCH_SET_LEN (32 * 2) // Should be sync with common/consts/ebpf.go.
+#endif
 #define MAX_LPM_SIZE 20480
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 2)
@@ -546,7 +548,9 @@ handle_ipv6_extensions(const struct __sk_buff *skb, __u32 offset, __u32 hdr,
   int ret;
   // We only process TCP and UDP traffic.
 
-#pragma unroll
+  // Unroll can give less instructions but more memory consumption when loading.
+  // We disable it here to support more poor memory devices.
+  // #pragma unroll
   for (int i = 0; i < IPV6_MAX_EXTENSIONS;
        i++, offset += hdr_length, hdr = nexthdr, *ihl += hdr_length / 4) {
     if (hdr_length % 4) {
@@ -1004,7 +1008,9 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
   __u32 *p_u32;
   __u16 *p_u16;
 
-#pragma unroll
+  // Unroll can give less instructions but more memory consumption when loading.
+  // We disable it here to support more poor memory devices.
+  // #pragma unroll
   for (__u32 i = 0; i < MAX_MATCH_SET_LEN; i++) {
     __u32 k = i; // Clone to pass code checker.
     match_set = bpf_map_lookup_elem(&routing_map, &k);
@@ -1526,7 +1532,8 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
   bool tproxy_response = *tproxy_port == tuples.sport;
-  // Double check to avoid bind wan and lan to one interface.
+  // Double check to avoid conflicts when binding wan and lan to the same
+  // interface.
   if (tproxy_response && l4proto == IPPROTO_TCP) {
     // If it is a TCP first handshake, it is not a tproxy response.
     if (tcph.syn && !tcph.syn) {
