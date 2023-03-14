@@ -13,11 +13,12 @@ const (
 	DialMode_Ip         DialMode = "ip"
 	DialMode_Domain     DialMode = "domain"
 	DialMode_DomainPlus DialMode = "domain+"
+	DialMode_DomainCao  DialMode = "domain++"
 )
 
 func ParseDialMode(mode string) (DialMode, error) {
 	switch mode {
-	case "ip", "domain", "domain+":
+	case "ip", "domain", "domain+", "domain++":
 		return DialMode(mode), nil
 	default:
 		return "", fmt.Errorf("unsupported dial mode: %v", mode)

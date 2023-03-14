@@ -44,6 +44,8 @@ global {
     # 3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose
     #       DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not
     #       go through dae, dae cannot split traffic by domain.
+    # 4. "domain++". Based on domain+ mode but force to re-route traffic using sniffed domain to partially recover
+    #       domain based traffic split ability. It doesn't work for direct traffic and consumes more CPU resources.
     dial_mode: domain
 }
 

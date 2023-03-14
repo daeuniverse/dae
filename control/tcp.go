@@ -7,13 +7,13 @@ package control
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
@@ -62,7 +62,11 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
 
+	// Get outbound.
 	var outboundIndex = consts.OutboundIndex(routingResult.Outbound)
+	if c.dialMode == consts.DialMode_DomainCao && domain != "" {
+		outboundIndex = consts.OutboundControlPlaneRouting
+	}
 
 	switch outboundIndex {
 	case consts.OutboundDirect:

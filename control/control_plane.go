@@ -11,9 +11,6 @@ import (
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/mzz2017/softwind/pool"
-	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -24,6 +21,9 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/mzz2017/softwind/pool"
+	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 	"net"
@@ -51,7 +51,7 @@ type ControlPlane struct {
 	dnsController    *DnsController
 	onceNetworkReady sync.Once
 
-	dialMode consts.DialMode
+	dialMode            consts.DialMode
 
 	routingMatcher *RoutingMatcher
 
@@ -487,6 +487,8 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				}
 
 			}
+		case consts.DialMode_DomainCao:
+			fallthrough
 		case consts.DialMode_DomainPlus:
 			dialMode = consts.DialMode_Domain
 		}

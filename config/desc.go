@@ -42,13 +42,13 @@ var GlobalDesc = Desc{
 	"check_interval":  "Interval of connectivity check for TCP and UDP",
 	"check_tolerance": "Group will switch node only when new_latency <= old_latency - tolerance.",
 	"lan_interface":   "The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.",
-	"lan_nat_direct":  "[Deprecated] SNAT for incoming connection to avoid redirects.\nAlways set it true if you are NOT using dae as a transparent bridge, but will reduce forwarding performance for direct traffic in LAN mode.\nThis option does not affect direct traffic performance of WAN.",
 	"wan_interface":   "The WAN interface to bind. Use it if you want to proxy localhost.",
 	"allow_insecure":  "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
 	"dial_mode": `Optional values of dial_mode are:
 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path respectively, and makes the IP version requested by the application meet expectations. For example, if you use curl -4 ip.sb, you will request IPv4 via proxy and get a IPv4 echo. And curl -6 ip.sb will request IPv6. This may solve some wierd full-cone problem if your are be your node support that.
 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing. That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
-3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not go through dae, dae cannot split traffic by domain`,
+3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not go through dae, dae cannot split traffic by domain.
+4. "domain++". Based on domain+ mode but force to re-route traffic using sniffed domain to partially recover domain based traffic split ability. It doesn't work for direct traffic and consumes more CPU resources.`,
 }
 
 var DnsDesc = Desc{

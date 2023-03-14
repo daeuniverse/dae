@@ -9,13 +9,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/netip"
@@ -139,6 +139,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 	// Get outbound.
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
+	if c.dialMode == consts.DialMode_DomainCao && domain != "" {
+		outboundIndex = consts.OutboundControlPlaneRouting
+	}
+
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundMustDirect:
