@@ -320,10 +320,10 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	return c.dialSend(req, data, upstream, 0)
+	return c.dialSend(req, data, dnsMessage.ID, upstream, 0)
 }
 
-func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Upstream, invokingDepth int) (err error) {
+func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, invokingDepth int) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
@@ -520,7 +520,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 				"next_upstream": nextUpstream.String(),
 			}).Traceln("Change DNS upstream and resend")
 		}
-		return c.dialSend(req, data, nextUpstream, invokingDepth+1)
+		return c.dialSend(req, data, id, nextUpstream, invokingDepth+1)
 	}
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
 		var qname, qtype string
@@ -549,6 +549,8 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, upstream *dns.Ups
 			return fmt.Errorf("unknown upstream: %v", upstreamIndex.String())
 		}
 	}
+	// Keep the id the same with request.
+	respMsg.ID = id
 	data, err = respMsg.Pack()
 	if err != nil {
 		return err
