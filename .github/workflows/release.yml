@@ -132,7 +132,7 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file_glob: true
-          file: build/dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
+          file: ./dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
           overwrite: true
           tag: ${{ github.ref }}
   
