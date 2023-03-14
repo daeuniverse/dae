@@ -64,7 +64,7 @@ node {
     mylink: 'ss://LINK'
 }
 
-# See more at https://github.com/daeuniverse/dae/blob/main/docs/dns.md.
+# See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
 dns {
     upstream {
         # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.
