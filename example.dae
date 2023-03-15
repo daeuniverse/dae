@@ -47,6 +47,9 @@ global {
     # 4. "domain++". Based on domain+ mode but force to re-route traffic using sniffed domain to partially recover
     #       domain based traffic split ability. It doesn't work for direct traffic and consumes more CPU resources.
     dial_mode: domain
+
+    # Disable waiting for network before pulling subscriptions.
+    disable_waiting_network: false
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.

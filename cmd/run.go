@@ -2,16 +2,17 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/mohae/deepcopy"
-	"github.com/okzk/sdnotify"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/mohae/deepcopy"
+	"github.com/okzk/sdnotify"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const (
@@ -212,6 +214,22 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 	}
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
+	if !conf.Global.DisableWaitingNetwork && len(conf.Subscription) > 0 {
+		log.Infoln("Waiting for network...")
+		for {
+			resp, err := http.Get("http://www.msftconnecttest.com/connecttest.txt")
+			if err != nil {
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				break
+			}
+			log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
+		}
+		log.Infoln("Network online.")
+	}
 	for _, sub := range conf.Subscription {
 		tag, nodes, err := subscription.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
 		if err != nil {
