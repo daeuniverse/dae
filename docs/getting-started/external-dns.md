@@ -35,14 +35,19 @@ You should configure dae as follows:
      upstream {
        adguardhome: 'udp://127.0.0.1:53'
      }
-     request {
-       fallback: adguardhome
+     routing {
+       request {
+         fallback: adguardhome
+       }
      }
    }
    ```
 
 4. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
+
 5. If there is still a DNS issue and there are no warn/error logs, you have to change your listening port of external DNS (here is AdGuardHome) from 53 to non-53 port. See [#31](https://github.com/daeuniverse/dae/issues/31#issuecomment-1467358364).
+
+6. If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
 
 ## External DNS on another machine in LAN
 
@@ -76,11 +81,16 @@ You should configure dae as follows:
      upstream {
        adguardhome: 'udp://192.168.30.3:53'
      }
-     request {
-       fallback: adguardhome
+     routing {
+       request {
+         fallback: adguardhome
+       }
      }
    }
    ```
 
 4. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
+
 5. If there is still a DNS issue and there are no warn/error logs, you have to change your listening port of external DNS (here is AdGuardHome) from 53 to non-53 port. See [#31](https://github.com/daeuniverse/dae/issues/31#issuecomment-1467358364).
+
+6. If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).

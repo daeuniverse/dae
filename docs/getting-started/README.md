@@ -58,6 +58,7 @@ If you set up dae as a router or other intermediate device and bind it to LAN in
 
 ```shell
 export lan_ifname=docker0
+
 sudo tee /etc/sysctl.d/60-dae-$lan_ifname.conf << EOF
 net.ipv4.conf.$lan_ifname.forwarding = 1
 net.ipv6.conf.$lan_ifname.forwarding = 1
@@ -68,57 +69,105 @@ sudo sysctl --system
 
 Please modify `docker0` to your LAN interface.
 
-## Usage
+## Installation
 
-### Build
+### Archlinux/Manjaro
 
-**Make Dependencies**
-
-```shell
-clang >= 10
-llvm >= 10
-golang >= 1.18
-make
-```
-
-**Build**
+dae has been released on [AUR](https://aur.archlinux.org/packages/dae/).
 
 ```shell
-git clone https://github.com/daeuniverse/dae.git
+# yay -S dae
+pacman -S --needed git base-devel
+git clone https://aur.archlinux.org/dae.git
 cd dae
-git submodule update --init
-# Minimal dependency build:
-make GOFLAGS="-buildvcs=false" CC=clang
-# Or normal build:
-# make
+makepkg -si
 ```
 
-### Run
-
-**Runtime Dependencies**
-
-For traffic splitting, dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
+After installation, use systemctl to control it.
 
 ```shell
-mkdir -p /usr/local/share/dae/
-pushd /usr/local/share/dae/
-curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
-curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
-popd
+# start dae
+sudo systemctl start dae
+
+# auto start dae at boot
+sudo systemctl enable dae
 ```
 
-**Run**
+### Docker
 
-Download the example config file:
+Pre-built image and related docs can be found at https://hub.docker.com/r/daeuniverse/dae.
+
+Alternatively, you can use `docker compose`:
+
 ```shell
-curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
+git clone --depth=1 https://github.com/daeuniverse/dae
+docker compose up -d --build
 ```
-See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
-After fine tuning, run dae:
+### Others
+
+Other users can build dae by scratch. See [Build Guide](build-by-yourself.md) for more help.
+
+### Minimal Configuration
+
+For minimal bootable config:
+
 ```shell
-./dae run -c example.dae
+global{}
+routing{}
 ```
 
-Alternatively, you may run dae as a daemon(systemd) service. Check out more details [HERE](./run-as-daemon.md).
+However, this config leaves dae no-load state. If you want dae to be in working state, following is a best practice for small config:
 
+```shell
+global {
+  # Bind to LAN and/or WAN as you want. Replace the interface name to your own.
+  #lan_interface: docker0
+  wan_interface: wlp5s0
+
+  log_level: info
+  allow_insecure: false
+}
+
+subscription {
+  # Fill in your subscription links here.
+}
+
+dns {
+  upstream {
+    googledns: 'tcp+udp://dns.google:53'
+  }
+  request {
+    fallback: asis
+  }
+  response {
+    upstream(googledns) -> accept
+    !qname(geosite:cn) && ip(geoip:private) -> googledns
+    fallback: accept
+  }
+}
+
+group {
+  proxy {
+    #filter: name(keyword: HK, keyword: SG)
+    policy: min_moving_avg
+  }
+}
+
+routing {
+  pname(NetworkManager, systemd-resolved) -> direct
+  dip(224.0.0.0/3, 'ff00::/8') -> direct
+
+  ### Write your rules below.
+
+  dip(geoip:private) -> direct
+  dip(geoip:cn) -> direct
+  domain(geosite:cn) -> direct
+
+  fallback: proxy
+}
+```
+
+See more at [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
+
+If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
