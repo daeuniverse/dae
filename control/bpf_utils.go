@@ -11,10 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/sirupsen/logrus"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -210,7 +210,9 @@ retryLoadBpf:
 			}
 		}
 		if strings.Contains(err.Error(), "no BTF found for kernel version") {
-			err = fmt.Errorf("%w: maybe installing the linux-headers package will solve it", err)
+			err = fmt.Errorf("%w: you should re-compile linux kernel with BTF configurations; see docs for more information", err)
+		} else if strings.Contains(err.Error(), "unknown func bpf_trace_printk") {
+			err = fmt.Errorf(`%w: please try to compile dae without bpf_printk; example of cross-compilation to arm64: make GOARCH=arm64 CGO_ENABLED=0 CFLAGS="-D__REMOVE_BPF_PRINTK"`, err)
 		}
 		return err
 	}

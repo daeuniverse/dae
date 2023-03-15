@@ -227,6 +227,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 				break
 			}
 			log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
+			time.Sleep(5 * time.Second)
 		}
 		log.Infoln("Network online.")
 	}

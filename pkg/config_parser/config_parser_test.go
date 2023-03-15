@@ -88,6 +88,6 @@ routing {
 		t.Fatalf("\n%v", err)
 	}
 	for _, section := range sections {
-		t.Logf("\n%v", section.String())
+		t.Logf("\n%v", section.String(false, false))
 	}
 }
