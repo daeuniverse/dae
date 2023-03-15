@@ -136,9 +136,10 @@ subscription {
 dns {
   upstream {
     googledns: 'tcp+udp://dns.google:53'
+    alidns: 'udp://dns.alidns.com:53'
   }
   request {
-    fallback: asis
+    fallback: alidns
   }
   response {
     upstream(googledns) -> accept

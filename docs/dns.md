@@ -1,6 +1,8 @@
 # DNS
 
-## Examples:
+dae will intercept all UDP traffic to port 53 and sniff DNS. Here gives some examples and templates for DNS configuration.
+
+## Examples
 
 ```shell
 dns {
@@ -45,5 +47,39 @@ dns {
         !qname(geosite:cn) && ip(geoip:private) -> googledns
         fallback: accept
     }
+}
+```
+
+## Templates
+
+```shell
+# Use alidns for all DNS queries and fallback to googledns if pollution result detected.
+dns {
+  upstream {
+    googledns: 'tcp+udp://dns.google:53'
+    alidns: 'udp://dns.alidns.com:53'
+  }
+  request {
+    fallback: alidns
+  }
+  response {
+    upstream(googledns) -> accept
+    !qname(geosite:cn) && ip(geoip:private) -> googledns
+    fallback: accept
+  }
+}
+```
+
+```shell
+# Use alidns for China mainland domains and googledns for others.
+dns {
+  upstream {
+    googledns: 'tcp+udp://dns.google:53'
+    alidns: 'udp://dns.alidns.com:53'
+  }
+  request {
+    qname(geosite:cn) -> alidns
+    fallback: googledns
+  }
 }
 ```
