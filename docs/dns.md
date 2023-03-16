@@ -59,9 +59,11 @@ dns {
     googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
-  request {
-    qname(geosite:cn) -> alidns
-    fallback: googledns
+  routing {
+    request {
+      qname(geosite:cn) -> alidns
+      fallback: googledns
+    }
   }
 }
 ```
@@ -73,13 +75,15 @@ dns {
     googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
-  request {
-    fallback: alidns
-  }
-  response {
-    upstream(googledns) -> accept
-    !qname(geosite:cn) && ip(geoip:private) -> googledns
-    fallback: accept
+  routing {
+    request {
+      fallback: alidns
+    }
+    response {
+      upstream(googledns) -> accept
+      !qname(geosite:cn) && ip(geoip:private) -> googledns
+      fallback: accept
+    }
   }
 }
 ```
