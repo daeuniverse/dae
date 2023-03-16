@@ -19,34 +19,37 @@ dns {
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
     # See https://github.com/daeuniverse/dae/blob/main/docs/routing.md
-    request {
-        # Built-in upstream in 'request': asis.
-        # You can also use user-defined upstreams.
+    routing {
+        request {
+            # Built-in upstream in 'request': asis.
+            # You can also use user-defined upstreams.
 
-        # Available functions: qname, qtype.
+            # Available functions: qname, qtype.
 
-        # DNS request name (omit suffix dot '.').
-        qname(suffix: abc.com, keyword: google) -> googledns
-        qname(full: ok.com, regex: '^yes') -> googledns
-        # DNS request type
-        qtype(a, aaaa) -> alidns
-        qtype(cname) -> googledns
+            # DNS request name (omit suffix dot '.').
+            qname(suffix: abc.com, keyword: google) -> googledns
+            qname(full: ok.com, regex: '^yes') -> googledns
+            # DNS request type
+            qtype(a, aaaa) -> alidns
+            qtype(cname) -> googledns
 
-        # If no match, fallback to this upstream.
-        fallback: asis
+            # If no match, fallback to this upstream.
+            fallback: asis
+        }
+        response {
+            # No built-in upstream in 'response'.
+            # You can use user-defined upstreams.
+
+            # Available functions: qname, qtype, upstream, ip.
+            # Accept the response if the request is sent to upstream 'googledns'. This is useful to avoid loop.
+            upstream(googledns) -> accept
+            # If DNS request name is not in CN and response answers include private IP, which is most likely polluted
+            # in China mainland. Therefore, resend DNS request to 'googledns' to get correct result. 
+            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            fallback: accept
+        }
     }
-    response {
-        # No built-in upstream in 'response'.
-        # You can use user-defined upstreams.
-
-        # Available functions: qname, qtype, upstream, ip.
-        # Accept the response if the request is sent to upstream 'googledns'. This is useful to avoid loop.
-        upstream(googledns) -> accept
-        # If DNS request name is not in CN and response answers include private IP, which is most likely polluted
-        # in China mainland. Therefore, resend DNS request to 'googledns' to get correct result. 
-        !qname(geosite:cn) && ip(geoip:private) -> googledns
-        fallback: accept
-    }
+    
 }
 ```
 
