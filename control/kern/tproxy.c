@@ -93,7 +93,8 @@ static const __u32 disable_l4_rx_checksum_key
 static const __u32 control_plane_pid_key = 4;
 static const __u32 control_plane_nat_direct_key
     __attribute__((unused, deprecated)) = 5;
-static const __u32 control_plane_dns_routing_key = 6;
+static const __u32 control_plane_dns_routing_key
+    __attribute__((unused, deprecated))= 6;
 
 // Outbound Connectivity Map:
 
@@ -1137,11 +1138,7 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
         // must_direct.
         if (match_set->outbound != OUTBOUND_MUST_DIRECT && h_dport == 53 &&
             _l4proto_type == L4ProtoType_UDP) {
-          __u32 *control_plane_dns_routing =
-              bpf_map_lookup_elem(&param_map, &control_plane_dns_routing_key);
-          if (control_plane_dns_routing && *control_plane_dns_routing) {
-            return OUTBOUND_CONTROL_PLANE_ROUTING | (match_set->mark << 8);
-          }
+          return OUTBOUND_CONTROL_PLANE_ROUTING | (match_set->mark << 8);
         }
         return match_set->outbound | (match_set->mark << 8);
       }

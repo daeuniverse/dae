@@ -28,7 +28,6 @@ import (
 	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,7 +50,7 @@ type ControlPlane struct {
 	dnsController    *DnsController
 	onceNetworkReady sync.Once
 
-	dialMode            consts.DialMode
+	dialMode consts.DialMode
 
 	routingMatcher *RoutingMatcher
 
@@ -373,7 +372,7 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
-func (c *ControlPlane) dnsUpstreamReadyCallback(raw *url.URL, dnsUpstream *dns.Upstream) (err error) {
+func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
 	// Waiting for ready.
 	select {
 	case <-c.closed:
@@ -388,21 +387,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(raw *url.URL, dnsUpstream *dns.U
 				d.NotifyCheck()
 			}
 		}
-		if dnsUpstream != nil {
-			// Control plane DNS routing.
-			if err = c.core.bpf.ParamMap.Update(consts.ControlPlaneDnsRoutingKey, uint32(1), ebpf.UpdateAny); err != nil {
-				return
-			}
-		} else {
-			// As-is.
-			if err = c.core.bpf.ParamMap.Update(consts.ControlPlaneDnsRoutingKey, uint32(0), ebpf.UpdateAny); err != nil {
-				return
-			}
-		}
 	})
-	if err != nil {
-		return err
-	}
 	if dnsUpstream == nil {
 		return nil
 	}

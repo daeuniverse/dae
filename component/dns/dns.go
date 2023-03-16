@@ -7,11 +7,11 @@ package dns
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"net/url"
@@ -29,7 +29,7 @@ type Dns struct {
 }
 
 type NewOption struct {
-	UpstreamReadyCallback func(raw *url.URL, upstream *Upstream) (err error)
+	UpstreamReadyCallback func(dnsUpstream *Upstream) (err error)
 }
 
 func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error) {
@@ -60,7 +60,7 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
 				return func(raw *url.URL, upstream *Upstream) (err error) {
 					if opt != nil && opt.UpstreamReadyCallback != nil {
-						if err = opt.UpstreamReadyCallback(raw, upstream); err != nil {
+						if err = opt.UpstreamReadyCallback(upstream); err != nil {
 							return err
 						}
 					}
@@ -110,7 +110,7 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 	}
 	if len(dns.Upstream) == 0 {
 		// Immediately ready.
-		go opt.UpstreamReadyCallback(nil, nil)
+		go opt.UpstreamReadyCallback(nil)
 	}
 	return s, nil
 }

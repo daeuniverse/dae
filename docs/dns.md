@@ -53,6 +53,20 @@ dns {
 ## Templates
 
 ```shell
+# Use alidns for China mainland domains and googledns for others.
+dns {
+  upstream {
+    googledns: 'tcp+udp://dns.google:53'
+    alidns: 'udp://dns.alidns.com:53'
+  }
+  request {
+    qname(geosite:cn) -> alidns
+    fallback: googledns
+  }
+}
+```
+
+```shell
 # Use alidns for all DNS queries and fallback to googledns if pollution result detected.
 dns {
   upstream {
@@ -66,20 +80,6 @@ dns {
     upstream(googledns) -> accept
     !qname(geosite:cn) && ip(geoip:private) -> googledns
     fallback: accept
-  }
-}
-```
-
-```shell
-# Use alidns for China mainland domains and googledns for others.
-dns {
-  upstream {
-    googledns: 'tcp+udp://dns.google:53'
-    alidns: 'udp://dns.alidns.com:53'
-  }
-  request {
-    qname(geosite:cn) -> alidns
-    fallback: googledns
   }
 }
 ```
