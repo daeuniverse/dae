@@ -86,11 +86,11 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		}
 	default:
 	}
-	outbound := c.outbounds[outboundIndex]
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
+	outbound := c.outbounds[outboundIndex]
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
