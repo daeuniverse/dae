@@ -6,17 +6,18 @@
 package control
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pool"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pool"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"io"
 	"net"
@@ -400,21 +401,33 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 		}()
 
 		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		_, err = conn.Write(data)
-		if err != nil {
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"to":      dialArgument.bestTarget.String(),
-					"pid":     req.routingResult.Pid,
-					"pname":   ProcessName2String(req.routingResult.Pname[:]),
-					"mac":     Mac2String(req.routingResult.Mac[:]),
-					"from":    req.realSrc.String(),
-					"network": networkType.String(),
-					"err":     err.Error(),
-				}).Debugln("Failed to write UDP(DNS) packet request.")
+		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), 5*time.Second)
+		defer cancelDnsReqCtx()
+		go func() {
+			// Send DNS request at 0, 2, 4 seconds.
+			for {
+				_, err = conn.Write(data)
+				if err != nil {
+					if c.log.IsLevelEnabled(logrus.DebugLevel) {
+						c.log.WithFields(logrus.Fields{
+							"to":      dialArgument.bestTarget.String(),
+							"pid":     req.routingResult.Pid,
+							"pname":   ProcessName2String(req.routingResult.Pname[:]),
+							"mac":     Mac2String(req.routingResult.Mac[:]),
+							"from":    req.realSrc.String(),
+							"network": networkType.String(),
+							"err":     err.Error(),
+						}).Debugln("Failed to write UDP(DNS) packet request.")
+					}
+					return
+				}
+				select {
+				case <-dnsReqCtx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
 			}
-			return fmt.Errorf("failed to write UDP(DNS) packet request: %w", err)
-		}
+		}()
 
 		// We can block here because we are in a coroutine.
 		respBuf := pool.Get(512)
@@ -425,6 +438,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 			if err != nil {
 				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
 			}
+			cancelDnsReqCtx()
 			respMsg, err = dnsRespHandler(respBuf[:n], dialArgument.bestTarget)
 			if err != nil {
 				return err
