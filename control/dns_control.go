@@ -28,7 +28,8 @@ import (
 )
 
 const (
-	MaxDnsLookupDepth = 3
+	MaxDnsLookupDepth      = 3
+	minFirefoxCacheTimeout = 120 * time.Second
 )
 
 var (
@@ -80,7 +81,9 @@ func (c *DnsController) LookupDnsRespCache(domain string, t dnsmessage.Type) (ca
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[strings.ToLower(domain)+t.String()]
 	c.dnsCacheMu.Unlock()
-	if ok && cache.Deadline.After(now) {
+	// We should make sure the remaining TTL is greater than 120s (minFirefoxCacheTimeout), or
+	// return nil and request a new lookup to refresh the cache.
+	if ok && cache.Deadline.After(now.Add(minFirefoxCacheTimeout)) {
 		return cache
 	}
 	return nil
@@ -194,14 +197,20 @@ loop:
 			"addition": FormatDnsRsc(msg.Additionals),
 		}).Tracef("Update DNS record cache")
 	}
-	if err = c.UpdateDnsCache(q.Name.String(), q.Type, msg.Answers, time.Now().Add(time.Duration(ttl)*time.Second+DnsNatTimeout)); err != nil {
+	cacheTimeout := time.Duration(ttl) * time.Second // TTL.
+	if cacheTimeout < minFirefoxCacheTimeout {
+		cacheTimeout = minFirefoxCacheTimeout
+	}
+	cacheTimeout += 5 * time.Second // DNS lookup timeout.
+
+	if err = c.UpdateDnsCache(q.Name.String(), q.Type.String(), msg.Answers, time.Now().Add(cacheTimeout)); err != nil {
 		return nil, err
 	}
 	// Pack to get newData.
 	return &msg, nil
 }
 
-func (c *DnsController) UpdateDnsCache(host string, typ dnsmessage.Type, answers []dnsmessage.Resource, deadline time.Time) (err error) {
+func (c *DnsController) UpdateDnsCache(host string, dnsTyp string, answers []dnsmessage.Resource, deadline time.Time) (err error) {
 	var fqdn string
 	if strings.HasSuffix(host, ".") {
 		fqdn = host
@@ -213,7 +222,7 @@ func (c *DnsController) UpdateDnsCache(host string, typ dnsmessage.Type, answers
 	if _, err = netip.ParseAddr(host); err == nil {
 		return nil
 	}
-	cacheKey := fqdn + typ.String()
+	cacheKey := fqdn + dnsTyp
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {

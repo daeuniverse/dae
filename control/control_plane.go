@@ -21,6 +21,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/mohae/deepcopy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
@@ -64,6 +65,7 @@ type ControlPlane struct {
 func NewControlPlane(
 	log *logrus.Logger,
 	_bpf interface{},
+	dnsCache map[string]*DnsCache,
 	tagToNodeList map[string][]string,
 	groups []config.Group,
 	routingA *config.Routing,
@@ -114,8 +116,10 @@ func NewControlPlane(
 	}
 
 	/// Load pre-compiled programs and maps into the kernel.
-	log.Infof("Loading eBPF programs and maps into the kernel.")
-	log.Infof("The loading process takes about 150MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
+	if _bpf == nil {
+		log.Infof("Loading eBPF programs and maps into the kernel.")
+		log.Infof("The loading process takes about 150MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
+	}
 	//var bpf bpfObjects
 	var ProgramOptions = ebpf.ProgramOptions{
 		KernelTypes: nil,
@@ -300,6 +304,7 @@ func NewControlPlane(
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
+
 	/// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)
 	if err != nil {
@@ -356,6 +361,24 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
+	// Refresh domain routing cache with new routing.
+	if dnsCache != nil {
+		for cacheKey, cache := range dnsCache {
+			if time.Now().After(cache.Deadline) {
+				continue
+			}
+			lastDot := strings.LastIndex(cacheKey, ".")
+			if lastDot == -1 || lastDot == len(cacheKey)-1 {
+				// Not a valid key.
+				log.Warnln("Invalid cache key:", cacheKey)
+				continue
+			}
+			host := cacheKey[:lastDot]
+			typ := cacheKey[lastDot+1:]
+			_ = plane.dnsController.UpdateDnsCache(host, typ, cache.Answers, cache.Deadline)
+		}
+	}
+
 	// Init immediately to avoid DNS leaking in the very beginning because param control_plane_dns_routing will
 	// be set in callback.
 	go dnsUpstream.InitUpstreams()
@@ -370,6 +393,12 @@ func (c *ControlPlane) EjectBpf() *bpfObjects {
 }
 func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
+}
+
+func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
+	c.dnsController.dnsCacheMu.Lock()
+	defer c.dnsController.dnsCacheMu.Unlock()
+	return deepcopy.Copy(c.dnsController.dnsCache).(map[string]*DnsCache)
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
@@ -413,7 +442,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 				A: dnsUpstream.Ip4.As4(),
 			},
 		}}
-		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
 			return err
 		}
 	}
@@ -431,7 +460,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 				AAAA: dnsUpstream.Ip6.As16(),
 			},
 		}}
-		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
 			return err
 		}
 	}
@@ -448,7 +477,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
 			} else {
-				// Check if the domain is in real domain set (bloom filter).
+				// Check if the domain is in real-domain set (bloom filter).
 				c.muRealDomainSet.RLock()
 				if c.realDomainSet.TestString(domain) {
 					c.muRealDomainSet.RUnlock()

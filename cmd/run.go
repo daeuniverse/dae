@@ -71,7 +71,7 @@ var (
 func Run(log *logrus.Logger, conf *config.Config) (err error) {
 
 	// New ControlPlane.
-	c, err := newControlPlane(log, nil, conf)
+	c, err := newControlPlane(log, nil, nil, conf)
 	if err != nil {
 		return err
 	}
@@ -157,14 +157,15 @@ loop:
 
 			// New control plane.
 			obj := c.EjectBpf()
+			dnsCache := c.CloneDnsCache()
 			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(log, obj, newConf)
+			newC, err := newControlPlane(log, obj, dnsCache, newConf)
 			if err != nil {
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
 				// Load last config back.
-				newC, err = newControlPlane(log, obj, conf)
+				newC, err = newControlPlane(log, obj, dnsCache, conf)
 				if err != nil {
 					sdnotify.Stopping()
 					obj.Close()
@@ -201,7 +202,7 @@ loop:
 	return nil
 }
 
-func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (c *control.ControlPlane, err error) {
+func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -256,6 +257,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config) (
 	c, err = control.NewControlPlane(
 		log,
 		bpf,
+		dnsCache,
 		tagToNodeList,
 		conf.Group,
 		&conf.Routing,
