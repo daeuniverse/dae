@@ -18,7 +18,10 @@ git clone https://github.com/daeuniverse/dae.git
 cd dae
 git submodule update --init
 ## Minimal dependency build
-make GOFLAGS="-buildvcs=false" CC=clang NOSTRIP=y
+make GOFLAGS="-buildvcs=false" \
+  CFLAGS="-D__REMOVE_BPF_PRINTK" \
+  CC=clang \
+  NOSTRIP=y
 
 ## Normal build
 #make
