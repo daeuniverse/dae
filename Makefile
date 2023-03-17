@@ -13,6 +13,12 @@ TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
 MAX_MATCH_SET_LEN ?= 64
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
+NOSTRIP ?= n
+ifeq ($(strip $(NOSTRIP)),y)
+	STRIP_FLAG := -no-strip
+else
+	STRIP_FLAG := -strip=$(STRIP)
+endif
 
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
@@ -35,7 +41,7 @@ clean-ebpf:
 
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)
-ebpf: export BPF_STRIP := $(STRIP)
+ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: clean-ebpf

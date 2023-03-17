@@ -6,7 +6,7 @@
 
 ```shell
 clang >= 10
-llvm >= 10
+llvm >= 10 (optional)
 golang >= 1.18
 make
 ```
@@ -17,10 +17,17 @@ make
 git clone https://github.com/daeuniverse/dae.git
 cd dae
 git submodule update --init
-# Minimal dependency build:
-make GOFLAGS="-buildvcs=false" CC=clang
-# Or normal build:
-# make
+## Minimal dependency build
+make GOFLAGS="-buildvcs=false" CC=clang NOSTRIP=y
+
+## Normal build
+#make
+
+## Cross compile
+# To armv7 CPU architect:
+#make CGO_ENABLED=0 GOARCH=arm GOARM=7
+# To mips CPU architect:
+#make CGO_ENABLED=0 GOARCH=mips
 ```
 
 ## Run

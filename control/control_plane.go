@@ -58,7 +58,7 @@ type ControlPlane struct {
 	closed chan struct{}
 	ready  chan struct{}
 
-	muRealDomainSet sync.RWMutex
+	muRealDomainSet sync.Mutex
 	realDomainSet   *bloom.BloomFilter
 }
 
@@ -323,7 +323,7 @@ func NewControlPlane(
 		routingMatcher:   routingMatcher,
 		closed:           make(chan struct{}),
 		ready:            make(chan struct{}),
-		muRealDomainSet:  sync.RWMutex{},
+		muRealDomainSet:  sync.Mutex{},
 		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
 	}
 	defer func() {
@@ -478,21 +478,22 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				dialMode = consts.DialMode_Domain
 			} else {
 				// Check if the domain is in real-domain set (bloom filter).
-				c.muRealDomainSet.RLock()
+				c.muRealDomainSet.Lock()
 				if c.realDomainSet.TestString(domain) {
-					c.muRealDomainSet.RUnlock()
+					c.muRealDomainSet.Unlock()
 					dialMode = consts.DialMode_Domain
 				} else {
-					c.muRealDomainSet.RUnlock()
+					c.muRealDomainSet.Unlock()
 					// Lookup A/AAAA to make sure it is a real domain.
 					ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 					defer cancel()
+					// TODO: use DNS controller and re-route by control plane.
 					systemDns, err := netutils.SystemDns()
 					if err == nil {
 						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, false, true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
-							// Has NS records. It is a real domain.
+							// Has A/AAAA records. It is a real domain.
 							dialMode = consts.DialMode_Domain
-							// Add it to real domain set.
+							// Add it to real-domain set.
 							c.muRealDomainSet.Lock()
 							c.realDomainSet.AddString(domain)
 							c.muRealDomainSet.Unlock()
