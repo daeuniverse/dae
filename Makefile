@@ -14,7 +14,10 @@ OUTPUT ?= dae
 MAX_MATCH_SET_LEN ?= 64
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 NOSTRIP ?= n
+STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
 ifeq ($(strip $(NOSTRIP)),y)
+	STRIP_FLAG := -no-strip
+else ifeq ($(wildcard $(STRIP_PATH)),)
 	STRIP_FLAG := -no-strip
 else
 	STRIP_FLAG := -strip=$(STRIP)
@@ -48,4 +51,5 @@ ebpf: clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
+    echo $(STRIP_FLAG) && \
     go generate ./control/control.go
