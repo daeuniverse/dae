@@ -20,8 +20,7 @@ git submodule update --init
 ## Minimal dependency build
 make GOFLAGS="-buildvcs=false" \
   CFLAGS="-D__REMOVE_BPF_PRINTK" \
-  CC=clang \
-  NOSTRIP=y
+  CC=clang
 
 ## Normal build
 #make
