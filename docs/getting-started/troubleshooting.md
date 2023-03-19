@@ -10,7 +10,7 @@ Solution:
 
 Compile dae with CFLAG `-D__REMOVE_BPF_PRINTK`. See [build-by-yourself](build-by-yourself.md).
 
-### Bind to WAN but no network
+### Binding to WAN but no network
 
 **1. Troubleshoot local DNS service**
 
@@ -25,7 +25,7 @@ Alternatively, if you really want to use them, refer to [external-dns](external-
 
 **2. Troubleshoot firewall**
 
-If you bind to wan, make sure firewall is closed or `12345` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
+If you bind to wan, make sure firewall is stopped or `12345` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
 
 Usual firewalls on Linux:
 
@@ -38,7 +38,7 @@ firewalld
 
 dae does not support PPPoE yet. We are working on it. However, binding to LAN for other machines should work fine.
 
-### Bind to LAN but bad DNS in other machines
+### Binding to LAN but bad DNS in other machines
 
 To verify:
 
