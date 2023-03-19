@@ -1,7 +1,4 @@
 //go:build armbe || arm64be || mips || mips64 || mips64p32 || ppc64 || s390 || s390x || sparc || sparc64
-// +build armbe arm64be mips mips64 mips64p32 ppc64 s390 s390x sparc sparc64
-
-// Copied from https://github.com/cilium/ebpf/blob/v0.10.0/internal/endian_be.go
 
 package internal
 
