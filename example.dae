@@ -59,6 +59,7 @@ subscription {
     my_sub: 'https://www.example.com/subscription/link'
     another_sub: 'https://example.com/another_sub'
     'https://example.com/no_tag_link'
+    'file://relative/path/to/mysub.sub' # Put subscription content in /etc/dae/relative/path/to/mysub.sub
 }
 
 # Nodes defined here will be merged as a part of the global node pool.

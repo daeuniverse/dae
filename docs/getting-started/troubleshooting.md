@@ -57,3 +57,5 @@ netstat -ulpen|grep 53
 
 If does, stop the service process or change its listening port from 53 to others.
 
+### Common troubleshooting
+
