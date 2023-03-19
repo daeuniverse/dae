@@ -30,7 +30,7 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
    uname -r
    ```
 
-3. Download corresponding kernel debs from [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel/releases).
+3. Download corresponding kernel debs from [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel).
 
 4. Extract debs and install
 

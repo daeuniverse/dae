@@ -176,3 +176,7 @@ routing {
 See more at [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
 If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
+
+### Troubleshooting
+
+See [Troubleshooting](troubleshooting.md).
