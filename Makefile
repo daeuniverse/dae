@@ -20,7 +20,7 @@ ifeq ($(strip $(NOSTRIP)),y)
 else ifeq ($(wildcard $(STRIP_PATH)),)
 	STRIP_FLAG := -no-strip
 else
-	STRIP_FLAG := -strip=$(STRIP)
+	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
 # Get version from .git.

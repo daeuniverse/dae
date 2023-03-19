@@ -12,6 +12,7 @@ import (
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,10 +28,21 @@ const (
 	PidFilePath = "/var/run/dae.pid"
 )
 
+var (
+	CheckNetworkLinks = []string{
+		"http://www.msftconnecttest.com/connecttest.txt",
+		"http://www.qualcomm.cn/generate_204",
+	}
+)
+
 func init() {
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-pidfile", "", false, "not generate /var/run/dae.pid")
+
+	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
+		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
+	})
 }
 
 var (
@@ -217,8 +229,8 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	resolvingfailed := false
 	if !conf.Global.DisableWaitingNetwork && len(conf.Subscription) > 0 {
 		log.Infoln("Waiting for network...")
-		for {
-			resp, err := http.Get("http://www.msftconnecttest.com/connecttest.txt")
+		for i := 0; ; i++ {
+			resp, err := http.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
 			if err != nil {
 				time.Sleep(5 * time.Second)
 				continue
