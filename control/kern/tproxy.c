@@ -2071,7 +2071,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
       } else {
         buf[to_read] = 0;
       }
-      if ((ret = bpf_probe_read_user(&buf, to_read,
+      if ((ret = bpf_core_read_user(&buf, to_read,
                                      (const void *)(arg_start + j)))) {
         // bpf_printk("failed to read process name.0: [%ld, %ld]", arg_start,
         //            arg_end);
@@ -2090,7 +2090,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
   if (length_cpy > TASK_COMM_LEN) {
     length_cpy = TASK_COMM_LEN;
   }
-  if ((ret = bpf_probe_read_user(&val.pname, length_cpy,
+  if ((ret = bpf_core_read_user(&val.pname, length_cpy,
                                  (const void *)(arg_start + last_slash)))) {
     bpf_printk("failed to read process name.1: %d", ret);
     return ret;
