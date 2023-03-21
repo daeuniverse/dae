@@ -8,9 +8,9 @@ package dns
 import (
 	"context"
 	"fmt"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"net"
 	"net/url"
 	"strconv"
@@ -18,12 +18,17 @@ import (
 	"time"
 )
 
+var (
+	FormatError = fmt.Errorf("format error")
+)
+
 type UpstreamScheme string
 
 const (
-	UpstreamScheme_TCP     UpstreamScheme = "tcp"
-	UpstreamScheme_UDP     UpstreamScheme = "udp"
-	UpstreamScheme_TCP_UDP UpstreamScheme = "tcp+udp"
+	UpstreamScheme_TCP           UpstreamScheme = "tcp"
+	UpstreamScheme_UDP           UpstreamScheme = "udp"
+	UpstreamScheme_TCP_UDP       UpstreamScheme = "tcp+udp"
+	upstreamScheme_TCP_UDP_Alias UpstreamScheme = "udp+tcp"
 )
 
 func (s UpstreamScheme) ContainsTcp() bool {
@@ -39,13 +44,16 @@ func (s UpstreamScheme) ContainsTcp() bool {
 func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, err error) {
 	var __port string
 	switch scheme = UpstreamScheme(raw.Scheme); scheme {
+	case upstreamScheme_TCP_UDP_Alias:
+		scheme = UpstreamScheme_TCP_UDP
+		fallthrough
 	case UpstreamScheme_TCP, UpstreamScheme_UDP, UpstreamScheme_TCP_UDP:
 		__port = raw.Port()
 		if __port == "" {
 			__port = "53"
 		}
 	default:
-		return "", "", 0, fmt.Errorf("unexpected dns_upstream format")
+		return "", "", 0, fmt.Errorf("unexpected scheme: %v", raw.Scheme)
 	}
 	_port, err := strconv.ParseUint(__port, 10, 16)
 	if err != nil {
@@ -66,7 +74,7 @@ type Upstream struct {
 func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err error) {
 	scheme, hostname, port, err := ParseRawUpstream(upstream)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", FormatError, err)
 	}
 
 	systemDns, err := netutils.SystemDns()
@@ -146,7 +154,7 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
 		if u.upstream, err = NewUpstream(ctx, u.Raw); err != nil {
-			return nil, fmt.Errorf("failed to init dns upstream: %v", err)
+			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 		}
 	}
 	return u.upstream, nil

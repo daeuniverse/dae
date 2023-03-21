@@ -21,6 +21,7 @@ import (
 var BadUpstreamFormatError = fmt.Errorf("bad upstream format")
 
 type Dns struct {
+	log              *logrus.Logger
 	upstream         []*UpstreamResolver
 	upstream2IndexMu sync.Mutex
 	upstream2Index   map[*Upstream]int
@@ -34,6 +35,7 @@ type NewOption struct {
 
 func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	s = &Dns{
+		log: log,
 		upstream2Index: map[*Upstream]int{
 			nil: int(consts.DnsRequestOutboundIndex_AsIs),
 		},
@@ -115,10 +117,26 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 	return s, nil
 }
 
-func (s *Dns) InitUpstreams() {
+func (s *Dns) CheckUpstreamsFormat() error {
 	for _, upstream := range s.upstream {
-		upstream.GetUpstream()
+		_, _, _, err := ParseRawUpstream(upstream.Raw)
+		if err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (s *Dns) InitUpstreams() {
+	var wg sync.WaitGroup
+	for _, upstream := range s.upstream {
+		wg.Add(1)
+		go func(upstream *UpstreamResolver) {
+			upstream.GetUpstream()
+			wg.Done()
+		}(upstream)
+	}
+	wg.Wait()
 }
 
 func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstream *Upstream, err error) {

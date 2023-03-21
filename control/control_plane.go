@@ -381,6 +381,9 @@ func NewControlPlane(
 
 	// Init immediately to avoid DNS leaking in the very beginning because param control_plane_dns_routing will
 	// be set in callback.
+	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
+		return nil, err
+	}
 	go dnsUpstream.InitUpstreams()
 
 	close(plane.ready)
