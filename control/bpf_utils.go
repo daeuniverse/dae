@@ -213,6 +213,8 @@ retryLoadBpf:
 			err = fmt.Errorf("%w: you should re-compile linux kernel with BTF configurations; see docs for more information", err)
 		} else if strings.Contains(err.Error(), "unknown func bpf_trace_printk") {
 			err = fmt.Errorf(`%w: please try to compile dae without bpf_printk; example of cross-compilation to arm64: make GOARCH=arm64 CGO_ENABLED=0 CFLAGS="-D__REMOVE_BPF_PRINTK"`, err)
+		} else if strings.Contains(err.Error(), "unknown func bpf_probe_read") {
+			err = fmt.Errorf(`%w: please re-compile linux kernel with CONFIG_BPF_EVENTS=y"`, err)
 		}
 		return err
 	}
