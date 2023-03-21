@@ -39,6 +39,7 @@ dae needs:
 ```
 CONFIG_DEBUG_INFO_BTF=y
 CONFIG_BPF_EVENTS=y
+CONFIG_KPROBE_EVENTS=y
 CONFIG_NET_CLS_ACT=y
 CONFIG_NET_SCH_INGRESS=m
 CONFIG_NET_INGRESS=y
@@ -47,7 +48,7 @@ CONFIG_NET_EGRESS=y
 Check them using command like:
 
 ```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO_BTF|CONFIG_BPF_EVENTS|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS)='
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO_BTF|BPF_EVENTS|KPROBE_EVENTS|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS)='
 ```
 
 > **Note**
