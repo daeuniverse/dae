@@ -138,7 +138,7 @@ jobs:
           tag: ${{ github.ref }}
   
   docker:
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v3
