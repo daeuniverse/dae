@@ -40,7 +40,15 @@ dae does not support PPPoE yet. We are working on it. However, binding to LAN fo
 
 ### Binding to LAN but bad DNS in other machines
 
-To verify:
+**1. Troubleshoot config of dae**
+
+Make sure you have bind to the correct LAN interfaces.
+
+For example, if your use the same interface eth1 for WAN and LAN, write it as `wan_interface: eth1` and also in `lan_interface: eth1`. If the LAN interfaces you want to proxy are eth1 and docker0, write them both as `lan_interface: eth1,docker0`.
+
+**2. Troubleshoot DNS**
+
+To verify on another machine in LAN:
 
 ```
 curl -i 1.1.1.1
@@ -55,7 +63,4 @@ netstat -ulpen|grep 53
 # lsof -i:53 -n
 ```
 
-If does, stop the service process or change its listening port from 53 to others.
-
-### Common troubleshooting
-
+If does, stop the service process or change its listening port from 53 to others. Do not forget to modify `/etc/resolv.conf` to make DNS accessible (for example, with content `nameserver 223.5.5.5`, but do not use `nameserver 127.0.0.1`).
