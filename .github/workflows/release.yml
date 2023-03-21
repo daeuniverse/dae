@@ -100,6 +100,7 @@ jobs:
           mkdir -p ./build/
           export CGO_ENABLED=0
           export GOFLAGS="-trimpath -modcacherw"
+          export CFLAGS="-D__REMOVE_BPF_PRINTK"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           make
