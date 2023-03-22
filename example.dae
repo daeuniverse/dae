@@ -128,11 +128,11 @@ routing {
     # If you bind to WAN and set upstream (in section "dns") to a DNS service in localhost (dnsmasq, adguard, etc.),
     # to avoid loops, let them "must_direct", which makes DNS requests not redirect back to dae again.
     # "pname" means process name.
-    #pname(dnsmasq) && l4proto(udp) && dport(53) -> must_direct
+    pname(dnsmasq, systemd-resolved) && l4proto(udp) && dport(53) -> must_direct
 
     # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
     # WAN.
-    pname(NetworkManager, systemd-resolved) -> direct
+    pname(NetworkManager) -> direct
 
     # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being
     # forwarded by the proxy.
