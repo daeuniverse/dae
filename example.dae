@@ -84,7 +84,7 @@ dns {
     }
     routing {
         request {
-            fallback: asis
+            fallback: alidns
         }
         response {
             upstream(googledns) -> accept
