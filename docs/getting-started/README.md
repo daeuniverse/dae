@@ -170,7 +170,7 @@ group {
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/routing.md for full examples.
 routing {
-  pname(NetworkManager, systemd-resolved) -> direct
+  pname(NetworkManager, systemd-resolved, dnsmasq) -> must_direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
 
   ### Write your rules below.
