@@ -45,7 +45,7 @@ jobs:
           # END Linux ARM 5 6 7
       fail-fast: false
 
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
@@ -138,7 +138,7 @@ jobs:
           tag: ${{ github.ref }}
   
   docker:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v3
