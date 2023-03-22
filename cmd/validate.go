@@ -14,7 +14,7 @@ import (
 var (
 	validateCmd = &cobra.Command{
 		Use:   "validate",
-		Short: "To validating dae config.",
+		Short: "To validate dae config.",
 		Run: func(cmd *cobra.Command, args []string) {
 			if cfgFile == "" {
 				fmt.Println("Argument \"--config\" or \"-c\" is required but not provided.")

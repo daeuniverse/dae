@@ -7,19 +7,21 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"github.com/daeuniverse/dae/config"
+	"github.com/spf13/cobra"
 )
 
 var (
 	exportCmd = &cobra.Command{
-		Use: "export",
+		Use:   "export",
+		Short: "To export some information for UI developers.",
 		Run: func(cmd *cobra.Command, args []string) {
 			_ = cmd.Help()
 		},
 	}
 	exportOutlineCmd = &cobra.Command{
-		Use: "outline",
+		Use:   "outline",
+		Short: "To export config structure.",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println(config.ExportOutlineJson(Version))
 		},
