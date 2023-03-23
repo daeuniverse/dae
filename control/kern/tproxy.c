@@ -94,7 +94,7 @@ static const __u32 control_plane_pid_key = 4;
 static const __u32 control_plane_nat_direct_key
     __attribute__((unused, deprecated)) = 5;
 static const __u32 control_plane_dns_routing_key
-    __attribute__((unused, deprecated))= 6;
+    __attribute__((unused, deprecated)) = 6;
 
 // Outbound Connectivity Map:
 
@@ -989,14 +989,12 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
                                           BPF_ANY)))) {
     return ret;
   };
-  if (!_is_wan) {
-    __builtin_memcpy(lpm_key_instance.data, mac, IPV6_BYTE_LENGTH);
-    key = MatchType_Mac;
-    if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key,
-                                            &lpm_key_instance, BPF_ANY)))) {
-      return ret;
-    };
-  }
+  __builtin_memcpy(lpm_key_instance.data, mac, IPV6_BYTE_LENGTH);
+  key = MatchType_Mac;
+  if (unlikely((ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
+                                          BPF_ANY)))) {
+    return ret;
+  };
 
   struct map_lpm_type *lpm;
   struct match_set *match_set;
@@ -1356,11 +1354,12 @@ new_connection:
   }
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
   if (l4proto == IPPROTO_TCP) {
-    bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", outbound,
+    bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", ret,
                tuples.dip.u6_addr32, bpf_ntohs(tuples.dport));
   } else {
-    bpf_printk("udp(lan): outbound: %u, target: %pI6:%u", outbound,
-               tuples.dip.u6_addr32, bpf_ntohs(tuples.dport));
+    bpf_printk("udp(lan): outbound: %u, target: %pI6:%u",
+               routing_result.outbound, tuples.dip.u6_addr32,
+               bpf_ntohs(tuples.dport));
   }
 #endif
   if (routing_result.outbound == OUTBOUND_DIRECT ||
@@ -1751,8 +1750,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       __u32 pid = pid_pname ? pid_pname->pid : 0;
       bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples.sip.u6_addr32,
                  bpf_ntohs(tuples.sport), pid);
-      bpf_printk("udp(wan): outbound: %u, %pI6:%u", new_hdr.outbound,
-                 tuples.dip.u6_addr32, bpf_ntohs(tuples.dport));
+      bpf_printk("udp(wan): outbound: %u, %pI6:%u",
+                 new_hdr.routing_result.outbound, tuples.dip.u6_addr32,
+                 bpf_ntohs(tuples.dport));
 #endif
 
       if ((new_hdr.routing_result.outbound == OUTBOUND_DIRECT ||
@@ -2072,7 +2072,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
         buf[to_read] = 0;
       }
       if ((ret = bpf_core_read_user(&buf, to_read,
-                                     (const void *)(arg_start + j)))) {
+                                    (const void *)(arg_start + j)))) {
         // bpf_printk("failed to read process name.0: [%ld, %ld]", arg_start,
         //            arg_end);
         // bpf_printk("_failed to read process name.0: %ld %ld", j, to_read);
@@ -2091,7 +2091,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
     length_cpy = TASK_COMM_LEN;
   }
   if ((ret = bpf_core_read_user(&val.pname, length_cpy,
-                                 (const void *)(arg_start + last_slash)))) {
+                                (const void *)(arg_start + last_slash)))) {
     bpf_printk("failed to read process name.1: %d", ret);
     return ret;
   }
