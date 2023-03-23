@@ -6,15 +6,16 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
-	"github.com/mohae/deepcopy"
-	"github.com/safchain/ethtool"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/mohae/deepcopy"
+	"github.com/safchain/ethtool"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
@@ -38,6 +39,9 @@ type controlPlaneCore struct {
 	flip       int
 	isReload   bool
 	bpfEjected bool
+
+	closed context.Context
+	close  context.CancelFunc
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -53,6 +57,7 @@ func newControlPlaneCore(log *logrus.Logger,
 	if !isReload {
 		deferFuncs = append(deferFuncs, bpf.Close)
 	}
+	closed, toClose := context.WithCancel(context.Background())
 	return &controlPlaneCore{
 		log:             log,
 		deferFuncs:      deferFuncs,
@@ -61,6 +66,9 @@ func newControlPlaneCore(log *logrus.Logger,
 		kernelVersion:   kernelVersion,
 		flip:            coreFlip,
 		isReload:        isReload,
+		bpfEjected:      false,
+		closed:          closed,
+		close:           toClose,
 	}
 }
 
@@ -68,6 +76,11 @@ func (c *controlPlaneCore) Flip() {
 	coreFlip = coreFlip&1 ^ 1
 }
 func (c *controlPlaneCore) Close() (err error) {
+	select {
+	case <-c.closed.Done():
+		return nil
+	default:
+	}
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
@@ -79,6 +92,7 @@ func (c *controlPlaneCore) Close() (err error) {
 			}
 		}
 	}
+	c.close()
 	return err
 }
 

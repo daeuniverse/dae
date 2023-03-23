@@ -186,6 +186,7 @@ loop:
 						"err": err,
 					}).Fatalln("[Reload] Failed to roll back configuration")
 				}
+				newConf = conf
 				log.Warnln("[Reload] Last reload failed; rolled back configuration")
 			} else {
 				log.Warnln("[Reload] Stopped old control plane")

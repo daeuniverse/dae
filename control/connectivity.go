@@ -7,8 +7,8 @@ package control
 
 import (
 	"github.com/cilium/ebpf"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"strconv"
 )
@@ -25,11 +25,17 @@ func FormatL4Proto(l4proto uint8) string {
 
 func (c *controlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, networkType *dialer.NetworkType, isInit bool) {
 	return func(alive bool, networkType *dialer.NetworkType, isInit bool) {
-		if !isInit {
+		select {
+		case <-c.closed.Done():
+			return
+		default:
+		}
+		if !isInit || c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.WithFields(logrus.Fields{
-				"alive":    alive,
-				"network":  networkType.StringWithoutDns(),
-				"outbound": c.outboundId2Name[outbound],
+				"alive":      alive,
+				"network":    networkType.StringWithoutDns(),
+				"outboundId": outbound,
+				"outbound":   c.outboundId2Name[outbound],
 			}).Warnf("Outbound alive state changed, notify the kernel program.")
 		}
 
@@ -37,10 +43,16 @@ func (c *controlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(aliv
 		if alive {
 			value = 1
 		}
-		_ = c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
+		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
 			Outbound:  outbound,
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
-		}, value, ebpf.UpdateAny)
+		}, value, ebpf.UpdateAny); err != nil {
+			c.log.WithFields(logrus.Fields{
+				"alive":    alive,
+				"network":  networkType.StringWithoutDns(),
+				"outbound": c.outboundId2Name[outbound],
+			}).Warnf("Failed to notify the kernel program: %v", err)
+		}
 	}
 }

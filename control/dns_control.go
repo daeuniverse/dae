@@ -289,6 +289,12 @@ type dialArgument struct {
 }
 
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest) (err error) {
+	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Questions) > 0 {
+		q := dnsMessage.Questions[0]
+		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
+			RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), req.realDst.String(), strings.ToLower(q.Name.String()), q.Type,
+		)
+	}
 	if resp := c.LookupDnsRespCache_(dnsMessage); resp != nil {
 		// Send cache to client directly.
 		if err = sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
@@ -296,7 +302,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 		}
 		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 			q := dnsMessage.Questions[0]
-			c.log.Tracef("UDP(DNS) %v <-> Cache: %v %v",
+			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
 				RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), strings.ToLower(q.Name.String()), q.Type,
 			)
 		}
