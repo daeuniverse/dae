@@ -226,9 +226,12 @@ func (c *DnsController) UpdateDnsCache(host string, dnsTyp string, answers []dns
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
-		c.dnsCacheMu.Unlock()
-		cache.Deadline = deadline
+		// To avoid overwriting DNS upstream resolution.
+		if deadline.After(cache.Deadline) {
+			cache.Deadline = deadline
+		}
 		cache.Answers = answers
+		c.dnsCacheMu.Unlock()
 	} else {
 		cache, err = c.newCache(fqdn, answers, deadline)
 		if err != nil {

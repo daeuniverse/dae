@@ -204,6 +204,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	retry := 0
 getNew:
 	if retry > MaxRetry {
+		c.log.WithFields(logrus.Fields{
+			"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
+			"network": networkType.String(),
+			"dialer":  ue.Dialer.Property().Name,
+			"retry":   retry,
+		}).Warnln("Touch max retry limit.")
 		return fmt.Errorf("touch max retry limit")
 	}
 	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
