@@ -43,7 +43,7 @@ jobs:
             goarch: arm
             goarm: 5
           # END Linux ARM 5 6 7
-          # BEGIN Linux AMD64
+          # BEGIN Linux AMD64 v1 v2 v3
           - goos: linux
             goarch: amd64
             goamd64: v1
