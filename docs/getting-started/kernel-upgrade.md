@@ -22,25 +22,7 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 
 ### Upgrade to BTF Kernel on Armbian Linux
 
-1. Backup your system using `clonezilla` or other tools.
-
-2. Check your board famlily:
-
-   ```shell
-   uname -r
-   ```
-
-3. Download corresponding kernel debs from [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel).
-
-4. Extract debs and install
-
-   ```shell
-   tar -xvf <downloaded_kernel_pkg.tar>
-   dpkg -i linux-*.deb
-   ```
-
-5. Reboot your machine.
-
+See [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel).
 
 ### Upgrade Kernel on Debian-based Linux
 
