@@ -30,7 +30,8 @@ const (
 
 var (
 	CheckNetworkLinks = []string{
-		"http://www.msftconnecttest.com/connecttest.txt",
+		"http://edge.microsoft.com/captiveportal/generate_204",
+		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
 )
