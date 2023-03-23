@@ -30,7 +30,7 @@ jobs:
     strategy:
       matrix:
         goos: [ linux ]
-        goarch: [ amd64, arm64, 386, riscv64, mips64, mips64le, mipsle, mips ]
+        goarch: [ arm64, 386, riscv64, mips64, mips64le, mipsle, mips ]
         include:
           # BEGIN Linux ARM 5 6 7
           - goos: linux
@@ -43,6 +43,17 @@ jobs:
             goarch: arm
             goarm: 5
           # END Linux ARM 5 6 7
+          # BEGIN Linux AMD64
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+          - goos: linux
+            goarch: amd64
+            goamd64: v2
+          - goos: linux
+            goarch: amd64
+            goamd64: v3
+          # END Linux AMD64 v1 v2 v3
       fail-fast: false
 
     runs-on: ubuntu-22.04
@@ -50,6 +61,7 @@ jobs:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
+      GOAMD64: ${{ matrix.goamd64 }}
       CGO_ENABLED: 0
 
     steps:
@@ -73,11 +85,10 @@ jobs:
           fi
           echo "VERSION=$version" >> $GITHUB_OUTPUT
           echo "VERSION=$version" >> $GITHUB_ENV
-
       - name: Show workflow information
         id: get_filename
         run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM\"].friendlyName" -r < install/friendly-filenames.json)
+          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
           echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
@@ -89,15 +100,13 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y clang llvm
-
       - name: Get project dependencies
         run: |
           git submodule update --init --recursive
           go mod download
           go mod vendor
-
       - name: Create full source ZIP archive and Signature
-        if: github.event_name == 'release' && matrix.goarch == 'amd64'
+        if: github.event_name == 'release' && matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: |
           zip -9vr dae-full-src.zip . -x .git/\*
           FILE=./dae-full-src.zip
@@ -106,7 +115,6 @@ jobs:
           shasum -a 1   $FILE >>$DGST
           shasum -a 256 $FILE >>$DGST
           shasum -a 512 $FILE >>$DGST
-
       - name: Build dae
         run: |
           mkdir -p ./build/
@@ -116,9 +124,8 @@ jobs:
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           make
-
       - name: Smoking test
-        if: matrix.goarch == 'amd64'
+        if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: ./build/dae-$ASSET_NAME --version
 
       - name: Create binary ZIP archive and Signature
@@ -132,7 +139,6 @@ jobs:
           shasum -a 1   $FILE >>$DGST
           shasum -a 256 $FILE >>$DGST
           shasum -a 512 $FILE >>$DGST
-
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v3
         with:

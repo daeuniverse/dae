@@ -1,6 +1,8 @@
 {
   "linux-386": { "friendlyName": "linux-x86_32" },
-  "linux-amd64": { "friendlyName": "linux-x86_64" },
+  "linux-amd64v1": { "friendlyName": "linux-x86_64" },
+  "linux-amd64v2": { "friendlyName": "linux-x86_64_v2" },
+  "linux-amd64v3": { "friendlyName": "linux-x86_64_v3" },
   "linux-arm5": { "friendlyName": "linux-armv5" },
   "linux-arm6": { "friendlyName": "linux-armv6" },
   "linux-arm7": { "friendlyName": "linux-armv7" },
