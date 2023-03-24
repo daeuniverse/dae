@@ -145,9 +145,9 @@ jobs:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
 
-      - name: Upload submodule status file to GitHub release
+      - name: Upload full source to GitHub release
         uses: svenstaro/upload-release-action@v2
-        if: github.event_name == 'release' && matrix.goarch == 'amd64'
+        if: github.event_name == 'release' && matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file_glob: true
