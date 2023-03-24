@@ -24,17 +24,35 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 
 See [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel).
 
-### Upgrade Kernel on Debian-based Linux
+### Upgrade Kernel on Debian Linux
 
-Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install any specific version kernel on your Linux system. After the installation is done, reboot your system to get the desired kernel on your Linux system.
+Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install the latest Kernel. After the installation is done, reboot your system to get the desired Kernel on your Linux system.
+
+See [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/)
 
 ```shell
 # Sync databases.
 sudo apt update
-# Search available kernel versions.
-apt-cache search ^linux-image
-# Install specific image.
-sudo apt install <specific-linux-image>
+# Add unstable source
+cat <<EOF | sudo tee -a /etc/apt/sources.list/
+deb http://deb.debian.org/debian unstable main contrib non-free
+deb-src http://deb.debian.org/debian unstable main contrib non-free
+EOF
+
+# Create apt preferences
+cat <<EOF | sudo tee /etc/apt/preferences
+Package: *
+Pin: release a=bullseye
+Pin-Priority: 500
+
+Package: linux-image-amd64
+Pin: release a=unstable
+Pin-Priority: 1000
+
+Package: *
+Pin: release a=unstable
+Pin-Priority: 100
+EOF
 ```
 
 Reboot to take effect:
