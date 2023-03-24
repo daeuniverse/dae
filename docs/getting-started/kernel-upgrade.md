@@ -53,6 +53,9 @@ Package: *
 Pin: release a=unstable
 Pin-Priority: 100
 EOF
+
+# Perform full dist-upgrade
+sudo apt dist-upgrade
 ```
 
 Reboot to take effect:
