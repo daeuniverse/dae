@@ -46,7 +46,7 @@ uname -r
 
 (DEBIAN ONLY): If you would like to upgrade to the latest Kernel (AGGRESSIVE UPGRADE), follow the commands below:
 
-> **Warn**
+> **Warning**
 > Upgrading to the latest Kernel might potentially introduce breaking changes to your system, so please do at your own risk.
 
 Reference: [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/)
