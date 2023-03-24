@@ -7,9 +7,10 @@ package domain_matcher
 
 import (
 	"fmt"
-	"github.com/v2rayA/ahocorasick-domain"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/trie"
+	"github.com/sirupsen/logrus"
+	"github.com/v2rayA/ahocorasick-domain"
 	"regexp"
 	"sort"
 	"strings"
@@ -18,6 +19,8 @@ import (
 var ValidDomainChars = trie.NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^"))
 
 type AhocorasickSlimtrie struct {
+	log *logrus.Logger
+
 	validAcIndexes     []int
 	validTrieIndexes   []int
 	validRegexpIndexes []int
@@ -30,8 +33,9 @@ type AhocorasickSlimtrie struct {
 	err         error
 }
 
-func NewAhocorasickSlimtrie(bitLength int) *AhocorasickSlimtrie {
+func NewAhocorasickSlimtrie(log *logrus.Logger, bitLength int) *AhocorasickSlimtrie {
 	return &AhocorasickSlimtrie{
+		log:         log,
 		ac:          make([]*ahocorasick.Matcher, bitLength),
 		trie:        make([]*trie.Trie, bitLength),
 		regexp:      make([][]*regexp.Regexp, bitLength),
@@ -43,13 +47,24 @@ func (n *AhocorasickSlimtrie) AddSet(bitIndex int, patterns []string, typ consts
 	if n.err != nil {
 		return
 	}
-	switch typ {
-	case consts.RoutingDomainKey_Full:
-		for _, d := range patterns {
+nextPattern:
+	for _, d := range patterns {
+		switch typ {
+		case consts.RoutingDomainKey_Full:
+			for _, r := range []byte(d) {
+				if !ValidDomainChars.IsValidChar(r) {
+					n.log.Warnf("DomainMatcher: skip bad full domain: %v: unexpected chat: %v", d, r)
+					continue nextPattern
+				}
+			}
 			n.toBuildTrie[bitIndex] = append(n.toBuildTrie[bitIndex], "^"+d+"$")
-		}
-	case consts.RoutingDomainKey_Suffix:
-		for _, d := range patterns {
+		case consts.RoutingDomainKey_Suffix:
+			for _, r := range []byte(d) {
+				if !ValidDomainChars.IsValidChar(r) {
+					n.log.Warnf("DomainMatcher: skip bad suffix domain: %v: unexpected chat: %v", d, r)
+					continue nextPattern
+				}
+			}
 			if strings.HasPrefix(d, ".") {
 				// abc.example.com
 				n.toBuildTrie[bitIndex] = append(n.toBuildTrie[bitIndex], d+"$")
@@ -61,24 +76,20 @@ func (n *AhocorasickSlimtrie) AddSet(bitIndex int, patterns []string, typ consts
 				n.toBuildTrie[bitIndex] = append(n.toBuildTrie[bitIndex], "^"+d+"$")
 				// cannot match abcexample.com
 			}
-		}
-	case consts.RoutingDomainKey_Keyword:
-		// Only use ac automaton for "keyword" matching to save memory.
-		for _, d := range patterns {
+		case consts.RoutingDomainKey_Keyword:
+			// Only use ac automaton for "keyword" matching to save memory.
 			n.toBuildAc[bitIndex] = append(n.toBuildAc[bitIndex], []byte(d))
-		}
-	case consts.RoutingDomainKey_Regex:
-		for _, d := range patterns {
+		case consts.RoutingDomainKey_Regex:
 			r, err := regexp.Compile(d)
 			if err != nil {
 				n.err = fmt.Errorf("failed to compile regex: %v", d)
 				return
 			}
 			n.regexp[bitIndex] = append(n.regexp[bitIndex], r)
+		default:
+			n.err = fmt.Errorf("unknown RoutingDomainKey: %v", typ)
+			return
 		}
-	default:
-		n.err = fmt.Errorf("unknown RoutingDomainKey: %v", typ)
-		return
 	}
 }
 func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32) {

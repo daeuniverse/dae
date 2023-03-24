@@ -317,7 +317,7 @@ func NewControlPlane(
 	}
 	routingMatcher, err := builder.BuildUserspace(core.bpf.LpmArrayMap)
 	if err != nil {
-		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
 
 	/// Dial mode.

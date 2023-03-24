@@ -7,14 +7,14 @@ package dns
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
+	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"strconv"
@@ -24,6 +24,7 @@ import (
 var ValidCidrChars = trie.NewValidChars([]byte{'0', '1'})
 
 type ResponseMatcherBuilder struct {
+	log                *logrus.Logger
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
 	ipSet              []*trie.Trie
@@ -32,7 +33,7 @@ type ResponseMatcherBuilder struct {
 }
 
 func NewResponseMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *ResponseMatcherBuilder, err error) {
-	b = &ResponseMatcherBuilder{upstreamName2Id: upstreamName2Id}
+	b = &ResponseMatcherBuilder{log: log, upstreamName2Id: upstreamName2Id}
 	rulesBuilder := routing.NewRulesBuilder(log)
 	rulesBuilder.RegisterFunctionParser(consts.Function_QName, routing.PlainParserFactory(b.addQName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
@@ -208,7 +209,7 @@ func (b *ResponseMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrS
 func (b *ResponseMatcherBuilder) Build() (matcher *ResponseMatcher, err error) {
 	var m ResponseMatcher
 	// Build domainMatcher.
-	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(b.log, consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		m.domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

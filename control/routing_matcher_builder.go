@@ -21,6 +21,7 @@ import (
 )
 
 type RoutingMatcherBuilder struct {
+	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
 	bpf                *bpfObjects
 	rules              []bpfMatchSet
@@ -30,7 +31,7 @@ type RoutingMatcherBuilder struct {
 }
 
 func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, bpf: bpf}
+	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, bpf: bpf}
 	rulesBuilder := routing.NewRulesBuilder(log)
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
@@ -318,7 +319,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 
 func (b *RoutingMatcherBuilder) BuildUserspace(lpmArrayMap *ebpf.Map) (matcher *RoutingMatcher, err error) {
 	// Build domainMatcher
-	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(b.log, consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}
