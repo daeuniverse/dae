@@ -24,11 +24,32 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 
 See [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel).
 
-### Upgrade Kernel on Debian Linux
+### Upgrade Kernel on Debian-based Linux
 
-Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install the latest Kernel. After the installation is done, reboot your system to get the desired Kernel on your Linux system.
+Debian-based distributions like armbian can install a specific version of Kernel on their system. You can run the following command-line on your Linux terminal to install any specific version kernel on your Linux system. After the installation is done, reboot your system to get the desired kernel on your Linux system.
 
-See [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/)
+```shell
+# Sync databases.
+sudo apt update
+# Search available kernel versions.
+apt-cache search ^linux-image
+# Install specific image.
+sudo apt install <specific-linux-image>
+```
+
+Reboot to take effect:
+
+```shell
+sudo reboot
+uname -r
+```
+
+(DEBIAN ONLY): If you would like to upgrade to the latest Kernel (AGGRESSIVE UPGRADE), follow the commands below:
+
+> **Note**
+> Upgrading to the latest Kernel might potentially introduce breaking changes to your system, so please do at your own risk.
+
+Reference: [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/)
 
 ```shell
 # Sync databases.
