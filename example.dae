@@ -26,8 +26,8 @@ global {
     #lan_interface: docker0
 
     # The WAN interface to bind. Use it if you want to proxy localhost.
-    # Multiple interfaces split by ",".
-    wan_interface: wlp5s0
+    # Multiple interfaces split by ",". Use "auto" to auto detect.
+    wan_interface: auto
 
     # Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.
     allow_insecure: false

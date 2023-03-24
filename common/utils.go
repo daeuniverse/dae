@@ -13,7 +13,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -68,6 +70,9 @@ func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
 }
 
 func Deduplicate(list []string) []string {
+	if list == nil {
+		return nil
+	}
 	res := make([]string, 0, len(list))
 	m := make(map[string]struct{})
 	for _, v := range list {
@@ -414,4 +419,33 @@ func Htons(i uint16) uint16 {
 func Ntohs(i uint16) uint16 {
 	bytes := *(*[2]byte)(unsafe.Pointer(&i))
 	return binary.BigEndian.Uint16(bytes[:])
+}
+
+func GetDefaultIfnames() (defaultIfs []string, err error) {
+	linkList, err := netlink.LinkList()
+	if err != nil {
+		return nil, err
+	}
+nextLink:
+	for _, link := range linkList {
+		if link.Attrs().Flags&unix.RTF_UP != unix.RTF_UP {
+			// Interface is down.
+			continue
+		}
+		for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
+			rs, err := netlink.RouteList(link, family)
+			if err != nil {
+				return nil, err
+			}
+			for _, route := range rs {
+				if route.Dst != nil {
+					continue
+				}
+				// Have no dst, it is a default route.
+				defaultIfs = append(defaultIfs, link.Attrs().Name)
+				continue nextLink
+			}
+		}
+	}
+	return Deduplicate(defaultIfs), nil
 }

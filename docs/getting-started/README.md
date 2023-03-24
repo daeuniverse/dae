@@ -133,7 +133,7 @@ However, this config leaves dae no-load state. If you want dae to be in working 
 global {
   # Bind to LAN and/or WAN as you want. Replace the interface name to your own.
   #lan_interface: docker0
-  wan_interface: wlp5s0
+  wan_interface: auto # Use "auto" to auto detect WAN interface.
 
   log_level: info
   allow_insecure: false

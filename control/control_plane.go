@@ -186,6 +186,7 @@ func NewControlPlane(
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
+		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
 			if err = core.bindLan(ifname); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
@@ -193,6 +194,20 @@ func NewControlPlane(
 		}
 	}
 	// Bind to WAN
+	// preprocess "auto".
+	ifs := make([]string, 0, len(global.WanInterface)+2)
+	for _, ifname := range global.WanInterface {
+		if ifname == "auto" {
+			defaultIfs, err := common.GetDefaultIfnames()
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert 'auto': %w", err)
+			}
+			ifs = append(ifs, defaultIfs...)
+		} else {
+			ifs = append(ifs, ifname)
+		}
+	}
+	global.WanInterface = common.Deduplicate(ifs)
 	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
 			return nil, err
