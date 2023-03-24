@@ -29,20 +29,23 @@ type CacheItem struct {
 }
 
 type LocationFinder struct {
-	mu sync.Mutex
-	m  map[string]CacheItem
+	mu         sync.Mutex
+	m          map[string]CacheItem
+	externDirs []string
 }
 
-func NewLocationFinder() *LocationFinder {
+func NewLocationFinder(externDirPath []string) *LocationFinder {
 	return &LocationFinder{
-		mu: sync.Mutex{},
-		m:  map[string]CacheItem{},
+		mu:         sync.Mutex{},
+		m:          map[string]CacheItem{},
+		externDirs: externDirPath,
 	}
 }
 
 func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (path string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Search cache.
 	if item, ok := c.m[filename]; ok && time.Now().Before(item.CacheDeadline) {
 		return item.Path, nil
 	}
@@ -63,63 +66,55 @@ func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (
 		}
 	}()
 
+	// Search dirs.
+	var searchDirs []string
 	folder := "dae"
 	location := os.Getenv("DAE_LOCATION_ASSET")
 	// check if DAE_LOCATION_ASSET is set
 	if location != "" {
 		// add DAE_LOCATION_ASSET to search path
-		searchPaths := []string{
-			filepath.Join(location, filename),
+		searchDirs = []string{
+			location,
 		}
 		// additional paths for non windows platforms
 		if runtime.GOOS != "windows" {
-			searchPaths = append(
-				searchPaths,
-				filepath.Join("/usr/local/share", folder, filename),
-				filepath.Join("/usr/share", folder, filename),
+			searchDirs = append(
+				searchDirs,
+				filepath.Join("/usr/local/share", folder),
+				filepath.Join("/usr/share", folder),
 			)
 		}
-		searchDirs := make([]string, len(searchPaths))
-		for i := range searchDirs {
-			searchDirs[i] = filepath.Dir(searchPaths[i])
-		}
-		log.Debugf(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
-		for _, searchPath := range searchPaths {
-			if _, err = os.Stat(searchPath); err != nil && errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			log.Debugf(`Found "%v" at %v`, filename, searchPath)
-			// return the first path that exists
-			return searchPath, nil
-		}
-		return "", fmt.Errorf("%v: %w in [%v]", filename, os.ErrNotExist, strings.Join(searchDirs, ", "))
+		searchDirs = append(searchDirs, c.externDirs...)
 	} else {
 		if runtime.GOOS != "windows" {
-			// search XDG data directories on non windows platform
-			searchDirs := append([]string{xdg.DataHome}, xdg.DataDirs...)
+			// Search XDG data directories on non windows platform
+			searchDirs = append([]string{xdg.DataHome}, xdg.DataDirs...)
 			for i := range searchDirs {
 				searchDirs[i] = filepath.Join(searchDirs[i], folder)
 			}
-			log.Debugf(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
-			relpath := filepath.Join(folder, filename)
-			fullpath, err := xdg.SearchDataFile(relpath)
-			if err != nil {
-				return "", fmt.Errorf("%v: %w in [%v]", filename, os.ErrNotExist, strings.Join(searchDirs, ", "))
-			}
-			log.Debugf(`Found "%v" at %v`, filename, fullpath)
-			return fullpath, nil
+			searchDirs = append(searchDirs, c.externDirs...)
 		} else {
+			searchDirs = append([]string{}, c.externDirs...)
 			// fallback to the old behavior of using only current dir on Windows
-			path := filepath.Join("./", filename)
-			if absPath, e := filepath.Abs(path); e == nil {
-				path = absPath
+			pwd := "./"
+			if absPath, e := filepath.Abs(pwd); e == nil {
+				pwd = absPath
 			}
-			if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-				return "", fmt.Errorf("%v: %w in %v", filename, os.ErrNotExist, path)
-			}
-			return path, nil
+			searchDirs = append(searchDirs, pwd)
 		}
 	}
+	log.Debugf(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
+	for _, searchDir := range searchDirs {
+		searchPath := filepath.Join(searchDir, filename)
+		if _, err = os.Stat(searchPath); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return "", err
+		}
+		log.Debugf(`Found "%v" at %v`, filename, searchPath)
+		// return the first path that exists
+		return searchPath, nil
+	}
+	return "", fmt.Errorf("%v: %w in [%v]", filename, os.ErrNotExist, strings.Join(searchDirs, ", "))
 }
-
-var DefaultLocationFinder = NewLocationFinder()

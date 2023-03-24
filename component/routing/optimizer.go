@@ -7,12 +7,12 @@ package routing
 
 import (
 	"fmt"
-	"github.com/mohae/deepcopy"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/geodata"
+	"github.com/mohae/deepcopy"
+	"github.com/sirupsen/logrus"
 	"net/netip"
 	"sort"
 	"strings"
@@ -153,14 +153,15 @@ func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule
 }
 
 type DatReaderOptimizer struct {
-	Logger *logrus.Logger
+	LocationFinder *assets.LocationFinder
+	Logger         *logrus.Logger
 }
 
 func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params []*config_parser.Param, err error) {
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := assets.DefaultLocationFinder.GetLocationAsset(o.Logger, filename)
+	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
 		return nil, err
@@ -205,7 +206,7 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := assets.DefaultLocationFinder.GetLocationAsset(o.Logger, filename)
+	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
 		return nil, err

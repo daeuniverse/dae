@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
@@ -71,6 +72,7 @@ func NewControlPlane(
 	routingA *config.Routing,
 	global *config.Global,
 	dnsConfig *config.Dns,
+	externGeoDataDirs []string,
 ) (*ControlPlane, error) {
 	var err error
 
@@ -290,10 +292,11 @@ func NewControlPlane(
 		outboundId2Name[uint8(i)] = o.Name
 	}
 	// Apply rules optimizers.
+	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
 		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{Logger: log},
+		&routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
@@ -348,7 +351,9 @@ func NewControlPlane(
 	}()
 
 	/// DNS upstream.
-	dnsUpstream, err := dns.New(log, dnsConfig, &dns.NewOption{
+	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
+		Logger:                log,
+		LocationFinder:        locationFinder,
 		UpstreamReadyCallback: plane.dnsUpstreamReadyCallback,
 	})
 	if err != nil {

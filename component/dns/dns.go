@@ -8,6 +8,7 @@ package dns
 import (
 	"fmt"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
@@ -30,12 +31,14 @@ type Dns struct {
 }
 
 type NewOption struct {
+	Logger                *logrus.Logger
+	LocationFinder        *assets.LocationFinder
 	UpstreamReadyCallback func(dnsUpstream *Upstream) (err error)
 }
 
-func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error) {
+func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	s = &Dns{
-		log: log,
+		log: opt.Logger,
 		upstream2Index: map[*Upstream]int{
 			nil: int(consts.DnsRequestOutboundIndex_AsIs),
 		},
@@ -79,21 +82,21 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 	}
 	// Optimize routings.
 	if dns.Routing.Request.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
-		&routing.DatReaderOptimizer{Logger: log},
+		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
 		return nil, err
 	}
 	if dns.Routing.Response.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Response.Rules,
-		&routing.DatReaderOptimizer{Logger: log},
+		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
 		return nil, err
 	}
 	// Parse request routing.
-	reqMatcherBuilder, err := NewRequestMatcherBuilder(log, dns.Routing.Request.Rules, upstreamName2Id, dns.Routing.Request.Fallback)
+	reqMatcherBuilder, err := NewRequestMatcherBuilder(opt.Logger, dns.Routing.Request.Rules, upstreamName2Id, dns.Routing.Request.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
@@ -102,7 +105,7 @@ func New(log *logrus.Logger, dns *config.Dns, opt *NewOption) (s *Dns, err error
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
 	// Parse response routing.
-	respMatcherBuilder, err := NewResponseMatcherBuilder(log, dns.Routing.Response.Rules, upstreamName2Id, dns.Routing.Response.Fallback)
+	respMatcherBuilder, err := NewResponseMatcherBuilder(opt.Logger, dns.Routing.Response.Rules, upstreamName2Id, dns.Routing.Response.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS response routing: %w", err)
 	}

@@ -74,17 +74,17 @@ var (
 			logrus.SetLevel(log.Level)
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			if err := Run(log, conf); err != nil {
+			if err := Run(log, conf, []string{filepath.Dir(cfgFile)}); err != nil {
 				logrus.Fatalln(err)
 			}
 		},
 	}
 )
 
-func Run(log *logrus.Logger, conf *config.Config) (err error) {
+func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
 
 	// New ControlPlane.
-	c, err := newControlPlane(log, nil, nil, conf)
+	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
 	if err != nil {
 		return err
 	}
@@ -172,13 +172,13 @@ loop:
 			obj := c.EjectBpf()
 			dnsCache := c.CloneDnsCache()
 			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(log, obj, dnsCache, newConf)
+			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
 			if err != nil {
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
 				// Load last config back.
-				newC, err = newControlPlane(log, obj, dnsCache, conf)
+				newC, err = newControlPlane(log, obj, dnsCache, conf, externGeoDataDirs)
 				if err != nil {
 					sdnotify.Stopping()
 					obj.Close()
@@ -216,7 +216,7 @@ loop:
 	return nil
 }
 
-func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config) (c *control.ControlPlane, err error) {
+func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -277,6 +277,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		&conf.Routing,
 		&conf.Global,
 		&conf.Dns,
+		externGeoDataDirs,
 	)
 	if err != nil {
 		return nil, err
