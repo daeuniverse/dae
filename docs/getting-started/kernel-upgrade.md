@@ -44,6 +44,51 @@ sudo reboot
 uname -r
 ```
 
+(DEBIAN ONLY): If you would like to upgrade to the latest Kernel (AGGRESSIVE UPGRADE), follow the commands below:
+
+> **Warning**
+> The latest Kernel that Debian officially supports is available in the `unstable release`. Debian Unstable (also known by its codename "Sid") is not strictly a release, but rather a rolling development version of the Debian distribution containing the latest packages that have been introduced into Debian. Upgrading to the latest Kernel might potentially introduce breaking changes to your system, so please do at your own risk.
+
+Reference: [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/)
+
+> **Note**
+> Please modify the following line if your system is NOT on Debian11: `Pin: release a=bullseye` - e.g. `Pin: release a=buster` (Debian10)
+
+```shell
+# Sync databases.
+sudo apt update
+# Add unstable source
+cat <<EOF | sudo tee -a /etc/apt/sources.list/
+deb http://deb.debian.org/debian unstable main contrib non-free
+deb-src http://deb.debian.org/debian unstable main contrib non-free
+EOF
+
+# Create apt preferences
+cat <<EOF | sudo tee /etc/apt/preferences
+Package: *
+Pin: release a=bullseye
+Pin-Priority: 500
+
+Package: linux-image-amd64
+Pin: release a=unstable
+Pin-Priority: 1000
+
+Package: *
+Pin: release a=unstable
+Pin-Priority: 100
+EOF
+
+# Perform full dist-upgrade
+sudo apt dist-upgrade
+```
+
+Reboot to take effect:
+
+```shell
+sudo reboot
+uname -r
+```
+
 ### Upgrade kernel on RedHat and Fedora Linux
 
 Fedora, RedHat, and RedHat-based Linux distribution users can upgrade their Linux kernel manually by downloading the kernel from the repository.
