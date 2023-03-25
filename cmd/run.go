@@ -92,7 +92,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
 		readyChan := make(chan bool, 1)
 		go func() {
@@ -131,12 +131,16 @@ loop:
 				// Listening error.
 				break loop
 			}
-		case syscall.SIGHUP:
+		case syscall.SIGUSR2:
 			isSuspend = true
 			fallthrough
 		case syscall.SIGUSR1:
 			// Reload signal.
-			log.Warnln("[Reload] Received reload signal; prepare to reload")
+			if isSuspend {
+				log.Warnln("[Reload] Received suspend signal; prepare to suspend")
+			} else {
+				log.Warnln("[Reload] Received reload signal; prepare to reload")
+			}
 			sdnotify.Reloading()
 
 			// Load new config.

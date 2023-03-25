@@ -9,12 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/netutils"
 	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/http"
@@ -239,7 +239,7 @@ func (d *Dialer) aliveBackground() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.TcpCheckOptionRaw.Raw,
 					"network": typ.String(),
-				}).Debugln("Skip check due to no record.")
+				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
 			return d.HttpCheck(ctx, opt.Url, opt.Ip4)
@@ -260,7 +260,7 @@ func (d *Dialer) aliveBackground() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.TcpCheckOptionRaw.Raw,
 					"network": typ.String(),
-				}).Debugln("Skip check due to no record.")
+				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
 			return d.HttpCheck(ctx, opt.Url, opt.Ip6)
@@ -281,7 +281,7 @@ func (d *Dialer) aliveBackground() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
-				}).Debugln("Skip check due to no record.")
+				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), true)
@@ -302,7 +302,7 @@ func (d *Dialer) aliveBackground() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
-				}).Debugln("Skip check due to no record.")
+				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), true)
@@ -323,7 +323,7 @@ func (d *Dialer) aliveBackground() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
-				}).Debugln("Skip check due to no record.")
+				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), false)
@@ -344,7 +344,7 @@ func (d *Dialer) aliveBackground() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
-				}).Debugln("Skip check due to no record.")
+				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), false)

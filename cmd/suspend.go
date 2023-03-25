@@ -7,8 +7,8 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/spf13/cobra"
 	"os"
 	"strconv"
 	"strings"
@@ -34,7 +34,7 @@ var (
 				cmd.Help()
 				os.Exit(1)
 			}
-			if err = syscall.Kill(pid, syscall.SIGHUP); err != nil {
+			if err = syscall.Kill(pid, syscall.SIGUSR2); err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
