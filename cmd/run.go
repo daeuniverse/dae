@@ -208,6 +208,9 @@ loop:
 
 			// Ready to close.
 			oldC.Close()
+		case syscall.SIGHUP:
+			// Ignore.
+			continue
 		default:
 			log.Infof("Received signal: %v", sig.String())
 			break loop
