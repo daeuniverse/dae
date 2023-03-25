@@ -186,3 +186,7 @@ dns {
 ## 错误排查
 
 详见 [Troubleshooting](troubleshooting.md)。
+
+## 大鹅宇宙
+
+Telegram: https://t.me/daeuniverse
