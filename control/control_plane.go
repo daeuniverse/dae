@@ -649,7 +649,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				return
 			default:
 			}
-			var buf [65535]byte
+			var buf [EthernetMtu]byte
 			var oob [120]byte // Size for original dest
 			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf[:], oob[:])
 			if err != nil {

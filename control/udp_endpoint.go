@@ -8,12 +8,16 @@ package control
 import (
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"net/netip"
 	"sync"
 	"time"
+)
+
+const (
+	EthernetMtu = 1500
 )
 
 type UdpHandler func(data []byte, from netip.AddrPort) error
@@ -30,7 +34,7 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) start() {
-	buf := pool.Get(0xffff)
+	buf := pool.Get(EthernetMtu)
 	defer pool.Put(buf)
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
