@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-[中文](README_zh.md)
+[**简体中文**](README_zh.md) | [**English**](README.md)
 
 ## Linux Kernel Requirement
 
