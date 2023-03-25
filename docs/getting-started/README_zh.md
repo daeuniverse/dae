@@ -157,6 +157,22 @@ routing {
 }
 ```
 
+如果你不在乎极致速度，而是更注重隐私和 DNS 泄露，使用以下配置替换上述的 dns 部分：
+```shell
+dns {
+  upstream {
+    googledns: 'tcp+udp://dns.google:53'
+    alidns: 'udp://dns.alidns.com:53'
+  }
+  routing {
+    request {
+      qname(geosite:cn) -> alidns
+      fallback: googledns
+    }
+  }
+}
+```
+
 完整样例：[example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae)。
 
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
