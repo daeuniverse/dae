@@ -17,15 +17,16 @@ type Global struct {
 	LogLevel   string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
-	TcpCheckUrl           string        `mapstructure:"tcp_check_url" default:"http://keep-alv.google.com/generate_204"`
-	UdpCheckDns           string        `mapstructure:"udp_check_dns" default:"dns.google:53"`
-	CheckInterval         time.Duration `mapstructure:"check_interval" default:"30s"`
-	CheckTolerance        time.Duration `mapstructure:"check_tolerance" default:"0"`
-	LanInterface          []string      `mapstructure:"lan_interface"`
-	WanInterface          []string      `mapstructure:"wan_interface"`
-	AllowInsecure         bool          `mapstructure:"allow_insecure" default:"false"`
-	DialMode              string        `mapstructure:"dial_mode" default:"domain"`
-	DisableWaitingNetwork bool          `mapstructure:"disable_waiting_network" default:"false"`
+	TcpCheckUrl               string        `mapstructure:"tcp_check_url" default:"http://keep-alv.google.com/generate_204"`
+	UdpCheckDns               string        `mapstructure:"udp_check_dns" default:"dns.google:53"`
+	CheckInterval             time.Duration `mapstructure:"check_interval" default:"30s"`
+	CheckTolerance            time.Duration `mapstructure:"check_tolerance" default:"0"`
+	LanInterface              []string      `mapstructure:"lan_interface"`
+	WanInterface              []string      `mapstructure:"wan_interface"`
+	AllowInsecure             bool          `mapstructure:"allow_insecure" default:"false"`
+	DialMode                  string        `mapstructure:"dial_mode" default:"domain"`
+	DisableWaitingNetwork     bool          `mapstructure:"disable_waiting_network" default:"false"`
+	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
 }
 
 type FunctionOrString interface{}

@@ -188,8 +188,15 @@ func NewControlPlane(
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
+		if global.AutoConfigKernelParameter {
+			_ = SetIpv4forward("1")
+		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
+			if global.AutoConfigKernelParameter {
+				SetSendRedirects(ifname, "0")
+				SetForwarding(ifname, "1")
+			}
 			if err = core.bindLan(ifname); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
 			}

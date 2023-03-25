@@ -10,9 +10,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/mzz2017/softwind/netproxy"
 	"golang.org/x/sys/unix"
 	"net/netip"
 	"os"
@@ -105,6 +105,28 @@ func CheckIpforward(ifname string) error {
 	return nil
 }
 
+func setForwarding(ifname string, ipversion consts.IpVersionStr, val string) error {
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
+	err := os.WriteFile(path, []byte(val), 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func SetIpv4forward(val string) error {
+	err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte(val), 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func SetForwarding(ifname string, val string) {
+	_ = setForwarding(ifname, consts.IpVersionStr_4, val)
+	_ = setForwarding(ifname, consts.IpVersionStr_6, val)
+}
+
 func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
 	b, err := os.ReadFile(path)
@@ -122,6 +144,19 @@ func CheckSendRedirects(ifname string) error {
 		return err
 	}
 	return nil
+}
+
+func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) error {
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
+	err := os.WriteFile(path, []byte(val), 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func SetSendRedirects(ifname string, val string) {
+	_ = setSendRedirects(ifname, consts.IpVersionStr_4, val)
 }
 
 func MagicNetwork(network string, mark uint32) string {
