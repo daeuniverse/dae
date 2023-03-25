@@ -22,6 +22,8 @@ Various Linux distributions have different methods to upgrade the Linux kernel. 
 
 ### Upgrade to BTF Kernel on Armbian Linux
 
+For Armbian users, we have compiled kernels with BTF on.
+
 See [daeuniverse/armbian-btf-kernel](https://github.com/daeuniverse/armbian-btf-kernel).
 
 ### Upgrade Kernel on Debian-based Linux

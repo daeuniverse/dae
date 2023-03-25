@@ -1,5 +1,7 @@
 # Quick Start Guide
 
+[中文](README_zh.md)
+
 ## Linux Kernel Requirement
 
 ## Kernel Version
@@ -91,9 +93,9 @@ docker compose up -d --build
 
 ### Others
 
-Other users can build dae by scratch. See [Build Guide](build-by-yourself.md) for more help.
+Other users can build dae from scratch. See [Build Guide](build-by-yourself.md) for more help.
 
-### Minimal Configuration
+## Minimal Configuration
 
 For minimal bootable config:
 
@@ -163,6 +165,12 @@ See more at [example.dae](https://github.com/daeuniverse/dae/blob/main/example.d
 
 If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
 
-### Troubleshooting
+## Reload and suspend
+
+When the configuration changes, it is convenient to use command to hot reload the configuration, and the existing connection will not be interrupted in the process. When you want to suspend dae, you can use command to pause.
+
+See [Reload and suspend](reload-and-suspend.md).
+
+## Troubleshooting
 
 See [Troubleshooting](troubleshooting.md).
