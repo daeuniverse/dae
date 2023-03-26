@@ -29,7 +29,7 @@ Please refer to [Quick Start Guide](./docs/getting-started) to start using `dae`
 
 ## How it works
 
-[dae 的工作原理](docs/how_it_works_zh.md)
+See [How it works](docs/how_it_works_zh.md).
 
 ## TODO
 
