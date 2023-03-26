@@ -122,7 +122,7 @@ group {
         # Filter nodes from the global node pool defined by the subscription and node section above.
         filter: subtag(regex: '^my_', another_sub) && !name(keyword: 'ExpireAt:')
         # Filter nodes from the global node pool defined by tag
-        # filter: name(node1, node2)
+        #filter: name(node1, node2)
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
