@@ -740,13 +740,6 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestTarget   netip.AddrPort
 		dialMark     uint32
 	)
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.WithFields(logrus.Fields{
-			"ipversions": ipversions,
-			"l4protos":   l4protos,
-			"upstream":   dnsUpstream.String(),
-		}).Traceln("Choose DNS path")
-	}
 	// Get the min latency path.
 	networkType := dialer.NetworkType{
 		IsDns: true,
@@ -804,6 +797,14 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	}
 	if bestDialer == nil {
 		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
+	}
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"ipversions": ipversions,
+			"l4protos":   l4protos,
+			"upstream":   dnsUpstream.String(),
+			"choose":     string(l4proto) + "+" + string(ipversion),
+		}).Traceln("Choose DNS path")
 	}
 	switch ipversion {
 	case consts.IpVersionStr_4:

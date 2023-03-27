@@ -86,7 +86,6 @@ func (d *Dialer) Close() error {
 		d.ticker.Stop()
 	}
 	d.tickerMu.Unlock()
-	close(d.checkCh)
 	return nil
 }
 

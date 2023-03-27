@@ -8,8 +8,8 @@
 package main
 
 import (
-	"github.com/json-iterator/go/extra"
 	"github.com/daeuniverse/dae/cmd"
+	"github.com/json-iterator/go/extra"
 	"net/http"
 	"os"
 	"time"

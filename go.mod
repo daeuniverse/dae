@@ -11,7 +11,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230321095027-720c4011df3a
+	github.com/mzz2017/softwind v0.0.0-20230327122502-f41e2b2af15b
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
 	github.com/safchain/ethtool v0.0.0-20230116090318-67cc41908669
 	github.com/sirupsen/logrus v1.9.0
@@ -56,6 +56,7 @@ require (
 )
 
 //replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
+
 //replace github.com/cloudflare/ahocorasick => /home/mzz/goProjects/ahocorasick
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
