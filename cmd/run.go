@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -275,6 +276,10 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		log.Warnln("No interface to bind.")
 	}
 
+	if err = preprocessWanInterfaceAuto(conf); err != nil {
+		return nil, err
+	}
+
 	c, err = control.NewControlPlane(
 		log,
 		bpf,
@@ -293,6 +298,24 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	runtime.GC()
 
 	return c, nil
+}
+
+func preprocessWanInterfaceAuto(params *config.Config) error {
+	// preprocess "auto".
+	ifs := make([]string, 0, len(params.Global.WanInterface)+2)
+	for _, ifname := range params.Global.WanInterface {
+		if ifname == "auto" {
+			defaultIfs, err := common.GetDefaultIfnames()
+			if err != nil {
+				return fmt.Errorf("failed to convert 'auto': %w", err)
+			}
+			ifs = append(ifs, defaultIfs...)
+		} else {
+			ifs = append(ifs, ifname)
+		}
+	}
+	params.Global.WanInterface = common.Deduplicate(ifs)
+	return nil
 }
 
 func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
