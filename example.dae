@@ -89,12 +89,20 @@ dns {
         googledns: 'tcp+udp://dns.google:53'
     }
     routing {
+        # According to the request of dns query, decide to use which DNS upstream.
+        # Match rules from top to bottom.
         request {
+            # fallback is also called default.
             fallback: alidns
         }
+        # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
+        # Match rules from top to bottom.
         response {
+            # Trusted upstream. Always accept its result.
             upstream(googledns) -> accept
+            # Possibly polluted, re-lookup using googledns.
             !qname(geosite:cn) && ip(geoip:private) -> googledns
+            # fallback is also called default.
             fallback: accept
         }
     }

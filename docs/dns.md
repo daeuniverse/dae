@@ -20,6 +20,8 @@ dns {
     # The routing format of 'request' and 'response' is similar with section 'routing'.
     # See https://github.com/daeuniverse/dae/blob/main/docs/routing.md
     routing {
+        # According to the request of dns query, decide to use which DNS upstream.
+        # Match rules from top to bottom.
         request {
             # Built-in upstream in 'request': asis.
             # You can also use user-defined upstreams.
@@ -36,6 +38,8 @@ dns {
             # If no match, fallback to this upstream.
             fallback: asis
         }
+        # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
+        # Match rules from top to bottom.
         response {
             # No built-in upstream in 'response'.
             # You can use user-defined upstreams.
@@ -63,8 +67,12 @@ dns {
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {
+    # According to the request of dns query, decide to use which DNS upstream.
+    # Match rules from top to bottom.
     request {
+      # Lookup China mainland domains using alidns, otherwise googledns.
       qname(geosite:cn) -> alidns
+      # fallback is also called default.
       fallback: googledns
     }
   }
@@ -79,12 +87,20 @@ dns {
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {
+    # According to the request of dns query, decide to use which DNS upstream.
+    # Match rules from top to bottom.
     request {
+      # fallback is also called default.
       fallback: alidns
     }
+    # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
+    # Match rules from top to bottom.
     response {
+      # Trusted upstream. Always accept its result.
       upstream(googledns) -> accept
+      # Possibly polluted, re-lookup using googledns.
       !qname(geosite:cn) && ip(geoip:private) -> googledns
+      # fallback is also called default.
       fallback: accept
     }
   }
