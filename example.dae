@@ -9,7 +9,7 @@ global {
     # Node connectivity check.
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     # Considering traffic consumption, it is recommended to choose a site with anycast IP and less response.
-    # tcp_check_url: 'http://keep-alv.google.com/generate_204'
+    #tcp_check_url: 'http://keep-alv.google.com/generate_204'
     tcp_check_url: 'http://gstatic.com/generate_204'
 
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
