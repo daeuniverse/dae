@@ -87,9 +87,13 @@ git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
 
-### 其他方式
+### 安装脚本
 
-其他用户可以手动编译 dae。见 [Build Guide](build-by-yourself.md)。
+见 [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer)（或使用 [镜像站](https://hubmirror.v2raya.org/daeuniverse/dae-installer)）。
+
+### 手动构建
+
+见 [Build Guide](build-by-yourself.md)。
 
 ## 最小 dae 配置
 

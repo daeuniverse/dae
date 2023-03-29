@@ -91,9 +91,13 @@ git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
 
-### Others
+### Installation Script
 
-Other users can build dae from scratch. See [Build Guide](build-by-yourself.md) for more help.
+See [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer) (or [mirror](https://hubmirror.v2raya.org/daeuniverse/dae-installer)).
+
+### Build from scratch
+
+See [Build Guide](build-by-yourself.md).
 
 ## Minimal Configuration
 
