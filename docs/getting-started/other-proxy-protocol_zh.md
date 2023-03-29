@@ -1,8 +1,8 @@
-#其他代理协议
+# 其他代理协议
 
 dae 目前支持的代理协议有：
 
-- [x] HTTP(S)
+- [x] HTTP(S), naiveproxy
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
@@ -11,11 +11,11 @@ dae 目前支持的代理协议有：
   - [x] TCP
   - [x] WS
   - [x] TLS
-  - [x] GRPC
+  - [x] gRPC
 - [x] Shadowsocks
   - [x] AEAD Ciphers
-  - [x] simple-obfs (not tested)
   - [x] Stream Ciphers
+  - [x] simple-obfs
   - [ ] v2ray-plugin
 - [x] ShadowsocksR
 - [x] Trojan
