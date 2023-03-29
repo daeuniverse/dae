@@ -6,10 +6,10 @@
 package outbound
 
 import (
-	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"testing"
 	"time"
 )
@@ -43,7 +43,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: fixedIndex,
-	}, func(alive bool, networkType *dialer.NetworkType) {})
+	}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 	for i := 0; i < 10; i++ {
 		d, _, err := g.Select(TestNetworkType)
 		if err != nil {
@@ -90,7 +90,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
-	}, func(alive bool, networkType *dialer.NetworkType) {})
+	}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 
 	// Test 1000 times.
 	for i := 0; i < 1000; i++ {
@@ -155,7 +155,7 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
-	}, func(alive bool, networkType *dialer.NetworkType) {})
+	}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
 		d, _, err := g.Select(TestNetworkType)
@@ -195,7 +195,7 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	}
 	g := NewDialerGroup(option, "test-group", dialers, DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Random,
-	}, func(alive bool, networkType *dialer.NetworkType) {})
+	}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 	zeroTarget := 3
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[zeroTarget], false)
 	count := make([]int, len(dialers))

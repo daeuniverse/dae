@@ -312,10 +312,11 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 		return nil
 	}
 
-	// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
-	// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
-	// Note that additional record OPT may not be supported by home router either.
-	_, _ = EnsureAdditionalOpt(dnsMessage, true)
+	//// NOTICE: Rush-answer detector was removed because it does not always work in all districts.
+	//// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
+	//// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
+	//// Note that additional record OPT may not be supported by home router either.
+	//_, _ = EnsureAdditionalOpt(dnsMessage, true)
 
 	// Route request.
 	upstream, err := c.routing.RequestSelect(dnsMessage)
@@ -382,13 +383,17 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 
 	// dnsRespHandler caches dns response and check rush answers.
 	dnsRespHandler := c.DnsRespHandlerFactory(func(from netip.AddrPort) bool {
-		// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
-		// Because additional record OPT may not be supported by home router.
-		// So se should trust home devices even if they make rush-answer (or looks like).
-		return dialArgument.bestDialer.Property().Name == "direct" &&
-			!from.Addr().IsPrivate() &&
-			!from.Addr().IsLoopback() &&
-			!from.Addr().IsUnspecified()
+		//// NOTICE: Rush-answer detector was removed because it does not always work in all districts.
+		//// We only validate rush-ans when outbound is direct and pkt does not send to a home device.
+		//// Because additional record OPT may not be supported by home router.
+		//// So se should trust home devices even if they make rush-answer (or looks like).
+		//return dialArgument.bestDialer.Property().Name == "direct" &&
+		//	!from.Addr().IsPrivate() &&
+		//	!from.Addr().IsLoopback() &&
+		//	!from.Addr().IsUnspecified()
+
+		// Do not validate rush-answer.
+		return false
 	})
 	// Dial and send.
 	var respMsg *dnsmessage.Message
@@ -456,12 +461,12 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 			if err != nil {
 				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
 			}
-			cancelDnsReqCtx()
 			respMsg, err = dnsRespHandler(respBuf[:n], dialArgument.bestTarget)
 			if err != nil {
 				return err
 			}
 			if respMsg != nil {
+				cancelDnsReqCtx()
 				break
 			}
 		}

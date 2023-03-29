@@ -7,9 +7,9 @@ package dialer
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/sirupsen/logrus"
-	"github.com/daeuniverse/dae/common/consts"
 	"strings"
 	"sync"
 	"time"
@@ -138,10 +138,8 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			// Dialer: not alive -> alive.
 			if index == -NotAlive {
 				a.log.WithFields(logrus.Fields{
-					"dialer":  dialer.property.Name,
-					"group":   a.dialerGroupName,
-					"network": a.CheckTyp.StringWithoutDns(),
-				}).Infoln("NOT ALIVE -> ALIVE:")
+					"group": a.dialerGroupName,
+				}).Infof("[NOT ALIVE --%v-> ALIVE] %v", a.CheckTyp.String(), dialer.property.Name)
 			}
 			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
 			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
@@ -151,10 +149,8 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		if index >= 0 {
 			// Dialer: alive -> not alive.
 			a.log.WithFields(logrus.Fields{
-				"dialer":  dialer.property.Name,
-				"group":   a.dialerGroupName,
-				"network": a.CheckTyp.StringWithoutDns(),
-			}).Infoln("ALIVE -> NOT ALIVE:")
+				"group": a.dialerGroupName,
+			}).Infof("[ALIVE --%v-> NOT ALIVE] %v", a.CheckTyp.String(), dialer.property.Name)
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {
 				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))

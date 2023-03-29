@@ -6,8 +6,8 @@
 package domain_matcher
 
 import (
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
 	"math/rand"
 	"testing"
@@ -21,7 +21,7 @@ func TestAhocorasickSlimtrie(t *testing.T) {
 		t.Fatal(err)
 	}
 	bf := NewBruteforce(consts.MaxMatchSetLen)
-	actrie := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+	actrie := NewAhocorasickSlimtrie(logrus.StandardLogger(), consts.MaxMatchSetLen)
 	for _, domains := range simulatedDomainSet {
 		bf.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 		actrie.AddSet(domains.RuleIndex, domains.Domains, domains.Key)

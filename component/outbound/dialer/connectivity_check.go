@@ -167,6 +167,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 type TcpCheckOptionRaw struct {
 	opt *TcpCheckOption
 	mu  sync.Mutex
+	Log *logrus.Logger
 	Raw string
 }
 
@@ -176,6 +177,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
+		ctx = context.WithValue(ctx, "logger", c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
@@ -238,6 +240,7 @@ func (d *Dialer) aliveBackground() {
 			if !opt.Ip4.IsValid() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.TcpCheckOptionRaw.Raw,
+					"dialer":  d.property.Name,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
@@ -259,6 +262,7 @@ func (d *Dialer) aliveBackground() {
 			if !opt.Ip6.IsValid() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.TcpCheckOptionRaw.Raw,
+					"dialer":  d.property.Name,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
@@ -280,6 +284,7 @@ func (d *Dialer) aliveBackground() {
 			if !opt.Ip4.IsValid() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
+					"dialer":  d.property.Name,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
@@ -301,6 +306,7 @@ func (d *Dialer) aliveBackground() {
 			if !opt.Ip6.IsValid() {
 				d.Log.WithFields(logrus.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
+					"dialer":  d.property.Name,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
@@ -523,9 +529,16 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr) 
 	defer resp.Body.Close()
 	// Judge the status code.
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
-		return strconv.Itoa(resp.StatusCode) == strings.TrimPrefix(page, "generate_"), nil
+		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {
+			return false, fmt.Errorf("unexpected status code: %v", resp.StatusCode)
+		}
+		return true, nil
+	} else {
+		if resp.StatusCode < 200 || resp.StatusCode >= 500 {
+			return false, fmt.Errorf("bad status code: %v", resp.StatusCode)
+		}
+		return true, nil
 	}
-	return resp.StatusCode >= 200 && resp.StatusCode < 500, nil
 }
 
 func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort, tcp bool) (ok bool, err error) {
