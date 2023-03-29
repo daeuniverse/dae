@@ -28,7 +28,7 @@ dae 目前支持的代理协议有：
 
 1. 启动 naiveproxy：
 
-   由于 naiveproxy 的 socks 实现无法被 curl 和 dae 使用，这里建议使用 naiveproxy 开启一个 http 监听端口。
+   由于 naiveproxy 的 socks 实现可能有些问题，无法被 curl 和 dae 使用，样例中使用 naiveproxy 开启一个 http 监听端口。注意，http 代理不支持代理 udp 流量，所以如果你外接其他代理程序，建议优先考虑使用 socks5 端口。
 
    ```bash
    naiveproxy --listen=http://127.0.0.1:1090 --proxy=https://yourlink
