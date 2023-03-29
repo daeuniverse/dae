@@ -34,7 +34,7 @@ dae 目前支持的代理协议有：
    naiveproxy --listen=http://127.0.0.1:1090 --proxy=https://yourlink
    ```
 
-2. 在 dae 配置的 node 一节中，新增一行：`http://127.0.0.1:1090`。
+2. 在 dae 配置的 node 一节中，新增一行：`http://127.0.0.1:1090`，并记得在所使用的组中使用该节点。
 
 3. 如果你绑定了 WAN 接口，即在 `global.wan_interface` 填写了内容，确保在 routing 一节的靠上位置增加一行，以避免流量从 dae 流向 naiveproxy 之后再次流向 dae，造成回环：
 
