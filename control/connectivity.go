@@ -31,12 +31,13 @@ func (c *controlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(aliv
 		default:
 		}
 		if !isInit || c.log.IsLevelEnabled(logrus.TraceLevel) {
+			strAlive := "NOT ALIVE"
+			if alive {
+				strAlive = "ALIVE"
+			}
 			c.log.WithFields(logrus.Fields{
-				"alive":      alive,
-				"network":    networkType.StringWithoutDns(),
 				"outboundId": outbound,
-				"outbound":   c.outboundId2Name[outbound],
-			}).Warnf("Outbound alive state changed, notify the kernel program.")
+			}).Warnf("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
 		}
 
 		value := uint32(0)

@@ -197,7 +197,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-	dialTarget, dialMode := c.ChooseDialTarget(outboundIndex, realDst, domain)
+	dialTarget, _ := c.ChooseDialTarget(outboundIndex, realDst, domain)
 
 	// Get udp endpoint.
 	var ue *UdpEndpoint
@@ -273,12 +273,12 @@ getNew:
 				"policy":   outbound.GetSelectionPolicy(),
 				"dialer":   ue.Dialer.Property().Name,
 				"domain":   domain,
+				"ip":       RefineAddrPortToShow(realDst),
 				"pid":      routingResult.Pid,
 				"pname":    ProcessName2String(routingResult.Pname[:]),
 				"mac":      Mac2String(routingResult.Mac[:]),
-				"dialMode": dialMode,
 			}
-			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), RefineAddrPortToShow(realDst))
+			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), dialTarget)
 		}
 	}
 

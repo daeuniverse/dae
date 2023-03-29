@@ -101,19 +101,19 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
 
-	dialTarget, dialMode := c.ChooseDialTarget(outboundIndex, dst, domain)
+	dialTarget, _ := c.ChooseDialTarget(outboundIndex, dst, domain)
 	if c.log.IsLevelEnabled(logrus.InfoLevel) {
 		c.log.WithFields(logrus.Fields{
 			"network":  networkType.String(),
 			"outbound": outbound.Name,
 			"policy":   outbound.GetSelectionPolicy(),
 			"dialer":   d.Property().Name,
-			"domain":   domain,
+			"sniffed":  domain,
+			"ip":       RefineAddrPortToShow(dst),
 			"pid":      routingResult.Pid,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
-			"dialMode": dialMode,
-		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), RefineAddrPortToShow(dst))
+		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), dialTarget)
 	}
 
 	// Dial and relay.

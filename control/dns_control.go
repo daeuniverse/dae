@@ -190,7 +190,7 @@ loop:
 	// Update DnsCache.
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
-			"qname":    q.Name,
+			"_qname":   q.Name,
 			"rcode":    msg.RCode,
 			"ans":      FormatDnsRsc(msg.Answers),
 			"auth":     FormatDnsRsc(msg.Authorities),
@@ -571,7 +571,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 			"outbound": dialArgument.bestOutbound.Name,
 			"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
 			"dialer":   dialArgument.bestDialer.Property().Name,
-			"qname":    qname,
+			"_qname":   qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,
 			"pname":    ProcessName2String(req.routingResult.Pname[:]),
