@@ -42,6 +42,6 @@ dae 目前支持的代理协议有：
    pname(naiveproxy) -> must_direct
    ```
 
-   这里的 pname 的含义是进程名。你可通过 `ps -ef` 命令或者观察 dae 的日志来确定 naiveproxy 的进程名。
+   这里的 pname 的含义是进程名。你可通过启动时的命令，或运行时通过 `ps -ef` 命令或者观察 dae 的日志来确定 naiveproxy 的进程名。must_direct 的含义是所有流量，包括 dns 查询都放行直连，不重定向至 dae。
 
    只绑定 LAN 接口的用户不需要做这一步。
