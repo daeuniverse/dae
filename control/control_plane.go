@@ -56,7 +56,8 @@ type ControlPlane struct {
 
 	routingMatcher *RoutingMatcher
 
-	closed chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 	ready  chan struct{}
 
 	muRealDomainSet sync.Mutex
@@ -322,6 +323,7 @@ func NewControlPlane(
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
 		log:              log,
 		core:             core,
@@ -332,14 +334,15 @@ func NewControlPlane(
 		onceNetworkReady: sync.Once{},
 		dialMode:         dialMode,
 		routingMatcher:   routingMatcher,
-		closed:           make(chan struct{}),
+		ctx:              ctx,
+		cancel:           cancel,
 		ready:            make(chan struct{}),
 		muRealDomainSet:  sync.Mutex{},
 		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
 	}
 	defer func() {
 		if err != nil {
-			close(plane.closed)
+			cancel()
 		}
 	}()
 
@@ -420,7 +423,7 @@ func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
 	// Waiting for ready.
 	select {
-	case <-c.closed:
+	case <-c.ctx.Done():
 		return nil
 	case <-c.ready:
 	}
@@ -605,18 +608,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		cancel()
-		return nil
-	})
 	sentReady = true
 	readyChan <- true
 	go func() {
-		defer cancel()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-c.ctx.Done():
 				return
 			default:
 			}
@@ -635,10 +632,9 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
-		defer cancel()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-c.ctx.Done():
 				return
 			default:
 			}
@@ -684,7 +680,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}(newBuf, src)
 		}
 	}()
-	<-ctx.Done()
+	<-c.ctx.Done()
 	return nil
 }
 
@@ -834,6 +830,6 @@ func (c *ControlPlane) Close() (err error) {
 			}
 		}
 	}
-	close(c.closed)
+	c.cancel()
 	return c.core.Close()
 }
