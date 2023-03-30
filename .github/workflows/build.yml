@@ -124,6 +124,10 @@ jobs:
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           make
+          cp install/dae.service ./
+          cp example.dae ./
+          curl -L -o geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
+          curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: ./build/dae-$ASSET_NAME --version
