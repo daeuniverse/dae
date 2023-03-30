@@ -39,3 +39,7 @@ See [How it works](docs/how_it_works_zh.md).
 - [ ] Protocol-oriented node features detecting (or filter), such as full-cone (especially VMess and VLESS).
 - [ ] Add quick-start guide
 - [ ] ...
+
+## Stargazers over time
+
+[![Stargazers over time](https://starchart.cc/daeuniverse/dae.svg)](https://starchart.cc/daeuniverse/dae)
