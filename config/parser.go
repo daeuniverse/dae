@@ -143,7 +143,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			// Assign. "to" should have field "Rules".
 			structField, ok := to.Type().FieldByName("Rules")
 			if !ok || structField.Type != reflect.TypeOf([]*config_parser.RoutingRule{}) {
-				return fmt.Errorf("unexpected type: \"routing rule\": %v", itemVal.String(true, false, false))
+				return fmt.Errorf("cannot use routing rule in this context: %v", itemVal.String(true, false, false))
 			}
 			if structField.Tag.Get("mapstructure") != "_" {
 				return fmt.Errorf("a []*RoutingRule field \"Rules\" with mapstructure:\"_\" is required in struct %v to parse section", to.Type().String())

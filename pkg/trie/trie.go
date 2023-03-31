@@ -5,8 +5,10 @@ package trie
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/bitlist"
 	"math/bits"
+	"sort"
 )
 
 type ValidChars struct {
@@ -86,8 +88,9 @@ type Trie struct {
 
 // NewTrie creates a new *Trie struct, from a slice of sorted strings.
 func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
-
 	// Check chars.
+	keys = common.Deduplicate(keys)
+	sort.Strings(keys)
 	for _, key := range keys {
 		for _, c := range []byte(key) {
 			if !chars.IsValidChar(c) {

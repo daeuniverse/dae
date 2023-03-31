@@ -12,7 +12,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/ahocorasick-domain"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -185,7 +184,6 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 			continue
 		}
 		toBuild = ToSuffixTrieStrings(toBuild)
-		sort.Strings(toBuild)
 		n.trie[i], err = trie.NewTrie(toBuild, ValidDomainChars)
 		if err != nil {
 			return err
