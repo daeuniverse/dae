@@ -142,9 +142,9 @@ func (s *Dns) InitUpstreams() {
 	wg.Wait()
 }
 
-func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstream *Upstream, err error) {
+func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
 	if msg.Response {
-		return nil, fmt.Errorf("DNS request expected but DNS response received")
+		return 0, nil, fmt.Errorf("DNS request expected but DNS response received")
 	}
 
 	// Prepare routing.
@@ -159,23 +159,24 @@ func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstream *Upstream, err er
 		qtype = q.Type
 	}
 	// Route.
-	upstreamIndex, err := s.reqMatcher.Match(qname, qtype)
+	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	// nil indicates AsIs.
-	if upstreamIndex == consts.DnsRequestOutboundIndex_AsIs {
-		return nil, nil
+	if upstreamIndex == consts.DnsRequestOutboundIndex_AsIs ||
+		upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
+		return upstreamIndex, nil, nil
 	}
 	if int(upstreamIndex) >= len(s.upstream) {
-		return nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
+		return 0, nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
 	}
 	// Get corresponding upstream.
 	upstream, err = s.upstream[upstreamIndex].GetUpstream()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	return upstream, nil
+	return upstreamIndex, upstream, nil
 }
 
 func (s *Dns) ResponseSelect(msg *dnsmessage.Message, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {

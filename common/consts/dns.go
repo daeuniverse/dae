@@ -10,9 +10,10 @@ import (
 	"strings"
 )
 
-type DnsRequestOutboundIndex uint8
+type DnsRequestOutboundIndex int16
 
 const (
+	DnsRequestOutboundIndex_Reject      DnsRequestOutboundIndex = 0xFC
 	DnsRequestOutboundIndex_AsIs        DnsRequestOutboundIndex = 0xFD
 	DnsRequestOutboundIndex_LogicalOr   DnsRequestOutboundIndex = 0xFE
 	DnsRequestOutboundIndex_LogicalAnd  DnsRequestOutboundIndex = 0xFF
@@ -23,6 +24,8 @@ const (
 
 func (i DnsRequestOutboundIndex) String() string {
 	switch i {
+	case DnsRequestOutboundIndex_Reject:
+		return "reject"
 	case DnsRequestOutboundIndex_AsIs:
 		return "asis"
 	case DnsRequestOutboundIndex_LogicalOr:

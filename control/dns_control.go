@@ -298,6 +298,41 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 			RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), req.realDst.String(), strings.ToLower(q.Name.String()), q.Type,
 		)
 	}
+
+	//// NOTICE: Rush-answer detector was removed because it does not always work in all districts.
+	//// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
+	//// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
+	//// Note that additional record OPT may not be supported by home router either.
+	//_, _ = EnsureAdditionalOpt(dnsMessage, true)
+
+	// Route request.
+	upstreamIndex, upstream, err := c.routing.RequestSelect(dnsMessage)
+	if err != nil {
+		return err
+	}
+
+	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
+		// Reject with empty answer.
+		dnsMessage.Answers = nil
+		dnsMessage.RCode = dnsmessage.RCodeSuccess
+		dnsMessage.Response = true
+		dnsMessage.RecursionAvailable = true
+		dnsMessage.Truncated = false
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question": dnsMessage.Questions,
+			}).Traceln("Reject with empty answer")
+		}
+		data, err := dnsMessage.Pack()
+		if err != nil {
+			return fmt.Errorf("pack DNS packet: %w", err)
+		}
+		if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if resp := c.LookupDnsRespCache_(dnsMessage); resp != nil {
 		// Send cache to client directly.
 		if err = sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
@@ -312,20 +347,8 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 		return nil
 	}
 
-	//// NOTICE: Rush-answer detector was removed because it does not always work in all districts.
-	//// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
-	//// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
-	//// Note that additional record OPT may not be supported by home router either.
-	//_, _ = EnsureAdditionalOpt(dnsMessage, true)
-
-	// Route request.
-	upstream, err := c.routing.RequestSelect(dnsMessage)
-	if err != nil {
-		return err
-	}
-
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		upstreamName := "asis"
+		upstreamName := upstreamIndex.String()
 		if upstream != nil {
 			upstreamName = upstream.String()
 		}
@@ -402,9 +425,6 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 	// We should set a connClosed flag to avoid it.
 	var connClosed bool
 	var conn netproxy.Conn
-	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
-	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
-	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 	switch dialArgument.l4proto {
 	case consts.L4ProtoStr_UDP:
 		// Get udp endpoint.

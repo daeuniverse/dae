@@ -9,7 +9,6 @@ import (
 	"github.com/mohae/deepcopy"
 	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
-	"strings"
 	"time"
 )
 
@@ -21,15 +20,16 @@ type DnsCache struct {
 
 func (c *DnsCache) FillInto(req *dnsmessage.Message) {
 	req.Answers = deepcopy.Copy(c.Answers).([]dnsmessage.Resource)
-	// Align question and answer Name.
-	if len(req.Questions) > 0 {
-		q := req.Questions[0]
-		for i := range req.Answers {
-			if strings.EqualFold(req.Answers[i].Header.Name.String(), q.Name.String()) {
-				req.Answers[i].Header.Name.Data = q.Name.Data
-			}
-		}
-	}
+	// No need to align because of no flipping now.
+	//// Align question and answer Name.
+	//if len(req.Questions) > 0 {
+	//	q := req.Questions[0]
+	//	for i := range req.Answers {
+	//		if strings.EqualFold(req.Answers[i].Header.Name.String(), q.Name.String()) {
+	//			req.Answers[i].Header.Name.Data = q.Name.Data
+	//		}
+	//	}
+	//}
 	req.RCode = dnsmessage.RCodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true

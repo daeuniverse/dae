@@ -23,12 +23,13 @@ dns {
         # According to the request of dns query, decide to use which DNS upstream.
         # Match rules from top to bottom.
         request {
-            # Built-in upstream in 'request': asis.
+            # Built-in outbounds in 'request': asis, reject.
             # You can also use user-defined upstreams.
 
             # Available functions: qname, qtype.
 
             # DNS request name (omit suffix dot '.').
+            qname(geosite:category-ads-all) -> reject
             qname(suffix: abc.com, keyword: google) -> googledns
             qname(full: ok.com, regex: '^yes') -> googledns
             # DNS request type
@@ -41,7 +42,7 @@ dns {
         # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
         # Match rules from top to bottom.
         response {
-            # No built-in upstream in 'response'.
+            # Built-in outbounds in 'response': accept, reject.
             # You can use user-defined upstreams.
 
             # Available functions: qname, qtype, upstream, ip.

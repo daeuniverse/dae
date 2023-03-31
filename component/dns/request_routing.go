@@ -43,6 +43,8 @@ func NewRequestMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 
 func (b *RequestMatcherBuilder) upstreamToId(upstream string) (upstreamId consts.DnsRequestOutboundIndex, err error) {
 	switch upstream {
+	case consts.DnsRequestOutboundIndex_Reject.String():
+		upstreamId = consts.DnsRequestOutboundIndex_Reject
 	case consts.DnsRequestOutboundIndex_AsIs.String():
 		upstreamId = consts.DnsRequestOutboundIndex_AsIs
 	case consts.DnsRequestOutboundIndex_LogicalAnd.String():
