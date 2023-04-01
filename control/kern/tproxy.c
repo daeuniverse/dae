@@ -4,8 +4,7 @@
  * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
  */
 
-#include <asm-generic/errno-base.h>
-
+#include "headers/errno-base.h"
 #include "headers/if_ether_defs.h"
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
