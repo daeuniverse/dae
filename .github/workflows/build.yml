@@ -103,8 +103,9 @@ jobs:
       - name: Get project dependencies
         run: |
           git submodule update --init --recursive
-          go mod download
-          go mod vendor
+          GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
+          find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
+          sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
       - name: Create full source ZIP archive and Signature
         if: github.event_name == 'release' && matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: |

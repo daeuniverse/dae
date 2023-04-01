@@ -23,6 +23,8 @@ else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
+#export GOMODCACHE=$(PWD)/go-mod
+
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
 count=$(shell git rev-list --count HEAD)
