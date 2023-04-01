@@ -85,6 +85,7 @@ jobs:
           fi
           echo "VERSION=$version" >> $GITHUB_OUTPUT
           echo "VERSION=$version" >> $GITHUB_ENV
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
       - name: Show workflow information
         id: get_filename
         run: |
