@@ -3,10 +3,12 @@
 ## Examples:
 
 ```shell
-### Built-in outbounds: block, direct
-# The difference between "direct" and "must_direct" is that "direct" will hijack and process DNS request (for traffic
-# split use), but "must_direct" will not. "must_direct" is useful when there are traffic loops of DNS requests.
-# "must_direct" can be written as "direct(must)".
+### Built-in outbounds: block, direct, must_rules
+
+# must_rules means no redirecting DNS traffic to dae and continue to matching.
+# For single rule, the difference between "direct" and "must_direct" is that "direct" will hijack and process DNS request
+# (for traffic split use), but "must_direct" will not. "must_direct" is useful when there are traffic loops of DNS requests.
+# "must_direct" can also be written as "direct(must)".
 # Similarly, "must_groupname" is also supported to NOT hijack and process DNS traffic, which equals to "groupname(must)".
 
 ### fallback outbound
@@ -98,4 +100,12 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 # Notice that interface wg0, mark 0x800, table 1145 can be set by preferences, but cannot conflict.
 # 3. Set routing rules in dae config file.
 domain(geosite:disney) -> direct(mark: 0x800)
+
+### Must rules
+# For following rules, DNS requests will be forcibly redirected to dae except from mosdns.
+# Different from must_direct/must_my_group, traffic from mosdns will continue to match other rules.
+pname(mosdns) -> must_rules
+ip(geoip:cn) -> direct
+domain(geosite:cn) -> direct
+fallback: my_group
 ```

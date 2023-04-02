@@ -19,7 +19,7 @@ import (
 	"syscall"
 )
 
-func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, err error) {
+func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	var ipVersion consts.IpVersionType
 	if dst.Addr().Is4() || dst.Addr().Is4In6() {
 		ipVersion = consts.IpVersion_4
@@ -28,7 +28,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	}
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
-	if outboundIndex, mark, err = c.routingMatcher.Match(
+	if outboundIndex, mark, must, err = c.routingMatcher.Match(
 		bSrc[:],
 		bDst[:],
 		src.Port(),
@@ -39,10 +39,10 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		routingResult.Pname,
 		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
 	); err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 
-	return outboundIndex, mark, nil
+	return outboundIndex, mark, false, nil
 }
 
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {

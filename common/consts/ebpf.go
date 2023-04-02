@@ -53,6 +53,7 @@ const (
 	MatchType_Mac
 	MatchType_ProcessName
 	MatchType_Fallback
+	MatchType_MustRules
 
 	MatchType_Upstream
 	MatchType_QType
@@ -64,17 +65,19 @@ const (
 	OutboundDirect OutboundIndex = iota
 	OutboundBlock
 
+	OutboundMustRules           OutboundIndex = 0xFC
 	OutboundControlPlaneRouting OutboundIndex = 0xFD
 	OutboundLogicalOr           OutboundIndex = 0xFE
 	OutboundLogicalAnd          OutboundIndex = 0xFF
 	OutboundLogicalMask         OutboundIndex = 0xFE
 
-	OutboundMax            = OutboundLogicalAnd
-	OutboundUserDefinedMax = OutboundControlPlaneRouting - 1
+	OutboundUserDefinedMax = OutboundMustRules - 1
 )
 
 func (i OutboundIndex) String() string {
 	switch i {
+	case OutboundMustRules:
+		return "must_rules"
 	case OutboundDirect:
 		return "direct"
 	case OutboundBlock:

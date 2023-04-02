@@ -33,9 +33,9 @@ func (m *RoutingMatcher) Match(
 	domain string,
 	processName [16]uint8,
 	mac []byte,
-) (outboundIndex consts.OutboundIndex, mark uint32, err error) {
+) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
-		return 0, 0, fmt.Errorf("bad address length")
+		return 0, 0, false, fmt.Errorf("bad address length")
 	}
 	lpmKeys := make([]*_bpfLpmKey, consts.MatchType_Mac+1)
 	lpmKeys[consts.MatchType_IpSet] = &_bpfLpmKey{
@@ -110,7 +110,7 @@ func (m *RoutingMatcher) Match(
 		case consts.MatchType_Fallback:
 			goodSubrule = true
 		default:
-			return 0, 0, fmt.Errorf("unknown match type: %v", match.Type)
+			return 0, 0, false, fmt.Errorf("unknown match type: %v", match.Type)
 		}
 	beforeNextLoop:
 		outbound := consts.OutboundIndex(match.Outbound)
@@ -133,10 +133,17 @@ func (m *RoutingMatcher) Match(
 			// Tail of a rule (line).
 			// Decide whether to hit.
 			if !badRule {
-				return outbound, match.Mark, nil
+				if outbound == consts.OutboundMustRules {
+					must = true
+					continue
+				}
+				if must {
+					match.Must = true
+				}
+				return outbound, match.Mark, match.Must, nil
 			}
 			badRule = false
 		}
 	}
-	return 0, 0, fmt.Errorf("no match set hit")
+	return 0, 0, false, fmt.Errorf("no match set hit")
 }

@@ -753,7 +753,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			default:
 				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
 			}
-			outboundIndex, mark, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), "", proto.ToL4ProtoType(), req.routingResult)
+			outboundIndex, mark, _, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), "", proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
 			}

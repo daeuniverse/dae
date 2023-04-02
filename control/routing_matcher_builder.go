@@ -60,6 +60,8 @@ func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 		outboundId = uint8(consts.OutboundLogicalOr)
 	case consts.OutboundLogicalAnd.String():
 		outboundId = uint8(consts.OutboundLogicalAnd)
+	case consts.OutboundMustRules.String():
+		outboundId = uint8(consts.OutboundMustRules)
 	default:
 		var ok bool
 		outboundId, ok = b.outboundName2Id[outbound]

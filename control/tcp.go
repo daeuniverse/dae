@@ -71,7 +71,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneRouting:
-		if outboundIndex, routingResult.Mark, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
+		if outboundIndex, routingResult.Mark, _, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
 			return err
 		}
 		routingResult.Outbound = uint8(outboundIndex)

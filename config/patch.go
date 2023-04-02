@@ -31,6 +31,10 @@ func patchEmptyDns(params *Config) error {
 func patchMustOutbound(params *Config) error {
 	for i := range params.Routing.Rules {
 		if strings.HasPrefix(params.Routing.Rules[i].Outbound.Name, "must_") {
+			if params.Routing.Rules[i].Outbound.Name == "must_rules" {
+				// Reserve must_rules.
+				continue
+			}
 			params.Routing.Rules[i].Outbound.Name = strings.TrimPrefix(params.Routing.Rules[i].Outbound.Name, "must_")
 			params.Routing.Rules[i].Outbound.Params = append(params.Routing.Rules[i].Outbound.Params, &config_parser.Param{
 				Val: "must",
