@@ -56,8 +56,6 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 	var outboundId uint8
 	switch outbound {
-	case consts.OutboundMustDirect.String():
-		outboundId = uint8(consts.OutboundMustDirect)
 	case consts.OutboundLogicalOr.String():
 		outboundId = uint8(consts.OutboundLogicalOr)
 	case consts.OutboundLogicalAnd.String():
@@ -95,6 +93,7 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 		Not:      f.Not,
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	})
 	return nil
 }
@@ -119,6 +118,7 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 		Not:      f.Not,
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
@@ -138,6 +138,7 @@ func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.
 		Not:      f.Not,
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
@@ -163,6 +164,7 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 			Not:      f.Not,
 			Outbound: outboundId,
 			Mark:     outbound.Mark,
+			Must:     outbound.Must,
 		})
 	}
 	return nil
@@ -181,6 +183,7 @@ func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []
 		Not:      f.Not,
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
@@ -206,6 +209,7 @@ func (b *RoutingMatcherBuilder) addSourcePort(f *config_parser.Function, values 
 			Not:      f.Not,
 			Outbound: outboundId,
 			Mark:     outbound.Mark,
+			Must:     outbound.Must,
 		})
 	}
 	return nil
@@ -222,6 +226,7 @@ func (b *RoutingMatcherBuilder) addL4Proto(f *config_parser.Function, values con
 		Not:      f.Not,
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	})
 	return nil
 }
@@ -237,6 +242,7 @@ func (b *RoutingMatcherBuilder) addIpVersion(f *config_parser.Function, values c
 		Not:      f.Not,
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	})
 	return nil
 }
@@ -256,6 +262,7 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 			Not:      f.Not,
 			Outbound: outboundId,
 			Mark:     outbound.Mark,
+			Must:     outbound.Must,
 		}
 		copy(matchSet.Value[:], value[:])
 		b.rules = append(b.rules, matchSet)
@@ -276,6 +283,7 @@ func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 		Type:     uint8(consts.MatchType_Fallback),
 		Outbound: outboundId,
 		Mark:     outbound.Mark,
+		Must:     outbound.Must,
 	})
 	return nil
 }

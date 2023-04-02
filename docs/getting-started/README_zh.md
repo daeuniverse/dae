@@ -133,7 +133,7 @@ subscription {
 # 更多的 DNS 样例见 https://github.com/daeuniverse/dae/blob/main/docs/dns.md
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google:53'
+    googledns: 'tcp+udp://dns.google.com:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {
@@ -174,7 +174,7 @@ routing {
 ```shell
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google:53'
+    googledns: 'tcp+udp://dns.google.com:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {

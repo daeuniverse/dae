@@ -137,7 +137,7 @@ subscription {
 # See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google:53'
+    googledns: 'tcp+udp://dns.google.com:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {

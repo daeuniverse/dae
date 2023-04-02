@@ -7,9 +7,9 @@ package routing
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/sirupsen/logrus"
 	"strconv"
 )
 
@@ -22,6 +22,7 @@ type DomainSet struct {
 type Outbound struct {
 	Name string
 	Mark uint32
+	Must bool
 }
 
 type RulesBuilder struct {
@@ -62,6 +63,7 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 				overrideOutbound := &Outbound{
 					Name: consts.OutboundLogicalOr.String(),
 					Mark: outbound.Mark,
+					Must: outbound.Must,
 				}
 				if jMatchSet == len(keyOrder)-1 {
 					overrideOutbound.Name = consts.OutboundLogicalAnd.String()
@@ -103,6 +105,7 @@ func ParseOutbound(rawOutbound *config_parser.Function) (outbound *Outbound, err
 	outbound = &Outbound{
 		Name: rawOutbound.Name,
 		Mark: 0,
+		Must: false,
 	}
 	for _, p := range rawOutbound.Params {
 		switch p.Key {
@@ -113,8 +116,14 @@ func ParseOutbound(rawOutbound *config_parser.Function) (outbound *Outbound, err
 				return nil, fmt.Errorf("failed to parse mark: %v", err)
 			}
 			outbound.Mark = uint32(_mark)
+		case "":
+			if p.Val == "must" {
+				outbound.Must = true
+			} else {
+				return nil, fmt.Errorf("unknown outbound param: %v", p.Val)
+			}
 		default:
-			return nil, fmt.Errorf("unknown outbound param: %v", p.Key)
+			return nil, fmt.Errorf("unknown outbound param key: %v", p.Key)
 		}
 	}
 	return outbound, nil

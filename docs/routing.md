@@ -3,9 +3,11 @@
 ## Examples:
 
 ```shell
-### Built-in outbounds: block, direct, must_direct
-# The difference between "direct" and "must_direct" is that "direct" will intercept and process DNS request (for traffic
+### Built-in outbounds: block, direct
+# The difference between "direct" and "must_direct" is that "direct" will hijack and process DNS request (for traffic
 # split use), but "must_direct" will not. "must_direct" is useful when there are traffic loops of DNS requests.
+# "must_direct" can be written as "direct(must)".
+# Similarly, "must_groupname" is also supported to NOT hijack and process DNS traffic, which equals to "groupname(must)".
 
 ### fallback outbound
 # If no rule matches, traffic will go through the outbound defined by fallback.
@@ -14,7 +16,7 @@ fallback: my_group
 ### Domain rule
 domain(suffix: v2raya.org) -> my_group
 # equals to domain(v2raya.org) -> my_group
-domain(full: dns.google) -> my_group
+domain(full: dns.google.com) -> my_group
 domain(keyword: facebook) -> my_group
 domain(regexp: '\.goo.*\.com$') -> my_group
 domain(geosite:category-ads) -> block

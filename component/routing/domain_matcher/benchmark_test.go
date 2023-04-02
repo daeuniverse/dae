@@ -7,11 +7,11 @@ package domain_matcher
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/sirupsen/logrus"
 	"hash/fnv"
 	"math/rand"
 	"reflect"
@@ -132,7 +132,7 @@ func getDomain() (simulatedDomainSet []routing.DomainSet, err error) {
 	sections, err := config_parser.Parse(`
 routing {
 	domain(geosite:bing)->us
-    domain(full:dns.google) -> direct
+    domain(full:dns.google.com) -> direct
 	domain(geosite:category-ads-all) -> block
     domain(geosite:cn) -> direct
 }`)

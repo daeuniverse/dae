@@ -7,12 +7,15 @@ package config
 
 import (
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/pkg/config_parser"
+	"strings"
 )
 
 type patch func(params *Config) error
 
 var patches = []patch{
 	patchEmptyDns,
+	patchMustOutbound,
 }
 
 func patchEmptyDns(params *Config) error {
@@ -21,6 +24,25 @@ func patchEmptyDns(params *Config) error {
 	}
 	if params.Dns.Routing.Response.Fallback == nil {
 		params.Dns.Routing.Response.Fallback = consts.DnsResponseOutboundIndex_Accept.String()
+	}
+	return nil
+}
+
+func patchMustOutbound(params *Config) error {
+	for i := range params.Routing.Rules {
+		if strings.HasPrefix(params.Routing.Rules[i].Outbound.Name, "must_") {
+			params.Routing.Rules[i].Outbound.Name = strings.TrimPrefix(params.Routing.Rules[i].Outbound.Name, "must_")
+			params.Routing.Rules[i].Outbound.Params = append(params.Routing.Rules[i].Outbound.Params, &config_parser.Param{
+				Val: "must",
+			})
+		}
+	}
+	if f := FunctionOrStringToFunction(params.Routing.Fallback); strings.HasPrefix(f.Name, "must_") {
+		f.Name = strings.TrimPrefix(f.Name, "must_")
+		f.Params = append(f.Params, &config_parser.Param{
+			Val: "must",
+		})
+		params.Routing.Fallback = f
 	}
 	return nil
 }

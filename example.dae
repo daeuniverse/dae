@@ -15,7 +15,7 @@ global {
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
     # TCP DNS connectivity of nodes.
     # This DNS should have both IPv4 and IPv6 if you have double stack in local.
-    udp_check_dns: 'dns.google:53'
+    udp_check_dns: 'dns.google.com:53'
 
     check_interval: 30s
 
@@ -87,7 +87,7 @@ dns {
         # If dial_mode is "ip", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.
 
         alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google:53'
+        googledns: 'tcp+udp://dns.google.com:53'
     }
     routing {
         # According to the request of dns query, decide to use which DNS upstream.

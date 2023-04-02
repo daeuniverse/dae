@@ -143,11 +143,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
+	if routingResult.Must > 0 {
+		isDns = false // Regard as plain traffic.
+	}
 	switch outboundIndex {
 	case consts.OutboundDirect:
-	case consts.OutboundMustDirect:
-		outboundIndex = consts.OutboundDirect
-		isDns = false // Regard as plain traffic.
 	case consts.OutboundControlPlaneRouting:
 		if isDns {
 			// Routing of DNS packets are managed by DNS controller.

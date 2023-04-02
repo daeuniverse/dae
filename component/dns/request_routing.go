@@ -112,6 +112,12 @@ func (b *RequestMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 	if err != nil {
 		return err
 	}
+	if upstream.Must {
+		return fmt.Errorf("unsupported param: must")
+	}
+	if upstream.Mark != 0 {
+		return fmt.Errorf("unsupported param: mark")
+	}
 	upstreamId, err := b.upstreamToId(upstream.Name)
 	if err != nil {
 		return err

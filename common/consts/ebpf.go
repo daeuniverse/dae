@@ -64,14 +64,13 @@ const (
 	OutboundDirect OutboundIndex = iota
 	OutboundBlock
 
-	OutboundMustDirect          OutboundIndex = 0xFC
 	OutboundControlPlaneRouting OutboundIndex = 0xFD
 	OutboundLogicalOr           OutboundIndex = 0xFE
 	OutboundLogicalAnd          OutboundIndex = 0xFF
 	OutboundLogicalMask         OutboundIndex = 0xFE
 
 	OutboundMax            = OutboundLogicalAnd
-	OutboundUserDefinedMax = OutboundMustDirect - 1
+	OutboundUserDefinedMax = OutboundControlPlaneRouting - 1
 )
 
 func (i OutboundIndex) String() string {
@@ -80,8 +79,6 @@ func (i OutboundIndex) String() string {
 		return "direct"
 	case OutboundBlock:
 		return "block"
-	case OutboundMustDirect:
-		return "must_direct"
 	case OutboundControlPlaneRouting:
 		return "<Control Plane Routing>"
 	case OutboundLogicalOr:

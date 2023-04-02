@@ -60,7 +60,6 @@
 
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
-#define OUTBOUND_MUST_DIRECT 0xFC
 #define OUTBOUND_CONTROL_PLANE_ROUTING 0xFD
 #define OUTBOUND_LOGICAL_OR 0xFE
 #define OUTBOUND_LOGICAL_AND 0xFF
@@ -135,6 +134,7 @@ struct ip_port {
 
 struct routing_result {
   __u32 mark;
+  __u8 must;
   __u8 mac[6];
   __u8 outbound;
   __u8 pname[TASK_COMM_LEN];
@@ -307,7 +307,7 @@ struct match_set {
   bool not ; // A subrule flag (this is not a match_set flag).
   enum MatchType type;
   __u8 outbound; // User-defined value range is [0, 252].
-  __u8 unused;
+  bool must;
   __u32 mark;
 };
 struct {
@@ -1133,11 +1133,13 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
         // DNS requests should routed by control plane if outbound is not
         // must_direct.
-        if (match_set->outbound != OUTBOUND_MUST_DIRECT && h_dport == 53 &&
+        if (!match_set->must && h_dport == 53 &&
             _l4proto_type == L4ProtoType_UDP) {
-          return OUTBOUND_CONTROL_PLANE_ROUTING | (match_set->mark << 8);
+          return (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
+                 ((__s64)match_set->mark << 8) | ((__s64)match_set->must << 40);
         }
-        return match_set->outbound | (match_set->mark << 8);
+        return (__s64)match_set->outbound | ((__s64)match_set->mark << 8) |
+               ((__s64)match_set->must << 40);
       }
       bad_rule = false;
     }
@@ -1325,14 +1327,16 @@ new_connection:
       bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
                 (ethh.h_source[4] << 8) + (ethh.h_source[5])),
   };
-  if ((ret = routing(flag, l4hdr, tuples.sip.u6_addr32, tuples.dip.u6_addr32,
-                     mac)) < 0) {
-    bpf_printk("shot routing: %d", ret);
+  __s64 s64_ret;
+  if ((s64_ret = routing(flag, l4hdr, tuples.sip.u6_addr32,
+                         tuples.dip.u6_addr32, mac)) < 0) {
+    bpf_printk("shot routing: %d", s64_ret);
     return TC_ACT_SHOT;
   }
   struct routing_result routing_result = {0};
-  routing_result.outbound = ret;
-  routing_result.mark = ret >> 8;
+  routing_result.outbound = s64_ret;
+  routing_result.mark = s64_ret >> 8;
+  routing_result.must = (s64_ret >> 40) & 1;
   __builtin_memcpy(routing_result.mac, ethh.h_source,
                    sizeof(routing_result.mac));
   /// NOTICE: No pid pname info for LAN packet.
@@ -1361,8 +1365,7 @@ new_connection:
                bpf_ntohs(tuples.dport));
   }
 #endif
-  if (routing_result.outbound == OUTBOUND_DIRECT ||
-      routing_result.outbound == OUTBOUND_MUST_DIRECT) {
+  if (routing_result.outbound == OUTBOUND_DIRECT) {
     skb->mark = routing_result.mark;
     goto direct;
   } else if (unlikely(routing_result.outbound == OUTBOUND_BLOCK)) {
@@ -1593,6 +1596,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       __builtin_memcpy(&key_src.ip, &tuples.dip, IPV6_BYTE_LENGTH);
       key_src.port = tcph.source;
       __u8 outbound;
+      bool must;
       __u32 mark;
       struct pid_pname *pid_pname = NULL;
       if (unlikely(tcp_state_syn)) {
@@ -1618,14 +1622,16 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
             bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
                       (ethh.h_source[4] << 8) + (ethh.h_source[5])),
         };
-        if ((ret = routing(flag, &tcph, tuples.sip.u6_addr32,
-                           tuples.dip.u6_addr32, mac)) < 0) {
-          bpf_printk("shot routing: %d", ret);
+        __s64 s64_ret;
+        if ((s64_ret = routing(flag, &tcph, tuples.sip.u6_addr32,
+                               tuples.dip.u6_addr32, mac)) < 0) {
+          bpf_printk("shot routing: %d", s64_ret);
           return TC_ACT_SHOT;
         }
 
-        outbound = ret;
-        mark = ret >> 8;
+        outbound = s64_ret;
+        mark = s64_ret >> 8;
+        must = (s64_ret >> 40) & 1;
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
         // Print only new connection.
@@ -1646,9 +1652,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         }
         outbound = dst->routing_result.outbound;
         mark = dst->routing_result.mark;
+        must = dst->routing_result.must;
       }
 
-      if ((outbound == OUTBOUND_DIRECT || outbound == OUTBOUND_MUST_DIRECT) &&
+      if (outbound == OUTBOUND_DIRECT &&
           mark == 0 // If mark is not zero, we should re-route it, so we send it
                     // to control plane in WAN.
       ) {
@@ -1678,6 +1685,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         routing_info.port = tcph.dest;
         routing_info.routing_result.outbound = outbound;
         routing_info.routing_result.mark = mark;
+        routing_info.routing_result.must = must;
         __builtin_memcpy(routing_info.routing_result.mac, ethh.h_source,
                          sizeof(ethh.h_source));
         if (pid_pname) {
@@ -1726,9 +1734,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
           bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
                     (ethh.h_source[4] << 8) + (ethh.h_source[5])),
       };
-      if ((ret = routing(flag, &udph, tuples.sip.u6_addr32,
-                         tuples.dip.u6_addr32, mac)) < 0) {
-        bpf_printk("shot routing: %d", ret);
+      __s64 s64_ret;
+      if ((s64_ret = routing(flag, &udph, tuples.sip.u6_addr32,
+                             tuples.dip.u6_addr32, mac)) < 0) {
+        bpf_printk("shot routing: %d", s64_ret);
         return TC_ACT_SHOT;
       }
       // Construct new hdr to encap.
@@ -1736,8 +1745,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
       __builtin_memcpy(new_hdr.ip, &tuples.dip, IPV6_BYTE_LENGTH);
       new_hdr.port = udph.dest;
-      new_hdr.routing_result.outbound = ret;
-      new_hdr.routing_result.mark = ret >> 8;
+      new_hdr.routing_result.outbound = s64_ret;
+      new_hdr.routing_result.mark = s64_ret >> 8;
+      new_hdr.routing_result.must = (s64_ret >> 40) & 1;
       __builtin_memcpy(new_hdr.routing_result.mac, ethh.h_source,
                        sizeof(ethh.h_source));
       if (pid_pname) {
@@ -1754,8 +1764,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                  bpf_ntohs(tuples.dport));
 #endif
 
-      if ((new_hdr.routing_result.outbound == OUTBOUND_DIRECT ||
-           new_hdr.routing_result.outbound == OUTBOUND_MUST_DIRECT) &&
+      if (new_hdr.routing_result.outbound == OUTBOUND_DIRECT &&
           new_hdr.routing_result.mark ==
               0 // If mark is not zero, we should re-route it, so we
                 // send it to control plane in WAN.
