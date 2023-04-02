@@ -20,11 +20,6 @@
 // #define __PRINT_SETUP_PROCESS_CONNNECTION
 // #define __REMOVE_BPF_PRINTK
 
-#ifdef __REMOVE_BPF_PRINTK
-#undef bpf_printk
-#define bpf_printk(...) (void)0
-#endif
-
 // #define likely(x) x
 // #define unlikely(x) x
 #define likely(x) __builtin_expect((x), 1)
@@ -41,7 +36,6 @@
 
 #define NOWHERE_IFINDEX 0
 #define LOOPBACK_IFINDEX 1
-#define LOOPBACK_ADDR 0x7f000001
 
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 128
@@ -1398,16 +1392,16 @@ new_connection:
     // TCP.
     sk = bpf_map_lookup_elem(&listen_socket_map, &zero_key);
     if (!sk || sk->state != BPF_TCP_LISTEN) {
-      bpf_printk("shot tcp tproxy not listen: %d", ret);
-      goto sk_shot;
+      bpf_printk("accpet tcp tproxy not listen");
+      goto sk_accept;
     }
   } else {
     // UDP.
 
     sk = bpf_map_lookup_elem(&listen_socket_map, &one_key);
     if (!sk) {
-      bpf_printk("shot udp tproxy not listen: %d", ret);
-      goto sk_shot;
+      bpf_printk("accpet udp tproxy not listen");
+      goto sk_accept;
     }
   }
 
@@ -1427,11 +1421,10 @@ assign:
   }
   return TC_ACT_OK;
 
-sk_shot:
+sk_accept:
   if (sk) {
     bpf_sk_release(sk);
   }
-  return TC_ACT_SHOT;
 
 direct:
   return TC_ACT_OK;
@@ -2118,8 +2111,8 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
   // bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);
 
   // Update map.
-  if (unlikely(ret = bpf_map_update_elem(&cookie_pid_map, &cookie, &val,
-                                         BPF_NOEXIST))) {
+  if (unlikely(
+          ret = bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY))) {
     // bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
     return ret;
   }
@@ -2133,6 +2126,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
 
 static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
   int ret;
+
   if ((ret = _update_map_elem_by_cookie(cookie))) {
     // Fallback to only write pid to avoid loop due to packets sent by dae.
     struct pid_pname val = {0};
@@ -2146,7 +2140,7 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
     } else {
       bpf_printk("failed [retrieve pname]: %u", val.pid);
     }
-    bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_NOEXIST);
+    bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY);
     return ret;
   }
   return 0;

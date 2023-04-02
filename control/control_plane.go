@@ -62,6 +62,9 @@ type ControlPlane struct {
 
 	muRealDomainSet sync.Mutex
 	realDomainSet   *bloom.BloomFilter
+
+	wanInterface []string
+	lanInterface []string
 }
 
 func NewControlPlane(
@@ -83,20 +86,20 @@ func NewControlPlane(
 	}
 	/// Check linux kernel requirements.
 	// Check version from high to low to reduce the number of user upgrading kernel.
-	if kernelVersion.Less(consts.ChecksumFeatureVersion) {
+	if requirement := consts.ChecksumFeatureVersion; kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
 			kernelVersion.String(),
-			consts.ChecksumFeatureVersion.String())
+			requirement.String())
 	}
-	if len(global.WanInterface) > 0 && kernelVersion.Less(consts.CgSocketCookieFeatureVersion) {
+	if requirement := consts.CgSocketCookieFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
 			kernelVersion.String(),
-			consts.CgSocketCookieFeatureVersion.String())
+			requirement.String())
 	}
-	if len(global.LanInterface) > 0 && kernelVersion.Less(consts.SkAssignFeatureVersion) {
+	if requirement := consts.SkAssignFeatureVersion; len(global.LanInterface) > 0 && kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
 			kernelVersion.String(),
-			consts.SkAssignFeatureVersion.String())
+			requirement.String())
 	}
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
 		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v",
@@ -339,6 +342,8 @@ func NewControlPlane(
 		ready:            make(chan struct{}),
 		muRealDomainSet:  sync.Mutex{},
 		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:     global.LanInterface,
+		wanInterface:     global.WanInterface,
 	}
 	defer func() {
 		if err != nil {
@@ -790,19 +795,20 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	if bestDialer == nil {
 		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
 	}
+	switch ipversion {
+	case consts.IpVersionStr_4:
+		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
+	case consts.IpVersionStr_6:
+		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
+	}
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
 			"upstream":   dnsUpstream.String(),
 			"choose":     string(l4proto) + "+" + string(ipversion),
+			"use":        bestTarget.String(),
 		}).Traceln("Choose DNS path")
-	}
-	switch ipversion {
-	case consts.IpVersionStr_4:
-		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
-	case consts.IpVersionStr_6:
-		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
 	}
 	return &dialArgument{
 		l4proto:      l4proto,

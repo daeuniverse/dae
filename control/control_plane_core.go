@@ -409,7 +409,7 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 			Program: prog.Prog,
 		})
 		if err != nil {
-			return fmt.Errorf("AttachTracing: %v: %w", prog.Prog.String(), err)
+			return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
 		}
 		c.deferFuncs = append(c.deferFuncs, func() error {
 			if err := attached.Close(); err != nil {

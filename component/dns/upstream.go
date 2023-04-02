@@ -83,7 +83,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 	}
 	defer func() {
 		if err != nil {
-			_ = netutils.TryUpdateSystemDns1s()
+			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
 		}
 	}()
 

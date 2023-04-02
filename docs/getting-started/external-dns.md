@@ -7,7 +7,7 @@ If you use a external DNS like AdguardHome, you could refer to the following gui
 
 ## External DNS on localhost
 
-If you set up a external DNS on localhost, you may want to let the DNS queries to dns.google.com proxied. For example, if you have following configuration in AdguardHome:
+If you set up an external DNS on localhost, you may want to let the DNS queries to dns.google.com proxied. For example, if you have the following configuration in AdguardHome:
 
 ```
 Listen on: the same machine with dae, port 53.
@@ -43,11 +43,13 @@ You should configure dae as follows:
    }
    ```
 
-4. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
+4. If you bind to WAN, make sure your `/etc/resolv.conf` does NOT use your local external DNS directly. For example, you can set it as `nameserver 119.29.29.29`, and then DNS traffic will be hijacked by dae when the packets are sent through NIC. Most of the time, `/etc/resolv.conf` will be modified back by your DNS service like dnsmasq after rebooting, which is hard to deal with. We recommended you to uninstall them or give `sudo chattr +i /etc/resolv.conf` if you encounter such situation.
 
-5. If there is still a DNS issue and there are no warn/error logs, you have to change your listening port of external DNS (here is AdGuardHome) from 53 to non-53 port. See [#31](https://github.com/daeuniverse/dae/issues/31#issuecomment-1467358364).
+5. If you bind to LAN, make sure your DHCP server will distribute dae as the DNS server (DNS request should be forwarded by dae for domain based traffic split).
 
-6. If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
+6. If there is still a DNS issue and there are no warn/error logs, you have to change your listening port of external DNS (here is AdGuardHome) from 53 to non-53 port. See [#31](https://github.com/daeuniverse/dae/issues/31#issuecomment-1467358364).
+
+7. If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
 
 ## External DNS on another machine in LAN
 

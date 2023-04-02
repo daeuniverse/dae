@@ -110,7 +110,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 	}
 	defer func() {
 		if err != nil {
-			_ = netutils.TryUpdateSystemDns1s()
+			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
 		}
 	}()
 
@@ -141,7 +141,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 	}
 	defer func() {
 		if err != nil {
-			_ = netutils.TryUpdateSystemDns1s()
+			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
 		}
 	}()
 

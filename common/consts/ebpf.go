@@ -139,6 +139,7 @@ var (
 	CgSocketCookieFeatureVersion              = internal.Version{5, 7, 0}
 	SkAssignFeatureVersion                    = internal.Version{5, 7, 0}
 	ChecksumFeatureVersion                    = internal.Version{5, 8, 0}
+	ProgTypeSkLookupFeatureVersion            = internal.Version{5, 9, 0}
 	UserspaceBatchUpdateLpmTrieFeatureVersion = internal.Version{5, 13, 0}
 )
 

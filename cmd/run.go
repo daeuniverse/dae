@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
@@ -14,6 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -238,11 +240,21 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
 	if !conf.Global.DisableWaitingNetwork && len(conf.Subscription) > 0 {
+		epo := 5 * time.Second
+		client := http.Client{
+			Timeout: epo,
+		}
 		log.Infoln("Waiting for network...")
 		for i := 0; ; i++ {
-			resp, err := http.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
+			resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
 			if err != nil {
-				time.Sleep(5 * time.Second)
+				log.Debugln("CheckNetwork:", err)
+				var neterr net.Error
+				if errors.As(err, &neterr) && neterr.Timeout() {
+					// Do not sleep.
+					continue
+				}
+				time.Sleep(epo)
 				continue
 			}
 			resp.Body.Close()
@@ -250,7 +262,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 				break
 			}
 			log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
-			time.Sleep(5 * time.Second)
+			time.Sleep(epo)
 		}
 		log.Infoln("Network online.")
 	}

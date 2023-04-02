@@ -37,10 +37,13 @@ func TryUpdateSystemDns() (err error) {
 	return err
 }
 
-// TryUpdateSystemDns1s will update system DNS if 1 second has elapsed since the last TryUpdateSystemDns1s call.
-func TryUpdateSystemDns1s() (err error) {
+// TryUpdateSystemDnsElapse will update system DNS if duration has elapsed since the last TryUpdateSystemDns1s call.
+func TryUpdateSystemDnsElapse(k time.Duration) (err error) {
 	systemDnsMu.Lock()
 	defer systemDnsMu.Unlock()
+	return tryUpdateSystemDnsElapse(k)
+}
+func tryUpdateSystemDnsElapse(k time.Duration) (err error) {
 	if time.Now().Before(systemDnsNextUpdateAfter) {
 		return fmt.Errorf("update too quickly")
 	}
@@ -48,7 +51,7 @@ func TryUpdateSystemDns1s() (err error) {
 	if err != nil {
 		return err
 	}
-	systemDnsNextUpdateAfter = time.Now().Add(time.Second)
+	systemDnsNextUpdateAfter = time.Now().Add(k)
 	return nil
 }
 
@@ -70,6 +73,8 @@ func SystemDns() (dns netip.AddrPort, err error) {
 			return netip.AddrPort{}, err
 		}
 	}
+	// To avoid environment changing.
+	_ = tryUpdateSystemDnsElapse(5 * time.Second)
 	return systemDns, nil
 }
 
