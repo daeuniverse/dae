@@ -926,7 +926,7 @@ decap_after_udp_hdr(struct __sk_buff *skb, __u8 ipversion, __u8 ihl,
 // Do not use __always_inline here because this function is too heavy.
 // low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
 static __s64 __attribute__((noinline))
-routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
+route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
         const __be32 daddr[4], const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
@@ -995,7 +995,8 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
   // Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
   // proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
   // set is like: suffix:baidu.com
-  __u8 must_goodsubrule_badrule = 0;
+  volatile __u8 isdns_must_goodsubrule_badrule =
+      (h_dport == 53 && _l4proto_type == L4ProtoType_UDP) << 3;
   struct domain_routing *domain_routing;
   __u32 *p_u32;
   __u16 *p_u16;
@@ -1009,7 +1010,7 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
     if (unlikely(!match_set)) {
       return -EFAULT;
     }
-    if ((must_goodsubrule_badrule & 0b1) || (must_goodsubrule_badrule & 0b10)) {
+    if (isdns_must_goodsubrule_badrule & 0b11) {
 #ifdef __DEBUG_ROUTING
       key = match_set->type;
       bpf_printk("key(match_set->type): %llu", key);
@@ -1035,7 +1036,7 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
       }
       if (bpf_map_lookup_elem(lpm, lpm_key)) {
         // match_set hits.
-        must_goodsubrule_badrule |= 0b10;
+        isdns_must_goodsubrule_badrule |= 0b10;
       }
     } else if ((p_u16 = bpf_map_lookup_elem(&h_port_map, &key))) {
 #ifdef __DEBUG_ROUTING
@@ -1048,7 +1049,7 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #endif
       if (*p_u16 >= match_set->port_range.port_start &&
           *p_u16 <= match_set->port_range.port_end) {
-        must_goodsubrule_badrule |= 0b10;
+        isdns_must_goodsubrule_badrule |= 0b10;
       }
     } else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map, &key))) {
 #ifdef __DEBUG_ROUTING
@@ -1057,42 +1058,45 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
                  match_set->type, match_set->not, match_set->outbound);
 #endif
       if (*p_u32 & *(__u32 *)&match_set->__value) {
-        must_goodsubrule_badrule |= 0b10;
+        isdns_must_goodsubrule_badrule |= 0b10;
       }
-    } else if (match_set->type == MatchType_DomainSet) {
-#ifdef __DEBUG_ROUTING
-      bpf_printk("CHECK: domain, match_set->type: %u, not: %d, "
-                 "outbound: %u",
-                 match_set->type, match_set->not, match_set->outbound);
-#endif
-
-      // Get domain routing bitmap.
-      domain_routing = bpf_map_lookup_elem(&domain_routing_map, daddr);
-      if (!domain_routing) {
-        // No domain corresponding to IP.
-        goto before_next_loop;
-      }
-
-      // We use key instead of k to pass checker.
-      if ((domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
-        must_goodsubrule_badrule |= 0b10;
-      }
-    } else if (match_set->type == MatchType_ProcessName) {
-      if (_is_wan && equal16(match_set->pname, _pname)) {
-        must_goodsubrule_badrule |= 0b10;
-      }
-    } else if (match_set->type == MatchType_Fallback) {
-#ifdef __DEBUG_ROUTING
-      bpf_printk("CHECK: hit fallback");
-#endif
-      must_goodsubrule_badrule |= 0b10;
     } else {
+      switch (key) {
+      case MatchType_DomainSet:
 #ifdef __DEBUG_ROUTING
-      bpf_printk("CHECK: <unknown>, match_set->type: %u, not: %d, "
-                 "outbound: %u",
-                 match_set->type, match_set->not, match_set->outbound);
+        bpf_printk("CHECK: domain, match_set->type: %u, not: %d, "
+                   "outbound: %u",
+                   match_set->type, match_set->not, match_set->outbound);
 #endif
-      return -EINVAL;
+
+        // Get domain routing bitmap.
+        domain_routing = bpf_map_lookup_elem(&domain_routing_map, daddr);
+
+        // We use key instead of k to pass checker.
+        if (domain_routing &&
+            (domain_routing->bitmap[i / 32] >> (i % 32)) & 1) {
+          isdns_must_goodsubrule_badrule |= 0b10;
+        }
+        break;
+      case MatchType_ProcessName:
+        if (_is_wan && equal16(match_set->pname, _pname)) {
+          isdns_must_goodsubrule_badrule |= 0b10;
+        }
+        break;
+      case MatchType_Fallback:
+#ifdef __DEBUG_ROUTING
+        bpf_printk("CHECK: hit fallback");
+#endif
+        isdns_must_goodsubrule_badrule |= 0b10;
+        break;
+      default:
+#ifdef __DEBUG_ROUTING
+        bpf_printk("CHECK: <unknown>, match_set->type: %u, not: %d, "
+                   "outbound: %u",
+                   match_set->type, match_set->not, match_set->outbound);
+#endif
+        return -EINVAL;
+      }
     }
 
   before_next_loop:
@@ -1104,13 +1108,13 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
       // We are now at end of rule, or next match_set belongs to another
       // subrule.
 
-      if ((must_goodsubrule_badrule & 0b10) > 0 == match_set->not ) {
+      if ((isdns_must_goodsubrule_badrule & 0b10) > 0 == match_set->not ) {
         // This subrule does not hit.
-        must_goodsubrule_badrule |= 0b1;
+        isdns_must_goodsubrule_badrule |= 0b1;
       }
 
       // Reset good_subrule.
-      must_goodsubrule_badrule &= ~0b10;
+      isdns_must_goodsubrule_badrule &= ~0b10;
     }
 #ifdef __DEBUG_ROUTING
     bpf_printk("_bad_rule: %d", bad_rule);
@@ -1119,7 +1123,7 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
         OUTBOUND_LOGICAL_MASK) {
       // Tail of a rule (line).
       // Decide whether to hit.
-      if (!(must_goodsubrule_badrule & 0b1)) {
+      if (!(isdns_must_goodsubrule_badrule & 0b1)) {
 #ifdef __DEBUG_ROUTING
         bpf_printk("MATCHED: match_set->type: %u, match_set->not: %d",
                    match_set->type, match_set->not );
@@ -1127,22 +1131,24 @@ routing(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
         // DNS requests should routed by control plane if outbound is not
         // must_direct.
-        if (match_set->outbound == OUTBOUND_MUST_RULES) {
-          must_goodsubrule_badrule |= 0b100;
-          continue;
+
+        if (unlikely(match_set->outbound == OUTBOUND_MUST_RULES)) {
+          isdns_must_goodsubrule_badrule |= 0b100;
+        } else {
+          if (isdns_must_goodsubrule_badrule & 0b100) {
+            match_set->must = true;
+          }
+          if (!match_set->must && (isdns_must_goodsubrule_badrule & 0b1000)) {
+            return (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
+                   ((__s64)match_set->mark << 8) |
+                   ((__s64)match_set->must << 40);
+          } else {
+            return (__s64)match_set->outbound | ((__s64)match_set->mark << 8) |
+                   ((__s64)match_set->must << 40);
+          }
         }
-        if (must_goodsubrule_badrule & 0b100) {
-          match_set->must = true;
-        }
-        if (!match_set->must && h_dport == 53 &&
-            _l4proto_type == L4ProtoType_UDP) {
-          return (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-                 ((__s64)match_set->mark << 8) | ((__s64)match_set->must << 40);
-        }
-        return (__s64)match_set->outbound | ((__s64)match_set->mark << 8) |
-               ((__s64)match_set->must << 40);
       }
-      must_goodsubrule_badrule &= ~0b1;
+      isdns_must_goodsubrule_badrule &= ~0b1;
     }
   }
   bpf_printk("No match_set hits. Did coder forget to sync "
@@ -1329,7 +1335,7 @@ new_connection:
                 (ethh.h_source[4] << 8) + (ethh.h_source[5])),
   };
   __s64 s64_ret;
-  if ((s64_ret = routing(flag, l4hdr, tuples.sip.u6_addr32,
+  if ((s64_ret = route(flag, l4hdr, tuples.sip.u6_addr32,
                          tuples.dip.u6_addr32, mac)) < 0) {
     bpf_printk("shot routing: %d", s64_ret);
     return TC_ACT_SHOT;
@@ -1623,7 +1629,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                       (ethh.h_source[4] << 8) + (ethh.h_source[5])),
         };
         __s64 s64_ret;
-        if ((s64_ret = routing(flag, &tcph, tuples.sip.u6_addr32,
+        if ((s64_ret = route(flag, &tcph, tuples.sip.u6_addr32,
                                tuples.dip.u6_addr32, mac)) < 0) {
           bpf_printk("shot routing: %d", s64_ret);
           return TC_ACT_SHOT;
@@ -1735,7 +1741,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                     (ethh.h_source[4] << 8) + (ethh.h_source[5])),
       };
       __s64 s64_ret;
-      if ((s64_ret = routing(flag, &udph, tuples.sip.u6_addr32,
+      if ((s64_ret = route(flag, &udph, tuples.sip.u6_addr32,
                              tuples.dip.u6_addr32, mac)) < 0) {
         bpf_printk("shot routing: %d", s64_ret);
         return TC_ACT_SHOT;
@@ -2060,8 +2066,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
   For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
   We extract "sddm-helper" from it.
   */
-  unsigned long loc, j;
-  unsigned long last_slash = -1;
+  unsigned long loc, j, last_slash = -1;
 #pragma unroll
   for (loc = 0, j = 0; j < MAX_ARG_LEN_TO_PROBE;
        ++j, loc = ((loc + 1) & (MAX_ARG_SCANNER_BUFFER_SIZE - 1))) {
