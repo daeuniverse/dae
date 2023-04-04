@@ -123,8 +123,8 @@ func NewControlPlane(
 
 	/// Load pre-compiled programs and maps into the kernel.
 	if _bpf == nil {
-		log.Infof("Loading eBPF programs and maps into the kernel.")
-		log.Infof("The loading process takes about 150MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
+		log.Infof("Loading eBPF programs and maps into the kernel...")
+		log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	}
 	//var bpf bpfObjects
 	var ProgramOptions = ebpf.ProgramOptions{

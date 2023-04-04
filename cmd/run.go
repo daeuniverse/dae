@@ -266,6 +266,9 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		}
 		log.Infoln("Network online.")
 	}
+	if len(conf.Subscription) > 0 {
+		log.Infoln("Fetching subscriptions...")
+	}
 	for _, sub := range conf.Subscription {
 		tag, nodes, err := subscription.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
 		if err != nil {

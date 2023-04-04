@@ -48,7 +48,7 @@
 #define MAX_TGID_PNAME_MAPPING_NUM (8192)
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
-#define MAX_ARG_LEN_TO_PROBE 192
+#define MAX_ARG_LEN_TO_PROBE 128
 #define MAX_ARG_SCANNER_BUFFER_SIZE (TASK_COMM_LEN * 4)
 #define IPV6_MAX_EXTENSIONS 4
 
@@ -927,7 +927,7 @@ decap_after_udp_hdr(struct __sk_buff *skb, __u8 ipversion, __u8 ihl,
 // low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
 static __s64 __attribute__((noinline))
 route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
-        const __be32 daddr[4], const __be32 mac[4]) {
+      const __be32 daddr[4], const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
@@ -1335,8 +1335,8 @@ new_connection:
                 (ethh.h_source[4] << 8) + (ethh.h_source[5])),
   };
   __s64 s64_ret;
-  if ((s64_ret = route(flag, l4hdr, tuples.sip.u6_addr32,
-                         tuples.dip.u6_addr32, mac)) < 0) {
+  if ((s64_ret = route(flag, l4hdr, tuples.sip.u6_addr32, tuples.dip.u6_addr32,
+                       mac)) < 0) {
     bpf_printk("shot routing: %d", s64_ret);
     return TC_ACT_SHOT;
   }
@@ -1630,7 +1630,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         };
         __s64 s64_ret;
         if ((s64_ret = route(flag, &tcph, tuples.sip.u6_addr32,
-                               tuples.dip.u6_addr32, mac)) < 0) {
+                             tuples.dip.u6_addr32, mac)) < 0) {
           bpf_printk("shot routing: %d", s64_ret);
           return TC_ACT_SHOT;
         }
@@ -1742,7 +1742,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       };
       __s64 s64_ret;
       if ((s64_ret = route(flag, &udph, tuples.sip.u6_addr32,
-                             tuples.dip.u6_addr32, mac)) < 0) {
+                           tuples.dip.u6_addr32, mac)) < 0) {
         bpf_printk("shot routing: %d", s64_ret);
         return TC_ACT_SHOT;
       }
@@ -2051,23 +2051,18 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
 
   int ret;
   // Build value.
-  struct pid_pname val;
-  __builtin_memset(&val, 0, sizeof(struct pid_pname));
+  struct pid_pname val = {0};
   char buf[MAX_ARG_SCANNER_BUFFER_SIZE] = {0};
   struct task_struct *current = (void *)bpf_get_current_task();
   unsigned long arg_start = BPF_CORE_READ(current, mm, arg_start);
   unsigned long arg_end = BPF_CORE_READ(current, mm, arg_end);
-  unsigned long arg_len = arg_end - arg_start;
-  if (arg_len > MAX_ARG_LEN_TO_PROBE) {
-    arg_len = MAX_ARG_LEN_TO_PROBE;
-  }
 
   /**
   For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
   We extract "sddm-helper" from it.
   */
   unsigned long loc, j, last_slash = -1;
-#pragma unroll
+  #pragma unroll
   for (loc = 0, j = 0; j < MAX_ARG_LEN_TO_PROBE;
        ++j, loc = ((loc + 1) & (MAX_ARG_SCANNER_BUFFER_SIZE - 1))) {
     // volatile unsigned long k = j; // Cheat to unroll.
