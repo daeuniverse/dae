@@ -9,6 +9,8 @@ package main
 
 import (
 	"github.com/daeuniverse/dae/cmd"
+	"github.com/daeuniverse/dae/common/json"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/json-iterator/go/extra"
 	"net/http"
 	"os"
@@ -16,6 +18,7 @@ import (
 )
 
 func main() {
+	jsoniter.RegisterTypeDecoder("bool", &json.FuzzyBoolDecoder{})
 	extra.RegisterFuzzyDecoders()
 
 	http.DefaultClient.Timeout = 30 * time.Second
