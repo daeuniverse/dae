@@ -17,10 +17,12 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mohae/deepcopy"
 	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"io"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
@@ -369,6 +371,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 
 	// Try to make both A and AAAA lookups.
 	dnsMessage2 := deepcopy.Copy(dnsMessage).(*dnsmessage.Message)
+	dnsMessage2.ID = uint16(fastrand.Intn(math.MaxUint16))
 	var qtype2 dnsmessage.Type
 	switch qtype {
 	case dnsmessage.TypeA:

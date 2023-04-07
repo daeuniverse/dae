@@ -81,6 +81,7 @@ node {
 dns {
     # For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only respond to type A queries and response empty answer to type AAAA queries.
     #ipversion_prefer: 4
+
     upstream {
         # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
