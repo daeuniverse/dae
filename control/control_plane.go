@@ -379,15 +379,14 @@ func NewControlPlane(
 			}, nil
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
+		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
 	}); err != nil {
 		return nil, err
 	}
 	// Refresh domain routing cache with new routing.
-	if dnsCache != nil {
+	if dnsCache != nil && len(dnsCache) > 0 {
 		for cacheKey, cache := range dnsCache {
-			if time.Now().After(cache.Deadline) {
-				continue
-			}
+			// Also refresh out-dated routing because kernel map items have no expiration.
 			lastDot := strings.LastIndex(cacheKey, ".")
 			if lastDot == -1 || lastDot == len(cacheKey)-1 {
 				// Not a valid key.
@@ -397,6 +396,16 @@ func NewControlPlane(
 			host := cacheKey[:lastDot]
 			typ := cacheKey[lastDot+1:]
 			_ = plane.dnsController.UpdateDnsCache(host, typ, cache.Answers, cache.Deadline)
+		}
+	} else if _bpf != nil {
+		// Is reloading, and dnsCache == nil.
+		// Remove all map items.
+		// Normally, it is due to the change of ip version preference.
+		var key [4]uint32
+		var val bpfDomainRouting
+		iter := core.bpf.DomainRoutingMap.Iterate()
+		for iter.Next(&key, &val) {
+			_ = core.bpf.DomainRoutingMap.Delete(&key)
 		}
 	}
 

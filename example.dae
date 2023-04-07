@@ -22,7 +22,7 @@ global {
     # Group will switch node only when new_latency <= old_latency - tolerance.
     check_tolerance: 50ms
 
-    # The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.
+    # The LAN interface to bind. Use it if you want to proxy LAN.
     # Multiple interfaces split by ",".
     #lan_interface: docker0
 
@@ -79,6 +79,8 @@ node {
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
 dns {
+    # For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only respond to type A queries and response empty answer to type AAAA queries.
+    #ipversion_prefer: 4
     upstream {
         # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose

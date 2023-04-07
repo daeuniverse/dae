@@ -76,8 +76,9 @@ type DnsRouting struct {
 }
 type KeyableString string
 type Dns struct {
-	Upstream []KeyableString `mapstructure:"upstream"`
-	Routing  DnsRouting      `mapstructure:"routing"`
+	IpVersionPrefer int             `mapstructure:"ipversion_prefer"`
+	Upstream        []KeyableString `mapstructure:"upstream"`
+	Routing         DnsRouting      `mapstructure:"routing"`
 }
 
 type Routing struct {

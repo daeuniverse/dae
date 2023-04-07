@@ -41,7 +41,7 @@ var GlobalDesc = Desc{
 	"udp_check_dns":   "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
 	"check_interval":  "Interval of connectivity check for TCP and UDP",
 	"check_tolerance": "Group will switch node only when new_latency <= old_latency - tolerance.",
-	"lan_interface":   "The LAN interface to bind. Use it if you only want to proxy LAN instead of localhost.",
+	"lan_interface":   "The LAN interface to bind. Use it if you want to proxy LAN.",
 	"wan_interface":   "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to auto detect.",
 	"allow_insecure":  "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
 	"dial_mode": `Optional values of dial_mode are:
@@ -54,7 +54,8 @@ var GlobalDesc = Desc{
 }
 
 var DnsDesc = Desc{
-	"upstream": "Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.\nIf host is a domain and has both IPv4 and IPv6 record, dae will automatically choose IPv4 or IPv6 to use according to group policy (such as min latency policy).\nPlease make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.\nIf dial_mode is \"ip\", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.",
+	"ipversion_prefer": "For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only respond to type A queries and response empty answer to type AAAA queries.",
+	"upstream":         "Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.\nIf host is a domain and has both IPv4 and IPv6 record, dae will automatically choose IPv4 or IPv6 to use according to group policy (such as min latency policy).\nPlease make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.\nIf dial_mode is \"ip\", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.",
 	"request": `DNS requests will follow this routing.
 Built-in outbound: asis.
 Available functions: qname, qtype`,

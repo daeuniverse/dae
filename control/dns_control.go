@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mohae/deepcopy"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
@@ -32,6 +33,14 @@ const (
 	minFirefoxCacheTimeout = 120 * time.Second
 )
 
+type IpVersionPrefer int
+
+const (
+	IpVersionPrefer_No IpVersionPrefer = 0
+	IpVersionPrefer_4  IpVersionPrefer = 4
+	IpVersionPrefer_6  IpVersionPrefer = 6
+)
+
 var (
 	SuspectedRushAnswerError     = fmt.Errorf("suspected DNS rush-answer")
 	UnsupportedQuestionTypeError = fmt.Errorf("unsupported question type")
@@ -42,10 +51,14 @@ type DnsControllerOption struct {
 	CacheAccessCallback func(cache *DnsCache) (err error)
 	NewCache            func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error)
 	BestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	IpVersionPrefer     int
 }
 
 type DnsController struct {
-	routing *dns.Dns
+	handling sync.Map
+
+	routing     *dns.Dns
+	qtypePrefer dnsmessage.Type
 
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
@@ -57,9 +70,29 @@ type DnsController struct {
 	dnsCache   map[string]*DnsCache
 }
 
+func parseIpVersionPreference(prefer int) (dnsmessage.Type, error) {
+	switch prefer := IpVersionPrefer(prefer); prefer {
+	case IpVersionPrefer_No:
+		return 0, nil
+	case IpVersionPrefer_4:
+		return dnsmessage.TypeA, nil
+	case IpVersionPrefer_6:
+		return dnsmessage.TypeAAAA, nil
+	default:
+		return 0, fmt.Errorf("unknown preference: %v", prefer)
+	}
+}
+
 func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsController, err error) {
+	// Parse ip version preference.
+	prefer, err := parseIpVersionPreference(option.IpVersionPrefer)
+	if err != nil {
+		return nil, err
+	}
+
 	return &DnsController{
-		routing: routing,
+		routing:     routing,
+		qtypePrefer: prefer,
 
 		log:                 option.Log,
 		cacheAccessCallback: option.CacheAccessCallback,
@@ -71,15 +104,28 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	}, nil
 }
 
-func (c *DnsController) LookupDnsRespCache(domain string, t dnsmessage.Type) (cache *DnsCache) {
+func (c *DnsController) cacheKey(qname string, qtype dnsmessage.Type) string {
+	// To fqdn.
+	if !strings.HasSuffix(qname, ".") {
+		qname = qname + "."
+	}
+	return strings.ToLower(qname) + qtype.String()
+}
+
+func (c *DnsController) RemoveDnsRespCache(qname string, qtype dnsmessage.Type) {
+	c.dnsCacheMu.Lock()
+	key := c.cacheKey(qname, qtype)
+	_, ok := c.dnsCache[key]
+	if ok {
+		delete(c.dnsCache, key)
+	}
+	c.dnsCacheMu.Unlock()
+}
+func (c *DnsController) LookupDnsRespCache(qname string, qtype dnsmessage.Type) (cache *DnsCache) {
 	now := time.Now()
 
-	// To fqdn.
-	if !strings.HasSuffix(domain, ".") {
-		domain = domain + "."
-	}
 	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[strings.ToLower(domain)+t.String()]
+	cache, ok := c.dnsCache[c.cacheKey(qname, qtype)]
 	c.dnsCacheMu.Unlock()
 	// We should make sure the remaining TTL is greater than 120s (minFirefoxCacheTimeout), or
 	// return nil and request a new lookup to refresh the cache.
@@ -299,6 +345,85 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 		)
 	}
 
+	if dnsMessage.Response {
+		return fmt.Errorf("DNS request expected but DNS response received")
+	}
+
+	// Prepare qname, qtype.
+	var qname string
+	var qtype dnsmessage.Type
+	if len(dnsMessage.Questions) != 0 {
+		qname = dnsMessage.Questions[0].Name.String()
+		qtype = dnsMessage.Questions[0].Type
+	}
+
+	// Check ip version preference and qtype.
+	switch qtype {
+	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+		if c.qtypePrefer == 0 {
+			return c.handle_(dnsMessage, req, true)
+		}
+	default:
+		return c.handle_(dnsMessage, req, true)
+	}
+
+	// Try to make both A and AAAA lookups.
+	dnsMessage2 := deepcopy.Copy(dnsMessage).(*dnsmessage.Message)
+	var qtype2 dnsmessage.Type
+	switch qtype {
+	case dnsmessage.TypeA:
+		qtype2 = dnsmessage.TypeAAAA
+	case dnsmessage.TypeAAAA:
+		qtype2 = dnsmessage.TypeA
+	default:
+		return fmt.Errorf("unexpected qtype path")
+	}
+	dnsMessage2.Questions[0].Type = qtype2
+
+	done := make(chan struct{})
+	go func() {
+		_ = c.handle_(dnsMessage2, req, false)
+		done <- struct{}{}
+	}()
+	err = c.handle_(dnsMessage, req, false)
+	<-done
+	if err != nil {
+		return err
+	}
+
+	// Join results and consider whether to response.
+	dnsMessage.Response = false
+	resp := c.LookupDnsRespCache_(dnsMessage)
+	if resp == nil {
+		// resp is not valid.
+		c.log.WithFields(logrus.Fields{
+			"qname": qname,
+		}).Tracef("Reject %v due to resp not valid", qtype.String())
+		return c.sendReject_(dnsMessage, req)
+	}
+	// resp is valid.
+	cache2 := c.LookupDnsRespCache(qname, qtype2)
+	if c.qtypePrefer == qtype || cache2 == nil {
+		return sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag)
+	} else {
+		return c.sendReject_(dnsMessage, req)
+	}
+}
+
+func (c *DnsController) handle_(
+	dnsMessage *dnsmessage.Message,
+	req *udpRequest,
+	needResp bool,
+) (err error) {
+	// Prepare qname, qtype.
+	var qname string
+	var qtype dnsmessage.Type
+	if len(dnsMessage.Questions) != 0 {
+		q := dnsMessage.Questions[0]
+		qname = q.Name.String()
+		qtype = q.Type
+	}
+
 	//// NOTICE: Rush-answer detector was removed because it does not always work in all districts.
 	//// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
 	//// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
@@ -306,37 +431,29 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 	//_, _ = EnsureAdditionalOpt(dnsMessage, true)
 
 	// Route request.
-	upstreamIndex, upstream, err := c.routing.RequestSelect(dnsMessage)
+	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
 	if err != nil {
 		return err
 	}
 
 	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
 		// Reject with empty answer.
-		dnsMessage.Answers = nil
-		dnsMessage.RCode = dnsmessage.RCodeSuccess
-		dnsMessage.Response = true
-		dnsMessage.RecursionAvailable = true
-		dnsMessage.Truncated = false
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
-				"question": dnsMessage.Questions,
-			}).Traceln("Reject with empty answer")
-		}
-		data, err := dnsMessage.Pack()
-		if err != nil {
-			return fmt.Errorf("pack DNS packet: %w", err)
-		}
-		if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
-			return err
-		}
-		return nil
+		c.RemoveDnsRespCache(qname, qtype)
+		return c.sendReject_(dnsMessage, req)
 	}
+
+	// No parallel for the same lookup.
+	_mu, _ := c.handling.LoadOrStore(c.cacheKey(qname, qtype), new(sync.Mutex))
+	mu := _mu.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
 
 	if resp := c.LookupDnsRespCache_(dnsMessage); resp != nil {
 		// Send cache to client directly.
-		if err = sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
-			return fmt.Errorf("failed to write cached DNS resp: %w", err)
+		if needResp {
+			if err = sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
+				return fmt.Errorf("failed to write cached DNS resp: %w", err)
+			}
 		}
 		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Questions) > 0 {
 			q := dnsMessage.Questions[0]
@@ -363,10 +480,32 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	return c.dialSend(req, data, dnsMessage.ID, upstream, 0)
+	return c.dialSend(0, req, data, dnsMessage.ID, upstream, needResp)
 }
 
-func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, invokingDepth int) (err error) {
+// sendReject_ send empty answer.
+func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Message, req *udpRequest) (err error) {
+	dnsMessage.Answers = nil
+	dnsMessage.RCode = dnsmessage.RCodeSuccess
+	dnsMessage.Response = true
+	dnsMessage.RecursionAvailable = true
+	dnsMessage.Truncated = false
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"question": dnsMessage.Questions,
+		}).Traceln("Reject with empty answer")
+	}
+	data, err := dnsMessage.Pack()
+	if err != nil {
+		return fmt.Errorf("pack DNS packet: %w", err)
+	}
+	if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
@@ -577,7 +716,7 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 				"next_upstream": nextUpstream.String(),
 			}).Traceln("Change DNS upstream and resend")
 		}
-		return c.dialSend(req, data, id, nextUpstream, invokingDepth+1)
+		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp)
 	}
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
 		var qname, qtype string
@@ -612,8 +751,10 @@ func (c *DnsController) dialSend(req *udpRequest, data []byte, id uint16, upstre
 	if err != nil {
 		return err
 	}
-	if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
-		return err
+	if needResp {
+		if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -142,22 +142,7 @@ func (s *Dns) InitUpstreams() {
 	wg.Wait()
 }
 
-func (s *Dns) RequestSelect(msg *dnsmessage.Message) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
-	if msg.Response {
-		return 0, nil, fmt.Errorf("DNS request expected but DNS response received")
-	}
-
-	// Prepare routing.
-	var qname string
-	var qtype dnsmessage.Type
-	if len(msg.Questions) == 0 {
-		qname = ""
-		qtype = 0
-	} else {
-		q := msg.Questions[0]
-		qname = q.Name.String()
-		qtype = q.Type
-	}
+func (s *Dns) RequestSelect(qname string, qtype dnsmessage.Type) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
 	// Route.
 	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
 	if err != nil {
