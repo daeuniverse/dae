@@ -18,14 +18,7 @@ Compile dae with CFLAG `-D__REMOVE_BPF_PRINTK`. See [build-by-yourself](build-by
 
 **1. Troubleshoot local DNS service**
 
-If you use `systemd-resolved`, `dnsmasq` or other local DNS service in `/etc/resolv.conf`, do not use their DNS service.
-
-Methods to disable their DNS service:
-
-1. Method 1: by modifying their configurations.
-2. Method 2: by modifying the content of `/etc/resolv.conf` to `nameserver 223.5.5.5` or other DNS.
-
-Alternatively, if you really want to use them, refer to [external-dns](external-dns.md).
+If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](external-dns.md).
 
 **2. Troubleshoot firewall**
 
