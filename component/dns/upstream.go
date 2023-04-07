@@ -92,7 +92,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 		return nil, fmt.Errorf("failed to resolve dns_upstream: %w", err)
 	}
 	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-		return nil, fmt.Errorf("dns_upstream has no record")
+		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
 	}
 
 	return &Upstream{

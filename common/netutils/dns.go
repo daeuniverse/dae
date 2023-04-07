@@ -28,6 +28,8 @@ var (
 	systemDnsNextUpdateAfter time.Time
 
 	BadDnsAnsError = fmt.Errorf("bad dns answer")
+
+	BootstrapDns = netip.MustParseAddrPort("208.67.222.222:5353")
 )
 
 func TryUpdateSystemDns() (err error) {
@@ -61,7 +63,17 @@ func tryUpdateSystemDns() (err error) {
 		err = fmt.Errorf("no valid dns server in /etc/resolv.conf")
 		return err
 	}
-	systemDns = netip.MustParseAddrPort(dnsConf.servers[0])
+	systemDns = netip.AddrPort{}
+	for _, s := range dnsConf.servers {
+		ipPort := netip.MustParseAddrPort(s)
+		if !ipPort.Addr().IsLoopback() {
+			systemDns = ipPort
+			break
+		}
+	}
+	if !systemDns.IsValid() {
+		systemDns = BootstrapDns
+	}
 	return nil
 }
 

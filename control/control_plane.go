@@ -491,8 +491,8 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 	return nil
 }
 
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, dialMode consts.DialMode) {
-	dialMode = consts.DialMode_Ip
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool) {
+	dialMode := consts.DialMode_Ip
 
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
@@ -521,6 +521,9 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 							c.muRealDomainSet.Lock()
 							c.realDomainSet.AddString(domain)
 							c.muRealDomainSet.Unlock()
+
+							// Should use this domain to reroute
+							shouldReroute = true
 						}
 					}
 				}
@@ -553,7 +556,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
 	}
-	return dialTarget, dialMode
+	return dialTarget, shouldReroute
 }
 
 type Listener struct {
@@ -758,7 +761,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			default:
 				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
 			}
-			outboundIndex, mark, _, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), "", proto.ToL4ProtoType(), req.routingResult)
+			outboundIndex, mark, _, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
 			}

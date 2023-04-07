@@ -68,6 +68,11 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
+	dialTarget, shouldReroute := c.ChooseDialTarget(outboundIndex, dst, domain)
+	if shouldReroute {
+		outboundIndex = consts.OutboundControlPlaneRouting
+	}
+
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneRouting:
@@ -82,6 +87,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 				outboundIndex.String(),
 			)
 		}
+		// Reset dialTarget.
+		dialTarget, _ = c.ChooseDialTarget(outboundIndex, dst, domain)
 	default:
 	}
 	// TODO: Set-up ip to domain mapping and show domain if possible.
@@ -99,7 +106,6 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
 
-	dialTarget, _ := c.ChooseDialTarget(outboundIndex, dst, domain)
 	if c.log.IsLevelEnabled(logrus.InfoLevel) {
 		c.log.WithFields(logrus.Fields{
 			"network":  networkType.String(),

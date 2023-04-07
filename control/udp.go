@@ -143,6 +143,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
+	dialTarget, shouldReroute := c.ChooseDialTarget(outboundIndex, realDst, domain)
+	if shouldReroute {
+		outboundIndex = consts.OutboundControlPlaneRouting
+	}
+
 	if routingResult.Must > 0 {
 		isDns = false // Regard as plain traffic.
 	}
@@ -164,6 +169,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				outboundIndex.String(),
 			)
 		}
+		// Reset dialTarget.
+		dialTarget, _ = c.ChooseDialTarget(outboundIndex, realDst, domain)
 	default:
 	}
 	if isDns {
@@ -197,7 +204,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-	dialTarget, _ := c.ChooseDialTarget(outboundIndex, realDst, domain)
 
 	// Get udp endpoint.
 	var ue *UdpEndpoint
