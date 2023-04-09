@@ -30,7 +30,15 @@ func NewConnSniffer(conn net.Conn, snifferBufSize int) *ConnSniffer {
 func (s *ConnSniffer) SniffTcp() (d string, err error) {
 	s.Conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	defer s.Conn.SetReadDeadline(time.Time{})
-	return s.sniffer.SniffTcp()
+	d, err = s.sniffer.SniffTcp()
+	if err != nil {
+		var netError net.Error
+		if errors.As(err, &netError) && netError.Timeout() {
+			return "", NotApplicableError
+		}
+		return "", err
+	}
+	return d, nil
 }
 
 func (s *ConnSniffer) Read(p []byte) (n int, err error) {
