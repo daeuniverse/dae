@@ -3,15 +3,15 @@ package v2ray
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/outbound/transport/tls"
+	"github.com/daeuniverse/dae/component/outbound/transport/ws"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/transport/grpc"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/outbound/transport/tls"
-	"github.com/daeuniverse/dae/component/outbound/transport/ws"
 	"net"
 	"net/url"
 	"regexp"
@@ -248,16 +248,18 @@ func ParseVmessURL(vmess string, option *dialer.GlobalOption) (data *V2Ray, err 
 		if aid == "" {
 			aid = q.Get("aid")
 		}
+		sni := q.Get("peer")
 		info = V2Ray{
 			ID:            subMatch[1],
 			Add:           subMatch[2],
 			Port:          subMatch[3],
 			Ps:            ps,
-			Host:          obfsParam,
+			Host:          jsoniter.Get([]byte(obfsParam), "host").ToString(),
 			Path:          path,
 			Net:           obfs,
 			Aid:           aid,
 			TLS:           map[string]string{"1": "tls"}[q.Get("tls")],
+			SNI:           sni,
 			AllowInsecure: false,
 		}
 		if info.Net == "websocket" {
