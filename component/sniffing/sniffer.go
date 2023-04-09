@@ -45,6 +45,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	defer s.readMu.Unlock()
 	if s.stream {
 		n, err := s.r.Read(s.buf)
+		s.buf = s.buf[:n]
 		if err != nil {
 			var netError net.Error
 			if errors.As(err, &netError) && netError.Timeout() {
@@ -52,7 +53,6 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			}
 			return "", err
 		}
-		s.buf = s.buf[:n]
 	}
 	if len(s.buf) == 0 {
 		return "", NotApplicableError
