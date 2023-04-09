@@ -87,7 +87,7 @@ sudo systemctl enable dae
 
 ### Docker
 
-预编译镜像可相关文档请查阅：https://hub.docker.com/r/daeuniverse/dae。
+预编译镜像可相关文档请查阅：<https://hub.docker.com/r/daeuniverse/dae>。
 
 作为替代，你也可以使用 `docker compose`:
 
