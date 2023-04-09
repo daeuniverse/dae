@@ -29,11 +29,13 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
 
 	// Sniff target domain.
+	lConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	sniffer := sniffing.NewConnSniffer(lConn, TcpSniffBufSize)
 	domain, err := sniffer.SniffTcp()
 	if err != nil && !sniffing.IsSniffingError(err) {
 		return err
 	}
+	lConn.SetReadDeadline(time.Time{})
 	// ConnSniffer should be used later, so we cannot close it now.
 	defer sniffer.Close()
 

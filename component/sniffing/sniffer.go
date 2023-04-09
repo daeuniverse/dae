@@ -6,8 +6,10 @@
 package sniffing
 
 import (
+	"errors"
 	"github.com/mzz2017/softwind/pool"
 	"io"
+	"net"
 	"sync"
 )
 
@@ -44,6 +46,10 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	if s.stream {
 		n, err := s.r.Read(s.buf)
 		if err != nil {
+			var netError net.Error
+			if errors.As(err, &netError) && netError.Timeout() {
+				return "", NotApplicableError
+			}
 			return "", err
 		}
 		s.buf = s.buf[:n]
