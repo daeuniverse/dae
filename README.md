@@ -48,6 +48,10 @@ See [How it works](docs/how_it_works_zh.md).
 - [ ] Add quick-start guide
 - [ ] ...
 
+## Contributors
+
+Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./docs/contribute.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
+
 ## License
 
 [AGPL-3.0 (C) daeuniverse](https://github.com/daeuniverse/dae/blob/master/LICENSE)
