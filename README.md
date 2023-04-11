@@ -48,6 +48,10 @@ See [How it works](docs/how_it_works_zh.md).
 - [ ] Add quick-start guide
 - [ ] ...
 
+## License
+
+[AGPL-3.0 (C) daeuniverse](https://github.com/daeuniverse/dae/blob/master/LICENSE)
+
 ## Stargazers over time
 
 [![Stargazers over time](https://starchart.cc/daeuniverse/dae.svg)](https://starchart.cc/daeuniverse/dae)
