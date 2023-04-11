@@ -35,7 +35,7 @@ Example `<type>` values:
 - `refactor`: (refactoring production code, eg. renaming a variable)
 - `test`: (adding missing tests, refactoring tests; no production code change)
 - `chore`: (updating grunt tasks etc; no production code change, e.g. dependencies upgrade)
-- `perf`: (perfomance improve change, e.g. better concurrency performance)
+- `perf`: (perfomance improvement change, e.g. better concurrency performance)
 
 Example `<Scope>` values:
 
