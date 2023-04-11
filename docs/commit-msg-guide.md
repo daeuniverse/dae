@@ -54,7 +54,7 @@ The first line cannot be longer than `72` characters and should be followed by a
 
 ## Message Body
 
-ust as in the `<subject>`, use the imperative, present tense: "change" not "changed" nor "changes". Message body should include motivation for the change and contrasts with previous behavior.
+use as in the `<subject>`, use the imperative, present tense: "change" not "changed" nor "changes". Message body should include motivation for the change and contrasts with previous behavior.
 
 ## Message footer
 
