@@ -6,6 +6,9 @@ dae will intercept all UDP traffic to port 53 and sniff DNS. Here gives some exa
 
 ```shell
 dns {
+    # For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only respond to type A queries and response empty answer to type AAAA queries.
+    ipversion_prefer: 4
+
     upstream {
         # Value can be scheme://host:port.
         # Scheme list: tcp, udp, tcp+udp. Ongoing: https, tls, quic.
