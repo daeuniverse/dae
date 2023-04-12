@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+const (
+	DataWaitingTimeout = 300 * time.Millisecond
+)
+
 type Sniffer struct {
 	// Stream
 	stream    bool
@@ -70,14 +74,14 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			close(s.dataReady)
 		}()
 
-		// Waiting 100ms for data.
+		// Waiting 300ms for data.
 		select {
-		case <-time.After(100 * time.Millisecond):
-			return "", NotApplicableError
 		case <-s.dataReady:
 			if s.dataError != nil {
 				return "", s.dataError
 			}
+		case <-time.After(DataWaitingTimeout):
+			return "", NotApplicableError
 		}
 	} else {
 		close(s.dataReady)
@@ -112,14 +116,19 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
-	if s.dataError != nil {
-		return 0, s.dataError
-	}
 
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
-	if s.buf != nil && s.bufAt < len(s.buf) {
+	if s.dataError != nil {
+		if s.bufAt < len(s.buf) {
+			n = copy(p, s.buf[s.bufAt:])
+			s.bufAt += n
+		}
+		return n, s.dataError
+	}
+
+	if s.bufAt < len(s.buf) {
 		// Read buf first.
 		n = copy(p, s.buf[s.bufAt:])
 		s.bufAt += n

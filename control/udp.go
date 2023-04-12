@@ -129,12 +129,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	if !isDns {
 		// Sniff Quic, ...
 		sniffer := sniffing.NewPacketSniffer(data)
+		defer sniffer.Close()
 		domain, err = sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
-			sniffer.Close()
 			return err
 		}
-		sniffer.Close()
 	}
 
 	// Get outbound.

@@ -30,12 +30,12 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 
 	// Sniff target domain.
 	sniffer := sniffing.NewConnSniffer(lConn, TcpSniffBufSize)
+	// ConnSniffer should be used later, so we cannot close it now.
+	defer sniffer.Close()
 	domain, err := sniffer.SniffTcp()
 	if err != nil && !sniffing.IsSniffingError(err) {
 		return err
 	}
-	// ConnSniffer should be used later, so we cannot close it now.
-	defer sniffer.Close()
 
 	// Get tuples and outbound.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
