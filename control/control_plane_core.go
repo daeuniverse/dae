@@ -195,13 +195,13 @@ func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 		Table: table,
 		Type:  unix.RTN_LOCAL,
 	}}
-	var badIpv6 bool
+	var routeBadIpv6 bool
 	cleanRoutes := func() error {
 		var errs error
 		for _, route := range routes {
 			if e := netlink.RouteDel(&route); e != nil {
-				if len(route.Dst.IP) == net.IPv6len && badIpv6 {
-					// ipv6
+				if len(route.Dst.IP) == net.IPv6len && routeBadIpv6 {
+					// Not clean for bad ipv6.
 					continue
 				}
 				if errs != nil {
@@ -225,8 +225,8 @@ tryRouteAddAgain:
 			}
 			if len(route.Dst.IP) == net.IPv6len {
 				// ipv6
-				c.log.Warnln("Bad IPv6 support. Perhaps your machine disabled IPv6.")
-				badIpv6 = true
+				c.log.Warnln("IpRouteAdd: Bad IPv6 support. Perhaps your machine disabled IPv6.")
+				routeBadIpv6 = true
 				continue
 			}
 			return fmt.Errorf("IpRouteAdd: %w", err)
@@ -259,9 +259,14 @@ tryRouteAddAgain:
 		Mark:              int(consts.TproxyMark),
 		Mask:              int(consts.TproxyMark),
 	}}
+	var ruleBadIpv6 bool
 	cleanRules := func() error {
 		var errs error
 		for _, rule := range rules {
+			if rule.Family == unix.AF_INET6 && ruleBadIpv6 {
+				// Not clean for bad ipv6.
+				continue
+			}
 			if e := netlink.RuleDel(&rule); e != nil {
 				if errs != nil {
 					errs = fmt.Errorf("%w; %v", errs, e)
@@ -281,6 +286,12 @@ tryRuleAddAgain:
 			if os.IsExist(err) {
 				_ = cleanRules()
 				goto tryRuleAddAgain
+			}
+			if rule.Family == unix.AF_INET6 {
+				// ipv6
+				c.log.Warnln("IpRuleAdd: Bad IPv6 support. Perhaps your machine disabled IPv6 (need CONFIG_IPV6_MULTIPLE_TABLES).")
+				ruleBadIpv6 = true
+				continue
 			}
 			return fmt.Errorf("IpRuleAdd: %w", err)
 		}
