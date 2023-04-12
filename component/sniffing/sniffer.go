@@ -98,6 +98,9 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
+	// Always ready.
+	close(s.dataReady)
+
 	if len(s.buf) == 0 {
 		return "", NotApplicableError
 	}
