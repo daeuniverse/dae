@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DataWaitingTimeout = 300 * time.Millisecond
+	DataWaitingTimeout = 100 * time.Millisecond
 )
 
 type Sniffer struct {
@@ -30,9 +30,9 @@ type Sniffer struct {
 
 func NewStreamSniffer(r io.Reader, bufSize int) *Sniffer {
 	s := &Sniffer{
+		stream:    true,
 		r:         r,
 		buf:       make([]byte, bufSize),
-		stream:    true,
 		dataReady: make(chan struct{}),
 	}
 	return s
@@ -40,8 +40,10 @@ func NewStreamSniffer(r io.Reader, bufSize int) *Sniffer {
 
 func NewPacketSniffer(data []byte) *Sniffer {
 	s := &Sniffer{
-		buf:    data,
-		stream: false,
+		stream:    false,
+		r:         nil,
+		buf:       data,
+		dataReady: make(chan struct{}),
 	}
 	return s
 }
@@ -74,7 +76,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			close(s.dataReady)
 		}()
 
-		// Waiting 300ms for data.
+		// Waiting 100ms for data.
 		select {
 		case <-s.dataReady:
 			if s.dataError != nil {
