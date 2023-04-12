@@ -27,6 +27,7 @@ type Global struct {
 	DialMode                  string        `mapstructure:"dial_mode" default:"domain"`
 	DisableWaitingNetwork     bool          `mapstructure:"disable_waiting_network" default:"false"`
 	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
+	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
 }
 
 type FunctionOrString interface{}

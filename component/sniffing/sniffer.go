@@ -11,16 +11,13 @@ import (
 	"time"
 )
 
-const (
-	DataWaitingTimeout = 100 * time.Millisecond
-)
-
 type Sniffer struct {
 	// Stream
-	stream    bool
-	r         io.Reader
-	dataReady chan struct{}
-	dataError error
+	stream             bool
+	r                  io.Reader
+	dataReady          chan struct{}
+	dataError          error
+	dataWaitingTimeout time.Duration
 
 	// Common
 	buf    []byte
@@ -28,12 +25,13 @@ type Sniffer struct {
 	readMu sync.Mutex
 }
 
-func NewStreamSniffer(r io.Reader, bufSize int) *Sniffer {
+func NewStreamSniffer(r io.Reader, bufSize int, dataWaitingTimeout time.Duration) *Sniffer {
 	s := &Sniffer{
-		stream:    true,
-		r:         r,
-		buf:       make([]byte, bufSize),
-		dataReady: make(chan struct{}),
+		stream:             true,
+		r:                  r,
+		buf:                make([]byte, bufSize),
+		dataReady:          make(chan struct{}),
+		dataWaitingTimeout: dataWaitingTimeout,
 	}
 	return s
 }
@@ -82,7 +80,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			if s.dataError != nil {
 				return "", s.dataError
 			}
-		case <-time.After(DataWaitingTimeout):
+		case <-time.After(s.dataWaitingTimeout):
 			return "", NotApplicableError
 		}
 	} else {

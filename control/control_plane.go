@@ -65,6 +65,8 @@ type ControlPlane struct {
 
 	wanInterface []string
 	lanInterface []string
+
+	sniffingTimeout time.Duration
 }
 
 func NewControlPlane(
@@ -325,6 +327,10 @@ func NewControlPlane(
 	if err != nil {
 		return nil, err
 	}
+	sniffingTimeout := global.SniffingTimeout
+	if dialMode == consts.DialMode_Ip {
+		sniffingTimeout = 0
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
@@ -344,6 +350,7 @@ func NewControlPlane(
 		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:     global.LanInterface,
 		wanInterface:     global.WanInterface,
+		sniffingTimeout:  sniffingTimeout,
 	}
 	defer func() {
 		if err != nil {

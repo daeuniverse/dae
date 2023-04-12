@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"time"
 )
 
 type ConnSniffer struct {
@@ -16,10 +17,10 @@ type ConnSniffer struct {
 	*Sniffer
 }
 
-func NewConnSniffer(conn net.Conn, snifferBufSize int) *ConnSniffer {
+func NewConnSniffer(conn net.Conn, snifferBufSize int, dataWaitingTimeout time.Duration) *ConnSniffer {
 	s := &ConnSniffer{
 		Conn:    conn,
-		Sniffer: NewStreamSniffer(conn, snifferBufSize),
+		Sniffer: NewStreamSniffer(conn, snifferBufSize, dataWaitingTimeout),
 	}
 	return s
 }
