@@ -56,7 +56,7 @@ Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/gra
 
 ## License
 
-[AGPL-3.0 (C) daeuniverse](https://github.com/daeuniverse/dae/blob/master/LICENSE)
+[AGPL-3.0 (C) daeuniverse](https://github.com/daeuniverse/dae/blob/main/LICENSE)
 
 ## Stargazers over time
 
