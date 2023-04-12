@@ -6,9 +6,11 @@
 package sniffing
 
 import (
-	"github.com/mzz2017/softwind/pool"
+	"errors"
 	"io"
+	"net"
 	"sync"
+	"time"
 )
 
 type Sniffer struct {
@@ -42,12 +44,26 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 	if s.stream {
-		n, err := s.r.Read(s.buf)
+		r, isConn := s.r.(net.Conn)
+		if isConn {
+			// Set timeout.
+			r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		}
+		n, err := r.Read(s.buf)
+		if isConn {
+			// Recover.
+			r.SetReadDeadline(time.Time{})
+		}
 		s.buf = s.buf[:n]
 		if err != nil {
+			var netError net.Error
+			if isConn && errors.As(err, &netError) && netError.Timeout() {
+				goto sniff
+			}
 			return "", err
 		}
 	}
+sniff:
 	if len(s.buf) == 0 {
 		return "", NotApplicableError
 	}
@@ -76,9 +92,6 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 		n = copy(p, s.buf[s.bufAt:])
 		s.bufAt += n
 		if s.bufAt >= len(s.buf) {
-			if s.stream {
-				pool.Put(s.buf)
-			}
 			s.buf = nil
 		}
 		return n, nil
