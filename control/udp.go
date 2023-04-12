@@ -127,9 +127,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
 	if !isDns {
-		// Sniff Quic
+		// Sniff Quic, ...
 		sniffer := sniffing.NewPacketSniffer(data)
-		domain, err = sniffer.SniffQuic()
+		domain, err = sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			sniffer.Close()
 			return err
