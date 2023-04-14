@@ -2,7 +2,7 @@
 
 Also seen in [GitHub Releases](https://github.com/daeuniverse/dae/releases)
 
-HTML version available at https://dae.v2raya.org/docs/changelogs
+HTML version available at https://dae.v2raya.org/docs/current/changelogs
 
 ## Query history releases
 
