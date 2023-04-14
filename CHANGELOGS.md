@@ -4,6 +4,12 @@ Also seen in [GitHub Releases](https://github.com/daeuniverse/dae/releases)
 
 HTML version available at https://dae.v2raya.org/docs/changelogs
 
+## Query history releases
+
+```bash
+curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.[] | {tag_name,created_at,prerelease}'
+```
+
 ## Releases
 
 - [0.1.7 (Pre-release)](#0.1.7)
@@ -137,9 +143,3 @@ HTML version available at https://dae.v2raya.org/docs/changelogs
 > Release date: 2023/03/14
 
 Goose out of shell.
-
-## Check history releases
-
-```bash
-curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.[] | {tag_name,created_at,prerelease}'
-```
