@@ -17,7 +17,7 @@ HTML version available at https://dae.v2raya.org/docs/changelogs
 
 ### 0.1.7 (Pre-release)
 
-> Release date: 2023/03/12
+> Release date: 2023/04/12
 
 ## 特性
 
