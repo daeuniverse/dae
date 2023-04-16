@@ -12,14 +12,14 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.7 (Pre-release)](#0.1.7)
-- [0.1.6 (Pre-release)](#0.1.6)
-- [0.1.5 (Current)](#0.1.5)
-- [0.1.4](#0.1.4)
-- [0.1.3](#0.1.3)
-- [0.1.2](#0.1.2)
-- [0.1.1](#0.1.1)
-- [0.1.0](#0.1.0)
+- [0.1.7 (Pre-release)](#017-pre-release)
+- [0.1.6 (Pre-release)](#016-pre-release)
+- [0.1.5 (Current)](#015-current)
+- [0.1.4](#014)
+- [0.1.3](#013)
+- [0.1.2](#012)
+- [0.1.1](#011)
+- [0.1.0](#010)
 
 ### 0.1.7 (Pre-release)
 
