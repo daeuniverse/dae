@@ -43,7 +43,7 @@ Then, configure lima configuration and dae VM configuration.
 ```shell
 # Configure lima networks.
 socket_vmnet_bin=$(readlink -f ${HOMEBREW_PREFIX}/opt/socket_vmnet)/bin/socket_vmnet
-sed -ir "s#^ *socketVMNet:.*#  socketVMNet: \"${socket_vmnet_bin}\"#" .lima/_config/networks.yaml
+sed -ir "s#^ *socketVMNet:.*#  socketVMNet: \"${socket_vmnet_bin}\"#" ~/.lima/_config/networks.yaml
 ```
 
 ```shell
