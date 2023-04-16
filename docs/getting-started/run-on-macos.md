@@ -23,7 +23,9 @@ curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C ho
 
 ## Lima
 
-This chapter intruduces how to use [lima](https://github.com/lima-vm/lima) virtual machine to run dae, and proxy whole macOS host network.
+### Setup
+
+This section intruduces how to use [lima](https://github.com/lima-vm/lima) virtual machine to run dae, and proxy whole macOS host network.
 
 First, we should install `lima` and `socket_vmnet`.
 
@@ -178,7 +180,7 @@ Set default route of macOS to dae VM.
 > **Note**
 > You may need to execute this command every time you connect to network.
 >
-> Refer to [run a script after a interface comes up](https://apple.stackexchange.com/questions/32354/how-do-you-run-a-script-after-a-network-interface-comes-up) if you want to auto execute it.
+> Refer to [Auto set route and DNS](#auto-set-route-and-dns) if you want to auto execute it.
 
 ```shell
 # Get IP of dae VM.
@@ -194,4 +196,71 @@ Verify that we were successful.
 ```shell
 # Verify.
 curl -v ipinfo.io
+```
+
+### Auto set route and DNS
+
+Write a script to execute.
+
+```shell
+# The script to execute.
+mkdir -p /Users/Shared/bin
+cat << 'EOF' > /Users/Shared/bin/dae-network-update.sh
+#!/bin/sh
+set -e
+export PATH=$PATH:/opt/local/bin/
+dae_ip=$(limactl shell dae ip --json addr | limactl shell dae jq -cr '.[] | select( .ifname == "lima0" ).addr_info | .[] | select( .family == "inet" ).local')
+current_gateway=$(route get default|grep gateway|rev|cut -d' ' -f1|rev)
+[ "$current_gateway" != "$dae_ip" ] && (sudo route delete default; sudo route add default $dae_ip)
+networksetup -setdnsservers Wi-Fi $dae_ip
+exit 0
+EOF
+
+# Give executable permission.
+chmod +x /Users/Shared/bin/dae-network-update.sh
+```
+
+Give no-password permission for route.
+```shell
+if [ $(id -u) -eq "0" ]; then echo 'Do not use root!!'; else echo "$(whoami) ALL=(ALL) NOPASSWD: $(which route)" | sudo tee /etc/sudoers.d/"$(whoami)"-route; fi
+```
+
+Write a plist service file.
+
+```shell
+cat << 'EOF' > ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" \
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.v2raya.dae.networkchanging</string>
+
+  <key>LowPriorityIO</key>
+  <true/>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/Shared/bin/dae-network-update.sh</string>
+  </array>
+
+  <key>WatchPaths</key>
+  <array>
+    <string>/etc/resolv.conf</string>
+    <string>/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist</string>
+    <string>/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+EOF
+```
+
+Load the plist service.
+
+```shell
+launchctl load ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist
 ```
