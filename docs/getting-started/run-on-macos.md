@@ -30,8 +30,8 @@ This section intruduces how to use [lima](https://github.com/lima-vm/lima) virtu
 First, we should install `lima` and `socket_vmnet`.
 
 ```shell
-# Install socket_vmnet for bridge.
-brew install socket_vmnet
+# Install lima for VM and socket_vmnet for bridge.
+brew install lima socket_vmnet
 
 # Set up the sudoers file for launching socket_vmnet from Lima
 limactl sudoers >etc_sudoers.d_lima
@@ -208,7 +208,7 @@ mkdir -p /Users/Shared/bin
 cat << 'EOF' > /Users/Shared/bin/dae-network-update.sh
 #!/bin/sh
 set -e
-export PATH=$PATH:/opt/local/bin/
+export PATH=$PATH:/opt/local/bin/:/opt/homebrew/bin/
 dae_ip=$(limactl shell dae ip --json addr | limactl shell dae jq -cr '.[] | select( .ifname == "lima0" ).addr_info | .[] | select( .family == "inet" ).local')
 current_gateway=$(route get default|grep gateway|rev|cut -d' ' -f1|rev)
 [ "$current_gateway" != "$dae_ip" ] && (sudo route delete default; sudo route add default $dae_ip)
