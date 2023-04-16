@@ -181,8 +181,12 @@ Set default route of macOS to dae VM.
 > Refer to [run a script after a interface comes up](https://apple.stackexchange.com/questions/32354/how-do-you-run-a-script-after-a-network-interface-comes-up) if you want to auto execute it.
 
 ```shell
-# Set gateway of macOS host to dae vm.
-sudo route delete default; sudo route add default $(limactl shell dae ip --json addr | limactl shell dae jq -cr '.[] | select( .ifname == "lima0" ).addr_info | .[] | select( .family == "inet" ).local')
+# Get IP of dae VM.
+dae_ip=$(limactl shell dae ip --json addr | limactl shell dae jq -cr '.[] | select( .ifname == "lima0" ).addr_info | .[] | select( .family == "inet" ).local')
+# Set gateway of macOS host to dae VM.
+sudo route delete default; sudo route add default $dae_ip
+# Set DNS of macOS host to dae VM.
+networksetup -setdnsservers Wi-Fi $dae_ip
 ```
 
 Verify that we were successful.
