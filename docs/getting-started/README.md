@@ -89,6 +89,10 @@ sudo systemctl start dae
 sudo systemctl enable dae
 ```
 
+### macOS
+
+我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macos](run-on-macos.md)。
+
 ### Docker
 
 Pre-built image and related docs can be found at https://hub.docker.com/r/daeuniverse/dae.
