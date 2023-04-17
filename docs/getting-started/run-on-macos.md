@@ -203,7 +203,7 @@ mkdir -p /Users/Shared/bin
 cat << 'EOF' > /Users/Shared/bin/dae-network-update.sh
 #!/bin/sh
 set -ex
-export PATH=$PATH:/opt/local/bin/
+export PATH=$PATH:/opt/local/bin/:/opt/homebrew/bin/
 dae_ip=$(limactl shell dae ip --json addr | limactl shell dae jq -cr '.[] | select( .ifname == "lima0" ).addr_info | .[] | select( .family == "inet" ).local')
 current_gateway=$(route -n get default|grep gateway|rev|cut -d' ' -f1|rev)
 networksetup -getdnsservers Wi-Fi | cut -d" " -f1 | grep -E '\.|:' && dns_override=1
