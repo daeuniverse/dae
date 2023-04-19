@@ -87,7 +87,7 @@ network:
         eth0:
             dhcp4: true
             dhcp4-overrides:
-                use-routes: false
+                route-metric: 200
                 use-dns: false
         lima0:
             dhcp4: true
