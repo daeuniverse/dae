@@ -12,12 +12,16 @@ repos:
           - --unsafe
       - id: double-quote-string-fixer
       - id: end-of-file-fixer
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.52.2
+    hooks:
+      - id: golangci-lint
   - repo: local
     hooks:
       - id: gofmt-fixer
         name: gofmt
         entry: gofmt -w .
-        language: system
+        language: golang
         types: [go]
     # - id: check-x
     #   name: Check X
