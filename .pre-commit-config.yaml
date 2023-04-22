@@ -10,3 +10,15 @@ repos:
           - --unsafe
       - id: double-quote-string-fixer
       - id: end-of-file-fixer
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt
+        language: system
+        types: [go]
+    # - id: check-x
+    #   name: Check X
+    #   entry: ./bin/check-x.sh
+    #   language: script
+    #   files: \.x$
