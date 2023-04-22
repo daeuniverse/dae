@@ -12,36 +12,34 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.7 (Pre-release)](#017-pre-release)
+- [0.1.7 (Current)](#017-current)
 - [0.1.6 (Pre-release)](#016-pre-release)
-- [0.1.5 (Current)](#015-current)
+- [0.1.5](#015)
 - [0.1.4](#014)
 - [0.1.3](#013)
 - [0.1.2](#012)
 - [0.1.1](#011)
 - [0.1.0](#010)
 
-### 0.1.7 (Pre-release)
+### 0.1.7 (Current)
 
-> Release date: 2023/04/12
+> Release date: 2023/04/16
 
-#### 特性
+## 特性
 
 支持 `global.sniffing_timeout` 来设定嗅探的超时时间，调大这个值对于时延较高的局域网来说较为有用。
 
-#### 修复
+## 修复
 
-1. 修复无法解析小火箭 shadowrocket 的 vmess+ws+tls 分享链接的问题。
+1. 修复无法解析小火箭shadowrocket的vmess+ws+tls分享链接的问题。
 2. 修复域名嗅探失败的问题。
 
-#### PR
+## PR
+* chore: fix doamin regex example by @troubadour-hell in https://github.com/daeuniverse/dae/pull/53
+* doc: add badges and contribution guide by @yqlbu in https://github.com/daeuniverse/dae/pull/54
 
-- chore: fix doamin regex example by @troubadour-hell in https://github.com/daeuniverse/dae/pull/53
-- doc: add badges and contribution guide by @yqlbu in https://github.com/daeuniverse/dae/pull/54
-
-#### New Contributors
-
-- @troubadour-hell made their first contribution in https://github.com/daeuniverse/dae/pull/53
+## New Contributors
+* @troubadour-hell made their first contribution in https://github.com/daeuniverse/dae/pull/53
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.6...v0.1.7
 
@@ -66,7 +64,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.5...v0.1.6
 
-### 0.1.5 (Latest)
+### 0.1.5
 
 > Release date: 2023/03/29
 
