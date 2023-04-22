@@ -14,7 +14,7 @@ repos:
     hooks:
       - id: gofmt
         name: gofmt
-        entry: gofmt
+        entry: gofmt -w .
         language: system
         types: [go]
     # - id: check-x
