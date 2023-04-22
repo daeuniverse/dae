@@ -12,7 +12,7 @@ repos:
       - id: end-of-file-fixer
   - repo: local
     hooks:
-      - id: gofmt
+      - id: gofmt-fixer
         name: gofmt
         entry: gofmt -w .
         language: system
