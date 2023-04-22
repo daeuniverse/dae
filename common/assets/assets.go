@@ -8,8 +8,6 @@ package assets
 import (
 	"errors"
 	"fmt"
-	"github.com/adrg/xdg"
-	"github.com/sirupsen/logrus"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrg/xdg"
+	"github.com/sirupsen/logrus"
 )
 
 const CacheTimeout = 5 * time.Second

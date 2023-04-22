@@ -6,9 +6,10 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"strings"
 )
 
 type patch func(params *Config) error

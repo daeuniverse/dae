@@ -7,15 +7,16 @@ package domain_matcher
 
 import (
 	"fmt"
+	"hash/fnv"
+	"math/rand"
+	"reflect"
+	"testing"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
-	"hash/fnv"
-	"math/rand"
-	"reflect"
-	"testing"
 )
 
 var TestSample = []string{
@@ -94,7 +95,6 @@ var TestSample = []string{
 }
 
 type RoutingMatcherBuilder struct {
-	outboundName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
 	Fallback           string
 
@@ -206,7 +206,7 @@ func BenchmarkAhocorasickSlimtrie(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	ahocorasick := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+	ahocorasick := NewAhocorasickSlimtrie(logrus.StandardLogger(), consts.MaxMatchSetLen)
 	for _, domains := range simulatedDomainSet {
 		ahocorasick.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

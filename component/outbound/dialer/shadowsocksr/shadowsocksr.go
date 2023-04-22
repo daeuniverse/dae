@@ -3,17 +3,18 @@ package shadowsocksr
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/protocol/shadowsocks_stream"
 	"github.com/mzz2017/softwind/transport/shadowsocksr/obfs"
 	"github.com/mzz2017/softwind/transport/shadowsocksr/proto"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"net"
-	"net/url"
-	"strconv"
-	"strings"
 )
 
 func init() {

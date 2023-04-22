@@ -7,9 +7,10 @@ package config
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	"reflect"
 	"time"
+
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 type Global struct {

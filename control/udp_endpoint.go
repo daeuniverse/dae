@@ -8,12 +8,13 @@ package control
 import (
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pool"
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pool"
 )
 
 const (

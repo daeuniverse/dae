@@ -7,8 +7,9 @@ package sniffing
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/pkg/fastrand"
 	"testing"
+
+	"github.com/mzz2017/softwind/pkg/fastrand"
 )
 
 var (

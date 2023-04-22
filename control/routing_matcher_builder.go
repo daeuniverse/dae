@@ -8,6 +8,9 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"net/netip"
+	"strconv"
+
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -16,8 +19,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
-	"net/netip"
-	"strconv"
 )
 
 type RoutingMatcherBuilder struct {

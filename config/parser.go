@@ -7,10 +7,11 @@ package config
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	"reflect"
 	"strings"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 func StringListParser(to reflect.Value, section *config_parser.Section) error {

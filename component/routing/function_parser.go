@@ -7,10 +7,10 @@ package routing
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/sirupsen/logrus"
 	"net/netip"
 	"strings"
 )

@@ -8,6 +8,11 @@ package control
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"regexp"
+
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common"
@@ -19,10 +24,6 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
-	"net"
-	"net/netip"
-	"os"
-	"regexp"
 )
 
 // coreFlip should be 0 or 1

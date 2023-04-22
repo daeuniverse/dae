@@ -9,11 +9,12 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
-	"github.com/sirupsen/logrus"
-	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 	"strconv"
 	"strings"
+
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+	"github.com/daeuniverse/dae-config-dist/go/dae_config"
+	"github.com/sirupsen/logrus"
 )
 
 type Walker struct {

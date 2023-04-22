@@ -7,8 +7,9 @@ package dialer
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
 	"net"
+
+	"github.com/mzz2017/softwind/netproxy"
 )
 
 type blockDialer struct {

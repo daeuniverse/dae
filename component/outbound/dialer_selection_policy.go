@@ -7,9 +7,10 @@ package outbound
 
 import (
 	"fmt"
+	"strconv"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
-	"strconv"
 )
 
 type DialerSelectionPolicy struct {

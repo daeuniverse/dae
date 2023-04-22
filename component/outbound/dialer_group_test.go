@@ -6,12 +6,13 @@
 package outbound
 
 import (
+	"testing"
+	"time"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/mzz2017/softwind/pkg/fastrand"
-	"testing"
-	"time"
 )
 
 const (

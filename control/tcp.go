@@ -7,6 +7,11 @@ package control
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
+	"strings"
+	"time"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -15,10 +20,6 @@ import (
 	"github.com/mzz2017/softwind/pkg/zeroalloc/io"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
-	"net"
-	"net/netip"
-	"strings"
-	"time"
 )
 
 const (

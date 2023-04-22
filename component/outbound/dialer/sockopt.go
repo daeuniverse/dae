@@ -7,10 +7,11 @@ package dialer
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
 	"net/netip"
 	"runtime"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 var fwmarkIoctl int

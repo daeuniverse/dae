@@ -6,11 +6,12 @@
 package common
 
 import (
-	"github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/sirupsen/logrus"
 )
 
 func ReportMemory(tag string) {

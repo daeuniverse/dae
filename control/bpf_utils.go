@@ -10,17 +10,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/cilium/ebpf"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/sirupsen/logrus"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/sirupsen/logrus"
 )
 
 type _bpfTuples struct {

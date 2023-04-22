@@ -8,12 +8,13 @@ package config
 import (
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 var (

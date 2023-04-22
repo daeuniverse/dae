@@ -6,11 +6,12 @@
 package control
 
 import (
+	"strconv"
+
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
-	"strconv"
 )
 
 func FormatL4Proto(l4proto uint8) string {

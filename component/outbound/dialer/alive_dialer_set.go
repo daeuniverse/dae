@@ -7,12 +7,13 @@ package dialer
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/sirupsen/logrus"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/sirupsen/logrus"
 )
 
 const (

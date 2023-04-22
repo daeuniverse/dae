@@ -10,10 +10,11 @@ package geodata
 import (
 	"errors"
 	"fmt"
-	"google.golang.org/protobuf/encoding/protowire"
 	"io"
 	"os"
 	"strings"
+
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 var (

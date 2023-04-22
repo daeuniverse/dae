@@ -12,10 +12,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/vishvananda/netlink"
-	"golang.org/x/net/dns/dnsmessage"
-	"golang.org/x/sys/unix"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -24,6 +20,11 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/sys/unix"
 )
 
 var (

@@ -3,11 +3,12 @@
 package geodata
 
 import (
+	"reflect"
+	"sync"
+
 	_ "github.com/daeuniverse/dae/pkg/geodata/protoext"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/runtime/protoimpl"
-	"reflect"
-	"sync"
 )
 
 const (
