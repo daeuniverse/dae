@@ -14,6 +14,6 @@ You may also post your idea on the Discussions or the Dae Telegram channel (http
 
 <!-- Please only use this template for submitting enhancement requests -->
 
-**What feature you would like us to integrate to the dae project**:
+## What feature you would like us to integrate to the dae project
 
-**Why is this needed**:
+## Why is this neede:

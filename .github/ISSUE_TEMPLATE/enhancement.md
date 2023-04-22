@@ -6,6 +6,6 @@ labels: kind/optimize
 
 <!-- Please only use this template for submitting enhancement requests -->
 
-**What would you like us to improve**:
+## What would you like us to improve
 
-**Why is this needed**:
+## Why is this needed
