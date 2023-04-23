@@ -14,6 +14,17 @@ Before you start any Pull Request, `it is recommended that you create an issue` 
 
 `Pull Requests` can only be merged once all status checks are green.
 
+### Pre-commit Hook
+
+This repo uses [pre-commit hook](https://github.com/pre-commit/pre-commit-hooks) to apply linting check prior to writing commit to local git history. To set up pre-commit, do the followings:
+
+```bash
+# install pre-commit
+pip3 install pre-commit
+# install pre-commit hooks
+pre-commit install
+```
+
 ### How to make a clean pull request
 
 - Create a `personal fork` of the project on Github.
