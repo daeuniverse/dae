@@ -10,13 +10,14 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net/netip"
+	"os"
+	"syscall"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/mzz2017/softwind/netproxy"
 	"golang.org/x/sys/unix"
-	"net/netip"
-	"os"
-	"syscall"
 )
 
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {

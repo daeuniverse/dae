@@ -7,10 +7,11 @@ package outbound
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	"regexp"
 	"strings"
+
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 const (

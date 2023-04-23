@@ -6,8 +6,9 @@
 package json
 
 import (
-	jsoniter "github.com/json-iterator/go"
 	"unsafe"
+
+	jsoniter "github.com/json-iterator/go"
 )
 
 type FuzzyBoolDecoder struct {

@@ -3,17 +3,6 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/cmd/internal"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/subscription"
-	"github.com/daeuniverse/dae/config"
-	"github.com/daeuniverse/dae/control"
-	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/daeuniverse/dae/pkg/logger"
-	"github.com/mohae/deepcopy"
-	"github.com/okzk/sdnotify"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
 	"math/rand"
 	"net"
 	"net/http"
@@ -25,6 +14,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/subscription"
+	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/control"
+	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/mohae/deepcopy"
+	"github.com/okzk/sdnotify"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
 )
 
 const (

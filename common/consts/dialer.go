@@ -6,8 +6,9 @@
 package consts
 
 import (
-	"golang.org/x/sys/unix"
 	"net/netip"
+
+	"golang.org/x/sys/unix"
 )
 
 type DialerSelectionPolicy string

@@ -6,9 +6,10 @@
 package config
 
 import (
-	jsoniter "github.com/json-iterator/go"
 	"reflect"
 	"sort"
+
+	jsoniter "github.com/json-iterator/go"
 )
 
 type Outline struct {

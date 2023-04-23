@@ -4,8 +4,9 @@ package internal
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/pkg/ebpf_internal/internal/unix"
 	"sync"
+
+	"github.com/daeuniverse/dae/pkg/ebpf_internal/internal/unix"
 )
 
 const (

@@ -7,12 +7,13 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/cmd/internal"
-	"github.com/spf13/cobra"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/spf13/cobra"
 )
 
 var (

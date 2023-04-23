@@ -7,6 +7,10 @@ package dns
 
 import (
 	"fmt"
+	"net/netip"
+	"net/url"
+	"sync"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
@@ -14,9 +18,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
-	"net/netip"
-	"net/url"
-	"sync"
 )
 
 var BadUpstreamFormatError = fmt.Errorf("bad upstream format")

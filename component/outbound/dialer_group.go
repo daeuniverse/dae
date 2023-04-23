@@ -7,11 +7,12 @@ package outbound
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/sirupsen/logrus"
-	"time"
 )
 
 var NoAliveDialerError = fmt.Errorf("no alive dialer")

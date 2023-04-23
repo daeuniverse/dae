@@ -10,8 +10,8 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
-	"github.com/mzz2017/softwind/pool"
 	"github.com/daeuniverse/dae/common"
+	"github.com/mzz2017/softwind/pool"
 	"golang.org/x/crypto/hkdf"
 	"io"
 )

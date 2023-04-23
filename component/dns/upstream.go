@@ -8,14 +8,15 @@ package dns
 import (
 	"context"
 	"fmt"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"net"
 	"net/url"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/mzz2017/softwind/protocol/direct"
 )
 
 var (

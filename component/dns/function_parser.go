@@ -7,11 +7,12 @@ package dns
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
+	"strings"
+
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
-	"strings"
 )
 
 var typeNames = map[string]dnsmessage.Type{

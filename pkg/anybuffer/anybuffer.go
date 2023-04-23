@@ -7,6 +7,7 @@ package anybuffer
 
 import (
 	"errors"
+
 	"golang.org/x/exp/constraints"
 )
 

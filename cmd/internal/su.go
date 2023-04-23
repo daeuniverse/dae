@@ -2,10 +2,11 @@ package internal
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/sirupsen/logrus"
 )
 
 func AutoSu() {

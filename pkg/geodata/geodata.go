@@ -9,10 +9,11 @@ package geodata
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/proto"
 	"os"
 	"strings"
+
+	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 )
 
 func UnmarshalGeoIp(log *logrus.Logger, filepath, code string) (*GeoIP, error) {

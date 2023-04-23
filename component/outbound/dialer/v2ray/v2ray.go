@@ -3,6 +3,11 @@ package v2ray
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
+	"net/url"
+	"regexp"
+	"strings"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/outbound/transport/tls"
@@ -12,10 +17,6 @@ import (
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/transport/grpc"
-	"net"
-	"net/url"
-	"regexp"
-	"strings"
 )
 
 func init() {

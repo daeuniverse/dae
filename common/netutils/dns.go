@@ -9,17 +9,18 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/pool"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 	"io"
 	"math"
 	"net/netip"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/mzz2017/softwind/pool"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 var (

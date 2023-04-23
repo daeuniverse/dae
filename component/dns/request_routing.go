@@ -7,6 +7,8 @@ package dns
 
 import (
 	"fmt"
+	"strconv"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
@@ -14,7 +16,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
-	"strconv"
 )
 
 type RequestMatcherBuilder struct {
