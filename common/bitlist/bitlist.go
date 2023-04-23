@@ -7,9 +7,10 @@ package bitlist
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/common"
-	"github.com/daeuniverse/dae/pkg/anybuffer"
 	"math/bits"
+
+	"github.com/daeuniverse/dae/pkg/anybuffer"
+	"github.com/mzz2017/softwind/common"
 )
 
 // CompactBitList allows your units to be of arbitrary bit size.

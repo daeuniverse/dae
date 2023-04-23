@@ -6,9 +6,10 @@
 package consts
 
 import (
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"strconv"
 	"strings"
+
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 )
 
 const (

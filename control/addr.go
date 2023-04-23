@@ -6,10 +6,11 @@
 package control
 
 import (
-	"github.com/daeuniverse/dae/common/consts"
 	"net"
 	"net/netip"
 	"strconv"
+
+	"github.com/daeuniverse/dae/common/consts"
 )
 
 func RefineSourceToShow(src netip.AddrPort, dst netip.Addr, lanWanFlag consts.LanWanFlag) (srcToShow string) {

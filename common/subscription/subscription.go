@@ -10,8 +10,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/sirupsen/logrus"
-	"github.com/daeuniverse/dae/common"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +18,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/sirupsen/logrus"
 )
 
 type sip008 struct {

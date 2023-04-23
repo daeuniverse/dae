@@ -7,6 +7,10 @@ package dns
 
 import (
 	"fmt"
+	"net/netip"
+	"strconv"
+	"strings"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
@@ -16,9 +20,6 @@ import (
 	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
-	"net/netip"
-	"strconv"
-	"strings"
 )
 
 var ValidCidrChars = trie.NewValidChars([]byte{'0', '1'})

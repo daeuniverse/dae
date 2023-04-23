@@ -9,13 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 	"net"
 	"net/http"
 	"net/netip"
@@ -25,6 +18,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 type NetworkType struct {

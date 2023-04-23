@@ -8,8 +8,9 @@ package sniffing
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	"strings"
+
+	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 )
 
 const (

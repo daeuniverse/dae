@@ -8,8 +8,9 @@ package quicutils
 import (
 	"bytes"
 	"encoding/hex"
-	"github.com/daeuniverse/dae/common"
 	"testing"
+
+	"github.com/daeuniverse/dae/common"
 )
 
 var destConnId = []byte{0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08}

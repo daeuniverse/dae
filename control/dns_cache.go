@@ -6,10 +6,11 @@
 package control
 
 import (
-	"github.com/mohae/deepcopy"
-	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"time"
+
+	"github.com/mohae/deepcopy"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 type DnsCache struct {

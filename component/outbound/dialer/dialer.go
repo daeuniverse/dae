@@ -3,10 +3,11 @@ package dialer
 import (
 	"context"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/sirupsen/logrus"
 	"sync"
 	"time"
+
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/sirupsen/logrus"
 )
 
 var (

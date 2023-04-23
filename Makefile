@@ -43,6 +43,8 @@ dae: ebpf
 clean-ebpf: 
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
+fmt:
+	go fmt ./...
 
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)

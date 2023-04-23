@@ -7,9 +7,10 @@ package sniffing
 
 import (
 	"errors"
-	"github.com/mzz2017/softwind/pool"
-	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	"io/fs"
+
+	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
+	"github.com/mzz2017/softwind/pool"
 )
 
 const (

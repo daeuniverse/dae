@@ -10,6 +10,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"net"
+	"net/netip"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
@@ -21,13 +29,6 @@ import (
 	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
-	"io"
-	"math"
-	"net"
-	"net/netip"
-	"strings"
-	"sync"
-	"time"
 )
 
 const (

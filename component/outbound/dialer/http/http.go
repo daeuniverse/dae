@@ -2,13 +2,14 @@ package http
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/mzz2017/softwind/protocol/http"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"net"
 	"net/url"
 	"strconv"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/protocol/http"
 )
 
 func init() {

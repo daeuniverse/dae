@@ -7,8 +7,9 @@ package dialer
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/common"
 	"net/url"
+
+	"github.com/daeuniverse/dae/common"
 )
 
 type FromLinkCreator func(gOption *GlobalOption, iOption InstanceOption, link string) (dialer *Dialer, err error)

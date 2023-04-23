@@ -5,10 +5,11 @@ package trie
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/bitlist"
 	"math/bits"
 	"sort"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/bitlist"
 )
 
 type ValidChars struct {

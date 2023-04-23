@@ -8,6 +8,16 @@ package control
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
@@ -28,15 +38,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
-	"net"
-	"net/netip"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
 )
 
 type ControlPlane struct {

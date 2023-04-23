@@ -8,11 +8,12 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"golang.org/x/net/dns/dnsmessage"
 	"hash/fnv"
 	"math/rand"
 	"net/netip"
 	"strings"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // FlipDnsQuestionCase is used to reduce dns pollution.

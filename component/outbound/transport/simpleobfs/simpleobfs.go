@@ -56,7 +56,6 @@ func NewSimpleObfs(s string, d netproxy.Dialer) (*SimpleObfs, error) {
 	return t, nil
 }
 
-
 func (s *SimpleObfs) Dial(network, addr string) (c netproxy.Conn, err error) {
 	magicNetwork, err := netproxy.ParseMagicNetwork(network)
 	if err != nil {
@@ -75,6 +74,7 @@ func (s *SimpleObfs) Dial(network, addr string) (c netproxy.Conn, err error) {
 func (s *SimpleObfs) DialUdp(addr string) (conn netproxy.PacketConn, err error) {
 	return nil, fmt.Errorf("%w: simpleobfs+udp", netproxy.UnsupportedTunnelTypeError)
 }
+
 // DialTcp connects to the address addr on the network net via the proxy.
 func (s *SimpleObfs) DialTcp(addr string) (c netproxy.Conn, err error) {
 
