@@ -321,6 +321,13 @@ func FuzzyDecode(to interface{}, val string) bool {
 		default:
 			return false
 		}
+	case reflect.Slice:
+		switch v.Interface().(type) {
+		case []string:
+			v.Set(reflect.ValueOf(strings.Split(val, ",")))
+		default:
+			return false
+		}
 	default:
 		return false
 	}

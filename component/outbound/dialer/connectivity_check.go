@@ -99,12 +99,28 @@ func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
 	return d.mustGetCollection(typ).Alive
 }
 
+func parseIp46FromList(ip []string) *netutils.Ip46 {
+	ip46 := new(netutils.Ip46)
+	for _, ip := range ip {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			continue
+		}
+		if addr.Is4() || addr.Is4In6() {
+			ip46.Ip4 = addr
+		} else if addr.Is6() {
+			ip46.Ip6 = addr
+		}
+	}
+	return ip46
+}
+
 type TcpCheckOption struct {
 	Url *netutils.URL
 	*netutils.Ip46
 }
 
-func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOption, err error) {
+func ParseTcpCheckOption(ctx context.Context, rawURL []string) (opt *TcpCheckOption, err error) {
 	systemDns, err := netutils.SystemDns()
 	if err != nil {
 		return nil, err
@@ -115,13 +131,21 @@ func ParseTcpCheckOption(ctx context.Context, rawURL string) (opt *TcpCheckOptio
 		}
 	}()
 
-	u, err := url.Parse(rawURL)
+	if len(rawURL) == 0 {
+		return nil, fmt.Errorf("ParseTcpCheckOption: bad format: empty")
+	}
+	u, err := url.Parse(rawURL[0])
 	if err != nil {
 		return nil, err
 	}
-	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), false, false)
-	if err != nil {
-		return nil, err
+	var ip46 *netutils.Ip46
+	if len(rawURL) > 1 {
+		ip46 = parseIp46FromList(rawURL[1:])
+	} else {
+		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), false, false)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &TcpCheckOption{
 		Url:  &netutils.URL{URL: u},
@@ -135,7 +159,7 @@ type CheckDnsOption struct {
 	*netutils.Ip46
 }
 
-func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDnsOption, err error) {
+func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string) (opt *CheckDnsOption, err error) {
 	systemDns, err := netutils.SystemDns()
 	if err != nil {
 		return nil, err
@@ -146,7 +170,11 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 		}
 	}()
 
-	host, _port, err := net.SplitHostPort(dnsHostPort)
+	if len(dnsHostPort) == 0 {
+		return nil, fmt.Errorf("ParseCheckDnsOption: bad format: empty")
+	}
+
+	host, _port, err := net.SplitHostPort(dnsHostPort[0])
 	if err != nil {
 		return nil, err
 	}
@@ -154,9 +182,14 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort string) (opt *CheckDns
 	if err != nil {
 		return nil, fmt.Errorf("bad port: %v", err)
 	}
-	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, false, false)
-	if err != nil {
-		return nil, err
+	var ip46 *netutils.Ip46
+	if len(dnsHostPort) > 1 {
+		ip46 = parseIp46FromList(dnsHostPort[1:])
+	} else {
+		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, false, false)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &CheckDnsOption{
 		DnsHost: host,
@@ -169,7 +202,7 @@ type TcpCheckOptionRaw struct {
 	opt *TcpCheckOption
 	mu  sync.Mutex
 	Log *logrus.Logger
-	Raw string
+	Raw []string
 }
 
 func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
@@ -191,7 +224,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 type CheckDnsOptionRaw struct {
 	opt *CheckDnsOption
 	mu  sync.Mutex
-	Raw string
+	Raw []string
 }
 
 func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
