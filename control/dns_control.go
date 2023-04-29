@@ -436,7 +436,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Message, req *udpRequest)
 	}
 	// resp is valid.
 	cache2 := c.LookupDnsRespCache(qname, qtype2)
-	if c.qtypePrefer == qtype || cache2 == nil {
+	if c.qtypePrefer == qtype || cache2 == nil || !cache2.IncludeAnyIp() {
 		return sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn, req.lanWanFlag)
 	} else {
 		return c.sendReject_(dnsMessage, req)
