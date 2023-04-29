@@ -525,18 +525,20 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Message, req *udpRequ
 		case dnsmessage.TypeA:
 			dnsMessage.Answers = []dnsmessage.Resource{{
 				Header: dnsmessage.ResourceHeader{
-					Name: q.Name,
-					Type: typ,
-					TTL:  0,
+					Name:  q.Name,
+					Type:  typ,
+					Class: dnsmessage.ClassINET,
+					TTL:   0,
 				},
 				Body: &dnsmessage.AResource{A: UnspecifiedAddressA.As4()},
 			}}
 		case dnsmessage.TypeAAAA:
 			dnsMessage.Answers = []dnsmessage.Resource{{
 				Header: dnsmessage.ResourceHeader{
-					Name: q.Name,
-					Type: typ,
-					TTL:  0,
+					Name:  q.Name,
+					Type:  typ,
+					Class: dnsmessage.ClassINET,
+					TTL:   0,
 				},
 				Body: &dnsmessage.AAAAResource{AAAA: UnspecifiedAddressAAAA.As16()},
 			}}

@@ -142,6 +142,10 @@ func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host 
 func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (ans []dnsmessage.Resource, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	fqdn := host
+	if !strings.HasSuffix(fqdn, ".") {
+		fqdn += "."
+	}
 	switch typ {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 		if addr, err := netip.ParseAddr(host); err == nil {
@@ -149,7 +153,10 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 				return []dnsmessage.Resource{
 					{
 						Header: dnsmessage.ResourceHeader{
-							Type: typ,
+							Name:  dnsmessage.MustNewName(fqdn),
+							Class: dnsmessage.ClassINET,
+							TTL:   0,
+							Type:  typ,
 						},
 						Body: &dnsmessage.AResource{A: addr.As4()},
 					},
@@ -158,7 +165,10 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 				return []dnsmessage.Resource{
 					{
 						Header: dnsmessage.ResourceHeader{
-							Type: typ,
+							Name:  dnsmessage.MustNewName(fqdn),
+							Class: dnsmessage.ClassINET,
+							TTL:   0,
+							Type:  typ,
 						},
 						Body: &dnsmessage.AAAAResource{AAAA: addr.As16()},
 					},
@@ -180,10 +190,6 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	})
 	if err = builder.StartQuestions(); err != nil {
 		return nil, err
-	}
-	fqdn := host
-	if !strings.HasSuffix(fqdn, ".") {
-		fqdn += "."
 	}
 	if err = builder.Question(dnsmessage.Question{
 		Name:  dnsmessage.MustNewName(fqdn),
