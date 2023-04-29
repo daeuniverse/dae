@@ -523,12 +523,17 @@ func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 	// Parse ips from DNS resp answers.
 	var ips []netip.Addr
 	for _, ans := range cache.Answers {
+		var ip netip.Addr
 		switch ans.Header.Type {
 		case dnsmessage.TypeA:
-			ips = append(ips, netip.AddrFrom4(ans.Body.(*dnsmessage.AResource).A))
+			ip = netip.AddrFrom4(ans.Body.(*dnsmessage.AResource).A)
 		case dnsmessage.TypeAAAA:
-			ips = append(ips, netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA))
+			ip = netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA)
 		}
+		if ip.IsUnspecified() {
+			continue
+		}
+		ips = append(ips, ip)
 	}
 	if len(ips) == 0 {
 		return nil

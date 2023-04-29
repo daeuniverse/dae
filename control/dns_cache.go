@@ -58,3 +58,13 @@ func (c *DnsCache) IncludeIp(ip netip.Addr) bool {
 	}
 	return false
 }
+
+func (c *DnsCache) IncludeAnyIp() bool {
+	for _, ans := range c.Answers {
+		switch ans.Body.(type) {
+		case *dnsmessage.AResource, *dnsmessage.AAAAResource:
+			return true
+		}
+	}
+	return false
+}
