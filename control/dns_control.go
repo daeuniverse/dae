@@ -33,7 +33,8 @@ import (
 
 const (
 	MaxDnsLookupDepth      = 3
-	minFirefoxCacheTimeout = 120 * time.Second
+	minFirefoxCacheTtl     = 120
+	minFirefoxCacheTimeout = minFirefoxCacheTtl * time.Second
 )
 
 type IpVersionPrefer int
@@ -47,6 +48,11 @@ const (
 var (
 	SuspectedRushAnswerError     = fmt.Errorf("suspected DNS rush-answer")
 	UnsupportedQuestionTypeError = fmt.Errorf("unsupported question type")
+)
+
+var (
+	UnspecifiedAddressA    = netip.MustParseAddr("0.0.0.0")
+	UnspecifiedAddressAAAA = netip.MustParseAddr("::")
 )
 
 type DnsControllerOption struct {
@@ -125,14 +131,12 @@ func (c *DnsController) RemoveDnsRespCache(qname string, qtype dnsmessage.Type) 
 	c.dnsCacheMu.Unlock()
 }
 func (c *DnsController) LookupDnsRespCache(qname string, qtype dnsmessage.Type) (cache *DnsCache) {
-	now := time.Now()
-
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[c.cacheKey(qname, qtype)]
 	c.dnsCacheMu.Unlock()
 	// We should make sure the remaining TTL is greater than 120s (minFirefoxCacheTimeout), or
 	// return nil and request a new lookup to refresh the cache.
-	if ok && cache.Deadline.After(now.Add(minFirefoxCacheTimeout)) {
+	if ok {
 		return cache
 	}
 	return nil
@@ -187,35 +191,52 @@ func (c *DnsController) DnsRespHandler(data []byte, validateRushAns bool) (newMs
 		return &msg, nil
 	}
 
-	// Check req type.
-	switch q.Type {
-	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-	default:
-		return &msg, nil
-	}
-
-	// Set ttl.
+	// Get TTL.
 	var ttl uint32
 	for i := range msg.Answers {
 		if ttl == 0 {
 			ttl = msg.Answers[i].Header.TTL
+			break
 		}
+	}
+	if ttl == 0 {
+		// It seems no answers (NXDomain).
+		ttl = minFirefoxCacheTtl
+	}
+
+	// Check req type.
+	switch q.Type {
+	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+	default:
+		// Update DnsCache.
+		if err = c.updateDnsCache(&msg, ttl, &q); err != nil {
+			return nil, err
+		}
+		return &msg, nil
+	}
+
+	// Set ttl.
+	for i := range msg.Answers {
 		// Set TTL = zero. This requests applications must resend every request.
 		// However, it may be not defined in the standard.
 		msg.Answers[i].Header.TTL = 0
 	}
 
-	// Check if there is any A/AAAA record.
-	var hasIpRecord bool
+	// Check if request A/AAAA record.
+	var reqIpRecord bool
 loop:
-	for i := range msg.Answers {
-		switch msg.Answers[i].Header.Type {
+	for i := range msg.Questions {
+		switch msg.Questions[i].Type {
 		case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-			hasIpRecord = true
+			reqIpRecord = true
 			break loop
 		}
 	}
-	if !hasIpRecord {
+	if !reqIpRecord {
+		// Update DnsCache.
+		if err = c.updateDnsCache(&msg, ttl, &q); err != nil {
+			return nil, err
+		}
 		return &msg, nil
 	}
 
@@ -237,6 +258,15 @@ loop:
 	}
 
 	// Update DnsCache.
+	if err = c.updateDnsCache(&msg, ttl, &q); err != nil {
+		return nil, err
+	}
+	// Pack to get newData.
+	return &msg, nil
+}
+
+func (c *DnsController) updateDnsCache(msg *dnsmessage.Message, ttl uint32, q *dnsmessage.Question) error {
+	// Update DnsCache.
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
 			"_qname":   q.Name,
@@ -252,11 +282,10 @@ loop:
 	}
 	cacheTimeout += 5 * time.Second // DNS lookup timeout.
 
-	if err = c.UpdateDnsCache(q.Name.String(), q.Type.String(), msg.Answers, time.Now().Add(cacheTimeout)); err != nil {
-		return nil, err
+	if err := c.UpdateDnsCache(q.Name.String(), q.Type.String(), msg.Answers, time.Now().Add(cacheTimeout)); err != nil {
+		return err
 	}
-	// Pack to get newData.
-	return &msg, nil
+	return nil
 }
 
 func (c *DnsController) UpdateDnsCache(host string, dnsTyp string, answers []dnsmessage.Resource, deadline time.Time) (err error) {
@@ -490,6 +519,29 @@ func (c *DnsController) handle_(
 // sendReject_ send empty answer.
 func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Message, req *udpRequest) (err error) {
 	dnsMessage.Answers = nil
+	if len(dnsMessage.Questions) > 0 {
+		q := dnsMessage.Questions[0]
+		switch typ := q.Type; typ {
+		case dnsmessage.TypeA:
+			dnsMessage.Answers = []dnsmessage.Resource{{
+				Header: dnsmessage.ResourceHeader{
+					Name: q.Name,
+					Type: typ,
+					TTL:  0,
+				},
+				Body: &dnsmessage.AResource{A: UnspecifiedAddressA.As4()},
+			}}
+		case dnsmessage.TypeAAAA:
+			dnsMessage.Answers = []dnsmessage.Resource{{
+				Header: dnsmessage.ResourceHeader{
+					Name: q.Name,
+					Type: typ,
+					TTL:  0,
+				},
+				Body: &dnsmessage.AAAAResource{AAAA: UnspecifiedAddressAAAA.As16()},
+			}}
+		}
+	}
 	dnsMessage.RCode = dnsmessage.RCodeSuccess
 	dnsMessage.Response = true
 	dnsMessage.RecursionAvailable = true
@@ -497,7 +549,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Message, req *udpRequ
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
 			"question": dnsMessage.Questions,
-		}).Traceln("Reject with empty answer")
+		}).Traceln("Reject")
 	}
 	data, err := dnsMessage.Pack()
 	if err != nil {
