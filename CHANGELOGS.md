@@ -12,8 +12,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
+- [0.1.8 (Pre-release)](#018-pre-release)
 - [0.1.7 (Current)](#017-current)
-- [0.1.6 (Pre-release)](#016-pre-release)
+- [0.1.6](#016)
 - [0.1.5](#015)
 - [0.1.4](#014)
 - [0.1.3](#013)
@@ -21,25 +22,50 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.1](#011)
 - [0.1.0](#010)
 
+### 0.1.8 (Pre-release)
+
+> Release date: 2023/04/30
+
+#### 功能变更
+
+- optimize: DNS 缓存空解析和非 A/AAAA 查询，以及 reject 使用 0.0.0.0 和 :: by @mzz2017 in https://github.com/daeuniverse/dae/pull/63
+- feat: 支持为 `tcp_check_url` 和 `udp_check_dns` 设定固定 IP 以防止 DNS 污染对 ipv4/ipv6 的支持带来影响 by @mzz2017 in https://github.com/daeuniverse/dae/commit/9493b9a0aa82573fed934bf62cc836f0fe148607
+
+#### 其他变更
+
+- chore: 增加 changelogs by @yqlbu in https://github.com/daeuniverse/dae/pull/55
+- chore: 增加 pre-commit 钩子来格式化代码 by @yqlbu in https://github.com/daeuniverse/dae/pull/59
+- style: 格式化 golang 代码风格 by @czybjtu in https://github.com/daeuniverse/dae/pull/58
+- chore: 增加 issue 模板 by @yqlbu in https://github.com/daeuniverse/dae/pull/62
+- chore(codeowner): 更新 ownership by @yqlbu in https://github.com/daeuniverse/dae/pull/64
+
+#### New Contributors
+
+- @czybjtu made their first contribution in https://github.com/daeuniverse/dae/pull/58
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.7...v0.1.8
+
 ### 0.1.7 (Current)
 
 > Release date: 2023/04/16
 
-## 特性
+#### 特性
 
 支持 `global.sniffing_timeout` 来设定嗅探的超时时间，调大这个值对于时延较高的局域网来说较为有用。
 
-## 修复
+#### 修复
 
-1. 修复无法解析小火箭shadowrocket的vmess+ws+tls分享链接的问题。
+1. 修复无法解析小火箭 shadowrocket 的 vmess+ws+tls 分享链接的问题。
 2. 修复域名嗅探失败的问题。
 
-## PR
-* chore: fix doamin regex example by @troubadour-hell in https://github.com/daeuniverse/dae/pull/53
-* doc: add badges and contribution guide by @yqlbu in https://github.com/daeuniverse/dae/pull/54
+#### PR
 
-## New Contributors
-* @troubadour-hell made their first contribution in https://github.com/daeuniverse/dae/pull/53
+- chore: fix doamin regex example by @troubadour-hell in https://github.com/daeuniverse/dae/pull/53
+- doc: add badges and contribution guide by @yqlbu in https://github.com/daeuniverse/dae/pull/54
+
+#### New Contributors
+
+- @troubadour-hell made their first contribution in https://github.com/daeuniverse/dae/pull/53
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.6...v0.1.7
 
