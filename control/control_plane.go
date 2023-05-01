@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
