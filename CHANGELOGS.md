@@ -12,8 +12,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.8 (Pre-release)](#018-pre-release)
-- [0.1.7 (Current)](#017-current)
+- [0.1.9 (Pre-release)](#019-pre-release)
+- [0.1.8 (Current)](#018-current)
+- [0.1.7](#017)
 - [0.1.6](#016)
 - [0.1.5](#015)
 - [0.1.4](#014)
@@ -22,7 +23,31 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.1](#011)
 - [0.1.0](#010)
 
-### 0.1.8 (Pre-release)
+### 0.1.9 (Pre-release)
+
+> Release date: 2023/05/09
+
+#### 功能变更
+
+- 修复 trojan UDP 不通的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/71
+- 修复 `curl http://[ipv6]:port` 不通的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/70
+
+#### 其他变更
+
+- 修复 docker 镜像构建的 CI 会在特定名称的分支提交时意外地运行的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/72
+
+#### Changes
+
+- fix(trojan): udp problem by @mzz2017 in https://github.com/daeuniverse/dae/pull/71
+- fix(sniffing): fail to `curl http://[ipv6]:port` by @mzz2017 in https://github.com/daeuniverse/dae/pull/70
+
+#### Other Changes
+
+- fix(ci): PR runs docker action in some cases by @mzz2017 in https://github.com/daeuniverse/dae/pull/72
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.8...v0.1.9
+
+### 0.1.8 (Current)
 
 > Release date: 2023/04/30
 
@@ -45,7 +70,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.7...v0.1.8
 
-### 0.1.7 (Current)
+### 0.1.7
 
 > Release date: 2023/04/16
 
