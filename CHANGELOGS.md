@@ -36,6 +36,15 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - 修复 docker 镜像构建的 CI 会在特定名称的分支提交时意外地运行的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/72
 
+#### Changes
+
+- fix(trojan): udp problem by @mzz2017 in https://github.com/daeuniverse/dae/pull/71
+- fix(sniffing): fail to `curl http://[ipv6]:port` by @mzz2017 in https://github.com/daeuniverse/dae/pull/70
+
+#### Other Changes
+
+- fix(ci): PR runs docker action in some cases by @mzz2017 in https://github.com/daeuniverse/dae/pull/72
+
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.8...v0.1.9
 
 ### 0.1.8 (Current)
