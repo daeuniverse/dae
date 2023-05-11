@@ -13,6 +13,10 @@ global {
     #tcp_check_url: 'http://cp.cloudflare.com'
     tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
 
+    # The HTTP request method to `tcp_check_url`. Use 'CONNECT' by default because some server implementations bypass
+    # accounting for this kind of traffic.
+    tcp_check_http_method: CONNECT
+
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
     # TCP DNS connectivity of nodes.
     # First is URL, others are IP addresses if given.
