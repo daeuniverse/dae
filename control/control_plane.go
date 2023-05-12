@@ -557,6 +557,10 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	case consts.DialMode_Ip:
 		dialTarget = dst.String()
 	case consts.DialMode_Domain:
+		if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
+			// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
+			domain = domain[1 : len(domain)-1]
+		}
 		if _, err := netip.ParseAddr(domain); err == nil {
 			// domain is IPv4 or IPv6 (has colon)
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
