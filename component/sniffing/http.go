@@ -8,6 +8,7 @@ package sniffing
 import (
 	"bufio"
 	"bytes"
+	"github.com/daeuniverse/dae/common"
 	"strings"
 	"unicode"
 )
@@ -27,9 +28,7 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 	if !found {
 		return "", NotApplicableError
 	}
-	switch string(method) {
-	case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND":
-	default:
+	if !common.IsValidHttpMethod(string(method)) {
 		return "", NotApplicableError
 	}
 
