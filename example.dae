@@ -3,6 +3,14 @@ global {
     # In normal case, you do not need to use it.
     tproxy_port: 12345
 
+    # Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed
+    # iptables tproxy rules.
+    tproxy_port_protect: true
+
+    # If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy
+    # rules.
+    so_mark_from_dae: 0
+
     # Log level: error, warn, info, debug, trace.
     log_level: info
 
