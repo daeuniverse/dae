@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -221,25 +222,25 @@ func FuzzyDecode(to interface{}, val string) bool {
 	v := reflect.Indirect(reflect.ValueOf(to))
 	switch v.Kind() {
 	case reflect.Int:
-		i, err := strconv.ParseInt(val, 10, strconv.IntSize)
+		i, err := strconv.ParseInt(val, 0, strconv.IntSize)
 		if err != nil {
 			return false
 		}
 		v.SetInt(i)
 	case reflect.Int8:
-		i, err := strconv.ParseInt(val, 10, 8)
+		i, err := strconv.ParseInt(val, 0, 8)
 		if err != nil {
 			return false
 		}
 		v.SetInt(i)
 	case reflect.Int16:
-		i, err := strconv.ParseInt(val, 10, 16)
+		i, err := strconv.ParseInt(val, 0, 16)
 		if err != nil {
 			return false
 		}
 		v.SetInt(i)
 	case reflect.Int32:
-		i, err := strconv.ParseInt(val, 10, 32)
+		i, err := strconv.ParseInt(val, 0, 32)
 		if err != nil {
 			return false
 		}
@@ -253,38 +254,38 @@ func FuzzyDecode(to interface{}, val string) bool {
 			}
 			v.Set(reflect.ValueOf(duration))
 		default:
-			i, err := strconv.ParseInt(val, 10, 64)
+			i, err := strconv.ParseInt(val, 0, 64)
 			if err != nil {
 				return false
 			}
 			v.SetInt(i)
 		}
 	case reflect.Uint:
-		i, err := strconv.ParseUint(val, 10, strconv.IntSize)
+		i, err := strconv.ParseUint(val, 0, strconv.IntSize)
 		if err != nil {
 			return false
 		}
 		v.SetUint(i)
 	case reflect.Uint8:
-		i, err := strconv.ParseUint(val, 10, 8)
+		i, err := strconv.ParseUint(val, 0, 8)
 		if err != nil {
 			return false
 		}
 		v.SetUint(i)
 	case reflect.Uint16:
-		i, err := strconv.ParseUint(val, 10, 16)
+		i, err := strconv.ParseUint(val, 0, 16)
 		if err != nil {
 			return false
 		}
 		v.SetUint(i)
 	case reflect.Uint32:
-		i, err := strconv.ParseUint(val, 10, 32)
+		i, err := strconv.ParseUint(val, 0, 32)
 		if err != nil {
 			return false
 		}
 		v.SetUint(i)
 	case reflect.Uint64:
-		i, err := strconv.ParseUint(val, 10, 64)
+		i, err := strconv.ParseUint(val, 0, 64)
 		if err != nil {
 			return false
 		}
@@ -456,4 +457,15 @@ nextLink:
 		}
 	}
 	return Deduplicate(defaultIfs), nil
+}
+
+func MagicNetwork(network string, mark uint32) string {
+	if mark == 0 {
+		return network
+	} else {
+		return netproxy.MagicNetwork{
+			Network: network,
+			Mark:    mark,
+		}.Encode()
+	}
 }

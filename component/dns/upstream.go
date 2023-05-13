@@ -72,7 +72,7 @@ type Upstream struct {
 	*netutils.Ip46
 }
 
-func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err error) {
+func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
 	scheme, hostname, port, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", FormatError, err)
@@ -88,7 +88,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 		}
 	}()
 
-	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, false, false)
+	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve dns_upstream: %w", err)
 	}
@@ -131,7 +131,8 @@ func (u *Upstream) String() string {
 }
 
 type UpstreamResolver struct {
-	Raw *url.URL
+	Raw     *url.URL
+	Network string
 	// FinishInitCallback may be invoked again if err is not nil
 	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
 	mu                 sync.Mutex
@@ -154,7 +155,7 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 		}()
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
-		if u.upstream, err = NewUpstream(ctx, u.Raw); err != nil {
+		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 		}
 	}

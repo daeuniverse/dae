@@ -14,8 +14,10 @@ import (
 )
 
 type Global struct {
-	TproxyPort uint16 `mapstructure:"tproxy_port" default:"12345"`
-	LogLevel   string `mapstructure:"log_level" default:"info"`
+	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
+	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
+	SoMarkFromDae     uint32 `mapstructure:"so_mark_from_dae"`
+	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
 	TcpCheckUrl               []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`

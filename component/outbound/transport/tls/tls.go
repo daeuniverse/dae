@@ -54,31 +54,23 @@ func (s *Tls) Dial(network, addr string) (c netproxy.Conn, err error) {
 	}
 	switch magicNetwork.Network {
 	case "tcp":
-		return s.DialTcp(addr)
+		rc, err := s.dialer.Dial(network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
+		}
+
+		tlsConn := tls.Client(&netproxy.FakeNetConn{
+			Conn:  rc,
+			LAddr: nil,
+			RAddr: nil,
+		}, s.tlsConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			return nil, err
+		}
+		return tlsConn, err
 	case "udp":
-		return s.DialUdp(addr)
+		return nil, fmt.Errorf("%w: tls+udp", netproxy.UnsupportedTunnelTypeError)
 	default:
 		return nil, fmt.Errorf("%w: %v", netproxy.UnsupportedTunnelTypeError, network)
 	}
-}
-
-func (s *Tls) DialUdp(addr string) (conn netproxy.PacketConn, err error) {
-	return nil, fmt.Errorf("%w: tls+udp", netproxy.UnsupportedTunnelTypeError)
-}
-
-func (s *Tls) DialTcp(addr string) (conn netproxy.Conn, err error) {
-	rc, err := s.dialer.DialTcp(addr)
-	if err != nil {
-		return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
-	}
-
-	tlsConn := tls.Client(&netproxy.FakeNetConn{
-		Conn:  rc,
-		LAddr: nil,
-		RAddr: nil,
-	}, s.tlsConfig)
-	if err := tlsConn.Handshake(); err != nil {
-		return nil, err
-	}
-	return tlsConn, err
 }

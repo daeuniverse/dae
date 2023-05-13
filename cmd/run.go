@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"math/rand"
 	"net"
 	"net/http"
@@ -247,6 +250,20 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	if !conf.Global.DisableWaitingNetwork && len(conf.Subscription) > 0 {
 		epo := 5 * time.Second
 		client := http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
+					cd := netproxy.ContextDialer{Dialer: direct.SymmetricDirect}
+					conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
+					if err != nil {
+						return nil, err
+					}
+					return &netproxy.FakeNetConn{
+						Conn:  conn,
+						LAddr: nil,
+						RAddr: nil,
+					}, nil
+				},
+			},
 			Timeout: epo,
 		}
 		log.Infoln("Waiting for network...")
@@ -274,8 +291,25 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	if len(conf.Subscription) > 0 {
 		log.Infoln("Fetching subscriptions...")
 	}
+	client := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
+				cd := netproxy.ContextDialer{Dialer: direct.SymmetricDirect}
+				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
+				if err != nil {
+					return nil, err
+				}
+				return &netproxy.FakeNetConn{
+					Conn:  conn,
+					LAddr: nil,
+					RAddr: nil,
+				}, nil
+			},
+		},
+		Timeout: 30 * time.Second,
+	}
 	for _, sub := range conf.Subscription {
-		tag, nodes, err := subscription.ResolveSubscription(log, filepath.Dir(cfgFile), string(sub))
+		tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 			resolvingfailed = true

@@ -19,7 +19,6 @@ import (
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -91,8 +90,8 @@ func SystemDns() (dns netip.AddrPort, err error) {
 	return systemDns, nil
 }
 
-func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (addrs []netip.Addr, err error) {
-	resources, err := resolve(ctx, d, dns, host, typ, tcp)
+func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, network string) (addrs []netip.Addr, err error) {
+	resources, err := resolve(ctx, d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
@@ -118,16 +117,14 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 	return addrs, nil
 }
 
-func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, tcp bool) (records []string, err error) {
+func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
 	typ := dnsmessage.TypeNS
-	resources, err := resolve(ctx, d, dns, host, typ, tcp)
+	resources, err := resolve(ctx, d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
-	logrus.Println(host, len(resources))
 	for _, ans := range resources {
 		if ans.Header.Type != typ {
-			logrus.Println(host, ans.Header.Type)
 			continue
 		}
 		ns, ok := ans.Body.(*dnsmessage.NSResource)
@@ -139,7 +136,7 @@ func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host 
 	return records, nil
 }
 
-func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, tcp bool) (ans []dnsmessage.Resource, err error) {
+func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, network string) (ans []dnsmessage.Resource, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	fqdn := host
@@ -202,7 +199,11 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	if err != nil {
 		return nil, err
 	}
-	if tcp {
+	magicNetwork, err := netproxy.ParseMagicNetwork(network)
+	if err != nil {
+		return nil, err
+	}
+	if magicNetwork.Network == "tcp" {
 		// Put DNS request length
 		buf := pool.Get(2 + len(b))
 		defer pool.Put(buf)
@@ -213,12 +214,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 
 	// Dial and write.
 	cd := &netproxy.ContextDialer{Dialer: d}
-	var c netproxy.Conn
-	if tcp {
-		c, err = cd.DialTcpContext(ctx, dns.String())
-	} else {
-		c, err = cd.DialUdpContext(ctx, dns.String())
-	}
+	c, err := cd.DialContext(ctx, network, dns.String())
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +224,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 		return nil, err
 	}
 	ch := make(chan error, 2)
-	if !tcp {
+	if magicNetwork.Network == "udp" {
 		go func() {
 			// Resend every 3 seconds for UDP.
 			for {
@@ -249,7 +245,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	go func() {
 		buf := pool.Get(512)
 		defer pool.Put(buf)
-		if tcp {
+		if magicNetwork.Network == "tcp" {
 			// Read DNS response length
 			_, err := io.ReadFull(c, buf[:2])
 			if err != nil {
