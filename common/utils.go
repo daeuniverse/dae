@@ -469,3 +469,12 @@ func MagicNetwork(network string, mark uint32) string {
 		}.Encode()
 	}
 }
+
+func IsValidHttpMethod(method string) bool {
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND", "CONNECT", "TRACE":
+		return true
+	default:
+		return false
+	}
+}

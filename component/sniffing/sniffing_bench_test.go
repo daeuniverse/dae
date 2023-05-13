@@ -7,6 +7,7 @@ package sniffing
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/common"
 	"testing"
 
 	"github.com/mzz2017/softwind/pkg/fastrand"
@@ -17,7 +18,7 @@ var (
 )
 
 func init() {
-	httpMethods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND"}
+	httpMethods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND", "CONNECT", "TRACE"}
 	httpMethodSet = make(map[string]struct{})
 	for _, method := range httpMethods {
 		httpMethodSet[method] = struct{}{}
@@ -39,9 +40,7 @@ func BenchmarkStringSwitch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var test [5]byte
 		fastrand.Read(test[:])
-		switch string(test[:]) {
-		case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND":
-		default:
+		if !common.IsValidHttpMethod(string(test[:])) {
 			fmt.Sprintf("%v", string(test[:]))
 		}
 	}

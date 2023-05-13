@@ -21,6 +21,7 @@ type Global struct {
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
 	TcpCheckUrl               []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
+	TcpCheckHttpMethod        string        `mapstructure:"tcp_check_http_method" default:"CONNECT"` // Use 'CONNECT' because some server implementations bypass accounting for this kind of traffic.
 	UdpCheckDns               []string      `mapstructure:"udp_check_dns" default:"dns.google.com:53,8.8.8.8,2001:4860:4860::8888"`
 	CheckInterval             time.Duration `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance            time.Duration `mapstructure:"check_tolerance" default:"0"`

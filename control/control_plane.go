@@ -233,6 +233,7 @@ func NewControlPlane(
 			Raw:             global.TcpCheckUrl,
 			Log:             log,
 			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+			Method:          global.TcpCheckHttpMethod,
 		},
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
 			Raw:             global.UdpCheckDns,

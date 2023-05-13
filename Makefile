@@ -37,6 +37,7 @@ endif
 
 .PHONY: clean-ebpf ebpf dae
 
+dae: export GOOS=linux
 dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
 
