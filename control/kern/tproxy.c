@@ -1691,7 +1691,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         __builtin_memset(&routing_info, 0, sizeof(routing_info));
         __builtin_memcpy(routing_info.ip, &tuples.dip, IPV6_BYTE_LENGTH);
         routing_info.port = tcph.dest;
-        routing_info.recognize = RECOGNIZE;
         routing_info.routing_result.outbound = outbound;
         routing_info.routing_result.mark = mark;
         routing_info.routing_result.must = must;
