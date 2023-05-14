@@ -70,13 +70,13 @@ func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (
 	// Search dirs.
 	var searchDirs []string
 	folder := "dae"
-	location := os.Getenv("DAE_LOCATION_ASSET")
 	// check if DAE_LOCATION_ASSET is set
+	location := os.Getenv("DAE_LOCATION_ASSET")
 	if location != "" {
 		// add DAE_LOCATION_ASSET to search path
-		searchDirs = []string{
-			location,
-		}
+		searchDirs = append(searchDirs, location)
+		// add /etc/dae to search path
+		searchDirs = append(searchDirs, c.externDirs...)
 		// additional paths for non windows platforms
 		if runtime.GOOS != "windows" {
 			searchDirs = append(
@@ -87,15 +87,16 @@ func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (
 		}
 		searchDirs = append(searchDirs, c.externDirs...)
 	} else {
+		// add /etc/dae to search path
+		searchDirs = append(searchDirs, c.externDirs...)
 		if runtime.GOOS != "windows" {
 			// Search XDG data directories on non windows platform
-			searchDirs = append([]string{xdg.DataHome}, xdg.DataDirs...)
+			searchDirs = append(searchDirs, xdg.DataHome)
+			searchDirs = append(searchDirs, xdg.DataDirs...)
 			for i := range searchDirs {
 				searchDirs[i] = filepath.Join(searchDirs[i], folder)
 			}
-			searchDirs = append(searchDirs, c.externDirs...)
 		} else {
-			searchDirs = append([]string{}, c.externDirs...)
 			// fallback to the old behavior of using only current dir on Windows
 			pwd := "./"
 			if absPath, e := filepath.Abs(pwd); e == nil {
