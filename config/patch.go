@@ -6,6 +6,8 @@
 package config
 
 import (
+	"github.com/daeuniverse/dae/common"
+	"github.com/sirupsen/logrus"
 	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -15,8 +17,17 @@ import (
 type patch func(params *Config) error
 
 var patches = []patch{
+	patchTcpCheckHttpMethod,
 	patchEmptyDns,
 	patchMustOutbound,
+}
+
+func patchTcpCheckHttpMethod(params *Config) error {
+	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
+		logrus.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
+		params.Global.TcpCheckHttpMethod = "CONNECT"
+	}
+	return nil
 }
 
 func patchEmptyDns(params *Config) error {

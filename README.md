@@ -52,7 +52,7 @@ See [How it works](docs/how_it_works_zh.md).
 
 ## Contributors
 
-Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./docs/contribute.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
+Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./CONTRIBUTING.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
 
 ## License
 

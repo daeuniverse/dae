@@ -118,9 +118,13 @@ func parseIp46FromList(ip []string) *netutils.Ip46 {
 type TcpCheckOption struct {
 	Url *netutils.URL
 	*netutils.Ip46
+	Method string
 }
 
-func ParseTcpCheckOption(ctx context.Context, rawURL []string) (opt *TcpCheckOption, err error) {
+func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string) (opt *TcpCheckOption, err error) {
+	if method == "" {
+		method = http.MethodGet
+	}
 	systemDns, err := netutils.SystemDns()
 	if err != nil {
 		return nil, err
@@ -148,8 +152,9 @@ func ParseTcpCheckOption(ctx context.Context, rawURL []string) (opt *TcpCheckOpt
 		}
 	}
 	return &TcpCheckOption{
-		Url:  &netutils.URL{URL: u},
-		Ip46: ip46,
+		Url:    &netutils.URL{URL: u},
+		Ip46:   ip46,
+		Method: method,
 	}, nil
 }
 
@@ -199,10 +204,11 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string) (opt *CheckD
 }
 
 type TcpCheckOptionRaw struct {
-	opt *TcpCheckOption
-	mu  sync.Mutex
-	Log *logrus.Logger
-	Raw []string
+	opt    *TcpCheckOption
+	mu     sync.Mutex
+	Log    *logrus.Logger
+	Raw    []string
+	Method string
 }
 
 func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
@@ -212,7 +218,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
 		ctx = context.WithValue(ctx, "logger", c.Log)
-		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw)
+		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
 		}
@@ -279,7 +285,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip4)
+			return d.HttpCheck(ctx, opt.Url, opt.Ip4, opt.Method)
 		},
 	}
 	tcp6CheckOpt := &CheckOption{
@@ -301,7 +307,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip6)
+			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method)
 		},
 	}
 	tcp4CheckDnsOpt := &CheckOption{
@@ -529,8 +535,11 @@ func (d *Dialer) Check(timeout time.Duration,
 	return ok, err
 }
 
-func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr) (ok bool, err error) {
+func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string) (ok bool, err error) {
 	// HTTP(S) check.
+	if method == "" {
+		method = http.MethodGet
+	}
 	cd := &netproxy.ContextDialer{Dialer: d.Dialer}
 	cli := http.Client{
 		Transport: &http.Transport{
@@ -548,7 +557,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr) 
 			},
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
 		return false, err
 	}
