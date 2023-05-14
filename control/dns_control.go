@@ -134,9 +134,9 @@ func (c *DnsController) LookupDnsRespCache(qname string, qtype dnsmessage.Type) 
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[c.cacheKey(qname, qtype)]
 	c.dnsCacheMu.Unlock()
-	// We should make sure the remaining TTL is greater than 120s (minFirefoxCacheTimeout), or
+	// We should make sure the cache did not expire, or
 	// return nil and request a new lookup to refresh the cache.
-	if ok {
+	if ok && cache.Deadline.After(time.Now()) {
 		return cache
 	}
 	return nil
