@@ -12,7 +12,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.10rc (Pre-release)](#0110rc-current)
+- [0.1.10rc (Pre-release)](#0110rc-pre-release)
 - [0.1.9-patch.1 (Current)](#019-patch1-current)
 - [0.1.9](#019)
 - [0.1.8](#018)
@@ -55,7 +55,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10rc
 
-### 0.1.9-patch.1
+### 0.1.9-patch.1 (Current)
 
 > Release date: 2023/05/14
 
