@@ -28,7 +28,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### 0.1.10rc1 (Pre-release)
 
-> Release date: 2023/05/14
+> Release date: 2023/05/15
 
 #### 功能变更
 
