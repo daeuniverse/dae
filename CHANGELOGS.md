@@ -12,6 +12,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
+- [0.1.10rc1 (Pre-release)](#0110rc1-pre-release)
 - [0.1.10rc (Pre-release)](#0110rc-pre-release)
 - [0.1.9-patch.1 (Current)](#019-patch1-current)
 - [0.1.9](#019)
@@ -24,6 +25,20 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.2](#012)
 - [0.1.1](#011)
 - [0.1.0](#010)
+
+### 0.1.10rc1 (Pre-release)
+
+> Release date: 2023/05/14
+
+#### 功能变更
+
+- patch(geodata): 修复由 #84 导致的错误的 geodata 搜索路径 `/etc/dae/dae` by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
+
+#### Changes
+
+- patch(geodata): fix incorrect geodata search path `/etc/dae/dae` caused by #84 by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10rc...v0.1.10rc1
 
 ### 0.1.10rc (Pre-release)
 
