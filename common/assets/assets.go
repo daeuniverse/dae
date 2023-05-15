@@ -91,11 +91,11 @@ func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (
 		searchDirs = append(searchDirs, c.externDirs...)
 		if runtime.GOOS != "windows" {
 			// Search XDG data directories on non windows platform
-			searchDirs = append(searchDirs, xdg.DataHome)
-			searchDirs = append(searchDirs, xdg.DataDirs...)
-			for i := range searchDirs {
-				searchDirs[i] = filepath.Join(searchDirs[i], folder)
+			xdgDirs := append([]string{xdg.DataHome}, xdg.DataDirs...)
+			for i := range xdgDirs {
+				xdgDirs[i] = filepath.Join(xdgDirs[i], folder)
 			}
+			searchDirs = append(searchDirs, xdgDirs...)
 		} else {
 			// fallback to the old behavior of using only current dir on Windows
 			pwd := "./"
