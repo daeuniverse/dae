@@ -37,7 +37,7 @@ jobs:
           npm ci
       - name: Lint Markdown files (markdownlint)
         run: |
-          npm run markdownlint-fix
+          npm run markdown-lint-fix
           npm run markdown-lint
       - name: Lint Markdown files (autocorrect)
         uses: huacnlee/autocorrect-action@main
