@@ -31,7 +31,7 @@ dae 会通过在 tc 挂载点的程序将流量分流，根据分流结果决定
 
 ### 代理原理
 
-dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时， dae 通过 eBPF 将 tc 挂载点的需代理流量的 socket buffer 直接关联至 dae 的 tproxy 侦听端口的 socket；在绑定 WAN 接口时，dae 将需代理流量 socket buffer 从网卡出队列移动至网卡的入队列，禁用其 checksum，并修改目的地址为 tproxy 侦听端口。
+dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时，dae 通过 eBPF 将 tc 挂载点的需代理流量的 socket buffer 直接关联至 dae 的 tproxy 侦听端口的 socket；在绑定 WAN 接口时，dae 将需代理流量 socket buffer 从网卡出队列移动至网卡的入队列，禁用其 checksum，并修改目的地址为 tproxy 侦听端口。
 
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
 
