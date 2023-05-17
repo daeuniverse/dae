@@ -12,7 +12,7 @@ Compile dae with CFLAG `-D__REMOVE_BPF_PRINTK`. See [build-by-yourself](build-by
 
 ## PVE related
 
-1. [PVE NIC Hardware passthrough](https://github.com/daeuniverse/dae/issues/43)
+- [PVE NIC Hardware passthrough](https://github.com/daeuniverse/dae/issues/43)
 
 ## Binding to WAN but no network
 
