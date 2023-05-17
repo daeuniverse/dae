@@ -59,7 +59,7 @@ use as in the `<subject>`, use the imperative, present tense: "change" not "chan
 
 ## Message footer
 
-##### Referencing issues
+### Referencing issues
 
 Closed issues should be listed on a separate line in the footer prefixed with "Closes" keyword as the following:
 

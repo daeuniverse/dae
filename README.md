@@ -16,15 +16,15 @@ In order to improve the traffic split performance as much as possible, dae runs 
 
 As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely.
 
-**Features**
+## Features
 
-1. Implement `Real Direct` traffic split (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
-1. Support to split traffic by process name in local host.
-1. Support to split traffic by MAC address in LAN.
-1. Support to split traffic with invert match rules.
-1. Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
-1. Support advanced DNS resolution process.
-1. Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
+- [x] Implement `Real Direct` traffic split (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
+- [x] Support to split traffic by process name in local host.
+- [x] Support to split traffic by MAC address in LAN.
+- [x] Support to split traffic with invert match rules.
+- [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
+- [x] Support advanced DNS resolution process.
+- [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 
 ## Getting Started
 
