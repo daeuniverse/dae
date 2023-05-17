@@ -10,9 +10,9 @@ You can install brew referring to official docs <https://docs.brew.sh/Installati
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
 ```
 
-### For arm64
+### For ARM64
 
-To install arm64 architecture packages, homebrew should be installed in `/opt/homebrew`:
+To install ARM64 architecture packages, homebrew should be installed in `/opt/homebrew`:
 
 ```shell
 cd /opt

@@ -66,7 +66,7 @@ CONFIG_BPF_EVENTS=y
 
 ### Archlinux/Manjaro
 
-dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae/)，使用下述命令安装：
+dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae)，使用下述命令安装：
 
 ```shell
 # yay -S dae
@@ -88,7 +88,7 @@ sudo systemctl enable dae
 
 ### macOS
 
-我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macos](run-on-macos.md)。
+我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](run-on-macos.md)。
 
 ### Docker
 
@@ -208,4 +208,4 @@ dns {
 
 ## 大鹅宇宙
 
-Telegram: https://t.me/daeuniverse
+Telegram: <https://t.me/daeuniverse>

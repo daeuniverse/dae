@@ -1,6 +1,6 @@
 # dae 的工作原理
 
-dae 通过 [eBPF](https://en.wikipedia.org/wiki/EBPF) 在 Linux 内核的 tc (traffic control) 挂载点加载一个程序，通过该程序在流量进入 TCP/IP 网络栈之前进行流量分流。tc 在 linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
+dae 通过 [eBPF](https://en.wikipedia.org/wiki/EBPF) 在 Linux 内核的 tc (traffic control) 挂载点加载一个程序，通过该程序在流量进入 TCP/IP 网络栈之前进行流量分流。tc 在 Linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
 
 ![](netstack-path.webp)
 

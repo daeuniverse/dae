@@ -70,7 +70,7 @@ Check them using command like:
 
 ### Archlinux/Manjaro
 
-dae has been released on [AUR](https://aur.archlinux.org/packages/dae/).
+dae has been released on [AUR](https://aur.archlinux.org/packages/dae).
 
 ```shell
 # yay -S dae
@@ -92,11 +92,11 @@ sudo systemctl enable dae
 
 ### macOS
 
-We provide a hacky way to run dae on your macOS. See [run on macos](run-on-macos.md).
+We provide a hacky way to run dae on your macOS. See [run on macOS](run-on-macos.md).
 
 ### Docker
 
-Pre-built image and related docs can be found at https://hub.docker.com/r/daeuniverse/dae.
+Pre-built image and related docs can be found at <https://hub.docker.com/r/daeuniverse/dae>.
 
 Alternatively, you can use `docker compose`:
 
