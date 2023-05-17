@@ -11,6 +11,8 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/*.yml"
+    paths-ignore:
+      - ".github/workflows/check-docs.yml"
   release:
     types: [ prereleased ]
 
