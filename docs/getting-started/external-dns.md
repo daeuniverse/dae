@@ -73,9 +73,9 @@ You should configure dae as follows:
    # Or use MAC address if in the same link:
    # mac(8c:16:45:36:1c:5a) && l4proto(udp) && dport(53) -> must_direct
    ```
-   
+
    And make sure domain `dns.google.com` will be proxied in routing rules.
-   
+
 3. Add upstream and request to section "dns".
 
    ```

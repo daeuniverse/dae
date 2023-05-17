@@ -34,6 +34,7 @@ zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
 dae 需要以下内核选项：
+
 ```
 CONFIG_BPF=y
 CONFIG_BPF_SYSCALL=y
@@ -52,14 +53,14 @@ CONFIG_DEBUG_INFO_BTF=y
 CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 ```
+
 你可以通过以下命令检查他们：
 
 ```shell
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-> **注意**
-> `Armbian` 用户可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级到支持的内核。
+> **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级到支持的内核。
 
 ## 安装
 
@@ -175,6 +176,7 @@ routing {
 ```
 
 如果你不在乎极致速度，而是更注重隐私和 DNS 泄露，使用以下配置替换上述的 dns 部分：
+
 ```shell
 dns {
   upstream {

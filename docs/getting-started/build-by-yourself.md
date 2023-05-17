@@ -49,12 +49,15 @@ popd
 **Run**
 
 Download the example config file:
+
 ```shell
 curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 ```
+
 See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
 After fine tuning, run dae:
+
 ```shell
 ./dae run -c example.dae
 ```
