@@ -1,0 +1,8 @@
+rules:
+  # Default rules: https://github.com/huacnlee/autocorrect/raw/main/autocorrect/.autocorrectrc.default
+  spellcheck: 1
+spellcheck:
+  words:
+    # Please do not add a general English word (eg. apple, python) here.
+    # Users can add their special words to their .autocorrectrc file by their need.
+    - filesystem = file system
