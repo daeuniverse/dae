@@ -39,6 +39,12 @@ type GlobalOption struct {
 	CheckTolerance    time.Duration
 	CheckDnsTcp       bool
 	AllowInsecure     bool
+	TlsImplementation string
+	Utls              Utls
+}
+
+type Utls struct {
+	Imitate string
 }
 
 type InstanceOption struct {

@@ -110,11 +110,12 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 				sni = s.Host
 			}
 			u := url.URL{
-				Scheme: "tls",
+				Scheme: option.TlsImplementation,
 				Host:   net.JoinHostPort(s.Add, s.Port),
 				RawQuery: url.Values{
 					"sni":           []string{sni},
 					"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
+					`utlsImitate`:   []string{option.Utls.Imitate},
 				}.Encode(),
 			}
 			d, err = tls.NewTls(u.String(), d)

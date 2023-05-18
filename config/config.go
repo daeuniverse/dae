@@ -30,6 +30,12 @@ type Global struct {
 	DisableWaitingNetwork     bool          `mapstructure:"disable_waiting_network" default:"false"`
 	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
+	TlsImplementation         string        `mapstructure:"tls_implementation" default:"tls"`
+	Utls                      Utls          `mapstructure:"utls"`
+}
+
+type Utls struct {
+	Imitate string `mapstructure:"imitate"`
 }
 
 type FunctionOrString interface{}

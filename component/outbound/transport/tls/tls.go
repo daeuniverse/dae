@@ -3,17 +3,21 @@ package tls
 import (
 	"crypto/tls"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
 	"net/url"
+
+	"github.com/mzz2017/softwind/netproxy"
+	utls "github.com/refraction-networking/utls"
 )
 
 // Tls is a base Tls struct
 type Tls struct {
-	dialer     netproxy.Dialer
-	addr       string
-	serverName string
-	skipVerify bool
-	tlsConfig  *tls.Config
+	dialer          netproxy.Dialer
+	addr            string
+	serverName      string
+	skipVerify      bool
+	tlsImplentation string
+	utlsImitate     string
+	tlsConfig       *tls.Config
 }
 
 // NewTls returns a Tls infra.
@@ -24,12 +28,14 @@ func NewTls(s string, d netproxy.Dialer) (*Tls, error) {
 	}
 
 	t := &Tls{
-		dialer: d,
-		addr:   u.Host,
+		dialer:          d,
+		addr:            u.Host,
+		tlsImplentation: u.Scheme,
 	}
 
 	query := u.Query()
 	t.serverName = query.Get("sni")
+	t.utlsImitate = query.Get("utlsImitate")
 
 	// skipVerify
 	if query.Get("allowInsecure") == "true" || query.Get("allowInsecure") == "1" ||
@@ -72,11 +78,32 @@ func (s *Tls) DialTcp(addr string) (conn netproxy.Conn, err error) {
 		return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
 	}
 
-	tlsConn := tls.Client(&netproxy.FakeNetConn{
-		Conn:  rc,
-		LAddr: nil,
-		RAddr: nil,
-	}, s.tlsConfig)
+	var tlsConn interface {
+		netproxy.Conn
+		Handshake() error
+	}
+
+	switch s.tlsImplentation {
+	case "tls":
+		tlsConn = tls.Client(&netproxy.FakeNetConn{
+			Conn:  rc,
+			LAddr: nil,
+			RAddr: nil,
+		}, s.tlsConfig)
+
+	case "utls":
+		clientHelloID, err := nameToUtlsClientHelloID(s.utlsImitate)
+		if err != nil {
+			return nil, err
+		}
+
+		tlsConn = utls.UClient(&netproxy.FakeNetConn{
+			Conn:  rc,
+			LAddr: nil,
+			RAddr: nil,
+		}, uTLSConfigFromTLSConfig(s.tlsConfig), *clientHelloID)
+	}
+
 	if err := tlsConn.Handshake(); err != nil {
 		return nil, err
 	}
