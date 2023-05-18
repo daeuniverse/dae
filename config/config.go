@@ -31,7 +31,7 @@ type Global struct {
 	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
 	TlsImplementation         string        `mapstructure:"tls_implementation" default:"tls"`
-	Utls                      Utls          `mapstructure:"utls"`
+	UtlsImitate               string        `mapstructure:"utls_imitate"`
 }
 
 type Utls struct {

@@ -40,11 +40,7 @@ type GlobalOption struct {
 	CheckDnsTcp       bool
 	AllowInsecure     bool
 	TlsImplementation string
-	Utls              Utls
-}
-
-type Utls struct {
-	Imitate string
+	UtlsImitate       string
 }
 
 type InstanceOption struct {

@@ -234,9 +234,7 @@ func NewControlPlane(
 		CheckDnsTcp:       true,
 		AllowInsecure:     global.AllowInsecure,
 		TlsImplementation: global.TlsImplementation,
-		Utls: dialer.Utls{
-			Imitate: global.Utls.Imitate,
-		},
+		UtlsImitate:       global.UtlsImitate,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
