@@ -67,6 +67,10 @@ global {
     # Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Set it higher is useful
     # in high latency LAN network.
     sniffing_timeout: 100ms
+
+    # TLS implementation. tls will use Go's crypto/tls. utls will use uTLS, which can imitate browser's Client Hello.
+    tls_implementation: tls
+    utls_imitate: chrome_auto
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
