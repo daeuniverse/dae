@@ -36,7 +36,7 @@ Example `<type>` values:
 - `test`: (adding missing tests, refactoring tests; no production code change)
 - `chore`: (updating grunt tasks etc; no production code change, e.g. dependencies upgrade)
 - `perf`: (perfomance improvement change, e.g. better concurrency performance)
-- `ci`: (updating CI configuration files and scripts e.g. .GitHub/workflows/\*.yml )
+- `ci`: (updating CI configuration files and scripts e.g. `.gitHub/workflows/*.yml` )
 
 Example `<Scope>` values:
 

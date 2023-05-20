@@ -8,8 +8,7 @@ A `kernel` is the core of any operating system. Before you start calling Linux a
 
 Upgrading the Linux kernel is not easy; you must do this only if you find security errors or hardware interaction issues. If your system crashes, you might have to recover the whole system. Mostly, Linux distributions come with the most upgraded kernel. Upgrading the Linux kernel doesn’t delete or remove the previous kernel; it is kept inside the system.
 
-> **Note**
-> You should not upgrade your kernel manually unless you want some specific driver support. You can roll back to the older kernel from the recovery menu of your Linux system. However, you may need to upgrade the kernel for hardware issues or security issues.
+> **Note**: You should not upgrade your kernel manually unless you want some specific driver support. You can roll back to the older kernel from the recovery menu of your Linux system. However, you may need to upgrade the kernel for hardware issues or security issues.
 
 ### Preparation
 
@@ -17,8 +16,7 @@ Before you start upgrading your Linux kernel, you must know the Kernel’s `curr
 
 Various Linux distributions have different methods to upgrade the Linux kernel. This guide convers ways to upgrade the kernel to a desired version for most `Armbian Linux`, `Debian-based Linux`, `RedHat, Fedora based Linux`, and `Arch-based Linux` distributions.
 
-> **Note**
-> Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
+> **Note**: Since `dae` is builts with `eBPF`, your host must meet the minimum Kernel version, `>= 5.8` for dae to properly running.
 
 ### Upgrade to BTF Kernel on Armbian Linux
 
@@ -48,13 +46,11 @@ uname -r
 
 (Debian ONLY): If you would like to upgrade to the latest Kernel (AGGRESSIVE UPGRADE), follow the commands below:
 
-> **Warning**
-> The latest Kernel that Debian officially supports is available in the `unstable release`. Debian Unstable (also known by its codename "SID") is not strictly a release, but rather a rolling development version of the Debian distribution containing the latest packages that have been introduced into Debian. Upgrading to the latest Kernel might potentially introduce breaking changes to your system, so please do at your own risk.
+> **Warning**: The latest Kernel that Debian officially supports is available in the `unstable release`. Debian Unstable (also known by its codename "SID") is not strictly a release, but rather a rolling development version of the Debian distribution containing the latest packages that have been introduced into Debian. Upgrading to the latest Kernel might potentially introduce breaking changes to your system, so please do at your own risk.
 
 Reference: [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11)
 
-> **Note**
-> Please modify the following line if your system is NOT on Debian11: `Pin: release a=bullseye` - e.g. `Pin: release a=buster` (Debian10)
+> **Note**: Please modify the following line if your system is NOT on Debian11: `Pin: release a=bullseye` - e.g. `Pin: release a=buster` (Debian10)
 
 ```shell
 # Sync databases.
