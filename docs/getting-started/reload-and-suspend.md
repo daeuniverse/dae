@@ -2,7 +2,7 @@
 
 dae supports configuration reloading and program suspending, which can help you save a lot of time when modifying the configuration or temporarily suspend dae.
 
-**Reload**
+## Reload
 
 Generally, dae won't interrupt connections when reloading configuration. And reloading is much faster than restarting.
 
@@ -12,11 +12,11 @@ Usage:
 dae reload
 ```
 
-**Suspend**
+## Suspend
 
 It will be useful if you want to suspend dae temporarily and recover it later.
 
-Usage:
+## Usage
 
 ```shell
 dae suspend
@@ -27,4 +27,3 @@ If you want to recover, use reload:
 ```shell
 dae reload
 ```
-

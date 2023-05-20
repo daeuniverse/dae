@@ -1,6 +1,6 @@
 # Routing
 
-## Examples:
+## Examples
 
 ```shell
 ### Built-in outbounds: block, direct, must_rules

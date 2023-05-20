@@ -52,12 +52,12 @@ dns {
             # Accept the response if the request is sent to upstream 'googledns'. This is useful to avoid loop.
             upstream(googledns) -> accept
             # If DNS request name is not in CN and response answers include private IP, which is most likely polluted
-            # in China mainland. Therefore, resend DNS request to 'googledns' to get correct result. 
+            # in China mainland. Therefore, resend DNS request to 'googledns' to get correct result.
             !qname(geosite:cn) && ip(geoip:private) -> googledns
             fallback: accept
         }
     }
-    
+
 }
 ```
 

@@ -7,7 +7,7 @@ If you use a external DNS like AdguardHome, you could refer to the following gui
 
 ## External DNS on localhost
 
-If you set up an external DNS on localhost, you may want to let the DNS queries to dns.google.com proxied. For example, if you have the following configuration in AdguardHome:
+If you set up an external DNS on localhost, you may want to let the DNS queries to `dns.google.com` proxied. For example, if you have the following configuration in AdguardHome:
 
 ```
 Listen on: the same machine with dae, port 53.
@@ -53,7 +53,7 @@ You should configure dae as follows:
 
 ## External DNS on another machine in LAN
 
-If you set up a external DNS on another machine in LAN, you may want to let the DNS queries to dns.google.com proxied. For example, if you have following configuration in AdguardHome:
+If you set up a external DNS on another machine in LAN, you may want to let the DNS queries to `dns.google.com` proxied. For example, if you have following configuration in `AdguardHome`:
 
 ```
 Listen on: 192.168.30.3:53 (mac address: 8c:16:45:36:1c:5a)
@@ -73,9 +73,9 @@ You should configure dae as follows:
    # Or use MAC address if in the same link:
    # mac(8c:16:45:36:1c:5a) && l4proto(udp) && dport(53) -> must_direct
    ```
-   
+
    And make sure domain `dns.google.com` will be proxied in routing rules.
-   
+
 3. Add upstream and request to section "dns".
 
    ```

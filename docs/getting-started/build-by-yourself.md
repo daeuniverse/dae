@@ -2,7 +2,7 @@
 
 ## Build
 
-**Make Dependencies**
+### Make Dependencies
 
 ```shell
 clang >= 10
@@ -11,7 +11,7 @@ golang >= 1.18
 make
 ```
 
-**Build**
+### Compilation
 
 ```shell
 git clone https://github.com/daeuniverse/dae.git
@@ -34,7 +34,7 @@ make GOFLAGS="-buildvcs=false" \
 
 ## Run
 
-**Runtime Dependencies**
+### Runtime Dependencies
 
 For traffic splitting, dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
 
@@ -46,15 +46,18 @@ curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/l
 popd
 ```
 
-**Run**
+### Run
 
 Download the example config file:
+
 ```shell
 curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 ```
+
 See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
 After fine tuning, run dae:
+
 ```shell
 ./dae run -c example.dae
 ```

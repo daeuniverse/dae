@@ -11,7 +11,7 @@ Use `uname -r` to check the kernel version on your machine.
 > **Note**
 > If you find your kernel version is `< 5.8`, follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to the minimum required version.
 
-**Bind to LAN: >= 5.8**
+`Bind to LAN: >= 5.8`
 
 You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
 
@@ -19,7 +19,7 @@ This feature requires the kernel version of machine on which dae install >= 5.8.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-**Bind to WAN: >= 5.8**
+`Bind to WAN: >= 5.8`
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
@@ -38,6 +38,7 @@ zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
 dae needs:
+
 ```
 CONFIG_BPF=y
 CONFIG_BPF_SYSCALL=y
@@ -56,20 +57,20 @@ CONFIG_DEBUG_INFO_BTF=y
 CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 ```
+
 Check them using command like:
 
 ```shell
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-> **Note**
-> `Armbian` users can follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
+> **Note**: `Armbian` users can follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
 
 ## Installation
 
 ### Archlinux/Manjaro
 
-dae has been released on [AUR](https://aur.archlinux.org/packages/dae/).
+dae has been released on [AUR](https://aur.archlinux.org/packages/dae).
 
 ```shell
 # yay -S dae
@@ -91,11 +92,11 @@ sudo systemctl enable dae
 
 ### macOS
 
-We provide a hacky way to run dae on your macOS. See [run on macos](run-on-macos.md).
+We provide a hacky way to run dae on your macOS. See [run on macOS](run-on-macos.md).
 
 ### Docker
 
-Pre-built image and related docs can be found at https://hub.docker.com/r/daeuniverse/dae.
+Pre-built image and related docs can be found at <https://hub.docker.com/r/daeuniverse/dae>.
 
 Alternatively, you can use `docker compose`:
 

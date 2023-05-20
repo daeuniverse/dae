@@ -1,9 +1,9 @@
 # Semantic Commit Messages
 
-## The reasons for these conventions:
+## The reasons for these conventions
 
 - automatic generating of the changelog
-- simple navigation through git history (e.g. ignoring the style changes)
+- simple navigation through Git history (e.g. ignoring the style changes)
 
 See how a minor change to your commit message style can make you a better developer.
 
@@ -36,7 +36,7 @@ Example `<type>` values:
 - `test`: (adding missing tests, refactoring tests; no production code change)
 - `chore`: (updating grunt tasks etc; no production code change, e.g. dependencies upgrade)
 - `perf`: (perfomance improvement change, e.g. better concurrency performance)
-- `ci`: (updating CI configuration files and scripts e.g. .github/workflows/*.yml )
+- `ci`: (updating CI configuration files and scripts e.g. `.gitHub/workflows/*.yml` )
 
 Example `<Scope>` values:
 
@@ -59,7 +59,7 @@ use as in the `<subject>`, use the imperative, present tense: "change" not "chan
 
 ## Message footer
 
-##### Referencing issues
+### Referencing issues
 
 Closed issues should be listed on a separate line in the footer prefixed with "Closes" keyword as the following:
 
@@ -75,7 +75,7 @@ Closes #123, #245, #992
 
 ## References
 
-- https://www.conventionalcommits.org/
-- https://seesparkbox.com/foundry/semantic_commit_messages
-- http://karma-runner.github.io/1.0/dev/git-commit-msg.html
-- https://wadehuanglearning.blogspot.com/2019/05/commit-commit-commit-why-what-commit.html
+- <https://www.conventionalcommits.org/>
+- <https://seesparkbox.com/foundry/semantic_commit_messages>
+- <http://karma-runner.github.io/1.0/dev/git-commit-msg.html>
+- <https://wadehuanglearning.blogspot.com/2019/05/commit-commit-commit-why-what-commit.html>
