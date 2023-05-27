@@ -22,11 +22,11 @@ def replacetext(src_file, dest_file, search_text, replace_text):
 
 def main():
     search_text = "<!-- TEXT REPLACE -->"
-    replace_text = read_config("../../example.dae")
+    replace_text = read_config("example.dae")
 
     replacetext(
-        "../../docs/templates/example-config.md",
-        "../../docs/sync/example-config.md",
+        "docs/templates/example-config.md",
+        "docs/sync/example-config.md",
         search_text,
         replace_text,
     )
