@@ -1,0 +1,60 @@
+name: Synchronize document
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'ci/**'
+      - 'release/**'
+    tags:
+      - 'v*'
+    paths:
+      - "README*.md"
+      - "docs/**"
+      - "package.json"
+      - ".autocorrectrc"
+      - ".markdownlint-cli2.jsonc"
+      - ".github/workflows/check-docs.yaml"
+  pull_request:
+    branches: [main]
+    types:
+      - opened
+      - synchronize
+    paths:
+      - "README*.md"
+      - "docs/**"
+      - "package.json"
+      - ".autocorrectrc"
+      - ".markdownlint-cli2.jsonc"
+      - ".github/workflows/check-docs.yaml"
+
+jobs:
+  check-docs:
+    name: Check document
+    uses: ./.github/workflows/check-docs.yml
+
+  replicate-config:
+    needs: [check-docs]
+    name: Replicate config.dae
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test
+        run: |
+          echo "hello"
+
+  checkout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout remote repository
+        uses: actions/checkout@v3
+        with:
+          repository: daeuniverse/dae-docs
+          fetch-depth: 0
+          ref: master
+
+      - name: List file
+        shell: /bin/bash
+        run: |
+          ls
+
