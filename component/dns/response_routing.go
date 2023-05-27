@@ -132,7 +132,7 @@ func (b *ResponseMatcherBuilder) addQName(f *config_parser.Function, key string,
 	}
 	b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
 		Key:       consts.RoutingDomainKey(key),
-		RuleIndex: len(b.simulatedDomainSet),
+		RuleIndex: len(b.rules),
 		Domains:   values,
 	})
 	upstreamId, err := b.upstreamToId(upstream.Name)

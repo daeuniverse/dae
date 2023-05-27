@@ -1,6 +1,5 @@
 global {
     ##### Software options.
-    ###
 
     # tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.
     # In normal case, you do not need to use it.
@@ -14,7 +13,6 @@ global {
 
 
     ##### Interface and kernel options.
-    ###
 
     # The LAN interface to bind. Use it if you want to proxy LAN.
     # Multiple interfaces split by ",".
@@ -30,7 +28,6 @@ global {
 
 
     ##### Node connectivity check.
-    ###
 
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     # First is URL, others are IP addresses if given.
@@ -56,7 +53,6 @@ global {
 
 
     ##### Connecting options.
-    ###
 
     # Optional values of dial_mode are:
     # 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path
