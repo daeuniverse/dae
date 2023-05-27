@@ -16,6 +16,7 @@ on:
       - ".autocorrectrc"
       - ".markdownlint-cli2.jsonc"
       - ".github/workflows/check-docs.yaml"
+      - '.github/workflows/sync-docs.yml'
   pull_request:
     branches: [main]
     types:
@@ -28,6 +29,7 @@ on:
       - ".autocorrectrc"
       - ".markdownlint-cli2.jsonc"
       - ".github/workflows/check-docs.yaml"
+      - '.github/workflows/sync-docs.yml'
 
 jobs:
   check-docs:
