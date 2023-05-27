@@ -83,11 +83,11 @@ jobs:
         id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
-          author: daebot @users.noreply.github.com>
-          committer: daebot <noreply@github.com>
+          author: daebot <dae@v2raya.org>
+          committer: daebot <dae@v2raya.org>
           token: ${{ secrets.GH_TOKEN }}
           signoff: false
-          branch: automated-pr-${{ needs.replicate-config.outputs.git_sha_short }}
+          branch: automated-pr-sync
           delete-branch: true
           title: 'ci: test docs synchronization ${{ needs.replicate-config.outputs.git_sha_short }}'
           body: |
