@@ -96,6 +96,8 @@ jobs:
         id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
+          author: daebot @users.noreply.github.com>
+          committer: daebot <noreply@github.com>
           token: ${{ secrets.GH_TOKEN }}
           signoff: false
           branch: release/v0.10.0
