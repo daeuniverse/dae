@@ -42,9 +42,9 @@ jobs:
           echo "git_commit_msg=$(git log --format=%s -n 1 ${{ inputs.ref }})" >> $GITHUB_OUTPUT
           echo "git_run_number=${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-      - name: Copy files to sync dir (docs/sync/)
+      - name: Generate example-config.md
         run: |
-          echo "## Hello" > docs/sync/test.md
+          python3 hack/ci/config-doc-generator.py
 
       - name: Export artifacts
         uses: actions/upload-artifact@v3
