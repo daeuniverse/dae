@@ -15,7 +15,6 @@ on:
       - "package.json"
       - ".autocorrectrc"
       - ".markdownlint-cli2.jsonc"
-      - ".github/workflows/check-docs.yaml"
       - '.github/workflows/sync-docs.yml'
 
 jobs:
@@ -25,7 +24,7 @@ jobs:
 
   replicate-config:
     needs: [check-docs]
-    name: Replicate config.dae
+    name: Replicate relevant document
     runs-on: ubuntu-latest
     outputs:
       git_sha_long: ${{ steps.export.outputs.git_sha_long }}
@@ -37,12 +36,12 @@ jobs:
       - name: Get metadata from HEAD sha
         id: export
         run: |
-          echo "git_sha_long=${{ inputs.ref }}" >> $GITHUB_OUTPUT
-          echo "git_sha_short=$(echo ${{ inputs.ref }} | cut -c1-6)" >> $GITHUB_OUTPUT
-          echo "git_commit_msg=$(git log --format=%s -n 1 ${{ inputs.ref }})" >> $GITHUB_OUTPUT
+          echo "git_sha_long=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "git_sha_short=$(echo ${{ github.sha }} | cut -c1-6)" >> $GITHUB_OUTPUT
+          echo "git_commit_msg=$(git log --format=%s -n 1 ${{ github.sha }})" >> $GITHUB_OUTPUT
           echo "git_run_number=${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-      - name: Generate example-config.md
+      - name: Generate artifacts
         run: |
           python3 hack/ci/config-doc-generator.py
 
@@ -89,7 +88,7 @@ jobs:
           signoff: false
           branch: automated-pr-sync
           delete-branch: true
-          title: 'ci: test docs synchronization ${{ needs.replicate-config.outputs.git_sha_short }}'
+          title: 'ci(auto-release): sync changes from upstream'
           body: |
             ## Summary
 
