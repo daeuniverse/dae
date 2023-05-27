@@ -17,19 +17,6 @@ on:
       - ".markdownlint-cli2.jsonc"
       - ".github/workflows/check-docs.yaml"
       - '.github/workflows/sync-docs.yml'
-  pull_request:
-    branches: [main]
-    types:
-      - opened
-      - synchronize
-    paths:
-      - "README*.md"
-      - "docs/**"
-      - "package.json"
-      - ".autocorrectrc"
-      - ".markdownlint-cli2.jsonc"
-      - ".github/workflows/check-docs.yaml"
-      - '.github/workflows/sync-docs.yml'
 
 jobs:
   check-docs:
@@ -100,7 +87,7 @@ jobs:
           committer: daebot <noreply@github.com>
           token: ${{ secrets.GH_TOKEN }}
           signoff: false
-          branch: release/v0.10.0
+          branch: automated-pr-${{ needs.replicate-config.outputs.git_sha_short }}
           delete-branch: true
           title: 'ci: test docs synchronization ${{ needs.replicate-config.outputs.git_sha_short }}'
           body: |
