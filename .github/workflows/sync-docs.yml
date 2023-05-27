@@ -12,6 +12,7 @@ on:
     paths:
       - "README*.md"
       - "docs/**"
+      - "example.dae"
       - "package.json"
       - ".autocorrectrc"
       - ".markdownlint-cli2.jsonc"
