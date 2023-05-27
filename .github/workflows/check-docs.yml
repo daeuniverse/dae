@@ -3,24 +3,24 @@ name: Check document
 on:
   workflow_dispatch:
   workflow_call:
-  push:
-    branches: [main]
-    paths:
-      - 'README.md'
-      - 'docs/**'
-      - 'package.json'
-      - '.autocorrectrc'
-      - '.markdownlint-cli2.jsonc'
-      - '.github/workflows/check-docs.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'README.md'
-      - 'docs/**'
-      - 'package.json'
-      - '.autocorrectrc'
-      - '.markdownlint-cli2.jsonc'
-      - '.github/workflows/check-docs.yml'
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'README.md'
+  #     - 'docs/**'
+  #     - 'package.json'
+  #     - '.autocorrectrc'
+  #     - '.markdownlint-cli2.jsonc'
+  #     - '.github/workflows/check-docs.yml'
+  # pull_request:
+  #   branches: [main]
+  #   paths:
+  #     - 'README.md'
+  #     - 'docs/**'
+  #     - 'package.json'
+  #     - '.autocorrectrc'
+  #     - '.markdownlint-cli2.jsonc'
+  #     - '.github/workflows/check-docs.yml'
 
 jobs:
   check-doc:
