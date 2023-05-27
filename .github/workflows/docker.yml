@@ -10,7 +10,7 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/*.yml"
+      - ".github/workflows/docker.yml"
   release:
     types: [ prereleased ]
 

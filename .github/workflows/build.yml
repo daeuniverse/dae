@@ -10,7 +10,7 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/*.yml"
+      - ".github/workflows/build.yml"
   release:
     types: [ prereleased ]
   pull_request:
@@ -21,7 +21,7 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/*.yml"
+      - ".github/workflows/build.yml"
 
 jobs:
   build:

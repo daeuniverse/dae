@@ -1,6 +1,6 @@
 # dae 的工作原理
 
-dae 通过 [eBPF](https://en.wikipedia.org/wiki/EBPF)  在 Linux 内核的 tc (traffic control) 挂载点加载一个程序，通过该程序在流量进入 TCP/IP 网络栈之前进行流量分流。tc 在 linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
+dae 通过 [eBPF](https://en.wikipedia.org/wiki/EBPF) 在 Linux 内核的 tc (traffic control) 挂载点加载一个程序，通过该程序在流量进入 TCP/IP 网络栈之前进行流量分流。tc 在 Linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
 
 ![](netstack-path.webp)
 
@@ -31,7 +31,7 @@ dae 会通过在 tc 挂载点的程序将流量分流，根据分流结果决定
 
 ### 代理原理
 
-dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时， dae 通过 eBPF 将 tc 挂载点的需代理流量的 socket buffer 直接关联至 dae 的 tproxy 侦听端口的 socket；在绑定 WAN 接口时，dae 将需代理流量 socket buffer 从网卡出队列移动至网卡的入队列，禁用其 checksum，并修改目的地址为 tproxy 侦听端口。
+dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时，dae 通过 eBPF 将 tc 挂载点的需代理流量的 socket buffer 直接关联至 dae 的 tproxy 侦听端口的 socket；在绑定 WAN 接口时，dae 将需代理流量 socket buffer 从网卡出队列移动至网卡的入队列，禁用其 checksum，并修改目的地址为 tproxy 侦听端口。
 
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
 
@@ -46,9 +46,9 @@ dae 在内核的较早路径上就对流量进行了分流，直连流量将直�
 因此，对于直连流量，dae 不会进行 SNAT，对于“旁路由”用户，这将形成非对称路由，即客户端设备发包时流量通过 dae 设备发送到网关，收包时由网关直接发给客户端设备，绕过 dae 设备。
 
 > 这里的旁路由定义为：1，被设为网关。2，对 TCP/UDP 进行 SNAT。3，LAN 接口和 WAN 接口属于同一个网段。
-> 
+>
 > 例如笔记本电脑在 192.168.0.3，旁路由在 192.168.0.2，路由器在 192.168.0.1。三层逻辑拓扑为：笔记本电脑 -> 旁路由 -> 路由器，且在路由器一侧只能看到源 IP 是 192.168.0.2 的 TCP/UDP 流量，而没有 192.168.0.3 的 TCP/UDP 流量。
-> 
+>
 > 据目前所知，我们是第一个对旁路由进行定义的（笑）。
 
 非对称路由将带来一个优点和一个可能的问题：

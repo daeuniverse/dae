@@ -10,9 +10,9 @@ You can install brew referring to official docs <https://docs.brew.sh/Installati
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
 ```
 
-### For arm64
+### For ARM64
 
-To install arm64 architecture packages, homebrew should be installed in `/opt/homebrew`:
+To install ARM64 architecture packages, homebrew should be installed in `/opt/homebrew`:
 
 ```shell
 cd /opt
@@ -88,7 +88,7 @@ network:
         lima0:
             dhcp4: true
             dhcp6: true
-    version: 2  
+    version: 2
 EOF
 
 # Apply netplan.
@@ -215,6 +215,7 @@ chmod +x /Users/Shared/bin/dae-network-update.sh
 ```
 
 Give no-password permission for route.
+
 ```shell
 if [ $(id -u) -eq "0" ]; then echo 'Do not use root!!'; else echo "$(whoami) ALL=(ALL) NOPASSWD: $(which route)" | sudo tee /etc/sudoers.d/"$(whoami)"-route; fi
 ```

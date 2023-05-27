@@ -2,14 +2,14 @@
 
 ## Linux 内核要求
 
-## 内核版本
+### 内核版本
 
 使用 `uname -r` 来查看内核版本。
 
 > **注意**
 > 如果你的内核版本低于 `5.8`，可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级你的内核。
 
-**绑定到 LAN 接口: >= 5.8**
+`绑定到 LAN 接口: >= 5.8`
 
 如果你想作为路由器、网桥等中间设备，为其他设备提供代理服务，需要把 dae 绑定到 LAN 接口上。
 
@@ -17,7 +17,7 @@
 
 如果你只在 `lan_interface` 中填写了接口，而未在 `wan_interface` 中填写内容，那么本地程序将无法被代理。如果你期望代理本地程序，需要在 `wan_interface` 中填写 `auto` 或是手动输入 WAN 接口。
 
-**绑定到 WAN 接口: >= 5.8**
+`绑定到 WAN 接口: >= 5.8`
 
 如果你想为本地程序提供代理服务，需要把 dae 绑定到 WAN 接口上。
 
@@ -34,6 +34,7 @@ zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
 dae 需要以下内核选项：
+
 ```
 CONFIG_BPF=y
 CONFIG_BPF_SYSCALL=y
@@ -52,20 +53,20 @@ CONFIG_DEBUG_INFO_BTF=y
 CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 ```
+
 你可以通过以下命令检查他们：
 
 ```shell
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-> **注意**
-> `Armbian` 用户可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级到支持的内核。
+> **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级到支持的内核。
 
 ## 安装
 
 ### Archlinux/Manjaro
 
-dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae/)，使用下述命令安装：
+dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae)，使用下述命令安装：
 
 ```shell
 # yay -S dae
@@ -87,7 +88,7 @@ sudo systemctl enable dae
 
 ### macOS
 
-我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macos](run-on-macos.md)。
+我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](run-on-macos.md)。
 
 ### Docker
 
@@ -175,6 +176,7 @@ routing {
 ```
 
 如果你不在乎极致速度，而是更注重隐私和 DNS 泄露，使用以下配置替换上述的 dns 部分：
+
 ```shell
 dns {
   upstream {
@@ -206,4 +208,4 @@ dns {
 
 ## 大鹅宇宙
 
-Telegram: https://t.me/daeuniverse
+Telegram: <https://t.me/daeuniverse>

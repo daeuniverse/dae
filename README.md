@@ -5,32 +5,32 @@
 <p align="left">
     <img src="https://custom-icon-badges.herokuapp.com/github/license/daeuniverse/dae?logo=law&color=orange" alt="License"/>
     <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Fdaeuniverse%2Fdae&count_bg=%235C3DC8&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=hits&edge_flat=false"/>
-    <img src="https://custom-icon-badges.herokuapp.com/badge/version-v0.1.7-blue.svg?logo=semanticrelease&logoColor=white" alt="version">
+    <img src="https://custom-icon-badges.herokuapp.com/badge/version-v0.1.9-blue.svg?logo=semanticrelease&logoColor=white" alt="version">
     <img src="https://custom-icon-badges.herokuapp.com/github/issues-pr-closed/daeuniverse/dae?color=purple&logo=git-pull-request&logoColor=white"/>
     <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
 
 **_dae_**, means goose, is a high-performance transparent proxy solution.
 
-In order to improve the traffic split performance as much as possible, dae runs the transparent proxy and traffic split suite in the linux kernel by eBPF. Therefore, dae has the opportunity to make the direct traffic bypass the forwarding by proxy application and achieve true direct traffic through. Under such a magic trick, there is almost no performance loss and additional resource consumption for direct traffic.
+In order to improve the traffic split performance as much as possible, dae runs the transparent proxy and traffic split suite in the Linux kernel by eBPF. Therefore, dae has the opportunity to make the direct traffic bypass the forwarding by proxy application and achieve true direct traffic through. Under such a magic trick, there is almost no performance loss and additional resource consumption for direct traffic.
 
 As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely.
 
-**Features**
+## Features
 
-1. Implement `Real Direct` traffic split (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
-1. Support to split traffic by process name in local host.
-1. Support to split traffic by MAC address in LAN.
-1. Support to split traffic with invert match rules.
-1. Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
-1. Support advanced DNS resolution process.
-1. Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
+- [x] Implement `Real Direct` traffic split (need ipforward on) to achieve [high performance](https://docs.google.com/spreadsheets/d/1UaWU6nNho7edBNjNqC8dfGXLlW0-cm84MM7sH6Gp7UE/edit?usp=sharing).
+- [x] Support to split traffic by process name in local host.
+- [x] Support to split traffic by MAC address in LAN.
+- [x] Support to split traffic with invert match rules.
+- [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
+- [x] Support advanced DNS resolution process.
+- [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 
 ## Getting Started
 
 Please refer to [Quick Start Guide](./docs/getting-started) to start using `dae` right away!
 
-Documentation: https://dae.v2raya.org
+Documentation: <https://dae.v2raya.org>
 
 ## Notes
 
@@ -52,7 +52,7 @@ See [How it works](docs/how_it_works_zh.md).
 
 ## Contributors
 
-Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./docs/contribute.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
+Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./CONTRIBUTING.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
 
 ## License
 

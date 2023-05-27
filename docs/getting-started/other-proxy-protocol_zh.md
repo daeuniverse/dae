@@ -24,11 +24,11 @@ dae 目前支持的代理协议有：
 
 有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
 
-尽管 dae 等代理程序支持 https 协议，但由于并不使用 chromium 网络栈，削弱了 naiveproxy 的伪装效果，因此可以选择外接 naiveproxy 程序来实现。
+尽管 dae 等代理程序支持 HTTPS 协议，但由于并不使用 chromium 网络栈，削弱了 naiveproxy 的伪装效果，因此可以选择外接 naiveproxy 程序来实现。
 
 1. 启动 naiveproxy：
 
-   由于 naiveproxy 的 socks 实现可能有些问题，无法被 curl 和 dae 使用，样例中使用 naiveproxy 开启一个 http 监听端口。注意，http 代理不支持代理 udp 流量，所以如果你外接其他代理程序，建议优先考虑使用 socks5 端口。
+   由于 naiveproxy 的 socks 实现可能有些问题，无法被 curl 和 dae 使用，样例中使用 naiveproxy 开启一个 HTTP 监听端口。注意，HTTP 代理不支持代理 udp 流量，所以如果你外接其他代理程序，建议优先考虑使用 socks5 端口。
 
    ```bash
    naiveproxy --listen=http://127.0.0.1:1090 --proxy=https://yourlink

@@ -9,7 +9,7 @@ dae can run as a daemon(systemd) service so that it can run at boot.
 
 ## Prerequisites
 
-**Optional Geo Data Files**
+### Optional Geo Data Files
 
 For more convenient traffic split, dae relies on the following data sources, [geoip.dat](https://github.com/v2ray/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
 
@@ -21,10 +21,9 @@ curl -L -o geosite.dat https://github.com/v2ray/domain-list-community/releases/l
 popd
 ```
 
-**Configuration File**
+### Configuration File
 
-> **Note**
-> The config file is recommended to save under `/etc/dae`
+> **Note**: The config file is recommended to save under `/etc/dae`
 
 Download the sample config file:
 

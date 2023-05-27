@@ -12,8 +12,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.9 (Pre-release)](#019-pre-release)
-- [0.1.8 (Current)](#018-current)
+- [0.1.10rc1 (Pre-release)](#0110rc1-pre-release)
+- [0.1.10rc (Pre-release)](#0110rc-pre-release)
+- [0.1.9-patch.1 (Current)](#019-patch1-current)
+- [0.1.9](#019)
+- [0.1.8](#018)
 - [0.1.7](#017)
 - [0.1.6](#016)
 - [0.1.5](#015)
@@ -23,7 +26,65 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.1](#011)
 - [0.1.0](#010)
 
-### 0.1.9 (Pre-release)
+### 0.1.10rc1 (Pre-release)
+
+> Release date: 2023/05/15
+
+#### 功能变更
+
+- patch(geodata): 修复由 #84 导致的错误的 geodata 搜索路径 `/etc/dae/dae` by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
+
+#### Changes
+
+- patch(geodata): fix incorrect geodata search path `/etc/dae/dae` caused by #84 by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10rc...v0.1.10rc1
+
+### 0.1.10rc (Pre-release)
+
+> Release date: 2023/05/14
+
+#### 功能变更
+
+- feat: 支持 `tcp_check_http_method` by @mzz2017 in https://github.com/daeuniverse/dae/pull/77
+- patch: 现在会优先在配置文件同目录搜索 geodata by @mzz2017 in https://github.com/daeuniverse/dae/pull/84
+- fix(dns): 修复 0.1.8 版本中 PR #63 导致的 DNS 缓存不会过期的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/87
+
+#### 其他变更
+
+- chore(Makefile): 添加 export GOOS=linux 以修复在 macos 上的构建 by @mzz2017 in https://github.com/daeuniverse/dae/pull/78
+- chore: 添加 editorconfig 文件以美化 github 上对 go 文件的展示 by @yqlbu in https://github.com/daeuniverse/dae/pull/85
+- chore: 添加 PR 模板 by @yqlbu in https://github.com/daeuniverse/dae/pull/86
+
+#### Changes
+
+- feat: support `tcp_check_http_method` by @mzz2017 in https://github.com/daeuniverse/dae/pull/77
+- patch: search geodata at same dir with config first by @mzz2017 in https://github.com/daeuniverse/dae/pull/84
+- fix(dns): cache would never expire caused by #63 by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/87
+
+#### Other Changes
+
+- chore(Makefile): add export GOOS=linux to build on macos by @mzz2017 in https://github.com/daeuniverse/dae/pull/78
+- chore: add editorconfig by @yqlbu in https://github.com/daeuniverse/dae/pull/85
+- chore: add pull_request_template by @yqlbu in https://github.com/daeuniverse/dae/pull/86
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10rc
+
+### 0.1.9-patch.1 (Current)
+
+> Release date: 2023/05/14
+
+#### 功能变更
+
+- 修复(dns): 修复 0.1.8 版本中 PR #63 导致的 DNS 缓存不会过期的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/87
+
+#### Changes
+
+- fix(dns): cache would never expire caused by #63 by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/87
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.9patch1
+
+### 0.1.9
 
 > Release date: 2023/05/09
 
