@@ -53,8 +53,8 @@ var GlobalDesc = Desc{
 	"disable_waiting_network":      "Disable waiting for network before pulling subscriptions.",
 	"auto_config_kernel_parameter": "Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out https://github.com/daeuniverse/dae/blob/main/docs/getting-started/kernel-parameters.md to see what will dae do.",
 	"sniffing_timeout":             "Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Set it higher is useful in high latency LAN network.",
-	"tls_implementation":           "TLS implementation. \"tls\" will use Go's crypto/tls. \"utls\" will use uTLS, which can imitate browser's Client Hello.",
-	"utls_imitate":                 "The Client Hello ID for uTLS to imitate.",
+	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",
+	"utls_imitate":                 "The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls. See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17",
 }
 
 var DnsDesc = Desc{

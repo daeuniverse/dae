@@ -53,7 +53,7 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 		RawQuery: url.Values{
 			"sni":           []string{s.Sni},
 			"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
-			`utlsImitate`:   []string{option.UtlsImitate},
+			"utlsImitate":   []string{option.UtlsImitate},
 		}.Encode(),
 	}
 	var err error

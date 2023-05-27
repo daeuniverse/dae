@@ -115,7 +115,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 				RawQuery: url.Values{
 					"sni":           []string{sni},
 					"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
-					`utlsImitate`:   []string{option.UtlsImitate},
+					"utlsImitate":   []string{option.UtlsImitate},
 				}.Encode(),
 			}
 			d, err = tls.NewTls(u.String(), d)

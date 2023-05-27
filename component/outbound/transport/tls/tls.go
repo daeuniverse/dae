@@ -17,7 +17,8 @@ type Tls struct {
 	skipVerify      bool
 	tlsImplentation string
 	utlsImitate     string
-	tlsConfig       *tls.Config
+
+	tlsConfig *tls.Config
 }
 
 // NewTls returns a Tls infra.
@@ -102,6 +103,9 @@ func (s *Tls) DialTcp(addr string) (conn netproxy.Conn, err error) {
 			LAddr: nil,
 			RAddr: nil,
 		}, uTLSConfigFromTLSConfig(s.tlsConfig), *clientHelloID)
+
+	default:
+		return nil, fmt.Errorf("unknown tls implementation: %v", s.tlsImplentation)
 	}
 
 	if err := tlsConn.Handshake(); err != nil {
