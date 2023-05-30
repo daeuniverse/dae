@@ -3,7 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"math/rand"
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"net"
 	"net/http"
 	"os"
@@ -45,7 +45,7 @@ func init() {
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-pidfile", "", false, "not generate /var/run/dae.pid")
 
-	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
+	fastrand.Rand().Shuffle(len(CheckNetworkLinks), func(i, j int) {
 		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
 	})
 }
