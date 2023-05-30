@@ -466,3 +466,11 @@ func IsValidHttpMethod(method string) bool {
 		return false
 	}
 }
+
+func StringSet(list []string) map[string]struct{} {
+	m := make(map[string]struct{})
+	for _, s := range list {
+		m[s] = struct{}{}
+	}
+	return m
+}
