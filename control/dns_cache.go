@@ -6,6 +6,7 @@
 package control
 
 import (
+	"math"
 	"net/netip"
 	"time"
 
@@ -21,16 +22,20 @@ type DnsCache struct {
 
 func (c *DnsCache) FillInto(req *dnsmessage.Message) {
 	req.Answers = deepcopy.Copy(c.Answers).([]dnsmessage.Resource)
-	// No need to align because of no flipping now.
-	//// Align question and answer Name.
-	//if len(req.Questions) > 0 {
-	//	q := req.Questions[0]
-	//	for i := range req.Answers {
-	//		if strings.EqualFold(req.Answers[i].Header.Name.String(), q.Name.String()) {
-	//			req.Answers[i].Header.Name.Data = q.Name.Data
-	//		}
-	//	}
-	//}
+	now := time.Now()
+	// Set ttl.
+	// TODO: give a domain hash (uint64) and let us to know whether the domain matches.
+	for i := range req.Answers {
+		// Use ceil because we want downstream to send requests to us after our cache missing.
+		ttl := math.Ceil(c.Deadline.Sub(now).Seconds())
+		if ttl < 0 {
+			ttl = 0
+		} else if ttl > math.MaxUint32 {
+			ttl = math.MaxUint32 - 1
+		}
+		req.Answers[i].Header.TTL = uint32(ttl)
+	}
+
 	req.RCode = dnsmessage.RCodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true

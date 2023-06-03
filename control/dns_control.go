@@ -220,13 +220,6 @@ func (c *DnsController) DnsRespHandler(data []byte, validateRushAns bool) (newMs
 		return &msg, nil
 	}
 
-	// Set ttl.
-	for i := range msg.Answers {
-		// Set TTL = zero. This requests applications must resend every request.
-		// However, it may be not defined in the standard.
-		msg.Answers[i].Header.TTL = 0
-	}
-
 	// Check if request A/AAAA record.
 	var reqIpRecord bool
 loop:
