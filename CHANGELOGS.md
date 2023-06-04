@@ -70,6 +70,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - ci: docs synchronization by @yqlbu in https://github.com/daeuniverse/dae/pull/103
 - docs(routing.md): revise fwmark section by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
 
+#### New Contributors
+
+- @AkinoKaede made their first contribution in https://github.com/daeuniverse/dae/pull/94
+
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10...v0.2.0rc1
 
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc1/example.dae
