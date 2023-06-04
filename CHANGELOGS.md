@@ -71,6 +71,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - docs(routing.md): revise fwmark section by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10...v0.2.0rc1
+
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc1/example.dae
 
 ### 0.1.10 (Current)
@@ -104,6 +105,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - chore: add pull_request_template by @yqlbu in https://github.com/daeuniverse/dae/pull/86
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10
+
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.1.10/example.dae
 
 ### 0.1.9-patch.1
