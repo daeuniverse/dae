@@ -84,10 +84,8 @@ domain(geosite:geolocation-!cn) &&
 domain(ext:"yourdatfile.dat:yourtag")->direct
 dip(ext:"yourdatfile.dat:yourtag")->direct
 
-### Mark for direct/must_direct outbound
-# Mark is useful when you want to redirect traffic to specific interface (such as wireguard) or other advanced uses.
-# Traffic from LAN will not be forwarded by dae to archive higher performance if lan_nat_direct is off (you can set it
-# off only if you are sure dae is on a bridge device).
+### Set fwmark
+# Mark is useful when you want to redirect traffic to specific interface (such as wireguard) or for other advanced uses.
 
 # An example of redirecting Disney traffic to wg0 is given here.
 # You need set ip rule and ip table like this:
