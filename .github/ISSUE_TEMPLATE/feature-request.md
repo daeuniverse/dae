@@ -16,4 +16,4 @@ You may also post your idea on the Discussions or the Dae Telegram channel (http
 
 ## What feature you would like us to integrate into the dae project
 
-## Why is this needed:
+## Why is this needed

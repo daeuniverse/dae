@@ -86,9 +86,17 @@ func (w *Walker) parseFunctionPrototype(ctx *dae_config.FunctionPrototypeContext
 	children := ctx.GetChildren()
 	not := false
 	offset := 0
+	if len(children) == 0 {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad function prototype expression")
+		return nil
+	}
 	if children[0].(*antlr.TerminalNodeImpl).GetText() == "!" {
 		offset++
 		not = true
+	}
+	if len(children) <= offset+2 {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad function prototype expression")
+		return nil
 	}
 	funcName := children[offset+0].(*antlr.TerminalNodeImpl).GetText()
 	paramList := children[offset+2].(*dae_config.OptParameterListContext)
@@ -151,6 +159,10 @@ func (p *literalExpressionParser) Parse(ctx *dae_config.LiteralExpressionContext
 
 func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 	children := ctx.GetChildren()
+	if len(children) < 3 {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad declaration expression")
+		return nil
+	}
 	key := children[0].(*antlr.TerminalNodeImpl).GetText()
 	switch valueCtx := children[2].(type) {
 	case *dae_config.LiteralExpressionContext:
@@ -202,6 +214,10 @@ func (w *Walker) parseFunctionPrototypeExpression(ctx dae_config.IFunctionProtot
 
 func (w *Walker) parseRoutingRule(ctx dae_config.IRoutingRuleContext) *RoutingRule {
 	children := ctx.GetChildren()
+	if len(children) < 3 {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad routing rule expression")
+		return nil
+	}
 	//logrus.Debugln(ctx.GetText(), children)
 	functionList, ok := children[0].(*dae_config.FunctionPrototypeExpressionContext)
 	if !ok {

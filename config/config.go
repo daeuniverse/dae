@@ -14,8 +14,10 @@ import (
 )
 
 type Global struct {
-	TproxyPort uint16 `mapstructure:"tproxy_port" default:"12345"`
-	LogLevel   string `mapstructure:"log_level" default:"info"`
+	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
+	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
+	SoMarkFromDae     uint32 `mapstructure:"so_mark_from_dae"`
+	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
 	TcpCheckUrl               []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
@@ -30,6 +32,12 @@ type Global struct {
 	DisableWaitingNetwork     bool          `mapstructure:"disable_waiting_network" default:"false"`
 	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
+	TlsImplementation         string        `mapstructure:"tls_implementation" default:"tls"`
+	UtlsImitate               string        `mapstructure:"utls_imitate" default:"chrome_auto"`
+}
+
+type Utls struct {
+	Imitate string `mapstructure:"imitate"`
 }
 
 type FunctionOrString interface{}
@@ -81,6 +89,7 @@ type DnsRouting struct {
 type KeyableString string
 type Dns struct {
 	IpVersionPrefer int             `mapstructure:"ipversion_prefer"`
+	FixedDomainTtl  []KeyableString `mapstructure:"fixed_domain_ttl"`
 	Upstream        []KeyableString `mapstructure:"upstream"`
 	Routing         DnsRouting      `mapstructure:"routing"`
 }

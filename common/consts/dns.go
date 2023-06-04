@@ -19,7 +19,7 @@ const (
 	DnsRequestOutboundIndex_LogicalAnd  DnsRequestOutboundIndex = 0xFF
 	DnsRequestOutboundIndex_LogicalMask DnsRequestOutboundIndex = 0xFE
 
-	DnsRequestOutboundIndex_UserDefinedMax = DnsRequestOutboundIndex_AsIs - 1
+	DnsRequestOutboundIndex_UserDefinedMax = DnsRequestOutboundIndex_Reject - 1
 )
 
 func (i DnsRequestOutboundIndex) String() string {

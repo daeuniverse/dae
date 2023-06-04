@@ -48,6 +48,9 @@ func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err er
 		return nil, 0, fmt.Errorf("data is too short to parse AddrHdr")
 	}
 	_hdr := *(*bpfDstRoutingResult)(unsafe.Pointer(&data[0]))
+	if _hdr.Recognize != consts.Recognize {
+		return nil, 0, fmt.Errorf("bad recognize")
+	}
 	_hdr.Port = common.Ntohs(_hdr.Port)
 	return &_hdr, dataOffset, nil
 }
@@ -173,6 +176,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		dialTarget, _ = c.ChooseDialTarget(outboundIndex, realDst, domain)
 	default:
 	}
+	if routingResult.Mark == 0 {
+		routingResult.Mark = c.soMarkFromDae
+	}
 	if isDns {
 		return c.dnsController.Handle_(dnsMessage, &udpRequest{
 			lanWanFlag:    lanWanFlag,
@@ -226,7 +232,7 @@ getNew:
 		},
 		NatTimeout: natTimeout,
 		Dialer:     dialerForNew,
-		Network:    MagicNetwork("udp", routingResult.Mark),
+		Network:    common.MagicNetwork("udp", routingResult.Mark),
 		Target:     dialTarget,
 	})
 	if err != nil {

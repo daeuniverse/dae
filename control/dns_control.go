@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common"
 	"io"
 	"math"
 	"net"
@@ -32,9 +33,8 @@ import (
 )
 
 const (
-	MaxDnsLookupDepth      = 3
-	minFirefoxCacheTtl     = 120
-	minFirefoxCacheTimeout = minFirefoxCacheTtl * time.Second
+	MaxDnsLookupDepth  = 3
+	minFirefoxCacheTtl = 120
 )
 
 type IpVersionPrefer int
@@ -58,9 +58,11 @@ var (
 type DnsControllerOption struct {
 	Log                 *logrus.Logger
 	CacheAccessCallback func(cache *DnsCache) (err error)
+	CacheRemoveCallback func(cache *DnsCache) (err error)
 	NewCache            func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error)
 	BestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	IpVersionPrefer     int
+	FixedDomainTtl      map[string]int
 }
 
 type DnsController struct {
@@ -71,9 +73,11 @@ type DnsController struct {
 
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
+	cacheRemoveCallback func(cache *DnsCache) (err error)
 	newCache            func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error)
 	bestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 
+	fixedDomainTtl map[string]int
 	// mutex protects the dnsCache.
 	dnsCacheMu sync.Mutex
 	dnsCache   map[string]*DnsCache
@@ -105,11 +109,13 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 		log:                 option.Log,
 		cacheAccessCallback: option.CacheAccessCallback,
+		cacheRemoveCallback: option.CacheRemoveCallback,
 		newCache:            option.NewCache,
 		bestDialerChooser:   option.BestDialerChooser,
 
-		dnsCacheMu: sync.Mutex{},
-		dnsCache:   make(map[string]*DnsCache),
+		fixedDomainTtl: option.FixedDomainTtl,
+		dnsCacheMu:     sync.Mutex{},
+		dnsCache:       make(map[string]*DnsCache),
 	}, nil
 }
 
@@ -276,19 +282,14 @@ func (c *DnsController) updateDnsCache(msg *dnsmessage.Message, ttl uint32, q *d
 			"addition": FormatDnsRsc(msg.Additionals),
 		}).Tracef("Update DNS record cache")
 	}
-	cacheTimeout := time.Duration(ttl) * time.Second // TTL.
-	if cacheTimeout < minFirefoxCacheTimeout {
-		cacheTimeout = minFirefoxCacheTimeout
-	}
-	cacheTimeout += 5 * time.Second // DNS lookup timeout.
 
-	if err := c.UpdateDnsCache(q.Name.String(), q.Type.String(), msg.Answers, time.Now().Add(cacheTimeout)); err != nil {
+	if err := c.UpdateDnsCacheTtl(q.Name.String(), q.Type.String(), msg.Answers, int(ttl)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (c *DnsController) UpdateDnsCache(host string, dnsTyp string, answers []dnsmessage.Resource, deadline time.Time) (err error) {
+func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp string, answers []dnsmessage.Resource, deadlineFunc func(now time.Time, host string) time.Time) (err error) {
 	var fqdn string
 	if strings.HasSuffix(host, ".") {
 		fqdn = host
@@ -300,15 +301,16 @@ func (c *DnsController) UpdateDnsCache(host string, dnsTyp string, answers []dns
 	if _, err = netip.ParseAddr(host); err == nil {
 		return nil
 	}
+
+	now := time.Now()
+	deadline := deadlineFunc(now, host)
+
 	cacheKey := fqdn + dnsTyp
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
-		// To avoid overwriting DNS upstream resolution.
-		if deadline.After(cache.Deadline) {
-			cache.Deadline = deadline
-		}
 		cache.Answers = answers
+		cache.Deadline = deadline
 		c.dnsCacheMu.Unlock()
 	} else {
 		cache, err = c.newCache(fqdn, answers, deadline)
@@ -322,7 +324,30 @@ func (c *DnsController) UpdateDnsCache(host string, dnsTyp string, answers []dns
 	if err = c.cacheAccessCallback(cache); err != nil {
 		return err
 	}
+
 	return nil
+}
+
+func (c *DnsController) UpdateDnsCacheDeadline(host string, dnsTyp string, answers []dnsmessage.Resource, deadline time.Time) (err error) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) time.Time {
+		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
+			/// NOTICE: Cannot set TTL accurately.
+			if now.Sub(deadline).Seconds() > float64(fixedTtl) {
+				return now.Add(time.Duration(fixedTtl) * time.Second)
+			}
+		}
+		return deadline
+	})
+}
+
+func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp string, answers []dnsmessage.Resource, ttl int) (err error) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) time.Time {
+		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
+			return now.Add(time.Duration(fixedTtl) * time.Second)
+		} else {
+			return now.Add(time.Duration(ttl) * time.Second)
+		}
+	})
 }
 
 func (c *DnsController) DnsRespHandlerFactory(validateRushAnsFunc func(from netip.AddrPort) bool) func(data []byte, from netip.AddrPort) (msg *dnsmessage.Message, err error) {
@@ -628,7 +653,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 		// TODO: connection pool.
 		conn, err = dialArgument.bestDialer.Dial(
-			MagicNetwork("udp", dialArgument.mark),
+			common.MagicNetwork("udp", dialArgument.mark),
 			dialArgument.bestTarget.String(),
 		)
 		if err != nil {
@@ -690,7 +715,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	case consts.L4ProtoStr_TCP:
 		// We can block here because we are in a coroutine.
 
-		conn, err = dialArgument.bestDialer.Dial(MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
+		conn, err = dialArgument.bestDialer.Dial(common.MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}

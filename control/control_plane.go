@@ -67,7 +67,9 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout time.Duration
+	sniffingTimeout   time.Duration
+	tproxyPortProtect bool
+	soMarkFromDae     uint32
 }
 
 func NewControlPlane(
@@ -226,13 +228,23 @@ func NewControlPlane(
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
 	option := &dialer.GlobalOption{
-		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns},
+		Log: log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{
+			Raw:             global.TcpCheckUrl,
+			Log:             log,
+			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+			Method:          global.TcpCheckHttpMethod,
+		},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
+			Raw:             global.UdpCheckDns,
+			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+		},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
 		AllowInsecure:     global.AllowInsecure,
+		TlsImplementation: global.TlsImplementation,
+		UtlsImitate:       global.UtlsImitate,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
@@ -335,23 +347,25 @@ func NewControlPlane(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
-		log:              log,
-		core:             core,
-		deferFuncs:       deferFuncs,
-		listenIp:         "0.0.0.0",
-		outbounds:        outbounds,
-		dnsController:    nil,
-		onceNetworkReady: sync.Once{},
-		dialMode:         dialMode,
-		routingMatcher:   routingMatcher,
-		ctx:              ctx,
-		cancel:           cancel,
-		ready:            make(chan struct{}),
-		muRealDomainSet:  sync.Mutex{},
-		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
-		lanInterface:     global.LanInterface,
-		wanInterface:     global.WanInterface,
-		sniffingTimeout:  sniffingTimeout,
+		log:               log,
+		core:              core,
+		deferFuncs:        deferFuncs,
+		listenIp:          "0.0.0.0",
+		outbounds:         outbounds,
+		dnsController:     nil,
+		onceNetworkReady:  sync.Once{},
+		dialMode:          dialMode,
+		routingMatcher:    routingMatcher,
+		ctx:               ctx,
+		cancel:            cancel,
+		ready:             make(chan struct{}),
+		muRealDomainSet:   sync.Mutex{},
+		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:      global.LanInterface,
+		wanInterface:      global.WanInterface,
+		sniffingTimeout:   sniffingTimeout,
+		tproxyPortProtect: global.TproxyPortProtect,
+		soMarkFromDae:     global.SoMarkFromDae,
 	}
 	defer func() {
 		if err != nil {
@@ -361,20 +375,33 @@ func NewControlPlane(
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
-		Logger:                log,
-		LocationFinder:        locationFinder,
-		UpstreamReadyCallback: plane.dnsUpstreamReadyCallback,
+		Logger:                  log,
+		LocationFinder:          locationFinder,
+		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
+		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
 	})
 	if err != nil {
 		return nil, err
 	}
 	/// Dns controller.
+	fixedDomainTtl, err := ParseFixedDomainTtl(dnsConfig.FixedDomainTtl)
+	if err != nil {
+		return nil, err
+	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
 			if err = core.BatchUpdateDomainRouting(cache); err != nil {
+				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
+			}
+			return nil
+		},
+		CacheRemoveCallback: func(cache *DnsCache) (err error) {
+			// Write mappings into eBPF map:
+			// IP record (from dns lookup) -> domain routing
+			if err = core.BatchRemoveDomainRouting(cache); err != nil {
 				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
 			}
 			return nil
@@ -388,6 +415,7 @@ func NewControlPlane(
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
+		FixedDomainTtl:    fixedDomainTtl,
 	}); err != nil {
 		return nil, err
 	}
@@ -403,7 +431,7 @@ func NewControlPlane(
 			}
 			host := cacheKey[:lastDot]
 			typ := cacheKey[lastDot+1:]
-			_ = plane.dnsController.UpdateDnsCache(host, typ, cache.Answers, cache.Deadline)
+			_ = plane.dnsController.UpdateDnsCacheDeadline(host, typ, cache.Answers, cache.Deadline)
 		}
 	} else if _bpf != nil {
 		// Is reloading, and dnsCache == nil.
@@ -426,6 +454,19 @@ func NewControlPlane(
 
 	close(plane.ready)
 	return plane, nil
+}
+
+func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
+	m := make(map[string]int)
+	for _, k := range ks {
+		key, value, _ := strings.Cut(string(k), ":")
+		ttl, err := strconv.ParseInt(strings.TrimSpace(value), 0, strconv.IntSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse ttl: %v", err)
+		}
+		m[strings.TrimSpace(key)] = int(ttl)
+	}
+	return m, nil
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.
@@ -483,7 +524,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 				A: dnsUpstream.Ip4.As4(),
 			},
 		}}
-		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
 			return err
 		}
 	}
@@ -501,7 +542,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 				AAAA: dnsUpstream.Ip6.As16(),
 			},
 		}}
-		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
 			return err
 		}
 	}
@@ -531,7 +572,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 					// TODO: use DNS controller and re-route by control plane.
 					systemDns, err := netutils.SystemDns()
 					if err == nil {
-						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, false, true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
+						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae), true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
 							// Has A/AAAA records. It is a real domain.
 							dialMode = consts.DialMode_Domain
 							// Add it to real-domain set.
@@ -689,8 +730,21 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					lastErr := err
 					addrHdr, dataOffset, err := ParseAddrHdr(data)
 					if err != nil {
-						c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
-						return
+						if c.tproxyPortProtect {
+							c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
+							return
+						} else {
+							routingResult = &bpfRoutingResult{
+								Mark:     0,
+								Must:     0,
+								Mac:      [6]uint8{},
+								Outbound: uint8(consts.OutboundControlPlaneRouting),
+								Pname:    [16]uint8{},
+								Pid:      0,
+							}
+							realDst = pktDst
+							goto destRetrieved
+						}
 					}
 					n := copy(data, data[dataOffset:])
 					data = data[:n]
@@ -703,6 +757,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				} else {
 					realDst = pktDst
 				}
+			destRetrieved:
 				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
@@ -785,6 +840,9 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			outboundIndex, mark, _, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
+			}
+			if mark == 0 {
+				mark = c.soMarkFromDae
 			}
 			if int(outboundIndex) >= len(c.outbounds) {
 				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)

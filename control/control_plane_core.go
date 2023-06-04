@@ -561,6 +561,40 @@ func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 	return nil
 }
 
+// BatchRemoveDomainRouting remove bpf map domain_routing.
+func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
+	// Parse ips from DNS resp answers.
+	var ips []netip.Addr
+	for _, ans := range cache.Answers {
+		var ip netip.Addr
+		switch ans.Header.Type {
+		case dnsmessage.TypeA:
+			ip = netip.AddrFrom4(ans.Body.(*dnsmessage.AResource).A)
+		case dnsmessage.TypeAAAA:
+			ip = netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA)
+		}
+		if ip.IsUnspecified() {
+			continue
+		}
+		ips = append(ips, ip)
+	}
+	if len(ips) == 0 {
+		return nil
+	}
+
+	// Update bpf map.
+	// Construct keys and vals, and BpfMapBatchUpdate.
+	var keys [][4]uint32
+	for _, ip := range ips {
+		ip6 := ip.As16()
+		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+	}
+	if _, err := BpfMapBatchDelete(c.bpf.DomainRoutingMap, keys); err != nil {
+		return err
+	}
+	return nil
+}
+
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	if !c.bpfEjected && !c.isReload {

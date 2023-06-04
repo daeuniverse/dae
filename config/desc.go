@@ -36,6 +36,8 @@ var SectionDescription = map[string]Desc{
 
 var GlobalDesc = Desc{
 	"tproxy_port":           "tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.\nIn normal case, you do not need to use it.",
+	"tproxy_port_protect":   "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
+	"so_mark_from_dae":      "If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy rules.",
 	"log_level":             "Log level: error, warn, info, debug, trace.",
 	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
 	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'CONNECT' by default because some server implementations bypass accounting for this kind of traffic.",
@@ -53,10 +55,13 @@ var GlobalDesc = Desc{
 	"disable_waiting_network":      "Disable waiting for network before pulling subscriptions.",
 	"auto_config_kernel_parameter": "Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out https://github.com/daeuniverse/dae/blob/main/docs/getting-started/kernel-parameters.md to see what will dae do.",
 	"sniffing_timeout":             "Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Set it higher is useful in high latency LAN network.",
+	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",
+	"utls_imitate":                 "The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls. See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17",
 }
 
 var DnsDesc = Desc{
 	"ipversion_prefer": "For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only respond to type A queries and response empty answer to type AAAA queries.",
+	"fixed_domain_ttl": "Give a fixed ttl for domains. Zero means that dae will request to upstream every time and not cache DNS results for these domains.",
 	"upstream":         "Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.\nIf host is a domain and has both IPv4 and IPv6 record, dae will automatically choose IPv4 or IPv6 to use according to group policy (such as min latency policy).\nPlease make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.\nIf dial_mode is \"ip\", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.",
 	"request": `DNS requests will follow this routing.
 Built-in outbound: asis.

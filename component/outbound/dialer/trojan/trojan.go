@@ -2,6 +2,7 @@ package trojan
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"net"
 	"net/url"
 	"strconv"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"github.com/daeuniverse/dae/component/outbound/transport/ws"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
@@ -48,11 +48,12 @@ func NewTrojan(option *dialer.GlobalOption, iOption dialer.InstanceOption, link 
 func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
 	d := direct.FullconeDirect // Trojan Proxy supports full-cone.
 	u := url.URL{
-		Scheme: "tls",
+		Scheme: option.TlsImplementation,
 		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		RawQuery: url.Values{
 			"sni":           []string{s.Sni},
 			"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
+			"utlsImitate":   []string{option.UtlsImitate},
 		}.Encode(),
 	}
 	var err error
