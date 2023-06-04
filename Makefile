@@ -23,6 +23,7 @@ else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
+# Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
 
 # Get version from .git.
@@ -41,7 +42,7 @@ dae: export GOOS=linux
 dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
 
-clean-ebpf: 
+clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
 fmt:

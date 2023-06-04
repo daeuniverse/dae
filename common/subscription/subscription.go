@@ -137,7 +137,7 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
-func ResolveSubscription(log *logrus.Logger, configDir string, subscription string) (tag string, nodes []string, err error) {
+func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
 	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
@@ -160,7 +160,7 @@ func ResolveSubscription(log *logrus.Logger, configDir string, subscription stri
 		goto resolve
 	default:
 	}
-	resp, err = http.Get(subscription)
+	resp, err = client.Get(subscription)
 	if err != nil {
 		return "", nil, err
 	}

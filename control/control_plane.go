@@ -67,7 +67,9 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout time.Duration
+	sniffingTimeout   time.Duration
+	tproxyPortProtect bool
+	soMarkFromDae     uint32
 }
 
 func NewControlPlane(
@@ -226,9 +228,17 @@ func NewControlPlane(
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
 	option := &dialer.GlobalOption{
-		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns},
+		Log: log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{
+			Raw:             global.TcpCheckUrl,
+			Log:             log,
+			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+			Method:          global.TcpCheckHttpMethod,
+		},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
+			Raw:             global.UdpCheckDns,
+			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+		},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
@@ -337,23 +347,25 @@ func NewControlPlane(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
-		log:              log,
-		core:             core,
-		deferFuncs:       deferFuncs,
-		listenIp:         "0.0.0.0",
-		outbounds:        outbounds,
-		dnsController:    nil,
-		onceNetworkReady: sync.Once{},
-		dialMode:         dialMode,
-		routingMatcher:   routingMatcher,
-		ctx:              ctx,
-		cancel:           cancel,
-		ready:            make(chan struct{}),
-		muRealDomainSet:  sync.Mutex{},
-		realDomainSet:    bloom.NewWithEstimates(2048, 0.001),
-		lanInterface:     global.LanInterface,
-		wanInterface:     global.WanInterface,
-		sniffingTimeout:  sniffingTimeout,
+		log:               log,
+		core:              core,
+		deferFuncs:        deferFuncs,
+		listenIp:          "0.0.0.0",
+		outbounds:         outbounds,
+		dnsController:     nil,
+		onceNetworkReady:  sync.Once{},
+		dialMode:          dialMode,
+		routingMatcher:    routingMatcher,
+		ctx:               ctx,
+		cancel:            cancel,
+		ready:             make(chan struct{}),
+		muRealDomainSet:   sync.Mutex{},
+		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:      global.LanInterface,
+		wanInterface:      global.WanInterface,
+		sniffingTimeout:   sniffingTimeout,
+		tproxyPortProtect: global.TproxyPortProtect,
+		soMarkFromDae:     global.SoMarkFromDae,
 	}
 	defer func() {
 		if err != nil {
@@ -363,9 +375,10 @@ func NewControlPlane(
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
-		Logger:                log,
-		LocationFinder:        locationFinder,
-		UpstreamReadyCallback: plane.dnsUpstreamReadyCallback,
+		Logger:                  log,
+		LocationFinder:          locationFinder,
+		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
+		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
 	})
 	if err != nil {
 		return nil, err
@@ -559,7 +572,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 					// TODO: use DNS controller and re-route by control plane.
 					systemDns, err := netutils.SystemDns()
 					if err == nil {
-						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, false, true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
+						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae), true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
 							// Has A/AAAA records. It is a real domain.
 							dialMode = consts.DialMode_Domain
 							// Add it to real-domain set.
@@ -717,8 +730,21 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					lastErr := err
 					addrHdr, dataOffset, err := ParseAddrHdr(data)
 					if err != nil {
-						c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
-						return
+						if c.tproxyPortProtect {
+							c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
+							return
+						} else {
+							routingResult = &bpfRoutingResult{
+								Mark:     0,
+								Must:     0,
+								Mac:      [6]uint8{},
+								Outbound: uint8(consts.OutboundControlPlaneRouting),
+								Pname:    [16]uint8{},
+								Pid:      0,
+							}
+							realDst = pktDst
+							goto destRetrieved
+						}
 					}
 					n := copy(data, data[dataOffset:])
 					data = data[:n]
@@ -731,6 +757,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				} else {
 					realDst = pktDst
 				}
+			destRetrieved:
 				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
@@ -813,6 +840,9 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			outboundIndex, mark, _, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
+			}
+			if mark == 0 {
+				mark = c.soMarkFromDae
 			}
 			if int(outboundIndex) >= len(c.outbounds) {
 				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
