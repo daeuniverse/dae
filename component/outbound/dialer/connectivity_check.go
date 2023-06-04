@@ -29,6 +29,8 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
+const Timeout = 10 * time.Second
+
 type NetworkType struct {
 	L4Proto   consts.L4ProtoStr
 	IpVersion consts.IpVersionStr
@@ -217,7 +219,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 		defer cancel()
 		ctx = context.WithValue(ctx, "logger", c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
@@ -240,7 +242,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 		defer cancel()
 		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, c.ResolverNetwork)
 		if err != nil {
@@ -259,15 +261,15 @@ type CheckOption struct {
 func (d *Dialer) ActivateCheck() {
 	d.tickerMu.Lock()
 	defer d.tickerMu.Unlock()
-	if d.instanceOption.CheckEnabled {
+	if d.InstanceOption.CheckEnabled {
 		return
 	}
-	d.instanceOption.CheckEnabled = true
+	d.InstanceOption.CheckEnabled = true
 	go d.aliveBackground()
 }
 
 func (d *Dialer) aliveBackground() {
-	timeout := 10 * time.Second
+	timeout := Timeout
 	cycle := d.CheckInterval
 	var tcpSomark uint32
 	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
@@ -490,6 +492,24 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	}
 }
 
+func offsetLatency(latency, offset time.Duration) time.Duration {
+	result := latency + offset
+	if result < 0 {
+		return 0
+	}
+	if result > Timeout {
+		result = Timeout
+	}
+	return result
+}
+
+func latencyString(latencyAfterOffset, latencyBeforeOffset time.Duration) string {
+	if latencyBeforeOffset == latencyAfterOffset {
+		return latencyAfterOffset.Truncate(time.Millisecond).String()
+	}
+	return latencyAfterOffset.Truncate(time.Millisecond).String() + "(" + latencyBeforeOffset.Truncate(time.Millisecond).String() + ")"
+}
+
 func (d *Dialer) Check(timeout time.Duration,
 	opts *CheckOption,
 ) (ok bool, err error) {
@@ -500,7 +520,8 @@ func (d *Dialer) Check(timeout time.Duration,
 	collection := d.mustGetCollection(opts.networkType)
 	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
 		// No error.
-		latency := time.Since(start)
+		_latency := time.Since(start)
+		latency := offsetLatency(_latency, d.InstanceOption.LatencyOffset)
 		collection.Latencies10.AppendLatency(latency)
 		avg, _ := collection.Latencies10.AvgLatency()
 		collection.MovingAverage = (collection.MovingAverage + latency) / 2
@@ -509,7 +530,7 @@ func (d *Dialer) Check(timeout time.Duration,
 		d.Log.WithFields(logrus.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.property.Name,
-			"last":    latency.Truncate(time.Millisecond),
+			"last":    latencyString(latency, _latency),
 			"avg_10":  avg.Truncate(time.Millisecond),
 			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")

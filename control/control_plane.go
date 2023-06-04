@@ -271,7 +271,7 @@ func NewControlPlane(
 			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
 		}
 		// Filter nodes with user given filters.
-		dialers, err := dialerSet.Filter(group.Filter)
+		dialers, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation)
 		if err != nil {
 			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}

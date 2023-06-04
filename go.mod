@@ -7,7 +7,7 @@ require (
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df
 	github.com/bits-and-blooms/bloom/v3 v3.3.1
 	github.com/cilium/ebpf v0.0.0-20230314095333-3945fa593427
-	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230314065856-e49435a874d8
+	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
@@ -20,7 +20,7 @@ require (
 	github.com/vishvananda/netlink v1.1.0
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.9.0
-	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2
+	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc
 	golang.org/x/net v0.10.0
 	golang.org/x/sys v0.8.0
 	google.golang.org/protobuf v1.28.1

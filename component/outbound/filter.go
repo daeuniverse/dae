@@ -9,9 +9,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+)
+
+const (
+	FilterAnnotationKey_AddLatency = "add_latency"
 )
 
 const (
@@ -125,14 +130,45 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 	return true, nil
 }
 
-func (s *DialerSet) Filter(filters []*config_parser.Function) (dialers []*dialer.Dialer, err error) {
-	for _, d := range s.dialers {
-		hit, err := s.filterHit(d, filters)
-		if err != nil {
-			return nil, err
+func (s *DialerSet) applyAnnotation(dialer *dialer.Dialer, annotation []*config_parser.Param) error {
+	for _, param := range annotation {
+		switch param.Key {
+		case FilterAnnotationKey_AddLatency:
+			latency, err := time.ParseDuration(param.Val)
+			if err != nil {
+				return fmt.Errorf("incorrect latency format: %w", err)
+			}
+			// Only the first setting is valid.
+			if dialer.InstanceOption.LatencyOffset == 0 {
+				dialer.InstanceOption.LatencyOffset = latency
+			}
+		default:
+			return fmt.Errorf("unknown filter annotation: %v", param.Key)
 		}
-		if hit {
-			dialers = append(dialers, d)
+	}
+	return nil
+}
+
+func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param) (dialers []*dialer.Dialer, err error) {
+	if len(filters) != len(annotations) {
+		return nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
+	}
+nextDialerLoop:
+	for _, d := range s.dialers {
+		// Hit any.
+		for j, f := range filters {
+			annotation := annotations[j]
+			hit, err := s.filterHit(d, f)
+			if err != nil {
+				return nil, err
+			}
+			if hit {
+				if err = s.applyAnnotation(d, annotation); err != nil {
+					return nil, fmt.Errorf("apply filter annotation: %w", err)
+				}
+				dialers = append(dialers, d)
+				continue nextDialerLoop
+			}
 		}
 	}
 	return dialers, nil
