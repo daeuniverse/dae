@@ -32,9 +32,10 @@ type Dns struct {
 }
 
 type NewOption struct {
-	Logger                *logrus.Logger
-	LocationFinder        *assets.LocationFinder
-	UpstreamReadyCallback func(dnsUpstream *Upstream) (err error)
+	Logger                  *logrus.Logger
+	LocationFinder          *assets.LocationFinder
+	UpstreamReadyCallback   func(dnsUpstream *Upstream) (err error)
+	UpstreamResolverNetwork string
 }
 
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
@@ -62,7 +63,8 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			return nil, fmt.Errorf("%w: %v", BadUpstreamFormatError, err)
 		}
 		r := &UpstreamResolver{
-			Raw: u,
+			Raw:     u,
+			Network: opt.UpstreamResolverNetwork,
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
 				return func(raw *url.URL, upstream *Upstream) (err error) {
 					if opt != nil && opt.UpstreamReadyCallback != nil {
@@ -77,6 +79,9 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 					return nil
 				}
 			}(i),
+			mu:       sync.Mutex{},
+			upstream: nil,
+			init:     false,
 		}
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)

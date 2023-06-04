@@ -146,6 +146,7 @@ var (
 
 const (
 	TproxyMark      uint32 = 0x8000000
+	Recognize       uint16 = 0x2017
 	LoopbackIfIndex        = 1
 )
 

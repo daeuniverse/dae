@@ -22,7 +22,7 @@ type Ip46 struct {
 	Ip6 netip.Addr
 }
 
-func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, tcp bool, race bool) (ipv46 *Ip46, err error) {
+func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (ipv46 *Ip46, err error) {
 	var log *logrus.Logger
 	if _log := ctx.Value("logger"); _log != nil {
 		log = _log.(*logrus.Logger)
@@ -49,7 +49,7 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 			}
 		}()
 		var e error
-		addrs4, e = ResolveNetip(ctx4, dialer, dns, host, dnsmessage.TypeA, tcp)
+		addrs4, e = ResolveNetip(ctx4, dialer, dns, host, dnsmessage.TypeA, network)
 		if err != nil && !errors.Is(e, context.Canceled) {
 			err4 = e
 			return
@@ -67,7 +67,7 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 			}
 		}()
 		var e error
-		addrs6, e = ResolveNetip(ctx6, dialer, dns, host, dnsmessage.TypeAAAA, tcp)
+		addrs6, e = ResolveNetip(ctx6, dialer, dns, host, dnsmessage.TypeAAAA, network)
 		if err != nil && !errors.Is(e, context.Canceled) {
 			err6 = e
 			return

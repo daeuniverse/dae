@@ -64,6 +64,7 @@
 #define IS_LAN 1
 
 #define TPROXY_MARK 0x8000000
+#define RECOGNIZE 0x2017
 
 #define ESOCKTNOSUPPORT 94 /* Socket type not supported */
 
@@ -139,6 +140,7 @@ struct routing_result {
 struct dst_routing_result {
   __be32 ip[4];
   __be16 port;
+  __u16 recognize;
   struct routing_result routing_result;
 };
 
@@ -1751,6 +1753,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
       __builtin_memcpy(new_hdr.ip, &tuples.dip, IPV6_BYTE_LENGTH);
       new_hdr.port = udph.dest;
+      new_hdr.recognize = RECOGNIZE;
       new_hdr.routing_result.outbound = s64_ret;
       new_hdr.routing_result.mark = s64_ret >> 8;
       new_hdr.routing_result.must = (s64_ret >> 40) & 1;
