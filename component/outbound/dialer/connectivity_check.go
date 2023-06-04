@@ -494,11 +494,12 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 
 func offsetLatency(latency, offset time.Duration) time.Duration {
 	result := latency + offset
-	if result < 0 {
-		return 0
+	epsilon := 1 * time.Nanosecond
+	if result < +epsilon {
+		return +epsilon
 	}
-	if result > Timeout {
-		result = Timeout
+	if result > Timeout-epsilon {
+		result = Timeout - epsilon
 	}
 	return result
 }
