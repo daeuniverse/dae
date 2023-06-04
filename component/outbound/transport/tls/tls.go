@@ -66,11 +66,35 @@ func (s *Tls) Dial(network, addr string) (c netproxy.Conn, err error) {
 			return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
 		}
 
-		tlsConn := tls.Client(&netproxy.FakeNetConn{
-			Conn:  rc,
-			LAddr: nil,
-			RAddr: nil,
-		}, s.tlsConfig)
+		var tlsConn interface {
+			netproxy.Conn
+			Handshake() error
+		}
+
+		switch s.tlsImplentation {
+		case "tls":
+			tlsConn = tls.Client(&netproxy.FakeNetConn{
+				Conn:  rc,
+				LAddr: nil,
+				RAddr: nil,
+			}, s.tlsConfig)
+
+		case "utls":
+			clientHelloID, err := nameToUtlsClientHelloID(s.utlsImitate)
+			if err != nil {
+				return nil, err
+			}
+
+			tlsConn = utls.UClient(&netproxy.FakeNetConn{
+				Conn:  rc,
+				LAddr: nil,
+				RAddr: nil,
+			}, uTLSConfigFromTLSConfig(s.tlsConfig), *clientHelloID)
+
+		default:
+			return nil, fmt.Errorf("unknown tls implementation: %v", s.tlsImplentation)
+		}
+
 		if err := tlsConn.Handshake(); err != nil {
 			return nil, err
 		}
