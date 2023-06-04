@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/protocol/direct"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -48,7 +48,7 @@ func init() {
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-pidfile", "", false, "not generate /var/run/dae.pid")
 
-	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
+	fastrand.Rand().Shuffle(len(CheckNetworkLinks), func(i, j int) {
 		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
 	})
 }

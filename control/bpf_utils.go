@@ -142,6 +142,24 @@ func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *
 	return vKeys.Len(), nil
 }
 
+// BpfMapBatchDelete deletes keys and ignores ErrKeyNotExist.
+func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
+	// Simulate
+	vKeys := reflect.ValueOf(keys)
+	if vKeys.Kind() != reflect.Slice {
+		return 0, fmt.Errorf("keys must be slice")
+	}
+	length := vKeys.Len()
+
+	for i := 0; i < length; i++ {
+		vKey := vKeys.Index(i)
+		if err = m.Delete(vKey.Interface()); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return i, err
+		}
+	}
+	return vKeys.Len(), nil
+}
+
 // detectCgroupPath returns the first-found mount point of type cgroup2
 // and stores it in the cgroupPath global variable.
 // Copied from https://github.com/cilium/ebpf/blob/v0.10.0/examples/cgroup_skb/main.go

@@ -7,6 +7,7 @@ package domain_matcher
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/common/assets"
 	"hash/fnv"
 	"math/rand"
 	"reflect"
@@ -145,7 +146,7 @@ routing {
 	}
 	if rules, err = routing.ApplyRulesOptimizers(r.Rules,
 		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{Logger: logrus.StandardLogger()},
+		&routing.DatReaderOptimizer{Logger: logrus.StandardLogger(), LocationFinder: assets.NewLocationFinder(nil)},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {

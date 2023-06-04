@@ -167,11 +167,26 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 		return nil, err
 	}
 	o.Logger.Debugf("Read geosite \"%v:%v\" from %v", filename, code, filePath)
+	code, attr, _ := strings.Cut(code, "@")
 	geoSite, err := geodata.UnmarshalGeoSite(o.Logger, filePath, code)
 	if err != nil {
 		return nil, err
 	}
 	for _, item := range geoSite.Domain {
+		if attr != "" {
+			// Filter by attr.
+			attrHit := false
+			for _, itemAttr := range item.Attribute {
+				if strings.EqualFold(itemAttr.Key, attr) {
+					attrHit = true
+					break
+				}
+			}
+			if !attrHit {
+				continue
+			}
+		}
+
 		switch item.Type {
 		case geodata.Domain_Full:
 			// Full.

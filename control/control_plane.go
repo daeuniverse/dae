@@ -239,10 +239,12 @@ func NewControlPlane(
 			Raw:             global.UdpCheckDns,
 			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
 		},
-		CheckInterval:  global.CheckInterval,
-		CheckTolerance: global.CheckTolerance,
-		CheckDnsTcp:    true,
-		AllowInsecure:  global.AllowInsecure,
+		CheckInterval:     global.CheckInterval,
+		CheckTolerance:    global.CheckTolerance,
+		CheckDnsTcp:       true,
+		AllowInsecure:     global.AllowInsecure,
+		TlsImplementation: global.TlsImplementation,
+		UtlsImitate:       global.UtlsImitate,
 	}
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
@@ -382,12 +384,24 @@ func NewControlPlane(
 		return nil, err
 	}
 	/// Dns controller.
+	fixedDomainTtl, err := ParseFixedDomainTtl(dnsConfig.FixedDomainTtl)
+	if err != nil {
+		return nil, err
+	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
 			if err = core.BatchUpdateDomainRouting(cache); err != nil {
+				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
+			}
+			return nil
+		},
+		CacheRemoveCallback: func(cache *DnsCache) (err error) {
+			// Write mappings into eBPF map:
+			// IP record (from dns lookup) -> domain routing
+			if err = core.BatchRemoveDomainRouting(cache); err != nil {
 				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
 			}
 			return nil
@@ -401,6 +415,7 @@ func NewControlPlane(
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
+		FixedDomainTtl:    fixedDomainTtl,
 	}); err != nil {
 		return nil, err
 	}
@@ -416,7 +431,7 @@ func NewControlPlane(
 			}
 			host := cacheKey[:lastDot]
 			typ := cacheKey[lastDot+1:]
-			_ = plane.dnsController.UpdateDnsCache(host, typ, cache.Answers, cache.Deadline)
+			_ = plane.dnsController.UpdateDnsCacheDeadline(host, typ, cache.Answers, cache.Deadline)
 		}
 	} else if _bpf != nil {
 		// Is reloading, and dnsCache == nil.
@@ -439,6 +454,19 @@ func NewControlPlane(
 
 	close(plane.ready)
 	return plane, nil
+}
+
+func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
+	m := make(map[string]int)
+	for _, k := range ks {
+		key, value, _ := strings.Cut(string(k), ":")
+		ttl, err := strconv.ParseInt(strings.TrimSpace(value), 0, strconv.IntSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse ttl: %v", err)
+		}
+		m[strings.TrimSpace(key)] = int(ttl)
+	}
+	return m, nil
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.
@@ -496,7 +524,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 				A: dnsUpstream.Ip4.As4(),
 			},
 		}}
-		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
 			return err
 		}
 	}
@@ -514,7 +542,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 				AAAA: dnsUpstream.Ip6.As16(),
 			},
 		}}
-		if err = c.dnsController.UpdateDnsCache(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
 			return err
 		}
 	}
