@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common"
 	"io"
 	"math"
 	"net"
@@ -645,7 +646,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 		// TODO: connection pool.
 		conn, err = dialArgument.bestDialer.Dial(
-			MagicNetwork("udp", dialArgument.mark),
+			common.MagicNetwork("udp", dialArgument.mark),
 			dialArgument.bestTarget.String(),
 		)
 		if err != nil {
@@ -707,7 +708,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	case consts.L4ProtoStr_TCP:
 		// We can block here because we are in a coroutine.
 
-		conn, err = dialArgument.bestDialer.Dial(MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
+		conn, err = dialArgument.bestDialer.Dial(common.MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}

@@ -50,7 +50,19 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 			Ip:   struct{ U6Addr8 [16]uint8 }{U6Addr8: ip6},
 			Port: common.Htons(src.Port()),
 		}, &value); e != nil {
-			return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
+			if c.tproxyPortProtect {
+				return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
+			} else {
+				routingResult = &bpfRoutingResult{
+					Mark:     0,
+					Must:     0,
+					Mac:      [6]uint8{},
+					Outbound: uint8(consts.OutboundControlPlaneRouting),
+					Pname:    [16]uint8{},
+					Pid:      0,
+				}
+				goto destRetrieved
+			}
 		}
 		routingResult = &value.RoutingResult
 
@@ -60,6 +72,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		}
 		dst = netip.AddrPortFrom(dstAddr, common.Htons(value.Port))
 	}
+destRetrieved:
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
 
@@ -92,6 +105,9 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		dialTarget, _ = c.ChooseDialTarget(outboundIndex, dst, domain)
 	default:
 	}
+	if routingResult.Mark == 0 {
+		routingResult.Mark = c.soMarkFromDae
+	}
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
 		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
@@ -122,7 +138,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 
 	// Dial and relay.
-	rConn, err := d.Dial(MagicNetwork("tcp", routingResult.Mark), dialTarget)
+	rConn, err := d.Dial(common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}

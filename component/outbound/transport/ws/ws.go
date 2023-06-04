@@ -13,10 +13,10 @@ import (
 
 // Ws is a base Ws struct
 type Ws struct {
-	dialer   netproxy.Dialer
-	wsAddr   string
-	header   http.Header
-	wsDialer *websocket.Dialer
+	dialer          netproxy.Dialer
+	wsAddr          string
+	header          http.Header
+	tlsClientConfig *tls.Config
 }
 
 // NewWs returns a Ws infra.
@@ -43,23 +43,9 @@ func NewWs(s string, d netproxy.Dialer) (*Ws, error) {
 		Host:   u.Host,
 	}
 	t.wsAddr = wsUrl.String() + u.Path
-	t.wsDialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
-			c, err := d.DialTcp(addr)
-			if err != nil {
-				return nil, err
-			}
-			return &netproxy.FakeNetConn{
-				Conn:  c,
-				LAddr: nil,
-				RAddr: nil,
-			}, nil
-		},
-		//Subprotocols: []string{"binary"},
-	}
 	if u.Scheme == "wss" {
 		skipVerify, _ := strconv.ParseBool(u.Query().Get("allowInsecure"))
-		t.wsDialer.TLSClientConfig = &tls.Config{
+		t.tlsClientConfig = &tls.Config{
 			ServerName:         u.Query().Get("sni"),
 			InsecureSkipVerify: skipVerify,
 		}
@@ -74,23 +60,28 @@ func (s *Ws) Dial(network, addr string) (c netproxy.Conn, err error) {
 	}
 	switch magicNetwork.Network {
 	case "tcp":
-		return s.DialTcp(addr)
+		wsDialer := &websocket.Dialer{
+			NetDial: func(_, addr string) (net.Conn, error) {
+				c, err := s.dialer.Dial(network, addr)
+				if err != nil {
+					return nil, err
+				}
+				return &netproxy.FakeNetConn{
+					Conn:  c,
+					LAddr: nil,
+					RAddr: nil,
+				}, nil
+			},
+			//Subprotocols: []string{"binary"},
+		}
+		rc, _, err := wsDialer.Dial(s.wsAddr, s.header)
+		if err != nil {
+			return nil, fmt.Errorf("[Ws]: dial to %s: %w", s.wsAddr, err)
+		}
+		return newConn(rc), err
 	case "udp":
-		return s.DialUdp(addr)
+		return nil, fmt.Errorf("%w: ws+udp", netproxy.UnsupportedTunnelTypeError)
 	default:
 		return nil, fmt.Errorf("%w: %v", netproxy.UnsupportedTunnelTypeError, network)
 	}
-}
-
-func (s *Ws) DialUdp(addr string) (netproxy.PacketConn, error) {
-	return nil, fmt.Errorf("%w: ws+udp", netproxy.UnsupportedTunnelTypeError)
-}
-
-// DialTcp connects to the address addr on the network net via the infra.
-func (s *Ws) DialTcp(addr string) (netproxy.Conn, error) {
-	rc, _, err := s.wsDialer.Dial(s.wsAddr, s.header)
-	if err != nil {
-		return nil, fmt.Errorf("[Ws]: dial to %s: %w", s.wsAddr, err)
-	}
-	return newConn(rc), err
 }
