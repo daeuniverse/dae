@@ -36,12 +36,14 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-.PHONY: clean-ebpf ebpf dae
+.PHONY: sync-git-modules clean-ebpf ebpf dae
 
 dae: export GOOS=linux
 dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
 
+sync-git-modules:
+	git submodule update --init
 clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
