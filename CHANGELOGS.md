@@ -12,7 +12,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.10 (Current)](#0110-current)
+- [0.1.10-patch.1 (Current)](#0110-patch1-current)
+- [0.1.10](#0110)
 - [0.1.9-patch.1](#019-patch1)
 - [0.1.9](#019)
 - [0.1.8](#018)
@@ -25,7 +26,23 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.1](#011)
 - [0.1.0](#010)
 
-### 0.1.10 (Current)
+### 0.1.10-patch.1 (Current)
+
+> Release date: 2023/06/05
+
+#### 功能变更
+
+- fix(trojan): 修复因无效的 trojan 协议控制字段而导致的程序崩溃 by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
+
+#### Changes
+
+- fix(dns): potential panic due to invalid packet control data by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10.p1
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.1.10.p1/example.dae
+
+### 0.1.10
 
 > Release date: 2023/06/04
 
@@ -56,6 +73,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - chore: add pull_request_template by @yqlbu in https://github.com/daeuniverse/dae/pull/86
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10
+
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.1.10/example.dae
 
 ### 0.1.9-patch.1
