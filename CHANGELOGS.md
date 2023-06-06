@@ -64,7 +64,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - ci: 添加文档格式检查工作流 by @yqlbu in https://github.com/daeuniverse/dae/pull/93
 - refactor: 将 insert.sh 移动至 ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
 - ci(hack): 添加 config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
-- fix(test): 修复 domain_matcher/benchmark_test.go in https://github.com/daeuniverse/dae/pull/107
+- fix(test): 修复 domain_matcher/benchmark_test.go by @mzz2017 in https://github.com/daeuniverse/dae/pull/107
 - ci: 添加文档自动同步至 dae-docs 项目 by @yqlbu in https://github.com/daeuniverse/dae/pull/103
 - docs(routing.md): 修订 fwmark 一节的文档 by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
 
@@ -84,7 +84,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - ci: add check-docs workflow by @yqlbu in https://github.com/daeuniverse/dae/pull/93
 - refactor: move insert.sh to ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
 - ci(hack): add config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
-- fix(test): domain_matcher/benchmark_test.go in https://github.com/daeuniverse/dae/pull/107
+- fix(test): domain_matcher/benchmark_test.go @mzz2017 in https://github.com/daeuniverse/dae/pull/107
 - ci: docs synchronization by @yqlbu in https://github.com/daeuniverse/dae/pull/103
 - docs(routing.md): revise fwmark section by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
 
