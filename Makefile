@@ -44,14 +44,14 @@ dae: ebpf
 ## End Dae Build
 
 ## Begin Git Submodules
-.gitmodules.mk: .gitmodules
+.gitmodules.d.mk: .gitmodules
 	@set -e -o pipefail && \
 	submodules=( $$(grep '\[submodule "' .gitmodules | cut -d'"' -f2) ) && \
 	echo "submodule_paths=$${submodules[@]}" > $@
 
--include .gitmodules.mk
+-include .gitmodules.d.mk
 
-$(submodule_paths): .gitmodules.mk
+$(submodule_paths): .gitmodules.d.mk
 	git submodule update --init --recursive -- $@ && \
 	touch $@
 
