@@ -16,7 +16,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/mzz2017/softwind/netproxy"
 	"golang.org/x/sys/unix"
 )
 
@@ -158,17 +157,6 @@ func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) 
 
 func SetSendRedirects(ifname string, val string) {
 	_ = setSendRedirects(ifname, consts.IpVersionStr_4, val)
-}
-
-func MagicNetwork(network string, mark uint32) string {
-	if mark == 0 {
-		return network
-	} else {
-		return netproxy.MagicNetwork{
-			Network: network,
-			Mark:    mark,
-		}.Encode()
-	}
 }
 
 func ProcessName2String(pname []uint8) string {

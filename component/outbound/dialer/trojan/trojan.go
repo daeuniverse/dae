@@ -2,6 +2,7 @@ package trojan
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"net"
 	"net/url"
 	"strconv"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"github.com/daeuniverse/dae/component/outbound/transport/ws"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"

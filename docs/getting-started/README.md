@@ -90,6 +90,18 @@ sudo systemctl start dae
 sudo systemctl enable dae
 ```
 
+### Gentoo Linux
+
+dae has been released on [gentoo-zh](https://github.com/microcai/gentoo-zh)
+
+use `app-eselect/eselect-repository` to enable this overlay:
+
+```shell
+eselect repository enable gentoo-zh
+emaint sync -r gentoo-zh
+emerge -a net-proxy/dae
+```
+
 ### macOS
 
 We provide a hacky way to run dae on your macOS. See [run on macOS](run-on-macos.md).

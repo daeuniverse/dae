@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common"
 	"net"
 	"net/http"
 	"net/netip"
@@ -121,7 +122,7 @@ type TcpCheckOption struct {
 	Method string
 }
 
-func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string) (opt *TcpCheckOption, err error) {
+func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string, resolverNetwork string) (opt *TcpCheckOption, err error) {
 	if method == "" {
 		method = http.MethodGet
 	}
@@ -146,7 +147,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string) (o
 	if len(rawURL) > 1 {
 		ip46 = parseIp46FromList(rawURL[1:])
 	} else {
-		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), false, false)
+		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), resolverNetwork, false)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +165,7 @@ type CheckDnsOption struct {
 	*netutils.Ip46
 }
 
-func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string) (opt *CheckDnsOption, err error) {
+func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string, resolverNetwork string) (opt *CheckDnsOption, err error) {
 	systemDns, err := netutils.SystemDns()
 	if err != nil {
 		return nil, err
@@ -191,7 +192,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string) (opt *CheckD
 	if len(dnsHostPort) > 1 {
 		ip46 = parseIp46FromList(dnsHostPort[1:])
 	} else {
-		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, false, false)
+		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, resolverNetwork, false)
 		if err != nil {
 			return nil, err
 		}
@@ -204,11 +205,12 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string) (opt *CheckD
 }
 
 type TcpCheckOptionRaw struct {
-	opt    *TcpCheckOption
-	mu     sync.Mutex
-	Log    *logrus.Logger
-	Raw    []string
-	Method string
+	opt             *TcpCheckOption
+	mu              sync.Mutex
+	Log             *logrus.Logger
+	Raw             []string
+	ResolverNetwork string
+	Method          string
 }
 
 func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
@@ -218,7 +220,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
 		ctx = context.WithValue(ctx, "logger", c.Log)
-		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method)
+		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
 		}
@@ -228,9 +230,10 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 }
 
 type CheckDnsOptionRaw struct {
-	opt *CheckDnsOption
-	mu  sync.Mutex
-	Raw []string
+	opt             *CheckDnsOption
+	mu              sync.Mutex
+	Raw             []string
+	ResolverNetwork string
 }
 
 func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
@@ -239,7 +242,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
-		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw)
+		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, c.ResolverNetwork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
 		}
@@ -266,6 +269,10 @@ func (d *Dialer) ActivateCheck() {
 func (d *Dialer) aliveBackground() {
 	timeout := 10 * time.Second
 	cycle := d.CheckInterval
+	var tcpSomark uint32
+	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
+		tcpSomark = network.Mark
+	}
 	tcp4CheckOpt := &CheckOption{
 		networkType: &NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
@@ -285,7 +292,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip4, opt.Method)
+			return d.HttpCheck(ctx, opt.Url, opt.Ip4, opt.Method, tcpSomark)
 		},
 	}
 	tcp6CheckOpt := &CheckOption{
@@ -307,7 +314,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method)
+			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method, tcpSomark)
 		},
 	}
 	tcp4CheckDnsOpt := &CheckOption{
@@ -329,7 +336,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), true)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
 		},
 	}
 	tcp6CheckDnsOpt := &CheckOption{
@@ -351,7 +358,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), true)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
 		},
 	}
 	udp4CheckDnsOpt := &CheckOption{
@@ -372,7 +379,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), false)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
 		},
 	}
 	udp6CheckDnsOpt := &CheckOption{
@@ -393,7 +400,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), false)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
 		},
 	}
 	var CheckOpts = []*CheckOption{
@@ -535,7 +542,7 @@ func (d *Dialer) Check(timeout time.Duration,
 	return ok, err
 }
 
-func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string) (ok bool, err error) {
+func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string, soMark uint32) (ok bool, err error) {
 	// HTTP(S) check.
 	if method == "" {
 		method = http.MethodGet
@@ -545,7 +552,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
 				// Force to dial "ip".
-				conn, err := cd.DialTcpContext(ctx, net.JoinHostPort(ip.String(), u.Port()))
+				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", soMark), net.JoinHostPort(ip.String(), u.Port()))
 				if err != nil {
 					return nil, err
 				}
@@ -584,8 +591,8 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	}
 }
 
-func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort, tcp bool) (ok bool, err error) {
-	addrs, err := netutils.ResolveNetip(ctx, d, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, tcp)
+func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort, network string) (ok bool, err error) {
+	addrs, err := netutils.ResolveNetip(ctx, d, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, network)
 	if err != nil {
 		return false, err
 	}

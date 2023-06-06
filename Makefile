@@ -23,6 +23,7 @@ else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
+# Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
 
 # Get version from .git.
@@ -64,7 +65,7 @@ submodule submodules: $(submodule_paths)
 ## End Git Submodules
 
 ## Begin Ebpf
-clean-ebpf: 
+clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
 fmt:

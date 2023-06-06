@@ -12,9 +12,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ## Releases
 
-- [0.1.10rc1 (Pre-release)](#0110rc1-pre-release)
-- [0.1.10rc (Pre-release)](#0110rc-pre-release)
-- [0.1.9-patch.1 (Current)](#019-patch1-current)
+- [0.2.0rc2 (Pre-release)](#020rc2-pre-release)
+- [0.2.0rc1 (Pre-release)](#020rc1-pre-release)
+- [0.1.10.p1 (Current)](#0110p1-current)
+- [0.1.10](#0110-current)
+- [0.1.9-patch.1](#019-patch1)
 - [0.1.9](#019)
 - [0.1.8](#018)
 - [0.1.7](#017)
@@ -26,29 +28,100 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.1](#011)
 - [0.1.0](#010)
 
-### 0.1.10rc1 (Pre-release)
+### 0.2.0rc2 (Pre-release)
 
-> Release date: 2023/05/15
+> Release date: 2023/06/05
 
 #### 功能变更
 
-- patch(geodata): 修复由 #84 导致的错误的 geodata 搜索路径 `/etc/dae/dae` by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
+- fix(trojan): 修复因无效的 trojan 协议控制字段而导致的程序崩溃 by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
 
 #### Changes
 
-- patch(geodata): fix incorrect geodata search path `/etc/dae/dae` caused by #84 by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
+- fix(dns): potential panic due to invalid packet control data by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10rc...v0.1.10rc1
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10...v0.2.0rc2
 
-### 0.1.10rc (Pre-release)
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc2/example.dae
 
-> Release date: 2023/05/14
+### 0.2.0rc1 (Pre-release)
+
+> Release date: 2023/06/04
+
+#### 功能变更
+
+- feat: 支持 iptables/nftables 的 mangle 表 tproxy by @mzz2017 in https://github.com/daeuniverse/dae/pull/80
+- feat: 支持 uTLS by @AkinoKaede in https://github.com/daeuniverse/dae/pull/94
+- feat: 支持在 geosite 使用属性标签 `@` 符号 by @mzz2017 in https://github.com/daeuniverse/dae/pull/98
+- feat(dns): 支持为特定域名设定固定的 ttl，这对 DDNS 场景较为有用 by @mzz2017 in https://github.com/daeuniverse/dae/pull/100
+- fix(dns): 修复 DNS 中 qname 匹配规则失效的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
+- fix: 修复启动时网络检查链接列表的随机排布问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/106
+- fix(config_parser): 修复配置文件格式错误时潜在的崩溃问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
+- fix(trojan): 修复 trojan 崩溃问题，该问题由 ReadFrom 返回的 n 可能不正确导致 by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
+
+#### 其他变更
+
+- ci: 添加文档格式检查工作流 by @yqlbu in https://github.com/daeuniverse/dae/pull/93
+- refactor: 将 insert.sh 移动至 ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
+- ci(hack): 添加 config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
+- fix(test): 修复 domain_matcher/benchmark_test.go by @mzz2017 in https://github.com/daeuniverse/dae/pull/107
+- ci: 添加文档自动同步至 dae-docs 项目 by @yqlbu in https://github.com/daeuniverse/dae/pull/103
+- docs(routing.md): 修订 fwmark 一节的文档 by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
+
+#### Changes
+
+- feat: support iptables tproxy by @mzz2017 in https://github.com/daeuniverse/dae/pull/80
+- feat: add uTLS support by @AkinoKaede in https://github.com/daeuniverse/dae/pull/94
+- feat: support geosite attr by @mzz2017 in https://github.com/daeuniverse/dae/pull/98
+- fix(dns): mismatched qname matching rules by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
+- feat(dns): support fixed domain ttl by @mzz2017 in https://github.com/daeuniverse/dae/pull/100
+- fix: rand seed for network check by @mzz2017 in https://github.com/daeuniverse/dae/pull/106
+- fix(config_parser): potential panic due to out of index by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
+- fix(trojan): potential panic due to incorrect n returned by ReadFrom by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
+
+#### Other Changes
+
+- ci: add check-docs workflow by @yqlbu in https://github.com/daeuniverse/dae/pull/93
+- refactor: move insert.sh to ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
+- ci(hack): add config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
+- fix(test): domain_matcher/benchmark_test.go @mzz2017 in https://github.com/daeuniverse/dae/pull/107
+- ci: docs synchronization by @yqlbu in https://github.com/daeuniverse/dae/pull/103
+- docs(routing.md): revise fwmark section by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
+
+#### New Contributors
+
+- @AkinoKaede made their first contribution in https://github.com/daeuniverse/dae/pull/94
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10...v0.2.0rc1
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc1/example.dae
+
+### 0.1.10.p1 (Current)
+
+> Release date: 2023/06/05
+
+#### 功能变更
+
+- fix(trojan): 修复因无效的 trojan 协议控制字段而导致的程序崩溃 by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
+
+#### Changes
+
+- fix(dns): potential panic due to invalid packet control data by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10.p1
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.1.10.p1/example.dae
+
+### 0.1.10
+
+> Release date: 2023/06/04
 
 #### 功能变更
 
 - feat: 支持 `tcp_check_http_method` by @mzz2017 in https://github.com/daeuniverse/dae/pull/77
 - patch: 现在会优先在配置文件同目录搜索 geodata by @mzz2017 in https://github.com/daeuniverse/dae/pull/84
 - fix(dns): 修复 0.1.8 版本中 PR #63 导致的 DNS 缓存不会过期的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/87
+- patch(geodata): 修复由 #84 导致的错误的 geodata 搜索路径 `/etc/dae/dae` by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
 
 #### 其他变更
 
@@ -61,6 +134,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - feat: support `tcp_check_http_method` by @mzz2017 in https://github.com/daeuniverse/dae/pull/77
 - patch: search geodata at same dir with config first by @mzz2017 in https://github.com/daeuniverse/dae/pull/84
 - fix(dns): cache would never expire caused by #63 by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/87
+- patch(geodata): fix incorrect geodata search path `/etc/dae/dae` caused by #84 by @mzz2017 in https://github.com/daeuniverse/dae/pull/90
 
 #### Other Changes
 
@@ -68,9 +142,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - chore: add editorconfig by @yqlbu in https://github.com/daeuniverse/dae/pull/85
 - chore: add pull_request_template by @yqlbu in https://github.com/daeuniverse/dae/pull/86
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10rc
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.9...v0.1.10
 
-### 0.1.9-patch.1 (Current)
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.1.10/example.dae
+
+### 0.1.9-patch.1
 
 > Release date: 2023/05/14
 
