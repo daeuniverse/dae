@@ -35,7 +35,7 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-.PHONY: clean-ebpf ebpf dae submodule
+.PHONY: clean-ebpf ebpf dae submodule submodules
 
 ## Begin Dae Build
 dae: export GOOS=linux
