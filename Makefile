@@ -36,12 +36,35 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-.PHONY: clean-ebpf ebpf dae
+.PHONY: clean-ebpf ebpf dae submodule submodules
 
+## Begin Dae Build
 dae: export GOOS=linux
 dae: ebpf
 	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
+## End Dae Build
 
+## Begin Git Submodules
+.gitmodules.d.mk: .gitmodules
+	@set -e -o pipefail && \
+	submodules=( $$(grep '\[submodule "' .gitmodules | cut -d'"' -f2) ) && \
+	echo "submodule_paths=$${submodules[@]}" > $@
+
+-include .gitmodules.d.mk
+
+$(submodule_paths): .gitmodules.d.mk
+	git submodule update --init --recursive -- $@ && \
+	touch $@
+
+submodule submodules: $(submodule_paths)
+	@if [ -z "$(submodule_paths)" ]; then \
+		rm -f .gitmodules.mk; \
+		echo "Failed to generate submodules list. Please try again."; \
+		exit 1; \
+	fi
+## End Git Submodules
+
+## Begin Ebpf
 clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
@@ -53,9 +76,10 @@ ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
-ebpf: clean-ebpf
+ebpf: submodule clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     go generate ./control/control.go
+## End Ebpf
