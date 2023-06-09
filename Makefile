@@ -58,7 +58,7 @@ $(submodule_paths): .gitmodules.d.mk
 
 submodule submodules: $(submodule_paths)
 	@if [ -z "$(submodule_paths)" ]; then \
-		rm -f .gitmodules.mk; \
+		rm -f .gitmodules.d.mk; \
 		echo "Failed to generate submodules list. Please try again."; \
 		exit 1; \
 	fi
