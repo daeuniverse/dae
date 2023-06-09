@@ -116,7 +116,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 					// Field is not interface{}, we can decode.
 					values := strings.Split(itemVal.Val, ",")
 					if len(values) > 0 && !field.Set {
-						// Clear default value to avoid append values to it.
+						// Clear default value to avoid appending values to it.
 						field.Val.Set(reflect.Zero(field.Val.Type()))
 					}
 					for _, value := range values {
