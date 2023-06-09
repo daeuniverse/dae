@@ -47,7 +47,7 @@ dae: ebpf
 ## Begin Git Submodules
 .gitmodules.d.mk: .gitmodules
 	@set -e -o pipefail && \
-	submodules=( $$(grep '\[submodule "' .gitmodules | cut -d'"' -f2) ) && \
+	submodules=$$(grep '\[submodule "' .gitmodules | cut -d'"' -f2 | tr '\n' ' ') && \
 	echo "submodule_paths=$${submodules[@]}" > $@
 
 -include .gitmodules.d.mk
