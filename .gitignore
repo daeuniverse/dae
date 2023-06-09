@@ -8,3 +8,4 @@ dae
 outline.json
 go-mod/
 node_modules/
+.gitmodules.d.mk
