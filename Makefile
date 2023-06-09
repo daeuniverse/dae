@@ -46,9 +46,9 @@ dae: ebpf
 
 ## Begin Git Submodules
 .gitmodules.d.mk: .gitmodules
-	@set -e -o pipefail && \
-	submodules=( $$(grep '\[submodule "' .gitmodules | cut -d'"' -f2) ) && \
-	echo "submodule_paths=$${submodules[@]}" > $@
+	@set -e && \
+	submodules=$$(grep '\[submodule "' .gitmodules | cut -d'"' -f2 | tr '\n' ' ') && \
+	echo "submodule_paths=$${submodules}" > $@
 
 -include .gitmodules.d.mk
 
@@ -58,7 +58,7 @@ $(submodule_paths): .gitmodules.d.mk
 
 submodule submodules: $(submodule_paths)
 	@if [ -z "$(submodule_paths)" ]; then \
-		rm -f .gitmodules.mk; \
+		rm -f .gitmodules.d.mk; \
 		echo "Failed to generate submodules list. Please try again."; \
 		exit 1; \
 	fi
