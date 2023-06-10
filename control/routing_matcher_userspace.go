@@ -59,7 +59,7 @@ func (m *RoutingMatcher) Match(
 		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
 			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
 			m := m.lpmMatcher[lpmIndex]
-			if m.HasPrefix(bin128s[int(match.Type)]) {
+			if m.HasPrefix(bin128s[match.Type]) {
 				goodSubrule = true
 			}
 		case consts.MatchType_DomainSet:

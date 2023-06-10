@@ -92,23 +92,26 @@ type Trie struct {
 }
 
 func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
-	bits := prefix.Bits()
+	n := prefix.Bits()
+	if n == -1 {
+		panic("! BadPrefix: " + prefix.String())
+	}
 	if prefix.Addr().Is4() {
-		bits += 96
+		n += 96
 	}
 	ip := prefix.Addr().As16()
 	buf := buffer.NewBuffer(128)
 	defer buf.Put()
 loop:
 	for i := 0; i < len(ip); i++ {
-		for j := 0; j < 8; j++ {
+		for j := 7; j >= 0; j-- {
 			if (ip[i]>>j)&1 == 1 {
 				_ = buf.WriteByte('1')
 			} else {
 				_ = buf.WriteByte('0')
 			}
-			bits--
-			if bits == 0 {
+			n--
+			if n == 0 {
 				break loop
 			}
 		}

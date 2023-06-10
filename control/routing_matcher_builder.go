@@ -337,8 +337,8 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	}
 	// Build Ip matcher.
 	var lpmMatcher []*trie.Trie
-	for _, v := range b.simulatedLpmTries {
-		t, err := trie.NewTrieFromPrefixes(v)
+	for _, prefixes := range b.simulatedLpmTries {
+		t, err := trie.NewTrieFromPrefixes(prefixes)
 		if err != nil {
 			return nil, err
 		}
