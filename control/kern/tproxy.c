@@ -42,7 +42,7 @@
 #ifndef MAX_MATCH_SET_LEN
 #define MAX_MATCH_SET_LEN (32 * 2) // Should be sync with common/consts/ebpf.go.
 #endif
-#define MAX_LPM_SIZE 20480
+#define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 2)
 #define MAX_TGID_PNAME_MAPPING_NUM (8192)
