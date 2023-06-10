@@ -8,6 +8,7 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/daeuniverse/dae/pkg/trie"
 	"net/netip"
 	"strconv"
 
@@ -334,6 +335,15 @@ func (b *RoutingMatcherBuilder) BuildUserspace(lpmArrayMap *ebpf.Map) (matcher *
 	for _, domains := range b.simulatedDomainSet {
 		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}
+	// Build Ip matcher.
+	var lpmMatcher []*trie.Trie
+	for _, v := range b.simulatedLpmTries {
+		t, err := trie.NewTrieFromPrefixes(v)
+		if err != nil {
+			return nil, err
+		}
+		lpmMatcher = append(lpmMatcher, t)
+	}
 	if err = domainMatcher.Build(); err != nil {
 		return nil, err
 	}
@@ -345,7 +355,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace(lpmArrayMap *ebpf.Map) (matcher *
 	}
 
 	return &RoutingMatcher{
-		lpmArrayMap:   lpmArrayMap,
+		lpmMatcher:    lpmMatcher,
 		domainMatcher: domainMatcher,
 		matches:       b.rules,
 	}, nil

@@ -17,12 +17,9 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 )
-
-var ValidCidrChars = trie.NewValidChars([]byte{'0', '1'})
 
 type ResponseMatcherBuilder struct {
 	log                *logrus.Logger
@@ -71,31 +68,6 @@ func (b *ResponseMatcherBuilder) upstreamToId(upstream string) (upstreamId const
 	return upstreamId, nil
 }
 
-func prefix2bin128(prefix netip.Prefix) (bin128 string) {
-	bits := prefix.Bits()
-	if prefix.Addr().Is4() {
-		bits += 96
-	}
-	ip := prefix.Addr().As16()
-	buf := buffer.NewBuffer(128)
-	defer buf.Put()
-loop:
-	for i := 0; i < len(ip); i++ {
-		for j := 0; j < 8; j++ {
-			if (ip[i]>>j)&1 == 1 {
-				buf.WriteByte('1')
-			} else {
-				buf.WriteByte('0')
-			}
-			bits--
-			if bits == 0 {
-				break loop
-			}
-		}
-	}
-	return buf.String()
-}
-
 func (b *ResponseMatcherBuilder) addIp(f *config_parser.Function, cidrs []netip.Prefix, upstream *routing.Outbound) (err error) {
 	upstreamId, err := b.upstreamToId(upstream.Name)
 	if err != nil {
@@ -107,12 +79,7 @@ func (b *ResponseMatcherBuilder) addIp(f *config_parser.Function, cidrs []netip.
 		Not:      f.Not,
 		Upstream: uint8(upstreamId),
 	}
-	var keys []string
-	// Convert netip.Prefix -> '0' '1' string
-	for _, prefix := range cidrs {
-		keys = append(keys, prefix2bin128(prefix))
-	}
-	t, err := trie.NewTrie(keys, ValidCidrChars)
+	t, err := trie.NewTrieFromPrefixes(cidrs)
 	if err != nil {
 		return err
 	}
@@ -263,7 +230,7 @@ func (m *ResponseMatcher) Match(
 	domainMatchBitmap := m.domainMatcher.MatchDomainBitmap(qName)
 	bin128 := make([]string, 0, len(ips))
 	for _, ip := range ips {
-		bin128 = append(bin128, prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(ip.As16()), 128)))
+		bin128 = append(bin128, trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(ip.As16()), 128)))
 	}
 
 	goodSubrule := false

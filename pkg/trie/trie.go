@@ -5,12 +5,16 @@ package trie
 
 import (
 	"fmt"
+	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"math/bits"
+	"net/netip"
 	"sort"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/bitlist"
 )
+
+var ValidCidrChars = NewValidChars([]byte{'0', '1'})
 
 type ValidChars struct {
 	table    [256]byte
@@ -85,6 +89,44 @@ type Trie struct {
 	ranksBL, selectsBL  *bitlist.CompactBitList
 
 	chars *ValidChars
+}
+
+func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
+	bits := prefix.Bits()
+	if prefix.Addr().Is4() {
+		bits += 96
+	}
+	ip := prefix.Addr().As16()
+	buf := buffer.NewBuffer(128)
+	defer buf.Put()
+loop:
+	for i := 0; i < len(ip); i++ {
+		for j := 0; j < 8; j++ {
+			if (ip[i]>>j)&1 == 1 {
+				_ = buf.WriteByte('1')
+			} else {
+				_ = buf.WriteByte('0')
+			}
+			bits--
+			if bits == 0 {
+				break loop
+			}
+		}
+	}
+	return buf.String()
+}
+
+func NewTrieFromPrefixes(cidrs []netip.Prefix) (*Trie, error) {
+	var keys []string
+	// Convert netip.Prefix -> '0' '1' string
+	for _, prefix := range cidrs {
+		keys = append(keys, Prefix2bin128(prefix))
+	}
+	t, err := NewTrie(keys, ValidCidrChars)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // NewTrie creates a new *Trie struct, from a slice of sorted strings.
