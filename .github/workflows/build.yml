@@ -11,6 +11,7 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/build.yml"
+      - "Makefile"
   release:
     types: [ prereleased ]
   pull_request:

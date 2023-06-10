@@ -115,6 +115,10 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				case reflect.Slice:
 					// Field is not interface{}, we can decode.
 					values := strings.Split(itemVal.Val, ",")
+					if len(values) > 0 && !field.Set {
+						// Clear default value to avoid appending values to it.
+						field.Val.Set(reflect.Zero(field.Val.Type()))
+					}
 					for _, value := range values {
 						vPointerNew := reflect.New(field.Val.Type().Elem())
 						if !common.FuzzyDecode(vPointerNew.Interface(), value) {
@@ -186,19 +190,19 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		case reflect.Struct:
 			// "to" is a section list (sections in section).
 			/**
-				to {
-					field1 {
-						...
-					}
-					field2 {
-						...
-					}
-				}
-			should be parsed to:
-				to []struct {
-						Name string `mapstructure: "_"`
-						...
-					}
+			  	to {
+			  		field1 {
+			  			...
+			  		}
+			  		field2 {
+			  			...
+			  		}
+			  	}
+			  should be parsed to:
+			  	to []struct {
+			  			Name string `mapstructure: "_"`
+			  			...
+			  		}
 			*/
 			// The struct should contain Name.
 			nameStructField, ok := elemType.FieldByName("Name")
