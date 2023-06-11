@@ -1016,8 +1016,8 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #ifdef __DEBUG_ROUTING
       key = match_set->type;
       bpf_printk("key(match_set->type): %llu", key);
-      bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", bad_rule,
-                 good_subrule);
+      bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", isdns_must_goodsubrule_badrule&0b10,
+                 isdns_must_goodsubrule_badrule&0b1);
 #endif
       goto before_next_loop;
     }
@@ -1103,7 +1103,7 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
   before_next_loop:
 #ifdef __DEBUG_ROUTING
-    bpf_printk("good_subrule: %d, bad_rule: %d", good_subrule, bad_rule);
+    bpf_printk("good_subrule: %d, bad_rule: %d", isdns_must_goodsubrule_badrule&0b10, isdns_must_goodsubrule_badrule&0b1);
 #endif
     if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
       // This match_set reaches the end of subrule.
@@ -1119,7 +1119,7 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
       isdns_must_goodsubrule_badrule &= ~0b10;
     }
 #ifdef __DEBUG_ROUTING
-    bpf_printk("_bad_rule: %d", bad_rule);
+    bpf_printk("_bad_rule: %d", isdns_must_goodsubrule_badrule&0b1);
 #endif
     if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
         OUTBOUND_LOGICAL_MASK) {

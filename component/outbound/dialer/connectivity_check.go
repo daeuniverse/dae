@@ -6,10 +6,12 @@
 package dialer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"github.com/daeuniverse/dae/common"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -580,6 +582,10 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	// Judge the status code.
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {
+			b, _ := io.ReadAll(resp.Body)
+			buf := bytes.NewBuffer(nil)
+			_ = resp.Request.Write(buf)
+			d.Log.Debugln(buf.String(), "Resp: ", string(b))
 			return false, fmt.Errorf("unexpected status code: %v", resp.StatusCode)
 		}
 		return true, nil

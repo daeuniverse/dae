@@ -8,6 +8,7 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/daeuniverse/dae/pkg/trie"
 	"net/netip"
 	"strconv"
 
@@ -328,11 +329,20 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) BuildUserspace(lpmArrayMap *ebpf.Map) (matcher *RoutingMatcher, err error) {
+func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
 	// Build domainMatcher
 	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(b.log, consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+	}
+	// Build Ip matcher.
+	var lpmMatcher []*trie.Trie
+	for _, prefixes := range b.simulatedLpmTries {
+		t, err := trie.NewTrieFromPrefixes(prefixes)
+		if err != nil {
+			return nil, err
+		}
+		lpmMatcher = append(lpmMatcher, t)
 	}
 	if err = domainMatcher.Build(); err != nil {
 		return nil, err
@@ -345,7 +355,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace(lpmArrayMap *ebpf.Map) (matcher *
 	}
 
 	return &RoutingMatcher{
-		lpmArrayMap:   lpmArrayMap,
+		lpmMatcher:    lpmMatcher,
 		domainMatcher: domainMatcher,
 		matches:       b.rules,
 	}, nil

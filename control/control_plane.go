@@ -330,7 +330,7 @@ func NewControlPlane(
 	if err = builder.BuildKernspace(log); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
-	routingMatcher, err := builder.BuildUserspace(core.bpf.LpmArrayMap)
+	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
