@@ -40,7 +40,7 @@ var GlobalDesc = Desc{
 	"so_mark_from_dae":      "If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy rules.",
 	"log_level":             "Log level: error, warn, info, debug, trace.",
 	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
-	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'CONNECT' by default because some server implementations bypass accounting for this kind of traffic.",
+	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",
 	"udp_check_dns":         "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
 	"check_interval":        "Interval of connectivity check for TCP and UDP",
 	"check_tolerance":       "Group will switch node only when new_latency <= old_latency - tolerance.",
