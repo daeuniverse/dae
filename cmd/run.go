@@ -121,6 +121,10 @@ loop:
 		switch sig {
 		case nil:
 			if reloading {
+				if listener == nil {
+					// Failed to listen. Exit.
+					break loop
+				}
 				// Serve.
 				reloading = false
 				log.Warnln("[Reload] Serve")
