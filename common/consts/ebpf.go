@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	AppName    = "dae"
 	BpfPinRoot = "/sys/fs/bpf"
 
 	TaskCommLen = 16
