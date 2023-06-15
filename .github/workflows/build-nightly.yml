@@ -12,7 +12,7 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/build.yml"
+      - ".github/workflows/build-nightly.yml"
       - "Makefile"
   release:
     types: [ prereleased ]
@@ -24,7 +24,7 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/build.yml"
+      - ".github/workflows/build-nightly.yml"
 
 jobs:
   build:
