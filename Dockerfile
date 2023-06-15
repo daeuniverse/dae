@@ -10,8 +10,8 @@ RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0
 FROM alpine
 RUN mkdir -p /usr/local/share/dae/
 RUN mkdir -p /etc/dae/
-RUN wget -O /usr/local/share/dae/geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
-RUN wget -O /usr/local/share/dae/geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
+RUN wget -O /usr/local/share/dae/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
+RUN wget -O /usr/local/share/dae/geosite.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geosite.dat
 COPY --from=builder /build/dae /usr/local/bin
 COPY --from=builder /build/install/empty.dae /etc/dae/config.dae
 RUN chmod 0600 /etc/dae/config.dae
