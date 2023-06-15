@@ -14,8 +14,6 @@ on:
       - "go.sum"
       - ".github/workflows/build-nightly.yml"
       - "Makefile"
-  release:
-    types: [ prereleased ]
   pull_request:
     types: [ opened, synchronize, reopened ]
     paths:
