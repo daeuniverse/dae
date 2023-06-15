@@ -10,7 +10,7 @@
 - [ ] There's an entry in the CHANGELOG
 - [ ] There is a user-facing docs PR against https://github.com/daeuniverse/dae
 
-### Full changelog
+### Full changelogs
 
 - [Implement ...]
 
