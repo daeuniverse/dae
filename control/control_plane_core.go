@@ -174,8 +174,8 @@ func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 	var table = 2023 + c.flip
 
 	/** ip table
-	ip route add local default dev lo table 2023
-	ip -6 route add local default dev lo table 2023
+	  ip route add local default dev lo table 2023
+	  ip -6 route add local default dev lo table 2023
 	*/
 	routes := []netlink.Route{{
 		Scope:     unix.RT_SCOPE_HOST,
@@ -236,8 +236,8 @@ tryRouteAddAgain:
 	c.deferFuncs = append(c.deferFuncs, cleanRoutes)
 
 	/** ip rule
-	ip rule add fwmark 0x8000000/0x8000000 table 2023
-	ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
+	  ip rule add fwmark 0x8000000/0x8000000 table 2023 proto kernel
+	  ip -6 rule add fwmark 0x8000000/0x8000000 table 2023 proto kernel
 	*/
 	rules := []netlink.Rule{{
 		SuppressIfgroup:   -1,
