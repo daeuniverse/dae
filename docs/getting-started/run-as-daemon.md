@@ -39,6 +39,15 @@ Releases are available in <https://github.com/daeuniverse/daed/releases>
 
 Nightly builds are available in <https://github.com/daeuniverse/dae/actions/workflows/build-nightly.yml>
 
+```bash
+sudo chmod +x ./dae
+sudo install -Dm755 dae /usr/bin/
+
+# helper
+dae [-h,--help]
+dae version
+```
+
 ## Setup
 
 ```bash
