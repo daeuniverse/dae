@@ -102,7 +102,7 @@ emerge -a net-proxy/dae
 
 ## Run as daemon
 
-dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](run-as-daemon)。
+dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](run-as-daemon.md)。
 
 ### Docker
 
