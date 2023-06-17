@@ -106,10 +106,6 @@ emerge -a net-proxy/dae
 
 We provide a hacky way to run dae on your macOS. See [run on macOS](run-on-macos.md).
 
-## Run as daemon
-
-dae can run as a daemon (systemd) service. See [run-as-daemon](run-as-daemon.md)
-
 ### Docker
 
 Pre-built image and related docs can be found at <https://hub.docker.com/r/daeuniverse/dae>.
@@ -120,6 +116,12 @@ Alternatively, you can use `docker compose`:
 git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
+
+## Manual installation
+
+> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, so do it at your own risk.
+
+dae can run as a daemon (systemd) service. See [run-as-daemon](run-as-daemon.md)
 
 ### Installation Script
 

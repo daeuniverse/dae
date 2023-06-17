@@ -100,10 +100,6 @@ emerge -a net-proxy/dae
 
 我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](run-on-macos.md)。
 
-## Run as daemon
-
-dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](run-as-daemon.md)。
-
 ### Docker
 
 预编译镜像可相关文档请查阅：<https://hub.docker.com/r/daeuniverse/dae>。
@@ -114,6 +110,12 @@ dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](run-
 git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
+
+### 手动安装
+
+> **Note**: 请注意，这个方法只适用于`高级用户`。通过这个方法，用户可以灵活的测试不同版本的 dae。请注意，新加入的功能可能会有 bug，请自行斟酌是否使用。
+
+dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](run-as-daemon.md)。
 
 ### 安装脚本
 
