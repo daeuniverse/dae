@@ -78,8 +78,8 @@ github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 h1:RWengNIwukTxcDr9
 github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826/go.mod h1:TaXosZuwdSHYgviHp1DAtfrULt5eUgsSMsZf+YrPgl8=
 github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B90M=
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
-github.com/mzz2017/softwind v0.0.0-20230604132739-86b8bb994aff h1:vwwRmi3l6Fk5h0eb+mpkfD22lwP2VTNez98aS52xcew=
-github.com/mzz2017/softwind v0.0.0-20230604132739-86b8bb994aff/go.mod h1:1hn+ZsP9fLm17yEx0jyqxHkIKm5u2gBXVGIrnKsE1fY=
+github.com/mzz2017/softwind v0.0.0-20230617041556-c341d431c575 h1:SdmqtK60s2yi9qghZ0CyECRkXDOGhp2wvhFxISi1spU=
+github.com/mzz2017/softwind v0.0.0-20230617041556-c341d431c575/go.mod h1:1hn+ZsP9fLm17yEx0jyqxHkIKm5u2gBXVGIrnKsE1fY=
 github.com/nxadm/tail v1.4.4/go.mod h1:kenIhsEOeOJmVchQTgglprH7qJGnHDVpk1VPCcaMI8A=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
 github.com/nxadm/tail v1.4.8/go.mod h1:+ncqLTQzXmGhMZNUePPaPqPvBxHAIsmXswZKocGu+AU=
