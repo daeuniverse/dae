@@ -45,6 +45,7 @@ sudo install -Dm755 dae /usr/bin/
 
 # helper
 dae [-h,--help]
+# check version
 dae version
 ```
 
