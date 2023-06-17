@@ -8,6 +8,7 @@ package assets
 import (
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common/consts"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (
 
 	// Search dirs.
 	var searchDirs []string
-	folder := "dae"
+	folder := consts.AppName
 	// check if DAE_LOCATION_ASSET is set
 	location := os.Getenv("DAE_LOCATION_ASSET")
 	if location != "" {
