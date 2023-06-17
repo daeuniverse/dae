@@ -106,7 +106,7 @@ emerge -a net-proxy/dae
 
 We provide a hacky way to run dae on your macOS. See [run on macOS](run-on-macos.md).
 
-## Systemd
+## Run as daemon
 
 dae can run as a daemon (systemd) service. See [run-as-daemon](run-as-daemon)
 
