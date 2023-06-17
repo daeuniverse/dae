@@ -119,7 +119,7 @@ docker compose up -d --build
 
 ## Manual installation
 
-> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, so do it at your own risk.
+> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, do it at your own risk.
 
 dae can run as a daemon (systemd) service. See [run-as-daemon](run-as-daemon.md)
 
