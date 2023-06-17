@@ -62,6 +62,8 @@ require (
 	google.golang.org/grpc v1.52.0 // indirect
 )
 
+replace github.com/vishvananda/netlink => github.com/daeuniverse/netlink v0.0.0-20230615170314-a0c32dc0a9ec
+
 //replace github.com/mzz2017/softwind => /home/mzz/goProjects/softwind
 
 //replace github.com/cloudflare/ahocorasick => /home/mzz/goProjects/ahocorasick
