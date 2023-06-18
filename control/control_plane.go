@@ -35,6 +35,7 @@ import (
 	"github.com/mohae/deepcopy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/transport/grpc"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
@@ -262,6 +263,8 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
+	// FIXME: Ugly code here: reset grpc clients manually.
+	grpc.CleanGlobalClientConnectionCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {

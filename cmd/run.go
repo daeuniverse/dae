@@ -18,7 +18,6 @@ import (
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/mzz2017/softwind/transport/grpc"
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
@@ -128,9 +127,6 @@ loop:
 					break loop
 				}
 				// Serve.
-				// FIXME: Ugly code here: reset grpc clients manually.
-				grpc.CleanGlobalClientConnectionCache()
-
 				reloading = false
 				log.Warnln("[Reload] Serve")
 				readyChan := make(chan bool, 1)
