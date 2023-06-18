@@ -37,12 +37,12 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		if f.Not {
 			return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)
 		}
-		if len(f.Params) > 1 || f.Params[0].Key != "" {
+		if len(f.Params) != 1 || f.Params[0].Key != "" {
 			return nil, fmt.Errorf(`invalid "%v" param format`, f.Name)
 		}
 		strIndex := f.Params[0].Val
 		index, err := strconv.Atoi(strIndex)
-		if len(f.Params) > 1 || f.Params[0].Key != "" {
+		if err != nil {
 			return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
 		}
 		return &DialerSelectionPolicy{
