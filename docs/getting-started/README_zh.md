@@ -111,6 +111,12 @@ git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
 
+### 手动安装
+
+> **Note**: 这种方法仅建议高级用户使用。采用这种方法，用户可以灵活地测试各个版本的 dae。请注意，新引入的功能有时可能存在 bug，因此请自行承担风险。
+
+dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](run-as-daemon.md)。
+
 ### 安装脚本
 
 见 [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer)（或使用 [镜像站](https://hubmirror.v2raya.org/daeuniverse/dae-installer)）。

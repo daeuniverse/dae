@@ -117,6 +117,12 @@ git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
 
+## Manual installation
+
+> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, do it at your own risk.
+
+dae can run as a daemon (systemd) service. See [run-as-daemon](run-as-daemon.md)
+
 ### Installation Script
 
 See [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer) (or [mirror](https://hubmirror.v2raya.org/daeuniverse/dae-installer)).
