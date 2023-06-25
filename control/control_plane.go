@@ -239,6 +239,7 @@ func NewControlPlane(
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
 			Raw:             global.UdpCheckDns,
 			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+			Somark:          global.SoMarkFromDae,
 		},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
