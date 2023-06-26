@@ -10,6 +10,12 @@ Solution:
 
 Compile dae with CFLAG `-D__REMOVE_BPF_PRINTK`. See [build-by-yourself](build-by-yourself.md).
 
+## No network after `dae suspend`
+
+Do not set dae as the DNS in DHCP setting. For example, you can set `223.5.5.5` as DNS in your DHCP setting.
+
+Because dae will not hijack any DNS request if it was suspended.
+
 ## PVE related
 
 - [PVE NIC Hardware passthrough](https://github.com/daeuniverse/dae/issues/43)
@@ -61,3 +67,14 @@ netstat -ulpen|grep 53
 ```
 
 If does, stop the service process or change its listening port from 53 to others. Do not forget to modify `/etc/resolv.conf` to make DNS accessible (for example, with content `nameserver 223.5.5.5`, but do not use `nameserver 127.0.0.1`).
+
+## Failed to load eBPF objects
+
+> FATA[0022] load eBPF objects: field TproxyWanEgress: program tproxy_wan_egress: load program: argument list too long: 1617: (bf) r2 = r6: 1618: (85) call bpf_map_loo (truncated, 992 line(s) omitted)
+
+If you use `clang-13` to compile dae, you may encounter this problem.
+
+There are ways to resolve it:
+
+1. Method 1: Use `clang-15` or higher versions to compile dae.
+2. Method 2: Add CFLAGS `-D__UNROLL_ROUTE_LOOP` while compiling. However, it will increse memory occupation (or swap space) at the eBPF loading stage (about 180MB). For example, compile dae to arm64 using `make CGO_ENABLE=0 GOARCH=arm64 CFLAGS="-D__UNROLL_ROUTE_LOOP -D__REMOVE_BPF_PRINTK"`.

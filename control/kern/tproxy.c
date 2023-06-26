@@ -19,6 +19,7 @@
 // #define __PRINT_ROUTING_RESULT
 // #define __PRINT_SETUP_PROCESS_CONNNECTION
 // #define __REMOVE_BPF_PRINTK
+// #define __UNROLL_ROUTE_LOOP
 
 // #define likely(x) x
 // #define unlikely(x) x
@@ -137,7 +138,7 @@ struct routing_result {
   __u32 pid;
 };
 
-struct dst_routing_result {
+struct __attribute__((packed)) dst_routing_result {
   __be32 ip[4];
   __be16 port;
   __u16 recognize;
@@ -1005,7 +1006,9 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
   // Unroll can give less instructions but more memory consumption when loading.
   // We disable it here to support more poor memory devices.
-  // #pragma unroll
+#ifdef __UNROLL_ROUTE_LOOP
+#pragma unroll
+#endif
   for (__u32 i = 0; i < MAX_MATCH_SET_LEN; i++) {
     __u32 k = i; // Clone to pass code checker.
     match_set = bpf_map_lookup_elem(&routing_map, &k);
@@ -1016,8 +1019,9 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #ifdef __DEBUG_ROUTING
       key = match_set->type;
       bpf_printk("key(match_set->type): %llu", key);
-      bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d", isdns_must_goodsubrule_badrule&0b10,
-                 isdns_must_goodsubrule_badrule&0b1);
+      bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
+                 isdns_must_goodsubrule_badrule & 0b10,
+                 isdns_must_goodsubrule_badrule & 0b1);
 #endif
       goto before_next_loop;
     }
@@ -1103,7 +1107,9 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 
   before_next_loop:
 #ifdef __DEBUG_ROUTING
-    bpf_printk("good_subrule: %d, bad_rule: %d", isdns_must_goodsubrule_badrule&0b10, isdns_must_goodsubrule_badrule&0b1);
+    bpf_printk("good_subrule: %d, bad_rule: %d",
+               isdns_must_goodsubrule_badrule & 0b10,
+               isdns_must_goodsubrule_badrule & 0b1);
 #endif
     if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
       // This match_set reaches the end of subrule.
@@ -1119,7 +1125,7 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
       isdns_must_goodsubrule_badrule &= ~0b10;
     }
 #ifdef __DEBUG_ROUTING
-    bpf_printk("_bad_rule: %d", isdns_must_goodsubrule_badrule&0b1);
+    bpf_printk("_bad_rule: %d", isdns_must_goodsubrule_badrule & 0b1);
 #endif
     if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
         OUTBOUND_LOGICAL_MASK) {
@@ -2065,7 +2071,7 @@ static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
   We extract "sddm-helper" from it.
   */
   unsigned long loc, j, last_slash = -1;
-  #pragma unroll
+#pragma unroll
   for (loc = 0, j = 0; j < MAX_ARG_LEN_TO_PROBE;
        ++j, loc = ((loc + 1) & (MAX_ARG_SCANNER_BUFFER_SIZE - 1))) {
     // volatile unsigned long k = j; // Cheat to unroll.
