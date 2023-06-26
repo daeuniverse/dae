@@ -76,5 +76,5 @@ If you use `clang-13` to compile dae, you may encounter this problem.
 
 There are ways to resolve it:
 
-1. Method 1: Use `clang-15` or higher versions to compile dae.
+1. Method 1: Use `clang-15` or higher versions to compile dae. Or just download dae from [releases](https://github.com/daeuniverse/dae/releases).
 2. Method 2: Add CFLAGS `-D__UNROLL_ROUTE_LOOP` while compiling. However, it will increse memory occupation (or swap space) at the eBPF loading stage (about 180MB). For example, compile dae to ARM64 using `make CGO_ENABLE=0 GOARCH=arm64 CFLAGS="-D__UNROLL_ROUTE_LOOP -D__REMOVE_BPF_PRINTK"`.
