@@ -12,8 +12,6 @@ on:
       - "go.sum"
       - ".github/workflows/build.yml"
       - "Makefile"
-  release:
-    types: [ prereleased ]
   pull_request:
     types: [ opened, synchronize, reopened ]
     paths:
@@ -68,6 +66,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+
       - name: Get the version
         id: get_version
         env:
@@ -84,6 +83,7 @@ jobs:
           fi
           echo "VERSION=$version" >> $GITHUB_OUTPUT
           echo "VERSION=$version" >> $GITHUB_ENV
+
       - name: Show workflow information
         id: get_filename
         run: |
@@ -91,30 +91,24 @@ jobs:
           echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
+
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
           go-version: '^1.19'
+
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y clang llvm
+
       - name: Get project dependencies
         run: |
           git submodule update --init --recursive
           GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
           find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
           sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
-      - name: Create full source ZIP archive and Signature
-        if: github.event_name == 'release' && matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        run: |
-          zip -9vr dae-full-src.zip . -x .git/\*
-          FILE=./dae-full-src.zip
-          DGST=$FILE.dgst
-          md5sum        $FILE >>$DGST
-          shasum -a 1   $FILE >>$DGST
-          shasum -a 256 $FILE >>$DGST
-          shasum -a 512 $FILE >>$DGST
+
       - name: Build dae
         run: |
           mkdir -p ./build/
@@ -128,6 +122,7 @@ jobs:
           cp ./example.dae ./build/
           curl -L -o ./build/geoip.dat https://github.com/v2ray/geoip/releases/latest/download/geoip.dat
           curl -L -o ./build/geosite.dat https://github.com/v2ray/domain-list-community/releases/latest/download/dlc.dat
+
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: ./build/dae-$ASSET_NAME --version
@@ -143,28 +138,10 @@ jobs:
           shasum -a 1   $FILE >>$DGST
           shasum -a 256 $FILE >>$DGST
           shasum -a 512 $FILE >>$DGST
+
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v3
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
 
-      - name: Upload full source to GitHub release
-        uses: svenstaro/upload-release-action@v2
-        if: github.event_name == 'release' && matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file_glob: true
-          file: dae-full-src.zip*
-          overwrite: true
-          tag: ${{ github.ref }}
-
-      - name: Upload files to GitHub release
-        uses: svenstaro/upload-release-action@v2
-        if: github.event_name == 'release'
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file_glob: true
-          file: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
-          overwrite: true
-          tag: ${{ github.ref }}
