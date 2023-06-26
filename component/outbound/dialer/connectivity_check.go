@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/common"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -236,6 +237,7 @@ type CheckDnsOptionRaw struct {
 	mu              sync.Mutex
 	Raw             []string
 	ResolverNetwork string
+	Somark          uint32
 }
 
 func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
@@ -319,6 +321,14 @@ func (d *Dialer) aliveBackground() {
 			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method, tcpSomark)
 		},
 	}
+	tcpNetwork := netproxy.MagicNetwork{
+		Network: "tcp",
+		Mark:    d.CheckDnsOptionRaw.Somark,
+	}.Encode()
+	udpNetwork := netproxy.MagicNetwork{
+		Network: "udp",
+		Mark:    d.CheckDnsOptionRaw.Somark,
+	}.Encode()
 	tcp4CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
@@ -338,7 +348,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), tcpNetwork)
 		},
 	}
 	tcp6CheckDnsOpt := &CheckOption{
@@ -360,7 +370,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), tcpNetwork)
 		},
 	}
 	udp4CheckDnsOpt := &CheckOption{
@@ -381,7 +391,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), udpNetwork)
 		},
 	}
 	udp6CheckDnsOpt := &CheckOption{
@@ -402,7 +412,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), udpNetwork)
 		},
 	}
 	var CheckOpts = []*CheckOption{
