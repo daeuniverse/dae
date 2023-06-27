@@ -13,6 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+- [0.2.0rc3 (Pre-release)](#020rc3-pre-release)
 - [0.2.0rc2 (Pre-release)](#020rc2-pre-release)
 - [0.2.0rc1 (Pre-release)](#020rc1-pre-release)
 - [0.1.10.p1 (Current)](#0110p1-current)
@@ -29,6 +30,78 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.1](#011)
 - [0.1.0](#010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### 0.2.0rc3 (Pre-release)
+
+> Release date: 2023/06/27
+
+### Features
+
+- optimize(routing): fix slow domain++ ip routing in [#133](https://github.com/daeuniverse/dae/pull/133) by (@mzz2017)
+
+### Bug Fixes
+
+- fix: bad connectivity check of dns(tcp) caused by #80 in [#155](https://github.com/daeuniverse/dae/pull/155) by (@mzz2017)
+- fix/chore(grpc): allow insecure caused no connection in [#151](https://github.com/daeuniverse/dae/pull/151) by (@mzz2017)
+- fix: new control plane should reset grpc conn pool cache in [#150](https://github.com/daeuniverse/dae/pull/150) by (@mzz2017)
+- fix(group): policy 'fixed' parsing in [#149](https://github.com/daeuniverse/dae/pull/149) by (@mzz2017)
+- fix(socks5): udp problem in [#148](https://github.com/daeuniverse/dae/pull/148) by (@mzz2017)
+- fix: should gracefully exit if failed to listen when reloading in [#138](https://github.com/daeuniverse/dae/pull/138) by (@mzz2017)
+- fix: change default `tcp_check_http_method` from CONNECT to `HEAD` in [#137](https://github.com/daeuniverse/dae/pull/137) by (@mzz2017)
+- fix: failed to sniff tls1.2 traffic in some cases in [#135](https://github.com/daeuniverse/dae/pull/135) by (@mzz2017)
+- fix: enlarge kernel geoip size limit in [#130](https://github.com/daeuniverse/dae/pull/130) by (@mzz2017)
+- fix(config): problem that always append values to default list in [#128](https://github.com/daeuniverse/dae/pull/128) by (@mzz2017)
+
+### Others
+
+- ci: add generate-changelogs workflow in [#159](https://github.com/daeuniverse/dae/pull/159) by (@yqlbu)
+- chore/docs: support to unroll route loop and update troubleshooting.md in [#158](https://github.com/daeuniverse/dae/pull/158) by (@mzz2017)
+- ci: separate release build from main build in [#157](https://github.com/daeuniverse/dae/pull/157) by (@yqlbu)
+- docs(getting-started): add ref to run-as-daemon in [#147](https://github.com/daeuniverse/dae/pull/147) by (@yqlbu)
+- chore(pr_template): correct a typo in [#146](https://github.com/daeuniverse/dae/pull/146) by (@yqlbu)
+- chore: allow to modify app name and assets dir name in [#144](https://github.com/daeuniverse/dae/pull/144) by (@mzz2017)
+- chore(Dockerfile): change geodata upstream in [#140](https://github.com/daeuniverse/dae/pull/140) by (@mzz2017)
+- chore: fix incorrect number of routing rule stringer in [#131](https://github.com/daeuniverse/dae/pull/131) by (@mzz2017)
+- chore: fix make with /bin/sh in [#129](https://github.com/daeuniverse/dae/pull/129) by (@mzz2017)
+- chore(Makefile): support submodules in [#126](https://github.com/daeuniverse/dae/pull/126) by (@mzz2017)
+- chore(changelogs-v0.2.0rc1): apply minor fix in [#125](https://github.com/daeuniverse/dae/pull/125) by (@yqlbu)
+- chore(config): support IgnoreZero option for config.Marhsaller in [#153](https://github.com/daeuniverse/dae/pull/153) by (@mzz2017)
+
+### 特性支持
+
+- 优化(routing): 修复 domain++ 的 ip 规则匹配缓慢的问题 in [#133](https://github.com/daeuniverse/dae/pull/133) by (@mzz2017)
+
+### 问题修复
+
+- 修复: 由 #80 导致的无法正常工作的 TCP DNS 检查 in [#155](https://github.com/daeuniverse/dae/pull/155) by (@mzz2017)
+- 修复(grpc): allow insecure 会导致的无法连接 in [#151](https://github.com/daeuniverse/dae/pull/151) by (@mzz2017)
+- 修复: grpc 连接池缓存应当在 reload 时候重置 in [#150](https://github.com/daeuniverse/dae/pull/150) by (@mzz2017)
+- 修复(group): 策略 'fixed' 的解析问题 in [#149](https://github.com/daeuniverse/dae/pull/149) by (@mzz2017)
+- 修复(socks5): udp 无法正常工作的问题 in [#148](https://github.com/daeuniverse/dae/pull/148) by (@mzz2017)
+- 修复: 重载时无法监听 tproxy 端口，应当做好清理工作后退出 in [#138](https://github.com/daeuniverse/dae/pull/138) by (@mzz2017)
+- 修复: 将 `tcp_check_http_method` 的默认值从 `CONNECT` 改为 `HEAD` in [#137](https://github.com/daeuniverse/dae/pull/137) by (@mzz2017)
+- 修复: 一些情况下无法嗅探 tls1.2 流量的问题 in [#135](https://github.com/daeuniverse/dae/pull/135) by (@mzz2017)
+- 修复: 扩大内核程序中可放置的 geoip 大小限制 in [#130](https://github.com/daeuniverse/dae/pull/130) by (@mzz2017)
+- 修复(config): 总是将用户设置的值添加到默认列表的后面的问题，例如 tcp_check_url 列表 in [#128](https://github.com/daeuniverse/dae/pull/128) by (@mzz2017)
+
+### 其他变更
+
+- 自动化: 添加生成 changelogs 工作流 in [#159](https://github.com/daeuniverse/dae/pull/159) by (@yqlbu)
+- 杂项/文档: 支持编译时 unroll route loop，更新 troubleshooting.md in [#158](https://github.com/daeuniverse/dae/pull/158) by (@mzz2017)
+- 自动化: 从 main build 中分离 release build in [#157](https://github.com/daeuniverse/dae/pull/157) by (@yqlbu)
+- 文档(getting-started): 添加到 run-as-daemon 的引用 in [#147](https://github.com/daeuniverse/dae/pull/147) by (@yqlbu)
+- 杂项(pr_template): 修正错别字 in [#146](https://github.com/daeuniverse/dae/pull/146) by (@yqlbu)
+- 杂项: 允许修改 app name 和 assets dir name in [#144](https://github.com/daeuniverse/dae/pull/144) by (@mzz2017)
+- 杂项(Dockerfile): 更改 geodata 上游 in [#140](https://github.com/daeuniverse/dae/pull/140) by (@mzz2017)
+- 杂项: 修复不正确的 routing rule 条目数的打印 in [#131](https://github.com/daeuniverse/dae/pull/131) by (@mzz2017)
+- 杂项: 修复使用 /bin/sh 会导致 make 失败的问题 in [#129](https://github.com/daeuniverse/dae/pull/129) by (@mzz2017)
+- 杂项(Makefile): 支持 submodules in [#126](https://github.com/daeuniverse/dae/pull/126) by (@mzz2017)
+- 杂项(changelogs-v0.2.0rc1): 修复格式问题 in [#125](https://github.com/daeuniverse/dae/pull/125) by (@yqlbu)
+- 杂项(config): 为 config.Marhsaller 添加 IgnoreZero 选项支持 in [#153](https://github.com/daeuniverse/dae/pull/153) by (@mzz2017)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc3/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0rc2...v0.2.0rc3
 
 ### 0.2.0rc2 (Pre-release)
 
