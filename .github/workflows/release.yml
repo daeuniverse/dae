@@ -1,26 +1,12 @@
-name: Build
+name: Publish Release
+run-name: Publish release ${{ inputs.tag }} by @${{ github.actor }}
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "**/*.go"
-      - "**/*.c"
-      - "**/*.h"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/build.yml"
-      - "Makefile"
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-    paths:
-      - "**/*.go"
-      - "**/*.c"
-      - "**/*.h"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/build.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
 
 jobs:
   build:
@@ -70,17 +56,9 @@ jobs:
       - name: Get the version
         id: get_version
         env:
-          REF: ${{ github.ref }}
+          REF: ${{ inputs.tag }}
         run: |
-          if [[ "$REF" == "refs/tags/v"* ]]; then
-            tag=$(git describe --tags $(git rev-list --tags --max-count=1))
-            version=${tag}
-          else
-            date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
-            count=$(git rev-list --count HEAD)
-            commit=$(git rev-parse --short HEAD)
-            version="unstable-$date.r${count}.$commit"
-          fi
+          version=${REF}
           echo "VERSION=$version" >> $GITHUB_OUTPUT
           echo "VERSION=$version" >> $GITHUB_ENV
 
@@ -109,6 +87,16 @@ jobs:
           find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
           sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
 
+      - name: Create full source ZIP archive and Signature
+        if: matrix.goarch == 'arm64'
+        run: |
+          zip -9vr dae-full-src.zip . -x .git/\*
+          FILE=./dae-full-src.zip
+          echo "$(md5sum $FILE)""  md5" >> $FILE.dgst
+          echo "$(shasum -a 1 $FILE)""  sha1" >> $FILE.dgst
+          echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
+          echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
+  
       - name: Build dae
         run: |
           mkdir -p ./build/
@@ -133,15 +121,44 @@ jobs:
           zip -9vr ../dae-$ASSET_NAME.zip .
           popd || exit 1
           FILE=./dae-$ASSET_NAME.zip
-          DGST=$FILE.dgst
-          md5sum        $FILE >>$DGST
-          shasum -a 1   $FILE >>$DGST
-          shasum -a 256 $FILE >>$DGST
-          shasum -a 512 $FILE >>$DGST
+          echo "$(md5sum $FILE)""  md5" >> $FILE.dgst
+          echo "$(shasum -a 1 $FILE)""  sha1" >> $FILE.dgst
+          echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
+          echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
 
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v3
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-          path: build/*
+          path: ./*.zip*
 
+  upload-release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: release/
+
+      - name: Prepare files for upload
+        run: |
+          cp release/*/*.zip ./
+          cp release/*/*.zip.dgst ./
+          echo "Show files are going to upload..."
+          ls -lh | grep ".zip"
+
+      - name: Upload full source to GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            dae-full-src.zip
+
+      - name: Upload full source and artifacts to GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            *zip
+            *dgst
