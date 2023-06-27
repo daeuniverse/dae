@@ -100,7 +100,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang llvm
+          sudo apt-get install -y clang-15 llvm-15
 
       - name: Get project dependencies
         run: |
@@ -117,6 +117,8 @@ jobs:
           export CFLAGS="-D__REMOVE_BPF_PRINTK"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
+          export CLANG=clang-15
+          export STRIP=llvm-strip-15
           make
           cp ./install/dae.service ./build/
           cp ./example.dae ./build/
@@ -144,4 +146,3 @@ jobs:
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
-

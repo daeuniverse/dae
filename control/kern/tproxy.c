@@ -138,7 +138,7 @@ struct routing_result {
   __u32 pid;
 };
 
-struct __attribute__((packed)) dst_routing_result {
+struct dst_routing_result {
   __be32 ip[4];
   __be16 port;
   __u16 recognize;
