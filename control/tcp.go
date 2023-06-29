@@ -82,7 +82,7 @@ destRetrieved:
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
-	dialTarget, shouldReroute := c.ChooseDialTarget(outboundIndex, dst, domain)
+	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, dst, domain)
 	if shouldReroute {
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
@@ -102,7 +102,7 @@ destRetrieved:
 			)
 		}
 		// Reset dialTarget.
-		dialTarget, _ = c.ChooseDialTarget(outboundIndex, dst, domain)
+		dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, dst, domain)
 	default:
 	}
 	if routingResult.Mark == 0 {
@@ -118,7 +118,8 @@ destRetrieved:
 		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
 		IsDns:     false,
 	}
-	d, _, err := outbound.Select(networkType)
+	strictIpVersion := dialIp
+	d, _, err := outbound.Select(networkType, strictIpVersion)
 	if err != nil {
 		return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
