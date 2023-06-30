@@ -244,19 +244,30 @@ func NewControlPlane(
 		TlsImplementation: global.TlsImplementation,
 		UtlsImitate:       global.UtlsImitate,
 	}
+
+	// Dial mode.
+	dialMode, err := consts.ParseDialMode(global.DialMode)
+	if err != nil {
+		return nil, err
+	}
+	sniffingTimeout := global.SniffingTimeout
+	if dialMode == consts.DialMode_Ip {
+		sniffingTimeout = 0
+	}
+	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{dialer.NewDirectDialer(option, true)},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, core.OutboundAliveChangeCallback(0)),
+			}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback)),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
 			[]*dialer.Dialer{dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, core.OutboundAliveChangeCallback(1)),
+			}, core.outboundAliveChangeCallback(1, disableKernelAliveCallback)),
 	}
 
 	// Filter out groups.
@@ -286,7 +297,8 @@ func NewControlPlane(
 			log.Infoln("\t<Empty>")
 		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy, core.OutboundAliveChangeCallback(uint8(len(outbounds))))
+		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy,
+			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
 		outbounds = append(outbounds, dialerGroup)
 	}
 
@@ -335,16 +347,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
 
-	/// Dial mode.
-	dialMode, err := consts.ParseDialMode(global.DialMode)
-	if err != nil {
-		return nil, err
-	}
-	sniffingTimeout := global.SniffingTimeout
-	if dialMode == consts.DialMode_Ip {
-		sniffingTimeout = 0
-	}
-
+	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
 		log:               log,
@@ -549,7 +552,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 	return nil
 }
 
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool) {
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
 	dialMode := consts.DialMode_Ip
 
 	if !outbound.IsReserved() && domain != "" {
@@ -597,6 +600,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	switch dialMode {
 	case consts.DialMode_Ip:
 		dialTarget = dst.String()
+		dialIp = true
 	case consts.DialMode_Domain:
 		if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
 			// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
@@ -605,6 +609,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		if _, err := netip.ParseAddr(domain); err == nil {
 			// domain is IPv4 or IPv6 (has colon)
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
+			dialIp = true
 
 		} else if _, _, err := net.SplitHostPort(domain); err == nil {
 			// domain is already domain:port
@@ -618,7 +623,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
 	}
-	return dialTarget, shouldReroute
+	return dialTarget, shouldReroute, dialIp
 }
 
 type Listener struct {
@@ -848,7 +853,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
 			}
 			dialerGroup := c.outbounds[outboundIndex]
-			d, latency, err := dialerGroup.Select(&networkType)
+			// DNS always dial IP.
+			d, latency, err := dialerGroup.Select(&networkType, true)
 			if err != nil {
 				continue
 			}
