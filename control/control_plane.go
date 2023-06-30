@@ -203,11 +203,7 @@ func NewControlPlane(
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
-			if global.AutoConfigKernelParameter {
-				SetSendRedirects(ifname, "0")
-				SetForwarding(ifname, "1")
-			}
-			if err = core.bindLan(ifname); err != nil {
+			if err = core.bindLan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
 			}
 		}
