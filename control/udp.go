@@ -146,7 +146,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
-	dialTarget, shouldReroute := c.ChooseDialTarget(outboundIndex, realDst, domain)
+	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, realDst, domain)
 	if shouldReroute {
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
@@ -173,7 +173,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			)
 		}
 		// Reset dialTarget.
-		dialTarget, _ = c.ChooseDialTarget(outboundIndex, realDst, domain)
+		dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, realDst, domain)
 	default:
 	}
 	if routingResult.Mark == 0 {
@@ -201,7 +201,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
 		IsDns:     true, // UDP relies on DNS check result.
 	}
-	dialerForNew, _, err := outbound.Select(networkType)
+	strictIpVersion := dialIp
+	dialerForNew, _, err := outbound.Select(networkType, strictIpVersion)
 	if err != nil {
 		return fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
 	}
