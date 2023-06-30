@@ -341,6 +341,7 @@ func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) 
 	return nil
 }
 
+// addNewLinkBindLanCb waits for NEWLINK msg of given `ifname` and invokes `bindLan`.
 func (c *controlPlaneCore) addNewLinkBindLanCb(ifname string, autoConfigKernelParameter bool) error {
 	return c.addLinkCb(ifname, unix.RTM_NEWLINK, func() {
 		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", ifname)
@@ -354,6 +355,9 @@ func (c *controlPlaneCore) addNewLinkBindLanCb(ifname string, autoConfigKernelPa
 	})
 }
 
+// bindLan automatically configures kernel parameters and bind to lan interface `ifname`.
+// bindLan supports lazy-bind if interface `ifname` is not found.
+// bindLan supports rebinding when the interface `ifname` is deleted in the future.
 func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) error {
 	if autoConfigKernelParameter {
 		SetSendRedirects(ifname, "0")
