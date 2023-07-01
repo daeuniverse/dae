@@ -41,7 +41,7 @@ dns {
 
             # DNS request name (omit suffix dot '.').
             qname(geosite:category-ads-all) -> reject
-            qname(geosite:google@cn) -> alidns # Also see: https://github.com/v2ray/domain-list-community#attributes
+            qname(geosite:google@cn) -> alidns # Also see: https://github.com/v2fly/domain-list-community#attributes
             qname(suffix: abc.com, keyword: google) -> googledns
             qname(full: ok.com, regex: '^yes') -> googledns
             # DNS request type
