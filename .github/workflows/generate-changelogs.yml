@@ -39,7 +39,7 @@ jobs:
           echo "${{ steps.changelog.outputs.changelogs }}"
 
       - name: Create an issue with proposed changelogs
-        if: ${{ inputs.write_to_issue }}
+        if: ${{ inputs.write_to_issue == 'true' }}
         uses: dacbd/create-issue-action@main
         with:
           token: ${{ secrets.GH_TOKEN }}
