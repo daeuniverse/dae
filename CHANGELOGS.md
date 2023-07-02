@@ -14,9 +14,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 - [v0.2.0 (Latest)](#v020-latest)
-- [0.2.0rc4 (Pre-release)](#020rc4-pre-release)
-- [0.2.0rc2 (Pre-release)](#020rc2-pre-release)
-- [0.2.0rc1 (Pre-release)](#020rc1-pre-release)
 - [0.1.10.p1 (Current)](#0110p1-current)
 - [0.1.10](#0110-current)
 - [0.1.9-patch.1](#019-patch1)
@@ -36,33 +33,18 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 > Release date: 2023/07/02
 
+### Features
 
-
-
+- optimize(routing): fix slow domain++ ip routing in [#133](https://github.com/daeuniverse/dae/pull/133) by (@mzz2017)
+- feat: support iptables tproxy by @mzz2017 in https://github.com/daeuniverse/dae/pull/80
+- feat: add uTLS support by @AkinoKaede in https://github.com/daeuniverse/dae/pull/94
+- feat: support geosite attr by @mzz2017 in https://github.com/daeuniverse/dae/pull/98
+- feat(dns): support fixed domain ttl by @mzz2017 in https://github.com/daeuniverse/dae/pull/100
 
 ### Bug Fixes
 
 * fix: samba not work in [#173](https://github.com/daeuniverse/dae/pull/173) by (@mzz2017)
 * fix: should allow fallbacking ip version if dialing domain in [#164](https://github.com/daeuniverse/dae/pull/164) by (@mzz2017)
-
-### Others
-
-* chore: expose the routable dialer for dae-wing in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
-* ci(generate-changelogs): add control on whether to write to issue page in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
-* chore(geodata): change back to v2fly geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0rc4...v0.2.0
-
-### 0.2.0rc4 (Pre-release)
-
-> Release date: 2023/06/27
-
-### Features
-
-- optimize(routing): fix slow domain++ ip routing in [#133](https://github.com/daeuniverse/dae/pull/133) by (@mzz2017)
-
-### Bug Fixes
-
 - fix: bad connectivity check of dns(tcp) caused by #80 in [#155](https://github.com/daeuniverse/dae/pull/155) by (@mzz2017)
 - fix/chore(grpc): allow insecure caused no connection in [#151](https://github.com/daeuniverse/dae/pull/151) by (@mzz2017)
 - fix: new control plane should reset grpc conn pool cache in [#150](https://github.com/daeuniverse/dae/pull/150) by (@mzz2017)
@@ -74,9 +56,16 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - fix: enlarge kernel geoip size limit in [#130](https://github.com/daeuniverse/dae/pull/130) by (@mzz2017)
 - fix(config): problem that always append values to default list in [#128](https://github.com/daeuniverse/dae/pull/128) by (@mzz2017)
 - fix/ci: fix argument list too long due to packed and use clang-15 in [#162](https://github.com/daeuniverse/dae/pull/162) by (@mzz2017)
+- fix(dns): mismatched qname matching rules by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
+- fix: rand seed for network check by @mzz2017 in https://github.com/daeuniverse/dae/pull/106
+- fix(config_parser): potential panic due to out of index by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
+- fix(trojan): potential panic due to incorrect n returned by ReadFrom by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
 
 ### Others
 
+* chore: expose the routable dialer for dae-wing in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
+* ci(generate-changelogs): add control on whether to write to issue page in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
+* chore(geodata): change back to v2fly geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
 - ci: add generate-changelogs workflow in [#159](https://github.com/daeuniverse/dae/pull/159) by (@yqlbu)
 - chore/docs: support to unroll route loop and update troubleshooting.md in [#158](https://github.com/daeuniverse/dae/pull/158) by (@mzz2017)
 - ci: separate release build from main build in [#157](https://github.com/daeuniverse/dae/pull/157) by (@yqlbu)
@@ -89,13 +78,25 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - chore(Makefile): support submodules in [#126](https://github.com/daeuniverse/dae/pull/126) by (@mzz2017)
 - chore(changelogs-v0.2.0rc1): apply minor fix in [#125](https://github.com/daeuniverse/dae/pull/125) by (@yqlbu)
 - chore(config): support IgnoreZero option for config.Marhsaller in [#153](https://github.com/daeuniverse/dae/pull/153) by (@mzz2017)
+- ci: add check-docs workflow by @yqlbu in https://github.com/daeuniverse/dae/pull/93
+- refactor: move insert.sh to ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
+- ci(hack): add config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
+- fix(test): domain_matcher/benchmark_test.go @mzz2017 in https://github.com/daeuniverse/dae/pull/107
+- ci: docs synchronization by @yqlbu in https://github.com/daeuniverse/dae/pull/103
+- docs(routing.md): revise fwmark section by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
 
 ### 特性支持
 
 - 优化(routing): 修复 domain++ 的 ip 规则匹配缓慢的问题 in [#133](https://github.com/daeuniverse/dae/pull/133) by (@mzz2017)
+- 优化: 支持 iptables/nftables 的 mangle 表 tproxy by @mzz2017 in https://github.com/daeuniverse/dae/pull/80
+- 优化: 支持 uTLS by @AkinoKaede in https://github.com/daeuniverse/dae/pull/94
+- 优化: 支持在 geosite 使用属性标签 `@` 符号 by @mzz2017 in https://github.com/daeuniverse/dae/pull/98
+- 优化(dns): 支持为特定域名设定固定的 ttl，这对 DDNS 场景较为有用 by @mzz2017 in https://github.com/daeuniverse/dae/pull/100
 
 ### 问题修复
 
+* 修复: samba 无法正常工作的问题 in [#173](https://github.com/daeuniverse/dae/pull/173) by (@mzz2017)
+* 修复: 当 dial_mode 为 domain 族时，现在允许从 ipv6 回落到 ipv4，以及从 ipv4 回落到 ipv6 in [#164](https://github.com/daeuniverse/dae/pull/164) by (@mzz2017)
 - 修复: 由 #80 导致的无法正常工作的 TCP DNS 检查 in [#155](https://github.com/daeuniverse/dae/pull/155) by (@mzz2017)
 - 修复(grpc): allow insecure 会导致的无法连接 in [#151](https://github.com/daeuniverse/dae/pull/151) by (@mzz2017)
 - 修复: grpc 连接池缓存应当在 reload 时候重置 in [#150](https://github.com/daeuniverse/dae/pull/150) by (@mzz2017)
@@ -107,9 +108,16 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 修复: 扩大内核程序中可放置的 geoip 大小限制 in [#130](https://github.com/daeuniverse/dae/pull/130) by (@mzz2017)
 - 修复(config): 总是将用户设置的值添加到默认列表的后面的问题，例如 tcp_check_url 列表 in [#128](https://github.com/daeuniverse/dae/pull/128) by (@mzz2017)
 - 修复/自动化: 修复 packed 导致的 argument list too long 并使用 clang-15 构建 in [#162](https://github.com/daeuniverse/dae/pull/162) by (@mzz2017)
+- 修复(dns): 修复 DNS 中 qname 匹配规则失效的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
+- 修复: 修复启动时网络检查链接列表的随机排布问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/106
+- 修复(config_parser): 修复配置文件格式错误时潜在的崩溃问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
+- 修复(trojan): 修复 trojan 崩溃问题，该问题由 ReadFrom 返回的 n 可能不正确导致 by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
 
-### 其他变更
+### 其他
 
+* 杂项: 提供代理 dialer 给 dae-wing，以允许在拉取订阅时经过代理 in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
+* 自动化(generate-changelogs): 添加发版时是否写 issue page 的控制项 in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
+* 杂项(geodata): 换回 v2fly 源的 geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
 - 自动化: 添加生成 changelogs 工作流 in [#159](https://github.com/daeuniverse/dae/pull/159) by (@yqlbu)
 - 杂项/文档: 支持编译时 unroll route loop，更新 troubleshooting.md in [#158](https://github.com/daeuniverse/dae/pull/158) by (@mzz2017)
 - 自动化: 从 main build 中分离 release build in [#157](https://github.com/daeuniverse/dae/pull/157) by (@yqlbu)
@@ -122,78 +130,20 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 杂项(Makefile): 支持 submodules in [#126](https://github.com/daeuniverse/dae/pull/126) by (@mzz2017)
 - 杂项(changelogs-v0.2.0rc1): 修复格式问题 in [#125](https://github.com/daeuniverse/dae/pull/125) by (@yqlbu)
 - 杂项(config): 为 config.Marhsaller 添加 IgnoreZero 选项支持 in [#153](https://github.com/daeuniverse/dae/pull/153) by (@mzz2017)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc4/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0rc2...v0.2.0rc4
-
-### 0.2.0rc2 (Pre-release)
-
-> Release date: 2023/06/05
-
-#### 功能变更
-
-- fix(trojan): 修复因无效的 trojan 协议控制字段而导致的程序崩溃 by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
-
-#### Changes
-
-- fix(dns): potential panic due to invalid packet control data by accident by @mzz2017 in https://github.com/daeuniverse/dae/pull/120
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10...v0.2.0rc2
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc2/example.dae
-
-### 0.2.0rc1 (Pre-release)
-
-> Release date: 2023/06/04
-
-#### 功能变更
-
-- feat: 支持 iptables/nftables 的 mangle 表 tproxy by @mzz2017 in https://github.com/daeuniverse/dae/pull/80
-- feat: 支持 uTLS by @AkinoKaede in https://github.com/daeuniverse/dae/pull/94
-- feat: 支持在 geosite 使用属性标签 `@` 符号 by @mzz2017 in https://github.com/daeuniverse/dae/pull/98
-- feat(dns): 支持为特定域名设定固定的 ttl，这对 DDNS 场景较为有用 by @mzz2017 in https://github.com/daeuniverse/dae/pull/100
-- fix(dns): 修复 DNS 中 qname 匹配规则失效的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
-- fix: 修复启动时网络检查链接列表的随机排布问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/106
-- fix(config_parser): 修复配置文件格式错误时潜在的崩溃问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
-- fix(trojan): 修复 trojan 崩溃问题，该问题由 ReadFrom 返回的 n 可能不正确导致 by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
-
-#### 其他变更
-
-- ci: 添加文档格式检查工作流 by @yqlbu in https://github.com/daeuniverse/dae/pull/93
-- refactor: 将 insert.sh 移动至 ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
-- ci(hack): 添加 config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
-- fix(test): 修复 domain_matcher/benchmark_test.go by @mzz2017 in https://github.com/daeuniverse/dae/pull/107
-- ci: 添加文档自动同步至 dae-docs 项目 by @yqlbu in https://github.com/daeuniverse/dae/pull/103
-- docs(routing.md): 修订 fwmark 一节的文档 by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
-
-#### Changes
-
-- feat: support iptables tproxy by @mzz2017 in https://github.com/daeuniverse/dae/pull/80
-- feat: add uTLS support by @AkinoKaede in https://github.com/daeuniverse/dae/pull/94
-- feat: support geosite attr by @mzz2017 in https://github.com/daeuniverse/dae/pull/98
-- fix(dns): mismatched qname matching rules by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
-- feat(dns): support fixed domain ttl by @mzz2017 in https://github.com/daeuniverse/dae/pull/100
-- fix: rand seed for network check by @mzz2017 in https://github.com/daeuniverse/dae/pull/106
-- fix(config_parser): potential panic due to out of index by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
-- fix(trojan): potential panic due to incorrect n returned by ReadFrom by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
-
-#### Other Changes
-
-- ci: add check-docs workflow by @yqlbu in https://github.com/daeuniverse/dae/pull/93
-- refactor: move insert.sh to ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
-- ci(hack): add config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
-- fix(test): domain_matcher/benchmark_test.go @mzz2017 in https://github.com/daeuniverse/dae/pull/107
-- ci: docs synchronization by @yqlbu in https://github.com/daeuniverse/dae/pull/103
-- docs(routing.md): revise fwmark section by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
+- 自动化: 添加文档格式检查工作流 by @yqlbu in https://github.com/daeuniverse/dae/pull/93
+- 重构: 将 insert.sh 移动至 ./hack/test by @yqlbu in https://github.com/daeuniverse/dae/pull/95
+- 自动化(hack): 添加 config-doc-generator by @yqlbu in https://github.com/daeuniverse/dae/pull/101
+- 修复(test): 修复 domain_matcher/benchmark_test.go by @mzz2017 in https://github.com/daeuniverse/dae/pull/107
+- 自动化: 添加文档自动同步至 dae-docs 项目 by @yqlbu in https://github.com/daeuniverse/dae/pull/103
+- 文档(routing.md): 修订 fwmark 一节的文档 by @mzz2017 in https://github.com/daeuniverse/dae/pull/113
 
 #### New Contributors
 
 - @AkinoKaede made their first contribution in https://github.com/daeuniverse/dae/pull/94
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10...v0.2.0rc1
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0/example.dae
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0rc1/example.dae
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.1.10.p1...v0.2.0
 
 ### 0.1.10.p1 (Current)
 
