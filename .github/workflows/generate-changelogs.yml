@@ -10,6 +10,10 @@ on:
       future_release_tag:
         required: true
         description: future release tag
+      write_to_issue:
+        required: true
+        description: export changelogs to an issue page
+        default: true
 
 jobs:
   build:
@@ -35,6 +39,7 @@ jobs:
           echo "${{ steps.changelog.outputs.changelogs }}"
 
       - name: Create an issue with proposed changelogs
+        if: ${{ inputs.write_to_issue == 'true' }}
         uses: dacbd/create-issue-action@main
         with:
           token: ${{ secrets.GH_TOKEN }}
