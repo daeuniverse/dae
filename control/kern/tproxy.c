@@ -1192,7 +1192,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
                             &ihl, &ipversion, &l4proto);
   if (ret) {
     bpf_printk("parse_transport: %d", ret);
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
   }
   switch (l4proto) {
   case IPPROTO_ICMPV6:
@@ -1256,10 +1256,10 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
                             &ihl, &ipversion, &l4proto);
   if (ret) {
     bpf_printk("parse_transport: %d", ret);
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
   }
   if (l4proto == IPPROTO_ICMPV6) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
   }
 
   // Prepare five tuples.
@@ -1302,6 +1302,10 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   if (l4proto == IPPROTO_TCP) {
     // TCP.
     if (tcph.syn && !tcph.ack) {
+      goto new_connection;
+    }
+    if (tcph.psh) {
+      // samba, etc. Slow path.
       goto new_connection;
     }
 
@@ -1548,7 +1552,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   // interface.
   if (tproxy_response && l4proto == IPPROTO_TCP) {
     // If it is a TCP first handshake, it is not a tproxy response.
-    if (tcph.syn && !tcph.syn) {
+    if (tcph.syn && !tcph.ack) {
       tproxy_response = false;
       // Abnormal.
       return TC_ACT_SHOT;
