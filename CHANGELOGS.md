@@ -113,7 +113,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 修复(config_parser): 修复配置文件格式错误时潜在的崩溃问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/108
 - 修复(trojan): 修复 trojan 崩溃问题，该问题由 ReadFrom 返回的 n 可能不正确导致 by @mzz2017 in https://github.com/daeuniverse/dae/pull/109
 
-### 其他
+### 其他变更
 
 * 杂项: 提供代理 dialer 给 dae-wing，以允许在拉取订阅时经过代理 in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
 * 自动化(generate-changelogs): 添加发版时是否写 issue page 的控制项 in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
