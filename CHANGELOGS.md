@@ -63,9 +63,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### Others
 
-* chore: expose the routable dialer for dae-wing in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
-* ci(generate-changelogs): add control on whether to write to issue page in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
-* chore(geodata): change back to v2fly geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
+- chore: expose the routable dialer for dae-wing in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
+- ci(generate-changelogs): add control on whether to write to issue page in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
+- chore(geodata): change back to v2fly geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
 - ci: add generate-changelogs workflow in [#159](https://github.com/daeuniverse/dae/pull/159) by (@yqlbu)
 - chore/docs: support to unroll route loop and update troubleshooting.md in [#158](https://github.com/daeuniverse/dae/pull/158) by (@mzz2017)
 - ci: separate release build from main build in [#157](https://github.com/daeuniverse/dae/pull/157) by (@yqlbu)
