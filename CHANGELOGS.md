@@ -106,7 +106,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 修复: 将 `tcp_check_http_method` 的默认值从 `CONNECT` 改为 `HEAD` in [#137](https://github.com/daeuniverse/dae/pull/137) by (@mzz2017)
 - 修复: 一些情况下无法嗅探 tls1.2 流量的问题 in [#135](https://github.com/daeuniverse/dae/pull/135) by (@mzz2017)
 - 修复: 扩大内核程序中可放置的 geoip 大小限制 in [#130](https://github.com/daeuniverse/dae/pull/130) by (@mzz2017)
-
 - 修复(config): 总是将用户设置的值添加到默认列表的后面的问题，例如 tcp_check_url 列表 in [#128](https://github.com/daeuniverse/dae/pull/128) by (@mzz2017)
 - 修复/自动化: 修复 packed 导致的 argument list too long 并使用 clang-15 构建 in [#162](https://github.com/daeuniverse/dae/pull/162) by (@mzz2017)
 - 修复(dns): 修复 DNS 中 qname 匹配规则失效的问题 by @mzz2017 in https://github.com/daeuniverse/dae/pull/99
