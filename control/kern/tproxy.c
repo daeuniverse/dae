@@ -1192,7 +1192,7 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
                             &ihl, &ipversion, &l4proto);
   if (ret) {
     bpf_printk("parse_transport: %d", ret);
-    return TC_ACT_PIPE;
+    return TC_ACT_OK;
   }
   switch (l4proto) {
   case IPPROTO_ICMPV6:
@@ -1256,10 +1256,10 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
                             &ihl, &ipversion, &l4proto);
   if (ret) {
     bpf_printk("parse_transport: %d", ret);
-    return TC_ACT_PIPE;
+    return TC_ACT_OK;
   }
   if (l4proto == IPPROTO_ICMPV6) {
-    return TC_ACT_PIPE;
+    return TC_ACT_OK;
   }
 
   // Prepare five tuples.
@@ -1304,13 +1304,13 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
     if (tcph.syn && !tcph.ack) {
       goto new_connection;
     }
-    if (tcph.psh) {
-      // samba, etc. Slow path.
-      goto new_connection;
-    }
 
     sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
     if (sk) {
+      if (tuples.dport == bpf_ntohs(445)) {
+        // samba. It is safe because the smb port cannot be customized.
+        goto sk_accept;
+      }
       if (sk->state != BPF_TCP_LISTEN) {
         is_old_conn = true;
         goto assign;
