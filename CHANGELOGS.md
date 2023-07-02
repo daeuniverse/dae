@@ -29,7 +29,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [0.1.0](#010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.2.0 (Latest)
+### 0.2.0 (Latest)
 
 > Release date: 2023/07/02
 
