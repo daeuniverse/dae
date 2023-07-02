@@ -43,8 +43,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### Bug Fixes
 
-* fix: samba not work in [#173](https://github.com/daeuniverse/dae/pull/173) by (@mzz2017)
-* fix: should allow fallbacking ip version if dialing domain in [#164](https://github.com/daeuniverse/dae/pull/164) by (@mzz2017)
+- fix: samba not work in [#173](https://github.com/daeuniverse/dae/pull/173) by (@mzz2017)
+- fix: should allow fallbacking ip version if dialing domain in [#164](https://github.com/daeuniverse/dae/pull/164) by (@mzz2017)
 - fix: bad connectivity check of dns(tcp) caused by #80 in [#155](https://github.com/daeuniverse/dae/pull/155) by (@mzz2017)
 - fix/chore(grpc): allow insecure caused no connection in [#151](https://github.com/daeuniverse/dae/pull/151) by (@mzz2017)
 - fix: new control plane should reset grpc conn pool cache in [#150](https://github.com/daeuniverse/dae/pull/150) by (@mzz2017)
