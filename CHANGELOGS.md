@@ -95,8 +95,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### 问题修复
 
-* 修复: samba 无法正常工作的问题 in [#173](https://github.com/daeuniverse/dae/pull/173) by (@mzz2017)
-* 修复: 当 dial_mode 为 domain 族时，现在允许从 ipv6 回落到 ipv4，以及从 ipv4 回落到 ipv6 in [#164](https://github.com/daeuniverse/dae/pull/164) by (@mzz2017)
+- 修复: samba 无法正常工作的问题 in [#173](https://github.com/daeuniverse/dae/pull/173) by (@mzz2017)
+- 修复: 当 dial_mode 为 domain 族时，现在允许从 ipv6 回落到 ipv4，以及从 ipv4 回落到 ipv6 in [#164](https://github.com/daeuniverse/dae/pull/164) by (@mzz2017)
 - 修复: 由 #80 导致的无法正常工作的 TCP DNS 检查 in [#155](https://github.com/daeuniverse/dae/pull/155) by (@mzz2017)
 - 修复(grpc): allow insecure 会导致的无法连接 in [#151](https://github.com/daeuniverse/dae/pull/151) by (@mzz2017)
 - 修复: grpc 连接池缓存应当在 reload 时候重置 in [#150](https://github.com/daeuniverse/dae/pull/150) by (@mzz2017)
