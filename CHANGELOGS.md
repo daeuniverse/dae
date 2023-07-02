@@ -115,9 +115,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### 其他变更
 
-* 杂项: 提供代理 dialer 给 dae-wing，以允许在拉取订阅时经过代理 in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
-* 自动化(generate-changelogs): 添加发版时是否写 issue page 的控制项 in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
-* 杂项(geodata): 换回 v2fly 源的 geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
+- 杂项: 提供代理 dialer 给 dae-wing，以允许在拉取订阅时经过代理 in [#172](https://github.com/daeuniverse/dae/pull/172) by (@mzz2017)
+- 自动化(generate-changelogs): 添加发版时是否写 issue page 的控制项 in [#170](https://github.com/daeuniverse/dae/pull/170) by (@yqlbu)
+- 杂项(geodata): 换回 v2fly 源的 geodata in [#168](https://github.com/daeuniverse/dae/pull/168) by (@mzz2017)
 - 自动化: 添加生成 changelogs 工作流 in [#159](https://github.com/daeuniverse/dae/pull/159) by (@yqlbu)
 - 杂项/文档: 支持编译时 unroll route loop，更新 troubleshooting.md in [#158](https://github.com/daeuniverse/dae/pull/158) by (@mzz2017)
 - 自动化: 从 main build 中分离 release build in [#157](https://github.com/daeuniverse/dae/pull/157) by (@yqlbu)
