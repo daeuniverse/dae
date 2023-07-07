@@ -7,6 +7,7 @@ package dns
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/daeuniverse/dae/component/routing"
@@ -37,11 +38,15 @@ func TypeParserFactory(callback func(f *config_parser.Function, types []dnsmessa
 	return func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) (err error) {
 		var types []dnsmessage.Type
 		for _, v := range paramValueGroup {
-			t, ok := typeNames[strings.ToUpper(v)]
-			if !ok {
-				return fmt.Errorf("unknown DNS request type: %v", v)
+			if t, ok := typeNames[strings.ToUpper(v)]; ok {
+				types = append(types, t)
+				continue
 			}
-			types = append(types, t)
+			if val, err := strconv.ParseUint(v, 0, 16); err == nil {
+				types = append(types, dnsmessage.Type(val))
+				continue
+			}
+			return fmt.Errorf("unknown DNS request type: %v", v)
 		}
 		return callback(f, types, overrideOutbound)
 	}
