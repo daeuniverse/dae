@@ -7,11 +7,13 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"regexp"
+	"sync"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -30,6 +32,8 @@ import (
 var coreFlip = 0
 
 type controlPlaneCore struct {
+	mu sync.Mutex
+
 	log             *logrus.Logger
 	deferFuncs      []func() error
 	bpf             *bpfObjects
@@ -77,6 +81,8 @@ func (c *controlPlaneCore) Flip() {
 	coreFlip = coreFlip&1 ^ 1
 }
 func (c *controlPlaneCore) Close() (err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
 	case <-c.closed.Done():
 		return nil
@@ -301,7 +307,96 @@ tryRuleAddAgain:
 	return nil
 }
 
-func (c *controlPlaneCore) bindLan(ifname string) error {
+func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) error {
+	ch := make(chan netlink.LinkUpdate)
+	done := make(chan struct{})
+	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
+		ErrorCallback: func(err error) {
+			c.log.Warnln("LinkSubscribe:", err)
+		},
+		ListExisting: true,
+	}); e != nil {
+		return e
+	}
+	go func(ctx context.Context, ch <-chan netlink.LinkUpdate, done chan struct{}) {
+		for {
+			select {
+			case <-ctx.Done():
+				close(done)
+				return
+			case <-done:
+				return
+			case update := <-ch:
+				if update.Header.Type == rtmType {
+					ifname := update.Link.Attrs().Name
+					if ifname == _ifname {
+						cb()
+						close(done)
+						return
+					}
+				}
+			}
+		}
+	}(c.closed, ch, done)
+	return nil
+}
+
+// addNewLinkBindLanCb waits for NEWLINK msg of given `ifname` and invokes `bindLan`.
+func (c *controlPlaneCore) addNewLinkBindLanCb(ifname string, autoConfigKernelParameter bool) error {
+	return c.addLinkCb(ifname, unix.RTM_NEWLINK, func() {
+		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", ifname)
+		if err := c.addQdisc(ifname); err != nil {
+			c.log.Errorf("addQdisc: %v", err)
+			return
+		}
+		if err := c.bindLan(ifname, autoConfigKernelParameter); err != nil {
+			c.log.Errorf("bindLan: %v", err)
+		}
+	})
+}
+
+// bindLan automatically configures kernel parameters and bind to lan interface `ifname`.
+// bindLan supports lazy-bind if interface `ifname` is not found.
+// bindLan supports rebinding when the interface `ifname` is deleted in the future.
+func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) error {
+	if autoConfigKernelParameter {
+		SetSendRedirects(ifname, "0")
+		SetForwarding(ifname, "1")
+	}
+	if err := c._bindLan(ifname); err != nil {
+		var notFoundErr netlink.LinkNotFoundError
+		if !errors.As(err, &notFoundErr) {
+			return err
+		}
+		// Not found error.
+
+		// Listen for `NEWLINK` to bind.
+		c.log.Warnf("Link '%v' is not found. Bind LAN program to it once it is created.", ifname)
+		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter); e != nil {
+			return fmt.Errorf("%w: %v", err, e)
+		}
+		return nil
+	}
+	// Listen for `DELLINK` and add `NEWLINK` callback to re-bind.
+	if err := c.addLinkCb(ifname, unix.RTM_DELLINK, func() {
+		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", ifname)
+		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter); e != nil {
+			c.log.Errorf("Failed to add callback for re-bind LAN program to '%v': %v", ifname, e)
+		}
+	}); err != nil {
+		return fmt.Errorf("failed to add re-bind callback: %w", err)
+	}
+	return nil
+}
+
+func (c *controlPlaneCore) _bindLan(ifname string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.closed.Done():
+		return nil
+	default:
+	}
 	c.log.Infof("Bind to LAN: %v", ifname)
 
 	link, err := netlink.LinkByName(ifname)
@@ -432,7 +527,19 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 	}
 	return nil
 }
+
 func (c *controlPlaneCore) bindWan(ifname string) error {
+	return c._bindWan(ifname)
+}
+
+func (c *controlPlaneCore) _bindWan(ifname string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.closed.Done():
+		return nil
+	default:
+	}
 	c.log.Infof("Bind to WAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
