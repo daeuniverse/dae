@@ -91,8 +91,8 @@ github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
 github.com/mzz2017/quic-go v0.0.0-20230706143320-cc858d4932b7 h1:9zmZilN02x3byMB2X3x+B4iyKHkucv70WA4hsyZkjo8=
 github.com/mzz2017/quic-go v0.0.0-20230706143320-cc858d4932b7/go.mod h1:3H6d55CEofIWWr3gQThiB27+hA3WG5tATtPovzEYPAA=
-github.com/mzz2017/softwind v0.0.0-20230706162055-4603642fac26 h1:YcQY0YxT9RQniy+7zysRo2kdb/vJ1r2GRpXbN4vTTok=
-github.com/mzz2017/softwind v0.0.0-20230706162055-4603642fac26/go.mod h1:/ULdUcDCW0RzEdgasAbjteAcouZkd4ztNm8PMJZd+bE=
+github.com/mzz2017/softwind v0.0.0-20230707012607-dd2be92b3f6c h1:P5cjLbW18cg6Tw/s76CWcMlsqRV0IUrwVXG029Cg0nw=
+github.com/mzz2017/softwind v0.0.0-20230707012607-dd2be92b3f6c/go.mod h1:/ULdUcDCW0RzEdgasAbjteAcouZkd4ztNm8PMJZd+bE=
 github.com/nxadm/tail v1.4.4/go.mod h1:kenIhsEOeOJmVchQTgglprH7qJGnHDVpk1VPCcaMI8A=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
 github.com/nxadm/tail v1.4.8/go.mod h1:+ncqLTQzXmGhMZNUePPaPqPvBxHAIsmXswZKocGu+AU=
