@@ -95,6 +95,7 @@ destRetrieved:
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"),
+			strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
 			strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
 			return nil // ignore
 		default:

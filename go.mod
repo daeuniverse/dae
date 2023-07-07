@@ -11,7 +11,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230707134845-5924956d362b
+	github.com/mzz2017/softwind v0.0.0-20230707153001-712a876a495e
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
 	github.com/safchain/ethtool v0.3.0
 	github.com/sirupsen/logrus v1.9.3
