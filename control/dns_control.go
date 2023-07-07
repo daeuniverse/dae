@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/common"
 	"io"
 	"math"
 	"net"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -155,11 +156,6 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Message) (resp []byt
 	}
 	q := msg.Questions[0]
 	if msg.Response {
-		return nil
-	}
-	switch q.Type {
-	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-	default:
 		return nil
 	}
 	cache := c.LookupDnsRespCache(q.Name.String(), q.Type)
