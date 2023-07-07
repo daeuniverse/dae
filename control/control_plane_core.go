@@ -312,7 +312,7 @@ func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) 
 	done := make(chan struct{})
 	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
-			c.log.Warnln("LinkSubscribe:", err)
+			c.log.Debug("LinkSubscribe:", err)
 		},
 		ListExisting: true,
 	}); e != nil {
