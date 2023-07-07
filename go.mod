@@ -11,7 +11,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230707132616-b7fd86f35cc4
+	github.com/mzz2017/softwind v0.0.0-20230707134845-5924956d362b
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
 	github.com/safchain/ethtool v0.3.0
 	github.com/sirupsen/logrus v1.9.3
@@ -36,7 +36,7 @@ require (
 	github.com/mzz2017/quic-go v0.0.0-20230706143320-cc858d4932b7 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
 	github.com/quic-go/qtls-go1-19 v0.3.2 // indirect
-	github.com/quic-go/qtls-go1-20 v0.3.0 // indirect
+	github.com/quic-go/qtls-go1-20 v0.2.2 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/tools v0.11.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230706204954-ccb25ca9f130 // indirect
