@@ -1,4 +1,4 @@
-name: PR Build
+name: PR Build (Preview)
 
 on:
   pull_request:
