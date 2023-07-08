@@ -51,6 +51,7 @@ jobs:
       fail-fast: false
 
     runs-on: ubuntu-22.04
+    needs: [context]
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
