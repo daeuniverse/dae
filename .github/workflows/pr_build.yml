@@ -1,5 +1,5 @@
 name: PR Build (Preview)
-run-name:  "#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.sha }}"
+run-name:  "#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.ref }}:${{ github.event.pull_request.head.sha }}"
 
 on:
   pull_request:
@@ -16,9 +16,11 @@ jobs:
   context:
     runs-on: ubuntu-22.04
     steps:
-      - name: Show PR context
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
         run: |
-          echo '${{ github.event }}'
+          echo "$GITHUB_CONTEXT"
 
   build:
     strategy:
