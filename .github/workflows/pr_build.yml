@@ -1,5 +1,5 @@
 name: PR Build (Preview)
-run-name:  ${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.sha }}
+run-name:  "#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.ref }}:${{ github.event.pull_request.head.sha }}"
 
 on:
   pull_request:
@@ -59,10 +59,7 @@ jobs:
 
       - name: Get event payload
         run: |
-          echo "${{ github.event.pull_request.number }}"
-          echo "${{ github.event.pull_request.title }}"
-          echo "${{ github.event.pull_request.head.sha }}"
-          echo "${{toJSON(github.event)}}"
+          echo "${{ toJSON(github.event) }}"
 
       - name: Get the version
         id: get_version
