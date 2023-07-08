@@ -58,7 +58,7 @@ jobs:
 
       - name: Get commit message
         run: |
-          echo "${{ github.event.head_commit.message }}"
+          echo "${{ github.event.workflow_run.head_commit.message }}"
 
       - name: Get the version
         id: get_version
