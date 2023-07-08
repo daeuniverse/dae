@@ -36,6 +36,7 @@ type UdpEndpoint struct {
 
 func (ue *UdpEndpoint) start() {
 	buf := pool.Get(EthernetMtu)
+	buf = buf[:cap(buf)]
 	defer pool.Put(buf)
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])

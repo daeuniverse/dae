@@ -94,7 +94,9 @@ destRetrieved:
 	if err = RelayTCP(sniffer, rConn); err != nil {
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
-			strings.HasSuffix(err.Error(), "i/o timeout"):
+			strings.HasSuffix(err.Error(), "i/o timeout"),
+			strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
+			strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
 			return nil // ignore
 		default:
 			return fmt.Errorf("handleTCP relay error: %w", err)
