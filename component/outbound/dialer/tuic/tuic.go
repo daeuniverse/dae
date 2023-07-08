@@ -74,12 +74,12 @@ func ParseTuicURL(u string, option *dialer.GlobalOption) (data *Tuic, err error)
 		err = fmt.Errorf("invalid trojan format")
 		return
 	}
-	alpn := strings.Split(t.Query().Get("alpn"), ",")
-	if len(alpn) == 0 {
-		alpn = []string{"h3"}
-	}
-	for i := range alpn {
-		alpn[i] = strings.TrimSpace(alpn[i])
+	var alpn []string
+	if t.Query().Has("alpn") {
+		alpn = strings.Split(t.Query().Get("alpn"), ",")
+		for i := range alpn {
+			alpn[i] = strings.TrimSpace(alpn[i])
+		}
 	}
 	allowInsecure, _ := strconv.ParseBool(t.Query().Get("allowInsecure"))
 	if !allowInsecure {
