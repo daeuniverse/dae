@@ -1,4 +1,5 @@
 name: PR Build (Preview)
+run-name:  ${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.sha }}
 
 on:
   pull_request:
@@ -56,9 +57,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get commit message
+      - name: Get event payload
         run: |
-          echo "${{ github.event.workflow_run.head_commit.message }}"
+          echo "${{ github.event.pull_request.number }}"
+          echo "${{ github.event.pull_request.title }}"
+          echo "${{ github.event.pull_request.head.sha }}"
+          echo "${{toJSON(github.event)}}"
 
       - name: Get the version
         id: get_version
