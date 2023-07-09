@@ -18,6 +18,7 @@ on:
         required: true
         type: string
 
+jobs:
   build:
     strategy:
       matrix:
