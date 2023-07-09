@@ -13,6 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+
 - [v0.2.1rc1 (Pre-release)](#v021rc1-pre-release)
 - [v0.2.0 (Latest)](#v020-latest)
 - [v0.1.10.p1](#v0110p1)
@@ -34,8 +35,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 > Release date: 2023/07/09
 
-
 ### Features
+
 - feat: support unknown qtype and upgrade go mod in [#180](https://github.com/daeuniverse/dae/pull/180) by (@mzz2017)
 - feat: support tuic v5 in [#176](https://github.com/daeuniverse/dae/pull/176) by (@mzz2017)
 - optimize(dns): cache all qtype (not only a/aaaa) in [#167](https://github.com/daeuniverse/dae/pull/167) by (@mzz2017)
@@ -57,15 +58,18 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - refactor(dns): replace dnsmessage with miekg/dns in [#188](https://github.com/daeuniverse/dae/pull/188) by (@mzz2017)
 
 ### 特性支持
+
 - 特性(dns): 支持未知的 qtype，允许使用数字 in [#180](https://github.com/daeuniverse/dae/pull/180) by (@mzz2017)
 - 特性: 支持新协议 tuic v5 in [#176](https://github.com/daeuniverse/dae/pull/176) by (@mzz2017)
 - 优化(dns): 缓存所有 qtype 类型 (不只是 a/aaaa) in [#167](https://github.com/daeuniverse/dae/pull/167) by (@mzz2017)
 - 特性: 支持到 lan 接口的懒绑定和重新绑定 in [#166](https://github.com/daeuniverse/dae/pull/166) by (@mzz2017)
 
 ### 问题修复
+
 - 修复(wss): `allow_insecure` 和 `sni` 无法正常工作的问题 in [#165](https://github.com/daeuniverse/dae/pull/165) by (@mzz2017)
 
 ### 其他变更
+
 - 自动化: 为 build, daily-build, and pr-build 添加模块化工作流支持 in [#190](https://github.com/daeuniverse/dae/pull/190) by (@yqlbu)
 - 自动化: 添加 daily-build 工作流 in [#189](https://github.com/daeuniverse/dae/pull/189) by (@yqlbu)
 - 自动化: 更新 workflow 命名标准 in [#186](https://github.com/daeuniverse/dae/pull/186) by (@yqlbu)
