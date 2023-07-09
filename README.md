@@ -41,7 +41,7 @@ Documentation: <https://dae.v2raya.org>
 
 ## How it works
 
-See [How it works](./docs/en/how_it_works.md).
+See [How it works](./docs/en/how-it-works.md).
 
 ## TODO
 
