@@ -115,7 +115,7 @@ subscription {
   # Fill in your subscription links here.
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
 dns {
   upstream {
     googledns: 'tcp+udp://dns.google.com:53'
@@ -140,7 +140,7 @@ group {
   }
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/routing.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
   pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
