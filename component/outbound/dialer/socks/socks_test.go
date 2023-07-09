@@ -7,13 +7,14 @@ package socks
 
 import (
 	"context"
-	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	dnsmessage "github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
 )
 
 func TestSocks5(t *testing.T) {

@@ -15,7 +15,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 type RequestMatcherBuilder struct {
@@ -88,7 +87,7 @@ func (b *RequestMatcherBuilder) addQName(f *config_parser.Function, key string, 
 	return nil
 }
 
-func (b *RequestMatcherBuilder) addQType(f *config_parser.Function, values []dnsmessage.Type, upstream *routing.Outbound) (err error) {
+func (b *RequestMatcherBuilder) addQType(f *config_parser.Function, values []uint16, upstream *routing.Outbound) (err error) {
 	for i, value := range values {
 		upstreamName := consts.OutboundLogicalOr.String()
 		if i == len(values)-1 {
@@ -166,7 +165,7 @@ type requestMatchSet struct {
 
 func (m *RequestMatcher) Match(
 	qName string,
-	qType dnsmessage.Type,
+	qType uint16,
 ) (upstreamIndex consts.DnsRequestOutboundIndex, err error) {
 	var domainMatchBitmap []uint32
 	if qName != "" {
@@ -185,7 +184,7 @@ func (m *RequestMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_QType:
-			if qType == dnsmessage.Type(match.Value) {
+			if qType == uint16(match.Value) {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:

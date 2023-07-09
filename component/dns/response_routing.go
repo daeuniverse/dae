@@ -18,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 type ResponseMatcherBuilder struct {
@@ -138,7 +137,7 @@ func (b *ResponseMatcherBuilder) addUpstream(f *config_parser.Function, values [
 	return nil
 }
 
-func (b *ResponseMatcherBuilder) addQType(f *config_parser.Function, values []dnsmessage.Type, upstream *routing.Outbound) (err error) {
+func (b *ResponseMatcherBuilder) addQType(f *config_parser.Function, values []uint16, upstream *routing.Outbound) (err error) {
 	for i, value := range values {
 		upstreamName := consts.OutboundLogicalOr.String()
 		if i == len(values)-1 {
@@ -219,7 +218,7 @@ type responseMatchSet struct {
 
 func (m *ResponseMatcher) Match(
 	qName string,
-	qType dnsmessage.Type,
+	qType uint16,
 	ips []netip.Addr,
 	upstream consts.DnsRequestOutboundIndex,
 ) (upstreamIndex consts.DnsResponseOutboundIndex, err error) {
@@ -253,7 +252,7 @@ func (m *ResponseMatcher) Match(
 				}
 			}
 		case consts.MatchType_QType:
-			if qType == dnsmessage.Type(match.Value) {
+			if qType == uint16(match.Value) {
 				goodSubrule = true
 			}
 		case consts.MatchType_Upstream:
