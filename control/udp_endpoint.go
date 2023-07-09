@@ -6,7 +6,6 @@
 package control
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 	"sync"
@@ -47,9 +46,6 @@ func (ue *UdpEndpoint) start() {
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 		if err = ue.handler(buf[:n], from); err != nil {
-			if errors.Is(err, SuspectedRushAnswerError) {
-				continue
-			}
 			break
 		}
 	}

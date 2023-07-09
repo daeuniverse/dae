@@ -29,7 +29,7 @@ dns {
         googledns: 'tcp+udp://dns.google.com:53'
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
-    # See https://github.com/daeuniverse/dae/blob/main/docs/routing.md
+    # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
     routing {
         # According to the request of dns query, decide to use which DNS upstream.
         # Match rules from top to bottom.

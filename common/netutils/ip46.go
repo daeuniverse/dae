@@ -12,9 +12,9 @@ import (
 	"net/netip"
 	"sync"
 
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 type Ip46 struct {

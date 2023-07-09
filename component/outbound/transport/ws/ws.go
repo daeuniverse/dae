@@ -3,12 +3,13 @@ package ws
 import (
 	"crypto/tls"
 	"fmt"
-	"github.com/gorilla/websocket"
-	"github.com/mzz2017/softwind/netproxy"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/gorilla/websocket"
+	"github.com/mzz2017/softwind/netproxy"
 )
 
 // Ws is a base Ws struct
@@ -44,9 +45,9 @@ func NewWs(s string, d netproxy.Dialer) (*Ws, error) {
 	}
 	t.wsAddr = wsUrl.String() + u.Path
 	if u.Scheme == "wss" {
-		skipVerify, _ := strconv.ParseBool(u.Query().Get("allowInsecure"))
+		skipVerify, _ := strconv.ParseBool(query.Get("allowInsecure"))
 		t.tlsClientConfig = &tls.Config{
-			ServerName:         u.Query().Get("sni"),
+			ServerName:         query.Get("sni"),
 			InsecureSkipVerify: skipVerify,
 		}
 	}
@@ -72,7 +73,7 @@ func (s *Ws) Dial(network, addr string) (c netproxy.Conn, err error) {
 					RAddr: nil,
 				}, nil
 			},
-			//Subprotocols: []string{"binary"},
+			TLSClientConfig: s.tlsClientConfig,
 		}
 		rc, _, err := wsDialer.Dial(s.wsAddr, s.header)
 		if err != nil {
