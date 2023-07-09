@@ -1,13 +1,11 @@
-name: Check document
+name: Check Documents
 
 on:
   workflow_dispatch:
   workflow_call:
   pull_request:
     branches: [main]
-    types:
-      - opened
-      - synchronize
+    types: [ opened, synchronize, reopened ]
     paths:
       - 'README.md'
       - 'docs/**'
