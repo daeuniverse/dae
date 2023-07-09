@@ -1,0 +1,52 @@
+#      _
+#   __| | __ _  ___
+#  / _` |/ _` |/ _ \
+# | (_| | (_| |  __/
+#  \__,_|\__,_|\___|
+#
+# Copyright (C) 2023 @daeuniverse <https://github.com/daeuniverse>
+#
+# This is a open-source software, liscensed under the AGPL-3.0 License.
+# See /License for more information.
+
+name: Upload (Pre)Release
+
+on:
+  workflow_call:
+    inputs:
+      prerelease:
+        required: true
+        type: boolean
+
+jobs:
+  upload-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: release/
+
+      - name: Prepare files for upload
+        run: |
+          cp release/*/*.zip ./
+          cp release/*/*.zip.dgst ./
+          echo "Show files are going to upload..."
+          ls -lh | grep ".zip"
+
+      - name: Upload full source to GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            dae-full-src.zip
+          prerelease: ${{ inputs.prerelease }}
+
+      - name: Upload full source and artifacts to GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            *zip
+            *dgst
+          prerelease: ${{ inputs.prerelease }}
