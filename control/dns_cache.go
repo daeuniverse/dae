@@ -9,49 +9,39 @@ import (
 	"net/netip"
 	"time"
 
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 type DnsCache struct {
 	DomainBitmap []uint32
-	Answers      []dnsmessage.Resource
+	Answer       []dnsmessage.RR
 	Deadline     time.Time
 }
 
-func (c *DnsCache) FillInto(req *dnsmessage.Message) {
-	req.Answers = deepcopy.Copy(c.Answers).([]dnsmessage.Resource)
-	// No need to align because of no flipping now.
-	//// Align question and answer Name.
-	//if len(req.Questions) > 0 {
-	//	q := req.Questions[0]
-	//	for i := range req.Answers {
-	//		if strings.EqualFold(req.Answers[i].Header.Name.String(), q.Name.String()) {
-	//			req.Answers[i].Header.Name.Data = q.Name.Data
-	//		}
-	//	}
-	//}
-	req.RCode = dnsmessage.RCodeSuccess
+func (c *DnsCache) FillInto(req *dnsmessage.Msg) {
+	req.Answer = deepcopy.Copy(c.Answer).([]dnsmessage.RR)
+	req.Rcode = dnsmessage.RcodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true
 	req.Truncated = false
 }
 
 func (c *DnsCache) IncludeIp(ip netip.Addr) bool {
-	for _, ans := range c.Answers {
-		switch body := ans.Body.(type) {
-		case *dnsmessage.AResource:
+	for _, ans := range c.Answer {
+		switch body := ans.(type) {
+		case *dnsmessage.A:
 			if !ip.Is4() {
 				continue
 			}
-			if netip.AddrFrom4(body.A) == ip {
+			if a, ok := netip.AddrFromSlice(body.A); ok && a == ip {
 				return true
 			}
-		case *dnsmessage.AAAAResource:
+		case *dnsmessage.AAAA:
 			if !ip.Is6() {
 				continue
 			}
-			if netip.AddrFrom16(body.AAAA) == ip {
+			if a, ok := netip.AddrFromSlice(body.AAAA); ok && a == ip {
 				return true
 			}
 		}
@@ -60,9 +50,9 @@ func (c *DnsCache) IncludeIp(ip netip.Addr) bool {
 }
 
 func (c *DnsCache) IncludeAnyIp() bool {
-	for _, ans := range c.Answers {
-		switch ans.Body.(type) {
-		case *dnsmessage.AResource, *dnsmessage.AAAAResource:
+	for _, ans := range c.Answer {
+		switch ans.(type) {
+		case *dnsmessage.A, *dnsmessage.AAAA:
 			return true
 		}
 	}

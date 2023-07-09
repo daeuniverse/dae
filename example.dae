@@ -31,7 +31,7 @@ global {
     wan_interface: auto
 
     # Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out
-    # https://github.com/daeuniverse/dae/blob/main/docs/getting-started/kernel-parameters.md to see what will dae do.
+    # https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md to see what will dae do.
     auto_config_kernel_parameter: true
 
 
@@ -114,7 +114,7 @@ node {
     node2: 'vless://LINK'
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
 dns {
     # For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only
     # respond to type A queries and response empty answer to type AAAA queries.
@@ -186,7 +186,7 @@ group {
     }
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/routing.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
     ### Preset rules.
 

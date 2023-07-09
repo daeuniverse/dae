@@ -30,8 +30,8 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	log := logger.NewLogger("trace", false)
 	option := &dialer.GlobalOption{
 		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
 		CheckTolerance:    0,
 		CheckDnsTcp:       false,
@@ -46,7 +46,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 		FixedIndex: fixedIndex,
 	}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 	for i := 0; i < 10; i++ {
-		d, _, err := g.Select(TestNetworkType)
+		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	fixedIndex = 0
 	g.selectionPolicy.FixedIndex = fixedIndex
 	for i := 0; i < 10; i++ {
-		d, _, err := g.Select(TestNetworkType)
+		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,8 +73,8 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 
 	option := &dialer.GlobalOption{
 		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
 	}
 	dialers := []*dialer.Dialer{
@@ -120,7 +120,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 			}
 			g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(d, alive)
 		}
-		d, _, err := g.Select(TestNetworkType)
+		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,8 +143,8 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 
 	option := &dialer.GlobalOption{
 		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
 	}
 	dialers := []*dialer.Dialer{
@@ -159,7 +159,7 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 	}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
-		d, _, err := g.Select(TestNetworkType)
+		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,8 +183,8 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 
 	option := &dialer.GlobalOption{
 		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: testTcpCheckUrl},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: testUdpCheckDns},
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
 	}
 	dialers := []*dialer.Dialer{
@@ -201,7 +201,7 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[zeroTarget], false)
 	count := make([]int, len(dialers))
 	for i := 0; i < 100; i++ {
-		d, _, err := g.Select(TestNetworkType)
+		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
 		}

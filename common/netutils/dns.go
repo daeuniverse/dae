@@ -12,14 +12,13 @@ import (
 	"io"
 	"math"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/pool"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 var (
@@ -90,29 +89,37 @@ func SystemDns() (dns netip.AddrPort, err error) {
 	return systemDns, nil
 }
 
-func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, network string) (addrs []netip.Addr, err error) {
+func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
 	resources, err := resolve(ctx, d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
 	for _, ans := range resources {
-		if ans.Header.Type != typ {
+		if ans.Header().Rrtype != typ {
 			continue
 		}
+		var (
+			ip  netip.Addr
+			okk bool
+		)
 		switch typ {
 		case dnsmessage.TypeA:
-			a, ok := ans.Body.(*dnsmessage.AResource)
+			a, ok := ans.(*dnsmessage.A)
 			if !ok {
 				return nil, BadDnsAnsError
 			}
-			addrs = append(addrs, netip.AddrFrom4(a.A))
+			ip, okk = netip.AddrFromSlice(a.A)
 		case dnsmessage.TypeAAAA:
-			a, ok := ans.Body.(*dnsmessage.AAAAResource)
+			a, ok := ans.(*dnsmessage.AAAA)
 			if !ok {
 				return nil, BadDnsAnsError
 			}
-			addrs = append(addrs, netip.AddrFrom16(a.AAAA))
+			ip, okk = netip.AddrFromSlice(a.AAAA)
 		}
+		if !okk {
+			continue
+		}
+		addrs = append(addrs, ip)
 	}
 	return addrs, nil
 }
@@ -124,50 +131,47 @@ func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host 
 		return nil, err
 	}
 	for _, ans := range resources {
-		if ans.Header.Type != typ {
+		if ans.Header().Rrtype != typ {
 			continue
 		}
-		ns, ok := ans.Body.(*dnsmessage.NSResource)
+		ns, ok := ans.(*dnsmessage.NS)
 		if !ok {
 			return nil, BadDnsAnsError
 		}
-		records = append(records, ns.NS.String())
+		records = append(records, ns.Ns)
 	}
 	return records, nil
 }
 
-func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ dnsmessage.Type, network string) (ans []dnsmessage.Resource, err error) {
+func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	fqdn := host
-	if !strings.HasSuffix(fqdn, ".") {
-		fqdn += "."
-	}
+	fqdn := dnsmessage.CanonicalName(host)
 	switch typ {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 		if addr, err := netip.ParseAddr(host); err == nil {
 			if (addr.Is4() || addr.Is4In6()) && typ == dnsmessage.TypeA {
-				return []dnsmessage.Resource{
-					{
-						Header: dnsmessage.ResourceHeader{
-							Name:  dnsmessage.MustNewName(fqdn),
-							Class: dnsmessage.ClassINET,
-							TTL:   0,
-							Type:  typ,
+				return []dnsmessage.RR{
+					&dnsmessage.A{
+						Hdr: dnsmessage.RR_Header{
+							Name:   dnsmessage.CanonicalName(fqdn),
+							Class:  dnsmessage.ClassINET,
+							Ttl:    0,
+							Rrtype: typ,
 						},
-						Body: &dnsmessage.AResource{A: addr.As4()},
+						A: addr.AsSlice(),
 					},
 				}, nil
 			} else if addr.Is6() && typ == dnsmessage.TypeAAAA {
-				return []dnsmessage.Resource{
-					{
-						Header: dnsmessage.ResourceHeader{
-							Name:  dnsmessage.MustNewName(fqdn),
-							Class: dnsmessage.ClassINET,
-							TTL:   0,
-							Type:  typ,
+				return []dnsmessage.RR{
+					&dnsmessage.AAAA{
+						Hdr: dnsmessage.RR_Header{
+							Name:   dnsmessage.CanonicalName(fqdn),
+							Class:  dnsmessage.ClassINET,
+							Ttl:    0,
+							Rrtype: typ,
 						},
-						Body: &dnsmessage.AAAAResource{AAAA: addr.As16()},
+						AAAA: addr.AsSlice(),
 					},
 				}, nil
 			}
@@ -177,25 +181,18 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	default:
 	}
 	// Build DNS req.
-	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{
-		ID:               uint16(fastrand.Intn(math.MaxUint16 + 1)),
-		Response:         false,
-		OpCode:           0,
-		Truncated:        false,
-		RecursionDesired: true,
-		Authoritative:    false,
-	})
-	if err = builder.StartQuestions(); err != nil {
-		return nil, err
+	builder := dnsmessage.Msg{
+		MsgHdr: dnsmessage.MsgHdr{
+			Id:               uint16(fastrand.Intn(math.MaxUint16 + 1)),
+			Response:         false,
+			Opcode:           0,
+			Truncated:        false,
+			RecursionDesired: true,
+			Authoritative:    false,
+		},
 	}
-	if err = builder.Question(dnsmessage.Question{
-		Name:  dnsmessage.MustNewName(fqdn),
-		Type:  typ,
-		Class: dnsmessage.ClassINET,
-	}); err != nil {
-		return nil, err
-	}
-	b, err := builder.Finish()
+	builder.SetQuestion(fqdn, typ)
+	b, err := builder.Pack()
 	if err != nil {
 		return nil, err
 	}
@@ -265,12 +262,12 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 			return
 		}
 		// Resolve DNS response and extract A/AAAA record.
-		var msg dnsmessage.Message
+		var msg dnsmessage.Msg
 		if err = msg.Unpack(buf[:n]); err != nil {
 			ch <- err
 			return
 		}
-		ans = msg.Answers
+		ans = msg.Answer
 		ch <- nil
 	}()
 	select {

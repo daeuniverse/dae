@@ -2,7 +2,7 @@
 
 dae 通过 [eBPF](https://en.wikipedia.org/wiki/EBPF) 在 Linux 内核的 tc (traffic control) 挂载点加载一个程序，通过该程序在流量进入 TCP/IP 网络栈之前进行流量分流。tc 在 Linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
 
-![](netstack-path.webp)
+![](../netstack-path.webp)
 
 ## 分流原理
 
@@ -41,7 +41,7 @@ dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时，da
 
 dae 在内核的较早路径上就对流量进行了分流，直连流量将直接进行三层路由转发，节省了大量内核态到用户态的切换和拷贝开销，此时 Linux 相当于一个纯粹的交换机或路由器。
 
-> 为了让直连生效，对于高级拓扑的用户，请确保按 [kernel-parameters](getting-started/kernel-parameters.md) 配置后，在**关闭** dae 的情况下，其他设备将 dae 所在设备设为网关时，网络是畅通的。例如访问 223.5.5.5 能够得到“UrlPathError”的响应，且在 dae 所在设备进行 tcpdump 可以看到客户端设备的请求报文。
+> 为了让直连生效，对于高级拓扑的用户，请确保按 [kernel-parameters](../en/user-guide/kernel-parameters.md) 配置后，在**关闭** dae 的情况下，其他设备将 dae 所在设备设为网关时，网络是畅通的。例如访问 223.5.5.5 能够得到“UrlPathError”的响应，且在 dae 所在设备进行 tcpdump 可以看到客户端设备的请求报文。
 
 因此，对于直连流量，dae 不会进行 SNAT，对于“旁路由”用户，这将形成非对称路由，即客户端设备发包时流量通过 dae 设备发送到网关，收包时由网关直接发给客户端设备，绕过 dae 设备。
 
