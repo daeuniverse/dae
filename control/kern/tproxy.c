@@ -1307,6 +1307,10 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
     sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
     if (sk) {
+      if (tuples.dport == bpf_ntohs(445)) {
+        // samba. It is safe because the smb port cannot be customized.
+        goto sk_accept;
+      }
       if (sk->state != BPF_TCP_LISTEN) {
         is_old_conn = true;
         goto assign;
@@ -1548,7 +1552,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   // interface.
   if (tproxy_response && l4proto == IPPROTO_TCP) {
     // If it is a TCP first handshake, it is not a tproxy response.
-    if (tcph.syn && !tcph.syn) {
+    if (tcph.syn && !tcph.ack) {
       tproxy_response = false;
       // Abnormal.
       return TC_ACT_SHOT;

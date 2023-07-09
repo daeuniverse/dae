@@ -76,8 +76,56 @@ destRetrieved:
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
 
-	// Get outbound.
-	var outboundIndex = consts.OutboundIndex(routingResult.Outbound)
+	// Dial and relay.
+	rConn, err := c.RouteDialTcp(&RouteDialParam{
+		Outbound:    consts.OutboundIndex(routingResult.Outbound),
+		Domain:      domain,
+		Mac:         routingResult.Mac,
+		ProcessName: routingResult.Pname,
+		Src:         src,
+		Dest:        dst,
+		Mark:        routingResult.Mark,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dial %v: %w", dst, err)
+	}
+	defer rConn.Close()
+
+	if err = RelayTCP(sniffer, rConn); err != nil {
+		switch {
+		case strings.HasSuffix(err.Error(), "write: broken pipe"),
+			strings.HasSuffix(err.Error(), "i/o timeout"),
+			strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
+			strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
+			return nil // ignore
+		default:
+			return fmt.Errorf("handleTCP relay error: %w", err)
+		}
+	}
+	return nil
+}
+
+type RouteDialParam struct {
+	Outbound    consts.OutboundIndex
+	Domain      string
+	Mac         [6]uint8
+	ProcessName [16]uint8
+	Src         netip.AddrPort
+	Dest        netip.AddrPort
+	Mark        uint32
+}
+
+func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
+	routingResult := &bpfRoutingResult{
+		Mark:     p.Mark,
+		Mac:      p.Mac,
+		Outbound: uint8(p.Outbound),
+		Pname:    p.ProcessName,
+	}
+	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
+	domain := p.Domain
+	src := p.Src
+	dst := p.Dest
 	if c.dialMode == consts.DialMode_DomainCao && domain != "" {
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
@@ -91,7 +139,7 @@ destRetrieved:
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneRouting:
 		if outboundIndex, routingResult.Mark, _, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
-			return err
+			return nil, err
 		}
 		routingResult.Outbound = uint8(outboundIndex)
 
@@ -109,8 +157,8 @@ destRetrieved:
 		routingResult.Mark = c.soMarkFromDae
 	}
 	// TODO: Set-up ip to domain mapping and show domain if possible.
-	if outboundIndex < 0 || int(outboundIndex) >= len(c.outbounds) {
-		return fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
+	if int(outboundIndex) >= len(c.outbounds) {
+		return nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	outbound := c.outbounds[outboundIndex]
 	networkType := &dialer.NetworkType{
@@ -121,7 +169,7 @@ destRetrieved:
 	strictIpVersion := dialIp
 	d, _, err := outbound.Select(networkType, strictIpVersion)
 	if err != nil {
-		return fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
+		return nil, fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
 
 	if c.log.IsLevelEnabled(logrus.InfoLevel) {
@@ -138,23 +186,7 @@ destRetrieved:
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), dialTarget)
 	}
 
-	// Dial and relay.
-	rConn, err := d.Dial(common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
-	if err != nil {
-		return fmt.Errorf("failed to dial %v: %w", dst, err)
-	}
-	defer rConn.Close()
-
-	if err = RelayTCP(sniffer, rConn); err != nil {
-		switch {
-		case strings.HasSuffix(err.Error(), "write: broken pipe"),
-			strings.HasSuffix(err.Error(), "i/o timeout"):
-			return nil // ignore
-		default:
-			return fmt.Errorf("handleTCP relay error: %w", err)
-		}
-	}
-	return nil
+	return d.Dial(common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
 }
 
 type WriteCloser interface {
