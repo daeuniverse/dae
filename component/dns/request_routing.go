@@ -184,7 +184,7 @@ func (m *RequestMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_QType:
-			if qType == uint16(match.Value) {
+			if qType == match.Value {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:

@@ -360,7 +360,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
-			RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), req.realDst.String(), strings.ToLower(q.Name), q.Qtype,
+			RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), req.realDst.String(), strings.ToLower(q.Name), QtypeToString(q.Qtype),
 		)
 	}
 
@@ -444,12 +444,6 @@ func (c *DnsController) handle_(
 		qtype = q.Qtype
 	}
 
-	//// NOTICE: Rush-answer detector was removed because it does not always work in all districts.
-	//// Make sure there is additional record OPT in the request to filter DNS rush-answer in the response process.
-	//// Because rush-answer has no resp OPT. We can distinguish them from multiple responses.
-	//// Note that additional record OPT may not be supported by home router either.
-	//_, _ = EnsureAdditionalOpt(dnsMessage, true)
-
 	// Route request.
 	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
 	if err != nil {
@@ -478,7 +472,7 @@ func (c *DnsController) handle_(
 		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
 			q := dnsMessage.Question[0]
 			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-				RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), strings.ToLower(q.Name), q.Qtype,
+				RefineSourceToShow(req.realSrc, req.realDst.Addr(), req.lanWanFlag), strings.ToLower(q.Name), QtypeToString(q.Qtype),
 			)
 		}
 		return nil
@@ -754,12 +748,12 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
 		var (
 			qname string
-			qtype uint16
+			qtype string
 		)
 		if len(respMsg.Question) > 0 {
 			q := respMsg.Question[0]
 			qname = strings.ToLower(q.Name)
-			qtype = q.Qtype
+			qtype = QtypeToString(q.Qtype)
 		}
 		fields := logrus.Fields{
 			"network":  networkType.String(),

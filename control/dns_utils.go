@@ -7,6 +7,7 @@ package control
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	dnsmessage "github.com/miekg/dns"
@@ -23,15 +24,26 @@ func (w RscWrapper) String() string {
 		strBody = body.A.String()
 	case *dnsmessage.AAAA:
 		strBody = body.AAAA.String()
+	case *dnsmessage.CNAME:
+		strBody = body.Target
 	default:
 		strBody = body.String()
 	}
-	return fmt.Sprintf("%v(%v): %v", w.Rsc.Header().Name, w.Rsc.Header().Rrtype, strBody)
+	return fmt.Sprintf("%v(%v): %v", w.Rsc.Header().Name, QtypeToString(w.Rsc.Header().Rrtype), strBody)
 }
+
 func FormatDnsRsc(ans []dnsmessage.RR) string {
 	var w []string
 	for _, a := range ans {
 		w = append(w, RscWrapper{Rsc: a}.String())
 	}
 	return strings.Join(w, "; ")
+}
+
+func QtypeToString(qtype uint16) string {
+	str, ok := dnsmessage.TypeToString[qtype]
+	if !ok {
+		str = strconv.Itoa(int(qtype))
+	}
+	return str
 }
