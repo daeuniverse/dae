@@ -1,6 +1,7 @@
-# Other Proxy Protocols
+# Proxy Protocols
 
-dae currently supports the following proxy protocols:
+> **Note**: dae currently supports the following proxy protocols
+
 - [x] HTTP(S), naiveproxy
 - [x] Socks
   - [x] Socks4
