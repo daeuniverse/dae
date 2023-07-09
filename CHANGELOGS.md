@@ -13,6 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+- [v0.2.1rc1 (Pre-release)](#v021rc1-pre-release)
 - [v0.2.0 (Latest)](#v020-latest)
 - [v0.1.10.p1](#v0110p1)
 - [v0.1.10](#v0110)
@@ -28,6 +29,59 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.2.1rc1 (Pre-release)
+
+> Release date: 2023/07/09
+
+
+### Features
+- feat: support unknown qtype and upgrade go mod in [#180](https://github.com/daeuniverse/dae/pull/180) by (@mzz2017)
+- feat: support tuic v5 in [#176](https://github.com/daeuniverse/dae/pull/176) by (@mzz2017)
+- optimize(dns): cache all qtype (not only a/aaaa) in [#167](https://github.com/daeuniverse/dae/pull/167) by (@mzz2017)
+- feat: support to bind to lan lazily and re-bind to lan in [#166](https://github.com/daeuniverse/dae/pull/166) by (@mzz2017)
+
+### Bug Fixes
+
+- fix(wss): allow_insecure and sni not work in [#165](https://github.com/daeuniverse/dae/pull/165) by (@mzz2017)
+
+### Others
+
+- ci: add modularity support for build, daily-build, and pr-build in [#190](https://github.com/daeuniverse/dae/pull/190) by (@yqlbu)
+- ci: add daily-build workflow in [#189](https://github.com/daeuniverse/dae/pull/189) by (@yqlbu)
+- ci: update workflow naming standards in [#186](https://github.com/daeuniverse/dae/pull/186) by (@yqlbu)
+- docs(readme/badges): make release-badge updated on the fly in [#185](https://github.com/daeuniverse/dae/pull/185) by (@yqlbu)
+- ci(trigger): separate pr_build from build in [#183](https://github.com/daeuniverse/dae/pull/183) by (@yqlbu)
+- chore: suppress LinkSubscribe error in [#181](https://github.com/daeuniverse/dae/pull/181) by (@mzz2017)
+- refactor(/docs): rework documentation structure layout in [#179](https://github.com/daeuniverse/dae/pull/179) by (@yqlbu @earrmouth)
+- refactor(dns): replace dnsmessage with miekg/dns in [#188](https://github.com/daeuniverse/dae/pull/188) by (@mzz2017)
+
+### 特性支持
+- 特性(dns): 支持未知的 qtype，允许使用数字 in [#180](https://github.com/daeuniverse/dae/pull/180) by (@mzz2017)
+- 特性: 支持新协议 tuic v5 in [#176](https://github.com/daeuniverse/dae/pull/176) by (@mzz2017)
+- 优化(dns): 缓存所有 qtype 类型 (不只是 a/aaaa) in [#167](https://github.com/daeuniverse/dae/pull/167) by (@mzz2017)
+- 特性: 支持到 lan 接口的懒绑定和重新绑定 in [#166](https://github.com/daeuniverse/dae/pull/166) by (@mzz2017)
+
+### 问题修复
+- 修复(wss): `allow_insecure` 和 `sni` 无法正常工作的问题 in [#165](https://github.com/daeuniverse/dae/pull/165) by (@mzz2017)
+
+### 其他变更
+- 自动化: 为 build, daily-build, and pr-build 添加模块化工作流支持 in [#190](https://github.com/daeuniverse/dae/pull/190) by (@yqlbu)
+- 自动化: 添加 daily-build 工作流 in [#189](https://github.com/daeuniverse/dae/pull/189) by (@yqlbu)
+- 自动化: 更新 workflow 命名标准 in [#186](https://github.com/daeuniverse/dae/pull/186) by (@yqlbu)
+- 文档(readme/badges): 更新 release-badge on the fly in [#185](https://github.com/daeuniverse/dae/pull/185) by (@yqlbu)
+- 自动化(trigger): 将 pr_build 从 build 分离出来 in [#183](https://github.com/daeuniverse/dae/pull/183) by (@yqlbu)
+- 杂项: 降低 LinkSubscribe 报错级别 in [#181](https://github.com/daeuniverse/dae/pull/181) by (@mzz2017)
+- 重构/文档: 重构文档结构布局 in [#179](https://github.com/daeuniverse/dae/pull/179) by (@yqlbu @earrmouth)
+- 重构(dns): 使用 miekg/dns 替换 dnsmessage in [#188](https://github.com/daeuniverse/dae/pull/188) by (@mzz2017)
+
+### New Contributors
+
+- @earrmouth made their first contribution in #179
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0...v0.2.1rc1
 
 ### v0.2.0 (Latest)
 
