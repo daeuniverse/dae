@@ -1,9 +1,20 @@
+#      _
+#   __| | __ _  ___
+#  / _` |/ _` |/ _ \
+# | (_| | (_| |  __/
+#  \__,_|\__,_|\___|
+#
+# Copyright (C) 2023 @daeuniverse <https://github.com/daeuniverse>
+#
+# This is a open-source software, liscensed under the AGPL-3.0 License.
+# See /License for more information.
+
 name: Build (Stable)
 
 on:
   push:
     branches:
-      - main
+      - ci_modularity
     paths:
       - "**/*.go"
       - "**/*.c"
@@ -14,126 +25,13 @@ on:
       - "Makefile"
 
 jobs:
+  pre-actions:
+    uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@master
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.sha }}
+      fetch-depth: 0
+    secrets: inherit
+
   build:
-    strategy:
-      matrix:
-        goos: [ linux ]
-        goarch: [ arm64, 386, riscv64, mips64, mips64le, mipsle, mips ]
-        include:
-          # BEGIN Linux ARM 5 6 7
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: linux
-            goarch: arm
-            goarm: 6
-          - goos: linux
-            goarch: arm
-            goarm: 5
-          # END Linux ARM 5 6 7
-          # BEGIN Linux AMD64 v1 v2 v3
-          - goos: linux
-            goarch: amd64
-            goamd64: v1
-          - goos: linux
-            goarch: amd64
-            goamd64: v2
-          - goos: linux
-            goarch: amd64
-            goamd64: v3
-          # END Linux AMD64 v1 v2 v3
-      fail-fast: false
-
-    runs-on: ubuntu-22.04
-    env:
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
-      GOARM: ${{ matrix.goarm }}
-      GOAMD64: ${{ matrix.goamd64 }}
-      CGO_ENABLED: 0
-
-    steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: Get the version
-        id: get_version
-        env:
-          REF: ${{ github.ref }}
-        run: |
-          if [[ "$REF" == "refs/tags/v"* ]]; then
-            tag=$(git describe --tags $(git rev-list --tags --max-count=1))
-            version=${tag}
-          else
-            date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
-            count=$(git rev-list --count HEAD)
-            commit=$(git rev-parse --short HEAD)
-            version="unstable-$date.r${count}.$commit"
-          fi
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
-          echo "VERSION=$version" >> $GITHUB_ENV
-
-      - name: Show workflow information
-        id: get_filename
-        run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
-
-      - name: Set up Go
-        uses: actions/setup-go@v3
-        with:
-          go-version: '^1.19'
-
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15
-
-      - name: Get project dependencies
-        run: |
-          git submodule update --init --recursive
-          GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
-          find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
-          sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
-
-      - name: Build dae
-        run: |
-          mkdir -p ./build/
-          export CGO_ENABLED=0
-          export GOFLAGS="-trimpath -modcacherw"
-          export CFLAGS="-D__REMOVE_BPF_PRINTK"
-          export OUTPUT=build/dae-$ASSET_NAME
-          export VERSION=${{ steps.get_version.outputs.VERSION }}
-          export CLANG=clang-15
-          export STRIP=llvm-strip-15
-          make
-          cp ./install/dae.service ./build/
-          cp ./example.dae ./build/
-          curl -L -o ./build/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./build/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
-
-      - name: Smoking test
-        if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        run: ./build/dae-$ASSET_NAME --version
-
-      - name: Create binary ZIP archive and Signature
-        run: |
-          pushd build || exit 1
-          zip -9vr ../dae-$ASSET_NAME.zip .
-          popd || exit 1
-          FILE=./dae-$ASSET_NAME.zip
-          DGST=$FILE.dgst
-          md5sum        $FILE >>$DGST
-          shasum -a 1   $FILE >>$DGST
-          shasum -a 256 $FILE >>$DGST
-          shasum -a 512 $FILE >>$DGST
-
-      - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-          path: build/*
+    uses: daeuniverse/dae-1/.github/workflows/seed-build.yml@ci_modularity
