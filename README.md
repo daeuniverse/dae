@@ -25,7 +25,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
 - [x] Support advanced DNS resolution process.
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
-- [x] Support `tuic` protocol.
+- [x] Support various trending proxy protocols, seen in [proxy-protocols.md](./docs/en/proxy-protocols.md).
 
 ## Getting Started
 
