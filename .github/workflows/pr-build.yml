@@ -1,9 +1,9 @@
-name: Build (Stable)
+name: PR Build (Preview)
+run-name:  "#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.ref }}:${{ github.event.pull_request.head.sha }}"
 
 on:
-  push:
-    branches:
-      - main
+  pull_request:
+    types: [ opened, synchronize, reopened ]
     paths:
       - "**/*.go"
       - "**/*.c"
@@ -11,14 +11,22 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/build.yml"
-      - "Makefile"
 
 jobs:
+  context:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: |
+          echo "$GITHUB_CONTEXT"
+
   build:
     strategy:
       matrix:
         goos: [ linux ]
-        goarch: [ arm64, 386, riscv64, mips64, mips64le, mipsle, mips ]
+        goarch: [ arm64 ]
         include:
           # BEGIN Linux ARM 5 6 7
           - goos: linux
@@ -45,6 +53,7 @@ jobs:
       fail-fast: false
 
     runs-on: ubuntu-22.04
+    needs: [context]
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
@@ -137,3 +146,4 @@ jobs:
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
+

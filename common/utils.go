@@ -12,7 +12,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -22,9 +21,11 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/mzz2017/softwind/netproxy"
+
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 )
 
@@ -409,7 +410,7 @@ func NewGcm(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-func AddrToDnsType(addr netip.Addr) dnsmessage.Type {
+func AddrToDnsType(addr netip.Addr) uint16 {
 	if addr.Is4() {
 		return dnsmessage.TypeA
 	} else {

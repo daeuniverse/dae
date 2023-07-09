@@ -20,9 +20,9 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 const (
@@ -31,11 +31,11 @@ const (
 	MaxRetry          = 2
 )
 
-func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Message, timeout time.Duration) {
+func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
 	if sniffDns {
-		var dnsmsg dnsmessage.Message
+		var dnsmsg dnsmessage.Msg
 		if err := dnsmsg.Unpack(data); err == nil {
-			//log.Printf("DEBUG: lookup %v", dnsmsg.Questions[0].Name)
+			//log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
 			return &dnsmsg, DnsNatTimeout
 		}
 	}

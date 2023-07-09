@@ -20,11 +20,11 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/safchain/ethtool"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 )
 
@@ -312,7 +312,7 @@ func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) 
 	done := make(chan struct{})
 	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
-			c.log.Warnln("LinkSubscribe:", err)
+			c.log.Debug("LinkSubscribe:", err)
 		},
 		ListExisting: true,
 	}); e != nil {
@@ -629,15 +629,18 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 	// Parse ips from DNS resp answers.
 	var ips []netip.Addr
-	for _, ans := range cache.Answers {
-		var ip netip.Addr
-		switch ans.Header.Type {
-		case dnsmessage.TypeA:
-			ip = netip.AddrFrom4(ans.Body.(*dnsmessage.AResource).A)
-		case dnsmessage.TypeAAAA:
-			ip = netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA)
+	for _, ans := range cache.Answer {
+		var (
+			ip netip.Addr
+			ok bool
+		)
+		switch body := ans.(type) {
+		case *dnsmessage.A:
+			ip, ok = netip.AddrFromSlice(body.A)
+		case *dnsmessage.AAAA:
+			ip, ok = netip.AddrFromSlice(body.AAAA)
 		}
-		if ip.IsUnspecified() {
+		if !ok || ip.IsUnspecified() {
 			continue
 		}
 		ips = append(ips, ip)
@@ -672,15 +675,18 @@ func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
 	// Parse ips from DNS resp answers.
 	var ips []netip.Addr
-	for _, ans := range cache.Answers {
-		var ip netip.Addr
-		switch ans.Header.Type {
-		case dnsmessage.TypeA:
-			ip = netip.AddrFrom4(ans.Body.(*dnsmessage.AResource).A)
-		case dnsmessage.TypeAAAA:
-			ip = netip.AddrFrom16(ans.Body.(*dnsmessage.AAAAResource).AAAA)
+	for _, ans := range cache.Answer {
+		var (
+			ip netip.Addr
+			ok bool
+		)
+		switch body := ans.(type) {
+		case *dnsmessage.A:
+			ip, ok = netip.AddrFromSlice(body.A)
+		case *dnsmessage.AAAA:
+			ip, ok = netip.AddrFromSlice(body.AAAA)
 		}
-		if ip.IsUnspecified() {
+		if !ok || ip.IsUnspecified() {
 			continue
 		}
 		ips = append(ips, ip)
