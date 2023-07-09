@@ -24,12 +24,15 @@ func FormatL4Proto(l4proto uint8) string {
 	return strconv.Itoa(int(l4proto))
 }
 
-func (c *controlPlaneCore) OutboundAliveChangeCallback(outbound uint8) func(alive bool, networkType *dialer.NetworkType, isInit bool) {
+func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bool) func(alive bool, networkType *dialer.NetworkType, isInit bool) {
 	return func(alive bool, networkType *dialer.NetworkType, isInit bool) {
 		select {
 		case <-c.closed.Done():
 			return
 		default:
+		}
+		if !isInit && dryrun {
+			return
 		}
 		if !isInit || c.log.IsLevelEnabled(logrus.TraceLevel) {
 			strAlive := "NOT ALIVE"

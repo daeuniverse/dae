@@ -3,9 +3,10 @@
 <img src="https://github.com/daeuniverse/dae/blob/main/logo.png" border="0" width="25%">
 
 <p align="left">
+    <img src="https://github.com/daeuniverse/dae/actions/workflows/build.yml/badge.svg" alt="Build"/>
     <img src="https://custom-icon-badges.herokuapp.com/github/license/daeuniverse/dae?logo=law&color=orange" alt="License"/>
     <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Fdaeuniverse%2Fdae&count_bg=%235C3DC8&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=hits&edge_flat=false"/>
-    <img src="https://custom-icon-badges.herokuapp.com/badge/version-v0.2.0rc1-blue.svg?logo=semanticrelease&logoColor=white" alt="version">
+    <img src="https://custom-icon-badges.herokuapp.com/github/v/release/daeuniverse/dae?logo=rocket" alt="version">
     <img src="https://custom-icon-badges.herokuapp.com/github/issues-pr-closed/daeuniverse/dae?color=purple&logo=git-pull-request&logoColor=white"/>
     <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
@@ -25,10 +26,11 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
 - [x] Support advanced DNS resolution process.
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
+- [x] Support various trending proxy protocols, seen in [proxy-protocols.md](./docs/en/proxy-protocols.md).
 
 ## Getting Started
 
-Please refer to [Quick Start Guide](./docs/getting-started) to start using `dae` right away!
+Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` right away!
 
 Documentation: <https://dae.v2raya.org>
 
@@ -39,7 +41,7 @@ Documentation: <https://dae.v2raya.org>
 
 ## How it works
 
-See [How it works](docs/how_it_works_zh.md).
+See [How it works](./docs/en/how-it-works.md).
 
 ## TODO
 
@@ -52,7 +54,7 @@ See [How it works](docs/how_it_works_zh.md).
 
 ## Contributors
 
-Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./CONTRIBUTING.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
+Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./docs/en/development/contribute.md). Also, it is recommended following the [commit-msg-guide](./docs/en/development/commit-msg-guide.md).
 
 ## License
 

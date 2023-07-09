@@ -206,7 +206,7 @@ func (r *RoutingRule) String(replaceParamWithN bool, compact bool, quoteVal bool
 			}
 		}
 		var paramBuilder strings.Builder
-		n += len(f.Params)
+		n = len(f.Params)
 		if replaceParamWithN {
 			paramBuilder.WriteString("[n = " + strconv.Itoa(n) + "]")
 		} else {

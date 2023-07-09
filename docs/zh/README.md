@@ -7,7 +7,7 @@
 使用 `uname -r` 来查看内核版本。
 
 > **注意**
-> 如果你的内核版本低于 `5.8`，可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级你的内核。
+> 如果你的内核版本低于 `5.8`，可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级你的内核。
 
 `绑定到 LAN 接口: >= 5.8`
 
@@ -60,7 +60,7 @@ CONFIG_BPF_EVENTS=y
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-> **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](./kernel-upgrade.md) 升级到支持的内核。
+> **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
 
 ## 安装
 
@@ -98,7 +98,7 @@ emerge -a net-proxy/dae
 
 ### macOS
 
-我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](run-on-macos.md)。
+我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](../en/tutorials/run-on-macos.md)。
 
 ### Docker
 
@@ -111,13 +111,19 @@ git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
 
+### 手动安装
+
+> **Note**: 这种方法仅建议高级用户使用。采用这种方法，用户可以灵活地测试各个版本的 dae。请注意，新引入的功能有时可能存在 bug，因此请自行承担风险。
+
+dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](../en/user-guide/run-as-daemon.md)。
+
 ### 安装脚本
 
 见 [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer)（或使用 [镜像站](https://hubmirror.v2raya.org/daeuniverse/dae-installer)）。
 
 ### 手动构建
 
-见 [Build Guide](build-by-yourself.md)。
+见 [Build Guide](../en/user-guide/build-by-yourself.md)。
 
 ## 最小 dae 配置
 
@@ -145,7 +151,7 @@ subscription {
   # 在下面填入你的订阅链接。
 }
 
-# 更多的 DNS 样例见 https://github.com/daeuniverse/dae/blob/main/docs/dns.md
+# 更多的 DNS 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md
 dns {
   upstream {
     googledns: 'tcp+udp://dns.google.com:53'
@@ -170,7 +176,7 @@ group {
   }
 }
 
-# 更多的 Routing 样例见 https://github.com/daeuniverse/dae/blob/main/docs/routing.md
+# 更多的 Routing 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
 routing {
   pname(NetworkManager, systemd-resolved, dnsmasq) -> must_direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
@@ -210,11 +216,11 @@ dns {
 
 当配置变化时，可以方便使用命令进行配置的热重载，在该过程中不会中断已有连接。当想暂停代理时，可使用命令进行暂停。
 
-详见 [Reload and suspend](reload-and-suspend.md)。
+详见 [Reload and suspend](../en/user-guide/reload-and-suspend.md)。
 
 ## 错误排查
 
-详见 [Troubleshooting](troubleshooting.md)。
+详见 [Troubleshooting](../en/troubleshooting.md)。
 
 ## 大鹅宇宙
 

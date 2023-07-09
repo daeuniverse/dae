@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	AppName    = "dae"
 	BpfPinRoot = "/sys/fs/bpf"
 
 	TaskCommLen = 16
@@ -131,6 +130,16 @@ const (
 	IpVersion_6 IpVersionType = 2
 	IpVersion_X IpVersionType = 3
 )
+
+func (v IpVersionType) ToIpVersionStr() IpVersionStr {
+	switch v {
+	case IpVersion_4:
+		return IpVersionStr_4
+	case IpVersion_6:
+		return IpVersionStr_6
+	}
+	panic("unsupported ipversion")
+}
 
 var (
 	BasicFeatureVersion = internal.Version{5, 2, 0}

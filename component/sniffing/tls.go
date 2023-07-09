@@ -21,9 +21,8 @@ const (
 )
 
 var (
-	Version_Tls1_0  = []byte{0x03, 0x01}
-	Version_Tls1_2  = []byte{0x03, 0x03}
-	HandShakePrefix = []byte{ContentType_HandShake, Version_Tls1_0[0], Version_Tls1_0[1]}
+	Version_Tls1_0 = []byte{0x03, 0x01}
+	Version_Tls1_2 = []byte{0x03, 0x03}
 )
 
 // SniffTls only supports tls1.2, tls1.3
@@ -35,7 +34,7 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 		return "", NotApplicableError
 	}
 
-	if !bytes.Equal(s.buf[:3], HandShakePrefix) {
+	if s.buf[0] != ContentType_HandShake || (!bytes.Equal(s.buf[1:3], Version_Tls1_0) && !bytes.Equal(s.buf[1:3], Version_Tls1_2)) {
 		return "", NotApplicableError
 	}
 

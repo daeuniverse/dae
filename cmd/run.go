@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +14,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/mzz2017/softwind/protocol/direct"
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
@@ -121,6 +122,10 @@ loop:
 		switch sig {
 		case nil:
 			if reloading {
+				if listener == nil {
+					// Failed to listen. Exit.
+					break loop
+				}
 				// Serve.
 				reloading = false
 				log.Warnln("[Reload] Serve")

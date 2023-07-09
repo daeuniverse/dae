@@ -6,10 +6,11 @@
 package dialer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/common"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -20,13 +21,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 const Timeout = 10 * time.Second
@@ -236,6 +239,7 @@ type CheckDnsOptionRaw struct {
 	mu              sync.Mutex
 	Raw             []string
 	ResolverNetwork string
+	Somark          uint32
 }
 
 func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
@@ -319,6 +323,14 @@ func (d *Dialer) aliveBackground() {
 			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method, tcpSomark)
 		},
 	}
+	tcpNetwork := netproxy.MagicNetwork{
+		Network: "tcp",
+		Mark:    d.CheckDnsOptionRaw.Somark,
+	}.Encode()
+	udpNetwork := netproxy.MagicNetwork{
+		Network: "udp",
+		Mark:    d.CheckDnsOptionRaw.Somark,
+	}.Encode()
 	tcp4CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
@@ -338,7 +350,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), tcpNetwork)
 		},
 	}
 	tcp6CheckDnsOpt := &CheckOption{
@@ -360,7 +372,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), tcpNetwork)
 		},
 	}
 	udp4CheckDnsOpt := &CheckOption{
@@ -381,7 +393,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), udpNetwork)
 		},
 	}
 	udp6CheckDnsOpt := &CheckOption{
@@ -402,7 +414,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), d.CheckDnsOptionRaw.ResolverNetwork)
+			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), udpNetwork)
 		},
 	}
 	var CheckOpts = []*CheckOption{
@@ -602,6 +614,10 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	// Judge the status code.
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {
+			b, _ := io.ReadAll(resp.Body)
+			buf := bytes.NewBuffer(nil)
+			_ = resp.Request.Write(buf)
+			d.Log.Debugln(buf.String(), "Resp: ", string(b))
 			return false, fmt.Errorf("unexpected status code: %v", resp.StatusCode)
 		}
 		return true, nil

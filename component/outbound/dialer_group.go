@@ -6,6 +6,7 @@
 package outbound
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -207,8 +208,17 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 	panic("invalid param")
 }
 
-// Select selects a dialer from group according to selectionPolicy.
-func (g *DialerGroup) Select(networkType *dialer.NetworkType) (d *dialer.Dialer, latency time.Duration, err error) {
+// Select selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
+func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bool) (d *dialer.Dialer, latency time.Duration, err error) {
+	d, latency, err = g._select(networkType)
+	if !strictIpVersion && errors.Is(err, NoAliveDialerError) {
+		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
+		return g._select(networkType)
+	}
+	return d, latency, err
+}
+
+func (g *DialerGroup) _select(networkType *dialer.NetworkType) (d *dialer.Dialer, latency time.Duration, err error) {
 	if len(g.Dialers) == 0 {
 		return nil, 0, fmt.Errorf("no dialer in this group")
 	}

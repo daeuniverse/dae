@@ -8,16 +8,16 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/daeuniverse/dae/pkg/trie"
 	"net"
+	"net/netip"
 
-	"github.com/cilium/ebpf"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 )
 
 type RoutingMatcher struct {
-	lpmArrayMap   *ebpf.Map
+	lpmMatcher    []*trie.Trie
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
 	matches []bpfMatchSet
@@ -38,19 +38,12 @@ func (m *RoutingMatcher) Match(
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
 		return 0, 0, false, fmt.Errorf("bad address length")
 	}
-	lpmKeys := make([]*_bpfLpmKey, consts.MatchType_Mac+1)
-	lpmKeys[consts.MatchType_IpSet] = &_bpfLpmKey{
-		PrefixLen: 128,
-		Data:      common.Ipv6ByteSliceToUint32Array(destAddr),
-	}
-	lpmKeys[consts.MatchType_SourceIpSet] = &_bpfLpmKey{
-		PrefixLen: 128,
-		Data:      common.Ipv6ByteSliceToUint32Array(sourceAddr),
-	}
-	lpmKeys[consts.MatchType_Mac] = &_bpfLpmKey{
-		PrefixLen: 128,
-		Data:      common.Ipv6ByteSliceToUint32Array(mac),
-	}
+
+	bin128s := make([]string, consts.MatchType_Mac+1)
+	bin128s[consts.MatchType_IpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(destAddr)), 128))
+	bin128s[consts.MatchType_SourceIpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(sourceAddr)), 128))
+	bin128s[consts.MatchType_Mac] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(mac)), 128))
+
 	var domainMatchBitmap []uint32
 	if domain != "" {
 		domainMatchBitmap = m.domainMatcher.MatchDomainBitmap(domain)
@@ -65,19 +58,10 @@ func (m *RoutingMatcher) Match(
 		switch consts.MatchType(match.Type) {
 		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
 			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
-			var lpm *ebpf.Map
-			if err = m.lpmArrayMap.Lookup(lpmIndex, &lpm); err != nil {
-				//logrus.Debugln("m.lpmArrayMap.Lookup:", err)
-				break
+			m := m.lpmMatcher[lpmIndex]
+			if m.HasPrefix(bin128s[match.Type]) {
+				goodSubrule = true
 			}
-			var v uint32
-			if err = lpm.Lookup(*lpmKeys[int(match.Type)], &v); err != nil {
-				_ = lpm.Close()
-				//logrus.Debugln("lpm.Lookup:", err, lpmKeys[int(match.Type)], match.Type, destAddr)
-				break
-			}
-			_ = lpm.Close()
-			goodSubrule = true
 		case consts.MatchType_DomainSet:
 			if domainMatchBitmap != nil && (domainMatchBitmap[i/32]>>(i%32))&1 > 0 {
 				goodSubrule = true

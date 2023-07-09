@@ -1,6 +1,6 @@
 # 其他代理协议
 
-dae 目前支持的代理协议有：
+> **Note**: dae 目前支持以下代理协议
 
 - [x] HTTP(S), naiveproxy
 - [x] Socks
@@ -21,6 +21,7 @@ dae 目前支持的代理协议有：
 - [x] Trojan
   - [x] Trojan-gfw
   - [x] Trojan-go
+- [x] Tuic (v5)
 
 有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
 

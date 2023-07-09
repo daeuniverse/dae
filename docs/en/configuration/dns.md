@@ -29,7 +29,7 @@ dns {
         googledns: 'tcp+udp://dns.google.com:53'
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
-    # See https://github.com/daeuniverse/dae/blob/main/docs/routing.md
+    # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
     routing {
         # According to the request of dns query, decide to use which DNS upstream.
         # Match rules from top to bottom.
@@ -41,7 +41,7 @@ dns {
 
             # DNS request name (omit suffix dot '.').
             qname(geosite:category-ads-all) -> reject
-            qname(geosite:google@cn) -> alidns # Also see: https://github.com/v2ray/domain-list-community#attributes
+            qname(geosite:google@cn) -> alidns # Also see: https://github.com/v2fly/domain-list-community#attributes
             qname(suffix: abc.com, keyword: google) -> googledns
             qname(full: ok.com, regex: '^yes') -> googledns
             # DNS request type

@@ -31,7 +31,7 @@ global {
     wan_interface: auto
 
     # Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out
-    # https://github.com/daeuniverse/dae/blob/main/docs/getting-started/kernel-parameters.md to see what will dae do.
+    # https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md to see what will dae do.
     auto_config_kernel_parameter: true
 
 
@@ -43,9 +43,9 @@ global {
     #tcp_check_url: 'http://cp.cloudflare.com'
     tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
 
-    # The HTTP request method to `tcp_check_url`. Use 'CONNECT' by default because some server implementations bypass
+    # The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass
     # accounting for this kind of traffic.
-    tcp_check_http_method: CONNECT
+    tcp_check_http_method: HEAD
 
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
     # TCP DNS connectivity of nodes.
@@ -114,7 +114,7 @@ node {
     node2: 'vless://LINK'
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
 dns {
     # For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only
     # respond to type A queries and response empty answer to type AAAA queries.
@@ -192,7 +192,7 @@ group {
     }
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/routing.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
     ### Preset rules.
 

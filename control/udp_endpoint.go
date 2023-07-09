@@ -6,7 +6,6 @@
 package control
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 	"sync"
@@ -36,6 +35,7 @@ type UdpEndpoint struct {
 
 func (ue *UdpEndpoint) start() {
 	buf := pool.Get(EthernetMtu)
+	buf = buf[:cap(buf)]
 	defer pool.Put(buf)
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
@@ -46,9 +46,6 @@ func (ue *UdpEndpoint) start() {
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 		if err = ue.handler(buf[:n], from); err != nil {
-			if errors.Is(err, SuspectedRushAnswerError) {
-				continue
-			}
 			break
 		}
 	}

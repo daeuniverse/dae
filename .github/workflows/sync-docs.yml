@@ -1,4 +1,4 @@
-name: Synchronize document
+name: Synchronize Documents
 
 on:
   workflow_dispatch:

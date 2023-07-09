@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-[**简体中文**](README_zh.md) | [**English**](README.md)
+[**简体中文**](../zh/README.md) | [**English**](README.md)
 
 ## Linux Kernel Requirement
 
@@ -9,7 +9,7 @@
 Use `uname -r` to check the kernel version on your machine.
 
 > **Note**
-> If you find your kernel version is `< 5.8`, follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to the minimum required version.
+> If you find your kernel version is `< 5.8`, follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to the minimum required version.
 
 `Bind to LAN: >= 5.8`
 
@@ -64,7 +64,7 @@ Check them using command like:
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-> **Note**: `Armbian` users can follow the [**Upgrade Guide**](./kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
+> **Note**: `Armbian` users can follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
 
 ## Installation
 
@@ -104,7 +104,7 @@ emerge -a net-proxy/dae
 
 ### macOS
 
-We provide a hacky way to run dae on your macOS. See [run on macOS](run-on-macos.md).
+We provide a hacky way to run dae on your macOS. See [run on macOS](tutorials/run-on-macos.md).
 
 ### Docker
 
@@ -117,13 +117,19 @@ git clone --depth=1 https://github.com/daeuniverse/dae
 docker compose up -d --build
 ```
 
+## Manual installation
+
+> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, do it at your own risk.
+
+dae can run as a daemon (systemd) service. See [run-as-daemon](user-guide/run-as-daemon.md)
+
 ### Installation Script
 
 See [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer) (or [mirror](https://hubmirror.v2raya.org/daeuniverse/dae-installer)).
 
 ### Build from scratch
 
-See [Build Guide](build-by-yourself.md).
+See [Build Guide](user-guide/build-by-yourself.md).
 
 ## Minimal Configuration
 
@@ -151,7 +157,7 @@ subscription {
   # Fill in your subscription links here.
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/dns.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
 dns {
   upstream {
     googledns: 'tcp+udp://dns.google.com:53'
@@ -176,7 +182,7 @@ group {
   }
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/routing.md for full examples.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
   pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
@@ -199,7 +205,7 @@ If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37
 
 When the configuration changes, it is convenient to use command to hot reload the configuration, and the existing connection will not be interrupted in the process. When you want to suspend dae, you can use command to pause.
 
-See [Reload and suspend](reload-and-suspend.md).
+See [Reload and suspend](user-guide/reload-and-suspend.md).
 
 ## Troubleshooting
 

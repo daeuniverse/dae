@@ -32,11 +32,12 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/transport/grpc"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 )
 
@@ -202,11 +203,7 @@ func NewControlPlane(
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
-			if global.AutoConfigKernelParameter {
-				SetSendRedirects(ifname, "0")
-				SetForwarding(ifname, "1")
-			}
-			if err = core.bindLan(ifname); err != nil {
+			if err = core.bindLan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
 			}
 		}
@@ -238,6 +235,7 @@ func NewControlPlane(
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
 			Raw:             global.UdpCheckDns,
 			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+			Somark:          global.SoMarkFromDae,
 		},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
@@ -246,22 +244,35 @@ func NewControlPlane(
 		TlsImplementation: global.TlsImplementation,
 		UtlsImitate:       global.UtlsImitate,
 	}
+
+	// Dial mode.
+	dialMode, err := consts.ParseDialMode(global.DialMode)
+	if err != nil {
+		return nil, err
+	}
+	sniffingTimeout := global.SniffingTimeout
+	if dialMode == consts.DialMode_Ip {
+		sniffingTimeout = 0
+	}
+	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{dialer.NewDirectDialer(option, true)},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, core.OutboundAliveChangeCallback(0)),
+			}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback)),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
 			[]*dialer.Dialer{dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, core.OutboundAliveChangeCallback(1)),
+			}, core.outboundAliveChangeCallback(1, disableKernelAliveCallback)),
 	}
 
 	// Filter out groups.
+	// FIXME: Ugly code here: reset grpc clients manually.
+	grpc.CleanGlobalClientConnectionCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
@@ -286,7 +297,8 @@ func NewControlPlane(
 			log.Infoln("\t<Empty>")
 		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy, core.OutboundAliveChangeCallback(uint8(len(outbounds))))
+		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy,
+			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
 		outbounds = append(outbounds, dialerGroup)
 	}
 
@@ -330,21 +342,12 @@ func NewControlPlane(
 	if err = builder.BuildKernspace(log); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
-	routingMatcher, err := builder.BuildUserspace(core.bpf.LpmArrayMap)
+	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
 
-	/// Dial mode.
-	dialMode, err := consts.ParseDialMode(global.DialMode)
-	if err != nil {
-		return nil, err
-	}
-	sniffingTimeout := global.SniffingTimeout
-	if dialMode == consts.DialMode_Ip {
-		sniffingTimeout = 0
-	}
-
+	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
 		log:               log,
@@ -406,10 +409,10 @@ func NewControlPlane(
 			}
 			return nil
 		},
-		NewCache: func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error) {
+		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time) (cache *DnsCache, err error) {
 			return &DnsCache{
 				DomainBitmap: plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
-				Answers:      answers,
+				Answer:       answers,
 				Deadline:     deadline,
 			}, nil
 		},
@@ -430,8 +433,13 @@ func NewControlPlane(
 				continue
 			}
 			host := cacheKey[:lastDot]
-			typ := cacheKey[lastDot+1:]
-			_ = plane.dnsController.UpdateDnsCacheDeadline(host, typ, cache.Answers, cache.Deadline)
+			_typ := cacheKey[lastDot+1:]
+			typ, err := strconv.ParseUint(_typ, 10, 16)
+			if err != nil {
+				// Unexpected.
+				return nil, err
+			}
+			_ = plane.dnsController.UpdateDnsCacheDeadline(host, uint16(typ), cache.Answer, cache.Deadline)
 		}
 	} else if _bpf != nil {
 		// Is reloading, and dnsCache == nil.
@@ -506,50 +514,43 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 	/// Updates dns cache to support domain routing for hostname of dns_upstream.
 	// Ten years later.
 	deadline := time.Now().Add(time.Hour * 24 * 365 * 10)
-	fqdn := dnsUpstream.Hostname
-	if !strings.HasSuffix(fqdn, ".") {
-		fqdn = fqdn + "."
-	}
+	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
 
 	if dnsUpstream.Ip4.IsValid() {
 		typ := dnsmessage.TypeA
-		answers := []dnsmessage.Resource{{
-			Header: dnsmessage.ResourceHeader{
-				Name:  dnsmessage.MustNewName(fqdn),
-				Type:  typ,
-				Class: dnsmessage.ClassINET,
-				TTL:   0, // Must be zero.
+		answers := []dnsmessage.RR{&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   dnsmessage.CanonicalName(fqdn),
+				Rrtype: typ,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0, // Must be zero.
 			},
-			Body: &dnsmessage.AResource{
-				A: dnsUpstream.Ip4.As4(),
-			},
+			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 			return err
 		}
 	}
 
 	if dnsUpstream.Ip6.IsValid() {
 		typ := dnsmessage.TypeAAAA
-		answers := []dnsmessage.Resource{{
-			Header: dnsmessage.ResourceHeader{
-				Name:  dnsmessage.MustNewName(fqdn),
-				Type:  typ,
-				Class: dnsmessage.ClassINET,
-				TTL:   0, // Must be zero.
+		answers := []dnsmessage.RR{&dnsmessage.AAAA{
+			Hdr: dnsmessage.RR_Header{
+				Name:   dnsmessage.CanonicalName(fqdn),
+				Rrtype: typ,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0, // Must be zero.
 			},
-			Body: &dnsmessage.AAAAResource{
-				AAAA: dnsUpstream.Ip6.As16(),
-			},
+			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool) {
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
 	dialMode := consts.DialMode_Ip
 
 	if !outbound.IsReserved() && domain != "" {
@@ -597,6 +598,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	switch dialMode {
 	case consts.DialMode_Ip:
 		dialTarget = dst.String()
+		dialIp = true
 	case consts.DialMode_Domain:
 		if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
 			// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
@@ -605,6 +607,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		if _, err := netip.ParseAddr(domain); err == nil {
 			// domain is IPv4 or IPv6 (has colon)
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
+			dialIp = true
 
 		} else if _, _, err := net.SplitHostPort(domain); err == nil {
 			// domain is already domain:port
@@ -618,7 +621,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
 	}
-	return dialTarget, shouldReroute
+	return dialTarget, shouldReroute, dialIp
 }
 
 type Listener struct {
@@ -848,7 +851,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
 			}
 			dialerGroup := c.outbounds[outboundIndex]
-			d, latency, err := dialerGroup.Select(&networkType)
+			// DNS always dial IP.
+			d, latency, err := dialerGroup.Select(&networkType, true)
 			if err != nil {
 				continue
 			}

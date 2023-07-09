@@ -38,6 +38,7 @@ func (c *Config) Marshal(indentSpace int) (b []byte, err error) {
 
 type Marshaller struct {
 	IndentSpace int
+	IgnoreZero  bool
 	buf         bytes.Buffer
 }
 
@@ -138,7 +139,7 @@ unsupported:
 }
 
 func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err error) {
-	if from.IsZero() {
+	if m.IgnoreZero && from.IsZero() {
 		// Do not marshal zero value.
 		return nil
 	}
