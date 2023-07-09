@@ -32,12 +32,12 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/mzz2017/softwind/pool"
 	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/transport/grpc"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 )
 
@@ -409,10 +409,10 @@ func NewControlPlane(
 			}
 			return nil
 		},
-		NewCache: func(fqdn string, answers []dnsmessage.Resource, deadline time.Time) (cache *DnsCache, err error) {
+		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time) (cache *DnsCache, err error) {
 			return &DnsCache{
 				DomainBitmap: plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
-				Answers:      answers,
+				Answer:       answers,
 				Deadline:     deadline,
 			}, nil
 		},
@@ -433,8 +433,13 @@ func NewControlPlane(
 				continue
 			}
 			host := cacheKey[:lastDot]
-			typ := cacheKey[lastDot+1:]
-			_ = plane.dnsController.UpdateDnsCacheDeadline(host, typ, cache.Answers, cache.Deadline)
+			_typ := cacheKey[lastDot+1:]
+			typ, err := strconv.ParseUint(_typ, 10, 16)
+			if err != nil {
+				// Unexpected.
+				return nil, err
+			}
+			_ = plane.dnsController.UpdateDnsCacheDeadline(host, uint16(typ), cache.Answer, cache.Deadline)
 		}
 	} else if _bpf != nil {
 		// Is reloading, and dnsCache == nil.
@@ -509,43 +514,36 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 	/// Updates dns cache to support domain routing for hostname of dns_upstream.
 	// Ten years later.
 	deadline := time.Now().Add(time.Hour * 24 * 365 * 10)
-	fqdn := dnsUpstream.Hostname
-	if !strings.HasSuffix(fqdn, ".") {
-		fqdn = fqdn + "."
-	}
+	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
 
 	if dnsUpstream.Ip4.IsValid() {
 		typ := dnsmessage.TypeA
-		answers := []dnsmessage.Resource{{
-			Header: dnsmessage.ResourceHeader{
-				Name:  dnsmessage.MustNewName(fqdn),
-				Type:  typ,
-				Class: dnsmessage.ClassINET,
-				TTL:   0, // Must be zero.
+		answers := []dnsmessage.RR{&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   dnsmessage.CanonicalName(fqdn),
+				Rrtype: typ,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0, // Must be zero.
 			},
-			Body: &dnsmessage.AResource{
-				A: dnsUpstream.Ip4.As4(),
-			},
+			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 			return err
 		}
 	}
 
 	if dnsUpstream.Ip6.IsValid() {
 		typ := dnsmessage.TypeAAAA
-		answers := []dnsmessage.Resource{{
-			Header: dnsmessage.ResourceHeader{
-				Name:  dnsmessage.MustNewName(fqdn),
-				Type:  typ,
-				Class: dnsmessage.ClassINET,
-				TTL:   0, // Must be zero.
+		answers := []dnsmessage.RR{&dnsmessage.AAAA{
+			Hdr: dnsmessage.RR_Header{
+				Name:   dnsmessage.CanonicalName(fqdn),
+				Rrtype: typ,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0, // Must be zero.
 			},
-			Body: &dnsmessage.AAAAResource{
-				AAAA: dnsUpstream.Ip6.As16(),
-			},
+			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ.String(), answers, deadline); err != nil {
+		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
 			return err
 		}
 	}

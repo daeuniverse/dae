@@ -16,8 +16,8 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 var BadUpstreamFormatError = fmt.Errorf("bad upstream format")
@@ -148,7 +148,7 @@ func (s *Dns) InitUpstreams() {
 	wg.Wait()
 }
 
-func (s *Dns) RequestSelect(qname string, qtype dnsmessage.Type) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
 	// Route.
 	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
 	if err != nil {
@@ -170,29 +170,37 @@ func (s *Dns) RequestSelect(qname string, qtype dnsmessage.Type) (upstreamIndex 
 	return upstreamIndex, upstream, nil
 }
 
-func (s *Dns) ResponseSelect(msg *dnsmessage.Message, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
 	if !msg.Response {
 		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
 	}
 
 	// Prepare routing.
 	var qname string
-	var qtype dnsmessage.Type
+	var qtype uint16
 	var ips []netip.Addr
-	if len(msg.Questions) == 0 {
+	if len(msg.Question) == 0 {
 		qname = ""
 		qtype = 0
 	} else {
-		q := msg.Questions[0]
-		qname = q.Name.String()
-		qtype = q.Type
-		for _, ans := range msg.Answers {
-			switch body := ans.Body.(type) {
-			case *dnsmessage.AResource:
-				ips = append(ips, netip.AddrFrom4(body.A))
-			case *dnsmessage.AAAAResource:
-				ips = append(ips, netip.AddrFrom16(body.AAAA))
+		q := msg.Question[0]
+		qname = q.Name
+		qtype = q.Qtype
+		for _, ans := range msg.Answer {
+			var (
+				ip netip.Addr
+				ok bool
+			)
+			switch body := ans.(type) {
+			case *dnsmessage.A:
+				ip, ok = netip.AddrFromSlice(body.A)
+			case *dnsmessage.AAAA:
+				ip, ok = netip.AddrFromSlice(body.AAAA)
 			}
+			if !ok {
+				continue
+			}
+			ips = append(ips, ip)
 		}
 	}
 
