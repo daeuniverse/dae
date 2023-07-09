@@ -1,5 +1,7 @@
 # Working Principle of dae
 
+[**简体中文**](../zh/how-it-works.md) | [**English**](./how-it-works.md)
+
 dae operates by loading a program into the tc (traffic control) mount point in the Linux kernel using [eBPF](https://en.wikipedia.org/wiki/EBPF). This program performs traffic splitting before the traffic enters the TCP/IP network stack. The position of tc in the Linux network protocol stack is shown in the diagram below (the diagram illustrates the receiving path, while the sending path is in the opposite direction), where netfilter represents the location of iptables/nftables.
 
 ![](../netstack-path.webp)
