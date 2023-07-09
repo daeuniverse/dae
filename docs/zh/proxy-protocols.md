@@ -1,6 +1,6 @@
 # 其他代理协议
 
-dae 目前支持的代理协议有：
+> **Note**: dae 目前支持以下代理协议
 
 - [x] HTTP(S), naiveproxy
 - [x] Socks

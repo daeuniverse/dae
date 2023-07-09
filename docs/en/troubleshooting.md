@@ -8,7 +8,7 @@ invalid argument: unknown func bpf_trace_printk
 
 Solution:
 
-Compile dae with CFLAG `-D__REMOVE_BPF_PRINTK`. See [build-by-yourself](build-by-yourself.md).
+Compile dae with CFLAG `-D__REMOVE_BPF_PRINTK`. See [build-by-yourself](user-guide/build-by-yourself.md).
 
 ## No network after `dae suspend`
 
@@ -24,7 +24,7 @@ Because dae will not hijack any DNS request if it was suspended.
 
 ### Troubleshoot local DNS service
 
-If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](external-dns.md).
+If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](configuration/external-dns.md).
 
 ### Troubleshoot firewall
 
