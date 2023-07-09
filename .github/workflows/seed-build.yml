@@ -13,6 +13,11 @@ name: Build
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+        default: ${{ github.ref }}
 
 jobs:
   build:
@@ -62,7 +67,7 @@ jobs:
       - name: Get the version
         id: get_version
         env:
-          REF: ${{ github.ref }}
+          REF: ${{ inputs.ref }}
         run: |
           if [[ "$REF" == "refs/tags/v"* ]]; then
             tag=$(git describe --tags $(git rev-list --tags --max-count=1))
