@@ -446,15 +446,17 @@ func (d *Dialer) aliveBackground() {
 	}()
 	var wg sync.WaitGroup
 	for range d.checkCh {
-		// No need to test if there is no dialer selection policy using its latency.
 		for _, opt := range CheckOpts {
-			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) > 0 {
-				wg.Add(1)
-				go func(opt *CheckOption) {
-					d.Check(timeout, opt)
-					wg.Done()
-				}(opt)
+			// No need to test if there is no dialer selection policy using its latency.
+			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+				continue
 			}
+
+			wg.Add(1)
+			go func(opt *CheckOption) {
+				_, _ = d.Check(timeout, opt)
+				wg.Done()
+			}(opt)
 		}
 		// Wait to block the loop.
 		wg.Wait()
@@ -504,25 +506,6 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	}
 }
 
-func offsetLatency(latency, offset time.Duration) time.Duration {
-	result := latency + offset
-	epsilon := 1 * time.Nanosecond
-	if result < +epsilon {
-		return +epsilon
-	}
-	if result > Timeout-epsilon {
-		result = Timeout - epsilon
-	}
-	return result
-}
-
-func latencyString(latencyAfterOffset, latencyBeforeOffset time.Duration) string {
-	if latencyBeforeOffset == latencyAfterOffset {
-		return latencyAfterOffset.Truncate(time.Millisecond).String()
-	}
-	return latencyAfterOffset.Truncate(time.Millisecond).String() + "(" + latencyBeforeOffset.Truncate(time.Millisecond).String() + ")"
-}
-
 func (d *Dialer) Check(timeout time.Duration,
 	opts *CheckOption,
 ) (ok bool, err error) {
@@ -533,8 +516,7 @@ func (d *Dialer) Check(timeout time.Duration,
 	collection := d.mustGetCollection(opts.networkType)
 	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
 		// No error.
-		_latency := time.Since(start)
-		latency := offsetLatency(_latency, d.InstanceOption.LatencyOffset)
+		latency := time.Since(start)
 		collection.Latencies10.AppendLatency(latency)
 		avg, _ := collection.Latencies10.AvgLatency()
 		collection.MovingAverage = (collection.MovingAverage + latency) / 2
@@ -543,7 +525,7 @@ func (d *Dialer) Check(timeout time.Duration,
 		d.Log.WithFields(logrus.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.property.Name,
-			"last":    latencyString(latency, _latency),
+			"last":    latency.Truncate(time.Millisecond).String(),
 			"avg_10":  avg.Truncate(time.Millisecond),
 			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")

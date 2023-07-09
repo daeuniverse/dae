@@ -9,14 +9,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-)
-
-const (
-	FilterAnnotationKey_AddLatency = "add_latency"
 )
 
 const (
@@ -130,48 +125,37 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 	return true, nil
 }
 
-func (s *DialerSet) applyAnnotation(dialer *dialer.Dialer, annotation []*config_parser.Param) error {
-	for _, param := range annotation {
-		switch param.Key {
-		case FilterAnnotationKey_AddLatency:
-			latency, err := time.ParseDuration(param.Val)
-			if err != nil {
-				return fmt.Errorf("incorrect latency format: %w", err)
-			}
-			// Only the first setting is valid.
-			if dialer.InstanceOption.LatencyOffset == 0 {
-				dialer.InstanceOption.LatencyOffset = latency
-			}
-		default:
-			return fmt.Errorf("unknown filter annotation: %v", param.Key)
-		}
-	}
-	return nil
-}
-
-func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param) (dialers []*dialer.Dialer, err error) {
+func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param) (dialers []*dialer.Dialer, filterAnnotations []*dialer.Annotation, err error) {
 	if len(filters) != len(annotations) {
-		return nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
+		return nil, nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
+	}
+	if len(filters) == 0 {
+		anno := make([]*dialer.Annotation, len(s.dialers))
+		for i := range anno {
+			anno[i] = &dialer.Annotation{}
+		}
+		return s.dialers, anno, nil
 	}
 nextDialerLoop:
 	for _, d := range s.dialers {
 		// Hit any.
 		for j, f := range filters {
-			annotation := annotations[j]
 			hit, err := s.filterHit(d, f)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if hit {
-				if err = s.applyAnnotation(d, annotation); err != nil {
-					return nil, fmt.Errorf("apply filter annotation: %w", err)
+				anno, err := dialer.NewAnnotation(annotations[j])
+				if err != nil {
+					return nil, nil, fmt.Errorf("apply filter annotation: %w", err)
 				}
 				dialers = append(dialers, d)
+				filterAnnotations = append(filterAnnotations, anno)
 				continue nextDialerLoop
 			}
 		}
 	}
-	return dialers, nil
+	return dialers, filterAnnotations, nil
 }
 
 func (s *DialerSet) Close() error {

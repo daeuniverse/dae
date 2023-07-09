@@ -44,8 +44,7 @@ type GlobalOption struct {
 }
 
 type InstanceOption struct {
-	CheckEnabled  bool
-	LatencyOffset time.Duration
+	CheckEnabled bool
 }
 
 type Property struct {
