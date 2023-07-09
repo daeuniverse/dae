@@ -33,4 +33,4 @@ jobs:
     secrets: inherit
 
   build:
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@ci_modularity
+    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
