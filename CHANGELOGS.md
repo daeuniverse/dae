@@ -83,7 +83,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - @earrmouth made their first contribution in #179
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.0/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.1rc1/example.dae
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0...v0.2.1rc1
 
