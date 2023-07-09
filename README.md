@@ -25,10 +25,11 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
 - [x] Support advanced DNS resolution process.
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
+- [x] Support `tuic` protocol.
 
 ## Getting Started
 
-Please refer to [Quick Start Guide](./docs/getting-started) to start using `dae` right away!
+Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` right away!
 
 Documentation: <https://dae.v2raya.org>
 
@@ -39,7 +40,7 @@ Documentation: <https://dae.v2raya.org>
 
 ## How it works
 
-See [How it works](docs/how_it_works_zh.md).
+See [How it works](./docs/zh/how_it_works_zh.md).
 
 ## TODO
 
@@ -52,7 +53,7 @@ See [How it works](docs/how_it_works_zh.md).
 
 ## Contributors
 
-Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./CONTRIBUTING.md). Also, it is recommended following the [commit-msg-guide](./docs/commit-msg-guide.md).
+Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/graphs/contributors). If you would like to contribute, please see the [instructions](./docs/en/development/contribute.md). Also, it is recommended following the [commit-msg-guide](./docs/en/development/commit-msg-guide.md).
 
 ## License
 
