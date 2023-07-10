@@ -13,7 +13,7 @@ on:
       write_to_issue:
         required: true
         description: export changelogs to an issue page
-        default: true
+        default: false
 
 jobs:
   build:
