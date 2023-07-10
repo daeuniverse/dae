@@ -705,15 +705,16 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
+		buf := pool.GetFullCap(consts.EthernetMtu)
+		var oob [120]byte // Size for original dest
+		defer buf.Put()
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
 			}
-			var buf [EthernetMtu]byte
-			var oob [120]byte // Size for original dest
-			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf[:], oob[:])
+			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob[:])
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
 					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
@@ -722,8 +723,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			newBuf := pool.Get(n)
 			copy(newBuf, buf[:n])
-			go func(data []byte, src netip.AddrPort) {
-				defer pool.Put(data)
+			go func(data pool.PB, src netip.AddrPort) {
+				defer data.Put()
 				var realDst netip.AddrPort
 				var routingResult *bpfRoutingResult
 				pktDst := RetrieveOriginalDest(oob[:oobn])

@@ -11,13 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
-)
-
-const (
-	EthernetMtu = 1500
 )
 
 type UdpHandler func(data []byte, from netip.AddrPort) error
@@ -34,8 +31,7 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) start() {
-	buf := pool.Get(EthernetMtu)
-	buf = buf[:cap(buf)]
+	buf := pool.GetFullCap(consts.EthernetMtu)
 	defer pool.Put(buf)
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
