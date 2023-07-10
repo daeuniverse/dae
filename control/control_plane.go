@@ -48,8 +48,6 @@ type ControlPlane struct {
 	deferFuncs []func() error
 	listenIp   string
 
-	udpEndpointPool *UdpEndpointPool
-
 	// TODO: add mutex?
 	outbounds []*outbound.DialerGroup
 

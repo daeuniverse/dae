@@ -193,7 +193,7 @@ getNew:
 		}).Warnln("Touch max retry limit.")
 		return fmt.Errorf("touch max retry limit")
 	}
-	ue, isNew, err := c.udpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
