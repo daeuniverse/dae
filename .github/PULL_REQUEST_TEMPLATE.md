@@ -18,7 +18,7 @@
 
 <!--- If it fixes an open issue, please link to the issue here. -->
 
-Fix #_[issue number]_
+Closes #_[issue number]_
 
 ### Test Result
 
