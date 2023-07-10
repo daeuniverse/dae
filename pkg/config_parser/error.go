@@ -7,10 +7,10 @@ package config_parser
 
 import (
 	"fmt"
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"reflect"
 	"strings"
 
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"github.com/sirupsen/logrus"
 )
 

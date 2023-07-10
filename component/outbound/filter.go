@@ -125,17 +125,37 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 	return true, nil
 }
 
-func (s *DialerSet) Filter(filters []*config_parser.Function) (dialers []*dialer.Dialer, err error) {
-	for _, d := range s.dialers {
-		hit, err := s.filterHit(d, filters)
-		if err != nil {
-			return nil, err
+func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param) (dialers []*dialer.Dialer, filterAnnotations []*dialer.Annotation, err error) {
+	if len(filters) != len(annotations) {
+		return nil, nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
+	}
+	if len(filters) == 0 {
+		anno := make([]*dialer.Annotation, len(s.dialers))
+		for i := range anno {
+			anno[i] = &dialer.Annotation{}
 		}
-		if hit {
-			dialers = append(dialers, d)
+		return s.dialers, anno, nil
+	}
+nextDialerLoop:
+	for _, d := range s.dialers {
+		// Hit any.
+		for j, f := range filters {
+			hit, err := s.filterHit(d, f)
+			if err != nil {
+				return nil, nil, err
+			}
+			if hit {
+				anno, err := dialer.NewAnnotation(annotations[j])
+				if err != nil {
+					return nil, nil, fmt.Errorf("apply filter annotation: %w", err)
+				}
+				dialers = append(dialers, d)
+				filterAnnotations = append(filterAnnotations, anno)
+				continue nextDialerLoop
+			}
 		}
 	}
-	return dialers, nil
+	return dialers, filterAnnotations, nil
 }
 
 func (s *DialerSet) Close() error {

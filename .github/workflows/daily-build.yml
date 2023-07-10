@@ -9,26 +9,19 @@
 # This is a open-source software, liscensed under the AGPL-3.0 License.
 # See /License for more information.
 
-name: PR Build (Preview)
-run-name:  "#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} @${{ github.event.pull_request.head.ref }}:${{ github.event.pull_request.head.sha }}"
+name: Daily Build (Stable)
 
 on:
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-    paths:
-      - "**/*.go"
-      - "**/*.c"
-      - "**/*.h"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/pr-build.yml"
+  schedule:
+    # At 00:00 (UTC+8) every day
+    - cron: "0 8 * * *"
 
 jobs:
   pre-actions:
     uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@master
     with:
       repository: ${{ github.repository }}
-      ref: ${{ github.event.pull_request.head.sha }}
+      ref: ${{ github.sha }}
       fetch-depth: 0
     secrets: inherit
 

@@ -9,10 +9,10 @@ package config_parser
 
 import (
 	"fmt"
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"strconv"
 	"strings"
 
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 	"github.com/sirupsen/logrus"
 )
@@ -164,11 +164,12 @@ func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 		return nil
 	}
 	key := children[0].(*antlr.TerminalNodeImpl).GetText()
+	var param *Param
 	switch valueCtx := children[2].(type) {
 	case *dae_config.LiteralExpressionContext:
 		parser := literalExpressionParser{}
 		parser.Parse(valueCtx)
-		return &Param{
+		param = &Param{
 			Key: key,
 			Val: strings.Join(parser.literals, ","), // TODO: Do we just check grammar and trim spaces and put it back?
 		}
@@ -177,7 +178,7 @@ func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 		if andFunctions == nil {
 			return nil
 		}
-		return &Param{
+		param = &Param{
 			Key:          key,
 			AndFunctions: andFunctions,
 		}
@@ -185,6 +186,26 @@ func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 		w.ReportError(valueCtx, ErrorType_Unsupported)
 		return nil
 	}
+	if len(children) >= 4 {
+		// Parse annotations.
+		optAnnotation, ok := children[3].(*dae_config.OptAnnotationContext)
+		if !ok {
+			w.ReportError(optAnnotation, ErrorType_Unsupported, "ERROR: is not optAnnotation type")
+			return nil
+		}
+		children = optAnnotation.GetChildren()
+		if len(children) >= 3 {
+			optParameterList := children[1]
+			nonEmptyParamList := optParameterList
+			children = nonEmptyParamList.GetChildren()
+			if len(children) == 0 {
+				w.ReportError(optAnnotation, ErrorType_Unsupported, "empty parameter list")
+				return nil
+			}
+			param.Annotation = w.parseNonEmptyParamList(children[0].(*dae_config.NonEmptyParameterListContext))
+		}
+	}
+	return param
 }
 
 func (w *Walker) parseFunctionPrototypeExpression(ctx dae_config.IFunctionPrototypeExpressionContext, verifier functionVerifier) (andFunctions []*Function) {

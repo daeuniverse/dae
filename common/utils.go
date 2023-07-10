@@ -327,6 +327,14 @@ func FuzzyDecode(to interface{}, val string) bool {
 		switch v.Interface().(type) {
 		case []string:
 			v.Set(reflect.ValueOf(strings.Split(val, ",")))
+		case []time.Duration:
+			var durations []time.Duration
+			duration, err := time.ParseDuration(val)
+			if err != nil {
+				return false
+			}
+			durations = append(durations, duration)
+			v.Set(reflect.ValueOf(durations))
 		default:
 			return false
 		}

@@ -257,13 +257,13 @@ func NewControlPlane(
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
-			[]*dialer.Dialer{dialer.NewDirectDialer(option, true)},
+			[]*dialer.Dialer{dialer.NewDirectDialer(option, true)}, []*dialer.Annotation{{}},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
 			}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback)),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
-			[]*dialer.Dialer{dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })},
+			[]*dialer.Dialer{dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })}, []*dialer.Annotation{{}},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
@@ -282,7 +282,7 @@ func NewControlPlane(
 			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
 		}
 		// Filter nodes with user given filters.
-		dialers, err := dialerSet.Filter(group.Filter)
+		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation)
 		if err != nil {
 			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}
@@ -297,7 +297,7 @@ func NewControlPlane(
 			log.Infoln("\t<Empty>")
 		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, *policy,
+		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
 		outbounds = append(outbounds, dialerGroup)
 	}
