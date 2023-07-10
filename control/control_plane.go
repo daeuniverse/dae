@@ -48,6 +48,8 @@ type ControlPlane struct {
 	deferFuncs []func() error
 	listenIp   string
 
+	udpEndpointPool *UdpEndpointPool
+
 	// TODO: add mutex?
 	outbounds []*outbound.DialerGroup
 
@@ -369,6 +371,7 @@ func NewControlPlane(
 		sniffingTimeout:   sniffingTimeout,
 		tproxyPortProtect: global.TproxyPortProtect,
 		soMarkFromDae:     global.SoMarkFromDae,
+		udpEndpointPool:   NewUdpEndpointPool(),
 	}
 	defer func() {
 		if err != nil {

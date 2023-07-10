@@ -36,6 +36,7 @@ type DialOption struct {
 	Target   string
 	Dialer   *dialer.Dialer
 	Outbound *ob.DialerGroup
+	Network  string
 }
 
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
@@ -192,14 +193,13 @@ getNew:
 		}).Warnln("Touch max retry limit.")
 		return fmt.Errorf("touch max retry limit")
 	}
-	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
+	ue, isNew, err := c.udpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
 			return sendPkt(data, from, realSrc, src, lConn, lanWanFlag)
 		},
 		NatTimeout: natTimeout,
-		Network:    common.MagicNetwork("udp", routingResult.Mark),
 		GetDialOption: func() (option *DialOption, err error) {
 			if shouldReroute {
 				outboundIndex = consts.OutboundControlPlaneRouting
@@ -243,6 +243,7 @@ getNew:
 				Target:   dialTarget,
 				Dialer:   dialerForNew,
 				Outbound: outbound,
+				Network:  common.MagicNetwork("udp", routingResult.Mark),
 			}, nil
 		},
 	})
@@ -288,21 +289,19 @@ getNew:
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).
-	if isNew {
-		if c.log.IsLevelEnabled(logrus.InfoLevel) {
-			fields := logrus.Fields{
-				"network":  networkType.StringWithoutDns(),
-				"outbound": ue.Outbound.Name,
-				"policy":   ue.Outbound.GetSelectionPolicy(),
-				"dialer":   ue.Dialer.Property().Name,
-				"domain":   domain,
-				"ip":       RefineAddrPortToShow(realDst),
-				"pid":      routingResult.Pid,
-				"pname":    ProcessName2String(routingResult.Pname[:]),
-				"mac":      Mac2String(routingResult.Mac[:]),
-			}
-			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), dialTarget)
+	if isNew && c.log.IsLevelEnabled(logrus.InfoLevel) || c.log.IsLevelEnabled(logrus.DebugLevel) {
+		fields := logrus.Fields{
+			"network":  networkType.StringWithoutDns(),
+			"outbound": ue.Outbound.Name,
+			"policy":   ue.Outbound.GetSelectionPolicy(),
+			"dialer":   ue.Dialer.Property().Name,
+			"domain":   domain,
+			"ip":       RefineAddrPortToShow(realDst),
+			"pid":      routingResult.Pid,
+			"pname":    ProcessName2String(routingResult.Pname[:]),
+			"mac":      Mac2String(routingResult.Mac[:]),
 		}
+		c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), dialTarget)
 	}
 
 	return nil

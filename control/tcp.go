@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -185,8 +186,12 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), dialTarget)
 	}
-
-	return d.Dial(common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
+	cd := netproxy.ContextDialer{
+		Dialer: d,
+	}
+	return cd.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
 }
 
 type WriteCloser interface {

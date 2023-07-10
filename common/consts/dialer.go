@@ -7,6 +7,7 @@ package consts
 
 import (
 	"net/netip"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -23,6 +24,7 @@ const (
 
 const (
 	UdpCheckLookupHost = "connectivitycheck.gstatic.com."
+	DefaultDialTimeout = 8 * time.Second
 )
 
 type L4ProtoStr string
