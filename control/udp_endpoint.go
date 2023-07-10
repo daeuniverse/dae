@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
@@ -30,7 +31,8 @@ type UdpEndpoint struct {
 	handler       UdpHandler
 	NatTimeout    time.Duration
 
-	Dialer *dialer.Dialer
+	Dialer   *dialer.Dialer
+	Outbound *outbound.DialerGroup
 }
 
 func (ue *UdpEndpoint) start() {
@@ -75,11 +77,10 @@ type UdpEndpointPool struct {
 type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
-	Dialer     *dialer.Dialer
 	// Network is useful for MagicNetwork
 	Network string
-	// Target is useful only if the underlay does not support Full-cone.
-	Target string
+	// GetTarget is useful only if the underlay does not support Full-cone.
+	GetDialOption func() (option *DialOption, err error)
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -120,7 +121,11 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			return nil, true, fmt.Errorf("createOption.Handler cannot be nil")
 		}
 
-		udpConn, err := createOption.Dialer.Dial(createOption.Network, createOption.Target)
+		dialOption, err := createOption.GetDialOption()
+		if err != nil {
+			return nil, false, err
+		}
+		udpConn, err := dialOption.Dialer.Dial(createOption.Network, dialOption.Target)
 		if err != nil {
 			return nil, true, err
 		}
@@ -139,7 +144,8 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			}),
 			handler:    createOption.Handler,
 			NatTimeout: createOption.NatTimeout,
-			Dialer:     createOption.Dialer,
+			Dialer:     dialOption.Dialer,
+			Outbound:   dialOption.Outbound,
 		}
 		p.pool[lAddr] = ue
 		// Receive UDP messages.
