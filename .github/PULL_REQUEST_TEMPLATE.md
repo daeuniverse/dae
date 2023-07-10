@@ -19,3 +19,7 @@
 <!--- If it fixes an open issue, please link to the issue here. -->
 
 Fix #_[issue number]_
+
+### Test Result
+
+<!--- Attach test result here. -->
