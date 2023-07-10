@@ -639,7 +639,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}()
 
 		// We can block here because we are in a coroutine.
-		respBuf := pool.Get(512)
+		respBuf := pool.GetFullCap(consts.EthernetMtu)
 		defer pool.Put(respBuf)
 		for {
 			// Wait for response.

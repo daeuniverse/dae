@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
@@ -240,8 +241,8 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 		}()
 	}
 	go func() {
-		buf := pool.Get(512)
-		defer pool.Put(buf)
+		buf := pool.GetFullCap(consts.EthernetMtu)
+		defer buf.Put()
 		if magicNetwork.Network == "tcp" {
 			// Read DNS response length
 			_, err := io.ReadFull(c, buf[:2])
@@ -250,7 +251,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 				return
 			}
 			n := binary.BigEndian.Uint16(buf)
-			if n > 512 {
+			if int(n) > cap(buf) {
 				ch <- fmt.Errorf("too big dns resp")
 				return
 			}
