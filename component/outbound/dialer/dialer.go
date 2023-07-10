@@ -17,7 +17,7 @@ var (
 
 type Dialer struct {
 	*GlobalOption
-	instanceOption InstanceOption
+	InstanceOption InstanceOption
 	netproxy.Dialer
 	property Property
 
@@ -65,7 +65,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption:     option,
-		instanceOption:   iOption,
+		InstanceOption:   iOption,
 		Dialer:           dialer,
 		property:         property,
 		collectionFineMu: sync.Mutex{},

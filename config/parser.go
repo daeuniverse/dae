@@ -45,9 +45,11 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 
 	// keyToField is for further parsing use.
 	type Field struct {
-		Val   reflect.Value
-		Index int
-		Set   bool
+		Val        reflect.Value
+		Annotation reflect.Value
+		Index      int
+		Set        bool
+		Repeatable bool
 	}
 	var keyToField = make(map[string]*Field)
 	tot := to.Type()
@@ -63,7 +65,13 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			// omit
 			continue
 		}
-		keyToField[key] = &Field{Val: field, Index: i}
+		annotationSF, annotatable := tot.FieldByName(structField.Name + "Annotation")
+		var annotation reflect.Value
+		if annotatable && annotationSF.Tag.Get("mapstructure") == "_" {
+			annotation = to.FieldByName(annotationSF.Name)
+		}
+		_, repeatable := structField.Tag.Lookup("repeatable")
+		keyToField[key] = &Field{Val: field, Annotation: annotation, Index: i, Repeatable: repeatable}
 
 		// Fill in default value before parsing section.
 		defaultValue, ok := structField.Tag.Lookup("default")
@@ -103,6 +111,24 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				if field.Val.Kind() == reflect.Interface ||
 					field.Val.Type() == reflect.TypeOf(itemVal.AndFunctions) {
 					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
+
+					if field.Annotation.IsValid() {
+						if field.Annotation.Type() != reflect.TypeOf(itemVal.Annotation) {
+							return fmt.Errorf("[CODE BUG]: unmatched annotation type")
+						}
+						field.Annotation.Set(reflect.ValueOf(itemVal.Annotation))
+					}
+				} else if field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeOf(itemVal.AndFunctions)) {
+					// If field is slice and repeatable, and slice element types match, we can append.
+					field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal.AndFunctions)))
+
+					if field.Annotation.IsValid() {
+						if field.Annotation.Type() != reflect.SliceOf(reflect.TypeOf(itemVal.Annotation)) {
+							return fmt.Errorf("[CODE BUG]: unmatched annotation type")
+						}
+						// We also append if `itemVal.Annotation == nil` because we want the same annotation length with the field's.
+						field.Annotation.Set(reflect.Append(field.Annotation, reflect.ValueOf(itemVal.Annotation)))
+					}
 				} else {
 					return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 				}

@@ -107,9 +107,13 @@ type Param struct {
 	// Either Val or AndFunctions is empty.
 	Val          string
 	AndFunctions []*Function
+
+	// Annotation is optional
+	Annotation []*Param
 }
 
 func (p *Param) String(compact bool, quoteVal bool) string {
+	// FIXME: annotation
 	var quote func(string) string
 	if quoteVal {
 		quote = strconv.Quote
