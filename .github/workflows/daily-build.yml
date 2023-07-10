@@ -13,8 +13,8 @@ name: Daily Build (Stable)
 
 on:
   schedule:
-    # At 00:00 (UTC+8) every day
-    - cron: "0 8 * * *"
+    # At (UTC+8 0:00 | UTC+0 16:00) every day
+    - cron: "0 16 * * *"
 
 jobs:
   pre-actions:
