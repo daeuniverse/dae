@@ -591,12 +591,20 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	// We should set a connClosed flag to avoid it.
 	var connClosed bool
 	var conn netproxy.Conn
+
+	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
+	bestContextDialer := netproxy.ContextDialer{
+		Dialer: dialArgument.bestDialer,
+	}
+
 	switch dialArgument.l4proto {
 	case consts.L4ProtoStr_UDP:
 		// Get udp endpoint.
 
 		// TODO: connection pool.
-		conn, err = dialArgument.bestDialer.Dial(
+		conn, err = bestContextDialer.DialContext(
+			ctxDial,
 			common.MagicNetwork("udp", dialArgument.mark),
 			dialArgument.bestTarget.String(),
 		)
@@ -659,7 +667,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	case consts.L4ProtoStr_TCP:
 		// We can block here because we are in a coroutine.
 
-		conn, err = dialArgument.bestDialer.Dial(common.MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
+		conn, err = bestContextDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
