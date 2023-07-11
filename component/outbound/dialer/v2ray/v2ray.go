@@ -69,15 +69,12 @@ func NewV2Ray(option *dialer.GlobalOption, iOption dialer.InstanceOption, link s
 }
 
 func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (data *dialer.Dialer, err error) {
-	var d netproxy.Dialer
 	switch s.Protocol {
-	case "vmess":
-		d = direct.FullconeDirect // VMess Proxy supports full-cone.
-	case "vless":
-		d = direct.SymmetricDirect // VLESS Proxy does not yet support full-cone by softwind.
+	case "vmess", "vless":
 	default:
 		return nil, fmt.Errorf("V2Ray.Dialer: unexpected protocol: %v", s.Protocol)
 	}
+	d := direct.SymmetricDirect
 
 	switch strings.ToLower(s.Net) {
 	case "ws":

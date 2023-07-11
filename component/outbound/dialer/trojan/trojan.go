@@ -46,7 +46,7 @@ func NewTrojan(option *dialer.GlobalOption, iOption dialer.InstanceOption, link 
 }
 
 func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	d := direct.FullconeDirect // Trojan Proxy supports full-cone.
+	d := direct.SymmetricDirect
 	u := url.URL{
 		Scheme: option.TlsImplementation,
 		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),

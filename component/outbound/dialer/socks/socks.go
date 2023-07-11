@@ -40,7 +40,7 @@ func (s *Socks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 	link := s.ExportToURL()
 	switch s.Protocol {
 	case "", "socks", "socks5":
-		d, err := socks5.NewSocks5Dialer(link, direct.FullconeDirect) // Socks5 Proxy supports full-cone.
+		d, err := socks5.NewSocks5Dialer(link, direct.SymmetricDirect)
 		if err != nil {
 			return nil, err
 		}

@@ -42,7 +42,7 @@ func NewTuic(option *dialer.GlobalOption, iOption dialer.InstanceOption, link st
 }
 
 func (s *Tuic) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	d := direct.FullconeDirect // Tuic Proxy supports full-cone.
+	d := direct.SymmetricDirect
 	var err error
 	var flags protocol.Flags
 	if s.UdpRelayMode == "quic" {

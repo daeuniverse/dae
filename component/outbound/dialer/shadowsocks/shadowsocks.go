@@ -49,7 +49,7 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 	var d netproxy.Dialer
 	switch s.Plugin.Name {
 	case "simple-obfs":
-		d = direct.SymmetricDirect // Simple-obfs does not supports UDP.
+		d = direct.SymmetricDirect
 		switch s.Plugin.Opts.Obfs {
 		case "http", "tls":
 		default:
@@ -74,7 +74,7 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 			return nil, err
 		}
 	default:
-		d = direct.FullconeDirect // Shadowsocks Proxy supports full-cone.
+		d = direct.SymmetricDirect
 	}
 	var nextDialerName string
 	switch s.Cipher {
