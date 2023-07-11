@@ -369,7 +369,6 @@ func NewControlPlane(
 		sniffingTimeout:   sniffingTimeout,
 		tproxyPortProtect: global.TproxyPortProtect,
 		soMarkFromDae:     global.SoMarkFromDae,
-		udpEndpointPool:   NewUdpEndpointPool(),
 	}
 	defer func() {
 		if err != nil {
