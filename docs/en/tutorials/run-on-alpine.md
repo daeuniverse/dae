@@ -1,6 +1,6 @@
 # Run on Alpine Linux
 
-Alpine Linux 3.18 or newer verison has full eBPF support out-of-box, older version of Alpine Linux need to build kernel by yourself.
+**Note**: Alpine Linux 3.18 or newer verison has full eBPF support out-of-box, older version of Alpine Linux need to build kernel by yourself.
 
 ## Enable Community Repo
 
