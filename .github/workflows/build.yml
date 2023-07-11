@@ -9,7 +9,7 @@
 # This is a open-source software, liscensed under the AGPL-3.0 License.
 # See /License for more information.
 
-name: Build (Stable)
+name: Build (Main)
 
 on:
   push:

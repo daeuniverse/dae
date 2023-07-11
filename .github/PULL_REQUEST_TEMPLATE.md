@@ -7,7 +7,7 @@
 ### Checklist
 
 - [ ] The Pull Request has been fully tested
-- [ ] There's an entry in the CHANGELOG
+- [ ] There's an entry in the CHANGELOGS
 - [ ] There is a user-facing docs PR against https://github.com/daeuniverse/dae
 
 ### Full changelogs
@@ -18,4 +18,8 @@
 
 <!--- If it fixes an open issue, please link to the issue here. -->
 
-Fix #_[issue number]_
+Closes #_[issue number]_
+
+### Test Result
+
+<!--- Attach test result here. -->

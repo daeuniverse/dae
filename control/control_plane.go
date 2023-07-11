@@ -723,11 +723,14 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			newBuf := pool.Get(n)
 			copy(newBuf, buf[:n])
-			go func(data pool.PB, src netip.AddrPort) {
+			newOob := pool.Get(oobn)
+			copy(newOob, oob[:oobn])
+			go func(data pool.PB, oob pool.PB, src netip.AddrPort) {
 				defer data.Put()
+				defer oob.Put()
 				var realDst netip.AddrPort
 				var routingResult *bpfRoutingResult
-				pktDst := RetrieveOriginalDest(oob[:oobn])
+				pktDst := RetrieveOriginalDest(oob)
 				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
 				if err != nil {
 					// WAN. Old method.
@@ -765,7 +768,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
-			}(newBuf, src)
+			}(newBuf, newOob, src)
 		}
 	}()
 	<-c.ctx.Done()
