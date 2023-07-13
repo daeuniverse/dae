@@ -9,12 +9,12 @@
 # This is a open-source software, liscensed under the AGPL-3.0 License.
 # See /License for more information.
 
-name: Daily Build (Stable)
+name: Daily Build (Main)
 
 on:
   schedule:
-    # At 00:00 (UTC+8) every day
-    - cron: "0 8 * * *"
+    # At (UTC+8 0:00 | UTC+0 16:00) every day
+    - cron: "0 16 * * *"
 
 jobs:
   pre-actions:

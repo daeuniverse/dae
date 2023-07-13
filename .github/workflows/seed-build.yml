@@ -13,6 +13,18 @@ name: Build
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+        default: ${{ github.ref }}
+      pr_build:
+        type: boolean
+        required: false
+        default: false
+      pr_number:
+        type: number
+        required: false
 
 jobs:
   build:
@@ -62,19 +74,19 @@ jobs:
       - name: Get the version
         id: get_version
         env:
-          REF: ${{ github.ref }}
+          REF: ${{ inputs.ref }}
         run: |
-          if [[ "$REF" == "refs/tags/v"* ]]; then
-            tag=$(git describe --tags $(git rev-list --tags --max-count=1))
-            version=${tag}
+          date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
+          commit=$(echo ${REF} | cut -c1-6)
+          if [[ "${{ inputs.pr_build }}" == "true" ]]; then
+            count=$(git rev-list --count origin/main..HEAD)
+            version="unstable-${date}.pr-${{ inputs.pr_number }}.r${count}.${commit}"
           else
-            date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
             count=$(git rev-list --count HEAD)
-            commit=$(git rev-parse --short HEAD)
-            version="unstable-$date.r${count}.$commit"
+            version="unstable-${date}.r${count}.${commit}"
           fi
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
-          echo "VERSION=$version" >> $GITHUB_ENV
+          echo "VERSION=${version}" >> $GITHUB_OUTPUT
+          echo "VERSION=${version}" >> $GITHUB_ENV
 
       - name: Show workflow information
         id: get_filename
