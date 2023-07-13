@@ -75,16 +75,16 @@ jobs:
         id: get_version
         env:
           REF: ${{ inputs.ref }}
-          PR: pr-${{ inputs.pr_number }}
         run: |
           date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
           commit=$(echo ${REF} | cut -c1-6)
           if [[ "${{ inputs.pr_build }}" == "true" ]]; then
             count=$(git rev-list --count origin/main..HEAD)
+            version="unstable-${date}.pr-${{ inputs.pr_number }}.r${count}.${commit}"
           else
             count=$(git rev-list --count HEAD)
+            version="unstable-${date}.r${count}.${commit}"
           fi
-          version="unstable-${date}.${PR}.r${count}.${commit}"
           echo "VERSION=${version}" >> $GITHUB_OUTPUT
           echo "VERSION=${version}" >> $GITHUB_ENV
 
