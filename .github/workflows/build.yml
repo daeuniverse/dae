@@ -22,6 +22,7 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/build.yml"
+      - ".github/workflows/seed-build.yml"
       - "Makefile"
 
 jobs:

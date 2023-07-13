@@ -22,6 +22,7 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/pr-build.yml"
+      - ".github/workflows/seed-build.yml"
 
 jobs:
   pre-actions:
@@ -33,7 +34,7 @@ jobs:
     secrets: inherit
 
   build:
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@pr_build_fix
+    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       pr_build: true
