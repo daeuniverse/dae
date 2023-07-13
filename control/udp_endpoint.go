@@ -6,12 +6,14 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pool"
@@ -27,7 +29,8 @@ type UdpEndpoint struct {
 	handler       UdpHandler
 	NatTimeout    time.Duration
 
-	Dialer *dialer.Dialer
+	Dialer   *dialer.Dialer
+	Outbound *outbound.DialerGroup
 }
 
 func (ue *UdpEndpoint) start() {
@@ -65,46 +68,44 @@ func (ue *UdpEndpoint) Close() error {
 
 // UdpEndpointPool is a full-cone udp conn pool
 type UdpEndpointPool struct {
-	pool map[netip.AddrPort]*UdpEndpoint
-	mu   sync.Mutex
+	pool        sync.Map
+	createMuMap sync.Map
 }
 type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
-	Dialer     *dialer.Dialer
-	// Network is useful for MagicNetwork
-	Network string
-	// Target is useful only if the underlay does not support Full-cone.
-	Target string
+	// GetTarget is useful only if the underlay does not support Full-cone.
+	GetDialOption func() (option *DialOption, err error)
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
 
 func NewUdpEndpointPool() *UdpEndpointPool {
-	return &UdpEndpointPool{
-		pool: make(map[netip.AddrPort]*UdpEndpoint),
-	}
+	return &UdpEndpointPool{}
 }
 
 func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if ue, ok := p.pool[lAddr]; ok {
+	if ue, ok := p.pool.LoadAndDelete(lAddr); ok {
 		if ue != udpEndpoint {
 			return fmt.Errorf("target udp endpoint is not in the pool")
 		}
-		ue.Close()
-		delete(p.pool, lAddr)
+		ue.(*UdpEndpoint).Close()
 	}
 	return nil
 }
 
 func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
-	// TODO: fine-grained lock.
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ue, ok := p.pool[lAddr]
+	_ue, ok := p.pool.Load(lAddr)
+begin:
 	if !ok {
+		createMu, _ := p.createMuMap.LoadOrStore(lAddr, &sync.Mutex{})
+		createMu.(*sync.Mutex).Lock()
+		defer createMu.(*sync.Mutex).Unlock()
+		defer p.createMuMap.Delete(lAddr)
+		_ue, ok = p.pool.Load(lAddr)
+		if ok {
+			goto begin
+		}
 		// Create an UdpEndpoint.
 		if createOption == nil {
 			createOption = &UdpEndpointOptions{}
@@ -116,36 +117,45 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			return nil, true, fmt.Errorf("createOption.Handler cannot be nil")
 		}
 
-		udpConn, err := createOption.Dialer.Dial(createOption.Network, createOption.Target)
+		dialOption, err := createOption.GetDialOption()
+		if err != nil {
+			return nil, false, err
+		}
+		cd := netproxy.ContextDialer{
+			Dialer: dialOption.Dialer,
+		}
+		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+		defer cancel()
+		udpConn, err := cd.DialContext(ctx, dialOption.Network, dialOption.Target)
 		if err != nil {
 			return nil, true, err
 		}
 		if _, ok = udpConn.(netproxy.PacketConn); !ok {
 			return nil, true, fmt.Errorf("protocol does not support udp")
 		}
-		ue = &UdpEndpoint{
+		ue := &UdpEndpoint{
 			conn: udpConn.(netproxy.PacketConn),
 			deadlineTimer: time.AfterFunc(createOption.NatTimeout, func() {
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				if ue, ok := p.pool[lAddr]; ok {
-					ue.Close()
-					delete(p.pool, lAddr)
+				if ue, ok := p.pool.LoadAndDelete(lAddr); ok {
+					ue.(*UdpEndpoint).Close()
 				}
 			}),
 			handler:    createOption.Handler,
 			NatTimeout: createOption.NatTimeout,
-			Dialer:     createOption.Dialer,
+			Dialer:     dialOption.Dialer,
+			Outbound:   dialOption.Outbound,
 		}
-		p.pool[lAddr] = ue
+		_ue = ue
+		p.pool.Store(lAddr, ue)
 		// Receive UDP messages.
 		go ue.start()
 		isNew = true
 	} else {
+		ue := _ue.(*UdpEndpoint)
 		// Postpone the deadline.
 		ue.mu.Lock()
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 	}
-	return ue, isNew, nil
+	return _ue.(*UdpEndpoint), isNew, nil
 }
