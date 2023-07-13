@@ -33,6 +33,6 @@ jobs:
     secrets: inherit
 
   build:
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
+    uses: daeuniverse/dae/.github/workflows/seed-build.yml@pr_build_fix
     with:
       ref: ${{ github.event.pull_request.head.sha }}
