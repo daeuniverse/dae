@@ -26,7 +26,7 @@ on:
 
 jobs:
   pre-actions:
-    uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@main
+    uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@master
     with:
       repository: ${{ github.repository }}
       ref: ${{ github.event.pull_request.head.sha }}
@@ -34,7 +34,7 @@ jobs:
     secrets: inherit
 
   build:
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@master
+    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       pr_build: true
