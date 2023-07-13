@@ -71,7 +71,7 @@ jobs:
         env:
           REF: ${{ inputs.ref }}
         run: |
-          if [[ "${{ inputs.pr_build }}" ]]; then
+          if [ "${{ inputs.pr_build }}" -lt "true" ]; then
             date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
             count=$(git rev-list --count HEAD)
             commit=$(git rev-parse --short origin..$REF)
