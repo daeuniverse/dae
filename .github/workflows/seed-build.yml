@@ -78,7 +78,7 @@ jobs:
           PR: pr-${{ inputs.pr_number }}
         run: |
           date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
-          commit=$(echo ${{ inputs.ref }} | cut -c1-6)
+          commit=$(echo ${REF} | cut -c1-6)
           if [[ "${{ inputs.pr_build }}" == "true" ]]; then
             count=$(git rev-list --count origin/main..HEAD)
           else
