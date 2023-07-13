@@ -88,7 +88,7 @@ type DnsRouting struct {
 }
 type KeyableString string
 type Dns struct {
-	IpVersionPrefer int             `mapstructure:"ipversion_prefer"`
+	IpVersionPrefer uint8           `mapstructure:"ipversion_prefer"`
 	FixedDomainTtl  []KeyableString `mapstructure:"fixed_domain_ttl"`
 	Upstream        []KeyableString `mapstructure:"upstream"`
 	Routing         DnsRouting      `mapstructure:"routing"`
