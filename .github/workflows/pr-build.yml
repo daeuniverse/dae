@@ -26,7 +26,7 @@ on:
 
 jobs:
   pre-actions:
-    uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@master
+    uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@main
     with:
       repository: ${{ github.repository }}
       ref: ${{ github.event.pull_request.head.sha }}
