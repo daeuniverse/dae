@@ -35,4 +35,4 @@ jobs:
   build:
     uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
     with:
-      sha: ${{ github.event.pull_request.head.sha }}
+      ref: ${{ github.event.pull_request.head.sha }}
