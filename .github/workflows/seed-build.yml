@@ -16,10 +16,15 @@ on:
     inputs:
       ref:
         type: string
+        required: true
         default: ${{ github.ref }}
       pr_build:
         type: boolean
+        required: false
         default: false
+      pr_number:
+        type: number
+        required: false
 
 jobs:
   build:
@@ -70,6 +75,7 @@ jobs:
         id: get_version
         env:
           REF: ${{ inputs.ref }}
+          PR: pr-${{ inputs.pr_number }}
         run: |
           date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
           commit=$(echo ${{ inputs.ref }} | cut -c1-6)
@@ -78,7 +84,7 @@ jobs:
           else
             count=$(git rev-list --count HEAD)
           fi
-          version="unstable-$date.r${count}.$commit"
+          version="unstable-${date}.${PR}.r${count}.${commit}"
           echo "VERSION=${version}" >> $GITHUB_OUTPUT
           echo "VERSION=${version}" >> $GITHUB_ENV
 

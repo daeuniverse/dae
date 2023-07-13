@@ -37,3 +37,4 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       pr_build: true
+      pr_number: ${{ github.event.pull_request.number }}
