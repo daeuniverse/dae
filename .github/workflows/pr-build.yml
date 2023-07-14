@@ -46,7 +46,7 @@ jobs:
   post-actions:
     if: always()
     needs: [build]
-    uses: daeuniverse/ci-seed-jobs/.github/workflows/dae-post-actions@master
+    uses: daeuniverse/ci-seed-jobs/.github/workflows/dae-post-actions.yml@master
     with:
       check-run-id: "dae-bot[bot]/pr-build-passed"
       check-run-conclusion: ${{ needs.build.result }}
