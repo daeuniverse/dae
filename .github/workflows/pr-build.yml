@@ -32,20 +32,8 @@ jobs:
       repository: ${{ github.repository }}
       ref: ${{ github.event.pull_request.head.sha }}
       fetch-depth: 0
+      instantiate-check-runs: true
     secrets: inherit
-
-  instantiate-check-runs:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        id: ["build", "pr-build-passed"]
-    steps:
-      - name: Instantiate required check runs
-        uses: daeuniverse/ci-seed-jobs/common/instantiate-check-runs@master
-        with:
-          app_id: ${{ secrets.GH_APP_ID }}
-          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          id: "dae-bot[bot]/${{ matrix.id }}"
 
   build:
     if: ${{ github.event.pull_request.draft == false }}
