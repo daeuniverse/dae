@@ -583,7 +583,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), 5*time.Second)
 		defer cancelDnsReqCtx()
 		go func() {
-			// Send DNS request at 0, 2, 4 seconds.
+			// Send DNS request every seconds.
 			for {
 				_, err = conn.Write(data)
 				if err != nil {
@@ -603,7 +603,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				select {
 				case <-dnsReqCtx.Done():
 					return
-				case <-time.After(2 * time.Second):
+				case <-time.After(1 * time.Second):
 				}
 			}
 		}()
@@ -636,7 +636,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			}
 		}()
 
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
 		// We should write two byte length in the front of TCP DNS request.
 		bReq := pool.Get(2 + len(data))
 		defer pool.Put(bReq)

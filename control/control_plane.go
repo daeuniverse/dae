@@ -424,7 +424,7 @@ func NewControlPlane(
 		return nil, err
 	}
 	// Refresh domain routing cache with new routing.
-	if dnsCache != nil && len(dnsCache) > 0 {
+	if len(dnsCache) > 0 {
 		for cacheKey, cache := range dnsCache {
 			// Also refresh out-dated routing because kernel map items have no expiration.
 			lastDot := strings.LastIndex(cacheKey, ".")
