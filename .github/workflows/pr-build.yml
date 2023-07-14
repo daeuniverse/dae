@@ -37,17 +37,17 @@ jobs:
 
   build:
     if: ${{ github.event.pull_request.draft == false }}
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
+    uses: daeuniverse/dae/.github/workflows/seed-build.yml@check_runs
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       pr_build: true
       pr_number: ${{ github.event.pull_request.number }}
 
-  conclusion:
+  post-actions:
     if: always()
     needs: [build]
-    uses: daeuniverse/ci-seed-jobs/.github/workflows/report-workflow-run.yml@master
+    uses: daeuniverse/ci-seed-jobs/.github/workflows/dae-post-actions@master
     with:
-      id: "dae-bot[bot]/pr-build-passed"
-      conclusion: ${{ needs.build.result }}
+      check-run-id: "dae-bot[bot]/pr-build-passed"
+      check-run-conclusion: ${{ needs.build.result }}
     secrets: inherit
