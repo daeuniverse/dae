@@ -34,6 +34,19 @@ jobs:
       fetch-depth: 0
     secrets: inherit
 
+  instantiate-check-runs:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        id: ["build", "pr-build-passed"]
+    steps:
+      - name: Instantiate required check runs
+        uses: daeuniverse/ci-seed-jobs/common/instantiate-check-runs@master
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          id: "dae-bot[bot]/${{ matrix.id }}"
+
   build:
     if: ${{ github.event.pull_request.draft == false }}
     uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
@@ -41,3 +54,16 @@ jobs:
       ref: ${{ github.event.pull_request.head.sha }}
       pr_build: true
       pr_number: ${{ github.event.pull_request.number }}
+
+  conclusion:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report workflow run result
+        uses: daeuniverse/ci-seed-jobs/core/daed/report-workflow-run@master
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          id: "dae-bot[bot]/pr-build-passed"
+          conclusion: ${{ needs.build-bundle.result }}

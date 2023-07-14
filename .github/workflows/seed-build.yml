@@ -150,3 +150,11 @@ jobs:
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
+
+      - name: Report result
+        uses: daeuniverse/ci-seed-jobs/common/report-check-run@master
+        if: always()
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          id: "dae-bot[bot]/checkout-full-src"
