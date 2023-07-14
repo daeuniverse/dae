@@ -61,5 +61,5 @@ jobs:
     uses: daeuniverse/ci-seed-jobs/.github/workflows/report-workflow-run.yml@master
     with:
       id: "dae-bot[bot]/pr-build-passed"
-      conclusion: ${{ needs.build-bundle.result }}
+      conclusion: ${{ needs.build.result }}
     secrets: inherit
