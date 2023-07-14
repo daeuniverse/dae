@@ -32,7 +32,7 @@ jobs:
       repository: ${{ github.repository }}
       ref: ${{ github.event.pull_request.head.sha }}
       fetch-depth: 0
-      instantiate-check-runs: true
+      check-runs: true
     secrets: inherit
 
   build:
