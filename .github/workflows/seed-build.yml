@@ -157,4 +157,4 @@ jobs:
         with:
           app_id: ${{ secrets.GH_APP_ID }}
           private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          id: "dae-bot[bot]/checkout-full-src"
+          id: "dae-bot[bot]/build"
