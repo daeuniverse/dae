@@ -22,7 +22,7 @@ on:
         type: number
         required: false
       build-type:
-        type: options
+        type: choice
         options:
           - pr-build
           - main-build
