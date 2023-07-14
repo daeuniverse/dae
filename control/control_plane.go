@@ -409,11 +409,12 @@ func NewControlPlane(
 			}
 			return nil
 		},
-		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time) (cache *DnsCache, err error) {
+		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error) {
 			return &DnsCache{
-				DomainBitmap: plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
-				Answer:       answers,
-				Deadline:     deadline,
+				DomainBitmap:     plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
+				Answer:           answers,
+				Deadline:         deadline,
+				OriginalDeadline: originalDeadline,
 			}, nil
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
@@ -556,7 +557,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
-			if cache := c.dnsController.LookupDnsRespCache(domain, common.AddrToDnsType(dst.Addr())); cache != nil {
+			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
 			} else {
