@@ -26,8 +26,9 @@ var TestNetworkType = &dialer.NetworkType{
 	IsDns:     false,
 }
 
+var log = logger.NewLogger("trace", false, nil)
+
 func TestDialerGroup_Select_Fixed(t *testing.T) {
-	log := logger.NewLogger("trace", false)
 	option := &dialer.GlobalOption{
 		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
@@ -69,7 +70,6 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 }
 
 func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
-	log := logger.NewLogger("trace", false)
 
 	option := &dialer.GlobalOption{
 		Log:               log,
@@ -139,7 +139,6 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 }
 
 func TestDialerGroup_Select_Random(t *testing.T) {
-	log := logger.NewLogger("trace", false)
 
 	option := &dialer.GlobalOption{
 		Log:               log,
@@ -179,7 +178,6 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 }
 
 func TestDialerGroup_SetAlive(t *testing.T) {
-	log := logger.NewLogger("trace", false)
 
 	option := &dialer.GlobalOption{
 		Log:               log,
