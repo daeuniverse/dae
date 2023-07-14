@@ -700,6 +700,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				"upstream": upstreamName,
 			}).Traceln("Reject with empty answer")
 		}
+		// We also cache response reject.
 	default:
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.WithFields(logrus.Fields{

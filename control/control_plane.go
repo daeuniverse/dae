@@ -424,7 +424,9 @@ func NewControlPlane(
 		return nil, err
 	}
 	// Refresh domain routing cache with new routing.
-	if len(dnsCache) > 0 {
+	// FIXME: We temperarily disable it because we want to make change of DNS section take effects immediately.
+	// TODO: Add change detection.
+	if false && len(dnsCache) > 0 {
 		for cacheKey, cache := range dnsCache {
 			// Also refresh out-dated routing because kernel map items have no expiration.
 			lastDot := strings.LastIndex(cacheKey, ".")
