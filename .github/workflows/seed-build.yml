@@ -22,12 +22,8 @@ on:
         type: number
         required: false
       build-type:
-        type: choice
-        options:
-          - pr-build
-          - main-build
-          - daily-build
-          - release-build
+        type: string
+        description: "[pr-build,main-build,daily-build,release-build]"
 
 jobs:
   build:
