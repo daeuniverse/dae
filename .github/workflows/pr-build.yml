@@ -32,10 +32,11 @@ jobs:
       repository: ${{ github.repository }}
       ref: ${{ github.event.pull_request.head.sha }}
       fetch-depth: 0
-      check-runs: true
+      check-runs: '["build", "pr-build-passed"]'
     secrets: inherit
 
   build:
+    needs: [pre-actions]
     if: ${{ github.event.pull_request.draft == false }}
     uses: daeuniverse/dae/.github/workflows/seed-build.yml@check_runs
     with:
