@@ -58,7 +58,7 @@ jobs:
   conclusion:
     if: always()
     needs: [build]
-    uses: daeuniverse/ci-seed-jobs/.github/workflows/report-workflow-run@master
+    uses: daeuniverse/ci-seed-jobs/.github/workflows/report-workflow-run.yml@master
     with:
       id: "dae-bot[bot]/pr-build-passed"
       conclusion: ${{ needs.build-bundle.result }}
