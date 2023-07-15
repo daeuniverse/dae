@@ -18,6 +18,7 @@ import (
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/pkg/fastrand"
 	"github.com/mzz2017/softwind/protocol/direct"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
@@ -45,9 +46,12 @@ var (
 )
 
 func init() {
-	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
-	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "disable timestamp")
-	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-pidfile", "", false, "not generate /var/run/dae.pid")
+	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.")
+	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to stdout and stderr.")
+	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
+	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
+	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "Disable timestamp.")
+	runCmd.PersistentFlags().BoolVarP(&disablePidFile, "disable-pidfile", "", false, "Not generate /var/run/dae.pid.")
 
 	fastrand.Rand().Shuffle(len(CheckNetworkLinks), func(i, j int) {
 		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
@@ -55,9 +59,12 @@ func init() {
 }
 
 var (
-	cfgFile          string
-	disableTimestamp bool
-	disablePidFile   bool
+	cfgFile           string
+	logFile           string
+	logFileMaxSize    int
+	logFileMaxBackups int
+	disableTimestamp  bool
+	disablePidFile    bool
 
 	runCmd = &cobra.Command{
 		Use:   "run",
@@ -78,7 +85,18 @@ var (
 				}).Fatalln("Failed to read config")
 			}
 
-			log := logger.NewLogger(conf.Global.LogLevel, disableTimestamp)
+			var logOpts *lumberjack.Logger
+			if logFile != "" {
+				logOpts = &lumberjack.Logger{
+					Filename:   logFile,
+					MaxSize:    logFileMaxSize,
+					MaxAge:     0,
+					MaxBackups: logFileMaxBackups,
+					LocalTime:  true,
+					Compress:   true,
+				}
+			}
+			log := logger.NewLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 			logrus.SetLevel(log.Level)
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
@@ -181,7 +199,9 @@ loop:
 				log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			}
 			// New logger.
-			log = logger.NewLogger(newConf.Global.LogLevel, disableTimestamp)
+			oldLogOutput := log.Out
+			log = logger.NewLogger(newConf.Global.LogLevel, disableTimestamp, nil)
+			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
 			logrus.SetLevel(log.Level)
 
 			// New control plane.

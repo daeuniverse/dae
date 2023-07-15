@@ -565,6 +565,9 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				if c.realDomainSet.TestString(domain) {
 					c.muRealDomainSet.Unlock()
 					dialMode = consts.DialMode_Domain
+
+					// Should use this domain to reroute
+					shouldReroute = true
 				} else {
 					c.muRealDomainSet.Unlock()
 					// Lookup A/AAAA to make sure it is a real domain.
@@ -589,6 +592,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 
 			}
 		case consts.DialMode_DomainCao:
+			shouldReroute = true
 			fallthrough
 		case consts.DialMode_DomainPlus:
 			dialMode = consts.DialMode_Domain
