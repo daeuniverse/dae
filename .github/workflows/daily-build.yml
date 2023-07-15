@@ -27,3 +27,5 @@ jobs:
 
   build:
     uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
+    with:
+      ref: ${{ github.sha }}
