@@ -38,7 +38,7 @@ jobs:
   build:
     needs: [pre-actions]
     if: ${{ github.event.pull_request.draft == false }}
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
+    uses: daeuniverse/dae/.github/workflows/seed-build.yml@check_runs
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       pr-number: ${{ github.event.pull_request.number }}
