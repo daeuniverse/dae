@@ -179,9 +179,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 	// Get outbound.
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
-	if c.dialMode == consts.DialMode_DomainCao && domain != "" {
-		outboundIndex = consts.OutboundControlPlaneRouting
-	}
 	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, realDst, domain)
 getNew:
 	if retry > MaxRetry {
@@ -229,6 +226,9 @@ getNew:
 			}
 
 			if int(outboundIndex) >= len(c.outbounds) {
+				if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
+					return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
+				}
 				return nil, fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
 			}
 			outbound := c.outbounds[outboundIndex]

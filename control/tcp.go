@@ -127,9 +127,6 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	domain := p.Domain
 	src := p.Src
 	dst := p.Dest
-	if c.dialMode == consts.DialMode_DomainCao && domain != "" {
-		outboundIndex = consts.OutboundControlPlaneRouting
-	}
 
 	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, dst, domain)
 	if shouldReroute {
@@ -159,6 +156,9 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	}
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if int(outboundIndex) >= len(c.outbounds) {
+		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
+			return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
+		}
 		return nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	outbound := c.outbounds[outboundIndex]

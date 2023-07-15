@@ -65,6 +65,8 @@ const (
 	OutboundDirect OutboundIndex = iota
 	OutboundBlock
 
+	OutboundUserDefinedMin
+
 	OutboundMustRules           OutboundIndex = 0xFC
 	OutboundControlPlaneRouting OutboundIndex = 0xFD
 	OutboundLogicalOr           OutboundIndex = 0xFE
