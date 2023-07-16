@@ -40,6 +40,7 @@ jobs:
     with:
       ref: ${{ github.sha }}
       build-type: main-build
+    secrets: inherit
 
   post-actions:
     if: always()
