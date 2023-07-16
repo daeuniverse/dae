@@ -65,6 +65,8 @@ const (
 	OutboundDirect OutboundIndex = iota
 	OutboundBlock
 
+	OutboundUserDefinedMin
+
 	OutboundMustRules           OutboundIndex = 0xFC
 	OutboundControlPlaneRouting OutboundIndex = 0xFD
 	OutboundLogicalOr           OutboundIndex = 0xFE
@@ -165,4 +167,9 @@ const (
 	LanWanFlag_IsWan LanWanFlag = iota
 	LanWanFlag_IsLan
 	LanWanFlag_NotApplicable
+)
+
+const (
+	LinkType_None uint32 = iota
+	LinkType_Ethernet
 )
