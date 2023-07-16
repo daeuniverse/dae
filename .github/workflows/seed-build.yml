@@ -152,7 +152,7 @@ jobs:
 
       - name: Report result
         uses: daeuniverse/ci-seed-jobs/common/report-check-run@master
-        if: always() && ${{ build-type == 'pr-build' }} && startsWith(github.event.pull_request.head.repo.full_name, github.repository_owner)
+        if: always() && ${{ inputs.build-type == 'pr-build' }} && startsWith(github.event.pull_request.head.repo.full_name, github.repository_owner)
         with:
           app_id: ${{ secrets.GH_APP_ID }}
           private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
