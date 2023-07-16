@@ -192,6 +192,7 @@ func NewControlPlane(
 	// Add clsact qdisc
 	for _, ifname := range common.Deduplicate(append(append([]string{}, global.LanInterface...), global.WanInterface...)) {
 		_ = core.addQdisc(ifname)
+		_ = core.mapLinkType(ifname)
 	}
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
