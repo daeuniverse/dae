@@ -368,6 +368,7 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
            const struct tcphdr *tcph, const struct udphdr *udph, __u8 l4proto) {
   __builtin_memset(tuples, 0, sizeof(*tuples));
   tuples->l4proto = l4proto;
+
   if (skb->protocol == bpf_htons(ETH_P_IP)) {
     tuples->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
     tuples->sip.u6_addr32[3] = iph->saddr;
@@ -684,15 +685,12 @@ parse_transport(const struct __sk_buff *skb, __u32 eth_h_len,
     } break;
     case IPPROTO_UDP: {
       if ((ret =
-               bpf_skb_load_bytes(skb, offset, tcph, sizeof(struct tcphdr)))) {
-        // Not a complete tcphdr.
+               bpf_skb_load_bytes(skb, offset, udph, sizeof(struct udphdr)))) {
+        // Not a complete udphdr.
         return -EFAULT;
       }
     } break;
     default:
-      /// EXPECTED: Maybe ICMP, MPLS, etc.
-      // bpf_printk("IP but not supported packet: protocol is %u",
-      // iph->protocol);
       return 1;
     }
     *ihl = iph->ihl;
@@ -710,7 +708,10 @@ parse_transport(const struct __sk_buff *skb, __u32 eth_h_len,
     return handle_ipv6_extensions(skb, offset, ipv6h->nexthdr, icmp6h, tcph,
                                   udph, ihl, l4proto);
   } else {
-    bpf_printk("unknown link proto: %u", bpf_ntohl(skb->protocol));
+    /// EXPECTED: Maybe ICMP, MPLS, etc.
+    // bpf_printk("IP but not supported packet: protocol is %u",
+    // iph->protocol);
+    // bpf_printk("unknown link proto: %u", bpf_ntohl(skb->protocol));
     return 1;
   }
 }
