@@ -18,13 +18,12 @@ on:
         type: string
         required: true
         default: ${{ github.ref }}
-      pr_build:
-        type: boolean
-        required: false
-        default: false
-      pr_number:
+      pr-number:
         type: number
         required: false
+      build-type:
+        type: string
+        description: "[pr-build,main-build,daily-build,release-build]"
 
 jobs:
   build:
@@ -78,9 +77,9 @@ jobs:
         run: |
           date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
           commit=$(echo ${REF} | cut -c1-6)
-          if [[ "${{ inputs.pr_build }}" == "true" ]]; then
+          if [[ "${{ inputs.build-type }}" == "pr-build" ]]; then
             count=$(git rev-list --count origin/main..HEAD)
-            version="unstable-${date}.pr-${{ inputs.pr_number }}.r${count}.${commit}"
+            version="unstable-${date}.pr-${{ inputs.pr-number }}.r${count}.${commit}"
           else
             count=$(git rev-list --count HEAD)
             version="unstable-${date}.r${count}.${commit}"
@@ -150,3 +149,11 @@ jobs:
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
+
+      - name: Report result
+        uses: daeuniverse/ci-seed-jobs/common/report-check-run@master
+        if: always()
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          id: "dae-bot[bot]/build"
