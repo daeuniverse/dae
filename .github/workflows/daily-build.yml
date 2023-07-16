@@ -37,6 +37,6 @@ jobs:
     needs: [build]
     uses: daeuniverse/ci-seed-jobs/.github/workflows/dae-post-actions.yml@master
     with:
-      check-run-id: "dae-bot[bot]/main-build-passed"
+      check-run-id: "dae-bot[bot]/daily-build-passed"
       check-run-conclusion: ${{ needs.build.result }}
     secrets: inherit
