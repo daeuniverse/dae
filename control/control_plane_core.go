@@ -135,6 +135,22 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	return ifParams, nil
 }
 
+func (c *controlPlaneCore) mapLinkType(ifname string) error {
+	link, err := netlink.LinkByName(ifname)
+	if err != nil {
+		return err
+	}
+	linkType := uint32(0xffff)
+	switch link.Attrs().EncapType {
+	case "none":
+		linkType = consts.LinkType_None
+	case "ether":
+		linkType = consts.LinkType_Ethernet
+	default:
+	}
+	return c.bpf.bpfMaps.LinktypeMap.Update(uint32(link.Attrs().Index), linkType, ebpf.UpdateAny)
+}
+
 func (c *controlPlaneCore) addQdisc(ifname string) error {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {

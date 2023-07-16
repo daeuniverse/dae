@@ -29,17 +29,17 @@
 #define IPV6_BYTE_LENGTH 16
 #define TASK_COMM_LEN 16
 
-#define IPV4_CSUM_OFF (ETH_HLEN + offsetof(struct iphdr, check))
-#define IPV4_DST_OFF (ETH_HLEN + offsetof(struct iphdr, daddr))
-#define IPV4_SRC_OFF (ETH_HLEN + offsetof(struct iphdr, saddr))
-#define IPV6_DST_OFF (ETH_HLEN + offsetof(struct ipv6hdr, daddr))
-#define IPV6_SRC_OFF (ETH_HLEN + offsetof(struct ipv6hdr, saddr))
+#define IPV4_CSUM_OFF(eth_h_len) (eth_h_len + offsetof(struct iphdr, check))
+#define IPV4_DST_OFF(eth_h_len) (eth_h_len + offsetof(struct iphdr, daddr))
+#define IPV4_SRC_OFF(eth_h_len) (eth_h_len + offsetof(struct iphdr, saddr))
+#define IPV6_DST_OFF(eth_h_len) (eth_h_len + offsetof(struct ipv6hdr, daddr))
+#define IPV6_SRC_OFF(eth_h_len) (eth_h_len + offsetof(struct ipv6hdr, saddr))
 
 #define NOWHERE_IFINDEX 0
 #define LOOPBACK_IFINDEX 1
 
 #define MAX_PARAM_LEN 16
-#define MAX_INTERFACE_NUM 128
+#define MAX_INTERFACE_NUM 256
 #ifndef MAX_MATCH_SET_LEN
 #define MAX_MATCH_SET_LEN (32 * 2) // Should be sync with common/consts/ebpf.go.
 #endif
@@ -194,6 +194,18 @@ struct {
   __uint(max_entries, MAX_PARAM_LEN);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } param_map SEC(".maps");
+
+// Link to type:
+#define LinkType_None 0
+#define LinkType_Ethernet 1
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u32);   // ifindex
+  __type(value, __u32); // LinkType
+  __uint(max_entries, MAX_INTERFACE_NUM);
+  /// NOTICE: No persistence.
+  // __uint(pinning, LIBBPF_PIN_BY_NAME);
+} linktype_map SEC(".maps");
 
 // LPM key:
 struct {
@@ -350,15 +362,13 @@ struct {
 
 // Functions:
 
-static void __always_inline get_tuples(struct tuples *tuples,
-                                       const struct iphdr *iph,
-                                       const struct ipv6hdr *ipv6h,
-                                       const struct tcphdr *tcph,
-                                       const struct udphdr *udph,
-                                       __u8 ipversion, __u8 l4proto) {
+static void __always_inline
+get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
+           const struct iphdr *iph, const struct ipv6hdr *ipv6h,
+           const struct tcphdr *tcph, const struct udphdr *udph, __u8 l4proto) {
   __builtin_memset(tuples, 0, sizeof(*tuples));
   tuples->l4proto = l4proto;
-  if (ipversion == 4) {
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
     tuples->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
     tuples->sip.u6_addr32[3] = iph->saddr;
 
@@ -400,19 +410,21 @@ static __always_inline __u32 l4_checksum_rel_off(__u8 proto) {
   return 0;
 }
 
-static __always_inline __u32 l4_checksum_off(__u8 proto, __u8 ihl) {
-  return ETH_HLEN + ihl * 4 + l4_checksum_rel_off(proto);
+static __always_inline __u32 l4_checksum_off(__u32 eth_h_len, __u8 proto,
+                                             __u8 ihl) {
+  return eth_h_len + ihl * 4 + l4_checksum_rel_off(proto);
 }
 
 static __always_inline int disable_l4_checksum(struct __sk_buff *skb,
-                                               __u8 l4proto, __u8 ihl) {
-  __u32 l4_cksm_off = l4_checksum_off(l4proto, ihl);
+                                               __u32 eth_h_len, __u8 l4proto,
+                                               __u8 ihl) {
+  __u32 l4_cksm_off = l4_checksum_off(eth_h_len, l4proto, ihl);
   // Set checksum zero.
   __sum16 bak_cksm = 0;
   return bpf_skb_store_bytes(skb, l4_cksm_off, &bak_cksm, sizeof(bak_cksm), 0);
 }
 
-static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
+static __always_inline int rewrite_ip(struct __sk_buff *skb, __u32 eth_h_len,
                                       __u8 proto, __u8 ihl, __be32 old_ip[4],
                                       __be32 new_ip[4], bool is_dest,
                                       bool disable_l4_checksum) {
@@ -422,7 +434,7 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
   }
   // bpf_printk("%pI6->%pI6", old_ip, new_ip);
 
-  __u32 l4_cksm_off = l4_checksum_off(proto, ihl);
+  __u32 l4_cksm_off = l4_checksum_off(eth_h_len, proto, ihl);
   int ret;
   // BPF_F_PSEUDO_HDR indicates the part we want to modify is part of the
   // pseudo header.
@@ -431,7 +443,7 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
     l4flags |= BPF_F_MARK_MANGLED_0;
   }
 
-  if (ipversion == 4) {
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
 
     __be32 _old_ip = old_ip[3];
     __be32 _new_ip = new_ip[3];
@@ -446,14 +458,15 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
       }
     }
 
-    if ((ret = bpf_l3_csum_replace(skb, IPV4_CSUM_OFF, _old_ip, _new_ip,
-                                   sizeof(_new_ip)))) {
+    if ((ret = bpf_l3_csum_replace(skb, IPV4_CSUM_OFF(eth_h_len), _old_ip,
+                                   _new_ip, sizeof(_new_ip)))) {
       return ret;
     }
     // bpf_printk("%pI4 -> %pI4", &_old_ip, &_new_ip);
 
-    ret = bpf_skb_store_bytes(skb, is_dest ? IPV4_DST_OFF : IPV4_SRC_OFF,
-                              &_new_ip, sizeof(_new_ip), 0);
+    ret = bpf_skb_store_bytes(
+        skb, is_dest ? IPV4_DST_OFF(eth_h_len) : IPV4_SRC_OFF(eth_h_len),
+        &_new_ip, sizeof(_new_ip), 0);
     if (ret) {
       bpf_printk("bpf_skb_store_bytes: %d", ret);
       return ret;
@@ -471,8 +484,9 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
 
     // bpf_printk("%pI6 -> %pI6", old_ip, new_ip);
 
-    ret = bpf_skb_store_bytes(skb, is_dest ? IPV6_DST_OFF : IPV6_SRC_OFF,
-                              new_ip, IPV6_BYTE_LENGTH, 0);
+    ret = bpf_skb_store_bytes(
+        skb, is_dest ? IPV6_DST_OFF(eth_h_len) : IPV6_SRC_OFF(eth_h_len),
+        new_ip, IPV6_BYTE_LENGTH, 0);
     if (ret) {
       bpf_printk("bpf_skb_store_bytes: %d", ret);
       return ret;
@@ -482,15 +496,17 @@ static __always_inline int rewrite_ip(struct __sk_buff *skb, __u8 ipversion,
   return 0;
 }
 
-static __always_inline int rewrite_port(struct __sk_buff *skb, __u8 proto,
-                                        __u8 ihl, __be16 old_port,
+static __always_inline int rewrite_port(struct __sk_buff *skb, __u32 eth_h_len,
+                                        __u8 proto, __u8 ihl, __be16 old_port,
                                         __be16 new_port, bool is_dest,
                                         bool disable_l4_checksum) {
   // Nothing to do.
   if (old_port == new_port) {
     return 0;
   }
-  __u32 cksm_off = l4_checksum_off(proto, ihl), port_off = ETH_HLEN + ihl * 4;
+
+  __u32 cksm_off = l4_checksum_off(eth_h_len, proto, ihl),
+        port_off = eth_h_len + ihl * 4;
   if (!cksm_off) {
     return -EINVAL;
   }
@@ -608,7 +624,8 @@ handle_ipv6_extensions(const struct __sk_buff *skb, __u32 offset, __u32 hdr,
       }
       return 0;
     default:
-      // Unknown hdr.
+      /// EXPECTED: Maybe ICMP, etc.
+      // bpf_printk("IPv6 but unrecognized extension protocol: %u", hdr);
       return 1;
     }
   }
@@ -616,22 +633,27 @@ handle_ipv6_extensions(const struct __sk_buff *skb, __u32 offset, __u32 hdr,
   return 1;
 }
 
-static __always_inline int parse_transport(
-    const struct __sk_buff *skb, struct ethhdr *ethh, struct iphdr *iph,
-    struct ipv6hdr *ipv6h, struct icmp6hdr *icmp6h, struct tcphdr *tcph,
-    struct udphdr *udph, __u8 *ihl, __u8 *ipversion, __u8 *l4proto) {
+static __always_inline int
+parse_transport(const struct __sk_buff *skb, __u32 eth_h_len,
+                struct ethhdr *ethh, struct iphdr *iph, struct ipv6hdr *ipv6h,
+                struct icmp6hdr *icmp6h, struct tcphdr *tcph,
+                struct udphdr *udph, __u8 *ihl, __u8 *l4proto) {
 
   __u32 offset = 0;
   int ret;
-  ret = bpf_skb_load_bytes(skb, offset, ethh, sizeof(struct ethhdr));
-  if (ret) {
-    bpf_printk("not ethernet packet");
-    return 1;
+  if (eth_h_len == ETH_HLEN) {
+    ret = bpf_skb_load_bytes(skb, offset, ethh, sizeof(struct ethhdr));
+    if (ret) {
+      bpf_printk("not ethernet packet");
+      return 1;
+    }
+    // Skip ethhdr for next hdr.
+    offset += sizeof(struct ethhdr);
+  } else {
+    __builtin_memset(ethh, 0, sizeof(struct ethhdr));
+    ethh->h_proto = skb->protocol;
   }
-  // Skip ethhdr for next hdr.
-  offset += sizeof(struct ethhdr);
 
-  *ipversion = 0;
   *ihl = 0;
   *l4proto = 0;
   __builtin_memset(iph, 0, sizeof(struct iphdr));
@@ -640,10 +662,9 @@ static __always_inline int parse_transport(
   __builtin_memset(tcph, 0, sizeof(struct tcphdr));
   __builtin_memset(udph, 0, sizeof(struct udphdr));
 
-  // bpf_printk("parse_transport: h_proto: %u ? %u %u", eth->h_proto,
+  // bpf_printk("parse_transport: h_proto: %u ? %u %u", ethh->h_proto,
   //            bpf_htons(ETH_P_IP), bpf_htons(ETH_P_IPV6));
   if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
-    *ipversion = 4;
 
     if ((ret = bpf_skb_load_bytes(skb, offset, iph, sizeof(struct iphdr)))) {
       return -EFAULT;
@@ -653,26 +674,30 @@ static __always_inline int parse_transport(
 
     // We only process TCP and UDP traffic.
     *l4proto = iph->protocol;
-    if (iph->protocol == IPPROTO_TCP) {
+    switch (iph->protocol) {
+    case IPPROTO_TCP: {
       if ((ret =
                bpf_skb_load_bytes(skb, offset, tcph, sizeof(struct tcphdr)))) {
         // Not a complete tcphdr.
         return -EFAULT;
       }
-    } else if (iph->protocol == IPPROTO_UDP) {
+    } break;
+    case IPPROTO_UDP: {
       if ((ret =
-               bpf_skb_load_bytes(skb, offset, udph, sizeof(struct udphdr)))) {
+               bpf_skb_load_bytes(skb, offset, tcph, sizeof(struct tcphdr)))) {
         // Not a complete tcphdr.
         return -EFAULT;
       }
-    } else {
-      // bpf_printk("IP but not TCP/UDP packet: protocol is %u", iph->protocol);
+    } break;
+    default:
+      /// EXPECTED: Maybe ICMP, MPLS, etc.
+      // bpf_printk("IP but not supported packet: protocol is %u",
+      // iph->protocol);
       return 1;
     }
     *ihl = iph->ihl;
     return 0;
   } else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
-    *ipversion = 6;
 
     if ((ret =
              bpf_skb_load_bytes(skb, offset, ipv6h, sizeof(struct ipv6hdr)))) {
@@ -685,11 +710,13 @@ static __always_inline int parse_transport(
     return handle_ipv6_extensions(skb, offset, ipv6h->nexthdr, icmp6h, tcph,
                                   udph, ihl, l4proto);
   } else {
+    bpf_printk("unknown link proto: %u", bpf_ntohl(skb->protocol));
     return 1;
   }
 }
 
-static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
+static __always_inline int adjust_udp_len(struct __sk_buff *skb,
+                                          __u32 eth_h_len, __u16 oldlen,
                                           __u32 ihl, __u16 len_diff,
                                           bool disable_l4_checksum) {
   if (unlikely(!len_diff)) {
@@ -712,7 +739,7 @@ static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
 
   // Calculate checksum and store the new value.
   int ret;
-  __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
+  __u32 udp_csum_off = l4_checksum_off(eth_h_len, IPPROTO_UDP, ihl);
 
   if (!disable_l4_checksum) { // replace twice because len exists both pseudo
                               // hdr and hdr.
@@ -731,15 +758,16 @@ static __always_inline int adjust_udp_len(struct __sk_buff *skb, __u16 oldlen,
   }
 
   if ((ret = bpf_skb_store_bytes(
-           skb, (__u32)ETH_HLEN + ihl * 4 + offsetof(struct udphdr, len),
-           &newlen, sizeof(oldlen), 0))) {
+           skb, eth_h_len + ihl * 4 + offsetof(struct udphdr, len), &newlen,
+           sizeof(oldlen), 0))) {
     bpf_printk("bpf_skb_store_bytes newudplen: %d", ret);
     return ret;
   }
   return 0;
 }
 
-static __always_inline int adjust_ipv4_len(struct __sk_buff *skb, __u16 oldlen,
+static __always_inline int adjust_ipv4_len(struct __sk_buff *skb,
+                                           __u32 eth_h_len, __u16 oldlen,
                                            __u16 len_diff) {
   if (unlikely(!len_diff)) {
     return 0;
@@ -761,14 +789,14 @@ static __always_inline int adjust_ipv4_len(struct __sk_buff *skb, __u16 oldlen,
 
   // Calculate checksum and store the new value.
   int ret;
-  if ((ret = bpf_l3_csum_replace(skb, IPV4_CSUM_OFF, oldlen, newlen,
+  if ((ret = bpf_l3_csum_replace(skb, IPV4_CSUM_OFF(eth_h_len), oldlen, newlen,
                                  sizeof(oldlen)))) {
     bpf_printk("bpf_l3_csum_replace newudplen: %d", ret);
     return ret;
   }
-  if ((ret = bpf_skb_store_bytes(
-           skb, (__u32)ETH_HLEN + offsetof(struct iphdr, tot_len), &newlen,
-           sizeof(oldlen), 0))) {
+  if ((ret =
+           bpf_skb_store_bytes(skb, eth_h_len + offsetof(struct iphdr, tot_len),
+                               &newlen, sizeof(oldlen), 0))) {
     bpf_printk("bpf_skb_store_bytes newiplen: %d", ret);
     return ret;
   }
@@ -776,7 +804,7 @@ static __always_inline int adjust_ipv4_len(struct __sk_buff *skb, __u16 oldlen,
 }
 
 static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
-                                               __u8 ipversion, __u8 ihl,
+                                               __u32 eth_h_len, __u8 ihl,
                                                __be16 iphdr_tot_len,
                                                void *newhdr, __u32 newhdrlen,
                                                bool disable_l4_checksum) {
@@ -788,7 +816,7 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
   }
 
   int ret = 0;
-  long ip_off = ETH_HLEN;
+  long ip_off = eth_h_len;
   // Calculate offsets using add instead of subtract to avoid verifier problems.
   long ipp_len = ihl * 4;
   long udp_payload_off = ip_off + ipp_len + sizeof(struct udphdr);
@@ -814,15 +842,15 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
   }
 
   // Rewrite ip len.
-  if (ipversion == 4) {
-    if ((ret = adjust_ipv4_len(skb, iphdr_tot_len, newhdrlen))) {
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    if ((ret = adjust_ipv4_len(skb, eth_h_len, iphdr_tot_len, newhdrlen))) {
       bpf_printk("adjust_ip_len: %d", ret);
       return ret;
     }
   }
 
   // Rewrite udp len.
-  if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, newhdrlen,
+  if ((ret = adjust_udp_len(skb, eth_h_len, reserved_udphdr.len, ihl, newhdrlen,
                             disable_l4_checksum))) {
     bpf_printk("adjust_udp_len: %d", ret);
     return ret;
@@ -830,7 +858,7 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
 
   // Rewrite udp payload.
   if (!disable_l4_checksum) {
-    __u32 l4_cksm_off = l4_checksum_off(IPPROTO_UDP, ihl);
+    __u32 l4_cksm_off = l4_checksum_off(eth_h_len, IPPROTO_UDP, ihl);
     __s64 cksm = bpf_csum_diff(NULL, 0, newhdr, newhdrlen, 0);
     if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, 0, cksm,
                                    BPF_F_MARK_MANGLED_0))) {
@@ -846,7 +874,7 @@ static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
 }
 
 static __always_inline int
-decap_after_udp_hdr(struct __sk_buff *skb, __u8 ipversion, __u8 ihl,
+decap_after_udp_hdr(struct __sk_buff *skb, __u32 eth_h_len, __u8 ihl,
                     __be16 ipv4hdr_tot_len, void *to, __u32 decap_hdrlen,
                     bool (*prevent_pop)(void *to), bool disable_l4_checksum) {
   if (unlikely(decap_hdrlen % 4 != 0)) {
@@ -856,7 +884,7 @@ decap_after_udp_hdr(struct __sk_buff *skb, __u8 ipversion, __u8 ihl,
     return -EINVAL;
   }
   int ret = 0;
-  long ip_off = ETH_HLEN;
+  long ip_off = eth_h_len;
   // Calculate offsets using add instead of subtract to avoid verifier problems.
   long ipp_len = ihl * 4;
 
@@ -898,23 +926,24 @@ decap_after_udp_hdr(struct __sk_buff *skb, __u8 ipversion, __u8 ihl,
     }
 
     // Rewrite ip len.
-    if (ipversion == 4) {
-      if ((ret = adjust_ipv4_len(skb, ipv4hdr_tot_len, -decap_hdrlen))) {
+    if (skb->protocol == bpf_htons(ETH_P_IP)) {
+      if ((ret = adjust_ipv4_len(skb, eth_h_len, ipv4hdr_tot_len,
+                                 -decap_hdrlen))) {
         bpf_printk("adjust_ip_len: %d", ret);
         return ret;
       }
     }
 
     // Rewrite udp len.
-    if ((ret = adjust_udp_len(skb, reserved_udphdr.len, ihl, -decap_hdrlen,
-                              disable_l4_checksum))) {
+    if ((ret = adjust_udp_len(skb, eth_h_len, reserved_udphdr.len, ihl,
+                              -decap_hdrlen, disable_l4_checksum))) {
       bpf_printk("adjust_udp_len: %d", ret);
       return ret;
     }
 
     if (!disable_l4_checksum) {
       // Rewrite udp checksum.
-      __u32 udp_csum_off = l4_checksum_off(IPPROTO_UDP, ihl);
+      __u32 udp_csum_off = l4_checksum_off(eth_h_len, IPPROTO_UDP, ihl);
       __s64 cksm = bpf_csum_diff(to, decap_hdrlen, 0, 0, 0);
       if ((ret = bpf_l4_csum_replace(skb, udp_csum_off, 0, cksm,
                                      BPF_F_MARK_MANGLED_0))) {
@@ -1173,6 +1202,24 @@ static bool __always_inline is_not_to_lan(void *_ori_src) {
   return ori_src->routing_result.outbound == IS_WAN;
 }
 
+static __always_inline int get_eth_h_len(__u32 ifindex, __u32 *eth_h_len) {
+  __u32 *link_type = bpf_map_lookup_elem(&linktype_map, &ifindex);
+  if (!link_type) {
+    return -EIO;
+  }
+  switch (*link_type) {
+  case LinkType_Ethernet: {
+    *eth_h_len = ETH_HLEN;
+  } break;
+  case LinkType_None: {
+    *eth_h_len = 0;
+  } break;
+  default:
+    return -EINVAL;
+  }
+  return 0;
+}
+
 // SNAT for UDP packet.
 SEC("tc/egress")
 int tproxy_lan_egress(struct __sk_buff *skb) {
@@ -1186,10 +1233,13 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
   struct tcphdr tcph;
   struct udphdr udph;
   __u8 ihl;
-  __u8 ipversion;
   __u8 l4proto;
-  int ret = parse_transport(skb, &ethh, &iph, &ipv6h, &icmp6h, &tcph, &udph,
-                            &ihl, &ipversion, &l4proto);
+  __u32 eth_h_len;
+  if (get_eth_h_len(skb->ifindex, &eth_h_len)) {
+    return TC_ACT_OK;
+  }
+  int ret = parse_transport(skb, eth_h_len, &ethh, &iph, &ipv6h, &icmp6h, &tcph,
+                            &udph, &ihl, &l4proto);
   if (ret) {
     bpf_printk("parse_transport: %d", ret);
     return TC_ACT_OK;
@@ -1212,29 +1262,30 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     return TC_ACT_PIPE;
   }
   struct tuples tuples;
-  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
+  get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
   if (*tproxy_port != tuples.sport) {
     return TC_ACT_PIPE;
   }
 
   struct dst_routing_result ori_src;
-  if ((ret = decap_after_udp_hdr(skb, ipversion, ihl,
-                                 ipversion == 4 ? iph.tot_len : 0, &ori_src,
-                                 sizeof(ori_src), is_not_to_lan, true))) {
+  if ((ret = decap_after_udp_hdr(
+           skb, eth_h_len, ihl,
+           skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &ori_src,
+           sizeof(ori_src), is_not_to_lan, true))) {
     return TC_ACT_SHOT;
   }
   if (is_not_to_lan(&ori_src)) {
     return TC_ACT_PIPE;
   }
-  if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, tuples.sip.u6_addr32,
+  if ((ret = rewrite_ip(skb, eth_h_len, l4proto, ihl, tuples.sip.u6_addr32,
                         ori_src.ip, false, true))) {
     return TC_ACT_SHOT;
   }
-  if ((ret = rewrite_port(skb, l4proto, ihl, tuples.sport, ori_src.port, false,
-                          true))) {
+  if ((ret = rewrite_port(skb, eth_h_len, l4proto, ihl, tuples.sport,
+                          ori_src.port, false, true))) {
     return TC_ACT_SHOT;
   }
-  disable_l4_checksum(skb, l4proto, ihl);
+  disable_l4_checksum(skb, eth_h_len, l4proto, ihl);
   // bpf_printk("from %pI6 to %pI6", tuples.sip, ori_src.ip);
   // bpf_printk("from %u to %u", bpf_ntohs(tuples.sport),
   //            bpf_ntohs(ori_src.port));
@@ -1250,10 +1301,13 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct tcphdr tcph;
   struct udphdr udph;
   __u8 ihl;
-  __u8 ipversion;
   __u8 l4proto;
-  int ret = parse_transport(skb, &ethh, &iph, &ipv6h, &icmp6h, &tcph, &udph,
-                            &ihl, &ipversion, &l4proto);
+  __u32 eth_h_len;
+  if (get_eth_h_len(skb->ifindex, &eth_h_len)) {
+    return TC_ACT_OK;
+  }
+  int ret = parse_transport(skb, eth_h_len, &ethh, &iph, &ipv6h, &icmp6h, &tcph,
+                            &udph, &ihl, &l4proto);
   if (ret) {
     bpf_printk("parse_transport: %d", ret);
     return TC_ACT_OK;
@@ -1264,7 +1318,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
   // Prepare five tuples.
   struct tuples tuples;
-  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
+  get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
   /**
   ip rule add fwmark 0x8000000/0x8000000 table 2023
@@ -1285,7 +1339,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   __u32 flag[6];
   void *l4hdr;
 
-  if (ipversion == 4) {
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
     tuple.ipv4.daddr = tuples.dip.u6_addr32[3];
     tuple.ipv4.saddr = tuples.sip.u6_addr32[3];
     tuple.ipv4.dport = tuples.dport;
@@ -1334,7 +1388,7 @@ new_connection:
     l4hdr = &udph;
     flag[0] = L4ProtoType_UDP;
   }
-  if (ipversion == 4) {
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
     flag[1] = IpVersionType_4;
   } else {
     flag[1] = IpVersionType_6;
@@ -1394,7 +1448,7 @@ new_connection:
   // Check outbound connectivity in specific ipversion and l4proto.
   struct outbound_connectivity_query q = {0};
   q.outbound = routing_result.outbound;
-  q.ipversion = ipversion;
+  q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
   q.l4proto = l4proto;
   __u32 *alive;
   alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1524,11 +1578,14 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   struct tcphdr tcph;
   struct udphdr udph;
   __u8 ihl;
-  __u8 ipversion;
   __u8 l4proto;
+  __u32 eth_h_len;
+  if (get_eth_h_len(skb->ifindex, &eth_h_len)) {
+    return TC_ACT_OK;
+  }
   bool tcp_state_syn;
-  int ret = parse_transport(skb, &ethh, &iph, &ipv6h, &icmp6h, &tcph, &udph,
-                            &ihl, &ipversion, &l4proto);
+  int ret = parse_transport(skb, eth_h_len, &ethh, &iph, &ipv6h, &icmp6h, &tcph,
+                            &udph, &ihl, &l4proto);
   if (ret) {
     return TC_ACT_OK;
   }
@@ -1538,7 +1595,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
   // Backup for further use.
   struct tuples tuples;
-  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
+  get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
   // We should know if this packet is from tproxy.
   // We do not need to check the source ip because we have skipped packets not
@@ -1561,7 +1618,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       // response.
       struct bpf_sock_tuple tuple = {0};
       __u32 tuple_size;
-      if (ipversion == 4) {
+      if (skb->protocol == bpf_htons(ETH_P_IP)) {
         tuple.ipv4.daddr = tuples.dip.u6_addr32[3];
         tuple.ipv4.saddr = tuples.sip.u6_addr32[3];
         tuple.ipv4.dport = tuples.dport;
@@ -1621,10 +1678,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         // New TCP connection.
         // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
         __u32 flag[6] = {L4ProtoType_TCP}; // TCP
-        if (ipversion == 6) {
-          flag[1] = IpVersionType_6;
-        } else {
+        if (skb->protocol == bpf_htons(ETH_P_IP)) {
           flag[1] = IpVersionType_4;
+        } else {
+          flag[1] = IpVersionType_6;
         }
         if (pid_is_control_plane(skb, &pid_pname)) {
           // From control plane. Direct.
@@ -1686,7 +1743,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       // Check outbound connectivity in specific ipversion and l4proto.
       struct outbound_connectivity_query q = {0};
       q.outbound = outbound;
-      q.ipversion = ipversion;
+      q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
       q.l4proto = l4proto;
       __u32 *alive;
       alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1732,10 +1789,10 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
       // Routing. It decides if we redirect traffic to control plane.
       __u32 flag[6] = {L4ProtoType_UDP};
-      if (ipversion == 6) {
-        flag[1] = IpVersionType_6;
-      } else {
+      if (skb->protocol == bpf_htons(ETH_P_IP)) {
         flag[1] = IpVersionType_4;
+      } else {
+        flag[1] = IpVersionType_6;
       }
       struct pid_pname *pid_pname;
       if (pid_is_control_plane(skb, &pid_pname)) {
@@ -1798,7 +1855,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       // Check outbound connectivity in specific ipversion and l4proto.
       struct outbound_connectivity_query q = {0};
       q.outbound = new_hdr.routing_result.outbound;
-      q.ipversion = ipversion;
+      q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
       q.l4proto = l4proto;
       __u32 *alive;
       alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1821,9 +1878,14 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       };
 
       // Encap a header to transmit fullcone tuple.
-      if ((ret = encap_after_udp_hdr(skb, ipversion, ihl,
-                                     ipversion == 4 ? iph.tot_len : 0, &new_hdr,
-                                     sizeof(new_hdr), true))) {
+      __u32 t_eth_h_len;
+      if (get_eth_h_len(skb->ifindex, &t_eth_h_len)) {
+        return TC_ACT_OK;
+      }
+      if ((ret = encap_after_udp_hdr(
+               skb, t_eth_h_len, ihl,
+               skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &new_hdr,
+               sizeof(new_hdr), true))) {
         return TC_ACT_SHOT;
       }
     }
@@ -1838,7 +1900,11 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   //     bpf_printk("%02x", t);
   //   }
   // }
-  disable_l4_checksum(skb, l4proto, ihl);
+  __u32 t_eth_h_len;
+  if (get_eth_h_len(skb->ifindex, &t_eth_h_len)) {
+    return TC_ACT_OK;
+  }
+  disable_l4_checksum(skb, t_eth_h_len, l4proto, ihl);
 
   // Redirect from egress to ingress.
   if ((ret = bpf_redirect(skb->ifindex, BPF_F_INGRESS)) == TC_ACT_SHOT) {
@@ -1857,10 +1923,13 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   struct tcphdr tcph;
   struct udphdr udph;
   __u8 ihl;
-  __u8 ipversion;
   __u8 l4proto;
-  int ret = parse_transport(skb, &ethh, &iph, &ipv6h, &icmp6h, &tcph, &udph,
-                            &ihl, &ipversion, &l4proto);
+  __u32 eth_h_len;
+  if (get_eth_h_len(skb->ifindex, &eth_h_len)) {
+    return TC_ACT_OK;
+  }
+  int ret = parse_transport(skb, eth_h_len, &ethh, &iph, &ipv6h, &icmp6h, &tcph,
+                            &udph, &ihl, &l4proto);
   if (ret) {
     return TC_ACT_OK;
   }
@@ -1869,7 +1938,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   }
 
   struct tuples tuples;
-  get_tuples(&tuples, &iph, &ipv6h, &tcph, &udph, ipversion, l4proto);
+  get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
   // bpf_printk("bpf_ntohs(*(__u16 *)&ethh.h_source[4]): %u",
   //            bpf_ntohs(*(__u16 *)&ethh.h_source[4]));
   // Tproxy related.
@@ -1884,7 +1953,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       struct bpf_sock_tuple tuple = {0};
       __u32 tuple_size;
 
-      if (ipversion == 4) {
+      if (skb->protocol == bpf_htons(ETH_P_IP)) {
         tuple.ipv4.daddr = tuples.dip.u6_addr32[3];
         tuple.ipv4.dport = tuples.dport;
         tuple_size = sizeof(tuple.ipv4);
@@ -1946,13 +2015,13 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       }
 
       // Rewrite sip and sport.
-      if ((ret = rewrite_ip(skb, ipversion, IPPROTO_TCP, ihl,
+      if ((ret = rewrite_ip(skb, eth_h_len, IPPROTO_TCP, ihl,
                             tuples.sip.u6_addr32, original_dst->ip, false,
                             true))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
-      if ((ret = rewrite_port(skb, IPPROTO_TCP, ihl, tuples.sport,
+      if ((ret = rewrite_port(skb, eth_h_len, IPPROTO_TCP, ihl, tuples.sport,
                               original_dst->port, false, true))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
@@ -1967,22 +2036,23 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // Get source ip/port from our packet header.
 
       // Decap header to get fullcone tuple.
-      if ((ret = decap_after_udp_hdr(skb, ipversion, ihl,
-                                     ipversion == 4 ? iph.tot_len : 0, &ori_src,
-                                     sizeof(ori_src), NULL, true))) {
+      if ((ret = decap_after_udp_hdr(
+               skb, eth_h_len, ihl,
+               skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &ori_src,
+               sizeof(ori_src), NULL, true))) {
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src ip
-      if ((ret = rewrite_ip(skb, ipversion, IPPROTO_UDP, ihl,
+      if ((ret = rewrite_ip(skb, eth_h_len, IPPROTO_UDP, ihl,
                             tuples.sip.u6_addr32, ori_src.ip, false, true))) {
         bpf_printk("Shot IP: %d", ret);
         return TC_ACT_SHOT;
       }
 
       // Rewrite udp src port
-      if ((ret = rewrite_port(skb, IPPROTO_UDP, ihl, tuples.sport, ori_src.port,
-                              false, true))) {
+      if ((ret = rewrite_port(skb, eth_h_len, IPPROTO_UDP, ihl, tuples.sport,
+                              ori_src.port, false, true))) {
         bpf_printk("Shot Port: %d", ret);
         return TC_ACT_SHOT;
       }
@@ -1998,7 +2068,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
       // }
     }
     // Rewrite dip to host ip.
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, tuples.dip.u6_addr32,
+    if ((ret = rewrite_ip(skb, eth_h_len, l4proto, ihl, tuples.dip.u6_addr32,
                           tuples.sip.u6_addr32, true, true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
@@ -2017,22 +2087,22 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // bpf_printk("should send to: %pI6:%u", tproxy_ip,
     // bpf_ntohs(*tproxy_port));
 
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, tuples.dip.u6_addr32,
+    if ((ret = rewrite_ip(skb, eth_h_len, l4proto, ihl, tuples.dip.u6_addr32,
                           tproxy_ip, true, true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;
     }
 
     // Rewrite dst port.
-    if ((ret = rewrite_port(skb, l4proto, ihl, tuples.dport, *tproxy_port, true,
-                            true))) {
+    if ((ret = rewrite_port(skb, eth_h_len, l4proto, ihl, tuples.dport,
+                            *tproxy_port, true, true))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
 
     // (1) Use daddr as saddr to pass NIC verification. Notice that we do not
     // modify the <sport> so tproxy will send packet to it.
-    if ((ret = rewrite_ip(skb, ipversion, l4proto, ihl, tuples.sip.u6_addr32,
+    if ((ret = rewrite_ip(skb, eth_h_len, l4proto, ihl, tuples.sip.u6_addr32,
                           tuples.dip.u6_addr32, false, true))) {
       bpf_printk("Shot IP: %d", ret);
       return TC_ACT_SHOT;

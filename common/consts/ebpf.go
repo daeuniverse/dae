@@ -168,3 +168,8 @@ const (
 	LanWanFlag_IsLan
 	LanWanFlag_NotApplicable
 )
+
+const (
+	LinkType_None uint32 = iota
+	LinkType_Ethernet
+)
