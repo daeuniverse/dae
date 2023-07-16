@@ -30,7 +30,7 @@ jobs:
     uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
     with:
       ref: ${{ github.sha }}
-      build-type: main-build
+      build-type: daily-build
 
   post-actions:
     if: always()
