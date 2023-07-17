@@ -14,8 +14,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
-- [v0.2.1rc1 (Pre-release)](#v021rc1-pre-release)
-- [v0.2.0 (Latest)](#v020-latest)
+- [v0.2.2rc1 (Pre-release)](#v022rc1-pre-release)
+- [v0.2.1 (Latest)](#v021-latest)
+- [v0.2.0](#v020)
 - [v0.1.10.p1](#v0110p1)
 - [v0.1.10](#v0110)
 - [v0.1.9-patch.1](#v019-patch1)
@@ -31,9 +32,84 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.2.1rc1 (Pre-release)
+### v0.2.2rc1 (Pre-release)
 
-> Release date: 2023/07/09
+> Release date: 2023/07/17
+
+### Features
+
+- feat/chore: add log file/refine code/add tip for no-load in [#219](https://github.com/daeuniverse/dae/pull/219) by (@mzz2017)
+- feat: latency-based failover [#119](https://github.com/daeuniverse/dae/pull/119) by (@mzz2017)
+
+### Bug Fixes
+
+- fix(ebpf): udp problem caused by #221 by accident in [#225](https://github.com/daeuniverse/dae/pull/225) by (@mzz2017)
+- fix: support to bind dae to wg lan (and other tun) in [#221](https://github.com/daeuniverse/dae/pull/221) by (@mzz2017)
+- fix: No AddrPort presented in [#207](https://github.com/daeuniverse/dae/pull/207) by (@mzz2017)
+- fix/optimize/refactor(udp): fix potential stuck UDP and optimize reroute logic in [#204](https://github.com/daeuniverse/dae/pull/204) by (@mzz2017)
+- fix: truncated dns resp in [#203](https://github.com/daeuniverse/dae/pull/203) by (@mzz2017)
+- fix(dns): should reject with nx instead of 0.0.0.0 [#141](https://github.com/daeuniverse/dae/pull/141) by (@mzz2017)
+
+### Others
+
+- ci/hotfix(build): inherit secret in [#223](https://github.com/daeuniverse/dae/pull/223) by (@yqlbu)
+- ci/hotfix(seed-build): add condition to run report-result in [#222](https://github.com/daeuniverse/dae/pull/222) by (@yqlbu)
+- ci/fix(daily-build): add missing ref input in [#220](https://github.com/daeuniverse/dae/pull/220) by (@yqlbu)
+- ci/feat(build,pr-build,seed-build): integrate check runs to report build status in [#218](https://github.com/daeuniverse/dae/pull/218) by (@yqlbu)
+- ci/fix(build): add ref input (required) in [#216](https://github.com/daeuniverse/dae/pull/216) by (@yqlbu)
+- ci(pr-build): don't trigger workflow for draft PRs in [#215](https://github.com/daeuniverse/dae/pull/215) by (@yqlbu)
+- ci(pr-build): fix default branch for seed workflow in [#214](https://github.com/daeuniverse/dae/pull/214) by (@yqlbu)
+- ci(build,pr-build): watch changes made to seed-build.yml in [#211](https://github.com/daeuniverse/dae/pull/211) by (@yqlbu)
+- ci/fix(seed-build): catch non-pr condition in [#210](https://github.com/daeuniverse/dae/pull/210) by (@yqlbu)
+- ci(pr-build): use pr.head.sha as default ref in [#209](https://github.com/daeuniverse/dae/pull/209) by (@yqlbu)
+- ci(build,daily-build.yml): adhere to naming convention in [#208](https://github.com/daeuniverse/dae/pull/208) by (@yqlbu)
+- docs(run-on-alpine.md)Add Alpine guide in [#206](https://github.com/daeuniverse/dae/pull/206) by (@MarksonHon)
+- docs: demise dae.v2raya.org in [#205](https://github.com/daeuniverse/dae/pull/205) by (@yqlbu)
+- chore(pr_template): add test result section in [#202](https://github.com/daeuniverse/dae/pull/202) by (@yqlbu)
+- ci(generate-changelogs): set dry_run as true in [#201](https://github.com/daeuniverse/dae/pull/201) by (@yqlbu)
+- ci(daily-build): update cron schedule in [#198](https://github.com/daeuniverse/dae/pull/198) by (@yqlbu)
+- ci(release): draft release v0.2.1rc1 in [#197](https://github.com/daeuniverse/dae/pull/197) by (@daebot)
+
+### 特性支持
+
+- 特性/杂项: 添加写入到 log 文件，添加更友好的空载提示 in [#219](https://github.com/daeuniverse/dae/pull/219) by (@mzz2017)
+- 特性: 基于时延的故障转移 [#119](https://github.com/daeuniverse/dae/pull/119) by (@mzz2017)
+
+### 问题修复
+
+- 修复(ebpf): 由 #221 导致的 udp 问题 in [#225](https://github.com/daeuniverse/dae/pull/225) by (@mzz2017)
+- 修复: 支持绑定 wg lan (以及其他 tun) in [#221](https://github.com/daeuniverse/dae/pull/221) by (@mzz2017)
+- 修复: 报错 No AddrPort presented 的问题 in [#207](https://github.com/daeuniverse/dae/pull/207) by (@mzz2017)
+- 修复/优化/重构(udp): 修复潜在的 UDP 阻塞并优化重路由逻辑 in [#204](https://github.com/daeuniverse/dae/pull/204) by (@mzz2017)
+- 修复: dns 回包过大被截断的问题 in [#203](https://github.com/daeuniverse/dae/pull/203) by (@mzz2017)
+- 修复(dns): 应当使用 NX 而不是 0.0.0.0 来进行 reject [#141](https://github.com/daeuniverse/dae/pull/141) by (@mzz2017)
+
+### 其他变更
+
+- 自动化/修复(build): 继承 secret 问题 in [#223](https://github.com/daeuniverse/dae/pull/223) by (@yqlbu)
+- 自动化/修复(seed-build): 添加运行 report-result 的条件 in [#222](https://github.com/daeuniverse/dae/pull/222) by (@yqlbu)
+- 自动化/修复(daily-build): 添加丢失的 ref input in [#220](https://github.com/daeuniverse/dae/pull/220) by (@yqlbu)
+- 自动化/特性(build,pr-build,seed-build): 持续检查运行来报告构建状态 in [#218](https://github.com/daeuniverse/dae/pull/218) by (@yqlbu)
+- 自动化/修复(build): 添加必须的 ref input in [#216](https://github.com/daeuniverse/dae/pull/216) by (@yqlbu)
+- 自动化(pr-build): 不要为 draft PRs 触发 actions in [#215](https://github.com/daeuniverse/dae/pull/215) by (@yqlbu)
+- 自动化(pr-build): 修复 seed 工作流的默认分支 in [#214](https://github.com/daeuniverse/dae/pull/214) by (@yqlbu)
+- 自动化(build,pr-build): 观察并响应 seed-build.yml 的变更 in [#211](https://github.com/daeuniverse/dae/pull/211) by (@yqlbu)
+- 自动化/修复(seed-build): 捕获 non-pr 条件 in [#210](https://github.com/daeuniverse/dae/pull/210) by (@yqlbu)
+- 自动化(pr-build): 使用 pr.head.sha 作为默认 ref in [#209](https://github.com/daeuniverse/dae/pull/209) by (@yqlbu)
+- 自动化(build,daily-build.yml): 遵守命名约定 in [#208](https://github.com/daeuniverse/dae/pull/208) by (@yqlbu)
+- 文档(run-on-alpine.md): 添加 Alpine 安装指南 in [#206](https://github.com/daeuniverse/dae/pull/206) by (@MarksonHon)
+- 文档: 暂时从 README 移除 dae.v2raya.org in [#205](https://github.com/daeuniverse/dae/pull/205) by (@yqlbu)
+- 杂项(pr_template): 添加测试结果一节 in [#202](https://github.com/daeuniverse/dae/pull/202) by (@yqlbu)
+- 自动化(generate-changelogs): 设置 dry_run 为 true in [#201](https://github.com/daeuniverse/dae/pull/201) by (@yqlbu)
+- 自动化(daily-build): 更新自动执行时间 in [#198](https://github.com/daeuniverse/dae/pull/198) by (@yqlbu)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.2rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.1...v0.2.2rc1
+
+### v0.2.1 (Latest)
+
+> Release date: 2023/07/17
 
 ### Features
 
@@ -87,7 +163,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0...v0.2.1rc1
 
-### v0.2.0 (Latest)
+### v0.2.0
 
 > Release date: 2023/07/02
 
