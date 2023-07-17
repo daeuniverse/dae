@@ -13,10 +13,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-- [v0.2.2rc1 (Pre-release)](#v022rc1-pre-release)
 
-- [v0.2.1rc1 (Pre-release)](#v021rc1-pre-release)
-- [v0.2.0 (Latest)](#v020-latest)
+- [v0.2.2rc1 (Pre-release)](#v022rc1-pre-release)
+- [v0.2.1 (Latest)](#v021-latest)
+- [v0.2.0](#v020)
 - [v0.1.10.p1](#v0110p1)
 - [v0.1.10](#v0110)
 - [v0.1.9-patch.1](#v019-patch1)
@@ -36,12 +36,13 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 > Release date: 2023/07/17
 
-
 ### Features
+
 - feat/chore: add log file/refine code/add tip for no-load in [#219](https://github.com/daeuniverse/dae/pull/219) by (@mzz2017)
 - feat: latency-based failover [#119](https://github.com/daeuniverse/dae/pull/119) by (@mzz2017)
 
 ### Bug Fixes
+
 - fix(ebpf): udp problem caused by #221 by accident in [#225](https://github.com/daeuniverse/dae/pull/225) by (@mzz2017)
 - fix: support to bind dae to wg lan (and other tun) in [#221](https://github.com/daeuniverse/dae/pull/221) by (@mzz2017)
 - fix: No AddrPort presented in [#207](https://github.com/daeuniverse/dae/pull/207) by (@mzz2017)
@@ -50,6 +51,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - fix(dns): should reject with nx instead of 0.0.0.0 [#141](https://github.com/daeuniverse/dae/pull/141) by (@mzz2017)
 
 ### Others
+
 - ci/hotfix(build): inherit secret in [#223](https://github.com/daeuniverse/dae/pull/223) by (@yqlbu)
 - ci/hotfix(seed-build): add condition to run report-result in [#222](https://github.com/daeuniverse/dae/pull/222) by (@yqlbu)
 - ci/fix(daily-build): add missing ref input in [#220](https://github.com/daeuniverse/dae/pull/220) by (@yqlbu)
@@ -68,12 +70,13 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - ci(daily-build): update cron schedule in [#198](https://github.com/daeuniverse/dae/pull/198) by (@yqlbu)
 - ci(release): draft release v0.2.1rc1 in [#197](https://github.com/daeuniverse/dae/pull/197) by (@daebot)
 
-
 ### 特性支持
+
 - 特性/杂项: 添加写入到 log 文件，添加更友好的空载提示 in [#219](https://github.com/daeuniverse/dae/pull/219) by (@mzz2017)
 - 特性: 基于时延的故障转移 [#119](https://github.com/daeuniverse/dae/pull/119) by (@mzz2017)
 
 ### 问题修复
+
 - 修复(ebpf): 由 #221 导致的 udp 问题 in [#225](https://github.com/daeuniverse/dae/pull/225) by (@mzz2017)
 - 修复: 支持绑定 wg lan (以及其他 tun) in [#221](https://github.com/daeuniverse/dae/pull/221) by (@mzz2017)
 - 修复: 报错 No AddrPort presented 的问题 in [#207](https://github.com/daeuniverse/dae/pull/207) by (@mzz2017)
@@ -82,6 +85,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 修复(dns): 应当使用 NX 而不是 0.0.0.0 来进行 reject [#141](https://github.com/daeuniverse/dae/pull/141) by (@mzz2017)
 
 ### 其他变更
+
 - 自动化/修复(build): 继承 secret 问题 in [#223](https://github.com/daeuniverse/dae/pull/223) by (@yqlbu)
 - 自动化/修复(seed-build): 添加运行 report-result 的条件 in [#222](https://github.com/daeuniverse/dae/pull/222) by (@yqlbu)
 - 自动化/修复(daily-build): 添加丢失的 ref input in [#220](https://github.com/daeuniverse/dae/pull/220) by (@yqlbu)
@@ -103,9 +107,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.1...v0.2.2rc1
 
-### v0.2.1rc1 (Pre-release)
+### v0.2.1 (Latest)
 
-> Release date: 2023/07/09
+> Release date: 2023/07/17
 
 ### Features
 
@@ -159,7 +163,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0...v0.2.1rc1
 
-### v0.2.0 (Latest)
+### v0.2.0
 
 > Release date: 2023/07/02
 
