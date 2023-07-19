@@ -12,6 +12,7 @@
   - [x] WS
   - [x] TLS
   - [x] gRPC
+  - [x] h2
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Stream Ciphers
