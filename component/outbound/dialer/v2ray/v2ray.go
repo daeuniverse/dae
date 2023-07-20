@@ -156,7 +156,11 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			Host:   net.JoinHostPort(s.Add, s.Port),
 		}
 		if s.SNI != "" {
-			u.RawQuery = url.Values{"sni": []string{sni}, "allowInsecure": []string{common.BoolToString(s.AllowInsecure)}}.Encode()
+			u.RawQuery = url.Values{
+				"sni":           []string{sni},
+				"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
+				"utlsImitate":   []string{option.UtlsImitate},
+			}.Encode()
 		}
 		d, err = http.NewHTTPProxy(&u, direct.SymmetricDirect)
 		if err != nil {
