@@ -68,6 +68,7 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@v3
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - name: Get the version
