@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/config"
 	"github.com/sirupsen/logrus"
 )
 
@@ -149,6 +150,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	log.Debugf("ResolveSubscription: %v", subscription)
 	var (
 		b    []byte
+		req  *http.Request
 		resp *http.Response
 	)
 	switch u.Scheme {
@@ -160,7 +162,11 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		goto resolve
 	default:
 	}
-	resp, err = client.Get(subscription)
+	req, err = http.NewRequest("GET", subscription, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
 	if err != nil {
 		return "", nil, err
 	}

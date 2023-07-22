@@ -13,6 +13,10 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
+var (
+	Version string
+)
+
 type Global struct {
 	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
