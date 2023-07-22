@@ -145,7 +145,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 	case "http", "http2", "h2":
 		sni := s.SNI
 		if sni == "" {
-			sni = s.Host
+			sni = s.Add
 		}
 		scheme := "http"
 		if s.TLS == "tls" {
@@ -154,13 +154,16 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 		u := url.URL{
 			Scheme: scheme,
 			Host:   net.JoinHostPort(s.Add, s.Port),
-		}
-		if s.SNI != "" {
-			u.RawQuery = url.Values{
-				"sni":           []string{sni},
-				"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
-				"utlsImitate":   []string{option.UtlsImitate},
-			}.Encode()
+			Path:   s.Path,
+			RawQuery: url.Values{
+				"sni":               []string{sni},
+				"allowInsecure":     []string{common.BoolToString(s.AllowInsecure)},
+				"tlsImplementation": []string{option.TlsImplementation},
+				"utlsImitate":       []string{option.UtlsImitate},
+				"host":              []string{s.Host},
+				"alpn":              []string{s.Alpn},
+				"transport":         []string{"1"},
+			}.Encode(),
 		}
 		d, err = http.NewHTTPProxy(&u, direct.SymmetricDirect)
 		if err != nil {
