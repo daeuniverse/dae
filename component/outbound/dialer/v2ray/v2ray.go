@@ -16,6 +16,7 @@ import (
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
 	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/protocol/http"
 	"github.com/mzz2017/softwind/transport/grpc"
 )
 
@@ -140,6 +141,33 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			ServiceName:   serviceName,
 			ServerName:    sni,
 			AllowInsecure: s.AllowInsecure,
+		}
+	case "http", "http2", "h2":
+		sni := s.SNI
+		if sni == "" {
+			sni = s.Add
+		}
+		scheme := "http"
+		if s.TLS == "tls" {
+			scheme = "https"
+		}
+		u := url.URL{
+			Scheme: scheme,
+			Host:   net.JoinHostPort(s.Add, s.Port),
+			Path:   s.Path,
+			RawQuery: url.Values{
+				"sni":               []string{sni},
+				"allowInsecure":     []string{common.BoolToString(s.AllowInsecure)},
+				"tlsImplementation": []string{option.TlsImplementation},
+				"utlsImitate":       []string{option.UtlsImitate},
+				"host":              []string{s.Host},
+				"alpn":              []string{s.Alpn},
+				"transport":         []string{"1"},
+			}.Encode(),
+		}
+		d, err = http.NewHTTPProxy(&u, direct.SymmetricDirect)
+		if err != nil {
+			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("%w: network: %v", dialer.UnexpectedFieldErr, s.Net)
