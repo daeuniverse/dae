@@ -172,7 +172,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 
 	if d, err = protocol.NewDialer(s.Protocol, d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Add, s.Port),
-		Cipher:       "aes-128-gcm",
+		Cipher:       getAutoCipher(),
 		Password:     s.ID,
 		IsClient:     true,
 		//Flags:        protocol.Flags_VMess_UsePacketAddr,
