@@ -85,7 +85,7 @@ func (s *Tls) Dial(network, addr string) (c netproxy.Conn, err error) {
 	}
 	switch magicNetwork.Network {
 	case "tcp":
-		rc, err := s.dialer.Dial(network, addr)
+		rc, err := s.dialer.Dial(network, s.addr)
 		if err != nil {
 			return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
 		}

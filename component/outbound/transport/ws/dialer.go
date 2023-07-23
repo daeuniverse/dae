@@ -5,5 +5,6 @@ import (
 )
 
 func init() {
-	dialer.FromLinkRegister("http", NewWs)
+	dialer.FromLinkRegister("ws", NewWs)
+	dialer.FromLinkRegister("wss", NewWs)
 }

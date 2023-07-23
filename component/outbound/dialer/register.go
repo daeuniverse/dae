@@ -34,8 +34,8 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*D
 		Protocol: "",
 		Link:     link,
 	}
-	for _, link := range links {
-		link = strings.TrimSpace(link)
+	for i := len(links) - 1; i >= 0; i-- {
+		link := strings.TrimSpace(links[i])
 		u, err := url.Parse(link)
 		if err != nil {
 			return nil, err
@@ -52,17 +52,17 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*D
 		if p.Name == "" {
 			p.Name = _property.Name
 		} else {
-			p.Name = p.Name + "->" + _property.Name
+			p.Name = _property.Name + "->" + p.Name
 		}
 		if p.Protocol == "" {
 			p.Protocol = _property.Protocol
 		} else {
-			p.Protocol = p.Protocol + "->" + _property.Protocol
+			p.Protocol = _property.Protocol + "->" + p.Protocol
 		}
 		if p.Address == "" {
 			p.Address = _property.Address
 		} else {
-			p.Address = p.Address + "->" + _property.Address
+			p.Address = _property.Address + "->" + p.Address
 		}
 	}
 	if overwrittenName != "" {
