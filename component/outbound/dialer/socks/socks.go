@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol/socks5"
 )
 
@@ -28,28 +28,29 @@ type Socks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewSocks(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
+func NewSocks(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
 	s, err := ParseSocksURL(link)
 	if err != nil {
-		return nil, dialer.InvalidParameterErr
+		return nil, nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func (s *Socks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
+func (s *Socks) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
 	link := s.ExportToURL()
+	d := nextDialer
 	switch s.Protocol {
 	case "", "socks", "socks5":
-		d, err := socks5.NewSocks5Dialer(link, direct.FullconeDirect) // Socks5 Proxy supports full-cone.
+		d, err := socks5.NewSocks5Dialer(link, d) // Socks5 Proxy supports full-cone.
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return dialer.NewDialer(d, option, iOption, dialer.Property{
+		return d, &dialer.Property{
 			Name:     s.Name,
 			Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 			Protocol: s.Protocol,
 			Link:     link,
-		}), nil
+		}, nil
 	//case "socks4", "socks4a":
 	//	d, err := socks4.NewSocks4Dialer(link, &proxy.Direct{})
 	//	if err != nil {
@@ -57,7 +58,7 @@ func (s *Socks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 	//	}
 	//	return dialer.NewDialer(d, false, s.Name, s.Protocol, link), nil
 	default:
-		return nil, fmt.Errorf("unexpected protocol: %v", s.Protocol)
+		return nil, nil, fmt.Errorf("unexpected protocol: %v", s.Protocol)
 	}
 }
 

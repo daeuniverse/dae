@@ -4,7 +4,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
 
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/mzz2017/softwind/netproxy"
 	utls "github.com/refraction-networking/utls"
 )
@@ -22,36 +25,57 @@ type Tls struct {
 }
 
 // NewTls returns a Tls infra.
-func NewTls(s string, d netproxy.Dialer) (*Tls, error) {
-	u, err := url.Parse(s)
+func NewTls(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	u, err := url.Parse(link)
 	if err != nil {
-		return nil, fmt.Errorf("NewTls: %w", err)
-	}
-
-	t := &Tls{
-		dialer:          d,
-		addr:            u.Host,
-		tlsImplentation: u.Scheme,
+		return nil, nil, fmt.Errorf("NewTls: %w", err)
 	}
 
 	query := u.Query()
-	t.serverName = query.Get("sni")
-	t.utlsImitate = query.Get("utlsImitate")
 
-	// skipVerify
-	if query.Get("allowInsecure") == "true" || query.Get("allowInsecure") == "1" ||
-		query.Get("skipVerify") == "true" || query.Get("skipVerify") == "1" {
-		t.skipVerify = true
+	tlsImplentation := u.Scheme
+	utlsImitate := query.Get("utlsImitate")
+	if tlsImplentation == "tls" && option.TlsImplementation != "" {
+		tlsImplentation = option.TlsImplementation
+		utlsImitate = option.UtlsImitate
+	}
+	t := &Tls{
+		dialer:          nextDialer,
+		addr:            u.Host,
+		tlsImplentation: tlsImplentation,
+		utlsImitate:     utlsImitate,
+		serverName:      query.Get("sni"),
 	}
 	if t.serverName == "" {
 		t.serverName = u.Hostname()
 	}
+
+	// skipVerify
+	allowInsecure, _ := strconv.ParseBool(u.Query().Get("allowInsecure"))
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(u.Query().Get("allow_insecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(u.Query().Get("allowinsecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(u.Query().Get("skipVerify"))
+	}
+	t.skipVerify = allowInsecure || option.AllowInsecure
 	t.tlsConfig = &tls.Config{
 		ServerName:         t.serverName,
 		InsecureSkipVerify: t.skipVerify,
 	}
+	if len(query.Get("alpn")) > 0 {
+		t.tlsConfig.NextProtos = strings.Split(query.Get("alpn"), ",")
+	}
 
-	return t, nil
+	return t, &dialer.Property{
+		Name:     u.Fragment,
+		Address:  t.addr,
+		Protocol: tlsImplentation,
+		Link:     link,
+	}, nil
 }
 
 func (s *Tls) Dial(network, addr string) (c netproxy.Conn, err error) {
@@ -61,7 +85,7 @@ func (s *Tls) Dial(network, addr string) (c netproxy.Conn, err error) {
 	}
 	switch magicNetwork.Network {
 	case "tcp":
-		rc, err := s.dialer.Dial(network, addr)
+		rc, err := s.dialer.Dial(network, s.addr)
 		if err != nil {
 			return nil, fmt.Errorf("[Tls]: dial to %s: %w", s.addr, err)
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	dnsmessage "github.com/miekg/dns"
+	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,7 +24,7 @@ func TestSocks5(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := logrus.StandardLogger()
-	d, err := c.Dialer(&dialer.GlobalOption{
+	d, _, err := c.Dialer(&dialer.GlobalOption{
 		Log: log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{
 			Log:             log,
@@ -41,9 +42,7 @@ func TestSocks5(t *testing.T) {
 		AllowInsecure:     false,
 		TlsImplementation: "",
 		UtlsImitate:       "",
-	}, dialer.InstanceOption{
-		CheckEnabled: false,
-	})
+	}, direct.SymmetricDirect)
 	if err != nil {
 		t.Fatal(err)
 	}

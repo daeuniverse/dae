@@ -8,11 +8,14 @@ package dialer
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/mzz2017/softwind/netproxy"
+	"github.com/mzz2017/softwind/protocol/direct"
 )
 
-type FromLinkCreator func(gOption *GlobalOption, iOption InstanceOption, link string) (dialer *Dialer, err error)
+type FromLinkCreator func(gOption *GlobalOption, nextDialer netproxy.Dialer, link string) (dialer netproxy.Dialer, property *Property, err error)
 
 var fromLinkCreators = make(map[string]FromLinkCreator)
 
@@ -20,24 +23,55 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 	fromLinkCreators[name] = creator
 }
 
-func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (dialer *Dialer, err error) {
+func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*Dialer, error) {
 	/// Get overwritten name.
-	overwrittenName, link := common.GetTagFromLinkLikePlaintext(link)
-	u, err := url.Parse(link)
-	if err != nil {
-		return nil, err
+	overwrittenName, linklike := common.GetTagFromLinkLikePlaintext(link)
+	links := strings.Split(linklike, "->")
+	d := direct.SymmetricDirect
+	p := &Property{
+		Name:     "",
+		Address:  "",
+		Protocol: "",
+		Link:     link,
 	}
-	if creator, ok := fromLinkCreators[u.Scheme]; ok {
-		node, err := creator(gOption, iOption, link)
+	for i := len(links) - 1; i >= 0; i-- {
+		link := strings.TrimSpace(links[i])
+		u, err := url.Parse(link)
 		if err != nil {
 			return nil, err
 		}
-		// Overwrite node name using user given tag.
-		if overwrittenName != "" {
-			node.property.Name = overwrittenName
+		creator, ok := fromLinkCreators[u.Scheme]
+		if !ok {
+			return nil, fmt.Errorf("unexpected link type: %v", u.Scheme)
 		}
-		return node, err
-	} else {
-		return nil, fmt.Errorf("unexpected link type: %v", u.Scheme)
+		var _property *Property
+		d, _property, err = creator(gOption, d, link)
+		if err != nil {
+			return nil, fmt.Errorf("create %v: %w", link, err)
+		}
+		if p.Name == "" {
+			p.Name = _property.Name
+		} else {
+			p.Name = _property.Name + "->" + p.Name
+		}
+		if p.Protocol == "" {
+			p.Protocol = _property.Protocol
+		} else {
+			p.Protocol = _property.Protocol + "->" + p.Protocol
+		}
+		if p.Address == "" {
+			p.Address = _property.Address
+		} else {
+			p.Address = _property.Address + "->" + p.Address
+		}
 	}
+	if overwrittenName != "" {
+		p.Name = overwrittenName
+	}
+	node := NewDialer(d, gOption, iOption, p)
+	// Overwrite node name using user given tag.
+	if overwrittenName != "" {
+		node.property.Name = overwrittenName
+	}
+	return node, nil
 }
