@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/daeuniverse/dae/config"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,10 @@ var (
 		},
 	}
 )
+
+func init() {
+	config.Version = Version
+}
 
 // Execute executes the root command.
 func Execute() error {
