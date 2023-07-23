@@ -2,18 +2,18 @@ package trojan
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/outbound/transport/ws"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/transport/grpc"
 )
 
@@ -37,36 +37,36 @@ type Trojan struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewTrojan(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
-	s, err := ParseTrojanURL(link, option)
+func NewTrojan(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	s, err := ParseTrojanURL(link)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	d := direct.FullconeDirect // Trojan Proxy supports full-cone.
-	u := url.URL{
-		Scheme: option.TlsImplementation,
-		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
-		RawQuery: url.Values{
-			"sni":           []string{s.Sni},
-			"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
-			"utlsImitate":   []string{option.UtlsImitate},
-		}.Encode(),
-	}
+func (s *Trojan) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
+	d := nextDialer
 	var err error
 	if s.Type != "grpc" {
 		// grpc contains tls
-		if d, err = tls.NewTls(u.String(), d); err != nil {
-			return nil, err
+		u := url.URL{
+			Scheme: option.TlsImplementation,
+			Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
+			RawQuery: url.Values{
+				"sni":           []string{s.Sni},
+				"allowInsecure": []string{common.BoolToString(s.AllowInsecure || option.AllowInsecure)},
+				"utlsImitate":   []string{option.UtlsImitate},
+			}.Encode(),
+		}
+		if d, _, err = tls.NewTls(option, d, u.String()); err != nil {
+			return nil, nil, err
 		}
 	}
 	// "tls,ws,ss,trojanc"
 	switch s.Type {
 	case "ws":
-		u = url.URL{
+		u := url.URL{
 			Scheme: "ws",
 			Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 			RawQuery: url.Values{
@@ -74,8 +74,8 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 				"path": []string{s.Path},
 			}.Encode(),
 		}
-		if d, err = ws.NewWs(u.String(), d); err != nil {
-			return nil, err
+		if d, _, err = ws.NewWs(option, d, u.String()); err != nil {
+			return nil, nil, err
 		}
 	case "grpc":
 		serviceName := s.ServiceName
@@ -86,7 +86,7 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 			NextDialer:    &netproxy.ContextDialer{Dialer: d},
 			ServiceName:   serviceName,
 			ServerName:    s.Sni,
-			AllowInsecure: s.AllowInsecure,
+			AllowInsecure: s.AllowInsecure || option.AllowInsecure,
 		}
 	}
 	if strings.HasPrefix(s.Encryption, "ss;") {
@@ -97,7 +97,7 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 			Password:     fields[2],
 			IsClient:     false,
 		}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if d, err = protocol.NewDialer("trojanc", d, protocol.Header{
@@ -105,17 +105,17 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOpti
 		Password:     s.Password,
 		IsClient:     true,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, dialer.Property{
+	return d, &dialer.Property{
 		Name:     s.Name,
 		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Protocol: s.Protocol,
 		Link:     s.ExportToURL(),
-	}), nil
+	}, nil
 }
 
-func ParseTrojanURL(u string, option *dialer.GlobalOption) (data *Trojan, err error) {
+func ParseTrojanURL(u string) (data *Trojan, err error) {
 	//trojan://password@server:port#escape(remarks)
 	t, err := url.Parse(u)
 	if err != nil {
@@ -123,8 +123,14 @@ func ParseTrojanURL(u string, option *dialer.GlobalOption) (data *Trojan, err er
 		return
 	}
 	allowInsecure, _ := strconv.ParseBool(t.Query().Get("allowInsecure"))
-	if !allowInsecure && option.AllowInsecure {
-		allowInsecure = true
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(t.Query().Get("allow_insecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(t.Query().Get("allowinsecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(t.Query().Get("skipVerify"))
 	}
 	sni := t.Query().Get("peer")
 	if sni == "" {

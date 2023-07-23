@@ -13,7 +13,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/transport/simpleobfs"
 	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/protocol/shadowsocks"
 )
 
@@ -36,24 +35,23 @@ type Shadowsocks struct {
 	Protocol string `json:"protocol"`
 }
 
-func NewShadowsocksFromLink(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
+func NewShadowsocksFromLink(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (npd netproxy.Dialer, property *dialer.Property, err error) {
 	s, err := ParseSSURL(link)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
+func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
 	var err error
-	var d netproxy.Dialer
+	d := nextDialer
 	switch s.Plugin.Name {
 	case "simple-obfs":
-		d = direct.SymmetricDirect // Simple-obfs does not supports UDP.
 		switch s.Plugin.Opts.Obfs {
 		case "http", "tls":
 		default:
-			return nil, fmt.Errorf("unsupported obfs %v of plugin %v", s.Plugin.Opts.Obfs, s.Plugin.Name)
+			return nil, nil, fmt.Errorf("unsupported obfs %v of plugin %v", s.Plugin.Opts.Obfs, s.Plugin.Name)
 		}
 		host := s.Plugin.Opts.Host
 		if host == "" {
@@ -69,12 +67,11 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 				"uri":  []string{path},
 			}.Encode(),
 		}
-		d, err = simpleobfs.NewSimpleObfs(uSimpleObfs.String(), d)
+		d, _, err = simpleobfs.NewSimpleObfs(option, d, uSimpleObfs.String())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	default:
-		d = direct.FullconeDirect // Shadowsocks Proxy supports full-cone.
 	}
 	var nextDialerName string
 	switch s.Cipher {
@@ -83,7 +80,7 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 	case "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "aes-128-ofb", "aes-192-ofb", "aes-256-ofb", "des-cfb", "bf-cfb", "cast5-cfb", "rc4-md5", "rc4-md5-6", "chacha20", "chacha20-ietf", "salsa20", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb", "idea-cfb", "rc2-cfb", "seed-cfb", "rc4", "none", "plain":
 		nextDialerName = "shadowsocks_stream"
 	default:
-		return nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
+		return nil, nil, fmt.Errorf("unsupported shadowsocks encryption method: %v", s.Cipher)
 	}
 	d, err = protocol.NewDialer(nextDialerName, d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
@@ -92,14 +89,14 @@ func (s *Shadowsocks) Dialer(option *dialer.GlobalOption, iOption dialer.Instanc
 		IsClient:     true,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, dialer.Property{
+	return d, &dialer.Property{
 		Name:     s.Name,
 		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Protocol: s.Protocol,
 		Link:     s.ExportToURL(),
-	}), nil
+	}, nil
 }
 
 func ParseSSURL(u string) (data *Shadowsocks, err error) {

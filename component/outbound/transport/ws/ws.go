@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/gorilla/websocket"
 	"github.com/mzz2017/softwind/netproxy"
 )
@@ -21,14 +23,14 @@ type Ws struct {
 }
 
 // NewWs returns a Ws infra.
-func NewWs(s string, d netproxy.Dialer) (*Ws, error) {
-	u, err := url.Parse(s)
+func NewWs(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	u, err := url.Parse(link)
 	if err != nil {
-		return nil, fmt.Errorf("NewWs: %w", err)
+		return nil, nil, fmt.Errorf("NewWs: %w", err)
 	}
 
 	t := &Ws{
-		dialer: d,
+		dialer: nextDialer,
 	}
 
 	query := u.Query()
@@ -45,13 +47,31 @@ func NewWs(s string, d netproxy.Dialer) (*Ws, error) {
 	}
 	t.wsAddr = wsUrl.String() + u.Path
 	if u.Scheme == "wss" {
-		skipVerify, _ := strconv.ParseBool(query.Get("allowInsecure"))
+		allowInsecure, _ := strconv.ParseBool(u.Query().Get("allowInsecure"))
+		if !allowInsecure {
+			allowInsecure, _ = strconv.ParseBool(u.Query().Get("allow_insecure"))
+		}
+		if !allowInsecure {
+			allowInsecure, _ = strconv.ParseBool(u.Query().Get("allowinsecure"))
+		}
+		if !allowInsecure {
+			allowInsecure, _ = strconv.ParseBool(u.Query().Get("skipVerify"))
+		}
+		// TODO: utls
 		t.tlsClientConfig = &tls.Config{
 			ServerName:         query.Get("sni"),
-			InsecureSkipVerify: skipVerify,
+			InsecureSkipVerify: allowInsecure || option.AllowInsecure,
+		}
+		if len(query.Get("alpn")) > 0 {
+			t.tlsClientConfig.NextProtos = strings.Split(query.Get("alpn"), ",")
 		}
 	}
-	return t, nil
+	return t, &dialer.Property{
+		Name:     u.Fragment,
+		Address:  wsUrl.Host,
+		Protocol: u.Scheme,
+		Link:     link,
+	}, nil
 }
 
 func (s *Ws) Dial(network, addr string) (c netproxy.Conn, err error) {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol/http"
 )
 
@@ -28,15 +28,15 @@ type HTTP struct {
 	AllowInsecure bool   `json:"allowInsecure"`
 }
 
-func NewHTTP(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
-	s, err := ParseHTTPURL(link, option)
+func NewHTTP(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	s, err := ParseHTTPURL(link)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", dialer.InvalidParameterErr, err)
+		return nil, nil, fmt.Errorf("%w: %v", dialer.InvalidParameterErr, err)
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func ParseHTTPURL(link string, option *dialer.GlobalOption) (data *HTTP, err error) {
+func ParseHTTPURL(link string) (data *HTTP, err error) {
 	u, err := url.Parse(link)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("%w: %v", dialer.InvalidParameterErr, err)
@@ -54,6 +54,16 @@ func ParseHTTPURL(link string, option *dialer.GlobalOption) (data *HTTP, err err
 	if err != nil {
 		return nil, fmt.Errorf("error when parsing port: %w", err)
 	}
+	allowInsecure, _ := strconv.ParseBool(u.Query().Get("allowInsecure"))
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(u.Query().Get("allow_insecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(u.Query().Get("allowinsecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(u.Query().Get("skipVerify"))
+	}
 	return &HTTP{
 		Name:          u.Fragment,
 		Server:        u.Hostname(),
@@ -62,22 +72,22 @@ func ParseHTTPURL(link string, option *dialer.GlobalOption) (data *HTTP, err err
 		Password:      pwd,
 		SNI:           u.Query().Get("sni"),
 		Protocol:      u.Scheme,
-		AllowInsecure: option.AllowInsecure,
+		AllowInsecure: allowInsecure,
 	}, nil
 }
 
-func (s *HTTP) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
+func (s *HTTP) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
 	u := s.URL()
-	d, err := http.NewHTTPProxy(&u, direct.SymmetricDirect) // HTTP Proxy does not support full-cone.
+	d, err := http.NewHTTPProxy(&u, nextDialer)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, dialer.Property{
+	return d, &dialer.Property{
 		Name:     s.Name,
 		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Protocol: s.Protocol,
 		Link:     u.String(),
-	}), nil
+	}, nil
 }
 
 func (s *HTTP) URL() url.URL {

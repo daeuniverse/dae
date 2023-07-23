@@ -10,8 +10,8 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/mzz2017/softwind/protocol/shadowsocks_stream"
 	"github.com/mzz2017/softwind/transport/shadowsocksr/obfs"
 	"github.com/mzz2017/softwind/transport/shadowsocksr/proto"
@@ -35,16 +35,16 @@ type ShadowsocksR struct {
 	Protocol   string `json:"protocol"`
 }
 
-func NewShadowsocksR(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
+func NewShadowsocksR(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
 	s, err := ParseSSRURL(link)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	d := direct.SymmetricDirect
+func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
+	d := nextDialer
 	obfsDialer, err := obfs.NewDialer(d, &obfs.ObfsParam{
 		ObfsHost:  s.Server,
 		ObfsPort:  uint16(s.Port),
@@ -52,7 +52,7 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 		ObfsParam: s.ObfsParam,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	d = obfsDialer
 	d, err = shadowsocks_stream.NewDialer(d, protocol.Header{
@@ -62,7 +62,7 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 		IsClient:     true,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	d = &proto.Dialer{
 		NextDialer:    d,
@@ -71,12 +71,12 @@ func (s *ShadowsocksR) Dialer(option *dialer.GlobalOption, iOption dialer.Instan
 		ObfsOverhead:  obfsDialer.ObfsOverhead(),
 	}
 
-	return dialer.NewDialer(d, option, iOption, dialer.Property{
+	return d, &dialer.Property{
 		Name:     s.Name,
 		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Protocol: s.Protocol,
 		Link:     s.ExportToURL(),
-	}), nil
+	}, nil
 }
 
 func ParseSSRURL(u string) (data *ShadowsocksR, err error) {

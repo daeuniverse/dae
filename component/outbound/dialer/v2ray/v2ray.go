@@ -44,40 +44,37 @@ type V2Ray struct {
 	Protocol      string `json:"protocol"`
 }
 
-func NewV2Ray(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
+func NewV2Ray(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
 	var (
 		s   *V2Ray
 		err error
 	)
 	switch {
 	case strings.HasPrefix(link, "vmess://"):
-		s, err = ParseVmessURL(link, option)
+		s, err = ParseVmessURL(link)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if s.Aid != "0" && s.Aid != "" {
-			return nil, fmt.Errorf("%w: aid: %v, we only support AEAD encryption", dialer.UnexpectedFieldErr, s.Aid)
+			return nil, nil, fmt.Errorf("%w: aid: %v, we only support AEAD encryption", dialer.UnexpectedFieldErr, s.Aid)
 		}
 	case strings.HasPrefix(link, "vless://"):
-		s, err = ParseVlessURL(link, option)
+		s, err = ParseVlessURL(link)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	default:
-		return nil, dialer.InvalidParameterErr
+		return nil, nil, dialer.InvalidParameterErr
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (data *dialer.Dialer, err error) {
-	var d netproxy.Dialer
+func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (npd netproxy.Dialer, property *dialer.Property, err error) {
+	d := nextDialer
 	switch s.Protocol {
-	case "vmess":
-		d = direct.FullconeDirect // VMess Proxy supports full-cone.
-	case "vless":
-		d = direct.SymmetricDirect // VLESS Proxy does not yet support full-cone by softwind.
+	case "vmess", "vless":
 	default:
-		return nil, fmt.Errorf("V2Ray.Dialer: unexpected protocol: %v", s.Protocol)
+		return nil, nil, fmt.Errorf("V2Ray.Dialer: unexpected protocol: %v", s.Protocol)
 	}
 
 	switch strings.ToLower(s.Net) {
@@ -97,12 +94,12 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			RawQuery: url.Values{
 				"host":          []string{s.Host},
 				"sni":           []string{sni},
-				"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
+				"allowInsecure": []string{common.BoolToString(s.AllowInsecure || option.AllowInsecure)},
 			}.Encode(),
 		}
-		d, err = ws.NewWs(u.String(), d)
+		d, _, err = ws.NewWs(option, d, u.String())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	case "tcp":
 		if s.TLS == "tls" || s.TLS == "xtls" {
@@ -115,17 +112,17 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 				Host:   net.JoinHostPort(s.Add, s.Port),
 				RawQuery: url.Values{
 					"sni":           []string{sni},
-					"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
+					"allowInsecure": []string{common.BoolToString(s.AllowInsecure || option.AllowInsecure)},
 					"utlsImitate":   []string{option.UtlsImitate},
 				}.Encode(),
 			}
-			d, err = tls.NewTls(u.String(), d)
+			d, _, err = tls.NewTls(option, d, u.String())
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		if s.Type != "none" && s.Type != "" {
-			return nil, fmt.Errorf("%w: type: %v", dialer.UnexpectedFieldErr, s.Type)
+			return nil, nil, fmt.Errorf("%w: type: %v", dialer.UnexpectedFieldErr, s.Type)
 		}
 	case "grpc":
 		sni := s.SNI
@@ -140,7 +137,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			NextDialer:    &netproxy.ContextDialer{Dialer: d},
 			ServiceName:   serviceName,
 			ServerName:    sni,
-			AllowInsecure: s.AllowInsecure,
+			AllowInsecure: s.AllowInsecure || option.AllowInsecure,
 		}
 	case "http", "http2", "h2":
 		sni := s.SNI
@@ -157,7 +154,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 			Path:   s.Path,
 			RawQuery: url.Values{
 				"sni":               []string{sni},
-				"allowInsecure":     []string{common.BoolToString(s.AllowInsecure)},
+				"allowInsecure":     []string{common.BoolToString(s.AllowInsecure || option.AllowInsecure)},
 				"tlsImplementation": []string{option.TlsImplementation},
 				"utlsImitate":       []string{option.UtlsImitate},
 				"host":              []string{s.Host},
@@ -167,10 +164,10 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 		}
 		d, err = http.NewHTTPProxy(&u, direct.SymmetricDirect)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	default:
-		return nil, fmt.Errorf("%w: network: %v", dialer.UnexpectedFieldErr, s.Net)
+		return nil, nil, fmt.Errorf("%w: network: %v", dialer.UnexpectedFieldErr, s.Net)
 	}
 
 	if d, err = protocol.NewDialer(s.Protocol, d, protocol.Header{
@@ -180,17 +177,17 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOptio
 		IsClient:     true,
 		//Flags:        protocol.Flags_VMess_UsePacketAddr,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, dialer.Property{
+	return d, &dialer.Property{
 		Name:     s.Ps,
 		Address:  net.JoinHostPort(s.Add, s.Port),
 		Protocol: s.Protocol,
 		Link:     s.ExportToURL(),
-	}), nil
+	}, nil
 }
 
-func ParseVlessURL(vless string, option *dialer.GlobalOption) (data *V2Ray, err error) {
+func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	u, err := url.Parse(vless)
 	if err != nil {
 		return nil, err
@@ -228,13 +225,10 @@ func ParseVlessURL(vless string, option *dialer.GlobalOption) (data *V2Ray, err 
 	if data.Type == "mkcp" || data.Type == "kcp" {
 		data.Path = u.Query().Get("seed")
 	}
-	if option.AllowInsecure {
-		data.AllowInsecure = true
-	}
 	return data, nil
 }
 
-func ParseVmessURL(vmess string, option *dialer.GlobalOption) (data *V2Ray, err error) {
+func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 	var info V2Ray
 	// perform base64 decoding and unmarshal to VmessInfo
 	raw, err := common.Base64StdDecode(vmess[8:])
@@ -252,7 +246,7 @@ func ParseVmessURL(vmess string, option *dialer.GlobalOption) (data *V2Ray, err 
 		s := strings.Split(vmess[8:], "?")[0]
 		s, err = common.Base64StdDecode(s)
 		if err != nil {
-			s, err = common.Base64UrlDecode(s)
+			s, _ = common.Base64UrlDecode(s)
 		}
 		subMatch := re.FindStringSubmatch(s)
 		if subMatch == nil {
@@ -310,9 +304,6 @@ func ParseVmessURL(vmess string, option *dialer.GlobalOption) (data *V2Ray, err 
 		info.Aid = "0"
 	}
 	info.Protocol = "vmess"
-	if option.AllowInsecure {
-		info.AllowInsecure = true
-	}
 	return &info, nil
 }
 

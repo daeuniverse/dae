@@ -41,7 +41,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 		for _, node := range nodes {
 			d, err := dialer.NewFromLink(option, dialer.InstanceOption{CheckEnabled: false}, node)
 			if err != nil {
-				option.Log.Infof("failed to parse node: %v: %v", node, err)
+				option.Log.Infof("failed to parse node: %v", err)
 				continue
 			}
 			s.dialers = append(s.dialers, d)

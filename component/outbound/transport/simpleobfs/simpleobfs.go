@@ -2,10 +2,12 @@ package simpleobfs
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/netproxy"
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mzz2017/softwind/netproxy"
 )
 
 type ObfsType int
@@ -25,14 +27,14 @@ type SimpleObfs struct {
 }
 
 // NewSimpleobfs returns a simpleobfs proxy.
-func NewSimpleObfs(s string, d netproxy.Dialer) (*SimpleObfs, error) {
-	u, err := url.Parse(s)
+func NewSimpleObfs(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	u, err := url.Parse(link)
 	if err != nil {
-		return nil, fmt.Errorf("simpleobfs: %w", err)
+		return nil, nil, fmt.Errorf("simpleobfs: %w", err)
 	}
 
 	t := &SimpleObfs{
-		dialer: d,
+		dialer: nextDialer,
 		addr:   u.Host,
 	}
 	query := u.Query()
@@ -46,14 +48,19 @@ func NewSimpleObfs(s string, d netproxy.Dialer) (*SimpleObfs, error) {
 	case "tls":
 		t.obfstype = TLS
 	default:
-		return nil, fmt.Errorf("unsupported obfs type %v", obfstype)
+		return nil, nil, fmt.Errorf("unsupported obfs type %v", obfstype)
 	}
 	t.host = query.Get("host")
 	t.path = query.Get("path")
 	if t.path == "" {
 		t.path = query.Get("uri")
 	}
-	return t, nil
+	return t, &dialer.Property{
+		Name:     u.Fragment,
+		Address:  t.addr,
+		Protocol: "simpleobfs(" + obfstype + ")",
+		Link:     link,
+	}, nil
 }
 
 func (s *SimpleObfs) Dial(network, addr string) (c netproxy.Conn, err error) {

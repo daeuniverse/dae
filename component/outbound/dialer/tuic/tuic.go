@@ -10,8 +10,8 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/mzz2017/softwind/netproxy"
 	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/protocol/direct"
 )
 
 func init() {
@@ -33,16 +33,16 @@ type Tuic struct {
 	UdpRelayMode      string
 }
 
-func NewTuic(option *dialer.GlobalOption, iOption dialer.InstanceOption, link string) (*dialer.Dialer, error) {
-	s, err := ParseTuicURL(link, option)
+func NewTuic(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	s, err := ParseTuicURL(link)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.Dialer(option, iOption)
+	return s.Dialer(option, nextDialer)
 }
 
-func (s *Tuic) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption) (*dialer.Dialer, error) {
-	d := direct.FullconeDirect // Tuic Proxy supports full-cone.
+func (s *Tuic) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
+	d := nextDialer
 	var err error
 	var flags protocol.Flags
 	if s.UdpRelayMode == "quic" {
@@ -51,23 +51,28 @@ func (s *Tuic) Dialer(option *dialer.GlobalOption, iOption dialer.InstanceOption
 	if d, err = protocol.NewDialer("tuic", d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Feature1:     s.CongestionControl,
-		TlsConfig:    &tls.Config{NextProtos: s.Alpn, MinVersion: tls.VersionTLS13, ServerName: s.Sni, InsecureSkipVerify: s.AllowInsecure},
-		User:         s.User,
-		Password:     s.Password,
-		IsClient:     true,
-		Flags:        flags,
+		TlsConfig: &tls.Config{
+			NextProtos:         s.Alpn,
+			MinVersion:         tls.VersionTLS13,
+			ServerName:         s.Sni,
+			InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
+		},
+		User:     s.User,
+		Password: s.Password,
+		IsClient: true,
+		Flags:    flags,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return dialer.NewDialer(d, option, iOption, dialer.Property{
+	return d, &dialer.Property{
 		Name:     s.Name,
 		Address:  net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Protocol: s.Protocol,
 		Link:     s.ExportToURL(),
-	}), nil
+	}, nil
 }
 
-func ParseTuicURL(u string, option *dialer.GlobalOption) (data *Tuic, err error) {
+func ParseTuicURL(u string) (data *Tuic, err error) {
 	//trojan://password@server:port#escape(remarks)
 	t, err := url.Parse(u)
 	if err != nil {
@@ -85,8 +90,11 @@ func ParseTuicURL(u string, option *dialer.GlobalOption) (data *Tuic, err error)
 	if !allowInsecure {
 		allowInsecure, _ = strconv.ParseBool(t.Query().Get("allow_insecure"))
 	}
-	if !allowInsecure && option.AllowInsecure {
-		allowInsecure = true
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(t.Query().Get("allowinsecure"))
+	}
+	if !allowInsecure {
+		allowInsecure, _ = strconv.ParseBool(t.Query().Get("skipVerify"))
 	}
 	sni := t.Query().Get("peer")
 	if sni == "" {

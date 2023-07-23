@@ -256,15 +256,19 @@ func NewControlPlane(
 		sniffingTimeout = 0
 	}
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
+	_direct, directProperty := dialer.NewDirectDialer(option, true)
+	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{CheckEnabled: false}, directProperty)
+	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
+	block := dialer.NewDialer(_block, option, dialer.InstanceOption{CheckEnabled: false}, blockProperty)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
-			[]*dialer.Dialer{dialer.NewDirectDialer(option, true)}, []*dialer.Annotation{{}},
+			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
 			}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback)),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
-			[]*dialer.Dialer{dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })}, []*dialer.Annotation{{}},
+			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
 			outbound.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
