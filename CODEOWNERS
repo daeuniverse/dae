@@ -1,3 +1,4 @@
-* @mzz2017
+* @daeuniverse/governance
 docs/** @daeuniverse/docs
-CHANGELOGS.md @daeuniverse/docs
+CHANGELOGS.md @daeuniverse/docs @daeuniverse/release
+/.github/** @daeuniverse/infra
