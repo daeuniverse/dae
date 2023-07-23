@@ -112,6 +112,7 @@ node {
     mylink: 'ss://LINK'
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
+    chains: 'tuic://LINK -> vmess://LINK'
 }
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
