@@ -170,6 +170,10 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	if err != nil {
 		return "", nil, err
 	}
+	resp, err = client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
 	defer resp.Body.Close()
 	b, err = io.ReadAll(resp.Body)
 	if err != nil {
