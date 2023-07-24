@@ -96,6 +96,10 @@ emaint sync -r gentoo-zh
 emerge -a net-proxy/dae
 ```
 
+### Alpine
+
+详见 [run on alpine](tutorials/run-on-alpine.md)。
+
 ### macOS
 
 我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](../en/tutorials/run-on-macos.md)。
