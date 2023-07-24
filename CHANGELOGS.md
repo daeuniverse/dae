@@ -13,9 +13,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-
-- [v0.2.2rc1 (Pre-release)](#v022rc1-pre-release)
-- [v0.2.1 (Latest)](#v021-latest)
+- [v0.2.3rc1 (Pre-release)](#v023rc1-pre-release)
+- [v0.2.2 (Latest)](#v022-latest)
+- [v0.2.1](#v021)
 - [v0.2.0](#v020)
 - [v0.1.10.p1](#v0110p1)
 - [v0.1.10](#v0110)
@@ -32,7 +32,51 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.2.2rc1 (Pre-release)
+### v0.2.3rc1 (Pre-release)
+
+> Release date: 2023/07/24
+
+### Features
+
+- feat/refactor: support the node-level proxy chain in [#235](https://github.com/daeuniverse/dae/pull/235) by (@mzz2017)
+- optimize: pull subscriptions using custom UA in [#233](https://github.com/daeuniverse/dae/pull/233) by (@mzz2017)
+- optimize(vmess): auto choose cipher instead of aes-128-gcm in [#232](https://github.com/daeuniverse/dae/pull/232) by (@mzz2017)
+- feat(vmess/vless): support network h2 in [#229](https://github.com/daeuniverse/dae/pull/229) by (@mzz2017)
+
+### Bug Fixes
+
+- hotfix: fix subscription pulling panic caused by #233 in [#237](https://github.com/daeuniverse/dae/pull/237) by (@mzz2017)
+
+### Others
+
+- chore: update codeowners in [#234](https://github.com/daeuniverse/dae/pull/234) by (@yqlbu)
+- ci(seed-build): checkout codebase based on ref in [#230](https://github.com/daeuniverse/dae/pull/230) by (@yqlbu)
+- ci(release): draft release v0.2.2rc1 in [#228](https://github.com/daeuniverse/dae/pull/228) by (@daebot)
+- ci(pr-build): add pr.ready_for_review trigger in [#226](https://github.com/daeuniverse/dae/pull/226) by (@yqlbu)
+
+### 特性支持
+
+- 特性/重构: 支持节点级代理链 in [#235](https://github.com/daeuniverse/dae/pull/235) 由 (@mzz2017) 提交
+- 优化: 使用自定义 UA 拉取订阅 in [#233](https://github.com/daeuniverse/dae/pull/233) 由 (@mzz2017) 提交
+- 优化(vmess): 自动选择加密方式，而不是 aes-128-gcm in [#232](https://github.com/daeuniverse/dae/pull/232) 由 (@mzz2017) 提交
+- 特性(vmess/vless): 支持网络类型 h2 in [#229](https://github.com/daeuniverse/dae/pull/229) 由 (@mzz2017) 提交
+
+### 问题修复
+
+- 紧急修复: 修复由 #233 引起的订阅拉取问题 in [#237](https://github.com/daeuniverse/dae/pull/237) 由 (@mzz2017) 提交
+
+### 其他变更
+
+- 杂项: 更新 codeowners in [#234](https://github.com/daeuniverse/dae/pull/234) 由 (@yqlbu) 提交
+- 自动化(seed-build): 基于 ref 检出代码库 in [#230](https://github.com/daeuniverse/dae/pull/230) 由 (@yqlbu) 提交
+- 自动化(release): 起草版本 v0.2.2rc1 in [#228](https://github.com/daeuniverse/dae/pull/228) 由 (@daebot) 提交
+- 自动化(pr-build): 添加 pr.ready_for_review 触发器 in [#226](https://github.com/daeuniverse/dae/pull/226) 由 (@yqlbu) 提交
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.3rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.2...v0.2.3rc1
+
+### v0.2.2 (Latest)
 
 > Release date: 2023/07/17
 
@@ -107,7 +151,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.1...v0.2.2rc1
 
-### v0.2.1 (Latest)
+### v0.2.1
 
 > Release date: 2023/07/17
 
