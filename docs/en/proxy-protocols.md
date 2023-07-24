@@ -22,7 +22,8 @@
 - [x] Trojan
   - [x] Trojan-gfw
   - [x] Trojan-go
-- [x] Tuic (v5)
+- [x] [Tuic (v5)](https://github.com/daeuniverse/dae/discussions/182)
+- [x] [Proxy chain (flexible protocol)](https://github.com/daeuniverse/dae/discussions/236)
 
 For other requirements, one way to expand protocol support is by using external proxy programs. Below is an example of using the external naiveproxy.
 
