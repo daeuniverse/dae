@@ -43,7 +43,7 @@ global {
     ##### 节点连通性检测。
 
     # 如果你本地网络为双栈，URL的主机应该同时支持 IPv4 和 IPv6。
-    # 第一个是 URL，如果有其他的应该是 IP 地址，代表对 URL 中 Host 的固定解析。
+    # 第一个是 URL，如果在其后填写了 IP 地址，代表对 URL 中 Host 的固定解析。
     # 考虑到流量消耗，推荐使用具有任播且响应简短的站点。
     #tcp_check_url: 'http://cp.cloudflare.com'
     tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
@@ -52,7 +52,7 @@ global {
     tcp_check_http_method: HEAD
 
     # 该 DNS 用于检测节点的 UDP 连通性。若包含 tcp 的 DNS，同样用于检测节点的 TCP DNS 连通性。
-    # 第一个是 URL，如果有其他的应该是 IP 地址，代表对 URL 中 Host 的固定解析。
+    # 第一个是 URL，如果在其后填写了 IP 地址，代表对 URL 中 Host 的固定解析。
     # 如果你本地网络为双栈，DNS 服务器应同时支持 IPv4 和 IPv6。
     #udp_check_dns: 'dns.google.com:53'
     udp_check_dns: 'dns.google.com:53,8.8.8.8,2001:4860:4860::8888'
