@@ -1,120 +1,95 @@
-# DNS
+# Global
 
-dae 会拦截到端口 53 的所有 UDP 流量并嗅探 DNS。以下是一些DNS配置的示例和模板。
+dae 的全局配置，主要控制 dae 除 DNS 和 routing 之外的行为，以下为示例。
 
 ## 示例
 
 ```shell
-dns {
-    # 若 ipversion_prefer 设为 4，且域名同时有 A 和 AAAA 记录，dae 只回应 A 类型的请求，并返回空回复给 AAAA 请求。
-    ipversion_prefer: 4
+global {
+    ##### 软件选项。
 
-    # 为域名设定固定的 ttl。若设为 0，dae 不缓存该域名 DNS 记录，收到请求时每次向上游查询。
-    fixed_domain_ttl {
-        ddns.example.org: 10
-        test.example.org: 3600
-    }
+    # 监听的 tproxy 端口。不是 HTTP/SOCKS 端口，仅供 eBPF 程序使用.
+    # 一般情况下，你不需要使用它。
+    tproxy_port: 12345
 
-    upstream {
-        # 格式为“协议://主机:端口”
-        # 支持协议：tcp, udp, tcp+udp（对于https, tls, quic的支持孵化中）。
-        # 若主机为域名且具有 A 和 AAAA 记录，dae 自动选择 IPv4 或 IPv6 进行连接,
-        # 是否走代理取决于全局的 routing（不是下面 dns 配置部分的 routing），节点选择取决于 group 的策略（如 policy: min）。
-        # 请确保DNS流量经过dae且由dae转发，按域名分流需要如此！
-        # 若 dial_mode 设为 'ip'，请确保上游 DNS 无污染，不推荐使用国内公共 DNS。
+    # 设为 true 来避免意外的流量进入 tproxy 端口。 设为 false 以配合用户自定义的 iptables tproxy 规则。
+    tproxy_port_protect: true
 
-        alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google.com:53'
-    }
-    # 'request' 和 'response' 的 routing 格式和全局的 'routing' 类似。
-    # 参考 https://github.com/daeuniverse/dae/blob/main/docs/zh/configuration/routing.md
-    routing {
-        # 根据 DNS 查询，决定使用哪个 DNS 上游。
-        # 按由上到下的顺序匹配。
-        request {
-            # 'request' 具有预置出站：asis, reject。
-            # asis 即向收到的 DNS 请求中的目标服务器查询，请勿将其他局域网设备 DNS 服务器设为 dae:53（小心回环）。
-            # 你可以使用在 upstream 中配置的 DNS 上游。
+    # 若非 0，dae 发出的流量会打上 SO_MARK。 这有助于使用 iptables tproxy 规则时避免流量回环。
+    so_mark_from_dae: 0
 
-            # 可以使用: qname, qtype。
+    # 日志等级: error, warn, info, debug, trace。
+    log_level: info
 
-            # DNS 查询域名（省略后缀点 '.'）。
-            qname(geosite:category-ads-all) -> reject
-            qname(geosite:google@cn) -> alidns # 参考: https://github.com/v2fly/domain-list-community#attributes
-            qname(suffix: abc.com, keyword: google) -> googledns
-            qname(full: ok.com, regex: '^yes') -> googledns
-            # DNS 查询类型
-            qtype(a, aaaa) -> alidns
-            qtype(cname) -> googledns
+    # 禁用等待网络以拉取订阅。
+    disable_waiting_network: false
 
-            # fallback 意为 default。
-            # 如果上面的都不匹配，使用这个 upstream。
-            fallback: asis
-        }
-        # 根据 DNS 查询的回复， 决定接受或使用其他 upstream 重新查询。
-        # 按由上到下的顺序匹配。
-        response {
-            # 具有预置出站：accept, reject。
-            # 你可以使用在 upstream 中配置的 DNS 上游。
 
-            # 可以使用: qname, qtype, upstream, ip。
-            # 接受upstream 'googledns' 回复的 DNS 响应。 有助于避免回环。
-            upstream(googledns) -> accept
-            # 若 DNS 请求的域名不属于 CN 且回复包含私有 IP， 大抵是被污染了，向 'googledns' 重查。
-            !qname(geosite:cn) && ip(geoip:private) -> googledns
-            fallback: accept
-        }
-    }
+    ##### 接口和内核选项。
 
-}
-```
+    # 绑定的 LAN 接口。使用它来代理局域网设备。
+    # 多个接口使用 "," 分隔。
+    #lan_interface: docker0
 
-## 模板
+    # 绑定的 WAN 接口. 使用它来代理本机。
+    # 多个接口使用 "," 分隔。使用 "auto" 自动检测接口.
+    wan_interface: auto
 
-```shell
-# 对于中国大陆域名使用 alidns，其他使用 googledns 查询。
-dns {
-  upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
-    alidns: 'udp://dns.alidns.com:53'
-  }
-  routing {
-    # 根据 DNS 查询，决定使用哪个 DNS 上游。
-    # 按由上到下的顺序匹配。
-    request {
-      # 对于中国大陆域名使用 alidns，其他使用 googledns 查询。
-      qname(geosite:cn) -> alidns
-      # fallback 意为 default。
-      fallback: googledns
-    }
-  }
-}
-```
+    # 自动配置 Linux 的内核选项（如 ip_forward 和 send_redirects）。
+    # 参考https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md
+    auto_config_kernel_parameter: true
 
-```shell
-# 默认使用 alidns，如果疑似污染使用 googledns 重查。
-dns {
-  upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
-    alidns: 'udp://dns.alidns.com:53'
-  }
-  routing {
-    # 根据 DNS 查询，决定使用哪个 DNS 上游。
-    # 按由上到下的顺序匹配。
-    request {
-      # fallback 意为 default。
-      fallback: alidns
-    }
-    # 根据 DNS 查询的回复， 决定接受或使用其他 upstream 重新查询。
-    # 按由上到下的顺序匹配。
-    response {
-      # 可信的 upstream。总是接受它的回复。
-      upstream(googledns) -> accept
-      # 疑似被污染结果，向 'googledns' 重查。
-      !qname(geosite:cn) && ip(geoip:private) -> googledns
-      # fallback 意为 default。
-      fallback: accept
-    }
-  }
+
+    ##### 节点连通性检测。
+
+    # 如果你本地网络为双栈，URL的主机应该同时支持 IPv4 和 IPv6。
+    # 第一个是 URL，如果有其他的应该是 IP 地址。
+    # 考虑到流量消耗，推荐使用具有任播且响应简短的站点。
+    #tcp_check_url: 'http://cp.cloudflare.com'
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
+
+    # 用于 `tcp_check_url` 的 HTTP 请求方法。 默认使用 'HEAD'，因为一些服务器实现不统计该类型流量。
+    tcp_check_http_method: HEAD
+
+    # 该 DNS 用于检测节点的 UDP 连通性。若包含 tcp 的 DNS，同样用于检测节点的 TCP DNS 连通性。
+    # 第一个是 URL，如果有其他的应该是 IP 地址。
+    # 如果你本地网络为双栈，DNS 服务器应同时支持 IPv4 和 IPv6。
+    #udp_check_dns: 'dns.google.com:53'
+    udp_check_dns: 'dns.google.com:53,8.8.8.8,2001:4860:4860::8888'
+
+    # 检测间隔
+    check_interval: 30s
+
+    # 仅在 new_latency <= old_latency - tolerance 时组内切换节点。
+    check_tolerance: 50ms
+
+
+    ##### 连接选项。
+
+    # dial_mode 选项为:
+    # 1. "ip"。 使用 DNS 查询得到的 IP 直接发送代理。这允许 ipv4、ipv6 分别选择最佳路径，并使应用程序请求的 IP 版本满足预期。
+    #       例如，如果使用 curl-4 ip.sb，将通过代理请求 IPv4 并获得 IPv4 响应。curl-6 ip.sb 将请求 IPv6。若节点支持IPv6，
+    #       这可能会解决一些奇怪的全锥问题。在此模式下将禁用嗅探。
+    # 2. "domain"。 使用嗅探到的域名发送代理。若 DNS 环境不纯净，这将在很大程度上缓解 DNS 污染问题。通常，这种模式会带来更快的
+    #       代理响应，因为代理会在远程重新解析域名，从而获得更好的 IP 连接结果。此策略不影响路由，也就是说，域名重写将在路由的
+    #       流量拆分后进行， dae 不会重新路由。
+    # 3. "domain+"。 基于 domain 模式但不会检查嗅探得到域名的真实性。 对于 DNS 请求不经过 dae 但想要更快的代理响应的用户有用。
+    #       但是， 若 DNS 请求不经过 dae，基于域名的流量拆分将失效。
+    # 4. "domain++"。 基于 domain+ 模式但会根据嗅探到的域名重新进行流量路由，以部分恢复基于域名的流量拆分能力。对于直连流量无效
+    #       且会占用更多的 CPU 资源。
+    dial_mode: domain
+
+    # 允许不安全的 TLS 证书. 非须勿用.
+    allow_insecure: false
+
+    # 嗅探第一个数据的超时。若 dial_mode 为 ip 则该值总为 0。若局域网延迟较高，应调高它。
+    sniffing_timeout: 100ms
+
+    # TLS 实现. 设为 tls 以使用 Go's crypto/tls。设为 utls 以使用 uTLS, 可以模拟浏览器的 Client Hello、
+    tls_implementation: tls
+
+    # uTLS 模拟的 Client Hello ID。 仅在 tls_implementation 设为 utls时 生效。
+    # 参考: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17
+    utls_imitate: chrome_auto
 }
 ```
