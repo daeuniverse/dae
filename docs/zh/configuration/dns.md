@@ -19,7 +19,7 @@ dns {
         # 格式为“协议://主机:端口”
         # 支持协议：tcp, udp, tcp+udp（对于https, tls, quic的支持孵化中）。
         # 若主机为域名且具有 A 和 AAAA 记录，dae 自动选择 IPv4 或 IPv6 进行连接,
-        # 是否走代理取决于全局的 routing（不是下面 dns 配置部分的 routing），节点选择取决于 group 的策略（如 policy: min）。
+        # 是否走代理取决于全局的 routing（不是下面 dns 配置部分的 routing），节点选择取决于 group 的策略。
         # 请确保DNS流量经过dae且由dae转发，按域名分流需要如此！
         # 若 dial_mode 设为 'ip'，请确保上游 DNS 无污染，不推荐使用国内公共 DNS。
 
