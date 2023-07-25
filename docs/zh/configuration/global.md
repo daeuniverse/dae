@@ -3,6 +3,7 @@
 dae 的全局配置，主要控制 dae 除 DNS 和 routing 之外的行为，以下为示例。
 
 ## 示例
+
 ```shell
 global {
     ##### 软件选项。
