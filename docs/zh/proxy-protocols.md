@@ -22,6 +22,9 @@
   - [x] Trojan-gfw
   - [x] Trojan-go
 - [x] Tuic (v5)
+- [x] [Tuic (v5)](https://github.com/daeuniverse/dae/discussions/182)
+- [x] [Juicity](https://github.com/juicity/juicity)
+- [x] [Proxy chain (flexible protocol)](https://github.com/daeuniverse/dae/discussions/236)
 
 有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
 
