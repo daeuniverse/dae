@@ -7,6 +7,7 @@ package outbound
 
 import (
 	_ "github.com/daeuniverse/dae/component/outbound/dialer/http"
+	_ "github.com/daeuniverse/dae/component/outbound/dialer/juicity"
 	_ "github.com/daeuniverse/dae/component/outbound/dialer/shadowsocks"
 	_ "github.com/daeuniverse/dae/component/outbound/dialer/shadowsocksr"
 	_ "github.com/daeuniverse/dae/component/outbound/dialer/socks"
@@ -16,6 +17,7 @@ import (
 	_ "github.com/daeuniverse/dae/component/outbound/transport/simpleobfs"
 	_ "github.com/daeuniverse/dae/component/outbound/transport/tls"
 	_ "github.com/daeuniverse/dae/component/outbound/transport/ws"
+	_ "github.com/mzz2017/softwind/protocol/juicity"
 	_ "github.com/mzz2017/softwind/protocol/shadowsocks"
 	_ "github.com/mzz2017/softwind/protocol/trojanc"
 	_ "github.com/mzz2017/softwind/protocol/tuic"

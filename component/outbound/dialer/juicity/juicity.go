@@ -1,4 +1,4 @@
-package tuic
+package juicity
 
 import (
 	"crypto/tls"
@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -15,10 +14,10 @@ import (
 )
 
 func init() {
-	dialer.FromLinkRegister("tuic", NewTuic)
+	dialer.FromLinkRegister("juicity", NewJuice)
 }
 
-type Tuic struct {
+type Juice struct {
 	Name              string
 	Server            string
 	Port              int
@@ -26,33 +25,27 @@ type Tuic struct {
 	Password          string
 	Sni               string
 	AllowInsecure     bool
-	DisableSni        bool
 	CongestionControl string
-	Alpn              []string
 	Protocol          string
-	UdpRelayMode      string
 }
 
-func NewTuic(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
-	s, err := ParseTuicURL(link)
+func NewJuice(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	s, err := ParseJuiceURL(link)
 	if err != nil {
 		return nil, nil, err
 	}
 	return s.Dialer(option, nextDialer)
 }
 
-func (s *Tuic) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
+func (s *Juice) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
 	d := nextDialer
 	var err error
 	var flags protocol.Flags
-	if s.UdpRelayMode == "quic" {
-		flags |= protocol.Flags_Tuic_UdpRelayModeQuic
-	}
-	if d, err = protocol.NewDialer("tuic", d, protocol.Header{
+	if d, err = protocol.NewDialer("juicity", d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Feature1:     s.CongestionControl,
 		TlsConfig: &tls.Config{
-			NextProtos:         s.Alpn,
+			NextProtos:         []string{"h3"},
 			MinVersion:         tls.VersionTLS13,
 			ServerName:         s.Sni,
 			InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
@@ -72,19 +65,12 @@ func (s *Tuic) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (
 	}, nil
 }
 
-func ParseTuicURL(u string) (data *Tuic, err error) {
+func ParseJuiceURL(u string) (data *Juice, err error) {
 	//trojan://password@server:port#escape(remarks)
 	t, err := url.Parse(u)
 	if err != nil {
 		err = fmt.Errorf("invalid trojan format")
 		return
-	}
-	var alpn []string
-	if t.Query().Has("alpn") {
-		alpn = strings.Split(t.Query().Get("alpn"), ",")
-		for i := range alpn {
-			alpn[i] = strings.TrimSpace(alpn[i])
-		}
 	}
 	allowInsecure, _ := strconv.ParseBool(t.Query().Get("allowInsecure"))
 	if !allowInsecure {
@@ -113,7 +99,7 @@ func ParseTuicURL(u string) (data *Tuic, err error) {
 		return nil, dialer.InvalidParameterErr
 	}
 	password, _ := t.User.Password()
-	data = &Tuic{
+	data = &Juice{
 		Name:              t.Fragment,
 		Server:            t.Hostname(),
 		Port:              port,
@@ -121,18 +107,15 @@ func ParseTuicURL(u string) (data *Tuic, err error) {
 		Password:          password,
 		Sni:               sni,
 		AllowInsecure:     allowInsecure,
-		DisableSni:        disableSni,
 		CongestionControl: t.Query().Get("congestion_control"),
-		Alpn:              alpn,
-		UdpRelayMode:      strings.ToLower(t.Query().Get("udp_relay_mode")),
-		Protocol:          "tuic",
+		Protocol:          "juicity",
 	}
 	return data, nil
 }
 
-func (t *Tuic) ExportToURL() string {
+func (t *Juice) ExportToURL() string {
 	u := &url.URL{
-		Scheme:   "tuic",
+		Scheme:   "juicity",
 		User:     url.UserPassword(t.User, t.Password),
 		Host:     net.JoinHostPort(t.Server, strconv.Itoa(t.Port)),
 		Fragment: t.Name,
@@ -142,19 +125,9 @@ func (t *Tuic) ExportToURL() string {
 		q.Set("allow_insecure", "1")
 	}
 	common.SetValue(&q, "sni", t.Sni)
-	if t.DisableSni {
-		common.SetValue(&q, "disable_sni", "1")
-	}
 	if t.CongestionControl != "" {
 		common.SetValue(&q, "congestion_control", t.CongestionControl)
 	}
-	if len(t.Alpn) > 0 {
-		common.SetValue(&q, "alpn", strings.Join(t.Alpn, ","))
-	}
-	if t.UdpRelayMode != "" {
-		common.SetValue(&q, "udp_relay_mode", t.UdpRelayMode)
-	}
-
 	u.RawQuery = q.Encode()
 	return u.String()
 }
