@@ -107,7 +107,7 @@ subscription {
 # Nodes defined here will be merged as a part of the global node pool.
 node {
     # Add your node links here.
-    # Support socks5, http, https, ss, ssr, vmess, vless, trojan, tuic, etc.
+    # Support socks5, http, https, ss, ssr, vmess, vless, trojan, tuic, juicity, etc.
     # Full support list: https://github.com/daeuniverse/dae/blob/main/docs/en/proxy-protocols.md
     'socks5://localhost:1080'
     mylink: 'ss://LINK'
