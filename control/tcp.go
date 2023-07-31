@@ -214,7 +214,10 @@ func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 	}
 	lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if e != nil {
-		<-eCh
+		e2 := <-eCh
+		if e2 != nil {
+			return fmt.Errorf("%w: %v", e, e2)
+		}
 		return e
 	}
 	return <-eCh
