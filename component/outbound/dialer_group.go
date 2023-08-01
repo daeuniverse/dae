@@ -217,22 +217,32 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 
 // Select selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
 func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bool) (d *dialer.Dialer, latency time.Duration, err error) {
-	d, latency, err = g._select(networkType)
+	policy := g.selectionPolicy
+	d, latency, err = g._select(networkType, policy)
 	if !strictIpVersion && errors.Is(err, NoAliveDialerError) {
 		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
-		return g._select(networkType)
+		return g._select(networkType, policy)
 	}
-	return d, latency, err
+	if err == nil {
+		return d, latency, nil
+	}
+	if errors.Is(err, NoAliveDialerError) && len(g.Dialers) == 1 {
+		// There is only one dialer in this group. Just choose it instead of return error.
+		g.log.WithError(err).WithField("group", g.Name).Debug("Force to choose due to only one node in this group")
+		return g._select(networkType, &DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		})
+	}
+	return nil, latency, err
 }
 
-func (g *DialerGroup) _select(networkType *dialer.NetworkType) (d *dialer.Dialer, latency time.Duration, err error) {
+func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSelectionPolicy) (d *dialer.Dialer, latency time.Duration, err error) {
 	if len(g.Dialers) == 0 {
 		return nil, 0, fmt.Errorf("no dialer in this group")
 	}
-
 	a := g.MustGetAliveDialerSet(networkType)
-
-	switch g.selectionPolicy.Policy {
+	switch policy.Policy {
 	case consts.DialerSelectionPolicy_Random:
 		d := a.GetRand()
 		if d == nil {
