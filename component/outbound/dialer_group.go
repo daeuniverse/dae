@@ -228,7 +228,6 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bo
 	}
 	if errors.Is(err, NoAliveDialerError) && len(g.Dialers) == 1 {
 		// There is only one dialer in this group. Just choose it instead of return error.
-		g.log.WithError(err).WithField("group", g.Name).Debug("Force to choose due to only one node in this group")
 		return g._select(networkType, &DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy_Fixed,
 			FixedIndex: 0,
