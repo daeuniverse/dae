@@ -13,6 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+
 - [v0.2.3 (Latest)](#v023-latest)
 - [v0.2.2](#v022)
 - [v0.2.1](#v021)
@@ -72,9 +73,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 自动化(release): 起草版本 v0.2.2rc1 in [#228](https://github.com/daeuniverse/dae/pull/228) 由 (@daebot) 提交
 - 自动化(pr-build): 添加 pr.ready_for_review 触发器 in [#226](https://github.com/daeuniverse/dae/pull/226) 由 (@yqlbu) 提交
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.3rc1/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.3/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.2...v0.2.3rc1
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.2...v0.2.3
 
 ### v0.2.2
 
@@ -147,9 +148,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 自动化(generate-changelogs): 设置 dry_run 为 true in [#201](https://github.com/daeuniverse/dae/pull/201) by (@yqlbu)
 - 自动化(daily-build): 更新自动执行时间 in [#198](https://github.com/daeuniverse/dae/pull/198) by (@yqlbu)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.2rc1/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.2/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.1...v0.2.2rc1
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.1...v0.2.2
 
 ### v0.2.1
 
@@ -203,9 +204,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - @earrmouth made their first contribution in #179
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.1rc1/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.1/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0...v0.2.1rc1
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.0...v0.2.1
 
 ### v0.2.0
 
