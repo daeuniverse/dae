@@ -13,8 +13,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-- [v0.2.3rc1 (Pre-release)](#v023rc1-pre-release)
-- [v0.2.2 (Latest)](#v022-latest)
+- [v0.2.3 (Latest)](#v023-latest)
+- [v0.2.2](#v022)
 - [v0.2.1](#v021)
 - [v0.2.0](#v020)
 - [v0.1.10.p1](#v0110p1)
@@ -32,9 +32,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.2.3rc1 (Pre-release)
+### v0.2.3 (Latest)
 
-> Release date: 2023/07/24
+> Release date: 2023/08/02
 
 ### Features
 
@@ -76,7 +76,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.2...v0.2.3rc1
 
-### v0.2.2 (Latest)
+### v0.2.2
 
 > Release date: 2023/07/17
 
