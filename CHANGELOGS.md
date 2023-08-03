@@ -13,7 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-
+- [v0.2.4rc1 (Pre-release)](#v024rc1-pre-release)
 - [v0.2.3 (Latest)](#v023-latest)
 - [v0.2.2](#v022)
 - [v0.2.1](#v021)
@@ -32,6 +32,46 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.2.4rc1 (Pre-release)
+
+> Release date: 2023/08/03
+
+### Features
+
+- optimize: force to choose one if there is only one node in the group in [#251](https://github.com/daeuniverse/dae/pull/251) by (@mzz2017)
+- feat: support juicity in [#248](https://github.com/daeuniverse/dae/pull/248) by (@mzz2017)
+
+### Others
+
+- ci(release): add entry for release-v0.2.3 in [#253](https://github.com/daeuniverse/dae/pull/253) by (@yqlbu)
+- chore: upgrade go mod in [#249](https://github.com/daeuniverse/dae/pull/249) by (@mzz2017)
+- docs: create zh routing docs in [#247](https://github.com/daeuniverse/dae/pull/247) by (@bradfordzhang)
+- docs: create zh global and dns docs in [#243](https://github.com/daeuniverse/dae/pull/243) by (@troubadour-hell)
+- docs: refine protocol support and alpine installation in [#241](https://github.com/daeuniverse/dae/pull/241) by (@mzz2017)
+- ci(release): draft release v0.2.3rc1 in [#240](https://github.com/daeuniverse/dae/pull/240) by (@daebot)
+
+### 特性支持
+
+- 优化: 在组中只有一个节点时强制选择该节点 in [#251](https://github.com/daeuniverse/dae/pull/251) by (@mzz2017)
+- 特性: 支持 juicity in [#248](https://github.com/daeuniverse/dae/pull/248) by (@mzz2017)
+
+### 其他变更
+
+- 自动化(release): 添加发布版本 v0.2.3 的条目 in [#253](https://github.com/daeuniverse/dae/pull/253) by (@yqlbu)
+- 杂项: 升级 Go 模块 in [#249](https://github.com/daeuniverse/dae/pull/249) by (@mzz2017)
+- 文档: 创建中文路由文档 in [#247](https://github.com/daeuniverse/dae/pull/247) by (@bradfordzhang)
+- 文档: 创建中文全局和 DNS 文档 in [#243](https://github.com/daeuniverse/dae/pull/243) by (@troubadour-hell)
+- 文档: 完善协议支持和 Alpine 安装 in [#241](https://github.com/daeuniverse/dae/pull/241) by (@mzz2017)
+- 自动化(release): 撰写发布版本 v0.2.3rc1 in [#240](https://github.com/daeuniverse/dae/pull/240) by (@daebot)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.4rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.3...v0.2.4rc1
+
+### New Contributors
+
+- @bradfordzhang made their first contribution in #247
 
 ### v0.2.3 (Latest)
 
