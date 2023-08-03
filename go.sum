@@ -89,10 +89,10 @@ github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 h1:RWengNIwukTxcDr9
 github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826/go.mod h1:TaXosZuwdSHYgviHp1DAtfrULt5eUgsSMsZf+YrPgl8=
 github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B90M=
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
-github.com/mzz2017/quic-go v0.0.0-20230730161358-da6d530ddb18 h1:SzaoU9jIglF82Qp2rmPhsXhdtgOYiTwmxbd85qa5+Gs=
-github.com/mzz2017/quic-go v0.0.0-20230730161358-da6d530ddb18/go.mod h1:+8o4sdYYZCkNfMGiP3oKstpdHeSDFJy84A68evIzhw4=
-github.com/mzz2017/softwind v0.0.0-20230730190454-1b4f59056283 h1:nmDedxylxjWN8CW4xxa4krkZknijTA/qHgRk849o8zs=
-github.com/mzz2017/softwind v0.0.0-20230730190454-1b4f59056283/go.mod h1:H5th8OX4bXcksqNjwKhyisZS4lmO1ZezAbcoIL3P1dU=
+github.com/mzz2017/quic-go v0.0.0-20230731153658-2aabc7c97220 h1:StI6iNucfDVrm54yhrHL0Dr1vKC1nBqkok2Itkypvdk=
+github.com/mzz2017/quic-go v0.0.0-20230731153658-2aabc7c97220/go.mod h1:+8o4sdYYZCkNfMGiP3oKstpdHeSDFJy84A68evIzhw4=
+github.com/mzz2017/softwind v0.0.0-20230803152605-5f1f6bc06934 h1:IAaVbSfNiYP/TuJ4n686SeAwcs+PMvKdzJM5R4Y1rhM=
+github.com/mzz2017/softwind v0.0.0-20230803152605-5f1f6bc06934/go.mod h1:TopiWHnL2ty4V4AkNM1nNVdbLlASWdQqploagf4tcKc=
 github.com/nxadm/tail v1.4.4/go.mod h1:kenIhsEOeOJmVchQTgglprH7qJGnHDVpk1VPCcaMI8A=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
 github.com/nxadm/tail v1.4.8/go.mod h1:+ncqLTQzXmGhMZNUePPaPqPvBxHAIsmXswZKocGu+AU=

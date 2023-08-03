@@ -1,7 +1,10 @@
 package juicity
 
 import (
+	"bytes"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
@@ -14,46 +17,61 @@ import (
 )
 
 func init() {
-	dialer.FromLinkRegister("juicity", NewJuice)
+	dialer.FromLinkRegister("juicity", NewJuicity)
 }
 
-type Juice struct {
-	Name              string
-	Server            string
-	Port              int
-	User              string
-	Password          string
-	Sni               string
-	AllowInsecure     bool
-	CongestionControl string
-	Protocol          string
+type Juicity struct {
+	Name                  string
+	Server                string
+	Port                  int
+	User                  string
+	Password              string
+	Sni                   string
+	AllowInsecure         bool
+	CongestionControl     string
+	PinnedCertchainSha256 string
+	Protocol              string
 }
 
-func NewJuice(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
-	s, err := ParseJuiceURL(link)
+func NewJuicity(option *dialer.GlobalOption, nextDialer netproxy.Dialer, link string) (netproxy.Dialer, *dialer.Property, error) {
+	s, err := ParseJuicityURL(link)
 	if err != nil {
 		return nil, nil, err
 	}
 	return s.Dialer(option, nextDialer)
 }
 
-func (s *Juice) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
+func (s *Juicity) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) (netproxy.Dialer, *dialer.Property, error) {
 	d := nextDialer
 	var err error
 	var flags protocol.Flags
+	tlsConfig := &tls.Config{
+		NextProtos:         []string{"h3"},
+		MinVersion:         tls.VersionTLS13,
+		ServerName:         s.Sni,
+		InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
+	}
+	if s.PinnedCertchainSha256 != "" {
+		pinnedHash, err := base64.StdEncoding.DecodeString(s.PinnedCertchainSha256)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decode pin_certchain_sha256: %w", err)
+		}
+		tlsConfig.InsecureSkipVerify = true
+		tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if !bytes.Equal(common.GenerateCertChainHash(rawCerts), pinnedHash) {
+				return fmt.Errorf("pinned hash of cert chain does not match")
+			}
+			return nil
+		}
+	}
 	if d, err = protocol.NewDialer("juicity", d, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Feature1:     s.CongestionControl,
-		TlsConfig: &tls.Config{
-			NextProtos:         []string{"h3"},
-			MinVersion:         tls.VersionTLS13,
-			ServerName:         s.Sni,
-			InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
-		},
-		User:     s.User,
-		Password: s.Password,
-		IsClient: true,
-		Flags:    flags,
+		TlsConfig:    tlsConfig,
+		User:         s.User,
+		Password:     s.Password,
+		IsClient:     true,
+		Flags:        flags,
 	}); err != nil {
 		return nil, nil, err
 	}
@@ -65,7 +83,7 @@ func (s *Juice) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 	}, nil
 }
 
-func ParseJuiceURL(u string) (data *Juice, err error) {
+func ParseJuicityURL(u string) (data *Juicity, err error) {
 	//trojan://password@server:port#escape(remarks)
 	t, err := url.Parse(u)
 	if err != nil {
@@ -89,31 +107,27 @@ func ParseJuiceURL(u string) (data *Juice, err error) {
 	if sni == "" {
 		sni = t.Hostname()
 	}
-	disableSni, _ := strconv.ParseBool(t.Query().Get("disable_sni"))
-	if disableSni {
-		sni = ""
-		allowInsecure = true
-	}
 	port, err := strconv.Atoi(t.Port())
 	if err != nil {
 		return nil, dialer.InvalidParameterErr
 	}
 	password, _ := t.User.Password()
-	data = &Juice{
-		Name:              t.Fragment,
-		Server:            t.Hostname(),
-		Port:              port,
-		User:              t.User.Username(),
-		Password:          password,
-		Sni:               sni,
-		AllowInsecure:     allowInsecure,
-		CongestionControl: t.Query().Get("congestion_control"),
-		Protocol:          "juicity",
+	data = &Juicity{
+		Name:                  t.Fragment,
+		Server:                t.Hostname(),
+		Port:                  port,
+		User:                  t.User.Username(),
+		Password:              password,
+		Sni:                   sni,
+		AllowInsecure:         allowInsecure,
+		CongestionControl:     t.Query().Get("congestion_control"),
+		PinnedCertchainSha256: t.Query().Get("pinned_certchain_sha256"),
+		Protocol:              "juicity",
 	}
 	return data, nil
 }
 
-func (t *Juice) ExportToURL() string {
+func (t *Juicity) ExportToURL() string {
 	u := &url.URL{
 		Scheme:   "juicity",
 		User:     url.UserPassword(t.User, t.Password),
@@ -125,9 +139,8 @@ func (t *Juice) ExportToURL() string {
 		q.Set("allow_insecure", "1")
 	}
 	common.SetValue(&q, "sni", t.Sni)
-	if t.CongestionControl != "" {
-		common.SetValue(&q, "congestion_control", t.CongestionControl)
-	}
+	common.SetValue(&q, "congestion_control", t.CongestionControl)
+	common.SetValue(&q, "pinned_certchain_sha256", t.PinnedCertchainSha256)
 	u.RawQuery = q.Encode()
 	return u.String()
 }

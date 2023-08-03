@@ -8,6 +8,7 @@ package common
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -494,4 +495,17 @@ func StringSet(list []string) map[string]struct{} {
 		m[s] = struct{}{}
 	}
 	return m
+}
+
+func GenerateCertChainHash(rawCerts [][]byte) (chainHash []byte) {
+	for _, cert := range rawCerts {
+		certHash := sha256.Sum256(cert)
+		if chainHash == nil {
+			chainHash = certHash[:]
+		} else {
+			newHash := sha256.Sum256(append(chainHash, certHash[:]...))
+			chainHash = newHash[:]
+		}
+	}
+	return chainHash
 }
