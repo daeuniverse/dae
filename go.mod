@@ -12,7 +12,7 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
-	github.com/mzz2017/softwind v0.0.0-20230730190454-1b4f59056283
+	github.com/mzz2017/softwind v0.0.0-20230803152605-5f1f6bc06934
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
 	github.com/safchain/ethtool v0.3.0
 	github.com/sirupsen/logrus v1.9.3
@@ -34,7 +34,7 @@ require (
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/pprof v0.0.0-20230705174524-200ffdc848b8 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
-	github.com/mzz2017/quic-go v0.0.0-20230730161358-da6d530ddb18 // indirect
+	github.com/mzz2017/quic-go v0.0.0-20230731153658-2aabc7c97220 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
 	github.com/quic-go/qtls-go1-20 v0.3.0 // indirect
 	golang.org/x/mod v0.12.0 // indirect
