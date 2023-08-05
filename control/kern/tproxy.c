@@ -18,9 +18,13 @@
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
 // #define __PRINT_SETUP_PROCESS_CONNNECTION
-// #define __REMOVE_BPF_PRINTK
+// #define __DEBUG
 // #define __UNROLL_ROUTE_LOOP
 
+#ifndef __DEBUG
+#undef bpf_printk
+#define bpf_printk(...) (void)0
+#endif
 // #define likely(x) x
 // #define unlikely(x) x
 #define likely(x) __builtin_expect((x), 1)
