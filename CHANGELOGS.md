@@ -13,6 +13,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+
+- [v0.2.4rc2 (Pre-release)](#v024rc2-pre-release)
 - [v0.2.4rc1 (Pre-release)](#v024rc1-pre-release)
 - [v0.2.3 (Latest)](#v023-latest)
 - [v0.2.2](#v022)
@@ -32,6 +34,30 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.2.4rc2 (Pre-release)
+
+> Release date: 2023/08/05
+
+### Features
+
+- feat(juicity): support certificate pinning in [#256](https://github.com/daeuniverse/dae/pull/256) by (@mzz2017)
+
+### Bug Fixes
+
+- fix: bad ipversion selection caused by #251 in [#257](https://github.com/daeuniverse/dae/pull/257) by (@mzz2017)
+
+### 特性支持
+
+- 特性(juicity): 支持证书固定 (Certificate Pinning) in [#256](https://github.com/daeuniverse/dae/pull/256) by (@mzz2017)
+
+### 问题修复
+
+- 修复: 由 #251 导致的错误的 IP 版本选择 in [#257](https://github.com/daeuniverse/dae/pull/257) by (@mzz2017)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.4rc2/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.4rc1...v0.2.4rc2
 
 ### v0.2.4rc1 (Pre-release)
 
