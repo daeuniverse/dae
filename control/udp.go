@@ -21,8 +21,8 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"github.com/sirupsen/logrus"
 )
 

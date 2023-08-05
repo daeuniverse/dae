@@ -22,7 +22,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mzz2017/softwind/netproxy"
+	"github.com/daeuniverse/softwind/netproxy"
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	dnsmessage "github.com/miekg/dns"

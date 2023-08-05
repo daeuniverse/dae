@@ -12,7 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/netproxy"
+	"github.com/daeuniverse/softwind/netproxy"
 	"github.com/sirupsen/logrus"
 )
 

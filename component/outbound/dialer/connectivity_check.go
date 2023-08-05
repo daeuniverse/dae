@@ -25,10 +25,10 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
 )
 

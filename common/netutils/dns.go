@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/pool"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/pool"
 )
 
 var (

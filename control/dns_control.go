@@ -25,11 +25,11 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/pool"
 	"github.com/sirupsen/logrus"
 )
 

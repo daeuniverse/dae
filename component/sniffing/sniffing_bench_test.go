@@ -10,7 +10,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"testing"
 
-	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
 )
 
 var (

@@ -16,7 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/daeuniverse/softwind/protocol/direct"
 )
 
 var (

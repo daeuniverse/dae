@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/protocol/direct"
 )
 
 type FromLinkCreator func(gOption *GlobalOption, nextDialer netproxy.Dialer, link string) (dialer netproxy.Dialer, property *Property, err error)
