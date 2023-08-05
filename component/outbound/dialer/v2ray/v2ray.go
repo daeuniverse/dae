@@ -176,7 +176,10 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 			Scheme: "meek",
 			Host:   net.JoinHostPort(s.Add, s.Port),
 			RawQuery: url.Values{
-				"url": []string{s.Path},
+				"url":            []string{s.Path},
+				"alpn":           []string{s.Alpn},
+				"serverName":     []string{s.SNI},
+				"skipCertVerify": []string{common.BoolToString(s.AllowInsecure || option.AllowInsecure)},
 			}.Encode(),
 		}
 
