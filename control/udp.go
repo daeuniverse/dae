@@ -21,8 +21,8 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
 	"github.com/sirupsen/logrus"
 )
 
@@ -175,7 +175,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
-		IsDns:     true, // UDP relies on DNS check result.
+		IsDns:     false,
 	}
 	// Get outbound.
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)

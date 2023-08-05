@@ -12,12 +12,12 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"github.com/daeuniverse/dae/component/outbound/transport/ws"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/protocol"
+	"github.com/daeuniverse/softwind/protocol/direct"
+	"github.com/daeuniverse/softwind/protocol/http"
+	"github.com/daeuniverse/softwind/transport/grpc"
 	jsoniter "github.com/json-iterator/go"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/mzz2017/softwind/protocol/http"
-	"github.com/mzz2017/softwind/transport/grpc"
 )
 
 func init() {

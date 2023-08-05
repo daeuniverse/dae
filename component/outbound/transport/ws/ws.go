@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/softwind/netproxy"
 	"github.com/gorilla/websocket"
-	"github.com/mzz2017/softwind/netproxy"
 )
 
 // Ws is a base Ws struct

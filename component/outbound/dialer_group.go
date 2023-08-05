@@ -12,7 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/netproxy"
+	"github.com/daeuniverse/softwind/netproxy"
 	"github.com/sirupsen/logrus"
 )
 
@@ -210,6 +210,13 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 				return d.aliveDialerSets[5]
 			}
 		case consts.L4ProtoStr_UDP:
+			// UDP share the DNS check result.
+			switch typ.IpVersion {
+			case consts.IpVersionStr_4:
+				return d.aliveDialerSets[2]
+			case consts.IpVersionStr_6:
+				return d.aliveDialerSets[3]
+			}
 		}
 	}
 	panic("invalid param")
@@ -228,10 +235,13 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bo
 	}
 	if errors.Is(err, NoAliveDialerError) && len(g.Dialers) == 1 {
 		// There is only one dialer in this group. Just choose it instead of return error.
-		return g._select(networkType, &DialerSelectionPolicy{
+		if d, _, err = g._select(networkType, &DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy_Fixed,
 			FixedIndex: 0,
-		})
+		}); err != nil {
+			return nil, 0, err
+		}
+		return d, dialer.Timeout, nil
 	}
 	return nil, latency, err
 }

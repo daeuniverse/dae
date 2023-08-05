@@ -15,8 +15,8 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pool"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pool"
 )
 
 type UdpHandler func(data []byte, from netip.AddrPort) error

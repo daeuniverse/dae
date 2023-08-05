@@ -5,7 +5,7 @@ package trie
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/pkg/zeroalloc/buffer"
+	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
 	"math/bits"
 	"net/netip"
 	"sort"

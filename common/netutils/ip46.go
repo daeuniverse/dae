@@ -12,8 +12,8 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/daeuniverse/softwind/netproxy"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mzz2017/softwind/netproxy"
 	"github.com/sirupsen/logrus"
 )
 

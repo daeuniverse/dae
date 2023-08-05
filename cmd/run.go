@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/protocol/direct"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/protocol/direct"
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/daeuniverse/dae/cmd/internal"

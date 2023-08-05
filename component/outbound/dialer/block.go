@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/mzz2017/softwind/netproxy"
+	"github.com/daeuniverse/softwind/netproxy"
 )
 
 type blockDialer struct {
