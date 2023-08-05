@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/softwind/protocol/direct"
 	"github.com/daeuniverse/softwind/protocol/http"
 	"github.com/daeuniverse/softwind/transport/grpc"
+	"github.com/daeuniverse/softwind/transport/meek"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -166,6 +167,19 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 		if err != nil {
 			return nil, nil, err
 		}
+	case "meek":
+		u := url.URL{
+			Scheme: "meek",
+			Host:   net.JoinHostPort(s.Add, s.Port),
+			RawQuery: url.Values{
+				"url": []string{s.Path},
+			}.Encode(),
+		}
+
+		d, err = meek.NewDialer(u.String(), d)
+		if err != nil {
+			return nil, nil, err
+		}
 	default:
 		return nil, nil, fmt.Errorf("%w: network: %v", dialer.UnexpectedFieldErr, s.Net)
 	}
@@ -213,6 +227,11 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if data.Net == "grpc" {
 		data.Path = u.Query().Get("serviceName")
 	}
+
+	if data.Net == "meek" {
+		data.Path = u.Query().Get("meekUrl")
+	}
+
 	if data.Type == "" {
 		data.Type = "none"
 	}
@@ -327,7 +346,10 @@ func (s *V2Ray) ExportToURL() string {
 			common.SetValue(&query, "path", s.Path)
 		case "grpc":
 			common.SetValue(&query, "serviceName", s.Path)
+		case "meek":
+			common.SetValue(&query, "url", s.Host)
 		}
+
 		//TODO: QUIC
 		if s.TLS != "none" {
 			common.SetValue(&query, "sni", s.Host) // FIXME: it may be different from ws's host
