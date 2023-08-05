@@ -1362,10 +1362,6 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
     sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
     if (sk) {
-      if (tuples.dport == bpf_ntohs(445)) {
-        // samba. It is safe because the smb port cannot be customized.
-        goto sk_accept;
-      }
       if (sk->state != BPF_TCP_LISTEN) {
         is_old_conn = true;
         goto assign;
@@ -1487,6 +1483,7 @@ assign:
       bpf_printk("bpf_sk_assign: %d, perhaps you have other TPROXY programs "
                  "(such as v2ray) running?",
                  ret);
+      return TC_ACT_OK;
     } else {
       bpf_printk("bpf_sk_assign: %d", ret);
     }
