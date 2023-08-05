@@ -96,6 +96,13 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 				return d.collections[5]
 			}
 		case consts.L4ProtoStr_UDP:
+			// UDP share the DNS check result.
+			switch typ.IpVersion {
+			case consts.IpVersionStr_4:
+				return d.collections[2]
+			case consts.IpVersionStr_6:
+				return d.collections[3]
+			}
 		}
 	}
 	panic("invalid param")

@@ -543,7 +543,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	networkType := &dialer.NetworkType{
 		L4Proto:   dialArgument.l4proto,
 		IpVersion: dialArgument.ipversion,
-		IsDns:     true, // UDP relies on DNS check result.
+		IsDns:     true,
 	}
 
 	// Dial and send.

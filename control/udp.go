@@ -175,7 +175,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
-		IsDns:     true, // UDP relies on DNS check result.
+		IsDns:     false,
 	}
 	// Get outbound.
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
