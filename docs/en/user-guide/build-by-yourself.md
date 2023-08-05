@@ -19,7 +19,6 @@ cd dae
 git submodule update --init
 ## Minimal dependency build
 make GOFLAGS="-buildvcs=false" \
-  CFLAGS="-D__REMOVE_BPF_PRINTK" \
   CC=clang
 
 ## Normal build

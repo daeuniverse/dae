@@ -18,9 +18,13 @@
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
 // #define __PRINT_SETUP_PROCESS_CONNNECTION
-// #define __REMOVE_BPF_PRINTK
+// #define __DEBUG
 // #define __UNROLL_ROUTE_LOOP
 
+#ifndef __DEBUG
+#undef bpf_printk
+#define bpf_printk(...) (void)0
+#endif
 // #define likely(x) x
 // #define unlikely(x) x
 #define likely(x) __builtin_expect((x), 1)
@@ -1362,10 +1366,6 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
 
     sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
     if (sk) {
-      if (tuples.dport == bpf_ntohs(445)) {
-        // samba. It is safe because the smb port cannot be customized.
-        goto sk_accept;
-      }
       if (sk->state != BPF_TCP_LISTEN) {
         is_old_conn = true;
         goto assign;
@@ -1487,6 +1487,7 @@ assign:
       bpf_printk("bpf_sk_assign: %d, perhaps you have other TPROXY programs "
                  "(such as v2ray) running?",
                  ret);
+      return TC_ACT_OK;
     } else {
       bpf_printk("bpf_sk_assign: %d", ret);
     }
