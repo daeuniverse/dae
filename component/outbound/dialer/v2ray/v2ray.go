@@ -168,6 +168,10 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 			return nil, nil, err
 		}
 	case "meek":
+		if strings.HasPrefix(s.Path, "https://") && s.TLS != "tls" && s.TLS != "utls" {
+			return nil, nil, fmt.Errorf("%w: meek: tls should be enabled", dialer.InvalidParameterErr)
+		}
+
 		u := url.URL{
 			Scheme: "meek",
 			Host:   net.JoinHostPort(s.Add, s.Port),
