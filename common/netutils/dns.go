@@ -59,10 +59,6 @@ func tryUpdateSystemDnsElapse(k time.Duration) (err error) {
 
 func tryUpdateSystemDns() (err error) {
 	dnsConf := dnsReadConfig("/etc/resolv.conf")
-	if len(dnsConf.servers) == 0 {
-		err = fmt.Errorf("no valid dns server in /etc/resolv.conf")
-		return err
-	}
 	systemDns = netip.AddrPort{}
 	for _, s := range dnsConf.servers {
 		ipPort := netip.MustParseAddrPort(s)

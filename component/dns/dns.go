@@ -141,7 +141,10 @@ func (s *Dns) InitUpstreams() {
 	for _, upstream := range s.upstream {
 		wg.Add(1)
 		go func(upstream *UpstreamResolver) {
-			upstream.GetUpstream()
+			_, err := upstream.GetUpstream()
+			if err != nil {
+				s.log.WithError(err).Debugln("Dns.GetUpstream")
+			}
 			wg.Done()
 		}(upstream)
 	}
