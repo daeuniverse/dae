@@ -386,17 +386,18 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		return nil, err
 	}
 
-	c, err = control.NewControlPlane(
-		log,
-		bpf,
-		dnsCache,
-		tagToNodeList,
-		conf.Group,
-		&conf.Routing,
-		&conf.Global,
-		&conf.Dns,
-		externGeoDataDirs,
-	)
+	c, err = control.NewControlPlane(&control.Options{
+		Log:               log,
+		Bpf:               bpf,
+		DnsCache:          dnsCache,
+		TagToNodeList:     tagToNodeList,
+		Groups:            conf.Group,
+		RoutingA:          &conf.Routing,
+		Global:            &conf.Global,
+		DnsConfig:         &conf.Dns,
+		ExternGeoDataDirs: externGeoDataDirs,
+		ChMsg:             nil,
+	})
 	if err != nil {
 		return nil, err
 	}

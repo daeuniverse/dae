@@ -58,6 +58,7 @@ type collection struct {
 	Latencies10       *LatenciesN
 	MovingAverage     time.Duration
 	Alive             bool
+	mu                sync.Mutex
 }
 
 func newCollection() *collection {
@@ -68,22 +69,26 @@ func newCollection() *collection {
 	}
 }
 
-func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
+func (d *Dialer) mustGetCollection(typ *NetworkType) (coll *collection, put func()) {
+	defer func() {
+		coll.mu.Lock()
+		put = coll.mu.Unlock
+	}()
 	if typ.IsDns {
 		switch typ.L4Proto {
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[0]
+				return d.collections[0], put
 			case consts.IpVersionStr_6:
-				return d.collections[1]
+				return d.collections[1], put
 			}
 		case consts.L4ProtoStr_UDP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[2]
+				return d.collections[2], put
 			case consts.IpVersionStr_6:
-				return d.collections[3]
+				return d.collections[3], put
 			}
 		}
 	} else {
@@ -91,17 +96,17 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[4]
+				return d.collections[4], put
 			case consts.IpVersionStr_6:
-				return d.collections[5]
+				return d.collections[5], put
 			}
 		case consts.L4ProtoStr_UDP:
 			// UDP share the DNS check result.
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[2]
+				return d.collections[2], put
 			case consts.IpVersionStr_6:
-				return d.collections[3]
+				return d.collections[3], put
 			}
 		}
 	}
@@ -109,7 +114,9 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 }
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
-	return d.mustGetCollection(typ).Alive
+	coll, put := d.mustGetCollection(typ)
+	defer put()
+	return coll.Alive
 }
 
 func parseIp46FromList(ip []string) *netutils.Ip46 {
@@ -455,9 +462,12 @@ func (d *Dialer) aliveBackground() {
 	for range d.checkCh {
 		for _, opt := range CheckOpts {
 			// No need to test if there is no dialer selection policy using its latency.
-			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			coll, put := d.mustGetCollection(opt.networkType)
+			if len(coll.AliveDialerSetSet) == 0 {
+				put()
 				continue
 			}
+			put()
 
 			wg.Add(1)
 			go func(opt *CheckOption) {
@@ -486,7 +496,9 @@ func (d *Dialer) NotifyCheck() {
 }
 
 func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
-	return d.mustGetCollection(typ).Latencies10
+	coll, put := d.mustGetCollection(typ)
+	defer put()
+	return coll.Latencies10
 }
 
 // RegisterAliveDialerSet is thread-safe.
@@ -494,9 +506,9 @@ func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
 	if a == nil {
 		return
 	}
-	d.collectionFineMu.Lock()
-	d.mustGetCollection(a.CheckTyp).AliveDialerSetSet[a]++
-	d.collectionFineMu.Unlock()
+	coll, put := d.mustGetCollection(a.CheckTyp)
+	coll.AliveDialerSetSet[a]++
+	put()
 }
 
 // UnregisterAliveDialerSet is thread-safe.
@@ -504,9 +516,9 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	if a == nil {
 		return
 	}
-	d.collectionFineMu.Lock()
-	defer d.collectionFineMu.Unlock()
-	setSet := d.mustGetCollection(a.CheckTyp).AliveDialerSetSet
+	coll, put := d.mustGetCollection(a.CheckTyp)
+	defer put()
+	setSet := coll.AliveDialerSetSet
 	setSet[a]--
 	if setSet[a] <= 0 {
 		delete(setSet, a)
@@ -520,10 +532,12 @@ func (d *Dialer) Check(timeout time.Duration,
 	defer cancel()
 	start := time.Now()
 	// Calc latency.
-	collection := d.mustGetCollection(opts.networkType)
+	collection, put := d.mustGetCollection(opts.networkType)
+	defer put()
+	var latency time.Duration
 	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
 		// No error.
-		latency := time.Since(start)
+		latency = time.Since(start)
 		collection.Latencies10.AppendLatency(latency)
 		avg, _ := collection.Latencies10.AvgLatency()
 		collection.MovingAverage = (collection.MovingAverage + latency) / 2
@@ -551,17 +565,21 @@ func (d *Dialer) Check(timeout time.Duration,
 				"err":     err.Error(),
 			}).Debugln("Connectivity Check Failed")
 		}
-		collection.Latencies10.AppendLatency(timeout)
+		latency = timeout
+		collection.Latencies10.AppendLatency(latency)
 		collection.MovingAverage = (collection.MovingAverage + timeout) / 2
 		collection.Alive = false
 	}
+	go d.GlobalOption.CheckCb(&CheckResult{
+		CheckType: opts.networkType,
+		Latency:   latency.Milliseconds(),
+		Alive:     collection.Alive,
+		Err:       err,
+	})
 	// Inform DialerGroups to update state.
-	// We use lock because AliveDialerSetSet is a reference of that in collection.
-	d.collectionFineMu.Lock()
 	for a := range collection.AliveDialerSetSet {
-		a.NotifyLatencyChange(d, collection.Alive)
+		a.NotifyLatencyChange(d, collection)
 	}
-	d.collectionFineMu.Unlock()
 	return ok, err
 }
 
