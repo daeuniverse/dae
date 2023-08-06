@@ -236,7 +236,7 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	}
 
 	if data.Net == "meek" {
-		data.Path = u.Query().Get("meekUrl")
+		data.Path = u.Query().Get("url")
 	}
 
 	if data.Type == "" {
