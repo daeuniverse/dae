@@ -571,10 +571,11 @@ func (d *Dialer) Check(timeout time.Duration,
 		collection.Alive = false
 	}
 	go d.GlobalOption.CheckCb(&CheckResult{
-		CheckType: opts.networkType,
-		Latency:   latency.Milliseconds(),
-		Alive:     collection.Alive,
-		Err:       err,
+		DialerProperty: d.property,
+		CheckType:      opts.networkType,
+		Latency:        latency.Milliseconds(),
+		Alive:          collection.Alive,
+		Err:            err,
 	})
 	// Inform DialerGroups to update state.
 	for a := range collection.AliveDialerSetSet {
