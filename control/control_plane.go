@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"github.com/daeuniverse/softwind/transport/meek"
 	"net"
 	"net/netip"
 	"os"
@@ -276,8 +277,9 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
-	// FIXME: Ugly code here: reset grpc clients manually.
+	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
+	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
