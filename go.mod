@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.5.0
 	github.com/cilium/ebpf v0.11.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/softwind v0.0.0-20230806054755-3c15c9e6f0f4
+	github.com/daeuniverse/softwind v0.0.0-20230806140139-8dd211d63c60
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
@@ -34,7 +34,7 @@ require (
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/pprof v0.0.0-20230705174524-200ffdc848b8 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
-	github.com/mzz2017/quic-go v0.0.0-20230805032040-5e9a02f54eac // indirect
+	github.com/mzz2017/quic-go v0.0.0-20230806040851-f9ecab3bb42a // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
 	github.com/quic-go/qtls-go1-20 v0.3.1 // indirect
 	golang.org/x/mod v0.12.0 // indirect
