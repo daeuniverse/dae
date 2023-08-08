@@ -41,7 +41,7 @@ endif
 ## Begin Dae Build
 dae: export GOOS=linux
 dae: ebpf
-	go build -o $(OUTPUT) -trimpath -ldflags "-buildmode=pie -s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
+	go build -o $(OUTPUT) -trimpath -buildmode=pie -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
 ## End Dae Build
 
 ## Begin Git Submodules
