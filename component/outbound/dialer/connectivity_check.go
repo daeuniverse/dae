@@ -570,7 +570,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	if method == "" {
 		method = http.MethodGet
 	}
-	cd := &netproxy.ContextDialer{Dialer: d.Dialer}
+	cd := &netproxy.ContextDialerConverter{Dialer: d.Dialer}
 	cli := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
