@@ -30,7 +30,7 @@ jobs:
     strategy:
       matrix:
         goos: [ linux ]
-        goarch: [386, riscv64, mips64, mips64le, mipsle, mips ]
+        goarch: [ 386, riscv64, mips64, mips64le, mipsle, mips ]
         include:
           # BEGIN Linux ARM 5 6 7 64
           - goos: linux
