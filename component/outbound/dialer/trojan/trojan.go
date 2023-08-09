@@ -83,7 +83,7 @@ func (s *Trojan) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer)
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:    &netproxy.ContextDialer{Dialer: d},
+			NextDialer:    &netproxy.ContextDialerConverter{Dialer: d},
 			ServiceName:   serviceName,
 			ServerName:    s.Sni,
 			AllowInsecure: s.AllowInsecure || option.AllowInsecure,

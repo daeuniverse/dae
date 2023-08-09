@@ -188,7 +188,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	}
 	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	cd := netproxy.ContextDialer{
+	cd := netproxy.ContextDialerConverter{
 		Dialer: d,
 	}
 	return cd.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark), dialTarget)

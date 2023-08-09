@@ -556,7 +556,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	bestContextDialer := netproxy.ContextDialer{
+	bestContextDialer := netproxy.ContextDialerConverter{
 		Dialer: dialArgument.bestDialer,
 	}
 

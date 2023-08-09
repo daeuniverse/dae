@@ -277,7 +277,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		client := http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					cd := netproxy.ContextDialer{Dialer: direct.SymmetricDirect}
+					cd := netproxy.ContextDialerConverter{Dialer: direct.SymmetricDirect}
 					conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
 					if err != nil {
 						return nil, err
@@ -319,7 +319,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				cd := netproxy.ContextDialer{Dialer: direct.SymmetricDirect}
+				cd := netproxy.ContextDialerConverter{Dialer: direct.SymmetricDirect}
 				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
 				if err != nil {
 					return nil, err
