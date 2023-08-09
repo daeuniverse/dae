@@ -36,12 +36,16 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
+BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
+
 .PHONY: clean-ebpf ebpf dae submodule submodules
 
 ## Begin Dae Build
 dae: export GOOS=linux
-dae: ebpf
-	go build -o $(OUTPUT) -trimpath -buildmode=pie -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
+# dae: ebpf
+dae:
+	@echo $(CFLAGS)
+	go build -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
 
 ## Begin Git Submodules
