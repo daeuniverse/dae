@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"github.com/daeuniverse/softwind/transport/meek"
 	"net"
 	"net/netip"
 	"os"
@@ -32,11 +33,11 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/softwind/pool"
+	"github.com/daeuniverse/softwind/protocol/direct"
+	"github.com/daeuniverse/softwind/transport/grpc"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
-	"github.com/mzz2017/softwind/pool"
-	"github.com/mzz2017/softwind/protocol/direct"
-	"github.com/mzz2017/softwind/transport/grpc"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -276,8 +277,9 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
-	// FIXME: Ugly code here: reset grpc clients manually.
+	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
+	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {

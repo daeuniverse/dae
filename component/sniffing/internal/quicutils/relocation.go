@@ -7,7 +7,7 @@ package quicutils
 
 import (
 	"fmt"
-	"github.com/mzz2017/softwind/pool"
+	"github.com/daeuniverse/softwind/pool"
 	"io/fs"
 	"sort"
 )

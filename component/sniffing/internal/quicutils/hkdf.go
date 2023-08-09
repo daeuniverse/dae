@@ -4,7 +4,7 @@ package quicutils
 
 import (
 	"encoding/binary"
-	"github.com/mzz2017/softwind/pool"
+	"github.com/daeuniverse/softwind/pool"
 	"golang.org/x/crypto/hkdf"
 	"hash"
 	"io"

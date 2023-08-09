@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/mzz2017/softwind/netproxy"
+	"github.com/daeuniverse/softwind/netproxy"
 )
 
 type ObfsType int

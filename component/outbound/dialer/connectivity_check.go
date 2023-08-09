@@ -25,10 +25,10 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
-	"github.com/mzz2017/softwind/protocol/direct"
 	"github.com/sirupsen/logrus"
 )
 
@@ -96,6 +96,13 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 				return d.collections[5]
 			}
 		case consts.L4ProtoStr_UDP:
+			// UDP share the DNS check result.
+			switch typ.IpVersion {
+			case consts.IpVersionStr_4:
+				return d.collections[2]
+			case consts.IpVersionStr_6:
+				return d.collections[3]
+			}
 		}
 	}
 	panic("invalid param")

@@ -5,8 +5,8 @@ package simpleobfs
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/mzz2017/softwind/netproxy"
-	"github.com/mzz2017/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/softwind/pkg/fastrand"
 	"io"
 	"sync"
 	"time"
