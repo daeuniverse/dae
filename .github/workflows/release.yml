@@ -52,6 +52,7 @@ jobs:
       GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
       CGO_ENABLED: 0
+      BUILD_ARGS: ${{ matrix.buildargs }}
 
     steps:
       - name: Checkout codebase
