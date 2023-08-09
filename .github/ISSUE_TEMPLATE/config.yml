@@ -1,0 +1,22 @@
+blank_issues_enabled: true
+contact_links:
+  - name: '📚 Support/Q&A'
+    url: https://github.com/daeuniverse/dae/discussions/categories/q-a-support
+    about: >-
+      Some questions are already answered in our github discussions Q&A section If you don't find an answer, [create a support ticket](https://github.com/daeuniverse/dae/discussions/new?category=q-a-support)
+
+  - name: '💬 dae Documentation Link (en)'
+    url: https://github.com/daeuniverse/dae/tree/main/docs/en
+    about: 'daeuniverse Documentation Link'
+
+  - name: '💬 dae Documentation Link (zh)'
+    url: https://github.com/daeuniverse/dae/tree/main/docs/zh
+    about: 'daeuniverse Documentation Link'
+
+  - name: '💬 daeuniverse Telegram Support'
+    url: https://t.me/daeuniverse
+    about: 'daeuniverse Telegram Support Channel'
+
+  - name: '💬 daeuniverse GitHub Discussion Support'
+    url: https://github.com/daeuniverse/dae/discussions
+    about: 'daeuniverse GitHub Discussion Portal'
