@@ -8,7 +8,6 @@ package control
 import (
 	"context"
 	"fmt"
-	"github.com/daeuniverse/softwind/transport/meek"
 	"net"
 	"net/netip"
 	"os"
@@ -36,6 +35,7 @@ import (
 	"github.com/daeuniverse/softwind/pool"
 	"github.com/daeuniverse/softwind/protocol/direct"
 	"github.com/daeuniverse/softwind/transport/grpc"
+	"github.com/daeuniverse/softwind/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -193,7 +193,6 @@ func NewControlPlane(
 	// Add clsact qdisc
 	for _, ifname := range common.Deduplicate(append(append([]string{}, global.LanInterface...), global.WanInterface...)) {
 		_ = core.addQdisc(ifname)
-		_ = core.mapLinkType(ifname)
 	}
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {

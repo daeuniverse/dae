@@ -425,6 +425,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err = CheckSendRedirects(ifname); err != nil {
 		return err
 	}
+	_ = c.mapLinkType(ifname)
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
