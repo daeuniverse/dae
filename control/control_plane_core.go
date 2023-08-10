@@ -425,6 +425,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err = CheckSendRedirects(ifname); err != nil {
 		return err
 	}
+	_ = c.addQdisc(ifname)
 	_ = c.mapLinkType(ifname)
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
@@ -565,6 +566,9 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if link.Attrs().Index == consts.LoopbackIfIndex {
 		return fmt.Errorf("cannot bind to loopback interface")
 	}
+	_ = c.addQdisc(ifname)
+	_ = c.mapLinkType(ifname)
+
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
