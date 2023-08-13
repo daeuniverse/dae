@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -52,9 +53,15 @@ func (s *Juicity) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer
 		InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
 	}
 	if s.PinnedCertchainSha256 != "" {
-		pinnedHash, err := base64.StdEncoding.DecodeString(s.PinnedCertchainSha256)
+		pinnedHash, err := base64.URLEncoding.DecodeString(s.PinnedCertchainSha256)
 		if err != nil {
-			return nil, nil, fmt.Errorf("decode pin_certchain_sha256: %w", err)
+			pinnedHash, err = base64.StdEncoding.DecodeString(s.PinnedCertchainSha256)
+			if err != nil {
+				pinnedHash, err = hex.DecodeString(s.PinnedCertchainSha256)
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to decode PinnedCertchainSha256")
+				}
+			}
 		}
 		tlsConfig.InsecureSkipVerify = true
 		tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {

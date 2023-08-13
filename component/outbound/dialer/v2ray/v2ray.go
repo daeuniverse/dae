@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/softwind/protocol/direct"
 	"github.com/daeuniverse/softwind/protocol/http"
 	"github.com/daeuniverse/softwind/transport/grpc"
+	"github.com/daeuniverse/softwind/transport/meek"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -134,7 +135,7 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:    &netproxy.ContextDialer{Dialer: d},
+			NextDialer:    &netproxy.ContextDialerConverter{Dialer: d},
 			ServiceName:   serviceName,
 			ServerName:    sni,
 			AllowInsecure: s.AllowInsecure || option.AllowInsecure,
@@ -163,6 +164,26 @@ func (s *V2Ray) Dialer(option *dialer.GlobalOption, nextDialer netproxy.Dialer) 
 			}.Encode(),
 		}
 		d, err = http.NewHTTPProxy(&u, direct.SymmetricDirect)
+		if err != nil {
+			return nil, nil, err
+		}
+	case "meek":
+		if strings.HasPrefix(s.Path, "https://") && s.TLS != "tls" && s.TLS != "utls" {
+			return nil, nil, fmt.Errorf("%w: meek: tls should be enabled", dialer.InvalidParameterErr)
+		}
+
+		u := url.URL{
+			Scheme: "meek",
+			Host:   net.JoinHostPort(s.Add, s.Port),
+			RawQuery: url.Values{
+				"url":            []string{s.Path},
+				"alpn":           []string{s.Alpn},
+				"serverName":     []string{s.SNI},
+				"skipCertVerify": []string{common.BoolToString(s.AllowInsecure || option.AllowInsecure)},
+			}.Encode(),
+		}
+
+		d, err = meek.NewDialer(u.String(), d)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -213,6 +234,11 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if data.Net == "grpc" {
 		data.Path = u.Query().Get("serviceName")
 	}
+
+	if data.Net == "meek" {
+		data.Path = u.Query().Get("url")
+	}
+
 	if data.Type == "" {
 		data.Type = "none"
 	}
@@ -327,7 +353,10 @@ func (s *V2Ray) ExportToURL() string {
 			common.SetValue(&query, "path", s.Path)
 		case "grpc":
 			common.SetValue(&query, "serviceName", s.Path)
+		case "meek":
+			common.SetValue(&query, "url", s.Host)
 		}
+
 		//TODO: QUIC
 		if s.TLS != "none" {
 			common.SetValue(&query, "sni", s.Host) // FIXME: it may be different from ws's host

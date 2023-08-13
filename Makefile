@@ -22,6 +22,7 @@ else ifeq ($(wildcard $(STRIP_PATH)),)
 else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
+GOARCH ?= $(shell go env GOARCH)
 
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
@@ -36,12 +37,20 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
+# amd64 and arm64 use PIE build mode by default
+ifeq ($(GOARCH),$(filter $(GOARCH),amd64 arm64))
+    BUILD_MODE ?= -buildmode=pie
+endif
+
+BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_MODE) $(BUILD_ARGS)
+
 .PHONY: clean-ebpf ebpf dae submodule submodules
 
 ## Begin Dae Build
 dae: export GOOS=linux
 dae: ebpf
-	go build -o $(OUTPUT) -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" .
+	@echo $(CFLAGS)
+	go build -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
 
 ## Begin Git Submodules

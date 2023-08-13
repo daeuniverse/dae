@@ -121,7 +121,7 @@ begin:
 		if err != nil {
 			return nil, false, err
 		}
-		cd := netproxy.ContextDialer{
+		cd := netproxy.ContextDialerConverter{
 			Dialer: dialOption.Dialer,
 		}
 		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)

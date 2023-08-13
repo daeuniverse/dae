@@ -99,7 +99,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
-          go-version: '^1.19'
+          go-version: '^1.21'
 
       - name: Install Dependencies
         run: |
@@ -116,9 +116,7 @@ jobs:
       - name: Build dae
         run: |
           mkdir -p ./build/
-          export CGO_ENABLED=0
           export GOFLAGS="-trimpath -modcacherw"
-          export CFLAGS="-D__REMOVE_BPF_PRINTK"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export CLANG=clang-15

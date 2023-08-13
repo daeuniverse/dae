@@ -10,11 +10,11 @@
 - [ ] There's an entry in the CHANGELOGS
 - [ ] There is a user-facing docs PR against https://github.com/daeuniverse/dae
 
-### Full changelogs
+### Full Changelogs
 
 - [Implement ...]
 
-### Issue reference
+### Issue Reference
 
 <!--- If it fixes an open issue, please link to the issue here. -->
 

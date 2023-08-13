@@ -35,6 +35,7 @@ import (
 	"github.com/daeuniverse/softwind/pool"
 	"github.com/daeuniverse/softwind/protocol/direct"
 	"github.com/daeuniverse/softwind/transport/grpc"
+	"github.com/daeuniverse/softwind/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -189,11 +190,6 @@ func NewControlPlane(
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
-	// Add clsact qdisc
-	for _, ifname := range common.Deduplicate(append(append([]string{}, global.LanInterface...), global.WanInterface...)) {
-		_ = core.addQdisc(ifname)
-		_ = core.mapLinkType(ifname)
-	}
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
 		if err = core.setupRoutingPolicy(); err != nil {
@@ -276,8 +272,9 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
-	// FIXME: Ugly code here: reset grpc clients manually.
+	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
+	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
