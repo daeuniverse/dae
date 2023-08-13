@@ -13,9 +13,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-- [v0.2.4rc2 (Pre-release)](#v024rc2-pre-release)
-- [v0.2.4rc1 (Pre-release)](#v024rc1-pre-release)
-- [v0.2.3 (Latest)](#v023-latest)
+- [v0.2.4 (Latest)](#v024)
+- [v0.2.3](#v023)
 - [v0.2.2](#v022)
 - [v0.2.1](#v021)
 - [v0.2.0](#v020)
@@ -34,38 +33,19 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.2.4rc2 (Pre-release)
+### v0.2.4 (Latest)
 
-> Release date: 2023/08/05
+> Release date: 2023/08/13
 
 ### Features
 
 - feat(juicity): support certificate pinning in [#256](https://github.com/daeuniverse/dae/pull/256) by (@mzz2017)
+- optimize: force to choose one if there is only one node in the group in [#251](https://github.com/daeuniverse/dae/pull/251) by (@mzz2017)
+- feat: support juicity in [#248](https://github.com/daeuniverse/dae/pull/248) by (@mzz2017)
 
 ### Bug Fixes
 
 - fix: bad ipversion selection caused by #251 in [#257](https://github.com/daeuniverse/dae/pull/257) by (@mzz2017)
-
-### 特性支持
-
-- 特性(juicity): 支持证书固定 (Certificate Pinning) in [#256](https://github.com/daeuniverse/dae/pull/256) by (@mzz2017)
-
-### 问题修复
-
-- 修复: 由 #251 导致的错误的 IP 版本选择 in [#257](https://github.com/daeuniverse/dae/pull/257) by (@mzz2017)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.4rc2/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.4rc1...v0.2.4rc2
-
-### v0.2.4rc1 (Pre-release)
-
-> Release date: 2023/08/03
-
-### Features
-
-- optimize: force to choose one if there is only one node in the group in [#251](https://github.com/daeuniverse/dae/pull/251) by (@mzz2017)
-- feat: support juicity in [#248](https://github.com/daeuniverse/dae/pull/248) by (@mzz2017)
 
 ### Others
 
@@ -78,8 +58,13 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### 特性支持
 
+- 特性(juicity): 支持证书固定 (Certificate Pinning) in [#256](https://github.com/daeuniverse/dae/pull/256) by (@mzz2017)
 - 优化: 在组中只有一个节点时强制选择该节点 in [#251](https://github.com/daeuniverse/dae/pull/251) by (@mzz2017)
 - 特性: 支持 juicity in [#248](https://github.com/daeuniverse/dae/pull/248) by (@mzz2017)
+
+### 问题修复
+
+- 修复: 由 #251 导致的错误的 IP 版本选择 in [#257](https://github.com/daeuniverse/dae/pull/257) by (@mzz2017)
 
 ### 其他变更
 
@@ -90,9 +75,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 文档: 完善协议支持和 Alpine 安装 in [#241](https://github.com/daeuniverse/dae/pull/241) by (@mzz2017)
 - 自动化(release): 撰写发布版本 v0.2.3rc1 in [#240](https://github.com/daeuniverse/dae/pull/240) by (@daebot)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.4rc1/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.4/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.3...v0.2.4rc1
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.3...v0.2.4
 
 ### New Contributors
 
