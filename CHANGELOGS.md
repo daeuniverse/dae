@@ -13,9 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-
 - [v0.2.5rc1 (Pre-release)](#v025rc1-pre-release)
-
 - [v0.2.4 (Latest)](#v024-latest)
 - [v0.2.3](#v023)
 - [v0.2.2](#v022)
@@ -140,7 +138,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - @bradfordzhang made their first contribution in #247
 
-### v0.2.3 (Latest)
+### v0.2.3
 
 > Release date: 2023/08/02
 
