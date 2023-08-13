@@ -2232,13 +2232,13 @@ static int __always_inline update_map_elem_by_cookie(const __u64 cookie) {
 }
 
 // Create cookie to pid, pname mapping.
-SEC("cgroup/sock_create")
+SEC("cgroupsock/sock_create")
 int tproxy_wan_cg_sock_create(struct bpf_sock *sk) {
   update_map_elem_by_cookie(bpf_get_socket_cookie(sk));
   return 1;
 }
 // Remove cookie to pid, pname mapping.
-SEC("cgroup/sock_release")
+SEC("cgroupsock/sock_release")
 int tproxy_wan_cg_sock_release(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
   if (unlikely(!cookie)) {
@@ -2248,22 +2248,22 @@ int tproxy_wan_cg_sock_release(struct bpf_sock *sk) {
   bpf_map_delete_elem(&cookie_pid_map, &cookie);
   return 1;
 }
-SEC("cgroup/connect4")
+SEC("connect4")
 int tproxy_wan_cg_connect4(struct bpf_sock_addr *ctx) {
   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
   return 1;
 }
-SEC("cgroup/connect6")
+SEC("connect6")
 int tproxy_wan_cg_connect6(struct bpf_sock_addr *ctx) {
   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
   return 1;
 }
-SEC("cgroup/sendmsg4")
+SEC("sendmsg4")
 int tproxy_wan_cg_sendmsg4(struct bpf_sock_addr *ctx) {
   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
   return 1;
 }
-SEC("cgroup/sendmsg6")
+SEC("sendmsg6")
 int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx) {
   update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
   return 1;
