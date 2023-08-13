@@ -14,6 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v0.2.5rc1 (Pre-release)](#v025rc1-pre-release)
+
 - [v0.2.4 (Latest)](#v024-latest)
 - [v0.2.3](#v023)
 - [v0.2.2](#v022)
@@ -33,6 +35,60 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.2.5rc1 (Pre-release)
+
+> Release date: 2023/08/13
+
+### Features
+
+- optimize(juicity): support Base64URLEncoding for PinnedCertchainSha256 in [#265](https://github.com/daeuniverse/dae/pull/265) by (@mzz2017)
+- feat: add meek in [#258](https://github.com/daeuniverse/dae/pull/258) by (@AkinoKaede)
+
+### Bug Fixes
+
+- fix: rebinding wg/tun not work in [#271](https://github.com/daeuniverse/dae/pull/271) by (@mzz2017)
+- fix: caddy cannot accept connections in [#262](https://github.com/daeuniverse/dae/pull/262) by (@mzz2017)
+
+### Others
+
+- ci(release): draft release v0.2.4 in [#277](https://github.com/daeuniverse/dae/pull/277) by (@yqlbu)
+- ci/chore: remove the buildmode specified in CI in [#273](https://github.com/daeuniverse/dae/pull/273) by (@shenghuang147)
+- chore: amd64 and arm64 use PIE build mode by default in [#272](https://github.com/daeuniverse/dae/pull/272) by (@shenghuang147)
+- chore: upgrade quic-go to 0.37.4 to support go1.21 in [#270](https://github.com/daeuniverse/dae/pull/270) by (@mzz2017)
+- chore(pr_template): update headers in [#269](https://github.com/daeuniverse/dae/pull/269) by (@yqlbu)
+- chore/refactor: rework issue_templates in [#267](https://github.com/daeuniverse/dae/pull/267) by (@yqlbu)
+- chore: add -buildmode=pie in [#266](https://github.com/daeuniverse/dae/pull/266) by (@shenghuang147)
+- ci(release): draft release v0.2.4rc2 in [#260](https://github.com/daeuniverse/dae/pull/260) by (@daebot)
+
+### 特性支持
+
+- 优化(juicity): 支持 PinnedCertchainSha256 的 Base64URLEncoding in [#265](https://github.com/daeuniverse/dae/pull/265) by (@mzz2017)
+- 特性: 添加 meek in [#258](https://github.com/daeuniverse/dae/pull/258) by (@AkinoKaede)
+
+### 问题修复
+
+- 修复: 重新绑定 wg/tun 无效的问题 in [#271](https://github.com/daeuniverse/dae/pull/271) by (@mzz2017)
+- 修复: caddy 无法接受连接的问题 in [#262](https://github.com/daeuniverse/dae/pull/262) by (@mzz2017)
+
+### 其他变更
+
+- 自动化(发布): 起草发布 v0.2.4 版本 in [#277](https://github.com/daeuniverse/dae/pull/277) by (@yqlbu)
+- 自动化/杂项: 在 CI 中移除指定的 buildmode in [#273](https://github.com/daeuniverse/dae/pull/273) by (@shenghuang147)
+- 杂项: amd64 和 arm64 默认使用 PIE 构建模式 in [#272](https://github.com/daeuniverse/dae/pull/272) by (@shenghuang147)
+- 杂项: 升级 quic-go 到 0.37.4 以支持 go1.21 in [#270](https://github.com/daeuniverse/dae/pull/270) by (@mzz2017)
+- 杂项(pr_template): 更新标题 in [#269](https://github.com/daeuniverse/dae/pull/269) by (@yqlbu)
+- 杂项/重构: 重新设计 issue_templates in [#267](https://github.com/daeuniverse/dae/pull/267) by (@yqlbu)
+- 杂项: 添加 -buildmode=pie in [#266](https://github.com/daeuniverse/dae/pull/266) by (@shenghuang147)
+- 自动化(发布): 起草发布 v0.2.4rc2 版本 in [#260](https://github.com/daeuniverse/dae/pull/260) by (@daebot)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.5rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.4...v0.2.5rc1
+
+### New Contributors
+
+- @shenghuang147 made their first contribution in https://github.com/daeuniverse/dae/pull/266
 
 ### v0.2.4 (Latest)
 
