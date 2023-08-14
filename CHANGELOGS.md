@@ -13,6 +13,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+
+- [v0.2.5rc2 (Pre-release)](#v025rc2-pre-release)
 - [v0.2.5rc1 (Pre-release)](#v025rc1-pre-release)
 - [v0.2.4 (Latest)](#v024-latest)
 - [v0.2.3](#v023)
@@ -33,6 +35,22 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.2.5rc2 (Pre-release)
+
+> Release date: 2023/08/14
+
+### Bug Fix
+
+- ci/hotfix: demise buildarg=pie in [#282](https://github.com/daeuniverse/dae/pull/282) by (@yqlbu)
+
+### 问题修复
+
+- 修复: 不再使用 buildarg=pie in [#271](https://github.com/daeuniverse/dae/pull/282) by (@yqlbu)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.5rc2/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.5rc1...v0.2.5rc2
 
 ### v0.2.5rc1 (Pre-release)
 
