@@ -30,7 +30,7 @@ jobs:
     strategy:
       matrix:
         goos: [ linux ]
-        goarch: [ 386, riscv64, mips64, mips64le, mipsle, mips ]
+        goarch: [ arm64, riscv64, mips64, mips64le, mipsle, mips ]
         include:
           # BEGIN Linux ARM 5 6 7 64
           - goos: linux
@@ -50,15 +50,12 @@ jobs:
           - goos: linux
             goarch: amd64
             goamd64: v1
-            buildargs: -buildmode=pie
           - goos: linux
             goarch: amd64
             goamd64: v2
-            buildargs: -buildmode=pie
           - goos: linux
             goarch: amd64
             goamd64: v3
-            buildargs: -buildmode=pie
           # END Linux AMD64 v1 v2 v3
       fail-fast: false
 
@@ -69,7 +66,6 @@ jobs:
       GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
       CGO_ENABLED: 0
-      BUILD_ARGS: ${{ matrix.buildargs }}
 
     steps:
       - name: Checkout codebase
