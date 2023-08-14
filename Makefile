@@ -37,11 +37,6 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-# amd64 and arm64 use PIE build mode by default
-ifeq ($(GOARCH),$(filter $(GOARCH),amd64 arm64))
-    BUILD_MODE ?= -buildmode=pie
-endif
-
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_MODE) $(BUILD_ARGS)
 
 .PHONY: clean-ebpf ebpf dae submodule submodules
