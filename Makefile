@@ -37,8 +37,8 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-# amd64 and arm64 use PIE build mode by default
-ifeq ($(GOARCH),$(filter $(GOARCH),amd64 arm64))
+# use PIE_BUILD_ENABLED env to control PIE build
+ifdef PIE_BUILD_ENABLED
     BUILD_MODE ?= -buildmode=pie
 endif
 
