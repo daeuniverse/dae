@@ -23,7 +23,7 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 	fromLinkCreators[name] = creator
 }
 
-func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*Dialer, error) {
+func NewNetproxyDialerFromLink(gOption *GlobalOption, link string) (netproxy.Dialer, *Property, error) {
 	/// Get overwritten name.
 	overwrittenName, linklike := common.GetTagFromLinkLikePlaintext(link)
 	links := strings.Split(linklike, "->")
@@ -32,22 +32,22 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*D
 		Name:     "",
 		Address:  "",
 		Protocol: "",
-		Link:     link,
+		Link:     linklike,
 	}
 	for i := len(links) - 1; i >= 0; i-- {
 		link := strings.TrimSpace(links[i])
 		u, err := url.Parse(link)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		creator, ok := fromLinkCreators[u.Scheme]
 		if !ok {
-			return nil, fmt.Errorf("unexpected link type: %v", u.Scheme)
+			return nil, nil, fmt.Errorf("unexpected link type: %v", u.Scheme)
 		}
 		var _property *Property
 		d, _property, err = creator(gOption, d, link)
 		if err != nil {
-			return nil, fmt.Errorf("create %v: %w", link, err)
+			return nil, nil, fmt.Errorf("create %v: %w", link, err)
 		}
 		if p.Name == "" {
 			p.Name = _property.Name
@@ -68,10 +68,13 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*D
 	if overwrittenName != "" {
 		p.Name = overwrittenName
 	}
-	node := NewDialer(d, gOption, iOption, p)
-	// Overwrite node name using user given tag.
-	if overwrittenName != "" {
-		node.property.Name = overwrittenName
+	return d, p, nil
+}
+
+func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*Dialer, error) {
+	d, p, err := NewNetproxyDialerFromLink(gOption, link)
+	if err != nil {
+		return nil, err
 	}
-	return node, nil
+	return NewDialer(d, gOption, iOption, p), nil
 }
