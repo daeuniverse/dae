@@ -23,11 +23,10 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 	fromLinkCreators[name] = creator
 }
 
-func NewNetproxyDialerFromLink(gOption *GlobalOption, link string) (netproxy.Dialer, *Property, error) {
+func NewNetproxyDialerFromLink(d netproxy.Dialer, gOption *GlobalOption, link string) (netproxy.Dialer, *Property, error) {
 	/// Get overwritten name.
 	overwrittenName, linklike := common.GetTagFromLinkLikePlaintext(link)
 	links := strings.Split(linklike, "->")
-	d := direct.SymmetricDirect
 	p := &Property{
 		Name:     "",
 		Address:  "",
@@ -72,7 +71,7 @@ func NewNetproxyDialerFromLink(gOption *GlobalOption, link string) (netproxy.Dia
 }
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*Dialer, error) {
-	d, p, err := NewNetproxyDialerFromLink(gOption, link)
+	d, p, err := NewNetproxyDialerFromLink(direct.SymmetricDirect, gOption, link)
 	if err != nil {
 		return nil, err
 	}
