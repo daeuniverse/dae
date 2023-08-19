@@ -1214,6 +1214,7 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #undef _ipversion_type
 #undef _pname
 #undef _is_wan
+#undef _tos
 }
 
 static bool __always_inline is_not_to_lan(void *_ori_src) {
