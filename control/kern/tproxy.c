@@ -140,6 +140,7 @@ struct routing_result {
   __u8 outbound;
   __u8 pname[TASK_COMM_LEN];
   __u32 pid;
+  __u8 tos;
 };
 
 struct dst_routing_result {
@@ -155,6 +156,7 @@ struct tuples {
   __u16 sport;
   __u16 dport;
   __u8 l4proto;
+  __u8 tos;
 };
 
 struct {
@@ -282,6 +284,7 @@ enum __attribute__((packed)) MatchType {
   MatchType_IpVersion,
   MatchType_Mac,
   MatchType_ProcessName,
+  MatchType_Tos,
   MatchType_Fallback,
 };
 enum L4ProtoType {
@@ -317,6 +320,7 @@ struct match_set {
     enum L4ProtoType l4proto_type;
     enum IpVersionType ip_version;
     __u32 pname[TASK_COMM_LEN / 4];
+    __u8 tos;
   };
   bool not ; // A subrule flag (this is not a match_set flag).
   enum MatchType type;
@@ -380,9 +384,13 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
     tuples->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
     tuples->dip.u6_addr32[3] = iph->daddr;
 
+    tuples->tos = iph->tos;
+
   } else {
     __builtin_memcpy(&tuples->dip, &ipv6h->daddr, IPV6_BYTE_LENGTH);
     __builtin_memcpy(&tuples->sip, &ipv6h->saddr, IPV6_BYTE_LENGTH);
+
+    tuples->tos = ipv6h->priority;
   }
   if (l4proto == IPPROTO_TCP) {
     tuples->sport = tcph->source;
@@ -969,6 +977,7 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
 #define _is_wan flag[2]
+#define _tos flag[3]
 
   int ret;
   struct lpm_key lpm_key_instance, *lpm_key;
@@ -1120,6 +1129,11 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
         break;
       case MatchType_ProcessName:
         if (_is_wan && equal16(match_set->pname, _pname)) {
+          isdns_must_goodsubrule_badrule |= 0b10;
+        }
+        break;
+      case MatchType_Tos:
+        if (_tos == match_set->tos) {
           isdns_must_goodsubrule_badrule |= 0b10;
         }
         break;
@@ -1394,6 +1408,7 @@ new_connection:
   } else {
     flag[1] = IpVersionType_6;
   }
+  flag[3] = tuples.tos;
   __be32 mac[4] = {
       0,
       0,
@@ -1411,6 +1426,7 @@ new_connection:
   routing_result.outbound = s64_ret;
   routing_result.mark = s64_ret >> 8;
   routing_result.must = (s64_ret >> 40) & 1;
+  routing_result.tos = tuples.tos;
   __builtin_memcpy(routing_result.mac, ethh.h_source,
                    sizeof(routing_result.mac));
   /// NOTICE: No pid pname info for LAN packet.
@@ -1685,6 +1701,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         } else {
           flag[1] = IpVersionType_6;
         }
+        flag[3] = tuples.tos;
         if (pid_is_control_plane(skb, &pid_pname)) {
           // From control plane. Direct.
           return TC_ACT_OK;
@@ -1706,7 +1723,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
           return TC_ACT_SHOT;
         }
 
-        outbound = s64_ret;
+        outbound = s64_ret & 0xff;
         mark = s64_ret >> 8;
         must = (s64_ret >> 40) & 1;
 
@@ -1763,6 +1780,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
         routing_info.routing_result.outbound = outbound;
         routing_info.routing_result.mark = mark;
         routing_info.routing_result.must = must;
+        routing_info.routing_result.tos = tuples.tos;
         __builtin_memcpy(routing_info.routing_result.mac, ethh.h_source,
                          sizeof(ethh.h_source));
         if (pid_pname) {
@@ -1796,6 +1814,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       } else {
         flag[1] = IpVersionType_6;
       }
+      flag[3] = tuples.tos;
       struct pid_pname *pid_pname;
       if (pid_is_control_plane(skb, &pid_pname)) {
         // From control plane. Direct.
@@ -1826,6 +1845,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       new_hdr.routing_result.outbound = s64_ret;
       new_hdr.routing_result.mark = s64_ret >> 8;
       new_hdr.routing_result.must = (s64_ret >> 40) & 1;
+      new_hdr.routing_result.tos = tuples.tos;
       __builtin_memcpy(new_hdr.routing_result.mac, ethh.h_source,
                        sizeof(ethh.h_source));
       if (pid_pname) {
