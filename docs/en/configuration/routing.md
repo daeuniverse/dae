@@ -55,6 +55,9 @@ mac('02:42:ac:11:00:02') -> direct
 ### Process Name rule (only support localhost process when binding to WAN)
 pname(curl) -> direct
 
+### ToS rule (match ToS/DSCP; is useful for BT bypass)
+tos(4) -> direct
+
 ### Multiple domains rule
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group
 ### Multiple IP rule
