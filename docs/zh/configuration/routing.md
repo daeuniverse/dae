@@ -55,6 +55,9 @@ mac('02:42:ac:11:00:02') -> direct
 ### 进程名称规则（绑定WAN时仅支持本机进程）
 pname(curl) -> direct
 
+### ToS规则（匹配 ToS 和 DSCP，可用于绕过 BT）
+tos(4) -> direct
+
 ### 多个域名规则
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group
 ### 多个IP规则
