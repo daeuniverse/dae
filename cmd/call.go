@@ -13,8 +13,8 @@
  )
  
  var (
-	 callCmd = &cobra.Command{
-		 Use:   "call",
+	 honkCmd = &cobra.Command{
+		 Use:   "honk",
 		 Short: "Let dae call for you.",
 		 Run: func(cmd *cobra.Command, args []string) {
 				 fmt.Println("Honk! Honk! Honk! This is dae!")
@@ -24,6 +24,6 @@
  )
  
  func init() {
-	 rootCmd.AddCommand(callCmd)
+	 rootCmd.AddCommand(honkCmd)
  }
  
