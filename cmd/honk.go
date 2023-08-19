@@ -18,7 +18,7 @@
 		 Short: "Let dae call for you.",
 		 Run: func(cmd *cobra.Command, args []string) {
 				 fmt.Println("Honk! Honk! Honk! This is dae!")
-				 os.Exit(1)
+				 os.Exit(0)
 		 },
 	 }
  )
