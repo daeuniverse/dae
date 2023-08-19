@@ -287,7 +287,7 @@ func (b *RoutingMatcherBuilder) addTos(f *config_parser.Function, values []uint8
 			return err
 		}
 		matchSet := bpfMatchSet{
-			Type:     uint8(consts.MatchType_ProcessName),
+			Type:     uint8(consts.MatchType_Tos),
 			Not:      f.Not,
 			Outbound: outboundId,
 			Mark:     outbound.Mark,
