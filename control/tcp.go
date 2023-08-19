@@ -182,6 +182,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 			"sniffed":  domain,
 			"ip":       RefineAddrPortToShow(dst),
 			"pid":      routingResult.Pid,
+			"tos":      routingResult.Tos,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), dialTarget)

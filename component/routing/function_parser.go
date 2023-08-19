@@ -6,13 +6,17 @@
 package routing
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net/netip"
+	"strconv"
+	"strings"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
-	"net/netip"
-	"strings"
+	"golang.org/x/exp/constraints"
 )
 
 type FunctionParser func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error)
@@ -136,4 +140,19 @@ func toProcessName(processName string) (procName [consts.TaskCommLen]byte) {
 	n := []byte(processName)
 	copy(procName[:], n)
 	return procName
+}
+
+func UintParserFactory[T constraints.Unsigned](callback func(f *config_parser.Function, values []T, overrideOutbound *Outbound) (err error)) FunctionParser {
+	size := binary.Size(new(T))
+	return func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+		var values []T
+		for _, v := range paramValueGroup {
+			val, err := strconv.ParseUint(v, 10, 8*size)
+			if err != nil {
+				return fmt.Errorf("cannot parse %v: %w", v, err)
+			}
+			values = append(values, T(val))
+		}
+		return callback(f, values, overrideOutbound)
+	}
 }
