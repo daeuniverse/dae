@@ -8,6 +8,7 @@
  import (
 	 "fmt"
 	 "os"
+     "time"
  
 	 "github.com/spf13/cobra"
  )
@@ -18,6 +19,11 @@
 		 Short: "Let dae call for you.",
 		 Run: func(cmd *cobra.Command, args []string) {
 				 fmt.Println("Honk! Honk! Honk! This is dae!")
+                 fmt.Println("\a\a\a\x1b[1A")
+                 time.Sleep(3 * 100 * time.Millisecond)
+                 fmt.Println("\a\a\a\x1b[1A")
+                 time.Sleep(3 * 100 * time.Millisecond)
+                 fmt.Println("\a\a\a\x1b[1A")
 				 os.Exit(0)
 		 },
 	 }
