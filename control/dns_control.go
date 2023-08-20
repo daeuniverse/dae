@@ -729,7 +729,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			"_qname":   qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,
-			"tos":      req.routingResult.Tos,
+			"dscp":     req.routingResult.Dscp,
 			"pname":    ProcessName2String(req.routingResult.Pname[:]),
 			"mac":      Mac2String(req.routingResult.Mac[:]),
 		}

@@ -757,6 +757,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								Outbound: uint8(consts.OutboundControlPlaneRouting),
 								Pname:    [16]uint8{},
 								Pid:      0,
+								Dscp:     0,
 							}
 							realDst = pktDst
 							goto destRetrieved

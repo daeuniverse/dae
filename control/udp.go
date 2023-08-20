@@ -274,7 +274,7 @@ getNew:
 				"to":      realDst.String(),
 				"domain":  domain,
 				"pid":     routingResult.Pid,
-				"tos":     routingResult.Tos,
+				"dscp":    routingResult.Dscp,
 				"pname":   ProcessName2String(routingResult.Pname[:]),
 				"mac":     Mac2String(routingResult.Mac[:]),
 				"from":    realSrc.String(),
@@ -299,7 +299,7 @@ getNew:
 			"domain":   domain,
 			"ip":       RefineAddrPortToShow(realDst),
 			"pid":      routingResult.Pid,
-			"tos":      routingResult.Tos,
+			"dscp":     routingResult.Dscp,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}

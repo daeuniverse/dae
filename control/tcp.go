@@ -83,6 +83,7 @@ destRetrieved:
 		Domain:      domain,
 		Mac:         routingResult.Mac,
 		ProcessName: routingResult.Pname,
+		Dscp:        routingResult.Dscp,
 		Src:         src,
 		Dest:        dst,
 		Mark:        routingResult.Mark,
@@ -110,6 +111,7 @@ type RouteDialParam struct {
 	Outbound    consts.OutboundIndex
 	Domain      string
 	Mac         [6]uint8
+	Dscp        uint8
 	ProcessName [16]uint8
 	Src         netip.AddrPort
 	Dest        netip.AddrPort
@@ -119,9 +121,12 @@ type RouteDialParam struct {
 func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
 	routingResult := &bpfRoutingResult{
 		Mark:     p.Mark,
+		Must:     0,
 		Mac:      p.Mac,
 		Outbound: uint8(p.Outbound),
 		Pname:    p.ProcessName,
+		Pid:      0,
+		Dscp:     p.Dscp,
 	}
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
 	domain := p.Domain
@@ -182,7 +187,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 			"sniffed":  domain,
 			"ip":       RefineAddrPortToShow(dst),
 			"pid":      routingResult.Pid,
-			"tos":      routingResult.Tos,
+			"dscp":     routingResult.Dscp,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), dialTarget)

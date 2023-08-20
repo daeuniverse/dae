@@ -52,7 +52,7 @@ const (
 	MatchType_IpVersion
 	MatchType_Mac
 	MatchType_ProcessName
-	MatchType_Tos
+	MatchType_Dscp
 	MatchType_Fallback
 	MatchType_MustRules
 

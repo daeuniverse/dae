@@ -22,7 +22,7 @@ const (
 	Function_IpVersion   = "ipversion"
 	Function_Mac         = "mac"
 	Function_ProcessName = "pname"
-	Function_Tos         = "tos"
+	Function_Dscp        = "dscp"
 
 	Function_QName    = "qname"
 	Function_QType    = "qtype"
