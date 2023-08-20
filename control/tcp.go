@@ -83,6 +83,7 @@ destRetrieved:
 		Domain:      domain,
 		Mac:         routingResult.Mac,
 		ProcessName: routingResult.Pname,
+		Tos:         routingResult.Tos,
 		Src:         src,
 		Dest:        dst,
 		Mark:        routingResult.Mark,
@@ -110,6 +111,7 @@ type RouteDialParam struct {
 	Outbound    consts.OutboundIndex
 	Domain      string
 	Mac         [6]uint8
+	Tos         uint8
 	ProcessName [16]uint8
 	Src         netip.AddrPort
 	Dest        netip.AddrPort
@@ -119,9 +121,12 @@ type RouteDialParam struct {
 func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
 	routingResult := &bpfRoutingResult{
 		Mark:     p.Mark,
+		Must:     0,
 		Mac:      p.Mac,
 		Outbound: uint8(p.Outbound),
 		Pname:    p.ProcessName,
+		Pid:      0,
+		Tos:      p.Tos,
 	}
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
 	domain := p.Domain
