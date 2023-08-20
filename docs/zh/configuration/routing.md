@@ -56,7 +56,7 @@ mac('02:42:ac:11:00:02') -> direct
 pname(curl) -> direct
 
 ### ToS规则（匹配 ToS 和 DSCP，可用于绕过 BT）
-tos(4) -> direct
+tos(0x4) -> direct
 
 ### 多个域名规则
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group

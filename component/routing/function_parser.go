@@ -147,7 +147,7 @@ func UintParserFactory[T constraints.Unsigned](callback func(f *config_parser.Fu
 	return func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var values []T
 		for _, v := range paramValueGroup {
-			val, err := strconv.ParseUint(v, 10, 8*size)
+			val, err := strconv.ParseUint(v, 0, 8*size)
 			if err != nil {
 				return fmt.Errorf("cannot parse %v: %w", v, err)
 			}
