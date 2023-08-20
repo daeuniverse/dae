@@ -982,7 +982,7 @@ decap_after_udp_hdr(struct __sk_buff *skb, __u32 eth_h_len, __u8 ihl,
 // Do not use __always_inline here because this function is too heavy.
 // low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
 static __s64 __attribute__((noinline))
-route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
+route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
       const __be32 daddr[4], const __be32 mac[4]) {
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
@@ -1367,7 +1367,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   __u32 tuple_size;
   struct bpf_sock *sk;
   bool is_old_conn = false;
-  __u32 flag[7];
+  __u32 flag[8];
   void *l4hdr;
 
   if (skb->protocol == bpf_htons(ETH_P_IP)) {
@@ -1707,7 +1707,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       if (unlikely(tcp_state_syn)) {
         // New TCP connection.
         // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
-        __u32 flag[7] = {L4ProtoType_TCP}; // TCP
+        __u32 flag[8] = {L4ProtoType_TCP}; // TCP
         if (skb->protocol == bpf_htons(ETH_P_IP)) {
           flag[1] = IpVersionType_4;
         } else {
@@ -1821,7 +1821,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     } else if (l4proto == IPPROTO_UDP) {
 
       // Routing. It decides if we redirect traffic to control plane.
-      __u32 flag[7] = {L4ProtoType_UDP};
+      __u32 flag[8] = {L4ProtoType_UDP};
       if (skb->protocol == bpf_htons(ETH_P_IP)) {
         flag[1] = IpVersionType_4;
       } else {
