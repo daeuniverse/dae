@@ -93,7 +93,7 @@ func (m *RoutingMatcher) Match(
 			if processName[0] != 0 && match.Value == processName {
 				goodSubrule = true
 			}
-		case consts.MatchType_Tos:
+		case consts.MatchType_Dscp:
 			if tos == match.Value[0] {
 				goodSubrule = true
 			}
