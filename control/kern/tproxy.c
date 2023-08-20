@@ -988,7 +988,7 @@ route(const __u32 flag[6], const void *l4hdr, const __be32 saddr[4],
 #define _ipversion_type flag[1]
 #define _pname &flag[2]
 #define _is_wan flag[2]
-#define _tos flag[3]
+#define _tos flag[6]
 
   int ret;
   struct lpm_key lpm_key_instance, *lpm_key;
@@ -1367,7 +1367,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   __u32 tuple_size;
   struct bpf_sock *sk;
   bool is_old_conn = false;
-  __u32 flag[6];
+  __u32 flag[7];
   void *l4hdr;
 
   if (skb->protocol == bpf_htons(ETH_P_IP)) {
@@ -1420,7 +1420,7 @@ new_connection:
   } else {
     flag[1] = IpVersionType_6;
   }
-  flag[3] = tuples.tos;
+  flag[6] = tuples.tos;
   __be32 mac[4] = {
       0,
       0,
@@ -1707,18 +1707,19 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       if (unlikely(tcp_state_syn)) {
         // New TCP connection.
         // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
-        __u32 flag[6] = {L4ProtoType_TCP}; // TCP
+        __u32 flag[7] = {L4ProtoType_TCP}; // TCP
         if (skb->protocol == bpf_htons(ETH_P_IP)) {
           flag[1] = IpVersionType_4;
         } else {
           flag[1] = IpVersionType_6;
         }
-        flag[3] = tuples.tos;
+        flag[6] = tuples.tos;
         if (pid_is_control_plane(skb, &pid_pname)) {
           // From control plane. Direct.
           return TC_ACT_OK;
         }
         if (pid_pname) {
+          // 2, 3, 4, 5
           __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
         }
         __be32 mac[4] = {
@@ -1820,19 +1821,20 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     } else if (l4proto == IPPROTO_UDP) {
 
       // Routing. It decides if we redirect traffic to control plane.
-      __u32 flag[6] = {L4ProtoType_UDP};
+      __u32 flag[7] = {L4ProtoType_UDP};
       if (skb->protocol == bpf_htons(ETH_P_IP)) {
         flag[1] = IpVersionType_4;
       } else {
         flag[1] = IpVersionType_6;
       }
-      flag[3] = tuples.tos;
+      flag[6] = tuples.tos;
       struct pid_pname *pid_pname;
       if (pid_is_control_plane(skb, &pid_pname)) {
         // From control plane. Direct.
         return TC_ACT_OK;
       }
       if (pid_pname) {
+        // 2, 3, 4, 5
         __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
       }
       __be32 mac[4] = {
