@@ -374,13 +374,12 @@ struct {
 
 // Functions:
 
-static __always_inline __u8 ipv4_get_dsfield(const struct iphdr *iph) {
-  return iph->tos;
+static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph) {
+  return (iph->tos & 0xfc) >> 2;
 }
-static __always_inline __u8 ipv6_get_dsfield(const struct ipv6hdr *ipv6h) {
-  return (ipv6h->priority >> 4) + (ipv6h->flow_lbl[0] >> 4);
+static __always_inline __u8 ipv6_get_dscp(const struct ipv6hdr *ipv6h) {
+  return (ipv6h->priority << 2) + (ipv6h->flow_lbl[0] >> 6);
 }
-
 static void __always_inline
 get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
            const struct iphdr *iph, const struct ipv6hdr *ipv6h,
@@ -395,13 +394,13 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
     tuples->five.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
     tuples->five.dip.u6_addr32[3] = iph->daddr;
 
-    tuples->dscp = ipv4_get_dsfield(iph) >> 2;
+    tuples->dscp = ipv4_get_dscp(iph);
 
   } else {
     __builtin_memcpy(&tuples->five.dip, &ipv6h->daddr, IPV6_BYTE_LENGTH);
     __builtin_memcpy(&tuples->five.sip, &ipv6h->saddr, IPV6_BYTE_LENGTH);
 
-    tuples->dscp = ipv6_get_dsfield(ipv6h) >> 2;
+    tuples->dscp = ipv6_get_dscp(ipv6h);
   }
   if (l4proto == IPPROTO_TCP) {
     tuples->five.sport = tcph->source;
