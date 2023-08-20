@@ -50,7 +50,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
 
-	tuples := &bpfTuples{
+	tuples := &bpfTuplesKey{
 		Sip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: srcIp6},
 		Sport:   common.Htons(src.Port()),
 		Dip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: dstIp6},
