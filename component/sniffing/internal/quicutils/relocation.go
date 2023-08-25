@@ -7,9 +7,10 @@ package quicutils
 
 import (
 	"fmt"
-	"github.com/daeuniverse/softwind/pool"
 	"io/fs"
 	"sort"
+
+	"github.com/daeuniverse/softwind/pool"
 )
 
 var (
@@ -85,6 +86,9 @@ func ReassembleCryptoToBytesFromPool(plaintextPayload []byte) (b []byte, err err
 		if offset == nil {
 			continue
 		}
+		if offset.UpperAppOffset+len(offset.Data) >= len(b) {
+			return nil, fmt.Errorf("offset.UpperAppOffset out of bound: %v:%v/%v", offset.UpperAppOffset, offset.UpperAppOffset+len(offset.Data), len(b))
+		}
 		copy(b[offset.UpperAppOffset:], offset.Data)
 		if offset.UpperAppOffset+len(offset.Data) > boundary {
 			boundary = offset.UpperAppOffset + len(offset.Data)
@@ -97,7 +101,7 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 	if len(remainder) == 0 {
 		return nil, 0, fmt.Errorf("frame has no length: %w", OutOfRangeError)
 	}
-	frameType, nextField, err := BigEndianUvarint(remainder[:])
+	frameType, nextField, err := BigEndianUvarint(remainder)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -197,7 +201,7 @@ func (r *CryptoFrameRelocation) RangeFromPool(i, j int) []byte {
 // copyBytesToPool copy bytes including i and j.
 func (r *CryptoFrameRelocation) copyBytesToPool(iOuter, iInner, jOuter, jInner, size int) []byte {
 	b := pool.Get(size)
-	//io := r.o[iOuter]
+	// io := r.o[iOuter]
 	k := 0
 	for {
 		// Most accesses are small range accesses.
