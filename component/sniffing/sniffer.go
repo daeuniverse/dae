@@ -6,49 +6,65 @@
 package sniffing
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
+	"github.com/daeuniverse/softwind/pool"
 )
 
 type Sniffer struct {
 	// Stream
-	stream             bool
-	r                  io.Reader
-	dataReady          chan struct{}
-	dataError          error
-	dataWaitingTimeout time.Duration
+	stream    bool
+	r         io.Reader
+	dataReady chan struct{}
+	dataError error
 
 	// Common
-	buf    []byte
-	bufAt  int
-	readMu sync.Mutex
+	buf      *bytes.Buffer
+	readMu   sync.Mutex
+	needMore bool
+	ctx      context.Context
+	cancel   func()
+
+	// Quic
+	quicCryptos []*quicutils.CryptoFrameOffset
 }
 
-func NewStreamSniffer(r io.Reader, bufSize int, dataWaitingTimeout time.Duration) *Sniffer {
+func NewStreamSniffer(r io.Reader, bufSize int, timeout time.Duration) *Sniffer {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	s := &Sniffer{
-		stream:             true,
-		r:                  r,
-		buf:                make([]byte, bufSize),
-		dataReady:          make(chan struct{}),
-		dataWaitingTimeout: dataWaitingTimeout,
+		stream:    true,
+		r:         r,
+		buf:       pool.GetBuffer(),
+		dataReady: make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 	return s
 }
 
-func NewPacketSniffer(data []byte) *Sniffer {
+func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
+	buffer := pool.GetBuffer()
+	buffer.Write(data)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	s := &Sniffer{
 		stream:    false,
 		r:         nil,
-		buf:       data,
+		buf:       buffer,
 		dataReady: make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 	return s
 }
 
 type sniff func() (d string, err error)
 
-func sniffGroup(sniffs []sniff) (d string, err error) {
+func sniffGroup(sniffs ...sniff) (d string, err error) {
 	for _, sniffer := range sniffs {
 		d, err = sniffer()
 		if err == nil {
@@ -66,8 +82,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	defer s.readMu.Unlock()
 	if s.stream {
 		go func() {
-			n, err := s.r.Read(s.buf)
-			s.buf = s.buf[:n]
+			_, err := s.buf.ReadFrom(s.r)
 			if err != nil {
 				s.dataError = err
 			}
@@ -80,22 +95,22 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			if s.dataError != nil {
 				return "", s.dataError
 			}
-		case <-time.After(s.dataWaitingTimeout):
+		case <-s.ctx.Done():
 			return "", NotApplicableError
 		}
 	} else {
 		close(s.dataReady)
 	}
 
-	if len(s.buf) == 0 {
+	if s.buf.Len() == 0 {
 		return "", NotApplicableError
 	}
 
-	return sniffGroup([]sniff{
+	return sniffGroup(
 		// Most sniffable traffic is TLS, thus we sniff it first.
 		s.SniffTls,
 		s.SniffHttp,
-	})
+	)
 }
 
 func (s *Sniffer) SniffUdp() (d string, err error) {
@@ -105,13 +120,21 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	// Always ready.
 	close(s.dataReady)
 
-	if len(s.buf) == 0 {
+	if s.buf.Len() == 0 {
 		return "", NotApplicableError
 	}
 
-	return sniffGroup([]sniff{
+	return sniffGroup(
 		s.SniffQuic,
-	})
+	)
+}
+
+func (s *Sniffer) AppendData(data []byte) {
+	s.buf.Write(data)
+}
+
+func (s *Sniffer) NeedMore() bool {
+	return s.needMore
 }
 
 func (s *Sniffer) Read(p []byte) (n int, err error) {
@@ -121,21 +144,13 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 	defer s.readMu.Unlock()
 
 	if s.dataError != nil {
-		if s.bufAt < len(s.buf) {
-			n = copy(p, s.buf[s.bufAt:])
-			s.bufAt += n
-		}
+		n, _ = s.buf.Read(p)
 		return n, s.dataError
 	}
 
-	if s.bufAt < len(s.buf) {
+	if s.buf.Len() > 0 {
 		// Read buf first.
-		n = copy(p, s.buf[s.bufAt:])
-		s.bufAt += n
-		if s.bufAt >= len(s.buf) {
-			s.buf = nil
-		}
-		return n, nil
+		return s.buf.Read(p)
 	}
 	if !s.stream {
 		return 0, io.EOF
@@ -144,5 +159,11 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 }
 
 func (s *Sniffer) Close() (err error) {
+	select {
+	case <-s.ctx.Done():
+	default:
+		s.cancel()
+		pool.PutBuffer(s.buf)
+	}
 	return nil
 }

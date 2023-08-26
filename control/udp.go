@@ -140,7 +140,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	isDns := dnsMessage != nil
 	if !isDns {
 		// Sniff Quic, ...
-		sniffer := sniffing.NewPacketSniffer(data)
+		sniffer := sniffing.NewPacketSniffer(data, c.sniffingTimeout)
 		defer sniffer.Close()
 		domain, err = sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {

@@ -8,6 +8,7 @@ package sniffing
 import (
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -16,41 +17,10 @@ var QuicStream, _ = hex.DecodeString("c00000000108d60451e5cb0f7050000044bc9acdca
 
 //var QuicStream, _ = hex.DecodeString("c6ff00001d100d5a802c52bfee4d71f3770529a5c6871415ea0d6ef29709e829432a18eb50f3af09c81c75004127f234d23fca9370573fd78cd781f4057ce9940111f0ad20e03e894b232013d76e268299644b036ac4557f03fead23ece9b788b3bcff3492b376861a188d5905e5e07cb156b57d7419e66235bedd44e5e774e1476d344eff64bdb1604aa9755a1fd08d4597a03a205e490f4223ddb32af2fc4023bc6784bcf6622ded2a49bbb976dec36e3712e0016272207f462b93b5a70dc66463131d2375bbfc38ece9215119b0b53676d05d470dcce52460f76d284d8f23846cbb38fcaa7e07fa1d6dec390e2876aea21bbd188dca3fe96dfc8c9f99237564e3db587b240279f46613ccc46c84e1b246cf1536be8275075fa4e63f0750df54f0cfbae986811cf3493c1d6ea63a836f387d1a3a02ac158b433ead3fc2035987f1f9c65c71c2d31803320f7a1a978a1aee3e1a50")
 
-func BenchmarkLinearLocator(b *testing.B) {
-	logrus.SetLevel(logrus.DebugLevel)
-	QuicReassemble = QuicReassemblePolicy_LinearLocator
-	for i := 0; i < b.N; i++ {
-		sniffer := NewPacketSniffer(QuicStream)
-		d, err := sniffer.SniffQuic()
-		if err != nil {
-			b.Fatal(err)
-		}
-		if d == "" {
-			b.Fatal(d)
-		}
-	}
-}
-
-func BenchmarkBuiltinSlow(b *testing.B) {
-	logrus.SetLevel(logrus.DebugLevel)
-	QuicReassemble = QuicReassemblePolicy_Slow
-	for i := 0; i < b.N; i++ {
-		sniffer := NewPacketSniffer(QuicStream)
-		d, err := sniffer.SniffQuic()
-		if err != nil {
-			b.Fatal(err)
-		}
-		if d == "" {
-			b.Fatal(d)
-		}
-	}
-}
-
 func BenchmarkReassembleCryptoToBytesFromPool(b *testing.B) {
 	logrus.SetLevel(logrus.DebugLevel)
-	QuicReassemble = QuicReassemblePolicy_ReassembleCryptoToBytesFromPool
 	for i := 0; i < b.N; i++ {
-		sniffer := NewPacketSniffer(QuicStream)
+		sniffer := NewPacketSniffer(QuicStream, 300*time.Millisecond)
 		d, err := sniffer.SniffQuic()
 		if err != nil {
 			b.Fatal(err)

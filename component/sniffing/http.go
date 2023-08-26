@@ -8,19 +8,20 @@ package sniffing
 import (
 	"bufio"
 	"bytes"
-	"github.com/daeuniverse/dae/common"
 	"strings"
 	"unicode"
+
+	"github.com/daeuniverse/dae/common"
 )
 
 func (s *Sniffer) SniffHttp() (d string, err error) {
 	// First byte should be printable.
-	if len(s.buf) == 0 || !unicode.IsPrint(rune(s.buf[0])) {
+	if s.buf.Len() == 0 || !unicode.IsPrint(rune(s.buf.Bytes()[0])) {
 		return "", NotApplicableError
 	}
 
 	// Search method.
-	search := s.buf
+	search := s.buf.Bytes()
 	if len(search) > 12 {
 		search = search[:12]
 	}
@@ -35,7 +36,7 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
 
 	// Search Host.
-	scanner := bufio.NewScanner(bytes.NewReader(s.buf))
+	scanner := bufio.NewScanner(bytes.NewReader(s.buf.Bytes()))
 	// \r\n
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {

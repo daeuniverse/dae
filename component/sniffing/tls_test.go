@@ -8,6 +8,7 @@ package sniffing
 import (
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -28,7 +29,7 @@ func TestSniffer_SniffTls(t *testing.T) {
 	}}
 	logrus.SetLevel(logrus.DebugLevel)
 	for _, test := range tests {
-		sniffer := NewPacketSniffer(test.Stream)
+		sniffer := NewPacketSniffer(test.Stream, 300*time.Millisecond)
 		d, err := sniffer.SniffTls()
 		if err != nil {
 			t.Fatal(err)
