@@ -86,13 +86,13 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	if s.stream {
 		go func() {
 			// Read once.
-			s.buf.Reset()
-			s.buf.Grow(max(0, 4096-s.buf.Available()))
-			n, err := s.r.Read(s.buf.AvailableBuffer())
+			buf := pool.Get(4096)
+			defer buf.Put()
+			n, err := s.r.Read(buf)
 			if err != nil {
 				s.dataError = err
 			}
-			s.buf.Truncate(n)
+			s.buf.Write(buf[:n])
 			close(s.dataReady)
 		}()
 
