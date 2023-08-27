@@ -107,6 +107,8 @@ func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err 
 // isGSOSupported tests if the kernel supports GSO.
 // Sending with GSO might still fail later on, if the interface doesn't support it (see isGSOError).
 func isGSOSupported(uc *net.UDPConn) bool {
+	// We disable GSO because we haven't thought through how to design to use larger packets.
+	return false
 	conn, err := uc.SyscallConn()
 	if err != nil {
 		return false
