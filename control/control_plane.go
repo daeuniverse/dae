@@ -763,8 +763,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 							goto destRetrieved
 						}
 					}
-					n := copy(data, data[dataOffset:])
-					data = data[:n]
+					data = data[dataOffset:]
 					routingResult = &addrHdr.RoutingResult
 					__ip := common.Ipv6Uint32ArrayToByteSlice(addrHdr.Ip)
 					_ip, _ := netip.AddrFromSlice(__ip)
@@ -775,7 +774,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					realDst = pktDst
 				}
 			destRetrieved:
-				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult); e != nil {
+				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 			}(newBuf, newOob, src)

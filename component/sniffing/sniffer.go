@@ -24,14 +24,16 @@ type Sniffer struct {
 	dataError error
 
 	// Common
-	buf      *bytes.Buffer
-	readMu   sync.Mutex
-	needMore bool
-	ctx      context.Context
-	cancel   func()
+	buf    *bytes.Buffer
+	readMu sync.Mutex
+	ctx    context.Context
+	cancel func()
 
-	// Quic
-	quicCryptos []*quicutils.CryptoFrameOffset
+	// Packet
+	data         [][]byte
+	needMore     bool
+	quicNextRead int
+	quicCryptos  []*quicutils.CryptoFrameOffset
 }
 
 func NewStreamSniffer(r io.Reader, bufSize int, timeout time.Duration) *Sniffer {
@@ -55,6 +57,7 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 		stream:    false,
 		r:         nil,
 		buf:       buffer,
+		data:      [][]byte{buffer.Bytes()},
 		dataReady: make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -122,7 +125,11 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	defer s.readMu.Unlock()
 
 	// Always ready.
-	close(s.dataReady)
+	select {
+	case <-s.dataReady:
+	default:
+		close(s.dataReady)
+	}
 
 	if s.buf.Len() == 0 {
 		return "", ErrNotApplicable
@@ -134,7 +141,14 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 }
 
 func (s *Sniffer) AppendData(data []byte) {
+	s.needMore = false
+	ori := s.buf.Len()
 	s.buf.Write(data)
+	s.data = append(s.data, s.buf.Bytes()[ori:])
+}
+
+func (s *Sniffer) Data() [][]byte {
+	return s.data
 }
 
 func (s *Sniffer) NeedMore() bool {

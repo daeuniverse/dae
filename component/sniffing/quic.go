@@ -37,7 +37,7 @@ const (
 )
 
 func (s *Sniffer) SniffQuic() (d string, err error) {
-	nextBlock := s.buf.Bytes()
+	nextBlock := s.buf.Bytes()[s.quicNextRead:]
 	isQuic := false
 	for {
 		s.quicCryptos, nextBlock, err = sniffQuicBlock(s.quicCryptos, nextBlock)
@@ -46,7 +46,8 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 			if errors.Is(err, ErrNotApplicable) {
 				// But if we have found quic block before, correct it.
 				if isQuic {
-					return "", ErrNotFound
+					// Unexpected non-block
+					break
 				}
 				return "", err
 			}
@@ -54,6 +55,7 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 				// ConnectionClose sniffed.
 				return "", ErrNotFound
 			}
+			// The code should NOT run here.
 			return "", err
 		}
 		// Should be quic block.
@@ -63,7 +65,7 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 		}
 	}
 	// Is quic.
-	s.buf.Reset()
+	s.quicNextRead = s.buf.Len()
 	sni, err := extractSniFromTls(quicutils.NewLinearLocator(s.quicCryptos))
 	if err != nil {
 		s.needMore = true
@@ -78,17 +80,17 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 	const dstConnIdPos = 6
 	boundary := dstConnIdPos
 	if len(buf) < boundary {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	// Check flag.
 	// Long header: 4 bits masked
 	// High 4 bits are not protected, so we can access QuicFlag_HeaderForm and QuicFlag_LongPacketType without decryption.
 	protectedFlag := buf[0]
 	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b11) != QuicFlag_HeaderForm_LongHeader {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != QuicFlag_LongPacketType_Initial {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 
 	// Skip version.
@@ -96,37 +98,37 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 	destConnIdLength := int(buf[boundary-1])
 	boundary += destConnIdLength + 1 // +1 because next field has 1B length
 	if len(buf) < boundary {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	destConnId := buf[dstConnIdPos : dstConnIdPos+destConnIdLength]
 
 	srcConnIdLength := int(buf[boundary-1])
 	boundary += srcConnIdLength + quicutils.MaxVarintLen64 // The next fields may have quic.MaxVarintLen64 bytes length
 	if len(buf) < boundary {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	tokenLength, n, err := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
 	if err != nil {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	boundary = boundary - quicutils.MaxVarintLen64 + n      // Correct boundary.
 	boundary += int(tokenLength) + quicutils.MaxVarintLen64 // Next fields may have quic.MaxVarintLen64 bytes length
 	if len(buf) < boundary {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	// https://datatracker.ietf.org/doc/html/rfc9000#name-variable-length-integer-enc
 	length, n, err := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
 	if err != nil {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	boundary = boundary - quicutils.MaxVarintLen64 + n // Correct boundary.
 	blockEnd := boundary + int(length)
 	if len(buf) < blockEnd {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	boundary += quicutils.MaxPacketNumberLength
 	if len(buf) < boundary {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	header := buf[:boundary]
 	// Decrypt protected Packets.
@@ -144,16 +146,16 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 	}()
 	plaintext, err := quicutils.DecryptQuic_(header, blockEnd, destConnId)
 	if err != nil {
-		return nil, nil, ErrNotApplicable
+		return cryptos, nil, ErrNotApplicable
 	}
 	// Now, we confirm it is exact a quic frame.
 	// After here, we should not return NotApplicableError.
 	// And we should return nextFrame.
 	if new, err = quicutils.ReassembleCryptos(cryptos, plaintext); err != nil {
 		if errors.Is(err, fs.ErrClosed) {
-			return nil, nil, err
+			return cryptos, nil, err
 		}
-		return nil, buf[blockEnd:], ErrNotFound
+		return cryptos, buf[blockEnd:], ErrNotApplicable
 	}
 	return new, buf[blockEnd:], nil
 }
