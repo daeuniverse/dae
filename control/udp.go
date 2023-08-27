@@ -102,11 +102,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 	}
 
-	d := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
-		return dialer.BindControl(c, from)
-	}}
-	var conn net.Conn
-	conn, err = d.Dial("udp", realTo.String())
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), DefaultNatTimeout)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			// Port collision, use traditional method.
@@ -114,9 +110,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		}
 		return err
 	}
-	defer conn.Close()
-	uConn := conn.(*net.UDPConn)
-	_, err = uConn.Write(data)
+	_, err = uConn.WriteToUDPAddrPort(data, realTo)
 	return err
 }
 
