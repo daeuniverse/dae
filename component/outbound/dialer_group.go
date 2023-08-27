@@ -16,7 +16,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var NoAliveDialerError = fmt.Errorf("no alive dialer")
+var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
 
 type DialerGroup struct {
 	netproxy.Dialer
@@ -226,14 +226,14 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bool) (d *dialer.Dialer, latency time.Duration, err error) {
 	policy := g.selectionPolicy
 	d, latency, err = g._select(networkType, policy)
-	if !strictIpVersion && errors.Is(err, NoAliveDialerError) {
+	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
 		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
 		return g._select(networkType, policy)
 	}
 	if err == nil {
 		return d, latency, nil
 	}
-	if errors.Is(err, NoAliveDialerError) && len(g.Dialers) == 1 {
+	if errors.Is(err, ErrNoAliveDialer) && len(g.Dialers) == 1 {
 		// There is only one dialer in this group. Just choose it instead of return error.
 		if d, _, err = g._select(networkType, &DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy_Fixed,
@@ -256,7 +256,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 		d := a.GetRand()
 		if d == nil {
 			// No alive dialer.
-			return nil, time.Hour, NoAliveDialerError
+			return nil, time.Hour, ErrNoAliveDialer
 		}
 		return d, 0, nil
 
@@ -272,7 +272,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 		d, latency := a.GetMinLatency()
 		if d == nil {
 			// No alive dialer.
-			return nil, time.Hour, NoAliveDialerError
+			return nil, time.Hour, ErrNoAliveDialer
 		}
 		return d, latency, nil
 

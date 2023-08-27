@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	Error              = fmt.Errorf("sniffing error")
-	NotApplicableError = fmt.Errorf("%w: not applicable", Error)
-	NotFoundError      = fmt.Errorf("%w: not found", Error)
+	Error            = fmt.Errorf("sniffing error")
+	ErrNotApplicable = fmt.Errorf("%w: not applicable", Error)
+	ErrNotFound      = fmt.Errorf("%w: not found", Error)
 )
 
 func IsSniffingError(err error) bool {

@@ -70,11 +70,11 @@ func sniffGroup(sniffs ...sniff) (d string, err error) {
 		if err == nil {
 			return d, nil
 		}
-		if err != NotApplicableError {
+		if err != ErrNotApplicable {
 			return "", err
 		}
 	}
-	return "", NotApplicableError
+	return "", ErrNotApplicable
 }
 
 func (s *Sniffer) SniffTcp() (d string, err error) {
@@ -100,14 +100,14 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 				return "", s.dataError
 			}
 		case <-s.ctx.Done():
-			return "", NotApplicableError
+			return "", ErrNotApplicable
 		}
 	} else {
 		close(s.dataReady)
 	}
 
 	if s.buf.Len() == 0 {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 
 	return sniffGroup(
@@ -125,7 +125,7 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	close(s.dataReady)
 
 	if s.buf.Len() == 0 {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 
 	return sniffGroup(

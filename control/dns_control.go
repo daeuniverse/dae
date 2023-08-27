@@ -47,7 +47,7 @@ const (
 )
 
 var (
-	UnsupportedQuestionTypeError = fmt.Errorf("unsupported question type")
+	ErrUnsupportedQuestionType = fmt.Errorf("unsupported question type")
 )
 
 var (

@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	UnknownFrameTypeError = fmt.Errorf("unknown frame type")
-	OutOfRangeError       = fmt.Errorf("index out of range")
+	ErrUnknownFrameType = fmt.Errorf("unknown frame type")
+	ErrOutOfRange       = fmt.Errorf("index out of range")
 )
 
 const (
@@ -78,7 +78,7 @@ func ReassembleCryptos(offsets []*CryptoFrameOffset, newPayload []byte) (newOffs
 
 func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *CryptoFrameOffset, frameSize int, err error) {
 	if len(remainder) == 0 {
-		return nil, 0, fmt.Errorf("frame has no length: %w", OutOfRangeError)
+		return nil, 0, fmt.Errorf("frame has no length: %w", ErrOutOfRange)
 	}
 	frameType, nextField, err := BigEndianUvarint(remainder)
 	if err != nil {
@@ -111,7 +111,7 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 	case Quic_FrameType_ConnectionClose, Quic_FrameType_ConnectionClose2:
 		return nil, 0, fmt.Errorf("connection closed: %w", fs.ErrClosed)
 	default:
-		return nil, 0, fmt.Errorf("%w: %v", UnknownFrameTypeError, frameType)
+		return nil, 0, fmt.Errorf("%w: %v", ErrUnknownFrameType, frameType)
 	}
 }
 

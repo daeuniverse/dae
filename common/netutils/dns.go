@@ -27,7 +27,7 @@ var (
 	systemDns                netip.AddrPort
 	systemDnsNextUpdateAfter time.Time
 
-	BadDnsAnsError = fmt.Errorf("bad dns answer")
+	ErrBadDnsAns = fmt.Errorf("bad dns answer")
 
 	BootstrapDns = netip.MustParseAddrPort("208.67.222.222:5353")
 )
@@ -107,13 +107,13 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 		case dnsmessage.TypeA:
 			a, ok := ans.(*dnsmessage.A)
 			if !ok {
-				return nil, BadDnsAnsError
+				return nil, ErrBadDnsAns
 			}
 			ip, okk = netip.AddrFromSlice(a.A)
 		case dnsmessage.TypeAAAA:
 			a, ok := ans.(*dnsmessage.AAAA)
 			if !ok {
-				return nil, BadDnsAnsError
+				return nil, ErrBadDnsAns
 			}
 			ip, okk = netip.AddrFromSlice(a.AAAA)
 		}
@@ -137,7 +137,7 @@ func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host 
 		}
 		ns, ok := ans.(*dnsmessage.NS)
 		if !ok {
-			return nil, BadDnsAnsError
+			return nil, ErrBadDnsAns
 		}
 		records = append(records, ns.Ns)
 	}

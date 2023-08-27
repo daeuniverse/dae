@@ -17,7 +17,7 @@ import (
 func (s *Sniffer) SniffHttp() (d string, err error) {
 	// First byte should be printable.
 	if s.buf.Len() == 0 || !unicode.IsPrint(rune(s.buf.Bytes()[0])) {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 
 	// Search method.
@@ -27,10 +27,10 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 	}
 	method, _, found := bytes.Cut(search, []byte(" "))
 	if !found {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 	if !common.IsValidHttpMethod(string(method)) {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 
 	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
@@ -63,5 +63,5 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 			return strings.TrimSpace(string(value)), nil
 		}
 	}
-	return "", NotFoundError
+	return "", ErrNotFound
 }
