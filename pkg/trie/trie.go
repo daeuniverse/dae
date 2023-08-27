@@ -5,13 +5,13 @@ package trie
 
 import (
 	"fmt"
-	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
 	"math/bits"
 	"net/netip"
 	"sort"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/bitlist"
+	"github.com/daeuniverse/softwind/pool"
 )
 
 var ValidCidrChars = NewValidChars([]byte{'0', '1'})
@@ -100,7 +100,7 @@ func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
 		n += 96
 	}
 	ip := prefix.Addr().As16()
-	buf := buffer.NewBuffer(128)
+	buf := pool.NewBuffer(128)
 	defer buf.Put()
 loop:
 	for i := 0; i < len(ip); i++ {

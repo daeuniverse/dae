@@ -21,7 +21,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
+	"github.com/daeuniverse/softwind/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -73,7 +73,7 @@ func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDP
 		},
 	}
 	// Do not put this 'buf' because it has been taken by buffer.
-	b := buffer.NewBuffer(int(unsafe.Sizeof(hdr)) + len(data))
+	b := pool.NewBuffer(int(unsafe.Sizeof(hdr)) + len(data))
 	defer b.Put()
 	// Use internal.NativeEndian due to already big endian.
 	if err := binary.Write(b, internal.NativeEndian, hdr); err != nil {

@@ -6,7 +6,6 @@
 package sniffing
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"sync"
@@ -24,7 +23,7 @@ type Sniffer struct {
 	dataError error
 
 	// Common
-	buf    *bytes.Buffer
+	buf    *pool.Buffer
 	readMu sync.Mutex
 	ctx    context.Context
 	cancel func()
@@ -86,13 +85,10 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	if s.stream {
 		go func() {
 			// Read once.
-			buf := pool.Get(4096)
-			defer buf.Put()
-			n, err := s.r.Read(buf)
+			_, err := s.buf.ReadFromOnce(s.r)
 			if err != nil {
 				s.dataError = err
 			}
-			s.buf.Write(buf[:n])
 			close(s.dataReady)
 		}()
 
@@ -181,7 +177,7 @@ func (s *Sniffer) Close() (err error) {
 	case <-s.ctx.Done():
 	default:
 		s.cancel()
-		pool.PutBuffer(s.buf)
+		s.buf.Put()
 	}
 	return nil
 }
