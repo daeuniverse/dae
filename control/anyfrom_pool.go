@@ -39,7 +39,7 @@ func (a *Anyfrom) SupportGso(size int) bool {
 	if size > math.MaxUint16 {
 		return false
 	}
-	return a.gso && a.gotGSOError
+	return a.gso && !a.gotGSOError
 }
 func (a *Anyfrom) ReadFrom(b []byte) (int, net.Addr, error) {
 	defer a.RefreshTtl()
