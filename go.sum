@@ -13,8 +13,8 @@ github.com/cilium/ebpf v0.11.0/go.mod h1:WE7CZAnqOL2RouJ4f1uyNhqr2P4CCvXFIqdRDUg
 github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d h1:hnC39MjR7xt5kZjrKlef7DXKFDkiX8MIcDXYC/6Jf9Q=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
-github.com/daeuniverse/softwind v0.0.0-20230827121940-c28c06550ed5 h1:62aU/ClsyzjQsFMlnfBrmmSMcmAI238sOp1Fn+VVNGM=
-github.com/daeuniverse/softwind v0.0.0-20230827121940-c28c06550ed5/go.mod h1:Didl+N+gp/UIZ6+n9lwHQjdQEBNWYbdFXvRlmlVcth8=
+github.com/daeuniverse/softwind v0.0.0-20230827130022-4d0d6eb963ea h1:VJ7OcwgiVnhURoOXZMpvxC3cYBE7Hiingz2IMBZvP78=
+github.com/daeuniverse/softwind v0.0.0-20230827130022-4d0d6eb963ea/go.mod h1:Didl+N+gp/UIZ6+n9lwHQjdQEBNWYbdFXvRlmlVcth8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

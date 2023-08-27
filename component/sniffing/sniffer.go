@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	"github.com/daeuniverse/softwind/pool"
+	"github.com/daeuniverse/softwind/pool/bytes"
 )
 
 type Sniffer struct {
@@ -23,7 +24,7 @@ type Sniffer struct {
 	dataError error
 
 	// Common
-	buf    *pool.Buffer
+	buf    *bytes.Buffer
 	readMu sync.Mutex
 	ctx    context.Context
 	cancel func()
@@ -177,7 +178,9 @@ func (s *Sniffer) Close() (err error) {
 	case <-s.ctx.Done():
 	default:
 		s.cancel()
-		s.buf.Put()
+		if s.buf.Len() == 0 {
+			pool.PutBuffer(s.buf)
+		}
 	}
 	return nil
 }

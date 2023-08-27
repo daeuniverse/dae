@@ -73,8 +73,8 @@ func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDP
 		},
 	}
 	// Do not put this 'buf' because it has been taken by buffer.
-	b := pool.NewBuffer(int(unsafe.Sizeof(hdr)) + len(data))
-	defer b.Put()
+	b := pool.GetBuffer()
+	defer pool.PutBuffer(b)
 	// Use internal.NativeEndian due to already big endian.
 	if err := binary.Write(b, internal.NativeEndian, hdr); err != nil {
 		return err
