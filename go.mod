@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.5.0
 	github.com/cilium/ebpf v0.11.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/softwind v0.0.0-20230827130022-4d0d6eb963ea
+	github.com/daeuniverse/softwind v0.0.0-20230828145226-466631552b02
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
