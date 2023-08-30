@@ -101,7 +101,6 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 # Notice that interface wg0, mark 0x800, table 1145 can be set by preferences, but cannot conflict.
 # 3. Set routing rules in dae config file.
 
-# Also see another usage: https://github.com/daeuniverse/dae/discussions/304
 domain(geosite:disney) -> direct(mark: 0x800)
 
 ### Must rules
