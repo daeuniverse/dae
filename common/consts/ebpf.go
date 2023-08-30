@@ -171,6 +171,6 @@ const (
 )
 
 const (
-	LinkType_None uint32 = iota
-	LinkType_Ethernet
+	LinkHdrLen_None     uint32 = 0
+	LinkHdrLen_Ethernet uint32 = 14
 )
