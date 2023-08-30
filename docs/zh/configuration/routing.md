@@ -99,6 +99,7 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 # >> ip -6 route add default dev wg0 scope global table 1145
 # 注意：接口wg0，标记0x800，表1145可以通过首选项设置，但不能冲突。
 # 3. 在dae配置文件中设置路由规则。
+# 也可参考另一种用法: https://github.com/daeuniverse/dae/discussions/304
 domain(geosite:disney) -> direct(mark: 0x800)
 
 ### Must规则
