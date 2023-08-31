@@ -102,7 +102,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 	}
 
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), DefaultNatTimeout)
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), DnsNatTimeout) // Do not cache too long.
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			// Port collision, use traditional method.
