@@ -41,6 +41,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 > **Note**
 > Adopt new release strategy.
 
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.2.5/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.2.4...v0.2.5
+
 ### v0.2.5rc2
 
 > Release date: 2023/08/14
