@@ -13,7 +13,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-
 - [v0.4.0rc1 (Pre-release)](#v040rc1-pre-release)
 - [v0.3.0 (Latest)](#v030-latest)
 - [v0.2.4](#v024)
@@ -36,7 +35,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.4.0rc1 (Pre-release)
+## v0.4.0rc1 (Pre-release)
 
 > Release date: 2023/09/02
 
@@ -76,7 +75,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.3.0...v0.4.0rc1
 
-### New Contributors
+#### New Contributors
 
 - @luochen1990 made their first contribution in https://github.com/daeuniverse/dae/pull/307
 
