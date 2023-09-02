@@ -2,9 +2,16 @@ package dialer
 
 import "time"
 
-func latencyString(latencyAfterOffset, latencyBeforeOffset time.Duration) string {
-	if latencyBeforeOffset == latencyAfterOffset {
-		return latencyAfterOffset.Truncate(time.Millisecond).String()
-	}
-	return latencyAfterOffset.Truncate(time.Millisecond).String() + "(" + latencyBeforeOffset.Truncate(time.Millisecond).String() + ")"
+func latencyString(realLatency, latencyOffset time.Duration) string {
+	offsetPart := func() string {
+		if latencyOffset > 0 {
+			return "(+" + latencyOffset.Truncate(time.Millisecond).String() + ")"
+		} else if latencyOffset < 0 {
+			return "(" + latencyOffset.Truncate(time.Millisecond).String() + ")"
+		} else { // latencyOffset == 0
+			return ""
+		}
+	}()
+
+	return realLatency.Truncate(time.Millisecond).String() + offsetPart
 }

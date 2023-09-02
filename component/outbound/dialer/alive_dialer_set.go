@@ -113,46 +113,27 @@ func (a *AliveDialerSet) printLatencies() {
 	var alive []*struct {
 		d *Dialer
 		l time.Duration
+		o time.Duration
 	}
 	for _, d := range a.inorderedAliveDialerSet {
 		latency, ok := a.dialerToLatency[d]
 		if !ok {
 			continue
 		}
+		offset := a.dialerToLatencyOffset[d]
 		alive = append(alive, &struct {
 			d *Dialer
 			l time.Duration
-		}{d, latency})
+			o time.Duration
+		}{d, latency, offset})
 	}
 	sort.SliceStable(alive, func(i, j int) bool {
-		return alive[i].l < alive[j].l
+		return alive[i].l+alive[i].o < alive[j].l+alive[j].o
 	})
 	for i, dl := range alive {
-		builder.WriteString(fmt.Sprintf("%4d. %v: %v\n", i+1, dl.d.property.Name, a.latencyString(dl.d, dl.l)))
+		builder.WriteString(fmt.Sprintf("%4d. %v: %v\n", i+1, dl.d.property.Name, latencyString(dl.l, dl.o)))
 	}
 	a.log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
-}
-
-func (a *AliveDialerSet) offsetLatency(d *Dialer, latency time.Duration, reverse bool) time.Duration {
-	offset := a.dialerToLatencyOffset[d]
-	var result time.Duration
-	if !reverse {
-		result = latency + offset
-	} else {
-		result = latency - offset
-	}
-	epsilon := 1 * time.Nanosecond
-	if result < +epsilon {
-		return +epsilon
-	}
-	if result > Timeout-epsilon {
-		result = Timeout - epsilon
-	}
-	return result
-}
-
-func (a *AliveDialerSet) latencyString(d *Dialer, afterLatency time.Duration) string {
-	return latencyString(afterLatency, a.offsetLatency(d, afterLatency, true))
 }
 
 // NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.
@@ -178,11 +159,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		hasLatency = rawLatency > 0
 		minPolicy = true
 	}
-	if hasLatency {
-		latency = a.offsetLatency(dialer, rawLatency, false)
-	} else {
-		latency = rawLatency
-	}
+	latency = rawLatency
 
 	if alive {
 		index := a.dialerToIndex[dialer]
@@ -265,7 +242,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					oldDialerName = bakOldBestDialer.property.Name
 				}
 				a.log.WithFields(logrus.Fields{
-					string(a.selectionPolicy): a.latencyString(a.minLatency.dialer, a.minLatency.latency),
+					string(a.selectionPolicy): latencyString(a.minLatency.latency, a.dialerToLatencyOffset[a.minLatency.dialer]),
 					"_new_dialer":             a.minLatency.dialer.property.Name,
 					"_old_dialer":             oldDialerName,
 					"group":                   a.dialerGroupName,
