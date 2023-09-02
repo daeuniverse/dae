@@ -13,8 +13,8 @@ github.com/cilium/ebpf v0.11.0/go.mod h1:WE7CZAnqOL2RouJ4f1uyNhqr2P4CCvXFIqdRDUg
 github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d h1:hnC39MjR7xt5kZjrKlef7DXKFDkiX8MIcDXYC/6Jf9Q=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
-github.com/daeuniverse/softwind v0.0.0-20230828145226-466631552b02 h1:4i+DAQywpgXdC1gWrghelwdt0VcwE8h0A/oMauJjvMc=
-github.com/daeuniverse/softwind v0.0.0-20230828145226-466631552b02/go.mod h1:Didl+N+gp/UIZ6+n9lwHQjdQEBNWYbdFXvRlmlVcth8=
+github.com/daeuniverse/softwind v0.0.0-20230902065137-dcc321666f9a h1:Eb16FC5oAAM4jdPobNPgJqEiZGBkyjpzGVLWRtAVuis=
+github.com/daeuniverse/softwind v0.0.0-20230902065137-dcc321666f9a/go.mod h1:oUzDGY0PDAiXCEIm5DNMewP4KpCAOEXOzZJ7JEP1080=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -97,8 +97,8 @@ github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 h1:RWengNIwukTxcDr9
 github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826/go.mod h1:TaXosZuwdSHYgviHp1DAtfrULt5eUgsSMsZf+YrPgl8=
 github.com/mzz2017/disk-bloom v1.0.1 h1:rEF9MiXd9qMW3ibRpqcerLXULoTgRlM21yqqJl1B90M=
 github.com/mzz2017/disk-bloom v1.0.1/go.mod h1:JLHETtUu44Z6iBmsqzkOtFlRvXSlKnxjwiBRDapizDI=
-github.com/mzz2017/quic-go v0.0.0-20230826094347-f6ce422906f4 h1:GlGWHALzJpMsdbJMKIRg0XNjkjkWjL7x0x7JfiGQaBI=
-github.com/mzz2017/quic-go v0.0.0-20230826094347-f6ce422906f4/go.mod h1:tWtXPktBZvMi0SzXP4QFO8SKDNsAkGEijAeiNe8QmyM=
+github.com/mzz2017/quic-go v0.0.0-20230902042923-a727c1c479d4 h1:7T4E6LsmEhclfkgOt5pCiBgZNRC7h45sIvLj3FunUO8=
+github.com/mzz2017/quic-go v0.0.0-20230902042923-a727c1c479d4/go.mod h1:tWtXPktBZvMi0SzXP4QFO8SKDNsAkGEijAeiNe8QmyM=
 github.com/nxadm/tail v1.4.4/go.mod h1:kenIhsEOeOJmVchQTgglprH7qJGnHDVpk1VPCcaMI8A=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
 github.com/nxadm/tail v1.4.8/go.mod h1:+ncqLTQzXmGhMZNUePPaPqPvBxHAIsmXswZKocGu+AU=
