@@ -186,6 +186,10 @@ loop:
 					sdnotify.Ready()
 					continue
 				}
+				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
+				newConf.Global.WanInterface = nil
+				newConf.Global.LanInterface = nil
+				newConf.Global.LogLevel = "warning"
 			} else {
 				var includes []string
 				newConf, includes, err = readConfig(cfgFile)
