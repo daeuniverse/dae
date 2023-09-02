@@ -13,6 +13,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+- [v0.4.0rc1 (Pre-release)](#v040rc1-pre-release)
 - [v0.3.0 (Latest)](#v030-latest)
 - [v0.2.4](#v024)
 - [v0.2.3](#v023)
@@ -33,6 +34,50 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+## v0.4.0rc1 (Pre-release)
+
+> Release date: 2023/09/02
+
+#### Features
+
+- optimize: latencyString shows realLatency(+offset) in [#307](https://github.com/daeuniverse/dae/pull/307) by (@luochen1990)
+- feat: support ToS routing rule in [#292](https://github.com/daeuniverse/dae/pull/292) by (@mzz2017)
+- feat: dae can call now in [#288](https://github.com/daeuniverse/dae/pull/288) by (@troubadour-hell)
+
+#### Others
+
+- chore(release): add changelogs entry for v0.3.0 in [#311](https://github.com/daeuniverse/dae/pull/311) by (@mzz2017,@yqlbu)
+- docs: improve docs about pppoe and mark in [#305](https://github.com/daeuniverse/dae/pull/305) by (@mzz2017)
+- chore: close file descriptor & remove duplicated error handle in [#303](https://github.com/daeuniverse/dae/pull/303) by (@douglarek)
+- docs(en): update how-it-works in [#300](https://github.com/daeuniverse/dae/pull/300) by (@yqlbu)
+- chore: bump quic-go to v0.38.0 in [#297](https://github.com/daeuniverse/dae/pull/297) by (@mzz2017)
+- refactor/fix: match dscp instead of tos in [#294](https://github.com/daeuniverse/dae/pull/294) by (@mzz2017)
+- chore: honk with sound in [#289](https://github.com/daeuniverse/dae/pull/289) by (@troubadour-hell)
+
+#### 特性支持
+
+- 优化: latencyString 现在显示实际延迟(+偏移) in [#307](https://github.com/daeuniverse/dae/pull/307) 由 (@luochen1990)
+- 特性: 支持 ToS 路由规则 in [#292](https://github.com/daeuniverse/dae/pull/292) 由 (@mzz2017)
+- 特性: 现在 dae 可以 honk honk 叫 in [#288](https://github.com/daeuniverse/dae/pull/288) 由 (@troubadour-hell)
+
+#### 其他
+
+- 杂项(release): 为 v0.3.0 添加变更记录入口 in [#311](https://github.com/daeuniverse/dae/pull/311) 由 (@mzz2017,@yqlbu)
+- 文档: 改进关于 pppoe 和 mark 的文档 in [#305](https://github.com/daeuniverse/dae/pull/305) 由 (@mzz2017)
+- 杂项: 关闭文件描述符并移除重复的错误处理 in [#303](https://github.com/daeuniverse/dae/pull/303) 由 (@douglarek)
+- 文档(en): 更新 how-it-works in [#300](https://github.com/daeuniverse/dae/pull/300) 由 (@yqlbu)
+- 杂项: 将 quic-go 升级到 v0.38.0 in [#297](https://github.com/daeuniverse/dae/pull/297) 由 (@mzz2017)
+- 重构/修复: 匹配 DSCP 而不是 ToS in [#294](https://github.com/daeuniverse/dae/pull/294) 由 (@mzz2017)
+- 杂项: 带声音 honk in [#289](https://github.com/daeuniverse/dae/pull/289) 由 (@troubadour-hell)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.4.0rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.3.0...v0.4.0rc1
+
+#### New Contributors
+
+- @luochen1990 made their first contribution in https://github.com/daeuniverse/dae/pull/307
 
 ## v0.3.0 (Latest)
 
