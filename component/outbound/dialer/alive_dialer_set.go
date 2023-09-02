@@ -23,8 +23,8 @@ const (
 )
 
 type minLatency struct {
-	latency time.Duration
-	dialer  *Dialer
+	sortingLatency time.Duration
+	dialer         *Dialer
 }
 
 // AliveDialerSet assumes mapping between index and dialer MUST remain unchanged.
@@ -80,7 +80,7 @@ func NewAliveDialerSet(
 		selectionPolicy:         selectionPolicy,
 		minLatency: minLatency{
 			// Initiate the latency with a very big value.
-			latency: time.Hour,
+			sortingLatency: time.Hour,
 		},
 	}
 	for _, d := range dialers {
@@ -102,9 +102,13 @@ func (a *AliveDialerSet) GetRand() *Dialer {
 	return a.inorderedAliveDialerSet[ind]
 }
 
+func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
+	return a.dialerToLatency[d] + a.dialerToLatencyOffset[d]
+}
+
 // GetMinLatency acquires correct selectionPolicy.
 func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
-	return a.minLatency.dialer, a.minLatency.latency
+	return a.minLatency.dialer, a.minLatency.sortingLatency
 }
 
 func (a *AliveDialerSet) printLatencies() {
@@ -141,10 +145,10 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var (
-		rawLatency time.Duration
-		latency    time.Duration
-		hasLatency bool
-		minPolicy  bool
+		rawLatency     time.Duration
+		sortingLatency time.Duration
+		hasLatency     bool
+		minPolicy      bool
 	)
 
 	switch a.selectionPolicy {
@@ -159,7 +163,6 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		hasLatency = rawLatency > 0
 		minPolicy = true
 	}
-	latency = rawLatency
 
 	if alive {
 		index := a.dialerToIndex[dialer]
@@ -210,15 +213,16 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	if hasLatency {
 		bakOldBestDialer := a.minLatency.dialer
 		// Calc minLatency.
-		a.dialerToLatency[dialer] = latency
+		a.dialerToLatency[dialer] = rawLatency
+		sortingLatency = a.SortingLatency(dialer)
 		if alive &&
-			latency <= a.minLatency.latency && // To avoid arithmetic overflow.
-			latency <= a.minLatency.latency-a.tolerance {
-			a.minLatency.latency = latency
+			sortingLatency <= a.minLatency.sortingLatency && // To avoid arithmetic overflow.
+			sortingLatency <= a.minLatency.sortingLatency-a.tolerance {
+			a.minLatency.sortingLatency = sortingLatency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
-			a.minLatency.latency = latency
-			if !alive || latency > a.minLatency.latency {
+			a.minLatency.sortingLatency = sortingLatency
+			if !alive || sortingLatency > a.minLatency.sortingLatency {
 				// Latency increases.
 				if !alive {
 					a.minLatency.dialer = nil
@@ -242,7 +246,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					oldDialerName = bakOldBestDialer.property.Name
 				}
 				a.log.WithFields(logrus.Fields{
-					string(a.selectionPolicy): latencyString(a.minLatency.latency, a.dialerToLatencyOffset[a.minLatency.dialer]),
+					string(a.selectionPolicy): latencyString(a.dialerToLatency[a.minLatency.dialer], a.dialerToLatencyOffset[a.minLatency.dialer]),
 					"_new_dialer":             a.minLatency.dialer.property.Name,
 					"_old_dialer":             oldDialerName,
 					"group":                   a.dialerGroupName,
@@ -276,22 +280,23 @@ func (a *AliveDialerSet) calcMinLatency() {
 	var minLatency = time.Hour
 	var minDialer *Dialer
 	for _, d := range a.inorderedAliveDialerSet {
-		latency, ok := a.dialerToLatency[d]
+		_, ok := a.dialerToLatency[d]
 		if !ok {
 			continue
 		}
-		if latency < minLatency {
-			minLatency = latency
+		sortingLatency := a.SortingLatency(d)
+		if sortingLatency < minLatency {
+			minLatency = sortingLatency
 			minDialer = d
 		}
 	}
 	if a.minLatency.dialer == nil {
-		a.minLatency.latency = minLatency
+		a.minLatency.sortingLatency = minLatency
 		a.minLatency.dialer = minDialer
 	} else if minDialer != nil &&
-		minLatency <= a.minLatency.latency && // To avoid arithmetic overflow.
-		minLatency <= a.minLatency.latency-a.tolerance {
-		a.minLatency.latency = minLatency
+		minLatency <= a.minLatency.sortingLatency && // To avoid arithmetic overflow.
+		minLatency <= a.minLatency.sortingLatency-a.tolerance {
+		a.minLatency.sortingLatency = minLatency
 		a.minLatency.dialer = minDialer
 	}
 }
