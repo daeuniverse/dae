@@ -39,7 +39,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
 		for _, node := range nodes {
-			d, err := dialer.NewFromLink(option, dialer.InstanceOption{CheckEnabled: false}, node)
+			d, err := dialer.NewFromLink(option, dialer.InstanceOption{CheckEnabled: false}, node, subscriptionTag)
 			if err != nil {
 				option.Log.Infof("failed to parse node: %v", err)
 				continue
