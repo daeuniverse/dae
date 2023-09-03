@@ -69,9 +69,5 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*D
 		p.Name = overwrittenName
 	}
 	node := NewDialer(d, gOption, iOption, p)
-	// Overwrite node name using user given tag.
-	if overwrittenName != "" {
-		node.property.Name = overwrittenName
-	}
 	return node, nil
 }
