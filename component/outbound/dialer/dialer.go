@@ -48,10 +48,11 @@ type InstanceOption struct {
 }
 
 type Property struct {
-	Name     string
-	Address  string
-	Protocol string
-	Link     string
+	Name            string
+	Address         string
+	Protocol        string
+	Link            string
+	SubscriptionTag string
 }
 
 type AliveDialerSetSet map[*AliveDialerSet]int

@@ -23,16 +23,17 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 	fromLinkCreators[name] = creator
 }
 
-func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string) (*Dialer, error) {
+func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
 	/// Get overwritten name.
 	overwrittenName, linklike := common.GetTagFromLinkLikePlaintext(link)
 	links := strings.Split(linklike, "->")
 	d := direct.SymmetricDirect
 	p := &Property{
-		Name:     "",
-		Address:  "",
-		Protocol: "",
-		Link:     link,
+		Name:            "",
+		Address:         "",
+		Protocol:        "",
+		Link:            link,
+		SubscriptionTag: subscriptionTag,
 	}
 	for i := len(links) - 1; i >= 0; i-- {
 		link := strings.TrimSpace(links[i])

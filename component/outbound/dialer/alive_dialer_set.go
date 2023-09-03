@@ -135,7 +135,7 @@ func (a *AliveDialerSet) printLatencies() {
 		return alive[i].l+alive[i].o < alive[j].l+alive[j].o
 	})
 	for i, dl := range alive {
-		builder.WriteString(fmt.Sprintf("%4d. %v: %v\n", i+1, dl.d.property.Name, latencyString(dl.l, dl.o)))
+		builder.WriteString(fmt.Sprintf("%4d. [%v] %v: %v\n", i+1, dl.d.property.SubscriptionTag, dl.d.property.Name, latencyString(dl.l, dl.o)))
 	}
 	a.log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
 }
