@@ -174,7 +174,7 @@ dns {
     }
     response {
       upstream(googledns) -> accept
-      !qname(geosite:cn) && ip(geoip:private) -> googledns
+      ip(geoip:private) && !qname(geosite:cn) -> googledns
       fallback: accept
     }
   }
