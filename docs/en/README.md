@@ -73,11 +73,13 @@ Check them using command like:
 dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae).
 
 #### Install by AUR Helper
+
 ```shell
 [yay/paru] -S dae
 ```
 
 #### Install Manually
+
 ```shell
 pacman -S --needed git base-devel
 git clone https://aur.archlinux.org/dae.git
