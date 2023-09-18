@@ -64,12 +64,19 @@ CONFIG_BPF_EVENTS=y
 
 ## 安装
 
-### Archlinux/Manjaro
+### Arch Linux / Manjaro
 
-dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae)，使用下述命令安装：
+dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae)，使用下述命令安装：
+
+#### 使用 AUR 助手安装
 
 ```shell
-# yay -S dae
+[yay/paru] -S dae
+```
+
+#### 手动编译安装
+
+```shell
 pacman -S --needed git base-devel
 git clone https://aur.archlinux.org/dae.git
 cd dae
