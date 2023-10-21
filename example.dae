@@ -152,7 +152,7 @@ dns {
             # Trusted upstream. Always accept its result.
             upstream(googledns) -> accept
             # Possibly polluted, re-lookup using googledns.
-            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            ip(geoip:private) && !qname(geosite:cn) -> googledns
             # fallback is also called default.
             fallback: accept
         }
