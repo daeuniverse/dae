@@ -38,10 +38,13 @@ type Sniffer struct {
 
 func NewStreamSniffer(r io.Reader, bufSize int, timeout time.Duration) *Sniffer {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	buffer := pool.GetBuffer()
+	buffer.Grow(AssumedTlsClientHelloMaxLength)
+	buffer.Reset()
 	s := &Sniffer{
 		stream:    true,
 		r:         r,
-		buf:       pool.GetBuffer(),
+		buf:       buffer,
 		dataReady: make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,

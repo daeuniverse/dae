@@ -18,6 +18,8 @@ const (
 	HandShakeType_Hello                  byte   = 1
 	TlsExtension_ServerName              uint16 = 0
 	TlsExtension_ServerNameType_HostName byte   = 0
+
+	AssumedTlsClientHelloMaxLength = 4096
 )
 
 var (
