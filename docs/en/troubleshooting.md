@@ -29,7 +29,7 @@ firewalld
 
 ### Troubleshoot PPPoE
 
-dae does not support PPPoE yet. We are working on it. However, binding to LAN for other machines should work fine.
+dae does not support PPPoE due to it is too complexity for a ebpf program. Binding to LAN for other machines should work fine. If you want to proxy the machine itself, see <<https://github.com/daeuniverse/dae/discussions/304>.
 
 ## Binding to LAN but bad DNS in other machines
 

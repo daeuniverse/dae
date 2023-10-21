@@ -1,5 +1,6 @@
-FROM golang:1.20-bullseye AS builder
-RUN apt-get update && apt-get install -y llvm clang git make
+FROM golang:1.21-bookworm AS builder
+RUN apt-get update && apt-get install -y llvm-15 clang-15 git make
+ENV CLANG=clang-15
 WORKDIR /build/
 ADD go.mod go.sum ./
 RUN go mod download

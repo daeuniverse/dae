@@ -140,15 +140,16 @@ func (c *controlPlaneCore) mapLinkType(ifname string) error {
 	if err != nil {
 		return err
 	}
-	linkType := uint32(0xffff)
+	var linkHdrLen uint32
 	switch link.Attrs().EncapType {
 	case "none":
-		linkType = consts.LinkType_None
+		linkHdrLen = consts.LinkHdrLen_None
 	case "ether":
-		linkType = consts.LinkType_Ethernet
+		linkHdrLen = consts.LinkHdrLen_Ethernet
 	default:
+		return nil
 	}
-	return c.bpf.bpfMaps.LinktypeMap.Update(uint32(link.Attrs().Index), linkType, ebpf.UpdateAny)
+	return c.bpf.bpfMaps.LinklenMap.Update(uint32(link.Attrs().Index), linkHdrLen, ebpf.UpdateAny)
 }
 
 func (c *controlPlaneCore) addQdisc(ifname string) error {
