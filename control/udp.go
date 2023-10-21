@@ -340,7 +340,7 @@ getNew:
 			"outbound": ue.Outbound.Name,
 			"policy":   ue.Outbound.GetSelectionPolicy(),
 			"dialer":   ue.Dialer.Property().Name,
-			"domain":   domain,
+			"sniffed":  domain,
 			"ip":       RefineAddrPortToShow(realDst),
 			"pid":      routingResult.Pid,
 			"dscp":     routingResult.Dscp,
