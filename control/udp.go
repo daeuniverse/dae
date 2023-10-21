@@ -160,7 +160,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 					WithField("to", realDst).
 					Trace("sniffUdp")
 			}
-			DefaultPacketSnifferPool.Remove(key, sniffer)
+			defer DefaultPacketSnifferPool.Remove(key, sniffer)
 			// Re-handlePkt after self func.
 			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
 			sniffer.Mu.Unlock()
@@ -168,7 +168,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				defer func() {
 					if err == nil {
 						for _, d := range toRehandle {
-							go c.handlePkt(lConn, d, src, pktDst, realDst, routingResult, true)
+							dCopy := pool.Get(len(d))
+							copy(dCopy, d)
+							go c.handlePkt(lConn, dCopy, src, pktDst, realDst, routingResult, true)
 						}
 					}
 				}()

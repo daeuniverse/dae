@@ -24,10 +24,11 @@ type Sniffer struct {
 	dataError error
 
 	// Common
-	buf    *bytes.Buffer
-	readMu sync.Mutex
-	ctx    context.Context
-	cancel func()
+	sniffed string
+	buf     *bytes.Buffer
+	readMu  sync.Mutex
+	ctx     context.Context
+	cancel  func()
 
 	// Packet
 	data         [][]byte
@@ -84,6 +85,14 @@ func sniffGroup(sniffs ...sniff) (d string, err error) {
 }
 
 func (s *Sniffer) SniffTcp() (d string, err error) {
+	if s.sniffed != "" {
+		return s.sniffed, nil
+	}
+	defer func() {
+		if err == nil {
+			s.sniffed = d
+		}
+	}()
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 	if s.stream {
@@ -121,6 +130,19 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 }
 
 func (s *Sniffer) SniffUdp() (d string, err error) {
+	if s.sniffed != "" {
+		return s.sniffed, nil
+	}
+	defer func() {
+		if err == nil {
+			s.sniffed = d
+		}
+	}()
+	defer func() {
+		if err == nil {
+			s.sniffed = d
+		}
+	}()
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
