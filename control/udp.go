@@ -29,6 +29,7 @@ import (
 const (
 	DefaultNatTimeout = 3 * time.Minute
 	DnsNatTimeout     = 17 * time.Second // RFC 5452
+	AnyfromTimeout    = 5 * time.Second  // Do not cache too long.
 	MaxRetry          = 2
 )
 
@@ -102,7 +103,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 	}
 
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), DnsNatTimeout) // Do not cache too long.
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			// Port collision, use traditional method.
