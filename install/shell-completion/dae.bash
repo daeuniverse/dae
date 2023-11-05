@@ -19,7 +19,7 @@ _dae() {
 			return 0
 			;;
 
-        honk|reload|suspend)
+        honk|reload|suspend|outline)
 			COMPREPLY=( $(compgen -W "-h --help" -- "${cur}") )
             return 0
             ;;
@@ -40,7 +40,8 @@ _dae() {
 				"${cur}") )
 			return 0
 			;;
-
+        
+        # multiple option matching
 		--disable-pidfile|--disable-timestamp|--logfile|--logfile-maxbackup|\
         --logfile-maxsize|-c|--config|*/*)
             
@@ -60,7 +61,7 @@ _dae() {
 
             case "${COMP_WORDS[1]}" in
                 run)
-                    COMPREPLY=( $(compgen -W "$run_opts -h --help" -- "${cur}") )
+                    COMPREPLY=( $(compgen -W "$run_opts" -- "${cur}") )
                     return 0
                     ;;
             esac
@@ -68,7 +69,7 @@ _dae() {
             return 0
             ;;
 
-		-h|--help|-v|--version)
+		-h|--help)
 			return 0
 			;;
 		*)
@@ -97,10 +98,5 @@ _dae() {
 	esac
 
 }
-
-if [[ -n ${ZSH_VERSION} ]]; then
-	autoload -U bashcompinit
-	bashcompinit
-fi
 
 complete -F _dae dae
