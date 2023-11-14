@@ -5,6 +5,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	AbortFile = "/var/run/dae.abort"
+)
+
 var (
 	Version = "unknown"
 	rootCmd = &cobra.Command{

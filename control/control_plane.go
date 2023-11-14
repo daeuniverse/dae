@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -50,7 +51,8 @@ type ControlPlane struct {
 	listenIp   string
 
 	// TODO: add mutex?
-	outbounds []*outbound.DialerGroup
+	outbounds     []*outbound.DialerGroup
+	inConnections sync.Map
 
 	dnsController    *DnsController
 	onceNetworkReady sync.Once
@@ -707,6 +709,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				break
 			}
 			go func(lconn net.Conn) {
+				c.inConnections.Store(lconn, struct{}{})
+				defer c.inConnections.Delete(lconn)
 				if err := c.handleConn(lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
@@ -920,6 +924,16 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	}, nil
 }
 
+func (c *ControlPlane) AbortConnections() (err error) {
+	var errs []error
+	c.inConnections.Range(func(key, value any) bool {
+		if err = key.(net.Conn).Close(); err != nil {
+			errs = append(errs, err)
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
 func (c *ControlPlane) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {

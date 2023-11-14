@@ -17,6 +17,7 @@ import (
 )
 
 var (
+	abort     bool
 	reloadCmd = &cobra.Command{
 		Use:   "reload [pid]",
 		Short: "To reload config file without interrupt connections.",
@@ -35,6 +36,11 @@ var (
 				cmd.Help()
 				os.Exit(1)
 			}
+			if abort {
+				if f, err := os.Create(AbortFile); err == nil {
+					f.Close()
+				}
+			}
 			if err = syscall.Kill(pid, syscall.SIGUSR1); err != nil {
 				fmt.Println(err)
 				os.Exit(1)
@@ -46,4 +52,5 @@ var (
 
 func init() {
 	rootCmd.AddCommand(reloadCmd)
+	reloadCmd.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
 }
