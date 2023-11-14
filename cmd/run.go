@@ -108,6 +108,8 @@ var (
 )
 
 func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+	// Remove AbortFile at beginning.
+	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
 	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
@@ -135,6 +137,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	}()
 	reloading := false
 	isSuspend := false
+	abortConnections := false
 loop:
 	for sig := range sigs {
 		switch sig {
@@ -174,6 +177,7 @@ loop:
 			sdnotify.Reloading()
 
 			// Load new config.
+			abortConnections = os.Remove(AbortFile) == nil
 			log.Warnln("[Reload] Load new config")
 			var newConf *config.Config
 			if isSuspend {
@@ -247,6 +251,9 @@ loop:
 			reloading = true
 
 			// Ready to close.
+			if abortConnections {
+				oldC.AbortConnections()
+			}
 			oldC.Close()
 		case syscall.SIGHUP:
 			// Ignore.
