@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	CircularIncludeError = fmt.Errorf("circular include is not allowed")
+	ErrCircularInclude = fmt.Errorf("circular include is not allowed")
 )
 
 type Merger struct {
@@ -51,7 +51,7 @@ func (m *Merger) readEntry(entry string) (err error) {
 	// Check circular include.
 	_, exist := m.entryToSectionMap[entry]
 	if exist {
-		return CircularIncludeError
+		return ErrCircularInclude
 	}
 
 	// Check filename
@@ -121,7 +121,7 @@ func unsqueezeEntries(patternEntries []string) (unsqueezed []string, err error) 
 func (m *Merger) dfsMerge(entry string, fatherEntry string) (err error) {
 	// Read entry and check circular include.
 	if err = m.readEntry(entry); err != nil {
-		if errors.Is(err, CircularIncludeError) {
+		if errors.Is(err, ErrCircularInclude) {
 			return fmt.Errorf("%w: %v -> %v -> ... -> %v", err, fatherEntry, entry, fatherEntry)
 		}
 		return err

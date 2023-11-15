@@ -8,34 +8,35 @@ package sniffing
 import (
 	"bufio"
 	"bytes"
-	"github.com/daeuniverse/dae/common"
 	"strings"
 	"unicode"
+
+	"github.com/daeuniverse/dae/common"
 )
 
 func (s *Sniffer) SniffHttp() (d string, err error) {
 	// First byte should be printable.
-	if len(s.buf) == 0 || !unicode.IsPrint(rune(s.buf[0])) {
-		return "", NotApplicableError
+	if s.buf.Len() == 0 || !unicode.IsPrint(rune(s.buf.Bytes()[0])) {
+		return "", ErrNotApplicable
 	}
 
 	// Search method.
-	search := s.buf
+	search := s.buf.Bytes()
 	if len(search) > 12 {
 		search = search[:12]
 	}
 	method, _, found := bytes.Cut(search, []byte(" "))
 	if !found {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 	if !common.IsValidHttpMethod(string(method)) {
-		return "", NotApplicableError
+		return "", ErrNotApplicable
 	}
 
 	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
 
 	// Search Host.
-	scanner := bufio.NewScanner(bytes.NewReader(s.buf))
+	scanner := bufio.NewScanner(bytes.NewReader(s.buf.Bytes()))
 	// \r\n
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -62,5 +63,5 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 			return strings.TrimSpace(string(value)), nil
 		}
 	}
-	return "", NotFoundError
+	return "", ErrNotFound
 }

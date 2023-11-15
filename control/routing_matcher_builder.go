@@ -8,9 +8,10 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/daeuniverse/dae/pkg/trie"
 	"net/netip"
 	"strconv"
+
+	"github.com/daeuniverse/dae/pkg/trie"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
@@ -43,6 +44,7 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 	rulesBuilder.RegisterFunctionParser(consts.Function_L4Proto, routing.L4ProtoParserFactory(b.addL4Proto))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Mac, routing.MacParserFactory(b.addSourceMac))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
+	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
@@ -269,6 +271,29 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 			Must:     outbound.Must,
 		}
 		copy(matchSet.Value[:], value[:])
+		b.rules = append(b.rules, matchSet)
+	}
+	return nil
+}
+
+func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint8, outbound *routing.Outbound) (err error) {
+	for i, value := range values {
+		outboundName := consts.OutboundLogicalOr.String()
+		if i == len(values)-1 {
+			outboundName = outbound.Name
+		}
+		outboundId, err := b.outboundToId(outboundName)
+		if err != nil {
+			return err
+		}
+		matchSet := bpfMatchSet{
+			Type:     uint8(consts.MatchType_Dscp),
+			Not:      f.Not,
+			Outbound: outboundId,
+			Mark:     outbound.Mark,
+			Must:     outbound.Must,
+		}
+		matchSet.Value[0] = value
 		b.rules = append(b.rules, matchSet)
 	}
 	return nil

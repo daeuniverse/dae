@@ -61,7 +61,7 @@ dns {
             # 接受upstream 'googledns' 回复的 DNS 响应。 有助于避免回环。
             upstream(googledns) -> accept
             # 若 DNS 请求的域名不属于 CN 且回复包含私有 IP， 大抵是被污染了，向 'googledns' 重查。
-            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            ip(geoip:private) && !qname(geosite:cn) -> googledns
             fallback: accept
         }
     }
@@ -111,7 +111,7 @@ dns {
       # 可信的 upstream。总是接受它的回复。
       upstream(googledns) -> accept
       # 疑似被污染结果，向 'googledns' 重查。
-      !qname(geosite:cn) && ip(geoip:private) -> googledns
+      ip(geoip:private) && !qname(geosite:cn) -> googledns
       # fallback 意为 default。
       fallback: accept
     }

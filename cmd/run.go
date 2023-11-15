@@ -108,6 +108,8 @@ var (
 )
 
 func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+	// Remove AbortFile at beginning.
+	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
 	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
@@ -135,6 +137,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	}()
 	reloading := false
 	isSuspend := false
+	abortConnections := false
 loop:
 	for sig := range sigs {
 		switch sig {
@@ -174,6 +177,7 @@ loop:
 			sdnotify.Reloading()
 
 			// Load new config.
+			abortConnections = os.Remove(AbortFile) == nil
 			log.Warnln("[Reload] Load new config")
 			var newConf *config.Config
 			if isSuspend {
@@ -186,6 +190,10 @@ loop:
 					sdnotify.Ready()
 					continue
 				}
+				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
+				newConf.Global.WanInterface = nil
+				newConf.Global.LanInterface = nil
+				newConf.Global.LogLevel = "warning"
 			} else {
 				var includes []string
 				newConf, includes, err = readConfig(cfgFile)
@@ -243,6 +251,9 @@ loop:
 			reloading = true
 
 			// Ready to close.
+			if abortConnections {
+				oldC.AbortConnections()
+			}
 			oldC.Close()
 		case syscall.SIGHUP:
 			// Ignore.
@@ -277,7 +288,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		client := http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					cd := netproxy.ContextDialer{Dialer: direct.SymmetricDirect}
+					cd := netproxy.ContextDialerConverter{Dialer: direct.SymmetricDirect}
 					conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
 					if err != nil {
 						return nil, err
@@ -319,7 +330,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				cd := netproxy.ContextDialer{Dialer: direct.SymmetricDirect}
+				cd := netproxy.ContextDialerConverter{Dialer: direct.SymmetricDirect}
 				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
 				if err != nil {
 					return nil, err

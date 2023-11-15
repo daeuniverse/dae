@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -35,6 +36,7 @@ import (
 	"github.com/daeuniverse/softwind/pool"
 	"github.com/daeuniverse/softwind/protocol/direct"
 	"github.com/daeuniverse/softwind/transport/grpc"
+	"github.com/daeuniverse/softwind/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -49,7 +51,8 @@ type ControlPlane struct {
 	listenIp   string
 
 	// TODO: add mutex?
-	outbounds []*outbound.DialerGroup
+	outbounds     []*outbound.DialerGroup
+	inConnections sync.Map
 
 	dnsController    *DnsController
 	onceNetworkReady sync.Once
@@ -189,11 +192,6 @@ func NewControlPlane(
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
-	// Add clsact qdisc
-	for _, ifname := range common.Deduplicate(append(append([]string{}, global.LanInterface...), global.WanInterface...)) {
-		_ = core.addQdisc(ifname)
-		_ = core.mapLinkType(ifname)
-	}
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
 		if err = core.setupRoutingPolicy(); err != nil {
@@ -276,8 +274,9 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
-	// FIXME: Ugly code here: reset grpc clients manually.
+	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
+	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
@@ -710,6 +709,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				break
 			}
 			go func(lconn net.Conn) {
+				c.inConnections.Store(lconn, struct{}{})
+				defer c.inConnections.Delete(lconn)
 				if err := c.handleConn(lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
@@ -760,13 +761,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								Outbound: uint8(consts.OutboundControlPlaneRouting),
 								Pname:    [16]uint8{},
 								Pid:      0,
+								Dscp:     0,
 							}
 							realDst = pktDst
 							goto destRetrieved
 						}
 					}
-					n := copy(data, data[dataOffset:])
-					data = data[:n]
+					data = data[dataOffset:]
 					routingResult = &addrHdr.RoutingResult
 					__ip := common.Ipv6Uint32ArrayToByteSlice(addrHdr.Ip)
 					_ip, _ := netip.AddrFromSlice(__ip)
@@ -777,7 +778,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					realDst = pktDst
 				}
 			destRetrieved:
-				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult); e != nil {
+				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
 			}(newBuf, newOob, src)
@@ -922,6 +923,16 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	}, nil
 }
 
+func (c *ControlPlane) AbortConnections() (err error) {
+	var errs []error
+	c.inConnections.Range(func(key, value any) bool {
+		if err = key.(net.Conn).Close(); err != nil {
+			errs = append(errs, err)
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
 func (c *ControlPlane) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {

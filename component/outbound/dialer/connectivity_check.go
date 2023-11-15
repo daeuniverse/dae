@@ -6,7 +6,6 @@
 package dialer
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/softwind/netproxy"
 	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/pool"
 	"github.com/daeuniverse/softwind/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
@@ -570,7 +570,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	if method == "" {
 		method = http.MethodGet
 	}
-	cd := &netproxy.ContextDialer{Dialer: d.Dialer}
+	cd := &netproxy.ContextDialerConverter{Dialer: d.Dialer}
 	cli := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
@@ -604,7 +604,8 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {
 			b, _ := io.ReadAll(resp.Body)
-			buf := bytes.NewBuffer(nil)
+			buf := pool.GetBuffer()
+			defer pool.PutBuffer(buf)
 			_ = resp.Request.Write(buf)
 			d.Log.Debugln(buf.String(), "Resp: ", string(b))
 			return false, fmt.Errorf("unexpected status code: %v", resp.StatusCode)

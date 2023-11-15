@@ -20,7 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var BadUpstreamFormatError = fmt.Errorf("bad upstream format")
+var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 
 type Dns struct {
 	log              *logrus.Logger
@@ -55,12 +55,12 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 
 		tag, link := common.GetTagFromLinkLikePlaintext(string(upstreamRaw))
 		if tag == "" {
-			return nil, fmt.Errorf("%w: '%v' has no tag", BadUpstreamFormatError, upstreamRaw)
+			return nil, fmt.Errorf("%w: '%v' has no tag", ErrBadUpstreamFormat, upstreamRaw)
 		}
 		var u *url.URL
 		u, err = url.Parse(link)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", BadUpstreamFormatError, err)
+			return nil, fmt.Errorf("%w: %v", ErrBadUpstreamFormat, err)
 		}
 		r := &UpstreamResolver{
 			Raw:     u,

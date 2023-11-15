@@ -87,11 +87,17 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(lAddr); ok {
 		if ue != udpEndpoint {
+			udpEndpoint.Close()
 			return fmt.Errorf("target udp endpoint is not in the pool")
 		}
 		ue.(*UdpEndpoint).Close()
 	}
 	return nil
+}
+
+func (p *UdpEndpointPool) Exists(lAddr netip.AddrPort) (ok bool) {
+	_, ok = p.pool.Load(lAddr)
+	return ok
 }
 
 func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
@@ -121,7 +127,7 @@ begin:
 		if err != nil {
 			return nil, false, err
 		}
-		cd := netproxy.ContextDialer{
+		cd := netproxy.ContextDialerConverter{
 			Dialer: dialOption.Dialer,
 		}
 		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
@@ -134,17 +140,22 @@ begin:
 			return nil, true, fmt.Errorf("protocol does not support udp")
 		}
 		ue := &UdpEndpoint{
-			conn: udpConn.(netproxy.PacketConn),
-			deadlineTimer: time.AfterFunc(createOption.NatTimeout, func() {
-				if ue, ok := p.pool.LoadAndDelete(lAddr); ok {
-					ue.(*UdpEndpoint).Close()
-				}
-			}),
-			handler:    createOption.Handler,
-			NatTimeout: createOption.NatTimeout,
-			Dialer:     dialOption.Dialer,
-			Outbound:   dialOption.Outbound,
+			conn:          udpConn.(netproxy.PacketConn),
+			deadlineTimer: nil,
+			handler:       createOption.Handler,
+			NatTimeout:    createOption.NatTimeout,
+			Dialer:        dialOption.Dialer,
+			Outbound:      dialOption.Outbound,
 		}
+		ue.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
+			if _ue, ok := p.pool.LoadAndDelete(lAddr); ok {
+				if _ue == ue {
+					ue.Close()
+				} else {
+					// FIXME: ?
+				}
+			}
+		})
 		_ue = ue
 		p.pool.Store(lAddr, ue)
 		// Receive UDP messages.

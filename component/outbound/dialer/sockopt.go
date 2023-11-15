@@ -72,6 +72,19 @@ func TproxyControl(c syscall.RawConn) error {
 	return sockOptErr
 }
 
+func TransparentControl(c syscall.RawConn) error {
+	var sockOptErr error
+	controlErr := c.Control(func(fd uintptr) {
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		}
+	})
+	if controlErr != nil {
+		return fmt.Errorf("error invoking socket control function: %w", controlErr)
+	}
+	return sockOptErr
+}
+
 func BindControl(c syscall.RawConn, lAddrPort netip.AddrPort) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {

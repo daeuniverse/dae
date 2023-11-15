@@ -17,10 +17,10 @@ type ConnSniffer struct {
 	*Sniffer
 }
 
-func NewConnSniffer(conn net.Conn, snifferBufSize int, dataWaitingTimeout time.Duration) *ConnSniffer {
+func NewConnSniffer(conn net.Conn, snifferBufSize int, timeout time.Duration) *ConnSniffer {
 	s := &ConnSniffer{
 		Conn:    conn,
-		Sniffer: NewStreamSniffer(conn, snifferBufSize, dataWaitingTimeout),
+		Sniffer: NewStreamSniffer(conn, snifferBufSize, timeout),
 	}
 	return s
 }

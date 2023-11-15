@@ -1,0 +1,42 @@
+name: Feature Request
+description: feature request related to dae
+title: '[Feature Request] <title>'
+labels: ['topic/feature']
+body:
+  - type: textarea
+    attributes:
+      label: Greetings
+      description: general greetings
+      placeholder: |
+        Thanks for supporting the @daeuniverse community! If you have a good idea that wishes us to integrate to the current dae project, feel free to elaborate here.
+
+        You may also post your idea on the [Discussions](https://github.com/daeuniverse/dae/discussions) or the daeuniverse Telegram channel (https://t.me/daeuniverse)
+
+        Prior to opening a feature request, please search for existing requests.
+
+        If you find an existing feature that matches your needs, use the 👍 emoji to show your support for it. If the specifics of your use case are not covered in the existing feature request but the idea seems similar enough, please take the time to *add new conversation* which helps the feature's design evolve.
+
+        If you do not find any other existing requests for the feature you desire, you should open a new feature request. Please take the time to help us understand your use-case as precisely as possible. Be sure to demonstrate that you've evaluated existing features and found them unsuitable.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Feature Request
+      description: What feature you would like us to integrate into the dae project.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Use Cases
+      description: Share with us what use cases the proposed new feature is categorized to.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Potential Benefits
+      description: Why is this needed.
+    validations:
+      required: false

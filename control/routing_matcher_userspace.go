@@ -8,12 +8,12 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/daeuniverse/dae/pkg/trie"
 	"net"
 	"net/netip"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/pkg/trie"
 )
 
 type RoutingMatcher struct {
@@ -33,6 +33,7 @@ func (m *RoutingMatcher) Match(
 	l4proto consts.L4ProtoType,
 	domain string,
 	processName [16]uint8,
+	tos uint8,
 	mac []byte,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
@@ -90,6 +91,10 @@ func (m *RoutingMatcher) Match(
 			}
 		case consts.MatchType_ProcessName:
 			if processName[0] != 0 && match.Value == processName {
+				goodSubrule = true
+			}
+		case consts.MatchType_Dscp:
+			if tos == match.Value[0] {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:

@@ -7,14 +7,13 @@ package quicutils
 
 import (
 	"fmt"
-	"github.com/daeuniverse/softwind/pool"
 	"io/fs"
 	"sort"
 )
 
 var (
-	UnknownFrameTypeError = fmt.Errorf("unknown frame type")
-	OutOfRangeError       = fmt.Errorf("index out of range")
+	ErrUnknownFrameType = fmt.Errorf("unknown frame type")
+	ErrOutOfRange       = fmt.Errorf("index out of range")
 )
 
 const (
@@ -31,73 +30,57 @@ type CryptoFrameOffset struct {
 	Data []byte
 }
 
-type CryptoFrameRelocation struct {
-	payload []byte
-	o       []*CryptoFrameOffset
-	length  int
-}
-
-func NewCryptoFrameRelocation(plaintextPayload []byte) (cryptoRelocation *CryptoFrameRelocation, err error) {
-	var frameSize int
-	var offset *CryptoFrameOffset
-	cryptoRelocation = &CryptoFrameRelocation{
-		payload: plaintextPayload,
-		o:       nil,
-	}
-
-	// Extract crypto frames.
-	for iNextFrame := 0; iNextFrame < len(plaintextPayload); iNextFrame += frameSize {
-		offset, frameSize, err = ExtractCryptoFrameOffset(plaintextPayload[iNextFrame:], iNextFrame)
-		if err != nil {
-			return nil, err
-		}
-		if offset == nil {
-			continue
-		}
-		cryptoRelocation.o = append(cryptoRelocation.o, offset)
-	}
-
-	// Sort offsets by UpperAppOffset.
-	sort.Slice(cryptoRelocation.o, func(i, j int) bool {
-		return cryptoRelocation.o[i].UpperAppOffset < cryptoRelocation.o[j].UpperAppOffset
-	})
-
-	// Store length.
-	left := cryptoRelocation.o[0]
-	right := cryptoRelocation.o[len(cryptoRelocation.o)-1]
-	cryptoRelocation.length = right.UpperAppOffset + len(right.Data) - left.UpperAppOffset
-
-	return cryptoRelocation, nil
-}
-
-func ReassembleCryptoToBytesFromPool(plaintextPayload []byte) (b []byte, err error) {
+func ReassembleCryptos(offsets []*CryptoFrameOffset, newPayload []byte) (newOffsets []*CryptoFrameOffset, err error) {
+	oldLen := len(offsets)
 	var frameSize int
 	var offset *CryptoFrameOffset
 	var boundary int
-	b = pool.Get(len(plaintextPayload))
 	// Extract crypto frames.
-	for iNextFrame := 0; iNextFrame < len(plaintextPayload); iNextFrame += frameSize {
-		offset, frameSize, err = ExtractCryptoFrameOffset(plaintextPayload[iNextFrame:], iNextFrame)
+	for iNextFrame := 0; iNextFrame < len(newPayload); iNextFrame += frameSize {
+		offset, frameSize, err = ExtractCryptoFrameOffset(newPayload[iNextFrame:], iNextFrame)
 		if err != nil {
-			pool.Put(b)
 			return nil, err
 		}
 		if offset == nil {
 			continue
 		}
-		copy(b[offset.UpperAppOffset:], offset.Data)
+		offsets = append(offsets, offset)
 		if offset.UpperAppOffset+len(offset.Data) > boundary {
 			boundary = offset.UpperAppOffset + len(offset.Data)
 		}
 	}
-	return b[:boundary], nil
+	// Sort the new part.
+	newPart := offsets[oldLen:]
+	sort.Slice(newPart, func(i, j int) bool {
+		return newPart[i].UpperAppOffset < newPart[j].UpperAppOffset
+	})
+
+	// Insertion sort.
+	for i := oldLen; i < len(offsets); i++ {
+		item := offsets[i]
+		j := i - 1
+		for ; j >= 0; j-- {
+			if item.UpperAppOffset < offsets[j].UpperAppOffset {
+				offsets[j+1] = offsets[j]
+			} else {
+				if offsets[j+1] != item {
+					offsets[j+1] = item
+				}
+				break
+			}
+		}
+		if j < 0 {
+			offsets[0] = item
+		}
+	}
+	return offsets, nil
 }
 
 func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *CryptoFrameOffset, frameSize int, err error) {
 	if len(remainder) == 0 {
-		return nil, 0, fmt.Errorf("frame has no length: %w", OutOfRangeError)
+		return nil, 0, fmt.Errorf("frame has no length: %w", ErrOutOfRange)
 	}
-	frameType, nextField, err := BigEndianUvarint(remainder[:])
+	frameType, nextField, err := BigEndianUvarint(remainder)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -128,112 +111,20 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 	case Quic_FrameType_ConnectionClose, Quic_FrameType_ConnectionClose2:
 		return nil, 0, fmt.Errorf("connection closed: %w", fs.ErrClosed)
 	default:
-		return nil, 0, fmt.Errorf("%w: %v", UnknownFrameTypeError, frameType)
+		return nil, 0, fmt.Errorf("%w: %v", ErrUnknownFrameType, frameType)
 	}
 }
 
-func (r *CryptoFrameRelocation) BinarySearch(iUpper int, leftOuter, rightOuter int) (iOuter int, iInner int, err error) {
-	rightOuterInstance := r.o[rightOuter]
-	if iUpper < r.o[leftOuter].UpperAppOffset || iUpper >= rightOuterInstance.UpperAppOffset+len(rightOuterInstance.Data) {
-		return 0, 0, fmt.Errorf("%w: %v is not in [%v, %v)", OutOfRangeError, iUpper, r.o[leftOuter].UpperAppOffset, rightOuterInstance.UpperAppOffset+len(rightOuterInstance.Data))
-	}
-	for leftOuter < rightOuter {
-		mid := leftOuter + ((rightOuter - leftOuter) >> 1)
-		if iUpper < r.o[mid].UpperAppOffset {
-			rightOuter = mid - 1
-		} else if iUpper >= r.o[mid].UpperAppOffset {
-			if iUpper < r.o[mid].UpperAppOffset+len(r.o[mid].Data) {
-				return mid, iUpper - r.o[mid].UpperAppOffset, nil
-			} else {
-				leftOuter = mid + 1
-			}
-		}
-	}
-	return leftOuter, iUpper - r.o[leftOuter].UpperAppOffset, nil
-}
-
-func (r *CryptoFrameRelocation) BytesFromPool() []byte {
-	if len(r.o) == 0 {
-		return pool.Get(0)
-	}
-	right := r.o[len(r.o)-1]
-	return r.copyBytesToPool(0, 0, len(r.o)-1, len(right.Data)-1, r.length)
-}
-
-// RangeFromPool copy bytes from iUpperAppOffset to jUpperAppOffset.
-// It is not suggested to use it for large range and frequent copy.
-func (r *CryptoFrameRelocation) RangeFromPool(i, j int) []byte {
-	if i > j {
-		panic(fmt.Sprintf("i > j: %v > %v", i, j))
-	}
-	// We find bytes including i and j, so we should sub j with 1.
-	j--
-
-	// Find i.
-	iOuter, iInner, err := r.BinarySearch(i, 0, len(r.o)-1)
-	if err != nil {
-		panic(err)
-	}
-	// Check if j and i is in the same outer or adjacent outers.
-	// It is very common because we usually have small access range.
-	var jOuter, jInner int
-	if iInner+j-i < len(r.o[iOuter].Data) {
-		jOuter = iOuter
-		jInner = iInner + j - i
-	} else if iOuter+1 < len(r.o) && j < r.o[iOuter+1].UpperAppOffset+len(r.o[iOuter+1].Data) {
-		jOuter = iOuter + 1
-		jInner = (j - i) + (len(r.o[iOuter].Data) - iInner)
-	} else {
-		// We have searched iOuter and iOuter+1
-		jOuter, jInner, err = r.BinarySearch(j, iOuter+2, len(r.o)-1)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	return r.copyBytesToPool(iOuter, iInner, jOuter, jInner, j-i+1)
-}
-
-// copyBytesToPool copy bytes including i and j.
-func (r *CryptoFrameRelocation) copyBytesToPool(iOuter, iInner, jOuter, jInner, size int) []byte {
-	b := pool.Get(size)
-	//io := r.o[iOuter]
-	k := 0
-	for {
-		// Most accesses are small range accesses.
-		base := r.o[iOuter].Data
-		if iOuter == jOuter {
-			k += copy(b[k:], base[iInner:jInner+1])
-			if k != size {
-				panic("unmatched size")
-			}
-			return b
-		} else {
-			k += copy(b[k:], base[iInner:])
-			if iInner != 0 {
-				iInner = 0
-			}
-			iOuter++
-		}
-	}
-}
-func (r *CryptoFrameRelocation) At(i int) byte {
-	iOuter, iInner, err := r.BinarySearch(i, 0, len(r.o)-1)
-	if err != nil {
-		panic(err)
-	}
-	return r.o[iOuter].Data[iInner]
-}
-
-func (r *CryptoFrameRelocation) Len() int {
-	return r.length
-}
+var (
+	ErrMissingCrypto = fmt.Errorf("missing crypto frame")
+)
 
 type Locator interface {
-	Range(i, j int) []byte
-	Slice(i, j int) Locator
-	At(i int) byte
+	Range(i, j int) ([]byte, error)
+	Slice(i, j int) (Locator, error)
+	At(i int) (byte, error)
 	Len() int
+	Bytes() ([]byte, error)
 }
 
 // LinearLocator only searches forward and have no boundary check.
@@ -244,95 +135,130 @@ type LinearLocator struct {
 	baseEnd   int
 	baseStart int
 	baseData  []byte
-	cfr       *CryptoFrameRelocation
+	o         []*CryptoFrameOffset
 }
 
-func NewLinearLocator(cfr *CryptoFrameRelocation) (linearLocator *LinearLocator) {
+func NewLinearLocator(o []*CryptoFrameOffset) *LinearLocator {
+	if len(o) == 0 {
+		return &LinearLocator{}
+	}
 	return &LinearLocator{
 		left:      0,
-		length:    cfr.length,
+		length:    o[len(o)-1].UpperAppOffset + len(o[len(o)-1].Data),
 		iOuter:    0,
-		baseData:  cfr.o[0].Data,
-		baseStart: cfr.o[0].UpperAppOffset,
-		baseEnd:   cfr.o[0].UpperAppOffset + len(cfr.o[0].Data),
-		cfr:       cfr,
+		baseData:  o[0].Data,
+		baseStart: o[0].UpperAppOffset,
+		baseEnd:   o[0].UpperAppOffset + len(o[0].Data),
+		o:         o,
 	}
 }
 
-func (ll *LinearLocator) relocate(i int) {
+func (l *LinearLocator) relocate(i int) error {
 	// Relocate ll.iOuter.
-	for i >= ll.baseEnd {
-		ll.iOuter++
-		ll.baseData = ll.cfr.o[ll.iOuter].Data
-		ll.baseStart = ll.cfr.o[ll.iOuter].UpperAppOffset
-		ll.baseEnd = ll.baseStart + len(ll.baseData)
+	for i >= l.baseEnd {
+		if l.iOuter+1 >= len(l.o) {
+			return ErrMissingCrypto
+		}
+		l.iOuter++
+		l.baseData = l.o[l.iOuter].Data
+		l.baseStart = l.o[l.iOuter].UpperAppOffset
+		l.baseEnd = l.baseStart + len(l.baseData)
 	}
+	if i < l.baseStart {
+		return ErrMissingCrypto
+	}
+	return nil
 }
 
-func (ll *LinearLocator) Range(i, j int) []byte {
+func (l *LinearLocator) Range(i, j int) ([]byte, error) {
 	if i == j {
-		return []byte{}
+		return []byte{}, nil
+	}
+	if len(l.o) == 0 {
+		return nil, ErrMissingCrypto
 	}
 	size := j - i
 
 	// We find bytes including i and j, so we should sub j with 1.
-	i += ll.left
-	j += ll.left - 1
-	ll.relocate(i)
+	i += l.left
+	j += l.left - 1
+	if err := l.relocate(i); err != nil {
+		return nil, err
+	}
 
 	// Linearly copy.
 
-	if j < ll.baseEnd {
+	if j < l.baseEnd {
 		// In the same block, no copy needed.
-		return ll.baseData[i-ll.baseStart : j-ll.baseStart+1]
+		return l.baseData[i-l.baseStart : j-l.baseStart+1], nil
 	}
 
 	b := make([]byte, size)
 	k := 0
-	for j >= ll.baseEnd {
-		n := copy(b[k:], ll.baseData[i-ll.baseStart:])
+	for j >= l.baseEnd {
+		n := copy(b[k:], l.baseData[i-l.baseStart:])
 		k += n
 		i += n
-		ll.iOuter++
-		ll.baseData = ll.cfr.o[ll.iOuter].Data
-		ll.baseStart = ll.cfr.o[ll.iOuter].UpperAppOffset
-		ll.baseEnd = ll.baseStart + len(ll.baseData)
+		if l.iOuter+1 >= len(l.o) || l.o[l.iOuter].UpperAppOffset+len(l.o[l.iOuter+1].Data) != l.o[l.iOuter].UpperAppOffset {
+			// Some crypto is missing.
+			return nil, ErrMissingCrypto
+		}
+		l.iOuter++
+		l.baseData = l.o[l.iOuter].Data
+		l.baseStart = l.o[l.iOuter].UpperAppOffset
+		l.baseEnd = l.baseStart + len(l.baseData)
 	}
-	copy(b[k:], ll.baseData[i-ll.baseStart:j-ll.baseStart+1])
-	return b
+	copy(b[k:], l.baseData[i-l.baseStart:j-l.baseStart+1])
+	return b, nil
 }
 
-func (ll *LinearLocator) At(i int) byte {
-	i += ll.left
+func (l *LinearLocator) At(i int) (byte, error) {
+	if len(l.o) == 0 {
+		return 0, ErrMissingCrypto
+	}
+	i += l.left
 
-	ll.relocate(i)
-	b := ll.baseData[i-ll.baseStart]
-	return b
+	if err := l.relocate(i); err != nil {
+		return 0, err
+	}
+	b := l.baseData[i-l.baseStart]
+	return b, nil
 }
 
-func (ll *LinearLocator) Slice(i, j int) Locator {
+func (l *LinearLocator) Slice(i, j int) (Locator, error) {
 	// We do not care about right.
-	newLL := *ll
+	newLL := *l
 	newLL.left += i
 	newLL.length = j - i + 1
-	return &newLL
+	return &newLL, nil
 }
 
-func (ll *LinearLocator) Len() int {
-	return ll.length
+func (l *LinearLocator) Bytes() ([]byte, error) {
+	return l.Range(0, l.length)
+}
+
+var _ Locator = &LinearLocator{}
+
+func (l *LinearLocator) Len() int {
+	return l.length
 }
 
 type BuiltinBytesLocator []byte
 
-func (l BuiltinBytesLocator) Range(i, j int) []byte {
-	return l[i:j]
+func (l BuiltinBytesLocator) Range(i, j int) ([]byte, error) {
+	return l[i:j], nil
 }
-func (l BuiltinBytesLocator) At(i int) byte {
-	return l[i]
+func (l BuiltinBytesLocator) At(i int) (byte, error) {
+	return l[i], nil
 }
-func (l BuiltinBytesLocator) Slice(i, j int) Locator {
-	return l[i:j]
+func (l BuiltinBytesLocator) Slice(i, j int) (Locator, error) {
+	return l[i:j], nil
 }
 func (l BuiltinBytesLocator) Len() int {
 	return len(l)
 }
+func (l BuiltinBytesLocator) Bytes() ([]byte, error) {
+	return l, nil
+}
+
+var _ Locator = BuiltinBytesLocator{}

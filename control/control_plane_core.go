@@ -140,15 +140,16 @@ func (c *controlPlaneCore) mapLinkType(ifname string) error {
 	if err != nil {
 		return err
 	}
-	linkType := uint32(0xffff)
+	var linkHdrLen uint32
 	switch link.Attrs().EncapType {
 	case "none":
-		linkType = consts.LinkType_None
+		linkHdrLen = consts.LinkHdrLen_None
 	case "ether":
-		linkType = consts.LinkType_Ethernet
+		linkHdrLen = consts.LinkHdrLen_Ethernet
 	default:
+		return nil
 	}
-	return c.bpf.bpfMaps.LinktypeMap.Update(uint32(link.Attrs().Index), linkType, ebpf.UpdateAny)
+	return c.bpf.bpfMaps.LinklenMap.Update(uint32(link.Attrs().Index), linkHdrLen, ebpf.UpdateAny)
 }
 
 func (c *controlPlaneCore) addQdisc(ifname string) error {
@@ -425,6 +426,8 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err = CheckSendRedirects(ifname); err != nil {
 		return err
 	}
+	_ = c.addQdisc(ifname)
+	_ = c.mapLinkType(ifname)
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
@@ -564,6 +567,9 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if link.Attrs().Index == consts.LoopbackIfIndex {
 		return fmt.Errorf("cannot bind to loopback interface")
 	}
+	_ = c.addQdisc(ifname)
+	_ = c.mapLinkType(ifname)
+
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {

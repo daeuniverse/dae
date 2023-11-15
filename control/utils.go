@@ -37,6 +37,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		l4proto,
 		domain,
 		routingResult.Pname,
+		routingResult.Dscp,
 		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
 	); err != nil {
 		return 0, 0, false, err
@@ -49,7 +50,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
 
-	tuples := &bpfTuples{
+	tuples := &bpfTuplesKey{
 		Sip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: srcIp6},
 		Sport:   common.Htons(src.Port()),
 		Dip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: dstIp6},

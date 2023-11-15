@@ -47,7 +47,7 @@ const (
 )
 
 var (
-	UnsupportedQuestionTypeError = fmt.Errorf("unsupported question type")
+	ErrUnsupportedQuestionType = fmt.Errorf("unsupported question type")
 )
 
 var (
@@ -556,7 +556,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	bestContextDialer := netproxy.ContextDialer{
+	bestContextDialer := netproxy.ContextDialerConverter{
 		Dialer: dialArgument.bestDialer,
 	}
 
@@ -729,6 +729,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			"_qname":   qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,
+			"dscp":     req.routingResult.Dscp,
 			"pname":    ProcessName2String(req.routingResult.Pname[:]),
 			"mac":      Mac2String(req.routingResult.Mac[:]),
 		}
