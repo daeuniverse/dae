@@ -1,6 +1,10 @@
 package cmd
 
 import (
+	"fmt"
+	"runtime"
+	"strings"
+
 	"github.com/daeuniverse/dae/config"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +28,12 @@ var (
 
 func init() {
 	config.Version = Version
+	rootCmd.Version = strings.Join([]string{
+		Version,
+		fmt.Sprintf("go runtime %v %v/%v", runtime.Version(), runtime.GOOS, runtime.GOARCH),
+		"Copyright (c) 2023 dae",
+		"License GNU AGPLv3 <https://github.com/daeuniverse/dae/blob/main/LICENSE>",
+	}, "\n")
 }
 
 // Execute executes the root command.
