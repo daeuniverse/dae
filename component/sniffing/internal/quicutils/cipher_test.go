@@ -89,7 +89,7 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	}
 	header = data[:len(header)-4+len(packetNumber)]
 	payload := data[len(header):]
-	plaintext, err := keys.PayloadDecryptFromPool(payload, packetNumber, header)
+	plaintext, err := keys.PayloadDecrypt(payload, packetNumber, header)
 	if err != nil {
 		t.Fatal("PayloadDecryptFromPool:", err)
 	}

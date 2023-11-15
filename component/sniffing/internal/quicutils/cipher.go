@@ -10,10 +10,11 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
+	"io"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/softwind/pool"
 	"golang.org/x/crypto/hkdf"
-	"io"
 )
 
 const (
@@ -113,7 +114,7 @@ func (k *Keys) HeaderProtection_(sample []byte, longHeader bool, firstByte *byte
 	return packetNumber, nil
 }
 
-func (k *Keys) PayloadDecryptFromPool(ciphertext []byte, packetNumber []byte, header []byte) (plaintext []byte, err error) {
+func (k *Keys) PayloadDecrypt(ciphertext []byte, packetNumber []byte, header []byte) (plaintext []byte, err error) {
 	// https://datatracker.ietf.org/doc/html/rfc9001#name-initial-secrets
 
 	aead, err := k.newAead(k.key)
@@ -125,15 +126,15 @@ func (k *Keys) PayloadDecryptFromPool(ciphertext []byte, packetNumber []byte, he
 	for i := range packetNumber {
 		k.iv[len(k.iv)-len(packetNumber)+i] ^= packetNumber[i]
 	}
-	plaintext = pool.Get(len(ciphertext) - aead.Overhead())
+	plaintext = make([]byte, len(ciphertext)-aead.Overhead())
 	plaintext, err = aead.Open(plaintext[:0], k.iv, ciphertext, header)
 	if err != nil {
-		pool.Put(plaintext)
+		// Do nothing.
 	}
 	return plaintext, nil
 }
 
-func DecryptQuicFromPool_(header []byte, blockEnd int, destConnId []byte) (plaintext []byte, err error) {
+func DecryptQuic_(header []byte, blockEnd int, destConnId []byte) (plaintext []byte, err error) {
 	_version := binary.BigEndian.Uint32(header[1:])
 	version, err := ParseVersion(_version)
 	if err != nil {
@@ -158,7 +159,7 @@ func DecryptQuicFromPool_(header []byte, blockEnd int, destConnId []byte) (plain
 	header = header[:len(header)-MaxPacketNumberLength+len(packetNumber)] // Correct header
 	payload := header[len(header):blockEnd]                               // Correct payload
 
-	plaintext, err = keys.PayloadDecryptFromPool(payload, packetNumber, header)
+	plaintext, err = keys.PayloadDecrypt(payload, packetNumber, header)
 	if err != nil {
 		return nil, err
 	}

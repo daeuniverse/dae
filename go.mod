@@ -1,6 +1,6 @@
 module github.com/daeuniverse/dae
 
-go 1.20
+go 1.21
 
 require (
 	github.com/adrg/xdg v0.4.0
@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.5.0
 	github.com/cilium/ebpf v0.11.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/softwind v0.0.0-20230821142121-f4d871b5a8c9
+	github.com/daeuniverse/softwind v0.0.0-20230902065137-dcc321666f9a
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
@@ -34,9 +34,9 @@ require (
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/pprof v0.0.0-20230705174524-200ffdc848b8 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
-	github.com/mzz2017/quic-go v0.0.0-20230821141654-3dd2575ee6bc // indirect
+	github.com/mzz2017/quic-go v0.0.0-20230902042923-a727c1c479d4 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
-	github.com/quic-go/qtls-go1-20 v0.3.2 // indirect
+	github.com/quic-go/qtls-go1-20 v0.3.3 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/net v0.12.0 // indirect
 	golang.org/x/tools v0.11.0 // indirect
@@ -72,7 +72,7 @@ require (
 
 // replace github.com/daeuniverse/softwind => ../softwind
 
-// replace github.com/metacubex/quic-go => ../quic-go
+// replace github.com/mzz2017/quic-go => ../quic-go
 
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
