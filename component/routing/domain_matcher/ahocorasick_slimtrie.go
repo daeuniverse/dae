@@ -7,15 +7,16 @@ package domain_matcher
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/trie"
 	"github.com/sirupsen/logrus"
 	"github.com/v2rayA/ahocorasick-domain"
-	"regexp"
-	"strings"
 )
 
-var ValidDomainChars = trie.NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^"))
+var ValidDomainChars = trie.NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^_"))
 
 type AhocorasickSlimtrie struct {
 	log *logrus.Logger
