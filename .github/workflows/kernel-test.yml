@@ -1,0 +1,164 @@
+name: Kernel Test
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/kernel-test.yml"
+
+jobs:
+
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+    - name: Set up Go
+      uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe
+      with:
+        go-version: 1.21.0
+
+    - name: Generate and build
+      run: |
+        git submodule update --init
+        make GOFLAGS="-buildvcs=false" CC=clang
+
+    - name: Store executable
+      uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32
+      with:
+        name: dae
+        path: dae
+
+  test:
+    runs-on: ubuntu-22.04
+    name: Test
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: [ '5.10-v0.3', '5.15-v0.3', '6.3-main', 'bpf-next-20231030.012704' ]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Retrieve stored executable
+        uses: actions/download-artifact@v3
+        with:
+          name: dae
+          path: dae
+
+      - name: Provision LVH VMs
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          test-name: dae-test
+          image-version: ${{ matrix.kernel }}
+          host-mount: ./
+          dns-resolver: '1.1.1.1'
+          install-dependencies: 'true'
+          cmd: |
+            chmod +x /host/dae/dae
+
+      - name: Setup
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker network create dae
+            docker run -td --name socks5 --privileged --network dae ubuntu:22.04 bash
+            docker run -td --name dae --privileged --network dae -v /host:/host ubuntu:22.04 bash
+
+      - name: Setup socks5 server
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec socks5 apt update
+            docker exec socks5 apt install -y dante-server
+
+            cat > ./danted.conf <<!
+            logoutput: /var/log/danted.log
+            internal: 0.0.0.0 port = 1080
+            external: eth0
+            method: username none
+            user.privileged: root
+            user.notprivileged: nobody
+            client pass {
+                from: 0.0.0.0/0 to: 0.0.0.0/0
+                log: connect disconnect error
+            }
+            socks pass {
+                from: 0.0.0.0/0 to: 0.0.0.0/0
+                log: connect disconnect error
+            }
+            !
+
+            docker cp ./danted.conf socks5:/etc/danted.conf
+            docker exec socks5 danted -D
+            docker exec socks5 cat /var/log/danted.log
+
+      - name: Setup dae server
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae apt update
+            docker exec dae apt install -y curl
+
+            cat > ./conf.dae <<!
+            global {
+                tproxy_port: 12345
+                log_level: trace
+
+                lan_interface: auto
+                wan_interface: auto
+                allow_insecure: false
+            }
+
+            node {
+                local: 'socks5://socks5:1080'
+            }
+
+            group {
+                proxy {
+                    policy: min_moving_avg
+                }
+            }
+
+            routing {
+                dip(1.1.1.1) -> proxy
+                fallback: direct
+            }
+            !
+
+            chmod 600 ./conf.dae
+            docker cp ./conf.dae dae:/etc/conf.dae
+            docker exec dae mount -t debugfs none /sys/kernel/debug/
+            docker exec dae mount bpffs -t bpf /sys/fs/bpf
+            docker exec dae /host/dae/dae run -c /etc/conf.dae &> dae.log &
+            sleep 20s
+
+            docker exec dae curl 1.1.1.1
+            docker exec dae curl 1.0.0.1
+
+            cat dae.log
+
+      - name: Check
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec socks5 cat /var/log/danted.log
+            docker exec socks5 cat /var/log/danted.log 2>&1 | grep -q 1.1.1.1
+            docker exec socks5 cat /var/log/danted.log 2>&1 | grep 1.0.0.1 && false || true
