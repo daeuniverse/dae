@@ -27,6 +27,18 @@ ufw
 firewalld
 ```
 
+UFW users may need some extra steps to make sure `Binding to LAN` working.
+
+Such as adding as follows to `/etc/ufw/before*.rules`:
+
+```bash
+# before.rules
+-A ufw-before-input -m mark --mark 0x8000000 -j ACCEPT
+
+# before6.rules
+-A ufw6-before-input -m mark --mark 0x8000000 -j ACCEPT
+```
+
 ### Troubleshoot PPPoE
 
 dae does not support PPPoE due to it is too complexity for a ebpf program. Binding to LAN for other machines should work fine. If you want to proxy the machine itself, see <<https://github.com/daeuniverse/dae/discussions/304>.
