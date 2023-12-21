@@ -85,15 +85,7 @@ enum {
 static const __u32 zero_key = 0;
 static const __u32 tproxy_port_key = 1;
 static const __u32 one_key = 1;
-static const __u32 disable_l4_tx_checksum_key
-    __attribute__((unused, deprecated)) = 2;
-static const __u32 disable_l4_rx_checksum_key
-    __attribute__((unused, deprecated)) = 3;
 static const __u32 control_plane_pid_key = 4;
-static const __u32 control_plane_nat_direct_key
-    __attribute__((unused, deprecated)) = 5;
-static const __u32 control_plane_dns_routing_key
-    __attribute__((unused, deprecated)) = 6;
 
 // Outbound Connectivity Map:
 
