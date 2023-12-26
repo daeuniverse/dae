@@ -94,7 +94,8 @@ func TestTrie(t *testing.T) {
 		"zib.fmc^",
 		"zk.ytamlacbci.",
 		"zk.ytamlacbci^",
-	}, NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^")))
+		"nc.ude.ctsu.srorrim.pct_.sptth_", // https://github.com/daeuniverse/daed/issues/400
+	}, NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^_")))
 	if err != nil {
 		t.Fatal(err)
 	}
