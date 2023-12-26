@@ -1613,59 +1613,13 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     return TC_ACT_OK;
   }
   bool tproxy_response = tproxy_port == tuples.five.sport;
-  // Double check to avoid conflicts when binding wan and lan to the same
-  // interface.
-  if (tproxy_response && l4proto == IPPROTO_TCP) {
-    // If it is a TCP first handshake, it is not a tproxy response.
-    if (tcph.syn && !tcph.ack) {
-      tproxy_response = false;
-      // Abnormal.
-      return TC_ACT_SHOT;
-    } else {
-      // If there is an existing socket on localhost, it is not a tproxy
-      // response.
-      struct bpf_sock_tuple tuple = {0};
-      __u32 tuple_size;
-      if (skb->protocol == bpf_htons(ETH_P_IP)) {
-        tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
-        tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
-        tuple.ipv4.dport = tuples.five.dport;
-        tuple.ipv4.sport = tuples.five.sport;
-        tuple_size = sizeof(tuple.ipv4);
-      } else {
-        __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
-        __builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
-        tuple.ipv6.dport = tuples.five.dport;
-        tuple.ipv6.sport = tuples.five.sport;
-        tuple_size = sizeof(tuple.ipv6);
-      }
-      struct bpf_sock *sk =
-          bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-      if (sk) {
-        // Not a tproxy WAN response. It is a tproxy LAN response.
-        bpf_sk_release(sk);
-        return TC_ACT_PIPE;
-      }
-    }
+  if (tproxy_response) {
+    // WAN response won't reach here, must be a LAN response.
+    return TC_ACT_PIPE;
   }
 
-  if (tproxy_response) {
-    // Packets from tproxy port.
-    // We need to redirect it to original port.
-
-    // bpf_printk("tproxy_response: %pI6:%u", tuples.five.dip.u6_addr32,
-    // bpf_ntohs(tuples.five.dport));
-
-    // Write mac.
-    if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-                                   ethh.h_source, sizeof(ethh.h_source), 0))) {
-      return TC_ACT_SHOT;
-    }
-    if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-                                   special_mac_from_tproxy,
-                                   sizeof(ethh.h_source), 0))) {
-      return TC_ACT_SHOT;
-    };
+  if (false) {
+    // Shouldn't happen because tproxy response won't be sent to WAN unless WAN == LAN
   } else {
     // Normal packets.
 
@@ -1981,7 +1935,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   accept:
     return TC_ACT_PIPE;
   }
-  bool tproxy_response = tproxy_typ == 1;
 
   // // Print packet in hex for debugging (checksum or something else).
   // if (dport == bpf_htons(8443)) {
@@ -1992,97 +1945,8 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   //     bpf_printk("%02x", t);
   //   }
   // }
-  if (tproxy_response) {
-    // Send the tproxy response packet to origin.
-
-    // If a client sent a packet at the begining, let's say the client is
-    // sender and its ip is right host ip.
-    // saddr is host ip and right sender ip.
-    // Now when tproxy responses, dport is sender's sport. See (1) below. daddr
-    // is original dest ip (target address).
-
-    // bpf_printk("[%u]should send to origin: %pI6:%u",
-    // l4proto, saddr,
-    //            bpf_ntohs(dport));
-
-    if (l4proto == IPPROTO_TCP) {
-      // Lookup original dest as sip and sport.
-      struct ip_port key_dst;
-      __builtin_memset(&key_dst, 0, sizeof(key_dst));
-      // Use daddr as key in WAN because tproxy (control plane) also lookups the
-      // map element using income client ip (that is daddr).
-      __builtin_memcpy(&key_dst.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-      key_dst.port = tcph.dest;
-      struct dst_routing_result *original_dst =
-          bpf_map_lookup_elem(&tcp_dst_map, &key_dst);
-      if (!original_dst) {
-        bpf_printk("[%X]Bad Connection: to: %pI6:%u", bpf_ntohl(tcph.seq),
-                   key_dst.ip.u6_addr32, bpf_ntohs(key_dst.port));
-        return TC_ACT_SHOT;
-      }
-
-      // Rewrite sip and sport.
-      if ((ret = rewrite_ip(skb, link_h_len, IPPROTO_TCP, ihl,
-                            tuples.five.sip.u6_addr32, original_dst->ip, false,
-                            true))) {
-        bpf_printk("Shot IP: %d", ret);
-        return TC_ACT_SHOT;
-      }
-      if ((ret = rewrite_port(skb, link_h_len, IPPROTO_TCP, ihl,
-                              tuples.five.sport, original_dst->port, false,
-                              true))) {
-        bpf_printk("Shot Port: %d", ret);
-        return TC_ACT_SHOT;
-      }
-    } else if (l4proto == IPPROTO_UDP) {
-
-      /// NOTICE: Actually, we do not need symmetrical headers in client and
-      /// server. We use it for convinience. This behavior may change in the
-      /// future. Outbound here is useless and redundant.
-      struct dst_routing_result ori_src;
-
-      // Get source ip/port from our packet header.
-
-      // Decap header to get fullcone tuple.
-      if ((ret = decap_after_udp_hdr(
-               skb, link_h_len, ihl,
-               skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &ori_src,
-               sizeof(ori_src), NULL, true))) {
-        return TC_ACT_SHOT;
-      }
-
-      // Rewrite udp src ip
-      if ((ret = rewrite_ip(skb, link_h_len, IPPROTO_UDP, ihl,
-                            tuples.five.sip.u6_addr32, ori_src.ip, false,
-                            true))) {
-        bpf_printk("Shot IP: %d", ret);
-        return TC_ACT_SHOT;
-      }
-
-      // Rewrite udp src port
-      if ((ret = rewrite_port(skb, link_h_len, IPPROTO_UDP, ihl,
-                              tuples.five.sport, ori_src.port, false, true))) {
-        bpf_printk("Shot Port: %d", ret);
-        return TC_ACT_SHOT;
-      }
-
-      // bpf_printk("real from: %pI6:%u", ori_src.ip, bpf_ntohs(ori_src.port));
-
-      // Print packet in hex for debugging (checksum or something else).
-      // bpf_printk("UDP EGRESS OK");
-      // for (__u32 i = 0; i < skb->len && i < 1500; i++) {
-      //   __u8 t = 0;
-      //   bpf_skb_load_bytes(skb, i, &t, 1);
-      //   bpf_printk("%02x", t);
-      // }
-    }
-    // Rewrite dip to host ip.
-    if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
-                          tuples.five.dip.u6_addr32, tuples.five.sip.u6_addr32,
-                          true, true))) {
-      bpf_printk("Shot IP: %d", ret);
-      return TC_ACT_SHOT;
-    }
+  if (false) {
+    // Shouldn't happen because tproxy response won't be sent to WAN unless WAN == LAN
   } else {
     // Should send the packet to tproxy.
 
