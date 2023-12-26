@@ -14,9 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
-- [v0.4.0rc2 (Pre-release)](#v040rc2-pre-release)
-- [v0.4.0rc1 (Pre-release)](#v040rc1-pre-release)
-- [v0.3.0 (Latest)](#v030-latest)
+- [v0.4.0 (Latest)](#v040-latest)
+- [v0.3.0](#v030)
 - [v0.2.4](#v024)
 - [v0.2.3](#v023)
 - [v0.2.2](#v022)
@@ -37,11 +36,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.4.0rc2 (Pre-release)
+### v0.4.0 (Latest)
 
 > Release date: 2023/12/26
 
-### Features
+#### Features
 
 - feat(cmd): extend --version print info in [#356](https://github.com/daeuniverse/dae/pull/356) by (@yqlbu)
 - feat: support --abort for reload and suspend in [#346](https://github.com/daeuniverse/dae/pull/346) by (@mzz2017)
@@ -50,11 +49,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - optimize(udp)/fix(quicSniffer): optimize performance of udp and fix a potential panic of quic in [#301](https://github.com/daeuniverse/dae/pull/301) by (@mzz2017)
 - feat: support ToS routing rule in [#292](https://github.com/daeuniverse/dae/pull/292) by (@mzz2017)
 
-### Bug Fixes
+#### Bug Fixes
 
 - fix: add \_ to valid domain chars set in [#365](https://github.com/daeuniverse/dae/pull/365) by (@mzz2017)
 
-### Others
+#### Others
 
 - ci: Test against various kernels on PR in [#373](https://github.com/daeuniverse/dae/pull/373) by (@jschwinger233)
 - docs: add guide for ufw 'binding to LAN' in [#372](https://github.com/daeuniverse/dae/pull/372) by (@st0nie)
@@ -76,7 +75,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - refactor/fix: match dscp instead of tos in [#294](https://github.com/daeuniverse/dae/pull/294) by (@mzz2017)
 - chore: honk with sound in [#289](https://github.com/daeuniverse/dae/pull/289) by (@troubadour-hell)
 
-### 特性
+#### 特性
 
 - 特性(cmd): 在 [#356](https://github.com/daeuniverse/dae/pull/356) 中扩展 --version 打印信息 by (@yqlbu)
 - 特性: 为重载和挂起支持 --abort in [#346](https://github.com/daeuniverse/dae/pull/346) by (@mzz2017)
@@ -85,11 +84,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 优化(udp)/修复(quicSniffer): 优化 udp 性能并修复 quic 潜在的 panic in [#301](https://github.com/daeuniverse/dae/pull/301) by (@mzz2017)
 - 特性: 在 [#292](https://github.com/daeuniverse/dae/pull/292) 中支持 ToS 路由规则 by (@mzz2017)
 
-### 问题修复
+#### 问题修复
 
 - 修复: 在 [#365](https://github.com/daeuniverse/dae/pull/365) 中将 \_ 添加到有效域字符集合 by (@mzz2017)
 
-### 其他
+#### 其他
 
 - ci: 在 [#373](https://github.com/daeuniverse/dae/pull/373) 中对 PR 测试不同内核 by (@jschwinger233)
 - docs: 在 [#372](https://github.com/daeuniverse/dae/pull/372) 中添加 ufw 'binding to LAN' 指南 by (@st0nie)
