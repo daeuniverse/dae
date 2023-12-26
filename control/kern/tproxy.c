@@ -1230,6 +1230,45 @@ static __always_inline __u32 get_link_h_len(__u32 ifindex,
   return 0;
 }
 
+static __always_inline int
+assign_socket_tcp(struct __sk_buff *skb, struct bpf_sock_tuple *tuple,
+		  __u32 len, bool established) {
+	int ret = -1;
+	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, tuple, len, BPF_F_CURRENT_NETNS, 0);
+	if (!sk)
+		return -1;
+
+	if (established &&
+	    (sk->state == BPF_TCP_LISTEN || sk->state == BPF_TCP_TIME_WAIT)) {
+		goto release;
+	}
+
+	ret = bpf_sk_assign(skb, sk, 0);
+release:
+	bpf_sk_release(sk);
+	return ret;
+}
+
+static __always_inline int
+assign_socket_udp(struct __sk_buff *skb,
+		  struct bpf_sock_tuple *tuple, __u32 len) {
+	struct bpf_sock *sk = bpf_sk_lookup_udp(skb, tuple, len, BPF_F_CURRENT_NETNS, 0);
+	if (!sk)
+		return -1;
+
+	int ret = bpf_sk_assign(skb, sk, 0);
+	bpf_sk_release(sk);
+	return ret;
+}
+
+static __always_inline int
+assign_socket(struct __sk_buff *skb, struct bpf_sock_tuple *tuple,
+	      __u32 len, __u8 nexthdr, bool established) {
+	if (nexthdr == IPPROTO_TCP)
+		return assign_socket_tcp(skb, tuple, len, established);
+	return assign_socket_udp(skb, tuple, len);
+}
+
 // SNAT for UDP packet.
 SEC("tc/egress")
 int tproxy_lan_egress(struct __sk_buff *skb) {
@@ -1932,62 +1971,39 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     return TC_ACT_PIPE;
   }
 
-  // // Print packet in hex for debugging (checksum or something else).
-  // if (dport == bpf_htons(8443)) {
-  //   bpf_printk("PRINT BEFORE PACKET");
-  //   for (__u32 i = 0; i < skb->len && i < 500; i++) {
-  //     __u8 t = 0;
-  //     bpf_skb_load_bytes(skb, i, &t, 1);
-  //     bpf_printk("%02x", t);
-  //   }
-  // }
-
   // Should send the packet to tproxy.
 
-  // Get tproxy ip and port.
-  // saddr should be tproxy ip.
-  __be32 *tproxy_ip = tuples.five.sip.u6_addr32;
-  // __builtin_memcpy(tproxy_ip, saddr, sizeof(tproxy_ip));
+  // TODO@gray: ipv6
+  skb->mark = TPROXY_MARK;
+  struct bpf_sock_tuple tuple = {};
+  __u32 tuple_size = sizeof(tuple.ipv4);
+
+  /* First look for established socket */
+  tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
+  tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
+  tuple.ipv4.sport = tuples.five.sport;
+  tuple.ipv4.dport = tuples.five.dport;
+  ret = assign_socket(skb, &tuple, tuple_size, l4proto, true);
+  if (ret == 0) {
+    return TC_ACT_OK;
+  }
+
+  /* Then look for tproxy listening socket */
+  __be32 tproxy_ip = tuples.five.sip.u6_addr32[3];
   __be16 tproxy_port = PARAM.tproxy_port;
   if (!tproxy_port) {
     return TC_ACT_OK;
   }
-  // bpf_printk("should send to: %pI6:%u", tproxy_ip,
-  // bpf_ntohs(*tproxy_port));
-
-  if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
-                        tuples.five.dip.u6_addr32, tproxy_ip, true, true))) {
-    bpf_printk("Shot IP: %d", ret);
-    return TC_ACT_SHOT;
+  tuple.ipv4.saddr = 0;
+  tuple.ipv4.daddr = tproxy_ip;
+  tuple.ipv4.sport = 0;
+  tuple.ipv4.dport = tproxy_port;
+  ret = assign_socket(skb, &tuple, tuple_size, l4proto, false);
+  if (ret == 0) {
+    return TC_ACT_OK;
   }
 
-  // Rewrite dst port.
-  if ((ret = rewrite_port(skb, link_h_len, l4proto, ihl, tuples.five.dport,
-                          tproxy_port, true, true))) {
-    bpf_printk("Shot Port: %d", ret);
-    return TC_ACT_SHOT;
-  }
-
-  // (1) Use daddr as saddr to pass NIC verification. Notice that we do not
-  // modify the <sport> so tproxy will send packet to it.
-  if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
-                        tuples.five.sip.u6_addr32, tuples.five.dip.u6_addr32,
-                        false, true))) {
-    bpf_printk("Shot IP: %d", ret);
-    return TC_ACT_SHOT;
-  }
-
-  // // Print packet in hex for debugging (checksum or something else).
-  // if (dport == bpf_htons(8443)) {
-  //   bpf_printk("PRINT AFTER PACKET");
-  //   for (__u32 i = 0; i < skb->len && i < 500; i++) {
-  //     __u8 t = 0;
-  //     bpf_skb_load_bytes(skb, i, &t, 1);
-  //     bpf_printk("%02x", t);
-  //   }
-  // }
-
-  return TC_ACT_OK;
+  return TC_ACT_SHOT;
 }
 
 static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
