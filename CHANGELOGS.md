@@ -13,8 +13,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-- [v0.4.0rc1 (Pre-release)](#v040rc1-pre-release)
-- [v0.3.0 (Latest)](#v030-latest)
+
+- [v0.4.0 (Latest)](#v040-latest)
+- [v0.3.0](#v030)
 - [v0.2.4](#v024)
 - [v0.2.3](#v023)
 - [v0.2.2](#v022)
@@ -34,6 +35,88 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.4.0 (Latest)
+
+> Release date: 2023/12/26
+
+#### Features
+
+- feat(cmd): extend --version print info in [#356](https://github.com/daeuniverse/dae/pull/356) by (@yqlbu)
+- feat: support --abort for reload and suspend in [#346](https://github.com/daeuniverse/dae/pull/346) by (@mzz2017)
+- feat/optimize: print SubscriptionTag in AliveDialerSet::printLatencies() in [#319](https://github.com/daeuniverse/dae/pull/319) by (@luochen1990)
+- optimize: latencyString shows realLatency(+offset) in [#307](https://github.com/daeuniverse/dae/pull/307) by (@luochen1990)
+- optimize(udp)/fix(quicSniffer): optimize performance of udp and fix a potential panic of quic in [#301](https://github.com/daeuniverse/dae/pull/301) by (@mzz2017)
+- feat: support ToS routing rule in [#292](https://github.com/daeuniverse/dae/pull/292) by (@mzz2017)
+
+#### Bug Fixes
+
+- fix: add \_ to valid domain chars set in [#365](https://github.com/daeuniverse/dae/pull/365) by (@mzz2017)
+
+#### Others
+
+- ci: Test against various kernels on PR in [#373](https://github.com/daeuniverse/dae/pull/373) by (@jschwinger233)
+- docs: add guide for ufw 'binding to LAN' in [#372](https://github.com/daeuniverse/dae/pull/372) by (@st0nie)
+- chore: upgrade softwind in [#359](https://github.com/daeuniverse/dae/pull/359) by (@mzz2017)
+- chore: add zsh completion in [#353](https://github.com/daeuniverse/dae/pull/353) by (@st0nie)
+- chore: add bash completion in [#352](https://github.com/daeuniverse/dae/pull/352) by (@shenghuang147)
+- docs: improve docs about reload in [#347](https://github.com/daeuniverse/dae/pull/347) by (@bradfordzhang)
+- docs: tweak archlinux installation guide in [#333](https://github.com/daeuniverse/dae/pull/333) by (@Integral-Tech)
+- docs: refine DNS example in [#329](https://github.com/daeuniverse/dae/pull/329) by (@EkkoG)
+- chore(Dockerfile): upgrade golang and clang (https://github.com/daeuniverse/daed/issues/250) in [#320](https://github.com/daeuniverse/dae/pull/320) by (@hero-intelligent)
+- docs(readme): refine project description in [#317](https://github.com/daeuniverse/dae/pull/317) by (@yqlbu)
+- ci(generate-changelogs): update default assignees list in [#314](https://github.com/daeuniverse/dae/pull/314) by (@yqlbu)
+- ci(release): draft release v0.4.0rc1 in [#313](https://github.com/daeuniverse/dae/pull/313) by (@daebot)
+- chore(release): add changelogs entry for v0.3.0 in [#311](https://github.com/daeuniverse/dae/pull/311) by (@mzz2017,@yqlbu)
+- docs: improve docs about pppoe and mark in [#305](https://github.com/daeuniverse/dae/pull/305) by (@mzz2017)
+- chore: close file descriptor & remove duplicated error handle in [#303](https://github.com/daeuniverse/dae/pull/303) by (@douglarek)
+- docs(en): update how-it-works in [#300](https://github.com/daeuniverse/dae/pull/300) by (@yqlbu)
+- chore: bump quic-go to v0.38.0 in [#297](https://github.com/daeuniverse/dae/pull/297) by (@mzz2017)
+- refactor/fix: match dscp instead of tos in [#294](https://github.com/daeuniverse/dae/pull/294) by (@mzz2017)
+- chore: honk with sound in [#289](https://github.com/daeuniverse/dae/pull/289) by (@troubadour-hell)
+
+#### 特性
+
+- 特性(cmd): 在 [#356](https://github.com/daeuniverse/dae/pull/356) 中扩展 --version 打印信息 by (@yqlbu)
+- 特性: 为重载和挂起支持 --abort in [#346](https://github.com/daeuniverse/dae/pull/346) by (@mzz2017)
+- 特性/优化: 在 [#319](https://github.com/daeuniverse/dae/pull/319) 中打印 SubscriptionTag 到 AliveDialerSet::printLatencies() by (@luochen1990)
+- 优化: latencyString 在 [#307](https://github.com/daeuniverse/dae/pull/307) 中显示 realLatency(+offset) by (@luochen1990)
+- 优化(udp)/修复(quicSniffer): 优化 udp 性能并修复 quic 潜在的 panic in [#301](https://github.com/daeuniverse/dae/pull/301) by (@mzz2017)
+- 特性: 在 [#292](https://github.com/daeuniverse/dae/pull/292) 中支持 ToS 路由规则 by (@mzz2017)
+
+#### 问题修复
+
+- 修复: 在 [#365](https://github.com/daeuniverse/dae/pull/365) 中将 \_ 添加到有效域字符集合 by (@mzz2017)
+
+#### 其他
+
+- ci: 在 [#373](https://github.com/daeuniverse/dae/pull/373) 中对 PR 测试不同内核 by (@jschwinger233)
+- docs: 在 [#372](https://github.com/daeuniverse/dae/pull/372) 中添加 ufw 'binding to LAN' 指南 by (@st0nie)
+- 杂项: 在 [#359](https://github.com/daeuniverse/dae/pull/359) 中升级 softwind by (@mzz2017)
+- 杂项: 在 [#353](https://github.com/daeuniverse/dae/pull/353) 中添加 zsh 完成 by (@st0nie)
+- 杂项: 在 [#352](https://github.com/daeuniverse/dae/pull/352) 中添加 bash 完成 by (@shenghuang147)
+- docs: 在 [#347](https://github.com/daeuniverse/dae/pull/347) 中改进关于重载的文档 by (@bradfordzhang)
+- docs: 在 [#333](https://github.com/daeuniverse/dae/pull/333) 中微调 Arch Linux 安装指南 by (@Integral-Tech)
+- docs: 在 [#329](https://github.com/daeuniverse/dae/pull/329) 中完善 DNS 示例 by (@EkkoG)
+- 杂项(Dockerfile): 在 [#320](https://github.com/daeuniverse/dae/pull/320) 中升级 golang 和 clang (https://github.com/daeuniverse/daed/issues/250) by (@hero-intelligent)
+- docs(readme): 在 [#317](https://github.com/daeuniverse/dae/pull/317) 中改进项目描述 by (@yqlbu)
+- ci(generate-changelogs): 在 [#314](https://github.com/daeuniverse/dae/pull/314) 中更新默认分配人列表 by (@yqlbu)
+- ci(release): 在 [#313](https://github.com/daeuniverse/dae/pull/313) 中起草发布 v0.4.0rc1 by (@daebot)
+- 杂项(release): 在 [#311](https://github.com/daeuniverse/dae/pull/311) 中为 v0.3.0 添加变更日志条目 by (@mzz2017,@yqlbu)
+- docs: 在 [#305](https://github.com/daeuniverse/dae/pull/305) 中改进关于 pppoe 和 mark 的文档 by (@mzz2017)
+- 杂项: 在 [#303](https://github.com/daeuniverse/dae/pull/303) 中关闭文件描述符并删除重复的错误处理 by (@douglarek)
+- docs(en): 在 [#300](https://github.com/daeuniverse/dae/pull/300) 中更新 how-it-works by (@yqlbu)
+- 杂项: 在 [#297](https://github.com/daeuniverse/dae/pull/297) 中升级 quic-go 到 v0.38.0 by (@mzz2017)
+- 重构/修复: 在 [#294](https://github.com/daeuniverse/dae/pull/294) 中匹配 DSCP 而不是 TOS by (@mzz2017)
+- 杂项: 在 [#289](https://github.com/daeuniverse/dae/pull/289) 中用声音 honk by (@troubadour-hell)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.4.0/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.3.0...v0.4.0
+
+#### New Contributors
+
+- @jschwinger233 made their first contribution in https://github.com/daeuniverse/dae/pull/373
 
 ## v0.4.0rc1 (Pre-release)
 
