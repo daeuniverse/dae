@@ -1618,149 +1618,31 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     return TC_ACT_PIPE;
   }
 
-  if (false) {
-    // Shouldn't happen because tproxy response won't be sent to WAN unless WAN == LAN
-  } else {
-    // Normal packets.
+  // Normal packets.
 
-    if (l4proto == IPPROTO_TCP) {
-      // Backup for further use.
-      tcp_state_syn = tcph.syn && !tcph.ack;
-      struct ip_port key_src;
-      __builtin_memset(&key_src, 0, sizeof(key_src));
-      // Use daddr as key in WAN because tproxy (control plane) also lookups the
-      // map element using income client ip (that is daddr).
-      __builtin_memcpy(&key_src.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-      key_src.port = tcph.source;
-      __u8 outbound;
-      bool must;
-      __u32 mark;
-      struct pid_pname *pid_pname = NULL;
-      if (unlikely(tcp_state_syn)) {
-        // New TCP connection.
-        // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
-        __u32 flag[8] = {L4ProtoType_TCP}; // TCP
-        if (skb->protocol == bpf_htons(ETH_P_IP)) {
-          flag[1] = IpVersionType_4;
-        } else {
-          flag[1] = IpVersionType_6;
-        }
-        flag[6] = tuples.dscp;
-        if (pid_is_control_plane(skb, &pid_pname)) {
-          // From control plane. Direct.
-          return TC_ACT_OK;
-        }
-        if (pid_pname) {
-          // 2, 3, 4, 5
-          __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
-        }
-        __be32 mac[4] = {
-            0,
-            0,
-            bpf_htonl((ethh.h_source[0] << 8) + (ethh.h_source[1])),
-            bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
-                      (ethh.h_source[4] << 8) + (ethh.h_source[5])),
-        };
-        __s64 s64_ret;
-        if ((s64_ret = route(flag, &tcph, tuples.five.sip.u6_addr32,
-                             tuples.five.dip.u6_addr32, mac)) < 0) {
-          bpf_printk("shot routing: %d", s64_ret);
-          return TC_ACT_SHOT;
-        }
-
-        outbound = s64_ret & 0xff;
-        mark = s64_ret >> 8;
-        must = (s64_ret >> 40) & 1;
-
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-        // Print only new connection.
-        __u32 pid = pid_pname ? pid_pname->pid : 0;
-        bpf_printk("tcp(wan): from %pI6:%u [PID %u]", tuples.five.sip.u6_addr32,
-                   bpf_ntohs(tuples.five.sport), pid);
-        bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound,
-                   tuples.five.dip.u6_addr32, bpf_ntohs(tuples.five.dport));
-#endif
-      } else {
-        // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
-        // The TCP connection exists.
-        struct dst_routing_result *dst =
-            bpf_map_lookup_elem(&tcp_dst_map, &key_src);
-        if (!dst) {
-          // Do not impact previous connections and server connections.
-          return TC_ACT_OK;
-        }
-        outbound = dst->routing_result.outbound;
-        mark = dst->routing_result.mark;
-        must = dst->routing_result.must;
-      }
-
-      if (outbound == OUTBOUND_DIRECT &&
-          mark == 0 // If mark is not zero, we should re-route it, so we send it
-                    // to control plane in WAN.
-      ) {
-        return TC_ACT_OK;
-      } else if (unlikely(outbound == OUTBOUND_BLOCK)) {
-        return TC_ACT_SHOT;
-      }
-      // Rewrite to control plane.
-
-      // Check outbound connectivity in specific ipversion and l4proto.
-      struct outbound_connectivity_query q = {0};
-      q.outbound = outbound;
-      q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-      q.l4proto = l4proto;
-      __u32 *alive;
-      alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-      if (alive && *alive == 0 &&
-          !(l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53))) {
-        // Outbound is not alive. Dns is an exception.
-        return TC_ACT_SHOT;
-      }
-
-      if (unlikely(tcp_state_syn)) {
-        struct dst_routing_result routing_info;
-        __builtin_memset(&routing_info, 0, sizeof(routing_info));
-        __builtin_memcpy(routing_info.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-        routing_info.port = tcph.dest;
-        routing_info.routing_result.outbound = outbound;
-        routing_info.routing_result.mark = mark;
-        routing_info.routing_result.must = must;
-        routing_info.routing_result.dscp = tuples.dscp;
-        __builtin_memcpy(routing_info.routing_result.mac, ethh.h_source,
-                         sizeof(ethh.h_source));
-        if (pid_pname) {
-          __builtin_memcpy(routing_info.routing_result.pname, pid_pname->pname,
-                           TASK_COMM_LEN);
-          routing_info.routing_result.pid = pid_pname->pid;
-        }
-        // bpf_printk("UPDATE: %pI6:%u", key_src.ip.u6_addr32,
-        // bpf_ntohs(key_src.port));
-        bpf_map_update_elem(&tcp_dst_map, &key_src, &routing_info, BPF_ANY);
-      }
-
-      // Write mac.
-      if ((ret =
-               bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-                                   ethh.h_source, sizeof(ethh.h_source), 0))) {
-        return TC_ACT_SHOT;
-      }
-      if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-                                     special_mac_to_tproxy,
-                                     sizeof(ethh.h_source), 0))) {
-        return TC_ACT_SHOT;
-      };
-
-    } else if (l4proto == IPPROTO_UDP) {
-
-      // Routing. It decides if we redirect traffic to control plane.
-      __u32 flag[8] = {L4ProtoType_UDP};
+  if (l4proto == IPPROTO_TCP) {
+    // Backup for further use.
+    tcp_state_syn = tcph.syn && !tcph.ack;
+    struct ip_port key_src;
+    __builtin_memset(&key_src, 0, sizeof(key_src));
+    // Use daddr as key in WAN because tproxy (control plane) also lookups the
+    // map element using income client ip (that is daddr).
+    __builtin_memcpy(&key_src.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
+    key_src.port = tcph.source;
+    __u8 outbound;
+    bool must;
+    __u32 mark;
+    struct pid_pname *pid_pname = NULL;
+    if (unlikely(tcp_state_syn)) {
+      // New TCP connection.
+      // bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
+      __u32 flag[8] = {L4ProtoType_TCP}; // TCP
       if (skb->protocol == bpf_htons(ETH_P_IP)) {
         flag[1] = IpVersionType_4;
       } else {
         flag[1] = IpVersionType_6;
       }
       flag[6] = tuples.dscp;
-      struct pid_pname *pid_pname;
       if (pid_is_control_plane(skb, &pid_pname)) {
         // From control plane. Direct.
         return TC_ACT_OK;
@@ -1777,81 +1659,195 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                     (ethh.h_source[4] << 8) + (ethh.h_source[5])),
       };
       __s64 s64_ret;
-      if ((s64_ret = route(flag, &udph, tuples.five.sip.u6_addr32,
+      if ((s64_ret = route(flag, &tcph, tuples.five.sip.u6_addr32,
                            tuples.five.dip.u6_addr32, mac)) < 0) {
         bpf_printk("shot routing: %d", s64_ret);
         return TC_ACT_SHOT;
       }
-      // Construct new hdr to encap.
-      struct dst_routing_result new_hdr;
-      __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
-      __builtin_memcpy(new_hdr.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-      new_hdr.port = udph.dest;
-      new_hdr.recognize = RECOGNIZE;
-      new_hdr.routing_result.outbound = s64_ret;
-      new_hdr.routing_result.mark = s64_ret >> 8;
-      new_hdr.routing_result.must = (s64_ret >> 40) & 1;
-      new_hdr.routing_result.dscp = tuples.dscp;
-      __builtin_memcpy(new_hdr.routing_result.mac, ethh.h_source,
+
+      outbound = s64_ret & 0xff;
+      mark = s64_ret >> 8;
+      must = (s64_ret >> 40) & 1;
+
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+      // Print only new connection.
+      __u32 pid = pid_pname ? pid_pname->pid : 0;
+      bpf_printk("tcp(wan): from %pI6:%u [PID %u]", tuples.five.sip.u6_addr32,
+                 bpf_ntohs(tuples.five.sport), pid);
+      bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound,
+                 tuples.five.dip.u6_addr32, bpf_ntohs(tuples.five.dport));
+#endif
+    } else {
+      // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
+      // The TCP connection exists.
+      struct dst_routing_result *dst =
+          bpf_map_lookup_elem(&tcp_dst_map, &key_src);
+      if (!dst) {
+        // Do not impact previous connections and server connections.
+        return TC_ACT_OK;
+      }
+      outbound = dst->routing_result.outbound;
+      mark = dst->routing_result.mark;
+      must = dst->routing_result.must;
+    }
+
+    if (outbound == OUTBOUND_DIRECT &&
+        mark == 0 // If mark is not zero, we should re-route it, so we send it
+                  // to control plane in WAN.
+    ) {
+      return TC_ACT_OK;
+    } else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+      return TC_ACT_SHOT;
+    }
+    // Rewrite to control plane.
+
+    // Check outbound connectivity in specific ipversion and l4proto.
+    struct outbound_connectivity_query q = {0};
+    q.outbound = outbound;
+    q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
+    q.l4proto = l4proto;
+    __u32 *alive;
+    alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+    if (alive && *alive == 0 &&
+        !(l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53))) {
+      // Outbound is not alive. Dns is an exception.
+      return TC_ACT_SHOT;
+    }
+
+    if (unlikely(tcp_state_syn)) {
+      struct dst_routing_result routing_info;
+      __builtin_memset(&routing_info, 0, sizeof(routing_info));
+      __builtin_memcpy(routing_info.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
+      routing_info.port = tcph.dest;
+      routing_info.routing_result.outbound = outbound;
+      routing_info.routing_result.mark = mark;
+      routing_info.routing_result.must = must;
+      routing_info.routing_result.dscp = tuples.dscp;
+      __builtin_memcpy(routing_info.routing_result.mac, ethh.h_source,
                        sizeof(ethh.h_source));
       if (pid_pname) {
-        __builtin_memcpy(new_hdr.routing_result.pname, pid_pname->pname,
+        __builtin_memcpy(routing_info.routing_result.pname, pid_pname->pname,
                          TASK_COMM_LEN);
-        new_hdr.routing_result.pid = pid_pname->pid;
+        routing_info.routing_result.pid = pid_pname->pid;
       }
+      // bpf_printk("UPDATE: %pI6:%u", key_src.ip.u6_addr32,
+      // bpf_ntohs(key_src.port));
+      bpf_map_update_elem(&tcp_dst_map, &key_src, &routing_info, BPF_ANY);
+    }
+
+    // Write mac.
+    if ((ret =
+             bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+                                 ethh.h_source, sizeof(ethh.h_source), 0))) {
+      return TC_ACT_SHOT;
+    }
+    if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+                                   special_mac_to_tproxy,
+                                   sizeof(ethh.h_source), 0))) {
+      return TC_ACT_SHOT;
+    };
+
+  } else if (l4proto == IPPROTO_UDP) {
+
+    // Routing. It decides if we redirect traffic to control plane.
+    __u32 flag[8] = {L4ProtoType_UDP};
+    if (skb->protocol == bpf_htons(ETH_P_IP)) {
+      flag[1] = IpVersionType_4;
+    } else {
+      flag[1] = IpVersionType_6;
+    }
+    flag[6] = tuples.dscp;
+    struct pid_pname *pid_pname;
+    if (pid_is_control_plane(skb, &pid_pname)) {
+      // From control plane. Direct.
+      return TC_ACT_OK;
+    }
+    if (pid_pname) {
+      // 2, 3, 4, 5
+      __builtin_memcpy(&flag[2], pid_pname->pname, TASK_COMM_LEN);
+    }
+    __be32 mac[4] = {
+        0,
+        0,
+        bpf_htonl((ethh.h_source[0] << 8) + (ethh.h_source[1])),
+        bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
+                  (ethh.h_source[4] << 8) + (ethh.h_source[5])),
+    };
+    __s64 s64_ret;
+    if ((s64_ret = route(flag, &udph, tuples.five.sip.u6_addr32,
+                         tuples.five.dip.u6_addr32, mac)) < 0) {
+      bpf_printk("shot routing: %d", s64_ret);
+      return TC_ACT_SHOT;
+    }
+    // Construct new hdr to encap.
+    struct dst_routing_result new_hdr;
+    __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
+    __builtin_memcpy(new_hdr.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
+    new_hdr.port = udph.dest;
+    new_hdr.recognize = RECOGNIZE;
+    new_hdr.routing_result.outbound = s64_ret;
+    new_hdr.routing_result.mark = s64_ret >> 8;
+    new_hdr.routing_result.must = (s64_ret >> 40) & 1;
+    new_hdr.routing_result.dscp = tuples.dscp;
+    __builtin_memcpy(new_hdr.routing_result.mac, ethh.h_source,
+                     sizeof(ethh.h_source));
+    if (pid_pname) {
+      __builtin_memcpy(new_hdr.routing_result.pname, pid_pname->pname,
+                       TASK_COMM_LEN);
+      new_hdr.routing_result.pid = pid_pname->pid;
+    }
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-      __u32 pid = pid_pname ? pid_pname->pid : 0;
-      bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples.five.sip.u6_addr32,
-                 bpf_ntohs(tuples.five.sport), pid);
-      bpf_printk("udp(wan): outbound: %u, %pI6:%u",
-                 new_hdr.routing_result.outbound, tuples.five.dip.u6_addr32,
-                 bpf_ntohs(tuples.five.dport));
+    __u32 pid = pid_pname ? pid_pname->pid : 0;
+    bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples.five.sip.u6_addr32,
+               bpf_ntohs(tuples.five.sport), pid);
+    bpf_printk("udp(wan): outbound: %u, %pI6:%u",
+               new_hdr.routing_result.outbound, tuples.five.dip.u6_addr32,
+               bpf_ntohs(tuples.five.dport));
 #endif
 
-      if (new_hdr.routing_result.outbound == OUTBOUND_DIRECT &&
-          new_hdr.routing_result.mark ==
-              0 // If mark is not zero, we should re-route it, so we
-                // send it to control plane in WAN.
-      ) {
-        return TC_ACT_OK;
-      } else if (unlikely(new_hdr.routing_result.outbound == OUTBOUND_BLOCK)) {
-        return TC_ACT_SHOT;
-      }
+    if (new_hdr.routing_result.outbound == OUTBOUND_DIRECT &&
+        new_hdr.routing_result.mark ==
+            0 // If mark is not zero, we should re-route it, so we
+              // send it to control plane in WAN.
+    ) {
+      return TC_ACT_OK;
+    } else if (unlikely(new_hdr.routing_result.outbound == OUTBOUND_BLOCK)) {
+      return TC_ACT_SHOT;
+    }
 
-      // Rewrite to control plane.
+    // Rewrite to control plane.
 
-      // Check outbound connectivity in specific ipversion and l4proto.
-      struct outbound_connectivity_query q = {0};
-      q.outbound = new_hdr.routing_result.outbound;
-      q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-      q.l4proto = l4proto;
-      __u32 *alive;
-      alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-      if (alive && *alive == 0 &&
-          !(l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53))) {
-        // Outbound is not alive. Dns is an exception.
-        return TC_ACT_SHOT;
-      }
+    // Check outbound connectivity in specific ipversion and l4proto.
+    struct outbound_connectivity_query q = {0};
+    q.outbound = new_hdr.routing_result.outbound;
+    q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
+    q.l4proto = l4proto;
+    __u32 *alive;
+    alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+    if (alive && *alive == 0 &&
+        !(l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53))) {
+      // Outbound is not alive. Dns is an exception.
+      return TC_ACT_SHOT;
+    }
 
-      // Write mac.
-      if ((ret =
-               bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-                                   ethh.h_source, sizeof(ethh.h_source), 0))) {
-        return TC_ACT_SHOT;
-      }
-      if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-                                     special_mac_to_tproxy,
-                                     sizeof(ethh.h_source), 0))) {
-        return TC_ACT_SHOT;
-      };
+    // Write mac.
+    if ((ret =
+             bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+                                 ethh.h_source, sizeof(ethh.h_source), 0))) {
+      return TC_ACT_SHOT;
+    }
+    if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+                                   special_mac_to_tproxy,
+                                   sizeof(ethh.h_source), 0))) {
+      return TC_ACT_SHOT;
+    };
 
-      // Encap a header to transmit fullcone tuple.
-      if ((ret = encap_after_udp_hdr(
-               skb, link_h_len, ihl,
-               skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &new_hdr,
-               sizeof(new_hdr), true))) {
-        return TC_ACT_SHOT;
-      }
+    // Encap a header to transmit fullcone tuple.
+    if ((ret = encap_after_udp_hdr(
+             skb, link_h_len, ihl,
+             skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &new_hdr,
+             sizeof(new_hdr), true))) {
+      return TC_ACT_SHOT;
     }
   }
 
@@ -1945,43 +1941,40 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   //     bpf_printk("%02x", t);
   //   }
   // }
-  if (false) {
-    // Shouldn't happen because tproxy response won't be sent to WAN unless WAN == LAN
-  } else {
-    // Should send the packet to tproxy.
 
-    // Get tproxy ip and port.
-    // saddr should be tproxy ip.
-    __be32 *tproxy_ip = tuples.five.sip.u6_addr32;
-    // __builtin_memcpy(tproxy_ip, saddr, sizeof(tproxy_ip));
-    __be16 tproxy_port = PARAM.tproxy_port;
-    if (!tproxy_port) {
-      return TC_ACT_OK;
-    }
-    // bpf_printk("should send to: %pI6:%u", tproxy_ip,
-    // bpf_ntohs(*tproxy_port));
+  // Should send the packet to tproxy.
 
-    if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
-                          tuples.five.dip.u6_addr32, tproxy_ip, true, true))) {
-      bpf_printk("Shot IP: %d", ret);
-      return TC_ACT_SHOT;
-    }
+  // Get tproxy ip and port.
+  // saddr should be tproxy ip.
+  __be32 *tproxy_ip = tuples.five.sip.u6_addr32;
+  // __builtin_memcpy(tproxy_ip, saddr, sizeof(tproxy_ip));
+  __be16 tproxy_port = PARAM.tproxy_port;
+  if (!tproxy_port) {
+    return TC_ACT_OK;
+  }
+  // bpf_printk("should send to: %pI6:%u", tproxy_ip,
+  // bpf_ntohs(*tproxy_port));
 
-    // Rewrite dst port.
-    if ((ret = rewrite_port(skb, link_h_len, l4proto, ihl, tuples.five.dport,
-                            tproxy_port, true, true))) {
-      bpf_printk("Shot Port: %d", ret);
-      return TC_ACT_SHOT;
-    }
+  if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
+                        tuples.five.dip.u6_addr32, tproxy_ip, true, true))) {
+    bpf_printk("Shot IP: %d", ret);
+    return TC_ACT_SHOT;
+  }
 
-    // (1) Use daddr as saddr to pass NIC verification. Notice that we do not
-    // modify the <sport> so tproxy will send packet to it.
-    if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
-                          tuples.five.sip.u6_addr32, tuples.five.dip.u6_addr32,
-                          false, true))) {
-      bpf_printk("Shot IP: %d", ret);
-      return TC_ACT_SHOT;
-    }
+  // Rewrite dst port.
+  if ((ret = rewrite_port(skb, link_h_len, l4proto, ihl, tuples.five.dport,
+                          tproxy_port, true, true))) {
+    bpf_printk("Shot Port: %d", ret);
+    return TC_ACT_SHOT;
+  }
+
+  // (1) Use daddr as saddr to pass NIC verification. Notice that we do not
+  // modify the <sport> so tproxy will send packet to it.
+  if ((ret = rewrite_ip(skb, link_h_len, l4proto, ihl,
+                        tuples.five.sip.u6_addr32, tuples.five.dip.u6_addr32,
+                        false, true))) {
+    bpf_printk("Shot IP: %d", ret);
+    return TC_ACT_SHOT;
   }
 
   // // Print packet in hex for debugging (checksum or something else).
