@@ -114,6 +114,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.3.0...v0.4.0rc2
 
+#### New Contributors
+
+- @jschwinger233 made their first contribution in https://github.com/daeuniverse/dae/pull/373
+
 ## v0.4.0rc1 (Pre-release)
 
 > Release date: 2023/09/02
