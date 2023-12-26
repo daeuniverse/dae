@@ -110,9 +110,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 重构/修复: 在 [#294](https://github.com/daeuniverse/dae/pull/294) 中匹配 DSCP 而不是 TOS by (@mzz2017)
 - 杂项: 在 [#289](https://github.com/daeuniverse/dae/pull/289) 中用声音 honk by (@troubadour-hell)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.4.0rc2/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.4.0/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.3.0...v0.4.0rc2
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.3.0...v0.4.0
 
 #### New Contributors
 
