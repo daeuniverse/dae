@@ -140,6 +140,9 @@ struct dst_routing_result {
   struct routing_result routing_result;
 };
 
+// force emitting struct into the ELF.
+const struct dst_routing_result *_ __attribute__((unused));
+
 struct tuples_key {
   union ip6 sip;
   union ip6 dip;
@@ -159,20 +162,6 @@ struct dae_param {
 };
 
 static volatile const struct dae_param PARAM = {};
-
-struct {
-  __uint(type, BPF_MAP_TYPE_LRU_HASH);
-  __type(key,
-         struct ip_port); // As TCP client side [SYN, !ACK],
-                          // (source ip, source port, tcp) is
-                          // enough for identifier. And UDP client
-                          // side does not care it (full-cone).
-  __type(value, struct dst_routing_result); // Original target.
-  __uint(max_entries, MAX_DST_MAPPING_NUM);
-  /// NOTICE: It MUST be pinned, or connection may break.
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
-} tcp_dst_map
-    SEC(".maps"); // This map is only for old method (redirect mode in WAN).
 
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1662,12 +1651,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   if (l4proto == IPPROTO_TCP) {
     // Backup for further use.
     tcp_state_syn = tcph.syn && !tcph.ack;
-    struct ip_port key_src;
-    __builtin_memset(&key_src, 0, sizeof(key_src));
-    // Use daddr as key in WAN because tproxy (control plane) also lookups the
-    // map element using income client ip (that is daddr).
-    __builtin_memcpy(&key_src.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-    key_src.port = tcph.source;
     __u8 outbound;
     bool must;
     __u32 mark;
@@ -1719,15 +1702,15 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     } else {
       // bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
       // The TCP connection exists.
-      struct dst_routing_result *dst =
-          bpf_map_lookup_elem(&tcp_dst_map, &key_src);
-      if (!dst) {
+      struct routing_result *routing_result =
+	  bpf_map_lookup_elem(&routing_tuples_map, &tuples.five);
+      if (!routing_result) {
         // Do not impact previous connections and server connections.
-        return TC_ACT_OK;
+	return TC_ACT_OK;
       }
-      outbound = dst->routing_result.outbound;
-      mark = dst->routing_result.mark;
-      must = dst->routing_result.must;
+      outbound = routing_result->outbound;
+      mark = routing_result->mark;
+      must = routing_result->must;
     }
 
     if (outbound == OUTBOUND_DIRECT &&
@@ -1754,24 +1737,20 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     }
 
     if (unlikely(tcp_state_syn)) {
-      struct dst_routing_result routing_info;
-      __builtin_memset(&routing_info, 0, sizeof(routing_info));
-      __builtin_memcpy(routing_info.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-      routing_info.port = tcph.dest;
-      routing_info.routing_result.outbound = outbound;
-      routing_info.routing_result.mark = mark;
-      routing_info.routing_result.must = must;
-      routing_info.routing_result.dscp = tuples.dscp;
-      __builtin_memcpy(routing_info.routing_result.mac, ethh.h_source,
+      struct routing_result routing_result = {};
+      routing_result.outbound = outbound;
+      routing_result.mark = mark;
+      routing_result.must = must;
+      routing_result.dscp = tuples.dscp;
+      __builtin_memcpy(routing_result.mac, ethh.h_source,
                        sizeof(ethh.h_source));
       if (pid_pname) {
-        __builtin_memcpy(routing_info.routing_result.pname, pid_pname->pname,
+        __builtin_memcpy(routing_result.pname, pid_pname->pname,
                          TASK_COMM_LEN);
-        routing_info.routing_result.pid = pid_pname->pid;
+        routing_result.pid = pid_pname->pid;
       }
-      // bpf_printk("UPDATE: %pI6:%u", key_src.ip.u6_addr32,
-      // bpf_ntohs(key_src.port));
-      bpf_map_update_elem(&tcp_dst_map, &key_src, &routing_info, BPF_ANY);
+      bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+			  &routing_result, BPF_ANY);
     }
 
     // Write mac.
