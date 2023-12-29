@@ -62,7 +62,10 @@ jobs:
           cmd: |
             chmod +x /host/dae/dae
 
-      - name: Setup
+            apt update
+            apt install -y unzip
+
+      - name: Setup network
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
@@ -70,39 +73,56 @@ jobs:
             set -ex
 
             docker network create dae
-            docker run -td --name socks5 --privileged --network dae ubuntu:22.04 bash
-            docker run -td --name dae --privileged --network dae -v /host:/host ubuntu:22.04 bash
+            docker run -td --name v2ray --privileged --network dae -v /host:/host ubuntu:22.04 bash
+            docker run -td --name dae --privileged --network dae -v /host:/host -v /sys:/sys ubuntu:22.04 bash
 
-      - name: Setup socks5 server
+      - name: Setup v2ray server
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             set -ex
+            cd /host
 
-            docker exec socks5 apt update
-            docker exec socks5 apt install -y dante-server
+            curl -OL https://github.com/v2fly/v2ray-core/releases/download/v4.31.0/v2ray-linux-64.zip
+            unzip v2ray-linux-64.zip
+            docker cp ./v2ray v2ray:/usr/bin
+            docker cp ./v2ctl v2ray:/usr/bin
 
-            cat > ./danted.conf <<!
-            logoutput: /var/log/danted.log
-            internal: 0.0.0.0 port = 1080
-            external: eth0
-            method: username none
-            user.privileged: root
-            user.notprivileged: nobody
-            client pass {
-                from: 0.0.0.0/0 to: 0.0.0.0/0
-                log: connect disconnect error
-            }
-            socks pass {
-                from: 0.0.0.0/0 to: 0.0.0.0/0
-                log: connect disconnect error
+            cat > ./v2ray.json <<!
+            {
+                "log": {
+                    "access": "/host/v2ray.access.log",
+                    "error": "/host/v2ray.error.log",
+                    "loglevel": "warning"
+                },
+                "inbound": {
+                    "port": 23333,
+                    "protocol": "vmess",
+                    "settings": {
+                        "clients": [
+                            {
+                                "id": "b004539e-0d7b-7996-c378-fb040e42de70",
+                                "level": 0,
+                                "alterId": 0
+                            }
+                        ]
+                    }
+                },
+                "outbound": {
+                    "protocol": "freedom",
+                    "settings": {}
+                },
+                "inboundDetour": [],
+                "outboundDetour": []
             }
             !
 
-            docker cp ./danted.conf socks5:/etc/danted.conf
-            docker exec socks5 danted -D
-            docker exec socks5 cat /var/log/danted.log
+            nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
+            sleep 5s
+            cat v2ray.log
+
+            echo '{"v":"2","ps":"test","add":"v2ray","port":"23333","id":"b004539e-0d7b-7996-c378-fb040e42de70","aid":"0","net":"tcp","tls":"","type":"none","path":"","host":"v2ray"}' > vmess.json
 
       - name: Setup dae server
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
@@ -110,9 +130,12 @@ jobs:
           provision: 'false'
           cmd: |
             set -ex
+            cd /host
 
             docker exec dae apt update
             docker exec dae apt install -y curl
+
+            vmess_link=$(base64 -w0 vmess.json)
 
             cat > ./conf.dae <<!
             global {
@@ -125,7 +148,7 @@ jobs:
             }
 
             node {
-                local: 'socks5://socks5:1080'
+                local: 'vmess://\$vmess_link'
             }
 
             group {
@@ -135,30 +158,24 @@ jobs:
             }
 
             routing {
-                dip(1.1.1.1) -> proxy
-                fallback: direct
+                pname(dae) -> direct
+                fallback: proxy
             }
             !
 
+            cat conf.dae
+
             chmod 600 ./conf.dae
-            docker cp ./conf.dae dae:/etc/conf.dae
-            docker exec dae mount -t debugfs none /sys/kernel/debug/
-            docker exec dae mount bpffs -t bpf /sys/fs/bpf
-            docker exec dae /host/dae/dae run -c /etc/conf.dae &> dae.log &
-            sleep 20s
-
-            docker exec dae curl 1.1.1.1
-            docker exec dae curl 1.0.0.1
-
+            nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
+            sleep 10s
             cat dae.log
 
-      - name: Check
+      - name: Check IPv4 TCP
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             set -ex
 
-            docker exec socks5 cat /var/log/danted.log
-            docker exec socks5 cat /var/log/danted.log 2>&1 | grep -q 1.1.1.1
-            docker exec socks5 cat /var/log/danted.log 2>&1 | grep 1.0.0.1 && false || true
+            docker exec dae curl 1.1.1.1
+            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.1.1.1:80'
