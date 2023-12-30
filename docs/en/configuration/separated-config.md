@@ -1,4 +1,4 @@
-# Separated Configuration Files
+# Separate Configuration Files
 
 Sometimes you want to break your configuration file into several files. It may be useful in these cases:
 1. You want to switch nodes via modify the config file using tools like `sed`.
