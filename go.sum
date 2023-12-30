@@ -143,8 +143,8 @@ github.com/stretchr/testify v1.8.2 h1:+h33VjcLVPDHtOdpUCuF+7gSuG3yGIftsP1YvFihtJ
 github.com/stretchr/testify v1.8.2/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/twmb/murmur3 v1.1.6 h1:mqrRot1BRxm+Yct+vavLMou2/iJt0tNVTTC0QoIjaZg=
 github.com/twmb/murmur3 v1.1.6/go.mod h1:Qq/R7NUyOfr65zD+6Q5IHKsJLwP7exErjN6lyyq3OSQ=
-github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8 h1:2Liq3JvM/acVQZ7Gq9U5PpznMzlFRPYMPQxC2yXSi74=
-github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8/go.mod h1:mWch8I826zic/bKaCyE9ZZbWtFgEW0ox3EQ0NGm5DGw=
+github.com/v2rayA/ahocorasick-domain v0.0.0-20231230072012-363138ff1af0 h1:hx08dQ0e3wHoLLVcsLKqXDj6gHzi0KaIgmhP6yh/Zxk=
+github.com/v2rayA/ahocorasick-domain v0.0.0-20231230072012-363138ff1af0/go.mod h1:mWch8I826zic/bKaCyE9ZZbWtFgEW0ox3EQ0NGm5DGw=
 github.com/vishvananda/netlink v1.1.0 h1:1iyaYNBLmP6L0220aDnYQpo1QEV4t4hJ+xEEhhJH8j0=
 github.com/vishvananda/netlink v1.1.0/go.mod h1:cTgwzPIzzgDAYoQrMm0EdrjRUBkTqKYppBueQtXaqoE=
 github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df/go.mod h1:JP3t17pCcGlemwknint6hfoeCVQrEMVwxRLRjXpq+BU=

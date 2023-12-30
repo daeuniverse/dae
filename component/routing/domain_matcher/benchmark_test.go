@@ -7,11 +7,12 @@ package domain_matcher
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/common/assets"
 	"hash/fnv"
 	"math/rand"
 	"reflect"
 	"testing"
+
+	"github.com/daeuniverse/dae/common/assets"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
@@ -93,6 +94,7 @@ var TestSample = []string{
 	"psbc.com",
 	"spdb.com.cn",
 	"whccb.com",
+	"_https._tcp.mirrors.ustc.edu.cn",
 }
 
 type RoutingMatcherBuilder struct {
@@ -133,6 +135,7 @@ func getDomain() (simulatedDomainSet []routing.DomainSet, err error) {
 	sections, err := config_parser.Parse(`
 routing {
 	domain(geosite:bing)->us
+	domain(_https._tcp.mirrors.ustc.edu.cn)->us
     domain(full:dns.google.com) -> direct
 	domain(geosite:category-ads-all) -> block
     domain(geosite:cn) -> direct
