@@ -1,6 +1,6 @@
 # Separate Configuration Files
 
-Sometimes you want to break your configuration file into several files. It may be useful in these cases:
+Sometimes you want to break your configuration file into several files. It may be useful in the following cases:
 1. You want to switch nodes via modify the config file using tools like `sed`.
 2. You copy other's configuration file and you want to overwrite some parts of it.
 
