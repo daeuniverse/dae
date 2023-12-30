@@ -95,6 +95,7 @@ var TestSample = []string{
 	"spdb.com.cn",
 	"whccb.com",
 	"_https._tcp.mirrors.ustc.edu.cn",
+	"ipv4.master.test-ipv6.com",
 }
 
 type RoutingMatcherBuilder struct {
@@ -134,6 +135,7 @@ func getDomain() (simulatedDomainSet []routing.DomainSet, err error) {
 	var rules []*config_parser.RoutingRule
 	sections, err := config_parser.Parse(`
 routing {
+	domain(suffix: test-ipv6.com)->direct
 	domain(geosite:bing)->us
 	domain(_https._tcp.mirrors.ustc.edu.cn)->us
     domain(full:dns.google.com) -> direct
