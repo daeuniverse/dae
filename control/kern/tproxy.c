@@ -1952,31 +1952,44 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
   // Should send the packet to tproxy.
 
-  // TODO@gray: ipv6
   skb->mark = TPROXY_MARK;
   struct bpf_sock_tuple tuple = {};
   __u32 tuple_size = sizeof(tuple.ipv4);
 
   /* First look for established socket */
-  tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
-  tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
-  tuple.ipv4.sport = tuples.five.sport;
-  tuple.ipv4.dport = tuples.five.dport;
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
+    tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
+    tuple.ipv4.sport = tuples.five.sport;
+    tuple.ipv4.dport = tuples.five.dport;
+  } else {
+    __builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
+    tuple.ipv6.sport = tuples.five.sport;
+    tuple.ipv6.dport = tuples.five.dport;
+    tuple_size = sizeof(tuple.ipv6);
+  }
   ret = assign_socket(skb, &tuple, tuple_size, l4proto, true);
   if (ret == 0) {
     return TC_ACT_OK;
   }
 
   /* Then look for tproxy listening socket */
-  __be32 tproxy_ip = tuples.five.sip.u6_addr32[3];
   __be16 tproxy_port = PARAM.tproxy_port;
   if (!tproxy_port) {
     return TC_ACT_OK;
   }
-  tuple.ipv4.saddr = 0;
-  tuple.ipv4.daddr = tproxy_ip;
-  tuple.ipv4.sport = 0;
-  tuple.ipv4.dport = tproxy_port;
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    tuple.ipv4.saddr = 0;
+    tuple.ipv4.daddr = tuples.five.sip.u6_addr32[3];
+    tuple.ipv4.sport = 0;
+    tuple.ipv4.dport = tproxy_port;
+  } else {
+    __builtin_memset(tuple.ipv6.saddr, 0, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
+    tuple.ipv6.sport = 0;
+    tuple.ipv6.dport = tproxy_port;
+  }
   ret = assign_socket(skb, &tuple, tuple_size, l4proto, false);
   if (ret == 0) {
     return TC_ACT_OK;
