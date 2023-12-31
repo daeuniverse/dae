@@ -33,6 +33,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/softwind/pool"
 	"github.com/daeuniverse/softwind/protocol/direct"
 	"github.com/daeuniverse/softwind/transport/grpc"
@@ -229,24 +230,16 @@ func NewControlPlane(
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
 	option := &dialer.GlobalOption{
-		Log: log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{
-			Raw:             global.TcpCheckUrl,
-			Log:             log,
-			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
-			Method:          global.TcpCheckHttpMethod,
-		},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
-			Raw:             global.UdpCheckDns,
-			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
-			Somark:          global.SoMarkFromDae,
-		},
+		ExtraOption: D.ExtraOption{
+			AllowInsecure:     global.AllowInsecure,
+			TlsImplementation: global.TlsImplementation,
+			UtlsImitate:       global.UtlsImitate},
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Somark: global.SoMarkFromDae},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
-		AllowInsecure:     global.AllowInsecure,
-		TlsImplementation: global.TlsImplementation,
-		UtlsImitate:       global.UtlsImitate,
 	}
 
 	// Dial mode.

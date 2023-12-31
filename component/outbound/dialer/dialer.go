@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/softwind/netproxy"
 	"github.com/sirupsen/logrus"
 )
@@ -32,15 +33,13 @@ type Dialer struct {
 }
 
 type GlobalOption struct {
+	D.ExtraOption
 	Log               *logrus.Logger
 	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
 	CheckDnsTcp       bool
-	AllowInsecure     bool
-	TlsImplementation string
-	UtlsImitate       string
 }
 
 type InstanceOption struct {
@@ -48,10 +47,7 @@ type InstanceOption struct {
 }
 
 type Property struct {
-	Name            string
-	Address         string
-	Protocol        string
-	Link            string
+	D.Property
 	SubscriptionTag string
 }
 
