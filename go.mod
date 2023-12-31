@@ -75,6 +75,7 @@ require (
 )
 
 // replace github.com/daeuniverse/softwind => ../softwind
+// replace github.com/daeuniverse/outbound => ../outbound
 
 // replace github.com/mzz2017/quic-go => ../quic-go
 
