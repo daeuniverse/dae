@@ -72,7 +72,7 @@ jobs:
           cmd: |
             set -ex
 
-            docker network create dae
+            docker network create --ipv6 --subnet 2001:0DB8::/112 dae
             docker run -td --name v2ray --privileged --network dae -v /host:/host ubuntu:22.04 bash
             docker run -td --name dae --privileged --network dae -v /host:/host -v /sys:/sys ubuntu:22.04 bash
 
@@ -133,10 +133,9 @@ jobs:
             cd /host
 
             docker exec dae apt update
-            docker exec dae apt install -y curl
+            docker exec dae apt install -y curl dnsutils netcat
 
             vmess_link=$(base64 -w0 vmess.json)
-
             cat > ./conf.dae <<!
             global {
                 tproxy_port: 12345
@@ -163,19 +162,55 @@ jobs:
             }
             !
 
-            cat conf.dae
-
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             sleep 10s
             cat dae.log
 
-      - name: Check IPv4 TCP
+      - name: Check WAN IPv4 TCP
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             set -ex
 
-            docker exec dae curl 1.1.1.1
-            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.1.1.1:80'
+            docker exec dae curl 1.1.1.1:443
+            cat /host/dae.log | grep -F -- '-> 1.1.1.1:443'
+            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.1.1.1:443'
+
+      - name: Check WAN IPv4 UDP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae dig @1.1.1.1 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
+            cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
+
+      - name: Check WAN IPv6 TCP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
+            cat /host/nc.log | grep -q 'succeeded!'
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
+
+      - name: Check WAN IPv6 UDP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            if docker exec dae dig @2606:4700:4700::1111 one.one.one.one; then
+              echo "Shouldn't succeed until https://github.com/daeuniverse/dae/issues/387 is resolved"
+              false
+            else
+              echo "Ingore failure until https://github.com/daeuniverse/dae/issues/387 is resolved"
+              true
+            fi
