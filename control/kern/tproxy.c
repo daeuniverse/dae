@@ -803,76 +803,6 @@ static __always_inline int adjust_ipv4_len(struct __sk_buff *skb,
   return 0;
 }
 
-static __always_inline int encap_after_udp_hdr(struct __sk_buff *skb,
-                                               __u32 link_h_len, __u8 ihl,
-                                               __be16 iphdr_tot_len,
-                                               void *newhdr, __u32 newhdrlen,
-                                               bool disable_l4_checksum) {
-  if (unlikely(newhdrlen % 4 != 0)) {
-    bpf_printk("encap_after_udp_hdr: unexpected newhdrlen value %u :must "
-               "be a multiple of 4",
-               newhdrlen);
-    return -EINVAL;
-  }
-
-  int ret = 0;
-  long ip_off = link_h_len;
-  // Calculate offsets using add instead of subtract to avoid verifier problems.
-  long ipp_len = ihl * 4;
-  long udp_payload_off = ip_off + ipp_len + sizeof(struct udphdr);
-
-  // Backup for further use.
-  struct udphdr reserved_udphdr;
-  if ((ret = bpf_skb_load_bytes(skb, ip_off + ipp_len, &reserved_udphdr,
-                                sizeof(reserved_udphdr)))) {
-    bpf_printk("bpf_skb_load_bytes: %d", ret);
-    return ret;
-  }
-  // Add room for new udp payload header.
-  if ((ret = bpf_skb_adjust_room(skb, newhdrlen, BPF_ADJ_ROOM_NET,
-                                 BPF_F_ADJ_ROOM_NO_CSUM_RESET))) {
-    bpf_printk("UDP ADJUST ROOM(encap): %d", ret);
-    return ret;
-  }
-  // Move the new room to the front of the UDP payload.
-  if ((ret = bpf_skb_store_bytes(skb, ip_off + ipp_len, &reserved_udphdr,
-                                 sizeof(reserved_udphdr), 0))) {
-    bpf_printk("bpf_skb_store_bytes reserved_udphdr: %d", ret);
-    return ret;
-  }
-
-  // Rewrite ip len.
-  if (skb->protocol == bpf_htons(ETH_P_IP)) {
-    if ((ret = adjust_ipv4_len(skb, link_h_len, iphdr_tot_len, newhdrlen))) {
-      bpf_printk("adjust_ip_len: %d", ret);
-      return ret;
-    }
-  }
-
-  // Rewrite udp len.
-  if ((ret = adjust_udp_len(skb, link_h_len, reserved_udphdr.len, ihl,
-                            newhdrlen, disable_l4_checksum))) {
-    bpf_printk("adjust_udp_len: %d", ret);
-    return ret;
-  }
-
-  // Rewrite udp payload.
-  if (!disable_l4_checksum) {
-    __u32 l4_cksm_off = l4_checksum_off(link_h_len, IPPROTO_UDP, ihl);
-    __s64 cksm = bpf_csum_diff(NULL, 0, newhdr, newhdrlen, 0);
-    if ((ret = bpf_l4_csum_replace(skb, l4_cksm_off, 0, cksm,
-                                   BPF_F_MARK_MANGLED_0))) {
-      bpf_printk("bpf_l4_csum_replace 2: %d", ret);
-      return ret;
-    }
-  }
-  if ((ret = bpf_skb_store_bytes(skb, udp_payload_off, newhdr, newhdrlen, 0))) {
-    bpf_printk("bpf_skb_store_bytes 2: %d", ret);
-    return ret;
-  }
-  return 0;
-}
-
 static __always_inline int
 decap_after_udp_hdr(struct __sk_buff *skb, __u32 link_h_len, __u8 ihl,
                     __be16 ipv4hdr_tot_len, void *to, __u32 decap_hdrlen,
@@ -1798,38 +1728,34 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     }
     // Construct new hdr to encap.
-    struct dst_routing_result new_hdr;
-    __builtin_memset(&new_hdr, 0, sizeof(new_hdr));
-    __builtin_memcpy(new_hdr.ip, &tuples.five.dip, IPV6_BYTE_LENGTH);
-    new_hdr.port = udph.dest;
-    new_hdr.recognize = RECOGNIZE;
-    new_hdr.routing_result.outbound = s64_ret;
-    new_hdr.routing_result.mark = s64_ret >> 8;
-    new_hdr.routing_result.must = (s64_ret >> 40) & 1;
-    new_hdr.routing_result.dscp = tuples.dscp;
-    __builtin_memcpy(new_hdr.routing_result.mac, ethh.h_source,
-                     sizeof(ethh.h_source));
+    struct routing_result routing_result = {};
+    routing_result.outbound = s64_ret;
+    routing_result.mark = s64_ret >> 8;
+    routing_result.must = (s64_ret >> 40) & 1;
+    routing_result.dscp = tuples.dscp;
+    __builtin_memcpy(routing_result.mac, ethh.h_source, sizeof(ethh.h_source));
     if (pid_pname) {
-      __builtin_memcpy(new_hdr.routing_result.pname, pid_pname->pname,
+      __builtin_memcpy(routing_result.pname, pid_pname->pname,
                        TASK_COMM_LEN);
-      new_hdr.routing_result.pid = pid_pname->pid;
+      routing_result.pid = pid_pname->pid;
     }
+    bpf_map_update_elem(&routing_tuples_map, &tuples.five, &routing_result,
+			BPF_ANY);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
     __u32 pid = pid_pname ? pid_pname->pid : 0;
     bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples.five.sip.u6_addr32,
                bpf_ntohs(tuples.five.sport), pid);
     bpf_printk("udp(wan): outbound: %u, %pI6:%u",
-               new_hdr.routing_result.outbound, tuples.five.dip.u6_addr32,
+               routing_result.outbound, tuples.five.dip.u6_addr32,
                bpf_ntohs(tuples.five.dport));
 #endif
 
-    if (new_hdr.routing_result.outbound == OUTBOUND_DIRECT &&
-        new_hdr.routing_result.mark ==
-            0 // If mark is not zero, we should re-route it, so we
-              // send it to control plane in WAN.
+    if (routing_result.outbound == OUTBOUND_DIRECT && routing_result.mark == 0
+	// If mark is not zero, we should re-route it, so we send it to control
+	// plane in WAN.
     ) {
       return TC_ACT_OK;
-    } else if (unlikely(new_hdr.routing_result.outbound == OUTBOUND_BLOCK)) {
+    } else if (unlikely(routing_result.outbound == OUTBOUND_BLOCK)) {
       return TC_ACT_SHOT;
     }
 
@@ -1837,7 +1763,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
     // Check outbound connectivity in specific ipversion and l4proto.
     struct outbound_connectivity_query q = {0};
-    q.outbound = new_hdr.routing_result.outbound;
+    q.outbound = routing_result.outbound;
     q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
     q.l4proto = l4proto;
     __u32 *alive;
@@ -1859,14 +1785,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                                    sizeof(ethh.h_source), 0))) {
       return TC_ACT_SHOT;
     };
-
-    // Encap a header to transmit fullcone tuple.
-    if ((ret = encap_after_udp_hdr(
-             skb, link_h_len, ihl,
-             skb->protocol == bpf_htons(ETH_P_IP) ? iph.tot_len : 0, &new_hdr,
-             sizeof(new_hdr), true))) {
-      return TC_ACT_SHOT;
-    }
   }
 
   // // Print packet in hex for debugging (checksum or something else).
