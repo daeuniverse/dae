@@ -88,7 +88,9 @@ func NewControlPlane(
 	externGeoDataDirs []string,
 ) (*ControlPlane, error) {
 	// TODO: Some users reported that enabling GSO on the client would affect the performance of watching YouTube, so we disabled it by default.
-	os.Setenv("QUIC_GO_DISABLE_GSO", "1")
+	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
+		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
+	}
 
 	var err error
 
