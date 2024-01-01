@@ -78,7 +78,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 自动化(docker): 在 [#392](https://github.com/daeuniverse/dae/pull/392) 中移除对 armv6 的支持 由 (@mzz2017)
 - 文档: 在 [#389](https://github.com/daeuniverse/dae/pull/389) 中添加分离配置文件的指南 由 (@epmtyicu)
 - 自动化: 在 [#386](https://github.com/daeuniverse/dae/pull/386) 中添加更多内核测试 由 (@jschwinger233)
-- 自动化(docker): 在 [#392](https://github.com/daeuniverse/dae/pull/392) 中移除对 armv6 的支持 由 (@jschwinger233)
 
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.5.0rc1/example.dae
 
