@@ -144,6 +144,7 @@ func NewControlPlane(
 	//var bpf bpfObjects
 	var ProgramOptions = ebpf.ProgramOptions{
 		KernelTypes: nil,
+		LogSize:     ebpf.DefaultVerifierLogSize * 10,
 	}
 	if log.Level == logrus.PanicLevel {
 		ProgramOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
@@ -215,7 +216,7 @@ func NewControlPlane(
 			return nil, err
 		}
 		for _, ifname := range global.WanInterface {
-			if err = core.bindWan(ifname); err != nil {
+			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}
 		}
@@ -736,38 +737,11 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				pktDst := RetrieveOriginalDest(oob)
 				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
 				if err != nil {
-					// WAN. Old method.
-					lastErr := err
-					addrHdr, dataOffset, err := ParseAddrHdr(data)
-					if err != nil {
-						if c.tproxyPortProtect {
-							c.log.Warnf("No AddrPort presented: %v, %v", lastErr, err)
-							return
-						} else {
-							routingResult = &bpfRoutingResult{
-								Mark:     0,
-								Must:     0,
-								Mac:      [6]uint8{},
-								Outbound: uint8(consts.OutboundControlPlaneRouting),
-								Pname:    [16]uint8{},
-								Pid:      0,
-								Dscp:     0,
-							}
-							realDst = pktDst
-							goto destRetrieved
-						}
-					}
-					data = data[dataOffset:]
-					routingResult = &addrHdr.RoutingResult
-					__ip := common.Ipv6Uint32ArrayToByteSlice(addrHdr.Ip)
-					_ip, _ := netip.AddrFromSlice(__ip)
-					// Comment it because them SHOULD equal.
-					//src = netip.AddrPortFrom(_ip, src.Port())
-					realDst = netip.AddrPortFrom(_ip, addrHdr.Port)
+					c.log.Warnf("No AddrPort presented: %v", err)
+					return
 				} else {
 					realDst = pktDst
 				}
-			destRetrieved:
 				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}

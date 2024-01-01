@@ -144,6 +144,7 @@ jobs:
                 lan_interface: auto
                 wan_interface: auto
                 allow_insecure: false
+                auto_config_kernel_parameter: true
             }
 
             node {
@@ -267,6 +268,7 @@ jobs:
                 lan_interface: dae-veth-peer
                 wan_interface: auto
                 allow_insecure: false
+                auto_config_kernel_parameter: true
             }
 
             node {

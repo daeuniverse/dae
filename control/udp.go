@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -49,19 +48,6 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 		}
 	}
 	return nil, DefaultNatTimeout
-}
-
-func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err error) {
-	dataOffset = int(unsafe.Sizeof(bpfDstRoutingResult{}))
-	if len(data) < dataOffset {
-		return nil, 0, fmt.Errorf("data is too short to parse AddrHdr")
-	}
-	_hdr := *(*bpfDstRoutingResult)(unsafe.Pointer(&data[0]))
-	if _hdr.Recognize != consts.Recognize {
-		return nil, 0, fmt.Errorf("bad recognize")
-	}
-	_hdr.Port = common.Ntohs(_hdr.Port)
-	return &_hdr, dataOffset, nil
 }
 
 func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
