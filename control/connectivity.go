@@ -41,7 +41,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 			}
 			c.log.WithFields(logrus.Fields{
 				"outboundId": outbound,
-			}).Warnf("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
+			}).Tracef("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
 		}
 
 		value := uint32(0)
