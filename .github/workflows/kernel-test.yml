@@ -208,13 +208,8 @@ jobs:
           cmd: |
             set -ex
 
-            if docker exec dae dig @2606:4700:4700::1111 one.one.one.one; then
-              echo "Shouldn't succeed until https://github.com/daeuniverse/dae/issues/387 is resolved"
-              false
-            else
-              echo "Ingore failure until https://github.com/daeuniverse/dae/issues/387 is resolved"
-              true
-            fi
+            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup LAN
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
