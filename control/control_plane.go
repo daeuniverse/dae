@@ -213,7 +213,7 @@ func NewControlPlane(
 	// Bind to WAN
 	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
-			return nil, err
+			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
 		}
 		for _, ifname := range global.WanInterface {
 			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
