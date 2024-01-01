@@ -53,7 +53,7 @@ jobs:
           context: .
           builder: ${{ steps.buildx.outputs.name }}
           file: Dockerfile
-          platforms: linux/arm/v6,linux/arm/v7,linux/arm64,linux/amd64,linux/386
+          platforms: linux/arm/v7,linux/arm64,linux/amd64,linux/386
           push: true
           tags: |
             ${{ steps.prep.outputs.IMAGE }}:${{ steps.prep.outputs.TAG }}
