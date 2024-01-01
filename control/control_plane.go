@@ -165,8 +165,9 @@ func NewControlPlane(
 	} else {
 		bpf = new(bpfObjects)
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
-			PinPath:           pinPath,
-			CollectionOptions: collectionOpts,
+			PinPath:             pinPath,
+			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
+			CollectionOptions:   collectionOpts,
 		}); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)
@@ -191,11 +192,6 @@ func NewControlPlane(
 			_ = core.Close()
 		}
 	}()
-
-	// Write params.
-	if err = core.bpf.ParamMap.Update(consts.ControlPlanePidKey, uint32(os.Getpid()), ebpf.UpdateAny); err != nil {
-		return nil, err
-	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Bind to LAN
@@ -683,10 +679,6 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		return udpFile.Close()
 	})
 	if err := c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return err
-	}
-	// Port.
-	if err := c.core.bpf.ParamMap.Update(consts.BigEndianTproxyPortKey, uint32(common.Htons(listener.port)), ebpf.UpdateAny); err != nil {
 		return err
 	}
 

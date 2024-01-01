@@ -83,17 +83,7 @@ enum {
 
 // Param keys:
 static const __u32 zero_key = 0;
-static const __u32 tproxy_port_key = 1;
 static const __u32 one_key = 1;
-static const __u32 disable_l4_tx_checksum_key
-    __attribute__((unused, deprecated)) = 2;
-static const __u32 disable_l4_rx_checksum_key
-    __attribute__((unused, deprecated)) = 3;
-static const __u32 control_plane_pid_key = 4;
-static const __u32 control_plane_nat_direct_key
-    __attribute__((unused, deprecated)) = 5;
-static const __u32 control_plane_dns_routing_key
-    __attribute__((unused, deprecated)) = 6;
 
 // Outbound Connectivity Map:
 
@@ -163,6 +153,13 @@ struct tuples {
   __u8 dscp;
 };
 
+struct dae_param {
+  __u32 tproxy_port;
+  __u32 control_plane_pid;
+};
+
+static volatile const struct dae_param PARAM = {};
+
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __type(key,
@@ -195,15 +192,6 @@ struct {
   /// NOTICE: It MUST be pinned.
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_tuples_map SEC(".maps");
-
-// Params:
-struct {
-  __uint(type, BPF_MAP_TYPE_ARRAY);
-  __type(key, __u32);
-  __type(value, __u32);
-  __uint(max_entries, MAX_PARAM_LEN);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
-} param_map SEC(".maps");
 
 // Link to type:
 #define LinkType_None 0
@@ -1279,13 +1267,13 @@ int tproxy_lan_egress(struct __sk_buff *skb) {
     return TC_ACT_PIPE;
   }
 
-  __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
+  __be16 tproxy_port = PARAM.tproxy_port;
   if (!tproxy_port) {
     return TC_ACT_PIPE;
   }
   struct tuples tuples;
   get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-  if (*tproxy_port != tuples.five.sport) {
+  if (tproxy_port != tuples.five.sport) {
     return TC_ACT_PIPE;
   }
 
@@ -1540,13 +1528,12 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
       *p = pid_pname;
     }
     // Get tproxy pid and compare if they are equal.
-    __u32 *pid_tproxy;
-    if (!(pid_tproxy =
-              bpf_map_lookup_elem(&param_map, &control_plane_pid_key))) {
+    __u32 pid_tproxy;
+    if (!(pid_tproxy = PARAM.control_plane_pid)) {
       bpf_printk("control_plane_pid is not set.");
       return false;
     }
-    return pid_pname->pid == *pid_tproxy;
+    return pid_pname->pid == pid_tproxy;
   } else {
     if (p) {
       *p = NULL;
@@ -1621,11 +1608,11 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   // We should know if this packet is from tproxy.
   // We do not need to check the source ip because we have skipped packets not
   // from localhost.
-  __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
+  __be16 tproxy_port = PARAM.tproxy_port;
   if (!tproxy_port) {
     return TC_ACT_OK;
   }
-  bool tproxy_response = *tproxy_port == tuples.five.sport;
+  bool tproxy_response = tproxy_port == tuples.five.sport;
   // Double check to avoid conflicts when binding wan and lan to the same
   // interface.
   if (tproxy_response && l4proto == IPPROTO_TCP) {
@@ -1965,11 +1952,11 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   __u16 tproxy_typ = bpf_ntohs(*(__u16 *)&ethh.h_source[4]);
   if (*(__u32 *)&ethh.h_source[0] != bpf_htonl(0x02000203) || tproxy_typ > 1) {
     // Check for security. Reject packets that is UDP and sent to tproxy port.
-    __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
+    __be16 tproxy_port = PARAM.tproxy_port;
     if (!tproxy_port) {
       goto accept;
     }
-    if (unlikely(*tproxy_port == tuples.five.dport)) {
+    if (unlikely(tproxy_port == tuples.five.dport)) {
       struct bpf_sock_tuple tuple = {0};
       __u32 tuple_size;
 
@@ -2103,7 +2090,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
     // saddr should be tproxy ip.
     __be32 *tproxy_ip = tuples.five.sip.u6_addr32;
     // __builtin_memcpy(tproxy_ip, saddr, sizeof(tproxy_ip));
-    __be16 *tproxy_port = bpf_map_lookup_elem(&param_map, &tproxy_port_key);
+    __be16 tproxy_port = PARAM.tproxy_port;
     if (!tproxy_port) {
       return TC_ACT_OK;
     }
@@ -2118,7 +2105,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
     // Rewrite dst port.
     if ((ret = rewrite_port(skb, link_h_len, l4proto, ihl, tuples.five.dport,
-                            *tproxy_port, true, true))) {
+                            tproxy_port, true, true))) {
       bpf_printk("Shot Port: %d", ret);
       return TC_ACT_SHOT;
     }
