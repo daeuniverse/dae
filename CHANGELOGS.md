@@ -59,7 +59,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@mzz2017)
 - docs: add guide to separate configuration files in [#389](https://github.com/daeuniverse/dae/pull/389) by (@epmtyicu)
 - ci: Add more kernel tests in [#386](https://github.com/daeuniverse/dae/pull/386) by (@jschwinger233)
-- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@jschwinger233)
 
 #### 特性支持
 
