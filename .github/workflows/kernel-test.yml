@@ -62,47 +62,67 @@ jobs:
           cmd: |
             chmod +x /host/dae/dae
 
-      - name: Setup
+            apt update
+            apt install -y unzip
+
+      - name: Setup network
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             set -ex
 
-            docker network create dae
-            docker run -td --name socks5 --privileged --network dae ubuntu:22.04 bash
-            docker run -td --name dae --privileged --network dae -v /host:/host ubuntu:22.04 bash
+            docker network create --ipv6 --subnet 2001:0DB8::/112 dae
+            docker run -td --name v2ray --privileged --network dae -v /host:/host ubuntu:22.04 bash
+            docker run -td --name dae --privileged --network dae -v /host:/host -v /sys:/sys ubuntu:22.04 bash
 
-      - name: Setup socks5 server
+      - name: Setup v2ray server
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             set -ex
+            cd /host
 
-            docker exec socks5 apt update
-            docker exec socks5 apt install -y dante-server
+            curl -OL https://github.com/v2fly/v2ray-core/releases/download/v4.31.0/v2ray-linux-64.zip
+            unzip v2ray-linux-64.zip
+            docker cp ./v2ray v2ray:/usr/bin
+            docker cp ./v2ctl v2ray:/usr/bin
 
-            cat > ./danted.conf <<!
-            logoutput: /var/log/danted.log
-            internal: 0.0.0.0 port = 1080
-            external: eth0
-            method: username none
-            user.privileged: root
-            user.notprivileged: nobody
-            client pass {
-                from: 0.0.0.0/0 to: 0.0.0.0/0
-                log: connect disconnect error
-            }
-            socks pass {
-                from: 0.0.0.0/0 to: 0.0.0.0/0
-                log: connect disconnect error
+            cat > ./v2ray.json <<!
+            {
+                "log": {
+                    "access": "/host/v2ray.access.log",
+                    "error": "/host/v2ray.error.log",
+                    "loglevel": "warning"
+                },
+                "inbound": {
+                    "port": 23333,
+                    "protocol": "vmess",
+                    "settings": {
+                        "clients": [
+                            {
+                                "id": "b004539e-0d7b-7996-c378-fb040e42de70",
+                                "level": 0,
+                                "alterId": 0
+                            }
+                        ]
+                    }
+                },
+                "outbound": {
+                    "protocol": "freedom",
+                    "settings": {}
+                },
+                "inboundDetour": [],
+                "outboundDetour": []
             }
             !
 
-            docker cp ./danted.conf socks5:/etc/danted.conf
-            docker exec socks5 danted -D
-            docker exec socks5 cat /var/log/danted.log
+            nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
+            sleep 5s
+            cat v2ray.log
+
+            echo '{"v":"2","ps":"test","add":"v2ray","port":"23333","id":"b004539e-0d7b-7996-c378-fb040e42de70","aid":"0","net":"tcp","tls":"","type":"none","path":"","host":"v2ray"}' > vmess.json
 
       - name: Setup dae server
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
@@ -110,10 +130,12 @@ jobs:
           provision: 'false'
           cmd: |
             set -ex
+            cd /host
 
             docker exec dae apt update
-            docker exec dae apt install -y curl
+            docker exec dae apt install -y curl dnsutils netcat
 
+            vmess_link=$(base64 -w0 vmess.json)
             cat > ./conf.dae <<!
             global {
                 tproxy_port: 12345
@@ -125,7 +147,7 @@ jobs:
             }
 
             node {
-                local: 'socks5://socks5:1080'
+                local: 'vmess://\$vmess_link'
             }
 
             group {
@@ -135,30 +157,178 @@ jobs:
             }
 
             routing {
-                dip(1.1.1.1) -> proxy
-                fallback: direct
+                pname(dae) -> direct
+                fallback: proxy
             }
             !
 
             chmod 600 ./conf.dae
-            docker cp ./conf.dae dae:/etc/conf.dae
-            docker exec dae mount -t debugfs none /sys/kernel/debug/
-            docker exec dae mount bpffs -t bpf /sys/fs/bpf
-            docker exec dae /host/dae/dae run -c /etc/conf.dae &> dae.log &
-            sleep 20s
-
-            docker exec dae curl 1.1.1.1
-            docker exec dae curl 1.0.0.1
-
+            nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
+            sleep 10s
             cat dae.log
 
-      - name: Check
+      - name: Check WAN IPv4 TCP
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
         with:
           provision: 'false'
           cmd: |
             set -ex
 
-            docker exec socks5 cat /var/log/danted.log
-            docker exec socks5 cat /var/log/danted.log 2>&1 | grep -q 1.1.1.1
-            docker exec socks5 cat /var/log/danted.log 2>&1 | grep 1.0.0.1 && false || true
+            docker exec dae curl 1.1.1.1:443
+            cat /host/dae.log | grep -F -- '-> 1.1.1.1:443'
+            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.1.1.1:443'
+
+      - name: Check WAN IPv4 UDP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae dig @1.1.1.1 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
+            cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
+
+      - name: Check WAN IPv6 TCP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
+            cat /host/nc.log | grep -q 'succeeded!'
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
+
+      - name: Check WAN IPv6 UDP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            if docker exec dae dig @2606:4700:4700::1111 one.one.one.one; then
+              echo "Shouldn't succeed until https://github.com/daeuniverse/dae/issues/387 is resolved"
+              false
+            else
+              echo "Ingore failure until https://github.com/daeuniverse/dae/issues/387 is resolved"
+              true
+            fi
+
+      - name: Setup LAN
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+            cd /host
+
+            docker restart -t0 dae
+            docker exec dae apt install -y iproute2 iptables iputils-ping
+
+            cat >lan.bash <<!
+            set -ex
+
+            ip net a dae
+            ip l a dae-veth type veth peer name dae-veth-peer
+            ip l s dae-veth-peer up
+            ip l s dae-veth netns dae
+            ip net e dae ip l s dae-veth up
+            ip r a 10.0.0.1 dev dae-veth-peer
+            ip net e dae ip a a 10.0.0.1 dev dae-veth
+            ip net e dae ip r a 169.254.0.1 dev dae-veth
+            ip net e dae ip r a default via 169.254.0.1 dev dae-veth
+
+            sysctl net.ipv6.conf.dae-veth-peer.disable_ipv6=0
+            ip -6 r a fd00:ffff::1 dev dae-veth-peer
+            ip -6 a a fe80::ecee:eeff:feee:eeee dev dae-veth-peer
+            ip net e dae ip -6 a a fd00:ffff::1 dev dae-veth
+            ip net e dae ip -6 r r default via fe80::ecee:eeff:feee:eeee dev dae-veth
+
+            sysctl net.ipv4.conf.dae-veth-peer.proxy_arp=1
+            sysctl net.ipv4.conf.dae-veth-peer.rp_filter=2
+            iptables-legacy -t nat -A POSTROUTING -s 10.0.0.1/32 -j MASQUERADE
+            !
+            docker exec dae bash /host/lan.bash
+
+            docker exec dae ping -c1 10.0.0.1
+            docker exec dae ip net e dae curl 1.0.0.1
+            docker exec dae ping -c1 fd00:ffff::1
+
+            docker exec dae sysctl net.ipv4.conf.dae-veth-peer.send_redirects=0
+            docker exec dae sysctl net.ipv6.conf.dae-veth-peer.forwarding=1
+
+            vmess_link=$(base64 -w0 vmess.json)
+            cat > ./conf.dae <<!
+            global {
+                tproxy_port: 12345
+                log_level: trace
+
+                lan_interface: dae-veth-peer
+                wan_interface: auto
+                allow_insecure: false
+            }
+
+            node {
+                local: 'vmess://\$vmess_link'
+            }
+
+            group {
+                proxy {
+                    policy: min_moving_avg
+                }
+            }
+
+            routing {
+                pname(dae) -> direct
+                fallback: proxy
+            }
+            !
+
+            chmod 600 ./conf.dae
+            nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
+            sleep 10s
+            cat dae.log
+
+      - name: Check LAN IPv4 TCP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae ip net e dae curl 1.0.0.1
+            cat /host/dae.log | grep -F -- '-> 1.0.0.1:80'
+            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.0.0.1:80'
+
+      - name: Check LAN IPv4 UDP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae ip net e dae dig @8.8.4.4 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
+            cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
+
+      - name: Check LAN IPv6 TCP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80 &> /host/nc.log
+            cat /host/nc.log | grep -q 'succeeded!'
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1001]:80'
+
+      - name: Check LAN IPv6 UDP
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
