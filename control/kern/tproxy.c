@@ -1797,8 +1797,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   //   }
   // }
 
-  disable_l4_checksum(skb, link_h_len, l4proto, ihl);
-
   // Redirect from egress to ingress.
   if ((ret = bpf_redirect(skb->ifindex, BPF_F_INGRESS)) == TC_ACT_SHOT) {
     bpf_printk("Shot bpf_redirect: %d", ret);
