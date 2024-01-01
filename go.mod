@@ -17,7 +17,7 @@ require (
 	github.com/safchain/ethtool v0.3.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.7.0
-	github.com/v2rayA/ahocorasick-domain v0.0.0-20230218160829-122a074c48c8
+	github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208
 	github.com/vishvananda/netlink v1.1.0
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.11.0
