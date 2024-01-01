@@ -216,7 +216,7 @@ func NewControlPlane(
 			return nil, err
 		}
 		for _, ifname := range global.WanInterface {
-			if err = core.bindWan(ifname); err != nil {
+			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}
 		}

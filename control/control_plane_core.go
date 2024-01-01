@@ -547,7 +547,10 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 	return nil
 }
 
-func (c *controlPlaneCore) bindWan(ifname string) error {
+func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) error {
+	if autoConfigKernelParameter {
+		SetAcceptLocal(ifname, "1")
+	}
 	return c._bindWan(ifname)
 }
 
