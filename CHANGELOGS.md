@@ -14,6 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v0.5.0rc1 (Pre-release)](#v050rc1-pre-release)
+
 - [v0.4.0 (Latest)](#v040-latest)
 - [v0.3.0](#v030)
 - [v0.2.4](#v024)
@@ -35,6 +37,54 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.5.0rc1 (Pre-release)
+
+> Release date: 2024/01/01
+
+### Features
+
+- feat/refactor: refactor outbound and support v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (@mzz2017)
+- feat: use bpf_sk_assign at tproxy_wan_ingress in [#383](https://github.com/daeuniverse/dae/pull/383) by (@jschwinger233)
+- patch(bpf): rewrite bpf spec before loading to avoid bpf map lookup during runtime in [#376](https://github.com/daeuniverse/dae/pull/376) by (@jschwinger233)
+
+### Bug Fixes
+
+- fix/chore: disable gso on client by default and upgrade softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (@mzz2017)
+- fix: add \_ into valid charset of ac machine in [#388](https://github.com/daeuniverse/dae/pull/388) by (@mzz2017)
+- fix: running issue and no network on android in [#264](https://github.com/daeuniverse/dae/pull/264) by (@mzz2017)
+- fix(bpf): Don't clear checksum on wan_egress in [#393](https://github.com/daeuniverse/dae/pull/393) by (@jschwinger233)
+
+### Others
+
+- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@mzz2017)
+- docs: add guide to separate configuration files in [#389](https://github.com/daeuniverse/dae/pull/389) by (@epmtyicu)
+- ci: Add more kernel tests in [#386](https://github.com/daeuniverse/dae/pull/386) by (@jschwinger233)
+- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@jschwinger233)
+
+### 特性支持
+
+- 特性/重构: 重构出站并支持 v2ray-plugin 并修复 simple-obfs 的 udp 问题 in [#390](https://github.com/daeuniverse/dae/pull/390) 由 (@mzz2017)
+- 特性: 在 [#383](https://github.com/daeuniverse/dae/pull/383) 中的 tproxy_wan_ingress 使用 bpf_sk_assign 由 (@jschwinger233)
+- 补丁(bpf): 在运行时加载之前重写 bpf 规范以避免 bpf 映射查找 in [#376](https://github.com/daeuniverse/dae/pull/376) 由 (@jschwinger233)
+
+### 问题修复
+
+- 修复/杂项: 默认情况下在客户端上禁用 gso 并升级 softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) 由 (@mzz2017)
+- 修复: 在 [#388](https://github.com/daeuniverse/dae/pull/388) 中将 \_ 添加到 ac 机器的有效字符集 由 (@mzz2017)
+- 修复: 在 [#264](https://github.com/daeuniverse/dae/pull/264) 上运行问题和 Android 上无网络 由 (@mzz2017)
+- 修复(bpf): 在 [#393](https://github.com/daeuniverse/dae/pull/393) 中不要清除 wan_egress 上的校验和 由 (@jschwinger233)
+
+### 其他变更
+
+- 自动化(docker): 在 [#392](https://github.com/daeuniverse/dae/pull/392) 中移除对 armv6 的支持 由 (@mzz2017)
+- 文档: 在 [#389](https://github.com/daeuniverse/dae/pull/389) 中添加分离配置文件的指南 由 (@epmtyicu)
+- 自动化: 在 [#386](https://github.com/daeuniverse/dae/pull/386) 中添加更多内核测试 由 (@jschwinger233)
+- 自动化(docker): 在 [#392](https://github.com/daeuniverse/dae/pull/392) 中移除对 armv6 的支持 由 (@jschwinger233)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.5.0rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.4.0...v0.5.0rc1
 
 ### v0.4.0 (Latest)
 
