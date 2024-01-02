@@ -1870,24 +1870,29 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
   skb->mark = TPROXY_MARK;
   struct bpf_sock_tuple tuple = {};
-  __u32 tuple_size = sizeof(tuple.ipv4);
+  __u32 tuple_size = skb->protocol == bpf_htons(ETH_P_IP) ?
+		     sizeof(tuple.ipv4) : sizeof(tuple.ipv6);
 
-  /* First look for established socket */
-  if (skb->protocol == bpf_htons(ETH_P_IP)) {
-    tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
-    tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
-    tuple.ipv4.sport = tuples.five.sport;
-    tuple.ipv4.dport = tuples.five.dport;
-  } else {
-    __builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
-    tuple.ipv6.sport = tuples.five.sport;
-    tuple.ipv6.dport = tuples.five.dport;
-    tuple_size = sizeof(tuple.ipv6);
-  }
-  ret = assign_socket(skb, &tuple, tuple_size, l4proto, true);
-  if (ret == 0) {
-    return TC_ACT_OK;
+  /* First look for established socket.
+   * This is done for TCP only, otherwise bpf_sk_lookup_udp would find
+   * previously created transparent socket for UDP, which is not what we want.
+   * */
+  if (l4proto == IPPROTO_TCP) {
+    if (skb->protocol == bpf_htons(ETH_P_IP)) {
+      tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
+      tuple.ipv4.sport = tuples.five.sport;
+      tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
+      tuple.ipv4.dport = tuples.five.dport;
+    } else {
+      __builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
+      __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
+      tuple.ipv6.sport = tuples.five.sport;
+      tuple.ipv6.dport = tuples.five.dport;
+    }
+    ret = assign_socket(skb, &tuple, tuple_size, l4proto, true);
+    if (ret == 0) {
+      return TC_ACT_OK;
+    }
   }
 
   /* Then look for tproxy listening socket */
