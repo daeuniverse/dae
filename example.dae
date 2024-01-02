@@ -202,6 +202,9 @@ routing {
     # WAN.
     pname(NetworkManager) -> direct
 
+    # Bypass DNS stubs. We want to bypass their DNS requests, thus use 'must'.
+    pname(systemd-resolved, dnsmasq) -> must_direct
+
     # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being
     # forwarded by the proxy.
     # "dip" means destination IP.
