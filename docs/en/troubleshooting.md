@@ -27,7 +27,7 @@ ufw
 firewalld
 ```
 
-**ufw**
+#### ufw
 
 UFW users may need some extra steps to make sure `Binding to LAN` working.
 
@@ -41,7 +41,7 @@ Such as adding as follows to `/etc/ufw/before*.rules`:
 -A ufw6-before-input -m mark --mark 0x8000000 -j ACCEPT
 ```
 
-**firewalld**
+#### firewalld
 
 If you use firewalld, it is hard to add mark support. You have to execute following commands every time machine boot and firewall rule changes:
 
