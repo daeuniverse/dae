@@ -27,6 +27,8 @@ ufw
 firewalld
 ```
 
+**ufw**
+
 UFW users may need some extra steps to make sure `Binding to LAN` working.
 
 Such as adding as follows to `/etc/ufw/before*.rules`:
@@ -37,6 +39,14 @@ Such as adding as follows to `/etc/ufw/before*.rules`:
 
 # before6.rules
 -A ufw6-before-input -m mark --mark 0x8000000 -j ACCEPT
+```
+
+**firewalld**
+
+If you use firewalld, it is hard to add mark support. You have to execute following commands every time machine boot and firewall rule changes:
+
+```bash
+sudo nft 'insert rule inet firewalld filter_INPUT mark 0x8000000 accept'
 ```
 
 ### Troubleshoot PPPoE
