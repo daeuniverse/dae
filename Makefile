@@ -42,6 +42,9 @@ BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Versio
 
 ## Begin Dae Build
 dae: export GOOS=linux
+ifndef CGO_ENABLED
+dae: export CGO_ENABLED=0
+endif
 dae: ebpf
 	@echo $(CFLAGS)
 	go build -o $(OUTPUT) $(BUILD_ARGS) .
