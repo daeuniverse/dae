@@ -18,7 +18,7 @@ If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](con
 
 ### Troubleshoot firewall
 
-If you bind to wan, make sure firewall is stopped or `12345` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
+If you bind to wan, make sure firewall is stopped or mark `0x8000000` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
 
 Usual firewalls on Linux:
 
