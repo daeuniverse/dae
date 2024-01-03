@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 // Package trie is modified from https://github.com/openacid/succinct/blob/loc100/sskv.go.
 // Slower than about 30% but more than 40% memory saving.
