@@ -9,10 +9,10 @@ insert_lines() {
   if [ -f "$file" ]; then
     # Inserting lines at the beginning of the file
     {
-      echo "#"
-      echo "#  SPDX-License-Identifier: AGPL-3.0-only"
-      echo "#  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>"
-      echo "#"
+      echo "/*"
+      echo "*  SPDX-License-Identifier: AGPL-3.0-only"
+      echo "*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>"
+      echo "*/"
       echo
       cat "$file"
     } >tempfile && mv tempfile "$file"

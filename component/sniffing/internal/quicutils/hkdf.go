@@ -1,3 +1,8 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+*/
+
 // Modified from https://github.com/quic-go/quic-go/blob/58cedf7a4f/internal/handshake/hkdf.go
 
 package quicutils
