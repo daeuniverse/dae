@@ -96,7 +96,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.4.0...v0.5.0
 
-### New Contributors
+#### New Contributors
 
 - @epmtyicu made their first contribution in [#389](https://github.com/daeuniverse/dae/pull/389)
 - @zzzsyyy made their first contribution in [#398](https://github.com/daeuniverse/dae/pull/398)
