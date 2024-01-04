@@ -71,6 +71,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 #### 特性支持
 
 - 特性/重构: 重构出站并支持 v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (@mzz2017)
+- 特性: 在 #383 的 tproxy_wan_ingress 中使用 bpf_sk_assign by (@jschwinger233)
 
 #### 问题修复
 
@@ -79,6 +80,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - 修复: Android 上的运行问题和无网络 in [#264](https://github.com/daeuniverse/dae/pull/264) by (@mzz2017)
 - 修复: 只绑定到 wan 时未添加 ip 规则 in [#399](https://github.com/daeuniverse/dae/pull/399) by (@mzz2017)
 - 修复(bpf): 仅针对监听器执行 sk_lookup_udp in [#401](https://github.com/daeuniverse/dae/pull/401) by (@jschwinger233)
+- 补丁: 重写 bpf 规范，以避免在运行时进行 bpf 映射查找 in #376 by (@jschwinger233)
+- 补丁(bpf): 不要在 #393 的 wan_egress 上清除校验和 by (@jschwinger233)
 
 #### 其他变更
 
