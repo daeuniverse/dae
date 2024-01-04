@@ -190,7 +190,11 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 			},
 			KeepAlive: 0,
 		}
-		pc, err := d.ListenPacket(context.Background(), "udp", lAddr)
+		var pc net.PacketConn
+		err := WithIndieNetns(func() (err error) {
+			pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+			return err
+		})
 		if err != nil {
 			return nil, true, err
 		}

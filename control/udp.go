@@ -97,7 +97,10 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		}
 		return err
 	}
-	_, err = uConn.WriteToUDPAddrPort(data, realTo)
+	err = WithIndieNetns(func() (err error) {
+		_, err = uConn.WriteToUDPAddrPort(data, realTo)
+		return
+	})
 	return err
 }
 
