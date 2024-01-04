@@ -15,9 +15,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 <!-- BEGIN NEW TOC ENTRY -->
 
 - [v0.5.0 (Latest)](#v050-latest)
-- [v0.5.0rc2 (Pre-release)](#v050rc2-pre-release)
-- [v0.5.0rc1 (Pre-release)](#v050rc1-pre-release)
-- [v0.4.0 (Latest)](#v040-latest)
+- [v0.4.0](#v040)
 - [v0.3.0](#v030)
 - [v0.2.4](#v024)
 - [v0.2.3](#v023)
@@ -45,51 +43,54 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 #### Features
 
-- feat/refactor: refactor outbound and support v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (mzz2017)
+- feat/refactor: refactor outbound and support v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (@mzz2017)
+- feat: use bpf_sk_assign at tproxy_wan_ingress in [#383](https://github.com/daeuniverse/dae/pull/383) by (@jschwinger233)
 
 #### Bug Fixes
 
-- fix/chore: disable gso on client by default and upgrade softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (mzz2017)
-- fix: add \_ into valid charset of ac machine in [#388](https://github.com/daeuniverse/dae/pull/388) by (mzz2017)
-- fix: running issue and no network on android in [#264](https://github.com/daeuniverse/dae/pull/264) by (mzz2017)
-- fix: ip rule is not added when only binding to wan in [#399](https://github.com/daeuniverse/dae/pull/399) by (mzz2017)
-- fix(bpf): sk_lookup_udp for listener only in [#401](https://github.com/daeuniverse/dae/pull/401) by (jschwinger233)
+- fix/chore: disable gso on client by default and upgrade softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (@mzz2017)
+- fix: add \_ into valid charset of ac machine in [#388](https://github.com/daeuniverse/dae/pull/388) by (@mzz2017)
+- fix: running issue and no network on android in [#264](https://github.com/daeuniverse/dae/pull/264) by (@mzz2017)
+- fix: ip rule is not added when only binding to wan in [#399](https://github.com/daeuniverse/dae/pull/399) by (@mzz2017)
+- fix(bpf): sk_lookup_udp for listener only in [#401](https://github.com/daeuniverse/dae/pull/401) by (@jschwinger233)
+- patch: rewrite bpf spec before loading to avoid bpf map lookup during runtime in [#376](https://github.com/daeuniverse/dae/pull/376) by (@jschwinger233)
+- patch(bpf): Don't clear checksum on wan_egress in [#393](https://github.com/daeuniverse/dae/pull/393) by (@jschwinger233)
 
 #### Others
 
-- docs: add guide to separate configuration files in [#389](https://github.com/daeuniverse/dae/pull/389) by (epmtyicu)
-- ci: Add more kernel tests in [#386](https://github.com/daeuniverse/dae/pull/386) by (jschwinger233)
-- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (mzz2017)
-- ci(release): draft release v0.5.0rc1 in [#396](https://github.com/daeuniverse/dae/pull/396) by (dae-prow-robot)
-- chore: add fish completion in [#398](https://github.com/daeuniverse/dae/pull/398) by (zzzsyyy)
-- chore: Build statically linked binary in [#402](https://github.com/daeuniverse/dae/pull/402) by (jschwinger233)
-- docs(troubleshooting.md): add firewalld related docs in [#403](https://github.com/daeuniverse/dae/pull/403) by (mzz2017)
-- ci(release): draft release v0.5.0rc2 in [#405](https://github.com/daeuniverse/dae/pull/405) by (dae-prow-robot)
-- chore(license): update license signature in [#406](https://github.com/daeuniverse/dae/pull/406) by (sumire88)
+- docs: add guide to separate configuration files in [#389](https://github.com/daeuniverse/dae/pull/389) by (@epmtyicu)
+- ci: Add more kernel tests in [#386](https://github.com/daeuniverse/dae/pull/386) by (@jschwinger233)
+- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@mzz2017)
+- ci(release): draft release v0.5.0rc1 in [#396](https://github.com/daeuniverse/dae/pull/396) by (@dae-prow-robot)
+- chore: add fish completion in [#398](https://github.com/daeuniverse/dae/pull/398) by (@zzzsyyy)
+- chore: Build statically linked binary in [#402](https://github.com/daeuniverse/dae/pull/402) by (@jschwinger233)
+- docs(troubleshooting.md): add firewalld related docs in [#403](https://github.com/daeuniverse/dae/pull/403) by (@mzz2017)
+- ci(release): draft release v0.5.0rc2 in [#405](https://github.com/daeuniverse/dae/pull/405) by (@dae-prow-robot)
+- chore(license): update license signature in [#406](https://github.com/daeuniverse/dae/pull/406) by (@sumire88)
 
 #### 特性支持
 
-- 特性/重构: 重构出站并支持 v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (mzz2017)
+- 特性/重构: 重构出站并支持 v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (@mzz2017)
 
 #### 问题修复
 
-- 修复/杂项: 默认情况下禁用客户端的 gso 并升级 softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (mzz2017)
-- 修复: 在 ac 机器的有效字符集中添加 \_ in [#388](https://github.com/daeuniverse/dae/pull/388) by (mzz2017)
-- 修复: Android 上的运行问题和无网络 in [#264](https://github.com/daeuniverse/dae/pull/264) by (mzz2017)
-- 修复: 只绑定到 wan 时未添加 ip 规则 in [#399](https://github.com/daeuniverse/dae/pull/399) by (mzz2017)
-- 修复(bpf): 仅针对监听器执行 sk_lookup_udp in [#401](https://github.com/daeuniverse/dae/pull/401) by (jschwinger233)
+- 修复/杂项: 默认情况下禁用客户端的 gso 并升级 softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (@mzz2017)
+- 修复: 在 ac 机器的有效字符集中添加 \_ in [#388](https://github.com/daeuniverse/dae/pull/388) by (@mzz2017)
+- 修复: Android 上的运行问题和无网络 in [#264](https://github.com/daeuniverse/dae/pull/264) by (@mzz2017)
+- 修复: 只绑定到 wan 时未添加 ip 规则 in [#399](https://github.com/daeuniverse/dae/pull/399) by (@mzz2017)
+- 修复(bpf): 仅针对监听器执行 sk_lookup_udp in [#401](https://github.com/daeuniverse/dae/pull/401) by (@jschwinger233)
 
 #### 其他变更
 
-- 文档: 添加分离配置文件的指南 in [#389](https://github.com/daeuniverse/dae/pull/389) by (epmtyicu)
-- 自动化: 在 [#386](https://github.com/daeuniverse/dae/pull/386) 中添加更多内核测试 by (jschwinger233)
-- 自动化(docker): 移除对 armv6 的支持 in [#392](https://github.com/daeuniverse/dae/pull/392) by (mzz2017)
-- 自动化(release): 在 [#396](https://github.com/daeuniverse/dae/pull/396) 中起草发布 v0.5.0rc1 by (dae-prow-robot)
-- 杂项: 在 [#398](https://github.com/daeuniverse/dae/pull/398) 中添加 fish 补全 by (zzzsyyy)
-- 杂项: 在 [#402](https://github.com/daeuniverse/dae/pull/402) 中构建静态链接二进制 by (jschwinger233)
-- 文档(troubleshooting.md): 在 [#403](https://github.com/daeuniverse/dae/pull/403) 中添加与 firewalld 相关的文档 by (mzz2017)
-- 自动化(release): 在 [#405](https://github.com/daeuniverse/dae/pull/405) 中起草发布 v0.5.0rc2 by (dae-prow-robot)
-- 杂项(license): 在 [#406](https://github.com/daeuniverse/dae/pull/406) 中更新许可证签名 by (sumire88)
+- 文档: 添加分离配置文件的指南 in [#389](https://github.com/daeuniverse/dae/pull/389) by (@epmtyicu)
+- 自动化: 在 [#386](https://github.com/daeuniverse/dae/pull/386) 中添加更多内核测试 by (@jschwinger233)
+- 自动化(docker): 移除对 armv6 的支持 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@mzz2017)
+- 自动化(release): 在 [#396](https://github.com/daeuniverse/dae/pull/396) 中起草发布 v0.5.0rc1 by (@dae-prow-robot)
+- 杂项: 在 [#398](https://github.com/daeuniverse/dae/pull/398) 中添加 fish 补全 by (@zzzsyyy)
+- 杂项: 在 [#402](https://github.com/daeuniverse/dae/pull/402) 中构建静态链接二进制 by (@jschwinger233)
+- 文档(troubleshooting.md): 在 [#403](https://github.com/daeuniverse/dae/pull/403) 中添加与 firewalld 相关的文档 by (@mzz2017)
+- 自动化(release): 在 [#405](https://github.com/daeuniverse/dae/pull/405) 中起草发布 v0.5.0rc2 by (@dae-prow-robot)
+- 杂项(license): 在 [#406](https://github.com/daeuniverse/dae/pull/406) 中更新许可证签名 by (@sumire88)
 
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.5.0/example.dae
 
@@ -101,116 +102,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - @zzzsyyy made their first contribution in [#398](https://github.com/daeuniverse/dae/pull/398)
 - @sumire88 made their first contribution in [#406](https://github.com/daeuniverse/dae/pull/406)
 
-### v0.5.0rc2 (Pre-release)
-
-> Release date: 2024/01/03
-
-#### Features
-
-- feat/refactor: refactor outbound and support v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (@mzz2017)
-- feat: use bpf_sk_assign at tproxy_wan_ingress in [#383](https://github.com/daeuniverse/dae/pull/383) by (@jschwinger233)
-- patch(bpf): rewrite bpf spec before loading to avoid bpf map lookup during runtime in [#376](https://github.com/daeuniverse/dae/pull/376) by (@jschwinger233)
-
-#### Bug Fixes
-
-- fix(bpf): sk_lookup_udp for listener only in [#401](https://github.com/daeuniverse/dae/pull/401) by (@jschwinger233)
-- fix: ip rule is not added when only binding to wan in [#399](https://github.com/daeuniverse/dae/pull/399) by (@mzz2017)
-- fix/chore: disable gso on client by default and upgrade softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (@mzz2017)
-- fix: add \_ into valid charset of ac machine in [#388](https://github.com/daeuniverse/dae/pull/388) by (@mzz2017)
-- fix: running issue and no network on android in [#264](https://github.com/daeuniverse/dae/pull/264) by (@mzz2017)
-- fix(bpf): Don't clear checksum on wan_egress in [#393](https://github.com/daeuniverse/dae/pull/393) by (@jschwinger233)
-
-#### Others
-
-- docs(troubleshooting.md): add firewalld related docs in [#403](https://github.com/daeuniverse/dae/pull/403) by (@mzz2017)
-- chore: Build statically linked binary in [#402](https://github.com/daeuniverse/dae/pull/402) by (@jschwinger233)
-- chore: add fish completion in [#398](https://github.com/daeuniverse/dae/pull/398) by (@zzzsyyy)
-- ci(release): draft release v0.5.0rc1 in [#396](https://github.com/daeuniverse/dae/pull/396) by (@dae-prow-robot)
-- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@mzz2017)
-- docs: add guide to separate configuration files in [#389](https://github.com/daeuniverse/dae/pull/389) by (@epmtyicu)
-- ci: Add more kernel tests in [#386](https://github.com/daeuniverse/dae/pull/386) by (@jschwinger233)
-
-#### 特性支持
-
-- 特性/重构: 重构出站并支持 v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) 由 (@mzz2017)
-- 特性: 在 [#383](https://github.com/daeuniverse/dae/pull/383) 使用 bpf_sk_assign 处理 tproxy_wan_ingress 由 (@jschwinger233)
-- 补丁(bpf): 在加载之前重写 bpf 规范，避免运行时进行 bpf 映射查找 in [#376](https://github.com/daeuniverse/dae/pull/376) 由 (@jschwinger233)
-
-#### Bug 修复
-
-- 修复(bpf): 仅为监听器使用 sk_lookup_udp in [#401](https://github.com/daeuniverse/dae/pull/401) 由 (@jschwinger233)
-- 修复: 仅绑定到 wan 时不添加 ip rule in [#399](https://github.com/daeuniverse/dae/pull/399) 由 (@mzz2017)
-- 修复/杂项: 默认情况下在客户端禁用 gso 并升级 softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) 由 (@mzz2017)
-- 修复: 在 ac 机器的有效字符集中添加 \_ in [#388](https://github.com/daeuniverse/dae/pull/388) 由 (@mzz2017)
-- 修复: 在 [#264](https://github.com/daeuniverse/dae/pull/264) 上运行问题和 Android 上没有网络 由 (@mzz2017)
-- 修复(bpf): 在 wan_egress 上不清除校验和 in [#393](https://github.com/daeuniverse/dae/pull/393) 由 (@jschwinger233)
-
-#### 其他
-
-- 文档(troubleshooting.md): 在 [#403](https://github.com/daeuniverse/dae/pull/403) 中添加与 firewalld 相关的文档 由 (@mzz2017)
-- 杂项: 在 [#402](https://github.com/daeuniverse/dae/pull/402) 中构建静态链接二进制 由 (@jschwinger233)
-- 杂项: 在 [#398](https://github.com/daeuniverse/dae/pull/398) 中添加 fish 完成 由 (@zzzsyyy)
-- 自动化(release): 在 [#396](https://github.com/daeuniverse/dae/pull/396) 中起草发布 v0.5.0rc1 由 (@dae-prow-robot)
-- 自动化(docker): 在 [#392](https://github.com/daeuniverse/dae/pull/392) 中移除对 armv6 的支持 由 (@mzz2017)
-- 文档: 在 [#389](https://github.com/daeuniverse/dae/pull/389) 中添加分离配置文件的指南 由 (@epmtyicu)
-- 自动化: 在 [#386](https://github.com/daeuniverse/dae/pull/386) 中添加更多内核测试 由 (@jschwinger233)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.5.0rc2/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.4.0...v0.5.0rc2
-
-#### New Contributors
-
-- @epmtyicu made their first contribution in https://github.com/daeuniverse/dae/pull/389
-- @zzzsyyy made their first contribution in https://github.com/daeuniverse/dae/pull/398
-
-### v0.5.0rc1 (Pre-release)
-
-> Release date: 2024/01/01
-
-#### Features
-
-- feat/refactor: refactor outbound and support v2ray-plugin in [#390](https://github.com/daeuniverse/dae/pull/390) by (@mzz2017)
-- feat: use bpf_sk_assign at tproxy_wan_ingress in [#383](https://github.com/daeuniverse/dae/pull/383) by (@jschwinger233)
-- patch(bpf): rewrite bpf spec before loading to avoid bpf map lookup during runtime in [#376](https://github.com/daeuniverse/dae/pull/376) by (@jschwinger233)
-
-#### Bug Fixes
-
-- fix/chore: disable gso on client by default and upgrade softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) by (@mzz2017)
-- fix: add \_ into valid charset of ac machine in [#388](https://github.com/daeuniverse/dae/pull/388) by (@mzz2017)
-- fix: running issue and no network on android in [#264](https://github.com/daeuniverse/dae/pull/264) by (@mzz2017)
-- fix(bpf): Don't clear checksum on wan_egress in [#393](https://github.com/daeuniverse/dae/pull/393) by (@jschwinger233)
-
-#### Others
-
-- ci(docker): remove support for armv6 in [#392](https://github.com/daeuniverse/dae/pull/392) by (@mzz2017)
-- docs: add guide to separate configuration files in [#389](https://github.com/daeuniverse/dae/pull/389) by (@epmtyicu)
-- ci: Add more kernel tests in [#386](https://github.com/daeuniverse/dae/pull/386) by (@jschwinger233)
-
-#### 特性支持
-
-- 特性/重构: 重构出站并支持 v2ray-plugin 并修复 simple-obfs 的 udp 问题 in [#390](https://github.com/daeuniverse/dae/pull/390) 由 (@mzz2017)
-- 特性: 在 [#383](https://github.com/daeuniverse/dae/pull/383) 中的 tproxy_wan_ingress 使用 bpf_sk_assign 由 (@jschwinger233)
-- 补丁(bpf): 在运行时加载之前重写 bpf 规范以避免 bpf 映射查找 in [#376](https://github.com/daeuniverse/dae/pull/376) 由 (@jschwinger233)
-
-#### 问题修复
-
-- 修复/杂项: 默认情况下在客户端上禁用 gso 并升级 softwind/quic-go in [#391](https://github.com/daeuniverse/dae/pull/391) 由 (@mzz2017)
-- 修复: 在 [#388](https://github.com/daeuniverse/dae/pull/388) 中将 \_ 添加到 ac 机器的有效字符集 由 (@mzz2017)
-- 修复: 在 [#264](https://github.com/daeuniverse/dae/pull/264) 上运行问题和 Android 上无网络 由 (@mzz2017)
-- 修复(bpf): 在 [#393](https://github.com/daeuniverse/dae/pull/393) 中不要清除 wan_egress 上的校验和 由 (@jschwinger233)
-
-#### 其他变更
-
-- 自动化(docker): 在 [#392](https://github.com/daeuniverse/dae/pull/392) 中移除对 armv6 的支持 由 (@mzz2017)
-- 文档: 在 [#389](https://github.com/daeuniverse/dae/pull/389) 中添加分离配置文件的指南 由 (@epmtyicu)
-- 自动化: 在 [#386](https://github.com/daeuniverse/dae/pull/386) 中添加更多内核测试 由 (@jschwinger233)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.5.0rc1/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.4.0...v0.5.0rc1
-
-### v0.4.0 (Latest)
+### v0.4.0
 
 > Release date: 2023/12/26
 
