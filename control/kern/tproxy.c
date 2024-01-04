@@ -133,16 +133,6 @@ struct routing_result {
   __u8 dscp;
 };
 
-struct dst_routing_result {
-  __be32 ip[4];
-  __be16 port;
-  __u16 recognize;
-  struct routing_result routing_result;
-};
-
-// force emitting struct into the ELF.
-const struct dst_routing_result *_ __attribute__((unused));
-
 struct tuples_key {
   union ip6 sip;
   union ip6 dip;

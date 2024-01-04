@@ -6,7 +6,6 @@
 package control
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -19,7 +18,6 @@ import (
 	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/daeuniverse/softwind/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
@@ -50,44 +48,8 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 	return nil, DefaultNatTimeout
 }
 
-func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
-	realFrom16 := realFrom.Addr().As16()
-	hdr := bpfDstRoutingResult{
-		Ip:   common.Ipv6ByteSliceToUint32Array(realFrom16[:]),
-		Port: common.Htons(realFrom.Port()),
-		RoutingResult: bpfRoutingResult{
-			Outbound: uint8(lanWanFlag), // Pass some message to the kernel program.
-		},
-	}
-	// Do not put this 'buf' because it has been taken by buffer.
-	b := pool.GetBuffer()
-	defer pool.PutBuffer(b)
-	// Use internal.NativeEndian due to already big endian.
-	if err := binary.Write(b, internal.NativeEndian, hdr); err != nil {
-		return err
-	}
-	b.Write(data)
-	//logrus.Debugln("sendPktWithHdrWithFlag: from", realFrom, "to", to)
-	if ipversion := consts.IpVersionFromAddr(to.Addr()); consts.IpVersionFromAddr(lConn.LocalAddr().(*net.UDPAddr).AddrPort().Addr()) != ipversion {
-		// ip versions unmatched.
-		if ipversion == consts.IpVersionStr_4 {
-			// 4 to 6
-			to = netip.AddrPortFrom(netip.AddrFrom16(to.Addr().As16()), to.Port())
-		} else {
-			// Shouldn't happen.
-			return fmt.Errorf("unmatched ipversions")
-		}
-	}
-	_, err := lConn.WriteToUDPAddrPort(b.Bytes(), to)
-	return err
-}
-
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn, lanWanFlag consts.LanWanFlag) (err error) {
-
-	if lanWanFlag == consts.LanWanFlag_IsWan {
-		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
-	}
+func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
 
 	transparentTimeout := AnyfromTimeout
 	if from.Port() == 53 {
@@ -113,18 +75,9 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
-	var lanWanFlag consts.LanWanFlag
 	var realSrc netip.AddrPort
 	var domain string
-	useAssign := pktDst == realDst // Use sk_assign instead of modify target ip/port.
-	if useAssign {
-		lanWanFlag = consts.LanWanFlag_IsLan
-		realSrc = src
-	} else {
-		lanWanFlag = consts.LanWanFlag_IsWan
-		// From localhost, so dst IP is src IP.
-		realSrc = netip.AddrPortFrom(pktDst.Addr(), src.Port())
-	}
+	realSrc = src
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
@@ -185,7 +138,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 	if isDns {
 		return c.dnsController.Handle_(dnsMessage, &udpRequest{
-			lanWanFlag:    lanWanFlag,
 			realSrc:       realSrc,
 			realDst:       realDst,
 			src:           src,
@@ -224,7 +176,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 getNew:
 	if retry > MaxRetry {
 		c.log.WithFields(logrus.Fields{
-			"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
+			"src":     RefineSourceToShow(realSrc, realDst.Addr()),
 			"network": networkType.String(),
 			"dialer":  ue.Dialer.Property().Name,
 			"retry":   retry,
@@ -235,7 +187,7 @@ getNew:
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
-			return sendPkt(data, from, realSrc, src, lConn, lanWanFlag)
+			return sendPkt(data, from, realSrc, src, lConn)
 		},
 		NatTimeout: natTimeout,
 		GetDialOption: func() (option *DialOption, err error) {
@@ -299,7 +251,7 @@ getNew:
 
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			c.log.WithFields(logrus.Fields{
-				"src":     RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag),
+				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
 				"network": networkType.String(),
 				"dialer":  ue.Dialer.Property().Name,
 				"retry":   retry,
@@ -346,7 +298,7 @@ getNew:
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}
-		c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr(), lanWanFlag), dialTarget)
+		c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 	}
 
 	return nil
