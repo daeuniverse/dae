@@ -1,3 +1,8 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package cmd
 
 import (
@@ -31,7 +36,7 @@ func init() {
 	rootCmd.Version = strings.Join([]string{
 		Version,
 		fmt.Sprintf("go runtime %v %v/%v", runtime.Version(), runtime.GOOS, runtime.GOARCH),
-		"Copyright (c) 2023 dae",
+		"Copyright (c) 2022-2024 dae",
 		"License GNU AGPLv3 <https://github.com/daeuniverse/dae/blob/main/LICENSE>",
 	}, "\n")
 }
