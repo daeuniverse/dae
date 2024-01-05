@@ -5,13 +5,17 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"sync"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
-var indieNetns netns.NsHandle
+var (
+	indieNetns netns.NsHandle
+	once       sync.Once
+)
 
 func WithIndieNetns(f func() error) (err error) {
 	runtime.LockOSThread()
@@ -39,7 +43,13 @@ func GetIndieNetns() (_ netns.NsHandle, err error) {
 		return indieNetns, nil
 	}
 
-	// Setup a new netns
+	once.Do(func() {
+		err = setupIndieNetns()
+	})
+	return indieNetns, err
+}
+
+func setupIndieNetns() (err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -116,7 +126,7 @@ func GetIndieNetns() (_ netns.NsHandle, err error) {
 	}); err != nil {
 		return
 	}
-	return indieNetns, err
+	return
 }
 
 func DeleteNamedNetns(name string) error {
