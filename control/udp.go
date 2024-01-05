@@ -90,17 +90,16 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	}
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
-	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			// Port collision, use traditional method.
-			return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
-		}
-		return err
+	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
+		err = WithIndieNetns(func() (err error) {
+			uConn, _, err = DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+			return err
+		})
 	}
-	err = WithIndieNetns(func() (err error) {
-		_, err = uConn.WriteToUDPAddrPort(data, realTo)
+	if err != nil {
 		return
-	})
+	}
+	_, err = uConn.WriteToUDPAddrPort(data, realTo)
 	return err
 }
 
