@@ -107,6 +107,10 @@ func setupIndieNetns() (err error) {
 	if err = SetArpFilter("all", "0"); err != nil {
 		return fmt.Errorf("Failed to set arp_filter for all: %v", err)
 	}
+	// sysctl net.ipv4.conf.dae0.accept_local=1
+	if err = SetAcceptLocal("dae0", "1"); err != nil {
+		return fmt.Errorf("Failed to set accept_local for dae0: %v", err)
+	}
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
 	if err = SetDisableIpv6("dae0", "0"); err != nil {
 		return fmt.Errorf("Failed to set disable_ipv6 for dae0: %v", err)
