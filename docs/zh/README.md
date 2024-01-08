@@ -189,7 +189,7 @@ group {
 
 # 更多的 Routing 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
 routing {
-  pname(NetworkManager, systemd-resolved, dnsmasq) -> must_direct
+  pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
 
   ### 以下为自定义规则
