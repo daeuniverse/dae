@@ -292,8 +292,6 @@ func NewControlPlane(
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
 			log.Infoln("\t" + d.Property().Name)
-			// We only activate check of nodes that have a group.
-			d.ActivateCheck()
 		}
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
@@ -555,6 +553,14 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 	return nil
 }
 
+func (c *ControlPlane) ActivateCheck() {
+	for _, g := range c.outbounds {
+		for _, d := range g.Dialers {
+			// We only activate check of nodes that have a group.
+			d.ActivateCheck()
+		}
+	}
+}
 func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
 	dialMode := consts.DialMode_Ip
 
@@ -751,6 +757,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}(newBuf, newOob, src)
 		}
 	}()
+	c.ActivateCheck()
 	<-c.ctx.Done()
 	return nil
 }
