@@ -196,7 +196,7 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 
 func (c *controlPlaneCore) addAcceptInputMark() error {
 	// TODO: Support more than firewalld.
-	return exec.Command("sh", "-c", "nft list table inet firewalld && nft 'insert rule inet firewalld filter_INPUT mark "+consts.TproxyMarkString+" accept'").Run()
+	return exec.Command("sh", "-c", "nft list table inet firewalld && nft 'insert rule inet firewalld filter_INPUT mark & "+consts.TproxyMarkString+" == "+consts.TproxyMarkString+" accept'").Run()
 }
 
 func (c *controlPlaneCore) delAcceptInputMark() error {
@@ -205,7 +205,7 @@ func (c *controlPlaneCore) delAcceptInputMark() error {
 		return err
 	}
 	lines := strings.Split(string(output), "\n")
-	regex := regexp.MustCompile("meta mark " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
+	regex := regexp.MustCompile("meta mark & " + consts.TproxyMarkString + " == " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
 	for _, line := range lines {
 		matches := regex.FindStringSubmatch(line)
 		if len(matches) >= 2 {
