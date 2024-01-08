@@ -140,8 +140,8 @@ func setupIndieNetns() (err error) {
 	if err = netlink.LinkSetUp(dae0peer); err != nil {
 		return fmt.Errorf("Failed to set link dae0peer up: %v", err)
 	}
-	// (ip net e daens) ip a a 169.254.0.1 dev dae0peer
-	ip, ipNet, err := net.ParseCIDR("169.254.0.1/24")
+	// (ip net e daens) ip a a 169.254.0.11 dev dae0peer
+	ip, ipNet, err := net.ParseCIDR("169.254.0.11/32")
 	ipNet.IP = ip
 	if err != nil {
 		return fmt.Errorf("Failed to parse ip: %v", err)
@@ -149,13 +149,31 @@ func setupIndieNetns() (err error) {
 	if err = netlink.AddrAdd(dae0peer, &netlink.Addr{IPNet: ipNet}); err != nil {
 		return fmt.Errorf("Failed to add v4 addr to dae0peer: %v", err)
 	}
-	// (ip net e daens) ip r a default dev dae0peer
+	// (ip net e daens) ip r a 169.254.0.1 dev dae0peer
+	if err = netlink.RouteAdd(&netlink.Route{
+		LinkIndex: dae0peer.Attrs().Index,
+		Dst:       &net.IPNet{IP: net.ParseIP("169.254.0.1"), Mask: net.CIDRMask(32, 32)},
+		Gw:        nil,
+		Scope:     netlink.SCOPE_LINK,
+	}); err != nil {
+		return fmt.Errorf("Failed to add v4 route1 to dae0peer: %v", err)
+	}
+	// (ip net e daens) ip r a default via 169.254.0.1 dev dae0peer
 	if err = netlink.RouteAdd(&netlink.Route{
 		LinkIndex: dae0peer.Attrs().Index,
 		Dst:       &net.IPNet{IP: net.IPv4(0, 0, 0, 0), Mask: net.CIDRMask(0, 32)},
-		Gw:        nil,
+		Gw:        net.ParseIP("169.254.0.1"),
 	}); err != nil {
-		return fmt.Errorf("Failed to add v4 route to dae0peer: %v", err)
+		return fmt.Errorf("Failed to add v4 route2 to dae0peer: %v", err)
+	}
+	// (ip net e daens) ip n r 169.254.0.1 dev dae0peer lladdr $mac_dae0 nud permanent
+	if err = netlink.NeighAdd(&netlink.Neigh{
+		IP:           net.ParseIP("169.254.0.1"),
+		HardwareAddr: dae0.Attrs().HardwareAddr,
+		LinkIndex:    dae0peer.Attrs().Index,
+		State:        netlink.NUD_PERMANENT,
+	}); err != nil {
+		return fmt.Errorf("Failed to add neigh to dae0peer: %v", err)
 	}
 	// (ip net e daens) ip -6 r a default via fe80::ecee:eeff:feee:eeee dev dae0peer
 	if err = netlink.RouteAdd(&netlink.Route{
