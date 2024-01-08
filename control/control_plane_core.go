@@ -202,8 +202,7 @@ func (c *controlPlaneCore) addAcceptInputMark() error {
 func (c *controlPlaneCore) delAcceptInputMark() error {
 	output, err := exec.Command("sh", "-c", "nft --handle --numeric list chain inet firewalld filter_INPUT").Output()
 	if err != nil {
-		// No firewalld.
-		return nil
+		return err
 	}
 	lines := strings.Split(string(output), "\n")
 	regex := regexp.MustCompile("meta mark " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
