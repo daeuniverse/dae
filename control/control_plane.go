@@ -198,8 +198,10 @@ func NewControlPlane(
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
-		if err = core.addAcceptInputMark(); err == nil {
-			core.deferFuncs = append(core.deferFuncs, core.delAcceptInputMark)
+		if global.AutoConfigFirewallRule {
+			if err = core.addAcceptInputMark(); err == nil {
+				core.deferFuncs = append(core.deferFuncs, core.delAcceptInputMark)
+			}
 		}
 	}
 
