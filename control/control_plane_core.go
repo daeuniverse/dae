@@ -208,8 +208,9 @@ func (c *controlPlaneCore) delAcceptInputMark() error {
 	regex := regexp.MustCompile("meta mark " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
 	for _, line := range lines {
 		matches := regex.FindStringSubmatch(line)
-		if len(matches) > 0 {
-			return exec.Command("sh", "-c", "nft 'delete rule inet firewalld filter_INPUT handle "+matches[1]+"'").Run()
+		if len(matches) >= 2 {
+			handle := matches[1]
+			return exec.Command("sh", "-c", "nft 'delete rule inet firewalld filter_INPUT handle "+handle+"'").Run()
 		}
 	}
 	return fmt.Errorf("no such rule")
