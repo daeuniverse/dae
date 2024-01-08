@@ -198,6 +198,9 @@ func NewControlPlane(
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
+		if err = core.addAcceptInputMark(); err == nil {
+			core.deferFuncs = append(core.deferFuncs, core.delAcceptInputMark)
+		}
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.

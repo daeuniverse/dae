@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -190,6 +192,28 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 		}
 	}
 	return nil
+}
+
+func (c *controlPlaneCore) addAcceptInputMark() error {
+	// TODO: Support more than firewalld.
+	return exec.Command("sh", "-c", "nft list table inet firewalld && nft 'insert rule inet firewalld filter_INPUT mark "+consts.TproxyMarkString+" accept'").Run()
+}
+
+func (c *controlPlaneCore) delAcceptInputMark() error {
+	output, err := exec.Command("sh", "-c", "nft --handle --numeric list chain inet firewalld filter_INPUT").Output()
+	if err != nil {
+		// No firewalld.
+		return nil
+	}
+	lines := strings.Split(string(output), "\n")
+	regex := regexp.MustCompile("meta mark " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
+	for _, line := range lines {
+		matches := regex.FindStringSubmatch(line)
+		if len(matches) > 0 {
+			return exec.Command("sh", "-c", "nft 'delete rule inet firewalld filter_INPUT handle "+matches[1]+"'").Run()
+		}
+	}
+	return fmt.Errorf("no such rule")
 }
 
 func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
