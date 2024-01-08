@@ -253,9 +253,9 @@ func NewControlPlane(
 	}
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	_direct, directProperty := dialer.NewDirectDialer(option, true)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{CheckEnabled: false}, directProperty)
+	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{CheckEnabled: false}, blockProperty)
+	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
