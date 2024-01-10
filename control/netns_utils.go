@@ -8,6 +8,7 @@ import (
 	"path"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -26,7 +27,8 @@ var (
 )
 
 type DaeNetns struct {
-	once sync.Once
+	setupDone atomic.Bool
+	mu        sync.Mutex
 
 	dae0, dae0peer netlink.Link
 	hostNs, daeNs  netns.NsHandle
@@ -37,16 +39,20 @@ func init() {
 }
 
 func (ns *DaeNetns) Setup() (err error) {
-	if ns.daeNs != 0 && ns.hostNs != 0 {
-		return nil
+	if ns.setupDone.Load() {
+		return
 	}
 
-	ns.once.Do(func() {
-		if err = ns.setup(); err != nil {
-			logrus.Fatal("Failed to setup dae netns: %v", err)
-		}
-	})
-	return err
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.setupDone.Load() {
+		return
+	}
+	if err = ns.setup(); err != nil {
+		return
+	}
+	ns.setupDone.Store(true)
+	return nil
 }
 
 func (ns *DaeNetns) With(f func() error) (err error) {
