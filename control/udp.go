@@ -95,7 +95,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 			WithField("to", to).
 			WithField("realTo", realTo).
 			Trace("Port in use, fallback to use netns.")
-		err = daeNetns.With(func() (err error) {
+		err = GetDaeNetns().With(func() (err error) {
 			uConn, _, err = DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 			return err
 		})

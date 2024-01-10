@@ -268,10 +268,11 @@ loop:
 			break loop
 		}
 	}
+	defer os.Remove(PidFilePath)
+	defer control.GetDaeNetns().Close()
 	if e := c.Close(); e != nil {
 		return fmt.Errorf("close control plane: %w", e)
 	}
-	_ = os.Remove(PidFilePath)
 	return nil
 }
 

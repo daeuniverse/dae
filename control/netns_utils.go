@@ -38,6 +38,10 @@ func init() {
 	daeNetns = &DaeNetns{}
 }
 
+func GetDaeNetns() *DaeNetns {
+	return daeNetns
+}
+
 func (ns *DaeNetns) Setup() (err error) {
 	if ns.setupDone.Load() {
 		return
@@ -53,6 +57,12 @@ func (ns *DaeNetns) Setup() (err error) {
 	}
 	ns.setupDone.Store(true)
 	return nil
+}
+
+func (ns *DaeNetns) Close() (err error) {
+	DeleteNamedNetns(NsName)
+	DeleteLink(HostVethName)
+	return
 }
 
 func (ns *DaeNetns) With(f func() error) (err error) {
