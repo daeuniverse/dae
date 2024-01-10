@@ -199,9 +199,11 @@ func NewControlPlane(
 			return nil, err
 		}
 		if global.AutoConfigFirewallRule {
-			if err = core.addAcceptInputMark(); err == nil {
-				core.deferFuncs = append(core.deferFuncs, core.delAcceptInputMark)
-			}
+			core.addAcceptInputMark()
+			core.deferFuncs = append(core.deferFuncs, func() error {
+				core.delAcceptInputMark()
+				return nil
+			})
 		}
 	}
 
