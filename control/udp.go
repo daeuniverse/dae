@@ -91,7 +91,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 
 	transparentTimeout := AnyfromTimeout
 	if from.Port() == 53 {
-		// Add port 53 (udp) to whitelist to avoid confliction with the potential local dns server.
+		// Add port 53 (udp) to whitelist to avoid conflicts with the potential local dns server.
 		transparentTimeout = 0
 	}
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), transparentTimeout)
