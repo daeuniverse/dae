@@ -202,8 +202,8 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 			gotGSOError:   false,
 			gso:           isGSOSupported(uConn),
 		}
-		// Add port 53 (udp) to whitelist to avoid confliction with the potential local dns server.
-		if uConn.LocalAddr().(*net.UDPAddr).Port != 53 {
+
+		if ttl > 0 {
 			af.deadlineTimer = time.AfterFunc(ttl, func() {
 				p.mu.Lock()
 				defer p.mu.Unlock()
