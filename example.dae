@@ -34,6 +34,10 @@ global {
     # https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md to see what will dae do.
     auto_config_kernel_parameter: true
 
+    # Automatically configure firewall rules like firewalld and fw4.
+    # firewalld: nft 'insert rule inet firewalld filter_INPUT mark 0x08000000 accept'
+    # fw4: nft 'insert rule inet fw4 input mark 0x08000000 accept'
+    auto_config_firewall_rule: true
 
     ##### Node connectivity check.
 
@@ -143,20 +147,30 @@ dns {
         # According to the request of dns query, decide to use which DNS upstream.
         # Match rules from top to bottom.
         request {
+            # Lookup China mainland domains using alidns, otherwise googledns.
+            qname(geosite:cn) -> alidns
             # fallback is also called default.
-            fallback: alidns
-        }
-        # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
-        # Match rules from top to bottom.
-        response {
-            # Trusted upstream. Always accept its result.
-            upstream(googledns) -> accept
-            # Possibly polluted, re-lookup using googledns.
-            ip(geoip:private) && !qname(geosite:cn) -> googledns
-            # fallback is also called default.
-            fallback: accept
+            fallback: googledns
         }
     }
+#    routing {
+#        # According to the request of dns query, decide to use which DNS upstream.
+#        # Match rules from top to bottom.
+#        request {
+#            # fallback is also called default.
+#            fallback: alidns
+#        }
+#        # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
+#        # Match rules from top to bottom.
+#        response {
+#            # Trusted upstream. Always accept its result.
+#            upstream(googledns) -> accept
+#            # Possibly polluted, re-lookup using googledns.
+#            ip(geoip:private) && !qname(geosite:cn) -> googledns
+#            # fallback is also called default.
+#            fallback: accept
+#        }
+#    }
 }
 
 # Node group (outbound).
@@ -201,9 +215,6 @@ routing {
     # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
     # WAN.
     pname(NetworkManager) -> direct
-
-    # Bypass DNS stubs. We want to bypass their DNS requests, thus use 'must'.
-    pname(systemd-resolved, dnsmasq) -> must_direct
 
     # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being
     # forwarded by the proxy.

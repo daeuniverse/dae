@@ -198,6 +198,14 @@ func NewControlPlane(
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
+		if global.AutoConfigFirewallRule {
+			if ok := core.addAcceptInputMark(); ok {
+				core.deferFuncs = append(core.deferFuncs, func() error {
+					core.delAcceptInputMark()
+					return nil
+				})
+			}
+		}
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
@@ -253,9 +261,9 @@ func NewControlPlane(
 	}
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	_direct, directProperty := dialer.NewDirectDialer(option, true)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{CheckEnabled: false}, directProperty)
+	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{CheckEnabled: false}, blockProperty)
+	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -292,8 +300,6 @@ func NewControlPlane(
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
 			log.Infoln("\t" + d.Property().Name)
-			// We only activate check of nodes that have a group.
-			d.ActivateCheck()
 		}
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
@@ -555,6 +561,14 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 	return nil
 }
 
+func (c *ControlPlane) ActivateCheck() {
+	for _, g := range c.outbounds {
+		for _, d := range g.Dialers {
+			// We only activate check of nodes that have a group.
+			d.ActivateCheck()
+		}
+	}
+}
 func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
 	dialMode := consts.DialMode_Ip
 
@@ -751,6 +765,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}(newBuf, newOob, src)
 		}
 	}()
+	c.ActivateCheck()
 	<-c.ctx.Done()
 	return nil
 }

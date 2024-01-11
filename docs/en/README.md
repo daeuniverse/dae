@@ -162,6 +162,7 @@ global {
   log_level: info
   allow_insecure: false
   auto_config_kernel_parameter: true
+  auto_config_firewall_rule: true
 }
 
 subscription {
@@ -195,7 +196,7 @@ group {
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
-  pname(NetworkManager, systemd-resolved, dnsmasq) -> must_direct
+  pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
 
   ### Write your rules below.
