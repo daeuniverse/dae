@@ -288,6 +288,9 @@ func (ns *DaeNetns) monitorDae0LinkAddr() {
 	if err != nil {
 		logrus.Errorf("failed to subscribe link updates: %v", err)
 	}
+	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
+		logrus.Errorf("failed to get link dae0: %v", err)
+	}
 	if err = ns.updateNeigh(); err != nil {
 		logrus.Errorf("failed to update neigh: %v", err)
 	}
