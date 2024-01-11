@@ -157,9 +157,10 @@ var (
 )
 
 const (
-	TproxyMark      uint32 = 0x8000000
-	Recognize       uint16 = 0x2017
-	LoopbackIfIndex        = 1
+	TproxyMark       uint32 = 0x08000000
+	TproxyMarkString string = "0x08000000" // Should be aligned with nftables
+	Recognize        uint16 = 0x2017
+	LoopbackIfIndex         = 1
 )
 
 type LanWanFlag uint8

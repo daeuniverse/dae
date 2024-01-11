@@ -90,12 +90,18 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	}
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
+		logrus.WithField("from", from).
+			WithField("to", to).
+			WithField("realTo", realTo).
+			Trace("Port in use, fallback to use netns.")
+		err = GetDaeNetns().With(func() (err error) {
+			uConn, _, err = DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+			return err
+		})
+	}
 	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			// Port collision, use traditional method.
-			return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
-		}
-		return err
+		return
 	}
 	_, err = uConn.WriteToUDPAddrPort(data, realTo)
 	return err
