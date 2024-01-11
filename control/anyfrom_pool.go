@@ -38,7 +38,9 @@ func (a *Anyfrom) afterWrite(err error) {
 	a.RefreshTtl()
 }
 func (a *Anyfrom) RefreshTtl() {
-	a.deadlineTimer.Reset(a.ttl)
+	if a.deadlineTimer != nil {
+		a.deadlineTimer.Reset(a.ttl)
+	}
 }
 func (a *Anyfrom) SupportGso(size int) bool {
 	if size > math.MaxUint16 {
