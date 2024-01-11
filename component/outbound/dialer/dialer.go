@@ -35,6 +35,8 @@ type Dialer struct {
 	checkCh  chan time.Time
 	ctx      context.Context
 	cancel   context.CancelFunc
+
+	checkActivated bool
 }
 
 type GlobalOption struct {
@@ -48,7 +50,7 @@ type GlobalOption struct {
 }
 
 type InstanceOption struct {
-	CheckEnabled bool
+	DisableCheck bool
 }
 
 type Property struct {
@@ -77,9 +79,6 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		checkCh:          make(chan time.Time, 1),
 		ctx:              ctx,
 		cancel:           cancel,
-	}
-	if iOption.CheckEnabled {
-		go d.aliveBackground()
 	}
 	return d
 }

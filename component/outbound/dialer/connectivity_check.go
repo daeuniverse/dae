@@ -272,10 +272,10 @@ type CheckOption struct {
 func (d *Dialer) ActivateCheck() {
 	d.tickerMu.Lock()
 	defer d.tickerMu.Unlock()
-	if d.InstanceOption.CheckEnabled {
+	if d.InstanceOption.DisableCheck || d.checkActivated {
 		return
 	}
-	d.InstanceOption.CheckEnabled = true
+	d.checkActivated = true
 	go d.aliveBackground()
 }
 
