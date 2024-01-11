@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -190,6 +192,43 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 		}
 	}
 	return nil
+}
+
+// TODO: Support more than firewalld and fw4: need more user feedback.
+var nftInputChains = [][3]string{
+	{"inet", "firewalld", "filter_INPUT"},
+	{"inet", "fw4", "input"},
+}
+
+func (c *controlPlaneCore) addAcceptInputMark() (ok bool) {
+	for _, rule := range nftInputChains {
+		if err := exec.Command("nft", "insert rule "+strings.Join(rule[:], " ")+" mark & "+consts.TproxyMarkString+" == "+consts.TproxyMarkString+" accept").Run(); err == nil {
+			ok = true
+		}
+	}
+	return ok
+}
+
+func (c *controlPlaneCore) delAcceptInputMark() (ok bool) {
+	for _, rule := range nftInputChains {
+		output, err := exec.Command("nft", "--handle", "--numeric", "list", "chain", rule[0], rule[1], rule[2]).Output()
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(output), "\n")
+		regex := regexp.MustCompile("meta mark & " + consts.TproxyMarkString + " == " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
+		for _, line := range lines {
+			matches := regex.FindStringSubmatch(line)
+			if len(matches) >= 2 {
+				handle := matches[1]
+				if err = exec.Command("nft", "delete rule "+strings.Join(rule[:], " ")+" handle "+handle).Run(); err == nil {
+					ok = true
+				}
+				break
+			}
+		}
+	}
+	return ok
 }
 
 func (c *controlPlaneCore) setupRoutingPolicy() (err error) {

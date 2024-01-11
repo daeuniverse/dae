@@ -35,6 +35,7 @@ type Global struct {
 	DialMode                  string        `mapstructure:"dial_mode" default:"domain"`
 	DisableWaitingNetwork     bool          `mapstructure:"disable_waiting_network" default:"false"`
 	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
+	AutoConfigFirewallRule    bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
 	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
 	TlsImplementation         string        `mapstructure:"tls_implementation" default:"tls"`
 	UtlsImitate               string        `mapstructure:"utls_imitate" default:"chrome_auto"`

@@ -198,6 +198,14 @@ func NewControlPlane(
 		if err = core.setupRoutingPolicy(); err != nil {
 			return nil, err
 		}
+		if global.AutoConfigFirewallRule {
+			if ok := core.addAcceptInputMark(); ok {
+				core.deferFuncs = append(core.deferFuncs, func() error {
+					core.delAcceptInputMark()
+					return nil
+				})
+			}
+		}
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
