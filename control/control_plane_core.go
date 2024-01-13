@@ -556,7 +556,9 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 
 func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) error {
 	if autoConfigKernelParameter {
-		SetAcceptLocal(ifname, "1")
+		if err := sysctl.Set(fmt.Sprintf("net.ipv4.conf.%v.accept_local", ifname), "1", false); err != nil {
+			return err
+		}
 	}
 	return c._bindWan(ifname)
 }

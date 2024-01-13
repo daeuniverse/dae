@@ -128,22 +128,6 @@ func SetForwarding(ifname string, val string) {
 	_ = setForwarding(ifname, consts.IpVersionStr_6, val)
 }
 
-func SetAcceptLocal(ifname, val string) error {
-	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/accept_local", ifname), []byte(val), 0644)
-}
-
-func SetRpFilter(ifname, val string) error {
-	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", ifname), []byte(val), 0644)
-}
-
-func SetArpFilter(ifname, val string) error {
-	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/arp_filter", ifname), []byte(val), 0644)
-}
-
-func SetDisableIpv6(ifname, val string) error {
-	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", ifname), []byte(val), 0644)
-}
-
 func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
 	b, err := os.ReadFile(path)

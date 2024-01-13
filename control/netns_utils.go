@@ -140,27 +140,27 @@ func (ns *DaeNetns) setupVeth() (err error) {
 
 func (ns *DaeNetns) setupSysctl() (err error) {
 	// sysctl net.ipv4.conf.dae0.rp_filter=0
-	if err = SetRpFilter(HostVethName, "0"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.rp_filter", HostVethName), "0", true); err != nil {
 		return fmt.Errorf("failed to set rp_filter for dae0: %v", err)
 	}
 	// sysctl net.ipv4.conf.all.rp_filter=0
-	if err = SetRpFilter("all", "0"); err != nil {
+	if err = sysctl.Set("net.ipv4.conf.all.rp_filter", "0", true); err != nil {
 		return fmt.Errorf("failed to set rp_filter for all: %v", err)
 	}
 	// sysctl net.ipv4.conf.dae0.arp_filter=0
-	if err = SetArpFilter(HostVethName, "0"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.arp_filter", HostVethName), "0", true); err != nil {
 		return fmt.Errorf("failed to set arp_filter for dae0: %v", err)
 	}
 	// sysctl net.ipv4.conf.all.arp_filter=0
-	if err = SetArpFilter("all", "0"); err != nil {
+	if err = sysctl.Set("net.ipv4.conf.all.arp_filter", "0", true); err != nil {
 		return fmt.Errorf("failed to set arp_filter for all: %v", err)
 	}
 	// sysctl net.ipv4.conf.dae0.accept_local=1
-	if err = SetAcceptLocal(HostVethName, "1"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.accept_local", HostVethName), "1", true); err != nil {
 		return fmt.Errorf("failed to set accept_local for dae0: %v", err)
 	}
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
-	if err = SetDisableIpv6(HostVethName, "0"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6", HostVethName), "0", true); err != nil {
 		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
 	}
 	// sysctl net.ipv6.conf.dae0.forwarding=1
