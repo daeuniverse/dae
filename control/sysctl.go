@@ -14,25 +14,25 @@ const SysctlPrefixPath = "/proc/sys/"
 var sysctl *SysctlManager
 
 type SysctlManager struct {
+	log          *logrus.Logger
 	mux          sync.Mutex
 	watcher      *fsnotify.Watcher
 	expectations map[string]string
 }
 
-func init() {
-	var err error
-	if sysctl, err = NewSysctlManager(); err != nil {
-		logrus.Fatalf("failed to create sysctl manager: %v", err)
-	}
+func InitSysctlManager(log *logrus.Logger) (err error) {
+	sysctl, err = NewSysctlManager(log)
+	return err
 }
 
-func NewSysctlManager() (*SysctlManager, error) {
+func NewSysctlManager(log *logrus.Logger) (*SysctlManager, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
 
 	manager := &SysctlManager{
+		log:          log,
 		mux:          sync.Mutex{},
 		watcher:      watcher,
 		expectations: map[string]string{},
@@ -49,20 +49,20 @@ func (s *SysctlManager) startWatch() {
 				return
 			}
 			if event.Has(fsnotify.Write) {
-				logrus.Tracef("sysctl write event: %+v", event)
+				s.log.Tracef("sysctl write event: %+v", event)
 				s.mux.Lock()
 				expected, ok := s.expectations[event.Name]
 				s.mux.Unlock()
 				if ok {
 					raw, err := os.ReadFile(event.Name)
 					if err != nil {
-						logrus.Errorf("failed to read sysctl file %s: %v", event.Name, err)
+						s.log.Errorf("failed to read sysctl file %s: %v", event.Name, err)
 					}
 					value := strings.TrimSpace(string(raw))
 					if value != expected {
-						logrus.Infof("sysctl %s has unexpected value %s, expected %s", event.Name, value, expected)
+						s.log.Infof("sysctl %s has unexpected value %s, expected %s", event.Name, value, expected)
 						if err := os.WriteFile(event.Name, []byte(expected), 0644); err != nil {
-							logrus.Errorf("failed to write sysctl file %s: %v", event.Name, err)
+							s.log.Errorf("failed to write sysctl file %s: %v", event.Name, err)
 						}
 					}
 				}
@@ -71,7 +71,7 @@ func (s *SysctlManager) startWatch() {
 			if !ok {
 				return
 			}
-			logrus.Errorf("sysctl watcher error: %v", err)
+			s.log.Errorf("sysctl watcher error: %v", err)
 		}
 	}
 }

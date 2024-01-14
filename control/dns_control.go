@@ -409,7 +409,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 	// resp is valid.
 	cache2 := c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
 	if c.qtypePrefer == qtype || cache2 == nil || !cache2.IncludeAnyIp() {
-		return sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn)
+		return sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn)
 	} else {
 		return c.sendReject_(dnsMessage, req)
 	}
@@ -453,7 +453,7 @@ func (c *DnsController) handle_(
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
 		if needResp {
-			if err = sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
 		}
@@ -501,7 +501,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+	if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 		return err
 	}
 	return nil
@@ -751,7 +751,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		if err != nil {
 			return err
 		}
-		if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 			return err
 		}
 	}

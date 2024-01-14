@@ -49,7 +49,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
+func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
 
 	transparentTimeout := AnyfromTimeout
 	if from.Port() == 53 {
@@ -58,7 +58,7 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 	}
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), transparentTimeout)
 	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
-		logrus.WithField("from", from).
+		log.WithField("from", from).
 			WithField("to", to).
 			WithField("realTo", realTo).
 			Trace("Port in use, fallback to use netns.")
@@ -187,7 +187,7 @@ getNew:
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
-			return sendPkt(data, from, realSrc, src, lConn)
+			return sendPkt(c.log, data, from, realSrc, src, lConn)
 		},
 		NatTimeout: natTimeout,
 		GetDialOption: func() (option *DialOption, err error) {

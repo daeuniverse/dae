@@ -27,6 +27,8 @@ var (
 )
 
 type DaeNetns struct {
+	log *logrus.Logger
+
 	setupDone atomic.Bool
 	mu        sync.Mutex
 
@@ -34,8 +36,10 @@ type DaeNetns struct {
 	hostNs, daeNs  netns.NsHandle
 }
 
-func init() {
-	daeNetns = &DaeNetns{}
+func InitDaeNetns(log *logrus.Logger) {
+	daeNetns = &DaeNetns{
+		log: log,
+	}
 }
 
 func GetDaeNetns() *DaeNetns {
@@ -85,7 +89,7 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 }
 
 func (ns *DaeNetns) setup() (err error) {
-	logrus.Trace("setting up dae netns")
+	ns.log.Trace("setting up dae netns")
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -286,17 +290,17 @@ func (ns *DaeNetns) monitorDae0LinkAddr() {
 
 	err := netlink.LinkSubscribe(ch, done)
 	if err != nil {
-		logrus.Errorf("failed to subscribe link updates: %v", err)
+		ns.log.Errorf("failed to subscribe link updates: %v", err)
 	}
 	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
-		logrus.Errorf("failed to get link dae0: %v", err)
+		ns.log.Errorf("failed to get link dae0: %v", err)
 	}
 	if err = ns.updateNeigh(); err != nil {
-		logrus.Errorf("failed to update neigh: %v", err)
+		ns.log.Errorf("failed to update neigh: %v", err)
 	}
 	for msg := range ch {
 		if msg.Link.Attrs().Name == HostVethName && !bytes.Equal(msg.Link.Attrs().HardwareAddr, ns.dae0.Attrs().HardwareAddr) {
-			logrus.WithField("old addr", ns.dae0.Attrs().HardwareAddr).WithField("new addr", msg.Link.Attrs().HardwareAddr).Info("dae0 link addr changed")
+			ns.log.WithField("old addr", ns.dae0.Attrs().HardwareAddr).WithField("new addr", msg.Link.Attrs().HardwareAddr).Info("dae0 link addr changed")
 			ns.dae0 = msg.Link
 			ns.updateNeigh()
 		}
