@@ -15,6 +15,7 @@ MAX_MATCH_SET_LEN ?= 64
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 NOSTRIP ?= n
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
+BUILD_TAGS_FILE := .build_tags
 ifeq ($(strip $(NOSTRIP)),y)
 	STRIP_FLAG := -no-strip
 else ifeq ($(wildcard $(STRIP_PATH)),)
@@ -47,7 +48,7 @@ dae: export CGO_ENABLED=0
 endif
 dae: ebpf
 	@echo $(CFLAGS)
-	go build -o $(OUTPUT) $(BUILD_ARGS) .
+	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
 
 ## Begin Git Submodules
@@ -74,6 +75,8 @@ submodule submodules: $(submodule_paths)
 clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 		rm -f control/bpf_bpf*.o
+	@rm -f trace/bpf_bpf*.go && \
+		rm -f trace/bpf_bpf*.o
 fmt:
 	go fmt ./...
 
@@ -82,10 +85,13 @@ ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
+ebpf: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf: submodule clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
-    go generate ./control/control.go
+    go generate ./control/control.go && \
+    go generate ./trace/trace.go && echo trace > $(BUILD_TAGS_FILE) || echo > $(BUILD_TAGS_FILE)
+
 ## End Ebpf
