@@ -20,7 +20,7 @@ yum update kernel
 ```
 
 > [!NOTE]
-> The kernel is based on Linux 6.1 LTS, rebuilt to support `BBRv2`, and enables `eBPF` support. It can also be compiled by yourself, and the source package is available at [https://repo.cooluc.com/kernel/7/SRPMS/](https://repo.cooluc.com/kernel/7/SRPMS/).
+> The kernel is based on Linux 6.1 LTS, rebuilt to support `BBRv2`, and enables `eBPF` support. It can also be compiled by yourself, and the source package is available at <https://repo.cooluc.com/kernel/7/SRPMS/>
 
 ### Mount BPF
 
@@ -36,7 +36,7 @@ curl -s https://repo.cooluc.com/kernel/mount-cgroup2.service > /etc/systemd/syst
 systemctl enable mount-cgroup2.service
 ```
 
-### Reboot the system to make the kernel effective.
+### Reboot the system to make the kernel effective
 
 > [!NOTE]
 > Check the kernel version. If the version is `6.1.xx-1.el7.x86_64`, it means that the operation is successful.
