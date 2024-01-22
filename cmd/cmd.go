@@ -36,7 +36,7 @@ func init() {
 	rootCmd.Version = strings.Join([]string{
 		Version,
 		fmt.Sprintf("go runtime %v %v/%v", runtime.Version(), runtime.GOOS, runtime.GOARCH),
-		"Copyright (c) 2022-2024 dae",
+		"Copyright (c) 2022-2024 @daeuniverse",
 		"License GNU AGPLv3 <https://github.com/daeuniverse/dae/blob/main/LICENSE>",
 	}, "\n")
 }
