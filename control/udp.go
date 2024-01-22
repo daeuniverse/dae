@@ -89,7 +89,12 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 	}
 
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+	transparentTimeout := AnyfromTimeout
+	if from.Port() == 53 {
+		// Add port 53 (udp) to whitelist to avoid conflicts with the potential local dns server.
+		transparentTimeout = 0
+	}
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), transparentTimeout)
 	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
 		logrus.WithField("from", from).
 			WithField("to", to).
