@@ -38,7 +38,9 @@ func (a *Anyfrom) afterWrite(err error) {
 	a.RefreshTtl()
 }
 func (a *Anyfrom) RefreshTtl() {
-	a.deadlineTimer.Reset(a.ttl)
+	if a.deadlineTimer != nil {
+		a.deadlineTimer.Reset(a.ttl)
+	}
 }
 func (a *Anyfrom) SupportGso(size int) bool {
 	if size > math.MaxUint16 {
@@ -202,16 +204,19 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 			gotGSOError:   false,
 			gso:           isGSOSupported(uConn),
 		}
-		af.deadlineTimer = time.AfterFunc(ttl, func() {
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			_af := p.pool[lAddr]
-			if _af == af {
-				delete(p.pool, lAddr)
-				af.Close()
-			}
-		})
-		p.pool[lAddr] = af
+
+		if ttl > 0 {
+			af.deadlineTimer = time.AfterFunc(ttl, func() {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				_af := p.pool[lAddr]
+				if _af == af {
+					delete(p.pool, lAddr)
+					af.Close()
+				}
+			})
+			p.pool[lAddr] = af
+		}
 		return af, true, nil
 	} else {
 		af.RefreshTtl()
