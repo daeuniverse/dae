@@ -1,6 +1,6 @@
 #
 #  SPDX-License-Identifier: AGPL-3.0-only
-#  Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+#  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
 #
 
 # The development version of clang is distributed as the 'clang' binary,
@@ -42,6 +42,9 @@ BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Versio
 
 ## Begin Dae Build
 dae: export GOOS=linux
+ifndef CGO_ENABLED
+dae: export CGO_ENABLED=0
+endif
 dae: ebpf
 	@echo $(CFLAGS)
 	go build -o $(OUTPUT) $(BUILD_ARGS) .

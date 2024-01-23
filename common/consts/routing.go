@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package consts
@@ -22,7 +22,7 @@ const (
 	Function_IpVersion   = "ipversion"
 	Function_Mac         = "mac"
 	Function_ProcessName = "pname"
-	Function_Tos         = "tos"
+	Function_Dscp        = "dscp"
 
 	Function_QName    = "qname"
 	Function_QType    = "qtype"

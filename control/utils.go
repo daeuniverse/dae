@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -37,7 +37,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		l4proto,
 		domain,
 		routingResult.Pname,
-		routingResult.Tos,
+		routingResult.Dscp,
 		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
 	); err != nil {
 		return 0, 0, false, err
@@ -50,7 +50,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 	srcIp6 := src.Addr().As16()
 	dstIp6 := dst.Addr().As16()
 
-	tuples := &bpfTuples{
+	tuples := &bpfTuplesKey{
 		Sip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: srcIp6},
 		Sport:   common.Htons(src.Port()),
 		Dip:     struct{ U6Addr8 [16]uint8 }{U6Addr8: dstIp6},
@@ -126,6 +126,22 @@ func SetIpv4forward(val string) error {
 func SetForwarding(ifname string, val string) {
 	_ = setForwarding(ifname, consts.IpVersionStr_4, val)
 	_ = setForwarding(ifname, consts.IpVersionStr_6, val)
+}
+
+func SetAcceptLocal(ifname, val string) error {
+	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/accept_local", ifname), []byte(val), 0644)
+}
+
+func SetRpFilter(ifname, val string) error {
+	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", ifname), []byte(val), 0644)
+}
+
+func SetArpFilter(ifname, val string) error {
+	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/arp_filter", ifname), []byte(val), 0644)
+}
+
+func SetDisableIpv6(ifname, val string) error {
+	return os.WriteFile(fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", ifname), []byte(val), 0644)
 }
 
 func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {

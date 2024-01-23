@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package sniffing
@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	Error              = fmt.Errorf("sniffing error")
-	NotApplicableError = fmt.Errorf("%w: not applicable", Error)
-	NotFoundError      = fmt.Errorf("%w: not found", Error)
+	Error            = fmt.Errorf("sniffing error")
+	ErrNotApplicable = fmt.Errorf("%w: not applicable", Error)
+	ErrNotFound      = fmt.Errorf("%w: not found", Error)
 )
 
 func IsSniffingError(err error) bool {

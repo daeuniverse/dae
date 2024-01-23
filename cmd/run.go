@@ -1,3 +1,8 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package cmd
 
 import (
@@ -108,6 +113,8 @@ var (
 )
 
 func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+	// Remove AbortFile at beginning.
+	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
 	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
@@ -135,6 +142,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	}()
 	reloading := false
 	isSuspend := false
+	abortConnections := false
 loop:
 	for sig := range sigs {
 		switch sig {
@@ -174,6 +182,7 @@ loop:
 			sdnotify.Reloading()
 
 			// Load new config.
+			abortConnections = os.Remove(AbortFile) == nil
 			log.Warnln("[Reload] Load new config")
 			var newConf *config.Config
 			if isSuspend {
@@ -186,6 +195,10 @@ loop:
 					sdnotify.Ready()
 					continue
 				}
+				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
+				newConf.Global.WanInterface = nil
+				newConf.Global.LanInterface = nil
+				newConf.Global.LogLevel = "warning"
 			} else {
 				var includes []string
 				newConf, includes, err = readConfig(cfgFile)
@@ -243,6 +256,9 @@ loop:
 			reloading = true
 
 			// Ready to close.
+			if abortConnections {
+				oldC.AbortConnections()
+			}
 			oldC.Close()
 		case syscall.SIGHUP:
 			// Ignore.
@@ -252,10 +268,11 @@ loop:
 			break loop
 		}
 	}
+	defer os.Remove(PidFilePath)
+	defer control.GetDaeNetns().Close()
 	if e := c.Close(); e != nil {
 		return fmt.Errorf("close control plane: %w", e)
 	}
-	_ = os.Remove(PidFilePath)
 	return nil
 }
 

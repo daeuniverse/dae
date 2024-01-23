@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package cmd
@@ -35,6 +35,11 @@ var (
 				cmd.Help()
 				os.Exit(1)
 			}
+			if abort {
+				if f, err := os.Create(AbortFile); err == nil {
+					f.Close()
+				}
+			}
 			if err = syscall.Kill(pid, syscall.SIGUSR2); err != nil {
 				fmt.Println(err)
 				os.Exit(1)
@@ -46,4 +51,5 @@ var (
 
 func init() {
 	rootCmd.AddCommand(suspendCmd)
+	suspendCmd.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
 }

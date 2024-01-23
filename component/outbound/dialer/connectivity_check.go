@@ -1,12 +1,11 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/softwind/netproxy"
 	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/softwind/pool"
 	"github.com/daeuniverse/softwind/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
@@ -272,10 +272,10 @@ type CheckOption struct {
 func (d *Dialer) ActivateCheck() {
 	d.tickerMu.Lock()
 	defer d.tickerMu.Unlock()
-	if d.InstanceOption.CheckEnabled {
+	if d.InstanceOption.DisableCheck || d.checkActivated {
 		return
 	}
-	d.InstanceOption.CheckEnabled = true
+	d.checkActivated = true
 	go d.aliveBackground()
 }
 
@@ -604,7 +604,8 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {
 			b, _ := io.ReadAll(resp.Body)
-			buf := bytes.NewBuffer(nil)
+			buf := pool.GetBuffer()
+			defer pool.PutBuffer(buf)
 			_ = resp.Request.Write(buf)
 			d.Log.Debugln(buf.String(), "Resp: ", string(b))
 			return false, fmt.Errorf("unexpected status code: %v", resp.StatusCode)

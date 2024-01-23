@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package consts
@@ -52,7 +52,7 @@ const (
 	MatchType_IpVersion
 	MatchType_Mac
 	MatchType_ProcessName
-	MatchType_Tos
+	MatchType_Dscp
 	MatchType_Fallback
 	MatchType_MustRules
 
@@ -157,9 +157,10 @@ var (
 )
 
 const (
-	TproxyMark      uint32 = 0x8000000
-	Recognize       uint16 = 0x2017
-	LoopbackIfIndex        = 1
+	TproxyMark       uint32 = 0x08000000
+	TproxyMarkString string = "0x08000000" // Should be aligned with nftables
+	Recognize        uint16 = 0x2017
+	LoopbackIfIndex         = 1
 )
 
 type LanWanFlag uint8
@@ -171,6 +172,6 @@ const (
 )
 
 const (
-	LinkType_None uint32 = iota
-	LinkType_Ethernet
+	LinkHdrLen_None     uint32 = 0
+	LinkHdrLen_Ethernet uint32 = 14
 )

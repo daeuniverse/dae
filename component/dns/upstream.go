@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dns
@@ -20,7 +20,7 @@ import (
 )
 
 var (
-	FormatError = fmt.Errorf("format error")
+	ErrFormat = fmt.Errorf("format error")
 )
 
 type UpstreamScheme string
@@ -75,7 +75,7 @@ type Upstream struct {
 func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
 	scheme, hostname, port, err := ParseRawUpstream(upstream)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", FormatError, err)
+		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
 	systemDns, err := netutils.SystemDns()

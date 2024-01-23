@@ -44,6 +44,6 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           title: '[Release Changelogs] ${{ inputs.future_release_tag }}'
           labels: automated-issue,release
-          assignees: daebot
+          assignees: "yqlbu,mzz2017,kunish"
           body: |
             ${{ steps.changelog.outputs.changelogs }}

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -21,7 +20,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
+	"github.com/daeuniverse/softwind/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -29,6 +28,7 @@ import (
 const (
 	DefaultNatTimeout = 3 * time.Minute
 	DnsNatTimeout     = 17 * time.Second // RFC 5452
+	AnyfromTimeout    = 5 * time.Second  // Do not cache too long.
 	MaxRetry          = 2
 )
 
@@ -50,19 +50,6 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 	return nil, DefaultNatTimeout
 }
 
-func ParseAddrHdr(data []byte) (hdr *bpfDstRoutingResult, dataOffset int, err error) {
-	dataOffset = int(unsafe.Sizeof(bpfDstRoutingResult{}))
-	if len(data) < dataOffset {
-		return nil, 0, fmt.Errorf("data is too short to parse AddrHdr")
-	}
-	_hdr := *(*bpfDstRoutingResult)(unsafe.Pointer(&data[0]))
-	if _hdr.Recognize != consts.Recognize {
-		return nil, 0, fmt.Errorf("bad recognize")
-	}
-	_hdr.Port = common.Ntohs(_hdr.Port)
-	return &_hdr, dataOffset, nil
-}
-
 func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDPConn, to netip.AddrPort, lanWanFlag consts.LanWanFlag) error {
 	realFrom16 := realFrom.Addr().As16()
 	hdr := bpfDstRoutingResult{
@@ -73,8 +60,8 @@ func sendPktWithHdrWithFlag(data []byte, realFrom netip.AddrPort, lConn *net.UDP
 		},
 	}
 	// Do not put this 'buf' because it has been taken by buffer.
-	b := buffer.NewBuffer(int(unsafe.Sizeof(hdr)) + len(data))
-	defer b.Put()
+	b := pool.GetBuffer()
+	defer pool.PutBuffer(b)
 	// Use internal.NativeEndian due to already big endian.
 	if err := binary.Write(b, internal.NativeEndian, hdr); err != nil {
 		return err
@@ -102,25 +89,30 @@ func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn 
 		return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
 	}
 
-	d := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
-		return dialer.BindControl(c, from)
-	}}
-	var conn net.Conn
-	conn, err = d.Dial("udp", realTo.String())
-	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			// Port collision, use traditional method.
-			return sendPktWithHdrWithFlag(data, from, lConn, to, lanWanFlag)
-		}
-		return err
+	transparentTimeout := AnyfromTimeout
+	if from.Port() == 53 {
+		// Add port 53 (udp) to whitelist to avoid conflicts with the potential local dns server.
+		transparentTimeout = 0
 	}
-	defer conn.Close()
-	uConn := conn.(*net.UDPConn)
-	_, err = uConn.Write(data)
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), transparentTimeout)
+	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
+		logrus.WithField("from", from).
+			WithField("to", to).
+			WithField("realTo", realTo).
+			Trace("Port in use, fallback to use netns.")
+		err = GetDaeNetns().With(func() (err error) {
+			uConn, _, err = DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+			return err
+		})
+	}
+	if err != nil {
+		return
+	}
+	_, err = uConn.WriteToUDPAddrPort(data, realTo)
 	return err
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult) (err error) {
+func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
 	var lanWanFlag consts.LanWanFlag
 	var realSrc netip.AddrPort
 	var domain string
@@ -138,13 +130,51 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
-	if !isDns {
+	if !isDns && !skipSniffing && !DefaultUdpEndpointPool.Exists(realSrc) {
 		// Sniff Quic, ...
-		sniffer := sniffing.NewPacketSniffer(data)
-		defer sniffer.Close()
-		domain, err = sniffer.SniffUdp()
-		if err != nil && !sniffing.IsSniffingError(err) {
-			return err
+		key := PacketSnifferKey{
+			LAddr: realSrc,
+			RAddr: realDst,
+		}
+		_sniffer, _ := DefaultPacketSnifferPool.GetOrCreate(key, nil)
+		_sniffer.Mu.Lock()
+		// Re-get sniffer from pool to confirm the transaction is not done.
+		sniffer := DefaultPacketSnifferPool.Get(key)
+		if _sniffer == sniffer {
+			sniffer.AppendData(data)
+			domain, err = sniffer.SniffUdp()
+			if err != nil && !sniffing.IsSniffingError(err) {
+				sniffer.Mu.Unlock()
+				return err
+			}
+			if sniffer.NeedMore() {
+				sniffer.Mu.Unlock()
+				return nil
+			}
+			if err != nil {
+				logrus.WithError(err).
+					WithField("from", realSrc).
+					WithField("to", realDst).
+					Trace("sniffUdp")
+			}
+			defer DefaultPacketSnifferPool.Remove(key, sniffer)
+			// Re-handlePkt after self func.
+			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
+			sniffer.Mu.Unlock()
+			if len(toRehandle) > 0 {
+				defer func() {
+					if err == nil {
+						for _, d := range toRehandle {
+							dCopy := pool.Get(len(d))
+							copy(dCopy, d)
+							go c.handlePkt(lConn, dCopy, src, pktDst, realDst, routingResult, true)
+						}
+					}
+				}()
+			}
+		} else {
+			_sniffer.Mu.Unlock()
+			// sniffer may be nil.
 		}
 	}
 	if routingResult.Must > 0 {
@@ -179,7 +209,18 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 	// Get outbound.
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
-	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, realDst, domain)
+	var (
+		dialTarget    string
+		shouldReroute bool
+		dialIp        bool
+	)
+	_, shouldReroute, _ = c.ChooseDialTarget(outboundIndex, realDst, domain)
+	// Do not overwrite target.
+	// This fixes a problem that quic connection to google servers.
+	// Reproduce:
+	// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
+	dialTarget = realDst.String()
+	dialIp = true
 getNew:
 	if retry > MaxRetry {
 		c.log.WithFields(logrus.Fields{
@@ -220,8 +261,10 @@ getNew:
 						outboundIndex.String(),
 					)
 				}
-				// Reset dialTarget.
-				dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, realDst, domain)
+				// Do not overwrite target.
+				// This fixes quic problem from google.
+				// Reproduce:
+				// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
 			default:
 			}
 
@@ -274,7 +317,7 @@ getNew:
 				"to":      realDst.String(),
 				"domain":  domain,
 				"pid":     routingResult.Pid,
-				"tos":     routingResult.Tos,
+				"dscp":    routingResult.Dscp,
 				"pname":   ProcessName2String(routingResult.Pname[:]),
 				"mac":     Mac2String(routingResult.Mac[:]),
 				"from":    realSrc.String(),
@@ -290,16 +333,16 @@ getNew:
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).
-	if isNew && c.log.IsLevelEnabled(logrus.InfoLevel) || c.log.IsLevelEnabled(logrus.DebugLevel) {
+	if (isNew && c.log.IsLevelEnabled(logrus.InfoLevel)) || c.log.IsLevelEnabled(logrus.DebugLevel) {
 		fields := logrus.Fields{
 			"network":  networkType.StringWithoutDns(),
 			"outbound": ue.Outbound.Name,
 			"policy":   ue.Outbound.GetSelectionPolicy(),
 			"dialer":   ue.Dialer.Property().Name,
-			"domain":   domain,
+			"sniffed":  domain,
 			"ip":       RefineAddrPortToShow(realDst),
 			"pid":      routingResult.Pid,
-			"tos":      routingResult.Tos,
+			"dscp":     routingResult.Dscp,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}

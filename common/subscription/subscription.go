@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package subscription
@@ -106,6 +106,7 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 	// Check file access.
 	fi, err := f.Stat()
 	if err != nil {
@@ -167,9 +168,6 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		return "", nil, err
 	}
 	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
-	if err != nil {
-		return "", nil, err
-	}
 	resp, err = client.Do(req)
 	if err != nil {
 		return "", nil, err

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -195,8 +195,20 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 }
 
 type loadBpfOptions struct {
-	PinPath           string
-	CollectionOptions *ebpf.CollectionOptions
+	PinPath             string
+	BigEndianTproxyPort uint32
+	CollectionOptions   *ebpf.CollectionOptions
+}
+
+func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
+	spec, err := loadBpf()
+	if err != nil {
+		return err
+	}
+	if err := spec.RewriteConstants(constants); err != nil {
+		return err
+	}
+	return spec.LoadAndAssign(obj, opts)
 }
 
 func fullLoadBpfObjects(
@@ -205,7 +217,16 @@ func fullLoadBpfObjects(
 	opts *loadBpfOptions,
 ) (err error) {
 retryLoadBpf:
-	if err = loadBpfObjects(bpf, opts.CollectionOptions); err != nil {
+	constants := map[string]interface{}{
+		"PARAM": struct {
+			tproxyPort      uint32
+			controlPlanePid uint32
+		}{
+			tproxyPort:      uint32(opts.BigEndianTproxyPort),
+			controlPlanePid: uint32(os.Getpid()),
+		},
+	}
+	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.
 			prefix := "use pinned map "

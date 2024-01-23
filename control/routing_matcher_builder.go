@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -44,7 +44,7 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 	rulesBuilder.RegisterFunctionParser(consts.Function_L4Proto, routing.L4ProtoParserFactory(b.addL4Proto))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Mac, routing.MacParserFactory(b.addSourceMac))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
-	rulesBuilder.RegisterFunctionParser(consts.Function_Tos, routing.UintParserFactory(b.addTos))
+	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
@@ -276,7 +276,7 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) addTos(f *config_parser.Function, values []uint8, outbound *routing.Outbound) (err error) {
+func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint8, outbound *routing.Outbound) (err error) {
 	for i, value := range values {
 		outboundName := consts.OutboundLogicalOr.String()
 		if i == len(values)-1 {
@@ -287,7 +287,7 @@ func (b *RoutingMatcherBuilder) addTos(f *config_parser.Function, values []uint8
 			return err
 		}
 		matchSet := bpfMatchSet{
-			Type:     uint8(consts.MatchType_Tos),
+			Type:     uint8(consts.MatchType_Dscp),
 			Not:      f.Not,
 			Outbound: outboundId,
 			Mark:     outbound.Mark,

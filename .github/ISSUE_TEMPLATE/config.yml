@@ -13,10 +13,6 @@ contact_links:
     url: https://github.com/daeuniverse/dae/tree/main/docs/zh
     about: 'daeuniverse Documentation Link'
 
-  - name: '💬 daeuniverse Telegram Support'
-    url: https://t.me/daeuniverse
-    about: 'daeuniverse Telegram Support Channel'
-
   - name: '💬 daeuniverse GitHub Discussion Support'
     url: https://github.com/daeuniverse/dae/discussions
     about: 'daeuniverse GitHub Discussion Portal'

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -44,36 +44,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
-		// WAN. Old method.
-		var value bpfDstRoutingResult
-		ip6 := src.Addr().As16()
-		if e := c.core.bpf.TcpDstMap.Lookup(bpfIpPort{
-			Ip:   struct{ U6Addr8 [16]uint8 }{U6Addr8: ip6},
-			Port: common.Htons(src.Port()),
-		}, &value); e != nil {
-			if c.tproxyPortProtect {
-				return fmt.Errorf("failed to retrieve target info %v: %v, %v", src.String(), err, e)
-			} else {
-				routingResult = &bpfRoutingResult{
-					Mark:     0,
-					Must:     0,
-					Mac:      [6]uint8{},
-					Outbound: uint8(consts.OutboundControlPlaneRouting),
-					Pname:    [16]uint8{},
-					Pid:      0,
-				}
-				goto destRetrieved
-			}
-		}
-		routingResult = &value.RoutingResult
-
-		dstAddr, ok := netip.AddrFromSlice(common.Ipv6Uint32ArrayToByteSlice(value.Ip))
-		if !ok {
-			return fmt.Errorf("failed to parse dest ip: %v", value.Ip)
-		}
-		dst = netip.AddrPortFrom(dstAddr, common.Htons(value.Port))
+		return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
 	}
-destRetrieved:
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
 
@@ -83,6 +55,7 @@ destRetrieved:
 		Domain:      domain,
 		Mac:         routingResult.Mac,
 		ProcessName: routingResult.Pname,
+		Dscp:        routingResult.Dscp,
 		Src:         src,
 		Dest:        dst,
 		Mark:        routingResult.Mark,
@@ -110,6 +83,7 @@ type RouteDialParam struct {
 	Outbound    consts.OutboundIndex
 	Domain      string
 	Mac         [6]uint8
+	Dscp        uint8
 	ProcessName [16]uint8
 	Src         netip.AddrPort
 	Dest        netip.AddrPort
@@ -119,9 +93,12 @@ type RouteDialParam struct {
 func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
 	routingResult := &bpfRoutingResult{
 		Mark:     p.Mark,
+		Must:     0,
 		Mac:      p.Mac,
 		Outbound: uint8(p.Outbound),
 		Pname:    p.ProcessName,
+		Pid:      0,
+		Dscp:     p.Dscp,
 	}
 	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
 	domain := p.Domain
@@ -182,7 +159,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 			"sniffed":  domain,
 			"ip":       RefineAddrPortToShow(dst),
 			"pid":      routingResult.Pid,
-			"tos":      routingResult.Tos,
+			"dscp":     routingResult.Dscp,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr(), consts.LanWanFlag_NotApplicable), dialTarget)

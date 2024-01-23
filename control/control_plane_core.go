@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -140,15 +142,16 @@ func (c *controlPlaneCore) mapLinkType(ifname string) error {
 	if err != nil {
 		return err
 	}
-	linkType := uint32(0xffff)
+	var linkHdrLen uint32
 	switch link.Attrs().EncapType {
 	case "none":
-		linkType = consts.LinkType_None
+		linkHdrLen = consts.LinkHdrLen_None
 	case "ether":
-		linkType = consts.LinkType_Ethernet
+		linkHdrLen = consts.LinkHdrLen_Ethernet
 	default:
+		return nil
 	}
-	return c.bpf.bpfMaps.LinktypeMap.Update(uint32(link.Attrs().Index), linkType, ebpf.UpdateAny)
+	return c.bpf.bpfMaps.LinklenMap.Update(uint32(link.Attrs().Index), linkHdrLen, ebpf.UpdateAny)
 }
 
 func (c *controlPlaneCore) addQdisc(ifname string) error {
@@ -189,6 +192,43 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 		}
 	}
 	return nil
+}
+
+// TODO: Support more than firewalld and fw4: need more user feedback.
+var nftInputChains = [][3]string{
+	{"inet", "firewalld", "filter_INPUT"},
+	{"inet", "fw4", "input"},
+}
+
+func (c *controlPlaneCore) addAcceptInputMark() (ok bool) {
+	for _, rule := range nftInputChains {
+		if err := exec.Command("nft", "insert rule "+strings.Join(rule[:], " ")+" mark & "+consts.TproxyMarkString+" == "+consts.TproxyMarkString+" accept").Run(); err == nil {
+			ok = true
+		}
+	}
+	return ok
+}
+
+func (c *controlPlaneCore) delAcceptInputMark() (ok bool) {
+	for _, rule := range nftInputChains {
+		output, err := exec.Command("nft", "--handle", "--numeric", "list", "chain", rule[0], rule[1], rule[2]).Output()
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(output), "\n")
+		regex := regexp.MustCompile("meta mark & " + consts.TproxyMarkString + " == " + consts.TproxyMarkString + " accept # handle ([0-9]+)")
+		for _, line := range lines {
+			matches := regex.FindStringSubmatch(line)
+			if len(matches) >= 2 {
+				handle := matches[1]
+				if err = exec.Command("nft", "delete rule "+strings.Join(rule[:], " ")+" handle "+handle).Run(); err == nil {
+					ok = true
+				}
+				break
+			}
+		}
+	}
+	return ok
 }
 
 func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
@@ -546,7 +586,10 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 	return nil
 }
 
-func (c *controlPlaneCore) bindWan(ifname string) error {
+func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) error {
+	if autoConfigKernelParameter {
+		SetAcceptLocal(ifname, "1")
+	}
 	return c._bindWan(ifname)
 }
 

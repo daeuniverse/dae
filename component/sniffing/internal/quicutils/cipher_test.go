@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package quicutils
@@ -89,7 +89,7 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	}
 	header = data[:len(header)-4+len(packetNumber)]
 	payload := data[len(header):]
-	plaintext, err := keys.PayloadDecryptFromPool(payload, packetNumber, header)
+	plaintext, err := keys.PayloadDecrypt(payload, packetNumber, header)
 	if err != nil {
 		t.Fatal("PayloadDecryptFromPool:", err)
 	}

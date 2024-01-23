@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dns
@@ -20,7 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var BadUpstreamFormatError = fmt.Errorf("bad upstream format")
+var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 
 type Dns struct {
 	log              *logrus.Logger
@@ -55,12 +55,12 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 
 		tag, link := common.GetTagFromLinkLikePlaintext(string(upstreamRaw))
 		if tag == "" {
-			return nil, fmt.Errorf("%w: '%v' has no tag", BadUpstreamFormatError, upstreamRaw)
+			return nil, fmt.Errorf("%w: '%v' has no tag", ErrBadUpstreamFormat, upstreamRaw)
 		}
 		var u *url.URL
 		u, err = url.Parse(link)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", BadUpstreamFormatError, err)
+			return nil, fmt.Errorf("%w: %v", ErrBadUpstreamFormat, err)
 		}
 		r := &UpstreamResolver{
 			Raw:     u,
@@ -141,7 +141,10 @@ func (s *Dns) InitUpstreams() {
 	for _, upstream := range s.upstream {
 		wg.Add(1)
 		go func(upstream *UpstreamResolver) {
-			upstream.GetUpstream()
+			_, err := upstream.GetUpstream()
+			if err != nil {
+				s.log.WithError(err).Debugln("Dns.GetUpstream")
+			}
 			wg.Done()
 		}(upstream)
 	}

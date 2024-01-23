@@ -18,7 +18,7 @@ If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](con
 
 ### Troubleshoot firewall
 
-If you bind to wan, make sure firewall is stopped or `12345` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
+If you bind to wan, make sure firewall is stopped or mark `0x8000000` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
 
 Usual firewalls on Linux:
 
@@ -27,9 +27,31 @@ ufw
 firewalld
 ```
 
+#### ufw
+
+UFW users may need some extra steps to make sure `Binding to LAN` working.
+
+Such as adding as follows to `/etc/ufw/before*.rules`:
+
+```bash
+# before.rules
+-A ufw-before-input -m mark --mark 0x8000000 -j ACCEPT
+
+# before6.rules
+-A ufw6-before-input -m mark --mark 0x8000000 -j ACCEPT
+```
+
+#### firewalld
+
+If you use firewalld, it is hard to add mark support. You have to execute following commands every time machine boot and firewall rule changes:
+
+```bash
+sudo nft 'insert rule inet firewalld filter_INPUT mark 0x8000000 accept'
+```
+
 ### Troubleshoot PPPoE
 
-dae does not support PPPoE yet. We are working on it. However, binding to LAN for other machines should work fine.
+dae does not support PPPoE due to it is too complexity for a ebpf program. Binding to LAN for other machines should work fine. If you want to proxy the machine itself, see <<https://github.com/daeuniverse/dae/discussions/304>.
 
 ## Binding to LAN but bad DNS in other machines
 

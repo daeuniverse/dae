@@ -23,8 +23,8 @@ repos:
         entry: gofmt -w .
         language: golang
         types: [go]
-    # - id: check-x
-    #   name: Check X
-    #   entry: ./bin/check-x.sh
-    #   language: script
-    #   files: \.x$
+      - id: check-license-signature
+        name: license-signature-automation
+        entry: ./hack/maintenance/append_license_signature.sh
+        language: script
+        files: \.go$

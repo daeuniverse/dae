@@ -1,3 +1,8 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ */
+
 // Package trie is modified from https://github.com/openacid/succinct/blob/loc100/sskv.go.
 // Slower than about 30% but more than 40% memory saving.
 
@@ -5,13 +10,13 @@ package trie
 
 import (
 	"fmt"
-	"github.com/daeuniverse/softwind/pkg/zeroalloc/buffer"
 	"math/bits"
 	"net/netip"
 	"sort"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/bitlist"
+	"github.com/daeuniverse/softwind/pool"
 )
 
 var ValidCidrChars = NewValidChars([]byte{'0', '1'})
@@ -100,8 +105,8 @@ func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
 		n += 96
 	}
 	ip := prefix.Addr().As16()
-	buf := buffer.NewBuffer(128)
-	defer buf.Put()
+	buf := pool.GetBuffer()
+	defer pool.PutBuffer(buf)
 loop:
 	for i := 0; i < len(ip); i++ {
 		for j := 7; j >= 0; j-- {

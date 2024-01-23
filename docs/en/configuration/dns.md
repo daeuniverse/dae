@@ -62,7 +62,7 @@ dns {
             upstream(googledns) -> accept
             # If DNS request name is not in CN and response answers include private IP, which is most likely polluted
             # in China mainland. Therefore, resend DNS request to 'googledns' to get correct result.
-            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            ip(geoip:private) && !qname(geosite:cn) -> googledns
             fallback: accept
         }
     }
@@ -112,7 +112,7 @@ dns {
       # Trusted upstream. Always accept its result.
       upstream(googledns) -> accept
       # Possibly polluted, re-lookup using googledns.
-      !qname(geosite:cn) && ip(geoip:private) -> googledns
+      ip(geoip:private) && !qname(geosite:cn) -> googledns
       # fallback is also called default.
       fallback: accept
     }

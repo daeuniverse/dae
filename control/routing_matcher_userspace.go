@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -93,7 +93,7 @@ func (m *RoutingMatcher) Match(
 			if processName[0] != 0 && match.Value == processName {
 				goodSubrule = true
 			}
-		case consts.MatchType_Tos:
+		case consts.MatchType_Dscp:
 			if tos == match.Value[0] {
 				goodSubrule = true
 			}

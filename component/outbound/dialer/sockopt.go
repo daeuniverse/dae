@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -64,6 +64,19 @@ func TproxyControl(c syscall.RawConn) error {
 				sockOptErr = fmt.Errorf("error setting IPV6_RECVORIGDSTADDR socket option: %w", e6)
 			}
 			return
+		}
+	})
+	if controlErr != nil {
+		return fmt.Errorf("error invoking socket control function: %w", controlErr)
+	}
+	return sockOptErr
+}
+
+func TransparentControl(c syscall.RawConn) error {
+	var sockOptErr error
+	controlErr := c.Control(func(fd uintptr) {
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
 		}
 	})
 	if controlErr != nil {

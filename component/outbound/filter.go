@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package outbound
@@ -39,7 +39,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
 		for _, node := range nodes {
-			d, err := dialer.NewFromLink(option, dialer.InstanceOption{CheckEnabled: false}, node)
+			d, err := dialer.NewFromLink(option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
 				option.Log.Infof("failed to parse node: %v", err)
 				continue

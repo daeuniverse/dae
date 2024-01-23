@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -47,7 +47,7 @@ const (
 )
 
 var (
-	UnsupportedQuestionTypeError = fmt.Errorf("unsupported question type")
+	ErrUnsupportedQuestionType = fmt.Errorf("unsupported question type")
 )
 
 var (
@@ -729,7 +729,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			"_qname":   qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,
-			"tos":      req.routingResult.Tos,
+			"dscp":     req.routingResult.Dscp,
 			"pname":    ProcessName2String(req.routingResult.Pname[:]),
 			"mac":      Mac2String(req.routingResult.Mac[:]),
 		}

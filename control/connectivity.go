@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -41,7 +41,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 			}
 			c.log.WithFields(logrus.Fields{
 				"outboundId": outbound,
-			}).Warnf("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
+			}).Tracef("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
 		}
 
 		value := uint32(0)

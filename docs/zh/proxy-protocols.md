@@ -18,6 +18,7 @@
   - [x] Stream Ciphers
   - [x] simple-obfs
   - [ ] v2ray-plugin
+    - [x] Websocket (+TLS)
 - [x] ShadowsocksR
 - [x] Trojan
   - [x] Trojan-gfw

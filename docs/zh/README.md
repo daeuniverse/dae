@@ -64,12 +64,19 @@ CONFIG_BPF_EVENTS=y
 
 ## 安装
 
-### Archlinux/Manjaro
+### Arch Linux / Manjaro
 
-dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae)，使用下述命令安装：
+dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae)，使用下述命令安装：
+
+#### 使用 AUR 助手安装
 
 ```shell
-# yay -S dae
+[yay/paru] -S dae
+```
+
+#### 手动编译安装
+
+```shell
 pacman -S --needed git base-devel
 git clone https://aur.archlinux.org/dae.git
 cd dae
@@ -149,6 +156,7 @@ global {
   log_level: info
   allow_insecure: false
   auto_config_kernel_parameter: true
+  auto_config_firewall_rule: true
 }
 
 subscription {
@@ -167,7 +175,7 @@ dns {
     }
     response {
       upstream(googledns) -> accept
-      !qname(geosite:cn) && ip(geoip:private) -> googledns
+      ip(geoip:private) && !qname(geosite:cn) -> googledns
       fallback: accept
     }
   }
@@ -182,11 +190,13 @@ group {
 
 # 更多的 Routing 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
 routing {
-  pname(NetworkManager, systemd-resolved, dnsmasq) -> must_direct
+  pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
 
   ### 以下为自定义规则
 
+  # 禁用 h3，因为它通常消耗很多 CPU 和内存资源
+  l4proto(udp) && dport(443) -> block
   dip(geoip:private) -> direct
   dip(geoip:cn) -> direct
   domain(geosite:cn) -> direct

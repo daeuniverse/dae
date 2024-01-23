@@ -68,12 +68,19 @@ Check them using command like:
 
 ## Installation
 
-### Archlinux/Manjaro
+### Arch Linux / Manjaro
 
-dae has been released on [AUR](https://aur.archlinux.org/packages/dae).
+dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae).
+
+#### Install by AUR Helper
 
 ```shell
-# yay -S dae
+[yay/paru] -S dae
+```
+
+#### Install Manually
+
+```shell
 pacman -S --needed git base-devel
 git clone https://aur.archlinux.org/dae.git
 cd dae
@@ -155,6 +162,7 @@ global {
   log_level: info
   allow_insecure: false
   auto_config_kernel_parameter: true
+  auto_config_firewall_rule: true
 }
 
 subscription {
@@ -173,7 +181,7 @@ dns {
     }
     response {
       upstream(googledns) -> accept
-      !qname(geosite:cn) && ip(geoip:private) -> googledns
+      ip(geoip:private) && !qname(geosite:cn) -> googledns
       fallback: accept
     }
   }
@@ -193,6 +201,8 @@ routing {
 
   ### Write your rules below.
 
+  # Disable h3 because it usually consumes too much cpu/mem resources.
+  l4proto(udp) && dport(443) -> block
   dip(geoip:private) -> direct
   dip(geoip:cn) -> direct
   domain(geosite:cn) -> direct

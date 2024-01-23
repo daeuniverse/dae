@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dns
@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"strconv"
-	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
@@ -225,7 +224,6 @@ func (m *ResponseMatcher) Match(
 	if qName == "" {
 		return 0, fmt.Errorf("qName cannot be empty")
 	}
-	qName = strings.TrimSuffix(strings.ToLower(qName), ".")
 	domainMatchBitmap := m.domainMatcher.MatchDomainBitmap(qName)
 	bin128 := make([]string, 0, len(ips))
 	for _, ip := range ips {
