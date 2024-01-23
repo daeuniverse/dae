@@ -471,6 +471,11 @@ func NewControlPlane(
 	}
 	go dnsUpstream.InitUpstreams()
 
+	InitDaeNetns(log)
+	if err = InitSysctlManager(log); err != nil {
+		return nil, err
+	}
+
 	close(plane.ready)
 	return plane, nil
 }
