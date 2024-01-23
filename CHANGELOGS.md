@@ -14,6 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v0.5.1 (Latest)](#v051-latest)
+
 - [v0.5.0 (Latest)](#v050-latest)
 - [v0.4.0](#v040)
 - [v0.3.0](#v030)
@@ -36,6 +38,60 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.5.1 (Latest)
+
+> Release date: 2024/01/23
+
+#### Features
+
+- feat: support to auto config firewall (firewalld) in [#420](https://github.com/daeuniverse/dae/pull/420) by (@mzz2017)
+- optimize: avoid conflict with potential local dns server in [#422](https://github.com/daeuniverse/dae/pull/422) by (@mzz2017)
+
+#### Bug Fixes
+
+- fix: Workaround UDP port conflicts when another local process binds 53 in [#414](https://github.com/daeuniverse/dae/pull/414) by (@jschwinger233)
+- fix/docs: fix the first check failure and possible dns leaking in [#418](https://github.com/daeuniverse/dae/pull/418) by (@mzz2017)
+- fix: Watch sysctl changes to ensure expected values in [#426](https://github.com/daeuniverse/dae/pull/426) by (@jschwinger233)
+
+#### Others
+
+- ci(release): draft release v0.5.0 in [#409](https://github.com/daeuniverse/dae/pull/409) by (@dae-prow-robot)
+- chore(changelogs): fix changelogs corruption in [#410](https://github.com/daeuniverse/dae/pull/410) by (@sumire88)
+- chore(issue_template): demise telegram support in [#425](https://github.com/daeuniverse/dae/pull/425) by (@sumire88)
+- docs(tutorials): add run-on-centos7 in [#434](https://github.com/daeuniverse/dae/pull/434) by (@kuseee)
+- chore(cmd/version): update print info in [#417](https://github.com/daeuniverse/dae/pull/417) by (@sumire88)
+- refactor/optimize: remove dead code in [#411](https://github.com/daeuniverse/dae/pull/411) by (@jschwinger233)
+- docs(tutorials): add dae-with-opnsense(en/zh) in [#438](https://github.com/daeuniverse/dae/pull/438) by (@troubadour-hell)
+
+#### 特性支持
+
+- 特性: 支持自动配置防火墙 (firewalld) in [#420](https://github.com/daeuniverse/dae/pull/420) 由 (@mzz2017)
+- 优化: 避免与潜在的本地 DNS 服务器冲突 in [#422](https://github.com/daeuniverse/dae/pull/422) 由 (@mzz2017)
+
+#### 问题修复
+
+- 修复: 解决另一个本地进程绑定 53 时的 UDP 端口冲突 in [#414](https://github.com/daeuniverse/dae/pull/414) 由 (@jschwinger233)
+- 修复/文档: 修复第一次检查失败和可能的 DNS 泄漏 in [#418](https://github.com/daeuniverse/dae/pull/418) 由 (@mzz2017)
+- 修复: 观察 sysctl 更改以确保预期的值 in [#426](https://github.com/daeuniverse/dae/pull/426) 由 (@jschwinger233)
+
+#### 其他变更
+
+- 自动化(release): 起草版本 v0.5.0 in [#409](https://github.com/daeuniverse/dae/pull/409) 由 (@dae-prow-robot)
+- 杂项(changelogs): 修复变更日志损坏 in [#410](https://github.com/daeuniverse/dae/pull/410) 由 (@sumire88)
+- 杂项(issue_template): 暂时移除 Telegram 支持 in [#425](https://github.com/daeuniverse/dae/pull/425) 由 (@sumire88)
+- 文档(tutorials): 添加在 CentOS 7 上运行指南 in [#434](https://github.com/daeuniverse/dae/pull/434) 由 (@kuseee)
+- 杂项(cmd/version): 更新打印信息 in [#417](https://github.com/daeuniverse/dae/pull/417) 由 (@sumire88)
+- 重构/优化: 移除无用代码 in [#411](https://github.com/daeuniverse/dae/pull/411) 由 (@jschwinger233)
+- 文档(tutorials): 添加 dae-with-opnsense(en/zh) in [#438](https://github.com/daeuniverse/dae/pull/438) 由 (@troubadour-hell)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.5.1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.5.0...v0.5.1
+
+#### New Contributors
+
+- @kuseee made their first contribution in [#434](https://github.com/daeuniverse/dae/pull/434)
 
 ### v0.5.0 (Latest)
 
