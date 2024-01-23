@@ -92,7 +92,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - @kuseee made their first contribution in [#434](https://github.com/daeuniverse/dae/pull/434)
 
-### v0.5.0 (Latest)
+### v0.5.0
 
 > Release date: 2024/01/04
 
