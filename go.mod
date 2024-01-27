@@ -8,7 +8,7 @@ require (
 	github.com/adrg/xdg v0.4.0
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df
 	github.com/bits-and-blooms/bloom/v3 v3.5.0
-	github.com/cilium/ebpf v0.11.0
+	github.com/cilium/ebpf v0.12.3
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
 	github.com/daeuniverse/outbound v0.0.0-20240101085641-7932e7df927d
 	github.com/daeuniverse/softwind v0.0.0-20231230065827-eed67f20d2c1
@@ -24,7 +24,7 @@ require (
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.12.0
 	golang.org/x/exp v0.0.0-20230728194245-b0cb94b80691
-	golang.org/x/sys v0.11.0
+	golang.org/x/sys v0.14.1-0.20231108175955-e4099bfacb8c
 	google.golang.org/protobuf v1.31.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )

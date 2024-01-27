@@ -1,3 +1,6 @@
 [submodule "control/kern/headers"]
 	path = control/kern/headers
 	url = https://github.com/daeuniverse/dae_bpf_headers
+[submodule "trace/kern/headers"]
+	path = trace/kern/headers
+	url = https://github.com/daeuniverse/dae_bpf_headers
