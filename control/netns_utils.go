@@ -24,6 +24,7 @@ const (
 
 var (
 	daeNetns *DaeNetns
+	once     sync.Once
 )
 
 type DaeNetns struct {
@@ -37,9 +38,10 @@ type DaeNetns struct {
 }
 
 func InitDaeNetns(log *logrus.Logger) {
-	daeNetns = &DaeNetns{
-		log: log,
-	}
+	once.Do(func() {
+		daeNetns = &DaeNetns{}
+	})
+	daeNetns.log = log
 }
 
 func GetDaeNetns() *DaeNetns {
