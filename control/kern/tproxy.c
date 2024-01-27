@@ -1112,9 +1112,6 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
   }
 }
 
-__u8 special_mac_to_tproxy[6] = {2, 0, 2, 3, 0, 0};
-__u8 special_mac_from_tproxy[6] = {2, 0, 2, 3, 0, 1};
-
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
 SEC("tc/wan_egress")
@@ -1279,11 +1276,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                                  ethh.h_source, sizeof(ethh.h_source), 0))) {
       return TC_ACT_SHOT;
     }
-    if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-                                   special_mac_to_tproxy,
-                                   sizeof(ethh.h_source), 0))) {
-      return TC_ACT_SHOT;
-    };
 
   } else if (l4proto == IPPROTO_UDP) {
 
@@ -1370,11 +1362,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
                                  ethh.h_source, sizeof(ethh.h_source), 0))) {
       return TC_ACT_SHOT;
     }
-    if ((ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-                                   special_mac_to_tproxy,
-                                   sizeof(ethh.h_source), 0))) {
-      return TC_ACT_SHOT;
-    };
   }
 
   // // Print packet in hex for debugging (checksum or something else).
@@ -1392,6 +1379,8 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     bpf_printk("Shot bpf_redirect: %d", ret);
     return TC_ACT_SHOT;
   }
+
+  skb->mark = TPROXY_MARK;
   return TC_ACT_REDIRECT;
 }
 
@@ -1423,8 +1412,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   // bpf_printk("bpf_ntohs(*(__u16 *)&ethh.h_source[4]): %u",
   //            bpf_ntohs(*(__u16 *)&ethh.h_source[4]));
   // Tproxy related.
-  __u16 tproxy_typ = bpf_ntohs(*(__u16 *)&ethh.h_source[4]);
-  if (*(__u32 *)&ethh.h_source[0] != bpf_htonl(0x02000203) || tproxy_typ > 1) {
+  if (skb->mark != TPROXY_MARK) {
     // Check for security. Reject packets that is UDP and sent to tproxy port.
     __be16 tproxy_port = PARAM.tproxy_port;
     if (!tproxy_port) {
@@ -1458,7 +1446,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
   // Should send the packet to tproxy.
 
-  skb->mark = TPROXY_MARK;
   struct bpf_sock_tuple tuple = {};
   __u32 tuple_size = skb->protocol == bpf_htons(ETH_P_IP) ?
 		     sizeof(tuple.ipv4) : sizeof(tuple.ipv6);
