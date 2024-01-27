@@ -510,38 +510,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		}
 		return nil
 	})
-
-	// Insert filters.
-	filterEgress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			// Priority should be front of WAN's
-			Priority: 1,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyLanEgress.FD(),
-		Name:         consts.AppName + "_lan_egress",
-		DirectAction: true,
-	}
-	// Remove and add.
-	_ = netlink.FilterDel(filterEgress)
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
-		filterEgressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterEgressFlipped)
-	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
-		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil {
-			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
-		}
-		return nil
-	})
 	return nil
 }
 
@@ -588,7 +556,9 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 
 func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) error {
 	if autoConfigKernelParameter {
-		SetAcceptLocal(ifname, "1")
+		if err := sysctl.Set(fmt.Sprintf("net.ipv4.conf.%v.accept_local", ifname), "1", false); err != nil {
+			return err
+		}
 	}
 	return c._bindWan(ifname)
 }

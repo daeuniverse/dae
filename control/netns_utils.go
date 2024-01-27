@@ -27,6 +27,8 @@ var (
 )
 
 type DaeNetns struct {
+	log *logrus.Logger
+
 	setupDone atomic.Bool
 	mu        sync.Mutex
 
@@ -34,8 +36,10 @@ type DaeNetns struct {
 	hostNs, daeNs  netns.NsHandle
 }
 
-func init() {
-	daeNetns = &DaeNetns{}
+func InitDaeNetns(log *logrus.Logger) {
+	daeNetns = &DaeNetns{
+		log: log,
+	}
 }
 
 func GetDaeNetns() *DaeNetns {
@@ -85,7 +89,7 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 }
 
 func (ns *DaeNetns) setup() (err error) {
-	logrus.Trace("setting up dae netns")
+	ns.log.Trace("setting up dae netns")
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -140,27 +144,27 @@ func (ns *DaeNetns) setupVeth() (err error) {
 
 func (ns *DaeNetns) setupSysctl() (err error) {
 	// sysctl net.ipv4.conf.dae0.rp_filter=0
-	if err = SetRpFilter(HostVethName, "0"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.rp_filter", HostVethName), "0", true); err != nil {
 		return fmt.Errorf("failed to set rp_filter for dae0: %v", err)
 	}
 	// sysctl net.ipv4.conf.all.rp_filter=0
-	if err = SetRpFilter("all", "0"); err != nil {
+	if err = sysctl.Set("net.ipv4.conf.all.rp_filter", "0", true); err != nil {
 		return fmt.Errorf("failed to set rp_filter for all: %v", err)
 	}
 	// sysctl net.ipv4.conf.dae0.arp_filter=0
-	if err = SetArpFilter(HostVethName, "0"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.arp_filter", HostVethName), "0", true); err != nil {
 		return fmt.Errorf("failed to set arp_filter for dae0: %v", err)
 	}
 	// sysctl net.ipv4.conf.all.arp_filter=0
-	if err = SetArpFilter("all", "0"); err != nil {
+	if err = sysctl.Set("net.ipv4.conf.all.arp_filter", "0", true); err != nil {
 		return fmt.Errorf("failed to set arp_filter for all: %v", err)
 	}
 	// sysctl net.ipv4.conf.dae0.accept_local=1
-	if err = SetAcceptLocal(HostVethName, "1"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.accept_local", HostVethName), "1", true); err != nil {
 		return fmt.Errorf("failed to set accept_local for dae0: %v", err)
 	}
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
-	if err = SetDisableIpv6(HostVethName, "0"); err != nil {
+	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6", HostVethName), "0", true); err != nil {
 		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
 	}
 	// sysctl net.ipv6.conf.dae0.forwarding=1
@@ -286,17 +290,17 @@ func (ns *DaeNetns) monitorDae0LinkAddr() {
 
 	err := netlink.LinkSubscribe(ch, done)
 	if err != nil {
-		logrus.Errorf("failed to subscribe link updates: %v", err)
+		ns.log.Errorf("failed to subscribe link updates: %v", err)
 	}
 	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
-		logrus.Errorf("failed to get link dae0: %v", err)
+		ns.log.Errorf("failed to get link dae0: %v", err)
 	}
 	if err = ns.updateNeigh(); err != nil {
-		logrus.Errorf("failed to update neigh: %v", err)
+		ns.log.Errorf("failed to update neigh: %v", err)
 	}
 	for msg := range ch {
 		if msg.Link.Attrs().Name == HostVethName && !bytes.Equal(msg.Link.Attrs().HardwareAddr, ns.dae0.Attrs().HardwareAddr) {
-			logrus.WithField("old addr", ns.dae0.Attrs().HardwareAddr).WithField("new addr", msg.Link.Attrs().HardwareAddr).Info("dae0 link addr changed")
+			ns.log.WithField("old addr", ns.dae0.Attrs().HardwareAddr).WithField("new addr", msg.Link.Attrs().HardwareAddr).Info("dae0 link addr changed")
 			ns.dae0 = msg.Link
 			ns.updateNeigh()
 		}

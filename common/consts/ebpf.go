@@ -166,12 +166,6 @@ const (
 type LanWanFlag uint8
 
 const (
-	LanWanFlag_IsWan LanWanFlag = iota
-	LanWanFlag_IsLan
-	LanWanFlag_NotApplicable
-)
-
-const (
 	LinkHdrLen_None     uint32 = 0
 	LinkHdrLen_Ethernet uint32 = 14
 )
