@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: [ '5.10-v0.3', '5.15-v0.3', '6.3-main', 'bpf-next-20231030.012704' ]
+        kernel: [ '5.10-main', '5.15-main', '6.3-main', 'bpf-next-20231030.012704' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
@@ -165,7 +165,7 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 10s
+            sleep 5s
             cat dae.log
 
       - name: Check WAN IPv4 TCP
@@ -210,6 +210,41 @@ jobs:
 
             docker exec dae dig @2606:4700:4700::1111 one.one.one.one
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+
+      - name: Setup WAN UDP port conflict
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker restart -t0 dae v2ray
+            nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
+            nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
+            sleep 5s
+            nohup docker exec dae nc -lu 53 &> nc.log &
+
+      - name: Check WAN IPv4 UDP with port conflict
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae dig @1.1.1.1 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
+            cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
+
+      - name: Check WAN IPv6 UDP with port conflict
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+
 
       - name: Setup LAN
         uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
@@ -284,7 +319,7 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 10s
+            sleep 5s
             cat dae.log
 
       - name: Check LAN IPv4 TCP
@@ -329,3 +364,44 @@ jobs:
 
             docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+
+      - name: Setup LAN UDP port conflict
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker restart -t0 dae v2ray
+
+            docker exec dae rm -f /var/run/netns/dae
+            docker exec dae bash /host/lan.bash
+            docker exec dae sysctl net.ipv4.conf.dae-veth-peer.send_redirects=0
+            docker exec dae sysctl net.ipv6.conf.dae-veth-peer.forwarding=1
+
+            nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
+            nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
+            sleep 5s
+            nohup docker exec dae nc -lu 53 &> nc.log &
+
+      - name: Check LAN IPv4 UDP with port conflict
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae ip net e dae dig @8.8.4.4 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
+            cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
+
+      - name: Check LAN IPv6 UDP with port conflict
+        uses: cilium/little-vm-helper@908ab1ff8a596a03cd5221a1f8602dc44c3f906d # v0.0.12
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
+
+            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+
