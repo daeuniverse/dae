@@ -1395,6 +1395,9 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   __u8 ihl;
   __u8 l4proto;
   __u32 link_h_len;
+  if (skb->mark != TPROXY_MARK) {
+    return TC_ACT_OK;
+  }
   if (get_link_h_len(skb->ifindex, &link_h_len)) {
     return TC_ACT_OK;
   }
@@ -1412,39 +1415,6 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   // bpf_printk("bpf_ntohs(*(__u16 *)&ethh.h_source[4]): %u",
   //            bpf_ntohs(*(__u16 *)&ethh.h_source[4]));
   // Tproxy related.
-  if (skb->mark != TPROXY_MARK) {
-    // Check for security. Reject packets that is UDP and sent to tproxy port.
-    __be16 tproxy_port = PARAM.tproxy_port;
-    if (!tproxy_port) {
-      goto accept;
-    }
-    if (unlikely(tproxy_port == tuples.five.dport)) {
-      struct bpf_sock_tuple tuple = {0};
-      __u32 tuple_size;
-
-      if (skb->protocol == bpf_htons(ETH_P_IP)) {
-        tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
-        tuple.ipv4.dport = tuples.five.dport;
-        tuple_size = sizeof(tuple.ipv4);
-      } else {
-        __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
-        tuple.ipv6.dport = tuples.five.dport;
-        tuple_size = sizeof(tuple.ipv6);
-      }
-
-      struct bpf_sock *sk =
-          bpf_sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
-      if (sk) {
-        // Scope is host.
-        bpf_sk_release(sk);
-        return TC_ACT_SHOT;
-      }
-    }
-  accept:
-    return TC_ACT_PIPE;
-  }
-
-  // Should send the packet to tproxy.
 
   struct bpf_sock_tuple tuple = {};
   __u32 tuple_size = skb->protocol == bpf_htons(ETH_P_IP) ?
