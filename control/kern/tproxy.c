@@ -1396,7 +1396,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   __u8 l4proto;
   __u32 link_h_len;
   if (skb->mark != TPROXY_MARK) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
   }
   if (get_link_h_len(skb->ifindex, &link_h_len)) {
     return TC_ACT_OK;
