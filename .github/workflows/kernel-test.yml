@@ -296,7 +296,7 @@ jobs:
                 log_level: trace
 
                 lan_interface: dae-veth-peer
-                wan_interface: auto
+                wan_interface: dae-veth-peer,eth0
                 allow_insecure: false
                 auto_config_kernel_parameter: true
             }
