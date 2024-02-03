@@ -130,7 +130,7 @@ jobs:
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
+          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
           path: ./*.zip*
 
   upload-release:
