@@ -24,6 +24,8 @@ else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
+GOARCH ?= $(shell go env GOARCH)
+
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
 
