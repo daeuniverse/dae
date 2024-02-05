@@ -49,7 +49,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -71,7 +71,7 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
           go-version: '^1.21'
 
@@ -129,13 +129,13 @@ jobs:
 
 #       - name: Upload full source to Artifacts
 #         if: matrix.goarch == 'arm64'
-#         uses: actions/upload-artifact@v3
+#         uses: actions/upload-artifact@v4
 #         with:
 #           name: dae-full-src.zip
 #           path: dae-full-src.zip
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: ./*.zip*
@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: release/
 

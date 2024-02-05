@@ -5,9 +5,9 @@
 ### Make Dependencies
 
 ```shell
-clang >= 10
-llvm >= 10 (optional)
-golang >= 1.18
+clang >= 15
+llvm >= 15
+golang >= 1.21
 make
 ```
 
@@ -45,7 +45,7 @@ curl -L -o geosite.dat https://github.com/v2fly/domain-list-community/releases/l
 popd
 ```
 
-### Run
+### Run Program
 
 Download the example config file:
 
