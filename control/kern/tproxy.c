@@ -39,6 +39,9 @@
 #define IPV6_DST_OFF(link_h_len) (link_h_len + offsetof(struct ipv6hdr, daddr))
 #define IPV6_SRC_OFF(link_h_len) (link_h_len + offsetof(struct ipv6hdr, saddr))
 
+#define PACKET_HOST 0
+#define PACKET_OTHERHOST 3
+
 #define NOWHERE_IFINDEX 0
 #define LOOPBACK_IFINDEX 1
 
@@ -111,15 +114,14 @@ struct {
 struct redirect_tuple {
   __be32 sip;
   __be32 dip;
-  __be16 sport;
-  __be16 dport;
   __u8 l4proto;
 };
 
 struct redirect_entry {
+  __u32 ifindex;
   __u8 smac[6];
   __u8 dmac[6];
-  __u32 ifindex;
+  __u8 from_wan;
 };
 
 struct {
@@ -168,7 +170,9 @@ struct dae_param {
   __u32 tproxy_port;
   __u32 control_plane_pid;
   __u32 dae0_ifindex;
+  __u32 dae_netns_id;
   __u8 dae0peer_mac[6];
+  __u8 padding[2];
 };
 
 static volatile const struct dae_param PARAM = {};
@@ -866,6 +870,27 @@ assign_listener(struct __sk_buff *skb, __u8 l4proto)
 	return ret;
 }
 
+static __always_inline int
+redirect_to_control_plane(struct __sk_buff *skb, struct tuples *tuples,
+			  __u8 l4proto, struct ethhdr *ethh, __u8 from_wan) {
+
+  bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+		      (void *)&PARAM.dae0peer_mac, sizeof(ethh->h_dest), 0);
+
+  struct redirect_tuple redirect_tuple = {};
+  redirect_tuple.sip = tuples->five.sip.u6_addr32[3];
+  redirect_tuple.dip = tuples->five.dip.u6_addr32[3];
+  redirect_tuple.l4proto = l4proto;
+  struct redirect_entry redirect_entry = {};
+  redirect_entry.ifindex = skb->ifindex;
+  redirect_entry.from_wan = from_wan;
+  __builtin_memcpy(redirect_entry.smac, ethh->h_source, sizeof(ethh->h_source));
+  __builtin_memcpy(redirect_entry.dmac, ethh->h_dest, sizeof(ethh->h_dest));
+  bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
+
+  return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
 SEC("tc/ingress")
 int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct ethhdr ethh;
@@ -909,7 +934,6 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
   struct bpf_sock_tuple tuple = {0};
   __u32 tuple_size;
   struct bpf_sock *sk;
-  bool is_old_conn = false;
   __u32 flag[8];
   void *l4hdr;
 
@@ -933,11 +957,11 @@ int tproxy_lan_ingress(struct __sk_buff *skb) {
       goto new_connection;
     }
 
-    sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0);
+    sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size, PARAM.dae_netns_id, 0);
     if (sk) {
       if (sk->state != BPF_TCP_LISTEN) {
-        is_old_conn = true;
-        goto assign;
+	bpf_sk_release(sk);
+        goto control_plane;
       }
       bpf_sk_release(sk);
     }
@@ -1031,45 +1055,8 @@ new_connection:
   }
 
   // Assign to control plane.
-
-  if (l4proto == IPPROTO_TCP) {
-    // TCP.
-    sk = bpf_map_lookup_elem(&listen_socket_map, &zero_key);
-    if (!sk || sk->state != BPF_TCP_LISTEN) {
-      bpf_printk("accpet tcp tproxy not listen");
-      goto sk_accept;
-    }
-  } else {
-    // UDP.
-
-    sk = bpf_map_lookup_elem(&listen_socket_map, &one_key);
-    if (!sk) {
-      bpf_printk("accpet udp tproxy not listen");
-      goto sk_accept;
-    }
-  }
-
-assign:
-  skb->mark = TPROXY_MARK;
-  ret = bpf_sk_assign(skb, sk, 0);
-  bpf_sk_release(sk);
-  if (ret) {
-    if (is_old_conn && ret == -ESOCKTNOSUPPORT) {
-      bpf_printk("bpf_sk_assign: %d, perhaps you have other TPROXY programs "
-                 "(such as v2ray) running?",
-                 ret);
-      return TC_ACT_OK;
-    } else {
-      bpf_printk("bpf_sk_assign: %d", ret);
-    }
-    return TC_ACT_SHOT;
-  }
-  return TC_ACT_OK;
-
-sk_accept:
-  if (sk) {
-    bpf_sk_release(sk);
-  }
+control_plane:
+  return redirect_to_control_plane(skb, &tuples, l4proto, &ethh, 0);
 
 direct:
   return TC_ACT_OK;
@@ -1286,13 +1273,6 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 			  &routing_result, BPF_ANY);
     }
 
-    // Write mac.
-    if ((ret =
-             bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-                                 ethh.h_source, sizeof(ethh.h_source), 0))) {
-      return TC_ACT_SHOT;
-    }
-
   } else if (l4proto == IPPROTO_UDP) {
 
     // Routing. It decides if we redirect traffic to control plane.
@@ -1372,43 +1352,9 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     }
 
-    // Write mac.
-    if ((ret =
-             bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-                                 (void *)&PARAM.dae0peer_mac, sizeof(ethh.h_dest), 0))) {
-      return TC_ACT_SHOT;
-    }
   }
 
-  // // Print packet in hex for debugging (checksum or something else).
-  // if ((l4proto == IPPROTO_TCP ? tcph.dest : udph.dest) == bpf_htons(8443)) {
-  //   bpf_printk("PRINT OUTPUT PACKET");
-  //   for (__u32 i = 0; i < skb->len && i < 500; i++) {
-  //     __u8 t = 0;
-  //     bpf_skb_load_bytes(skb, i, &t, 1);
-  //     bpf_printk("%02x", t);
-  //   }
-  // }
-
-  // Redirect from egress to ingress.
-  if ((ret = bpf_redirect(PARAM.dae0_ifindex, 0)) == TC_ACT_SHOT) {
-    bpf_printk("Shot bpf_redirect: %d", ret);
-    return TC_ACT_SHOT;
-  }
-
-  struct redirect_tuple redirect_tuple = {};
-  redirect_tuple.sip = tuples.five.sip.u6_addr32[3];
-  redirect_tuple.dip = tuples.five.dip.u6_addr32[3];
-  redirect_tuple.sport = tuples.five.sport;
-  redirect_tuple.dport = tuples.five.dport;
-  redirect_tuple.l4proto = l4proto;
-  struct redirect_entry redirect_entry = {};
-  redirect_entry.ifindex = skb->ifindex;
-  __builtin_memcpy(redirect_entry.smac, ethh.h_source, sizeof(ethh.h_source));
-  __builtin_memcpy(redirect_entry.dmac, ethh.h_dest, sizeof(ethh.h_dest));
-  bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
-
-  return TC_ACT_REDIRECT;
+  return redirect_to_control_plane(skb, &tuples, l4proto, &ethh, 1);
 }
 
 SEC("tc/dae0peer_ingress")
@@ -1435,7 +1381,7 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb) {
   get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
   skb->mark = TPROXY_MARK;
-  bpf_skb_change_type(skb, 0); // PACKET_HOST = 0
+  bpf_skb_change_type(skb, PACKET_HOST);
 
   /* First look for established socket.
    * This is done for TCP only, otherwise bpf_sk_lookup_udp would find
@@ -1493,8 +1439,6 @@ int tproxy_dae0_ingress(struct __sk_buff *skb) {
   struct redirect_tuple redirect_tuple = {};
   redirect_tuple.sip = tuples.five.dip.u6_addr32[3];
   redirect_tuple.dip = tuples.five.sip.u6_addr32[3];
-  redirect_tuple.sport = tuples.five.dport;
-  redirect_tuple.dport = tuples.five.sport;
   redirect_tuple.l4proto = l4proto;
   struct redirect_entry *redirect_entry = bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
   if (!redirect_entry)
@@ -1504,7 +1448,10 @@ int tproxy_dae0_ingress(struct __sk_buff *skb) {
 		      redirect_entry->dmac, sizeof(redirect_entry->dmac), 0);
   bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
 		      redirect_entry->smac, sizeof(redirect_entry->smac), 0);
-  return bpf_redirect(redirect_entry->ifindex, BPF_F_INGRESS);
+  __u32 type = redirect_entry->from_wan ? PACKET_HOST : PACKET_OTHERHOST;
+  bpf_skb_change_type(skb, type);
+  __u64 flags = redirect_entry->from_wan ? BPF_F_INGRESS : 0;
+  return bpf_redirect(redirect_entry->ifindex, flags);
 }
 
 static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
