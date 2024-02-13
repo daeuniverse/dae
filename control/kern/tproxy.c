@@ -108,8 +108,26 @@ struct {
   __uint(max_entries, 2);
 } listen_socket_map SEC(".maps");
 
-/// TODO: Remove items from the dst_map by conntrack.
-// Dest map:
+struct redirect_tuple {
+  __be32 sip;
+  __be32 dip;
+  __be16 sport;
+  __be16 dport;
+  __u8 l4proto;
+};
+
+struct redirect_entry {
+  __u8 smac[6];
+  __u8 dmac[6];
+  __u32 ifindex;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __type(key, struct redirect_tuple);
+  __type(value, struct redirect_entry);
+  __uint(max_entries, 65536);
+} redirect_track SEC(".maps");
 
 union ip6 {
   __u8 u6_addr8[16];
@@ -149,6 +167,8 @@ struct tuples {
 struct dae_param {
   __u32 tproxy_port;
   __u32 control_plane_pid;
+  __u32 dae0_ifindex;
+  __u8 dae0peer_mac[6];
 };
 
 static volatile const struct dae_param PARAM = {};
@@ -812,15 +832,14 @@ static __always_inline __u32 get_link_h_len(__u32 ifindex,
 }
 
 static __always_inline int
-assign_socket_tcp(struct __sk_buff *skb, struct bpf_sock_tuple *tuple,
-		  __u32 len, bool established) {
+lookup_and_assign_tcp_established(struct __sk_buff *skb, struct bpf_sock_tuple *tuple, __u32 len)
+{
 	int ret = -1;
 	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, tuple, len, BPF_F_CURRENT_NETNS, 0);
 	if (!sk)
 		return -1;
 
-	if (established &&
-	    (sk->state == BPF_TCP_LISTEN || sk->state == BPF_TCP_TIME_WAIT)) {
+	if (sk->state == BPF_TCP_LISTEN || sk->state == BPF_TCP_TIME_WAIT) {
 		goto release;
 	}
 
@@ -831,23 +850,20 @@ release:
 }
 
 static __always_inline int
-assign_socket_udp(struct __sk_buff *skb,
-		  struct bpf_sock_tuple *tuple, __u32 len) {
-	struct bpf_sock *sk = bpf_sk_lookup_udp(skb, tuple, len, BPF_F_CURRENT_NETNS, 0);
+assign_listener(struct __sk_buff *skb, __u8 l4proto)
+{
+	struct bpf_sock *sk;
+	if (l4proto == IPPROTO_TCP)
+		sk = bpf_map_lookup_elem(&listen_socket_map, &zero_key);
+	else
+		sk = bpf_map_lookup_elem(&listen_socket_map, &one_key);
+
 	if (!sk)
 		return -1;
 
 	int ret = bpf_sk_assign(skb, sk, 0);
 	bpf_sk_release(sk);
 	return ret;
-}
-
-static __always_inline int
-assign_socket(struct __sk_buff *skb, struct bpf_sock_tuple *tuple,
-	      __u32 len, __u8 nexthdr, bool established) {
-	if (nexthdr == IPPROTO_TCP)
-		return assign_socket_tcp(skb, tuple, len, established);
-	return assign_socket_udp(skb, tuple, len);
 }
 
 SEC("tc/ingress")
@@ -1359,7 +1375,7 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
     // Write mac.
     if ((ret =
              bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-                                 ethh.h_source, sizeof(ethh.h_source), 0))) {
+                                 (void *)&PARAM.dae0peer_mac, sizeof(ethh.h_dest), 0))) {
       return TC_ACT_SHOT;
     }
   }
@@ -1375,17 +1391,28 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
   // }
 
   // Redirect from egress to ingress.
-  if ((ret = bpf_redirect(skb->ifindex, BPF_F_INGRESS)) == TC_ACT_SHOT) {
+  if ((ret = bpf_redirect(PARAM.dae0_ifindex, 0)) == TC_ACT_SHOT) {
     bpf_printk("Shot bpf_redirect: %d", ret);
     return TC_ACT_SHOT;
   }
 
-  skb->mark = TPROXY_MARK;
+  struct redirect_tuple redirect_tuple = {};
+  redirect_tuple.sip = tuples.five.sip.u6_addr32[3];
+  redirect_tuple.dip = tuples.five.dip.u6_addr32[3];
+  redirect_tuple.sport = tuples.five.sport;
+  redirect_tuple.dport = tuples.five.dport;
+  redirect_tuple.l4proto = l4proto;
+  struct redirect_entry redirect_entry = {};
+  redirect_entry.ifindex = skb->ifindex;
+  __builtin_memcpy(redirect_entry.smac, ethh.h_source, sizeof(ethh.h_source));
+  __builtin_memcpy(redirect_entry.dmac, ethh.h_dest, sizeof(ethh.h_dest));
+  bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
+
   return TC_ACT_REDIRECT;
 }
 
-SEC("tc/wan_ingress")
-int tproxy_wan_ingress(struct __sk_buff *skb) {
+SEC("tc/dae0peer_ingress")
+int tproxy_dae0peer_ingress(struct __sk_buff *skb) {
   struct ethhdr ethh;
   struct iphdr iph;
   struct ipv6hdr ipv6h;
@@ -1394,13 +1421,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
   struct udphdr udph;
   __u8 ihl;
   __u8 l4proto;
-  __u32 link_h_len;
-  if (skb->mark != TPROXY_MARK) {
-    return TC_ACT_PIPE;
-  }
-  if (get_link_h_len(skb->ifindex, &link_h_len)) {
-    return TC_ACT_OK;
-  }
+  __u32 link_h_len = 14;
   int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
                             &tcph, &udph, &ihl, &l4proto);
   if (ret) {
@@ -1412,58 +1433,78 @@ int tproxy_wan_ingress(struct __sk_buff *skb) {
 
   struct tuples tuples;
   get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-  // bpf_printk("bpf_ntohs(*(__u16 *)&ethh.h_source[4]): %u",
-  //            bpf_ntohs(*(__u16 *)&ethh.h_source[4]));
-  // Tproxy related.
 
-  struct bpf_sock_tuple tuple = {};
-  __u32 tuple_size = skb->protocol == bpf_htons(ETH_P_IP) ?
-		     sizeof(tuple.ipv4) : sizeof(tuple.ipv6);
+  skb->mark = TPROXY_MARK;
+  bpf_skb_change_type(skb, 0); // PACKET_HOST = 0
 
   /* First look for established socket.
    * This is done for TCP only, otherwise bpf_sk_lookup_udp would find
    * previously created transparent socket for UDP, which is not what we want.
    * */
   if (l4proto == IPPROTO_TCP) {
+    __u32 tuple_size;
+    struct bpf_sock_tuple tuple = {};
+
     if (skb->protocol == bpf_htons(ETH_P_IP)) {
       tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
-      tuple.ipv4.sport = tuples.five.sport;
       tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
+      tuple.ipv4.sport = tuples.five.sport;
       tuple.ipv4.dport = tuples.five.dport;
+      tuple_size = sizeof(tuple.ipv4);
     } else {
       __builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
       __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
       tuple.ipv6.sport = tuples.five.sport;
       tuple.ipv6.dport = tuples.five.dport;
+      tuple_size = sizeof(tuple.ipv6);
     }
-    ret = assign_socket(skb, &tuple, tuple_size, l4proto, true);
-    if (ret == 0) {
+    if (lookup_and_assign_tcp_established(skb, &tuple, tuple_size) == 0) {
       return TC_ACT_OK;
     }
   }
 
   /* Then look for tproxy listening socket */
-  __be16 tproxy_port = PARAM.tproxy_port;
-  if (!tproxy_port) {
-    return TC_ACT_OK;
-  }
-  if (skb->protocol == bpf_htons(ETH_P_IP)) {
-    tuple.ipv4.saddr = 0;
-    tuple.ipv4.daddr = tuples.five.sip.u6_addr32[3];
-    tuple.ipv4.sport = 0;
-    tuple.ipv4.dport = tproxy_port;
-  } else {
-    __builtin_memset(tuple.ipv6.saddr, 0, IPV6_BYTE_LENGTH);
-    __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
-    tuple.ipv6.sport = 0;
-    tuple.ipv6.dport = tproxy_port;
-  }
-  ret = assign_socket(skb, &tuple, tuple_size, l4proto, false);
-  if (ret == 0) {
+  if (assign_listener(skb, l4proto) == 0) {
     return TC_ACT_OK;
   }
 
   return TC_ACT_SHOT;
+}
+
+SEC("tc/dae0_ingress")
+int tproxy_dae0_ingress(struct __sk_buff *skb) {
+  struct ethhdr ethh;
+  struct iphdr iph;
+  struct ipv6hdr ipv6h;
+  struct icmp6hdr icmp6h;
+  struct tcphdr tcph;
+  struct udphdr udph;
+  __u8 ihl;
+  __u8 l4proto;
+  __u32 link_h_len = 14;
+  if (parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
+                      &tcph, &udph, &ihl, &l4proto)) {
+    return TC_ACT_OK;
+  }
+  struct tuples tuples;
+  get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+
+  // reverse the tuple!
+  struct redirect_tuple redirect_tuple = {};
+  redirect_tuple.sip = tuples.five.dip.u6_addr32[3];
+  redirect_tuple.dip = tuples.five.sip.u6_addr32[3];
+  redirect_tuple.sport = tuples.five.dport;
+  redirect_tuple.dport = tuples.five.sport;
+  redirect_tuple.l4proto = l4proto;
+  struct redirect_entry *redirect_entry = bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
+  if (!redirect_entry)
+    return TC_ACT_OK;
+
+  bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+		      redirect_entry->dmac, sizeof(redirect_entry->dmac), 0);
+  bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+		      redirect_entry->smac, sizeof(redirect_entry->smac), 0);
+  return bpf_redirect(redirect_entry->ifindex, BPF_F_INGRESS);
 }
 
 static int __always_inline _update_map_elem_by_cookie(const __u64 cookie) {
