@@ -48,6 +48,10 @@ func GetDaeNetns() *DaeNetns {
 	return daeNetns
 }
 
+func (ns *DaeNetns) NetnsID() (int, error) {
+	return netlink.GetNetNsIdByFd(int(ns.daeNs))
+}
+
 func (ns *DaeNetns) Dae0() netlink.Link {
 	return ns.dae0
 }
