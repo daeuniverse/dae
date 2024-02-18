@@ -242,7 +242,7 @@ func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 			}
 		}
 		if errs != nil {
-			return fmt.Errorf("IpRouteDel(lo): %w", errs)
+			c.log.Warnln("IpRouteDel: ", errs)
 		}
 		return nil
 	}
@@ -306,7 +306,7 @@ tryRouteAddAgain:
 			}
 		}
 		if errs != nil {
-			return fmt.Errorf("IpRuleDel: %w", errs)
+			c.log.Warnln("IpRuleDel: ", errs)
 		}
 		return nil
 	}
@@ -628,11 +628,9 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := daens.With(func() error {
+		daens.With(func() error {
 			return netlink.FilterDel(filterDae0peerIngress)
-		}); err != nil {
-			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
-		}
+		})
 		return nil
 	})
 
