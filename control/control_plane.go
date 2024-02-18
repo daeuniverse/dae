@@ -203,12 +203,6 @@ func NewControlPlane(
 		}
 	}()
 
-	if len(global.LanInterface) > 0 || len(global.WanInterface) > 0 {
-		if err = core.setupRoutingPolicy(); err != nil {
-			return nil, err
-		}
-	}
-
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
