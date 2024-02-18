@@ -221,7 +221,6 @@ retryLoadBpf:
 	if err != nil {
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
-	println("netnsID", netnsID)
 	constants := map[string]interface{}{
 		"PARAM": struct {
 			tproxyPort      uint32

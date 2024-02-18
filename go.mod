@@ -12,6 +12,7 @@ require (
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
 	github.com/daeuniverse/outbound v0.0.0-20240101085641-7932e7df927d
 	github.com/daeuniverse/softwind v0.0.0-20231230065827-eed67f20d2c1
+	github.com/fsnotify/fsnotify v1.7.0
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
@@ -21,6 +22,7 @@ require (
 	github.com/spf13/cobra v1.7.0
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208
 	github.com/vishvananda/netlink v1.1.0
+	github.com/vishvananda/netns v0.0.4
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.12.0
 	golang.org/x/exp v0.0.0-20230728194245-b0cb94b80691
@@ -54,7 +56,6 @@ require (
 	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
 	github.com/dgryski/go-rc2 v0.0.0-20150621095337-8a9021637152 // indirect
 	github.com/eknkc/basex v1.0.1 // indirect
-	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -68,7 +69,6 @@ require (
 	github.com/refraction-networking/utls v1.4.3 // indirect
 	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/vishvananda/netns v0.0.4 // indirect
 	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37 // indirect
 	golang.org/x/term v0.11.0 // indirect
 	golang.org/x/text v0.12.0 // indirect
