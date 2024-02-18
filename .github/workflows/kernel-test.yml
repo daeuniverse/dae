@@ -190,26 +190,26 @@ jobs:
             cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
 
-            #- name: Check WAN IPv6 TCP
-            #  uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
-            #  with:
-            #    provision: 'false'
-            #    cmd: |
-            #      set -ex
+      - name: Check WAN IPv6 TCP
+        uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
 
-            #      docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
-            #      cat /host/nc.log | grep -q 'succeeded!'
-            #      cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
+            docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
+            cat /host/nc.log | grep -q 'succeeded!'
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
 
-            #- name: Check WAN IPv6 UDP
-            #  uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
-            #  with:
-            #    provision: 'false'
-            #    cmd: |
-            #      set -ex
+      - name: Check WAN IPv6 UDP
+        uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
 
-            #      docker exec dae dig @2606:4700:4700::1111 one.one.one.one
-            #      cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup WAN UDP port conflict
         uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
@@ -235,16 +235,15 @@ jobs:
             cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
 
-            #- name: Check WAN IPv6 UDP with port conflict
-            #  uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
-            #  with:
-            #    provision: 'false'
-            #    cmd: |
-            #      set -ex
+      - name: Check WAN IPv6 UDP with port conflict
+        uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
 
-            #      docker exec dae dig @2606:4700:4700::1111 one.one.one.one
-            #      cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
-
+            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup LAN
         uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
@@ -344,26 +343,26 @@ jobs:
             cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
 
-            #- name: Check LAN IPv6 TCP
-            #  uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
-            #  with:
-            #    provision: 'false'
-            #    cmd: |
-            #      set -ex
+      - name: Check LAN IPv6 TCP
+        uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
 
-            #      docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80 &> /host/nc.log
-            #      cat /host/nc.log | grep -q 'succeeded!'
-            #      cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1001]:80'
+            docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80 &> /host/nc.log
+            cat /host/nc.log | grep -q 'succeeded!'
+            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1001]:80'
 
-            #- name: Check LAN IPv6 UDP
-            #  uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
-            #  with:
-            #    provision: 'false'
-            #    cmd: |
-            #      set -ex
+      - name: Check LAN IPv6 UDP
+        uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
 
-            #      docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
-            #      cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
 
       - name: Setup LAN UDP port conflict
         uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
@@ -395,13 +394,12 @@ jobs:
             cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
 
-            #- name: Check LAN IPv6 UDP with port conflict
-            #  uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
-            #  with:
-            #    provision: 'false'
-            #    cmd: |
-            #      set -ex
+      - name: Check LAN IPv6 UDP with port conflict
+        uses: cilium/little-vm-helper@9d758b756305e83718a51b792a5aeabd022a39ec # v0.0.16
+        with:
+          provision: 'false'
+          cmd: |
+            set -ex
 
-            #docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
-            #cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
-
+            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
