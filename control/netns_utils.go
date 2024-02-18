@@ -182,6 +182,14 @@ func (ns *DaeNetns) setupNetns() (err error) {
 	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
 		return fmt.Errorf("failed to get link dae0peer: %v", err)
 	}
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		return fmt.Errorf("failed to get link lo: %v", err)
+	}
+	// (ip net e daens) ip l s lo up
+	if err = netlink.LinkSetUp(lo); err != nil {
+		return fmt.Errorf("failed to set link lo up: %v", err)
+	}
 	return
 }
 
