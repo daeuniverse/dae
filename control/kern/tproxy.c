@@ -111,9 +111,16 @@ struct {
   __uint(max_entries, 2);
 } listen_socket_map SEC(".maps");
 
+union ip6 {
+  __u8 u6_addr8[16];
+  __be16 u6_addr16[8];
+  __be32 u6_addr32[4];
+  __be64 u6_addr64[2];
+};
+
 struct redirect_tuple {
-  __be32 sip;
-  __be32 dip;
+  union ip6 sip;
+  union ip6 dip;
   __u8 l4proto;
 };
 
@@ -130,13 +137,6 @@ struct {
   __type(value, struct redirect_entry);
   __uint(max_entries, 65536);
 } redirect_track SEC(".maps");
-
-union ip6 {
-  __u8 u6_addr8[16];
-  __be16 u6_addr16[8];
-  __be32 u6_addr32[4];
-  __be64 u6_addr64[2];
-};
 
 struct ip_port {
   union ip6 ip;
@@ -878,8 +878,13 @@ redirect_to_control_plane(struct __sk_buff *skb, struct tuples *tuples,
 		      (void *)&PARAM.dae0peer_mac, sizeof(ethh->h_dest), 0);
 
   struct redirect_tuple redirect_tuple = {};
-  redirect_tuple.sip = tuples->five.sip.u6_addr32[3];
-  redirect_tuple.dip = tuples->five.dip.u6_addr32[3];
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    redirect_tuple.sip.u6_addr32[3] = tuples->five.sip.u6_addr32[3];
+    redirect_tuple.dip.u6_addr32[3] = tuples->five.dip.u6_addr32[3];
+  } else {
+    __builtin_memcpy(&redirect_tuple.sip, &tuples->five.sip, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(&redirect_tuple.dip, &tuples->five.dip, IPV6_BYTE_LENGTH);
+  }
   redirect_tuple.l4proto = l4proto;
   struct redirect_entry redirect_entry = {};
   redirect_entry.ifindex = skb->ifindex;
@@ -1437,8 +1442,13 @@ int tproxy_dae0_ingress(struct __sk_buff *skb) {
 
   // reverse the tuple!
   struct redirect_tuple redirect_tuple = {};
-  redirect_tuple.sip = tuples.five.dip.u6_addr32[3];
-  redirect_tuple.dip = tuples.five.sip.u6_addr32[3];
+  if (skb->protocol == bpf_htons(ETH_P_IP)) {
+    redirect_tuple.sip.u6_addr32[3] = tuples.five.dip.u6_addr32[3];
+    redirect_tuple.dip.u6_addr32[3] = tuples.five.sip.u6_addr32[3];
+  } else {
+    __builtin_memcpy(&redirect_tuple.sip, &tuples.five.dip, IPV6_BYTE_LENGTH);
+    __builtin_memcpy(&redirect_tuple.dip, &tuples.five.sip, IPV6_BYTE_LENGTH);
+  }
   redirect_tuple.l4proto = l4proto;
   struct redirect_entry *redirect_entry = bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
   if (!redirect_entry)
