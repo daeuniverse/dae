@@ -221,9 +221,14 @@ retryLoadBpf:
 		"PARAM": struct {
 			tproxyPort      uint32
 			controlPlanePid uint32
+			dae0Ifindex     uint32
+			dae0peerMac     [6]byte
+			padding         [2]byte
 		}{
 			tproxyPort:      uint32(opts.BigEndianTproxyPort),
 			controlPlanePid: uint32(os.Getpid()),
+			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
+			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {

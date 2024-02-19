@@ -128,6 +128,15 @@ func NewControlPlane(
 	if err = rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
+
+	InitDaeNetns(log)
+	if err = InitSysctlManager(log); err != nil {
+		return nil, err
+	}
+
+	if err = GetDaeNetns().Setup(); err != nil {
+		return nil, fmt.Errorf("failed to setup dae netns: %w", err)
+	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		if os.IsNotExist(err) {
@@ -199,6 +208,7 @@ func NewControlPlane(
 			return nil, err
 		}
 		if global.AutoConfigFirewallRule {
+			// Maybe no more needed.
 			if ok := core.addAcceptInputMark(); ok {
 				core.deferFuncs = append(core.deferFuncs, func() error {
 					core.delAcceptInputMark()
@@ -230,6 +240,9 @@ func NewControlPlane(
 			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}
+		}
+		if err = core.bindDaens(); err != nil {
+			return nil, fmt.Errorf("bindDaens: %w", err)
 		}
 	}
 
@@ -471,8 +484,7 @@ func NewControlPlane(
 	}
 	go dnsUpstream.InitUpstreams()
 
-	InitDaeNetns(log)
-	if err = InitSysctlManager(log); err != nil {
+	if err = GetDaeNetns().With(core.setupRoutingPolicy); err != nil {
 		return nil, err
 	}
 

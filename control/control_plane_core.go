@@ -626,36 +626,86 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return nil
 	})
 
-	filterIngress := &netlink.BpfFilter{
+	return nil
+}
+
+func (c *controlPlaneCore) bindDaens() (err error) {
+	daens := GetDaeNetns()
+
+	// tproxy_dae0peer_ingress@eth0 at dae netns
+	daens.With(func() error {
+		return c.addQdisc(daens.Dae0Peer().Attrs().Name)
+	})
+	filterDae0peerIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
+			LinkIndex: daens.Dae0Peer().Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
+			Handle:    netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)),
 			Protocol:  unix.ETH_P_ALL,
-			Priority:  1,
+			Priority:  0,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyWanIngress.FD(),
-		Name:         consts.AppName + "_wan_ingress",
+		Fd:           c.bpf.bpfPrograms.TproxyDae0peerIngress.FD(),
+		Name:         consts.AppName + "_dae0peer_ingress",
 		DirectAction: true,
 	}
-	_ = netlink.FilterDel(filterIngress)
+	daens.With(func() error {
+		return netlink.FilterDel(filterDae0peerIngress)
+	})
 	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
-		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
+		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
 		filterIngressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterIngressFlipped)
+		daens.With(func() error {
+			return netlink.FilterDel(filterDae0peerIngress)
+		})
 	}
-	if err := netlink.FilterAdd(filterIngress); err != nil {
+	if err = daens.With(func() error {
+		return netlink.FilterAdd(filterDae0peerIngress)
+	}); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil {
-			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
+		if err := daens.With(func() error {
+			return netlink.FilterDel(filterDae0peerIngress)
+		}); err != nil {
+			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
 		}
 		return nil
 	})
-	return nil
+
+	// tproxy_dae0_ingress@dae0 at host netns
+	c.addQdisc(daens.Dae0().Attrs().Name)
+	filterDae0Ingress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: daens.Dae0().Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  0,
+		},
+		Fd:           c.bpf.bpfPrograms.TproxyDae0Ingress.FD(),
+		Name:         consts.AppName + "_dae0_ingress",
+		DirectAction: true,
+	}
+	_ = netlink.FilterDel(filterDae0Ingress)
+	// Remove and add.
+	if !c.isReload {
+		// Clean up thoroughly.
+		filterEgressFlipped := deepcopy.Copy(filterDae0Ingress).(*netlink.BpfFilter)
+		filterEgressFlipped.FilterAttrs.Handle ^= 1
+		_ = netlink.FilterDel(filterEgressFlipped)
+	}
+	if err := netlink.FilterAdd(filterDae0Ingress); err != nil {
+		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
+		}
+		return nil
+	})
+	return
 }
 
 // BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should

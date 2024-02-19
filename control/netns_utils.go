@@ -48,6 +48,14 @@ func GetDaeNetns() *DaeNetns {
 	return daeNetns
 }
 
+func (ns *DaeNetns) Dae0() netlink.Link {
+	return ns.dae0
+}
+
+func (ns *DaeNetns) Dae0Peer() netlink.Link {
+	return ns.dae0peer
+}
+
 func (ns *DaeNetns) Setup() (err error) {
 	if ns.setupDone.Load() {
 		return
