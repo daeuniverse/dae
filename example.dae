@@ -44,8 +44,8 @@ global {
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     # First is URL, others are IP addresses if given.
     # Considering traffic consumption, it is recommended to choose a site with anycast IP and less response.
-    #tcp_check_url: 'http://cp.cloudflare.com'
-    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
+    #tcp_check_url: 'https://cp.cloudflare.com'
+    tcp_check_url: 'https://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
 
     # The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass
     # accounting for this kind of traffic.
