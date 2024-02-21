@@ -226,9 +226,10 @@ func NewControlPlane(
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}
 		}
-		if err = core.bindDaens(); err != nil {
-			return nil, fmt.Errorf("bindDaens: %w", err)
-		}
+	}
+	// Bind to dae0 and dae0peer
+	if err = core.bindDaens(); err != nil {
+		return nil, fmt.Errorf("bindDaens: %w", err)
 	}
 
 	/// DialerGroups (outbounds).
