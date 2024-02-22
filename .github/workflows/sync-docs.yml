@@ -33,7 +33,7 @@ jobs:
       git_commit_msg: ${{ steps.export.outputs.git_commit_msg }}
       git_run_number: ${{ steps.export.outputs.git_run_number }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Get metadata from HEAD sha
         id: export
         run: |
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout to daeuniverse/dae-docs
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: daeuniverse/dae-docs
           fetch-depth: 0

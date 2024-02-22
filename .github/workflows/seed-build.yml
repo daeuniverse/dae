@@ -66,7 +66,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -131,22 +131,10 @@ jobs:
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: ./build/dae-$ASSET_NAME --version
 
-      - name: Create binary ZIP archive and Signature
-        run: |
-          pushd build || exit 1
-          zip -9vr ../dae-$ASSET_NAME.zip .
-          popd || exit 1
-          FILE=./dae-$ASSET_NAME.zip
-          DGST=$FILE.dgst
-          md5sum        $FILE >>$DGST
-          shasum -a 1   $FILE >>$DGST
-          shasum -a 256 $FILE >>$DGST
-          shasum -a 512 $FILE >>$DGST
-
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
+          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
           path: build/*
 
       - name: Report result
