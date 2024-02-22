@@ -135,7 +135,8 @@ func (ns *DaeNetns) setupVeth() (err error) {
 	DeleteLink(HostVethName)
 	if err = netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name: HostVethName,
+			Name:   HostVethName,
+			TxQLen: 1000,
 		},
 		PeerName: NsVethName,
 	}); err != nil {
