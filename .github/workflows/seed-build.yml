@@ -97,7 +97,7 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
           go-version: '^1.21'
 
@@ -132,7 +132,7 @@ jobs:
         run: ./build/dae-$ASSET_NAME --version
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
           path: build/*
