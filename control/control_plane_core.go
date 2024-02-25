@@ -192,12 +192,6 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 	return nil
 }
 
-// TODO: Support more than firewalld and fw4: need more user feedback.
-var nftInputChains = [][3]string{
-	{"inet", "firewalld", "filter_INPUT"},
-	{"inet", "fw4", "input"},
-}
-
 func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 	/// Insert ip rule / ip route.
 	var table = 2023 + c.flip
@@ -242,7 +236,7 @@ func (c *controlPlaneCore) setupRoutingPolicy() (err error) {
 			}
 		}
 		if errs != nil {
-			c.log.Warnln("IpRouteDel: ", errs)
+			c.log.Debugf("IpRouteDel: %w\n", errs)
 		}
 		return nil
 	}
@@ -306,7 +300,7 @@ tryRouteAddAgain:
 			}
 		}
 		if errs != nil {
-			c.log.Warnln("IpRuleDel: ", errs)
+			c.log.Debugf("IpRuleDel: %w\n", errs)
 		}
 		return nil
 	}

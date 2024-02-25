@@ -192,7 +192,12 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 			},
 			KeepAlive: 0,
 		}
-		pc, err := d.ListenPacket(context.Background(), "udp", lAddr)
+		var err error
+		var pc net.PacketConn
+		GetDaeNetns().With(func() error {
+			pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+			return nil
+		})
 		if err != nil {
 			return nil, true, err
 		}
