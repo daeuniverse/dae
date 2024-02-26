@@ -34,8 +34,8 @@ type Global struct {
 	AllowInsecure             bool          `mapstructure:"allow_insecure" default:"false"`
 	DialMode                  string        `mapstructure:"dial_mode" default:"domain"`
 	DisableWaitingNetwork     bool          `mapstructure:"disable_waiting_network" default:"false"`
-	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"` // DEPRECATED: not needed as of https://github.com/daeuniverse/dae/pull/458
-	AutoConfigFirewallRule    bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
+	AutoConfigKernelParameter bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
+	AutoConfigFirewallRule    bool          `mapstructure:"auto_config_firewall_rule" default:"false"` // DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/458
 	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
 	TlsImplementation         string        `mapstructure:"tls_implementation" default:"tls"`
 	UtlsImitate               string        `mapstructure:"utls_imitate" default:"chrome_auto"`
