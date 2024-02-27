@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -127,9 +128,93 @@ func (ns *DaeNetns) setup() (err error) {
 	if err = ns.setupIPv6Datapath(); err != nil {
 		return
 	}
+	if err = ns.setupRoutingPolicy(); err != nil {
+		return
+	}
 	return
 }
 
+func (ns *DaeNetns) setupRoutingPolicy() (err error) {
+	if err = netns.Set(ns.daeNs); err != nil {
+		return fmt.Errorf("failed to switch to daens: %v", err)
+	}
+	defer netns.Set(ns.hostNs)
+
+	/// Insert ip rule / ip route.
+	var table = 2023
+
+	/** ip table
+	ip route add local default dev lo table 2023
+	ip -6 route add local default dev lo table 2023
+	*/
+	routes := []netlink.Route{{
+		Scope:     unix.RT_SCOPE_HOST,
+		LinkIndex: consts.LoopbackIfIndex,
+		Dst: &net.IPNet{
+			IP:   []byte{0, 0, 0, 0},
+			Mask: net.CIDRMask(0, 32),
+		},
+		Table: table,
+		Type:  unix.RTN_LOCAL,
+	}, {
+		Scope:     unix.RT_SCOPE_HOST,
+		LinkIndex: consts.LoopbackIfIndex,
+		Dst: &net.IPNet{
+			IP:   []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+			Mask: net.CIDRMask(0, 128),
+		},
+		Table: table,
+		Type:  unix.RTN_LOCAL,
+	}}
+	for _, route := range routes {
+		if err = netlink.RouteAdd(&route); err != nil {
+			if len(route.Dst.IP) == net.IPv6len {
+				// ipv6
+				ns.log.Warnln("IpRouteAdd: Bad IPv6 support. Perhaps your machine disabled IPv6.")
+				continue
+			}
+			return fmt.Errorf("IpRouteAdd: %w", err)
+		}
+	}
+
+	/** ip rule
+	ip rule add fwmark 0x8000000/0x8000000 table 2023
+	ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
+	*/
+	rules := []netlink.Rule{{
+		SuppressIfgroup:   -1,
+		SuppressPrefixlen: -1,
+		Priority:          -1,
+		Goto:              -1,
+		Flow:              -1,
+		Family:            unix.AF_INET,
+		Table:             table,
+		Mark:              int(consts.TproxyMark),
+		Mask:              int(consts.TproxyMark),
+	}, {
+		SuppressIfgroup:   -1,
+		SuppressPrefixlen: -1,
+		Priority:          -1,
+		Goto:              -1,
+		Flow:              -1,
+		Family:            unix.AF_INET6,
+		Table:             table,
+		Mark:              int(consts.TproxyMark),
+		Mask:              int(consts.TproxyMark),
+	}}
+
+	for _, rule := range rules {
+		if err = netlink.RuleAdd(&rule); err != nil {
+			if rule.Family == unix.AF_INET6 {
+				// ipv6
+				ns.log.Warnln("IpRuleAdd: Bad IPv6 support. Perhaps your machine disabled IPv6 (need CONFIG_IPV6_MULTIPLE_TABLES).")
+				continue
+			}
+			return fmt.Errorf("IpRuleAdd: %w", err)
+		}
+	}
+	return nil
+}
 func (ns *DaeNetns) setupVeth() (err error) {
 	// ip l a dae0 type veth peer name dae0peer
 	DeleteLink(HostVethName)

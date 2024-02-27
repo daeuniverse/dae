@@ -470,10 +470,6 @@ func NewControlPlane(
 	}
 	go dnsUpstream.InitUpstreams()
 
-	if err = GetDaeNetns().With(core.setupRoutingPolicy); err != nil {
-		return nil, err
-	}
-
 	close(plane.ready)
 	return plane, nil
 }
