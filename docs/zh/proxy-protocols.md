@@ -23,7 +23,6 @@
 - [x] Trojan
   - [x] Trojan-gfw
   - [x] Trojan-go
-- [x] Tuic (v5)
 - [x] [Tuic (v5)](https://github.com/daeuniverse/dae/discussions/182)
 - [x] [Juicity](https://github.com/juicity/juicity)
 - [x] [Proxy chain (flexible protocol)](https://github.com/daeuniverse/dae/discussions/236)
