@@ -902,6 +902,7 @@ redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
   __builtin_memcpy(redirect_entry.dmac, ethh->h_dest, sizeof(ethh->h_dest));
   bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
 
+  skb->cb[0] = TPROXY_MARK;
   return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
@@ -1382,6 +1383,11 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb) {
   __u8 ihl;
   __u8 l4proto;
   __u32 link_h_len = 14;
+
+  if (skb->cb[0] != TPROXY_MARK) {
+    return TC_ACT_SHOT;
+  }
+
   int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
                             &tcph, &udph, &ihl, &l4proto);
   if (ret) {
