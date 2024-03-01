@@ -6,11 +6,9 @@
 package control
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -50,23 +48,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-
-	transparentTimeout := AnyfromTimeout
-	if from.Port() == 53 {
-		// Add port 53 (udp) to whitelist to avoid conflicts with the potential local dns server.
-		transparentTimeout = 0
-	}
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), transparentTimeout)
-	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
-		log.WithField("from", from).
-			WithField("to", to).
-			WithField("realTo", realTo).
-			Trace("Port in use, fallback to use netns.")
-		err = GetDaeNetns().With(func() (err error) {
-			uConn, _, err = DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
-			return err
-		})
-	}
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 	if err != nil {
 		return
 	}

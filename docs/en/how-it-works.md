@@ -37,6 +37,8 @@ The proxy mechanism of dae is akin to other programs. However, when binding to t
 
 In terms of benchmarking, dae's proxy performance slightly surpasses that of other proxy programs, but the difference is not significant.
 
+As of [PR:implement stack bypass](https://github.com/daeuniverse/dae/pull/458), the hijack datapath has been changed to bypass stack for better performance and less stack influence (e.g. netfilter, systemd-sysctl). Please refer to the PR description for better understanding.
+
 ### Direct Connection Mechanism
 
 Conventionally, traffic splitting involves passing traffic through a proxy program, navigating the splitting module, and then determining whether to use a proxy or establish a direct connection. This process requires parsing, processing, and copying traffic through the network stack, delivering it to the proxy program, and subsequently copying, processing, and encapsulating it through the network stack before sending it out. This consumes substantial resources. Particularly in scenarios like BitTorrent downloads, even if a direct connection is set, it still consumes numerous connections, ports, memory, and CPU resources. It might even impact NAT type in gaming situations due to the proxy program's inadequate handling, resulting in connection errors.

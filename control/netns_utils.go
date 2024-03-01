@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -46,6 +46,18 @@ func InitDaeNetns(log *logrus.Logger) {
 
 func GetDaeNetns() *DaeNetns {
 	return daeNetns
+}
+
+func (ns *DaeNetns) NetnsID() (int, error) {
+	return netlink.GetNetNsIdByFd(int(ns.daeNs))
+}
+
+func (ns *DaeNetns) Dae0() netlink.Link {
+	return ns.dae0
+}
+
+func (ns *DaeNetns) Dae0Peer() netlink.Link {
+	return ns.dae0peer
 }
 
 func (ns *DaeNetns) Setup() (err error) {
@@ -104,10 +116,10 @@ func (ns *DaeNetns) setup() (err error) {
 	if err = ns.setupVeth(); err != nil {
 		return
 	}
-	if err = ns.setupSysctl(); err != nil {
+	if err = ns.setupNetns(); err != nil {
 		return
 	}
-	if err = ns.setupNetns(); err != nil {
+	if err = ns.setupSysctl(); err != nil {
 		return
 	}
 	if err = ns.setupIPv4Datapath(); err != nil {
@@ -116,16 +128,100 @@ func (ns *DaeNetns) setup() (err error) {
 	if err = ns.setupIPv6Datapath(); err != nil {
 		return
 	}
-	go ns.monitorDae0LinkAddr()
+	if err = ns.setupRoutingPolicy(); err != nil {
+		return
+	}
 	return
 }
 
+func (ns *DaeNetns) setupRoutingPolicy() (err error) {
+	if err = netns.Set(ns.daeNs); err != nil {
+		return fmt.Errorf("failed to switch to daens: %v", err)
+	}
+	defer netns.Set(ns.hostNs)
+
+	/// Insert ip rule / ip route.
+	var table = 2023
+
+	/** ip table
+	ip route add local default dev lo table 2023
+	ip -6 route add local default dev lo table 2023
+	*/
+	routes := []netlink.Route{{
+		Scope:     unix.RT_SCOPE_HOST,
+		LinkIndex: consts.LoopbackIfIndex,
+		Dst: &net.IPNet{
+			IP:   []byte{0, 0, 0, 0},
+			Mask: net.CIDRMask(0, 32),
+		},
+		Table: table,
+		Type:  unix.RTN_LOCAL,
+	}, {
+		Scope:     unix.RT_SCOPE_HOST,
+		LinkIndex: consts.LoopbackIfIndex,
+		Dst: &net.IPNet{
+			IP:   []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+			Mask: net.CIDRMask(0, 128),
+		},
+		Table: table,
+		Type:  unix.RTN_LOCAL,
+	}}
+	for _, route := range routes {
+		if err = netlink.RouteAdd(&route); err != nil {
+			if len(route.Dst.IP) == net.IPv6len {
+				// ipv6
+				ns.log.Warnln("IpRouteAdd: Bad IPv6 support. Perhaps your machine disabled IPv6.")
+				continue
+			}
+			return fmt.Errorf("IpRouteAdd: %w", err)
+		}
+	}
+
+	/** ip rule
+	ip rule add fwmark 0x8000000/0x8000000 table 2023
+	ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
+	*/
+	rules := []netlink.Rule{{
+		SuppressIfgroup:   -1,
+		SuppressPrefixlen: -1,
+		Priority:          -1,
+		Goto:              -1,
+		Flow:              -1,
+		Family:            unix.AF_INET,
+		Table:             table,
+		Mark:              int(consts.TproxyMark),
+		Mask:              int(consts.TproxyMark),
+	}, {
+		SuppressIfgroup:   -1,
+		SuppressPrefixlen: -1,
+		Priority:          -1,
+		Goto:              -1,
+		Flow:              -1,
+		Family:            unix.AF_INET6,
+		Table:             table,
+		Mark:              int(consts.TproxyMark),
+		Mask:              int(consts.TproxyMark),
+	}}
+
+	for _, rule := range rules {
+		if err = netlink.RuleAdd(&rule); err != nil {
+			if rule.Family == unix.AF_INET6 {
+				// ipv6
+				ns.log.Warnln("IpRuleAdd: Bad IPv6 support. Perhaps your machine disabled IPv6 (need CONFIG_IPV6_MULTIPLE_TABLES).")
+				continue
+			}
+			return fmt.Errorf("IpRuleAdd: %w", err)
+		}
+	}
+	return nil
+}
 func (ns *DaeNetns) setupVeth() (err error) {
 	// ip l a dae0 type veth peer name dae0peer
 	DeleteLink(HostVethName)
 	if err = netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name: HostVethName,
+			Name:   HostVethName,
+			TxQLen: 1000,
 		},
 		PeerName: NsVethName,
 	}); err != nil {
@@ -144,38 +240,6 @@ func (ns *DaeNetns) setupVeth() (err error) {
 	return
 }
 
-func (ns *DaeNetns) setupSysctl() (err error) {
-	// sysctl net.ipv4.conf.dae0.rp_filter=0
-	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.rp_filter", HostVethName), "0", true); err != nil {
-		return fmt.Errorf("failed to set rp_filter for dae0: %v", err)
-	}
-	// sysctl net.ipv4.conf.all.rp_filter=0
-	if err = sysctl.Set("net.ipv4.conf.all.rp_filter", "0", true); err != nil {
-		return fmt.Errorf("failed to set rp_filter for all: %v", err)
-	}
-	// sysctl net.ipv4.conf.dae0.arp_filter=0
-	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.arp_filter", HostVethName), "0", true); err != nil {
-		return fmt.Errorf("failed to set arp_filter for dae0: %v", err)
-	}
-	// sysctl net.ipv4.conf.all.arp_filter=0
-	if err = sysctl.Set("net.ipv4.conf.all.arp_filter", "0", true); err != nil {
-		return fmt.Errorf("failed to set arp_filter for all: %v", err)
-	}
-	// sysctl net.ipv4.conf.dae0.accept_local=1
-	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.accept_local", HostVethName), "1", true); err != nil {
-		return fmt.Errorf("failed to set accept_local for dae0: %v", err)
-	}
-	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
-	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6", HostVethName), "0", true); err != nil {
-		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
-	}
-	// sysctl net.ipv6.conf.dae0.forwarding=1
-	SetForwarding(HostVethName, "1")
-	// sysctl net.ipv6.conf.all.forwarding=1
-	SetForwarding("all", "1")
-	return
-}
-
 func (ns *DaeNetns) setupNetns() (err error) {
 	// ip netns a daens
 	DeleteNamedNetns(NsName)
@@ -191,6 +255,41 @@ func (ns *DaeNetns) setupNetns() (err error) {
 	if err = netlink.LinkSetNsFd(ns.dae0peer, int(ns.daeNs)); err != nil {
 		return fmt.Errorf("failed to move dae0peer to daens: %v", err)
 	}
+
+	if err = netns.Set(ns.daeNs); err != nil {
+		return fmt.Errorf("failed to switch to daens: %v", err)
+	}
+	defer netns.Set(ns.hostNs)
+	// (ip net e daens) ip l s dae0peer up
+	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
+		return fmt.Errorf("failed to set link dae0peer up: %v", err)
+	}
+	// re-fetch dae0peer to make sure we have the latest mac address
+	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
+		return fmt.Errorf("failed to get link dae0peer: %v", err)
+	}
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		return fmt.Errorf("failed to get link lo: %v", err)
+	}
+	// (ip net e daens) ip l s lo up
+	if err = netlink.LinkSetUp(lo); err != nil {
+		return fmt.Errorf("failed to set link lo up: %v", err)
+	}
+	return
+}
+
+func (ns *DaeNetns) setupSysctl() (err error) {
+	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
+	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6", HostVethName), "0", true); err != nil {
+		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
+	}
+	// sysctl net.ipv6.conf.dae0.forwarding=1
+	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.forwarding", HostVethName), "1", true); err != nil {
+		return fmt.Errorf("failed to set forwarding for dae0: %v", err)
+	}
+	// sysctl net.ipv6.conf.all.forwarding=1
+	SetForwarding("all", "1")
 	return
 }
 
@@ -200,10 +299,6 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 	}
 	defer netns.Set(ns.hostNs)
 
-	// (ip net e daens) ip l s dae0peer up
-	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
-		return fmt.Errorf("failed to set link dae0peer up: %v", err)
-	}
 	// (ip net e daens) ip a a 169.254.0.11 dev dae0peer
 	// Although transparent UDP socket doesn't use this IP, it's still needed to make proper L3 header
 	ip, ipNet, err := net.ParseCIDR("169.254.0.11/32")
@@ -233,6 +328,14 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 		return fmt.Errorf("failed to add v4 route2 to dae0peer: %v", err)
 	}
 	// (ip net e daens) ip n r 169.254.0.1 dev dae0peer lladdr $mac_dae0 nud permanent
+	if err = netlink.NeighSet(&netlink.Neigh{
+		IP:           net.ParseIP("169.254.0.1"),
+		HardwareAddr: ns.dae0.Attrs().HardwareAddr,
+		LinkIndex:    ns.dae0peer.Attrs().Index,
+		State:        netlink.NUD_PERMANENT,
+	}); err != nil {
+		return fmt.Errorf("failed to add neigh to dae0peer: %v", err)
+	}
 	return
 }
 
@@ -261,21 +364,9 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 	}); err != nil {
 		return fmt.Errorf("failed to add v6 route to dae0peer: %v", err)
 	}
-	return
-}
-
-// updateNeigh() isn't named as setupNeigh() because it requires runtime.LockOSThread()
-func (ns *DaeNetns) updateNeigh() (err error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
-	}
-	defer netns.Set(ns.hostNs)
-
+	// (ip net e daens) ip n r fe80::ecee:eeff:feee:eeee dev dae0peer lladdr $mac_dae0 nud permanent
 	if err = netlink.NeighSet(&netlink.Neigh{
-		IP:           net.ParseIP("169.254.0.1"),
+		IP:           net.ParseIP("fe80::ecee:eeff:feee:eeee"),
 		HardwareAddr: ns.dae0.Attrs().HardwareAddr,
 		LinkIndex:    ns.dae0peer.Attrs().Index,
 		State:        netlink.NUD_PERMANENT,
@@ -283,30 +374,6 @@ func (ns *DaeNetns) updateNeigh() (err error) {
 		return fmt.Errorf("failed to add neigh to dae0peer: %v", err)
 	}
 	return
-}
-
-func (ns *DaeNetns) monitorDae0LinkAddr() {
-	ch := make(chan netlink.LinkUpdate)
-	done := make(chan struct{})
-	defer close(done)
-
-	err := netlink.LinkSubscribe(ch, done)
-	if err != nil {
-		ns.log.Errorf("failed to subscribe link updates: %v", err)
-	}
-	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
-		ns.log.Errorf("failed to get link dae0: %v", err)
-	}
-	if err = ns.updateNeigh(); err != nil {
-		ns.log.Errorf("failed to update neigh: %v", err)
-	}
-	for msg := range ch {
-		if msg.Link.Attrs().Name == HostVethName && !bytes.Equal(msg.Link.Attrs().HardwareAddr, ns.dae0.Attrs().HardwareAddr) {
-			ns.log.WithField("old addr", ns.dae0.Attrs().HardwareAddr).WithField("new addr", msg.Link.Attrs().HardwareAddr).Info("dae0 link addr changed")
-			ns.dae0 = msg.Link
-			ns.updateNeigh()
-		}
-	}
 }
 
 func DeleteNamedNetns(name string) error {

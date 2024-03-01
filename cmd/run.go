@@ -135,9 +135,12 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 			}
 		}()
-		if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
-			log.Errorln("ListenAndServe:", err)
-		}
+		control.GetDaeNetns().With(func() error {
+			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
+				log.Errorln("ListenAndServe:", err)
+			}
+			return err
+		})
 		sigs <- nil
 	}()
 	reloading := false
