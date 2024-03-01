@@ -129,13 +129,13 @@ jobs:
 
 #       - name: Upload full source to Artifacts
 #         if: matrix.goarch == 'arm64'
-#         uses: actions/upload-artifact@v3
+#         uses: actions/upload-artifact@v4
 #         with:
 #           name: dae-full-src.zip
 #           path: dae-full-src.zip
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: ./*.zip*
@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: release/
 
