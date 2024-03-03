@@ -7,11 +7,12 @@ package outbound
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/dlclark/regexp2"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -72,7 +73,12 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterKey_Name_Regex:
-					matched, _ := regexp.MatchString(param.Val, dialer.Property().Name)
+					regex, err := regexp2.Compile(param.Val, 0)
+					if err != nil {
+						logrus.Warnln(err, ",No filtering")
+						regex, _ = regexp2.Compile("", 0)
+					}
+					matched, _ := regex.MatchString(dialer.Property().Name)
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
@@ -97,7 +103,12 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterInput_SubscriptionTag_Regex:
-					matched, _ := regexp.MatchString(param.Val, s.nodeToTagMap[dialer])
+					regex, err := regexp2.Compile(param.Val, 0)
+					if err != nil {
+						logrus.Warnln(err, ",No filtering")
+						regex, _ = regexp2.Compile("", 0)
+					}
+					matched, _ := regex.MatchString(s.nodeToTagMap[dialer])
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
