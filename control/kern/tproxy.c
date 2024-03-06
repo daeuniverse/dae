@@ -852,8 +852,8 @@ assign_listener(struct __sk_buff *skb, __u8 l4proto)
 	return ret;
 }
 
-static __always_inline int
-redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
+static __always_inline void
+prep_redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
 			  struct tuples *tuples, __u8 l4proto,
 			  struct ethhdr *ethh, __u8 from_wan,
 			  struct tcphdr *tcph) {
@@ -890,7 +890,7 @@ redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
   if ((l4proto == IPPROTO_TCP && tcph->syn) || l4proto == IPPROTO_UDP) {
     skb->cb[1] = l4proto;
   }
-  return bpf_redirect(PARAM.dae0_ifindex, 0);
+  return;
 }
 
 SEC("tc/ingress")
@@ -1058,7 +1058,8 @@ new_connection:
 
   // Assign to control plane.
 control_plane:
-  return redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 0, &tcph);
+  prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 0, &tcph);
+  return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
 
 direct:
   return TC_ACT_OK;
@@ -1356,7 +1357,8 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
   }
 
-  return redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 1, &tcph);
+  prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 1, &tcph);
+  return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
 SEC("tc/dae0peer_ingress")
