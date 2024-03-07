@@ -14,6 +14,7 @@
   - [x] gRPC
   - [x] h2
   - [x] Meek
+  - [x] HTTPUpgrade
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Stream Ciphers
