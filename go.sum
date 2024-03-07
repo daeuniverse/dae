@@ -15,8 +15,11 @@ github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c276
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
 github.com/daeuniverse/outbound v0.0.0-20240101085641-7932e7df927d h1:hEZDwJvoTATxtNU8/kirJP9GK0tFxekXzT00cGXO0xg=
 github.com/daeuniverse/outbound v0.0.0-20240101085641-7932e7df927d/go.mod h1:RlBqzRS0OfxDxmD1bgNfTmz9uzs8wQSmSG2vonMwSd0=
+github.com/daeuniverse/outbound v0.0.0-20240126121235-33bc68e5f93e h1:GvldPfT/+6v84H8N3l5g61okMkqmd86RnNku3YoPdp0=
+github.com/daeuniverse/outbound v0.0.0-20240126121235-33bc68e5f93e/go.mod h1:RSMbP0N/AtpyTbxhYSCHbeyztj/JOdZfT/m60gL9aHg=
 github.com/daeuniverse/softwind v0.0.0-20231230065827-eed67f20d2c1 h1:qh16GLF9TfntnLIwos49rj7Yj4EHICDe9ToesIjTm1c=
 github.com/daeuniverse/softwind v0.0.0-20231230065827-eed67f20d2c1/go.mod h1:ly72DcZIxHlKbOEz1qaSCh99lr7ns8T5JLpfww8hXrI=
+github.com/daeuniverse/softwind v0.0.0-20240125045015-94186ddaef35/go.mod h1:ly72DcZIxHlKbOEz1qaSCh99lr7ns8T5JLpfww8hXrI=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
