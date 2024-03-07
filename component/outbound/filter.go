@@ -76,12 +76,11 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterKey_Name_Regex:
-					var matched bool
-					if regex, err := regexp2.Compile(param.Val, 0); err == nil {
-						matched, _ = regex.MatchString(dialer.Property().Name)
-					} else {
-						s.log.Warnf("Bad regexp %v: %v", param.Val, err)
+					regex, err := regexp2.Compile(param.Val, 0)
+					if err != nil {
+						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
 					}
+					matched, _ := regex.MatchString(dialer.Property().Name)
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
@@ -107,12 +106,11 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterInput_SubscriptionTag_Regex:
-					var matched bool
-					if regex, err := regexp2.Compile(param.Val, 0); err == nil {
-						matched, _ = regex.MatchString(s.nodeToTagMap[dialer])
-					} else {
-						s.log.Warnf("Bad regexp %v: %v", param.Val, err)
+					regex, err := regexp2.Compile(param.Val, 0)
+					if err != nil {
+						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
 					}
+					matched, _ := regex.MatchString(s.nodeToTagMap[dialer])
 					if matched {
 						subFilterHit = true
 						break loop2
