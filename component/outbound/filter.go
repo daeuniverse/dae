@@ -12,7 +12,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/dlclark/regexp2"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -70,29 +69,29 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 		switch filter.Name {
 		case FilterInput_Name:
 			// Or
+		loop:
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterKey_Name_Regex:
+					var matched bool
 					regex, err := regexp2.Compile(param.Val, 0)
-					if err != nil {
-						logrus.Warnln(err, ",No filtering")
-						regex, _ = regexp2.Compile("", 0)
+					if err == nil {
+						matched, _ = regex.MatchString(dialer.Property().Name)
 					}
-					matched, _ := regex.MatchString(dialer.Property().Name)
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
-						break
+						break loop
 					}
 				case FilterKey_Name_Keyword:
 					if strings.Contains(dialer.Property().Name, param.Val) {
 						subFilterHit = true
-						break
+						break loop
 					}
 				case "":
 					if dialer.Property().Name == param.Val {
 						subFilterHit = true
-						break
+						break loop
 					}
 				default:
 					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
@@ -100,25 +99,25 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			}
 		case FilterInput_SubscriptionTag:
 			// Or
+		loop2:
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterInput_SubscriptionTag_Regex:
+					var matched bool
 					regex, err := regexp2.Compile(param.Val, 0)
-					if err != nil {
-						logrus.Warnln(err, ",No filtering")
-						regex, _ = regexp2.Compile("", 0)
+					if err == nil {
+						matched, _ = regex.MatchString(s.nodeToTagMap[dialer])
 					}
-					matched, _ := regex.MatchString(s.nodeToTagMap[dialer])
-					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
-						break
+						break loop2
 					}
+					//logrus.Warnln(param.Val, matched, dialer.Name())
 				case "":
 					// Full
 					if s.nodeToTagMap[dialer] == param.Val {
 						subFilterHit = true
-						break
+						break loop2
 					}
 				default:
 					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
