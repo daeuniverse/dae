@@ -12,6 +12,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/dlclark/regexp2"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -28,12 +29,14 @@ const (
 )
 
 type DialerSet struct {
+	log          *logrus.Logger
 	dialers      []*dialer.Dialer
 	nodeToTagMap map[*dialer.Dialer]string
 }
 
 func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
 	s := &DialerSet{
+		log:          option.Log,
 		dialers:      make([]*dialer.Dialer, 0),
 		nodeToTagMap: make(map[*dialer.Dialer]string),
 	}
@@ -41,7 +44,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 		for _, node := range nodes {
 			d, err := dialer.NewFromLink(option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
-				option.Log.Infof("failed to parse node: %v", err)
+				s.log.Infof("failed to parse node: %v", err)
 				continue
 			}
 			s.dialers = append(s.dialers, d)
@@ -74,9 +77,10 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 				switch param.Key {
 				case FilterKey_Name_Regex:
 					var matched bool
-					regex, err := regexp2.Compile(param.Val, 0)
-					if err == nil {
+					if regex, err := regexp2.Compile(param.Val, 0); err == nil {
 						matched, _ = regex.MatchString(dialer.Property().Name)
+					} else {
+						s.log.Warnf("Bad regexp %v: %v", param.Val, err)
 					}
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
@@ -104,9 +108,10 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 				switch param.Key {
 				case FilterInput_SubscriptionTag_Regex:
 					var matched bool
-					regex, err := regexp2.Compile(param.Val, 0)
-					if err == nil {
+					if regex, err := regexp2.Compile(param.Val, 0); err == nil {
 						matched, _ = regex.MatchString(s.nodeToTagMap[dialer])
+					} else {
+						s.log.Warnf("Bad regexp %v: %v", param.Val, err)
 					}
 					if matched {
 						subFilterHit = true
