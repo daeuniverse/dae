@@ -290,6 +290,14 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	}
 	// sysctl net.ipv6.conf.all.forwarding=1
 	SetForwarding("all", "1")
+
+	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
+	if err = netns.Set(ns.daeNs); err != nil {
+		return fmt.Errorf("failed to switch to daens: %v", err)
+	}
+	defer netns.Set(ns.hostNs)
+	sysctl.Set("net.ipv4.tcp_early_demux", "1", false)
+	sysctl.Set("net.ipv4.ip_early_demux", "1", false)
 	return
 }
 

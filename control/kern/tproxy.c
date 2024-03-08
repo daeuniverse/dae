@@ -836,24 +836,6 @@ static __always_inline __u32 get_link_h_len(__u32 ifindex,
 }
 
 static __always_inline int
-lookup_and_assign_tcp_established(struct __sk_buff *skb, struct bpf_sock_tuple *tuple, __u32 len)
-{
-	int ret = -1;
-	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, tuple, len, BPF_F_CURRENT_NETNS, 0);
-	if (!sk)
-		return -1;
-
-	if (sk->state == BPF_TCP_LISTEN || sk->state == BPF_TCP_TIME_WAIT) {
-		goto release;
-	}
-
-	ret = bpf_sk_assign(skb, sk, 0);
-release:
-	bpf_sk_release(sk);
-	return ret;
-}
-
-static __always_inline int
 assign_listener(struct __sk_buff *skb, __u8 l4proto)
 {
 	struct bpf_sock *sk;
@@ -870,10 +852,11 @@ assign_listener(struct __sk_buff *skb, __u8 l4proto)
 	return ret;
 }
 
-static __always_inline int
-redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
+static __always_inline void
+prep_redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
 			  struct tuples *tuples, __u8 l4proto,
-			  struct ethhdr *ethh, __u8 from_wan) {
+			  struct ethhdr *ethh, __u8 from_wan,
+			  struct tcphdr *tcph) {
 
   /* Redirect from L3 dev to L2 dev, e.g. wg0 -> veth */
   if (!link_h_len) {
@@ -903,7 +886,11 @@ redirect_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
   bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
 
   skb->cb[0] = TPROXY_MARK;
-  return bpf_redirect(PARAM.dae0_ifindex, 0);
+  skb->cb[1] = 0;
+  if ((l4proto == IPPROTO_TCP && tcph->syn) || l4proto == IPPROTO_UDP) {
+    skb->cb[1] = l4proto;
+  }
+  return;
 }
 
 SEC("tc/ingress")
@@ -1071,7 +1058,8 @@ new_connection:
 
   // Assign to control plane.
 control_plane:
-  return redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 0);
+  prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 0, &tcph);
+  return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
 
 direct:
   return TC_ACT_OK;
@@ -1369,72 +1357,32 @@ int tproxy_wan_egress(struct __sk_buff *skb) {
 
   }
 
-  return redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 1);
+  prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 1, &tcph);
+  return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
 SEC("tc/dae0peer_ingress")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb) {
-  struct ethhdr ethh;
-  struct iphdr iph;
-  struct ipv6hdr ipv6h;
-  struct icmp6hdr icmp6h;
-  struct tcphdr tcph;
-  struct udphdr udph;
-  __u8 ihl;
-  __u8 l4proto;
-  __u32 link_h_len = 14;
-
+  /* Only packets redirected from wan_egress or lan_ingress have this cb mark. */
   if (skb->cb[0] != TPROXY_MARK) {
     return TC_ACT_SHOT;
   }
 
-  int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-                            &tcph, &udph, &ihl, &l4proto);
-  if (ret) {
-    return TC_ACT_OK;
-  }
-  if (l4proto == IPPROTO_ICMPV6) {
-    return TC_ACT_OK;
-  }
-
-  struct tuples tuples;
-  get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-
+  /* ip rule add fwmark 0x8000000/0x8000000 table 2023
+   * ip route add local default dev lo table 2023
+   */
   skb->mark = TPROXY_MARK;
   bpf_skb_change_type(skb, PACKET_HOST);
 
-  /* First look for established socket.
-   * This is done for TCP only, otherwise bpf_sk_lookup_udp would find
-   * previously created transparent socket for UDP, which is not what we want.
-   * */
-  if (l4proto == IPPROTO_TCP) {
-    __u32 tuple_size;
-    struct bpf_sock_tuple tuple = {};
-
-    if (skb->protocol == bpf_htons(ETH_P_IP)) {
-      tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
-      tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
-      tuple.ipv4.sport = tuples.five.sport;
-      tuple.ipv4.dport = tuples.five.dport;
-      tuple_size = sizeof(tuple.ipv4);
-    } else {
-      __builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
-      __builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
-      tuple.ipv6.sport = tuples.five.sport;
-      tuple.ipv6.dport = tuples.five.dport;
-      tuple_size = sizeof(tuple.ipv6);
-    }
-    if (lookup_and_assign_tcp_established(skb, &tuple, tuple_size) == 0) {
-      return TC_ACT_OK;
-    }
+  /* l4proto is stored in skb->cb[1] only for UDP and new TCP. As for
+   * established TCP, kernel can take care of socket lookup, so just
+   * return them to stack without calling bpf_sk_assign.
+   */
+  __u8 l4proto = skb->cb[1];
+  if (l4proto != 0) {
+    assign_listener(skb, l4proto);
   }
-
-  /* Then look for tproxy listening socket */
-  if (assign_listener(skb, l4proto) == 0) {
-    return TC_ACT_OK;
-  }
-
-  return TC_ACT_SHOT;
+  return TC_ACT_OK;
 }
 
 SEC("tc/dae0_ingress")
