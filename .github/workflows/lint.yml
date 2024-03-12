@@ -1,0 +1,23 @@
+name: Lint
+
+on:
+  pull_request:
+    paths:
+      - "**/*.c"
+      - "**/*.h"
+      - ".github/workflows/lint.yml"
+
+jobs:
+
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Perl
+      uses: shogo82148/actions-setup-perl@v1
+      with:
+        perl-version: "5.38"
+
+    - name: Run lint
+      run: make ebpf-lint
