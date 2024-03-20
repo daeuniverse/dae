@@ -1156,22 +1156,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 
 	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
-	// We should know if this packet is from tproxy.
-	// We do not need to check the source ip because we have skipped packets not
-	// from localhost.
-	__be16 tproxy_port = PARAM.tproxy_port;
-
-	if (!tproxy_port)
-		return TC_ACT_OK;
-	bool tproxy_response = tproxy_port == tuples.five.sport;
-
-	if (tproxy_response) {
-		// WAN response won't reach here, must be a LAN response.
-		return TC_ACT_PIPE;
-	}
-
 	// Normal packets.
-
 	if (l4proto == IPPROTO_TCP) {
 		// Backup for further use.
 		tcp_state_syn = tcph.syn && !tcph.ack;
