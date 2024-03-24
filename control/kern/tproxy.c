@@ -193,6 +193,17 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_tuples_map SEC(".maps");
 
+/* Sockets in fast_sock map are used for fast-redirecting via
+ * sk_msg/fast_redirect. Sockets are automactically deleted from map once
+ * closed, so we don't need to worry about stale entries.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_SOCKHASH);
+	__type(key, struct tuples_key);
+	__type(value, __u64);
+	__uint(max_entries, 65535);
+} fast_sock SEC(".maps");
+
 // Link to type:
 #define LinkType_None 0
 #define LinkType_Ethernet 1
@@ -1592,6 +1603,85 @@ int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx)
 {
 	update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
 	return 1;
+}
+
+SEC("sockops")
+int local_tcp_sockops(struct bpf_sock_ops *skops)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	__u32 pid = BPF_CORE_READ(task, pid);
+
+	/* Only local TCP connection has non-zero pids. */
+	if (pid == 0)
+		return 0;
+
+	struct tuples_key tuple = {};
+
+	tuple.l4proto = IPPROTO_TCP;
+	tuple.sport = bpf_htonl(skops->local_port) >> 16;
+	tuple.dport = skops->remote_port >> 16;
+	tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+	tuple.sip.u6_addr32[3] = skops->local_ip4;
+	tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+	tuple.dip.u6_addr32[3] = skops->remote_ip4;
+
+	switch (skops->op) {
+	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: // dae sockets
+		{
+			struct tuples_key rev_tuple = {};
+
+			rev_tuple.l4proto = IPPROTO_TCP;
+			rev_tuple.sport = tuple.dport;
+			rev_tuple.dport = tuple.sport;
+			__builtin_memcpy(&rev_tuple.sip, &tuple.dip, IPV6_BYTE_LENGTH);
+			__builtin_memcpy(&rev_tuple.dip, &tuple.sip, IPV6_BYTE_LENGTH);
+
+			if (!bpf_map_lookup_elem(&routing_tuples_map, &rev_tuple))
+				break;
+
+			if (!bpf_sock_hash_update(skops, &fast_sock, &tuple, BPF_ANY))
+				bpf_printk("fast_sock added: %pI4:%lu -> %pI4:%lu",
+					   &tuple.sip.u6_addr32[3], bpf_ntohs(tuple.sport),
+					   &tuple.dip.u6_addr32[3], bpf_ntohs(tuple.dport));
+			break;
+		}
+
+	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: // local client sockets
+		if (!bpf_map_lookup_elem(&routing_tuples_map, &tuple))
+			break;
+
+		if (!bpf_sock_hash_update(skops, &fast_sock, &tuple, BPF_ANY))
+			bpf_printk("fast_sock added: %pI4:%lu -> %pI4:%lu",
+				   &tuple.sip.u6_addr32[3], bpf_ntohs(tuple.sport),
+				   &tuple.dip.u6_addr32[3], bpf_ntohs(tuple.dport));
+		break;
+
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+SEC("sk_msg/fast_redirect")
+int sk_msg_fast_redirect(struct sk_msg_md *msg)
+{
+	struct tuples_key rev_tuple = {};
+
+	rev_tuple.l4proto = IPPROTO_TCP;
+	rev_tuple.sport = msg->remote_port >> 16;
+	rev_tuple.dport = bpf_htonl(msg->local_port) >> 16;
+	rev_tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+	rev_tuple.sip.u6_addr32[3] = msg->remote_ip4;
+	rev_tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+	rev_tuple.dip.u6_addr32[3] = msg->local_ip4;
+
+	if (bpf_msg_redirect_hash(msg, &fast_sock, &rev_tuple, BPF_F_INGRESS) == SK_PASS)
+		bpf_printk("tcp fast redirect: %pI4:%lu -> %pI4:%lu",
+			   &rev_tuple.sip.u6_addr32[3], bpf_ntohs(rev_tuple.sport),
+			   &rev_tuple.dip.u6_addr32[3], bpf_ntohs(rev_tuple.dport));
+
+	return SK_PASS;
 }
 
 SEC("license") const char __license[] = "Dual BSD/GPL";
