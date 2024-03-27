@@ -11,10 +11,26 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/spf13/cobra"
 )
+
+func readSignalProgressFile() (code byte, content string, err error) {
+	b, err := os.ReadFile(SignalProgressFilePath)
+	if err != nil {
+		return 0, "", err
+	}
+	var firstLine string
+	firstLine, content, _ = strings.Cut(string(b), "\n")
+	if len(firstLine) != 1 {
+		return 0, "", fmt.Errorf("unexpected format: %v", string(b))
+	}
+	code = firstLine[0]
+	return code, content, nil
+}
 
 var (
 	abort     bool
@@ -41,10 +57,40 @@ var (
 					f.Close()
 				}
 			}
+			// Read the first line of SignalProgressFilePath.
+			code, _, err := readSignalProgressFile()
+			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
+				// In progress.
+				fmt.Printf("%v shows another reload operation is in progress.\n", SignalProgressFilePath)
+				return
+			}
+			// Set the progress as ReloadSend.
+			os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadSend}, 0644)
+			// Send signal.
 			if err = syscall.Kill(pid, syscall.SIGUSR1); err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
+			time.Sleep(500 * time.Millisecond)
+			code, _, _ = readSignalProgressFile()
+			if code == consts.ReloadSend {
+				// Old version dae is running.
+				goto fallback
+			}
+
+			for {
+				time.Sleep(200 * time.Millisecond)
+				code, content, err := readSignalProgressFile()
+				if err != nil {
+					// Unexpecetd case.
+					goto fallback
+				}
+				if code == consts.ReloadDone || code == consts.ReloadError {
+					fmt.Println(content)
+					return
+				}
+			}
+		fallback:
 			fmt.Println("OK")
 		},
 	}
