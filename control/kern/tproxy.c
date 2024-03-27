@@ -612,10 +612,13 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 #define _dscp flag[6]
 
 	int ret;
-	struct lpm_key lpm_key_instance, *lpm_key;
+	struct lpm_key *lpm_key;
 	__u32 key = MatchType_L4Proto;
 	__u16 h_dport;
 	__u16 h_sport;
+	struct lpm_key lpm_key_instance = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
 
 	/// TODO: BPF_MAP_UPDATE_BATCH ?
 	ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_l4proto_type, BPF_ANY);
@@ -642,7 +645,6 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 	if (unlikely((ret = bpf_map_update_elem(&h_port_map, &key, &h_dport, BPF_ANY))))
 		return ret;
 
-	lpm_key_instance.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
 	__builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
 	key = MatchType_IpSet;
 	ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance, BPF_ANY);
