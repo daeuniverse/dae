@@ -188,6 +188,7 @@ group {
 
     group2 {
         # Filter nodes from the global node pool defined by the subscription and node section above.
+        #filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
         #filter: subtag(regex: '^my_', another_sub) && !name(keyword: 'ExpireAt:')
 
         # Filter nodes from the global node pool defined by tag.
