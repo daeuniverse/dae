@@ -1374,6 +1374,24 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
+static __always_inline int
+lookup_and_assign_tcp_established(struct __sk_buff *skb, struct bpf_sock_tuple *tuple, __u32 len)
+{
+	int ret = -1;
+	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, tuple, len, BPF_F_CURRENT_NETNS, 0);
+
+	if (!sk)
+		return -1;
+
+	if (sk->state == BPF_TCP_LISTEN || sk->state == BPF_TCP_TIME_WAIT)
+		goto release;
+
+	ret = bpf_sk_assign(skb, sk, 0);
+release:
+	bpf_sk_release(sk);
+	return ret;
+}
+
 SEC("tc/dae0peer_ingress")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
@@ -1388,14 +1406,55 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 	bpf_skb_change_type(skb, PACKET_HOST);
 
 	/* l4proto is stored in skb->cb[1] only for UDP and new TCP. As for
-	 * established TCP, kernel can take care of socket lookup, so just
-	 * return them to stack without calling bpf_sk_assign.
+	 * established TCP, fallback to bpf_skc_lookup_tcp.
 	 */
 	__u8 l4proto = skb->cb[1];
 
-	if (l4proto != 0)
+	if (l4proto != 0) {
 		assign_listener(skb, l4proto);
-	return TC_ACT_OK;
+		return TC_ACT_OK;
+	}
+
+	/* Fallback to bpf_skc_lookup_tcp for established TCP. */
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl;
+	__u32 link_h_len = 14;
+
+	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
+				  &tcph, &udph, &ihl, &l4proto);
+	if (ret)
+		return TC_ACT_OK;
+
+	struct tuples tuples;
+
+	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+
+	if (l4proto == IPPROTO_TCP) {
+		__u32 tuple_size;
+		struct bpf_sock_tuple tuple = {};
+
+		if (skb->protocol == bpf_htons(ETH_P_IP)) {
+			tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
+			tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
+			tuple.ipv4.sport = tuples.five.sport;
+			tuple.ipv4.dport = tuples.five.dport;
+			tuple_size = sizeof(tuple.ipv4);
+		} else {
+			__builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip, IPV6_BYTE_LENGTH);
+			__builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip, IPV6_BYTE_LENGTH);
+			tuple.ipv6.sport = tuples.five.sport;
+			tuple.ipv6.dport = tuples.five.dport;
+			tuple_size = sizeof(tuple.ipv6);
+		}
+		if (lookup_and_assign_tcp_established(skb, &tuple, tuple_size) == 0)
+			return TC_ACT_OK;
+	}
+	return TC_ACT_SHOT;
 }
 
 SEC("tc/dae0_ingress")
