@@ -13,6 +13,7 @@
   - [x] TLS
   - [x] gRPC
   - [x] Meek
+  - [x] HTTPUpgrade
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Stream Ciphers

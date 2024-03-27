@@ -27,6 +27,7 @@ import (
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -39,7 +40,8 @@ import (
 )
 
 const (
-	PidFilePath = "/var/run/dae.pid"
+	PidFilePath            = "/var/run/dae.pid"
+	SignalProgressFilePath = "/var/run/dae.progress"
 )
 
 var (
@@ -134,6 +136,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			if !disablePidFile {
 				_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 			}
+			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadDone}, 0644)
 		}()
 		control.GetDaeNetns().With(func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
@@ -167,6 +170,7 @@ loop:
 				}()
 				<-readyChan
 				sdnotify.Ready()
+				_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
 				log.Warnln("[Reload] Finished")
 			} else {
 				// Listening error.
@@ -183,6 +187,7 @@ loop:
 				log.Warnln("[Reload] Received reload signal; prepare to reload")
 			}
 			sdnotify.Reloading()
+			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
 
 			// Load new config.
 			abortConnections = os.Remove(AbortFile) == nil
@@ -196,6 +201,7 @@ loop:
 						"err": err,
 					}).Errorln("[Reload] Failed to reload")
 					sdnotify.Ready()
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
 					continue
 				}
 				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
@@ -210,6 +216,7 @@ loop:
 						"err": err,
 					}).Errorln("[Reload] Failed to reload")
 					sdnotify.Ready()
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
 					continue
 				}
 				log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
