@@ -27,6 +27,10 @@ This feature requires kernel version of the machine >= 5.8.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
+`Use trace command`
+
+If you want to use `dae trace` command to triage network connectivity issue, the kernel version is required to be >= 5.15.
+
 ## Kernel Configurations
 
 Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.

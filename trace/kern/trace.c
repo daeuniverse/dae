@@ -132,7 +132,7 @@ filter_l3_and_l4(struct sk_buff *skb)
 static __always_inline void
 set_meta(struct meta *meta, struct sk_buff *skb, struct pt_regs *ctx)
 {
-	meta->pc = BPF_CORE_READ(ctx, ip);
+	meta->pc = bpf_get_func_ip(ctx);
 	meta->skb = (__u64)skb;
 	meta->second_param = PT_REGS_PARM2(ctx);
 	meta->mark = BPF_CORE_READ(skb, mark);
