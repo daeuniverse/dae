@@ -19,11 +19,11 @@ This feature requires the kernel version of machine on which dae install >= 5.8.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-`Bind to WAN: >= 5.8`
+`Bind to WAN: >= 5.10`
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
-This feature requires kernel version of the machine >= 5.8.
+This feature requires kernel version of the machine >= 5.10.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 

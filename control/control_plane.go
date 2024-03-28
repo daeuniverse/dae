@@ -106,7 +106,7 @@ func NewControlPlane(
 			kernelVersion.String(),
 			requirement.String())
 	}
-	if requirement := consts.CgSocketCookieFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
+	if requirement := consts.SockmapFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
 			kernelVersion.String(),
 			requirement.String())
@@ -220,6 +220,9 @@ func NewControlPlane(
 	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
 			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
+		}
+		if err = core.setupLocalTcpFastRedirect(); err != nil {
+			log.WithError(err).Warnln("failed to setup local tcp fast redirect")
 		}
 		for _, ifname := range global.WanInterface {
 			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
