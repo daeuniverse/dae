@@ -1651,7 +1651,10 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 			__builtin_memcpy(&rev_tuple.sip, &tuple.dip, IPV6_BYTE_LENGTH);
 			__builtin_memcpy(&rev_tuple.dip, &tuple.sip, IPV6_BYTE_LENGTH);
 
-			if (!bpf_map_lookup_elem(&routing_tuples_map, &rev_tuple))
+			struct routing_result *routing_result;
+
+			routing_result = bpf_map_lookup_elem(&routing_tuples_map, &rev_tuple);
+			if (!routing_result || !routing_result->pid)
 				break;
 
 			if (!bpf_sock_hash_update(skops, &fast_sock, &tuple, BPF_ANY))
@@ -1662,14 +1665,19 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 		}
 
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: // local client sockets
-		if (!bpf_map_lookup_elem(&routing_tuples_map, &tuple))
-			break;
+		{
+			struct routing_result *routing_result;
 
-		if (!bpf_sock_hash_update(skops, &fast_sock, &tuple, BPF_ANY))
-			bpf_printk("fast_sock added: %pI4:%lu -> %pI4:%lu",
-				   &tuple.sip.u6_addr32[3], bpf_ntohs(tuple.sport),
-				   &tuple.dip.u6_addr32[3], bpf_ntohs(tuple.dport));
-		break;
+			routing_result = bpf_map_lookup_elem(&routing_tuples_map, &tuple);
+			if (!routing_result || !routing_result->pid)
+				break;
+
+			if (!bpf_sock_hash_update(skops, &fast_sock, &tuple, BPF_ANY))
+				bpf_printk("fast_sock added: %pI4:%lu -> %pI4:%lu",
+					   &tuple.sip.u6_addr32[3], bpf_ntohs(tuple.sport),
+					   &tuple.dip.u6_addr32[3], bpf_ntohs(tuple.dport));
+			break;
+		}
 
 	default:
 		break;
