@@ -7,11 +7,12 @@ package outbound
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/dlclark/regexp2"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -28,12 +29,14 @@ const (
 )
 
 type DialerSet struct {
+	log          *logrus.Logger
 	dialers      []*dialer.Dialer
 	nodeToTagMap map[*dialer.Dialer]string
 }
 
 func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
 	s := &DialerSet{
+		log:          option.Log,
 		dialers:      make([]*dialer.Dialer, 0),
 		nodeToTagMap: make(map[*dialer.Dialer]string),
 	}
@@ -41,7 +44,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 		for _, node := range nodes {
 			d, err := dialer.NewFromLink(option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
-				option.Log.Infof("failed to parse node: %v", err)
+				s.log.Infof("failed to parse node: %v", err)
 				continue
 			}
 			s.dialers = append(s.dialers, d)
@@ -69,24 +72,29 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 		switch filter.Name {
 		case FilterInput_Name:
 			// Or
+		loop:
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterKey_Name_Regex:
-					matched, _ := regexp.MatchString(param.Val, dialer.Property().Name)
+					regex, err := regexp2.Compile(param.Val, 0)
+					if err != nil {
+						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
+					}
+					matched, _ := regex.MatchString(dialer.Property().Name)
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
-						break
+						break loop
 					}
 				case FilterKey_Name_Keyword:
 					if strings.Contains(dialer.Property().Name, param.Val) {
 						subFilterHit = true
-						break
+						break loop
 					}
 				case "":
 					if dialer.Property().Name == param.Val {
 						subFilterHit = true
-						break
+						break loop
 					}
 				default:
 					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
@@ -94,20 +102,25 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 			}
 		case FilterInput_SubscriptionTag:
 			// Or
+		loop2:
 			for _, param := range filter.Params {
 				switch param.Key {
 				case FilterInput_SubscriptionTag_Regex:
-					matched, _ := regexp.MatchString(param.Val, s.nodeToTagMap[dialer])
-					//logrus.Warnln(param.Val, matched, dialer.Name())
+					regex, err := regexp2.Compile(param.Val, 0)
+					if err != nil {
+						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
+					}
+					matched, _ := regex.MatchString(s.nodeToTagMap[dialer])
 					if matched {
 						subFilterHit = true
-						break
+						break loop2
 					}
+					//logrus.Warnln(param.Val, matched, dialer.Name())
 				case "":
 					// Full
 					if s.nodeToTagMap[dialer] == param.Val {
 						subFilterHit = true
-						break
+						break loop2
 					}
 				default:
 					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
