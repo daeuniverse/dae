@@ -1062,7 +1062,7 @@ new_connection:
 	// Assign to control plane.
 control_plane:
 	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh, 0, &tcph);
-	return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
 	return TC_ACT_OK;
