@@ -155,6 +155,7 @@ var (
 	ProgTypeSkLookupFeatureVersion            = internal.Version{5, 9, 0}
 	SockmapFeatureVersion                     = internal.Version{5, 10, 0}
 	UserspaceBatchUpdateLpmTrieFeatureVersion = internal.Version{5, 13, 0}
+	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
 )
 
 const (
