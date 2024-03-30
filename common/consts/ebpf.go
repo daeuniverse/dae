@@ -154,6 +154,7 @@ var (
 	ChecksumFeatureVersion                    = internal.Version{5, 8, 0}
 	ProgTypeSkLookupFeatureVersion            = internal.Version{5, 9, 0}
 	UserspaceBatchUpdateLpmTrieFeatureVersion = internal.Version{5, 13, 0}
+	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
 )
 
 const (

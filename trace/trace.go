@@ -20,6 +20,8 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
+	"github.com/daeuniverse/dae/common/consts"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 )
 
@@ -42,6 +44,15 @@ func init() {
 }
 
 func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, outputFile string) (err error) {
+	kernelVersion, err := internal.KernelVersion()
+	if err != nil {
+		return fmt.Errorf("failed to get kernel version: %w", err)
+	}
+	if requirement := consts.HelperBpfGetFuncIpVersionFeatureVersion; kernelVersion.Less(requirement) {
+		return fmt.Errorf("your kernel version %v does not support bpf_get_func_ip; expect >=%v; upgrade your kernel and try again",
+			kernelVersion.String(),
+			requirement.String())
+	}
 	objs, err := rewriteAndLoadBpf(ipVersion, l4ProtoNo, port)
 	if err != nil {
 		return
