@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -380,6 +381,32 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		})
 	}
 	return nil
+}
+
+func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
+	cgroupPath, err := detectCgroupPath()
+	if err != nil {
+		return
+	}
+	cg, err := link.AttachCgroup(link.CgroupOptions{
+		Path:    cgroupPath,
+		Program: c.bpf.LocalTcpSockops, // todo@gray: rename
+		Attach:  ebpf.AttachCGroupSockOps,
+	})
+	if err != nil {
+		return fmt.Errorf("AttachCgroupSockOps: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, cg.Close)
+
+	if err = link.RawAttachProgram(link.RawAttachProgramOptions{
+		Target:  c.bpf.FastSock.FD(),
+		Program: c.bpf.SkMsgFastRedirect,
+		Attach:  ebpf.AttachSkMsgVerdict,
+	}); err != nil {
+		return fmt.Errorf("AttachSkMsgVerdict: %w", err)
+	}
+	return nil
+
 }
 
 func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) error {
