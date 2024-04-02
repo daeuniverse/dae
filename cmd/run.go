@@ -108,7 +108,7 @@ var (
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			if err := Run(log, conf, []string{filepath.Dir(cfgFile)}); err != nil {
-				logrus.Fatalln(err)
+				log.Fatalln(err)
 			}
 		},
 	}
