@@ -79,33 +79,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - docs(example): add '# Multiple filters indicate 'or' logic.' in [#488](https://github.com/daeuniverse/dae/pull/488) by (@akiooo45)
 - ci(generate-changelogs.yml): generate auth token on the fly in [#489](https://github.com/daeuniverse/dae/pull/489) by (@sumire88)
 
-#### 特性支持
-
-- 特性: 在 [#435](https://github.com/daeuniverse/dae/pull/435) 中添加 dae trace 由 (@jschwinger233)
-- 特性(bpf): 在 [#458](https://github.com/daeuniverse/dae/pull/458) 中实现栈绕过 由 (@jschwinger233)
-- 特性: 在 [#472](https://github.com/daeuniverse/dae/pull/472) 中添加 httpupgrade 由 (@AkinoKaede)
-- 特性: 在 [#470](https://github.com/daeuniverse/dae/pull/470) 中为 dae reload 支持重新加载进度和错误 由 (@mzz2017)
-
-#### 问题修复
-
-- 修复: 在 [#446](https://github.com/daeuniverse/dae/pull/446) 中在重新加载时严格创建 DaeNetns 实例 由 (@jschwinger233)
-- 补丁/优化(bpf): 在 [#466](https://github.com/daeuniverse/dae/pull/466) 中改进 lan hijack 数据路径性能 由 (@jschwinger233)
-- 修复: 在 [#483](https://github.com/daeuniverse/dae/pull/483) 中解决 6.9 上的 bpf CO-RE 问题 由 (@jschwinger233)
-- 修复(bpf): 在 [#480](https://github.com/daeuniverse/dae/pull/480) 中恢复使用 bpf_redirect_peer 由 (@jschwinger233)
-- 补丁/优化(bpf): 在 [#481](https://github.com/daeuniverse/dae/pull/481) 中改进 wan tcp hijack 数据路径性能 由 (@jschwinger233)
-
-#### 其他变更
-
-- 文档(protocols): 在 [#452](https://github.com/daeuniverse/dae/pull/452) 中删除多余的行 由 (@bradfordzhang)
-- 自动化(Makefile): 在 [#455](https://github.com/daeuniverse/dae/pull/455) 中默认启用 trace 模块 由 (@hero-intelligent)
-- 自动化: 在 [#461](https://github.com/daeuniverse/dae/pull/461) 中将 actions/checkout@v3 更新为 actions/checkout@v4 由 (@MarksonHon)
-- 自动化: 在 [#465](https://github.com/daeuniverse/dae/pull/465) 中更新使用 nodejs 的 ci 模块至最新版本 由 (@MarksonHon)
-- 格式: 在 [#477](https://github.com/daeuniverse/dae/pull/477) 中使用内核 checkpatch.pl 格式化 bpf c 代码 由 (@jschwinger233)
-- 杂项: 在 [#487](https://github.com/daeuniverse/dae/pull/487) 中升级子模块 dae_bpf_headers 由 (@jschwinger233)
-- 杂项: 在 [#467](https://github.com/daeuniverse/dae/pull/467) 中使用 regexp2 替换 regexp 以获得更好的过滤效果 由 (@xishang0128)
-- 文档(example): 在 [#488](https://github.com/daeuniverse/dae/pull/488) 中添加 '# 多个过滤器表示逻辑“或”' 由 (@akiooo45)
-- 自动化(generate-changelogs.yml): 在 [#489](https://github.com/daeuniverse/dae/pull/489) 中动态生成授权令牌 由 (@sumire88)
-
 **Example Config**: https://github.com/daeuniverse/dae/blob/v0.6.0rc1/example.dae
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.5.1...v0.6.0rc1
