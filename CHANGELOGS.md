@@ -45,7 +45,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 #### Breaking Changes
 
-> [!NOTE] Please read the following PRs for details
+> [!NOTE]
+> Please read the following PRs for details
 
 - feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
 - patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
