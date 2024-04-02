@@ -23,6 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generate GitHub Auth Token
+        # https://github.com/tibdex/github-app-token
+        id: generate_token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Generate release changelogs
         uses: daeuniverse/changelogs-generator-action@main
         id: changelog
@@ -30,7 +38,7 @@ jobs:
           # https://github.com/daeuniverse/changelogs-generator-action
           previousRelease: ${{ inputs.previous_release_tag }}
           futureRelease: ${{ inputs.future_release_tag }}
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.generate_token.outputs.token }}
 
       - name: Print outputs
         shell: bash
@@ -41,7 +49,7 @@ jobs:
         if: ${{ inputs.dry_run == 'false' }}
         uses: dacbd/create-issue-action@main
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.generate_token.outputs.token }}
           title: '[Release Changelogs] ${{ inputs.future_release_tag }}'
           labels: automated-issue,release
           assignees: "sumire88,mzz2017,kunish,jschwinger233"
