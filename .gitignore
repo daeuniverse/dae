@@ -10,3 +10,4 @@ go-mod/
 node_modules/
 *.log
 .build_tags
+.checkpatch-camelcase.git.
