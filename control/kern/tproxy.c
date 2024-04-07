@@ -1216,9 +1216,9 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return false;
 }
 
-static int refresh_output_state_timer_cb(void *_udp_conn_state_map,
-					 struct tuples_key *key,
-					 struct udp_conn_state *val)
+static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
+					   struct tuples_key *key,
+					   struct udp_conn_state *val)
 {
 	bpf_map_delete_elem(&udp_conn_state_map, key);
 	return 0;
@@ -1234,7 +1234,7 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->dport = key->sport;
 	dst->l4proto = key->l4proto;
 }
-static __always_inline int refresh_output_state_timer(struct tuples_key *key)
+static __always_inline int refresh_udp_conn_state_timer(struct tuples_key *key)
 {
 	struct udp_conn_state new_output_state = { 0 };
 	int ret = bpf_map_update_elem(&udp_conn_state_map, key,
@@ -1253,7 +1253,7 @@ static __always_inline int refresh_output_state_timer(struct tuples_key *key)
 		goto del;
 	}
 	ret = bpf_timer_set_callback(&value->timer,
-				     refresh_output_state_timer_cb);
+				     refresh_udp_conn_state_timer_cb);
 	if (unlikely(ret)) {
 		goto del;
 	}
@@ -1294,7 +1294,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 	copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-	if (refresh_output_state_timer(&reversed_tuples_key)) {
+	if (refresh_udp_conn_state_timer(&reversed_tuples_key)) {
 		return TC_ACT_SHOT;
 	}
 
@@ -1473,7 +1473,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		struct pid_pname *pid_pname;
 
 		if (bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five)) {
-			if (refresh_output_state_timer(&tuples.five)) {
+			if (refresh_udp_conn_state_timer(&tuples.five)) {
 				return TC_ACT_SHOT;
 			}
 			return TC_ACT_OK;
