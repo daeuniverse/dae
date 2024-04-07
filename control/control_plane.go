@@ -106,7 +106,7 @@ func NewControlPlane(
 			kernelVersion.String(),
 			requirement.String())
 	}
-	if requirement := consts.SockmapFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
+	if requirement := consts.BpfTimerFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
 			kernelVersion.String(),
 			requirement.String())

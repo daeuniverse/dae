@@ -12,6 +12,7 @@
 #include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
+#include "headers/bpf_timer.h"
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -75,6 +76,8 @@
 #define RECOGNIZE 0x2017
 
 #define ESOCKTNOSUPPORT 94 /* Socket type not supported */
+
+#define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
 
 enum { BPF_F_CURRENT_NETNS = -1 };
 
@@ -318,7 +321,8 @@ struct port_range {
  *
  * domain(geosite:cn, suffix: google.com) && l4proto(tcp) -> my_group
  *
- * pseudocode: domain(geosite:cn || suffix:google.com) && l4proto(tcp) -> my_group
+ * pseudocode: domain(geosite:cn || suffix:google.com) && l4proto(tcp) ->
+ * my_group
  *
  * A match_set can be: IP set geosite:cn, suffix google.com, tcp proto
  */
@@ -380,6 +384,19 @@ struct {
 	/// NOTICE: No persistence.
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } cookie_pid_map SEC(".maps");
+
+struct udp_conn_state {
+	// pass
+
+	struct bpf_timer timer;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_DST_MAPPING_NUM);
+	__type(key, struct tuples_key);
+	__type(value, struct udp_conn_state);
+} udp_conn_state_map SEC(".maps");
 
 // Functions:
 
@@ -562,7 +579,8 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	__builtin_memset(udph, 0, sizeof(struct udphdr));
 
 	// bpf_printk("parse_transport: h_proto: %u ? %u %u", ethh->h_proto,
-	//            bpf_htons(ETH_P_IP), bpf_htons(ETH_P_IPV6));
+	//						bpf_htons(ETH_P_IP),
+	// bpf_htons(ETH_P_IPV6));
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
 		ret = bpf_skb_load_bytes(skb, offset, iph,
 					 sizeof(struct iphdr));
@@ -757,7 +775,8 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 							&key))) {
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
-				"CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d, outbound: %u",
+				"CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d, "
+				"outbound: %u",
 				match_set->type, match_set->not,
 				match_set->outbound);
 #endif
@@ -876,8 +895,8 @@ before_next_loop:
 			isdns_must_goodsubrule_badrule &= ~0b1;
 		}
 	}
-	bpf_printk(
-		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
+	bpf_printk("No match_set hits. Did coder forget to sync "
+		   "common/consts/ebpf.go with enum MatchType?");
 	return -EPERM;
 #undef _l4proto_type
 #undef _ipversion_type
@@ -991,16 +1010,16 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
 	/*
-	 * ip rule add fwmark 0x8000000/0x8000000 table 2023
-	 * ip route add local default dev lo table 2023
-	 * ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
-	 * ip -6 route add local default dev lo table 2023
+   * ip rule add fwmark 0x8000000/0x8000000 table 2023
+   * ip route add local default dev lo table 2023
+   * ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
+   * ip -6 route add local default dev lo table 2023
 
-	 * ip rule del fwmark 0x8000000/0x8000000 table 2023
-	 * ip route del local default dev lo table 2023
-	 * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
-	 * ip -6 route del local default dev lo table 2023
-	 */
+   * ip rule del fwmark 0x8000000/0x8000000 table 2023
+   * ip route del local default dev lo table 2023
+   * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
+   * ip -6 route del local default dev lo table 2023
+   */
 	// Socket lookup and assign skb to existing socket connection.
 	struct bpf_sock_tuple tuple = { 0 };
 	__u32 tuple_size;
@@ -1089,8 +1108,8 @@ new_connection:
 	// __u64 cookie = bpf_get_socket_cookie(skb);
 	// struct pid_pname *pid_pname = bpf_map_lookup_elem(&cookie_pid_map,
 	// &cookie); if (pid_pname) {
-	//   __builtin_memcpy(routing_result.pname, pid_pname->pname, TASK_COMM_LEN);
-	//   routing_result.pid = pid_pname->pid;
+	//	 __builtin_memcpy(routing_result.pname, pid_pname->pname,
+	// TASK_COMM_LEN); 	 routing_result.pid = pid_pname->pid;
 	// }
 
 	// Save routing result.
@@ -1175,26 +1194,111 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	if ((skb->mark & 0x100) == 0x100) {
 		bpf_printk("No pid_pname found. But it should not happen");
 		/*
-		 *		if (l4proto == IPPROTO_TCP) {
-		 *if (tcph.syn && !tcph.ack) {
-		 *	bpf_printk("No pid_pname found. But it should not happen: local:%u "
-		 *	     "(%u)[%llu]",
-		 *	     bpf_ntohs(sport), l4proto, cookie);
-		 *} else {
-		 *	bpf_printk("No pid_pname found. But it should not happen: (Old "
-		 *	     "Connection): local:%u "
-		 *	     "(%u)[%llu]",
-		 *	     bpf_ntohs(sport), l4proto, cookie);
-		 *}
-		 *		} else {
-		 *bpf_printk("No pid_pname found. But it should not happen: local:%u "
-		 *	   "(%u)[%llu]",
-		 *	   bpf_ntohs(sport), l4proto, cookie);
-		 *		}
-		 */
+     *		if (l4proto == IPPROTO_TCP) {
+     *if (tcph.syn && !tcph.ack) {
+     *	bpf_printk("No pid_pname found. But it should not happen: local:%u "
+     *			 "(%u)[%llu]",
+     *			 bpf_ntohs(sport), l4proto, cookie);
+     *} else {
+     *	bpf_printk("No pid_pname found. But it should not happen: (Old "
+     *			 "Connection): local:%u "
+     *			 "(%u)[%llu]",
+     *			 bpf_ntohs(sport), l4proto, cookie);
+     *}
+     *		} else {
+     *bpf_printk("No pid_pname found. But it should not happen: local:%u "
+     *		 "(%u)[%llu]",
+     *		 bpf_ntohs(sport), l4proto, cookie);
+     *		}
+     */
 		return true;
 	}
 	return false;
+}
+
+static int refresh_output_state_timer_cb(void *_udp_conn_state_map,
+					 struct tuples_key *key,
+					 struct udp_conn_state *val)
+{
+	bpf_map_delete_elem(&udp_conn_state_map, key);
+	return 0;
+}
+
+static __always_inline void copy_reversed_tuples(struct tuples_key *key,
+						 struct tuples_key *dst)
+{
+	__builtin_memset(dst, 0, sizeof(*dst));
+	dst->dip = key->sip;
+	dst->sip = key->dip;
+	dst->sport = key->dport;
+	dst->dport = key->sport;
+	dst->l4proto = key->l4proto;
+}
+static __always_inline int refresh_output_state_timer(struct tuples_key *key)
+{
+	struct udp_conn_state new_output_state = { 0 };
+	int ret = bpf_map_update_elem(&udp_conn_state_map, key,
+				      &new_output_state, BPF_ANY);
+	if (unlikely(ret)) {
+		return -EINVAL;
+	}
+	struct udp_conn_state *value =
+		bpf_map_lookup_elem(&udp_conn_state_map, key);
+	if (unlikely(!value)) {
+		return -EFAULT;
+	}
+	ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
+			     CLOCK_MONOTONIC);
+	if (unlikely(ret)) {
+		goto del;
+	}
+	ret = bpf_timer_set_callback(&value->timer,
+				     refresh_output_state_timer_cb);
+	if (unlikely(ret)) {
+		goto del;
+	}
+	ret = bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0);
+	if (unlikely(ret)) {
+		goto del;
+	}
+	return 0;
+del:
+	bpf_map_delete_elem(&udp_conn_state_map, key);
+	return -EFAULT;
+}
+
+SEC("tc/wan_ingress")
+int tproxy_wan_ingress(struct __sk_buff *skb)
+{
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl;
+	__u8 l4proto;
+	__u32 link_h_len;
+
+	if (get_link_h_len(skb->ifindex, &link_h_len))
+		return TC_ACT_OK;
+	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
+				  &tcph, &udph, &ihl, &l4proto);
+	if (ret)
+		return TC_ACT_OK;
+	if (l4proto != IPPROTO_UDP)
+		return TC_ACT_PIPE;
+
+	struct tuples tuples;
+	struct tuples_key reversed_tuples_key;
+	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+	copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
+
+	if (refresh_output_state_timer(&reversed_tuples_key)) {
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_PIPE;
 }
 
 // Routing and redirect the packet back.
@@ -1206,7 +1310,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
 		return TC_ACT_OK;
 	// if ((skb->mark & 0x80) == 0x80) {
-	//   return TC_ACT_OK;
+	//	 return TC_ACT_OK;
 	// }
 
 	struct ethhdr ethh;
@@ -1368,6 +1472,13 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		flag[6] = tuples.dscp;
 		struct pid_pname *pid_pname;
 
+		if (bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five)) {
+			if (refresh_output_state_timer(&tuples.five)) {
+				return TC_ACT_SHOT;
+			}
+			return TC_ACT_OK;
+		}
+
 		if (pid_is_control_plane(skb, &pid_pname)) {
 			// From control plane. Direct.
 			return TC_ACT_OK;
@@ -1458,20 +1569,21 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 SEC("tc/dae0peer_ingress")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
-	/* Only packets redirected from wan_egress or lan_ingress have this cb mark. */
+	/* Only packets redirected from wan_egress or lan_ingress have this cb mark.
+   */
 	if (skb->cb[0] != TPROXY_MARK)
 		return TC_ACT_SHOT;
 
 	/* ip rule add fwmark 0x8000000/0x8000000 table 2023
-	 * ip route add local default dev lo table 2023
-	 */
+   * ip route add local default dev lo table 2023
+   */
 	skb->mark = TPROXY_MARK;
 	bpf_skb_change_type(skb, PACKET_HOST);
 
 	/* l4proto is stored in skb->cb[1] only for UDP and new TCP. As for
-	 * established TCP, kernel can take care of socket lookup, so just
-	 * return them to stack without calling bpf_sk_assign.
-	 */
+   * established TCP, kernel can take care of socket lookup, so just
+   * return them to stack without calling bpf_sk_assign.
+   */
 	__u8 l4proto = skb->cb[1];
 
 	if (l4proto != 0)
@@ -1552,9 +1664,9 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 	unsigned long arg_end = BPF_CORE_READ(current, mm, arg_end);
 
 	/*
-	 * For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
-	 * We extract "sddm-helper" from it.
-	 */
+   * For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
+   * We extract "sddm-helper" from it.
+   */
 	unsigned long loc, j, last_slash = -1;
 #pragma unroll
 	for (loc = 0, j = 0; j < MAX_ARG_LEN_TO_PROBE;
@@ -1576,7 +1688,7 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 						 (const void *)(arg_start + j));
 			if (ret) {
 				// bpf_printk("failed to read process name.0: [%ld, %ld]", arg_start,
-				//            arg_end);
+				//						arg_end);
 				// bpf_printk("_failed to read process name.0: %ld %ld", j, to_read);
 				return ret;
 			}
