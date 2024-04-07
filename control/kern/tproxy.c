@@ -961,6 +961,38 @@ static __always_inline void prep_redirect_to_control_plane(
 		skb->cb[1] = l4proto;
 }
 
+// SNAT for UDP packet.
+SEC("tc/egress")
+int tproxy_lan_egress(struct __sk_buff *skb)
+{
+	if (skb->ingress_ifindex != NOWHERE_IFINDEX) {
+		return TC_ACT_PIPE;
+	}
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl;
+	__u8 l4proto;
+	__u32 link_h_len;
+	if (get_link_h_len(skb->ifindex, &link_h_len)) {
+		return TC_ACT_OK;
+	}
+	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
+				  &tcph, &udph, &ihl, &l4proto);
+	if (ret) {
+		bpf_printk("parse_transport: %d", ret);
+		return TC_ACT_OK;
+	}
+	if (l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == 137) {
+		// REDIRECT (NDP)
+		return TC_ACT_SHOT;
+	}
+	return TC_ACT_PIPE;
+}
+
 SEC("tc/ingress")
 int tproxy_lan_ingress(struct __sk_buff *skb)
 {
