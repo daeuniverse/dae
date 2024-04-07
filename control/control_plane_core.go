@@ -480,9 +480,9 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
+			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
 			Protocol:  unix.ETH_P_ALL,
-			Priority:  2,
+			Priority:  1,
 		},
 		Fd:           c.bpf.bpfPrograms.TproxyWanIngress.FD(),
 		Name:         consts.AppName + "_wan_ingress",
