@@ -775,8 +775,7 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 							&key))) {
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
-				"CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d, "
-				"outbound: %u",
+				"CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d, outbound: %u",
 				match_set->type, match_set->not,
 				match_set->outbound);
 #endif
@@ -895,8 +894,8 @@ before_next_loop:
 			isdns_must_goodsubrule_badrule &= ~0b1;
 		}
 	}
-	bpf_printk("No match_set hits. Did coder forget to sync "
-		   "common/consts/ebpf.go with enum MatchType?");
+	bpf_printk(
+		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
 	return -EPERM;
 #undef _l4proto_type
 #undef _ipversion_type
@@ -1105,12 +1104,14 @@ new_connection:
 	/// NOTICE: No pid pname info for LAN packet.
 	// // Maybe this packet is also in the host (such as docker) ?
 	// // I tried and it is false.
-	// __u64 cookie = bpf_get_socket_cookie(skb);
-	// struct pid_pname *pid_pname = bpf_map_lookup_elem(&cookie_pid_map,
-	// &cookie); if (pid_pname) {
-	//	 __builtin_memcpy(routing_result.pname, pid_pname->pname,
-	// TASK_COMM_LEN); 	 routing_result.pid = pid_pname->pid;
-	// }
+	//__u64 cookie = bpf_get_socket_cookie(skb);
+	//struct pid_pname *pid_pname =
+	//	bpf_map_lookup_elem(&cookie_pid_map, &cookie);
+	//if (pid_pname) {
+	//	__builtin_memcpy(routing_result.pname, pid_pname->pname,
+	//			 TASK_COMM_LEN);
+	//	routing_result.pid = pid_pname->pid;
+	//}
 
 	// Save routing result.
 	ret = bpf_map_update_elem(&routing_tuples_map, &tuples.five,
@@ -1234,33 +1235,33 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->dport = key->sport;
 	dst->l4proto = key->l4proto;
 }
+
 static __always_inline int refresh_udp_conn_state_timer(struct tuples_key *key)
 {
 	struct udp_conn_state new_output_state = { 0 };
 	int ret = bpf_map_update_elem(&udp_conn_state_map, key,
 				      &new_output_state, BPF_ANY);
-	if (unlikely(ret)) {
+	if (unlikely(ret))
 		return -EINVAL;
-	}
 	struct udp_conn_state *value =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	if (unlikely(!value)) {
+	if (unlikely(!value))
 		return -EFAULT;
-	}
+
 	ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
 			     CLOCK_MONOTONIC);
-	if (unlikely(ret)) {
+	if (unlikely(ret))
 		goto del;
-	}
+
 	ret = bpf_timer_set_callback(&value->timer,
 				     refresh_udp_conn_state_timer_cb);
-	if (unlikely(ret)) {
+	if (unlikely(ret))
 		goto del;
-	}
+
 	ret = bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0);
-	if (unlikely(ret)) {
+	if (unlikely(ret))
 		goto del;
-	}
+
 	return 0;
 del:
 	bpf_map_delete_elem(&udp_conn_state_map, key);
@@ -1291,12 +1292,12 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 
 	struct tuples tuples;
 	struct tuples_key reversed_tuples_key;
+
 	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 	copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-	if (refresh_udp_conn_state_timer(&reversed_tuples_key)) {
+	if (refresh_udp_conn_state_timer(&reversed_tuples_key))
 		return TC_ACT_SHOT;
-	}
 
 	return TC_ACT_PIPE;
 }
@@ -1473,9 +1474,9 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		struct pid_pname *pid_pname;
 
 		if (bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five)) {
-			if (refresh_udp_conn_state_timer(&tuples.five)) {
+			if (refresh_udp_conn_state_timer(&tuples.five))
 				return TC_ACT_SHOT;
-			}
+
 			return TC_ACT_OK;
 		}
 
