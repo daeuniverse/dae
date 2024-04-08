@@ -54,6 +54,12 @@ func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function)
 		return &config_parser.Function{Name: fs}
 	case *config_parser.Function:
 		return fs
+	case []*config_parser.Function:
+		if len(fs) == 1 {
+			return fs[0]
+		} else {
+			panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+		}
 	default:
 		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
 	}
