@@ -77,7 +77,6 @@
 
 #define ESOCKTNOSUPPORT 94 /* Socket type not supported */
 
-
 #define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
 
 #define NDP_REDIRECT 137
