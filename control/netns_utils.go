@@ -288,8 +288,6 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.forwarding", HostVethName), "1", true); err != nil {
 		return fmt.Errorf("failed to set forwarding for dae0: %v", err)
 	}
-	// sysctl net.ipv6.conf.all.forwarding=1
-	SetForwarding("all", "1")
 
 	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
 	if err = netns.Set(ns.daeNs); err != nil {
