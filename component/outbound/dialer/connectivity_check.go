@@ -570,13 +570,19 @@ func (d *Dialer) Check(timeout time.Duration,
 		collection.MovingAverage = (collection.MovingAverage + timeout) / 2
 		collection.Alive = false
 	}
+	selectedByGroups := make([]string, 0, 4)
+	d.SelectedByGroups.Range(func(key, value any) bool {
+		selectedByGroups = append(selectedByGroups, key.(string))
+		return true
+	})
 	go d.GlobalOption.CheckCb(&CheckResult{
-		DialerProperty: d.property,
-		Groups:         d.Groups,
-		CheckType:      opts.networkType,
-		Latency:        latency.Milliseconds(),
-		Alive:          collection.Alive,
-		Err:            err,
+		DialerProperty:   d.property,
+		Groups:           d.Groups,
+		SelectedByGroups: selectedByGroups,
+		CheckType:        opts.networkType,
+		Latency:          latency.Milliseconds(),
+		Alive:            collection.Alive,
+		Err:              err,
 	})
 	// Inform DialerGroups to update state.
 	for a := range collection.AliveDialerSetSet {

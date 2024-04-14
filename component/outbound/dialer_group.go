@@ -39,7 +39,7 @@ func NewDialerGroup(
 	dialersAnnotations []*dialer.Annotation,
 	p DialerSelectionPolicy,
 	aliveChangeCallback func(alive bool, networkType *dialer.NetworkType, isInit bool),
-) *DialerGroup {
+) (*DialerGroup, error) {
 	log := option.Log
 	var aliveDnsTcp4DialerSet *dialer.AliveDialerSet
 	var aliveDnsTcp6DialerSet *dialer.AliveDialerSet
@@ -63,7 +63,20 @@ func NewDialerGroup(
 		needAliveState = false
 
 	default:
-		log.Panicf("Unexpected dialer selection policy: %v", p.Policy)
+		return nil, fmt.Errorf("unexpected dialer selection policy: %v", p.Policy)
+	}
+
+	switch p.Policy {
+	case consts.DialerSelectionPolicy_Random:
+		// Random strategy indicates selecting every item.
+		for _, d := range dialers {
+			d.SelectedByGroups.Store(name, struct{}{})
+		}
+	case consts.DialerSelectionPolicy_Fixed:
+		if p.FixedIndex >= len(dialers) {
+			return nil, fmt.Errorf("index of fixed policy is out of range: the number of group members is %v", len(dialers))
+		}
+		dialers[p.FixedIndex].SelectedByGroups.Store(name, struct{}{})
 	}
 
 	networkType := &dialer.NetworkType{
@@ -163,7 +176,7 @@ func NewDialerGroup(
 			aliveTcp6DialerSet,
 		},
 		selectionPolicy: &p,
-	}
+	}, nil
 }
 
 func (g *DialerGroup) Close() error {

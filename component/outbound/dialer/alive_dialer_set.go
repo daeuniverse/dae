@@ -220,12 +220,19 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, coll *collection) {
 			sortingLatency <= a.minLatency.sortingLatency && // To avoid arithmetic overflow.
 			sortingLatency <= a.minLatency.sortingLatency-a.tolerance {
 			a.minLatency.sortingLatency = sortingLatency
+			if a.minLatency.dialer != nil {
+				a.minLatency.dialer.SelectedByGroups.Delete(a.dialerGroupName)
+			}
 			a.minLatency.dialer = dialer
+			a.minLatency.dialer.SelectedByGroups.Store(a.dialerGroupName, struct{}{})
 		} else if a.minLatency.dialer == dialer {
 			a.minLatency.sortingLatency = sortingLatency
 			if !coll.Alive || sortingLatency > a.minLatency.sortingLatency {
 				// Latency increases.
 				if !coll.Alive {
+					if a.minLatency.dialer != nil {
+						a.minLatency.dialer.SelectedByGroups.Delete(a.dialerGroupName)
+					}
 					a.minLatency.dialer = nil
 				}
 				a.calcMinLatency()
@@ -267,6 +274,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, coll *collection) {
 	} else if coll.Alive && minPolicy && a.minLatency.dialer == nil {
 		// Use first dialer if no dialer has alive state (usually happen at the very beginning).
 		a.minLatency.dialer = dialer
+		a.minLatency.dialer.SelectedByGroups.Store(a.dialerGroupName, struct{}{})
 		a.log.WithFields(logrus.Fields{
 			"group":   a.dialerGroupName,
 			"network": a.CheckTyp.String(),
@@ -292,10 +300,13 @@ func (a *AliveDialerSet) calcMinLatency() {
 	if a.minLatency.dialer == nil {
 		a.minLatency.sortingLatency = minLatency
 		a.minLatency.dialer = minDialer
+		a.minLatency.dialer.SelectedByGroups.Store(a.dialerGroupName, struct{}{})
 	} else if minDialer != nil &&
 		minLatency <= a.minLatency.sortingLatency && // To avoid arithmetic overflow.
 		minLatency <= a.minLatency.sortingLatency-a.tolerance {
 		a.minLatency.sortingLatency = minLatency
+		a.minLatency.dialer.SelectedByGroups.Delete(a.dialerGroupName)
 		a.minLatency.dialer = minDialer
+		a.minLatency.dialer.SelectedByGroups.Store(a.dialerGroupName, struct{}{})
 	}
 }

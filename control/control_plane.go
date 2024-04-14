@@ -279,19 +279,21 @@ func NewControlPlane(opts *Options) (*ControlPlane, error) {
 	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
 	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
+	directGroup, _ := outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
+		[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback))
+	blockGroup, _ := outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
+		[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		}, core.outboundAliveChangeCallback(1, disableKernelAliveCallback))
 	outbounds := []*outbound.DialerGroup{
-		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
-			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
-			outbound.DialerSelectionPolicy{
-				Policy:     consts.DialerSelectionPolicy_Fixed,
-				FixedIndex: 0,
-			}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback)),
-		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
-			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
-			outbound.DialerSelectionPolicy{
-				Policy:     consts.DialerSelectionPolicy_Fixed,
-				FixedIndex: 0,
-			}, core.outboundAliveChangeCallback(1, disableKernelAliveCallback)),
+		directGroup,
+		blockGroup,
 	}
 
 	// Filter out groups.
@@ -320,9 +322,12 @@ func NewControlPlane(opts *Options) (*ControlPlane, error) {
 			log.Infoln("\t<Empty>")
 		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, annos, *policy,
+		dialerGroup, err := outbound.NewDialerGroup(option, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
 		outbounds = append(outbounds, dialerGroup)
+		if err != nil {
+			return nil, fmt.Errorf("outbound.NewDialerGroup:%w", err)
+		}
 	}
 
 	/// Routing.

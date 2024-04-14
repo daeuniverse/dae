@@ -19,8 +19,9 @@ type Dialer struct {
 	*GlobalOption
 	InstanceOption
 	netproxy.Dialer
-	property *Property
-	Groups   []string
+	property         *Property
+	Groups           []string
+	SelectedByGroups sync.Map
 
 	collections [6]*collection
 
