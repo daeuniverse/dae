@@ -572,6 +572,7 @@ func (d *Dialer) Check(timeout time.Duration,
 	}
 	go d.GlobalOption.CheckCb(&CheckResult{
 		DialerProperty: d.property,
+		Groups:         d.Groups,
 		CheckType:      opts.networkType,
 		Latency:        latency.Milliseconds(),
 		Alive:          collection.Alive,

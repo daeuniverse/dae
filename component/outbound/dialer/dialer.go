@@ -7,7 +7,6 @@ package dialer
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -16,16 +15,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	UnexpectedFieldErr  = fmt.Errorf("unexpected field")
-	InvalidParameterErr = fmt.Errorf("invalid parameters")
-)
-
 type Dialer struct {
 	*GlobalOption
 	InstanceOption
 	netproxy.Dialer
 	property *Property
+	Groups   []string
 
 	collections [6]*collection
 

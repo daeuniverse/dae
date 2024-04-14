@@ -141,6 +141,7 @@ func NewDialerGroup(
 	}
 
 	for _, d := range dialers {
+		d.Groups = append(d.Groups, name)
 		d.RegisterAliveDialerSet(aliveTcp4DialerSet)
 		d.RegisterAliveDialerSet(aliveTcp6DialerSet)
 		d.RegisterAliveDialerSet(aliveDnsTcp4DialerSet)
