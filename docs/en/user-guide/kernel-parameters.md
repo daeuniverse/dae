@@ -18,10 +18,11 @@ EOF
 sudo sysctl --system
 ```
 
-It is also recommended to enable IPv4 forward to avoid weird situations:
+It is also recommended to enable IPv4 and IPv6 forward to avoid weird situations:
 
 ```shell
 echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.d/60-ip-forward.conf
+echo "net.ipv6.conf.all.forwarding = 1" | sudo tee /etc/sysctl.d/60-ip-forward.conf
 sudo sysctl --system
 ```
 
