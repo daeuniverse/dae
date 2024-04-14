@@ -247,6 +247,7 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 	if autoConfigKernelParameter {
 		SetSendRedirects(ifname, "0")
 		SetForwarding(ifname, "1")
+		setForwarding("all", consts.IpVersionStr_6, "1")
 	}
 	if err := c._bindLan(ifname); err != nil {
 		var notFoundErr netlink.LinkNotFoundError
