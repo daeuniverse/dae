@@ -15,7 +15,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 <!-- BEGIN NEW TOC ENTRY -->
 
 - [v0.6.0rc2 (Pre-release)](#v060rc2-pre-release)
-
 - [v0.6.0rc1 (Pre-release)](#v060rc1-pre-release)
 - [v0.5.1 (Latest)](#v051-latest)
 - [v0.5.0](#v050)
@@ -44,6 +43,15 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ### v0.6.0rc2 (Pre-release)
 
 > Release date: 2024/04/15
+
+#### Breaking Changes
+
+> [!NOTE]
+> Please read the following PRs for details
+
+- feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
+- patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
+- patch/optimize(bpf): improve wan tcp hijack datapath performance in [#481](https://github.com/daeuniverse/dae/pull/481) by (@jschwinger233)
 
 #### Features
 
