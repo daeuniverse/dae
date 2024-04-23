@@ -38,6 +38,7 @@ if [ "$(cat /proc/sys/net/ipv6/conf/$wan_ifname/accept_ra)" == "1" ]; then
 net.ipv6.conf.$wan_ifname.accept_ra = 2
 EOF
     sudo sysctl --system
+fi
 ```
 
 Please modify `eth0` to your WAN interface.
