@@ -208,6 +208,7 @@ func NewControlPlane(
 	if len(global.LanInterface) > 0 {
 		if global.AutoConfigKernelParameter {
 			_ = SetIpv4forward("1")
+			_ = setForwarding("all", consts.IpVersionStr_6, "1")
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
@@ -225,6 +226,19 @@ func NewControlPlane(
 			log.WithError(err).Warnln("failed to setup local tcp fast redirect")
 		}
 		for _, ifname := range global.WanInterface {
+			if len(global.LanInterface) > 0 {
+				// FIXME: Code is not elegant here.
+				// bindLan setting conf.ipv6.all.forwarding=1 suppresses accept_ra=1,
+				// thus we set it 2 as a workaround.
+				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
+				if global.AutoConfigKernelParameter {
+					acceptRaPath := fmt.Sprintf("net.ipv6.conf.%v.accept_ra", ifname)
+					val, _ := sysctl.Get(acceptRaPath)
+					if val == "1" {
+						_ = sysctl.Set(acceptRaPath, "2", false)
+					}
+				}
+			}
 			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}

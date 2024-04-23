@@ -76,6 +76,15 @@ func (s *SysctlManager) startWatch() {
 	}
 }
 
+func (s *SysctlManager) Get(key string) (value string, err error) {
+	path := SysctlPrefixPath + strings.Replace(key, ".", "/", -1)
+	val, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(val)), nil
+}
+
 func (s *SysctlManager) Set(key string, value string, watch bool) (err error) {
 	path := SysctlPrefixPath + strings.Replace(key, ".", "/", -1)
 	if watch {
