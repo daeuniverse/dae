@@ -10,8 +10,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.5.0
 	github.com/cilium/ebpf v0.12.3
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20240413032918-078e65ce9409
-	github.com/daeuniverse/softwind v0.0.0-20240413031314-0049ada6ee9d
+	github.com/daeuniverse/outbound v0.0.0-20240423150318-97fdbb427e02
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
@@ -73,8 +72,6 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/grpc v1.57.0 // indirect
 )
-
-// replace github.com/daeuniverse/softwind => ../softwind
 
 // replace github.com/daeuniverse/outbound => ../outbound
 

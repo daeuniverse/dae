@@ -12,7 +12,7 @@ import (
 	"time"
 
 	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
 )
 

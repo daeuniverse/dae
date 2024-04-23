@@ -15,12 +15,10 @@ github.com/cloudflare/circl v1.3.7/go.mod h1:sRTcRWXGLrKw6yIGJ+l7amYJFfAXbZG0kBS
 github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d h1:hnC39MjR7xt5kZjrKlef7DXKFDkiX8MIcDXYC/6Jf9Q=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
-github.com/daeuniverse/outbound v0.0.0-20240413032918-078e65ce9409 h1:A08H+3cGMreCiAYGq965rP2XoKXgvPKoR9I09/lDW7s=
-github.com/daeuniverse/outbound v0.0.0-20240413032918-078e65ce9409/go.mod h1:+incQmNwLG/JkkBymqMz/SnxRGWcSCSjy80CAjVj4v0=
+github.com/daeuniverse/outbound v0.0.0-20240423150318-97fdbb427e02 h1:RvfDfy4c67zHoHos8OyxrpzUqGjnBf/EyfLt3AXehEg=
+github.com/daeuniverse/outbound v0.0.0-20240423150318-97fdbb427e02/go.mod h1:UDGbEWJWcLVHanbq6NCK9kszBCBcIbrF4FT8v+XcU/I=
 github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810 h1:YtEYouFaNrg9sV9vf3UabvKShKn6sD0QaCdOxCwaF3g=
 github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810/go.mod h1:61o2uZUGLrlv1i+oO2rx9sVX0vbf8cHzdSHt7h6lMnM=
-github.com/daeuniverse/softwind v0.0.0-20240413031314-0049ada6ee9d h1:1Tj48+Vv5W4XIyG0X2JWzzRBo13ll6csThKzFGCbT1o=
-github.com/daeuniverse/softwind v0.0.0-20240413031314-0049ada6ee9d/go.mod h1:xhBh5EiYniZRA0qRRy0PvjRd1TeHMXR8M6k0beD7sv4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -139,9 +137,8 @@ github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UV
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
 github.com/stretchr/testify v1.5.1/go.mod h1:5W2xD1RspED5o8YsWQXVCued0rvSQ+mT+I5cxcmMvtA=
 github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.7.0 h1:nwc3DEeHmmLAfoZucVR881uASk0Mfjw8xYJ99tb5CcY=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
-github.com/stretchr/testify v1.8.2 h1:+h33VjcLVPDHtOdpUCuF+7gSuG3yGIftsP1YvFihtJ8=
-github.com/stretchr/testify v1.8.2/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/twmb/murmur3 v1.1.6 h1:mqrRot1BRxm+Yct+vavLMou2/iJt0tNVTTC0QoIjaZg=
 github.com/twmb/murmur3 v1.1.6/go.mod h1:Qq/R7NUyOfr65zD+6Q5IHKsJLwP7exErjN6lyyq3OSQ=
 github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208 h1:s/K1ome/+rTDictkqGhqLuAleUymyWnvgNWARjblS9U=
