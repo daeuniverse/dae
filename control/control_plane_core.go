@@ -417,6 +417,12 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 }
 
 func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
+	tp, err := link.Tracepoint("syscalls", "sys_enter_splice", c.bpf.TracepointSyscallsSysEnterSplice, nil)
+	if err != nil {
+		return fmt.Errorf("Attach tracepoint:sys_enter_splice: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, tp.Close)
+
 	cgroupPath, err := detectCgroupPath()
 	if err != nil {
 		return

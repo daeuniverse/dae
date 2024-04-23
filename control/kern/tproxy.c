@@ -387,6 +387,13 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } cookie_pid_map SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, char[TASK_COMM_LEN]);
+	__type(value, __u8);
+	__uint(max_entries, MAX_COOKIE_PID_PNAME_MAPPING_NUM);
+} fastsock_allowlist_map SEC(".maps");
+
 struct udp_conn_state {
 	// pass
 
@@ -1845,12 +1852,74 @@ SEC("sockops")
 int local_tcp_sockops(struct bpf_sock_ops *skops)
 {
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-	__u32 pid = BPF_CORE_READ(task, pid);
+	__u32 pid = BPF_CORE_READ(task, tgid);
 
 	/* Only local TCP connection has non-zero pids. */
 	if (pid == 0)
 		return 0;
 
+	/* We only care about 3 kinds of events, skip others */
+	switch (skops->op) {
+	/* PASSIVE_ESTABLISHED_CB event is triggered when a new connection is
+	 * established on a listening socket. In our case it's a dae TCP
+	 * socket.
+	 */
+	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
+	/* ACTIVE_ESTABLISHED_CB event is triggered when a new connection is
+	 * established on a client process. In our case it's a local client
+	 * process whose traffic has been redirected to dae.
+	 */
+	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
+	/* STATE_CB event is triggered when a TCP status changes. It requires
+	 * bpf_sock_ops_cb_flags_set(skops, BPF_SOCK_OPS_STATE_CB_FLAG) when
+	 * connection is established. In our case it can only happen for a
+	 * "probing" socket whose process is unknown to fastsock_allowlist_map.
+	 * */
+	case BPF_SOCK_OPS_STATE_CB:
+		break;
+	default:
+		return 0;
+	}
+
+	char pname[16];
+
+	__builtin_memset(&pname, 0, sizeof(pname));
+	BPF_CORE_READ_STR_INTO(&pname, task, comm);
+
+	/* Let's handle BPF_SOCK_OPS_STATE_CB events here */
+	if (skops->op == BPF_SOCK_OPS_STATE_CB) {
+		/* TCP connection is closing, let's check if splice(2) is called */
+		if (skops->args[1] == BPF_TCP_CLOSE || skops->args[0] == BPF_TCP_ESTABLISHED) {
+			if (bpf_map_lookup_elem(&fastsock_allowlist_map, &pname)) {
+				/* Process has been recogized, return */
+				return 0;
+			}
+			/* Still no record, meaning process didn't call
+			 * splice(2), add it to the allowlist. */
+			bpf_map_update_elem(&fastsock_allowlist_map, &pname, &one_key, BPF_ANY);
+			bpf_printk("fastsock_allowlist_map[%s] = 1", pname);
+		}
+		return 0;
+	}
+
+	/* Now it's BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB or
+	 * BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB, let's check if process is in the
+	 * allowlist.
+	 * */
+	__u8 *allow = bpf_map_lookup_elem(&fastsock_allowlist_map, &pname);
+
+	if (!allow) {
+		/* No entry, unknown process, let's probe it. */
+		bpf_sock_ops_cb_flags_set(skops, BPF_SOCK_OPS_STATE_CB_FLAG);
+		bpf_printk("track TCP socket session: \"%s\"\n", pname);
+		return 0;
+	} else if (!*allow) {
+		/* Entry found, but it's forbidden, abort. */
+		bpf_printk("fastsock not allowed: %s", pname);
+		return 0;
+	}
+
+	/* Okay this process is allowed to proceed with fast socket, let's add it to sockmap. */
 	struct tuples_key tuple = {};
 
 	tuple.l4proto = IPPROTO_TCP;
@@ -1955,12 +2024,30 @@ int sk_msg_fast_redirect(struct sk_msg_md *msg)
 	if (bpf_msg_redirect_hash(msg, &fast_sock, &rev_tuple, BPF_F_INGRESS) ==
 	    SK_PASS)
 		bpf_printk("tcp fast redirect: %pI4:%lu -> %pI4:%lu",
-			   &rev_tuple.sip.u6_addr32[3],
-			   bpf_ntohs(rev_tuple.sport),
 			   &rev_tuple.dip.u6_addr32[3],
-			   bpf_ntohs(rev_tuple.dport));
+			   bpf_ntohs(rev_tuple.dport),
+			   &rev_tuple.sip.u6_addr32[3],
+			   bpf_ntohs(rev_tuple.sport));
 
 	return SK_PASS;
+}
+
+SEC("tracepoint/syscalls/sys_enter_splice")
+int tracepoint_syscalls_sys_enter_splice(void)
+{
+	char pname[16];
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+	__builtin_memset(&pname, 0, sizeof(pname));
+	BPF_CORE_READ_STR_INTO(&pname, task, comm);
+
+	__u8 *allow = bpf_map_lookup_elem(&fastsock_allowlist_map, &pname);
+
+	if (!allow || (allow && *allow)) {
+		bpf_map_update_elem(&fastsock_allowlist_map, &pname, &zero_key, BPF_ANY);
+		bpf_printk("fastsock_allowlist_map[%s] = 0", pname);
+	}
+	return 0;
 }
 
 SEC("license") const char __license[] = "Dual BSD/GPL";
