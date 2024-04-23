@@ -1522,8 +1522,8 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		if (!conn_state->is_egress ||
 		    pid_is_control_plane(skb, &pid_pname)) {
 			// Input udp connection or
-			// 	from control plane
-			//  => direct.
+			// from control plane
+			// => direct.
 			return TC_ACT_OK;
 		}
 		if (pid_pname) {
