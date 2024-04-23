@@ -7,6 +7,7 @@
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
 #include "headers/upai_in6_defs.h"
+#include "headers/vmlinux-x86.h"
 #include "headers/vmlinux.h"
 
 #include "headers/bpf_core_read.h"
@@ -388,7 +389,7 @@ struct {
 } cookie_pid_map SEC(".maps");
 
 struct udp_conn_state {
-	// pass
+	bool is_egress;
 
 	struct bpf_timer timer;
 };
@@ -1269,17 +1270,25 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
-static __always_inline int refresh_udp_conn_state_timer(struct tuples_key *key)
+static __always_inline struct udp_conn_state *
+refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
 {
-	struct udp_conn_state new_output_state = { 0 };
-	int ret = bpf_map_update_elem(&udp_conn_state_map, key,
-				      &new_output_state, BPF_ANY);
+	struct udp_conn_state *old_conn_state =
+		bpf_map_lookup_elem(&udp_conn_state_map, key);
+	struct udp_conn_state new_conn_state = { 0 };
+	if (old_conn_state)
+		new_conn_state.is_egress =
+			old_conn_state->is_egress; // Keep the value.
+	else
+		new_conn_state.is_egress = is_egress;
+	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
+				       &new_conn_state, BPF_ANY);
 	if (unlikely(ret))
-		return -EINVAL;
+		return NULL;
 	struct udp_conn_state *value =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
 	if (unlikely(!value))
-		return -EFAULT;
+		return NULL;
 
 	ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
 			     CLOCK_MONOTONIC);
@@ -1295,10 +1304,10 @@ static __always_inline int refresh_udp_conn_state_timer(struct tuples_key *key)
 	if (unlikely(ret))
 		goto del;
 
-	return 0;
+	return value;
 del:
 	bpf_map_delete_elem(&udp_conn_state_map, key);
-	return -EFAULT;
+	return NULL;
 }
 
 SEC("tc/wan_ingress")
@@ -1329,7 +1338,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 	copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-	if (refresh_udp_conn_state_timer(&reversed_tuples_key))
+	if (!refresh_udp_conn_state_timer(&reversed_tuples_key, false))
 		return TC_ACT_SHOT;
 
 	return TC_ACT_PIPE;
@@ -1506,15 +1515,15 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		flag[6] = tuples.dscp;
 		struct pid_pname *pid_pname;
 
-		if (bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five)) {
-			if (refresh_udp_conn_state_timer(&tuples.five))
-				return TC_ACT_SHOT;
-
-			return TC_ACT_OK;
-		}
-
-		if (pid_is_control_plane(skb, &pid_pname)) {
-			// From control plane. Direct.
+		struct udp_conn_state *conn_state =
+			refresh_udp_conn_state_timer(&tuples.five, true);
+		if (!conn_state)
+			return TC_ACT_SHOT;
+		if (!conn_state->is_egress ||
+		    pid_is_control_plane(skb, &pid_pname)) {
+			// Input udp connection or
+			// 	from control plane
+			//  => direct.
 			return TC_ACT_OK;
 		}
 		if (pid_pname) {
