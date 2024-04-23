@@ -1276,6 +1276,7 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
 	struct udp_conn_state *old_conn_state =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
 	struct udp_conn_state new_conn_state = { 0 };
+
 	if (old_conn_state)
 		new_conn_state.is_egress =
 			old_conn_state->is_egress; // Keep the value.
