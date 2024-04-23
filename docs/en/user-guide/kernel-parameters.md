@@ -33,7 +33,7 @@ For your WAN interfaces that accept RA:
 ```shell
 export wan_ifname=eth0
 
-if [ "$(cat /proc/sys/net/ipv6/conf/wlan0/accept_ra)" == "1" ]; then
+if [ "$(cat /proc/sys/net/ipv6/conf/$wan_ifname/accept_ra)" == "1" ]; then
     sudo tee /etc/sysctl.d/60-dae-wan-$wan_ifname.conf << EOF
 net.ipv6.conf.$wan_ifname.accept_ra = 2
 EOF
