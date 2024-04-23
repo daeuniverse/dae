@@ -16,7 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/bitlist"
-	"github.com/daeuniverse/softwind/pool"
+	"github.com/daeuniverse/outbound/pool"
 )
 
 var ValidCidrChars = NewValidChars([]byte{'0', '1'})
