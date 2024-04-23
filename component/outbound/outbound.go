@@ -25,10 +25,4 @@ import (
 	_ "github.com/daeuniverse/outbound/transport/simpleobfs"
 	_ "github.com/daeuniverse/outbound/transport/tls"
 	_ "github.com/daeuniverse/outbound/transport/ws"
-	_ "github.com/daeuniverse/softwind/protocol/juicity"
-	_ "github.com/daeuniverse/softwind/protocol/shadowsocks"
-	_ "github.com/daeuniverse/softwind/protocol/trojanc"
-	_ "github.com/daeuniverse/softwind/protocol/tuic"
-	_ "github.com/daeuniverse/softwind/protocol/vless"
-	_ "github.com/daeuniverse/softwind/protocol/vmess"
 )

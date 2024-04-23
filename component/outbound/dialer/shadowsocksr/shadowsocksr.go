@@ -10,11 +10,11 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/protocol"
-	"github.com/daeuniverse/softwind/protocol/shadowsocks_stream"
-	"github.com/daeuniverse/softwind/transport/shadowsocksr/obfs"
-	"github.com/daeuniverse/softwind/transport/shadowsocksr/proto"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol"
+	"github.com/daeuniverse/outbound/protocol/shadowsocks_stream"
+	"github.com/daeuniverse/outbound/transport/shadowsocksr/obfs"
+	"github.com/daeuniverse/outbound/transport/shadowsocksr/proto"
 )
 
 func init() {

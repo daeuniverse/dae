@@ -13,7 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/softwind/protocol/direct"
+	"github.com/daeuniverse/outbound/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )

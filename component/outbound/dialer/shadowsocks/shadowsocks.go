@@ -11,9 +11,9 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/outbound/transport/simpleobfs"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/protocol"
-	"github.com/daeuniverse/softwind/protocol/shadowsocks"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol"
+	"github.com/daeuniverse/outbound/protocol/shadowsocks"
 )
 
 func init() {

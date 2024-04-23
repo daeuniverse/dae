@@ -10,7 +10,7 @@ import (
 	"math/bits"
 
 	"github.com/daeuniverse/dae/pkg/anybuffer"
-	"github.com/daeuniverse/softwind/common"
+	"github.com/daeuniverse/outbound/common"
 )
 
 // CompactBitList allows your units to be of arbitrary bit size.

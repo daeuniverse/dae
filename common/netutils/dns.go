@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/pkg/fastrand"
-	"github.com/daeuniverse/softwind/pool"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 )
 

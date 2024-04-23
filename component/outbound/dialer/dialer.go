@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
 )
 

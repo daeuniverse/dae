@@ -13,7 +13,7 @@ import (
 	"io"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/softwind/pool"
+	"github.com/daeuniverse/outbound/pool"
 	"golang.org/x/crypto/hkdf"
 )
 

@@ -4,10 +4,11 @@ package quicutils
 
 import (
 	"encoding/binary"
-	"github.com/daeuniverse/softwind/pool"
-	"golang.org/x/crypto/hkdf"
 	"hash"
 	"io"
+
+	"github.com/daeuniverse/outbound/pool"
+	"golang.org/x/crypto/hkdf"
 )
 
 // HkdfExpandLabelFromPool HKDF expands a label.

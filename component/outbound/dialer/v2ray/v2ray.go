@@ -12,12 +12,12 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/outbound/transport/tls"
 	"github.com/daeuniverse/dae/component/outbound/transport/ws"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/protocol"
-	"github.com/daeuniverse/softwind/protocol/direct"
-	"github.com/daeuniverse/softwind/protocol/http"
-	"github.com/daeuniverse/softwind/transport/grpc"
-	"github.com/daeuniverse/softwind/transport/meek"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol"
+	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/outbound/protocol/http"
+	"github.com/daeuniverse/outbound/transport/grpc"
+	"github.com/daeuniverse/outbound/transport/meek"
 	jsoniter "github.com/json-iterator/go"
 )
 

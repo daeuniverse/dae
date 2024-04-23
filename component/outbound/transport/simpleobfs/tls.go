@@ -5,11 +5,12 @@ package simpleobfs
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/pkg/fastrand"
 	"io"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/pkg/fastrand"
 )
 
 const (

@@ -12,9 +12,9 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/outbound/transport/ws"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/protocol"
-	"github.com/daeuniverse/softwind/transport/grpc"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol"
+	"github.com/daeuniverse/outbound/transport/grpc"
 )
 
 func init() {

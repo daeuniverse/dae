@@ -8,8 +8,8 @@ import (
 	"strconv"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/softwind/netproxy"
-	"github.com/daeuniverse/softwind/protocol/socks5"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol/socks5"
 )
 
 func init() {

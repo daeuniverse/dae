@@ -7,10 +7,11 @@ package sniffing
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/common"
 	"testing"
 
-	"github.com/daeuniverse/softwind/pkg/fastrand"
+	"github.com/daeuniverse/dae/common"
+
+	"github.com/daeuniverse/outbound/pkg/fastrand"
 )
 
 var (
