@@ -7,7 +7,6 @@
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
 #include "headers/upai_in6_defs.h"
-#include "headers/vmlinux-x86.h"
 #include "headers/vmlinux.h"
 
 #include "headers/bpf_core_read.h"
