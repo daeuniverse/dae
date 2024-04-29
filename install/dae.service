@@ -13,6 +13,7 @@ ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
 ExecReload=/usr/bin/dae reload $MAINPID
 Restart=on-abnormal
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target
