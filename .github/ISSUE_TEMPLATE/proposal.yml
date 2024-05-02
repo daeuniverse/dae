@@ -8,21 +8,21 @@ body:
       label: Proposal
       description: What new feature you would like to integrate into the dae project.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
       label: Use Cases
       description: What use cases the proposed new feature is categorized to.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
       label: Potential Benefits
       description: Why is this needed.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:

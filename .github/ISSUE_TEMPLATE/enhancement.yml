@@ -8,11 +8,11 @@ body:
       label: Improvement Suggestion
       description: What would you like us to improve.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
       label: Potential Benefits
       description: Why is this needed.
     validations:
-      required: false
+      required: true

@@ -25,18 +25,18 @@ body:
       label: Feature Request
       description: What feature you would like us to integrate into the dae project.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
       label: Use Cases
       description: Share with us what use cases the proposed new feature is categorized to.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
       label: Potential Benefits
       description: Why is this needed.
     validations:
-      required: false
+      required: true
