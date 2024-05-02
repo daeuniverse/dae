@@ -20,14 +20,14 @@ body:
       label: Support Request
       description: What would you like us to support (In short summary).
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
       label: Current Behavior
       description: A concise description of what you're experiencing.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
@@ -46,7 +46,7 @@ body:
         3. Do ...
         4. See error...
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
@@ -63,7 +63,7 @@ body:
           - **Kernel (e.g. `uname -a`)**:
           - **Others**:
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
