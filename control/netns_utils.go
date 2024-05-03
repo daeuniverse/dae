@@ -289,13 +289,20 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 		return fmt.Errorf("failed to set forwarding for dae0: %v", err)
 	}
 
-	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
 	defer netns.Set(ns.hostNs)
+
+	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
 	sysctl.Set("net.ipv4.tcp_early_demux", "1", false)
 	sysctl.Set("net.ipv4.ip_early_demux", "1", false)
+
+	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
+	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
+	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.accept_local", NsVethName), "1", false); err != nil {
+		return fmt.Errorf("failed to set accept_local for dae0peer: %v", err)
+	}
 	return
 }
 
