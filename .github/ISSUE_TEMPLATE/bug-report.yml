@@ -13,14 +13,14 @@ body:
         - label: I have read the documentation
           required: true
         - label: Is it your first time sumbitting an issue
-          required: true
+          required: false
 
   - type: textarea
     attributes:
       label: Current Behavior
       description: A concise description of what you're experiencing.
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
@@ -39,7 +39,7 @@ body:
         3. Do ...
         4. See error...
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
@@ -56,7 +56,7 @@ body:
           - **Kernel (e.g. `uname -a`)**:
           - **Others**:
     validations:
-      required: false
+      required: true
 
   - type: textarea
     attributes:
