@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/softwind/protocol/direct"
+	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
 func TestResolveIp46(t *testing.T) {

@@ -11,7 +11,6 @@ require (
 	github.com/cilium/ebpf v0.12.3
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
 	github.com/daeuniverse/outbound v0.0.0-20240126121235-33bc68e5f93e
-	github.com/daeuniverse/softwind v0.0.0-20240125045015-94186ddaef35
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/json-iterator/go v1.1.12
 	github.com/miekg/dns v1.1.55
@@ -24,27 +23,25 @@ require (
 	github.com/vishvananda/netlink v1.1.0
 	github.com/vishvananda/netns v0.0.4
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
-	golang.org/x/crypto v0.12.0
+	golang.org/x/crypto v0.18.0
 	golang.org/x/exp v0.0.0-20230728194245-b0cb94b80691
-	golang.org/x/sys v0.14.1-0.20231108175955-e4099bfacb8c
+	golang.org/x/sys v0.16.0
 	google.golang.org/protobuf v1.31.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.5 // indirect
-	github.com/gaukas/godicttls v0.0.4 // indirect
+	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/cloudflare/circl v1.3.7 // indirect
+	github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/google/pprof v0.0.0-20230705174524-200ffdc848b8 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
-	github.com/klauspost/compress v1.16.7 // indirect
-	github.com/mzz2017/quic-go v0.0.0-20231230054300-5221ce9164a3 // indirect
+	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
-	github.com/quic-go/qtls-go1-20 v0.4.1 // indirect
-	github.com/quic-go/quic-go v0.37.4 // indirect
-	go.uber.org/mock v0.3.0 // indirect
+	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/mod v0.12.0 // indirect
-	golang.org/x/net v0.14.0 // indirect
+	golang.org/x/net v0.20.0 // indirect
 	golang.org/x/tools v0.11.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230807174057-1744710a1577 // indirect
 )
@@ -67,17 +64,17 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mzz2017/disk-bloom v1.0.1 // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
-	github.com/refraction-networking/utls v1.4.3 // indirect
+	github.com/refraction-networking/utls v1.6.4 // indirect
 	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37 // indirect
-	golang.org/x/term v0.11.0 // indirect
-	golang.org/x/text v0.12.0 // indirect
+	golang.org/x/term v0.16.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/grpc v1.57.0 // indirect
 )
 
-// replace github.com/daeuniverse/softwind => ../softwind
-// replace github.com/daeuniverse/outbound => ../outbound
+// replace github.com/daeuniverse/outbound => ../softwind
+replace github.com/daeuniverse/outbound => ../outbound
 
 // replace github.com/mzz2017/quic-go => ../quic-go
 
