@@ -52,7 +52,7 @@ dae enp1s0: 192.168.2.1 Gateway 192.168.2.2
    | Protocol | TCP/UDP |
    | Destination/Invert | √ |
    | Destination | proxyroute |
-   | Gateway | Enable |
+   | Gateway | proxy |
 
    > In addition, you can exclude LAN devices through Source/Invert, so their traffic will not be passed to dae.
 
