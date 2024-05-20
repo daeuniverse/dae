@@ -44,6 +44,7 @@ global {
 
     dial_mode: domain
     disable_waiting_network: false
+    enable_local_tcp_fast_redirect: false
     auto_config_kernel_parameter: true
     sniffing_timeout: 100ms
 }
