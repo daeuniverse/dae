@@ -34,10 +34,10 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/softwind/pool"
-	"github.com/daeuniverse/softwind/protocol/direct"
-	"github.com/daeuniverse/softwind/transport/grpc"
-	"github.com/daeuniverse/softwind/transport/meek"
+	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/outbound/transport/grpc"
+	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -222,8 +222,10 @@ func NewControlPlane(
 		if err = core.setupSkPidMonitor(); err != nil {
 			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
 		}
-		if err = core.setupLocalTcpFastRedirect(); err != nil {
-			log.WithError(err).Warnln("failed to setup local tcp fast redirect")
+		if global.EnableLocalTcpFastRedirect {
+			if err = core.setupLocalTcpFastRedirect(); err != nil {
+				log.WithError(err).Warnln("failed to setup local tcp fast redirect")
+			}
 		}
 		for _, ifname := range global.WanInterface {
 			if len(global.LanInterface) > 0 {

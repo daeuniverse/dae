@@ -52,7 +52,7 @@ dae enp1s0：192.168.2.1 网关 192.168.2.2
    | 协议 | TCP/UDP |
    | 目标/反转 | √ |
    | 目标 | proxyroute |
-   | 网关 | 启用 |
+   | 网关 | proxy |
 
    > 此外可以通过源、源/反转来排除局域网设备，使其流量不会被分流到dae。
 
@@ -78,7 +78,7 @@ dae enp1s0：192.168.2.1 网关 192.168.2.2
 
 经过如上配置可以使DNS请求经过dae，并被dae劫持处理，这里设置的DNS服务器并不是最终查询的服务器，DNS查询的目标服务器会被dae根据dae配置中的dns规则改写，然后发送DNS查询请求。
 
-需要注意的是Unbound会在转发客户端发出的DNS请求时，追加EDNS相关参数，这样可能会从上游服务器取得长度超大（偶见大于2000）的DNS响应，从而导致dae处理udp DNS的缓冲区溢出（处于性能考虑，dae没有使用更大的缓冲区，tcp的DNS不会溢出），最终表现是客户端无法拿到DNS响应，甚至导致dae功能崩溃。要解决这个问题，可以改用Dnsmasq或在`服务：Unbound DNS：常规`中关闭EDNSSEC支持并写入如下Unbound配置，该配置可以有效减小返回的DNS响应大小：
+需要注意的是Unbound会在转发客户端发出的DNS请求时，追加EDNS相关参数，这样可能会从上游服务器取得长度超大（偶见大于2000）的DNS响应，从而导致dae处理udp DNS的缓冲区溢出（出于性能考虑，dae没有使用更大的缓冲区，tcp的DNS不会溢出），最终表现是客户端无法拿到DNS响应，甚至导致dae功能崩溃。要解决这个问题，可以改用Dnsmasq或在`服务：Unbound DNS：常规`中关闭EDNSSEC支持并写入如下Unbound配置，该配置可以有效减小返回的DNS响应大小：
 
 ``` yaml
 # 存为 /usr/local/etc/unbound.opnsense.d/disableedns.conf

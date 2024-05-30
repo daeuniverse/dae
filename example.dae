@@ -19,6 +19,8 @@ global {
     # Disable waiting for network before pulling subscriptions.
     disable_waiting_network: false
 
+    # Enable fast redirect for local TCP connections. There is a known kernel issue that breaks certain clients/proxies, such as nadoo/glider. Users may enable this experimental option at their own risks.
+    enable_local_tcp_fast_redirect: false
 
     ##### Interface and kernel options.
 

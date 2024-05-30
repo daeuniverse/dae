@@ -7,7 +7,7 @@ package dialer
 
 import (
 	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/softwind/netproxy"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 func NewBlockDialer(option *GlobalOption, dialCallback func()) (netproxy.Dialer, *Property) {
