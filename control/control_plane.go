@@ -232,10 +232,10 @@ func NewControlPlane(
 				// thus we set it 2 as a workaround.
 				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
 				if global.AutoConfigKernelParameter {
-					acceptRaPath := fmt.Sprintf("net.ipv6.conf.%v.accept_ra", ifname)
-					val, _ := sysctl.Get(acceptRaPath)
+					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
+					val, _ := acceptRa.Get()
 					if val == "1" {
-						_ = sysctl.Set(acceptRaPath, "2", false)
+						_ = acceptRa.Set("2", false)
 					}
 				}
 			}
