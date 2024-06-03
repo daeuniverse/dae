@@ -39,6 +39,7 @@ require (
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
+	github.com/quic-go/qpack v0.4.0 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/net v0.20.0 // indirect
@@ -73,7 +74,7 @@ require (
 	google.golang.org/grpc v1.57.0 // indirect
 )
 
-// replace github.com/daeuniverse/outbound => ../outbound
+replace github.com/daeuniverse/outbound => ../outbound
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
