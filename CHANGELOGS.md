@@ -15,10 +15,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 <!-- BEGIN NEW TOC ENTRY -->
 
 - [v0.6.0 (Latest)](#v060-latest)
-
-- [v0.6.0rc2 (Pre-release)](#v060rc2-pre-release)
-- [v0.6.0rc1 (Pre-release)](#v060rc1-pre-release)
-- [v0.5.1 (Latest)](#v051-latest)
+- [v0.5.1](#v051)
 - [v0.5.0](#v050)
 - [v0.4.0](#v040)
 - [v0.3.0](#v030)
@@ -45,6 +42,15 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ### v0.6.0 (Latest)
 
 > Release date: 2024/06/11
+
+#### Breaking Changes
+
+> [!NOTE]
+> Please read the following PRs for details
+
+- feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
+- patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
+- patch/optimize(bpf): improve wan tcp hijack datapath performance in [#481](https://github.com/daeuniverse/dae/pull/481) by (@jschwinger233)
 
 #### Features
 
@@ -103,113 +109,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - @hiifeng made their first contribution in [#510](https://github.com/daeuniverse/dae/pull/510)
 - @linglilongyi made their first contribution in [#517](https://github.com/daeuniverse/dae/pull/517)
 
-### v0.6.0rc2 (Pre-release)
-
-> Release date: 2024/04/15
-
-#### Breaking Changes
-
-> [!NOTE]
-> Please read the following PRs for details
-
-- feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
-- patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
-- patch/optimize(bpf): improve wan tcp hijack datapath performance in [#481](https://github.com/daeuniverse/dae/pull/481) by (@jschwinger233)
-
-#### Features
-
-- feat: dae trace in [#435](https://github.com/daeuniverse/dae/pull/435) by (@jschwinger233)
-- feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
-- feat: add httpupgrade in [#472](https://github.com/daeuniverse/dae/pull/472) by (@AkinoKaede)
-- feat: support reloading progress and error for `dae reload` in [#470](https://github.com/daeuniverse/dae/pull/470) by (@mzz2017)
-- feat: add .clang-format file from torvalds/linux in [#492](https://github.com/daeuniverse/dae/pull/492) by (@mzz2017)
-- feat: support to maintain udp conn state in [#493](https://github.com/daeuniverse/dae/pull/493) by (@mzz2017)
-
-#### Bug Fixes
-
-- fix: Create DaeNetns instance strictly once on reload in [#446](https://github.com/daeuniverse/dae/pull/446) by (@jschwinger233)
-- patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
-- fix: Fix bpf CO-RE issue on 6.9 in [#483](https://github.com/daeuniverse/dae/pull/483) by (@jschwinger233)
-- fix(bpf): revert using bpf_redirect_peer in [#480](https://github.com/daeuniverse/dae/pull/480) by (@jschwinger233)
-- patch/optimize(bpf): improve wan tcp hijack datapath performance in [#481](https://github.com/daeuniverse/dae/pull/481) by (@jschwinger233)
-- fix: shoot ipv6 icmp redirects in [#494](https://github.com/daeuniverse/dae/pull/494) by (@mzz2017)
-- fix: cannot use must in bracket in fallback in [#495](https://github.com/daeuniverse/dae/pull/495) by (@mzz2017)
-- fix: Don't enable net.ipv6.conf.all.forwarding in [#496](https://github.com/daeuniverse/dae/pull/496) by (@jschwinger233)
-- fix: auto_config_kernel_parameter sets net.ipv6.conf.all.forwarding=1 when binding lan interfaces in [#499](https://github.com/daeuniverse/dae/pull/499) by (@jschwinger233)
-
-#### Others
-
-- docs(protocols): delete redundant line in [#452](https://github.com/daeuniverse/dae/pull/452) by (@bradfordzhang)
-- ci(Makefile): enable trace module by default in [#455](https://github.com/daeuniverse/dae/pull/455) by (@hero-intelligent)
-- ci: update actions/checkout@v3 to actions/checkout@v4 in [#461](https://github.com/daeuniverse/dae/pull/461) by (@MarksonHon)
-- ci: update ci modules using nodejs to latest in [#465](https://github.com/daeuniverse/dae/pull/465) by (@MarksonHon)
-- style: format bpf c code using kernel checkpatch.pl in [#477](https://github.com/daeuniverse/dae/pull/477) by (@jschwinger233)
-- chore: bump submodule dae_bpf_headers in [#487](https://github.com/daeuniverse/dae/pull/487) by (@jschwinger233)
-- chore: Replace regexp with regexp2 for better filtering in [#467](https://github.com/daeuniverse/dae/pull/467) by (@xishang0128)
-- docs(example): add '# Multiple filters indicate 'or' logic.' in [#488](https://github.com/daeuniverse/dae/pull/488) by (@akiooo45)
-- ci(generate-changelogs.yml): generate auth token on the fly in [#489](https://github.com/daeuniverse/dae/pull/489) by (@sumire88)
-- ci(release): draft release v0.6.0rc1 in [#491](https://github.com/daeuniverse/dae/pull/491) by (@dae-prow)
-- docs(readme): remove unnecessary lines in [#500](https://github.com/daeuniverse/dae/pull/500) by (@sumire88)
-- chore: upgrade quic-go to 0.42.0 and utls to 1.6.4 in [#497](https://github.com/daeuniverse/dae/pull/497) by (@mzz2017)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.6.0rc2/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.5.1...v0.6.0rc2
-
-#### New Contributors
-
-- @xishang0128 made their first contribution in [#467](https://github.com/daeuniverse/dae/pull/467)
-- @akiooo45 made their first contribution in [#488](https://github.com/daeuniverse/dae/pull/488)
-
-### v0.6.0rc1 (Pre-release)
-
-> Release date: 2024/04/02
-
-#### Breaking Changes
-
-> [!NOTE]
-> Please read the following PRs for details
-
-- feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
-- patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
-- patch/optimize(bpf): improve wan tcp hijack datapath performance in [#481](https://github.com/daeuniverse/dae/pull/481) by (@jschwinger233)
-
-#### Features
-
-- feat: dae trace in [#435](https://github.com/daeuniverse/dae/pull/435) by (@jschwinger233)
-- feat(bpf): implement stack bypass in [#458](https://github.com/daeuniverse/dae/pull/458) by (@jschwinger233)
-- feat: add httpupgrade in [#472](https://github.com/daeuniverse/dae/pull/472) by (@AkinoKaede)
-- feat: support reloading progress and error for `dae reload` in [#470](https://github.com/daeuniverse/dae/pull/470) by (@mzz2017)
-
-#### Bug Fixes
-
-- fix: Create DaeNetns instance strictly once on reload in [#446](https://github.com/daeuniverse/dae/pull/446) by (@jschwinger233)
-- patch/optimize(bpf): improve lan hijack datapath performance in [#466](https://github.com/daeuniverse/dae/pull/466) by (@jschwinger233)
-- fix: Fix bpf CO-RE issue on 6.9 in [#483](https://github.com/daeuniverse/dae/pull/483) by (@jschwinger233)
-- fix(bpf): revert using bpf_redirect_peer in [#480](https://github.com/daeuniverse/dae/pull/480) by (@jschwinger233)
-- patch/optimize(bpf): improve wan tcp hijack datapath performance in [#481](https://github.com/daeuniverse/dae/pull/481) by (@jschwinger233)
-
-#### Others
-
-- docs(protocols): delete redundant line in [#452](https://github.com/daeuniverse/dae/pull/452) by (@bradfordzhang)
-- ci(Makefile): enable trace module by default in [#455](https://github.com/daeuniverse/dae/pull/455) by (@hero-intelligent)
-- ci: update actions/checkout@v3 to actions/checkout@v4 in [#461](https://github.com/daeuniverse/dae/pull/461) by (@MarksonHon)
-- ci: update ci modules using nodejs to latest in [#465](https://github.com/daeuniverse/dae/pull/465) by (@MarksonHon)
-- style: format bpf c code using kernel checkpatch.pl in [#477](https://github.com/daeuniverse/dae/pull/477) by (@jschwinger233)
-- chore: bump submodule dae_bpf_headers in [#487](https://github.com/daeuniverse/dae/pull/487) by (@jschwinger233)
-- chore: Replace regexp with regexp2 for better filtering in [#467](https://github.com/daeuniverse/dae/pull/467) by (@xishang0128)
-- docs(example): add '# Multiple filters indicate 'or' logic.' in [#488](https://github.com/daeuniverse/dae/pull/488) by (@akiooo45)
-- ci(generate-changelogs.yml): generate auth token on the fly in [#489](https://github.com/daeuniverse/dae/pull/489) by (@sumire88)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.6.0rc1/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.5.1...v0.6.0rc1
-
-#### New Contributors
-
-- @xishang0128 made their first contribution in [#467](https://github.com/daeuniverse/dae/pull/467)
-
-### v0.5.1 (Latest)
+### v0.5.1
 
 > Release date: 2024/01/23
 
