@@ -281,11 +281,11 @@ func (ns *DaeNetns) setupNetns() (err error) {
 
 func (ns *DaeNetns) setupSysctl() (err error) {
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
-	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6", HostVethName), "0", true); err != nil {
+	if err = sysctl.Keyf("net.ipv6.conf.%s.disable_ipv6", HostVethName).Set("0", true); err != nil {
 		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
 	}
 	// sysctl net.ipv6.conf.dae0.forwarding=1
-	if err = sysctl.Set(fmt.Sprintf("net.ipv6.conf.%s.forwarding", HostVethName), "1", true); err != nil {
+	if err = sysctl.Keyf("net.ipv6.conf.%s.forwarding", HostVethName).Set("1", true); err != nil {
 		return fmt.Errorf("failed to set forwarding for dae0: %v", err)
 	}
 
@@ -295,12 +295,12 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	defer netns.Set(ns.hostNs)
 
 	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
-	sysctl.Set("net.ipv4.tcp_early_demux", "1", false)
-	sysctl.Set("net.ipv4.ip_early_demux", "1", false)
+	sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
+	sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
 
 	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
 	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
-	if err = sysctl.Set(fmt.Sprintf("net.ipv4.conf.%s.accept_local", NsVethName), "1", false); err != nil {
+	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", NsVethName).Set("1", false); err != nil {
 		return fmt.Errorf("failed to set accept_local for dae0peer: %v", err)
 	}
 	return
