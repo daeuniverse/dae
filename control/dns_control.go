@@ -38,7 +38,7 @@ const (
 	minFirefoxCacheTtl = 120
 )
 
-type IpVersionPrefer int
+type IpVersionPrefer uint8
 
 const (
 	IpVersionPrefer_No IpVersionPrefer = 0
@@ -61,7 +61,7 @@ type DnsControllerOption struct {
 	CacheRemoveCallback func(cache *DnsCache) (err error)
 	NewCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	BestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
-	IpVersionPrefer     int
+	IpVersionPrefer     uint8
 	FixedDomainTtl      map[string]int
 }
 
@@ -83,7 +83,7 @@ type DnsController struct {
 	dnsCache   map[string]*DnsCache
 }
 
-func parseIpVersionPreference(prefer int) (uint16, error) {
+func parseIpVersionPreference(prefer uint8) (uint16, error) {
 	switch prefer := IpVersionPrefer(prefer); prefer {
 	case IpVersionPrefer_No:
 		return 0, nil

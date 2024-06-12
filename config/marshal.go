@@ -180,7 +180,7 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		case fmt.Stringer, string,
 			uint8, uint16, uint32, uint64,
 			int8, int16, int32, int64,
-			float32, float64,
+			float32, float64, int,
 			bool:
 			m.writeLine(depth, key+":"+strconv.Quote(fmt.Sprintf("%v", val)))
 		case *config_parser.Function:
