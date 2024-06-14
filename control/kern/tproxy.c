@@ -1509,6 +1509,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			flag[1] = IpVersionType_6;
 		flag[6] = tuples.dscp;
 		struct pid_pname *pid_pname;
+
 		if (pid_is_control_plane(skb, &pid_pname)) {
 			// from control plane
 			// => direct.
