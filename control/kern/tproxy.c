@@ -1290,24 +1290,19 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
 	if (unlikely(!value))
 		return NULL;
 
-	ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
-			     CLOCK_MONOTONIC);
-	if (unlikely(ret))
-		goto del;
+	if ((ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
+				  CLOCK_MONOTONIC)))
+		goto retn;
 
-	ret = bpf_timer_set_callback(&value->timer,
-				     refresh_udp_conn_state_timer_cb);
-	if (unlikely(ret))
-		goto del;
+	if ((ret = bpf_timer_set_callback(&value->timer,
+					  refresh_udp_conn_state_timer_cb)))
+		goto retn;
 
-	ret = bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0);
-	if (unlikely(ret))
-		goto del;
+	if ((ret = bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
+		goto retn;
 
+retn:
 	return value;
-del:
-	bpf_map_delete_elem(&udp_conn_state_map, key);
-	return NULL;
 }
 
 SEC("tc/wan_ingress")
@@ -1514,18 +1509,22 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			flag[1] = IpVersionType_6;
 		flag[6] = tuples.dscp;
 		struct pid_pname *pid_pname;
+		if (pid_is_control_plane(skb, &pid_pname)) {
+			// from control plane
+			// => direct.
+			return TC_ACT_OK;
+		}
 
 		struct udp_conn_state *conn_state =
 			refresh_udp_conn_state_timer(&tuples.five, true);
 		if (!conn_state)
 			return TC_ACT_SHOT;
-		if (!conn_state->is_egress ||
-		    pid_is_control_plane(skb, &pid_pname)) {
-			// Input udp connection or
-			// from control plane
+		if (!conn_state->is_egress) {
+			// Input udp connection
 			// => direct.
 			return TC_ACT_OK;
 		}
+
 		if (pid_pname) {
 			// 2, 3, 4, 5
 			__builtin_memcpy(&flag[2], pid_pname->pname,
