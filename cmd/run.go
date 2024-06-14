@@ -147,6 +147,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		sigs <- nil
 	}()
 	reloading := false
+	reloadingErr := error(nil)
 	isSuspend := false
 	abortConnections := false
 loop:
@@ -170,7 +171,11 @@ loop:
 				}()
 				<-readyChan
 				sdnotify.Ready()
-				_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+				if reloadingErr == nil {
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+				} else {
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+				}
 				log.Warnln("[Reload] Finished")
 			} else {
 				// Listening error.
@@ -188,6 +193,7 @@ loop:
 			}
 			sdnotify.Reloading()
 			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
+			reloadingErr = nil
 
 			// Load new config.
 			abortConnections = os.Remove(AbortFile) == nil
@@ -237,6 +243,7 @@ loop:
 			log.Warnln("[Reload] Load new control plane")
 			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
 			if err != nil {
+				reloadingErr = err
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
