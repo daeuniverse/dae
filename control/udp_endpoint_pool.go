@@ -31,6 +31,9 @@ type UdpEndpoint struct {
 
 	Dialer   *dialer.Dialer
 	Outbound *outbound.DialerGroup
+
+	// Non-empty indicates this UDP Endpoint is related with a sniffed domain.
+	SniffedDomain string
 }
 
 func (ue *UdpEndpoint) start() {
@@ -146,6 +149,7 @@ begin:
 			NatTimeout:    createOption.NatTimeout,
 			Dialer:        dialOption.Dialer,
 			Outbound:      dialOption.Outbound,
+			SniffedDomain: dialOption.SniffedDomain,
 		}
 		ue.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
 			if _ue, ok := p.pool.LoadAndDelete(lAddr); ok {
