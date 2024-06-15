@@ -56,13 +56,14 @@ var (
 )
 
 type DnsControllerOption struct {
-	Log                 *logrus.Logger
-	CacheAccessCallback func(cache *DnsCache) (err error)
-	CacheRemoveCallback func(cache *DnsCache) (err error)
-	NewCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
-	BestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
-	IpVersionPrefer     int
-	FixedDomainTtl      map[string]int
+	Log                   *logrus.Logger
+	CacheAccessCallback   func(cache *DnsCache) (err error)
+	CacheRemoveCallback   func(cache *DnsCache) (err error)
+	NewCache              func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
+	BestDialerChooser     func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	TimeoutExceedCallback func(dialArgument *dialArgument, err error)
+	IpVersionPrefer       int
+	FixedDomainTtl        map[string]int
 }
 
 type DnsController struct {
@@ -76,6 +77,8 @@ type DnsController struct {
 	cacheRemoveCallback func(cache *DnsCache) (err error)
 	newCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	bestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
+	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
 	fixedDomainTtl map[string]int
 	// mutex protects the dnsCache.
@@ -107,11 +110,12 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		routing:     routing,
 		qtypePrefer: prefer,
 
-		log:                 option.Log,
-		cacheAccessCallback: option.CacheAccessCallback,
-		cacheRemoveCallback: option.CacheRemoveCallback,
-		newCache:            option.NewCache,
-		bestDialerChooser:   option.BestDialerChooser,
+		log:                   option.Log,
+		cacheAccessCallback:   option.CacheAccessCallback,
+		cacheRemoveCallback:   option.CacheRemoveCallback,
+		newCache:              option.NewCache,
+		bestDialerChooser:     option.BestDialerChooser,
+		timeoutExceedCallback: option.TimeoutExceedCallback,
 
 		fixedDomainTtl: option.FixedDomainTtl,
 		dnsCacheMu:     sync.Mutex{},
@@ -578,8 +582,9 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			}
 		}()
 
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), 5*time.Second)
+		timeout := 5 * time.Second
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
 		defer cancelDnsReqCtx()
 		go func() {
 			// Send DNS request every seconds.
@@ -613,6 +618,9 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		// Wait for response.
 		n, err := conn.Read(respBuf)
 		if err != nil {
+			if c.timeoutExceedCallback != nil {
+				c.timeoutExceedCallback(dialArgument, err)
+			}
 			return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
 		}
 		var msg dnsmessage.Msg
