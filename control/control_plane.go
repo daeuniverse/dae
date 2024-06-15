@@ -33,6 +33,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/grpc"
@@ -224,24 +225,17 @@ func NewControlPlane(
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
 	option := &dialer.GlobalOption{
-		Log: log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{
-			Raw:             global.TcpCheckUrl,
-			Log:             log,
-			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
-			Method:          global.TcpCheckHttpMethod,
+		ExtraOption: D.ExtraOption{
+			AllowInsecure:     global.AllowInsecure,
+			TlsImplementation: global.TlsImplementation,
+			UtlsImitate:       global.UtlsImitate,
 		},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{
-			Raw:             global.UdpCheckDns,
-			ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
-			Somark:          global.SoMarkFromDae,
-		},
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Somark: global.SoMarkFromDae},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
-		AllowInsecure:     global.AllowInsecure,
-		TlsImplementation: global.TlsImplementation,
-		UtlsImitate:       global.UtlsImitate,
 	}
 
 	// Dial mode.
@@ -255,9 +249,9 @@ func NewControlPlane(
 	}
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	_direct, directProperty := dialer.NewDirectDialer(option, true)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{CheckEnabled: false}, directProperty)
+	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{CheckEnabled: false}, blockProperty)
+	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},

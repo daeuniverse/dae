@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2023, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -272,10 +272,10 @@ type CheckOption struct {
 func (d *Dialer) ActivateCheck() {
 	d.tickerMu.Lock()
 	defer d.tickerMu.Unlock()
-	if d.InstanceOption.CheckEnabled {
+	if d.InstanceOption.DisableCheck || d.checkActivated {
 		return
 	}
-	d.InstanceOption.CheckEnabled = true
+	d.checkActivated = true
 	go d.aliveBackground()
 }
 

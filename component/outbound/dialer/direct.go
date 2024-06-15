@@ -1,20 +1,19 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package dialer
 
 import (
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	softwindDirect "github.com/daeuniverse/outbound/protocol/direct"
 )
 
 func NewDirectDialer(option *GlobalOption, fullcone bool) (netproxy.Dialer, *Property) {
-	property := &Property{
-		Name:     "direct",
-		Address:  "",
-		Protocol: "",
-		Link:     "",
-	}
-	if fullcone {
-		return softwindDirect.FullconeDirect, property
-	} else {
-		return softwindDirect.SymmetricDirect, property
+	d, _p := D.NewDirectDialer(&option.ExtraOption, fullcone)
+	return d, &Property{
+		Property:        *_p,
+		SubscriptionTag: "",
 	}
 }

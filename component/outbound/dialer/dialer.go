@@ -1,3 +1,8 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package dialer
 
 import (
@@ -6,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
 )
@@ -29,29 +35,26 @@ type Dialer struct {
 	checkCh  chan time.Time
 	ctx      context.Context
 	cancel   context.CancelFunc
+
+	checkActivated bool
 }
 
 type GlobalOption struct {
+	D.ExtraOption
 	Log               *logrus.Logger
 	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
 	CheckDnsTcp       bool
-	AllowInsecure     bool
-	TlsImplementation string
-	UtlsImitate       string
 }
 
 type InstanceOption struct {
-	CheckEnabled bool
+	DisableCheck bool
 }
 
 type Property struct {
-	Name            string
-	Address         string
-	Protocol        string
-	Link            string
+	D.Property
 	SubscriptionTag string
 }
 
@@ -76,9 +79,6 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		checkCh:          make(chan time.Time, 1),
 		ctx:              ctx,
 		cancel:           cancel,
-	}
-	if iOption.CheckEnabled {
-		go d.aliveBackground()
 	}
 	return d
 }
