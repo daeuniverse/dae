@@ -31,10 +31,11 @@ const (
 )
 
 type DialOption struct {
-	Target   string
-	Dialer   *dialer.Dialer
-	Outbound *ob.DialerGroup
-	Network  string
+	Target        string
+	Dialer        *dialer.Dialer
+	Outbound      *ob.DialerGroup
+	Network       string
+	SniffedDomain string
 }
 
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
@@ -78,12 +79,41 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	var realSrc netip.AddrPort
 	var domain string
 	realSrc = src
+	ue, ueExists := DefaultUdpEndpointPool.Get(realSrc)
+	if ueExists && ue.SniffedDomain != "" {
+		// It is quic ...
+		// Fast path.
+		domain := ue.SniffedDomain
+		dialTarget := realDst.String()
+
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			fields := logrus.Fields{
+				"network":  "udp(fp)",
+				"outbound": ue.Outbound.Name,
+				"policy":   ue.Outbound.GetSelectionPolicy(),
+				"dialer":   ue.Dialer.Property().Name,
+				"sniffed":  domain,
+				"ip":       RefineAddrPortToShow(realDst),
+				"pid":      routingResult.Pid,
+				"dscp":     routingResult.Dscp,
+				"pname":    ProcessName2String(routingResult.Pname[:]),
+				"mac":      Mac2String(routingResult.Mac[:]),
+			}
+			c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+		}
+
+		_, err = ue.WriteTo(data, dialTarget)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
-	if !isDns && !skipSniffing && !DefaultUdpEndpointPool.Exists(realSrc) {
+	if !isDns && !skipSniffing && !ueExists {
 		// Sniff Quic, ...
 		key := PacketSnifferKey{
 			LAddr: realSrc,
@@ -152,7 +182,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 
 	// Get udp endpoint.
-	var ue *UdpEndpoint
 	retry := 0
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,

@@ -751,7 +751,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			copy(newBuf, buf[:n])
 			newOob := pool.Get(oobn)
 			copy(newOob, oob[:oobn])
-			go func(data pool.PB, oob pool.PB, src netip.AddrPort) {
+			newSrc := src
+			convergeSrc := common.ConvergeAddrPort(src)
+			// Debug:
+			// t := time.Now()
+			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+				data := newBuf
+				oob := newOob
+				src := newSrc
+
 				defer data.Put()
 				defer oob.Put()
 				var realDst netip.AddrPort
@@ -764,10 +772,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				} else {
 					realDst = pktDst
 				}
-				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
+				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
-			}(newBuf, newOob, src)
+			})
+			// if d := time.Since(t); d > 100*time.Millisecond {
+			// 	logrus.Println(d)
+			// }
 		}
 	}()
 	c.ActivateCheck()
