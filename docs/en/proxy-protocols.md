@@ -51,11 +51,11 @@
 
   [Tuic URI Schema](https://github.com/daeuniverse/dae/discussions/182)
 
-- [x] [Juicity](https://github.com/juicity/juicity)
+- [x] Juicity
 
   [Juicity URI Schema](https://github.com/juicity/juicity?tab=readme-ov-file#link-format)
 
-- [x] [Proxy chain (flexible protocol)]
+- [x] Proxy chain (flexible protocol)
 
   [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
 
