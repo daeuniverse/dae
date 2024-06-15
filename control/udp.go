@@ -33,10 +33,11 @@ const (
 )
 
 type DialOption struct {
-	Target   string
-	Dialer   *dialer.Dialer
-	Outbound *ob.DialerGroup
-	Network  string
+	Target        string
+	Dialer        *dialer.Dialer
+	Outbound      *ob.DialerGroup
+	Network       string
+	SniffedDomain string
 }
 
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
@@ -127,12 +128,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// From localhost, so dst IP is src IP.
 		realSrc = netip.AddrPortFrom(pktDst.Addr(), src.Port())
 	}
+	ue, ueExists := DefaultUdpEndpointPool.Get(realSrc)
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
-	if !isDns && !skipSniffing && !DefaultUdpEndpointPool.Exists(realSrc) {
+	if !isDns && !skipSniffing && !ueExists {
 		// Sniff Quic, ...
 		key := PacketSnifferKey{
 			LAddr: realSrc,
@@ -202,7 +204,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 
 	// Get udp endpoint.
-	var ue *UdpEndpoint
 	retry := 0
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
