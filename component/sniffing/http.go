@@ -8,7 +8,6 @@ package sniffing
 import (
 	"bufio"
 	"bytes"
-	"net"
 	"strings"
 	"unicode"
 
@@ -61,15 +60,7 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 			continue
 		}
 		if strings.EqualFold(string(key), "host") {
-			host := strings.TrimSpace(string(value))
-			if strings.HasSuffix(host, "]") {
-				// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
-				return strings.Trim(host, "[]"), nil
-			}
-			if domain, _, err := net.SplitHostPort(host); err == nil {
-				return domain, nil
-			}
-			return host, nil
+			return string(value), nil
 		}
 	}
 	return "", ErrNotFound
