@@ -44,6 +44,14 @@ func (p *UdpTaskPool) convoy(q *UdpTaskQueue) {
 	for {
 		select {
 		case <-q.closed:
+		clearloop:
+			for {
+				select {
+				case <-q.ch:
+				default:
+					break clearloop
+				}
+			}
 			close(q.freed)
 			return
 		case t := <-q.ch:
