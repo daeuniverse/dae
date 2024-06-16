@@ -6,11 +6,12 @@
 package domain_matcher
 
 import (
+	"math/rand"
+	"testing"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
-	"math/rand"
-	"testing"
 )
 
 func TestAhocorasickSlimtrie(t *testing.T) {
