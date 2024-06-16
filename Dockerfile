@@ -1,4 +1,4 @@
-FROM golang:1.21-bookworm AS builder
+FROM golang:1.22-bookworm AS builder
 RUN apt-get update && apt-get install -y llvm-15 clang-15 git make
 ENV CLANG=clang-15
 WORKDIR /build/
