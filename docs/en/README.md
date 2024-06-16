@@ -76,19 +76,38 @@ Check them using command like:
 
 dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae).
 
-#### Install by AUR Helper
+#### AUR
+
+##### Latest Release
 
 ```shell
 [yay/paru] -S dae
 ```
 
-#### Install Manually
+##### Latest Git Version
 
 ```shell
-pacman -S --needed git base-devel
-git clone https://aur.archlinux.org/dae.git
-cd dae
-makepkg -si
+[yay/paru] -S dae-git
+```
+
+#### archlinuxcn
+
+##### Latest Release (Optimized for x86-64 v3)
+
+```shell
+sudo pacman -S dae-bin-x64-v3
+```
+
+##### Latest Release (General x86-64 or aarch64)
+
+```shell
+sudo pacman -S dae
+```
+
+##### Latest Git Version
+
+```shell
+sudo pacman -S dae-git
 ```
 
 After installation, use systemctl to control it.

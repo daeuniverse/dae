@@ -72,19 +72,38 @@ CONFIG_BPF_EVENTS=y
 
 dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae)，使用下述命令安装：
 
-#### 使用 AUR 助手安装
+#### AUR
+
+##### 最新稳定版
 
 ```shell
 [yay/paru] -S dae
 ```
 
-#### 手动编译安装
+##### 最新 Git 版
 
 ```shell
-pacman -S --needed git base-devel
-git clone https://aur.archlinux.org/dae.git
-cd dae
-makepkg -si
+[yay/paru] -S dae-git
+```
+
+#### archlinuxcn
+
+##### 最新稳定版 (针对 x86-64 v3 优化)
+
+```shell
+sudo pacman -S dae-bin-x64-v3
+```
+
+##### 最新稳定版 (x86-64 或 aarch64 通用版)
+
+```shell
+sudo pacman -S dae
+```
+
+##### 最新 Git 版 
+
+```shell
+sudo pacman -S dae-git
 ```
 
 安装后，使用 systemctl 对服务进行控制：
