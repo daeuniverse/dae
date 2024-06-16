@@ -131,9 +131,14 @@ jobs:
           echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v4
+        uses: nanoufo/action-upload-artifacts-and-release-assets@v2
         with:
-          path: ./*.zip*
+          if-no-files-found: ignore
+          path: |
+            dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
+            dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip.dgst
+            dae-full-src.zip
+            dae-full-src.zip.dgst
 
   upload-release:
     needs: [build]
@@ -151,16 +156,8 @@ jobs:
           echo "Show files are going to upload..."
           ls -lh | grep ".zip"
 
-      - name: Upload full source to GitHub release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: |
-            dae-full-src.zip
-          prerelease: true
-
       - name: Upload full source and artifacts to GitHub release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           files: |
