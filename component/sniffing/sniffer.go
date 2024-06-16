@@ -75,7 +75,7 @@ func sniffGroup(sniffs ...sniff) (d string, err error) {
 	for _, sniffer := range sniffs {
 		d, err = sniffer()
 		if err == nil {
-			return d, nil
+			return NormalizeDomain(d), nil
 		}
 		if err != ErrNotApplicable {
 			return "", err

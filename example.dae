@@ -9,6 +9,9 @@ global {
     # iptables tproxy rules.
     tproxy_port_protect: true
 
+    # Set non-zero value to enable pprof.
+    pprof_port: 0
+
     # If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy
     # rules.
     so_mark_from_dae: 0
