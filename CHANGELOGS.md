@@ -13,6 +13,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
+
+- [v0.7.0rc1 (Pre-release)](#v070rc1-pre-release)
 - [v0.6.0 (Latest)](#v060-latest)
 - [v0.5.1](#v051)
 - [v0.5.0](#v050)
@@ -37,6 +39,37 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.7.0rc1 (Pre-release)
+
+> Release date: 2024/06/16
+
+#### Features
+
+- feat: support assist connectivity check (udp-dns) by dns module in [#543](https://github.com/daeuniverse/dae/pull/543) by (@mzz2017)
+- feat: Add support for hysteria2 dialer and protocol in [#533](https://github.com/daeuniverse/dae/pull/533) by (@mnixry)
+
+#### Bug Fixes
+
+- fix: support to report all error when reloading in [#540](https://github.com/daeuniverse/dae/pull/540) by (@mzz2017)
+- fix: cannot route for sniffed domain with port in [#542](https://github.com/daeuniverse/dae/pull/542) by (@mzz2017)
+- fix: incidental packet drop and weird UDP state maintaining in [#539](https://github.com/daeuniverse/dae/pull/539) by (@mzz2017)
+
+#### Others
+
+- chore: Add a global config to enable pprof in [#532](https://github.com/daeuniverse/dae/pull/532) by (@jschwinger233)
+- docs: add protocols uri schema in [#541](https://github.com/daeuniverse/dae/pull/541) by (@mzz2017)
+- docs: update arch installation in [#531](https://github.com/daeuniverse/dae/pull/531) by (@Integral-Tech)
+- docs: add gaming-oriented routing tutorial in [#527](https://github.com/daeuniverse/dae/pull/527) by (@rustcult)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.7.0rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.6.0...v0.7.0rc1
+
+#### New Contributors
+
+- @mnixry made their first contribution in [#533](https://github.com/daeuniverse/dae/pull/533)
+- @rustcult made their first contribution in [#527](https://github.com/daeuniverse/dae/pull/527)
 
 ### v0.6.0 (Latest)
 
