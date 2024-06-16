@@ -444,8 +444,15 @@ func NewControlPlane(
 			}, nil
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
-		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
-		FixedDomainTtl:    fixedDomainTtl,
+		TimeoutExceedCallback: func(dialArgument *dialArgument, err error) {
+			dialArgument.bestDialer.ReportUnavailable(&dialer.NetworkType{
+				L4Proto:   dialArgument.l4proto,
+				IpVersion: dialArgument.ipversion,
+				IsDns:     true,
+			}, err)
+		},
+		IpVersionPrefer: dnsConfig.IpVersionPrefer,
+		FixedDomainTtl:  fixedDomainTtl,
 	}); err != nil {
 		return nil, err
 	}
