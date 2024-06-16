@@ -1,6 +1,7 @@
 package control
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -76,8 +77,29 @@ func (s *SysctlManager) startWatch() {
 	}
 }
 
-func (s *SysctlManager) Set(key string, value string, watch bool) (err error) {
-	path := SysctlPrefixPath + strings.Replace(key, ".", "/", -1)
+type SysctlKey string
+
+func (s *SysctlManager) Keyf(format string, a ...any) SysctlKey {
+	return SysctlKey(SysctlPrefixPath + fmt.Sprintf(strings.ReplaceAll(format, ".", "/"), a...))
+}
+
+func (k SysctlKey) Get() (value string, err error) {
+	return sysctl.get(string(k))
+}
+
+func (k SysctlKey) Set(value string, watch bool) (err error) {
+	return sysctl.set(string(k), value, watch)
+}
+
+func (s *SysctlManager) get(path string) (value string, err error) {
+	val, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(val)), nil
+}
+
+func (s *SysctlManager) set(path string, value string, watch bool) (err error) {
 	if watch {
 		s.mux.Lock()
 		s.expectations[path] = value
