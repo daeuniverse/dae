@@ -280,7 +280,6 @@ func (d *Dialer) ActivateCheck() {
 }
 
 func (d *Dialer) aliveBackground() {
-	timeout := Timeout
 	cycle := d.CheckInterval
 	var tcpSomark uint32
 	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
@@ -461,7 +460,7 @@ func (d *Dialer) aliveBackground() {
 
 			wg.Add(1)
 			go func(opt *CheckOption) {
-				_, _ = d.Check(timeout, opt)
+				_, _ = d.Check(opt)
 				wg.Done()
 			}(opt)
 		}
@@ -513,10 +512,48 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	}
 }
 
-func (d *Dialer) Check(timeout time.Duration,
-	opts *CheckOption,
-) (ok bool, err error) {
-	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
+func (d *Dialer) logUnavailable(
+	collection *collection,
+	network *NetworkType,
+	err error,
+) {
+	// Append timeout if there is any error or unexpected status code.
+	if err != nil {
+		if strings.HasSuffix(err.Error(), "network is unreachable") {
+			err = fmt.Errorf("network is unreachable")
+		} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
+			strings.HasSuffix(err.Error(), "non-IPv4 address") {
+			err = fmt.Errorf("IPv%v is not supported", network.IpVersion)
+		}
+		d.Log.WithFields(logrus.Fields{
+			"network": network.String(),
+			"node":    d.property.Name,
+			"err":     err.Error(),
+		}).Debugln("Connectivity Check Failed")
+	}
+	collection.Latencies10.AppendLatency(Timeout)
+	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
+	collection.Alive = false
+}
+
+func (d *Dialer) informDialerGroupUpdate(collection *collection) {
+	// Inform DialerGroups to update state.
+	// We use lock because AliveDialerSetSet is a reference of that in collection.
+	d.collectionFineMu.Lock()
+	for a := range collection.AliveDialerSetSet {
+		a.NotifyLatencyChange(d, collection.Alive)
+	}
+	d.collectionFineMu.Unlock()
+}
+
+func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
+	collection := d.mustGetCollection(typ)
+	d.logUnavailable(collection, typ, err)
+	d.informDialerGroupUpdate(collection)
+}
+
+func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
+	ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 	defer cancel()
 	start := time.Now()
 	// Calc latency.
@@ -537,31 +574,9 @@ func (d *Dialer) Check(timeout time.Duration,
 			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")
 	} else {
-		// Append timeout if there is any error or unexpected status code.
-		if err != nil {
-			if strings.HasSuffix(err.Error(), "network is unreachable") {
-				err = fmt.Errorf("network is unreachable")
-			} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
-				strings.HasSuffix(err.Error(), "non-IPv4 address") {
-				err = fmt.Errorf("IPv%v is not supported", opts.networkType.IpVersion)
-			}
-			d.Log.WithFields(logrus.Fields{
-				"network": opts.networkType.String(),
-				"node":    d.property.Name,
-				"err":     err.Error(),
-			}).Debugln("Connectivity Check Failed")
-		}
-		collection.Latencies10.AppendLatency(timeout)
-		collection.MovingAverage = (collection.MovingAverage + timeout) / 2
-		collection.Alive = false
+		d.logUnavailable(collection, opts.networkType, err)
 	}
-	// Inform DialerGroups to update state.
-	// We use lock because AliveDialerSetSet is a reference of that in collection.
-	d.collectionFineMu.Lock()
-	for a := range collection.AliveDialerSetSet {
-		a.NotifyLatencyChange(d, collection.Alive)
-	}
-	d.collectionFineMu.Unlock()
+	d.informDialerGroupUpdate(collection)
 	return ok, err
 }
 

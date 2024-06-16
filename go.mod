@@ -40,6 +40,7 @@ require (
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
+	github.com/stretchr/testify v1.8.1 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/net v0.20.0 // indirect
