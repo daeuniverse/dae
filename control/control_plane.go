@@ -208,6 +208,7 @@ func NewControlPlane(
 	if len(global.LanInterface) > 0 {
 		if global.AutoConfigKernelParameter {
 			_ = SetIpv4forward("1")
+			_ = setForwarding("all", consts.IpVersionStr_6, "1")
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
@@ -227,6 +228,19 @@ func NewControlPlane(
 			}
 		}
 		for _, ifname := range global.WanInterface {
+			if len(global.LanInterface) > 0 {
+				// FIXME: Code is not elegant here.
+				// bindLan setting conf.ipv6.all.forwarding=1 suppresses accept_ra=1,
+				// thus we set it 2 as a workaround.
+				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
+				if global.AutoConfigKernelParameter {
+					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
+					val, _ := acceptRa.Get()
+					if val == "1" {
+						_ = acceptRa.Set("2", false)
+					}
+				}
+			}
 			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
 			}
@@ -430,8 +444,15 @@ func NewControlPlane(
 			}, nil
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
-		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
-		FixedDomainTtl:    fixedDomainTtl,
+		TimeoutExceedCallback: func(dialArgument *dialArgument, err error) {
+			dialArgument.bestDialer.ReportUnavailable(&dialer.NetworkType{
+				L4Proto:   dialArgument.l4proto,
+				IpVersion: dialArgument.ipversion,
+				IsDns:     true,
+			}, err)
+		},
+		IpVersionPrefer: dnsConfig.IpVersionPrefer,
+		FixedDomainTtl:  fixedDomainTtl,
 	}); err != nil {
 		return nil, err
 	}
@@ -750,7 +771,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			copy(newBuf, buf[:n])
 			newOob := pool.Get(oobn)
 			copy(newOob, oob[:oobn])
-			go func(data pool.PB, oob pool.PB, src netip.AddrPort) {
+			newSrc := src
+			convergeSrc := common.ConvergeAddrPort(src)
+			// Debug:
+			// t := time.Now()
+			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+				data := newBuf
+				oob := newOob
+				src := newSrc
+
 				defer data.Put()
 				defer oob.Put()
 				var realDst netip.AddrPort
@@ -763,10 +792,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				} else {
 					realDst = pktDst
 				}
-				if e := c.handlePkt(udpConn, data, common.ConvergeAddrPort(src), common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
+				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 				}
-			}(newBuf, newOob, src)
+			})
+			// if d := time.Since(t); d > 100*time.Millisecond {
+			// 	logrus.Println(d)
+			// }
 		}
 	}()
 	c.ActivateCheck()

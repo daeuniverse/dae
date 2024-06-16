@@ -3,10 +3,19 @@
 > **Note**: dae 目前支持以下代理协议
 
 - [x] HTTP(S), naiveproxy
+  ```
+  https://[[user:]pass@]hostname:port/
+  ```
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
   - [x] Socks5
+
+  ```
+  socks4://[[user:]pass@]hostname:port/
+  socks5://[[user:]pass@]hostname:port/
+  ```
+
 - [x] VMess(AEAD, alterID=0) / VLESS
   - [x] TCP
   - [x] WS
@@ -14,19 +23,41 @@
   - [x] gRPC
   - [x] Meek
   - [x] HTTPUpgrade
+
+  [v2rayN URI Schema](https://github.com/2dust/v2rayN/wiki/%E5%88%86%E4%BA%AB%E9%93%BE%E6%8E%A5%E6%A0%BC%E5%BC%8F%E8%AF%B4%E6%98%8E(ver-2))
+
+  [DuckSoft URI Schema](https://github.com/XTLS/Xray-core/discussions/716)
+
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Stream Ciphers
   - [x] simple-obfs
   - [ ] v2ray-plugin
     - [x] Websocket (+TLS)
+
+  [SIP002](https://shadowsocks.org/doc/sip002.html)
+
+  [SIP008](https://shadowsocks.org/doc/sip008.html)
+
 - [x] ShadowsocksR
+
 - [x] Trojan
   - [x] Trojan-gfw
   - [x] Trojan-go
-- [x] [Tuic (v5)](https://github.com/daeuniverse/dae/discussions/182)
-- [x] [Juicity](https://github.com/juicity/juicity)
-- [x] [Proxy chain (flexible protocol)](https://github.com/daeuniverse/dae/discussions/236)
+
+  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url/)
+
+- [x] Tuic (v5)
+
+  [Tuic URI Schema](https://github.com/daeuniverse/dae/discussions/182)
+
+- [x] Juicity
+
+  [Juicity URI Schema](https://github.com/juicity/juicity?tab=readme-ov-file#link-format)
+
+- [x] Proxy chain (flexible protocol)
+
+  [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
 
 有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
 

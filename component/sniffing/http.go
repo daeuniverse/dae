@@ -60,7 +60,7 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 			continue
 		}
 		if strings.EqualFold(string(key), "host") {
-			return strings.TrimSpace(string(value)), nil
+			return string(value), nil
 		}
 	}
 	return "", ErrNotFound
