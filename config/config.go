@@ -41,6 +41,7 @@ type Global struct {
 	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
 	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
 	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
+	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
 }
 
 type Utls struct {
