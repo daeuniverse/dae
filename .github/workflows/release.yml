@@ -156,13 +156,6 @@ jobs:
           echo "Show files are going to upload..."
           ls -lh | grep ".zip"
 
-      - name: Upload full source to GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: |
-            dae-full-src.zip
-
       - name: Upload full source and artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
