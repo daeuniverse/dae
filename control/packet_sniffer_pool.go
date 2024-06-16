@@ -37,7 +37,7 @@ type PacketSnifferKey struct {
 	RAddr netip.AddrPort
 }
 
-var DefaultPacketSnifferPool = NewPacketSnifferPool()
+var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
 
 func NewPacketSnifferPool() *PacketSnifferPool {
 	return &PacketSnifferPool{}

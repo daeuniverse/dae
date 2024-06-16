@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -29,10 +30,11 @@ const (
 )
 
 type DialOption struct {
-	Target   string
-	Dialer   *dialer.Dialer
-	Outbound *ob.DialerGroup
-	Network  string
+	Target        string
+	Dialer        *dialer.Dialer
+	Outbound      *ob.DialerGroup
+	Network       string
+	SniffedDomain string
 }
 
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
@@ -60,21 +62,50 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	var realSrc netip.AddrPort
 	var domain string
 	realSrc = src
+	ue, ueExists := DefaultUdpEndpointPool.Get(realSrc)
+	if ueExists && ue.SniffedDomain != "" {
+		// It is quic ...
+		// Fast path.
+		domain := ue.SniffedDomain
+		dialTarget := realDst.String()
+
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			fields := logrus.Fields{
+				"network":  "udp(fp)",
+				"outbound": ue.Outbound.Name,
+				"policy":   ue.Outbound.GetSelectionPolicy(),
+				"dialer":   ue.Dialer.Property().Name,
+				"sniffed":  domain,
+				"ip":       RefineAddrPortToShow(realDst),
+				"pid":      routingResult.Pid,
+				"dscp":     routingResult.Dscp,
+				"pname":    ProcessName2String(routingResult.Pname[:]),
+				"mac":      Mac2String(routingResult.Mac[:]),
+			}
+			c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+		}
+
+		_, err = ue.WriteTo(data, dialTarget)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
-	if !isDns && !skipSniffing && !DefaultUdpEndpointPool.Exists(realSrc) {
+	if !isDns && !skipSniffing && !ueExists {
 		// Sniff Quic, ...
 		key := PacketSnifferKey{
 			LAddr: realSrc,
 			RAddr: realDst,
 		}
-		_sniffer, _ := DefaultPacketSnifferPool.GetOrCreate(key, nil)
+		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		_sniffer.Mu.Lock()
 		// Re-get sniffer from pool to confirm the transaction is not done.
-		sniffer := DefaultPacketSnifferPool.Get(key)
+		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
 			sniffer.AppendData(data)
 			domain, err = sniffer.SniffUdp()
@@ -92,7 +123,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 					WithField("to", realDst).
 					Trace("sniffUdp")
 			}
-			defer DefaultPacketSnifferPool.Remove(key, sniffer)
+			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 			// Re-handlePkt after self func.
 			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
 			sniffer.Mu.Unlock()
@@ -134,7 +165,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 
 	// Get udp endpoint.
-	var ue *UdpEndpoint
 	retry := 0
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
@@ -217,10 +247,11 @@ getNew:
 				return nil, fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
 			}
 			return &DialOption{
-				Target:   dialTarget,
-				Dialer:   dialerForNew,
-				Outbound: outbound,
-				Network:  common.MagicNetwork("udp", routingResult.Mark),
+				Target:        dialTarget,
+				Dialer:        dialerForNew,
+				Outbound:      outbound,
+				Network:       common.MagicNetwork("udp", routingResult.Mark),
+				SniffedDomain: domain,
 			}, nil
 		},
 	})
@@ -242,6 +273,10 @@ getNew:
 		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 		retry++
 		goto getNew
+	}
+	if domain == "" {
+		// It is used for showing.
+		domain = ue.SniffedDomain
 	}
 
 	_, err = ue.WriteTo(data, dialTarget)
@@ -280,7 +315,11 @@ getNew:
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}
-		c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+		logger := c.log.WithFields(fields).Infof
+		if !isNew && c.log.IsLevelEnabled(logrus.DebugLevel) {
+			logger = c.log.WithFields(fields).Debugf
+		}
+		logger("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 	}
 
 	return nil
