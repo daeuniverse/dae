@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -21,7 +22,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"gopkg.in/natefinch/lumberjack.v2"
 
@@ -62,7 +62,7 @@ func init() {
 	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "Disable timestamp.")
 	runCmd.PersistentFlags().BoolVarP(&disablePidFile, "disable-pidfile", "", false, "Not generate /var/run/dae.pid.")
 
-	fastrand.Rand().Shuffle(len(CheckNetworkLinks), func(i, j int) {
+	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
 		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
 	})
 }
