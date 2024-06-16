@@ -8,6 +8,8 @@ package sniffing
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 )
 
 var (
@@ -18,4 +20,16 @@ var (
 
 func IsSniffingError(err error) bool {
 	return errors.Is(err, Error)
+}
+
+func NormalizeDomain(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if strings.HasSuffix(host, "]") {
+		// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
+		return strings.Trim(host, "[]")
+	}
+	if domain, _, err := net.SplitHostPort(host); err == nil {
+		return domain
+	}
+	return strings.TrimSuffix(host, ".")
 }

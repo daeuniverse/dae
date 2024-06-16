@@ -100,11 +100,12 @@ func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32)
 	bitmap = make([]uint32, N)
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 	// Domain should consist of 'a'-'z' and '.' and '-'
-	for _, b := range []byte(domain) {
-		if !ahocorasick.IsValidChar(b) {
-			return bitmap
-		}
-	}
+	// NOTE: DO NOT VERIFY THE DOMAIN TO MATCH: https://github.com/daeuniverse/dae/issues/528
+	// for _, b := range []byte(domain) {
+	// 	if !ahocorasick.IsValidChar(b) {
+	// 		return bitmap
+	// 	}
+	// }
 	// Suffix matching.
 	suffixTrieDomain := ToSuffixTrieString("^" + domain)
 	for _, i := range n.validTrieIndexes {
