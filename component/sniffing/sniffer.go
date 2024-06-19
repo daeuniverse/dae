@@ -7,6 +7,8 @@ package sniffing
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -37,7 +39,7 @@ type Sniffer struct {
 	quicCryptos  []*quicutils.CryptoFrameOffset
 }
 
-func NewStreamSniffer(r io.Reader, bufSize int, timeout time.Duration) *Sniffer {
+func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	buffer := pool.GetBuffer()
 	buffer.Grow(AssumedTlsClientHelloMaxLength)
@@ -62,7 +64,7 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 		r:         nil,
 		buf:       buffer,
 		data:      [][]byte{buffer.Bytes()},
-		dataReady: make(chan struct{}),
+		dataReady: nil,
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -95,38 +97,55 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	}()
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
-	if s.stream {
-		go func() {
-			// Read once.
-			_, err := s.buf.ReadFromOnce(s.r)
-			if err != nil {
-				s.dataError = err
-			}
-			close(s.dataReady)
-		}()
+	var oerr error
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: %w", oerr, err)
+		}
+	}()
+	for {
+		s.dataReady = make(chan struct{})
+		if s.stream {
+			go func() {
+				// Read once.
+				n, err := s.buf.ReadFromOnce(s.r)
+				if err != nil {
+					s.dataError = err
+				}
+				if n == 0 {
+					s.dataError = io.EOF
+				}
+				close(s.dataReady)
+			}()
 
-		// Waiting 100ms for data.
-		select {
-		case <-s.dataReady:
-			if s.dataError != nil {
-				return "", s.dataError
+			// Waiting 100ms for data.
+			select {
+			case <-s.dataReady:
+				if s.dataError != nil {
+					return "", s.dataError
+				}
+			case <-s.ctx.Done():
+				return "", fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
 			}
-		case <-s.ctx.Done():
+		} else {
+			close(s.dataReady)
+		}
+
+		if s.buf.Len() == 0 {
 			return "", ErrNotApplicable
 		}
-	} else {
-		close(s.dataReady)
-	}
 
-	if s.buf.Len() == 0 {
-		return "", ErrNotApplicable
+		d, err = sniffGroup(
+			// Most sniffable traffic is TLS, thus we sniff it first.
+			s.SniffTls,
+			s.SniffHttp,
+		)
+		if errors.Is(err, ErrNeedMore) {
+			oerr = err
+			continue
+		}
+		return d, err
 	}
-
-	return sniffGroup(
-		// Most sniffable traffic is TLS, thus we sniff it first.
-		s.SniffTls,
-		s.SniffHttp,
-	)
 }
 
 func (s *Sniffer) SniffUdp() (d string, err error) {
