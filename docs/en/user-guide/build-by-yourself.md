@@ -18,8 +18,7 @@ git clone https://github.com/daeuniverse/dae.git
 cd dae
 git submodule update --init
 ## Minimal dependency build
-make GOFLAGS="-buildvcs=false" \
-  CC=clang
+make GOFLAGS="-buildvcs=false" CC=clang KEEP_CGO_ENVS=1
 
 ## Normal build
 #make

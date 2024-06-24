@@ -25,7 +25,18 @@ else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
-GOARCH ?= $(shell go env GOARCH)
+ifndef CGO_ENABLED
+CGO_ENABLED_NDEF := 1
+CGO_ENABLED := $(shell go env CGO_ENABLED)
+endif
+ifndef CC
+CC_NDEF := 1
+CC := $(shell go env CC)
+endif
+ifndef GOARCH
+GOARCH_NDEF := 1
+GOARCH := $(shell go env GOARCH)
+endif
 
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
@@ -54,7 +65,9 @@ dae: ebpf
 	$(info CGO_ENABLED=$(CGO_ENABLED))
 	$(info GO_LDFLAGS=$(GO_LDFLAGS))
 	$(info CC=$(CC))
+	$(info GOARCH=$(GOARCH))
 	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(GO_BUILD_ARGS) .
+	@$(STRIP) $(OUTPUT) || llvm-strip $(OUTPUT) || strip $(OUTPUT) || true
 ## End Dae Build
 
 ## Begin Git Submodules
