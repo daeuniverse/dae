@@ -7,7 +7,7 @@
 ```shell
 clang >= 10
 llvm >= 10 (optional)
-golang >= 1.18
+golang >= 1.22
 make
 ```
 
