@@ -6,7 +6,7 @@ ADD go.mod go.sum ./
 RUN go mod download
 ADD . .
 RUN git submodule update --init
-RUN which musl-gcc; make OUTPUT=dae GOFLAGS="-buildvcs=false"
+RUN make OUTPUT=dae GOFLAGS="-buildvcs=false"
 
 FROM alpine
 RUN mkdir -p /usr/local/share/dae/
