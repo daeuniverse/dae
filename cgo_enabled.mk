@@ -29,6 +29,4 @@ export CGO_ENABLED := 1
 GO_LDFLAGS += -linkmode external -extldflags=-static
 $(info * Building dae with "$(CC)" static linking instead of CGO_ENABLED=0. See https://github.com/daeuniverse/dae/issues/557)
 	endif
-else
-	export CGO_ENABLED := 0
 endif
