@@ -1,12 +1,12 @@
 FROM golang:1.22-bookworm AS builder
-RUN apt-get update && apt-get install -y llvm-15 clang-15 git make
+RUN apt-get update && apt-get install -y llvm-15 clang-15 git make musl-tools
 ENV CLANG=clang-15
 WORKDIR /build/
 ADD go.mod go.sum ./
 RUN go mod download
 ADD . .
 RUN git submodule update --init
-RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0
+RUN which musl-gcc; make OUTPUT=dae GOFLAGS="-buildvcs=false"
 
 FROM alpine
 RUN mkdir -p /usr/local/share/dae/
@@ -17,5 +17,4 @@ COPY --from=builder /build/dae /usr/local/bin
 COPY --from=builder /build/install/empty.dae /etc/dae/config.dae
 RUN chmod 0600 /etc/dae/config.dae
 
-CMD ["dae"]
-ENTRYPOINT ["dae", "run", "-c", "/etc/dae/config.dae"]
+CMD ["dae", "run", "-c", "/etc/dae/config.dae"]

@@ -4,9 +4,9 @@
 #
 ifneq ($(KEEP_CGO_ENVS),1)
 	ifndef CGO_ENABLED
-	export CGO_ENABLED := 0
+export CGO_ENABLED := 0
 	endif
-	ifeq ($(shell go env CGO_ENABLED),0)
+	ifeq ($(CGO_ENABLED),0)
 		ifneq ($(shell which musl-gcc),)
 export CGO_ENABLED := 1
 export CC := musl-gcc
