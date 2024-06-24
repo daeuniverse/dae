@@ -64,7 +64,7 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 		r:         nil,
 		buf:       buffer,
 		data:      [][]byte{buffer.Bytes()},
-		dataReady: nil,
+		dataReady: make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -104,7 +104,6 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 		}
 	}()
 	for {
-		s.dataReady = make(chan struct{})
 		if s.stream {
 			go func() {
 				// Read once.
@@ -142,6 +141,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 		)
 		if errors.Is(err, ErrNeedMore) {
 			oerr = err
+			s.dataReady = make(chan struct{})
 			continue
 		}
 		return d, err
