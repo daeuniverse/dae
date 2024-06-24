@@ -78,6 +78,8 @@ jobs:
             go.sum          
           go-version: '^1.22'
 
+      - uses: goto-bus-stop/setup-zig@v2
+
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
