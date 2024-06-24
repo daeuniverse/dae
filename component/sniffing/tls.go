@@ -43,7 +43,7 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 	length := int(binary.BigEndian.Uint16(s.buf.Bytes()[3:5]))
 	search := s.buf.Bytes()[5:]
 	if len(search) < length {
-		return "", ErrNotApplicable
+		return "", ErrNeedMore
 	}
 	return extractSniFromTls(quicutils.BuiltinBytesLocator(search[:length]))
 }
