@@ -67,7 +67,7 @@ dae: ebpf
 	$(info CC=$(CC))
 	$(info GOARCH=$(GOARCH))
 	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(GO_BUILD_ARGS) .
-	@$(STRIP) $(OUTPUT) || llvm-strip $(OUTPUT) || strip $(OUTPUT) || true
+	@$(STRIP) $(OUTPUT) || strip $(OUTPUT) || true
 ## End Dae Build
 
 ## Begin Git Submodules
