@@ -8,10 +8,12 @@ _dae() {
 
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 	cur="${COMP_WORDS[COMP_CWORD]}"
-	cmd="export help honk reload run suspend validate"
+	cmd="export help honk reload run suspend trace validate"
 	export_cmd="outline"
 	run_opts="-c --config --disable-pidfile --disable-timestamp --logfile \
-    --logfile-maxbackups --logfile-maxsize"
+        --logfile-maxbackups --logfile-maxsize"
+    trace_opts="-4 --ipv4 -6 --ipv6 -p --l4-proto -o --output -P \
+        --port"
     validate_opts="-c --config"
 
 	case "${prev}" in
@@ -35,6 +37,12 @@ _dae() {
 			return 0
 			;;
 
+		trace)
+			COMPREPLY=( $(compgen -W "$trace_opts -h --help" -- \
+				"${cur}") )
+			return 0
+			;;
+
 		validate)
 			COMPREPLY=( $(compgen -W "$validate_opts -h --help" -- \
 				"${cur}") )
@@ -43,18 +51,20 @@ _dae() {
         
         # multiple option matching
 		--disable-pidfile|--disable-timestamp|--logfile|--logfile-maxbackup|\
-        --logfile-maxsize|-c|--config|*/*)
-            
+        --logfile-maxsize|-c|--config)
+
             case "${prev}" in
                 --logfile)
-                    _filedir 
+                    COMPREPLY=()
+                    _filedir '@(log)'
                     return 0
                     ;;
             esac
 
             case "${prev}" in
                 -c|--config)
-                    _filedir -d
+                    COMPREPLY=()
+                    _filedir '@(dae|d)'
                     return 0
                     ;;
             esac
