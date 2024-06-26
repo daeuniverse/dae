@@ -65,7 +65,7 @@ _dae() {
 			case "${prev}" in
 				-c|--config)
 					COMPREPLY=()
-					_filedir '@(dae|d)'
+					_filedir '@(dae)'
 					return 0
 					;;
 			esac
