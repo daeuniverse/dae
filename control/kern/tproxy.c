@@ -931,7 +931,7 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 
 static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
-	__u16 l3proto, __u8 l4proto, struct ethhdr *ethh, __u8 from_wan, void *l4hdr)
+	__u16 l3proto, __u8 l4proto, struct ethhdr *ethh, __u8 from_wan, bool tcp_state_syn)
 {
 	struct redirect_tuple redirect_tuple = {};
 
@@ -958,7 +958,7 @@ static __always_inline void prep_redirect_to_control_plane(
 
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = 0;
-	if ((l4proto == IPPROTO_TCP && ((struct tcphdr *)l4hdr)->syn) ||
+	if ((l4proto == IPPROTO_TCP && tcp_state_syn) ||
 	    l4proto == IPPROTO_UDP)
 		skb->cb[1] = l4proto;
 
@@ -1021,6 +1021,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 
 	if (get_link_h_len(skb->ifindex, &link_h_len))
 		return TC_ACT_OK;
+	bool tcp_state_syn = false;
 	int ret = parse_transport(skb, link_h_len,
 				  &ethh, &l3hdr, &l4hdr,
 				  &ihl, &l3proto, &l4proto);
@@ -1073,7 +1074,8 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 		// TCP.
 		struct tcphdr *tcph = (struct tcphdr *)l4hdr;
 
-		if (tcph->syn && !tcph->ack)
+		tcp_state_syn = tcph->syn && !tcph->ack;
+		if (tcp_state_syn)
 			goto new_connection;
 
 		sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
@@ -1091,9 +1093,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 new_connection:
 	__builtin_memset(flag, 0, sizeof(flag));
 	if (l4proto == IPPROTO_TCP) {
-		struct tcphdr *tcph = (struct tcphdr *)l4hdr;
-
-		if (!(tcph->syn && !tcph->ack)) {
+		if (!tcp_state_syn) {
 			// Not a new TCP connection.
 			// Perhaps single-arm.
 			return TC_ACT_OK;
@@ -1185,7 +1185,7 @@ new_connection:
 	// Assign to control plane.
 control_plane:
 	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l3proto, l4proto, &ethh,
-				       0, l4hdr);
+				       0, tcp_state_syn);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
@@ -1356,7 +1356,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 
 	if (get_link_h_len(skb->ifindex, &link_h_len))
 		return TC_ACT_OK;
-	bool tcp_state_syn;
+	bool tcp_state_syn = false;
 	int ret = parse_transport(skb, link_h_len,
 				  &ethh, &l3hdr, &l4hdr,
 				  &ihl, &l3proto, &l4proto);
@@ -1601,7 +1601,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	}
 
 	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l3proto, l4proto, &ethh,
-				       1, l4hdr);
+				       1, tcp_state_syn);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
