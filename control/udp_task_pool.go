@@ -79,6 +79,7 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 			freed:     make(chan struct{}),
 		}
 		q.timer = time.AfterFunc(q.agingTime, func() {
+			// This func may be invoked twice due to concurrent Reset.
 			select {
 			case <-q.closed:
 				return
