@@ -23,7 +23,7 @@ require (
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.18.0
 	golang.org/x/exp v0.0.0-20230728194245-b0cb94b80691
-	golang.org/x/sys v0.20.0
+	golang.org/x/sys v0.16.0
 	google.golang.org/protobuf v1.31.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
@@ -35,25 +35,13 @@ require (
 	github.com/awnumar/memguard v0.19.1 // indirect
 	github.com/cloudflare/circl v1.3.7 // indirect
 	github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810 // indirect
-	github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5 // indirect
-	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
-	github.com/golang/snappy v0.0.2 // indirect
 	github.com/google/pprof v0.0.0-20230705174524-200ffdc848b8 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
-	github.com/klauspost/pgzip v1.2.5 // indirect
-	github.com/mholt/archiver/v3 v3.5.1 // indirect
-	github.com/nwaples/rardecode v1.1.0 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
-	github.com/pierrec/lz4/v4 v4.1.2 // indirect
-	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/shirou/gopsutil/v4 v4.24.5 // indirect
-	github.com/stretchr/testify v1.9.0 // indirect
-	github.com/ulikunitz/xz v0.5.9 // indirect
-	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
-	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	github.com/stretchr/testify v1.8.1 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/net v0.20.0 // indirect
