@@ -10,7 +10,6 @@ const UdpTaskQueueLength = 128
 type UdpTask = func()
 
 type UdpTaskQueue struct {
-	poolFrom  *UdpTaskPool
 	key       string
 	ch        chan UdpTask
 	timer     *time.Timer
@@ -51,7 +50,7 @@ func (p *UdpTaskPool) convoy(q *UdpTaskQueue) {
 				select {
 				case t := <-q.ch:
 					// Emit it back due to closed q.
-					p.poolFrom.EmitTask(p.key, t)
+					p.EmitTask(q.key, t)
 				default:
 					break clearloop
 				}
@@ -70,7 +69,6 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	if !ok {
 		ch := p.queueChPool.Get().(chan UdpTask)
 		q = &UdpTaskQueue{
-			poolFrom:  p,
 			key:       key,
 			ch:        ch,
 			timer:     nil,
