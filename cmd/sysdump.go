@@ -63,11 +63,48 @@ func dumpRouting(outputDir string) {
 	var buffer bytes.Buffer
 	buffer.WriteString("Routing Table:\n")
 	for _, route := range routes {
-		buffer.WriteString(fmt.Sprintf("Iface: %s, Dst: %s, Gw: %s, Flags: %d, Table: %d, Proto: %d, Scope: %d, Type: %d, TOS: %d\n",
-			route.LinkIndex, route.Dst, route.Gw, route.Flags, route.Table, route.Protocol, route.Scope, route.Type, route.Tos))
-	}
+		link, err := netlink.LinkByIndex(route.LinkIndex)
+		if err != nil {
+			fmt.Printf("Failed to get link by index: %v\n", err)
+			continue
+		}
+		ifaceName := link.Attrs().Name
 
-	ioutil.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
+		routeStr := ""
+		if route.Dst == nil {
+			routeStr += "default"
+		} else {
+			routeStr += route.Dst.String()
+		}
+
+		if route.Gw != nil {
+			routeStr += fmt.Sprintf(" via %s", route.Gw.String())
+		}
+
+		routeStr += fmt.Sprintf(" dev %s", ifaceName)
+
+		if route.Scope != 0 {
+			routeStr += fmt.Sprintf(" scope %d", route.Scope)
+		}
+
+		if route.Protocol != 0 {
+			routeStr += fmt.Sprintf(" proto %d", route.Protocol)
+		}
+
+		if route.Type != 0 {
+			routeStr += fmt.Sprintf(" type %d", route.Type)
+		}
+
+		if route.Flags != 0 {
+			routeStr += fmt.Sprintf(" flags %d", route.Flags)
+		}
+
+		buffer.WriteString(routeStr + "\n")
+	}
+	err = ioutil.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
+	if err != nil {
+		fmt.Printf("Failed to write routing information to file: %v\n", err)
+	}
 }
 
 func dumpNetInterfaces(outputDir string) {
@@ -114,7 +151,6 @@ func dumpSysctl(outputDir string) {
 
 	if err != nil {
 		fmt.Printf("Failed to get sysctl settings: %v\n", err)
-		return
 	}
 
 	ioutil.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
