@@ -23,7 +23,7 @@ import (
 var (
 	sysdumpCmd = &cobra.Command{
 		Use:   "sysdump",
-		Short: "Dumps system network information",
+		Short: "To dump up system network config",
 		Run: func(cmd *cobra.Command, args []string) {
 			dumpNetworkInfo()
 		},
