@@ -166,7 +166,7 @@ func dumpRouting(outputDir string) {
 	}
 
 	var buffer bytes.Buffer
-	buffer.WriteString("Routing Table:\n")
+	buffer.WriteString("Routing:\n")
 	for _, route := range routes {
 		link, err := netlink.LinkByIndex(route.LinkIndex)
 		if err != nil {
@@ -189,15 +189,15 @@ func dumpRouting(outputDir string) {
 		routeStr += fmt.Sprintf(" dev %s", ifaceName)
 
 		if route.Scope != 0 {
-			routeStr += fmt.Sprintf(" scope %d", scopeToString(route.Scope))
+			routeStr += fmt.Sprintf(" scope %s", scopeToString(route.Scope))
 		}
 
 		if route.Protocol != 0 {
-			routeStr += fmt.Sprintf(" proto %d", protocolToString(route.Protocol))
+			routeStr += fmt.Sprintf(" proto %s", protocolToString(route.Protocol))
 		}
 
 		if route.Type != 0 {
-			routeStr += fmt.Sprintf(" type %d", typeToString(route.Type))
+			routeStr += fmt.Sprintf(" type %s", typeToString(route.Type))
 		}
 
 		if route.Flags != 0 {
