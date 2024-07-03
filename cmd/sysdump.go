@@ -46,7 +46,7 @@ func dumpNetworkInfo() {
 	dumpNetfilter(tempDir)
 	dumpIPTables(tempDir)
 
-	tarFile := fmt.Sprintf("sysdump.%d.tar.gz",time.Now().Unix())
+	tarFile := fmt.Sprintf("dae-sysdump.%d.tar.gz",time.Now().Unix())
 	if err := archiver.Archive([]string{tempDir}, tarFile); err != nil {
 		fmt.Printf("Failed to create tar archive: %v\n", err)
 		return
