@@ -101,6 +101,11 @@ func NewControlPlane(
 	}
 	/// Check linux kernel requirements.
 	// Check version from high to low to reduce the number of user upgrading kernel.
+	if requirement := consts.BpfLoopFeatureVersion; kernelVersion.Less(requirement) {
+		return nil, fmt.Errorf("your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
+			kernelVersion.String(),
+			requirement.String())
+	}
 	if requirement := consts.ChecksumFeatureVersion; kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
 			kernelVersion.String(),
