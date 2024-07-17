@@ -614,9 +614,9 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 
 struct route_params {
 	__u32 flag[8];
-	void *l4hdr;
-	__be32 saddr[4];
-	__be32 daddr[4];
+	const void *l4hdr;
+	const __be32 *saddr;
+	const __be32 *daddr;
 	__be32 mac[4];
 };
 
@@ -1120,10 +1120,8 @@ new_connection:;
 	params.mac[3] =
 		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
 			  (ethh.h_source[4] << 8) | (ethh.h_source[5]));
-	__builtin_memcpy(params.daddr, tuples.five.dip.u6_addr32,
-			 sizeof(params.daddr));
-	__builtin_memcpy(params.saddr, tuples.five.sip.u6_addr32,
-			 sizeof(params.saddr));
+	params.saddr = tuples.five.sip.u6_addr32;
+	params.daddr = tuples.five.dip.u6_addr32;
 	__s64 s64_ret;
 
 	s64_ret = route(&params);
@@ -1425,12 +1423,8 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 						  (ethh.h_source[3] << 16) |
 						  (ethh.h_source[4] << 8) |
 						  (ethh.h_source[5]));
-			__builtin_memcpy(params.daddr,
-					 tuples.five.dip.u6_addr32,
-					 sizeof(params.daddr));
-			__builtin_memcpy(params.saddr,
-					 tuples.five.sip.u6_addr32,
-					 sizeof(params.saddr));
+			params.saddr = tuples.five.sip.u6_addr32;
+			params.daddr = tuples.five.dip.u6_addr32;
 			__s64 s64_ret;
 
 			s64_ret = route(&params);
@@ -1564,10 +1558,8 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		params.mac[3] = bpf_htonl(
 			(ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
 			(ethh.h_source[4] << 8) | (ethh.h_source[5]));
-		__builtin_memcpy(params.daddr, tuples.five.dip.u6_addr32,
-				 sizeof(params.daddr));
-		__builtin_memcpy(params.saddr, tuples.five.sip.u6_addr32,
-				 sizeof(params.saddr));
+		params.saddr = tuples.five.sip.u6_addr32;
+		params.daddr = tuples.five.dip.u6_addr32;
 
 		__s64 s64_ret;
 
