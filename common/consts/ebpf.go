@@ -102,7 +102,7 @@ func (i OutboundIndex) IsReserved() bool {
 
 var (
 	MaxMatchSetLen_ = ""
-	MaxMatchSetLen  = 32 * 2
+	MaxMatchSetLen  = 32 * 32
 )
 
 func init() {

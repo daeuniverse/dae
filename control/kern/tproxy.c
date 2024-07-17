@@ -223,30 +223,6 @@ struct {
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } linklen_map SEC(".maps");
 
-// LPM key:
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__type(key, __u32);
-	__type(value, struct lpm_key);
-	__uint(max_entries, 3);
-} lpm_key_map SEC(".maps");
-
-// h_sport, h_dport:
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__type(key, __u32);
-	__type(value, __u16);
-	__uint(max_entries, 2);
-} h_port_map SEC(".maps");
-
-// l4proto, ipversion:
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__type(key, __u32);
-	__type(value, __u32);
-	__uint(max_entries, 2);
-} l4proto_ipversion_map SEC(".maps");
-
 // Interface Ips:
 struct if_params {
 	bool rx_cksm_offload;
@@ -898,18 +874,6 @@ __s64 __always_inline route(const struct route_params *params)
 	ctx.params = params;
 	ctx.result = -ENOEXEC;
 	int ret;
-	__u32 key = MatchType_L4Proto;
-
-	/// TODO: BPF_MAP_UPDATE_BATCH ?
-	ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_l4proto_type,
-				  BPF_ANY);
-	if (unlikely(ret))
-		return ret;
-	key = MatchType_IpVersion;
-	ret = bpf_map_update_elem(&l4proto_ipversion_map, &key,
-				  &_ipversion_type, BPF_ANY);
-	if (unlikely(ret))
-		return ret;
 
 	// Variables for further use.
 	if (_l4proto_type == L4ProtoType_TCP) {
