@@ -49,7 +49,8 @@
 #define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 256
 #ifndef MAX_MATCH_SET_LEN
-#define MAX_MATCH_SET_LEN (32 * 2) // Should be sync with common/consts/ebpf.go.
+#define MAX_MATCH_SET_LEN \
+	(32 * 32) // Should be sync with common/consts/ebpf.go.
 #endif
 #define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
