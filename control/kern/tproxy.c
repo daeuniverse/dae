@@ -635,26 +635,269 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	}
 }
 
-// Do not use __always_inline here because this function is too heavy.
-// low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
-static __s64 __attribute__((noinline))
-route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
-      const __be32 daddr[4], const __be32 mac[4])
-{
-#define _l4proto_type flag[0]
-#define _ipversion_type flag[1]
-#define _pname (&flag[2])
-#define _is_wan flag[2]
-#define _dscp flag[6]
+struct route_params {
+	__u32 flag[8];
+	void *l4hdr;
+	__be32 saddr[4];
+	__be32 daddr[4];
+	__be32 mac[4];
+};
 
-	int ret;
-	struct lpm_key *lpm_key;
-	__u32 key = MatchType_L4Proto;
+struct route_ctx {
+	const struct route_params *params;
 	__u16 h_dport;
 	__u16 h_sport;
-	struct lpm_key lpm_key_instance = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
+	__s64 result;
+	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
+	volatile __u8 isdns_must_goodsubrule_badrule;
+};
+
+static int route_loop_cb(__u32 index, void *data)
+{
+#define _l4proto_type ctx->params->flag[0]
+#define _ipversion_type ctx->params->flag[1]
+#define _pname (&ctx->params->flag[2])
+#define _is_wan ctx->params->flag[2]
+#define _dscp ctx->params->flag[6]
+
+	struct route_ctx *ctx = data;
+	struct match_set *match_set;
+	struct lpm_key *lpm_key;
+	struct map_lpm_type *lpm;
+	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
+	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
+	// set is like: suffix:baidu.com
+	struct domain_routing *domain_routing;
+
+	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
+
+	__u32 k = index; // Clone to pass code checker.
+
+	match_set = bpf_map_lookup_elem(&routing_map, &k);
+	if (unlikely(!match_set)) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
+	if (ctx->isdns_must_goodsubrule_badrule & 0b11) {
+#ifdef __DEBUG_ROUTING
+		bpf_printk("key(match_set->type): %llu", match_set->type);
+		bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
+			   ctx->isdns_must_goodsubrule_badrule & 0b10,
+			   ctx->isdns_must_goodsubrule_badrule & 0b1);
+#endif
+		goto before_next_loop;
+	}
+	switch (match_set->type) {
+	case MatchType_Mac:
+		lpm_key = &ctx->lpm_key_mac;
+		goto lookup_lpm;
+	case MatchType_IpSet:
+		lpm_key = &ctx->lpm_key_daddr;
+		goto lookup_lpm;
+	case MatchType_SourceIpSet:
+		lpm_key = &ctx->lpm_key_saddr;
+lookup_lpm:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+		bpf_printk("\tip: %pI6", lpm_key->data);
+#endif
+		lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
+		if (unlikely(!lpm)) {
+			ctx->result = -EFAULT;
+			return 1;
+		}
+		if (bpf_map_lookup_elem(lpm, lpm_key)) {
+			// match_set hits.
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		}
+		break;
+	case MatchType_Port:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+		bpf_printk("\tport: %u, range: [%u, %u]", ctx->h_dport,
+			   match_set->port_range.port_start,
+			   match_set->port_range.port_end);
+#endif
+		if (ctx->h_dport >= match_set->port_range.port_start ||
+		    ctx->h_dport <= match_set->port_range.port_end) {
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		}
+		break;
+	case MatchType_SourcePort:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+		bpf_printk("\tport: %u, range: [%u, %u]", ctx->h_sport,
+			   match_set->port_range.port_start,
+			   match_set->port_range.port_end);
+#endif
+		if (ctx->h_sport >= match_set->port_range.port_start ||
+		    ctx->h_sport <= match_set->port_range.port_end) {
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		}
+		break;
+	case MatchType_L4Proto:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: l4proto, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
+		if (_l4proto_type & match_set->l4proto_type)
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		break;
+	case MatchType_IpVersion:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: ipversion, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
+		if (_ipversion_type & match_set->ip_version)
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		break;
+	case MatchType_DomainSet:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: domain, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
+
+		// Get domain routing bitmap.
+		domain_routing = bpf_map_lookup_elem(&domain_routing_map,
+						     ctx->params->daddr);
+
+		// We use key instead of k to pass checker.
+		if (domain_routing &&
+		    (domain_routing->bitmap[index / 32] >> (index % 32)) & 1)
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		break;
+	case MatchType_ProcessName:
+		if (_is_wan && equal16(match_set->pname, _pname))
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		break;
+	case MatchType_Dscp:
+		if (_dscp == match_set->dscp)
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		break;
+	case MatchType_Fallback:
+#ifdef __DEBUG_ROUTING
+		bpf_printk("CHECK: hit fallback");
+#endif
+		ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		break;
+	default:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: <unknown>, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
+		ctx->result = -EINVAL;
+		return 1;
+	}
+
+before_next_loop:
+#ifdef __DEBUG_ROUTING
+	bpf_printk("good_subrule: %d, bad_rule: %d",
+		   ctx->isdns_must_goodsubrule_badrule & 0b10,
+		   ctx->isdns_must_goodsubrule_badrule & 0b1);
+#endif
+	if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
+		// This match_set reaches the end of subrule.
+		// We are now at end of rule, or next match_set belongs to another
+		// subrule.
+
+		if ((ctx->isdns_must_goodsubrule_badrule & 0b10) > 0 ==
+		    match_set->not ) {
+			// This subrule does not hit.
+			ctx->isdns_must_goodsubrule_badrule |= 0b1;
+		}
+
+		// Reset good_subrule.
+		ctx->isdns_must_goodsubrule_badrule &= ~0b10;
+	}
+#ifdef __DEBUG_ROUTING
+	bpf_printk("_bad_rule: %d", ctx->isdns_must_goodsubrule_badrule & 0b1);
+#endif
+	if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
+	    OUTBOUND_LOGICAL_MASK) {
+		// Tail of a rule (line).
+		// Decide whether to hit.
+		if (!(ctx->isdns_must_goodsubrule_badrule & 0b1)) {
+#ifdef __DEBUG_ROUTING
+			bpf_printk(
+				"MATCHED: match_set->type: %u, match_set->not: %d",
+				match_set->type, match_set->not );
+#endif
+
+			// DNS requests should routed by control plane if outbound is not
+			// must_direct.
+
+			if (unlikely(match_set->outbound ==
+				     OUTBOUND_MUST_RULES)) {
+				ctx->isdns_must_goodsubrule_badrule |= 0b100;
+			} else {
+				if (ctx->isdns_must_goodsubrule_badrule & 0b100)
+					match_set->must = true;
+				if (!match_set->must &&
+				    (ctx->isdns_must_goodsubrule_badrule &
+				     0b1000)) {
+					ctx->result =
+						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
+						((__s64)match_set->mark << 8) |
+						((__s64)match_set->must << 40);
+#ifdef __DEBUG_ROUTING
+					bpf_printk(
+						"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
+						ctx->result);
+#endif
+					return 1;
+				} else {
+					ctx->result =
+						(__s64)match_set->outbound |
+						((__s64)match_set->mark << 8) |
+						((__s64)match_set->must << 40);
+#ifdef __DEBUG_ROUTING
+					bpf_printk("outbound %u: %ld",
+						   match_set->outbound,
+						   ctx->result);
+#endif
+					return 1;
+				}
+			}
+		}
+		ctx->isdns_must_goodsubrule_badrule &= ~0b1;
+	}
+	return 0;
+#undef _l4proto_type
+#undef _ipversion_type
+#undef _pname
+#undef _is_wan
+#undef _dscp
+}
+
+// Do not use __always_inline here because this function is too heavy.
+// low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
+__s64 __always_inline route(const struct route_params *params)
+{
+#define _l4proto_type params->flag[0]
+#define _ipversion_type params->flag[1]
+#define _pname (&params->flag[2])
+#define _is_wan params->flag[2]
+#define _dscp params->flag[6]
+
+	struct route_ctx ctx;
+	__builtin_memset(&ctx, 0, sizeof(ctx));
+	ctx.params = params;
+	ctx.result = -ENOEXEC;
+	int ret;
+	__u32 key = MatchType_L4Proto;
 
 	/// TODO: BPF_MAP_UPDATE_BATCH ?
 	ret = bpf_map_update_elem(&l4proto_ipversion_map, &key, &_l4proto_type,
@@ -669,232 +912,35 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 
 	// Variables for further use.
 	if (_l4proto_type == L4ProtoType_TCP) {
-		h_dport = bpf_ntohs(((struct tcphdr *)l4hdr)->dest);
-		h_sport = bpf_ntohs(((struct tcphdr *)l4hdr)->source);
+		ctx.h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
+		ctx.h_sport =
+			bpf_ntohs(((struct tcphdr *)params->l4hdr)->source);
 	} else {
-		h_dport = bpf_ntohs(((struct udphdr *)l4hdr)->dest);
-		h_sport = bpf_ntohs(((struct udphdr *)l4hdr)->source);
+		ctx.h_dport = bpf_ntohs(((struct udphdr *)params->l4hdr)->dest);
+		ctx.h_sport =
+			bpf_ntohs(((struct udphdr *)params->l4hdr)->source);
 	}
 
-	key = MatchType_SourcePort;
-	if (unlikely((ret = bpf_map_update_elem(&h_port_map, &key, &h_sport,
-						BPF_ANY))))
-		return ret;
-	key = MatchType_Port;
-	if (unlikely((ret = bpf_map_update_elem(&h_port_map, &key, &h_dport,
-						BPF_ANY))))
-		return ret;
-
-	__builtin_memcpy(lpm_key_instance.data, daddr, IPV6_BYTE_LENGTH);
-	key = MatchType_IpSet;
-	ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
-				  BPF_ANY);
-	if (unlikely(ret))
-		return ret;
-	__builtin_memcpy(lpm_key_instance.data, saddr, IPV6_BYTE_LENGTH);
-	key = MatchType_SourceIpSet;
-	ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
-				  BPF_ANY);
-	if (unlikely(ret))
-		return ret;
-	__builtin_memcpy(lpm_key_instance.data, mac, IPV6_BYTE_LENGTH);
-	key = MatchType_Mac;
-	ret = bpf_map_update_elem(&lpm_key_map, &key, &lpm_key_instance,
-				  BPF_ANY);
-	if (unlikely(ret))
-		return ret;
-
-	struct map_lpm_type *lpm;
-	struct match_set *match_set;
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
-	volatile __u8 isdns_must_goodsubrule_badrule =
-		(h_dport == 53 && _l4proto_type == L4ProtoType_UDP) << 3;
-	struct domain_routing *domain_routing;
-	__u32 *p_u32;
-	__u16 *p_u16;
+	ctx.isdns_must_goodsubrule_badrule =
+		(ctx.h_dport == 53 && _l4proto_type == L4ProtoType_UDP) << 3;
 
-	// Unroll can give less instructions but more memory consumption when loading.
-	// We disable it here to support more poor memory devices.
-#ifdef __UNROLL_ROUTE_LOOP
-#pragma unroll
-#endif
-	for (__u32 i = 0; i < MAX_MATCH_SET_LEN; i++) {
-		__u32 k = i; // Clone to pass code checker.
+	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
+			 IPV6_BYTE_LENGTH);
+	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
+			 IPV6_BYTE_LENGTH);
+	__builtin_memcpy(ctx.lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
 
-		match_set = bpf_map_lookup_elem(&routing_map, &k);
-		if (unlikely(!match_set))
-			return -EFAULT;
-		if (isdns_must_goodsubrule_badrule & 0b11) {
-#ifdef __DEBUG_ROUTING
-			key = match_set->type;
-			bpf_printk("key(match_set->type): %llu", key);
-			bpf_printk(
-				"Skip to judge. bad_rule: %d, good_subrule: %d",
-				isdns_must_goodsubrule_badrule & 0b10,
-				isdns_must_goodsubrule_badrule & 0b1);
-#endif
-			goto before_next_loop;
-		}
-		key = match_set->type;
-#ifdef __DEBUG_ROUTING
-		bpf_printk("key(match_set->type): %llu", key);
-#endif
-		lpm_key = bpf_map_lookup_elem(&lpm_key_map, &key);
-		if (lpm_key) {
-#ifdef __DEBUG_ROUTING
-			bpf_printk(
-				"CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
-				match_set->type, match_set->not,
-				match_set->outbound);
-			bpf_printk("\tip: %pI6", lpm_key->data);
-#endif
-			lpm = bpf_map_lookup_elem(&lpm_array_map,
-						  &match_set->index);
-			if (unlikely(!lpm))
-				return -EFAULT;
-			if (bpf_map_lookup_elem(lpm, lpm_key)) {
-				// match_set hits.
-				isdns_must_goodsubrule_badrule |= 0b10;
-			}
-		} else if ((p_u16 = bpf_map_lookup_elem(&h_port_map, &key))) {
-#ifdef __DEBUG_ROUTING
-			bpf_printk(
-				"CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
-				match_set->type, match_set->not,
-				match_set->outbound);
-			bpf_printk("\tport: %u, range: [%u, %u]", *p_u16,
-				   match_set->port_range.port_start,
-				   match_set->port_range.port_end);
-#endif
-			if (*p_u16 >= match_set->port_range.port_start &&
-			    *p_u16 <= match_set->port_range.port_end) {
-				isdns_must_goodsubrule_badrule |= 0b10;
-			}
-		} else if ((p_u32 = bpf_map_lookup_elem(&l4proto_ipversion_map,
-							&key))) {
-#ifdef __DEBUG_ROUTING
-			bpf_printk(
-				"CHECK: l4proto_ipversion_map, match_set->type: %u, not: %d, outbound: %u",
-				match_set->type, match_set->not,
-				match_set->outbound);
-#endif
-			if (*p_u32 & *(__u32 *)&match_set->__value)
-				isdns_must_goodsubrule_badrule |= 0b10;
-		} else {
-			switch (key) {
-			case MatchType_DomainSet:
-#ifdef __DEBUG_ROUTING
-				bpf_printk(
-					"CHECK: domain, match_set->type: %u, not: %d, outbound: %u",
-					match_set->type, match_set->not,
-					match_set->outbound);
-#endif
-
-				// Get domain routing bitmap.
-				domain_routing = bpf_map_lookup_elem(
-					&domain_routing_map, daddr);
-
-				// We use key instead of k to pass checker.
-				if (domain_routing &&
-				    (domain_routing->bitmap[i / 32] >>
-				     (i % 32)) &
-					    1)
-					isdns_must_goodsubrule_badrule |= 0b10;
-				break;
-			case MatchType_ProcessName:
-				if (_is_wan &&
-				    equal16(match_set->pname, _pname))
-					isdns_must_goodsubrule_badrule |= 0b10;
-				break;
-			case MatchType_Dscp:
-				if (_dscp == match_set->dscp)
-					isdns_must_goodsubrule_badrule |= 0b10;
-				break;
-			case MatchType_Fallback:
-#ifdef __DEBUG_ROUTING
-				bpf_printk("CHECK: hit fallback");
-#endif
-				isdns_must_goodsubrule_badrule |= 0b10;
-				break;
-			default:
-#ifdef __DEBUG_ROUTING
-				bpf_printk(
-					"CHECK: <unknown>, match_set->type: %u, not: %d, outbound: %u",
-					match_set->type, match_set->not,
-					match_set->outbound);
-#endif
-				return -EINVAL;
-			}
-		}
-
-before_next_loop:
-#ifdef __DEBUG_ROUTING
-		bpf_printk("good_subrule: %d, bad_rule: %d",
-			   isdns_must_goodsubrule_badrule & 0b10,
-			   isdns_must_goodsubrule_badrule & 0b1);
-#endif
-		if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
-			// This match_set reaches the end of subrule.
-			// We are now at end of rule, or next match_set belongs to another
-			// subrule.
-
-			if ((isdns_must_goodsubrule_badrule & 0b10) > 0 ==
-			    match_set->not ) {
-				// This subrule does not hit.
-				isdns_must_goodsubrule_badrule |= 0b1;
-			}
-
-			// Reset good_subrule.
-			isdns_must_goodsubrule_badrule &= ~0b10;
-		}
-#ifdef __DEBUG_ROUTING
-		bpf_printk("_bad_rule: %d",
-			   isdns_must_goodsubrule_badrule & 0b1);
-#endif
-		if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
-		    OUTBOUND_LOGICAL_MASK) {
-			// Tail of a rule (line).
-			// Decide whether to hit.
-			if (!(isdns_must_goodsubrule_badrule & 0b1)) {
-#ifdef __DEBUG_ROUTING
-				bpf_printk(
-					"MATCHED: match_set->type: %u, match_set->not: %d",
-					match_set->type, match_set->not );
-#endif
-
-				// DNS requests should routed by control plane if outbound is not
-				// must_direct.
-
-				if (unlikely(match_set->outbound ==
-					     OUTBOUND_MUST_RULES)) {
-					isdns_must_goodsubrule_badrule |= 0b100;
-				} else {
-					if (isdns_must_goodsubrule_badrule &
-					    0b100)
-						match_set->must = true;
-					if (!match_set->must &&
-					    (isdns_must_goodsubrule_badrule &
-					     0b1000)) {
-						return (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-						       ((__s64)match_set->mark
-							<< 8) |
-						       ((__s64)match_set->must
-							<< 40);
-					} else {
-						return (__s64)match_set
-							       ->outbound |
-						       ((__s64)match_set->mark
-							<< 8) |
-						       ((__s64)match_set->must
-							<< 40);
-					}
-				}
-			}
-			isdns_must_goodsubrule_badrule &= ~0b1;
-		}
-	}
+	ret = bpf_loop(MAX_MATCH_SET_LEN, route_loop_cb, &ctx, 0);
+	if (unlikely(ret < 0))
+		return ret;
+	if (ctx.result >= 0)
+		return ctx.result;
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
 	return -EPERM;
@@ -1054,8 +1100,6 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 	struct bpf_sock_tuple tuple = { 0 };
 	__u32 tuple_size;
 	struct bpf_sock *sk;
-	__u32 flag[8];
-	void *l4hdr;
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
 		tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
@@ -1090,36 +1134,37 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 	}
 
 // Routing for new connection.
-new_connection:
-	__builtin_memset(flag, 0, sizeof(flag));
+new_connection:;
+	struct route_params params;
+	__builtin_memset(&params, 0, sizeof(params));
 	if (l4proto == IPPROTO_TCP) {
 		if (!(tcph.syn && !tcph.ack)) {
 			// Not a new TCP connection.
 			// Perhaps single-arm.
 			return TC_ACT_OK;
 		}
-		l4hdr = &tcph;
-		flag[0] = L4ProtoType_TCP;
+		params.l4hdr = &tcph;
+		params.flag[0] = L4ProtoType_TCP;
 	} else {
-		l4hdr = &udph;
-		flag[0] = L4ProtoType_UDP;
+		params.l4hdr = &udph;
+		params.flag[0] = L4ProtoType_UDP;
 	}
 	if (skb->protocol == bpf_htons(ETH_P_IP))
-		flag[1] = IpVersionType_4;
+		params.flag[1] = IpVersionType_4;
 	else
-		flag[1] = IpVersionType_6;
-	flag[6] = tuples.dscp;
-	__be32 mac[4] = {
-		0,
-		0,
-		bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1])),
+		params.flag[1] = IpVersionType_6;
+	params.flag[6] = tuples.dscp;
+	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
+	params.mac[3] =
 		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
-			  (ethh.h_source[4] << 8) | (ethh.h_source[5])),
-	};
+			  (ethh.h_source[4] << 8) | (ethh.h_source[5]));
+	__builtin_memcpy(params.daddr, tuples.five.dip.u6_addr32,
+			 sizeof(params.daddr));
+	__builtin_memcpy(params.saddr, tuples.five.sip.u6_addr32,
+			 sizeof(params.saddr));
 	__s64 s64_ret;
 
-	s64_ret = route(flag, l4hdr, tuples.five.sip.u6_addr32,
-			tuples.five.dip.u6_addr32, mac);
+	s64_ret = route(&params);
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
 		return TC_ACT_SHOT;
@@ -1164,8 +1209,14 @@ new_connection:
 #endif
 	if (routing_result.outbound == OUTBOUND_DIRECT) {
 		skb->mark = routing_result.mark;
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("GO OUTBOUND_DIRECT");
+#endif
 		goto direct;
 	} else if (unlikely(routing_result.outbound == OUTBOUND_BLOCK)) {
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("SHOT OUTBOUND_BLOCK");
+#endif
 		goto block;
 	}
 
@@ -1386,36 +1437,40 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		if (unlikely(tcp_state_syn)) {
 			// New TCP connection.
 			// bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
-			__u32 flag[8] = { L4ProtoType_TCP }; // TCP
-
+			struct route_params params;
+			__builtin_memset(&params, 0, sizeof(params));
+			params.l4hdr = &tcph;
+			params.flag[0] = L4ProtoType_TCP;
 			if (skb->protocol == bpf_htons(ETH_P_IP))
-				flag[1] = IpVersionType_4;
+				params.flag[1] = IpVersionType_4;
 			else
-				flag[1] = IpVersionType_6;
-			flag[6] = tuples.dscp;
+				params.flag[1] = IpVersionType_6;
+			params.flag[6] = tuples.dscp;
 			if (pid_is_control_plane(skb, &pid_pname)) {
 				// From control plane. Direct.
 				return TC_ACT_OK;
 			}
 			if (pid_pname) {
 				// 2, 3, 4, 5
-				__builtin_memcpy(&flag[2], pid_pname->pname,
+				__builtin_memcpy(&params.flag[2],
+						 pid_pname->pname,
 						 TASK_COMM_LEN);
 			}
-			__be32 mac[4] = {
-				0,
-				0,
-				bpf_htonl((ethh.h_source[0] << 8) |
-					  (ethh.h_source[1])),
-				bpf_htonl((ethh.h_source[2] << 24) |
-					  (ethh.h_source[3] << 16) |
-					  (ethh.h_source[4] << 8) |
-					  (ethh.h_source[5])),
-			};
+			params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) |
+						  (ethh.h_source[1]));
+			params.mac[3] = bpf_htonl((ethh.h_source[2] << 24) |
+						  (ethh.h_source[3] << 16) |
+						  (ethh.h_source[4] << 8) |
+						  (ethh.h_source[5]));
+			__builtin_memcpy(params.daddr,
+					 tuples.five.dip.u6_addr32,
+					 sizeof(params.daddr));
+			__builtin_memcpy(params.saddr,
+					 tuples.five.sip.u6_addr32,
+					 sizeof(params.saddr));
 			__s64 s64_ret;
 
-			s64_ret = route(flag, &tcph, tuples.five.sip.u6_addr32,
-					tuples.five.dip.u6_addr32, mac);
+			s64_ret = route(&params);
 			if (s64_ret < 0) {
 				bpf_printk("shot routing: %d", s64_ret);
 				return TC_ACT_SHOT;
@@ -1456,8 +1511,16 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		    mark == 0 // If mark is not zero, we should re-route it, so we send it
 		    // to control plane in WAN.
 		) {
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+			bpf_printk("GO OUTBOUND_DIRECT");
+#endif
+
+			skb->mark = mark;
 			return TC_ACT_OK;
 		} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+			bpf_printk("SHOT OUTBOUND_BLOCK");
+#endif
 			return TC_ACT_SHOT;
 		}
 		// Rewrite to control plane.
@@ -1499,13 +1562,16 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 
 	} else if (l4proto == IPPROTO_UDP) {
 		// Routing. It decides if we redirect traffic to control plane.
-		__u32 flag[8] = { L4ProtoType_UDP };
-
+		struct route_params params;
+		__builtin_memset(&params, 0, sizeof(params));
+		params.l4hdr = &udph;
+		params.flag[0] = L4ProtoType_UDP;
 		if (skb->protocol == bpf_htons(ETH_P_IP))
-			flag[1] = IpVersionType_4;
+			params.flag[1] = IpVersionType_4;
 		else
-			flag[1] = IpVersionType_6;
-		flag[6] = tuples.dscp;
+			params.flag[1] = IpVersionType_6;
+		params.flag[6] = tuples.dscp;
+
 		struct pid_pname *pid_pname;
 
 		if (pid_is_control_plane(skb, &pid_pname)) {
@@ -1526,21 +1592,22 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 
 		if (pid_pname) {
 			// 2, 3, 4, 5
-			__builtin_memcpy(&flag[2], pid_pname->pname,
+			__builtin_memcpy(&params.flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
 		}
-		__be32 mac[4] = {
-			0,
-			0,
-			bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1])),
-			bpf_htonl((ethh.h_source[2] << 24) |
-				  (ethh.h_source[3] << 16) |
-				  (ethh.h_source[4] << 8) | (ethh.h_source[5])),
-		};
+		params.mac[2] =
+			bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
+		params.mac[3] = bpf_htonl(
+			(ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
+			(ethh.h_source[4] << 8) | (ethh.h_source[5]));
+		__builtin_memcpy(params.daddr, tuples.five.dip.u6_addr32,
+				 sizeof(params.daddr));
+		__builtin_memcpy(params.saddr, tuples.five.sip.u6_addr32,
+				 sizeof(params.saddr));
+
 		__s64 s64_ret;
 
-		s64_ret = route(flag, &udph, tuples.five.sip.u6_addr32,
-				tuples.five.dip.u6_addr32, mac);
+		s64_ret = route(&params);
 		if (s64_ret < 0) {
 			bpf_printk("shot routing: %d", s64_ret);
 			return TC_ACT_SHOT;
