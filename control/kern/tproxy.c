@@ -624,7 +624,7 @@ struct route_ctx {
 	const struct route_params *params;
 	__u16 h_dport;
 	__u16 h_sport;
-	__s64 result;
+	__s64 result; // high -> low: sign(1b) unused(23b) mark(32b) outbound(8b)
 	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
 	volatile __u8 isdns_must_goodsubrule_badrule;
 };
@@ -835,18 +835,15 @@ before_next_loop:
 						ctx->result);
 #endif
 					return 1;
-				} else {
-					ctx->result =
-						(__s64)match_set->outbound |
-						((__s64)match_set->mark << 8) |
-						((__s64)match_set->must << 40);
-#ifdef __DEBUG_ROUTING
-					bpf_printk("outbound %u: %ld",
-						   match_set->outbound,
-						   ctx->result);
-#endif
-					return 1;
 				}
+				ctx->result = (__s64)match_set->outbound |
+					      ((__s64)match_set->mark << 8) |
+					      ((__s64)match_set->must << 40);
+#ifdef __DEBUG_ROUTING
+				bpf_printk("outbound %u: %ld",
+					   match_set->outbound, ctx->result);
+#endif
+				return 1;
 			}
 		}
 		ctx->isdns_must_goodsubrule_badrule &= ~0b1;
@@ -859,9 +856,7 @@ before_next_loop:
 #undef _dscp
 }
 
-// Do not use __always_inline here because this function is too heavy.
-// low -> high: outbound(8b) mark(32b) unused(23b) sign(1b)
-__s64 __always_inline route(const struct route_params *params)
+__always_inline __s64 route(const struct route_params *params)
 {
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
@@ -869,11 +864,12 @@ __s64 __always_inline route(const struct route_params *params)
 #define _is_wan params->flag[2]
 #define _dscp params->flag[6]
 
+	int ret;
 	struct route_ctx ctx;
+
 	__builtin_memset(&ctx, 0, sizeof(ctx));
 	ctx.params = params;
 	ctx.result = -ENOEXEC;
-	int ret;
 
 	// Variables for further use.
 	if (_l4proto_type == L4ProtoType_TCP) {
@@ -1101,6 +1097,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 // Routing for new connection.
 new_connection:;
 	struct route_params params;
+
 	__builtin_memset(&params, 0, sizeof(params));
 	if (l4proto == IPPROTO_TCP) {
 		if (!(tcph.syn && !tcph.ack)) {
@@ -1403,6 +1400,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			// New TCP connection.
 			// bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
 			struct route_params params;
+
 			__builtin_memset(&params, 0, sizeof(params));
 			params.l4hdr = &tcph;
 			params.flag[0] = L4ProtoType_TCP;
@@ -1528,6 +1526,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	} else if (l4proto == IPPROTO_UDP) {
 		// Routing. It decides if we redirect traffic to control plane.
 		struct route_params params;
+
 		__builtin_memset(&params, 0, sizeof(params));
 		params.l4hdr = &udph;
 		params.flag[0] = L4ProtoType_UDP;

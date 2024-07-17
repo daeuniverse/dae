@@ -7,21 +7,21 @@
 使用 `uname -r` 来查看内核版本。
 
 > **注意**
-> 如果你的内核版本低于 `5.8`，可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级你的内核。
+> 如果你的内核版本低于 `5.17`，可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级你的内核。
 
-`绑定到 LAN 接口: >= 5.8`
+`绑定到 LAN 接口: >= 5.17`
 
 如果你想作为路由器、网桥等中间设备，为其他设备提供代理服务，需要把 dae 绑定到 LAN 接口上。
 
-该特性要求 dae 所在的设备的内核版本 >= 5.8。
+该特性要求 dae 所在的设备的内核版本 >= 5.17。
 
 如果你只在 `lan_interface` 中填写了接口，而未在 `wan_interface` 中填写内容，那么本地程序将无法被代理。如果你期望代理本地程序，需要在 `wan_interface` 中填写 `auto` 或是手动输入 WAN 接口。
 
-`绑定到 WAN 接口: >= 5.15`
+`绑定到 WAN 接口: >= 5.17`
 
 如果你想为本地程序提供代理服务，需要把 dae 绑定到 WAN 接口上。
 
-该特性要求 dae 所在的设备的内核版本 >= 5.15。
+该特性要求 dae 所在的设备的内核版本 >= 5.17。
 
 如果你只在 `wan_interface` 中填写了接口或 `auto`，而未在 `lan_interface` 中填写内容，那么从局域网中传来的流量将无法被代理。如果你想同时代理本机和局域网流量，请同时填写 `wan_interface` 和 `lan_interface`。
 
