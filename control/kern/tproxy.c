@@ -888,9 +888,18 @@ __always_inline __s64 route(const struct route_params *params)
 	ctx.isdns_must_goodsubrule_badrule =
 		(ctx.h_dport == 53 && _l4proto_type == L4ProtoType_UDP) << 3;
 
-	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	struct lpm_key lpm_key_saddr = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
+	ctx.lpm_key_saddr = lpm_key_saddr;
+	struct lpm_key lpm_key_daddr = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
+	ctx.lpm_key_daddr = lpm_key_daddr;
+	struct lpm_key lpm_key_mac = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
+	ctx.lpm_key_mac = lpm_key_mac;
 	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
