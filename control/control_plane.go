@@ -21,6 +21,8 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -101,10 +103,11 @@ func NewControlPlane(
 	}
 	/// Check linux kernel requirements.
 	// Check version from high to low to reduce the number of user upgrading kernel.
-	if requirement := consts.BpfLoopFeatureVersion; kernelVersion.Less(requirement) {
-		return nil, fmt.Errorf("your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
+	if err := features.HaveProgramHelper(ebpf.SchedCLS, asm.FnLoop); err != nil {
+		return nil, fmt.Errorf("%w: your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
+			err,
 			kernelVersion.String(),
-			requirement.String())
+			consts.BpfLoopFeatureVersion.String())
 	}
 	if requirement := consts.ChecksumFeatureVersion; kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
