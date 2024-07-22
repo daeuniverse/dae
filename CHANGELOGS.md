@@ -15,8 +15,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 <!-- BEGIN NEW TOC ENTRY -->
 
 - [v0.8.0rc1 (Pre-release)](#v080rc1-pre-release)
-- [v0.7.0rc1 (Pre-release)](#v070rc1-pre-release)
-- [v0.6.0 (Latest)](#v060-latest)
+- [v0.7.0 (Latest)](#v070-latest)
+- [v0.6.0](#v060)
 - [v0.5.1](#v051)
 - [v0.5.0](#v050)
 - [v0.4.0](#v040)
@@ -45,6 +45,13 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 > Release date: 2024/07/22
 
+#### Breaking Changes
+
+> [!NOTE]
+> Please read the following PRs for details
+
+- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
+
 #### Features
 
 - feat: add sysdump as subcommand in [#572](https://github.com/daeuniverse/dae/pull/572) by (@linglilongyi)
@@ -71,9 +78,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 **Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.7.0...v0.8.0rc1
 
-### v0.7.0rc1 (Pre-release)
+### v0.7.0 (Latest)
 
-> Release date: 2024/06/16
+> Release date: 2024/07/21
 
 #### Features
 
@@ -102,7 +109,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - @mnixry made their first contribution in [#533](https://github.com/daeuniverse/dae/pull/533)
 - @rustcult made their first contribution in [#527](https://github.com/daeuniverse/dae/pull/527)
 
-### v0.6.0 (Latest)
+### v0.6.0
 
 > Release date: 2024/06/11
 
