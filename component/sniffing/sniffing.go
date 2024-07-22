@@ -15,6 +15,7 @@ import (
 var (
 	Error            = fmt.Errorf("sniffing error")
 	ErrNotApplicable = fmt.Errorf("%w: not applicable", Error)
+	ErrNeedMore      = fmt.Errorf("%w: need more", Error)
 	ErrNotFound      = fmt.Errorf("%w: not found", Error)
 )
 
