@@ -1022,6 +1022,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 	if (get_link_h_len(skb->ifindex, &link_h_len))
 		return TC_ACT_OK;
 	bool tcp_state_syn = false;
+	bool tcp_state_first_syn = false;
 	int ret = parse_transport(skb, link_h_len,
 				  &ethh, &l3hdr, &l4hdr,
 				  &ihl, &l3proto, &l4proto);
@@ -1074,8 +1075,9 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 		// TCP.
 		struct tcphdr *tcph = (struct tcphdr *)l4hdr;
 
-		tcp_state_syn = tcph->syn && !tcph->ack;
-		if (tcp_state_syn)
+		tcp_state_syn = tcph->syn;
+		tcp_state_first_syn = tcph->syn && !tcph->ack;
+		if (tcp_state_first_syn)
 			goto new_connection;
 
 		sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
@@ -1093,7 +1095,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 new_connection:
 	__builtin_memset(flag, 0, sizeof(flag));
 	if (l4proto == IPPROTO_TCP) {
-		if (!tcp_state_syn) {
+		if (!tcp_state_first_syn) {
 			// Not a new TCP connection.
 			// Perhaps single-arm.
 			return TC_ACT_OK;
@@ -1357,6 +1359,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	if (get_link_h_len(skb->ifindex, &link_h_len))
 		return TC_ACT_OK;
 	bool tcp_state_syn = false;
+	bool tcp_state_first_syn = false;
 	int ret = parse_transport(skb, link_h_len,
 				  &ethh, &l3hdr, &l4hdr,
 				  &ihl, &l3proto, &l4proto);
@@ -1375,13 +1378,14 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		// Backup for further use.
 		struct tcphdr *tcph = (struct tcphdr *)l4hdr;
 
-		tcp_state_syn = tcph->syn && !tcph->ack;
+		tcp_state_syn = tcph->syn;
+		tcp_state_first_syn = tcph->syn && !tcph->ack;
 		__u8 outbound;
 		bool must;
 		__u32 mark;
 		struct pid_pname *pid_pname = NULL;
 
-		if (unlikely(tcp_state_syn)) {
+		if (unlikely(tcp_state_first_syn)) {
 			// New TCP connection.
 			// bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
 			__u32 flag[8] = { L4ProtoType_TCP }; // TCP
@@ -1476,7 +1480,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			return TC_ACT_SHOT;
 		}
 
-		if (unlikely(tcp_state_syn)) {
+		if (unlikely(tcp_state_first_syn)) {
 			struct routing_result routing_result = {};
 
 			routing_result.outbound = outbound;
