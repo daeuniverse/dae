@@ -73,6 +73,8 @@ func FunctionListOrStringToFunctionList(fs FunctionListOrString) (f []*config_pa
 	switch fs := fs.(type) {
 	case string:
 		return []*config_parser.Function{{Name: fs}}
+	case *config_parser.Function:
+		return []*config_parser.Function{fs}
 	case []*config_parser.Function:
 		return fs
 	default:
