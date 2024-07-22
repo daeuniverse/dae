@@ -102,7 +102,7 @@ func (i OutboundIndex) IsReserved() bool {
 
 var (
 	MaxMatchSetLen_ = ""
-	MaxMatchSetLen  = 32 * 2
+	MaxMatchSetLen  = 32 * 32
 )
 
 func init() {
@@ -157,6 +157,7 @@ var (
 	UserspaceBatchUpdateLpmTrieFeatureVersion = internal.Version{5, 13, 0}
 	BpfTimerFeatureVersion                    = internal.Version{5, 15, 0}
 	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
+	BpfLoopFeatureVersion                     = internal.Version{5, 17, 0}
 )
 
 const (
