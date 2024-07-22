@@ -13,8 +13,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-- [v0.7.0rc1 (Pre-release)](#v070rc1-pre-release)
-- [v0.6.0 (Latest)](#v060-latest)
+
+- [v0.8.0rc1 (Pre-release)](#v080rc1-pre-release)
+- [v0.7.0 (Latest)](#v070-latest)
+- [v0.6.0](#v060)
 - [v0.5.1](#v051)
 - [v0.5.0](#v050)
 - [v0.4.0](#v040)
@@ -39,9 +41,46 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.7.0rc1 (Pre-release)
+### v0.8.0rc1 (Pre-release)
 
-> Release date: 2024/06/16
+> Release date: 2024/07/22
+
+#### Breaking Changes
+
+> [!NOTE]
+> Please read the following PRs for details
+
+- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
+
+#### Features
+
+- feat: add sysdump as subcommand in [#572](https://github.com/daeuniverse/dae/pull/572) by (@linglilongyi)
+- optimize(bpf): Use direct packet access in [#562](https://github.com/daeuniverse/dae/pull/562) by (@jschwinger233)
+
+#### Bug Fixes
+
+- fix/chore(hy2): update outbound submodule to fix userpass auth in [#550](https://github.com/daeuniverse/dae/pull/550) by (@mzz2017)
+- fix(udp_task_pool): panic: close of closed channel in [#570](https://github.com/daeuniverse/dae/pull/570) by (@mzz2017)
+- fix: unknown tls implementation in [#569](https://github.com/daeuniverse/dae/pull/569) by (@mzz2017)
+- fix: cannot sniff tls fragments in [#555](https://github.com/daeuniverse/dae/pull/555) by (@mzz2017)
+- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
+
+#### Others
+
+- ci(release): draft release v0.7.0rc1 in [#545](https://github.com/daeuniverse/dae/pull/545) by (@dae-prow)
+- ci(prerelease): fix go version ref in [#546](https://github.com/daeuniverse/dae/pull/546) by (@sumire88)
+- ci: update action-gh-release to v2 in [#547](https://github.com/daeuniverse/dae/pull/547) by (@MarksonHon)
+- docs(protocols): add hysteria2 in [#558](https://github.com/daeuniverse/dae/pull/558) by (@wanlce)
+- docs: Update build-by-yourself.md in [#561](https://github.com/daeuniverse/dae/pull/561) by (@linglilongyi)
+- docs: persistent subscription in [#577](https://github.com/daeuniverse/dae/pull/577) by (@st0nie)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.8.0rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.7.0...v0.8.0rc1
+
+### v0.7.0 (Latest)
+
+> Release date: 2024/07/21
 
 #### Features
 
@@ -70,7 +109,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - @mnixry made their first contribution in [#533](https://github.com/daeuniverse/dae/pull/533)
 - @rustcult made their first contribution in [#527](https://github.com/daeuniverse/dae/pull/527)
 
-### v0.6.0 (Latest)
+### v0.6.0
 
 > Release date: 2024/06/11
 
