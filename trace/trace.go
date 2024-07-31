@@ -43,7 +43,7 @@ func init() {
 	}
 }
 
-func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, outputFile string) (err error) {
+func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, dropOnly bool, outputFile string) (err error) {
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
 		return fmt.Errorf("failed to get kernel version: %w", err)
@@ -80,7 +80,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	}()
 
 	fmt.Printf("\nstart tracing\n")
-	if err = handleEvents(ctx, objs, outputFile, kfreeSkbReasons); err != nil {
+	if err = handleEvents(ctx, objs, outputFile, kfreeSkbReasons, dropOnly); err != nil {
 		return
 	}
 	return
@@ -221,7 +221,7 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 	return links, nil
 }
 
-func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfreeSkbReasons map[uint64]string) (err error) {
+func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfreeSkbReasons map[uint64]string, dropOnly bool) (err error) {
 	writer, err := os.Create(outputFile)
 	if err != nil {
 		return
@@ -258,6 +258,8 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 		PayloadLen  uint16
 	}
 
+	var	skb2events map[uint64][]bpfEvent 
+	skb2events = make(map[uint64][]bpfEvent)
 	for {
 		rec, err := eventsReader.Read()
 		if err != nil {
@@ -273,22 +275,57 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 			logrus.Debugf("failed to parse ringbuf event: %+v", err)
 			continue
 		}
+		if skb2events[event.Skb]==nil {
+		    skb2events[event.Skb] = []bpfEvent{}
+		}
+		skb2events[event.Skb] = append(skb2events[event.Skb],event)
+		
 
-		fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", event.Skb, event.Mark, event.Netns, event.Ifindex, TrimNull(string(event.Ifname[:])), event.Pid, TrimNull(string(event.Pname[:])))
-		if event.L3Proto == syscall.ETH_P_IP {
-			fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(event.Saddr[:4]).String(), Ntohs(event.Sport), net.IP(event.Daddr[:4]).String(), Ntohs(event.Dport))
-		} else {
-			fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(event.Saddr[:]).String(), Ntohs(event.Sport), net.IP(event.Daddr[:]).String(), Ntohs(event.Dport))
-		}
-		if event.L4Proto == syscall.IPPROTO_TCP {
-			fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(event.TcpFlags))
-		}
-		fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
-		sym := NearestSymbol(event.Pc)
-		fmt.Fprintf(writer, "%s", sym.Name)
-		if sym.Name == "kfree_skb_reason" {
-			fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[event.SecondParam])
-		}
-		fmt.Fprintf(writer, "\n")
+		sym := NearestSymbol(event.Pc);
+		switch sym.Name {
+		    case "kfree_skb_reason":
+			    if dropOnly {
+					for _,drop_skb_ev := range skb2events[event.Skb] {
+						fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", drop_skb_ev.Skb, drop_skb_ev.Mark, drop_skb_ev.Netns, drop_skb_ev.Ifindex, TrimNull(string(drop_skb_ev.Ifname[:])), drop_skb_ev.Pid, TrimNull(string(drop_skb_ev.Pname[:])))
+						if drop_skb_ev.L3Proto == syscall.ETH_P_IP {
+							fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(drop_skb_ev.Saddr[:4]).String(), Ntohs(drop_skb_ev.Sport), net.IP(drop_skb_ev.Daddr[:4]).String(), Ntohs(drop_skb_ev.Dport))
+						} else {
+							fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(drop_skb_ev.Saddr[:]).String(), Ntohs(drop_skb_ev.Sport), net.IP(drop_skb_ev.Daddr[:]).String(), Ntohs(drop_skb_ev.Dport))
+						}
+						if event.L4Proto == syscall.IPPROTO_TCP {
+							fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(drop_skb_ev.TcpFlags))
+						}
+						fmt.Fprintf(writer, "payload_len=%d ", drop_skb_ev.PayloadLen)
+						sym := NearestSymbol(drop_skb_ev.Pc)
+						fmt.Fprintf(writer, "%s", sym.Name)
+						if sym.Name == "kfree_skb_reason" {
+						fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[drop_skb_ev.SecondParam])
+						}
+						fmt.Fprintf(writer, "\n")
+					}
+			    }
+			case "__kfree_skb":
+			    if !dropOnly {
+					for _,skb_ev := range skb2events[event.Skb] {
+						fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
+						if event.L3Proto == syscall.ETH_P_IP {
+							fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
+						} else {
+							fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
+						}
+						if event.L4Proto == syscall.IPPROTO_TCP {
+							fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
+						}
+						fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
+						sym := NearestSymbol(skb_ev.Pc)
+						fmt.Fprintf(writer, "%s", sym.Name)
+						if sym.Name == "kfree_skb_reason" {
+							fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
+						}
+						fmt.Fprintf(writer, "\n")	
+					}
+				delete(skb2events, event.Skb)
+			    }
+		}		
 	}
 }

@@ -24,6 +24,7 @@ var (
 	L4Proto    string
 	Port       int
 	OutputFile string
+	DropOnly   bool
 )
 
 func init() {
@@ -56,7 +57,7 @@ func init() {
 
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
-			if err := trace.StartTrace(ctx, IPVersion, L4ProtoNo, Port, OutputFile); err != nil {
+			if err := trace.StartTrace(ctx, IPVersion, L4ProtoNo, Port, DropOnly, OutputFile); err != nil {
 				logrus.Fatalln(err)
 			}
 		},
@@ -66,6 +67,7 @@ func init() {
 	traceCmd.PersistentFlags().BoolVarP(&IPv6, "ipv6", "6", false, "Capture IPv6 traffic")
 	traceCmd.PersistentFlags().StringVarP(&L4Proto, "l4-proto", "p", "tcp", "Layer 4 protocol")
 	traceCmd.PersistentFlags().IntVarP(&Port, "port", "P", 80, "Port")
+	traceCmd.PersistentFlags().BoolVarP(&DropOnly, "drop-only", "", true, "only trace the dropped package")
 	traceCmd.PersistentFlags().StringVarP(&OutputFile, "output", "o", "/dev/stdout", "Output file")
 
 	rootCmd.AddCommand(traceCmd)
