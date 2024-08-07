@@ -96,6 +96,10 @@ global {
     # The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls.
     # See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17
     utls_imitate: chrome_auto
+
+    # Multipath TCP (MPTCP) support. If is true, dae will try to use MPTCP to connect all nodes, but it will only take
+    # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
+    mptcp: false
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.

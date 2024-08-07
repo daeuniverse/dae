@@ -8,13 +8,15 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.5.0
 	github.com/cilium/ebpf v0.12.3
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20240628165628-7c0c217530ea
+	github.com/daeuniverse/outbound v0.0.0-20240807173909-1bac5b52e542
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/json-iterator/go v1.1.12
+	github.com/mholt/archiver/v3 v3.5.1
 	github.com/miekg/dns v1.1.55
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
 	github.com/safchain/ethtool v0.3.0
+	github.com/shirou/gopsutil/v4 v4.24.5
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.7.0
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208
@@ -43,14 +45,11 @@ require (
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/klauspost/pgzip v1.2.5 // indirect
-	github.com/mholt/archiver/v3 v3.5.1 // indirect
 	github.com/nwaples/rardecode v1.1.0 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/shirou/gopsutil/v4 v4.24.5 // indirect
-	github.com/stretchr/testify v1.9.0 // indirect
 	github.com/ulikunitz/xz v0.5.9 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect

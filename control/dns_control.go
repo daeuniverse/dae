@@ -344,6 +344,7 @@ type dialArgument struct {
 	bestOutbound *outbound.DialerGroup
 	bestTarget   netip.AddrPort
 	mark         uint32
+	mptcp        bool
 }
 
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
@@ -570,7 +571,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		// TODO: connection pool.
 		conn, err = bestContextDialer.DialContext(
 			ctxDial,
-			common.MagicNetwork("udp", dialArgument.mark),
+			common.MagicNetwork("udp", dialArgument.mark, dialArgument.mptcp),
 			dialArgument.bestTarget.String(),
 		)
 		if err != nil {
@@ -633,7 +634,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	case consts.L4ProtoStr_TCP:
 		// We can block here because we are in a coroutine.
 
-		conn, err = bestContextDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
+		conn, err = bestContextDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}

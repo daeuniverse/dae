@@ -250,7 +250,7 @@ getNew:
 				Target:        dialTarget,
 				Dialer:        dialerForNew,
 				Outbound:      outbound,
-				Network:       common.MagicNetwork("udp", routingResult.Mark),
+				Network:       common.MagicNetwork("udp", routingResult.Mark, c.mptcp),
 				SniffedDomain: domain,
 			}, nil
 		},
