@@ -325,7 +325,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	}
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
-	if !conf.Global.DisableWaitingNetwork && len(conf.Subscription) > 0 {
+	if !conf.Global.DisableWaitingNetwork {
 		epo := 5 * time.Second
 		client := http.Client{
 			Transport: &http.Transport{
