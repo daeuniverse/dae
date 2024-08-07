@@ -126,7 +126,6 @@ union ip6 {
 struct redirect_tuple {
 	union ip6 sip;
 	union ip6 dip;
-	__u8 l4proto;
 };
 
 struct redirect_entry {
@@ -963,7 +962,6 @@ static __always_inline void prep_redirect_to_control_plane(
 		__builtin_memcpy(&redirect_tuple.dip, &tuples->five.dip,
 				 IPV6_BYTE_LENGTH);
 	}
-	redirect_tuple.l4proto = l4proto;
 	struct redirect_entry redirect_entry = {};
 
 	redirect_entry.ifindex = skb->ifindex;
@@ -1637,36 +1635,22 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 SEC("tc/dae0_ingress")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
-	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 ihl;
-	__u8 l4proto;
-	__u32 link_h_len = 14;
-
-	if (parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-			    &tcph, &udph, &ihl, &l4proto))
-		return TC_ACT_OK;
-	struct tuples tuples;
-
-	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-
 	// reverse the tuple!
 	struct redirect_tuple redirect_tuple = {};
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
-		redirect_tuple.sip.u6_addr32[3] = tuples.five.dip.u6_addr32[3];
-		redirect_tuple.dip.u6_addr32[3] = tuples.five.sip.u6_addr32[3];
+		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, daddr),
+				   &redirect_tuple.sip.u6_addr32[3],
+				   sizeof(redirect_tuple.sip.u6_addr32[3]));
+		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, saddr),
+				   &redirect_tuple.dip.u6_addr32[3],
+				   sizeof(redirect_tuple.dip.u6_addr32[3]));
 	} else {
-		__builtin_memcpy(&redirect_tuple.sip, &tuples.five.dip,
-				 IPV6_BYTE_LENGTH);
-		__builtin_memcpy(&redirect_tuple.dip, &tuples.five.sip,
-				 IPV6_BYTE_LENGTH);
+		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, daddr),
+				   &redirect_tuple.sip, sizeof(redirect_tuple.sip));
+		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, saddr),
+				   &redirect_tuple.dip, sizeof(redirect_tuple.dip));
 	}
-	redirect_tuple.l4proto = l4proto;
 	struct redirect_entry *redirect_entry =
 		bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
 
