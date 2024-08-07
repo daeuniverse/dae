@@ -97,7 +97,7 @@ global {
     # See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17
     utls_imitate: chrome_auto
 
-    # Multipath TCP (MPTCP) support. It will takes effect to all nodes.
+    # Multipath TCP (MPTCP) support. If is true, dae will try to use MPTCP to connect all nodes, but it will only take effects when the node supports MPTCP
     mptcp: false
 }
 
