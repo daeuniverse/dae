@@ -13,8 +13,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 ## Releases
 
 <!-- BEGIN NEW TOC ENTRY -->
-- [v0.7.0rc1 (Pre-release)](#v070rc1-pre-release)
-- [v0.6.0 (Latest)](#v060-latest)
+
+- [v0.7.1 (Latest)](#-latest)
+- [v0.7.0]($v070)
+- [v0.6.0](#v060)
 - [v0.5.1](#v051)
 - [v0.5.0](#v050)
 - [v0.4.0](#v040)
@@ -39,7 +41,17 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.7.0rc1 (Pre-release)
+### v0.7.1
+
+> Release date: 2024/08/21
+
+#### Bug Fixes
+
+- fix(cmd/run.go): always check whether network online (#588)
+- fix(udp_task_pool): panic: close of closed channel (#570)
+- fix: unknown tls implementation (#569)
+
+### v0.7.0
 
 > Release date: 2024/06/16
 
