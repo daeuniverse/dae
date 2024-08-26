@@ -1,0 +1,49 @@
+#      _
+#   __| | __ _  ___
+#  / _` |/ _` |/ _ \
+# | (_| | (_| |  __/
+#  \__,_|\__,_|\___|
+#
+# Copyright (C) 2024 @daeuniverse <https://github.com/daeuniverse>
+#
+# This is a open-source software, liscensed under the AGPL-3.0 License.
+# See /License for more information.
+
+---
+name: Trigger downstream sync workflow
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'main'
+
+env:
+  DOWNSTREAM_REPO: flake.nix
+  WORKFLOW_BRANCH: unstable
+  WORKFLOW_FILE: sync-upstream.yml
+
+jobs:
+  dispatch-downstream-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub auth token
+        # https://github.com/tibdex/github-app-token
+        id: generate_token
+        uses: tibdex/github-app-token@v2.1.0
+        with:
+          app_id: ${{ secrets.GH_APP_ID }}
+          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Dispatch
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ env.DOWNSTREAM_REPO }}
+          github_token: ${{ steps.generate_token.outputs.token }}
+          workflow_file_name: ${{ env.WORKFLOW_FILE }}
+          ref: ${{ env.WORKFLOW_BRANCH }}
+          client_payload: '{"project":"${{ env.DOWNSTREAM_REPO }}","branch":"${{ env.WORKFLOW_BRANCH }}"}'
+          trigger_workflow: true
+          propagate_failure: false
+          wait_workflow: false
