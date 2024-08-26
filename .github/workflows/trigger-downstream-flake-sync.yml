@@ -43,7 +43,7 @@ jobs:
           github_token: ${{ steps.generate_token.outputs.token }}
           workflow_file_name: ${{ env.WORKFLOW_FILE }}
           ref: ${{ env.WORKFLOW_BRANCH }}
-          client_payload: '{"project":"${{ env.DOWNSTREAM_REPO }}","branch":"${{ env.WORKFLOW_BRANCH }}"}'
+          client_payload: '{"project":"dae","branch":"${{ env.WORKFLOW_BRANCH }}"}'
           trigger_workflow: true
           propagate_failure: false
           wait_workflow: false
