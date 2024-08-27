@@ -42,6 +42,7 @@ type Global struct {
 	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
 	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
 	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
+	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
 }
 
 type Utls struct {

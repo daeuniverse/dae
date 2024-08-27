@@ -165,7 +165,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	cd := netproxy.ContextDialerConverter{
 		Dialer: d,
 	}
-	return cd.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
+	return cd.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
 }
 
 type WriteCloser interface {
