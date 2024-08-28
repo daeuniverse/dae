@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/daeuniverse/dae/common"
@@ -151,8 +152,20 @@ func (s *Dns) InitUpstreams() {
 	wg.Wait()
 }
 
+func formatDNSName(rawURL string) string {
+	if strings.HasPrefix(rawURL, "https://") {
+		parsedURL, err := url.Parse(rawURL)
+		if err != nil {
+			return rawURL
+		}
+		return parsedURL.Hostname()
+	}
+	return rawURL
+}
+
 func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
 	// Route.
+	qname = formatDNSName(qname)
 	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
 	if err != nil {
 		return 0, nil, err
