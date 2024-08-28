@@ -21,23 +21,34 @@ We assume that your dae configuration file is stored in `/usr/local/etc/dae/` .
 cd /usr/local/etc/dae || exit 1
 version="$(dae --version | head -n 1 | sed 's/dae version //')"
 UA="dae/${version} (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)"
+fail=false
+
 while IFS=':' read -r name url
 do
-    curl -fL -A "$UA" "$url" -o "${name}.sub.new"
-    if [[ $? -eq 0 ]]; then
-        mv "${name}.sub.new" "${name}.sub"
-        chmod 0600 "${name}.sub"
-        echo "Downloaded $name"
-    else
-        rm "${name}.sub.new"
-        echo "Failed to download $name"
-    fi
+        curl --retry 3 --retry-delay 5 -fL -A "$UA" "$url" -o "${name}.sub.new"
+        if [[ $? -eq 0 ]]; then
+                mv "${name}.sub.new" "${name}.sub"
+                chmod 0600 "${name}.sub"
+                echo "Downloaded $name"
+        else
+                if [ -f "${name}.sub.new" ]; then
+                        rm "${name}.sub.new"
+                fi
+                fail=true
+                echo "Failed to download $name"
+        fi
 done < sublist
 
 dae reload
+
+if $fail; then
+        echo "Failed to update some subs"
+        exit 2
+fi
 ```
 
 You need to give it proper permission:
+
 ```sh
 chmod +x /usr/local/bin/update-dae-subs.sh
 ```
@@ -71,6 +82,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/update-dae-subs.sh
+Restart=on-failure
 ```
 
 ## Configurations

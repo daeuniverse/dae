@@ -75,6 +75,7 @@ type ControlPlane struct {
 	sniffingTimeout   time.Duration
 	tproxyPortProtect bool
 	soMarkFromDae     uint32
+	mptcp             bool
 }
 
 func NewControlPlane(
@@ -261,8 +262,8 @@ func NewControlPlane(
 			TlsImplementation: global.TlsImplementation,
 			UtlsImitate:       global.UtlsImitate},
 		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Somark: global.SoMarkFromDae},
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
@@ -395,6 +396,7 @@ func NewControlPlane(
 		sniffingTimeout:   sniffingTimeout,
 		tproxyPortProtect: global.TproxyPortProtect,
 		soMarkFromDae:     global.SoMarkFromDae,
+		mptcp:             global.Mptcp,
 	}
 	defer func() {
 		if err != nil {
@@ -407,7 +409,7 @@ func NewControlPlane(
 		Logger:                  log,
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
-		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp),
 	})
 	if err != nil {
 		return nil, err
@@ -620,7 +622,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 					// TODO: use DNS controller and re-route by control plane.
 					systemDns, err := netutils.SystemDns()
 					if err == nil {
-						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae), true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
+						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
 							// Has A/AAAA records. It is a real domain.
 							dialMode = consts.DialMode_Domain
 							// Add it to real-domain set.
@@ -938,6 +940,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestOutbound: bestOutbound,
 		bestTarget:   bestTarget,
 		mark:         dialMark,
+		mptcp:        c.mptcp,
 	}, nil
 }
 
