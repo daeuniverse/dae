@@ -33,7 +33,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/grpc"
@@ -256,18 +255,7 @@ func NewControlPlane(
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
-	option := &dialer.GlobalOption{
-		ExtraOption: D.ExtraOption{
-			AllowInsecure:     global.AllowInsecure,
-			TlsImplementation: global.TlsImplementation,
-			UtlsImitate:       global.UtlsImitate},
-		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
-		CheckInterval:     global.CheckInterval,
-		CheckTolerance:    global.CheckTolerance,
-		CheckDnsTcp:       true,
-	}
+	option := dialer.NewGlobalOption(global, log)
 
 	// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)
@@ -552,19 +540,8 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 		changed = true
 	}
 	if changed {
-		option := dialer.GlobalOption{
-			ExtraOption: D.ExtraOption{
-				AllowInsecure:     global.AllowInsecure,
-				TlsImplementation: global.TlsImplementation,
-				UtlsImitate:       global.UtlsImitate},
-			Log:               log,
-			TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: result.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: result.TcpCheckHttpMethod},
-			CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: result.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
-			CheckInterval:     result.CheckInterval,
-			CheckTolerance:    result.CheckTolerance,
-			CheckDnsTcp:       true,
-		}
-		return &option, nil
+		option := dialer.NewGlobalOption(&result, log)
+		return option, nil
 	}
 	return nil, nil
 }

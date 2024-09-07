@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
@@ -59,6 +61,21 @@ type Property struct {
 }
 
 type AliveDialerSetSet map[*AliveDialerSet]int
+
+func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
+	return &GlobalOption{
+		ExtraOption: D.ExtraOption{
+			AllowInsecure:     global.AllowInsecure,
+			TlsImplementation: global.TlsImplementation,
+			UtlsImitate:       global.UtlsImitate},
+		Log:               log,
+		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
+		CheckInterval:     global.CheckInterval,
+		CheckTolerance:    global.CheckTolerance,
+		CheckDnsTcp:       true,
+	}
+}
 
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
