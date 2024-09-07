@@ -317,6 +317,7 @@ func NewControlPlane(
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
 				newDialer := d.Clone()
+				deferFuncs = append(deferFuncs, newDialer.Close)
 				newDialer.GlobalOption = groupOption
 				newDialers = append(newDialers, newDialer)
 			}
