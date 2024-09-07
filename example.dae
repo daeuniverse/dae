@@ -213,12 +213,24 @@ group {
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
+    }
+
+    steam {
+        # Filter nodes from the global node pool defined by the subscription and node section above.
+        filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
+        # Select the node with min moving average of latencies from the group for every connection.
+        policy: min_moving_avg
 
         # Override tcp_check_url in global.
-        tcp_check_url: https://gstatic.com/generate_204
-
-        # This not override global tcp_check_http_method so it still will be "HEAD"
-        #tcp_check_http_method: GET
+        tcp_check_url: 'http://test.steampowered.com'
+        # Override tcp_check_http_method in global
+        #tcp_check_http_method: HEAD
+        # Override udp_check_dns in global
+        #udp_check_dns: 'dns.google.com:53,8.8.8.8,2001:4860:4860::8888'
+        # Override check_interval in global
+        #check_interval: 30s
+        # Override check_tolerance in global
+        #check_tolerance: 50ms
     }
 }
 
@@ -245,6 +257,7 @@ routing {
     l4proto(udp) && dport(443) -> block
     dip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
+    
 
     fallback: my_group
 }
