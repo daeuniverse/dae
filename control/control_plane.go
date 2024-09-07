@@ -323,6 +323,17 @@ func NewControlPlane(
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
 		}
+		groupOption, err := ParseGroupOverrideOption(group, *global, log)
+		if err == nil && groupOption != nil {
+			newDialerSet := make([]*dialer.Dialer, 0)
+			for _, d := range dialers {
+				newDialer := d.Clone()
+				newDialer.GlobalOption = groupOption
+				newDialerSet = append(newDialerSet, newDialer)
+			}
+			log.Infof(`Group "%v"'s check option has been override.`, group.Name)
+			dialers = newDialerSet
+		}
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
@@ -513,6 +524,47 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 		m[strings.TrimSpace(key)] = int(ttl)
 	}
 	return m, nil
+}
+
+func ParseGroupOverrideOption(group config.Group, global config.Global, log *logrus.Logger) (*dialer.GlobalOption, error) {
+	result := global
+	changed := false
+	if group.TcpCheckUrl != nil {
+		result.TcpCheckUrl = group.TcpCheckUrl
+		changed = true
+	}
+	if group.TcpCheckHttpMethod != "" {
+		result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
+		changed = true
+	}
+	if group.UdpCheckDns != nil {
+		result.UdpCheckDns = group.UdpCheckDns
+		changed = true
+	}
+	if group.CheckInterval != 0 {
+		result.CheckInterval = group.CheckInterval
+		changed = true
+	}
+	if group.CheckTolerance != 0 {
+		result.CheckTolerance = group.CheckTolerance
+		changed = true
+	}
+	if changed {
+		option := dialer.GlobalOption{
+			ExtraOption: D.ExtraOption{
+				AllowInsecure:     global.AllowInsecure,
+				TlsImplementation: global.TlsImplementation,
+				UtlsImitate:       global.UtlsImitate},
+			Log:               log,
+			TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: result.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: result.TcpCheckHttpMethod},
+			CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: result.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
+			CheckInterval:     result.CheckInterval,
+			CheckTolerance:    result.CheckTolerance,
+			CheckDnsTcp:       true,
+		}
+		return &option, nil
+	}
+	return nil, nil
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.

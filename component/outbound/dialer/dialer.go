@@ -83,6 +83,10 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	return d
 }
 
+func (d *Dialer) Clone() *Dialer {
+	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.property)
+}
+
 func (d *Dialer) Close() error {
 	d.cancel()
 	d.tickerMu.Lock()
