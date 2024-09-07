@@ -324,6 +324,7 @@ func NewControlPlane(
 			log.Infoln("\t<Empty>")
 		}
 		groupOption, err := ParseGroupOverrideOption(group, *global, log)
+		finalOption := option
 		if err == nil && groupOption != nil {
 			newDialerSet := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
@@ -333,9 +334,10 @@ func NewControlPlane(
 			}
 			log.Infof(`Group "%v"'s check option has been override.`, group.Name)
 			dialers = newDialerSet
+			finalOption = groupOption
 		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, annos, *policy,
+		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
 		outbounds = append(outbounds, dialerGroup)
 	}
