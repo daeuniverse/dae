@@ -314,14 +314,14 @@ func NewControlPlane(
 		groupOption, err := ParseGroupOverrideOption(group, *global, log)
 		finalOption := option
 		if err == nil && groupOption != nil {
-			newDialerSet := make([]*dialer.Dialer, 0)
+			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
 				newDialer := d.Clone()
 				newDialer.GlobalOption = groupOption
-				newDialerSet = append(newDialerSet, newDialer)
+				newDialers = append(newDialers, newDialer)
 			}
 			log.Infof(`Group "%v"'s check option has been override.`, group.Name)
-			dialers = newDialerSet
+			dialers = newDialers
 			finalOption = groupOption
 		}
 		// Create dialer group and append it to outbounds.
