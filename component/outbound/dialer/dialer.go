@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unsafe"
 
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
@@ -60,6 +63,21 @@ type Property struct {
 
 type AliveDialerSetSet map[*AliveDialerSet]int
 
+func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
+	return &GlobalOption{
+		ExtraOption: D.ExtraOption{
+			AllowInsecure:     global.AllowInsecure,
+			TlsImplementation: global.TlsImplementation,
+			UtlsImitate:       global.UtlsImitate},
+		Log:               log,
+		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
+		CheckInterval:     global.CheckInterval,
+		CheckTolerance:    global.CheckTolerance,
+		CheckDnsTcp:       true,
+	}
+}
+
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
 	var collections [6]*collection
@@ -80,7 +98,14 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+	option.Log.WithField("dialer", d.Property().Name).
+		WithField("p", unsafe.Pointer(d)).
+		Traceln("NewDialer")
 	return d
+}
+
+func (d *Dialer) Clone() *Dialer {
+	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.property)
 }
 
 func (d *Dialer) Close() error {
