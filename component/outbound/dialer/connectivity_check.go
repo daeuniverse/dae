@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
 
@@ -452,6 +453,18 @@ func (d *Dialer) aliveBackground() {
 			}
 		}
 	}()
+	var unused int
+	for _, opt := range CheckOpts {
+		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			unused++
+		}
+	}
+	if unused == len(CheckOpts) {
+		d.Log.WithField("dialer", d.Property().Name).
+			WithField("p", unsafe.Pointer(d)).
+			Traceln("cleaned up due to unused")
+		return
+	}
 	var wg sync.WaitGroup
 	for range d.checkCh {
 		for _, opt := range CheckOpts {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
@@ -97,6 +98,9 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+	option.Log.WithField("dialer", d.Property().Name).
+		WithField("p", unsafe.Pointer(d)).
+		Traceln("NewDialer")
 	return d
 }
 
