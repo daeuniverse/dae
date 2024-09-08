@@ -560,16 +560,13 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	bestContextDialer := netproxy.ContextDialerConverter{
-		Dialer: dialArgument.bestDialer,
-	}
 
 	switch dialArgument.l4proto {
 	case consts.L4ProtoStr_UDP:
 		// Get udp endpoint.
 
 		// TODO: connection pool.
-		conn, err = bestContextDialer.DialContext(
+		conn, err = dialArgument.bestDialer.DialContext(
 			ctxDial,
 			common.MagicNetwork("udp", dialArgument.mark, dialArgument.mptcp),
 			dialArgument.bestTarget.String(),
@@ -634,7 +631,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	case consts.L4ProtoStr_TCP:
 		// We can block here because we are in a coroutine.
 
-		conn, err = bestContextDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
+		conn, err = dialArgument.bestDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
