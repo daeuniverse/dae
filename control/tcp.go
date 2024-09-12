@@ -65,6 +65,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"),
+			strings.HasPrefix(err.Error(), "EOF"),
+			strings.HasSuffix(err.Error(), "connection reset by peer"),
 			strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
 			strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
 			return nil // ignore
