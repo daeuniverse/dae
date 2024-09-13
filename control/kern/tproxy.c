@@ -962,10 +962,9 @@ static __always_inline void prep_redirect_to_control_plane(
 		__builtin_memcpy(&redirect_tuple.dip, &tuples->five.dip,
 				 IPV6_BYTE_LENGTH);
 	}
-	struct redirect_entry redirect_entry = {};
+	struct redirect_entry redirect_entry = { .ifindex = skb->ifindex,
+						 .from_wan = from_wan };
 
-	redirect_entry.ifindex = skb->ifindex;
-	redirect_entry.from_wan = from_wan;
 	__builtin_memcpy(redirect_entry.smac, ethh->h_source,
 			 sizeof(ethh->h_source));
 	__builtin_memcpy(redirect_entry.dmac, ethh->h_dest,
@@ -1124,12 +1123,11 @@ new_connection:
 		bpf_printk("shot routing: %d", s64_ret);
 		return TC_ACT_SHOT;
 	}
-	struct routing_result routing_result = { 0 };
+	struct routing_result routing_result = { .outbound = s64_ret,
+						 .mark = s64_ret >> 8,
+						 .must = (s64_ret >> 40) & 1,
+						 .dscp = tuples.dscp };
 
-	routing_result.outbound = s64_ret;
-	routing_result.mark = s64_ret >> 8;
-	routing_result.must = (s64_ret >> 40) & 1;
-	routing_result.dscp = tuples.dscp;
 	__builtin_memcpy(routing_result.mac, ethh.h_source,
 			 sizeof(routing_result.mac));
 	/// NOTICE: No pid pname info for LAN packet.
@@ -1170,11 +1168,12 @@ new_connection:
 	}
 
 	// Check outbound connectivity in specific ipversion and l4proto.
-	struct outbound_connectivity_query q = { 0 };
+	struct outbound_connectivity_query q = {
+		.outbound = routing_result.outbound,
+		.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
+		.l4proto = l4proto
+	};
 
-	q.outbound = routing_result.outbound;
-	q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-	q.l4proto = l4proto;
 	__u32 *alive;
 
 	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1272,13 +1271,11 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
 {
 	struct udp_conn_state *old_conn_state =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	struct udp_conn_state new_conn_state = { 0 };
+	struct udp_conn_state new_conn_state = {
+		.is_egress = old_conn_state ? old_conn_state->is_egress :
+					      is_egress
+	};
 
-	if (old_conn_state)
-		new_conn_state.is_egress =
-			old_conn_state->is_egress; // Keep the value.
-	else
-		new_conn_state.is_egress = is_egress;
 	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
 				       &new_conn_state, BPF_ANY);
 	if (unlikely(ret))
@@ -1463,11 +1460,13 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		// Rewrite to control plane.
 
 		// Check outbound connectivity in specific ipversion and l4proto.
-		struct outbound_connectivity_query q = { 0 };
+		struct outbound_connectivity_query q = {
+			.outbound = outbound,
+			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 :
+									    6,
+			.l4proto = l4proto
+		};
 
-		q.outbound = outbound;
-		q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-		q.l4proto = l4proto;
 		__u32 *alive;
 
 		alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1479,12 +1478,13 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		}
 
 		if (unlikely(tcp_state_syn)) {
-			struct routing_result routing_result = {};
+			struct routing_result routing_result = {
+				.outbound = outbound,
+				.mark = mark,
+				.must = must,
+				.dscp = tuples.dscp
+			};
 
-			routing_result.outbound = outbound;
-			routing_result.mark = mark;
-			routing_result.must = must;
-			routing_result.dscp = tuples.dscp;
 			__builtin_memcpy(routing_result.mac, ethh.h_source,
 					 sizeof(ethh.h_source));
 			if (pid_pname) {
@@ -1546,12 +1546,13 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			return TC_ACT_SHOT;
 		}
 		// Construct new hdr to encap.
-		struct routing_result routing_result = {};
+		struct routing_result routing_result = {
+			.outbound = s64_ret,
+			.mark = s64_ret >> 8,
+			.must = (s64_ret >> 40) & 1,
+			.dscp = tuples.dscp
+		};
 
-		routing_result.outbound = s64_ret;
-		routing_result.mark = s64_ret >> 8;
-		routing_result.must = (s64_ret >> 40) & 1;
-		routing_result.dscp = tuples.dscp;
 		__builtin_memcpy(routing_result.mac, ethh.h_source,
 				 sizeof(ethh.h_source));
 		if (pid_pname) {
@@ -1586,11 +1587,13 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		// Rewrite to control plane.
 
 		// Check outbound connectivity in specific ipversion and l4proto.
-		struct outbound_connectivity_query q = { 0 };
+		struct outbound_connectivity_query q = {
+			.outbound = routing_result.outbound,
+			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 :
+									    6,
+			.l4proto = l4proto
+		};
 
-		q.outbound = routing_result.outbound;
-		q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-		q.l4proto = l4proto;
 		__u32 *alive;
 
 		alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1766,9 +1769,9 @@ static __always_inline int update_map_elem_by_cookie(const __u64 cookie)
 	ret = _update_map_elem_by_cookie(cookie);
 	if (ret) {
 		// Fallback to only write pid to avoid loop due to packets sent by dae.
-		struct pid_pname val = { 0 };
+		struct pid_pname val = { .pid = bpf_get_current_pid_tgid() >>
+						32 };
 
-		val.pid = bpf_get_current_pid_tgid() >> 32;
 		__u32(*pname)[TASK_COMM_LEN] =
 			bpf_map_lookup_elem(&tgid_pname_map, &val.pid);
 		if (pname) {
@@ -1844,11 +1847,12 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 	if (pid == 0)
 		return 0;
 
-	struct tuples_key tuple = {};
+	struct tuples_key tuple = {
+		.l4proto = IPPROTO_TCP,
+		.sport = bpf_htonl(skops->local_port) >> 16,
+		.dport = skops->remote_port >> 16,
+	};
 
-	tuple.l4proto = IPPROTO_TCP;
-	tuple.sport = bpf_htonl(skops->local_port) >> 16;
-	tuple.dport = skops->remote_port >> 16;
 	if (skops->family == AF_INET) {
 		tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		tuple.sip.u6_addr32[3] = skops->local_ip4;
@@ -1870,17 +1874,14 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 	switch (skops->op) {
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: // dae sockets
 	{
-		struct tuples_key rev_tuple = {};
+		struct tuples_key rev_tuple = { .l4proto = IPPROTO_TCP,
+						.sport = tuple.dport,
+						.dport = tuple.sport };
 
-		rev_tuple.l4proto = IPPROTO_TCP;
-		rev_tuple.sport = tuple.dport;
-		rev_tuple.dport = tuple.sport;
 		__builtin_memcpy(&rev_tuple.sip, &tuple.dip, IPV6_BYTE_LENGTH);
 		__builtin_memcpy(&rev_tuple.dip, &tuple.sip, IPV6_BYTE_LENGTH);
 
-		struct routing_result *routing_result;
-
-		routing_result =
+		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map, &rev_tuple);
 		if (!routing_result || !routing_result->pid)
 			break;
@@ -1896,9 +1897,7 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: // local client sockets
 	{
-		struct routing_result *routing_result;
-
-		routing_result =
+		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map, &tuple);
 		if (!routing_result || !routing_result->pid)
 			break;
@@ -1922,11 +1921,11 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 SEC("sk_msg/fast_redirect")
 int sk_msg_fast_redirect(struct sk_msg_md *msg)
 {
-	struct tuples_key rev_tuple = {};
+	struct tuples_key rev_tuple = { .l4proto = IPPROTO_TCP,
+					.sport = msg->remote_port >> 16,
+					.dport = bpf_htonl(msg->local_port) >>
+						 16 };
 
-	rev_tuple.l4proto = IPPROTO_TCP;
-	rev_tuple.sport = msg->remote_port >> 16;
-	rev_tuple.dport = bpf_htonl(msg->local_port) >> 16;
 	if (msg->family == AF_INET) {
 		rev_tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		rev_tuple.sip.u6_addr32[3] = msg->remote_ip4;
