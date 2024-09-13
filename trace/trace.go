@@ -261,8 +261,10 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 
 	var	skb2events map[uint64][]bpfEvent
 	skb2events = make(map[uint64][]bpfEvent)
+	// a map to save slices of bpfEvent of the Skb
 	var skb2sysNames map[uint64][]string
 	skb2sysNames = make(map[uint64][]string)
+	// a map to save slices of function name called with the Skb
 	for {
 		rec, err := eventsReader.Read()
 		if err != nil {
@@ -291,7 +293,9 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 		skb2sysNames[event.Skb] = append(skb2sysNames[event.Skb],sym.Name)
 		switch sym.Name {
 			case "__kfree_skb","kfree_skbmem":
+				// most skb end in the call of kfree_skbmem
 			    if !dropOnly || slices.Contains(skb2sysNames[event.Skb],"kfree_skb_reason") {
+					// track dropOnly with drop reason or all skb
 					for _,skb_ev := range skb2events[event.Skb] {
 						fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
 						if event.L3Proto == syscall.ETH_P_IP {
