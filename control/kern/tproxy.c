@@ -1855,14 +1855,8 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 		tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		tuple.dip.u6_addr32[3] = skops->remote_ip4;
 	} else if (skops->family == AF_INET6) {
-		tuple.sip.u6_addr32[3] = skops->local_ip6[3];
-		tuple.sip.u6_addr32[2] = skops->local_ip6[2];
-		tuple.sip.u6_addr32[1] = skops->local_ip6[1];
-		tuple.sip.u6_addr32[0] = skops->local_ip6[0];
-		tuple.dip.u6_addr32[3] = skops->remote_ip6[3];
-		tuple.dip.u6_addr32[2] = skops->remote_ip6[2];
-		tuple.dip.u6_addr32[1] = skops->remote_ip6[1];
-		tuple.dip.u6_addr32[0] = skops->remote_ip6[0];
+		__builtin_memcpy(&tuple.sip, skops->local_ip6, IPV6_BYTE_LENGTH);
+		__builtin_memcpy(&tuple.dip, skops->remote_ip6, IPV6_BYTE_LENGTH);
 	} else {
 		return 0;
 	}
@@ -1933,14 +1927,8 @@ int sk_msg_fast_redirect(struct sk_msg_md *msg)
 		rev_tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		rev_tuple.dip.u6_addr32[3] = msg->local_ip4;
 	} else if (msg->family == AF_INET6) {
-		rev_tuple.sip.u6_addr32[3] = msg->remote_ip6[3];
-		rev_tuple.sip.u6_addr32[2] = msg->remote_ip6[2];
-		rev_tuple.sip.u6_addr32[1] = msg->remote_ip6[1];
-		rev_tuple.sip.u6_addr32[0] = msg->remote_ip6[0];
-		rev_tuple.dip.u6_addr32[3] = msg->local_ip6[3];
-		rev_tuple.dip.u6_addr32[2] = msg->local_ip6[2];
-		rev_tuple.dip.u6_addr32[1] = msg->local_ip6[1];
-		rev_tuple.dip.u6_addr32[0] = msg->local_ip6[0];
+		__builtin_memcpy(&rev_tuple.sip, msg->remote_ip6, IPV6_BYTE_LENGTH);
+		__builtin_memcpy(&rev_tuple.dip, msg->local_ip6, IPV6_BYTE_LENGTH);
 	} else {
 		return SK_PASS;
 	}
