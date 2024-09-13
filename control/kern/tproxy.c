@@ -408,7 +408,7 @@ static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph)
 
 static __always_inline __u8 ipv6_get_dscp(const struct ipv6hdr *ipv6h)
 {
-	return (ipv6h->priority << 2) + (ipv6h->flow_lbl[0] >> 6);
+	return (ipv6h->priority << 2) | (ipv6h->flow_lbl[0] >> 6);
 }
 
 static __always_inline void
@@ -1112,9 +1112,9 @@ new_connection:
 	__be32 mac[4] = {
 		0,
 		0,
-		bpf_htonl((ethh.h_source[0] << 8) + (ethh.h_source[1])),
-		bpf_htonl((ethh.h_source[2] << 24) + (ethh.h_source[3] << 16) +
-			  (ethh.h_source[4] << 8) + (ethh.h_source[5])),
+		bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1])),
+		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
+			  (ethh.h_source[4] << 8) | (ethh.h_source[5])),
 	};
 	__s64 s64_ret;
 
@@ -1405,11 +1405,11 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			__be32 mac[4] = {
 				0,
 				0,
-				bpf_htonl((ethh.h_source[0] << 8) +
+				bpf_htonl((ethh.h_source[0] << 8) |
 					  (ethh.h_source[1])),
-				bpf_htonl((ethh.h_source[2] << 24) +
-					  (ethh.h_source[3] << 16) +
-					  (ethh.h_source[4] << 8) +
+				bpf_htonl((ethh.h_source[2] << 24) |
+					  (ethh.h_source[3] << 16) |
+					  (ethh.h_source[4] << 8) |
 					  (ethh.h_source[5])),
 			};
 			__s64 s64_ret;
@@ -1532,10 +1532,10 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		__be32 mac[4] = {
 			0,
 			0,
-			bpf_htonl((ethh.h_source[0] << 8) + (ethh.h_source[1])),
-			bpf_htonl((ethh.h_source[2] << 24) +
-				  (ethh.h_source[3] << 16) +
-				  (ethh.h_source[4] << 8) + (ethh.h_source[5])),
+			bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1])),
+			bpf_htonl((ethh.h_source[2] << 24) |
+				  (ethh.h_source[3] << 16) |
+				  (ethh.h_source[4] << 8) | (ethh.h_source[5])),
 		};
 		__s64 s64_ret;
 
