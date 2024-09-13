@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"net"
 	"os"
 	"syscall"
@@ -258,8 +259,10 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 		PayloadLen  uint16
 	}
 
-	var	skb2events map[uint64][]bpfEvent 
+	var	skb2events map[uint64][]bpfEvent
 	skb2events = make(map[uint64][]bpfEvent)
+	var skb2sysNames map[uint64][]string
+	skb2sysNames = make(map[uint64][]string)
 	for {
 		rec, err := eventsReader.Read()
 		if err != nil {
@@ -279,33 +282,16 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 		    skb2events[event.Skb] = []bpfEvent{}
 		}
 		skb2events[event.Skb] = append(skb2events[event.Skb],event)
-		
+
 
 		sym := NearestSymbol(event.Pc);
+		if skb2sysNames[event.Skb]==nil {
+			skb2sysNames[event.Skb] = []string{}
+		}
+		skb2sysNames[event.Skb] = append(skb2sysNames[event.Skb],sym.Name)
 		switch sym.Name {
-		    case "kfree_skb_reason":
-			    if dropOnly {
-					for _,drop_skb_ev := range skb2events[event.Skb] {
-						fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", drop_skb_ev.Skb, drop_skb_ev.Mark, drop_skb_ev.Netns, drop_skb_ev.Ifindex, TrimNull(string(drop_skb_ev.Ifname[:])), drop_skb_ev.Pid, TrimNull(string(drop_skb_ev.Pname[:])))
-						if drop_skb_ev.L3Proto == syscall.ETH_P_IP {
-							fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(drop_skb_ev.Saddr[:4]).String(), Ntohs(drop_skb_ev.Sport), net.IP(drop_skb_ev.Daddr[:4]).String(), Ntohs(drop_skb_ev.Dport))
-						} else {
-							fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(drop_skb_ev.Saddr[:]).String(), Ntohs(drop_skb_ev.Sport), net.IP(drop_skb_ev.Daddr[:]).String(), Ntohs(drop_skb_ev.Dport))
-						}
-						if event.L4Proto == syscall.IPPROTO_TCP {
-							fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(drop_skb_ev.TcpFlags))
-						}
-						fmt.Fprintf(writer, "payload_len=%d ", drop_skb_ev.PayloadLen)
-						sym := NearestSymbol(drop_skb_ev.Pc)
-						fmt.Fprintf(writer, "%s", sym.Name)
-						if sym.Name == "kfree_skb_reason" {
-						fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[drop_skb_ev.SecondParam])
-						}
-						fmt.Fprintf(writer, "\n")
-					}
-			    }
-			case "__kfree_skb":
-			    if !dropOnly {
+			case "__kfree_skb","kfree_skbmem":
+			    if !dropOnly || slices.Contains(skb2sysNames[event.Skb],"kfree_skb_reason") {
 					for _,skb_ev := range skb2events[event.Skb] {
 						fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
 						if event.L3Proto == syscall.ETH_P_IP {
@@ -322,10 +308,10 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 						if sym.Name == "kfree_skb_reason" {
 							fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
 						}
-						fmt.Fprintf(writer, "\n")	
+						fmt.Fprintf(writer, "\n")
 					}
 				delete(skb2events, event.Skb)
 			    }
-		}		
+		}
 	}
 }
