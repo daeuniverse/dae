@@ -262,8 +262,8 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 	var	skb2events map[uint64][]bpfEvent
 	skb2events = make(map[uint64][]bpfEvent)
 	// a map to save slices of bpfEvent of the Skb
-	var skb2sysNames map[uint64][]string
-	skb2sysNames = make(map[uint64][]string)
+	var skb2symNames map[uint64][]string
+	skb2symNames = make(map[uint64][]string)
 	// a map to save slices of function name called with the Skb
 	for {
 		rec, err := eventsReader.Read()
@@ -287,10 +287,10 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 
 
 		sym := NearestSymbol(event.Pc);
-		if skb2sysNames[event.Skb]==nil {
-			skb2sysNames[event.Skb] = []string{}
+		if skb2symNames[event.Skb]==nil {
+			skb2symNames[event.Skb] = []string{}
 		}
-		skb2sysNames[event.Skb] = append(skb2sysNames[event.Skb],sym.Name)
+		skb2symNames[event.Skb] = append(skb2symNames[event.Skb],sym.Name)
 		switch sym.Name {
 			case "__kfree_skb","kfree_skbmem":
 				// most skb end in the call of kfree_skbmem
