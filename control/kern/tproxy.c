@@ -302,14 +302,14 @@ enum __attribute__((packed)) MatchType {
 
 enum L4ProtoType {
 	L4ProtoType_TCP = 1,
-	L4ProtoType_UDP = 2,
-	L4ProtoType_X = 3,
+	L4ProtoType_UDP,
+	L4ProtoType_X,
 };
 
 enum IpVersionType {
 	IpVersionType_4 = 1,
-	IpVersionType_6 = 2,
-	IpVersionType_X = 3,
+	IpVersionType_6,
+	IpVersionType_X,
 };
 
 struct port_range {
@@ -1285,15 +1285,15 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
 	if (unlikely(!value))
 		return NULL;
 
-	if ((ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
-				  CLOCK_MONOTONIC)))
+	if ((bpf_timer_init(&value->timer, &udp_conn_state_map,
+			    CLOCK_MONOTONIC)))
 		goto retn;
 
-	if ((ret = bpf_timer_set_callback(&value->timer,
-					  refresh_udp_conn_state_timer_cb)))
+	if ((bpf_timer_set_callback(&value->timer,
+				    refresh_udp_conn_state_timer_cb)))
 		goto retn;
 
-	if ((ret = bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
+	if ((bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
 		goto retn;
 
 retn:
@@ -1710,7 +1710,7 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 			// __builtin_memset(&buf, 0, MAX_ARG_SCANNER_BUFFER_SIZE);
 			unsigned long to_read = arg_end - (arg_start + j);
 
-			if (to_read >= MAX_ARG_SCANNER_BUFFER_SIZE)
+			if (to_read > MAX_ARG_SCANNER_BUFFER_SIZE)
 				to_read = MAX_ARG_SCANNER_BUFFER_SIZE;
 			else
 				buf[to_read] = 0;
