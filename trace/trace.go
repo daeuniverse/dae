@@ -315,6 +315,7 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 						fmt.Fprintf(writer, "\n")
 					}
 				delete(skb2events, event.Skb)
+                delete(skb2symNames, event.Skb)
 			    }
 		}
 	}
