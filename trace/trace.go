@@ -294,7 +294,7 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 		switch sym.Name {
 			case "__kfree_skb","kfree_skbmem":
 				// most skb end in the call of kfree_skbmem
-			    if !dropOnly || slices.Contains(skb2sysNames[event.Skb],"kfree_skb_reason") {
+			    if !dropOnly || slices.Contains(skb2symNames[event.Skb],"kfree_skb_reason") {
 					// trace dropOnly with drop reason or all skb
 					for _,skb_ev := range skb2events[event.Skb] {
 						fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
