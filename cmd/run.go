@@ -239,9 +239,11 @@ loop:
 			}
 			// New logger.
 			oldLogOutput := log.Out
-			log = logger.NewLogger(newConf.Global.LogLevel, disableTimestamp, nil)
+			log = logrus.New()
+			logger.SetLogger(log, newConf.Global.LogLevel, disableTimestamp, nil)
+			logger.SetLogger(logrus.StandardLogger(), newConf.Global.LogLevel, disableTimestamp, nil)
 			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
-			logrus.SetLevel(log.Level)
+			logrus.SetOutput(oldLogOutput)
 
 			// New control plane.
 			obj := c.EjectBpf()
