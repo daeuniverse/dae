@@ -2,8 +2,13 @@ package control
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/panjf2000/ants"
 )
+
+var isTest = false
 
 const UdpTaskQueueLength = 128
 
@@ -14,7 +19,7 @@ type UdpTaskQueue struct {
 	ch        chan UdpTask
 	timer     *time.Timer
 	agingTime time.Duration
-	closed    chan struct{}
+	closed    atomic.Bool
 	freed     chan struct{}
 }
 
@@ -43,21 +48,23 @@ func NewUdpTaskPool() *UdpTaskPool {
 
 func (p *UdpTaskPool) convoy(q *UdpTaskQueue) {
 	for {
-		select {
-		case <-q.closed:
+		if q.closed.Load() {
 		clearloop:
 			for {
 				select {
 				case t := <-q.ch:
 					// Emit it back due to closed q.
-					p.EmitTask(q.key, t)
+					ReemitWorkers.Submit(func() {
+						p.EmitTask(q.key, t)
+					})
 				default:
 					break clearloop
 				}
 			}
 			close(q.freed)
 			return
-		case t := <-q.ch:
+		} else {
+			t := <-q.ch
 			t()
 		}
 	}
@@ -73,22 +80,24 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 			ch:        ch,
 			timer:     nil,
 			agingTime: DefaultNatTimeout,
-			closed:    make(chan struct{}),
+			closed:    atomic.Bool{},
 			freed:     make(chan struct{}),
 		}
 		q.timer = time.AfterFunc(q.agingTime, func() {
 			// This func may be invoked twice due to concurrent Reset.
-			select {
-			case <-q.closed:
+			if !q.closed.CompareAndSwap(false, true) {
 				return
-			default:
+			}
+			if isTest {
+				time.Sleep(3 * time.Microsecond)
 			}
 			p.mu.Lock()
 			defer p.mu.Unlock()
 			if p.m[key] == q {
 				delete(p.m, key)
 			}
-			close(q.closed)
+			// Trigger next loop in func convoy
+			q.ch <- func() {}
 			<-q.freed
 			p.queueChPool.Put(ch)
 		})
@@ -99,4 +108,15 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	q.Push(task)
 }
 
-var DefaultUdpTaskPool = NewUdpTaskPool()
+var (
+	DefaultUdpTaskPool = NewUdpTaskPool()
+	ReemitWorkers      *ants.Pool
+)
+
+func init() {
+	var err error
+	ReemitWorkers, err = ants.NewPool(UdpTaskQueueLength/2, ants.WithExpiryDuration(AnyfromTimeout))
+	if err != nil {
+		panic(err)
+	}
+}
