@@ -17,6 +17,7 @@ type UdpTask = func()
 // UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
 type UdpTaskQueue struct {
 	key       string
+	p         *UdpTaskPool
 	ch        chan UdpTask
 	timer     *time.Timer
 	agingTime time.Duration
@@ -27,6 +28,30 @@ type UdpTaskQueue struct {
 func (q *UdpTaskQueue) Push(task UdpTask) {
 	q.timer.Reset(q.agingTime)
 	q.ch <- task
+}
+
+func (q *UdpTaskQueue) convoy() {
+	for {
+		if q.closed.Load() {
+		clearloop:
+			for {
+				select {
+				case t := <-q.ch:
+					// Emit it back due to closed q.
+					ReemitWorkers.Submit(func() {
+						q.p.EmitTask(q.key, t)
+					})
+				default:
+					break clearloop
+				}
+			}
+			close(q.freed)
+			return
+		} else {
+			t := <-q.ch
+			t()
+		}
+	}
 }
 
 type UdpTaskPool struct {
@@ -47,30 +72,6 @@ func NewUdpTaskPool() *UdpTaskPool {
 	return p
 }
 
-func (p *UdpTaskPool) convoy(q *UdpTaskQueue) {
-	for {
-		if q.closed.Load() {
-		clearloop:
-			for {
-				select {
-				case t := <-q.ch:
-					// Emit it back due to closed q.
-					ReemitWorkers.Submit(func() {
-						p.EmitTask(q.key, t)
-					})
-				default:
-					break clearloop
-				}
-			}
-			close(q.freed)
-			return
-		} else {
-			t := <-q.ch
-			t()
-		}
-	}
-}
-
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
 func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	p.mu.Lock()
@@ -79,6 +80,7 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 		ch := p.queueChPool.Get().(chan UdpTask)
 		q = &UdpTaskQueue{
 			key:       key,
+			p:         p,
 			ch:        ch,
 			timer:     nil,
 			agingTime: DefaultNatTimeout,
@@ -104,7 +106,7 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 			p.queueChPool.Put(ch)
 		})
 		p.m[key] = q
-		go p.convoy(q)
+		go q.convoy()
 	}
 	p.mu.Unlock()
 	q.Push(task)

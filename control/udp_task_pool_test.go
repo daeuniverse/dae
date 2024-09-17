@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUdpEndpointPool(t *testing.T) {
+func TestUdpTaskPool(t *testing.T) {
 	isTest = true
 	c, err := cpu.Times(false)
 	require.NoError(t, err)
