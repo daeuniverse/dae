@@ -1877,6 +1877,7 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: // dae sockets
 	{
 		struct tuples_key rev_tuple = {};
+
 		copy_reversed_tuples(&tuple, &rev_tuple);
 
 		struct routing_result *routing_result;
