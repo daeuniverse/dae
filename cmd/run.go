@@ -105,8 +105,9 @@ var (
 					Compress:   true,
 				}
 			}
-			log := logger.NewLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
-			logrus.SetLevel(log.Level)
+			log := logrus.New()
+			logger.SetLogger(log, conf.Global.LogLevel, disableTimestamp, logOpts)
+			logger.SetLogger(logrus.StandardLogger(), conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			if err := Run(log, conf, []string{filepath.Dir(cfgFile)}); err != nil {
