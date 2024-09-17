@@ -14,6 +14,7 @@ const UdpTaskQueueLength = 128
 
 type UdpTask = func()
 
+// UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
 type UdpTaskQueue struct {
 	key       string
 	ch        chan UdpTask
@@ -70,6 +71,7 @@ func (p *UdpTaskPool) convoy(q *UdpTaskQueue) {
 	}
 }
 
+// EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
 func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	p.mu.Lock()
 	q, ok := p.m[key]
