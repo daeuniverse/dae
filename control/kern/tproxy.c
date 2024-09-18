@@ -1639,17 +1639,23 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	struct redirect_tuple redirect_tuple = {};
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
-		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, daddr),
+		bpf_skb_load_bytes(skb,
+				   ETH_HLEN + offsetof(struct iphdr, daddr),
 				   &redirect_tuple.sip.u6_addr32[3],
 				   sizeof(redirect_tuple.sip.u6_addr32[3]));
-		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct iphdr, saddr),
+		bpf_skb_load_bytes(skb,
+				   ETH_HLEN + offsetof(struct iphdr, saddr),
 				   &redirect_tuple.dip.u6_addr32[3],
 				   sizeof(redirect_tuple.dip.u6_addr32[3]));
 	} else {
-		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, daddr),
-				   &redirect_tuple.sip, sizeof(redirect_tuple.sip));
-		bpf_skb_load_bytes(skb, ETH_HLEN + offsetof(struct ipv6hdr, saddr),
-				   &redirect_tuple.dip, sizeof(redirect_tuple.dip));
+		bpf_skb_load_bytes(skb,
+				   ETH_HLEN + offsetof(struct ipv6hdr, daddr),
+				   &redirect_tuple.sip,
+				   sizeof(redirect_tuple.sip));
+		bpf_skb_load_bytes(skb,
+				   ETH_HLEN + offsetof(struct ipv6hdr, saddr),
+				   &redirect_tuple.dip,
+				   sizeof(redirect_tuple.dip));
 	}
 	struct redirect_entry *redirect_entry =
 		bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
@@ -1872,11 +1878,7 @@ int local_tcp_sockops(struct bpf_sock_ops *skops)
 	{
 		struct tuples_key rev_tuple = {};
 
-		rev_tuple.l4proto = IPPROTO_TCP;
-		rev_tuple.sport = tuple.dport;
-		rev_tuple.dport = tuple.sport;
-		__builtin_memcpy(&rev_tuple.sip, &tuple.dip, IPV6_BYTE_LENGTH);
-		__builtin_memcpy(&rev_tuple.dip, &tuple.sip, IPV6_BYTE_LENGTH);
+		copy_reversed_tuples(&tuple, &rev_tuple);
 
 		struct routing_result *routing_result;
 
