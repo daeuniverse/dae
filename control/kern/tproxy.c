@@ -1034,15 +1034,15 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_inbound_flow)
 	if (unlikely(!value))
 		return NULL;
 
-	if ((ret = bpf_timer_init(&value->timer, &udp_conn_state_map,
-				  CLOCK_MONOTONIC)))
+	if (bpf_timer_init(&value->timer, &udp_conn_state_map,
+				  CLOCK_MONOTONIC))
 		goto retn;
 
-	if ((ret = bpf_timer_set_callback(&value->timer,
-					  refresh_udp_conn_state_timer_cb)))
+	if (bpf_timer_set_callback(&value->timer,
+					  refresh_udp_conn_state_timer_cb))
 		goto retn;
 
-	if ((ret = bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
+	if (bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0))
 		goto retn;
 
 retn:
