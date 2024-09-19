@@ -154,6 +154,7 @@ struct routing_result {
 	__u8 outbound;
 	__u8 pname[TASK_COMM_LEN];
 	__u32 pid;
+	__u32 ifindex;
 	__u8 dscp;
 };
 
@@ -272,6 +273,7 @@ enum __attribute__((packed)) MatchType {
 	MatchType_IpVersion,
 	MatchType_Mac,
 	MatchType_ProcessName,
+	MatchType_IfIndex,
 	MatchType_Dscp,
 	MatchType_Fallback,
 };
@@ -312,6 +314,7 @@ struct match_set {
 		enum L4ProtoType l4proto_type;
 		enum IpVersionType ip_version;
 		__u32 pname[TASK_COMM_LEN / 4];
+		__u32 ifindex;
 		__u8 dscp;
 	};
 	bool not ; // A subrule flag (this is not a match_set flag).
@@ -641,6 +644,7 @@ static int route_loop_cb(__u32 index, void *data)
 #define _pname (&ctx->params->flag[2])
 #define _is_wan ctx->params->flag[2]
 #define _dscp ctx->params->flag[6]
+#define _ifindex ctx->params->flag[7]
 
 	struct route_ctx *ctx = data;
 	struct match_set *match_set;
@@ -768,6 +772,10 @@ lookup_lpm:
 		if (_is_wan && equal16(match_set->pname, _pname))
 			ctx->goodsubrule = true;
 		break;
+	case MatchType_IfIndex:
+		if (_ifindex == match_set->ifindex)
+			ctx->goodsubrule = true;
+		break;
 	case MatchType_Dscp:
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
@@ -863,6 +871,7 @@ before_next_loop:
 #undef _pname
 #undef _is_wan
 #undef _dscp
+#undef _ifindex
 }
 
 static __always_inline __s64 route(const struct route_params *params)
@@ -872,6 +881,7 @@ static __always_inline __s64 route(const struct route_params *params)
 #define _pname (&params->flag[2])
 #define _is_wan params->flag[2]
 #define _dscp params->flag[6]
+#define _ifindex params->flag[6]
 
 	int ret;
 	struct route_ctx ctx = {};
@@ -926,6 +936,7 @@ static __always_inline __s64 route(const struct route_params *params)
 #undef _pname
 #undef _is_wan
 #undef _dscp
+#undef _ifindex
 }
 
 static __always_inline __u32 get_link_h_len(__u32 ifindex,
@@ -1208,6 +1219,7 @@ new_connection:;
 	else
 		params.flag[1] = IpVersionType_6;
 	params.flag[6] = tuples.dscp;
+	params.flag[7] = skb->ifindex;
 	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
 	params.mac[3] =
 		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
@@ -1226,6 +1238,7 @@ new_connection:;
 	routing_result.outbound = s64_ret;
 	routing_result.mark = s64_ret >> 8;
 	routing_result.must = (s64_ret >> 40) & 1;
+	routing_result.ifindex = skb->ifindex;
 	routing_result.dscp = tuples.dscp;
 	__builtin_memcpy(routing_result.mac, ethh.h_source,
 			 sizeof(routing_result.mac));
@@ -1447,6 +1460,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			else
 				params.flag[1] = IpVersionType_6;
 			params.flag[6] = tuples.dscp;
+			params.flag[7] = skb->ifindex;
 			if (pid_is_control_plane(skb, &pid_pname)) {
 				// From control plane. Direct.
 				return TC_ACT_OK;
@@ -1544,6 +1558,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			routing_result.outbound = outbound;
 			routing_result.mark = mark;
 			routing_result.must = must;
+			routing_result.ifindex = skb->ifindex;
 			routing_result.dscp = tuples.dscp;
 			__builtin_memcpy(routing_result.mac, ethh.h_source,
 					 sizeof(ethh.h_source));
@@ -1569,6 +1584,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		else
 			params.flag[1] = IpVersionType_6;
 		params.flag[6] = tuples.dscp;
+		params.flag[7] = skb->ifindex;
 
 		struct pid_pname *pid_pname;
 
@@ -1614,6 +1630,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		routing_result.outbound = s64_ret;
 		routing_result.mark = s64_ret >> 8;
 		routing_result.must = (s64_ret >> 40) & 1;
+		routing_result.ifindex = skb->ifindex;
 		routing_result.dscp = tuples.dscp;
 		__builtin_memcpy(routing_result.mac, ethh.h_source,
 				 sizeof(ethh.h_source));

@@ -33,6 +33,7 @@ func (m *RoutingMatcher) Match(
 	l4proto consts.L4ProtoType,
 	domain string,
 	processName [16]uint8,
+	ifindex uint32,
 	tos uint8,
 	mac []byte,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
@@ -91,6 +92,10 @@ func (m *RoutingMatcher) Match(
 			}
 		case consts.MatchType_ProcessName:
 			if processName[0] != 0 && match.Value == processName {
+				goodSubrule = true
+			}
+		case consts.MatchType_IfIndex:
+			if ifindex == binary.LittleEndian.Uint32(match.Value[:]) {
 				goodSubrule = true
 			}
 		case consts.MatchType_Dscp:
