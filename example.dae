@@ -101,6 +101,11 @@ global {
     # Multipath TCP (MPTCP) support. If is true, dae will try to use MPTCP to connect all nodes, but it will only take
     # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
     mptcp: false
+
+    # The maximum bandwidth for accessing the Internet. It is useful for some specific protocols (e.g., Hysteria2), 
+    # which will perform better with bandwith information provided. The unit is **byte** per second.
+    bandwidth_max_tx: 26214400 # 200Mbps == 25MB/s == 26214400 B/s uplink
+    bandwidth_max_rx: 131072000 # 1Gbps == 125MB/s == 131072000 B/s downlink
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
