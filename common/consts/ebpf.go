@@ -122,9 +122,9 @@ func init() {
 type L4ProtoType uint8
 
 const (
-	L4ProtoType_TCP     L4ProtoType = 1
-	L4ProtoType_UDP     L4ProtoType = 2
-	L4ProtoType_TCP_UDP L4ProtoType = 3
+	L4ProtoType_TCP L4ProtoType = 1
+	L4ProtoType_UDP L4ProtoType = 2
+	L4ProtoType_X   L4ProtoType = 3
 )
 
 type IpVersionType uint8
