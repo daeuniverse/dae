@@ -14,16 +14,19 @@ require (
 	github.com/miekg/dns v1.1.55
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
+	github.com/panjf2000/ants v1.3.0
 	github.com/safchain/ethtool v0.3.0
+	github.com/shirou/gopsutil/v4 v4.24.8
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.7.0
+	github.com/stretchr/testify v1.9.0
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208
 	github.com/vishvananda/netlink v1.1.0
 	github.com/vishvananda/netns v0.0.4
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
 	golang.org/x/crypto v0.18.0
 	golang.org/x/exp v0.0.0-20230728194245-b0cb94b80691
-	golang.org/x/sys v0.16.0
+	golang.org/x/sys v0.24.0
 	google.golang.org/protobuf v1.31.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
@@ -35,18 +38,27 @@ require (
 	github.com/awnumar/memguard v0.19.1 // indirect
 	github.com/cloudflare/circl v1.3.7 // indirect
 	github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/google/pprof v0.0.0-20230705174524-200ffdc848b8 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/onsi/ginkgo/v2 v2.11.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/stretchr/testify v1.8.1 // indirect
+	github.com/shoenig/go-m1cpu v0.1.6 // indirect
+	github.com/tklauser/go-sysconf v0.3.12 // indirect
+	github.com/tklauser/numcpus v0.6.1 // indirect
+	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/mod v0.12.0 // indirect
 	golang.org/x/net v0.20.0 // indirect
 	golang.org/x/tools v0.11.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230807174057-1744710a1577 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (
