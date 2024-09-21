@@ -166,6 +166,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
 	if cache != nil {
 		cache.FillInto(msg)
+		msg.Compress = true
 		b, err := msg.Pack()
 		if err != nil {
 			c.log.Warnf("failed to pack: %v", err)
@@ -483,6 +484,7 @@ func (c *DnsController) handle_(
 	}
 
 	// Re-pack DNS packet.
+	dnsMessage.Compress = true
 	data, err := dnsMessage.Pack()
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
@@ -502,6 +504,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 			"question": dnsMessage.Question,
 		}).Traceln("Reject")
 	}
+	dnsMessage.Compress = true
 	data, err := dnsMessage.Pack()
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
@@ -756,6 +759,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	if needResp {
 		// Keep the id the same with request.
 		respMsg.Id = id
+		respMsg.Compress = true
 		data, err = respMsg.Pack()
 		if err != nil {
 			return err
