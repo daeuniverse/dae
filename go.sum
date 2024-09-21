@@ -111,8 +111,8 @@ github.com/mholt/archiver/v3 v3.5.1 h1:rDjOBX9JSF5BvoJGvjqK479aL70qh9DIpZCl+k7Cl
 github.com/mholt/archiver/v3 v3.5.1/go.mod h1:e3dqJ7H78uzsRSEACH1joayhuSyhnonssnDhppzS1L4=
 github.com/miekg/dns v1.1.58 h1:ca2Hdkz+cDg/7eNF6V56jjzuZ4aCAE+DbVkILdQWG/4=
 github.com/miekg/dns v1.1.58/go.mod h1:Ypv+3b/KadlvW9vJfXOTf300O4UqaHFzFCuHz+rPkBY=
-github.com/mnixry/outbound v0.0.0-20240919190537-75554f8247d9 h1:yZqhyMYwxnPYf/dhuiCemGj03RCplvj6+sO+lZojJHw=
-github.com/mnixry/outbound v0.0.0-20240919190537-75554f8247d9/go.mod h1:0dkFMC58MVUWMB19jwQuXEg1G16uAIAtdAU7v+yWXYs=
+github.com/mnixry/outbound v0.0.0-20240921063838-5f2aa05357f0 h1:+5MvVaE0Guqe+UaRFRjA43jmvbnKcmZoA+v6yHfezxs=
+github.com/mnixry/outbound v0.0.0-20240921063838-5f2aa05357f0/go.mod h1:0dkFMC58MVUWMB19jwQuXEg1G16uAIAtdAU7v+yWXYs=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
 github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=
 github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
