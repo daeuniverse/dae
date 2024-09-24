@@ -591,7 +591,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		_ = conn.SetDeadline(time.Now().Add(timeout))
 		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
 		defer cancelDnsReqCtx()
-		if upstream.Scheme == "udp" {
+		if upstream.Scheme == dns.UpstreamScheme_UDP {
 			go func() {
 				// Send DNS request every seconds.
 				for {
@@ -635,7 +635,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			}
 			respMsg = &msg
 			cancelDnsReqCtx()
-		} else if upstream.Scheme == "h3" {
+		} else if upstream.Scheme == dns.UpstreamScheme_H3 || upstream.Scheme == dns.UpstreamScheme_HTTP3 {
 			roundTripper := &http3.RoundTripper{
 				TLSClientConfig: &tls.Config{
 					ServerName:         upstream.Hostname,
@@ -648,8 +648,8 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 					pkt := conn.(netproxy.PacketConn)
 					fakePkt := &netproxy.FakeNetPacketConn{
 						PacketConn: pkt,
-						LAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr("::1"), 0)),
-						RAddr: udpAddr,
+						LAddr:      net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr("::1"), 0)),
+						RAddr:      udpAddr,
 					}
 					c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
 					return c, e
@@ -671,7 +671,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		// We can block here because we are in a coroutine.
 
 		conn, err = dialArgument.bestDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
-		if upstream.Scheme == "tls" {
+		if upstream.Scheme == dns.UpstreamScheme_TLS {
 			tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
 				InsecureSkipVerify: false,
 				ServerName:         upstream.Hostname,
@@ -688,7 +688,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}()
 
 		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
-		if upstream.Scheme == "tcp" || upstream.Scheme == "tls" {
+		if upstream.Scheme == dns.UpstreamScheme_TCP || upstream.Scheme == dns.UpstreamScheme_TLS {
 
 			// We should write two byte length in the front of TCP DNS request.
 			bReq := pool.Get(2 + len(data))
@@ -722,7 +722,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				return err
 			}
 			respMsg = &msg
-		} else if upstream.Scheme == "https" {
+		} else if upstream.Scheme == dns.UpstreamScheme_HTTPS {
 
 			httpTransport := http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
