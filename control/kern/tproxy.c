@@ -1742,7 +1742,7 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	char *args = (void *)BPF_CORE_READ(task, mm, arg_start);
 
 	// Read args to buffer.
-	char arg_buf[MAX_ARG_LEN]; // Allocate it out of ctx to bypass CO-RE
+	char arg_buf[MAX_ARG_LEN]; // Allocate it out of ctx to pass CO-RE
 	struct get_real_comm_ctx ctx = { 0 };
 	ctx.arg_buf = arg_buf;
 	ret = bpf_core_read_user_str(arg_buf, MAX_ARG_LEN, args);
@@ -1758,7 +1758,7 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	if (unlikely(ret < 0))
 		return ret;
 
-	unsigned offset = ctx.l; // Copy it to bypass CO-RE
+	unsigned offset = ctx.l; // Copy it to pass CO-RE
 	ret = bpf_core_read_str(pid_pname->pname, sizeof(pid_pname->pname),
 				arg_buf + offset);
 	if (unlikely(ret < 0)) {
