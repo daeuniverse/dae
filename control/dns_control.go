@@ -484,7 +484,6 @@ func (c *DnsController) handle_(
 	}
 
 	// Re-pack DNS packet.
-	dnsMessage.Compress = true
 	data, err := dnsMessage.Pack()
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
@@ -499,12 +498,12 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	dnsMessage.Response = true
 	dnsMessage.RecursionAvailable = true
 	dnsMessage.Truncated = false
+	dnsMessage.Compress = true
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
 			"question": dnsMessage.Question,
 		}).Traceln("Reject")
 	}
-	dnsMessage.Compress = true
 	data, err := dnsMessage.Pack()
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
