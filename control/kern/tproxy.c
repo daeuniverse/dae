@@ -702,7 +702,7 @@ lookup_lpm:
 			   match_set->port_range.port_start,
 			   match_set->port_range.port_end);
 #endif
-		if (ctx->h_dport >= match_set->port_range.port_start ||
+		if (match_set->port_range.port_start <= ctx->h_dport &&
 		    ctx->h_dport <= match_set->port_range.port_end) {
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		}
@@ -716,7 +716,7 @@ lookup_lpm:
 			   match_set->port_range.port_start,
 			   match_set->port_range.port_end);
 #endif
-		if (ctx->h_sport >= match_set->port_range.port_start ||
+		if (match_set->port_range.port_start <= ctx->h_sport &&
 		    ctx->h_sport <= match_set->port_range.port_end) {
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		}
