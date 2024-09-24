@@ -30,6 +30,10 @@ const (
 	UpstreamScheme_UDP           UpstreamScheme = "udp"
 	UpstreamScheme_TCP_UDP       UpstreamScheme = "tcp+udp"
 	upstreamScheme_TCP_UDP_Alias UpstreamScheme = "udp+tcp"
+	upstreamScheme_TLS           UpstreamScheme = "tls"
+	upstreamScheme_QUIC          UpstreamScheme = "quic"
+	upstreamScheme_HTTPS         UpstreamScheme = "https"
+	upstreamScheme_HTTP3         UpstreamScheme = "http3"
 )
 
 func (s UpstreamScheme) ContainsTcp() bool {
@@ -52,6 +56,16 @@ func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, por
 		__port = raw.Port()
 		if __port == "" {
 			__port = "53"
+		}
+	case upstreamScheme_HTTPS, upstreamScheme_HTTP3:
+		__port = raw.Port()
+		if __port == "" {
+			__port = "443"
+		}
+	case upstreamScheme_QUIC, upstreamScheme_TLS:
+		__port = raw.Port()
+		if __port == "" {
+			__port = "853"
 		}
 	default:
 		return "", "", 0, fmt.Errorf("unexpected scheme: %v", raw.Scheme)
@@ -115,9 +129,9 @@ func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4prot
 		}
 	}
 	switch u.Scheme {
-	case UpstreamScheme_TCP:
+	case UpstreamScheme_TCP, upstreamScheme_HTTPS, upstreamScheme_TLS:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_TCP}
-	case UpstreamScheme_UDP:
+	case UpstreamScheme_UDP, upstreamScheme_QUIC, upstreamScheme_HTTP3:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP}
 	case UpstreamScheme_TCP_UDP:
 		// UDP first.
