@@ -31,22 +31,12 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/quic-go"
+	"github.com/daeuniverse/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 )
-
-type NetConnWrapper struct {
-	netproxy.Conn
-}
-
-func (c NetConnWrapper) LocalAddr() net.Addr {
-	return nil
-}
-
-func (c NetConnWrapper) RemoteAddr() net.Addr {
-	return nil
-}
 
 const (
 	MaxDnsLookupDepth  = 3
@@ -601,58 +591,90 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		_ = conn.SetDeadline(time.Now().Add(timeout))
 		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
 		defer cancelDnsReqCtx()
-		go func() {
-			// Send DNS request every seconds.
-			for {
-				_, err = conn.Write(data)
-				if err != nil {
-					if c.log.IsLevelEnabled(logrus.DebugLevel) {
-						c.log.WithFields(logrus.Fields{
-							"to":      dialArgument.bestTarget.String(),
-							"pid":     req.routingResult.Pid,
-							"pname":   ProcessName2String(req.routingResult.Pname[:]),
-							"mac":     Mac2String(req.routingResult.Mac[:]),
-							"from":    req.realSrc.String(),
-							"network": networkType.String(),
-							"err":     err.Error(),
-						}).Debugln("Failed to write UDP(DNS) packet request.")
+		if upstream.Scheme == "udp" {
+			go func() {
+				// Send DNS request every seconds.
+				for {
+					_, err = conn.Write(data)
+					if err != nil {
+						if c.log.IsLevelEnabled(logrus.DebugLevel) {
+							c.log.WithFields(logrus.Fields{
+								"to":      dialArgument.bestTarget.String(),
+								"pid":     req.routingResult.Pid,
+								"pname":   ProcessName2String(req.routingResult.Pname[:]),
+								"mac":     Mac2String(req.routingResult.Mac[:]),
+								"from":    req.realSrc.String(),
+								"network": networkType.String(),
+								"err":     err.Error(),
+							}).Debugln("Failed to write UDP(DNS) packet request.")
+						}
+						return
 					}
-					return
+					select {
+					case <-dnsReqCtx.Done():
+						return
+					case <-time.After(1 * time.Second):
+					}
 				}
-				select {
-				case <-dnsReqCtx.Done():
-					return
-				case <-time.After(1 * time.Second):
-				}
-			}
-		}()
+			}()
 
-		// We can block here because we are in a coroutine.
-		respBuf := pool.GetFullCap(consts.EthernetMtu)
-		defer pool.Put(respBuf)
-		// Wait for response.
-		n, err := conn.Read(respBuf)
-		if err != nil {
-			if c.timeoutExceedCallback != nil {
-				c.timeoutExceedCallback(dialArgument, err)
+			// We can block here because we are in a coroutine.
+			respBuf := pool.GetFullCap(consts.EthernetMtu)
+			defer pool.Put(respBuf)
+			// Wait for response.
+			n, err := conn.Read(respBuf)
+			if err != nil {
+				if c.timeoutExceedCallback != nil {
+					c.timeoutExceedCallback(dialArgument, err)
+				}
+				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
 			}
-			return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
+			var msg dnsmessage.Msg
+			if err = msg.Unpack(respBuf[:n]); err != nil {
+				return err
+			}
+			respMsg = &msg
+			cancelDnsReqCtx()
+		} else if upstream.Scheme == "http3" {
+			roundTripper := &http3.RoundTripper{
+				TLSClientConfig: &tls.Config{
+					ServerName:         upstream.Hostname,
+					NextProtos:         []string{"h3"},
+					InsecureSkipVerify: false,
+				},
+				QuicConfig: &quic.Config{},
+				Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+					udpAddr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
+					pkt := conn.(netproxy.PacketConn)
+					fakePkt := &netproxy.FakeNetPacketConn{
+						PacketConn: pkt,
+						LAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr("::1"), 0)),
+						RAddr: udpAddr,
+					}
+					c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
+					return c, e
+				},
+			}
+			defer roundTripper.Close()
+
+			client := &http.Client{
+				Transport: roundTripper,
+			}
+			msg, err := httpDNS(client, dialArgument.bestTarget.String(), data)
+			if err != nil {
+				return err
+			}
+			respMsg = msg
 		}
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(respBuf[:n]); err != nil {
-			return err
-		}
-		respMsg = &msg
-		cancelDnsReqCtx()
 
 	case consts.L4ProtoStr_TCP:
 		// We can block here because we are in a coroutine.
 
 		conn, err = dialArgument.bestDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
 		if upstream.Scheme == "tls" {
-			tlsConn := tls.Client(NetConnWrapper{Conn: conn}, &tls.Config{
+			tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
 				InsecureSkipVerify: false,
-				ServerName: 	   upstream.Hostname,
+				ServerName:         upstream.Hostname,
 			})
 			conn = tlsConn
 		}
@@ -700,39 +722,21 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				return err
 			}
 			respMsg = &msg
-		} else {
+		} else if upstream.Scheme == "https" {
+
 			httpTransport := http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return NetConnWrapper{Conn: conn}, nil
+					return &netproxy.FakeNetConn{Conn: conn}, nil
 				},
 			}
 			client := http.Client{
 				Transport: &httpTransport,
 			}
-			serverURL := url.URL{
-				Scheme: "https",
-				Host:   dialArgument.bestTarget.String(),
-				Path:  "/dns-query",
-			}
-			req, err := http.NewRequest(http.MethodPost, serverURL.String(), strings.NewReader(string(data)))
+			msg, err := httpDNS(&client, dialArgument.bestTarget.String(), data)
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Content-Type", "application/dns-message")
-			resp, err := client.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			buf, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return err
-			}
-			var msg dnsmessage.Msg
-			if err = msg.Unpack(buf); err != nil {
-				return err
-			}
-			respMsg = &msg
+			respMsg = msg
 		}
 	default:
 		return fmt.Errorf("unexpected l4proto: %v", dialArgument.l4proto)
@@ -823,4 +827,34 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 	}
 	return nil
+}
+
+func httpDNS(client *http.Client, target string, data []byte) (respMsg *dnsmessage.Msg, err error) {
+	serverURL := url.URL{
+		Scheme: "https",
+		Host:   target,
+		Path:   "/dns-query",
+	}
+
+	req, err := http.NewRequest(http.MethodPost, serverURL.String(), strings.NewReader(string(data)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/dns-message")
+	req.Header.Set("Accept", "application/dns-message")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	buf, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var msg dnsmessage.Msg
+	if err = msg.Unpack(buf); err != nil {
+		return nil, err
+	}
+	respMsg = &msg
+	return respMsg, nil
 }
