@@ -1710,7 +1710,7 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 
 struct get_real_comm_ctx {
 	char *arg_buf;
-	unsigned l;
+	unsigned int l;
 };
 
 static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
@@ -1720,6 +1720,7 @@ static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
 	* We extract "sddm-helper" from it.
 	*/
 	struct get_real_comm_ctx *ctx = (struct get_real_comm_ctx *)data;
+
 	if (index >= MAX_ARG_LEN) // always false, just to make verifier happy
 		return 1;
 	if (unlikely(ctx->arg_buf[index] == '/'))
@@ -1744,6 +1745,7 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	// Read args to buffer.
 	char arg_buf[MAX_ARG_LEN]; // Allocate it out of ctx to pass CO-RE
 	struct get_real_comm_ctx ctx = { 0 };
+
 	ctx.arg_buf = arg_buf;
 	ret = bpf_core_read_user_str(arg_buf, MAX_ARG_LEN, args);
 	if (unlikely(ret < 0)) {
@@ -1758,7 +1760,8 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	if (unlikely(ret < 0))
 		return ret;
 
-	unsigned offset = ctx.l; // Copy it to pass CO-RE
+	unsigned int offset = ctx.l; // Copy it to pass CO-RE
+
 	ret = bpf_core_read_str(pid_pname->pname, sizeof(pid_pname->pname),
 				arg_buf + offset);
 	if (unlikely(ret < 0)) {
@@ -1791,6 +1794,7 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 	int ret;
 	// Build value.
 	struct pid_pname val = { 0 };
+
 	ret = get_pid_pname(&val);
 	if (ret)
 		return ret;
