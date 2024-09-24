@@ -58,8 +58,7 @@
 #define MAX_TGID_PNAME_MAPPING_NUM (8192)
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
-#define MAX_ARG_LEN_TO_PROBE 128
-#define MAX_ARG_SCANNER_BUFFER_SIZE (TASK_COMM_LEN * 4)
+#define MAX_ARG_LEN 128
 #define IPV6_MAX_EXTENSIONS 4
 
 #define OUTBOUND_DIRECT 0
@@ -1709,6 +1708,75 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	return bpf_redirect(redirect_entry->ifindex, flags);
 }
 
+struct get_real_comm_ctx {
+	char *arg_buf;
+	unsigned l;
+};
+
+static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
+{
+	/*
+	* For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
+	* We extract "sddm-helper" from it.
+	*/
+	struct get_real_comm_ctx *ctx = (struct get_real_comm_ctx *)data;
+	if (index >= MAX_ARG_LEN) // always false, just to make verifier happy
+		return 1;
+	if (unlikely(ctx->arg_buf[index] == '/'))
+		ctx->l = index + 1;
+	if (unlikely(ctx->arg_buf[index] == ' ' ||
+		     ctx->arg_buf[index] == '\0')) {
+		// Write to dst.
+		ctx->arg_buf[index] = '\0';
+		return 1;
+	}
+	return 0;
+}
+
+/// Parse command line arguments to get the real command name and tgid.
+static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
+{
+	int ret;
+	// Get pointer to args string.
+	struct task_struct *task = (void *)bpf_get_current_task();
+	char *args = (void *)BPF_CORE_READ(task, mm, arg_start);
+
+	// Read args to buffer.
+	char arg_buf[MAX_ARG_LEN]; // Allocate it out of ctx to bypass CO-RE
+	struct get_real_comm_ctx ctx = { 0 };
+	ctx.arg_buf = arg_buf;
+	ret = bpf_core_read_user_str(arg_buf, MAX_ARG_LEN, args);
+	if (unlikely(ret < 0)) {
+		bpf_printk(
+			"failed to read process name: bpf_core_read_user_str: %d",
+			ret);
+		return ret;
+	}
+
+	// Find range of command name.
+	ret = bpf_loop(MAX_ARG_LEN, get_real_comm_loop_cb, &ctx, 0);
+	if (unlikely(ret < 0))
+		return ret;
+
+	unsigned offset = ctx.l; // Copy it to bypass CO-RE
+	ret = bpf_core_read_str(pid_pname->pname, sizeof(pid_pname->pname),
+				arg_buf + offset);
+	if (unlikely(ret < 0)) {
+		bpf_printk("failed to read process name: bpf_core_read_str: %d",
+			   ret);
+		return ret;
+	}
+
+	// Pupulate tgid
+	ret = bpf_core_read(&pid_pname->pid, sizeof(pid_pname->pid),
+			    &task->tgid);
+	if (unlikely(ret < 0)) {
+		bpf_printk("failed to read pid: %d", ret);
+		return ret;
+	}
+	return 0;
+}
+
 static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 {
 	if (unlikely(!cookie)) {
@@ -1723,64 +1791,9 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 	int ret;
 	// Build value.
 	struct pid_pname val = { 0 };
-	char buf[MAX_ARG_SCANNER_BUFFER_SIZE] = { 0 };
-	struct task_struct *current = (void *)bpf_get_current_task();
-	unsigned long arg_start = BPF_CORE_READ(current, mm, arg_start);
-	unsigned long arg_end = BPF_CORE_READ(current, mm, arg_end);
-
-	/*
-   * For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
-   * We extract "sddm-helper" from it.
-   */
-	unsigned long loc, j, last_slash = -1;
-#pragma unroll
-	for (loc = 0, j = 0; j < MAX_ARG_LEN_TO_PROBE;
-	     ++j, loc = ((loc + 1) & (MAX_ARG_SCANNER_BUFFER_SIZE - 1))) {
-		// volatile unsigned long k = j; // Cheat to unroll.
-		if (unlikely(arg_start + j >= arg_end))
-			break;
-		if (unlikely(loc == 0)) {
-			/// WANRING: Do NOT use bpf_core_read_user_str, it will bring terminator
-			/// 0.
-			// __builtin_memset(&buf, 0, MAX_ARG_SCANNER_BUFFER_SIZE);
-			unsigned long to_read = arg_end - (arg_start + j);
-
-			if (to_read > MAX_ARG_SCANNER_BUFFER_SIZE)
-				to_read = MAX_ARG_SCANNER_BUFFER_SIZE;
-			else
-				buf[to_read] = 0;
-			ret = bpf_core_read_user(&buf, to_read,
-						 (const void *)(arg_start + j));
-			if (ret) {
-				// bpf_printk("failed to read process name.0: [%ld, %ld]", arg_start,
-				//						arg_end);
-				// bpf_printk("_failed to read process name.0: %ld %ld", j, to_read);
-				return ret;
-			}
-		}
-		if (unlikely(buf[loc] == '/'))
-			last_slash = j;
-		else if (unlikely(buf[loc] == ' ' || buf[loc] == 0))
-			break;
-	}
-	++last_slash;
-	unsigned long length_cpy = j - last_slash;
-
-	if (length_cpy > TASK_COMM_LEN)
-		length_cpy = TASK_COMM_LEN;
-	ret = bpf_core_read_user(&val.pname, length_cpy,
-				 (const void *)(arg_start + last_slash));
-	if (ret) {
-		bpf_printk("failed to read process name.1: %d", ret);
+	ret = get_pid_pname(&val);
+	if (ret)
 		return ret;
-	}
-	ret = bpf_core_read(&val.pid, sizeof(val.pid), &current->tgid);
-	if (ret) {
-		bpf_printk("failed to read pid: %d", ret);
-		return ret;
-	}
-	// bpf_printk("a start_end: %lu %lu", arg_start, arg_end);
-	// bpf_printk("b start_end: %lu %lu", arg_start + last_slash, arg_start + j);
 
 	// Update map.
 	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY);
