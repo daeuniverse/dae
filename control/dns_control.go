@@ -13,7 +13,9 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -664,38 +666,74 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}()
 
 		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
-		// We should write two byte length in the front of TCP DNS request.
-		bReq := pool.Get(2 + len(data))
-		defer pool.Put(bReq)
-		binary.BigEndian.PutUint16(bReq, uint16(len(data)))
-		copy(bReq[2:], data)
-		_, err = conn.Write(bReq)
-		if err != nil {
-			return fmt.Errorf("failed to write DNS req: %w", err)
-		}
+		if upstream.Scheme == "tcp" || upstream.Scheme == "tls" {
 
-		// Read two byte length.
-		if _, err = io.ReadFull(conn, bReq[:2]); err != nil {
-			return fmt.Errorf("failed to read DNS resp payload length: %w", err)
-		}
-		respLen := int(binary.BigEndian.Uint16(bReq))
-		// Try to reuse the buf.
-		var buf []byte
-		if len(bReq) < respLen {
-			buf = pool.Get(respLen)
-			defer pool.Put(buf)
+			// We should write two byte length in the front of TCP DNS request.
+			bReq := pool.Get(2 + len(data))
+			defer pool.Put(bReq)
+			binary.BigEndian.PutUint16(bReq, uint16(len(data)))
+			copy(bReq[2:], data)
+			_, err = conn.Write(bReq)
+			if err != nil {
+				return fmt.Errorf("failed to write DNS req: %w", err)
+			}
+
+			// Read two byte length.
+			if _, err = io.ReadFull(conn, bReq[:2]); err != nil {
+				return fmt.Errorf("failed to read DNS resp payload length: %w", err)
+			}
+			respLen := int(binary.BigEndian.Uint16(bReq))
+			// Try to reuse the buf.
+			var buf []byte
+			if len(bReq) < respLen {
+				buf = pool.Get(respLen)
+				defer pool.Put(buf)
+			} else {
+				buf = bReq
+			}
+			var n int
+			if n, err = io.ReadFull(conn, buf[:respLen]); err != nil {
+				return fmt.Errorf("failed to read DNS resp payload: %w", err)
+			}
+			var msg dnsmessage.Msg
+			if err = msg.Unpack(buf[:n]); err != nil {
+				return err
+			}
+			respMsg = &msg
 		} else {
-			buf = bReq
+			httpTransport := http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return NetConnWrapper{Conn: conn}, nil
+				},
+			}
+			client := http.Client{
+				Transport: &httpTransport,
+			}
+			serverURL := url.URL{
+				Scheme: "https",
+				Host:   dialArgument.bestTarget.String(),
+				Path:  "/dns-query",
+			}
+			req, err := http.NewRequest(http.MethodPost, serverURL.String(), strings.NewReader(string(data)))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/dns-message")
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+			var msg dnsmessage.Msg
+			if err = msg.Unpack(buf); err != nil {
+				return err
+			}
+			respMsg = &msg
 		}
-		var n int
-		if n, err = io.ReadFull(conn, buf[:respLen]); err != nil {
-			return fmt.Errorf("failed to read DNS resp payload: %w", err)
-		}
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(buf[:n]); err != nil {
-			return err
-		}
-		respMsg = &msg
 	default:
 		return fmt.Errorf("unexpected l4proto: %v", dialArgument.l4proto)
 	}
