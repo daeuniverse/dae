@@ -33,7 +33,7 @@ const (
 	upstreamScheme_TLS           UpstreamScheme = "tls"
 	upstreamScheme_QUIC          UpstreamScheme = "quic"
 	upstreamScheme_HTTPS         UpstreamScheme = "https"
-	upstreamScheme_HTTP3         UpstreamScheme = "http3"
+	upstreamScheme_HTTP3         UpstreamScheme = "h3"
 )
 
 func (s UpstreamScheme) ContainsTcp() bool {

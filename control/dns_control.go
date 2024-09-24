@@ -635,7 +635,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			}
 			respMsg = &msg
 			cancelDnsReqCtx()
-		} else if upstream.Scheme == "http3" {
+		} else if upstream.Scheme == "h3" {
 			roundTripper := &http3.RoundTripper{
 				TLSClientConfig: &tls.Config{
 					ServerName:         upstream.Hostname,
