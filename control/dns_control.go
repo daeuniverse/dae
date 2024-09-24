@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -32,6 +33,18 @@ import (
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 )
+
+type NetConnWrapper struct {
+	netproxy.Conn
+}
+
+func (c NetConnWrapper) LocalAddr() net.Addr {
+	return nil
+}
+
+func (c NetConnWrapper) RemoteAddr() net.Addr {
+	return nil
+}
 
 const (
 	MaxDnsLookupDepth  = 3
@@ -634,6 +647,13 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		// We can block here because we are in a coroutine.
 
 		conn, err = dialArgument.bestDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
+		if upstream.Scheme == "tls" {
+			tlsConn := tls.Client(NetConnWrapper{Conn: conn}, &tls.Config{
+				InsecureSkipVerify: false,
+				ServerName: 	   upstream.Hostname,
+			})
+			conn = tlsConn
+		}
 		if err != nil {
 			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
 		}
