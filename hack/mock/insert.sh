@@ -1,6 +1,6 @@
 #!/bin/bash
 lan=docker0
-wan=ens192
+wan=enp5s0
 
 sudo tc qdisc add dev $lan clsact > /dev/null 2>&1
 sudo tc qdisc add dev $wan clsact > /dev/null 2>&1
@@ -10,7 +10,7 @@ set -ex
 sudo rm -rf /sys/fs/bpf/tc/globals/*
 
 # clang -fno-stack-protector -O2 -g -emit-llvm -c ../../control/kern/tproxy.c -o - | llc -march=bpf -mcpu=v3 -mattr=+alu32 -filetype=obj -o foo.o
-clang-14 -O2 -g -Wall -c ../../control/kern/tproxy.c -target bpf -D__TARGET_ARCH_x86 -o foo.o
+clang -O2 -g -Wall -c ../../control/kern/tproxy.c -target bpf -D__TARGET_ARCH_x86 -o foo.o
 sudo tc filter del dev $lan ingress
 sudo tc filter del dev $lan egress
 sudo tc filter del dev $wan ingress

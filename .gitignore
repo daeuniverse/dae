@@ -2,8 +2,8 @@
 .idea
 *.o
 *.tmp
-bpf_bpfeb*.go
-bpf_bpfel*.go
+bpf*_bpfeb*.go
+bpf*_bpfel*.go
 dae
 outline.json
 go-mod/
