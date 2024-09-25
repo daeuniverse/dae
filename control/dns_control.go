@@ -31,6 +31,7 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
+	tc "github.com/daeuniverse/outbound/protocol/tuic/common"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
@@ -649,7 +650,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 					pkt := conn.(netproxy.PacketConn)
 					fakePkt := &netproxy.FakeNetPacketConn{
 						PacketConn: pkt,
-						LAddr:      net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr("::1"), 0)),
+						LAddr:      net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()),
 						RAddr:      udpAddr,
 					}
 					c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
