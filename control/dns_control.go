@@ -591,7 +591,8 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		_ = conn.SetDeadline(time.Now().Add(timeout))
 		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
 		defer cancelDnsReqCtx()
-		if upstream.Scheme == dns.UpstreamScheme_UDP {
+		switch upstream.Scheme {
+		case dns.UpstreamScheme_UDP, dns.UpstreamScheme_TCP_UDP:
 			go func() {
 				// Send DNS request every seconds.
 				for {
@@ -635,7 +636,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			}
 			respMsg = &msg
 			cancelDnsReqCtx()
-		} else if upstream.Scheme == dns.UpstreamScheme_H3 || upstream.Scheme == dns.UpstreamScheme_HTTP3 {
+		case dns.UpstreamScheme_H3, dns.UpstreamScheme_HTTP3:
 			roundTripper := &http3.RoundTripper{
 				TLSClientConfig: &tls.Config{
 					ServerName:         upstream.Hostname,
@@ -688,8 +689,8 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}()
 
 		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
-		if upstream.Scheme == dns.UpstreamScheme_TCP || upstream.Scheme == dns.UpstreamScheme_TLS {
-
+		switch upstream.Scheme {
+		case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TLS, dns.UpstreamScheme_TCP_UDP:
 			// We should write two byte length in the front of TCP DNS request.
 			bReq := pool.Get(2 + len(data))
 			defer pool.Put(bReq)
@@ -722,7 +723,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				return err
 			}
 			respMsg = &msg
-		} else if upstream.Scheme == dns.UpstreamScheme_HTTPS {
+		case dns.UpstreamScheme_HTTPS:
 
 			httpTransport := http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
