@@ -53,14 +53,14 @@ func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, por
 	case upstreamScheme_TCP_UDP_Alias:
 		scheme = UpstreamScheme_TCP_UDP
 		fallthrough
-	case upstreamScheme_H3_Alias:
-		scheme = UpstreamScheme_H3
-		fallthrough
 	case UpstreamScheme_TCP, UpstreamScheme_UDP, UpstreamScheme_TCP_UDP:
 		__port = raw.Port()
 		if __port == "" {
 			__port = "53"
 		}
+	case upstreamScheme_H3_Alias:
+		scheme = UpstreamScheme_H3
+		fallthrough
 	case UpstreamScheme_HTTPS, UpstreamScheme_H3:
 		__port = raw.Port()
 		if __port == "" {
