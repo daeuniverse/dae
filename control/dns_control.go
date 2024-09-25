@@ -667,6 +667,66 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				return err
 			}
 			respMsg = msg
+		case dns.UpstreamScheme_QUIC:
+			udpAddr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
+			pkt := conn.(netproxy.PacketConn)
+			fakePkt := &netproxy.FakeNetPacketConn{
+				PacketConn: pkt,
+				LAddr:      net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()),
+				RAddr:      udpAddr,
+			}
+			tlsCfg := &tls.Config{
+				NextProtos:         []string{"doq"},
+				InsecureSkipVerify: false,
+				ServerName:         upstream.Hostname,
+			}
+			addr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
+			qc, err := quic.DialEarly(ctxDial, fakePkt, addr, tlsCfg, nil)
+			if err != nil {
+				return err
+			}
+			defer qc.CloseWithError(0, "")
+
+			stream, err := qc.OpenStreamSync(ctxDial)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = stream.Close()
+			}()
+
+			// We should write two byte length in the front of QUIC DNS request.
+			bReq := pool.Get(2 + len(data))
+			defer pool.Put(bReq)
+			binary.BigEndian.PutUint16(bReq, uint16(len(data)))
+			copy(bReq[2:], data)
+			_, err = stream.Write(bReq)
+			if err != nil {
+				return fmt.Errorf("failed to write DNS req: %w", err)
+			}
+
+			// Read two byte length.
+			if _, err = io.ReadFull(stream, bReq[:2]); err != nil {
+				return fmt.Errorf("failed to read DNS resp payload length: %w", err)
+			}
+			respLen := int(binary.BigEndian.Uint16(bReq))
+			// Try to reuse the buf.
+			var buf []byte
+			if len(bReq) < respLen {
+				buf = pool.Get(respLen)
+				defer pool.Put(buf)
+			} else {
+				buf = bReq
+			}
+			var n int
+			if n, err = io.ReadFull(stream, buf[:respLen]); err != nil {
+				return fmt.Errorf("failed to read DNS resp payload: %w", err)
+			}
+			var msg dnsmessage.Msg
+			if err = msg.Unpack(buf[:n]); err != nil {
+				return err
+			}
+			respMsg = &msg
 		}
 
 	case consts.L4ProtoStr_TCP:
