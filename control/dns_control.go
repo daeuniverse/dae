@@ -873,12 +873,7 @@ func httpDNS(client *http.Client, target string, data []byte) (respMsg *dnsmessa
 	return respMsg, nil
 }
 
-type stream interface {
-	io.Reader
-	io.Writer
-}
-
-func streamDNS(stream stream, data []byte) (respMsg *dnsmessage.Msg, err error) {
+func streamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, err error) {
 	// We should write two byte length in the front of QUIC DNS request.
 	bReq := pool.Get(2 + len(data))
 	defer pool.Put(bReq)
