@@ -166,6 +166,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
 	if cache != nil {
 		cache.FillInto(msg)
+		msg.Compress = true
 		b, err := msg.Pack()
 		if err != nil {
 			c.log.Warnf("failed to pack: %v", err)
@@ -497,6 +498,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	dnsMessage.Response = true
 	dnsMessage.RecursionAvailable = true
 	dnsMessage.Truncated = false
+	dnsMessage.Compress = true
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
 			"question": dnsMessage.Question,
@@ -753,6 +755,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	if needResp {
 		// Keep the id the same with request.
 		respMsg.Id = id
+		respMsg.Compress = true
 		data, err = respMsg.Pack()
 		if err != nil {
 			return err

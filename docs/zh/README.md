@@ -66,6 +66,8 @@ CONFIG_BPF_EVENTS=y
 
 > **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
 
+> `Arch Linux ARM` 用户可以使用支持 dae 的 [linux-aarch64-7ji](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
+
 ## 安装
 
 ### Arch Linux / Manjaro
