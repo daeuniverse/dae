@@ -585,12 +585,11 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	if method == "" {
 		method = http.MethodGet
 	}
-	cd := &netproxy.ContextDialerConverter{Dialer: d.Dialer}
 	cli := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
 				// Force to dial "ip".
-				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", soMark), net.JoinHostPort(ip.String(), u.Port()))
+				conn, err := d.Dialer.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), net.JoinHostPort(ip.String(), u.Port()))
 				if err != nil {
 					return nil, err
 				}
