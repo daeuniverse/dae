@@ -695,38 +695,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				_ = stream.Close()
 			}()
 
-			// We should write two byte length in the front of QUIC DNS request.
-			bReq := pool.Get(2 + len(data))
-			defer pool.Put(bReq)
-			binary.BigEndian.PutUint16(bReq, uint16(len(data)))
-			copy(bReq[2:], data)
-			_, err = stream.Write(bReq)
+			msg, err := streamDNS(stream, data)
 			if err != nil {
-				return fmt.Errorf("failed to write DNS req: %w", err)
-			}
-
-			// Read two byte length.
-			if _, err = io.ReadFull(stream, bReq[:2]); err != nil {
-				return fmt.Errorf("failed to read DNS resp payload length: %w", err)
-			}
-			respLen := int(binary.BigEndian.Uint16(bReq))
-			// Try to reuse the buf.
-			var buf []byte
-			if len(bReq) < respLen {
-				buf = pool.Get(respLen)
-				defer pool.Put(buf)
-			} else {
-				buf = bReq
-			}
-			var n int
-			if n, err = io.ReadFull(stream, buf[:respLen]); err != nil {
-				return fmt.Errorf("failed to read DNS resp payload: %w", err)
-			}
-			var msg dnsmessage.Msg
-			if err = msg.Unpack(buf[:n]); err != nil {
 				return err
 			}
-			respMsg = &msg
+			respMsg = msg
 		}
 
 	case consts.L4ProtoStr_TCP:
@@ -752,38 +725,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
 		switch upstream.Scheme {
 		case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TLS, dns.UpstreamScheme_TCP_UDP:
-			// We should write two byte length in the front of TCP DNS request.
-			bReq := pool.Get(2 + len(data))
-			defer pool.Put(bReq)
-			binary.BigEndian.PutUint16(bReq, uint16(len(data)))
-			copy(bReq[2:], data)
-			_, err = conn.Write(bReq)
+			msg, err := streamDNS(conn, data)
 			if err != nil {
-				return fmt.Errorf("failed to write DNS req: %w", err)
-			}
-
-			// Read two byte length.
-			if _, err = io.ReadFull(conn, bReq[:2]); err != nil {
-				return fmt.Errorf("failed to read DNS resp payload length: %w", err)
-			}
-			respLen := int(binary.BigEndian.Uint16(bReq))
-			// Try to reuse the buf.
-			var buf []byte
-			if len(bReq) < respLen {
-				buf = pool.Get(respLen)
-				defer pool.Put(buf)
-			} else {
-				buf = bReq
-			}
-			var n int
-			if n, err = io.ReadFull(conn, buf[:respLen]); err != nil {
-				return fmt.Errorf("failed to read DNS resp payload: %w", err)
-			}
-			var msg dnsmessage.Msg
-			if err = msg.Unpack(buf[:n]); err != nil {
 				return err
 			}
-			respMsg = &msg
+			respMsg = msg
 		case dns.UpstreamScheme_HTTPS:
 
 			httpTransport := http.Transport{
@@ -920,3 +866,44 @@ func httpDNS(client *http.Client, target string, data []byte) (respMsg *dnsmessa
 	respMsg = &msg
 	return respMsg, nil
 }
+
+type stream interface {
+	io.Reader
+	io.Writer
+}
+
+func streamDNS(stream stream, data []byte) (respMsg *dnsmessage.Msg, err error) {
+	// We should write two byte length in the front of QUIC DNS request.
+	bReq := pool.Get(2 + len(data))
+	defer pool.Put(bReq)
+	binary.BigEndian.PutUint16(bReq, uint16(len(data)))
+	copy(bReq[2:], data)
+	_, err = stream.Write(bReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write DNS req: %w", err)
+	}
+
+	// Read two byte length.
+	if _, err = io.ReadFull(stream, bReq[:2]); err != nil {
+		return nil, fmt.Errorf("failed to read DNS resp payload length: %w", err)
+	}
+	respLen := int(binary.BigEndian.Uint16(bReq))
+	// Try to reuse the buf.
+	var buf []byte
+	if len(bReq) < respLen {
+		buf = pool.Get(respLen)
+		defer pool.Put(buf)
+	} else {
+		buf = bReq
+	}
+	var n int
+	if n, err = io.ReadFull(stream, buf[:respLen]); err != nil {
+		return nil, fmt.Errorf("failed to read DNS resp payload: %w", err)
+	}
+	var msg dnsmessage.Msg
+	if err = msg.Unpack(buf[:n]); err != nil {
+		return  nil, err
+	}
+	return &msg, nil
+}
+		
