@@ -4,6 +4,8 @@
 *.tmp
 bpf_bpfeb*.go
 bpf_bpfel*.go
+bpf_*_bpfeb*.go
+bpf_*_bpfel*.go
 dae
 outline.json
 go-mod/
