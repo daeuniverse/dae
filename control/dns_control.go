@@ -695,6 +695,12 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				_ = stream.Close()
 			}()
 
+			// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
+			// msg id should set to 0 when transport over QUIC.
+			// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
+			binary.BigEndian.PutUint16(data[0:2], 0)
+			
+
 			msg, err := streamDNS(stream, data)
 			if err != nil {
 				return err
