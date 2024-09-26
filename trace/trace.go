@@ -259,11 +259,9 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 		PayloadLen  uint16
 	}
 
-	var	skb2events map[uint64][]bpfEvent
-	skb2events = make(map[uint64][]bpfEvent)
+	skb2events := make(map[uint64][]bpfEvent)
 	// a map to save slices of bpfEvent of the Skb
-	var skb2symNames map[uint64][]string
-	skb2symNames = make(map[uint64][]string)
+	skb2symNames := make(map[uint64][]string)
 	// a map to save slices of function name called with the Skb
 	for {
 		rec, err := eventsReader.Read()
