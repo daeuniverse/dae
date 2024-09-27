@@ -15,10 +15,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 <!-- BEGIN NEW TOC ENTRY -->
 
 - [v0.8.0rc2 (Pre-release)](#v080rc2-pre-release)
-
+- [v0.8.0rc1 (Pre-release)](#v080rc1-pre-release)
 - [v0.7.2 (Latest)](#v072-latest)
 - [v0.7.1](#v071)
-- [v0.8.0rc1 (Pre-release)](#v080rc1-pre-release)
 - [v0.7.0](#v070)
 - [v0.6.0](#v060)
 - [v0.5.1](#v051)
