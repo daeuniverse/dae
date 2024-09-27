@@ -114,6 +114,7 @@ func Test(t *testing.T) {
 	}
 
 	for _, progset := range progsets {
+		t.Logf("Running test: %s\n", progset.id)
 		// create ctx with the max allowed size(4k - head room - tailroom)
 		data := make([]byte, 4096-256-320)
 

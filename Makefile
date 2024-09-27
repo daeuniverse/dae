@@ -112,6 +112,7 @@ ebpf-test: submodule clean-ebpf
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     go generate ./control/kern/tests/bpf_test.go && \
+    go clean -testcache && \
     go test -v ./control/kern/tests/...
 
 ## End Ebpf
