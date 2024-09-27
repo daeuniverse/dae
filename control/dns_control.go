@@ -6,9 +6,9 @@
 package control
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -663,7 +663,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			client := &http.Client{
 				Transport: roundTripper,
 			}
-			msg, err := sendHttpDNS(client, dialArgument.bestTarget.String(), upstream.Hostname, upstream.Path, data)
+			msg, err := sendHttpDNS(client, dialArgument.bestTarget.String(), upstream, data)
 			if err != nil {
 				return err
 			}
@@ -750,7 +750,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			client := http.Client{
 				Transport: &httpTransport,
 			}
-			msg, err := sendHttpDNS(&client, dialArgument.bestTarget.String(), upstream.Hostname, upstream.Path, data)
+			msg, err := sendHttpDNS(&client, dialArgument.bestTarget.String(), upstream, data)
 			if err != nil {
 				return err
 			}
@@ -847,20 +847,26 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	return nil
 }
 
-func sendHttpDNS(client *http.Client, target string, host string, path string, data []byte) (respMsg *dnsmessage.Msg, err error) {
+func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, data []byte) (respMsg *dnsmessage.Msg, err error) {
+	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return fmt.Errorf("do not use a server that will redirect, upstream: %v", upstream.String())
+	}
 	serverURL := url.URL{
 		Scheme: "https",
 		Host:   target,
-		Path:   path,
+		Path:   upstream.Path,
 	}
+	q := serverURL.Query()
+	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
+	serverURL.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodPost, serverURL.String(), bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodGet, serverURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
-	req.Host = host
+	req.Host = upstream.Hostname 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -874,8 +880,7 @@ func sendHttpDNS(client *http.Client, target string, host string, path string, d
 	if err = msg.Unpack(buf); err != nil {
 		return nil, err
 	}
-	respMsg = &msg
-	return respMsg, nil
+	return &msg, nil
 }
 
 func sendStreamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, err error) {
