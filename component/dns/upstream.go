@@ -47,8 +47,9 @@ func (s UpstreamScheme) ContainsTcp() bool {
 	}
 }
 
-func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, err error) {
+func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, path string, err error) {
 	var __port string
+	var __path string
 	switch scheme = UpstreamScheme(raw.Scheme); scheme {
 	case upstreamScheme_TCP_UDP_Alias:
 		scheme = UpstreamScheme_TCP_UDP
@@ -66,32 +67,37 @@ func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, por
 		if __port == "" {
 			__port = "443"
 		}
+		__path = raw.Path
+		if __path == "" {
+			__path = "/dns-query"
+		}
 	case UpstreamScheme_QUIC, UpstreamScheme_TLS:
 		__port = raw.Port()
 		if __port == "" {
 			__port = "853"
 		}
 	default:
-		return "", "", 0, fmt.Errorf("unexpected scheme: %v", raw.Scheme)
+		return "", "", 0, "", fmt.Errorf("unexpected scheme: %v", raw.Scheme)
 	}
 	_port, err := strconv.ParseUint(__port, 10, 16)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("failed to parse dns_upstream port: %v", err)
+		return "", "", 0, "", fmt.Errorf("failed to parse dns_upstream port: %v", err)
 	}
 	port = uint16(_port)
 	hostname = raw.Hostname()
-	return scheme, hostname, port, nil
+	return scheme, hostname, port, __path, nil
 }
 
 type Upstream struct {
 	Scheme   UpstreamScheme
 	Hostname string
 	Port     uint16
+	Path     string
 	*netutils.Ip46
 }
 
 func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
-	scheme, hostname, port, err := ParseRawUpstream(upstream)
+	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
@@ -118,6 +124,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		Scheme:   scheme,
 		Hostname: hostname,
 		Port:     port,
+		Path:     path,
 		Ip46:     ip46,
 	}, nil
 }
@@ -145,7 +152,7 @@ func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4prot
 }
 
 func (u *Upstream) String() string {
-	return string(u.Scheme) + "://" + net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port)))
+	return string(u.Scheme) + "://" + net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port))) + u.Path
 }
 
 type UpstreamResolver struct {

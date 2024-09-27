@@ -663,7 +663,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			client := &http.Client{
 				Transport: roundTripper,
 			}
-			msg, err := sendHttpDNS(client, dialArgument.bestTarget.String(), upstream.Hostname, data)
+			msg, err := sendHttpDNS(client, dialArgument.bestTarget.String(), upstream.Hostname, upstream.Path, data)
 			if err != nil {
 				return err
 			}
@@ -700,7 +700,6 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			// msg id should set to 0 when transport over QUIC.
 			// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
 			binary.BigEndian.PutUint16(data[0:2], 0)
-			
 
 			msg, err := sendStreamDNS(stream, data)
 			if err != nil {
@@ -751,7 +750,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			client := http.Client{
 				Transport: &httpTransport,
 			}
-			msg, err := sendHttpDNS(&client, dialArgument.bestTarget.String(), upstream.Hostname, data)
+			msg, err := sendHttpDNS(&client, dialArgument.bestTarget.String(), upstream.Hostname, upstream.Path, data)
 			if err != nil {
 				return err
 			}
@@ -848,11 +847,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	return nil
 }
 
-func sendHttpDNS(client *http.Client, target string, host string, data []byte) (respMsg *dnsmessage.Msg, err error) {
+func sendHttpDNS(client *http.Client, target string, host string, path string, data []byte) (respMsg *dnsmessage.Msg, err error) {
 	serverURL := url.URL{
 		Scheme: "https",
 		Host:   target,
-		Path:   "/dns-query",
+		Path:   path,
 	}
 
 	req, err := http.NewRequest(http.MethodPost, serverURL.String(), bytes.NewReader(data))
@@ -909,8 +908,7 @@ func sendStreamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, 
 	}
 	var msg dnsmessage.Msg
 	if err = msg.Unpack(buf[:n]); err != nil {
-		return  nil, err
+		return nil, err
 	}
 	return &msg, nil
 }
-		
