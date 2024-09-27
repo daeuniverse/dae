@@ -648,12 +648,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				QuicConfig: &quic.Config{},
 				Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
 					udpAddr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
-					pkt := conn.(netproxy.PacketConn)
-					fakePkt := &netproxy.FakeNetPacketConn{
-						PacketConn: pkt,
-						LAddr:      net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()),
-						RAddr:      udpAddr,
-					}
+					fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
 					c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
 					return c, e
 				},
@@ -670,12 +665,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			respMsg = msg
 		case dns.UpstreamScheme_QUIC:
 			udpAddr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
-			pkt := conn.(netproxy.PacketConn)
-			fakePkt := &netproxy.FakeNetPacketConn{
-				PacketConn: pkt,
-				LAddr:      net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()),
-				RAddr:      udpAddr,
-			}
+			fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
 			tlsCfg := &tls.Config{
 				NextProtos:         []string{"doq"},
 				InsecureSkipVerify: false,
@@ -866,7 +856,7 @@ func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, dat
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/dns-message")
-	req.Host = upstream.Hostname 
+	req.Host = upstream.Hostname
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
