@@ -6,6 +6,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -854,7 +855,7 @@ func sendHttpDNS(client *http.Client, target string, host string, data []byte) (
 		Path:   "/dns-query",
 	}
 
-	req, err := http.NewRequest(http.MethodPost, serverURL.String(), strings.NewReader(string(data)))
+	req, err := http.NewRequest(http.MethodPost, serverURL.String(), bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
