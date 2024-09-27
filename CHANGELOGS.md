@@ -16,7 +16,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - [v0.8.0rc2 (Pre-release)](#v080rc2-pre-release)
 - [v0.8.0rc1 (Pre-release)](#v080rc1-pre-release)
-- [v0.7.2 (Latest)](#v072-latest)
+- [v0.7.3 (Latest)](#v073-latest)
+- [v0.7.2](#v072)
 - [v0.7.1](#v071)
 - [v0.7.0](#v070)
 - [v0.6.0](#v060)
@@ -107,7 +108,16 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - @4860575 made their first contribution in [#605](https://github.com/daeuniverse/dae/pull/605)
 - @KagurazakaNyaa made their first contribution in [#623](https://github.com/daeuniverse/dae/pull/623)
 
-### v0.7.2 (Latest)
+### v0.7.3 (Latest)
+
+> Release date: 2024/09/27
+
+#### Bug Fixes
+
+- fix: connection leaks (#624)
+- fix: crash on openwrt (#640)
+
+### v0.7.2
 
 > Release date: 2024/09/27
 
