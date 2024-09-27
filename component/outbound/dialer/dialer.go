@@ -68,7 +68,9 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 		ExtraOption: D.ExtraOption{
 			AllowInsecure:     global.AllowInsecure,
 			TlsImplementation: global.TlsImplementation,
-			UtlsImitate:       global.UtlsImitate},
+			UtlsImitate:       global.UtlsImitate,
+			BandwidthMaxTx:    global.BandwidthMaxTx,
+			BandwidthMaxRx:    global.BandwidthMaxRx},
 		Log:               log,
 		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},

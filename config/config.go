@@ -43,6 +43,9 @@ type Global struct {
 	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
 	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
 	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
+	// TODO: support input in human-readable format (e.g., 100Mbps, 1Gbps)
+	BandwidthMaxTx uint64 `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx uint64 `mapstructure:"bandwidth_max_rx" default:"0"`
 }
 
 type Utls struct {

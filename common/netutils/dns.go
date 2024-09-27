@@ -207,8 +207,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	}
 
 	// Dial and write.
-	cd := &netproxy.ContextDialerConverter{Dialer: d}
-	c, err := cd.DialContext(ctx, network, dns.String())
+	c, err := d.DialContext(ctx, network, dns.String())
 	if err != nil {
 		return nil, err
 	}
