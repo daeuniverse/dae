@@ -34,7 +34,7 @@ global {
     log_level: warn
 
     tcp_check_url: 'http://cp.cloudflare.com'
-    udp_check_dns: 'dns.google.com:53'
+    udp_check_dns: 'dns.google:53'
     check_interval: 600s
     check_tolerance: 50ms
 
@@ -55,7 +55,7 @@ global {
 dns {
     upstream {
         alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google.com:53'
+        googledns: 'tcp+udp://dns.google:53'
     }
 
     routing {

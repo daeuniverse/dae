@@ -18,7 +18,7 @@ fallback: my_group
 ### Domain rule
 domain(suffix: v2raya.org) -> my_group
 # equals to domain(v2raya.org) -> my_group
-domain(full: dns.google.com) -> my_group
+domain(full: dns.google) -> my_group
 domain(keyword: facebook) -> my_group
 domain(regex: '\.goo.*\.com$') -> my_group
 domain(geosite:category-ads) -> block

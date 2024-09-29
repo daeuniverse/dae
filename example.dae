@@ -56,8 +56,8 @@ global {
     # TCP DNS connectivity of nodes.
     # First is URL, others are IP addresses if given.
     # This DNS should have both IPv4 and IPv6 if you have double stack in local.
-    #udp_check_dns: 'dns.google.com:53'
-    udp_check_dns: 'dns.google.com:53,8.8.8.8,2001:4860:4860::8888'
+    #udp_check_dns: 'dns.google:53'
+    udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
 
     check_interval: 30s
 
@@ -152,7 +152,7 @@ dns {
         # If dial_mode is "ip", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.
 
         alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google.com:53'
+        googledns: 'tcp+udp://dns.google:53'
     }
     routing {
         # According to the request of dns query, decide to use which DNS upstream.
@@ -231,7 +231,7 @@ group {
         # Override tcp_check_http_method in global
         #tcp_check_http_method: HEAD
         # Override udp_check_dns in global
-        #udp_check_dns: 'dns.google.com:53,8.8.8.8,2001:4860:4860::8888'
+        #udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
         # Override check_interval in global
         #check_interval: 30s
         # Override check_tolerance in global

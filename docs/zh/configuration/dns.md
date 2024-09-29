@@ -24,7 +24,7 @@ dns {
         # 若 dial_mode 设为 'ip'，请确保上游 DNS 无污染，不推荐使用国内公共 DNS。
 
         alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google.com:53'
+        googledns: 'tcp+udp://dns.google:53'
     }
     # 'request' 和 'response' 的 routing 格式和全局的 'routing' 类似。
     # 参考 https://github.com/daeuniverse/dae/blob/main/docs/zh/configuration/routing.md
@@ -75,7 +75,7 @@ dns {
 # 对于中国大陆域名使用 alidns，其他使用 googledns 查询。
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
+    googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {
@@ -95,7 +95,7 @@ dns {
 # 默认使用 alidns，如果疑似污染使用 googledns 重查。
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
+    googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {
