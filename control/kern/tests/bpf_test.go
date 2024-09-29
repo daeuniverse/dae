@@ -96,7 +96,15 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 	return
 }
 
+func consumeBpfDebugLog(t *testing.T) {
+	readBpfDebugLog(t)
+}
+
 func printBpfDebugLog(t *testing.T) {
+	fmt.Print(readBpfDebugLog(t))
+}
+
+func readBpfDebugLog(t *testing.T) string {
 	file, err := os.Open("/sys/kernel/tracing/trace_pipe")
 	if err != nil {
 		t.Fatalf("Failed to open trace_pipe: %v", err)
@@ -109,7 +117,7 @@ func printBpfDebugLog(t *testing.T) {
 		t.Fatalf("Failed to read from trace_pipe: %v", err)
 	}
 
-	fmt.Print(string(buffer[:n]))
+	return string(buffer[:n])
 }
 
 func Test(t *testing.T) {
@@ -153,5 +161,7 @@ func Test(t *testing.T) {
 			printBpfDebugLog(t)
 			t.Fatalf("error while running check program: unexpected status code: %d", statusCode)
 		}
+
+		consumeBpfDebugLog(t)
 	}
 }
