@@ -1,17 +1,21 @@
-DAE Config  (e.g. /etc/dae/config.dae)
+# Routing designed specifically for gaming
+## Examples
+
+### DAE Config  (e.g. /etc/dae/config.dae)
 
 ```
 routing {            
-#stop using low efficiency socks5 proxy or else
-#dscp(8) -> game             
+# Stop using low efficiency socks5 proxy ...
+# dscp(8) -> game             
 
-#using fw mark for ultra fast gaming experience
+### Use fw mark for ultra fast gaming experience
 dscp(8) -> direct(mark:0x800)
 }
 
 ```
 
-OpenWRT Network Config  (e.g. /etc/config/network)
+### OpenWRT Network Config  (e.g. /etc/config/network)
+This article uses the WireGuard tunnel in OpenWRT as an example; other tunnel configuration files can refer to the WireGuard tunnel.
 
 Please choose the tunnel MTU carefully (CS2 Require MTU > 1300 due to UDP Ping (1300 bytes))
 
@@ -50,7 +54,7 @@ config rule6
         option mark '0x800/0x800'
 ```
 
-OpenWRT Firewall Config (e.g. /etc/config/firewall)
+### OpenWRT Firewall Config (e.g. /etc/config/firewall)
 
 ```
 config nat                       
@@ -63,7 +67,7 @@ config nat
 
 config nat                     
         option src 'vpn'
-         option src_ip '[Gaming PC IPv6 Address]'
+        option src_ip '[Gaming PC IPv6 Address]'
         option target 'SNAT'
         option snat_ip 'fd42:42:42::2'
         option family 'ipv6'
