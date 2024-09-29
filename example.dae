@@ -102,10 +102,11 @@ global {
     # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
     mptcp: false
 
-    # The maximum bandwidth for accessing the Internet. It is useful for some specific protocols (e.g., Hysteria2), 
-    # which will perform better with bandwith information provided. The unit is **byte** per second.
-    bandwidth_max_tx: 26214400 # 200Mbps == 25MB/s == 26214400 B/s uplink
-    bandwidth_max_rx: 131072000 # 1Gbps == 125MB/s == 131072000 B/s downlink
+    # The maximum bandwidth for accessing the Internet. It is useful for some specific protocols (e.g., Hysteria2),
+    # which will perform better with bandwith information provided. The unit can be b, kb, mb, gb, tb or bytes per second.
+    # supported formats: https://v2.hysteria.network/docs/advanced/Full-Client-Config/#bandwidth
+    bandwidth_max_tx: '200 mbps' # uplink, or '200 m' or '200 mb' or '200 mbps' or 25000000(which is 200/8*1000*1000)
+    bandwidth_max_rx: '1 gbps' # downlink, or '1 g' or '1 gb' or '1 gbps' or 125000000(which is 1000/8*1000*1000)
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
