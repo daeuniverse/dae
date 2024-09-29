@@ -74,6 +74,11 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 		return nil, err
 	}
 
+	if err = obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
+		t.Fatalf("Failed to update LpmArrayMap: %s", err)
+		return
+	}
+
 	v := reflect.ValueOf(obj.bpftestPrograms)
 	typeOfV := v.Type()
 	for i := 0; i < v.NumField(); i++ {
