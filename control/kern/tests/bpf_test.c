@@ -750,3 +750,132 @@ int testcheck_ipset_mismatch(struct __sk_buff *skb)
 
 	return TC_ACT_OK;
 }
+
+SEC("tc/pktgen/source_ipset_match")
+int testpktgen_source_ipset_match(struct __sk_buff *skb)
+{
+	bpf_skb_change_tail(skb, ETH_HLEN + IP4_HLEN + TCP_HLEN, 0);
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	struct ethhdr *eth = data;
+	if ((void *)(eth + 1) > data_end) {
+		bpf_printk("data + sizeof(*eth) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	eth->h_proto = bpf_htons(ETH_P_IP);
+
+	struct iphdr *ip = data + ETH_HLEN;
+	if ((void *)(ip + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	ip->ihl = 5;
+	ip->version = 4;
+	ip->protocol = IPPROTO_TCP;
+	ip->saddr = bpf_htonl(0xc0a83201); // 192.168.50.1
+	ip->daddr = bpf_htonl(0xe0010002); // 224.1.0.2
+
+	struct tcphdr *tcp = data + ETH_HLEN + IP4_HLEN;
+	if ((void *)(tcp + 1) > data_end) {
+		bpf_printk("data + sizeof(*tcp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	tcp->source = bpf_htons(19233);
+	tcp->dest = bpf_htons(80);
+	tcp->syn = 1;
+
+	return TC_ACT_OK;
+}
+
+SEC("tc/setup/source_ipset_match")
+int testsetup_source_ipset_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* sip(192.168.50.0/24) -> direct */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_SourceIpSet;
+	ms.outbound = 0;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 120;
+	lpm_key.data[2] = bpf_ntohl(0xffff);
+	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	/* fallback: proxy */
+	__builtin_memset(&ms.__value, 0, sizeof(ms.__value));
+	ms.not = false;
+	ms.type = MatchType_Fallback;
+	ms.outbound = 2;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &one_key, &ms, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/source_ipset_match")
+int testcheck_source_ipset_match(struct __sk_buff *skb)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != TC_ACT_OK) {
+		bpf_printk("status_code(%d) != TC_ACT_OK\n", *status_code);
+		return TC_ACT_SHOT;
+	}
+
+	struct ethhdr *eth = data + sizeof(*status_code);
+	if ((void *)(eth + 1) > data_end) {
+		bpf_printk("data + sizeof(*eth) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+		bpf_printk("eth->h_proto != 0x0800\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct iphdr *ip = (void *)eth + ETH_HLEN;
+	if ((void *)(ip + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip->protocol != IPPROTO_TCP) {
+		bpf_printk("ip->protocol != IPPROTO_TCP\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip->daddr != bpf_htonl(0xe0010002)) {
+		bpf_printk("ip->daddr != 224.1.0.2\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tcphdr *tcp = (void *)ip + IP4_HLEN;
+	if ((void *)(tcp + 1) > data_end) {
+		bpf_printk("data + sizeof(*tcp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (tcp->dest != bpf_htons(80)) {
+		bpf_printk("tcp->dest != 80\n");
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
