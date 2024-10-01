@@ -103,15 +103,15 @@ int testcheck_port_mismatch(struct __sk_buff *skb)
 				      19233, 79);
 }
 
-SEC("tc/pktgen/ipset_match_v4")
-int testpktgen_ipset_match_v4(struct __sk_buff *skb)
+SEC("tc/pktgen/ipset_match")
+int testpktgen_ipset_match(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 224.1.0.2:80
 	return set_ipv4_tcp(skb, 0xc0a80001, 0xe0010002, 19233, 80);
 }
 
-SEC("tc/setup/ipset_match_v4")
-int testsetup_ipset_match_v4(struct __sk_buff *skb)
+SEC("tc/setup/ipset_match")
+int testsetup_ipset_match(struct __sk_buff *skb)
 {
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
@@ -139,8 +139,8 @@ int testsetup_ipset_match_v4(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/ipset_match_v4")
-int testcheck_ipset_match_v4(struct __sk_buff *skb)
+SEC("tc/check/ipset_match")
+int testcheck_ipset_match(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 224.1.0.2:80
 	return check_routing_ipv4_tcp(skb,
@@ -238,5 +238,51 @@ int testcheck_source_ipset_match(struct __sk_buff *skb)
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
 				      0xc0a83201, 0xe0010002,
+				      19233, 80);
+}
+
+SEC("tc/pktgen/source_ipset_mismatch")
+int testpktgen_source_ipset_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.51.1:19233 -> 224.1.0.2:80
+	return set_ipv4_tcp(skb, 0xc0a83301, 0xe0010002, 19233, 80);
+}
+
+SEC("tc/setup/source_ipset_mismatch")
+int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* sip(192.168.50.0/24) -> direct */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_SourceIpSet;
+	ms.outbound = 0;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 120;
+	lpm_key.data[2] = bpf_ntohl(0xffff);
+	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	/* fallback: proxy */
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/source_ipset_mismatch")
+int testcheck_source_ipset_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.51.1:19233 -> 224.1.0.2:80
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a83301, 0xe0010002,
 				      19233, 80);
 }
