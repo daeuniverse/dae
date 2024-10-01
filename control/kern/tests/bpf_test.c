@@ -368,3 +368,83 @@ int testcheck_sport_mismatch(struct __sk_buff *skb)
 				      0xc0a80001, 0x01010101,
 				      19233, 79);
 }
+
+SEC("tc/pktgen/l4proto_match")
+int testpktgen_l4proto_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/l4proto_match")
+int testsetup_l4proto_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dport(80) -> proxy */
+	struct match_set ms = {};
+	ms.l4proto_type = L4ProtoType_TCP;
+	ms.not = false;
+	ms.type = MatchType_L4Proto;
+	ms.outbound = 2;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/l4proto_match")
+int testcheck_l4proto_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
+
+SEC("tc/pktgen/l4proto_mismatch")
+int testpktgen_l4proto_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/l4proto_mismatch")
+int testsetup_l4proto_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dport(80) -> proxy */
+	struct match_set ms = {};
+	ms.l4proto_type = L4ProtoType_UDP;
+	ms.not = false;
+	ms.type = MatchType_L4Proto;
+	ms.outbound = 2;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/l4proto_mismatch")
+int testcheck_l4proto_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
