@@ -21,15 +21,15 @@ struct {
 	},
 };
 
-SEC("tc/pktgen/port_match")
-int testpktgen_port_match(struct __sk_buff *skb)
+SEC("tc/pktgen/dport_match")
+int testpktgen_dport_match(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 1.1.1.1:80
 	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 80);
 }
 
-SEC("tc/setup/port_match")
-int testsetup_port_match(struct __sk_buff *skb)
+SEC("tc/setup/dport_match")
+int testsetup_dport_match(struct __sk_buff *skb)
 {
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
@@ -52,8 +52,8 @@ int testsetup_port_match(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/port_match")
-int testcheck_port_match(struct __sk_buff *skb)
+SEC("tc/check/dport_match")
+int testcheck_dport_match(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 1.1.1.1:80
 	return check_routing_ipv4_tcp(skb,
@@ -62,15 +62,15 @@ int testcheck_port_match(struct __sk_buff *skb)
 				      19233, 80);
 }
 
-SEC("tc/pktgen/port_mismatch")
-int testpktgen_port_mismatch(struct __sk_buff *skb)
+SEC("tc/pktgen/dport_mismatch")
+int testpktgen_dport_mismatch(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 1.1.1.1:80
 	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
 }
 
-SEC("tc/setup/port_mismatch")
-int testsetup_port_mismatch(struct __sk_buff *skb)
+SEC("tc/setup/dport_mismatch")
+int testsetup_dport_mismatch(struct __sk_buff *skb)
 {
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
@@ -93,8 +93,8 @@ int testsetup_port_mismatch(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/port_mismatch")
-int testcheck_port_mismatch(struct __sk_buff *skb)
+SEC("tc/check/dport_mismatch")
+int testcheck_dport_mismatch(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
@@ -285,4 +285,86 @@ int testcheck_source_ipset_mismatch(struct __sk_buff *skb)
 				      TC_ACT_REDIRECT,
 				      0xc0a83301, 0xe0010002,
 				      19233, 80);
+}
+
+SEC("tc/pktgen/sport_match")
+int testpktgen_sport_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 80);
+}
+
+SEC("tc/setup/sport_match")
+int testsetup_sport_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dport(80) -> proxy */
+	struct match_set ms = {};
+	struct port_range pr = {19000, 20000};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_SourcePort;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/sport_match")
+int testcheck_sport_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a80001, 0x01010101,
+				      19233, 80);
+}
+
+SEC("tc/pktgen/sport_mismatch")
+int testpktgen_sport_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/sport_mismatch")
+int testsetup_sport_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dport(80) -> proxy */
+	struct match_set ms = {};
+	struct port_range pr = {19230, 19232};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_SourcePort;
+	ms.outbound = 2;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/sport_mismatch")
+int testcheck_sport_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
 }
