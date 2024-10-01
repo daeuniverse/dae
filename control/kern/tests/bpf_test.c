@@ -300,7 +300,7 @@ int testsetup_sport_match(struct __sk_buff *skb)
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
 
-	/* dport(80) -> proxy */
+	/* sport(19000-20000) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {19000, 20000};
 	ms.port_range = pr;
@@ -341,7 +341,7 @@ int testsetup_sport_mismatch(struct __sk_buff *skb)
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
 
-	/* dport(80) -> proxy */
+	/* sport(19230-19232) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {19230, 19232};
 	ms.port_range = pr;
@@ -382,7 +382,7 @@ int testsetup_l4proto_match(struct __sk_buff *skb)
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
 
-	/* dport(80) -> proxy */
+	/* l4proto(tcp) -> proxy */
 	struct match_set ms = {};
 	ms.l4proto_type = L4ProtoType_TCP;
 	ms.not = false;
@@ -422,7 +422,7 @@ int testsetup_l4proto_mismatch(struct __sk_buff *skb)
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
 
-	/* dport(80) -> proxy */
+	/* l4proto(udp) -> proxy */
 	struct match_set ms = {};
 	ms.l4proto_type = L4ProtoType_UDP;
 	ms.not = false;
@@ -462,7 +462,7 @@ int testsetup_ipversion_match(struct __sk_buff *skb)
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
 
-	/* dport(80) -> proxy */
+	/* ipversion(4) -> proxy */
 	struct match_set ms = {};
 	ms.ip_version = IpVersionType_4;
 	ms.not = false;
@@ -502,7 +502,7 @@ int testsetup_ipversion_mismatch(struct __sk_buff *skb)
 	__u32 linklen = ETH_HLEN;
 	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
 
-	/* dport(80) -> proxy */
+	/* ipversion(6) -> proxy */
 	struct match_set ms = {};
 	ms.ip_version = IpVersionType_6;
 	ms.not = false;
@@ -521,6 +521,120 @@ int testsetup_ipversion_mismatch(struct __sk_buff *skb)
 
 SEC("tc/check/ipversion_mismatch")
 int testcheck_ipversion_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
+
+SEC("tc/pktgen/mac_match")
+int testpktgen_mac_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/mac_match")
+int testsetup_mac_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* mac('06:07:08:09:0a:0b') -> proxy */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_Mac;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 128;
+	__u8 *data = (__u8 *)&lpm_key.data;
+	data[10] = 0x6;
+	data[11] = 0x7;
+	data[12] = 0x8;
+	data[13] = 0x9;
+	data[14] = 0xa;
+	data[15] = 0xb;
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/mac_match")
+int testcheck_mac_match(struct __sk_buff *skb)
+{
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 128;
+	__u8 *data = (__u8 *)&lpm_key.data;
+	data[10] = 0x6;
+	data[11] = 0x7;
+	data[12] = 0x8;
+	data[13] = 0x9;
+	data[14] = 0xa;
+	data[15] = 0xb;
+	bpf_map_delete_elem(&unused_lpm_type, &lpm_key);
+
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
+
+SEC("tc/pktgen/mac_mismatch")
+int testpktgen_mac_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/mac_mismatch")
+int testsetup_mac_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* mac('00:01:02:03:04:05') -> proxy */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_Mac;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 128;
+	__u8 *data = (__u8 *)&lpm_key.data;
+	data[10] = 0x0;
+	data[11] = 0x1;
+	data[12] = 0x2;
+	data[13] = 0x3;
+	data[14] = 0x4;
+	data[15] = 0x5;
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/mac_mismatch")
+int testcheck_mac_mismatch(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
