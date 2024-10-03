@@ -573,7 +573,6 @@ int testsetup_mac_match(struct __sk_buff *skb)
 SEC("tc/check/mac_match")
 int testcheck_mac_match(struct __sk_buff *skb)
 {
-
 	struct lpm_key lpm_key = {};
 	lpm_key.trie_key.prefixlen = 128;
 	__u8 *data = (__u8 *)&lpm_key.data;
@@ -635,6 +634,86 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 
 SEC("tc/check/mac_mismatch")
 int testcheck_mac_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
+
+SEC("tc/pktgen/dscp_match")
+int testpktgen_dscp_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/dscp_match")
+int testsetup_dscp_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dscp(4) -> proxy */
+	struct match_set ms = {};
+	ms.dscp = 4;
+	ms.not = false;
+	ms.type = MatchType_Dscp;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/dscp_match")
+int testcheck_dscp_match(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
+
+SEC("tc/pktgen/dscp_mismatch")
+int testpktgen_dscp_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/dscp_mismatch")
+int testsetup_dscp_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dscp(5) -> proxy */
+	struct match_set ms = {};
+	ms.dscp = 5;
+	ms.not = false;
+	ms.type = MatchType_Dscp;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/dscp_mismatch")
+int testcheck_dscp_mismatch(struct __sk_buff *skb)
 {
 	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
