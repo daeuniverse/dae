@@ -721,3 +721,246 @@ int testcheck_dscp_mismatch(struct __sk_buff *skb)
 				      0xc0a80001, 0x01010101,
 				      19233, 79);
 }
+
+SEC("tc/pktgen/and_match_1")
+int testpktgen_and_match_1(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:80
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+}
+
+SEC("tc/setup/and_match_1")
+int testsetup_and_match_1(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_IpSet;
+	ms.outbound = OUTBOUND_LOGICAL_AND;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 112; // */16
+	lpm_key.data[2] = bpf_ntohl(0xffff);
+	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	ms.l4proto_type = L4ProtoType_TCP;
+	ms.not = false;
+	ms.type = MatchType_L4Proto;
+	ms.outbound = OUTBOUND_LOGICAL_AND;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &one_key, &ms, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	struct port_range pr = {1, 1023};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_LOGICAL_OR;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &two_key, &ms, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	pr.port_start = 8443;
+	pr.port_end = 8443;
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &three_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	ms.not = false;
+	ms.type = MatchType_Fallback;
+	ms.outbound = OUTBOUND_DIRECT;
+	ms.must = true;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &four_key, &ms, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/and_match_1")
+int testcheck_and_match_1(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:79
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a80001, 0x01010101,
+				      19233, 79);
+}
+
+SEC("tc/pktgen/and_match_2")
+int testpktgen_and_match_2(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:8443
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 8443);
+}
+
+SEC("tc/setup/and_match_2")
+int testsetup_and_match_2(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_IpSet;
+	ms.outbound = OUTBOUND_LOGICAL_AND;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 112; // */16
+	lpm_key.data[2] = bpf_ntohl(0xffff);
+	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	ms.l4proto_type = L4ProtoType_TCP;
+	ms.not = false;
+	ms.type = MatchType_L4Proto;
+	ms.outbound = OUTBOUND_LOGICAL_AND;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &one_key, &ms, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	struct port_range pr = {1, 1023};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_LOGICAL_OR;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &two_key, &ms, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	pr.port_start = 8443;
+	pr.port_end = 8443;
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &three_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	ms.not = false;
+	ms.type = MatchType_Fallback;
+	ms.outbound = OUTBOUND_DIRECT;
+	ms.must = true;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &four_key, &ms, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/and_match_2")
+int testcheck_and_match_2(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:8443
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0xc0a80001, 0x01010101,
+				      19233, 8443);
+}
+
+SEC("tc/pktgen/and_mismatch")
+int testpktgen_and_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:2333
+	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 2333);
+}
+
+SEC("tc/setup/and_mismatch")
+int testsetup_and_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
+	struct match_set ms = {};
+	ms.not = false;
+	ms.type = MatchType_IpSet;
+	ms.outbound = OUTBOUND_LOGICAL_AND;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	struct lpm_key lpm_key = {};
+	lpm_key.trie_key.prefixlen = 112; // */16
+	lpm_key.data[2] = bpf_ntohl(0xffff);
+	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
+	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	ms.l4proto_type = L4ProtoType_TCP;
+	ms.not = false;
+	ms.type = MatchType_L4Proto;
+	ms.outbound = OUTBOUND_LOGICAL_AND;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &one_key, &ms, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	struct port_range pr = {1, 1023};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_LOGICAL_OR;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &two_key, &ms, BPF_ANY);
+
+	__builtin_memset(&ms, 0, sizeof(ms));
+	pr.port_start = 8443;
+	pr.port_end = 8443;
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &three_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	ms.not = false;
+	ms.type = MatchType_Fallback;
+	ms.outbound = OUTBOUND_DIRECT;
+	ms.must = true;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &four_key, &ms, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/and_mismatch")
+int testcheck_and_mismatch(struct __sk_buff *skb)
+{
+	// 192.168.0.1:19233 -> 1.1.1.1:2333
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      0xc0a80001, 0x01010101,
+				      19233, 2333);
+}
