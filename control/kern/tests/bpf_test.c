@@ -926,3 +926,81 @@ int testcheck_and_mismatch(struct __sk_buff *skb)
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 2333);
 }
+
+SEC("tc/pktgen/not_match")
+int testpktgen_not_match(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/not_match")
+int testsetup_not_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* !dport(80) -> proxy */
+	struct match_set ms = {};
+	struct port_range pr = {80, 80};
+	ms.port_range = pr;
+	ms.not = true;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/not_match")
+int testcheck_not_match(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 80);
+}
+
+SEC("tc/pktgen/not_mismtach")
+int testpktgen_not_mismtach(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
+}
+
+SEC("tc/setup/not_mismtach")
+int testsetup_not_mismtach(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* !dport(80) -> proxy */
+	struct match_set ms = {};
+	struct port_range pr = {80, 80};
+	ms.port_range = pr;
+	ms.not = true;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/not_mismtach")
+int testcheck_not_mismtach(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 79);
+}
