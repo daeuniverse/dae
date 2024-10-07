@@ -24,8 +24,7 @@ struct {
 SEC("tc/pktgen/dport_match")
 int testpktgen_dport_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
 }
 
 SEC("tc/setup/dport_match")
@@ -55,18 +54,16 @@ int testsetup_dport_match(struct __sk_buff *skb)
 SEC("tc/check/dport_match")
 int testcheck_dport_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/dport_mismatch")
 int testpktgen_dport_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/dport_mismatch")
@@ -96,18 +93,16 @@ int testsetup_dport_mismatch(struct __sk_buff *skb)
 SEC("tc/check/dport_mismatch")
 int testcheck_dport_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/ipset_match")
 int testpktgen_ipset_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 224.1.0.2:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0xe0010002, 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(224,1,0,2), 19233, 80);
 }
 
 SEC("tc/setup/ipset_match")
@@ -142,18 +137,16 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 SEC("tc/check/ipset_match")
 int testcheck_ipset_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 224.1.0.2:80
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0xe0010002,
+				      IPV4(192,168,0,1), IPV4(224,1,0,2),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/ipset_mismatch")
 int testpktgen_ipset_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 225.1.0.2:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0xe1010002, 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(225,1,0,2), 19233, 80);
 }
 
 SEC("tc/setup/ipset_mismatch")
@@ -188,18 +181,16 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 SEC("tc/check/ipset_mismatch")
 int testcheck_ipset_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 225.1.0.2:80
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0xe1010002,
+				      IPV4(192,168,0,1), IPV4(225,1,0,2),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/source_ipset_match")
 int testpktgen_source_ipset_match(struct __sk_buff *skb)
 {
-	// 192.168.50.1:19233 -> 224.1.0.2:80
-	return set_ipv4_tcp(skb, 0xc0a83201, 0xe0010002, 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,50,1), IPV4(224,1,0,2), 19233, 80);
 }
 
 SEC("tc/setup/source_ipset_match")
@@ -234,18 +225,16 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 SEC("tc/check/source_ipset_match")
 int testcheck_source_ipset_match(struct __sk_buff *skb)
 {
-	// 192.168.50.1:19233 -> 224.1.0.2:80
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a83201, 0xe0010002,
+				      IPV4(192,168,50,1), IPV4(224,1,0,2),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/source_ipset_mismatch")
 int testpktgen_source_ipset_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.51.1:19233 -> 224.1.0.2:80
-	return set_ipv4_tcp(skb, 0xc0a83301, 0xe0010002, 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,51,1), IPV4(224,1,0,2), 19233, 80);
 }
 
 SEC("tc/setup/source_ipset_mismatch")
@@ -280,18 +269,16 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 SEC("tc/check/source_ipset_mismatch")
 int testcheck_source_ipset_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.51.1:19233 -> 224.1.0.2:80
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a83301, 0xe0010002,
+				      IPV4(192,168,51,1), IPV4(224,1,0,2),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/sport_match")
 int testpktgen_sport_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
 }
 
 SEC("tc/setup/sport_match")
@@ -321,18 +308,16 @@ int testsetup_sport_match(struct __sk_buff *skb)
 SEC("tc/check/sport_match")
 int testcheck_sport_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/sport_mismatch")
 int testpktgen_sport_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/sport_mismatch")
@@ -362,18 +347,16 @@ int testsetup_sport_mismatch(struct __sk_buff *skb)
 SEC("tc/check/sport_mismatch")
 int testcheck_sport_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/l4proto_match")
 int testpktgen_l4proto_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/l4proto_match")
@@ -402,18 +385,16 @@ int testsetup_l4proto_match(struct __sk_buff *skb)
 SEC("tc/check/l4proto_match")
 int testcheck_l4proto_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/l4proto_mismatch")
 int testpktgen_l4proto_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/l4proto_mismatch")
@@ -442,18 +423,16 @@ int testsetup_l4proto_mismatch(struct __sk_buff *skb)
 SEC("tc/check/l4proto_mismatch")
 int testcheck_l4proto_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/ipversion_match")
 int testpktgen_ipversion_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/ipversion_match")
@@ -482,18 +461,16 @@ int testsetup_ipversion_match(struct __sk_buff *skb)
 SEC("tc/check/ipversion_match")
 int testcheck_ipversion_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/ipversion_mismatch")
 int testpktgen_ipversion_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/ipversion_mismatch")
@@ -522,18 +499,16 @@ int testsetup_ipversion_mismatch(struct __sk_buff *skb)
 SEC("tc/check/ipversion_mismatch")
 int testcheck_ipversion_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/mac_match")
 int testpktgen_mac_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/mac_match")
@@ -584,18 +559,16 @@ int testcheck_mac_match(struct __sk_buff *skb)
 	data[15] = 0xb;
 	bpf_map_delete_elem(&unused_lpm_type, &lpm_key);
 
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/mac_mismatch")
 int testpktgen_mac_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/mac_mismatch")
@@ -635,18 +608,16 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 SEC("tc/check/mac_mismatch")
 int testcheck_mac_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/dscp_match")
 int testpktgen_dscp_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/dscp_match")
@@ -675,18 +646,16 @@ int testsetup_dscp_match(struct __sk_buff *skb)
 SEC("tc/check/dscp_match")
 int testcheck_dscp_match(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/dscp_mismatch")
 int testpktgen_dscp_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/dscp_mismatch")
@@ -715,18 +684,16 @@ int testsetup_dscp_mismatch(struct __sk_buff *skb)
 SEC("tc/check/dscp_mismatch")
 int testcheck_dscp_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/and_match_1")
 int testpktgen_and_match_1(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:80
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 79);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
 }
 
 SEC("tc/setup/and_match_1")
@@ -796,18 +763,16 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 SEC("tc/check/and_match_1")
 int testcheck_and_match_1(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:79
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
 
 SEC("tc/pktgen/and_match_2")
 int testpktgen_and_match_2(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:8443
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 8443);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 8443);
 }
 
 SEC("tc/setup/and_match_2")
@@ -877,18 +842,16 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 SEC("tc/check/and_match_2")
 int testcheck_and_match_2(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:8443
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 8443);
 }
 
 SEC("tc/pktgen/and_mismatch")
 int testpktgen_and_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:2333
-	return set_ipv4_tcp(skb, 0xc0a80001, 0x01010101, 19233, 2333);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 2333);
 }
 
 SEC("tc/setup/and_mismatch")
@@ -958,9 +921,8 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 SEC("tc/check/and_mismatch")
 int testcheck_and_mismatch(struct __sk_buff *skb)
 {
-	// 192.168.0.1:19233 -> 1.1.1.1:2333
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      0xc0a80001, 0x01010101,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 2333);
 }
