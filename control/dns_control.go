@@ -848,6 +848,9 @@ func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, dat
 		Path:   upstream.Path,
 	}
 	q := serverURL.Query()
+	// According https://datatracker.ietf.org/doc/html/rfc8484#section-4
+	// msg id should set to 0 when transport over HTTPS for cache friendly.
+	binary.BigEndian.PutUint16(data[0:2], 0)
 	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
 	serverURL.RawQuery = q.Encode()
 
