@@ -163,6 +163,7 @@ func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, err
 
 	stream, err := d.connection.OpenStreamSync(ctx)
 	if err != nil {
+		// If failed to open stream, we should try to create a new connection.
 		qc, err := d.createConnection(ctx)
 		if err != nil {
 			return nil, err
