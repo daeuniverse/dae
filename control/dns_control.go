@@ -7,34 +7,22 @@ package control
 
 import (
 	"context"
-	"crypto/tls"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/daeuniverse/dae/common"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
-	"github.com/daeuniverse/outbound/pool"
-	tc "github.com/daeuniverse/outbound/protocol/tuic/common"
-	"github.com/daeuniverse/quic-go"
-	"github.com/daeuniverse/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -521,6 +509,8 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	return nil
 }
 
+var clientCache = make(map[string]*http.Client)
+
 func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
@@ -565,193 +555,28 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	// the next recursive call. However, a connection cannot be closed twice.
 	// We should set a connClosed flag to avoid it.
 	var connClosed bool
-	var conn netproxy.Conn
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	switch dialArgument.l4proto {
-	case consts.L4ProtoStr_UDP:
-		// Get udp endpoint.
-
-		// TODO: connection pool.
-		conn, err = dialArgument.bestDialer.DialContext(
-			ctxDial,
-			common.MagicNetwork("udp", dialArgument.mark, dialArgument.mptcp),
-			dialArgument.bestTarget.String(),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to dial '%v': %w", dialArgument.bestTarget, err)
+	forwarder, err := newDnsForwarder(upstream, *dialArgument)
+	defer func() {
+		if !connClosed {
+			forwarder.Close()
 		}
-		defer func() {
-			if !connClosed {
-				conn.Close()
-			}
-		}()
+	}()
 
-		timeout := 5 * time.Second
-		_ = conn.SetDeadline(time.Now().Add(timeout))
-		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
-		defer cancelDnsReqCtx()
-		switch upstream.Scheme {
-		case dns.UpstreamScheme_UDP, dns.UpstreamScheme_TCP_UDP:
-			go func() {
-				// Send DNS request every seconds.
-				for {
-					_, err = conn.Write(data)
-					if err != nil {
-						if c.log.IsLevelEnabled(logrus.DebugLevel) {
-							c.log.WithFields(logrus.Fields{
-								"to":      dialArgument.bestTarget.String(),
-								"pid":     req.routingResult.Pid,
-								"pname":   ProcessName2String(req.routingResult.Pname[:]),
-								"mac":     Mac2String(req.routingResult.Mac[:]),
-								"from":    req.realSrc.String(),
-								"network": networkType.String(),
-								"err":     err.Error(),
-							}).Debugln("Failed to write UDP(DNS) packet request.")
-						}
-						return
-					}
-					select {
-					case <-dnsReqCtx.Done():
-						return
-					case <-time.After(1 * time.Second):
-					}
-				}
-			}()
+	if err != nil {
+		return err
+	}
 
-			// We can block here because we are in a coroutine.
-			respBuf := pool.GetFullCap(consts.EthernetMtu)
-			defer pool.Put(respBuf)
-			// Wait for response.
-			n, err := conn.Read(respBuf)
-			if err != nil {
-				if c.timeoutExceedCallback != nil {
-					c.timeoutExceedCallback(dialArgument, err)
-				}
-				return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
-			}
-			var msg dnsmessage.Msg
-			if err = msg.Unpack(respBuf[:n]); err != nil {
-				return err
-			}
-			respMsg = &msg
-			cancelDnsReqCtx()
-		case dns.UpstreamScheme_H3:
-			roundTripper := &http3.RoundTripper{
-				TLSClientConfig: &tls.Config{
-					ServerName:         upstream.Hostname,
-					NextProtos:         []string{"h3"},
-					InsecureSkipVerify: false,
-				},
-				QuicConfig: &quic.Config{},
-				Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
-					udpAddr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
-					fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
-					c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
-					return c, e
-				},
-			}
-			defer roundTripper.Close()
-
-			client := &http.Client{
-				Transport: roundTripper,
-			}
-			msg, err := sendHttpDNS(client, dialArgument.bestTarget.String(), upstream, data)
-			if err != nil {
-				return err
-			}
-			respMsg = msg
-		case dns.UpstreamScheme_QUIC:
-			udpAddr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
-			fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
-			tlsCfg := &tls.Config{
-				NextProtos:         []string{"doq"},
-				InsecureSkipVerify: false,
-				ServerName:         upstream.Hostname,
-			}
-			addr := net.UDPAddrFromAddrPort(dialArgument.bestTarget)
-			qc, err := quic.DialEarly(ctxDial, fakePkt, addr, tlsCfg, nil)
-			if err != nil {
-				return err
-			}
-			defer qc.CloseWithError(0, "")
-
-			stream, err := qc.OpenStreamSync(ctxDial)
-			if err != nil {
-				return err
-			}
-			defer func() {
-				_ = stream.Close()
-			}()
-
-			// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
-			// msg id should set to 0 when transport over QUIC.
-			// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
-			binary.BigEndian.PutUint16(data[0:2], 0)
-
-			msg, err := sendStreamDNS(stream, data)
-			if err != nil {
-				return err
-			}
-			respMsg = msg
-		}
-
-	case consts.L4ProtoStr_TCP:
-		// We can block here because we are in a coroutine.
-
-		conn, err = dialArgument.bestDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark, dialArgument.mptcp), dialArgument.bestTarget.String())
-		if upstream.Scheme == dns.UpstreamScheme_TLS {
-			tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
-				InsecureSkipVerify: false,
-				ServerName:         upstream.Hostname,
-			})
-			conn = tlsConn
-		}
-		if err != nil {
-			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
-		}
-		defer func() {
-			if !connClosed {
-				conn.Close()
-			}
-		}()
-
-		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
-		switch upstream.Scheme {
-		case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TLS, dns.UpstreamScheme_TCP_UDP:
-			msg, err := sendStreamDNS(conn, data)
-			if err != nil {
-				return err
-			}
-			respMsg = msg
-		case dns.UpstreamScheme_HTTPS:
-
-			httpTransport := http.Transport{
-				TLSClientConfig: &tls.Config{
-					ServerName:         upstream.Hostname,
-					InsecureSkipVerify: false,
-				},
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return &netproxy.FakeNetConn{Conn: conn}, nil
-				},
-			}
-			client := http.Client{
-				Transport: &httpTransport,
-			}
-			msg, err := sendHttpDNS(&client, dialArgument.bestTarget.String(), upstream, data)
-			if err != nil {
-				return err
-			}
-			respMsg = msg
-		}
-	default:
-		return fmt.Errorf("unexpected l4proto: %v", dialArgument.l4proto)
+	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
+	if err != nil {
+		return err
 	}
 
 	// Close conn before the recursive call.
-	conn.Close()
+	forwarder.Close()
 	connClosed = true
 
 	// Route response.
@@ -835,78 +660,4 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 	}
 	return nil
-}
-
-func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, data []byte) (respMsg *dnsmessage.Msg, err error) {
-	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return fmt.Errorf("do not use a server that will redirect, upstream: %v", upstream.String())
-	}
-	serverURL := url.URL{
-		Scheme: "https",
-		Host:   target,
-		Path:   upstream.Path,
-	}
-	q := serverURL.Query()
-	// According https://datatracker.ietf.org/doc/html/rfc8484#section-4
-	// msg id should set to 0 when transport over HTTPS for cache friendly.
-	binary.BigEndian.PutUint16(data[0:2], 0)
-	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
-	serverURL.RawQuery = q.Encode()
-
-	req, err := http.NewRequest(http.MethodGet, serverURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/dns-message")
-	req.Host = upstream.Hostname
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	buf, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	var msg dnsmessage.Msg
-	if err = msg.Unpack(buf); err != nil {
-		return nil, err
-	}
-	return &msg, nil
-}
-
-func sendStreamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, err error) {
-	// We should write two byte length in the front of stream DNS request.
-	bReq := pool.Get(2 + len(data))
-	defer pool.Put(bReq)
-	binary.BigEndian.PutUint16(bReq, uint16(len(data)))
-	copy(bReq[2:], data)
-	_, err = stream.Write(bReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write DNS req: %w", err)
-	}
-
-	// Read two byte length.
-	if _, err = io.ReadFull(stream, bReq[:2]); err != nil {
-		return nil, fmt.Errorf("failed to read DNS resp payload length: %w", err)
-	}
-	respLen := int(binary.BigEndian.Uint16(bReq))
-	// Try to reuse the buf.
-	var buf []byte
-	if len(bReq) < respLen {
-		buf = pool.Get(respLen)
-		defer pool.Put(buf)
-	} else {
-		buf = bReq
-	}
-	var n int
-	if n, err = io.ReadFull(stream, buf[:respLen]); err != nil {
-		return nil, fmt.Errorf("failed to read DNS resp payload: %w", err)
-	}
-	var msg dnsmessage.Msg
-	if err = msg.Unpack(buf[:n]); err != nil {
-		return nil, err
-	}
-	return &msg, nil
 }
