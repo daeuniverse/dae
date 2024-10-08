@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -508,8 +507,6 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	}
 	return nil
 }
-
-var clientCache = make(map[string]*http.Client)
 
 func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
