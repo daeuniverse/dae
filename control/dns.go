@@ -79,18 +79,32 @@ type DoH struct {
 
 func (d *DoH) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
 	if d.client == nil {
-		var roundTripper http.RoundTripper
-		if d.http3 {
-			roundTripper = d.getHttp3RoundTripper()
-		} else {
-			roundTripper = d.getHttpRoundTripper()
-		}
-
-		d.client = &http.Client{
-			Transport: roundTripper,
-		}
+		d.client = d.getClient()
 	}
-	return sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+	msg, err := sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+	if err != nil {
+		// If failed to send DNS request, we should try to create a new client.
+		d.client = d.getClient()
+		msg, err = sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+		if err != nil {
+			return nil, err
+		}
+		return msg, nil
+	}
+	return msg, nil
+}
+
+func (d *DoH) getClient() *http.Client {
+	var roundTripper http.RoundTripper
+	if d.http3 {
+		roundTripper = d.getHttp3RoundTripper()
+	} else {
+		roundTripper = d.getHttpRoundTripper()
+	}
+
+	return &http.Client{
+		Transport: roundTripper,
+	}
 }
 
 func (d *DoH) getHttpRoundTripper() *http.Transport {
