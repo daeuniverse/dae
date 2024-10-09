@@ -128,7 +128,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 
 func (s *Dns) CheckUpstreamsFormat() error {
 	for _, upstream := range s.upstream {
-		_, _, _, err := ParseRawUpstream(upstream.Raw)
+		_, _, _, _, err := ParseRawUpstream(upstream.Raw)
 		if err != nil {
 			return err
 		}
