@@ -11,9 +11,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-func NewLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) *logrus.Logger {
-	log := logrus.New()
-
+func SetLogger(log *logrus.Logger, logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		level = logrus.InfoLevel
@@ -28,6 +26,4 @@ func NewLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Lo
 	if logFileOpt != nil {
 		log.SetOutput(logFileOpt)
 	}
-
-	return log
 }

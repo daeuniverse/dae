@@ -26,7 +26,7 @@ dns {
         # If dial_mode is "ip", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.
 
         alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google.com:53'
+        googledns: 'tcp+udp://dns.google:53'
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
     # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
@@ -76,7 +76,7 @@ dns {
 # Use alidns for China mainland domains and googledns for others.
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
+    googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {
@@ -96,7 +96,7 @@ dns {
 # Use alidns for all DNS queries and fallback to googledns if pollution result detected.
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
+    googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {

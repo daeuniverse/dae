@@ -134,12 +134,9 @@ begin:
 		if err != nil {
 			return nil, false, err
 		}
-		cd := netproxy.ContextDialerConverter{
-			Dialer: dialOption.Dialer,
-		}
 		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 		defer cancel()
-		udpConn, err := cd.DialContext(ctx, dialOption.Network, dialOption.Target)
+		udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
 		if err != nil {
 			return nil, true, err
 		}

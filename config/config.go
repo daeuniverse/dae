@@ -26,7 +26,7 @@ type Global struct {
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
 	TcpCheckUrl                []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
 	TcpCheckHttpMethod         string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
-	UdpCheckDns                []string      `mapstructure:"udp_check_dns" default:"dns.google.com:53,8.8.8.8,2001:4860:4860::8888"`
+	UdpCheckDns                []string      `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
 	CheckInterval              time.Duration `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance             time.Duration `mapstructure:"check_tolerance" default:"0"`
 	LanInterface               []string      `mapstructure:"lan_interface"`
@@ -43,6 +43,9 @@ type Global struct {
 	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
 	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
 	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
+	// TODO: support input in human-readable format (e.g., 100Mbps, 1Gbps)
+	BandwidthMaxTx uint64 `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx uint64 `mapstructure:"bandwidth_max_rx" default:"0"`
 }
 
 type Utls struct {
