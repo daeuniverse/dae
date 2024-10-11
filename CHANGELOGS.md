@@ -14,9 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
-- [v0.8.0rc2 (Pre-release)](#v080rc2-pre-release)
-- [v0.8.0rc1 (Pre-release)](#v080rc1-pre-release)
-- [v0.7.4 (Latest)](#v074-latest)
+- [v0.8.0 (Latest)](#v080-latest)
+- [v0.7.4](#v074)
 - [v0.7.3 (Deprecated)](#v073-deprecated)
 - [v0.7.2 (Deprecated)](#v072-deprecated)
 - [v0.7.1](#v071)
@@ -46,9 +45,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.8.0rc2 (Pre-release)
+### v0.8.0 (Latest)
 
-> Release date: 2024/09/27
+> Release date: 2024/10/11
 
 #### Features
 
@@ -70,14 +69,15 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - fix(udp_task_pool): panic: close of closed channel in [#570](https://github.com/daeuniverse/dae/pull/570) by (@mzz2017)
 - fix: unknown tls implementation in [#569](https://github.com/daeuniverse/dae/pull/569) by (@mzz2017)
 - fix: cannot sniff tls fragments in [#555](https://github.com/daeuniverse/dae/pull/555) by (@mzz2017)
-- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
 - fix(cmd/run.go): always check whether network online in [#588](https://github.com/daeuniverse/dae/pull/588) by (@MarksonHon)
 - patch: revert: refactor: improve code readability of struct initialization in [#637](https://github.com/daeuniverse/dae/pull/637) by (@mzz2017)
 - fix: compatible issue when DNS msg not be compressed in [#646](https://github.com/daeuniverse/dae/pull/646) by (@EkkoG)
 - fix(sniffer): remove useless EOF warning logs printing in [#650](https://github.com/daeuniverse/dae/pull/650) by (@douglarek)
 - fix(vless): allow empty flow as ordinary tls in [#652](https://github.com/daeuniverse/dae/pull/652) by (@mzz2017)
-- fix: connection leaks in [#624](https://github.com/daeuniverse/dae/pull/624) by (@mzz2017)
 - fix: crash on openwrt in [#640](https://github.com/daeuniverse/dae/pull/640) by (@mzz2017)
+- fix(hy2): dialer regression introduced by #645 pr in [#663](https://github.com/daeuniverse/dae/pull/663) by (@douglarek)
+- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
+- fix: connection leaks in [#624](https://github.com/daeuniverse/dae/pull/624) by (@mzz2017)
 
 #### Others
 
@@ -99,17 +99,23 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - refactor: reuse existing functions & format code in [#641](https://github.com/daeuniverse/dae/pull/641) by (@Integral-Tech)
 - docs: add linux-aarch64-7ji as recommended kernel for Arch Linux ARM in [#648](https://github.com/daeuniverse/dae/pull/648) by (@Integral-Tech)
 - chore(changelogs): include v0.7.2 changelogs in [#653](https://github.com/daeuniverse/dae/pull/653) by (@sumire88)
+- ci(release): draft release v0.8.0rc2 in [#655](https://github.com/daeuniverse/dae/pull/655) by (@dae-prow)
+- chore: fix go.mod for v0.7.2 in [#656](https://github.com/daeuniverse/dae/pull/656) by (@mzz2017)
+- chore(changelogs): add v0.7.3 changelogs in [#658](https://github.com/daeuniverse/dae/pull/658) by (@sumire88)
+- ci(workflows/{prerelease,release}): force checkout to specific tag in [#660](https://github.com/daeuniverse/dae/pull/660) by (@sumire88)
+- chore(changelogs): add v0.7.4 changelogs in [#659](https://github.com/daeuniverse/dae/pull/659) by (@sumire88)
+- docs: Google DNS should use dns.google instead of dns.google.com in [#664](https://github.com/daeuniverse/dae/pull/664) by (@EkkoG)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.8.0rc2/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.8.0/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.7.0...v0.8.0rc2
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.7.0...v0.8.0
 
 #### New Contributors
 
 - @4860575 made their first contribution in [#605](https://github.com/daeuniverse/dae/pull/605)
 - @KagurazakaNyaa made their first contribution in [#623](https://github.com/daeuniverse/dae/pull/623)
 
-### v0.7.4 (Latest)
+### v0.7.4
 
 > Release date: 2024/09/27
 
@@ -147,43 +153,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - fix: unknown tls implementation (#569)
 
 #### Bug Fixes
-
-### v0.8.0rc1 (Pre-release)
-
-> Release date: 2024/07/22
-
-#### Breaking Changes
-
-> [!NOTE]
-> Please read the following PRs for details
-
-- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
-
-#### Features
-
-- feat: add sysdump as subcommand in [#572](https://github.com/daeuniverse/dae/pull/572) by (@linglilongyi)
-- optimize(bpf): Use direct packet access in [#562](https://github.com/daeuniverse/dae/pull/562) by (@jschwinger233)
-
-#### Bug Fixes
-
-- fix/chore(hy2): update outbound submodule to fix userpass auth in [#550](https://github.com/daeuniverse/dae/pull/550) by (@mzz2017)
-- fix(udp_task_pool): panic: close of closed channel in [#570](https://github.com/daeuniverse/dae/pull/570) by (@mzz2017)
-- fix: unknown tls implementation in [#569](https://github.com/daeuniverse/dae/pull/569) by (@mzz2017)
-- fix: cannot sniff tls fragments in [#555](https://github.com/daeuniverse/dae/pull/555) by (@mzz2017)
-- fix: unknown type due to dae-wing fixed policy in [#582](https://github.com/daeuniverse/dae/pull/582) by (@wanlce)
-
-#### Others
-
-- ci(release): draft release v0.7.0rc1 in [#545](https://github.com/daeuniverse/dae/pull/545) by (@dae-prow)
-- ci(prerelease): fix go version ref in [#546](https://github.com/daeuniverse/dae/pull/546) by (@sumire88)
-- ci: update action-gh-release to v2 in [#547](https://github.com/daeuniverse/dae/pull/547) by (@MarksonHon)
-- docs(protocols): add hysteria2 in [#558](https://github.com/daeuniverse/dae/pull/558) by (@wanlce)
-- docs: Update build-by-yourself.md in [#561](https://github.com/daeuniverse/dae/pull/561) by (@linglilongyi)
-- docs: persistent subscription in [#577](https://github.com/daeuniverse/dae/pull/577) by (@st0nie)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.8.0rc1/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.7.0...v0.8.0rc1
 
 ### v0.7.0
 
