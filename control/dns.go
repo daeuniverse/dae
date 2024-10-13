@@ -28,12 +28,7 @@ type DnsForwarder interface {
 	Close() error
 }
 
-var forwarderCache = make(map[string]DnsForwarder)
-
 func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForwarder, error) {
-	if forwarder, ok := forwarderCache[upstream.String()]; ok {
-		return forwarder, nil
-	}
 	forwarder, err := func() (DnsForwarder, error) {
 		switch dialArgument.l4proto {
 		case consts.L4ProtoStr_TCP:
@@ -65,7 +60,6 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 	if err != nil {
 		return nil, err
 	}
-	forwarderCache[upstream.String()] = forwarder
 	return forwarder, nil
 }
 

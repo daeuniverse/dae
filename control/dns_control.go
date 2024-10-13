@@ -78,6 +78,8 @@ type DnsController struct {
 	// mutex protects the dnsCache.
 	dnsCacheMu sync.Mutex
 	dnsCache   map[string]*DnsCache
+	dnsForwarderCacheMu sync.Mutex
+	dnsForwarderCache   map[string]DnsForwarder
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -114,6 +116,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		fixedDomainTtl: option.FixedDomainTtl,
 		dnsCacheMu:     sync.Mutex{},
 		dnsCache:       make(map[string]*DnsCache),
+		dnsForwarderCacheMu: sync.Mutex{},
+		dnsForwarderCache:   make(map[string]DnsForwarder),
 	}, nil
 }
 
@@ -556,7 +560,19 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	forwarder, err := newDnsForwarder(upstream, *dialArgument)
+	// get forwarder from cache
+	c.dnsForwarderCacheMu.Lock()
+	forwarder, ok := c.dnsForwarderCache[upstreamName]
+	if !ok {
+		forwarder, err = newDnsForwarder(upstream, *dialArgument)
+		if err != nil {
+			c.dnsForwarderCacheMu.Unlock()
+			return err
+		}
+		c.dnsForwarderCache[upstreamName] = forwarder
+	}
+	c.dnsForwarderCacheMu.Unlock()
+
 	defer func() {
 		if !connClosed {
 			forwarder.Close()
