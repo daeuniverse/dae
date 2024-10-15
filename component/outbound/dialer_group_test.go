@@ -13,6 +13,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -26,7 +27,11 @@ var TestNetworkType = &dialer.NetworkType{
 	IsDns:     false,
 }
 
-var log = logger.NewLogger("trace", false, nil)
+var log = logrus.New()
+
+func init() {
+	logger.SetLogger(log, "trace", false, nil)
+}
 
 func newDirectDialer(option *dialer.GlobalOption, fullcone bool) *dialer.Dialer {
 	_d, p := dialer.NewDirectDialer(option, true)
