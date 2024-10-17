@@ -646,6 +646,7 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 #define _pname (&flag[2])
 #define _is_wan flag[2]
 #define _dscp flag[6]
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 	int ret;
 	struct lpm_key *lpm_key;
@@ -658,7 +659,7 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 	const enum MatchType keys[] = { MatchType_L4Proto,
 					MatchType_IpVersion };
 
-	for (__u32 i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+	for (__u32 i = 0; i < ARRAY_SIZE(keys); i++) {
 		ret = bpf_map_update_elem(&l4proto_ipversion_map, &keys[i],
 					  &flag[i], BPF_ANY);
 		if (unlikely(ret))
@@ -675,6 +676,7 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 	}
 
 	__u32 key = MatchType_SourcePort;
+
 	if (unlikely((ret = bpf_map_update_elem(&h_port_map, &key, &h_sport,
 						BPF_ANY))))
 		return ret;
