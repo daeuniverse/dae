@@ -656,8 +656,7 @@ route(const __u32 flag[8], const void *l4hdr, const __be32 saddr[4],
 		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
 	};
 
-	const __u32 keys[] = { MatchType_L4Proto,
-					MatchType_IpVersion };
+	const __u32 keys[] = { MatchType_L4Proto, MatchType_IpVersion };
 
 	for (__u32 i = 0; i < ARRAY_SIZE(keys); i++) {
 		ret = bpf_map_update_elem(&l4proto_ipversion_map, &keys[i],
