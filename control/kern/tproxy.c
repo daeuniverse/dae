@@ -855,7 +855,7 @@ before_next_loop:
 #undef _dscp
 }
 
-__always_inline __s64 route(const struct route_params *params)
+static __always_inline __s64 route(const struct route_params *params)
 {
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
