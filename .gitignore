@@ -2,15 +2,10 @@
 .idea
 *.o
 *.tmp
-<<<<<<< HEAD
 bpf_bpfeb*.go
 bpf_bpfel*.go
 bpf_*_bpfeb*.go
 bpf_*_bpfel*.go
-=======
-bpf*_bpfeb*.go
-bpf*_bpfel*.go
->>>>>>> 8d3cfca (refactor/optimize: rework route with bpf_loop)
 dae
 outline.json
 go-mod/
