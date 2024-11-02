@@ -10,8 +10,8 @@ DoH3
 h3://<host>:<port>/<path>
 http3://<host>:<port>/<path>
 
-default port: 443
-default path: /dns-query
+默认端口: 443
+默认 path: /dns-query
 ```
 
 DoH
@@ -19,8 +19,8 @@ DoH
 ```
 https://<host>:<port>/<path>
 
-default port: 443
-default path: /dns-query
+默认端口: 443
+默认 path: /dns-query
 ```
 
 DoT
@@ -28,7 +28,7 @@ DoT
 ```
 tls://<host>:<port>
 
-default port: 853
+默认端口: 853
 ```
 
 DoQ
@@ -36,9 +36,32 @@ DoQ
 ```
 quic://<host>:<port>
 
-default port: 863
+默认端口: 863
 ```
 
+UDP
+  
+```
+udp://<host>:<port>
+
+默认端口: 53
+```
+
+TCP
+
+```
+tcp://<host>:<port>
+
+默认端口: 53
+```
+
+TCP and UDP
+
+```
+tcp+udp://<host>:<port>
+
+默认端口: 53
+```
 
 ## 示例
 

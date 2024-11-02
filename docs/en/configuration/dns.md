@@ -39,6 +39,30 @@ quic://<host>:<port>
 default port: 863
 ```
 
+UDP
+  
+```
+udp://<host>:<port>
+
+default port: 53
+```
+
+TCP
+
+```
+tcp://<host>:<port>
+
+default port: 53
+```
+
+TCP and UDP
+
+```
+tcp+udp://<host>:<port>
+
+default port: 53
+```
+
 ## Examples
 
 ```shell
