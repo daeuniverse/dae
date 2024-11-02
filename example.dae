@@ -146,7 +146,8 @@ dns {
     #}
 
     upstream {
-        # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.
+        # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp/h3/http3/quic/https/tls.
+        # If the protocol is h3/http3/https, it supports setting a custom path, that is, the format can be "protocol://host:port/custom path".
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
         # IPv4 or IPv6 to use according to group policy (such as min latency policy).
         # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
