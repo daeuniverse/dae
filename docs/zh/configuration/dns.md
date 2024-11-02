@@ -85,6 +85,20 @@ dns {
 
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
+
+        # alih3: 'h3://dns.alidns.com:443'
+        # alih3_path: 'h3://dns.alidns.com:443/dns-query'
+        # alihttp3: 'http3://dns.alidns.com:443'
+        # alihttp3_path: 'http3://dns.alidns.com:443/dns-query'
+        # ali_quic: 'quic://dns.alidns.com:853'
+
+        # h3_cusotm_path: 'h3://dns.example.com:443/custom-path'
+        # http3_cusotm_path: 'http3://dns.example.com:443/custom-path'
+
+        # ali_doh: 'https://dns.alidns.com:443'
+        # ali_dot: 'tls://dns.alidns.com:853'
+
+        # doh_cusotm_path: 'https://dns.example.com:443/custom-path'
     }
     # 'request' 和 'response' 的 routing 格式和全局的 'routing' 类似。
     # 参考 https://github.com/daeuniverse/dae/blob/main/docs/zh/configuration/routing.md
