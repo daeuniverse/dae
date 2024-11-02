@@ -2,6 +2,43 @@
 
 dae will intercept all UDP traffic to port 53 and sniff DNS. Here gives some examples and templates for DNS configuration.
 
+# Schema
+
+DoH3
+
+```
+h3://<host>:<port>/<path>
+http3://<host>:<port>/<path>
+
+default port: 443
+default path: /dns-query
+```
+
+DoH
+
+```
+https://<host>:<port>/<path>
+
+default port: 443
+default path: /dns-query
+```
+
+DoT
+
+```
+tls://<host>:<port>
+
+default port: 853
+```
+
+DoQ
+
+```
+quic://<host>:<port>
+
+default port: 863
+```
+
 ## Examples
 
 ```shell
@@ -18,9 +55,7 @@ dns {
     }
 
     upstream {
-        # Value can be scheme://host:port.
-        # Scheme list: tcp, udp, tcp+udp, https, tls, http3, h3, quic.
-        # If the protocol is h3/http3/https, it supports setting a custom path, that is, the format can be "protocol://host:port/custom path".
+        # Scheme list: tcp, udp, tcp+udp, https, tls, http3, h3, quic, details see above Schema.
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
         # IPv4 or IPv6 to use according to group policy (such as min latency policy).
         # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.

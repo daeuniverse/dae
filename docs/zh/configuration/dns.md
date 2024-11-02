@@ -2,6 +2,44 @@
 
 dae 拦截目标端口为 53 的 UDP 流量并嗅探 DNS，以下为 DNS 配置的示例和模板。
 
+# Schema
+
+DoH3
+
+```
+h3://<host>:<port>/<path>
+http3://<host>:<port>/<path>
+
+default port: 443
+default path: /dns-query
+```
+
+DoH
+
+```
+https://<host>:<port>/<path>
+
+default port: 443
+default path: /dns-query
+```
+
+DoT
+
+```
+tls://<host>:<port>
+
+default port: 853
+```
+
+DoQ
+
+```
+quic://<host>:<port>
+
+default port: 863
+```
+
+
 ## 示例
 
 ```shell
@@ -16,9 +54,7 @@ dns {
     }
 
     upstream {
-        # 格式为“协议://主机:端口”
-        # 支持协议：tcp, udp, tcp+udp, https, tls, http3, h3, quic.
-        # 如果协议是 h3/http3/https，支持设置自定义路径，即格式可以是“协议://主机:端口/自定义路径”
+        # 支持协议：tcp, udp, tcp+udp, https, tls, http3, h3, quic, 详情见上面的 Schema。
         # 若主机为域名且具有 A 和 AAAA 记录，dae 自动选择 IPv4 或 IPv6 进行连接,
         # 是否走代理取决于全局的 routing（不是下面 dns 配置部分的 routing），节点选择取决于 group 的策略。
         # 请确保DNS流量经过dae且由dae转发，按域名分流需要如此！
