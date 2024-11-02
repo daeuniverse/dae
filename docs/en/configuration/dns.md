@@ -36,7 +36,7 @@ DoQ
 ```
 quic://<host>:<port>
 
-default port: 863
+default port: 853
 ```
 
 UDP
