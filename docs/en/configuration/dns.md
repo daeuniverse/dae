@@ -2,6 +2,67 @@
 
 dae will intercept all UDP traffic to port 53 and sniff DNS. Here gives some examples and templates for DNS configuration.
 
+# Schema
+
+DoH3
+
+```
+h3://<host>:<port>/<path>
+http3://<host>:<port>/<path>
+
+default port: 443
+default path: /dns-query
+```
+
+DoH
+
+```
+https://<host>:<port>/<path>
+
+default port: 443
+default path: /dns-query
+```
+
+DoT
+
+```
+tls://<host>:<port>
+
+default port: 853
+```
+
+DoQ
+
+```
+quic://<host>:<port>
+
+default port: 853
+```
+
+UDP
+  
+```
+udp://<host>:<port>
+
+default port: 53
+```
+
+TCP
+
+```
+tcp://<host>:<port>
+
+default port: 53
+```
+
+TCP and UDP
+
+```
+tcp+udp://<host>:<port>
+
+default port: 53
+```
+
 ## Examples
 
 ```shell
@@ -18,8 +79,7 @@ dns {
     }
 
     upstream {
-        # Value can be scheme://host:port.
-        # Scheme list: tcp, udp, tcp+udp. Ongoing: https, tls, quic.
+        # Scheme list: tcp, udp, tcp+udp, https, tls, http3, h3, quic, details see above Schema.
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
         # IPv4 or IPv6 to use according to group policy (such as min latency policy).
         # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
@@ -27,6 +87,20 @@ dns {
 
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
+
+        # alih3: 'h3://dns.alidns.com:443'
+        # alih3_path: 'h3://dns.alidns.com:443/dns-query'
+        # alihttp3: 'http3://dns.alidns.com:443'
+        # alihttp3_path: 'http3://dns.alidns.com:443/dns-query'
+        # ali_quic: 'quic://dns.alidns.com:853'
+
+        # h3_cusotm_path: 'h3://dns.example.com:443/custom-path'
+        # http3_cusotm_path: 'http3://dns.example.com:443/custom-path'
+
+        # ali_doh: 'https://dns.alidns.com:443'
+        # ali_dot: 'tls://dns.alidns.com:853'
+
+        # doh_cusotm_path: 'https://dns.example.com:443/custom-path'
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
     # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md

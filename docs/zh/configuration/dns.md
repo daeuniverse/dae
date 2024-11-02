@@ -2,6 +2,67 @@
 
 dae 拦截目标端口为 53 的 UDP 流量并嗅探 DNS，以下为 DNS 配置的示例和模板。
 
+# Schema
+
+DoH3
+
+```
+h3://<host>:<port>/<path>
+http3://<host>:<port>/<path>
+
+默认端口: 443
+默认 path: /dns-query
+```
+
+DoH
+
+```
+https://<host>:<port>/<path>
+
+默认端口: 443
+默认 path: /dns-query
+```
+
+DoT
+
+```
+tls://<host>:<port>
+
+默认端口: 853
+```
+
+DoQ
+
+```
+quic://<host>:<port>
+
+默认端口: 853
+```
+
+UDP
+  
+```
+udp://<host>:<port>
+
+默认端口: 53
+```
+
+TCP
+
+```
+tcp://<host>:<port>
+
+默认端口: 53
+```
+
+TCP and UDP
+
+```
+tcp+udp://<host>:<port>
+
+默认端口: 53
+```
+
 ## 示例
 
 ```shell
@@ -16,8 +77,7 @@ dns {
     }
 
     upstream {
-        # 格式为“协议://主机:端口”
-        # 支持协议：tcp, udp, tcp+udp（对于https, tls, quic的支持孵化中）。
+        # 支持协议：tcp, udp, tcp+udp, https, tls, http3, h3, quic, 详情见上面的 Schema。
         # 若主机为域名且具有 A 和 AAAA 记录，dae 自动选择 IPv4 或 IPv6 进行连接,
         # 是否走代理取决于全局的 routing（不是下面 dns 配置部分的 routing），节点选择取决于 group 的策略。
         # 请确保DNS流量经过dae且由dae转发，按域名分流需要如此！
@@ -25,6 +85,20 @@ dns {
 
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
+
+        # alih3: 'h3://dns.alidns.com:443'
+        # alih3_path: 'h3://dns.alidns.com:443/dns-query'
+        # alihttp3: 'http3://dns.alidns.com:443'
+        # alihttp3_path: 'http3://dns.alidns.com:443/dns-query'
+        # ali_quic: 'quic://dns.alidns.com:853'
+
+        # h3_cusotm_path: 'h3://dns.example.com:443/custom-path'
+        # http3_cusotm_path: 'http3://dns.example.com:443/custom-path'
+
+        # ali_doh: 'https://dns.alidns.com:443'
+        # ali_dot: 'tls://dns.alidns.com:853'
+
+        # doh_cusotm_path: 'https://dns.example.com:443/custom-path'
     }
     # 'request' 和 'response' 的 routing 格式和全局的 'routing' 类似。
     # 参考 https://github.com/daeuniverse/dae/blob/main/docs/zh/configuration/routing.md
