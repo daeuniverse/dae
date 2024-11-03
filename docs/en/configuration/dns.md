@@ -94,13 +94,13 @@ dns {
         # alihttp3_path: 'http3://dns.alidns.com:443/dns-query'
         # ali_quic: 'quic://dns.alidns.com:853'
 
-        # h3_cusotm_path: 'h3://dns.example.com:443/custom-path'
-        # http3_cusotm_path: 'http3://dns.example.com:443/custom-path'
+        # h3_custom_path: 'h3://dns.example.com:443/custom-path'
+        # http3_custom_path: 'http3://dns.example.com:443/custom-path'
 
         # ali_doh: 'https://dns.alidns.com:443'
         # ali_dot: 'tls://dns.alidns.com:853'
 
-        # doh_cusotm_path: 'https://dns.example.com:443/custom-path'
+        # doh_custom_path: 'https://dns.example.com:443/custom-path'
     }
     # The routing format of 'request' and 'response' is similar with section 'routing'.
     # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
