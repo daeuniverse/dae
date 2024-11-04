@@ -971,6 +971,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			"upstream":   dnsUpstream.String(),
 			"choose":     string(l4proto) + "+" + string(ipversion),
 			"use":        bestTarget.String(),
+			"outbound":   bestOutbound.Name,
+			"dialer":     bestDialer.Property().Name,
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
