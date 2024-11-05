@@ -57,6 +57,7 @@ var GlobalDesc = Desc{
 	"sniffing_timeout":             "Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Set it higher is useful in high latency LAN network.",
 	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",
 	"utls_imitate":                 "The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls. See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17",
+	"mptcp":                        "Enable Multipath TCP.  If is true, dae will try to use MPTCP to connect all nodes, but it will only take effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.",
 }
 
 var DnsDesc = Desc{
@@ -84,4 +85,9 @@ min: Select node by the latency of last check.
 min_avg10: Select node by the average of latencies of last 10 checks.
 min_moving_avg: Select node by the moving average of latencies of checks, which means more recent latencies have higher weight.
 `,
+	"tcp_check_url":         "Override global config.",
+	"tcp_check_http_method": "Override global config.",
+	"udp_check_dns":         "Override global config.",
+	"check_interval":        "Override global config.",
+	"check_tolerance":       "Override global config.",
 }

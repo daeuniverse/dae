@@ -11,7 +11,7 @@ STRIP ?= llvm-strip
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
 TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
-MAX_MATCH_SET_LEN ?= 64
+MAX_MATCH_SET_LEN ?= 1024
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 NOSTRIP ?= n
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
@@ -79,6 +79,8 @@ clean-ebpf:
 		rm -f control/bpf_bpf*.o
 	@rm -f trace/bpf_bpf*.go && \
 		rm -f trace/bpf_bpf*.o
+	@rm -f control/kern/tests/bpftest_bpf*.go && \
+		rm -f control/kern/tests/bpftest_bpf*.o
 fmt:
 	go fmt ./...
 
@@ -98,5 +100,19 @@ ebpf: submodule clean-ebpf
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
+
+ebpf-test: export BPF_CLANG := $(CLANG)
+ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
+ebpf-test: export BPF_CFLAGS := $(CFLAGS)
+ebpf-test: export BPF_TARGET := $(TARGET)
+ebpf-test: export BPF_TRACE_TARGET := $(GOARCH)
+ebpf-test: submodule clean-ebpf
+	@unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
+    echo $(STRIP_FLAG) && \
+    go generate ./control/kern/tests/bpf_test.go && \
+    go clean -testcache && \
+    go test -v ./control/kern/tests/...
 
 ## End Ebpf

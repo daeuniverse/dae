@@ -7,9 +7,7 @@ package control
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/netip"
@@ -18,16 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
-
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
-	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -84,6 +78,8 @@ type DnsController struct {
 	// mutex protects the dnsCache.
 	dnsCacheMu sync.Mutex
 	dnsCache   map[string]*DnsCache
+	dnsForwarderCacheMu sync.Mutex
+	dnsForwarderCache   map[string]DnsForwarder
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -120,6 +116,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		fixedDomainTtl: option.FixedDomainTtl,
 		dnsCacheMu:     sync.Mutex{},
 		dnsCache:       make(map[string]*DnsCache),
+		dnsForwarderCacheMu: sync.Mutex{},
+		dnsForwarderCache:   make(map[string]DnsForwarder),
 	}, nil
 }
 
@@ -166,6 +164,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
 	if cache != nil {
 		cache.FillInto(msg)
+		msg.Compress = true
 		b, err := msg.Pack()
 		if err != nil {
 			c.log.Warnf("failed to pack: %v", err)
@@ -344,6 +343,7 @@ type dialArgument struct {
 	bestOutbound *outbound.DialerGroup
 	bestTarget   netip.AddrPort
 	mark         uint32
+	mptcp        bool
 }
 
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
@@ -496,6 +496,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	dnsMessage.Response = true
 	dnsMessage.RecursionAvailable = true
 	dnsMessage.Truncated = false
+	dnsMessage.Compress = true
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
 			"question": dnsMessage.Question,
@@ -555,133 +556,40 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	// the next recursive call. However, a connection cannot be closed twice.
 	// We should set a connClosed flag to avoid it.
 	var connClosed bool
-	var conn netproxy.Conn
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	bestContextDialer := netproxy.ContextDialerConverter{
-		Dialer: dialArgument.bestDialer,
+
+	// get forwarder from cache
+	c.dnsForwarderCacheMu.Lock()
+	forwarder, ok := c.dnsForwarderCache[upstreamName]
+	if !ok {
+		forwarder, err = newDnsForwarder(upstream, *dialArgument)
+		if err != nil {
+			c.dnsForwarderCacheMu.Unlock()
+			return err
+		}
+		c.dnsForwarderCache[upstreamName] = forwarder
+	}
+	c.dnsForwarderCacheMu.Unlock()
+
+	defer func() {
+		if !connClosed {
+			forwarder.Close()
+		}
+	}()
+
+	if err != nil {
+		return err
 	}
 
-	switch dialArgument.l4proto {
-	case consts.L4ProtoStr_UDP:
-		// Get udp endpoint.
-
-		// TODO: connection pool.
-		conn, err = bestContextDialer.DialContext(
-			ctxDial,
-			common.MagicNetwork("udp", dialArgument.mark),
-			dialArgument.bestTarget.String(),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to dial '%v': %w", dialArgument.bestTarget, err)
-		}
-		defer func() {
-			if !connClosed {
-				conn.Close()
-			}
-		}()
-
-		timeout := 5 * time.Second
-		_ = conn.SetDeadline(time.Now().Add(timeout))
-		dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
-		defer cancelDnsReqCtx()
-		go func() {
-			// Send DNS request every seconds.
-			for {
-				_, err = conn.Write(data)
-				if err != nil {
-					if c.log.IsLevelEnabled(logrus.DebugLevel) {
-						c.log.WithFields(logrus.Fields{
-							"to":      dialArgument.bestTarget.String(),
-							"pid":     req.routingResult.Pid,
-							"pname":   ProcessName2String(req.routingResult.Pname[:]),
-							"mac":     Mac2String(req.routingResult.Mac[:]),
-							"from":    req.realSrc.String(),
-							"network": networkType.String(),
-							"err":     err.Error(),
-						}).Debugln("Failed to write UDP(DNS) packet request.")
-					}
-					return
-				}
-				select {
-				case <-dnsReqCtx.Done():
-					return
-				case <-time.After(1 * time.Second):
-				}
-			}
-		}()
-
-		// We can block here because we are in a coroutine.
-		respBuf := pool.GetFullCap(consts.EthernetMtu)
-		defer pool.Put(respBuf)
-		// Wait for response.
-		n, err := conn.Read(respBuf)
-		if err != nil {
-			if c.timeoutExceedCallback != nil {
-				c.timeoutExceedCallback(dialArgument, err)
-			}
-			return fmt.Errorf("failed to read from: %v (dialer: %v): %w", dialArgument.bestTarget, dialArgument.bestDialer.Property().Name, err)
-		}
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(respBuf[:n]); err != nil {
-			return err
-		}
-		respMsg = &msg
-		cancelDnsReqCtx()
-
-	case consts.L4ProtoStr_TCP:
-		// We can block here because we are in a coroutine.
-
-		conn, err = bestContextDialer.DialContext(ctxDial, common.MagicNetwork("tcp", dialArgument.mark), dialArgument.bestTarget.String())
-		if err != nil {
-			return fmt.Errorf("failed to dial proxy to tcp: %w", err)
-		}
-		defer func() {
-			if !connClosed {
-				conn.Close()
-			}
-		}()
-
-		_ = conn.SetDeadline(time.Now().Add(4900 * time.Millisecond))
-		// We should write two byte length in the front of TCP DNS request.
-		bReq := pool.Get(2 + len(data))
-		defer pool.Put(bReq)
-		binary.BigEndian.PutUint16(bReq, uint16(len(data)))
-		copy(bReq[2:], data)
-		_, err = conn.Write(bReq)
-		if err != nil {
-			return fmt.Errorf("failed to write DNS req: %w", err)
-		}
-
-		// Read two byte length.
-		if _, err = io.ReadFull(conn, bReq[:2]); err != nil {
-			return fmt.Errorf("failed to read DNS resp payload length: %w", err)
-		}
-		respLen := int(binary.BigEndian.Uint16(bReq))
-		// Try to reuse the buf.
-		var buf []byte
-		if len(bReq) < respLen {
-			buf = pool.Get(respLen)
-			defer pool.Put(buf)
-		} else {
-			buf = bReq
-		}
-		var n int
-		if n, err = io.ReadFull(conn, buf[:respLen]); err != nil {
-			return fmt.Errorf("failed to read DNS resp payload: %w", err)
-		}
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(buf[:n]); err != nil {
-			return err
-		}
-		respMsg = &msg
-	default:
-		return fmt.Errorf("unexpected l4proto: %v", dialArgument.l4proto)
+	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
+	if err != nil {
+		return err
 	}
 
 	// Close conn before the recursive call.
-	conn.Close()
+	forwarder.Close()
 	connClosed = true
 
 	// Route response.
@@ -755,6 +663,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	if needResp {
 		// Keep the id the same with request.
 		respMsg.Id = id
+		respMsg.Compress = true
 		data, err = respMsg.Pack()
 		if err != nil {
 			return err

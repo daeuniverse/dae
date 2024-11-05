@@ -55,7 +55,7 @@ var (
 )
 
 func init() {
-	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.")
+	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
 	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to stdout and stderr.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
@@ -105,8 +105,9 @@ var (
 					Compress:   true,
 				}
 			}
-			log := logger.NewLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
-			logrus.SetLevel(log.Level)
+			log := logrus.New()
+			logger.SetLogger(log, conf.Global.LogLevel, disableTimestamp, logOpts)
+			logger.SetLogger(logrus.StandardLogger(), conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			if err := Run(log, conf, []string{filepath.Dir(cfgFile)}); err != nil {
@@ -238,9 +239,11 @@ loop:
 			}
 			// New logger.
 			oldLogOutput := log.Out
-			log = logger.NewLogger(newConf.Global.LogLevel, disableTimestamp, nil)
+			log = logrus.New()
+			logger.SetLogger(log, newConf.Global.LogLevel, disableTimestamp, nil)
+			logger.SetLogger(logrus.StandardLogger(), newConf.Global.LogLevel, disableTimestamp, nil)
 			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
-			logrus.SetLevel(log.Level)
+			logrus.SetOutput(oldLogOutput)
 
 			// New control plane.
 			obj := c.EjectBpf()
@@ -325,13 +328,12 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	}
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
-	if !conf.Global.DisableWaitingNetwork && len(conf.Subscription) > 0 {
+	if !conf.Global.DisableWaitingNetwork {
 		epo := 5 * time.Second
 		client := http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					cd := netproxy.ContextDialerConverter{Dialer: direct.SymmetricDirect}
-					conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
+					conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
 					if err != nil {
 						return nil, err
 					}
@@ -372,8 +374,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				cd := netproxy.ContextDialerConverter{Dialer: direct.SymmetricDirect}
-				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
+				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
 				if err != nil {
 					return nil, err
 				}

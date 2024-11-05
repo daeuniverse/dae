@@ -22,11 +22,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
+var (
 	DefaultNatTimeout = 3 * time.Minute
-	DnsNatTimeout     = 17 * time.Second // RFC 5452
-	AnyfromTimeout    = 5 * time.Second  // Do not cache too long.
-	MaxRetry          = 2
+)
+
+const (
+	DnsNatTimeout  = 17 * time.Second // RFC 5452
+	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
+	MaxRetry       = 2
 )
 
 type DialOption struct {
@@ -250,7 +253,7 @@ getNew:
 				Target:        dialTarget,
 				Dialer:        dialerForNew,
 				Outbound:      outbound,
-				Network:       common.MagicNetwork("udp", routingResult.Mark),
+				Network:       common.MagicNetwork("udp", routingResult.Mark, c.mptcp),
 				SniffedDomain: domain,
 			}, nil
 		},

@@ -21,6 +21,8 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -33,7 +35,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/grpc"
@@ -75,6 +76,7 @@ type ControlPlane struct {
 	sniffingTimeout   time.Duration
 	tproxyPortProtect bool
 	soMarkFromDae     uint32
+	mptcp             bool
 }
 
 func NewControlPlane(
@@ -101,6 +103,12 @@ func NewControlPlane(
 	}
 	/// Check linux kernel requirements.
 	// Check version from high to low to reduce the number of user upgrading kernel.
+	if err := features.HaveProgramHelper(ebpf.SchedCLS, asm.FnLoop); err != nil {
+		return nil, fmt.Errorf("%w: your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
+			err,
+			kernelVersion.String(),
+			consts.BpfLoopFeatureVersion.String())
+	}
 	if requirement := consts.ChecksumFeatureVersion; kernelVersion.Less(requirement) {
 		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
 			kernelVersion.String(),
@@ -255,18 +263,7 @@ func NewControlPlane(
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
-	option := &dialer.GlobalOption{
-		ExtraOption: D.ExtraOption{
-			AllowInsecure:     global.AllowInsecure,
-			TlsImplementation: global.TlsImplementation,
-			UtlsImitate:       global.UtlsImitate},
-		Log:               log,
-		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Somark: global.SoMarkFromDae},
-		CheckInterval:     global.CheckInterval,
-		CheckTolerance:    global.CheckTolerance,
-		CheckDnsTcp:       true,
-	}
+	option := dialer.NewGlobalOption(global, log)
 
 	// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)
@@ -322,8 +319,22 @@ func NewControlPlane(
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
 		}
+		groupOption, err := ParseGroupOverrideOption(group, *global, log)
+		finalOption := option
+		if err == nil && groupOption != nil {
+			newDialers := make([]*dialer.Dialer, 0)
+			for _, d := range dialers {
+				newDialer := d.Clone()
+				deferFuncs = append(deferFuncs, newDialer.Close)
+				newDialer.GlobalOption = groupOption
+				newDialers = append(newDialers, newDialer)
+			}
+			log.Infof(`Group "%v"'s check option has been override.`, group.Name)
+			dialers = newDialers
+			finalOption = groupOption
+		}
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(option, group.Name, dialers, annos, *policy,
+		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
 		outbounds = append(outbounds, dialerGroup)
 	}
@@ -395,6 +406,7 @@ func NewControlPlane(
 		sniffingTimeout:   sniffingTimeout,
 		tproxyPortProtect: global.TproxyPortProtect,
 		soMarkFromDae:     global.SoMarkFromDae,
+		mptcp:             global.Mptcp,
 	}
 	defer func() {
 		if err != nil {
@@ -407,7 +419,7 @@ func NewControlPlane(
 		Logger:                  log,
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
-		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp),
 	})
 	if err != nil {
 		return nil, err
@@ -511,6 +523,36 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 		m[strings.TrimSpace(key)] = int(ttl)
 	}
 	return m, nil
+}
+
+func ParseGroupOverrideOption(group config.Group, global config.Global, log *logrus.Logger) (*dialer.GlobalOption, error) {
+	result := global
+	changed := false
+	if group.TcpCheckUrl != nil {
+		result.TcpCheckUrl = group.TcpCheckUrl
+		changed = true
+	}
+	if group.TcpCheckHttpMethod != "" {
+		result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
+		changed = true
+	}
+	if group.UdpCheckDns != nil {
+		result.UdpCheckDns = group.UdpCheckDns
+		changed = true
+	}
+	if group.CheckInterval != 0 {
+		result.CheckInterval = group.CheckInterval
+		changed = true
+	}
+	if group.CheckTolerance != 0 {
+		result.CheckTolerance = group.CheckTolerance
+		changed = true
+	}
+	if changed {
+		option := dialer.NewGlobalOption(&result, log)
+		return option, nil
+	}
+	return nil, nil
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.
@@ -620,7 +662,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 					// TODO: use DNS controller and re-route by control plane.
 					systemDns, err := netutils.SystemDns()
 					if err == nil {
-						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae), true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
+						if ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true); err == nil && (ip46.Ip4.IsValid() || ip46.Ip6.IsValid()) {
 							// Has A/AAAA records. It is a real domain.
 							dialMode = consts.DialMode_Domain
 							// Add it to real-domain set.
@@ -938,6 +980,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestOutbound: bestOutbound,
 		bestTarget:   bestTarget,
 		mark:         dialMark,
+		mptcp:        c.mptcp,
 	}, nil
 }
 

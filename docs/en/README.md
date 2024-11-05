@@ -9,21 +9,21 @@
 Use `uname -r` to check the kernel version on your machine.
 
 > **Note**
-> If you find your kernel version is `< 5.8`, follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to the minimum required version.
+> If you find your kernel version is `< 5.17`, follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to the minimum required version.
 
-`Bind to LAN: >= 5.8`
+`Bind to LAN: >= 5.17`
 
 You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
 
-This feature requires the kernel version of machine on which dae install >= 5.8.
+This feature requires the kernel version of machine on which dae install >= 5.17.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-`Bind to WAN: >= 5.15`
+`Bind to WAN: >= 5.17`
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
-This feature requires kernel version of the machine >= 5.15.
+This feature requires kernel version of the machine >= 5.17.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
@@ -69,6 +69,8 @@ Check them using command like:
 ```
 
 > **Note**: `Armbian` users can follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
+
+> `Arch Linux ARM` users can use [linux-aarch64-7ji](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) which meets the kernel configuration requirement of dae.
 
 ## Installation
 
@@ -194,7 +196,7 @@ subscription {
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
 dns {
   upstream {
-    googledns: 'tcp+udp://dns.google.com:53'
+    googledns: 'tcp+udp://dns.google:53'
     alidns: 'udp://dns.alidns.com:53'
   }
   routing {

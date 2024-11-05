@@ -138,7 +138,7 @@ routing {
 	domain(suffix: test-ipv6.com)->direct
 	domain(geosite:bing)->us
 	domain(_https._tcp.mirrors.ustc.edu.cn)->us
-    domain(full:dns.google.com) -> direct
+    domain(full:dns.google) -> direct
 	domain(geosite:category-ads-all) -> block
     domain(geosite:cn) -> direct
 }`)

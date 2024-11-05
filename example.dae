@@ -40,6 +40,7 @@ global {
     auto_config_kernel_parameter: true
 
     ##### Node connectivity check.
+    # These options, as defaults, are effective when no definition is given in the group.
 
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     # First is URL, others are IP addresses if given.
@@ -55,8 +56,8 @@ global {
     # TCP DNS connectivity of nodes.
     # First is URL, others are IP addresses if given.
     # This DNS should have both IPv4 and IPv6 if you have double stack in local.
-    #udp_check_dns: 'dns.google.com:53'
-    udp_check_dns: 'dns.google.com:53,8.8.8.8,2001:4860:4860::8888'
+    #udp_check_dns: 'dns.google:53'
+    udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
 
     check_interval: 30s
 
@@ -96,6 +97,16 @@ global {
     # The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls.
     # See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17
     utls_imitate: chrome_auto
+
+    # Multipath TCP (MPTCP) support. If is true, dae will try to use MPTCP to connect all nodes, but it will only take
+    # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
+    mptcp: false
+
+    # The maximum bandwidth for accessing the Internet. It is useful for some specific protocols (e.g., Hysteria2),
+    # which will perform better with bandwith information provided. The unit can be b, kb, mb, gb, tb or bytes per second.
+    # supported formats: https://v2.hysteria.network/docs/advanced/Full-Client-Config/#bandwidth
+    bandwidth_max_tx: '200 mbps' # uplink, or '200 m' or '200 mb' or '200 mbps' or 25000000(which is 200/8*1000*1000)
+    bandwidth_max_rx: '1 gbps' # downlink, or '1 g' or '1 gb' or '1 gbps' or 125000000(which is 1000/8*1000*1000)
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
@@ -111,13 +122,14 @@ subscription {
 # Nodes defined here will be merged as a part of the global node pool.
 node {
     # Add your node links here.
-    # Support socks5, http, https, ss, ssr, vmess, vless, trojan, tuic, juicity, etc.
+    # Support socks5, http, https, ss, ssr, vmess, vless, trojan, tuic, juicity, hysteria2, etc.
     # Full support list: https://github.com/daeuniverse/dae/blob/main/docs/en/proxy-protocols.md
     'socks5://localhost:1080'
     mylink: 'ss://LINK'
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
     chains: 'tuic://LINK -> vmess://LINK'
+    hysteria2: 'hysteria2://password@server-ip:port/?sni=domain'
 }
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
@@ -134,14 +146,29 @@ dns {
     #}
 
     upstream {
-        # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.
+        # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp/h3/http3/quic/https/tls.
+        # If the protocol is h3/http3/https, it supports setting a custom path, that is, the format can be "protocol://host:port/custom path".
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
         # IPv4 or IPv6 to use according to group policy (such as min latency policy).
         # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
         # If dial_mode is "ip", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.
 
         alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google.com:53'
+        googledns: 'tcp+udp://dns.google:53'
+
+        # alih3: 'h3://dns.alidns.com:443'
+        # alih3_path: 'h3://dns.alidns.com:443/dns-query'
+        # alihttp3: 'http3://dns.alidns.com:443'
+        # alihttp3_path: 'http3://dns.alidns.com:443/dns-query'
+        # ali_quic: 'quic://dns.alidns.com:853'
+
+        # h3_custom_path: 'h3://dns.example.com:443/custom-path'
+        # http3_custom_path: 'http3://dns.example.com:443/custom-path'
+
+        # ali_doh: 'https://dns.alidns.com:443'
+        # ali_dot: 'tls://dns.alidns.com:853'
+
+        # doh_custom_path: 'https://dns.example.com:443/custom-path'
     }
     routing {
         # According to the request of dns query, decide to use which DNS upstream.
@@ -208,6 +235,24 @@ group {
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
     }
+
+    steam {
+        # Filter nodes from the global node pool defined by the subscription and node section above.
+        filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
+        # Select the node with min moving average of latencies from the group for every connection.
+        policy: min_moving_avg
+
+        # Override tcp_check_url in global.
+        tcp_check_url: 'http://test.steampowered.com'
+        # Override tcp_check_http_method in global
+        #tcp_check_http_method: HEAD
+        # Override udp_check_dns in global
+        #udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
+        # Override check_interval in global
+        #check_interval: 30s
+        # Override check_tolerance in global
+        #check_tolerance: 50ms
+    }
 }
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
@@ -233,6 +278,7 @@ routing {
     l4proto(udp) && dport(443) -> block
     dip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
+    
 
     fallback: my_group
 }

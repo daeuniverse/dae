@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
 
@@ -282,8 +283,10 @@ func (d *Dialer) ActivateCheck() {
 func (d *Dialer) aliveBackground() {
 	cycle := d.CheckInterval
 	var tcpSomark uint32
+	var mptcp bool
 	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
 		tcpSomark = network.Mark
+		mptcp = network.Mptcp
 	}
 	tcp4CheckOpt := &CheckOption{
 		networkType: &NetworkType{
@@ -304,7 +307,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip4, opt.Method, tcpSomark)
+			return d.HttpCheck(ctx, opt.Url, opt.Ip4, opt.Method, tcpSomark, mptcp)
 		},
 	}
 	tcp6CheckOpt := &CheckOption{
@@ -326,7 +329,7 @@ func (d *Dialer) aliveBackground() {
 				}).Debugln("Skip check due to no DNS record.")
 				return false, nil
 			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method, tcpSomark)
+			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method, tcpSomark, mptcp)
 		},
 	}
 	tcpNetwork := netproxy.MagicNetwork{
@@ -450,6 +453,18 @@ func (d *Dialer) aliveBackground() {
 			}
 		}
 	}()
+	var unused int
+	for _, opt := range CheckOpts {
+		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			unused++
+		}
+	}
+	if unused == len(CheckOpts) {
+		d.Log.WithField("dialer", d.Property().Name).
+			WithField("p", unsafe.Pointer(d)).
+			Traceln("cleaned up due to unused")
+		return
+	}
 	var wg sync.WaitGroup
 	for range d.checkCh {
 		for _, opt := range CheckOpts {
@@ -580,17 +595,16 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	return ok, err
 }
 
-func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string, soMark uint32) (ok bool, err error) {
+func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string, soMark uint32, mptcp bool) (ok bool, err error) {
 	// HTTP(S) check.
 	if method == "" {
 		method = http.MethodGet
 	}
-	cd := &netproxy.ContextDialerConverter{Dialer: d.Dialer}
 	cli := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
 				// Force to dial "ip".
-				conn, err := cd.DialContext(ctx, common.MagicNetwork("tcp", soMark), net.JoinHostPort(ip.String(), u.Port()))
+				conn, err := d.Dialer.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), net.JoinHostPort(ip.String(), u.Port()))
 				if err != nil {
 					return nil, err
 				}

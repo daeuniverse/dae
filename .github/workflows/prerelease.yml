@@ -52,6 +52,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag }}
 
       - name: Get the version
         id: get_version
@@ -71,8 +72,11 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
+          cache-dependency-path: |
+            go.mod
+            go.sum          
           go-version: '^1.22'
 
       - name: Install Dependencies
@@ -127,18 +131,15 @@ jobs:
           echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
           echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
 
-#       - name: Upload full source to Artifacts
-#         if: matrix.goarch == 'arm64'
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: dae-full-src.zip
-#           path: dae-full-src.zip
-
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v4
+        uses: nanoufo/action-upload-artifacts-and-release-assets@v2
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-          path: ./*.zip*
+          if-no-files-found: ignore
+          path: |
+            dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
+            dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip.dgst
+            dae-full-src.zip
+            dae-full-src.zip.dgst
 
   upload-release:
     needs: [build]
@@ -156,16 +157,8 @@ jobs:
           echo "Show files are going to upload..."
           ls -lh | grep ".zip"
 
-      - name: Upload full source to GitHub release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: |
-            dae-full-src.zip
-          prerelease: true
-
       - name: Upload full source and artifacts to GitHub release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           files: |

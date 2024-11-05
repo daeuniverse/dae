@@ -20,6 +20,7 @@
   - [x] TCP
   - [x] WS
   - [x] TLS
+    - [x] Reality (**Experimental, TCP Only**)
   - [x] gRPC
   - [x] Meek
   - [x] HTTPUpgrade
@@ -55,6 +56,10 @@
 
   [Juicity URI Schema](https://github.com/juicity/juicity?tab=readme-ov-file#link-format)
 
+- [x] Hysteria2
+
+  [Hysteria2 URI Schema](https://v2.hysteria.network/docs/developers/URI-Scheme)
+
 - [x] Proxy chain (flexible protocol)
 
   [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
@@ -65,7 +70,7 @@ Although dae and other proxy programs support the HTTPS protocol, using them doe
 
 1. Start naiveproxy:
 
-   Since the socks implementation of naiveproxy may have some issues and cannot be used by curl and dae, the example uses naiveproxy to open an HTTP listening port. Note that HTTP proxy does not support proxying UDP traffic, so if you are using an external proxy program, it is advisable to prioritize using the socks5 port.
+   The example uses naiveproxy to open an HTTP listening port. Note that HTTP proxy does not support proxying UDP traffic, so if you are using an external proxy program, it is advisable to prioritize using the socks5 port.
 
    ```bash
    naiveproxy --listen=http://127.0.0.1:1090 --proxy=https://yourlink

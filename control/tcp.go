@@ -23,15 +23,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	TcpSniffBufSize = 4096
-)
-
 func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
 
 	// Sniff target domain.
-	sniffer := sniffing.NewConnSniffer(lConn, TcpSniffBufSize, c.sniffingTimeout)
+	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
 	// ConnSniffer should be used later, so we cannot close it now.
 	defer sniffer.Close()
 	domain, err := sniffer.SniffTcp()
@@ -69,6 +65,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"),
+			strings.HasPrefix(err.Error(), "EOF"),
+			strings.HasSuffix(err.Error(), "connection reset by peer"),
 			strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
 			strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
 			return nil // ignore
@@ -166,10 +164,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	}
 	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	cd := netproxy.ContextDialerConverter{
-		Dialer: d,
-	}
-	return cd.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark), dialTarget)
+	return d.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
 }
 
 type WriteCloser interface {

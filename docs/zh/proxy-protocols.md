@@ -20,6 +20,7 @@
   - [x] TCP
   - [x] WS
   - [x] TLS
+    - [x] Reality (**实验性，目前仅支持 TCP**)
   - [x] gRPC
   - [x] Meek
   - [x] HTTPUpgrade
@@ -55,6 +56,10 @@
 
   [Juicity URI Schema](https://github.com/juicity/juicity?tab=readme-ov-file#link-format)
 
+- [x] Hysteria2
+
+  [Hysteria2 URI Schema](https://v2.hysteria.network/zh/docs/developers/URI-Scheme)
+
 - [x] Proxy chain (flexible protocol)
 
   [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
@@ -65,7 +70,7 @@
 
 1. 启动 naiveproxy：
 
-   由于 naiveproxy 的 socks 实现可能有些问题，无法被 curl 和 dae 使用，样例中使用 naiveproxy 开启一个 HTTP 监听端口。注意，HTTP 代理不支持代理 udp 流量，所以如果你外接其他代理程序，建议优先考虑使用 socks5 端口。
+   样例使用 naiveproxy 开启一个 HTTP 监听端口。注意，HTTP 代理不支持代理 udp 流量，所以如果你外接其他代理程序，建议优先考虑使用 socks5 端口。
 
    ```bash
    naiveproxy --listen=http://127.0.0.1:1090 --proxy=https://yourlink
