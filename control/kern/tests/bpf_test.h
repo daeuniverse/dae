@@ -22,8 +22,8 @@ set_ipv4_tcp(struct __sk_buff *skb,
 {
 	bpf_skb_change_tail(skb, ETH_HLEN + IP4_HLEN + TCP_HLEN, 0);
 
-	void *data = (void *)(long)skb->data;
-	void *data_end = (void *)(long)skb->data_end;
+	void *data = (void *)(uintptr_t)skb->data;
+	void *data_end = (void *)(uintptr_t)skb->data_end;
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end) {
@@ -76,8 +76,8 @@ check_routing_ipv4_tcp(struct __sk_buff *skb,
 {
 	__u32 *status_code;
 
-	void *data = (void *)(long)skb->data;
-	void *data_end = (void *)(long)skb->data_end;
+	void *data = (void *)(uintptr_t)skb->data;
+	void *data_end = (void *)(uintptr_t)skb->data_end;
 
 	if (data + sizeof(*status_code) > data_end) {
 		bpf_printk("data + sizeof(*status_code) > data_end\n");

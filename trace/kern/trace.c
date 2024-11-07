@@ -180,7 +180,7 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 		tpl->sport= BPF_CORE_READ(tcp, source);
 		tpl->dport= BPF_CORE_READ(tcp, dest);
 		bpf_probe_read_kernel(&tpl->tcp_flags, sizeof(tpl->tcp_flags),
-				    (void *)tcp + offsetof(struct tcphdr, ack_seq) + 5);
+				    tcp + offsetof(struct tcphdr, ack_seq) + 5);
 		l4_hdr_len = BPF_CORE_READ_BITFIELD_PROBED(tcp, doff) * 4;
 		tpl->payload_len = l3_total_len - l3_hdr_len - l4_hdr_len;
 	} else if (tpl->l4_proto == IPPROTO_UDP) {

@@ -963,7 +963,7 @@ static __always_inline void prep_redirect_to_control_plane(
 	}
 
 	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-			    (void *)&PARAM.dae0peer_mac, sizeof(ethh->h_dest),
+			    (void *)PARAM.dae0peer_mac, sizeof(ethh->h_dest),
 			    0);
 
 	struct redirect_tuple redirect_tuple = {};
