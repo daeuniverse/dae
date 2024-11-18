@@ -26,11 +26,7 @@ var kallsyms []Symbol
 var kallsymsByName map[string]Symbol = make(map[string]Symbol)
 var kallsymsByAddr map[uint64]Symbol = make(map[uint64]Symbol)
 
-func init() {
-	readKallsyms()
-}
-
-func readKallsyms() {
+func ReadKallsyms() {
 	file, err := os.Open("/proc/kallsyms")
 	if err != nil {
 		logrus.Fatalf("failed to open /proc/kallsyms: %v", err)
