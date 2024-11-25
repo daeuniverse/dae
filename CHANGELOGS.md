@@ -14,6 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v0.9.0rc2 (Pre-release)](#v090rc2-pre-release)
+
 - [v0.9.0rc1 (Pre-release)](#v090rc1-pre-release)
 - [v0.8.0 (Latest)](#v080-latest)
 - [v0.7.4](#v074)
@@ -45,6 +47,36 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v0.9.0rc2 (Pre-release)
+
+> Release date: 2024/11/25
+
+#### Features
+
+- feat/optimize(hy2): support human-readable bandwidth configuration in [#666](https://github.com/daeuniverse/dae/pull/666) by (@douglarek)
+- feat(dns): support DoH, DoT, DoH3, DoQ in [#649](https://github.com/daeuniverse/dae/pull/649) by (@EkkoG)
+- optimize: reduce memory usage by reading kallsyms only in the trace command in [#700](https://github.com/daeuniverse/dae/pull/700) by (@seiuneko)
+
+#### Bug Fixes
+
+- fix(routing): Fix MergeAndSortRulesOptimizer in [#682](https://github.com/daeuniverse/dae/pull/682) by (@jschwinger233)
+
+#### Others
+
+- ci(workflows/bpf-test): add BPF test to cover route logic in [#671](https://github.com/daeuniverse/dae/pull/671) by (@jschwinger233)
+- refactor/optimize(bpf): rework bpf route with bpf_loop in [#580](https://github.com/daeuniverse/dae/pull/580) by (@mzz2017)
+- docs(dns): add docs for #649 in [#687](https://github.com/daeuniverse/dae/pull/687) by (@EkkoG)
+- docs(dns): fix typo in [#688](https://github.com/daeuniverse/dae/pull/688) by (@EkkoG)
+- ci(release): draft release v0.9.0rc1 in [#690](https://github.com/daeuniverse/dae/pull/690) by (@dae-prow)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.9.0rc2/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.8.0...v0.9.0rc2
+
+#### New Contributors
+
+- @seiuneko made their first contribution in [#700](https://github.com/daeuniverse/dae/pull/700)
 
 ### v0.9.0rc1 (Pre-release)
 
