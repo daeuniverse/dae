@@ -31,6 +31,9 @@ func init() {
 	traceCmd := &cobra.Command{
 		Use:   "trace",
 		Short: "To trace traffic",
+		PreRun: func(cmd *cobra.Command, args []string) {
+			trace.ReadKallsyms()
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			internal.AutoSu()
 
