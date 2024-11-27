@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/ants"
+	ants "github.com/panjf2000/ants/v2"
 )
 
 var isTest = false
