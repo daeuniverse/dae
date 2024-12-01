@@ -97,7 +97,7 @@ require (
 	google.golang.org/grpc v1.65.0 // indirect
 )
 
-// replace github.com/daeuniverse/outbound => ../outbound
+replace github.com/daeuniverse/outbound => github.com/cubatic45/outbound v0.0.0-20241201020123-c3ac24b95d2c
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
