@@ -28,6 +28,8 @@ github.com/cubatic45/outbound v0.0.0-20241201020123-c3ac24b95d2c h1:cEosbzzd42Ri
 github.com/cubatic45/outbound v0.0.0-20241201020123-c3ac24b95d2c/go.mod h1:aR0y8VzpD7RJ5ZGD5ooe0MC6wfTzkIEYaGyxztJqG94=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d h1:hnC39MjR7xt5kZjrKlef7DXKFDkiX8MIcDXYC/6Jf9Q=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
+github.com/daeuniverse/outbound v0.0.0-20241203160254-b61700645a6c h1:sG5F1F4TE+WBkgr4WBDhO5rDXiKtj1qIr0cVMeX3siY=
+github.com/daeuniverse/outbound v0.0.0-20241203160254-b61700645a6c/go.mod h1:aR0y8VzpD7RJ5ZGD5ooe0MC6wfTzkIEYaGyxztJqG94=
 github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810 h1:YtEYouFaNrg9sV9vf3UabvKShKn6sD0QaCdOxCwaF3g=
 github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810/go.mod h1:61o2uZUGLrlv1i+oO2rx9sVX0vbf8cHzdSHt7h6lMnM=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

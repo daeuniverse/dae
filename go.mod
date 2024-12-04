@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.0
 	github.com/cilium/ebpf v0.15.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20241026154416-424675853298
+	github.com/daeuniverse/outbound v0.0.0-20241203160254-b61700645a6c
 	github.com/daeuniverse/quic-go v0.0.0-20240413031024-943f218e0810
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/json-iterator/go v1.1.12
@@ -97,7 +97,7 @@ require (
 	google.golang.org/grpc v1.65.0 // indirect
 )
 
-replace github.com/daeuniverse/outbound => github.com/cubatic45/outbound v0.0.0-20241201020123-c3ac24b95d2c
+// replace github.com/daeuniverse/outbound => ../outbound
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
