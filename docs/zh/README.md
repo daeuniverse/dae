@@ -195,6 +195,7 @@ dns {
   }
   routing {
     request {
+      qtype(https) -> reject
       fallback: alidns
     }
     response {
