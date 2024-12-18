@@ -14,9 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
-- [v0.9.0rc2 (Pre-release)](#v090rc2-pre-release)
-- [v0.9.0rc1 (Pre-release)](#v090rc1-pre-release)
-- [v0.8.0 (Latest)](#v080-latest)
+- [v0.9.0 (Latest)](#v090-latest)
+- [v0.8.0](#v080)
 - [v0.7.4](#v074)
 - [v0.7.3 (Deprecated)](#v073-deprecated)
 - [v0.7.2 (Deprecated)](#v072-deprecated)
@@ -47,19 +46,23 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v0.9.0rc2 (Pre-release)
+### v0.9.0 (Latest)
 
-> Release date: 2024/11/25
+> Release date: 2024/12/18
 
 #### Features
 
 - feat/optimize(hy2): support human-readable bandwidth configuration in [#666](https://github.com/daeuniverse/dae/pull/666) by (@douglarek)
 - feat(dns): support DoH, DoT, DoH3, DoQ in [#649](https://github.com/daeuniverse/dae/pull/649) by (@EkkoG)
 - optimize: reduce memory usage by reading kallsyms only in the trace command in [#700](https://github.com/daeuniverse/dae/pull/700) by (@seiuneko)
+- feat(vision): support xudp in [#708](https://github.com/daeuniverse/dae/pull/708) by (@cubatic45)
 
 #### Bug Fixes
 
 - fix(routing): Fix MergeAndSortRulesOptimizer in [#682](https://github.com/daeuniverse/dae/pull/682) by (@jschwinger233)
+- fix: update sources in `desc.go` in [#697](https://github.com/daeuniverse/dae/pull/697) by (@emmanuel-ferdman)
+- fix: minimal upgrade panjf2000/ants dependency to v2.0.0 in [#707](https://github.com/daeuniverse/dae/pull/707) by (@cospotato)
+- fix: add risc-v vmlinux headers in submodules (#696) in [#706](https://github.com/daeuniverse/dae/pull/706) by (@Integral-Tech)
 
 #### Others
 
@@ -68,40 +71,20 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - docs(dns): add docs for #649 in [#687](https://github.com/daeuniverse/dae/pull/687) by (@EkkoG)
 - docs(dns): fix typo in [#688](https://github.com/daeuniverse/dae/pull/688) by (@EkkoG)
 - ci(release): draft release v0.9.0rc1 in [#690](https://github.com/daeuniverse/dae/pull/690) by (@dae-prow)
+- ci(release): draft release v0.9.0rc2 in [#705](https://github.com/daeuniverse/dae/pull/705) by (@dae-prow)
+- chore: more detail of Choose DNS path log in [#692](https://github.com/daeuniverse/dae/pull/692) by (@EkkoG)
+- docs(run-on-alpine.md): update for Alpine's kernel changes in [#712](https://github.com/daeuniverse/dae/pull/712) by (@MarksonHon)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.9.0rc2/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v0.9.0/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.8.0...v0.9.0rc2
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.8.0...v0.9.0
 
 #### New Contributors
 
 - @seiuneko made their first contribution in [#700](https://github.com/daeuniverse/dae/pull/700)
+- @cubatic45 made their first contribution in [#708](https://github.com/daeuniverse/dae/pull/708)
 
-### v0.9.0rc1 (Pre-release)
-
-> Release date: 2024/11/03
-
-#### Features
-
-- feat/optimize(hy2): support human-readable bandwidth configuration in [#666](https://github.com/daeuniverse/dae/pull/666) by (@douglarek)
-- feat(dns): support DoH, DoT, DoH3, DoQ in [#649](https://github.com/daeuniverse/dae/pull/649) by (@EkkoG)
-
-#### Bug Fixes
-
-- fix(routing): Fix MergeAndSortRulesOptimizer in [#682](https://github.com/daeuniverse/dae/pull/682) by (@jschwinger233)
-
-#### Others
-
-- ci(workflows/bpf-test): add BPF test to cover route logic in [#671](https://github.com/daeuniverse/dae/pull/671) by (@jschwinger233)
-- refactor/optimize(bpf): rework bpf route with bpf_loop in [#580](https://github.com/daeuniverse/dae/pull/580) by (@mzz2017)
-- docs(dns): add docs for #649 in [#687](https://github.com/daeuniverse/dae/pull/687) by (@EkkoG)
-- docs(dns): fix typo in [#688](https://github.com/daeuniverse/dae/pull/688) by (@EkkoG)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v0.9.0rc1/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.8.0...v0.9.0rc1
-
-### v0.8.0 (Latest)
+### v0.8.0
 
 > Release date: 2024/10/11
 
