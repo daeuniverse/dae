@@ -15,12 +15,11 @@ name: Trigger downstream sync workflow
 on:
   workflow_dispatch:
   push:
-    branches:
-      - 'unstable'
+    branches: [ main ]
 
 env:
   DOWNSTREAM_REPO: flake.nix
-  WORKFLOW_BRANCH: unstable
+  WORKFLOW_BRANCH: sync-target
   WORKFLOW_FILE: sync-upstream.yml
 
 jobs:
