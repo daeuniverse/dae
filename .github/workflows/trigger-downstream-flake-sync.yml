@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - 'main'
+      - 'unstable'
 
 env:
   DOWNSTREAM_REPO: flake.nix
