@@ -120,7 +120,8 @@ dns {
             # DNS 查询类型
             qtype(a, aaaa) -> alidns
             qtype(cname) -> googledns
-
+            # 禁用 ECH 避免影响分流
+            qtype(https) -> reject
             # fallback 意为 default。
             # 如果上面的都不匹配，使用这个 upstream。
             fallback: asis
