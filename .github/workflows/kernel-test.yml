@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: [ '6.1-20240305.092417', '6.6-20240305.092417' ]
+        kernel: [ '6.1-20240305.092417', '6.6-20240305.092417', 'bpf-next-main' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
