@@ -15,12 +15,10 @@ name: Trigger downstream sync workflow
 on:
   workflow_dispatch:
   push:
-    branches:
-      - 'main'
+    branches: [ main ]
 
 env:
   DOWNSTREAM_REPO: flake.nix
-  WORKFLOW_BRANCH: unstable
   WORKFLOW_FILE: sync-upstream.yml
 
 jobs:
@@ -42,8 +40,8 @@ jobs:
           repo: ${{ env.DOWNSTREAM_REPO }}
           github_token: ${{ steps.generate_token.outputs.token }}
           workflow_file_name: ${{ env.WORKFLOW_FILE }}
-          ref: ${{ env.WORKFLOW_BRANCH }}
-          client_payload: '{"project":"dae","branch":"${{ env.WORKFLOW_BRANCH }}"}'
+          ref: main
+          client_payload: '{"project":"dae"}'
           trigger_workflow: true
           propagate_failure: false
           wait_workflow: false
