@@ -121,7 +121,8 @@ dns {
             # DNS request type
             qtype(a, aaaa) -> alidns
             qtype(cname) -> googledns
-
+            # disable ECH to avoid affecting traffic split
+            qtype(https) -> reject
             # If no match, fallback to this upstream.
             fallback: asis
         }
