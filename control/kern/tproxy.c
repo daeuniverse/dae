@@ -755,10 +755,20 @@ lookup_lpm:
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		break;
 	case MatchType_ProcessName:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: pname, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
 		if (_is_wan && equal16(match_set->pname, _pname))
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		break;
 	case MatchType_Dscp:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: dscp, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
 		if (_dscp == match_set->dscp)
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		break;
