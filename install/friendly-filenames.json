@@ -11,5 +11,9 @@
   "linux-mips64": { "friendlyName": "linux-mips64" },
   "linux-mipsle": { "friendlyName": "linux-mips32le" },
   "linux-mips": { "friendlyName": "linux-mips32" },
-  "linux-riscv64": { "friendlyName": "linux-riscv64" }
+  "linux-riscv64": { "friendlyName": "linux-riscv64" },
+  "linux-loong64": { "friendlyName": "linux-loongarch64" },
+  "linux-ppc64": { "friendlyName": "linux-powerpc64" },
+  "linux-ppc64le": { "friendlyName": "linux-powerpc64le" },
+  "linux-s390x": { "friendlyName": "linux-s390x" }
 }
