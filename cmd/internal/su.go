@@ -15,7 +15,7 @@ import (
 )
 
 func AutoSu() {
-	if os.Getuid() == 0 {
+	if os.Geteuid() == 0 {
 		return
 	}
 	path, arg := tryPolkit()
