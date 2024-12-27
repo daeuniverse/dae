@@ -18,7 +18,7 @@ func AutoSu() {
 	if os.Getuid() == 0 {
 		return
 	}
-	path, arg := tryDesktopSudo()
+	path, arg := tryPolkit()
 	if path == "" {
 		path, arg = trySudo()
 	}
@@ -57,21 +57,17 @@ func trySudo() (path string, arg []string) {
 	}
 }
 
-func tryDesktopSudo() (path string, arg []string) {
-	// https://specifications.freedesktop.org/desktop-entry-spec/latest
-	desktop := os.Getenv("XDG_CURRENT_DESKTOP")
-	if desktop != "" {
-		var possible = []string{"pkexec"}
-		for _, v := range possible {
-			path, err := exec.LookPath(v)
-			if err != nil {
-				continue
-			}
-			if isExistAndExecutable(path) {
-				switch v {
-				case "pkexec":
-					return path, []string{path, "--keep-cwd", "--user", "root"}
-				}
+func tryPolkit() (path string, arg []string) {
+	var possible = []string{"pkexec"}
+	for _, v := range possible {
+		path, err := exec.LookPath(v)
+		if err != nil {
+			continue
+		}
+		if isExistAndExecutable(path) {
+			switch v {
+			case "pkexec":
+				return path, []string{path, "--keep-cwd", "--user", "root"}
 			}
 		}
 	}
