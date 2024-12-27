@@ -755,10 +755,20 @@ lookup_lpm:
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		break;
 	case MatchType_ProcessName:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: pname, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
 		if (_is_wan && equal16(match_set->pname, _pname))
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		break;
 	case MatchType_Dscp:
+#ifdef __DEBUG_ROUTING
+		bpf_printk(
+			"CHECK: dscp, match_set->type: %u, not: %d, outbound: %u",
+			match_set->type, match_set->not, match_set->outbound);
+#endif
 		if (_dscp == match_set->dscp)
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		break;
@@ -819,15 +829,16 @@ before_next_loop:
 				     OUTBOUND_MUST_RULES)) {
 				ctx->isdns_must_goodsubrule_badrule |= 0b100;
 			} else {
-				if (ctx->isdns_must_goodsubrule_badrule & 0b100)
-					match_set->must = true;
-				if (!match_set->must &&
+				bool must = ctx->isdns_must_goodsubrule_badrule & 0b100 ||
+							match_set->must;
+
+				if (!must &&
 				    (ctx->isdns_must_goodsubrule_badrule &
 				     0b1000)) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
-						((__s64)match_set->must << 40);
+						((__s64)must << 40);
 #ifdef __DEBUG_ROUTING
 					bpf_printk(
 						"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
@@ -837,7 +848,7 @@ before_next_loop:
 				}
 				ctx->result = (__s64)match_set->outbound |
 					      ((__s64)match_set->mark << 8) |
-					      ((__s64)match_set->must << 40);
+					      ((__s64)must << 40);
 #ifdef __DEBUG_ROUTING
 				bpf_printk("outbound %u: %ld",
 					   match_set->outbound, ctx->result);
