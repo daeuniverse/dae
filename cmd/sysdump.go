@@ -7,18 +7,18 @@ package cmd
 
 import (
 	"bytes"
-	"io/ioutil"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-    "time"
+	"time"
 
-	"github.com/vishvananda/netlink"
-	"github.com/spf13/cobra"
 	"github.com/mholt/archiver/v3"
 	"github.com/shirou/gopsutil/v4/net"
+	"github.com/spf13/cobra"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -46,7 +46,7 @@ func dumpNetworkInfo() {
 	dumpNetfilter(tempDir)
 	dumpIPTables(tempDir)
 
-	tarFile := fmt.Sprintf("dae-sysdump.%d.tar.gz",time.Now().Unix())
+	tarFile := fmt.Sprintf("dae-sysdump.%d.tar.gz", time.Now().Unix())
 	if err := archiver.Archive([]string{tempDir}, tarFile); err != nil {
 		fmt.Printf("Failed to create tar archive: %v\n", err)
 		return
@@ -54,7 +54,6 @@ func dumpNetworkInfo() {
 
 	fmt.Printf("System network information collected and saved to %s\n", tarFile)
 }
-
 
 // Translate scope enum into semantic words
 func scopeToString(scope netlink.Scope) string {
@@ -73,7 +72,6 @@ func scopeToString(scope netlink.Scope) string {
 		return "unknown"
 	}
 }
-
 
 // Translate protocol enum into semantic words
 func protocolToString(proto int) string {
@@ -157,7 +155,6 @@ func typeToString(typ int) string {
 	}
 }
 
-
 func dumpRouting(outputDir string) {
 	routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
 	if err != nil {
@@ -232,7 +229,6 @@ func dumpNetInterfaces(outputDir string) {
 	ioutil.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
 }
 
-
 func dumpSysctl(outputDir string) {
 	sysctlPath := "/proc/sys/net"
 	var buffer bytes.Buffer
@@ -281,12 +277,12 @@ func dumpIPTables(outputDir string) {
 		ioutil.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
 	}
 
-	ip6tables := exec.Command("ip6tables-save","-c")
+	ip6tables := exec.Command("ip6tables-save", "-c")
 	output, err = ip6tables.CombinedOutput()
 	if err != nil {
 		fmt.Printf("Failed to get ip6tables: %v\n", err)
 	} else {
-    ioutil.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
+		ioutil.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
 	}
 }
 
