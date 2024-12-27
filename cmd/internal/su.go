@@ -44,22 +44,8 @@ func AutoSu() {
 
 func trySudo() (path string, arg []string) {
 	pathSudo, err := exec.LookPath("sudo")
-	if err != nil {
-		// fallback
-		var possibleSudoPath = []string{
-			"/usr/bin/sudo", "/usr/sbin/sudo",
-		}
-		var found = false
-		for _, v := range possibleSudoPath {
-			if isExistAndExecutable(v) {
-				pathSudo = v
-				found = true
-				break
-			}
-		}
-		if !found {
-			return "", nil
-		}
+	if err != nil || !isExistAndExecutable(pathSudo) {
+		return "", nil
 	}
 	// https://github.com/WireGuard/wireguard-tools/blob/71799a8f6d1450b63071a21cad6ed434b348d3d5/src/wg-quick/linux.bash#L85
 	return pathSudo, []string{
@@ -93,12 +79,14 @@ func tryDesktopSudo() (path string, arg []string) {
 }
 
 func isExistAndExecutable(path string) bool {
+	if path == "" {
+		return false
+	}
+
 	st, err := os.Stat(path)
 	if err == nil {
 		// https://stackoverflow.com/questions/60128401/how-to-check-if-a-file-is-executable-in-go
-		if st.Mode()&0o111 == 0o111 {
-			return true
-		}
+		return st.Mode()&0o111 == 0o111
 	}
 	return false
 }
