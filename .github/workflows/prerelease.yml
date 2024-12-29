@@ -130,7 +130,7 @@ jobs:
           sudo gem install fpm
 
           case $GOARCH in
-            'amd64' | 'i386' | 'arm64' | 'arm' | 'riscv64' | 'loong64') archlinux_pacman='pacman' ;;
+            'amd64' | 'i386' | 'arm64' | 'arm' | 'riscv64' | 'loong64' | 'ppc64' | 'ppc64le') archlinux_pacman='pacman' ;;
             *) echo "Skip unsupported architecture for Arch Linux" ;;
           esac
 
