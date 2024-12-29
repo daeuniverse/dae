@@ -91,55 +91,126 @@ jobs:
           find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
           sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
 
-      - name: Create full source ZIP archive and Signature
+      - name: Create directory for placing archives & packages temporarily
+        run: mkdir -p ./bundled/
+
+      - name: Create full source archive
         if: matrix.goarch == 'arm64'
         run: |
-          zip -9vr dae-full-src.zip . -x .git/\*
-          FILE=./dae-full-src.zip
-          echo "$(md5sum $FILE)""  md5" >> $FILE.dgst
-          echo "$(shasum -a 1 $FILE)""  sha1" >> $FILE.dgst
-          echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
-          echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
+          zip -9vr ./bundled/dae-full-src.zip . -x .git/\* bundled/\*
+          tar -I 'xz -9' -cvf ./bundled/dae-full-src.tar.xz --exclude .git --exclude bundled .
 
       - name: Build dae
         run: |
-          mkdir -p ./build/
           export CGO_ENABLED=0
           export GOFLAGS="-trimpath -modcacherw"
-          export OUTPUT=build/dae-$ASSET_NAME
-          export VERSION=${{ steps.get_version.outputs.VERSION }}
+          export OUTPUT=build/usr/bin/dae
+          export VERSION=${{ env.VERSION }}
           export CLANG=clang-15
           export STRIP=llvm-strip-15
           make
-          cp ./install/dae.service ./build/
-          cp ./example.dae ./build/
-          curl -L -o ./build/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./build/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          install -Dm644 ./install/dae.service -t ./build/usr/lib/systemd/system/
+          install -Dm640 ./install/empty.dae ./build/etc/dae/config.dae
+          install -Dm644 ./example.dae -t ./build/etc/dae/
+          install -d ./build/usr/share/dae/
+          curl -L -o ./build/usr/share/dae/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+          curl -L -o ./build/usr/share/dae/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
 
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        run: ./build/dae-$ASSET_NAME --version
+        run: ./build/usr/bin/dae --version
 
-      - name: Create binary ZIP archive and Signature
+      - name: Create binary archive
+        run: tar -cJvf ./bundled/dae-$ASSET_NAME.tar.xz -C build .
+
+      - name: Build Linux packages
+        if: ${{ env.GOARM == '7' || env.GOARM == '' }}
         run: |
-          pushd build || exit 1
-          zip -9vr ../dae-$ASSET_NAME.zip .
-          popd || exit 1
-          FILE=./dae-$ASSET_NAME.zip
-          echo "$(md5sum $FILE)""  md5" >> $FILE.dgst
-          echo "$(shasum -a 1 $FILE)""  sha1" >> $FILE.dgst
-          echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
-          echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
+          sudo apt install -y libarchive-tools
+          sudo gem install fpm
+
+          case $GOARCH in
+            'amd64' | 'i386' | 'arm64' | 'arm' | 'riscv64' | 'loong64' | 'ppc64' | 'ppc64le') archlinux_pacman='pacman' ;;
+            *) echo "Skip unsupported architecture for Arch Linux" ;;
+          esac
+
+          for pkg_mgr in deb rpm $archlinux_pacman; do
+            case $GOARCH in
+              'amd64')
+                if [ $pkg_mgr == 'deb' ]; then
+                  pkg_arch='amd64'
+                else
+                  pkg_arch='x86_64'
+                fi ;;
+              '386')
+                case $pkg_mgr in
+                  'deb') pkg_arch='i386' ;;
+                  'rpm') pkg_arch='x86' ;;
+                  'pacman') pkg_arch'i486' ;;
+                esac ;;
+              'arm64')
+                if [ $pkg_mgr == 'deb' ]; then
+                  pkg_arch='arm64'
+                else
+                  pkg_arch='aarch64'
+                fi ;;
+              'arm')
+                case $pkg_mgr in
+                  'deb') pkg_arch='armhf' ;;
+                  'rpm') pkg_arch='armhfp' ;;
+                  'pacman') pkg_arch='armv7h' ;;
+                esac ;;
+              'loong64')
+                if [ $pkg_mgr != 'rpm' ]; then
+                  pkg_arch='loong64'
+                else
+                  pkg_arch='loongarch64'
+                fi ;;
+              'mips64le') pkg_arch='mips64el' ;;
+              'mipsle') pkg_arch='mipsel' ;;
+              'ppc64le')
+                if [ $pkg_mgr == 'deb' ]; then
+                  pkg_arch='ppc64el'
+                else
+                  pkg_arch='ppc64le'
+                fi ;;
+              *) pkg_arch=$GOARCH ;;
+            esac
+
+            fpm -s dir -t $pkg_mgr -a $pkg_arch -v ${VERSION/v/} -n dae \
+                  --url "https://github.com/daeuniverse/dae" \
+                  --description "eBPF-based Linux high-performance transparent proxy solution" \
+                  --maintainer "daeuniverse <dae@v2raya.org>" \
+                  --license 'AGPL-3.0' \
+                  --package ./bundled/dae-$ASSET_NAME.$pkg_mgr \
+                  --after-install ./install/package_after_install.sh \
+                  --after-remove ./install/package_after_remove.sh \
+                  --deb-compression xz \
+                  --deb-compression-level 9 \
+                  --rpm-compression xz \
+                  --verbose \
+                  -C build .
+          done
+
+          if [ $archlinux_pacman == 'pacman' ]; then
+            mv ./bundled/dae-$ASSET_NAME.pacman ./bundled/dae-$ASSET_NAME.pkg.tar.zst
+          fi
+
+      - name: Create signature
+        run: |
+          cd bundled
+          for FILE in *; do
+            echo "$(md5sum $FILE)""  md5" >> $FILE.dgst
+            echo "$(shasum -a 1 $FILE)""  sha1" >> $FILE.dgst
+            echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
+            echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
+          done
 
       - name: Upload files to Artifacts
         uses: nanoufo/action-upload-artifacts-and-release-assets@v2
         with:
           if-no-files-found: ignore
-          path: |
-            dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-            dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip.dgst
-            dae-full-src.zip
-            dae-full-src.zip.dgst
+          path: ./bundled/*
 
   upload-release:
     needs: [build]
@@ -152,16 +223,13 @@ jobs:
 
       - name: Prepare files for upload
         run: |
-          cp release/*/*.zip ./
-          cp release/*/*.zip.dgst ./
           echo "Show files are going to upload..."
-          ls -lh | grep ".zip"
+          cd release
+          ls -lh */*
 
       - name: Upload full source and artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          files: |
-            *zip
-            *dgst
+          files: release/*/*
           prerelease: true
