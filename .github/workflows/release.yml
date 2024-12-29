@@ -180,7 +180,7 @@ jobs:
             fpm -s dir -t $pkg_mgr -a $pkg_arch -v ${VERSION/v/} -n dae \
                   --url "https://github.com/daeuniverse/dae" \
                   --description "eBPF-based Linux high-performance transparent proxy solution" \
-                  --maintainer "daeuniverse <dae@dae.v2raya.org>" \
+                  --maintainer "daeuniverse <dae@v2raya.org>" \
                   --license 'AGPL-3.0' \
                   --package ./bundled/dae-$ASSET_NAME.$pkg_mgr \
                   --after-install ./install/package_after_install.sh \
