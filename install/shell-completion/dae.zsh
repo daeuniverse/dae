@@ -61,14 +61,14 @@ _dae_reload() {
 	_arguments -C \
 		"-h[help for reload]" \
 		"--help[help for reload]" \
-		"::pid:($(ps -A | awk '{print $1}'))"
+		"::pid:($(pgrep -x dae))"
 }
 
 _dae_suspend() {
 	_arguments -C \
 		"-h[help for suspend]" \
 		"--help[help for suspend]" \
-		"::pid:($(ps -A | awk '{print $1}'))"
+		"::pid:($(pgrep -x dae))"
 }
 
 _dae_run() {
