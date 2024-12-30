@@ -78,11 +78,14 @@ WantedBy=timers.target
 Description=Update dae subscriptions
 Wants=network-online.target
 After=network-online.target
+StartLimitBurst=3
+StartLimitInterval=120
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/update-dae-subs.sh
 Restart=on-failure
+RestartSec=15
 ```
 
 ## Configurations
