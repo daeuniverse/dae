@@ -76,8 +76,8 @@ type DnsController struct {
 
 	fixedDomainTtl map[string]int
 	// mutex protects the dnsCache.
-	dnsCacheMu sync.Mutex
-	dnsCache   map[string]*DnsCache
+	dnsCacheMu          sync.Mutex
+	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[string]DnsForwarder
 }
@@ -113,9 +113,9 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl: option.FixedDomainTtl,
-		dnsCacheMu:     sync.Mutex{},
-		dnsCache:       make(map[string]*DnsCache),
+		fixedDomainTtl:      option.FixedDomainTtl,
+		dnsCacheMu:          sync.Mutex{},
+		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
 		dnsForwarderCache:   make(map[string]DnsForwarder),
 	}, nil

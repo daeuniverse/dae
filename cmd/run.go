@@ -59,9 +59,9 @@ func init() {
 	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to stdout and stderr.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
-	runCmd.PersistentFlags().BoolVarP(&disableTimestamp, "disable-timestamp", "", false, "Disable timestamp.")
-	runCmd.PersistentFlags().BoolVarP(&disablePidFile, "disable-pidfile", "", false, "Not generate /var/run/dae.pid.")
-
+	runCmd.PersistentFlags().BoolVar(&disableTimestamp, "disable-timestamp", false, "Disable timestamp.")
+	runCmd.PersistentFlags().BoolVar(&disablePidFile, "disable-pidfile", false, "Not generate /var/run/dae.pid.")
+	runCmd.PersistentFlags().BoolVar(&disableAuthSudo, "disable-sudo", false, "Disable sudo prompt ,may cause startup failure due to insufficient permissions")
 	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
 		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
 	})
@@ -74,6 +74,7 @@ var (
 	logFileMaxBackups int
 	disableTimestamp  bool
 	disablePidFile    bool
+	disableAuthSudo   bool
 
 	runCmd = &cobra.Command{
 		Use:   "run",
@@ -82,9 +83,13 @@ var (
 			if cfgFile == "" {
 				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
 			}
-
+			if disableAuthSudo && os.Geteuid() != 0 {
+				logrus.Fatalln("Auto-sudo is disabled and current user is not root.")
+			}
 			// Require "sudo" if necessary.
-			internal.AutoSu()
+			if !disableAuthSudo {
+				internal.AutoSu()
+			}
 
 			// Read config from --config cfgFile.
 			conf, includes, err := readConfig(cfgFile)

@@ -38,7 +38,7 @@ var (
 		Use:   "reload [pid]",
 		Short: "To reload config file without interrupt connections.",
 		Run: func(cmd *cobra.Command, args []string) {
-			internal.AutoSu()
+            internal.AutoSu()
 			if len(args) == 0 {
 				_pid, err := os.ReadFile(PidFilePath)
 				if err != nil {
