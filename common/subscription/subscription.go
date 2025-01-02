@@ -165,7 +165,11 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		}
 		goto resolve
 	case "http-file", "https-file":
-		persistToFile = true
+		if len(tag) != 0 {
+			persistToFile = true
+		} else {
+			log.Warnln("tag is required for http-file/https-file subscription")
+		}
 		subscription = strings.Replace(subscription, "-file", "", 1)
 		break
 	default:
