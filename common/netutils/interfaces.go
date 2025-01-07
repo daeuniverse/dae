@@ -14,32 +14,32 @@ type InterfaceMather interface {
 	Match(ifname string) bool
 }
 
-type simpleInterfaceMather struct {
+type simpleInterfaceMatcher struct {
 	pattern string
 }
 
-func (m *simpleInterfaceMather) Match(ifname string) bool {
+func (m *simpleInterfaceMatcher) Match(ifname string) bool {
 	return m.pattern == ifname
 }
 
-type wildcardInterfaceMather struct {
+type wildcardInterfaceMatcher struct {
 	pattern string
 	re      *regexp.Regexp
 }
 
-func (m *wildcardInterfaceMather) Match(ifname string) bool {
+func (m *wildcardInterfaceMatcher) Match(ifname string) bool {
 	return m.pattern == ifname || m.re.MatchString(ifname)
 }
 
-func NewInterfaceMather(pattern string) (InterfaceMather, error) {
+func NewInterfaceMatcher(pattern string) (InterfaceMather, error) {
 	if !IsInterfaceNameIsWildcard(pattern) {
-		return &simpleInterfaceMather{pattern}, nil
+		return &simpleInterfaceMatcher{pattern}, nil
 	}
 
-	return newWildcardInterfaceMather(pattern)
+	return newWildcardInterfaceMatcher(pattern)
 }
 
-func newWildcardInterfaceMather(pattern string) (*wildcardInterfaceMather, error) {
+func newWildcardInterfaceMatcher(pattern string) (*wildcardInterfaceMatcher, error) {
 	regexPattern := "^" +
 		strings.ReplaceAll(
 			strings.ReplaceAll(pattern, "*", ".*"),
@@ -50,5 +50,5 @@ func newWildcardInterfaceMather(pattern string) (*wildcardInterfaceMather, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to create interface matcher for ifname pattern %s: %w", pattern, err)
 	}
-	return &wildcardInterfaceMather{pattern, regex}, nil
+	return &wildcardInterfaceMatcher{pattern, regex}, nil
 }
