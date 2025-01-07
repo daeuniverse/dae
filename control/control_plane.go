@@ -428,28 +428,29 @@ func NewControlPlane(
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
-			// Write mappings into eBPF map:
-			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchUpdateDomainRouting(cache); err != nil {
-				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
-			}
 			return nil
 		},
 		CacheRemoveCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchRemoveDomainRouting(cache); err != nil {
-				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
+			if err = core.BatchRemoveDomain(cache); err != nil {
+				return fmt.Errorf("BatchRemoveDomain: %w", err)
 			}
 			return nil
 		},
 		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error) {
-			return &DnsCache{
+			cache = &DnsCache{
 				DomainBitmap:     plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
 				Answer:           answers,
 				Deadline:         deadline,
 				OriginalDeadline: originalDeadline,
-			}, nil
+			}
+			// Write mappings into eBPF map:
+			// IP record (from dns lookup) -> domain routing
+			if err = core.BatchNewDomain(cache); err != nil {
+				return cache, fmt.Errorf("BatchNewDomain: %w", err)
+			}
+			return cache, nil
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		TimeoutExceedCallback: func(dialArgument *dialArgument, err error) {

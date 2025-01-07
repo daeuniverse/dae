@@ -342,6 +342,15 @@ struct {
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_routing_map SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __be32[4]);
+	__type(value, struct domain_routing);
+	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
+	/// NOTICE: No persistence.
+	// __uint(pinning, LIBBPF_PIN_BY_NAME);
+} domain_bump_map SEC(".maps");
+
 struct ip_port_proto {
 	__u32 ip[4];
 	__be16 port;
@@ -650,6 +659,8 @@ static int route_loop_cb(__u32 index, void *data)
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
 	struct domain_routing *domain_routing;
+	struct domain_routing *domain_bump;
+	bool need_control_plane_routing = false;
 
 	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
 		ctx->result = -EFAULT;
@@ -756,8 +767,21 @@ lookup_lpm:
 
 		// We use key instead of k to pass checker.
 		if (domain_routing &&
-		    (domain_routing->bitmap[index / 32] >> (index % 32)) & 1)
+		    (domain_routing->bitmap[index / 32] >> (index % 32)) & 1) {
+			// All domains mapeed by the current IP address are matched.
 			ctx->goodsubrule = true;
+		} else {
+			// Get domain bump bitmap.
+			domain_bump = bpf_map_lookup_elem(&domain_bump_map,
+							  ctx->params->daddr);
+			if (domain_bump &&
+			    (domain_bump->bitmap[index / 32] >> (index % 32)) & 1) {
+				ctx->goodsubrule = true;
+				// The current IP has mapped domains that match this rule, but not all of them do.
+				// jump to control plane.
+				need_control_plane_routing = true;
+			}
+		}
 		break;
 	case MatchType_ProcessName:
 #ifdef __DEBUG_ROUTING
@@ -833,7 +857,7 @@ before_next_loop:
 			} else {
 				bool must = ctx->must || match_set->must;
 
-				if (!must && ctx->isdns) {
+				if ((!must && ctx->isdns) || need_control_plane_routing) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
