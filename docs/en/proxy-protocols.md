@@ -20,7 +20,7 @@
   - [x] TCP
   - [x] WS
   - [x] TLS
-    - [x] Reality (**Experimental, TCP Only**)
+    - [x] Reality
   - [x] gRPC
   - [x] Meek
   - [x] HTTPUpgrade
