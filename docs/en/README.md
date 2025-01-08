@@ -134,6 +134,15 @@ emaint sync -r gentoo-zh
 emerge -a net-proxy/dae
 ```
 
+### Fedora
+
+dae has been released on [Fedora Copr](https://copr.fedorainfracloud.org/coprs/zhullyb/v2rayA/package/dae).
+
+```shell
+sudo dnf copr enable zhullyb/v2rayA
+sudo dnf install dae
+```
+
 ### Alpine
 
 See [run on alpine](tutorials/run-on-alpine.md).
