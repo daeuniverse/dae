@@ -402,6 +402,22 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 			tagToNodeList[tag] = append(tagToNodeList[tag], nodes...)
 		}
 	}
+
+	// Delete all files in persist.d that are not in tagToNodeList
+	files, err := os.ReadDir(filepath.Join(filepath.Dir(cfgFile), "persist.d"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, file := range files {
+		tag := strings.TrimSuffix(file.Name(), ".sub")
+		if _, ok := tagToNodeList[tag]; !ok {
+			err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name()))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if len(tagToNodeList) == 0 {
 		if resolvingfailed {
 			log.Warnln("No node found because all subscription resolving failed.")
