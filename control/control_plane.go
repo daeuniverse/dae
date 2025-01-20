@@ -220,7 +220,7 @@ func NewControlPlane(
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
-			if err = core.bindLan(ifname, global.AutoConfigKernelParameter); err != nil {
+			if err = core.bindLanWildcard(ifname, global.AutoConfigKernelParameter); err != nil {
 				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
 			}
 		}

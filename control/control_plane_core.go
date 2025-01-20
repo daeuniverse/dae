@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common/netutils"
+	"net"
 	"net/netip"
 	"os"
 	"regexp"
@@ -192,18 +194,24 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 	return nil
 }
 
-func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) error {
+func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func(realIfname string), keep bool) error {
+	matcher, err := netutils.NewInterfaceMatcher(_ifname)
+	if err != nil {
+		return err
+	}
 	ch := make(chan netlink.LinkUpdate)
 	done := make(chan struct{})
+
 	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
 			c.log.Debug("LinkSubscribe:", err)
 		},
-		ListExisting: true,
+		ListExisting: false,
 	}); e != nil {
 		return e
 	}
 	go func(ctx context.Context, ch <-chan netlink.LinkUpdate, done chan struct{}) {
+		processedLink := make(map[string]bool)
 		for {
 			select {
 			case <-ctx.Done():
@@ -214,10 +222,13 @@ func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) 
 			case update := <-ch:
 				if update.Header.Type == rtmType {
 					ifname := update.Link.Attrs().Name
-					if ifname == _ifname {
-						cb()
-						close(done)
-						return
+					if _, ok := processedLink[ifname]; !ok && matcher.Match(ifname) {
+						cb(ifname)
+						if !keep {
+							close(done)
+							return
+						}
+						processedLink[ifname] = true
 					}
 				}
 			}
@@ -227,48 +238,90 @@ func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) 
 }
 
 // addNewLinkBindLanCb waits for NEWLINK msg of given `ifname` and invokes `bindLan`.
-func (c *controlPlaneCore) addNewLinkBindLanCb(ifname string, autoConfigKernelParameter bool) error {
-	return c.addLinkCb(ifname, unix.RTM_NEWLINK, func() {
-		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", ifname)
-		if err := c.addQdisc(ifname); err != nil {
+func (c *controlPlaneCore) addNewLinkBindLanCb(ifname string, autoConfigKernelParameter bool, keep bool) error {
+	return c.addLinkCb(ifname, unix.RTM_NEWLINK, func(realIfname string) {
+		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", realIfname)
+		if err := c.addQdisc(realIfname); err != nil {
 			c.log.Errorf("addQdisc: %v", err)
 			return
 		}
-		if err := c.bindLan(ifname, autoConfigKernelParameter); err != nil {
+		if err := c.bindLan(realIfname, autoConfigKernelParameter, false); err != nil {
 			c.log.Errorf("bindLan: %v", err)
 		}
-	})
+	}, keep)
+}
+
+func (c *controlPlaneCore) bindLanWildcard(ifname string, autoConfigKernelParameter bool) error {
+	if !netutils.IsInterfaceNameIsWildcard(ifname) {
+		return c.bindLan(ifname, autoConfigKernelParameter, false)
+	}
+
+	// bind to current existed matched-interfaces
+	matcher, err := netutils.NewInterfaceMatcher(ifname)
+	if err != nil {
+		return err
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+	for _, iface := range interfaces {
+		if !matcher.Match(iface.Name) {
+			continue
+		}
+		if err := c.bindLan(iface.Name, autoConfigKernelParameter, true); err != nil {
+			return err
+		}
+	}
+	// listen new link creation
+	if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter, true); e != nil {
+		return fmt.Errorf("%w: %v", err, e)
+	}
+	return nil
 }
 
 // bindLan automatically configures kernel parameters and bind to lan interface `ifname`.
 // bindLan supports lazy-bind if interface `ifname` is not found.
 // bindLan supports rebinding when the interface `ifname` is deleted in the future.
-func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) error {
+func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool, isFromWildcard bool) error {
+	if !isFromWildcard && netutils.IsInterfaceNameIsWildcard(ifname) {
+		return c.bindLanWildcard(ifname, autoConfigKernelParameter)
+	}
+
 	if autoConfigKernelParameter {
 		SetSendRedirects(ifname, "0")
 		SetForwarding(ifname, "1")
 	}
 	if err := c._bindLan(ifname); err != nil {
+
 		var notFoundErr netlink.LinkNotFoundError
 		if !errors.As(err, &notFoundErr) {
 			return err
 		}
+		if isFromWildcard {
+			return err
+		}
 		// Not found error.
-
 		// Listen for `NEWLINK` to bind.
 		c.log.Warnf("Link '%v' is not found. Bind LAN program to it once it is created.", ifname)
-		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter); e != nil {
+		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter, false); e != nil {
 			return fmt.Errorf("%w: %v", err, e)
 		}
 		return nil
 	}
+
 	// Listen for `DELLINK` and add `NEWLINK` callback to re-bind.
-	if err := c.addLinkCb(ifname, unix.RTM_DELLINK, func() {
-		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", ifname)
-		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter); e != nil {
+	if err := c.addLinkCb(ifname, unix.RTM_DELLINK, func(realIfname string) {
+		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", realIfname)
+		// The interface retrieved through wildcard will be handled by the global wildcard callback.
+		// no need to monitor it here
+		if isFromWildcard {
+			return
+		}
+		if e := c.addNewLinkBindLanCb(realIfname, autoConfigKernelParameter, false); e != nil {
 			c.log.Errorf("Failed to add callback for re-bind LAN program to '%v': %v", ifname, e)
 		}
-	}); err != nil {
+	}, false); err != nil {
 		return fmt.Errorf("failed to add re-bind callback: %w", err)
 	}
 	return nil
