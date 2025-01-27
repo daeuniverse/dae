@@ -117,6 +117,11 @@ subscription {
     another_sub: 'https://example.com/another_sub'
     'https://example.com/no_tag_link'
     'file://relative/path/to/mysub.sub' # Put subscription content in /etc/dae/relative/path/to/mysub.sub
+
+    # Subscriptions with '-file' will be saved to 'config_dir/persist.d/your_sub_tag.sub'.
+    # This file will serve as a fallback when fetching the subscription via a link fails.
+    # It will be updated automatically once the fetch is successful.
+    persist_sub: 'https-file://www.example.com/persist_sub/link'
 }
 
 # Nodes defined here will be merged as a part of the global node pool.
