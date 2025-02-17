@@ -260,6 +260,9 @@ dns {
 
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
 
+## PPPoE
+如果希望代理 pppoe 接口, 请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口, 对于 wan 接口是 pppoe 的情况, 使用 auto 即可。
+
 ## 热重载和暂停
 
 当配置变化时，可以方便使用命令进行配置的热重载，在该过程中不会中断已有连接。当想暂停代理时，可使用命令进行暂停。

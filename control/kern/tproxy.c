@@ -964,7 +964,7 @@ static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
 	__u8 l4proto, struct ethhdr *ethh, __u8 from_wan, struct tcphdr *tcph)
 {
-	/* Redirect from L3 dev to L2 dev, e.g. wg0 -> veth */
+	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> veth */
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
 
@@ -1390,7 +1390,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	__u32 link_h_len;
 
 	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
+		return TC_ACT_PIPE;
 	bool tcp_state_syn;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
