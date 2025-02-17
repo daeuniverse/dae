@@ -30,6 +30,7 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -249,6 +250,7 @@ loop:
 			logger.SetLogger(logrus.StandardLogger(), newConf.Global.LogLevel, disableTimestamp, nil)
 			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
 			logrus.SetOutput(oldLogOutput)
+			netutils.SetLogger(log)
 
 			// New control plane.
 			obj := c.EjectBpf()

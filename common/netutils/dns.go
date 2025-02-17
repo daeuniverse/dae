@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -61,7 +60,7 @@ func tryUpdateSystemDnsElapse(k time.Duration) (err error) {
 func tryUpdateSystemDns() (err error) {
 	dnsConf := dnsReadConfig("/etc/resolv.conf")
 	if dnsConf.err != nil {
-		logrus.WithError(err).Debugln("dnsReadConfig(\"/etc/resolv.conf\")")
+		logger.WithError(err).Warnln("dnsReadConfig(\"/etc/resolv.conf\")")
 	}
 	systemDns = netip.AddrPort{}
 	for _, s := range dnsConf.servers {
