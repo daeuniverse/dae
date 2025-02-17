@@ -128,6 +128,15 @@ emaint sync -r gentoo-zh
 emerge -a net-proxy/dae
 ```
 
+### Fedora
+
+dae 已发布于 [Fedora Copr](https://copr.fedorainfracloud.org/coprs/zhullyb/v2rayA/package/dae)。
+
+```shell
+sudo dnf copr enable zhullyb/v2rayA
+sudo dnf install dae
+```
+
 ### Alpine
 
 详见 [run on alpine](../en/tutorials/run-on-alpine.md)。
@@ -250,6 +259,9 @@ dns {
 完整样例：[example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae)。
 
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
+
+## PPPoE
+如果希望代理 pppoe 接口, 请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口, 对于 wan 接口是 pppoe 的情况, 使用 auto 即可。
 
 ## 热重载和暂停
 

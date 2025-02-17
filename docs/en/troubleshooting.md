@@ -51,7 +51,7 @@ sudo nft 'insert rule inet firewalld filter_INPUT mark 0x8000000 accept'
 
 ### Troubleshoot PPPoE
 
-dae does not support PPPoE due to it is too complexity for a ebpf program. Binding to LAN for other machines should work fine. If you want to proxy the machine itself, see <<https://github.com/daeuniverse/dae/discussions/304>.
+Old version of dae does not support PPPoE, Please use latest version.
 
 ## Binding to LAN but bad DNS in other machines
 
