@@ -107,7 +107,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 		if s.stream {
 			go func() {
 				// Read once.
-				_, err = s.buf.ReadFromOnce(s.r)
+				_, err := s.buf.ReadFromOnce(s.r)
 				if err != nil {
 					s.dataError = err
 				}

@@ -50,7 +50,7 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 		}()
 		var e error
 		addrs4, e = ResolveNetip(ctx4, dialer, dns, host, dnsmessage.TypeA, network)
-		if err != nil && !errors.Is(e, context.Canceled) {
+		if e != nil && !errors.Is(e, context.Canceled) {
 			err4 = e
 			return
 		}
@@ -68,7 +68,7 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 		}()
 		var e error
 		addrs6, e = ResolveNetip(ctx6, dialer, dns, host, dnsmessage.TypeAAAA, network)
-		if err != nil && !errors.Is(e, context.Canceled) {
+		if e != nil && !errors.Is(e, context.Canceled) {
 			err6 = e
 			return
 		}

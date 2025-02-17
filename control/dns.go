@@ -317,7 +317,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	go func() {
 		// Send DNS request every seconds.
 		for {
-			_, err = conn.Write(data)
+			_, _ = conn.Write(data)
 			// if err != nil {
 			// 	if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			// 		c.log.WithFields(logrus.Fields{
