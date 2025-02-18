@@ -51,9 +51,6 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 			_err4 = e
 			return
 		}
-		if len(addrs4) == 0 {
-			addrs4 = []netip.Addr{{}}
-		}
 	}()
 	go func() {
 		defer func() {
@@ -68,9 +65,6 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 		if e != nil && !errors.Is(e, context.Canceled) {
 			err6 = e
 			return
-		}
-		if len(addrs6) == 0 {
-			addrs6 = []netip.Addr{{}}
 		}
 	}()
 	wg.Wait()
