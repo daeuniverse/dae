@@ -160,9 +160,9 @@ func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string, re
 	if len(rawURL) > 1 {
 		ip46 = parseIp46FromList(rawURL[1:])
 	} else {
-		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), resolverNetwork, false)
-		if err != nil {
-			return nil, err
+		ip46, _, _ = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), resolverNetwork, false)
+		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
+			return nil, fmt.Errorf("ResolveIp46: no valid ip for %v", u.Hostname())
 		}
 	}
 	return &TcpCheckOption{
@@ -205,9 +205,9 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string, resolverNetw
 	if len(dnsHostPort) > 1 {
 		ip46 = parseIp46FromList(dnsHostPort[1:])
 	} else {
-		ip46, err = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, resolverNetwork, false)
-		if err != nil {
-			return nil, err
+		ip46, _, _ = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, resolverNetwork, false)
+		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
+			return nil, fmt.Errorf("ResolveIp46: no valid ip for %v", host)
 		}
 	}
 	return &CheckDnsOption{
