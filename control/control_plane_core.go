@@ -142,7 +142,7 @@ func (c *controlPlaneCore) mapLinkType(ifname string) error {
 	}
 	var linkHdrLen uint32
 	switch link.Attrs().EncapType {
-	case "none", "ipip":
+	case "none", "ipip", "ppp", "tun":
 		linkHdrLen = consts.LinkHdrLen_None
 	case "ether":
 		linkHdrLen = consts.LinkHdrLen_Ethernet

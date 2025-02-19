@@ -130,7 +130,7 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 			NextProtos:         []string{"h3"},
 			InsecureSkipVerify: false,
 		},
-		QuicConfig: &quic.Config{},
+		QUICConfig: &quic.Config{},
 		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
 			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
 			conn, err := d.dialArgument.bestDialer.DialContext(
