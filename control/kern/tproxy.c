@@ -829,8 +829,10 @@ before_next_loop:
 				     OUTBOUND_MUST_RULES)) {
 				ctx->isdns_must_goodsubrule_badrule |= 0b100;
 			} else {
-				bool must = ctx->isdns_must_goodsubrule_badrule & 0b100 ||
-							match_set->must;
+				bool must =
+					ctx->isdns_must_goodsubrule_badrule &
+						0b100 ||
+					match_set->must;
 
 				if (!must &&
 				    (ctx->isdns_must_goodsubrule_badrule &
@@ -1362,7 +1364,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
 	if (!refresh_udp_conn_state_timer(&reversed_tuples_key, false))
-		return TC_ACT_SHOT;
+		return TC_ACT_PIPE;
 
 	return TC_ACT_PIPE;
 }
@@ -1560,7 +1562,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		struct udp_conn_state *conn_state =
 			refresh_udp_conn_state_timer(&tuples.five, true);
 		if (!conn_state)
-			return TC_ACT_SHOT;
+			return TC_ACT_PIPE;
 		if (!conn_state->is_egress) {
 			// Input udp connection
 			// => direct.
