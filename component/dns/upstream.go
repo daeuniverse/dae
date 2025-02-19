@@ -112,10 +112,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		}
 	}()
 
-	ip46, err := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve dns_upstream: %w", err)
-	}
+	ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
 	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
 	}
