@@ -17,6 +17,7 @@ package netutils
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -27,7 +28,7 @@ import (
 )
 
 var (
-	defaultNS   = []string{"127.0.0.1:53", "[::1]:53"}
+	defaultNS   = []string{"119.29.29.29:53", "[2400:3200::1, 2400:3200:baba::1]:53"}
 	getHostname = os.Hostname // variable for testing
 )
 
@@ -159,6 +160,7 @@ func dnsReadConfig(filename string) *dnsConfig {
 	}
 	if len(conf.servers) == 0 {
 		conf.servers = defaultNS
+		conf.err = fmt.Errorf("no servers read")
 	}
 	if len(conf.search) == 0 {
 		conf.search = dnsDefaultSearch()

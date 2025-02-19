@@ -232,7 +232,6 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 		defer cancel()
-		ctx = context.WithValue(ctx, "logger", c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
