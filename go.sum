@@ -32,6 +32,8 @@ github.com/daeuniverse/outbound v0.0.0-20250217155837-ed1630717a5c h1:jlx7EJs/Yu
 github.com/daeuniverse/outbound v0.0.0-20250217155837-ed1630717a5c/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
 github.com/daeuniverse/outbound v0.0.0-20250218165550-ad1a2c485f36 h1:qfjdvxdbxCTVfqCe68cMC7QMXJniil5ZNAxs0TrIj0w=
 github.com/daeuniverse/outbound v0.0.0-20250218165550-ad1a2c485f36/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
+github.com/daeuniverse/outbound v0.0.0-20250219135309-c607702d1c85 h1:g+V4WLWTZLXRCHmjgXH8W9kgYf+6QBPOS4q7plcHMFk=
+github.com/daeuniverse/outbound v0.0.0-20250219135309-c607702d1c85/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
 github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851 h1:AK4qfFw5CcHdOJcEpZj443NqskjhTvc+2cLOB5Cvrmk=
 github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851/go.mod h1:hykVjD1wT/nAFcAkagZpziNAnXLwJOOpn0Ozohtgmsw=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
