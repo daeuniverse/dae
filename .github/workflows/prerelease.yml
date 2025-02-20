@@ -110,8 +110,7 @@ jobs:
           export STRIP=llvm-strip-15
           make
           install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
-          install -Dm640 ./install/empty.dae ./pkgdir/etc/dae/config.dae
-          install -Dm644 ./example.dae -t ./pkgdir/etc/dae/
+          install -Dm640 ./example.dae -t ./pkgdir/etc/dae/
           install -d ./pkgdir/usr/share/dae/
           curl -L -o ./pkgdir/usr/share/dae/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
           curl -L -o ./pkgdir/usr/share/dae/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
