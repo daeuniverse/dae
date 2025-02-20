@@ -104,24 +104,28 @@ jobs:
         run: |
           export CGO_ENABLED=0
           export GOFLAGS="-trimpath -modcacherw"
-          export OUTPUT=build/usr/bin/dae
+          export OUTPUT=pkgdir/usr/bin/dae
           export VERSION=${{ env.VERSION }}
           export CLANG=clang-15
           export STRIP=llvm-strip-15
           make
-          install -Dm644 ./install/dae.service -t ./build/usr/lib/systemd/system/
-          install -Dm640 ./install/empty.dae ./build/etc/dae/config.dae
-          install -Dm644 ./example.dae -t ./build/etc/dae/
-          install -d ./build/usr/share/dae/
-          curl -L -o ./build/usr/share/dae/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./build/usr/share/dae/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
+          install -Dm640 ./example.dae -t ./pkgdir/etc/dae/
+          install -d ./pkgdir/usr/share/dae/
+          curl -L -o ./pkgdir/usr/share/dae/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+          curl -L -o ./pkgdir/usr/share/dae/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          install -D pkgdir/usr/share/dae/geo{ip,site}.dat install/{dae.service,empty.dae} example.dae -t ./zip/
+          install -D pkgdir/usr/bin/dae ./zip/dae-$ASSET_NAME
 
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        run: ./build/usr/bin/dae --version
+        run: ./pkgdir/usr/bin/dae --version
 
       - name: Create binary archive
-        run: tar -cJvf ./bundled/dae-$ASSET_NAME.tar.xz -C build .
+        run: |
+          tar -I 'xz -9' -cvf ./bundled/dae-$ASSET_NAME.tar.xz -C pkgdir .
+          cd zip
+          zip -9vr ../bundled/dae-$ASSET_NAME.zip .
 
       - name: Build Linux packages
         if: ${{ env.GOARM == '7' || env.GOARM == '' }}
@@ -189,7 +193,7 @@ jobs:
                   --deb-compression-level 9 \
                   --rpm-compression xz \
                   --verbose \
-                  -C build .
+                  -C pkgdir .
           done
 
           if [ $archlinux_pacman == 'pacman' ]; then
