@@ -62,7 +62,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - fix: must_rules cause entire match_set to become must. in [#719](https://github.com/daeuniverse/dae/pull/719) by (@LostAttractor)
 - fix(trojan): websocket path loss in [#727](https://github.com/daeuniverse/dae/pull/727) by (@irort)
 - fix(config): correct the truncation of process name(comm name) in [#738](https://github.com/daeuniverse/dae/pull/738) by (@xcpky)
-- fix: close of closed channel in [#747](https://github.com/daeuniverse/dae/pull/747) by (@cubercsl,mzz2017)
+- fix: close of closed channel in [#747](https://github.com/daeuniverse/dae/pull/747) by (@mzz2017)
 - fix: panic due to goroutine setting returned error in [#748](https://github.com/daeuniverse/dae/pull/748) by (@mzz2017)
 - fix(hy2): memory leaking from RoundTrip in [#752](https://github.com/daeuniverse/dae/pull/752) by (@mzz2017)
 
