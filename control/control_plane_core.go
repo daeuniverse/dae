@@ -399,8 +399,35 @@ func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
 
 }
 
-func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) error {
-	return c._bindWan(ifname)
+// bindWan supports lazy-bind if interface `ifname` is not found.
+// bindWan supports rebinding when the interface `ifname` is detected in the future.
+func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) {
+	initlinkCallback := func(link netlink.Link) {
+		if link.Attrs().Name == HostVethName {
+			return
+		}
+		if err := c._bindWan(link.Attrs().Name); err != nil {
+			c.log.Errorf("bindWan: %v", err)
+		}
+	}
+	newlinkCallback := func(link netlink.Link) {
+		if link.Attrs().Name == HostVethName {
+			return
+		}
+		c.log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
+		if err := c.addQdisc(link.Attrs().Name); err != nil {
+			c.log.Errorf("addQdisc: %v", err)
+			return
+		}
+		initlinkCallback(link)
+	}
+	dellinkCallback := func(link netlink.Link) {
+		if link.Attrs().Name == HostVethName {
+			return
+		}
+		c.log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
+	}
+	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
 }
 
 func (c *controlPlaneCore) _bindWan(ifname string) error {
