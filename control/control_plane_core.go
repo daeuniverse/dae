@@ -7,7 +7,6 @@ package control
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -19,6 +18,7 @@ import (
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
@@ -47,6 +47,7 @@ type controlPlaneCore struct {
 
 	closed context.Context
 	close  context.CancelFunc
+	ifmgr  *component.InterfaceManager
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -63,6 +64,8 @@ func newControlPlaneCore(log *logrus.Logger,
 		deferFuncs = append(deferFuncs, bpf.Close)
 	}
 	closed, toClose := context.WithCancel(context.Background())
+	ifmgr := component.NewInterfaceManager(log)
+	deferFuncs = append(deferFuncs, ifmgr.Close)
 	return &controlPlaneCore{
 		log:             log,
 		deferFuncs:      deferFuncs,
@@ -72,6 +75,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		flip:            coreFlip,
 		isReload:        isReload,
 		bpfEjected:      false,
+		ifmgr:           ifmgr,
 		closed:          closed,
 		close:           toClose,
 	}
@@ -192,86 +196,40 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 	return nil
 }
 
-func (c *controlPlaneCore) addLinkCb(_ifname string, rtmType uint16, cb func()) error {
-	ch := make(chan netlink.LinkUpdate)
-	done := make(chan struct{})
-	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
-		ErrorCallback: func(err error) {
-			c.log.Debug("LinkSubscribe:", err)
-		},
-		ListExisting: true,
-	}); e != nil {
-		return e
-	}
-	go func(ctx context.Context, ch <-chan netlink.LinkUpdate, done chan struct{}) {
-		for {
-			select {
-			case <-ctx.Done():
-				close(done)
-				return
-			case <-done:
-				return
-			case update := <-ch:
-				if update.Header.Type == rtmType {
-					ifname := update.Link.Attrs().Name
-					if ifname == _ifname {
-						cb()
-						close(done)
-						return
-					}
-				}
-			}
+// bindLan automatically configures kernel parameters and bind to lan interface `ifname`.
+// bindLan supports lazy-bind if interface `ifname` is not found.
+// bindLan supports rebinding when the interface `ifname` is detected in the future.
+func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) {
+	initlinkCallback := func(link netlink.Link) {
+		if link.Attrs().Name == HostVethName {
+			return
 		}
-	}(c.closed, ch, done)
-	return nil
-}
-
-// addNewLinkBindLanCb waits for NEWLINK msg of given `ifname` and invokes `bindLan`.
-func (c *controlPlaneCore) addNewLinkBindLanCb(ifname string, autoConfigKernelParameter bool) error {
-	return c.addLinkCb(ifname, unix.RTM_NEWLINK, func() {
-		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", ifname)
-		if err := c.addQdisc(ifname); err != nil {
+		if autoConfigKernelParameter {
+			SetSendRedirects(link.Attrs().Name, "0")
+			SetForwarding(link.Attrs().Name, "1")
+		}
+		if err := c._bindLan(link.Attrs().Name); err != nil {
+			c.log.Errorf("bindLan: %v", err)
+		}
+	}
+	newlinkCallback := func(link netlink.Link) {
+		if link.Attrs().Name == HostVethName {
+			return
+		}
+		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
+		if err := c.addQdisc(link.Attrs().Name); err != nil {
 			c.log.Errorf("addQdisc: %v", err)
 			return
 		}
-		if err := c.bindLan(ifname, autoConfigKernelParameter); err != nil {
-			c.log.Errorf("bindLan: %v", err)
-		}
-	})
-}
-
-// bindLan automatically configures kernel parameters and bind to lan interface `ifname`.
-// bindLan supports lazy-bind if interface `ifname` is not found.
-// bindLan supports rebinding when the interface `ifname` is deleted in the future.
-func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) error {
-	if autoConfigKernelParameter {
-		SetSendRedirects(ifname, "0")
-		SetForwarding(ifname, "1")
+		initlinkCallback(link)
 	}
-	if err := c._bindLan(ifname); err != nil {
-		var notFoundErr netlink.LinkNotFoundError
-		if !errors.As(err, &notFoundErr) {
-			return err
+	dellinkCallback := func(link netlink.Link) {
+		if link.Attrs().Name == HostVethName {
+			return
 		}
-		// Not found error.
-
-		// Listen for `NEWLINK` to bind.
-		c.log.Warnf("Link '%v' is not found. Bind LAN program to it once it is created.", ifname)
-		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter); e != nil {
-			return fmt.Errorf("%w: %v", err, e)
-		}
-		return nil
+		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
 	}
-	// Listen for `DELLINK` and add `NEWLINK` callback to re-bind.
-	if err := c.addLinkCb(ifname, unix.RTM_DELLINK, func() {
-		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", ifname)
-		if e := c.addNewLinkBindLanCb(ifname, autoConfigKernelParameter); e != nil {
-			c.log.Errorf("Failed to add callback for re-bind LAN program to '%v': %v", ifname, e)
-		}
-	}); err != nil {
-		return fmt.Errorf("failed to add re-bind callback: %w", err)
-	}
-	return nil
+	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
 }
 
 func (c *controlPlaneCore) _bindLan(ifname string) error {
