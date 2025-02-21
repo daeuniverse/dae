@@ -363,7 +363,10 @@ struct {
 } cookie_pid_map SEC(".maps");
 
 struct udp_conn_state {
-	bool is_egress;
+	// For each flow (echo symmetric path), note the original flow direction.
+	// Mark as true if traffic go through wan ingress.
+	// For traffic from lan that go through wan ingress, dae parse them in lan egress
+	bool is_wan_ingress_direction;
 
 	struct bpf_timer timer;
 };
@@ -1025,17 +1028,17 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 }
 
 static __always_inline struct udp_conn_state *
-refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
+refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_direction)
 {
 	struct udp_conn_state *old_conn_state =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
 	struct udp_conn_state new_conn_state = { 0 };
 
 	if (old_conn_state)
-		new_conn_state.is_egress =
-			old_conn_state->is_egress; // Keep the value.
+		new_conn_state.is_wan_ingress_direction =
+			old_conn_state->is_wan_ingress_direction; // Keep the value.
 	else
-		new_conn_state.is_egress = is_egress;
+		new_conn_state.is_wan_ingress_direction = is_wan_ingress_direction;
 	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
 				       &new_conn_state, BPF_ANY);
 	if (unlikely(ret))
@@ -1063,9 +1066,6 @@ retn:
 SEC("tc/egress")
 int tproxy_lan_egress(struct __sk_buff *skb)
 {
-	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
-		return TC_ACT_PIPE;
-
 	struct ethhdr ethh;
 	struct iphdr iph;
 	struct ipv6hdr ipv6h;
@@ -1084,10 +1084,25 @@ int tproxy_lan_egress(struct __sk_buff *skb)
 		bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_OK;
 	}
-	if (l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
+
+	if (skb->ingress_ifindex == NOWHERE_IFINDEX &&  // Only drop NDP_REDIRECT packets from localhost
+		l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
 		// REDIRECT (NDP)
 		return TC_ACT_SHOT;
 	}
+
+	// Update UDP Conntrack
+	if (l4proto == IPPROTO_UDP) {
+		struct tuples tuples;
+		struct tuples_key reversed_tuples_key;
+
+		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
+
+		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+			return TC_ACT_SHOT;
+	}
+
 	return TC_ACT_PIPE;
 }
 
@@ -1182,6 +1197,15 @@ new_connection:;
 		params.l4hdr = &tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
+		struct udp_conn_state *conn_state =
+			refresh_udp_conn_state_timer(&tuples.five, false);
+		if (!conn_state)
+			return TC_ACT_SHOT;
+		if (conn_state->is_wan_ingress_direction) {
+			// Replay (outbound) of an inbound flow
+			// => direct.
+			return TC_ACT_OK;
+		}
 		params.l4hdr = &udph;
 		params.flag[0] = L4ProtoType_UDP;
 	}
@@ -1350,19 +1374,22 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
-	if (ret)
+	if (ret) {
+		bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_OK;
-	if (l4proto != IPPROTO_UDP)
-		return TC_ACT_PIPE;
+	}
 
-	struct tuples tuples;
-	struct tuples_key reversed_tuples_key;
+	// Update UDP Conntrack
+	if (l4proto == IPPROTO_UDP) {
+		struct tuples tuples;
+		struct tuples_key reversed_tuples_key;
 
-	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-	copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
+		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-	if (!refresh_udp_conn_state_timer(&reversed_tuples_key, false))
-		return TC_ACT_SHOT;
+		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+			return TC_ACT_SHOT;
+	}
 
 	return TC_ACT_PIPE;
 }
@@ -1558,11 +1585,11 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 		}
 
 		struct udp_conn_state *conn_state =
-			refresh_udp_conn_state_timer(&tuples.five, true);
+			refresh_udp_conn_state_timer(&tuples.five, false);
 		if (!conn_state)
 			return TC_ACT_SHOT;
-		if (!conn_state->is_egress) {
-			// Input udp connection
+		if (conn_state->is_wan_ingress_direction) {
+			// Replay (outbound) of an inbound flow
 			// => direct.
 			return TC_ACT_OK;
 		}
