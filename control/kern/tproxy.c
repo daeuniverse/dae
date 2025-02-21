@@ -1005,6 +1005,61 @@ static __always_inline void prep_redirect_to_control_plane(
 		skb->cb[1] = l4proto;
 }
 
+static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
+					   struct tuples_key *key,
+					   struct udp_conn_state *val)
+{
+	bpf_map_delete_elem(&udp_conn_state_map, key);
+	return 0;
+}
+
+static __always_inline void copy_reversed_tuples(struct tuples_key *key,
+						 struct tuples_key *dst)
+{
+	__builtin_memset(dst, 0, sizeof(*dst));
+	dst->dip = key->sip;
+	dst->sip = key->dip;
+	dst->sport = key->dport;
+	dst->dport = key->sport;
+	dst->l4proto = key->l4proto;
+}
+
+static __always_inline struct udp_conn_state *
+refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
+{
+	struct udp_conn_state *old_conn_state =
+		bpf_map_lookup_elem(&udp_conn_state_map, key);
+	struct udp_conn_state new_conn_state = { 0 };
+
+	if (old_conn_state)
+		new_conn_state.is_egress =
+			old_conn_state->is_egress; // Keep the value.
+	else
+		new_conn_state.is_egress = is_egress;
+	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
+				       &new_conn_state, BPF_ANY);
+	if (unlikely(ret))
+		return NULL;
+	struct udp_conn_state *value =
+		bpf_map_lookup_elem(&udp_conn_state_map, key);
+	if (unlikely(!value))
+		return NULL;
+
+	if ((bpf_timer_init(&value->timer, &udp_conn_state_map,
+			    CLOCK_MONOTONIC)))
+		goto retn;
+
+	if ((bpf_timer_set_callback(&value->timer,
+				    refresh_udp_conn_state_timer_cb)))
+		goto retn;
+
+	if ((bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
+		goto retn;
+
+retn:
+	return value;
+}
+
 SEC("tc/egress")
 int tproxy_lan_egress(struct __sk_buff *skb)
 {
@@ -1276,61 +1331,6 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 		return true;
 	}
 	return false;
-}
-
-static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
-					   struct tuples_key *key,
-					   struct udp_conn_state *val)
-{
-	bpf_map_delete_elem(&udp_conn_state_map, key);
-	return 0;
-}
-
-static __always_inline void copy_reversed_tuples(struct tuples_key *key,
-						 struct tuples_key *dst)
-{
-	__builtin_memset(dst, 0, sizeof(*dst));
-	dst->dip = key->sip;
-	dst->sip = key->dip;
-	dst->sport = key->dport;
-	dst->dport = key->sport;
-	dst->l4proto = key->l4proto;
-}
-
-static __always_inline struct udp_conn_state *
-refresh_udp_conn_state_timer(struct tuples_key *key, bool is_egress)
-{
-	struct udp_conn_state *old_conn_state =
-		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	struct udp_conn_state new_conn_state = { 0 };
-
-	if (old_conn_state)
-		new_conn_state.is_egress =
-			old_conn_state->is_egress; // Keep the value.
-	else
-		new_conn_state.is_egress = is_egress;
-	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
-				       &new_conn_state, BPF_ANY);
-	if (unlikely(ret))
-		return NULL;
-	struct udp_conn_state *value =
-		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	if (unlikely(!value))
-		return NULL;
-
-	if ((bpf_timer_init(&value->timer, &udp_conn_state_map,
-			    CLOCK_MONOTONIC)))
-		goto retn;
-
-	if ((bpf_timer_set_callback(&value->timer,
-				    refresh_udp_conn_state_timer_cb)))
-		goto retn;
-
-	if ((bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
-		goto retn;
-
-retn:
-	return value;
 }
 
 SEC("tc/wan_ingress")
