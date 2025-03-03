@@ -1748,7 +1748,7 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 
 struct get_real_comm_ctx {
 	char *arg_buf;
-	unsigned int l;
+	u8 l;
 };
 
 static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
@@ -1782,7 +1782,7 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 
 	// Read args to buffer.
 	char arg_buf[MAX_ARG_LEN]; // Allocate it out of ctx to pass CO-RE
-	struct get_real_comm_ctx ctx = { 0 };
+	struct get_real_comm_ctx ctx = {};
 
 	ctx.arg_buf = arg_buf;
 	ret = bpf_core_read_user_str(arg_buf, MAX_ARG_LEN, args);
@@ -1798,9 +1798,11 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	if (unlikely(ret < 0))
 		return ret;
 
-	for (int i = 0; i < TASK_COMM_LEN; i++) {
-		if (ctx.l + i < MAX_ARG_LEN && arg_buf[ctx.l + i] != '\0') {
-			pid_pname->pname[i] = arg_buf[ctx.l + i];
+	u8 offset = ctx.l;
+
+	for (u8 i = 0; i < TASK_COMM_LEN; i++) {
+		if (offset + i < MAX_ARG_LEN && arg_buf[offset + i] != '\0') {
+			pid_pname->pname[i] = arg_buf[offset + i];
 		} else {
 			pid_pname->pname[i] = '\0';
 			break;
