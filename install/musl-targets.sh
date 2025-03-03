@@ -1,0 +1,9 @@
+GOARCH_386=i386-linux-musl
+GOARCH_amd64=x86_64-linux-musl
+GOARCH_arm=arm-linux-musleabi
+GOARCH_arm64=aarch64-linux-musl
+GOARCH_mips64le=mips64el-linux-musl
+GOARCH_mips64=mips64-linux-musl
+GOARCH_mipsle=mipsel-linux-musl
+GOARCH_mips=mips-linux-musl
+GOARCH_riscv64=riscv64-linux-musl
