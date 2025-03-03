@@ -220,9 +220,7 @@ func NewControlPlane(
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
-			if err = core.bindLan(ifname, global.AutoConfigKernelParameter); err != nil {
-				return nil, fmt.Errorf("bindLan: %v: %w", ifname, err)
-			}
+			core.bindLan(ifname, global.AutoConfigKernelParameter)
 		}
 	}
 	// Bind to WAN
@@ -249,9 +247,7 @@ func NewControlPlane(
 					}
 				}
 			}
-			if err = core.bindWan(ifname, global.AutoConfigKernelParameter); err != nil {
-				return nil, fmt.Errorf("bindWan: %v: %w", ifname, err)
-			}
+			core.bindWan(ifname, global.AutoConfigKernelParameter)
 		}
 	}
 	// Bind to dae0 and dae0peer
