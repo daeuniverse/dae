@@ -21,8 +21,14 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang-15 llvm-15
+
       - name: Run BPF tests
         run: |
           git submodule update --init
-          sudo make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
+          sudo CLANG=clang-15 make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
 

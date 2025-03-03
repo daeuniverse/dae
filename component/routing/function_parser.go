@@ -112,8 +112,8 @@ func ProcessNameParserFactory(callback func(f *config_parser.Function, procNames
 	return func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var procNames [][consts.TaskCommLen]byte
 		for _, v := range paramValueGroup {
-			if len([]byte(v)) > consts.TaskCommLen - 1 {
-				log.Infof(`pname routing: trim "%v" to "%v" because it is too long.`, v, string([]byte(v)[:consts.TaskCommLen-1]))
+			if len([]byte(v)) > consts.TaskCommLen {
+				log.Infof(`pname routing: trim "%v" to "%v" because it is too long.`, v, string([]byte(v)[:consts.TaskCommLen]))
 			}
 			procNames = append(procNames, toProcessName(v))
 		}
@@ -138,7 +138,7 @@ func parsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
 
 func toProcessName(processName string) (procName [consts.TaskCommLen]byte) {
 	n := []byte(processName)
-	copy(procName[:consts.TaskCommLen-1], n)
+	copy(procName[:], n)
 	return procName
 }
 

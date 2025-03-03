@@ -1798,14 +1798,13 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	if (unlikely(ret < 0))
 		return ret;
 
-	unsigned int offset = ctx.l; // Copy it to pass CO-RE
-
-	ret = bpf_core_read_str(pid_pname->pname, sizeof(pid_pname->pname),
-				arg_buf + offset);
-	if (unlikely(ret < 0)) {
-		bpf_printk("failed to read process name: bpf_core_read_str: %d",
-			   ret);
-		return ret;
+	for (int i = 0; i < TASK_COMM_LEN; i++) {
+		if (ctx.l + i < MAX_ARG_LEN && arg_buf[ctx.l + i] != '\0') {
+			pid_pname->pname[i] = arg_buf[ctx.l + i];
+		} else {
+			pid_pname->pname[i] = '\0';
+			break;
+		}
 	}
 
 	// Pupulate tgid
