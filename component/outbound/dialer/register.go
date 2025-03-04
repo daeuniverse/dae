@@ -6,12 +6,15 @@
 package dialer
 
 import (
+	"net/netip"
+
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
-	d, _p, err := D.NewNetproxyDialerFromLink(direct.SymmetricDirect, &gOption.ExtraOption, link)
+	cachedDirectDialer := direct.NewDirectDialerLaddr(netip.Addr{}, direct.Option{FullCone: false, WithCache: true})
+	d, _p, err := D.NewNetproxyDialerFromLink(cachedDirectDialer, &gOption.ExtraOption, link)
 	if err != nil {
 		return nil, err
 	}
