@@ -79,7 +79,7 @@ type DnsController struct {
 	dnsCacheMu          sync.Mutex
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[string]DnsForwarder
+	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -117,7 +117,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsCacheMu:          sync.Mutex{},
 		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[string]DnsForwarder),
+		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
 	}, nil
 }
 
@@ -346,6 +346,11 @@ type dialArgument struct {
 	mptcp        bool
 }
 
+type dnsForwarderKey struct {
+	upstream     string
+	dialArgument dialArgument
+}
+
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
@@ -562,14 +567,14 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// get forwarder from cache
 	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[upstreamName]
+	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
 	if !ok {
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
 			c.dnsForwarderCacheMu.Unlock()
 			return err
 		}
-		c.dnsForwarderCache[upstreamName] = forwarder
+		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
 	}
 	c.dnsForwarderCacheMu.Unlock()
 
