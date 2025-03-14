@@ -18,7 +18,6 @@ require (
 	github.com/miekg/dns v1.1.61
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
 	github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
-	github.com/panjf2000/ants/v2 v2.0.0
 	github.com/safchain/ethtool v0.4.1
 	github.com/shirou/gopsutil/v4 v4.24.6
 	github.com/sirupsen/logrus v1.9.3
