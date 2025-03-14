@@ -96,10 +96,10 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 				time.Sleep(3 * time.Microsecond)
 			}
 			p.mu.Lock()
-			defer p.mu.Unlock()
 			if p.m[key] == q {
 				delete(p.m, key)
 			}
+			p.mu.Unlock()
 			// Trigger next loop in func convoy
 			q.ch <- func() {}
 			<-q.freed
