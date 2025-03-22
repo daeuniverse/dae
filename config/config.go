@@ -49,6 +49,7 @@ type Global struct {
 	FallbackResolver       string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
 	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
 	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
+	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
 }
 
 type Utls struct {
