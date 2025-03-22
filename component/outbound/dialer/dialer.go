@@ -74,6 +74,7 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 			TlsFragment:         global.TlsFragment,
 			TlsFragmentLength:   global.TlsFragmentLength,
 			TlsFragmentInterval: global.TlsFragmentInterval,
+			UDPHopInterval:      global.UDPHopInterval,
 		},
 		Log:               log,
 		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
