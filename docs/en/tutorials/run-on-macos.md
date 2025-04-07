@@ -27,11 +27,21 @@ curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C ho
 
 This section intruduces how to use [lima](https://github.com/lima-vm/lima) virtual machine to run dae, and proxy whole macOS host network.
 
-First, we should install `lima` and `socket_vmnet`.
+First, we should install `lima` and `socket_vmnet`. And install `socket_vmnet` [from binary](https://github.com/lima-vm/socket_vmnet#from-binary) is recommended to avoid the 'not owned by "root"' error.
 
 ```shell
-# Install lima for VM and socket_vmnet for bridge.
-brew install lima socket_vmnet
+# Install lima for VM.
+brew install lima
+
+# Install socket_vmnet from binary for bridge
+VERSION="$(curl -fsSL https://api.github.com/repos/lima-vm/socket_vmnet/releases/latest | jq -r .tag_name)"
+FILE="socket_vmnet-${VERSION:1}-$(uname -m).tar.gz"
+
+# Download the binary archive
+curl -OSL "https://github.com/lima-vm/socket_vmnet/releases/download/${VERSION}/${FILE}"
+
+# Install /opt/socket_vmnet from the binary archive
+sudo tar Cxzvf / "${FILE}" opt/socket_vmnet
 
 # Set up the sudoers file for launching socket_vmnet from Lima
 limactl sudoers >etc_sudoers.d_lima
@@ -42,7 +52,7 @@ Then, configure lima configuration and dae VM configuration.
 
 ```shell
 # Configure lima networks.
-socket_vmnet_bin=$(readlink -f ${HOMEBREW_PREFIX}/opt/socket_vmnet)/bin/socket_vmnet
+socket_vmnet_bin=/opt/socket_vmnet/bin/socket_vmnet
 sed -ir "s#^ *socketVMNet:.*#  socketVMNet: \"${socket_vmnet_bin}\"#" ~/.lima/_config/networks.yaml
 ```
 
@@ -51,12 +61,13 @@ sed -ir "s#^ *socketVMNet:.*#  socketVMNet: \"${socket_vmnet_bin}\"#" ~/.lima/_c
 mkdir ~/.lima/dae/
 cat << 'EOF' | tee ~/.lima/dae/lima.yaml
 images:
-- location: "https://cloud.debian.org/images/cloud/bookworm/daily/20230416-1352/debian-12-generic-amd64-daily-20230416-1352.qcow2"
-  arch: "x86_64"
-  digest: "sha512:8dcb07f213bbe7436744ce310252f53eb06d8d0a85378e4bdeb297e29d7f8b8af82b038519fabca84a75f188aa4e5586d21856d1bb09ab89aca70fd39be7c06b"
-- location: "https://cloud.debian.org/images/cloud/bookworm/daily/20230416-1352/debian-12-generic-arm64-daily-20230416-1352.qcow2"
+### amd64 or arm64
+# - location: "https://cloud.debian.org/images/cloud/bookworm/daily/latest/debian-12-generic-amd64-daily.qcow2"
+#   arch: "x86_64"
+#   digest: "sha512: Paste the SHA512SUMS here and uncomment this line if you want security check"
+- location: "https://cloud.debian.org/images/cloud/bookworm/daily/latest/debian-12-generic-arm64-daily.qcow2"
   arch: "aarch64"
-  digest: "sha512:88020fbde570e4bc773d6b05d810150b64fea007a2a18dfee835f1d73025bd2872300352e5cb1acb0bb4784c3c6765be1007880177f5319385d4fdf1d75e3ccf"
+# digest: "sha512: Paste the SHA512SUMS here and uncomment this line if you want security check"
 mounts:
 networks:
 - lima: bridged
@@ -98,7 +109,10 @@ sudo netplan apply
 sudo apt-get install jq
 
 # Install dae.
-sudo bash -c "$(curl -s https://hubmirror.v2raya.org/raw/daeuniverse/dae-installer/main/installer.sh)" @ install
+sudo bash -c "$(wget -qO- https://github.com/daeuniverse/dae-installer/raw/main/installer.sh)" @ install
+
+# If you have difficulty accessing GitHub, you can use this command instead.
+sudo bash -c "$(curl -sL https://cdn.jsdelivr.net/gh/daeuniverse/dae-installer/installer.sh)" @ install use-cdn
 
 # Configure config.dae.
 cat << 'EOF' | sudo tee /usr/local/etc/dae/config.dae
@@ -202,6 +216,8 @@ set -ex
 export PATH=$PATH:/opt/local/bin/:/opt/homebrew/bin/
 dae_ip=$(limactl shell dae ip --json addr | limactl shell dae jq -cr '.[] | select( .ifname == "lima0" ).addr_info | .[] | select( .family == "inet" ).local')
 current_gateway=$(route -n get default|grep gateway|rev|cut -d' ' -f1|rev)
+
+# Take notice of the network interface, which you can find by `networksetup -listallnetworkservices'
 networksetup -getdnsservers Wi-Fi | cut -d" " -f1 | grep -E '\.|:' && dns_override=1
 [ ! -z "$dae_ip" ] && ping -c 1 -t 1 -n "$dae_ip" && dae_ready=1
 [ -z "$dae_ready" ] && [ ! -z "$dns_override" ] && (networksetup -setmanual Wi-Fi 1.1.1.1 1.1.1.1/32 1.1.1.1; networksetup -setdhcp Wi-Fi; networksetup -setdnsservers Wi-Fi "Empty"; exit 1)
