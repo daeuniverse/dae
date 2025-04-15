@@ -84,7 +84,13 @@ dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn]
 
 #### AUR
 
-##### 最新稳定版
+##### 最新稳定版 (针对 x86-64 v3 / AVX2 优化)
+
+```shell
+[yay/paru] -S dae-avx2-bin
+```
+
+##### 最新稳定版 (x86-64 或 aarch64 通用版)
 
 ```shell
 [yay/paru] -S dae
@@ -98,10 +104,10 @@ dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn]
 
 #### archlinuxcn
 
-##### 最新稳定版 (针对 x86-64 v3 优化)
+##### 最新稳定版 (针对 x86-64 v3 / AVX2 优化)
 
 ```shell
-sudo pacman -S dae-bin-x64-v3
+sudo pacman -S dae-avx2-bin
 ```
 
 ##### 最新稳定版 (x86-64 或 aarch64 通用版)
