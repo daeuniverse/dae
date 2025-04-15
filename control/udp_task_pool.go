@@ -1,14 +1,10 @@
 package control
 
 import (
+	"context"
 	"sync"
-	"sync/atomic"
 	"time"
-
-	ants "github.com/panjf2000/ants/v2"
 )
-
-var isTest = false
 
 const UdpTaskQueueLength = 128
 
@@ -21,35 +17,19 @@ type UdpTaskQueue struct {
 	ch        chan UdpTask
 	timer     *time.Timer
 	agingTime time.Duration
-	closed    atomic.Bool
-	freed     chan struct{}
-}
-
-func (q *UdpTaskQueue) Push(task UdpTask) {
-	q.timer.Reset(q.agingTime)
-	q.ch <- task
+	ctx       context.Context
+	closed    chan struct{}
 }
 
 func (q *UdpTaskQueue) convoy() {
 	for {
-		if q.closed.Load() {
-		clearloop:
-			for {
-				select {
-				case t := <-q.ch:
-					// Emit it back due to closed q.
-					ReemitWorkers.Submit(func() {
-						q.p.EmitTask(q.key, t)
-					})
-				default:
-					break clearloop
-				}
-			}
-			close(q.freed)
+		select {
+		case <-q.ctx.Done():
+			close(q.closed)
 			return
-		} else {
-			t := <-q.ch
-			t()
+		case task := <-q.ch:
+			task()
+			q.timer.Reset(q.agingTime)
 		}
 	}
 }
@@ -78,49 +58,39 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	q, ok := p.m[key]
 	if !ok {
 		ch := p.queueChPool.Get().(chan UdpTask)
+		ctx, cancel := context.WithCancel(context.Background())
 		q = &UdpTaskQueue{
 			key:       key,
 			p:         p,
 			ch:        ch,
 			timer:     nil,
 			agingTime: DefaultNatTimeout,
-			closed:    atomic.Bool{},
-			freed:     make(chan struct{}),
+			ctx:       ctx,
+			closed:    make(chan struct{}),
 		}
 		q.timer = time.AfterFunc(q.agingTime, func() {
-			// This func may be invoked twice due to concurrent Reset.
-			if !q.closed.CompareAndSwap(false, true) {
-				return
-			}
-			if isTest {
-				time.Sleep(3 * time.Microsecond)
-			}
+			// if timer executed, there should no task in queue.
+			// q.closed should not blocking things.
 			p.mu.Lock()
-			defer p.mu.Unlock()
-			if p.m[key] == q {
-				delete(p.m, key)
+			cancel()
+			delete(p.m, key)
+			p.mu.Unlock()
+			<-q.closed
+			if len(ch) == 0 { // Otherwise let it be GCed
+				p.queueChPool.Put(ch)
 			}
-			// Trigger next loop in func convoy
-			q.ch <- func() {}
-			<-q.freed
-			p.queueChPool.Put(ch)
 		})
 		p.m[key] = q
 		go q.convoy()
 	}
 	p.mu.Unlock()
-	q.Push(task)
+	// if task cannot be executed within 180s(DefaultNatTimeout), GC may be triggered, so skip the task when GC occurs
+	select {
+	case q.ch <- task:
+	case <-q.ctx.Done():
+	}
 }
 
 var (
 	DefaultUdpTaskPool = NewUdpTaskPool()
-	ReemitWorkers      *ants.Pool
 )
-
-func init() {
-	var err error
-	ReemitWorkers, err = ants.NewPool(UdpTaskQueueLength/2, ants.WithExpiryDuration(AnyfromTimeout))
-	if err != nil {
-		panic(err)
-	}
-}
