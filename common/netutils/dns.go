@@ -29,7 +29,7 @@ var (
 
 	ErrBadDnsAns = fmt.Errorf("bad dns answer")
 
-	BootstrapDns = netip.MustParseAddrPort("208.67.222.222:5353")
+	FallbackDns netip.AddrPort
 )
 
 func TryUpdateSystemDns() (err error) {
@@ -68,7 +68,7 @@ func tryUpdateSystemDns() (err error) {
 		}
 	}
 	if !systemDns.IsValid() {
-		systemDns = BootstrapDns
+		systemDns = FallbackDns
 	}
 	return nil
 }
