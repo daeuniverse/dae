@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -331,6 +333,11 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 			tagToNodeList[""] = append(tagToNodeList[""], string(node))
 		}
 	}
+
+	/// Init Direct Dialers.
+	direct.InitDirectDialers(conf.Global.FallbackResovler)
+	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResovler)
+
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
 	if !conf.Global.DisableWaitingNetwork {
