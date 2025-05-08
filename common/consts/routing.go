@@ -23,6 +23,8 @@ const (
 	Function_Mac         = "mac"
 	Function_ProcessName = "pname"
 	Function_Dscp        = "dscp"
+	Function_IfIndex     = "ifindex"
+	Function_IfName      = "ifname"
 
 	Function_QName    = "qname"
 	Function_QType    = "qtype"
