@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -79,7 +80,12 @@ type DnsController struct {
 	dnsCacheMu          sync.Mutex
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[string]DnsForwarder
+	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+}
+
+type handlingState struct {
+	mu  sync.Mutex
+	ref uint32
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -117,7 +123,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsCacheMu:          sync.Mutex{},
 		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[string]DnsForwarder),
+		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
 	}, nil
 }
 
@@ -346,6 +352,11 @@ type dialArgument struct {
 	mptcp        bool
 }
 
+type dnsForwarderKey struct {
+	upstream     string
+	dialArgument dialArgument
+}
+
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
@@ -448,11 +459,17 @@ func (c *DnsController) handle_(
 	}
 
 	// No parallel for the same lookup.
-	_mu, _ := c.handling.LoadOrStore(cacheKey, new(sync.Mutex))
-	mu := _mu.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-	defer c.handling.Delete(cacheKey)
+	handlingState_, _ := c.handling.LoadOrStore(cacheKey, new(handlingState))
+	handlingState := handlingState_.(*handlingState)
+	atomic.AddUint32(&handlingState.ref, 1)
+	handlingState.mu.Lock()
+	defer func() {
+		handlingState.mu.Unlock()
+		atomic.AddUint32(&handlingState.ref, ^uint32(0))
+		if atomic.LoadUint32(&handlingState.ref) == 0 {
+			c.handling.Delete(cacheKey)
+		}
+	}()
 
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
@@ -562,14 +579,14 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// get forwarder from cache
 	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[upstreamName]
+	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
 	if !ok {
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
 			c.dnsForwarderCacheMu.Unlock()
 			return err
 		}
-		c.dnsForwarderCache[upstreamName] = forwarder
+		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
 	}
 	c.dnsForwarderCacheMu.Unlock()
 

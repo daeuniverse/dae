@@ -13,18 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Should run successfully in less than 3.2 seconds.
 func TestUdpTaskPool(t *testing.T) {
-	isTest = true
 	c, err := cpu.Times(false)
 	require.NoError(t, err)
 	t.Log(c)
 	DefaultNatTimeout = 1000 * time.Microsecond
 	for i := 0; i < 100; i++ {
-		DefaultUdpTaskPool.EmitTask("testkey", func() {
-		})
+		DefaultUdpTaskPool.EmitTask("testkey", func() { time.Sleep(100 * time.Microsecond) })
 		time.Sleep(99 * time.Microsecond)
 	}
-	time.Sleep(5 * time.Second)
+	time.Sleep(1 * time.Second)
+	DefaultUdpTaskPool.EmitTask("testkey", func() { time.Sleep(100 * time.Second) })
+	time.Sleep(2 * time.Second)
+	DefaultUdpTaskPool.EmitTask("testkey", func() { time.Sleep(100 * time.Second) })
 	c, err = cpu.Times(false)
 	require.NoError(t, err)
 	t.Log(c)
