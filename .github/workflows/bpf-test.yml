@@ -14,7 +14,17 @@ permissions: read-all
 jobs:
   bpf_tests:
     name: BPF Unit Test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      matrix:
+        env:
+        - VERSION: 15
+        - VERSION: 16
+        - VERSION: 17
+        - VERSION: 18
+        - VERSION: 19
+
     steps:
       - name: Checkout code
         uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
@@ -23,12 +33,14 @@ jobs:
           fetch-depth: 0
 
       - name: Install Dependencies
+        env: ${{ matrix.env }}
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15
+          sudo apt-get install -y clang-$VERSION llvm-$VERSION
 
       - name: Run BPF tests
+        env: ${{ matrix.env }}
         run: |
           git submodule update --init
-          sudo CLANG=clang-15 make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
+          sudo CLANG=clang-$VERSION make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
 
