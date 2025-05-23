@@ -88,7 +88,13 @@ dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [arch
 
 #### AUR
 
-##### Latest Release
+##### Latest Release (Optimized Binary for x86-64 v3 / AVX2)
+
+```shell
+[yay/paru] -S dae-avx2-bin
+```
+
+##### Latest Release (General x86-64 or aarch64)
 
 ```shell
 [yay/paru] -S dae
@@ -102,10 +108,10 @@ dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [arch
 
 #### archlinuxcn
 
-##### Latest Release (Optimized for x86-64 v3)
+##### Latest Release (Optimized Binary for x86-64 v3 / AVX2)
 
 ```shell
-sudo pacman -S dae-bin-x64-v3
+sudo pacman -S dae-avx2-bin
 ```
 
 ##### Latest Release (General x86-64 or aarch64)

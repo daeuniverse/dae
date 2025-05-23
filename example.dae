@@ -64,6 +64,9 @@ global {
     # Group will switch node only when new_latency <= old_latency - tolerance.
     check_tolerance: 50ms
 
+    # Specify a fallback DNS resolver to be used when DNS resolution using resolv.conf fails. 
+    # This ensures DNS resolution continues to work even when the system's default DNS servers are unavailable or not responding properly.
+    fallback_resolver: '8.8.8.8:53'
 
     ##### Connecting options.
 

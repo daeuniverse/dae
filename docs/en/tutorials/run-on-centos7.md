@@ -1,7 +1,7 @@
 # Run on CentOS 7
 
 > [!WARNING]
-> CentOS 7 and RHEL 6.5/7 do not support eBPF out of the box; in other words, you must build the kernel (>= 5.8) yourself and install it.
+> CentOS 7 and RHEL 6.5/7 do not support eBPF out of the box; in other words, you must build the kernel (>= 5.17) yourself and install it.
 
 ## Introduction
 
