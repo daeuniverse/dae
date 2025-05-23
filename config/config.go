@@ -43,7 +43,7 @@ type Global struct {
 	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
 	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
 	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
-	FallbackResovler       string        `mapstructure:"fallback_resovler" default:"8.8.8.8:53"`
+	FallbackResolver       string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
 	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
 	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
 }

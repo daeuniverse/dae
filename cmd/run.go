@@ -335,8 +335,8 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	}
 
 	/// Init Direct Dialers.
-	direct.InitDirectDialers(conf.Global.FallbackResovler)
-	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResovler)
+	direct.InitDirectDialers(conf.Global.FallbackResolver)
+	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
 
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
