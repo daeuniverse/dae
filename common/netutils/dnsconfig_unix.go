@@ -2,7 +2,7 @@
 
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
-*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 // Modified from go1.18/src/net/dnsconfig_unix.go
