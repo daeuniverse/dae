@@ -186,15 +186,6 @@ struct {
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __u32); // ifindex
-	__type(value, __u32); // link length
-	__uint(max_entries, MAX_INTERFACE_NUM);
-	/// NOTICE: No persistence.
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-} linklen_map SEC(".maps");
-
 // Array of LPM tries:
 struct lpm_key {
 	struct bpf_lpm_trie_key trie_key;
@@ -884,17 +875,6 @@ static __always_inline __s64 route(const struct route_params *params)
 #undef _dscp
 }
 
-static __always_inline __u32 get_link_h_len(__u32 ifindex,
-					    volatile __u32 *link_h_len)
-{
-	__u32 *plink_h_len = bpf_map_lookup_elem(&linklen_map, &ifindex);
-
-	if (!plink_h_len)
-		return -EIO;
-	*link_h_len = *plink_h_len;
-	return 0;
-}
-
 static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 {
 	struct bpf_sock *sk;
@@ -1013,8 +993,7 @@ retn:
 	return value;
 }
 
-SEC("tc/egress")
-int tproxy_lan_egress(struct __sk_buff *skb)
+static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1024,10 +1003,7 @@ int tproxy_lan_egress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
@@ -1056,8 +1032,19 @@ int tproxy_lan_egress(struct __sk_buff *skb)
 	return TC_ACT_PIPE;
 }
 
-SEC("tc/ingress")
-int tproxy_lan_ingress(struct __sk_buff *skb)
+SEC("tc/lan_egress_l2")
+int tproxy_lan_egress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_egress(skb, 14);
+}
+
+SEC("tc/lan_egress_l3")
+int tproxy_lan_egress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_egress(skb, 0);
+}
+
+static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1067,10 +1054,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
@@ -1256,6 +1240,18 @@ block:
 	return TC_ACT_SHOT;
 }
 
+SEC("tc/lan_ingress_l2")
+int tproxy_lan_ingress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/lan_ingress_l3")
+int tproxy_lan_ingress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 0);
+}
+
 // Cookie will change after the first packet, so we just use it for
 // handshake.
 static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
@@ -1307,8 +1303,7 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return false;
 }
 
-SEC("tc/wan_ingress")
-int tproxy_wan_ingress(struct __sk_buff *skb)
+static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1318,10 +1313,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
@@ -1344,10 +1336,21 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	return TC_ACT_PIPE;
 }
 
+SEC("tc/wan_ingress_l2")
+int tproxy_wan_ingress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_ingress(skb, 14);
+}
+
+SEC("tc/wan_ingress_l3")
+int tproxy_wan_ingress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_ingress(skb, 0);
+}
+
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
-SEC("tc/wan_egress")
-int tproxy_wan_egress(struct __sk_buff *skb)
+static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
@@ -1364,10 +1367,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_PIPE;
 	bool tcp_state_syn;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
@@ -1624,6 +1624,18 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh,
 				       1, &tcph);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
+SEC("tc/wan_egress_l2")
+int tproxy_wan_egress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_egress(skb, 14);
+}
+
+SEC("tc/wan_egress_l3")
+int tproxy_wan_egress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_egress(skb, 0);
 }
 
 SEC("tc/dae0peer_ingress")
