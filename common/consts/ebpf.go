@@ -167,8 +167,6 @@ const (
 	LoopbackIfIndex         = 1
 )
 
-type LanWanFlag uint8
-
 const (
 	LinkHdrLen_None     uint32 = 0
 	LinkHdrLen_Ethernet uint32 = 14
