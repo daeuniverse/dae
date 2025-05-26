@@ -185,6 +185,7 @@ func NewControlPlane(
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
 			PinPath:             pinPath,
 			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
+			SoMarkFromDae:       global.SoMarkFromDae,
 			CollectionOptions:   collectionOpts,
 		}); err != nil {
 			if log.Level == logrus.PanicLevel {
