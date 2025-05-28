@@ -11,7 +11,7 @@ insert_lines() {
     {
       echo "/*"
       echo "*  SPDX-License-Identifier: AGPL-3.0-only"
-      echo "*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>"
+      echo "*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>"
       echo "*/"
       echo
       cat "$file"
