@@ -789,7 +789,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
+		buf := pool.GetFullCap(netutils.GetEthernetMtu())
 		var oob [120]byte // Size for original dest
 		defer buf.Put()
 		for {
