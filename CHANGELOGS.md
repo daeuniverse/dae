@@ -14,10 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
-- [v1.0.0rc3 (Pre-release)](#v100rc3-pre-release)
-- [v1.0.0rc2 (Pre-release)](#v100rc2-pre-release)
-- [v1.0.0rc1 (Pre-release)](#v100rc1-pre-release)
-- [v0.9.0 (Latest)](#v090-latest)
+- [v1.0.0 (Latest)](#v100-latest)
+- [v0.9.0)](#v090)
 - [v0.8.0](#v080)
 - [v0.7.4](#v074)
 - [v0.7.3 (Deprecated)](#v073-deprecated)
@@ -49,9 +47,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v1.0.0rc3 (Pre-release)
+### v1.0.0 (Latest)
 
-> Release date: 2025/05/12
+> Release date: 2025/05/30
 
 #### Features
 
@@ -74,6 +72,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - fix(bpf): Make bpf code compatible with clang-12 to clang-19 in [#771](https://github.com/daeuniverse/dae/pull/771) by (@jschwinger233)
 - fix: must_rules cause entire match_set to become must. in [#719](https://github.com/daeuniverse/dae/pull/719) by (@LostAttractor)
 - fix: revert wrongly merged go mod changes in [#802](https://github.com/daeuniverse/dae/pull/802) by (@LostAttractor)
+- fix: solve the problem that DNS dialer not perform switching & udp traffic stucks in [#782](https://github.com/daeuniverse/dae/pull/782) by (@LostAttractor)
 
 #### Others
 
@@ -91,103 +90,25 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - ci(release): draft release v1.0.0rc2 in [#761](https://github.com/daeuniverse/dae/pull/761) by (@dae-prow)
 - docs: update minimum kernel version to 5.17 in [#794](https://github.com/daeuniverse/dae/pull/794) by (@Integral-Tech)
 - docs: update archlinuxcn package name & add AVX2 package to AUR in [#797](https://github.com/daeuniverse/dae/pull/797) by (@Integral-Tech)
+- ci(release): draft release v1.0.0rc3 in [#808](https://github.com/daeuniverse/dae/pull/808) by (@dae-prow)
+- ci(bpf-test): Test bpf against llvm 15-19 in [#811](https://github.com/daeuniverse/dae/pull/811) by (@jschwinger233)
+- chore(cmd/config): fix typos in [#813](https://github.com/daeuniverse/dae/pull/813) by (@wanlce)
+- chore(license/copyright): update license signature in [#820](https://github.com/daeuniverse/dae/pull/820) by (@sumire88)
+- docs(example): add fallback resolver in [#829](https://github.com/daeuniverse/dae/pull/829) by (@MarksonHon)
+- docs(readme): remove legacy badge in [#828](https://github.com/daeuniverse/dae/pull/828) by (@sumire88)
+- docs(example): remove duplicate fallback resolver in [#830](https://github.com/daeuniverse/dae/pull/830) by (@wanlce)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v1.0.0rc3/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v1.0.0/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.9.0...v1.0.0rc3
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.9.0...v1.0.0
 
 #### New Contributors
 
 - @sommio made their first contribution in [#717](https://github.com/daeuniverse/dae/pull/717)
 - @irort made their first contribution in [#727](https://github.com/daeuniverse/dae/pull/727)
 - @xcpky made their first contribution in [#737](https://github.com/daeuniverse/dae/pull/737)
-- @xcpky made their first contribution in [#738](https://github.com/daeuniverse/dae/pull/738)
 
-### v1.0.0rc2 (Pre-release)
-
-> Release date: 2025/02/20
-
-#### Features
-
-- feat: enhance privilege elevation logic in [#722](https://github.com/daeuniverse/dae/pull/722) by (@woshikedayaa)
-- feat: subfile as sublink fallback in [#726](https://github.com/daeuniverse/dae/pull/726) by (@st0nie)
-- feat: support link/ppp & link/tun in [#746](https://github.com/daeuniverse/dae/pull/746) by (@LostAttractor)
-
-#### Bug Fixes
-
-- fix: must_rules cause entire match_set to become must. in [#719](https://github.com/daeuniverse/dae/pull/719) by (@LostAttractor)
-- fix(trojan): websocket path loss in [#727](https://github.com/daeuniverse/dae/pull/727) by (@irort)
-- fix(config): correct the truncation of process name(comm name) in [#738](https://github.com/daeuniverse/dae/pull/738) by (@xcpky)
-- fix: close of closed channel in [#747](https://github.com/daeuniverse/dae/pull/747) by (@mzz2017)
-- fix: panic due to goroutine setting returned error in [#748](https://github.com/daeuniverse/dae/pull/748) by (@mzz2017)
-- fix(hy2): memory leaking from RoundTrip in [#752](https://github.com/daeuniverse/dae/pull/752) by (@mzz2017)
-
-#### Others
-
-- docs: disable Encrypted ClientHello to avoid affecting traffic split in [#717](https://github.com/daeuniverse/dae/pull/717) by (@sommio)
-- ci(trigger-downstream-flake-sync): update sync-target branch in [#716](https://github.com/daeuniverse/dae/pull/716) by (@sumire88)
-- ci: add new goarch in [#720](https://github.com/daeuniverse/dae/pull/720) by (@Integral-Tech)
-- ci: add linux packages & minimize archive size in [#721](https://github.com/daeuniverse/dae/pull/721) by (@Integral-Tech)
-- docs: add UDP support for Reality in [#732](https://github.com/daeuniverse/dae/pull/732) by (@woshikedayaa)
-- docs: add Fedora Copr to installation guide in [#733](https://github.com/daeuniverse/dae/pull/733) by (@Integral-Tech)
-- chore: upgrade quic-go to v0.49.0 in [#743](https://github.com/daeuniverse/dae/pull/743) by (@mzz2017)
-- ci(kernel-test.yml): update checkout to v4.2 in [#751](https://github.com/daeuniverse/dae/pull/751) by (@MarksonHon)
-- docs: add check command for fish shell in [#744](https://github.com/daeuniverse/dae/pull/744) by (@Bryan2333)
-- ci(release): draft release v1.0.0rc1 in [#756](https://github.com/daeuniverse/dae/pull/756) by (@dae-prow)
-- ci: add zip format for binary archives & adjust compression level in [#757](https://github.com/daeuniverse/dae/pull/757) by (@Integral-Tech)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v1.0.0rc2/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.9.0...v1.0.0rc2
-
-#### New Contributors
-
-- @sommio made their first contribution in [#717](https://github.com/daeuniverse/dae/pull/717)
-- @irort made their first contribution in [#727](https://github.com/daeuniverse/dae/pull/727)
-- @xcpky made their first contribution in [#738](https://github.com/daeuniverse/dae/pull/738)
-
-### v1.0.0rc1 (Pre-release)
-
-> Release date: 2025/02/20
-
-#### Features
-
-- feat: enhance privilege elevation logic in [#722](https://github.com/daeuniverse/dae/pull/722) by (@woshikedayaa)
-- feat: subfile as sublink fallback in [#726](https://github.com/daeuniverse/dae/pull/726) by (@st0nie)
-- feat: support link/ppp & link/tun in [#746](https://github.com/daeuniverse/dae/pull/746) by (@LostAttractor)
-
-#### Bug Fixes
-
-- fix: must_rules cause entire match_set to become must. in [#719](https://github.com/daeuniverse/dae/pull/719) by (@LostAttractor)
-- fix(trojan): websocket path loss in [#727](https://github.com/daeuniverse/dae/pull/727) by (@irort)
-- fix(config): correct the truncation of process name(comm name) in [#738](https://github.com/daeuniverse/dae/pull/738) by (@xcpky)
-- fix: close of closed channel in [#747](https://github.com/daeuniverse/dae/pull/747) by (@mzz2017)
-- fix: panic due to goroutine setting returned error in [#748](https://github.com/daeuniverse/dae/pull/748) by (@mzz2017)
-- fix(hy2): memory leaking from RoundTrip in [#752](https://github.com/daeuniverse/dae/pull/752) by (@mzz2017)
-
-#### Others
-
-- docs: disable Encrypted ClientHello to avoid affecting traffic split in [#717](https://github.com/daeuniverse/dae/pull/717) by (@sommio)
-- ci(trigger-downstream-flake-sync): update sync-target branch in [#716](https://github.com/daeuniverse/dae/pull/716) by (@sumire88)
-- ci: add new goarch in [#720](https://github.com/daeuniverse/dae/pull/720) by (@Integral-Tech)
-- ci: add linux packages & minimize archive size in [#721](https://github.com/daeuniverse/dae/pull/721) by (@Integral-Tech)
-- docs: add UDP support for Reality in [#732](https://github.com/daeuniverse/dae/pull/732) by (@woshikedayaa)
-- docs: add Fedora Copr to installation guide in [#733](https://github.com/daeuniverse/dae/pull/733) by (@Integral-Tech)
-- chore: upgrade quic-go to v0.49.0 in [#743](https://github.com/daeuniverse/dae/pull/743) by (@mzz2017)
-- ci(kernel-test.yml): update checkout to v4.2 in [#751](https://github.com/daeuniverse/dae/pull/751) by (@MarksonHon)
-- docs: add check command for fish shell in [#744](https://github.com/daeuniverse/dae/pull/744) by (@Bryan2333)
-
-**Example Config**: https://github.com/daeuniverse/dae/blob/v1.0.0rc1/example.dae
-
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v0.9.0...v1.0.0rc1
-
-#### New Contributors
-
-- @sommio made their first contribution in [#717](https://github.com/daeuniverse/dae/pull/717)
-- @irort made their first contribution in [#727](https://github.com/daeuniverse/dae/pull/727)
-- @xcpky made their first contribution in [#738](https://github.com/daeuniverse/dae/pull/738)
-
-### v0.9.0 (Latest)
+### v0.9.0
 
 > Release date: 2024/12/18
 
