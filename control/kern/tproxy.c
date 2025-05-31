@@ -175,6 +175,7 @@ struct dae_param {
 	__u32 control_plane_pid;
 	__u32 dae0_ifindex;
 	__u32 dae_netns_id;
+	__u32 so_mark_from_dae;
 	__u8 dae0peer_mac[6];
 	__u8 padding[2];
 };
@@ -1453,7 +1454,8 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 			else
 				params.flag[1] = IpVersionType_6;
 			params.flag[6] = tuples.dscp;
-			if (pid_is_control_plane(skb, &pid_pname)) {
+			if ((PARAM.so_mark_from_dae && skb->mark == PARAM.so_mark_from_dae) ||
+			    pid_is_control_plane(skb, &pid_pname)) {
 				// From control plane. Direct.
 				return TC_ACT_OK;
 			}
@@ -1578,7 +1580,8 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 
 		struct pid_pname *pid_pname;
 
-		if (pid_is_control_plane(skb, &pid_pname)) {
+		if ((PARAM.so_mark_from_dae && skb->mark == PARAM.so_mark_from_dae) ||
+		    pid_is_control_plane(skb, &pid_pname)) {
 			// from control plane
 			// => direct.
 			return TC_ACT_OK;
