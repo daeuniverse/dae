@@ -98,6 +98,15 @@ global {
     # See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17
     utls_imitate: chrome_auto
 
+    # TLS fragmentation support. If is true, dae will send Client Hello in fragments to bypass SNI blocking.
+    tls_fragment: false
+
+    # TLS fragment packet length range, in bytes. The length of each fragment is randomly generated from this range.
+    tls_fragment_length: '50-100'
+
+    # TLS fragment packet length, in milliseconds. Each fragment interval is randomly generated from this range.
+    tls_fragment_interval: '10-20'
+
     # Multipath TCP (MPTCP) support. If is true, dae will try to use MPTCP to connect all nodes, but it will only take
     # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
     mptcp: false
