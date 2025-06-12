@@ -822,57 +822,57 @@ before_next_loop:
 #ifdef __DEBUG_ROUTING
 	bpf_printk("_bad_rule: %d", ctx->isdns_must_goodsubrule_badrule & 0b1);
 #endif
-	if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
-	    OUTBOUND_LOGICAL_MASK) {
-		// Tail of a rule (line).
-		// Decide whether to hit.
-		if (!(ctx->isdns_must_goodsubrule_badrule & 0b1)) {
+	if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) == OUTBOUND_LOGICAL_MASK)
+		return 0;
+
+	// Tail of a rule (line).
+	// Decide whether to hit.
+	if (!(ctx->isdns_must_goodsubrule_badrule & 0b1)) {
 #ifdef __DEBUG_ROUTING
-			bpf_printk(
-				"MATCHED: match_set->type: %u, match_set->not: %d",
-				match_set->type, match_set->not );
+		bpf_printk(
+			"MATCHED: match_set->type: %u, match_set->not: %d",
+			match_set->type, match_set->not );
 #endif
 
-			// DNS requests should routed by control plane if outbound is not
-			// must_direct.
+		// DNS requests should routed by control plane if outbound is not
+		// must_direct.
 
-			if (unlikely(match_set->outbound ==
-				     OUTBOUND_MUST_RULES)) {
-				ctx->isdns_must_goodsubrule_badrule |= 0b100;
-			} else {
-				bool must = ctx->isdns_must_goodsubrule_badrule & 0b100 ||
-							match_set->must;
+		if (unlikely(match_set->outbound ==
+			     OUTBOUND_MUST_RULES)) {
+			ctx->isdns_must_goodsubrule_badrule |= 0b100;
+		} else {
+			bool must = ctx->isdns_must_goodsubrule_badrule & 0b100 ||
+						match_set->must;
 
-				if (!must &&
-				    (ctx->isdns_must_goodsubrule_badrule &
-				     0b1000)) {
-					ctx->params->decision.outbound = OUTBOUND_CONTROL_PLANE_ROUTING;
-					ctx->params->decision.mark = match_set->mark;
-					ctx->params->decision.must = must;
-#ifdef __DEBUG_ROUTING
-					bpf_printk(
-						"OUTBOUND_CONTROL_PLANE_ROUTING: outbound=%u, mark=%x, must=%d",
-						ctx->params->decision.outbound,
-						ctx->params->decision.mark,
-						ctx->params->decision.must);
-#endif
-					return 1;
-				}
-				ctx->params->decision.outbound = match_set->outbound;
+			if (!must &&
+			    (ctx->isdns_must_goodsubrule_badrule &
+			     0b1000)) {
+				ctx->params->decision.outbound = OUTBOUND_CONTROL_PLANE_ROUTING;
 				ctx->params->decision.mark = match_set->mark;
 				ctx->params->decision.must = must;
 #ifdef __DEBUG_ROUTING
-				bpf_printk("outbound %u: mark=%x, must=%d, error=%d",
-					   match_set->outbound,
-					   ctx->params->decision.mark,
-					   ctx->params->decision.must,
-					   ctx->params->decision.error);
+				bpf_printk(
+					"OUTBOUND_CONTROL_PLANE_ROUTING: outbound=%u, mark=%x, must=%d",
+					ctx->params->decision.outbound,
+					ctx->params->decision.mark,
+					ctx->params->decision.must);
 #endif
 				return 1;
 			}
+			ctx->params->decision.outbound = match_set->outbound;
+			ctx->params->decision.mark = match_set->mark;
+			ctx->params->decision.must = must;
+#ifdef __DEBUG_ROUTING
+			bpf_printk("outbound %u: mark=%x, must=%d, error=%d",
+				   match_set->outbound,
+				   ctx->params->decision.mark,
+				   ctx->params->decision.must,
+				   ctx->params->decision.error);
+#endif
+			return 1;
 		}
-		ctx->isdns_must_goodsubrule_badrule &= ~0b1;
 	}
+	ctx->isdns_must_goodsubrule_badrule &= ~0b1;
 	return 0;
 #undef _l4proto_type
 #undef _ipversion_type
