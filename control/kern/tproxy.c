@@ -55,7 +55,6 @@
 #define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 2)
-#define MAX_TGID_PNAME_MAPPING_NUM (8192)
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
@@ -180,15 +179,6 @@ struct dae_param {
 };
 
 static volatile const struct dae_param PARAM = {};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
-	__type(key, __u32); // tgid
-	__type(value, __u32[TASK_COMM_LEN / 4]); // process name.
-	__uint(max_entries, MAX_TGID_PNAME_MAPPING_NUM);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);
-} tgid_pname_map
-	SEC(".maps"); // This map is only for old method (redirect mode in WAN).
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1819,7 +1809,8 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	return 0;
 }
 
-static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
+static __always_inline int _update_map_elem_by_cookie(const __u64 cookie,
+						      struct pid_pname *val)
 {
 	if (unlikely(!cookie)) {
 		bpf_printk("zero cookie");
@@ -1831,20 +1822,17 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 	}
 
 	int ret;
-	// Build value.
-	struct pid_pname val = { 0 };
 
-	ret = get_pid_pname(&val);
+	ret = get_pid_pname(val);
 	if (ret)
 		return ret;
 
 	// Update map.
-	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY);
+	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, val, BPF_ANY);
 	if (unlikely(ret)) {
 		// bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
 		return ret;
 	}
-	bpf_map_update_elem(&tgid_pname_map, &val.pid, &val.pname, BPF_ANY);
 
 #ifdef __PRINT_SETUP_PROCESS_CONNNECTION
 	bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val.pname,
@@ -1856,22 +1844,12 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 static __always_inline int update_map_elem_by_cookie(const __u64 cookie)
 {
 	int ret;
+	struct pid_pname val = {};
 
-	ret = _update_map_elem_by_cookie(cookie);
+	ret = _update_map_elem_by_cookie(cookie, &val);
 	if (ret) {
 		// Fallback to only write pid to avoid loop due to packets sent by dae.
-		struct pid_pname val = { 0 };
-
 		val.pid = bpf_get_current_pid_tgid() >> 32;
-		__u32(*pname)[TASK_COMM_LEN] =
-			bpf_map_lookup_elem(&tgid_pname_map, &val.pid);
-		if (pname) {
-			__builtin_memcpy(val.pname, *pname, TASK_COMM_LEN);
-			ret = 0;
-			bpf_printk("fallback [retrieve pname]: %u", val.pid);
-		} else {
-			bpf_printk("failed [retrieve pname]: %u", val.pid);
-		}
 		bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY);
 		return ret;
 	}
