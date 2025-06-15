@@ -1,6 +1,6 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
-*  Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -66,11 +66,15 @@ type AliveDialerSetSet map[*AliveDialerSet]int
 func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 	return &GlobalOption{
 		ExtraOption: D.ExtraOption{
-			AllowInsecure:     global.AllowInsecure,
-			TlsImplementation: global.TlsImplementation,
-			UtlsImitate:       global.UtlsImitate,
-			BandwidthMaxTx:    global.BandwidthMaxTx,
-			BandwidthMaxRx:    global.BandwidthMaxRx},
+			AllowInsecure:       global.AllowInsecure,
+			TlsImplementation:   global.TlsImplementation,
+			UtlsImitate:         global.UtlsImitate,
+			BandwidthMaxTx:      global.BandwidthMaxTx,
+			BandwidthMaxRx:      global.BandwidthMaxRx,
+			TlsFragment:         global.TlsFragment,
+			TlsFragmentLength:   global.TlsFragmentLength,
+			TlsFragmentInterval: global.TlsFragmentInterval,
+		},
 		Log:               log,
 		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},

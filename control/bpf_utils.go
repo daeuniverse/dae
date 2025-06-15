@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -180,6 +180,13 @@ func detectCgroupPath() (string, error) {
 	}
 
 	return "", errors.New("cgroup2 not mounted")
+}
+
+type bpfIfParams struct {
+	RxCksmOffload                  bool
+	TxL4CksmIp4Offload             bool
+	TxL4CksmIp6Offload             bool
+	UseNonstandardOffloadAlgorithm bool
 }
 
 func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err error) {

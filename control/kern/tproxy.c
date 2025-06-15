@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
 
 // +build ignore
 #include "headers/errno-base.h"
@@ -32,21 +32,11 @@
 #define IPV6_BYTE_LENGTH 16
 #define TASK_COMM_LEN 16
 
-#define IPV4_CSUM_OFF(link_h_len) ((link_h_len) + offsetof(struct iphdr, check))
-#define IPV4_DST_OFF(link_h_len) ((link_h_len) + offsetof(struct iphdr, daddr))
-#define IPV4_SRC_OFF(link_h_len) ((link_h_len) + offsetof(struct iphdr, saddr))
-#define IPV6_DST_OFF(link_h_len) \
-	((link_h_len) + offsetof(struct ipv6hdr, daddr))
-#define IPV6_SRC_OFF(link_h_len) \
-	((link_h_len) + offsetof(struct ipv6hdr, saddr))
-
 #define PACKET_HOST 0
 #define PACKET_OTHERHOST 3
 
 #define NOWHERE_IFINDEX 0
-#define LOOPBACK_IFINDEX 1
 
-#define MAX_PARAM_LEN 16
 #define MAX_INTERFACE_NUM 256
 #ifndef MAX_MATCH_SET_LEN
 #define MAX_MATCH_SET_LEN \
@@ -69,25 +59,11 @@
 #define OUTBOUND_LOGICAL_AND 0xFF
 #define OUTBOUND_LOGICAL_MASK 0xFE
 
-#define IS_WAN 0
-#define IS_LAN 1
-
 #define TPROXY_MARK 0x8000000
-#define RECOGNIZE 0x2017
-
-#define ESOCKTNOSUPPORT 94 /* Socket type not supported */
 
 #define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
 
 #define NDP_REDIRECT 137
-
-enum { BPF_F_CURRENT_NETNS = -1 };
-
-enum {
-	DisableL4ChecksumPolicy_EnableL4Checksum,
-	DisableL4ChecksumPolicy_Restore,
-	DisableL4ChecksumPolicy_SetZero,
-};
 
 // Param keys:
 static const __u32 zero_key;
@@ -211,9 +187,6 @@ struct {
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
 
-// Link to type:
-#define LinkType_None 0
-#define LinkType_Ethernet 1
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u32); // ifindex
@@ -222,23 +195,6 @@ struct {
 	/// NOTICE: No persistence.
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } linklen_map SEC(".maps");
-
-// Interface Ips:
-struct if_params {
-	bool rx_cksm_offload;
-	bool tx_l4_cksm_ip4_offload;
-	bool tx_l4_cksm_ip6_offload;
-	bool use_nonstandard_offload_algorithm;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __u32); // ifindex
-	__type(value, struct if_params); // ip
-	__uint(max_entries, MAX_INTERFACE_NUM);
-	/// NOTICE: No persistence.
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-} ifindex_params_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -427,14 +383,8 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 
 static __always_inline bool equal16(const __be32 x[4], const __be32 y[4])
 {
-#if __clang_major__ >= 10
 	return ((__be64 *)x)[0] == ((__be64 *)y)[0] &&
 	       ((__be64 *)x)[1] == ((__be64 *)y)[1];
-
-	// return x[0] == y[0] && x[1] == y[1] && x[2] == y[2] && x[3] == y[3];
-#else
-	return __builtin_bcmp(x, y, IPV6_BYTE_LENGTH) == 0;
-#endif
 }
 
 static __always_inline int

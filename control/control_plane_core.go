@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2024, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -262,9 +262,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
 	}
-	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update IfindexIpsMap: %w", err)
-	}
 
 	// Insert filters.
 	filterIngress := &netlink.BpfFilter{
@@ -456,9 +453,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
-	}
-	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 
 	/// Set-up WAN ingress/egress TC programs.
