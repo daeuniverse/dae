@@ -182,6 +182,13 @@ func detectCgroupPath() (string, error) {
 	return "", errors.New("cgroup2 not mounted")
 }
 
+type bpfIfParams struct {
+	RxCksmOffload                  bool
+	TxL4CksmIp4Offload             bool
+	TxL4CksmIp6Offload             bool
+	UseNonstandardOffloadAlgorithm bool
+}
+
 func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err error) {
 	if !p.TxL4CksmIp4Offload ||
 		!p.TxL4CksmIp6Offload {
