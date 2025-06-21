@@ -52,6 +52,9 @@ ipversion(6) -> ipv6_group
 mac('02:42:ac:11:00:02') -> direct
 
 ### Process Name rule (only support localhost process when binding to WAN)
+### The pname extraction algorithm can be roughly understood as: cmdline.split(' ').split('/')[-1]
+### "/usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1" ⇒ sddm-helper
+### "/game/SteamLibrary/steamapps/common/Counter-Strike Global Offensive/game/bin/linuxsteamrt64/cs2" ⇒ Counter-Strike
 pname(curl) -> direct
 
 ### DSCP rule (match DSCP; is useful for BT bypass). See https://github.com/daeuniverse/dae/discussions/295
