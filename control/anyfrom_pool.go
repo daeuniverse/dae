@@ -161,71 +161,77 @@ func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
 
 // AnyfromPool is a full-cone udp listener pool
 type AnyfromPool struct {
-	pool map[string]*Anyfrom
-	mu   sync.RWMutex
+	pool sync.Map // 使用sync.Map减少锁竞争
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
 func NewAnyfromPool() *AnyfromPool {
-	return &AnyfromPool{
-		pool: make(map[string]*Anyfrom, 64),
-		mu:   sync.RWMutex{},
-	}
+	return &AnyfromPool{}
 }
 
 func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
-	p.mu.RLock()
-	af, ok := p.pool[lAddr]
-	if !ok {
-		p.mu.RUnlock()
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if af, ok = p.pool[lAddr]; ok {
-			return af, false, nil
-		}
-		// Create an Anyfrom.
-		isNew = true
-		d := net.ListenConfig{
-			Control: func(network string, address string, c syscall.RawConn) error {
-				return dialer.TransparentControl(c)
-			},
-			KeepAlive: 0,
-		}
-		var err error
-		var pc net.PacketConn
-		GetDaeNetns().With(func() error {
-			pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
-			return nil
-		})
-		if err != nil {
-			return nil, true, err
-		}
-		uConn := pc.(*net.UDPConn)
-		af = &Anyfrom{
-			UDPConn:       uConn,
-			deadlineTimer: nil,
-			ttl:           ttl,
-			gotGSOError:   false,
-			gso:           isGSOSupported(uConn),
-		}
-
-		if ttl > 0 {
-			af.deadlineTimer = time.AfterFunc(ttl, func() {
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				_af := p.pool[lAddr]
-				if _af == af {
-					delete(p.pool, lAddr)
-					af.Close()
-				}
-			})
-			p.pool[lAddr] = af
-		}
-		return af, true, nil
-	} else {
-		af.RefreshTtl()
-		p.mu.RUnlock()
-		return af, false, nil
+	if af, ok := p.pool.Load(lAddr); ok {
+		anyfrom := af.(*Anyfrom)
+		anyfrom.RefreshTtl()
+		return anyfrom, false, nil
 	}
+	
+	// 使用双重检查锁定模式避免重复创建
+	// 创建临时key用于创建锁
+	createKey := lAddr + "_creating"
+	if _, loaded := p.pool.LoadOrStore(createKey, struct{}{}); loaded {
+		// 有其他goroutine在创建，等待并重试
+		time.Sleep(time.Microsecond * 100)
+		if af, ok := p.pool.Load(lAddr); ok {
+			anyfrom := af.(*Anyfrom)
+			anyfrom.RefreshTtl()
+			return anyfrom, false, nil
+		}
+	}
+	
+	defer p.pool.Delete(createKey)
+	
+	// 再次检查是否已创建
+	if af, ok := p.pool.Load(lAddr); ok {
+		anyfrom := af.(*Anyfrom)
+		anyfrom.RefreshTtl()
+		return anyfrom, false, nil
+	}
+	
+	// 创建新的Anyfrom
+	d := net.ListenConfig{
+		Control: func(network string, address string, c syscall.RawConn) error {
+			return dialer.TransparentControl(c)
+		},
+		KeepAlive: 0,
+	}
+	var pc net.PacketConn
+	GetDaeNetns().With(func() error {
+		pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+		return nil
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	
+	uConn := pc.(*net.UDPConn)
+	af := &Anyfrom{
+		UDPConn:       uConn,
+		deadlineTimer: nil,
+		ttl:           ttl,
+		gotGSOError:   false,
+		gso:           isGSOSupported(uConn),
+	}
+
+	if ttl > 0 {
+		af.deadlineTimer = time.AfterFunc(ttl, func() {
+			if loaded := p.pool.CompareAndDelete(lAddr, af); loaded {
+				af.Close()
+			}
+		})
+	}
+	
+	p.pool.Store(lAddr, af)
+	return af, true, nil
 }
