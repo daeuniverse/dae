@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -62,8 +61,6 @@ type DnsControllerOption struct {
 }
 
 type DnsController struct {
-	handling sync.Map
-
 	routing     *dns.Dns
 	qtypePrefer uint16
 
@@ -76,16 +73,9 @@ type DnsController struct {
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
 	fixedDomainTtl map[string]int
-	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
-	dnsCache            map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
-}
-
-type handlingState struct {
-	mu  sync.Mutex
-	ref uint32
+	// 使用sync.Map代替mutex+map，减少锁竞争
+	dnsCache            sync.Map // map[string]*DnsCache
+	dnsForwarderCache   sync.Map // map[dnsForwarderKey]DnsForwarder
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -119,11 +109,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
-		dnsCache:            make(map[string]*DnsCache),
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		fixedDomainTtl: option.FixedDomainTtl,
+		// 使用sync.Map，无需初始化
 	}, nil
 }
 
@@ -133,20 +120,15 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
-	c.dnsCacheMu.Lock()
-	_, ok := c.dnsCache[cacheKey]
-	if ok {
-		delete(c.dnsCache, cacheKey)
-	}
-	c.dnsCacheMu.Unlock()
+	c.dnsCache.Delete(cacheKey)
 }
+
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	cacheValue, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
 		return nil
 	}
+	cache = cacheValue.(*DnsCache)
 	var deadline time.Time
 	if !ignoreFixedTtl {
 		deadline = cache.Deadline
@@ -287,22 +269,16 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	deadline, originalDeadline := deadlineFunc(now, host)
 
 	cacheKey := c.cacheKey(fqdn, dnsTyp)
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	if ok {
-		cache.Answer = answers
-		cache.Deadline = deadline
-		cache.OriginalDeadline = originalDeadline
-		c.dnsCacheMu.Unlock()
-	} else {
-		cache, err = c.newCache(fqdn, answers, deadline, originalDeadline)
-		if err != nil {
-			c.dnsCacheMu.Unlock()
-			return err
-		}
-		c.dnsCache[cacheKey] = cache
-		c.dnsCacheMu.Unlock()
+	
+	// 创建新的缓存项而不是修改现有的，避免数据竞争
+	cache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
+	if err != nil {
+		return err
 	}
+	
+	// 原子性地更新缓存
+	c.dnsCache.Store(cacheKey, cache)
+	
 	if err = c.cacheAccessCallback(cache); err != nil {
 		return err
 	}
@@ -458,18 +434,26 @@ func (c *DnsController) handle_(
 		return c.sendReject_(dnsMessage, req)
 	}
 
-	// No parallel for the same lookup.
-	handlingState_, _ := c.handling.LoadOrStore(cacheKey, new(handlingState))
-	handlingState := handlingState_.(*handlingState)
-	atomic.AddUint32(&handlingState.ref, 1)
-	handlingState.mu.Lock()
-	defer func() {
-		handlingState.mu.Unlock()
-		atomic.AddUint32(&handlingState.ref, ^uint32(0))
-		if atomic.LoadUint32(&handlingState.ref) == 0 {
-			c.handling.Delete(cacheKey)
+	// 使用简化的处理状态管理，避免重复请求
+	handlingState, isNew := GlobalHandlingStateManager.GetOrCreateState(cacheKey)
+	
+	if !isNew {
+		// 有其他goroutine正在处理相同请求，等待完成
+		handlingState.Wait()
+		
+		// 重新检查缓存
+		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+			if needResp {
+				if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+					return fmt.Errorf("failed to write cached DNS resp: %w", err)
+				}
+			}
+			return nil
 		}
-	}()
+		// 如果仍然没有缓存，继续处理（可能是上一个请求失败了）
+	}
+	
+	defer GlobalHandlingStateManager.CompleteAndCleanup(cacheKey, handlingState)
 
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
@@ -569,45 +553,21 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
-	// defer in a recursive call will delay Close(), thus we Close() before
-	// the next recursive call. However, a connection cannot be closed twice.
-	// We should set a connClosed flag to avoid it.
-	var connClosed bool
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
-	if !ok {
-		forwarder, err = newDnsForwarder(upstream, *dialArgument)
-		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
-			return err
-		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
-	}
-	c.dnsForwarderCacheMu.Unlock()
-
-	defer func() {
-		if !connClosed {
-			forwarder.Close()
-		}
-	}()
-
+	// 使用新的转发器管理器，避免重复创建
+	forwarder, releaseForwarder, err := GlobalDnsForwarderManager.GetForwarder(upstream, *dialArgument)
 	if err != nil {
 		return err
 	}
+	defer releaseForwarder()
 
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
 	if err != nil {
 		return err
 	}
-
-	// Close conn before the recursive call.
-	forwarder.Close()
-	connClosed = true
 
 	// Route response.
 	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
