@@ -17,7 +17,7 @@ struct {
 	__array(values, int());
 } entry_call_map SEC(".maps") = {
 	.values = {
-		[0] = &tproxy_wan_egress,
+		[0] = &tproxy_wan_egress_l2,
 	},
 };
 
@@ -30,9 +30,6 @@ int testpktgen_dport_match(struct __sk_buff *skb)
 SEC("tc/setup/dport_match")
 int testsetup_dport_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
@@ -69,9 +66,6 @@ int testpktgen_dport_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/dport_mismatch")
 int testsetup_dport_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
@@ -108,9 +102,6 @@ int testpktgen_ipset_match(struct __sk_buff *skb)
 SEC("tc/setup/ipset_match")
 int testsetup_ipset_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dip(224.1.0.0/16) -> direct */
 	struct match_set ms = {};
 	ms.not = false;
@@ -153,9 +144,6 @@ int testpktgen_ipset_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/ipset_mismatch")
 int testsetup_ipset_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	// dip(224.1.0.0/16) -> direct
 	struct match_set ms = {};
 	ms.not = false;
@@ -198,9 +186,6 @@ int testpktgen_source_ipset_match(struct __sk_buff *skb)
 SEC("tc/setup/source_ipset_match")
 int testsetup_source_ipset_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* sip(192.168.50.0/24) -> direct */
 	struct match_set ms = {};
 	ms.not = false;
@@ -243,9 +228,6 @@ int testpktgen_source_ipset_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/source_ipset_mismatch")
 int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* sip(192.168.50.0/24) -> direct */
 	struct match_set ms = {};
 	ms.not = false;
@@ -288,9 +270,6 @@ int testpktgen_sport_match(struct __sk_buff *skb)
 SEC("tc/setup/sport_match")
 int testsetup_sport_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* sport(19000-20000) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {19000, 20000};
@@ -327,9 +306,6 @@ int testpktgen_sport_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/sport_mismatch")
 int testsetup_sport_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* sport(19230-19232) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {19230, 19232};
@@ -366,9 +342,6 @@ int testpktgen_l4proto_match(struct __sk_buff *skb)
 SEC("tc/setup/l4proto_match")
 int testsetup_l4proto_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* l4proto(tcp) -> proxy */
 	struct match_set ms = {};
 	ms.l4proto_type = L4ProtoType_TCP;
@@ -404,9 +377,6 @@ int testpktgen_l4proto_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/l4proto_mismatch")
 int testsetup_l4proto_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* l4proto(udp) -> proxy */
 	struct match_set ms = {};
 	ms.l4proto_type = L4ProtoType_UDP;
@@ -442,9 +412,6 @@ int testpktgen_ipversion_match(struct __sk_buff *skb)
 SEC("tc/setup/ipversion_match")
 int testsetup_ipversion_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* ipversion(4) -> proxy */
 	struct match_set ms = {};
 	ms.ip_version = IpVersionType_4;
@@ -480,9 +447,6 @@ int testpktgen_ipversion_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/ipversion_mismatch")
 int testsetup_ipversion_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* ipversion(6) -> proxy */
 	struct match_set ms = {};
 	ms.ip_version = IpVersionType_6;
@@ -518,9 +482,6 @@ int testpktgen_mac_match(struct __sk_buff *skb)
 SEC("tc/setup/mac_match")
 int testsetup_mac_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* mac('06:07:08:09:0a:0b') -> proxy */
 	struct match_set ms = {};
 	ms.not = false;
@@ -580,9 +541,6 @@ int testpktgen_mac_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/mac_mismatch")
 int testsetup_mac_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* mac('00:01:02:03:04:05') -> proxy */
 	struct match_set ms = {};
 	ms.not = false;
@@ -630,9 +588,6 @@ int testpktgen_dscp_match(struct __sk_buff *skb)
 SEC("tc/setup/dscp_match")
 int testsetup_dscp_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dscp(4) -> proxy */
 	struct match_set ms = {};
 	ms.dscp = 4;
@@ -668,9 +623,6 @@ int testpktgen_dscp_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/dscp_mismatch")
 int testsetup_dscp_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dscp(5) -> proxy */
 	struct match_set ms = {};
 	ms.dscp = 5;
@@ -706,9 +658,6 @@ int testpktgen_and_match_1(struct __sk_buff *skb)
 SEC("tc/setup/and_match_1")
 int testsetup_and_match_1(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms = {};
 	ms.not = false;
@@ -786,9 +735,6 @@ int testpktgen_and_match_2(struct __sk_buff *skb)
 SEC("tc/setup/and_match_2")
 int testsetup_and_match_2(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms = {};
 	ms.not = false;
@@ -866,9 +812,6 @@ int testpktgen_and_mismatch(struct __sk_buff *skb)
 SEC("tc/setup/and_mismatch")
 int testsetup_and_mismatch(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms = {};
 	ms.not = false;
@@ -946,9 +889,6 @@ int testpktgen_not_match(struct __sk_buff *skb)
 SEC("tc/setup/not_match")
 int testsetup_not_match(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* !dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
@@ -985,9 +925,6 @@ int testpktgen_not_mismtach(struct __sk_buff *skb)
 SEC("tc/setup/not_mismtach")
 int testsetup_not_mismtach(struct __sk_buff *skb)
 {
-	__u32 linklen = ETH_HLEN;
-	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
-
 	/* !dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};

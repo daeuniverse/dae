@@ -48,7 +48,9 @@
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
-#define IPV6_MAX_EXTENSIONS 4
+#define IPV6_MAX_EXTENSIONS 8
+
+#define ipv6_optlen(p) (((p)+1) << 3)
 
 #define OUTBOUND_DIRECT 0
 #define OUTBOUND_BLOCK 1
@@ -175,15 +177,6 @@ struct {
 	__type(value, __u64);
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __u32); // ifindex
-	__type(value, __u32); // link length
-	__uint(max_entries, MAX_INTERFACE_NUM);
-	/// NOTICE: No persistence.
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-} linklen_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -376,95 +369,56 @@ static __always_inline bool equal16(const __be32 x[4], const __be32 y[4])
 	       ((__be64 *)x)[1] == ((__be64 *)y)[1];
 }
 
-static __always_inline int
-handle_ipv6_extensions(const struct __sk_buff *skb, __u32 offset, __u32 hdr,
-		       struct icmp6hdr *icmp6h, struct tcphdr *tcph,
-		       struct udphdr *udph, __u8 *ihl, __u8 *l4proto)
+static __always_inline bool is_extension_header(__u8 nexthdr)
 {
-	__u8 hdr_length = 0;
-	__u8 nexthdr = 0;
-	*ihl = sizeof(struct ipv6hdr) / 4;
-	int ret;
-	// We only process TCP and UDP traffic.
-
-	// Unroll can give less instructions but more memory consumption when loading.
-	// We disable it here to support more poor memory devices.
-	// #pragma unroll
-	for (int i = 0; i < IPV6_MAX_EXTENSIONS;
-	     i++, offset += hdr_length, hdr = nexthdr, *ihl += hdr_length / 4) {
-		if (hdr_length % 4) {
-			bpf_printk(
-				"IPv6 extension length is not multiples of 4");
-			return 1;
-		}
-		// See control/control_plane.go.
-
-		switch (hdr) {
-		case IPPROTO_ICMPV6:
-			*l4proto = hdr;
-			hdr_length = sizeof(struct icmp6hdr);
-			// Assume ICMPV6 as a level 4 protocol.
-			ret = bpf_skb_load_bytes(skb, offset, icmp6h,
-						 hdr_length);
-			if (ret) {
-				bpf_printk("not a valid IPv6 packet");
-				return -EFAULT;
-			}
-			return 0;
-
-		case IPPROTO_HOPOPTS:
-		case IPPROTO_ROUTING:
-			ret = bpf_skb_load_bytes(skb, offset + 1, &hdr_length,
-						 sizeof(hdr_length));
-			if (ret) {
-				bpf_printk("not a valid IPv6 packet");
-				return -EFAULT;
-			}
-
-special_n1:
-			ret = bpf_skb_load_bytes(skb, offset, &nexthdr,
-						 sizeof(nexthdr));
-			if (ret) {
-				bpf_printk("not a valid IPv6 packet");
-				return -EFAULT;
-			}
-			break;
-		case IPPROTO_FRAGMENT:
-			hdr_length = 4;
-			goto special_n1;
-		case IPPROTO_TCP:
-		case IPPROTO_UDP:
-			*l4proto = hdr;
-			if (hdr == IPPROTO_TCP) {
-				// Upper layer;
-				ret = bpf_skb_load_bytes(skb, offset, tcph,
-							 sizeof(struct tcphdr));
-				if (ret) {
-					bpf_printk("not a valid IPv6 packet");
-					return -EFAULT;
-				}
-			} else if (hdr == IPPROTO_UDP) {
-				// Upper layer;
-				ret = bpf_skb_load_bytes(skb, offset, udph,
-							 sizeof(struct udphdr));
-				if (ret) {
-					bpf_printk("not a valid IPv6 packet");
-					return -EFAULT;
-				}
-			} else {
-				// Unknown hdr.
-				bpf_printk("Unexpected hdr.");
-				return 1;
-			}
-			return 0;
-		default:
-			/// EXPECTED: Maybe ICMP, etc.
-			// bpf_printk("IPv6 but unrecognized extension protocol: %u", hdr);
-			return 1;
-		}
+	switch (nexthdr) {
+	case IPPROTO_HOPOPTS:
+	case IPPROTO_ROUTING:
+	case IPPROTO_FRAGMENT:
+	case IPPROTO_DSTOPTS:
+		return true;
+	default:
+		return false;
 	}
-	bpf_printk("exceeds IPV6_MAX_EXTENSIONS limit");
-	return 1;
+}
+
+struct ipv6_ext_ctx {
+	const struct __sk_buff *skb;
+	__u32 *offset;
+	__u8 *nexthdr;
+	int result;
+};
+
+static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
+{
+	struct ipv6_ext_ctx *ctx = data;
+
+	if (*ctx->nexthdr == IPPROTO_NONE)
+		return 1;
+
+	if (!is_extension_header(*ctx->nexthdr))
+		return 1;
+
+	int ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset, ctx->nexthdr,
+					 sizeof(*ctx->nexthdr));
+	if (ret) {
+		bpf_printk("not a valid IPv6 packet");
+		ctx->result = -EFAULT;
+		return 1;
+	}
+
+	__u8 hdr_ext_len = 0;
+
+	ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset + 1, &hdr_ext_len,
+				 sizeof(hdr_ext_len));
+	if (ret) {
+		bpf_printk("not a valid IPv6 packet");
+		ctx->result = -EFAULT;
+		return 1;
+	}
+
+	*ctx->offset += ipv6_optlen(hdr_ext_len);
+	return 0;
 }
 
 static __always_inline int
@@ -512,22 +466,22 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		// We only process TCP and UDP traffic.
 		*l4proto = iph->protocol;
 		switch (iph->protocol) {
-		case IPPROTO_TCP: {
+		case IPPROTO_TCP:
 			ret = bpf_skb_load_bytes(skb, offset, tcph,
 						 sizeof(struct tcphdr));
 			if (ret) {
 				// Not a complete tcphdr.
 				return -EFAULT;
 			}
-		} break;
-		case IPPROTO_UDP: {
+			break;
+		case IPPROTO_UDP:
 			ret = bpf_skb_load_bytes(skb, offset, udph,
 						 sizeof(struct udphdr));
 			if (ret) {
 				// Not a complete udphdr.
 				return -EFAULT;
 			}
-		} break;
+			break;
 		default:
 			return 1;
 		}
@@ -542,16 +496,65 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 
 		offset += sizeof(struct ipv6hdr);
+		*ihl = sizeof(struct ipv6hdr) / 4;
+		__u8 nexthdr = ipv6h->nexthdr;
 
-		return handle_ipv6_extensions(skb, offset, ipv6h->nexthdr,
-					      icmp6h, tcph, udph, ihl, l4proto);
-	} else {
-		/// EXPECTED: Maybe ICMP, MPLS, etc.
-		// bpf_printk("IP but not supported packet: protocol is %u",
-		// iph->protocol);
-		// bpf_printk("unknown link proto: %u", bpf_ntohl(skb->protocol));
-		return 1;
+		// Skip all extension headers.
+		struct ipv6_ext_ctx ext_ctx = {
+			.skb = skb,
+			.offset = &offset,
+			.nexthdr = &nexthdr,
+			.result = 0
+		};
+
+		ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb, &ext_ctx, 0);
+		if (ret < 0)
+			return ret;
+		if (ext_ctx.result)
+			return ext_ctx.result;
+
+		if (is_extension_header(nexthdr)) {
+			bpf_printk("Unexpected hdr or exceeds IPV6_MAX_EXTENSIONS limit");
+			return 1;
+		}
+
+		*l4proto = nexthdr;
+
+		switch (nexthdr) {
+		case IPPROTO_TCP:
+			ret = bpf_skb_load_bytes(skb, offset, tcph,
+						 sizeof(struct tcphdr));
+			if (ret) {
+				// Not a complete tcphdr.
+				return -EFAULT;
+			}
+			break;
+		case IPPROTO_UDP:
+			ret = bpf_skb_load_bytes(skb, offset, udph,
+						 sizeof(struct udphdr));
+			if (ret) {
+				// Not a complete udphdr.
+				return -EFAULT;
+			}
+			break;
+		case IPPROTO_ICMPV6:
+			ret = bpf_skb_load_bytes(skb, offset, icmp6h,
+						 sizeof(struct icmp6hdr));
+			if (ret) {
+				// Not a complete icmp6hdr.
+				return -EFAULT;
+			}
+			break;
+		default:
+			/// EXPECTED: Maybe ICMP, MPLS, etc.
+			// bpf_printk("IP but not supported packet: protocol is %u",
+			// iph->protocol);
+			return 1;
+		}
+		return 0;
 	}
+	// bpf_printk("unknown link proto: %u", bpf_ntohl(ethh->h_proto));
+	return 1;
 }
 
 struct route_params {
@@ -874,17 +877,6 @@ static __always_inline __s64 route(const struct route_params *params)
 #undef _dscp
 }
 
-static __always_inline __u32 get_link_h_len(__u32 ifindex,
-					    volatile __u32 *link_h_len)
-{
-	__u32 *plink_h_len = bpf_map_lookup_elem(&linklen_map, &ifindex);
-
-	if (!plink_h_len)
-		return -EIO;
-	*link_h_len = *plink_h_len;
-	return 0;
-}
-
 static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 {
 	struct bpf_sock *sk;
@@ -1003,8 +995,7 @@ retn:
 	return value;
 }
 
-SEC("tc/egress")
-int tproxy_lan_egress(struct __sk_buff *skb)
+static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1014,10 +1005,7 @@ int tproxy_lan_egress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
@@ -1046,8 +1034,19 @@ int tproxy_lan_egress(struct __sk_buff *skb)
 	return TC_ACT_PIPE;
 }
 
-SEC("tc/ingress")
-int tproxy_lan_ingress(struct __sk_buff *skb)
+SEC("tc/lan_egress_l2")
+int tproxy_lan_egress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_egress(skb, 14);
+}
+
+SEC("tc/lan_egress_l3")
+int tproxy_lan_egress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_egress(skb, 0);
+}
+
+static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1057,10 +1056,7 @@ int tproxy_lan_ingress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
@@ -1246,6 +1242,18 @@ block:
 	return TC_ACT_SHOT;
 }
 
+SEC("tc/lan_ingress_l2")
+int tproxy_lan_ingress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/lan_ingress_l3")
+int tproxy_lan_ingress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 0);
+}
+
 // Cookie will change after the first packet, so we just use it for
 // handshake.
 static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
@@ -1297,8 +1305,7 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return false;
 }
 
-SEC("tc/wan_ingress")
-int tproxy_wan_ingress(struct __sk_buff *skb)
+static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1308,10 +1315,7 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_OK;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
@@ -1334,10 +1338,21 @@ int tproxy_wan_ingress(struct __sk_buff *skb)
 	return TC_ACT_PIPE;
 }
 
+SEC("tc/wan_ingress_l2")
+int tproxy_wan_ingress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_ingress(skb, 14);
+}
+
+SEC("tc/wan_ingress_l3")
+int tproxy_wan_ingress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_ingress(skb, 0);
+}
+
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
-SEC("tc/wan_egress")
-int tproxy_wan_egress(struct __sk_buff *skb)
+static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
@@ -1354,10 +1369,7 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u32 link_h_len;
 
-	if (get_link_h_len(skb->ifindex, &link_h_len))
-		return TC_ACT_PIPE;
 	bool tcp_state_syn;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
@@ -1614,6 +1626,18 @@ int tproxy_wan_egress(struct __sk_buff *skb)
 	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh,
 				       1, &tcph);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
+SEC("tc/wan_egress_l2")
+int tproxy_wan_egress_l2(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_egress(skb, 14);
+}
+
+SEC("tc/wan_egress_l3")
+int tproxy_wan_egress_l3(struct __sk_buff *skb)
+{
+	return do_tproxy_wan_egress(skb, 0);
 }
 
 SEC("tc/dae0peer_ingress")
