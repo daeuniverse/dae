@@ -121,7 +121,6 @@ type Dns struct {
 	FixedDomainTtl  []KeyableString `mapstructure:"fixed_domain_ttl"`
 	Upstream        []KeyableString `mapstructure:"upstream"`
 	Routing         DnsRouting      `mapstructure:"routing"`
-	Server          DnsServerConfig `mapstructure:"server"`
 }
 
 type Routing struct {
@@ -136,12 +135,6 @@ type Config struct {
 	Group        []Group         `mapstructure:"group" desc:"GroupDesc"`
 	Routing      Routing         `mapstructure:"routing" required:""`
 	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
-}
-
-// DNS服务器配置
-type DnsServerConfig struct {
-	Enabled   bool     `mapstructure:"enabled" default:"false"`
-	Addresses []string `mapstructure:"address"`
 }
 
 // New params from sections. This func assumes merging (section "include") and deduplication for section names has been executed.

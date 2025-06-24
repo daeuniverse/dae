@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"strconv"
@@ -16,7 +17,11 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
@@ -71,12 +76,6 @@ type DnsController struct {
 	// 使用sync.Map代替mutex+map，减少锁竞争
 	dnsCache            sync.Map // map[string]*DnsCache
 	dnsForwarderCache   sync.Map // map[dnsForwarderKey]DnsForwarder
-	
-	// DNS服务器相关字段
-	dnsServerEnabled bool
-	dnsServers       []*net.UDPConn
-	dnsServerCtx     context.Context
-	dnsServerCancel  context.CancelFunc
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -99,8 +98,6 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
 	return &DnsController{
 		routing:     routing,
 		qtypePrefer: prefer,
@@ -114,11 +111,6 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 		fixedDomainTtl: option.FixedDomainTtl,
 		// 使用sync.Map，无需初始化
-		
-		// DNS服务器初始化
-		dnsServerEnabled: false,
-		dnsServerCtx:     ctx,
-		dnsServerCancel:  cancel,
 	}, nil
 }
 
@@ -127,350 +119,535 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 	return dnsmessage.CanonicalName(qname) + strconv.Itoa(int(qtype))
 }
 
-// 启动DNS服务器
-func (c *DnsController) StartDnsServer(bindAddrs []string) error {
-	if c.dnsServerEnabled {
-		return fmt.Errorf("DNS server already started")
-	}
-
-	for _, addr := range bindAddrs {
-		udpConn, err := c.startDnsListener(addr)
-		if err != nil {
-			c.stopDnsServer()
-			return fmt.Errorf("failed to start DNS listener on %s: %w", addr, err)
-		}
-		c.dnsServers = append(c.dnsServers, udpConn)
-	}
-
-	c.dnsServerEnabled = true
-	c.log.Infof("DNS server started on %v", bindAddrs)
-	return nil
+func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
+	c.dnsCache.Delete(cacheKey)
 }
 
-// 启动单个DNS监听器
-func (c *DnsController) startDnsListener(addr string) (*net.UDPConn, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return nil, err
+func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
+	cacheValue, ok := c.dnsCache.Load(cacheKey)
+	if !ok {
+		return nil
 	}
-
-	udpConn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	// 启动处理goroutine
-	go c.handleDnsServerRequests(udpConn)
-
-	return udpConn, nil
-}
-
-// 处理DNS服务器请求
-func (c *DnsController) handleDnsServerRequests(udpConn *net.UDPConn) {
-	defer udpConn.Close()
-
-	buffer := make([]byte, 4096)
-
-	for {
-		select {
-		case <-c.dnsServerCtx.Done():
-			return
-		default:
-			// 设置读取超时
-			udpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
-
-			n, clientAddr, err := udpConn.ReadFromUDP(buffer)
-			if err != nil {
-				if opErr, ok := err.(*net.OpError); ok && opErr.Timeout() {
-					continue
-				}
-				c.log.Errorf("DNS server read error: %v", err)
-				continue
-			}
-
-			// 异步处理DNS请求
-			go c.processDnsServerRequest(buffer[:n], clientAddr, udpConn)
-		}
-	}
-}
-
-// 处理单个DNS请求
-func (c *DnsController) processDnsServerRequest(data []byte, clientAddr *net.UDPAddr, udpConn *net.UDPConn) {
-	// 解析DNS消息
-	var dnsMsg dnsmessage.Msg
-	if err := dnsMsg.Unpack(data); err != nil {
-		c.log.Errorf("Failed to parse DNS message from %v: %v", clientAddr, err)
-		return
-	}
-
-	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMsg.Question) > 0 {
-		q := dnsMsg.Question[0]
-		c.log.Tracef("DNS Server received: %v %v from %v", 
-			strings.ToLower(q.Name), QtypeToString(q.Qtype), clientAddr)
-	}
-
-	// 创建模拟的udpRequest用于兼容现有处理逻辑
-	realSrc, _ := netip.ParseAddrPort(clientAddr.String())
-	realDst, _ := netip.ParseAddrPort(udpConn.LocalAddr().String())
-
-	req := &udpRequest{
-		realSrc: realSrc,
-		realDst: realDst,
-		src:     realSrc,
-		lConn:   nil, // DNS服务器模式不需要
-		routingResult: &bpfRoutingResult{
-			Mark:     0,
-			Outbound: 0,
-			Pid:      0,
-			Dscp:     0,
-		},
-		clientAddr: clientAddr,
-		udpConn:    udpConn,
-	}
-
-	// 使用现有DNS处理逻辑
-	if err := c.HandleDnsServerRequest(&dnsMsg, req); err != nil {
-		c.log.Errorf("DNS server processing error for %v: %v", clientAddr, err)
-		c.sendErrorResponse(&dnsMsg, clientAddr, udpConn, dnsmessage.RcodeServerFailure)
-	}
-}
-
-// 处理DNS服务器请求的核心逻辑
-func (c *DnsController) HandleDnsServerRequest(dnsMsg *dnsmessage.Msg, req *udpRequest) error {
-	if len(dnsMsg.Question) == 0 {
-		return fmt.Errorf("no question in DNS request")
-	}
-
-	q := dnsMsg.Question[0]
-	qname := q.Name
-	qtype := q.Qtype
-
-	// 检查缓存
-	cacheKey := c.cacheKey(qname, qtype)
-	if cached := c.LookupDnsRespCache(cacheKey, false); cached != nil {
-		return c.sendCachedResponse(dnsMsg, cached, req)
-	}
-
-	// 路由请求到上游
-	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
-	if err != nil {
-		return err
-	}
-
-	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
-		return c.sendErrorResponse(dnsMsg, req.clientAddr, req.udpConn, dnsmessage.RcodeRefused)
-	}
-
-	// 转发到上游DNS并处理响应
-	return c.forwardAndCacheResponse(dnsMsg, upstream, req)
-}
-
-// Handle_ 处理DNS请求（透明代理模式和DNS服务器模式通用）
-func (c *DnsController) Handle_(dnsMsg *dnsmessage.Msg, req *udpRequest) error {
-	if len(dnsMsg.Question) == 0 {
-		return fmt.Errorf("no question in DNS request")
-	}
-
-	q := dnsMsg.Question[0]
-	qname := q.Name
-	qtype := q.Qtype
-
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.Tracef("DNS Handle_: %v %v from %v", 
-			strings.ToLower(qname), QtypeToString(qtype), req.realSrc)
-	}
-
-	// 检查缓存
-	cacheKey := c.cacheKey(qname, qtype)
-	if cached := c.LookupDnsRespCache(cacheKey, false); cached != nil {
-		if req.clientAddr != nil && req.udpConn != nil {
-			// DNS服务器模式
-			return c.sendCachedResponse(dnsMsg, cached, req)
-		} else {
-			// 透明代理模式 - 使用现有逻辑
-			return c.sendTransparentResponse(dnsMsg, cached, req)
-		}
-	}
-
-	// 路由请求到上游
-	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
-	if err != nil {
-		return err
-	}
-
-	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
-		if req.clientAddr != nil && req.udpConn != nil {
-			// DNS服务器模式
-			return c.sendErrorResponse(dnsMsg, req.clientAddr, req.udpConn, dnsmessage.RcodeRefused)
-		} else {
-			// 透明代理模式 - 返回错误或空响应
-			return fmt.Errorf("DNS request rejected by routing")
-		}
-	}
-
-	// 转发到上游DNS并处理响应
-	if req.clientAddr != nil && req.udpConn != nil {
-		// DNS服务器模式
-		return c.forwardAndCacheResponse(dnsMsg, upstream, req)
+	cache = cacheValue.(*DnsCache)
+	var deadline time.Time
+	if !ignoreFixedTtl {
+		deadline = cache.Deadline
 	} else {
-		// 透明代理模式 - 使用现有转发逻辑
-		return c.forwardTransparentRequest(dnsMsg, upstream, req)
+		deadline = cache.OriginalDeadline
 	}
+	// We should make sure the cache did not expire, or
+	// return nil and request a new lookup to refresh the cache.
+	if !deadline.After(time.Now()) {
+		return nil
+	}
+	if err := c.cacheAccessCallback(cache); err != nil {
+		c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
+		return nil
+	}
+	return cache
 }
 
-// sendTransparentResponse 发送缓存响应（透明代理模式）
-func (c *DnsController) sendTransparentResponse(request *dnsmessage.Msg, cache *DnsCache, req *udpRequest) error {
-	// 这里应该实现透明代理模式的响应发送逻辑
-	// 暂时使用简化实现
-	c.log.Tracef("Sending cached response for transparent proxy: %v", request.Question[0].Name)
+// LookupDnsRespCache_ will modify the msg in place.
+func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte) {
+	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
+	if cache != nil {
+		cache.FillInto(msg)
+		msg.Compress = true
+		b, err := msg.Pack()
+		if err != nil {
+			c.log.Warnf("failed to pack: %v", err)
+			return nil
+		}
+		return b
+	}
 	return nil
 }
 
-// forwardTransparentRequest 转发请求（透明代理模式）
-func (c *DnsController) forwardTransparentRequest(request *dnsmessage.Msg, upstream *dns.Upstream, req *udpRequest) error {
-	// 这里应该实现透明代理模式的请求转发逻辑
-	// 暂时使用简化实现
-	c.log.Tracef("Forwarding request for transparent proxy: %v to %v", request.Question[0].Name, upstream.String())
+// NormalizeAndCacheDnsResp_ handle DNS resp in place.
+func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err error) {
+	// Check healthy resp.
+	if !msg.Response || len(msg.Question) == 0 {
+		return nil
+	}
+
+	q := msg.Question[0]
+
+	// Check suc resp.
+	if msg.Rcode != dnsmessage.RcodeSuccess {
+		return nil
+	}
+
+	// Get TTL.
+	var ttl uint32
+	for i := range msg.Answer {
+		if ttl == 0 {
+			ttl = msg.Answer[i].Header().Ttl
+			break
+		}
+	}
+	if ttl == 0 {
+		// It seems no answers (NXDomain).
+		ttl = minFirefoxCacheTtl
+	}
+
+	// Check req type.
+	switch q.Qtype {
+	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+	default:
+		// Update DnsCache.
+		if err = c.updateDnsCache(msg, ttl, &q); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Set ttl.
+	for i := range msg.Answer {
+		// Set TTL = zero. This requests applications must resend every request.
+		// However, it may be not defined in the standard.
+		msg.Answer[i].Header().Ttl = 0
+	}
+
+	// Check if request A/AAAA record.
+	var reqIpRecord bool
+loop:
+	for i := range msg.Question {
+		switch msg.Question[i].Qtype {
+		case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+			reqIpRecord = true
+			break loop
+		}
+	}
+	if !reqIpRecord {
+		// Update DnsCache.
+		if err = c.updateDnsCache(msg, ttl, &q); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Update DnsCache.
+	if err = c.updateDnsCache(msg, ttl, &q); err != nil {
+		return err
+	}
+	// Pack to get newData.
 	return nil
 }
 
-// 发送缓存的响应
-func (c *DnsController) sendCachedResponse(request *dnsmessage.Msg, cache *DnsCache, req *udpRequest) error {
-	response := &dnsmessage.Msg{
-		MsgHdr: dnsmessage.MsgHdr{
-			Id:       request.MsgHdr.Id,
-			Response: true,
-			Rcode:    dnsmessage.RcodeSuccess,
-			RecursionAvailable: true,
-		},
-		Question: request.Question,
-		Answer:   deepcopy.Copy(cache.Answer).([]dnsmessage.RR),
+func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsmessage.Question) error {
+	// Update DnsCache.
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"_qname": q.Name,
+			"rcode":  msg.Rcode,
+			"ans":    FormatDnsRsc(msg.Answer),
+		}).Tracef("Update DNS record cache")
+	}
+
+	if err := c.UpdateDnsCacheTtl(q.Name, q.Qtype, msg.Answer, int(ttl)); err != nil {
+		return err
+	}
+	return nil
+}
+
+type daedlineFunc func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time)
+
+func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
+	var fqdn string
+	if strings.HasSuffix(host, ".") {
+		fqdn = strings.ToLower(host)
+		host = host[:len(host)-1]
+	} else {
+		fqdn = dnsmessage.CanonicalName(host)
+	}
+	// Bypass pure IP.
+	if _, err = netip.ParseAddr(host); err == nil {
+		return nil
+	}
+
+	now := time.Now()
+	deadline, originalDeadline := deadlineFunc(now, host)
+
+	cacheKey := c.cacheKey(fqdn, dnsTyp)
+	
+	// 创建新的缓存项而不是修改现有的，避免数据竞争
+	cache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
+	if err != nil {
+		return err
 	}
 	
-	responseData, err := response.Pack()
-	if err != nil {
-		return fmt.Errorf("failed to pack cached DNS response: %w", err)
+	// 原子性地更新缓存
+	c.dnsCache.Store(cacheKey, cache)
+	
+	if err = c.cacheAccessCallback(cache); err != nil {
+		return err
 	}
 
-	return c.sendResponse(responseData, req.clientAddr, req.udpConn)
+	return nil
 }
 
-// 转发到上游并缓存响应
-func (c *DnsController) forwardAndCacheResponse(request *dnsmessage.Msg, upstream *dns.Upstream, req *udpRequest) error {
-	// 使用现有的DNS转发机制获取最佳拨号器
-	dialArg, err := c.bestDialerChooser(req, upstream)
-	if err != nil {
-		return fmt.Errorf("failed to choose dialer: %w", err)
-	}
-
-	// 创建DNS转发器
-	forwarder, err := newDnsForwarder(upstream, *dialArg)
-	if err != nil {
-		return fmt.Errorf("failed to create DNS forwarder: %w", err)
-	}
-	defer forwarder.Close()
-
-	// 打包请求
-	requestData, err := request.Pack()
-	if err != nil {
-		return fmt.Errorf("failed to pack DNS request: %w", err)
-	}
-
-	// 转发请求
-	response, err := forwarder.ForwardDNS(context.Background(), requestData)
-	if err != nil {
-		return fmt.Errorf("failed to forward DNS request: %w", err)
-	}
-
-	// 缓存响应
-	if len(response.Answer) > 0 {
-		q := request.Question[0]
-		deadline := time.Now().Add(time.Duration(response.Answer[0].Header().Ttl) * time.Second)
-		cache, err := c.newCache(q.Name, response.Answer, deadline, deadline)
-		if err == nil {
-			c.dnsCache.Store(c.cacheKey(q.Name, q.Qtype), cache)
+func (c *DnsController) UpdateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadline time.Time) (err error) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
+		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
+			/// NOTICE: Cannot set TTL accurately.
+			if now.Sub(deadline).Seconds() > float64(fixedTtl) {
+				deadline := now.Add(time.Duration(fixedTtl) * time.Second)
+				return deadline, deadline
+			}
 		}
-	}
-
-	// 发送响应
-	response.MsgHdr.Id = request.MsgHdr.Id
-	responseData, err := response.Pack()
-	if err != nil {
-		return fmt.Errorf("failed to pack DNS response: %w", err)
-	}
-
-	return c.sendResponse(responseData, req.clientAddr, req.udpConn)
+		return deadline, deadline
+	})
 }
 
-// 发送错误响应
-func (c *DnsController) sendErrorResponse(request *dnsmessage.Msg, clientAddr *net.UDPAddr, udpConn *net.UDPConn, rcode int) error {
-	response := &dnsmessage.Msg{
-		MsgHdr: dnsmessage.MsgHdr{
-			Id:       request.MsgHdr.Id,
-			Response: true,
-			Rcode:    rcode,
-		},
-		Question: request.Question,
-	}
-
-	responseData, err := response.Pack()
-	if err != nil {
-		return fmt.Errorf("failed to pack DNS error response: %w", err)
-	}
-
-	return c.sendResponse(responseData, clientAddr, udpConn)
+func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers []dnsmessage.RR, ttl int) (err error) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
+		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
+		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
+			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
+		} else {
+			return originalDeadline, originalDeadline
+		}
+	})
 }
 
-// 发送响应
-func (c *DnsController) sendResponse(data []byte, clientAddr *net.UDPAddr, udpConn *net.UDPConn) error {
-	_, err := udpConn.WriteToUDP(data, clientAddr)
+type udpRequest struct {
+	realSrc       netip.AddrPort
+	realDst       netip.AddrPort
+	src           netip.AddrPort
+	lConn         *net.UDPConn
+	routingResult *bpfRoutingResult
+}
+
+type dialArgument struct {
+	l4proto      consts.L4ProtoStr
+	ipversion    consts.IpVersionStr
+	bestDialer   *dialer.Dialer
+	bestOutbound *outbound.DialerGroup
+	bestTarget   netip.AddrPort
+	mark         uint32
+	mptcp        bool
+}
+
+type dnsForwarderKey struct {
+	upstream     string
+	dialArgument dialArgument
+}
+
+func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
+	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
+		q := dnsMessage.Question[0]
+		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
+			RefineSourceToShow(req.realSrc, req.realDst.Addr()), req.realDst.String(), strings.ToLower(q.Name), QtypeToString(q.Qtype),
+		)
+	}
+
+	if dnsMessage.Response {
+		return fmt.Errorf("DNS request expected but DNS response received")
+	}
+
+	// Prepare qname, qtype.
+	var qname string
+	var qtype uint16
+	if len(dnsMessage.Question) != 0 {
+		qname = dnsMessage.Question[0].Name
+		qtype = dnsMessage.Question[0].Qtype
+	}
+
+	// Check ip version preference and qtype.
+	switch qtype {
+	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
+		if c.qtypePrefer == 0 {
+			return c.handle_(dnsMessage, req, true)
+		}
+	default:
+		return c.handle_(dnsMessage, req, true)
+	}
+
+	// Try to make both A and AAAA lookups.
+	dnsMessage2 := deepcopy.Copy(dnsMessage).(*dnsmessage.Msg)
+	dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
+	var qtype2 uint16
+	switch qtype {
+	case dnsmessage.TypeA:
+		qtype2 = dnsmessage.TypeAAAA
+	case dnsmessage.TypeAAAA:
+		qtype2 = dnsmessage.TypeA
+	default:
+		return fmt.Errorf("unexpected qtype path")
+	}
+	dnsMessage2.Question[0].Qtype = qtype2
+
+	done := make(chan struct{})
+	go func() {
+		_ = c.handle_(dnsMessage2, req, false)
+		done <- struct{}{}
+	}()
+	err = c.handle_(dnsMessage, req, false)
+	<-done
 	if err != nil {
-		return fmt.Errorf("failed to send DNS response to %v: %w", clientAddr, err)
+		return err
+	}
+
+	// Join results and consider whether to response.
+	resp := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
+	if resp == nil {
+		// resp is not valid.
+		c.log.WithFields(logrus.Fields{
+			"qname": qname,
+		}).Tracef("Reject %v due to resp not valid", qtype)
+		return c.sendReject_(dnsMessage, req)
+	}
+	// resp is valid.
+	cache2 := c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
+	if c.qtypePrefer == qtype || cache2 == nil || !cache2.IncludeAnyIp() {
+		return sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn)
+	} else {
+		return c.sendReject_(dnsMessage, req)
+	}
+}
+
+func (c *DnsController) handle_(
+	dnsMessage *dnsmessage.Msg,
+	req *udpRequest,
+	needResp bool,
+) (err error) {
+	// Prepare qname, qtype.
+	var qname string
+	var qtype uint16
+	if len(dnsMessage.Question) != 0 {
+		q := dnsMessage.Question[0]
+		qname = q.Name
+		qtype = q.Qtype
+	}
+
+	// Route request.
+	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
+	if err != nil {
+		return err
+	}
+
+	cacheKey := c.cacheKey(qname, qtype)
+
+	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
+		// Reject with empty answer.
+		c.RemoveDnsRespCache(cacheKey)
+		return c.sendReject_(dnsMessage, req)
+	}
+
+	// 使用简化的处理状态管理，避免重复请求
+	handlingState, isNew := GlobalHandlingStateManager.GetOrCreateState(cacheKey)
+	
+	if !isNew {
+		// 有其他goroutine正在处理相同请求，等待完成
+		handlingState.Wait()
+		
+		// 重新检查缓存
+		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+			if needResp {
+				if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+					return fmt.Errorf("failed to write cached DNS resp: %w", err)
+				}
+			}
+			return nil
+		}
+		// 如果仍然没有缓存，继续处理（可能是上一个请求失败了）
+	}
+	
+	defer GlobalHandlingStateManager.CompleteAndCleanup(cacheKey, handlingState)
+
+	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+		// Send cache to client directly.
+		if needResp {
+			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+				return fmt.Errorf("failed to write cached DNS resp: %w", err)
+			}
+		}
+		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+			q := dnsMessage.Question[0]
+			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
+				RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
+			)
+		}
+		return nil
+	}
+
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		upstreamName := upstreamIndex.String()
+		if upstream != nil {
+			upstreamName = upstream.String()
+		}
+		c.log.WithFields(logrus.Fields{
+			"question": dnsMessage.Question,
+			"upstream": upstreamName,
+		}).Traceln("Request to DNS upstream")
+	}
+
+	// Re-pack DNS packet.
+	data, err := dnsMessage.Pack()
+	if err != nil {
+		return fmt.Errorf("pack DNS packet: %w", err)
+	}
+	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp)
+}
+
+// sendReject_ send empty answer.
+func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
+	dnsMessage.Answer = nil
+	dnsMessage.Rcode = dnsmessage.RcodeSuccess
+	dnsMessage.Response = true
+	dnsMessage.RecursionAvailable = true
+	dnsMessage.Truncated = false
+	dnsMessage.Compress = true
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"question": dnsMessage.Question,
+		}).Traceln("Reject")
+	}
+	data, err := dnsMessage.Pack()
+	if err != nil {
+		return fmt.Errorf("pack DNS packet: %w", err)
+	}
+	if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		return err
 	}
 	return nil
 }
 
-// 停止DNS服务器
-func (c *DnsController) stopDnsServer() {
-	if !c.dnsServerEnabled {
-		return
+func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
+	if invokingDepth >= MaxDnsLookupDepth {
+		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
 
-	c.dnsServerCancel()
+	upstreamName := "asis"
+	if upstream == nil {
+		// As-is.
 
-	for _, server := range c.dnsServers {
-		if err := server.Close(); err != nil {
-			c.log.Warnf("Error closing DNS server: %v", err)
+		// As-is should not be valid in response routing, thus using connection realDest is reasonable.
+		var ip46 netutils.Ip46
+		if req.realDst.Addr().Is4() {
+			ip46.Ip4 = req.realDst.Addr()
+		} else {
+			ip46.Ip6 = req.realDst.Addr()
+		}
+		upstream = &dns.Upstream{
+			Scheme:   "udp",
+			Hostname: req.realDst.Addr().String(),
+			Port:     req.realDst.Port(),
+			Ip46:     &ip46,
+		}
+	} else {
+		upstreamName = upstream.String()
+	}
+
+	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
+	dialArgument, err := c.bestDialerChooser(req, upstream)
+	if err != nil {
+		return err
+	}
+
+	networkType := &dialer.NetworkType{
+		L4Proto:   dialArgument.l4proto,
+		IpVersion: dialArgument.ipversion,
+		IsDns:     true,
+	}
+
+	// Dial and send.
+	var respMsg *dnsmessage.Msg
+
+	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
+
+	// 使用新的转发器管理器，避免重复创建
+	forwarder, releaseForwarder, err := GlobalDnsForwarderManager.GetForwarder(upstream, *dialArgument)
+	if err != nil {
+		return err
+	}
+	defer releaseForwarder()
+
+	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
+	if err != nil {
+		return err
+	}
+
+	// Route response.
+	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
+	if err != nil {
+		return err
+	}
+	switch upstreamIndex {
+	case consts.DnsResponseOutboundIndex_Accept:
+		// Accept.
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question": respMsg.Question,
+				"upstream": upstreamName,
+			}).Traceln("Accept")
+		}
+	case consts.DnsResponseOutboundIndex_Reject:
+		// Reject the request with empty answer.
+		respMsg.Answer = nil
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question": respMsg.Question,
+				"upstream": upstreamName,
+			}).Traceln("Reject with empty answer")
+		}
+		// We also cache response reject.
+	default:
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question":      respMsg.Question,
+				"last_upstream": upstreamName,
+				"next_upstream": nextUpstream.String(),
+			}).Traceln("Change DNS upstream and resend")
+		}
+		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp)
+	}
+	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
+		var (
+			qname string
+			qtype string
+		)
+		if len(respMsg.Question) > 0 {
+			q := respMsg.Question[0]
+			qname = strings.ToLower(q.Name)
+			qtype = QtypeToString(q.Qtype)
+		}
+		fields := logrus.Fields{
+			"network":  networkType.String(),
+			"outbound": dialArgument.bestOutbound.Name,
+			"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
+			"dialer":   dialArgument.bestDialer.Property().Name,
+			"_qname":   qname,
+			"qtype":    qtype,
+			"pid":      req.routingResult.Pid,
+			"dscp":     req.routingResult.Dscp,
+			"pname":    ProcessName2String(req.routingResult.Pname[:]),
+			"mac":      Mac2String(req.routingResult.Mac[:]),
+		}
+		switch upstreamIndex {
+		case consts.DnsResponseOutboundIndex_Accept:
+			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
+		case consts.DnsResponseOutboundIndex_Reject:
+			c.log.WithFields(fields).Infof("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
+		default:
+			return fmt.Errorf("unknown upstream: %v", upstreamIndex.String())
 		}
 	}
-
-	c.dnsServers = nil
-	c.dnsServerEnabled = false
-	c.log.Info("DNS server stopped")
-}
-
-// UpdateDnsCacheDeadline 更新DNS缓存的截止时间
-func (c *DnsController) UpdateDnsCacheDeadline(hostname string, qtype uint16, answers []dnsmessage.RR, deadline time.Time) error {
-	key := c.cacheKey(hostname, qtype)
-	if existingCache, ok := c.dnsCache.Load(key); ok {
-		cache := existingCache.(*DnsCache)
-		cache.Deadline = deadline
-		cache.Answer = answers
-		c.dnsCache.Store(key, cache)
+	if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+		return err
 	}
-	return nil
-}
-
-// 获取或查找DNS响应缓存
-func (c *DnsController) LookupDnsRespCache(key string, allowExpired bool) *DnsCache {
-	if cached, ok := c.dnsCache.Load(key); ok {
-		cache := cached.(*DnsCache)
-		// 检查缓存是否过期
-		if time.Now().Before(cache.Deadline) {
-			return cache
+	if needResp {
+		// Keep the id the same with request.
+		respMsg.Id = id
+		respMsg.Compress = true
+		data, err = respMsg.Pack()
+		if err != nil {
+			return err
 		}
-		// 缓存过期，删除
-		c.dnsCache.Delete(key)
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -45,17 +45,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// dialArgument contains information for DNS dialing decision
-type dialArgument struct {
-	l4proto      consts.L4ProtoStr
-	ipversion    consts.IpVersionStr
-	bestDialer   *dialer.Dialer
-	bestOutbound *outbound.DialerGroup
-	bestTarget   netip.AddrPort
-	mark         uint32
-	mptcp        bool
-}
-
 type ControlPlane struct {
 	log *logrus.Logger
 
@@ -514,15 +503,6 @@ func NewControlPlane(
 		return nil, err
 	}
 	go dnsUpstream.InitUpstreams()
-
-	// 启动DNS服务器（如果已配置）
-	if dnsConfig.Server.Enabled && len(dnsConfig.Server.Addresses) > 0 {
-		log.Infof("Starting DNS server on addresses: %v", dnsConfig.Server.Addresses)
-		if err = plane.dnsController.StartDnsServer(dnsConfig.Server.Addresses); err != nil {
-			log.WithError(err).Errorf("Failed to start DNS server")
-			// 不返回错误，允许DAE在DNS服务器启动失败时继续运行
-		}
-	}
 
 	close(plane.ready)
 	return plane, nil
