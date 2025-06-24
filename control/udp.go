@@ -32,6 +32,18 @@ const (
 	MaxRetry       = 2
 )
 
+// udpRequest 表示UDP请求的上下文信息，兼容透明代理和DNS服务器模式
+type udpRequest struct {
+	realSrc       netip.AddrPort
+	realDst       netip.AddrPort
+	src           netip.AddrPort
+	lConn         *net.UDPConn
+	routingResult *bpfRoutingResult
+	// DNS服务器模式专用字段
+	clientAddr    *net.UDPAddr  // DNS客户端地址
+	udpConn       *net.UDPConn  // DNS服务器监听连接
+}
+
 type DialOption struct {
 	Target        string
 	Dialer        *dialer.Dialer

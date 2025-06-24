@@ -13,6 +13,12 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 )
 
+// dnsForwarderKey 用于标识DNS转发器的唯一键
+type dnsForwarderKey struct {
+	upstream     string
+	dialArgument dialArgument
+}
+
 // DnsForwarderManager 管理DNS转发器的生命周期，避免重复创建和资源浪费
 type DnsForwarderManager struct {
 	// 使用sync.Map存储活跃的转发器
@@ -24,6 +30,7 @@ type DnsForwarderManager struct {
 	cancel          context.CancelFunc
 }
 
+// forwarderEntry DNS转发器条目，包含转发器实例和引用计数
 type forwarderEntry struct {
 	forwarder   DnsForwarder
 	lastUsed    time.Time

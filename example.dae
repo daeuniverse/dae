@@ -192,6 +192,21 @@ dns {
 
         # doh_custom_path: 'https://dns.example.com:443/custom-path'
     }
+
+    # Built-in DNS server configuration.
+    # This feature allows dae to act as a DNS server, listening on specified addresses.
+    # server {
+    #     # Enable/disable the built-in DNS server
+    #     enabled: false
+    #     
+    #     # Listening addresses for the DNS server
+    #     # Supports IPv4, IPv6, and multiple ports
+    #     address: [
+    #         '127.0.0.1:53',     # Local IPv4
+    #         '[::1]:53',         # Local IPv6  
+    #         '127.0.0.1:9053'    # Alternative port
+    #     ]
+    # }
     routing {
         # According to the request of dns query, decide to use which DNS upstream.
         # Match rules from top to bottom.
