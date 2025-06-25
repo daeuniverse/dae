@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/netip"
@@ -177,17 +178,21 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 		return anyfrom, false, nil
 	}
 	
-	// 使用双重检查锁定模式避免重复创建
+	// 使用更精确的双重检查锁定模式避免重复创建
 	// 创建临时key用于创建锁
 	createKey := lAddr + "_creating"
 	if _, loaded := p.pool.LoadOrStore(createKey, struct{}{}); loaded {
-		// 有其他goroutine在创建，等待并重试
-		time.Sleep(time.Microsecond * 100)
-		if af, ok := p.pool.Load(lAddr); ok {
-			anyfrom := af.(*Anyfrom)
-			anyfrom.RefreshTtl()
-			return anyfrom, false, nil
+		// 有其他goroutine在创建，使用退避重试机制
+		for i := 0; i < 10; i++ {
+			time.Sleep(time.Millisecond * time.Duration(i+1)) // 递增退避
+			if af, ok := p.pool.Load(lAddr); ok {
+				anyfrom := af.(*Anyfrom)
+				anyfrom.RefreshTtl()
+				return anyfrom, false, nil
+			}
 		}
+		// 如果等待后仍未创建成功，返回错误而不是继续创建
+		return nil, false, fmt.Errorf("timeout waiting for connection creation on %s", lAddr)
 	}
 	
 	defer p.pool.Delete(createKey)

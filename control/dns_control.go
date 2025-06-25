@@ -445,7 +445,11 @@ func (c *DnsController) handle_(
 		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 			if needResp {
 				if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-					return fmt.Errorf("failed to write cached DNS resp: %w", err)
+					c.log.WithError(err).WithFields(logrus.Fields{
+						"from": req.realSrc.String(),
+						"to":   req.realDst.String(),
+					}).Warn("failed to write cached DNS resp")
+					// 不返回错误，继续处理避免程序崩溃
 				}
 			}
 			return nil
@@ -459,7 +463,11 @@ func (c *DnsController) handle_(
 		// Send cache to client directly.
 		if needResp {
 			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-				return fmt.Errorf("failed to write cached DNS resp: %w", err)
+				c.log.WithError(err).WithFields(logrus.Fields{
+					"from": req.realSrc.String(),
+					"to":   req.realDst.String(),
+				}).Warn("failed to write cached DNS resp")
+				// 不返回错误，继续处理避免程序崩溃
 			}
 		}
 		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
@@ -508,7 +516,11 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-		return err
+		c.log.WithError(err).WithFields(logrus.Fields{
+			"from": req.realSrc.String(),
+			"to":   req.realDst.String(),
+		}).Warn("failed to send DNS reject response")
+		// 不返回错误，避免程序崩溃
 	}
 	return nil
 }
@@ -646,7 +658,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			return err
 		}
 		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-			return err
+			c.log.WithError(err).WithFields(logrus.Fields{
+				"from": req.realSrc.String(),
+				"to":   req.realDst.String(),
+			}).Warn("failed to send DNS response")
+			// 不返回错误，避免程序崩溃
 		}
 	}
 	return nil
