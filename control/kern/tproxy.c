@@ -972,37 +972,27 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 static __always_inline struct udp_conn_state *
 refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_direction)
 {
-	struct udp_conn_state *old_conn_state =
-		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	struct udp_conn_state new_conn_state = { 0 };
+	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
 
-	if (old_conn_state)
-		new_conn_state.is_wan_ingress_direction =
-			old_conn_state->is_wan_ingress_direction; // Keep the value.
-	else
-		new_conn_state.is_wan_ingress_direction = is_wan_ingress_direction;
-	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
-				       &new_conn_state, BPF_ANY);
-	if (unlikely(ret))
-		return NULL;
-	struct udp_conn_state *value =
-		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	if (unlikely(!value))
+	if (state)
+		goto rearm;
+
+	struct udp_conn_state new_state = {};
+
+	new_state.is_wan_ingress_direction = is_wan_ingress_direction;
+	if (unlikely(bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_NOEXIST)))
 		return NULL;
 
-	if ((bpf_timer_init(&value->timer, &udp_conn_state_map,
-			    CLOCK_MONOTONIC)))
-		goto retn;
+	state = bpf_map_lookup_elem(&udp_conn_state_map, key);
+	if (unlikely(!state))
+		return NULL;
 
-	if ((bpf_timer_set_callback(&value->timer,
-				    refresh_udp_conn_state_timer_cb)))
-		goto retn;
+	bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
+	bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
 
-	if ((bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
-		goto retn;
-
-retn:
-	return value;
+rearm:
+	bpf_timer_start(&state->timer, TIMEOUT_UDP_CONN_STATE, 0);
+	return state;
 }
 
 static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
