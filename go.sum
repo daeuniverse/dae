@@ -24,8 +24,8 @@ github.com/cilium/ebpf v0.15.0/go.mod h1:DHp1WyrLeiBh19Cf/tfiSMhqheEiK8fXFZ4No0P
 github.com/cloudflare/circl v1.3.9 h1:QFrlgFYf2Qpi8bSpVPK1HBvWpx16v/1TZivyo7pGuBE=
 github.com/cloudflare/circl v1.3.9/go.mod h1:PDRU+oXvdD7KCtgKxW95M5Z8BpSCJXQORiZFnBQS5QU=
 github.com/cpuguy83/go-md2man/v2 v2.0.4/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
-github.com/cubatic45/outbound v0.0.0-20250627062521-14223f5b0a77 h1:/3CCC+6im7ltsVHOVclcwAXYxaiy88ETmQy1pTIZqIg=
-github.com/cubatic45/outbound v0.0.0-20250627062521-14223f5b0a77/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
+github.com/cubatic45/outbound v0.0.0-20250628142635-b8c45fef716a h1:GQ5A65XMYvbSmF4cDfThNW9SBkbUST5DEUMABVgu+q4=
+github.com/cubatic45/outbound v0.0.0-20250628142635-b8c45fef716a/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d h1:hnC39MjR7xt5kZjrKlef7DXKFDkiX8MIcDXYC/6Jf9Q=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
 github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851 h1:AK4qfFw5CcHdOJcEpZj443NqskjhTvc+2cLOB5Cvrmk=
