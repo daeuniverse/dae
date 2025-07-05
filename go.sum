@@ -26,8 +26,8 @@ github.com/cloudflare/circl v1.3.9/go.mod h1:PDRU+oXvdD7KCtgKxW95M5Z8BpSCJXQORiZ
 github.com/cpuguy83/go-md2man/v2 v2.0.4/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d h1:hnC39MjR7xt5kZjrKlef7DXKFDkiX8MIcDXYC/6Jf9Q=
 github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d/go.mod h1:VGWGgv7pCP5WGyHGUyb9+nq/gW0yBm+i/GfCNATOJ1M=
-github.com/daeuniverse/outbound v0.0.0-20250531131212-a58b4c6b39b2 h1:NUUI9tKUM+KZUUC51w0wu9Ci4myFaoTsTSA7sJS0rtc=
-github.com/daeuniverse/outbound v0.0.0-20250531131212-a58b4c6b39b2/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
+github.com/daeuniverse/outbound v0.0.0-20250701160453-1aafa6d1924c h1:HJnatP8NQT9Chmi5Ebd+NgXE18na/UwABJcwT5xEDws=
+github.com/daeuniverse/outbound v0.0.0-20250701160453-1aafa6d1924c/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
 github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851 h1:AK4qfFw5CcHdOJcEpZj443NqskjhTvc+2cLOB5Cvrmk=
 github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851/go.mod h1:hykVjD1wT/nAFcAkagZpziNAnXLwJOOpn0Ozohtgmsw=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
