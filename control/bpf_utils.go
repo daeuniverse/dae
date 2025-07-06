@@ -207,12 +207,24 @@ type loadBpfOptions struct {
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
-func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
+type daeParam struct {
+	tproxyPort      uint32
+	controlPlanePid uint32
+	dae0Ifindex     uint32
+	dae0NetnsId     uint32
+	dae0peerMac     [6]byte
+	padding         [2]byte
+}
+
+func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, param *daeParam) error {
 	spec, err := loadBpf()
 	if err != nil {
 		return err
 	}
-	if err := spec.RewriteConstants(constants); err != nil {
+	for k, v := range spec.Variables {
+		fmt.Printf("Variable %s: %v\n", k, v)
+	}
+	if err := spec.Variables["PARAM"].Set(*param); err != nil {
 		return err
 	}
 	return spec.LoadAndAssign(obj, opts)
@@ -228,23 +240,14 @@ retryLoadBpf:
 	if err != nil {
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
-	constants := map[string]interface{}{
-		"PARAM": struct {
-			tproxyPort      uint32
-			controlPlanePid uint32
-			dae0Ifindex     uint32
-			dae0NetnsId     uint32
-			dae0peerMac     [6]byte
-			padding         [2]byte
-		}{
-			tproxyPort:      uint32(opts.BigEndianTproxyPort),
-			controlPlanePid: uint32(os.Getpid()),
-			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
-			dae0NetnsId:     uint32(netnsID),
-			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
-		},
+	param := daeParam{
+		tproxyPort:      uint32(opts.BigEndianTproxyPort),
+		controlPlanePid: uint32(os.Getpid()),
+		dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
+		dae0NetnsId:     uint32(netnsID),
+		dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 	}
-	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
+	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, &param); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.
 			prefix := "use pinned map "

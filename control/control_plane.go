@@ -161,7 +161,6 @@ func NewControlPlane(
 	//var bpf bpfObjects
 	var ProgramOptions = ebpf.ProgramOptions{
 		KernelTypes: nil,
-		LogSize:     ebpf.DefaultVerifierLogSize * 10,
 	}
 	if log.Level == logrus.PanicLevel {
 		ProgramOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
