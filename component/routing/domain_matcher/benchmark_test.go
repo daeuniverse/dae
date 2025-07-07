@@ -151,15 +151,15 @@ routing {
 	}
 	if rules, err = routing.ApplyRulesOptimizers(r.Rules,
 		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{Logger: logrus.StandardLogger(), LocationFinder: assets.NewLocationFinder(nil)},
+		&routing.DatReaderOptimizer{LocationFinder: assets.NewLocationFinder(nil)},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
 	builder := RoutingMatcherBuilder{}
-	rb := routing.NewRulesBuilder(logrus.StandardLogger())
-	rb.RegisterFunctionParser("domain", func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) (err error) {
+	rb := routing.NewRulesBuilder()
+	rb.RegisterFunctionParser("domain", func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) (err error) {
 		builder.AddDomain(f, key, paramValueGroup, overrideOutbound)
 		return nil
 	})
@@ -212,7 +212,7 @@ func BenchmarkAhocorasickSlimtrie(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	ahocorasick := NewAhocorasickSlimtrie(logrus.StandardLogger(), consts.MaxMatchSetLen)
+	ahocorasick := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range simulatedDomainSet {
 		ahocorasick.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

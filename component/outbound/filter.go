@@ -12,7 +12,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/dlclark/regexp2"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -29,14 +29,12 @@ const (
 )
 
 type DialerSet struct {
-	log          *logrus.Logger
 	dialers      []*dialer.Dialer
 	nodeToTagMap map[*dialer.Dialer]string
 }
 
 func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
 	s := &DialerSet{
-		log:          option.Log,
 		dialers:      make([]*dialer.Dialer, 0),
 		nodeToTagMap: make(map[*dialer.Dialer]string),
 	}
@@ -44,7 +42,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 		for _, node := range nodes {
 			d, err := dialer.NewFromLink(option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
-				s.log.Infof("failed to parse node: %v", err)
+				log.Infof("failed to parse node: %v", err)
 				continue
 			}
 			s.dialers = append(s.dialers, d)

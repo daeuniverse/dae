@@ -25,7 +25,7 @@ import (
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -51,7 +51,6 @@ var (
 )
 
 type DnsControllerOption struct {
-	Log                   *logrus.Logger
 	CacheAccessCallback   func(cache *DnsCache) (err error)
 	CacheRemoveCallback   func(cache *DnsCache) (err error)
 	NewCache              func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
@@ -67,7 +66,6 @@ type DnsController struct {
 	routing     *dns.Dns
 	qtypePrefer uint16
 
-	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
 	cacheRemoveCallback func(cache *DnsCache) (err error)
 	newCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
@@ -112,7 +110,6 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		routing:     routing,
 		qtypePrefer: prefer,
 
-		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
 		cacheRemoveCallback:   option.CacheRemoveCallback,
 		newCache:              option.NewCache,
@@ -159,7 +156,7 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 		return nil
 	}
 	if err := c.cacheAccessCallback(cache); err != nil {
-		c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
+		log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
 		return nil
 	}
 	return cache
@@ -173,7 +170,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 		msg.Compress = true
 		b, err := msg.Pack()
 		if err != nil {
-			c.log.Warnf("failed to pack: %v", err)
+			log.Warnf("failed to pack: %v", err)
 			return nil
 		}
 		return b
@@ -254,8 +251,8 @@ loop:
 
 func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsmessage.Question) error {
 	// Update DnsCache.
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.WithFields(logrus.Fields{
+	if log.IsLevelEnabled(log.TraceLevel) {
+		log.WithFields(log.Fields{
 			"_qname": q.Name,
 			"rcode":  msg.Rcode,
 			"ans":    FormatDnsRsc(msg.Answer),
@@ -358,9 +355,9 @@ type dnsForwarderKey struct {
 }
 
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
-	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
+	if log.IsLevelEnabled(log.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
-		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
+		log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
 			RefineSourceToShow(req.realSrc, req.realDst.Addr()), req.realDst.String(), strings.ToLower(q.Name), QtypeToString(q.Qtype),
 		)
 	}
@@ -416,7 +413,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 	resp := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
 	if resp == nil {
 		// resp is not valid.
-		c.log.WithFields(logrus.Fields{
+		log.WithFields(log.Fields{
 			"qname": qname,
 		}).Tracef("Reject %v due to resp not valid", qtype)
 		return c.sendReject_(dnsMessage, req)
@@ -424,7 +421,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 	// resp is valid.
 	cache2 := c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
 	if c.qtypePrefer == qtype || cache2 == nil || !cache2.IncludeAnyIp() {
-		return sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn)
+		return sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn)
 	} else {
 		return c.sendReject_(dnsMessage, req)
 	}
@@ -474,25 +471,25 @@ func (c *DnsController) handle_(
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
 		if needResp {
-			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+			if err = sendPkt(resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
 		}
-		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+		if log.IsLevelEnabled(log.DebugLevel) && len(dnsMessage.Question) > 0 {
 			q := dnsMessage.Question[0]
-			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
+			log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
 				RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
 			)
 		}
 		return nil
 	}
 
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+	if log.IsLevelEnabled(log.TraceLevel) {
 		upstreamName := upstreamIndex.String()
 		if upstream != nil {
 			upstreamName = upstream.String()
 		}
-		c.log.WithFields(logrus.Fields{
+		log.WithFields(log.Fields{
 			"question": dnsMessage.Question,
 			"upstream": upstreamName,
 		}).Traceln("Request to DNS upstream")
@@ -514,8 +511,8 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	dnsMessage.RecursionAvailable = true
 	dnsMessage.Truncated = false
 	dnsMessage.Compress = true
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.WithFields(logrus.Fields{
+	if log.IsLevelEnabled(log.TraceLevel) {
+		log.WithFields(log.Fields{
 			"question": dnsMessage.Question,
 		}).Traceln("Reject")
 	}
@@ -523,7 +520,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+	if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 		return err
 	}
 	return nil
@@ -617,8 +614,8 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	switch upstreamIndex {
 	case consts.DnsResponseOutboundIndex_Accept:
 		// Accept.
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.WithFields(log.Fields{
 				"question": respMsg.Question,
 				"upstream": upstreamName,
 			}).Traceln("Accept")
@@ -626,16 +623,16 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	case consts.DnsResponseOutboundIndex_Reject:
 		// Reject the request with empty answer.
 		respMsg.Answer = nil
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.WithFields(log.Fields{
 				"question": respMsg.Question,
 				"upstream": upstreamName,
 			}).Traceln("Reject with empty answer")
 		}
 		// We also cache response reject.
 	default:
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.WithFields(log.Fields{
 				"question":      respMsg.Question,
 				"last_upstream": upstreamName,
 				"next_upstream": nextUpstream.String(),
@@ -643,7 +640,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp)
 	}
-	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
+	if upstreamIndex.IsReserved() && log.IsLevelEnabled(log.InfoLevel) {
 		var (
 			qname string
 			qtype string
@@ -653,7 +650,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			qname = strings.ToLower(q.Name)
 			qtype = QtypeToString(q.Qtype)
 		}
-		fields := logrus.Fields{
+		fields := log.Fields{
 			"network":  networkType.String(),
 			"outbound": dialArgument.bestOutbound.Name,
 			"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
@@ -667,9 +664,9 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 		switch upstreamIndex {
 		case consts.DnsResponseOutboundIndex_Accept:
-			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
+			log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
 		case consts.DnsResponseOutboundIndex_Reject:
-			c.log.WithFields(fields).Infof("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
+			log.WithFields(fields).Infof("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
 		default:
 			return fmt.Errorf("unknown upstream: %v", upstreamIndex.String())
 		}
@@ -685,7 +682,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		if err != nil {
 			return err
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		if err = sendPkt(data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 			return err
 		}
 	}

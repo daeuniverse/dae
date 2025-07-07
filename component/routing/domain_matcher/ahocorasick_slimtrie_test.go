@@ -10,19 +10,19 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
 )
 
 func TestAhocorasickSlimtrie(t *testing.T) {
 
-	logrus.SetLevel(logrus.TraceLevel)
+	log.SetLevel(log.TraceLevel)
 	simulatedDomainSet, err := getDomain()
 	if err != nil {
 		t.Fatal(err)
 	}
 	bf := NewBruteforce(consts.MaxMatchSetLen)
-	actrie := NewAhocorasickSlimtrie(logrus.StandardLogger(), consts.MaxMatchSetLen)
+	actrie := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range simulatedDomainSet {
 		bf.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 		actrie.AddSet(domains.RuleIndex, domains.Domains, domains.Key)

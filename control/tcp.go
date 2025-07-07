@@ -19,7 +19,7 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/zeroalloc/io"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -116,8 +116,8 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 		}
 		routingResult.Outbound = uint8(outboundIndex)
 
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.Tracef("outbound: %v => %v",
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.Tracef("outbound: %v => %v",
 				consts.OutboundControlPlaneRouting.String(),
 				outboundIndex.String(),
 			)
@@ -148,8 +148,8 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 		return nil, fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
 
-	if c.log.IsLevelEnabled(logrus.InfoLevel) {
-		c.log.WithFields(logrus.Fields{
+	if log.IsLevelEnabled(log.InfoLevel) {
+		log.WithFields(log.Fields{
 			"network":  networkType.String(),
 			"outbound": outbound.Name,
 			"policy":   outbound.GetSelectionPolicy(),

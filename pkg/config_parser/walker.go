@@ -9,12 +9,13 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"strconv"
 	"strings"
 
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 type Walker struct {
@@ -298,7 +299,7 @@ func (p *routingRuleOrDeclarationOrLiteralOrExpressionListParser) Parse(ctx dae_
 		case dae_config.IRoutingRuleOrDeclarationOrLiteralOrExpressionListContext:
 			p.Parse(elem)
 		default:
-			logrus.Debugf("? %T", elem)
+			log.Debugf("? %T", elem)
 			p.Walker.ReportError(elem, ErrorType_Unsupported)
 			return
 		}

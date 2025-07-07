@@ -19,7 +19,7 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -52,7 +52,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
+func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 	if err != nil {
 		return
@@ -72,8 +72,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		domain := ue.SniffedDomain
 		dialTarget := realDst.String()
 
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			fields := logrus.Fields{
+		if log.IsLevelEnabled(log.TraceLevel) {
+			fields := log.Fields{
 				"network":  "udp(fp)",
 				"outbound": ue.Outbound.Name,
 				"policy":   ue.Outbound.GetSelectionPolicy(),
@@ -85,7 +85,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				"pname":    ProcessName2String(routingResult.Pname[:]),
 				"mac":      Mac2String(routingResult.Mac[:]),
 			}
-			c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+			log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 		}
 
 		_, err = ue.WriteTo(data, dialTarget)
@@ -121,7 +121,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				return nil
 			}
 			if err != nil {
-				logrus.WithError(err).
+				log.WithError(err).
 					WithField("from", realSrc).
 					WithField("to", realDst).
 					Trace("sniffUdp")
@@ -190,7 +190,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	dialIp = true
 getNew:
 	if retry > MaxRetry {
-		c.log.WithFields(logrus.Fields{
+		log.WithFields(log.Fields{
 			"src":     RefineSourceToShow(realSrc, realDst.Addr()),
 			"network": networkType.String(),
 			"dialer":  ue.Dialer.Property().Name,
@@ -202,7 +202,7 @@ getNew:
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
-			return sendPkt(c.log, data, from, realSrc, src, lConn)
+			return sendPkt(data, from, realSrc, src, lConn)
 		},
 		NatTimeout: natTimeout,
 		GetDialOption: func() (option *DialOption, err error) {
@@ -222,8 +222,8 @@ getNew:
 					return nil, err
 				}
 				routingResult.Outbound = uint8(outboundIndex)
-				if c.log.IsLevelEnabled(logrus.TraceLevel) {
-					c.log.Tracef("outbound: %v => %v",
+				if log.IsLevelEnabled(log.TraceLevel) {
+					log.Tracef("outbound: %v => %v",
 						consts.OutboundControlPlaneRouting.String(),
 						outboundIndex.String(),
 					)
@@ -265,8 +265,8 @@ getNew:
 	// If the udp endpoint has been not alive, remove it from pool and get a new one.
 	if !isNew && ue.Outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
 
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
+		if log.IsLevelEnabled(log.DebugLevel) {
+			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
 				"network": networkType.String(),
 				"dialer":  ue.Dialer.Property().Name,
@@ -284,8 +284,8 @@ getNew:
 
 	_, err = ue.WriteTo(data, dialTarget)
 	if err != nil {
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
+		if log.IsLevelEnabled(log.DebugLevel) {
+			log.WithFields(log.Fields{
 				"to":      realDst.String(),
 				"domain":  domain,
 				"pid":     routingResult.Pid,
@@ -305,8 +305,8 @@ getNew:
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).
-	if (isNew && c.log.IsLevelEnabled(logrus.InfoLevel)) || c.log.IsLevelEnabled(logrus.DebugLevel) {
-		fields := logrus.Fields{
+	if (isNew && log.IsLevelEnabled(log.InfoLevel)) || log.IsLevelEnabled(log.DebugLevel) {
+		fields := log.Fields{
 			"network":  networkType.StringWithoutDns(),
 			"outbound": ue.Outbound.Name,
 			"policy":   ue.Outbound.GetSelectionPolicy(),
@@ -318,9 +318,9 @@ getNew:
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}
-		logger := c.log.WithFields(fields).Infof
-		if !isNew && c.log.IsLevelEnabled(logrus.DebugLevel) {
-			logger = c.log.WithFields(fields).Debugf
+		logger := log.WithFields(fields).Infof
+		if !isNew && log.IsLevelEnabled(log.DebugLevel) {
+			logger = log.WithFields(fields).Debugf
 		}
 		logger("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 	}

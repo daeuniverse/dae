@@ -14,7 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -31,7 +31,6 @@ type minLatency struct {
 //
 // It is thread-safe.
 type AliveDialerSet struct {
-	log             *logrus.Logger
 	dialerGroupName string
 	CheckTyp        *NetworkType
 	tolerance       time.Duration
@@ -49,7 +48,6 @@ type AliveDialerSet struct {
 }
 
 func NewAliveDialerSet(
-	log *logrus.Logger,
 	dialerGroupName string,
 	networkType *NetworkType,
 	tolerance time.Duration,
@@ -68,7 +66,6 @@ func NewAliveDialerSet(
 		dialerToLatencyOffset[d] = a.AddLatency
 	}
 	a := &AliveDialerSet{
-		log:                     log,
 		dialerGroupName:         dialerGroupName,
 		CheckTyp:                networkType,
 		tolerance:               tolerance,
@@ -137,7 +134,7 @@ func (a *AliveDialerSet) printLatencies() {
 	for i, dl := range alive {
 		builder.WriteString(fmt.Sprintf("%4d. [%v] %v: %v\n", i+1, dl.d.property.SubscriptionTag, dl.d.property.Name, latencyString(dl.l, dl.o)))
 	}
-	a.log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
+	log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
 }
 
 // NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.
@@ -171,7 +168,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		} else {
 			// Dialer: not alive -> alive.
 			if index == -NotAlive {
-				a.log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"dialer": dialer.property.Name,
 					"group":  a.dialerGroupName,
 				}).Infof("[NOT ALIVE --%v-> ALIVE]", a.CheckTyp.String())
@@ -183,20 +180,20 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		index := a.dialerToIndex[dialer]
 		if index >= 0 {
 			// Dialer: alive -> not alive.
-			a.log.WithFields(logrus.Fields{
+			log.WithFields(log.Fields{
 				"dialer": dialer.property.Name,
 				"group":  a.dialerGroupName,
 			}).Infof("[ALIVE --%v-> NOT ALIVE]", a.CheckTyp.String())
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {
-				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))
+				log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))
 			}
 			a.dialerToIndex[dialer] = -NotAlive
 			if index < len(a.inorderedAliveDialerSet)-1 {
 				// Swap this element with the last element.
 				dialerToSwap := a.inorderedAliveDialerSet[len(a.inorderedAliveDialerSet)-1]
 				if dialer == dialerToSwap {
-					a.log.Panicf("dialer[%p] == dialerToSwap[%p]", dialer, dialerToSwap)
+					log.Panicf("dialer[%p] == dialerToSwap[%p]", dialer, dialerToSwap)
 				}
 
 				a.dialerToIndex[dialerToSwap] = index
@@ -245,7 +242,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				} else {
 					oldDialerName = bakOldBestDialer.property.Name
 				}
-				a.log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					string(a.selectionPolicy): latencyString(a.dialerToLatency[a.minLatency.dialer], a.dialerToLatencyOffset[a.minLatency.dialer]),
 					"_new_dialer":             a.minLatency.dialer.property.Name,
 					"_old_dialer":             oldDialerName,
@@ -257,7 +254,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			} else {
 				// Alive -> not alive
 				defer a.aliveChangeCallback(false)
-				a.log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"group":   a.dialerGroupName,
 					"network": a.CheckTyp.String(),
 				}).Infof("Group has no dialer alive")
@@ -267,7 +264,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		if alive && minPolicy && a.minLatency.dialer == nil {
 			// Use first dialer if no dialer has alive state (usually happen at the very beginning).
 			a.minLatency.dialer = dialer
-			a.log.WithFields(logrus.Fields{
+			log.WithFields(log.Fields{
 				"group":   a.dialerGroupName,
 				"network": a.CheckTyp.String(),
 				"dialer":  a.minLatency.dialer.property.Name,
