@@ -21,7 +21,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 type _bpfTuples struct {
@@ -219,7 +219,6 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 }
 
 func fullLoadBpfObjects(
-	log *logrus.Logger,
 	bpf *bpfObjects,
 	opts *loadBpfOptions,
 ) (err error) {
@@ -258,7 +257,7 @@ retryLoadBpf:
 			goto retryLoadBpf
 		}
 		// Get detailed log from ebpf.internal.(*VerifierError)
-		if log.Level == logrus.FatalLevel {
+		if log.IsLevelEnabled(log.FatalLevel) {
 			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
 				if _log := v.FieldByName("Log"); _log.IsValid() {
 					if strSlice, ok := _log.Interface().([]string); ok {

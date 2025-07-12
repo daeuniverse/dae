@@ -10,7 +10,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,12 +34,12 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		if !isInit && dryrun {
 			return
 		}
-		if !isInit || c.log.IsLevelEnabled(logrus.TraceLevel) {
+		if !isInit || log.IsLevelEnabled(log.TraceLevel) {
 			strAlive := "NOT ALIVE"
 			if alive {
 				strAlive = "ALIVE"
 			}
-			c.log.WithFields(logrus.Fields{
+			log.WithFields(log.Fields{
 				"outboundId": outbound,
 			}).Tracef("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
 		}
@@ -53,7 +53,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
 		}, value, ebpf.UpdateAny); err != nil {
-			c.log.WithFields(logrus.Fields{
+			log.WithFields(log.Fields{
 				"alive":    alive,
 				"network":  networkType.StringWithoutDns(),
 				"outbound": c.outboundId2Name[outbound],

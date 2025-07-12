@@ -11,9 +11,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -27,12 +25,6 @@ var TestNetworkType = &dialer.NetworkType{
 	IsDns:     false,
 }
 
-var log = logrus.New()
-
-func init() {
-	logger.SetLogger(log, "trace", false, nil)
-}
-
 func newDirectDialer(option *dialer.GlobalOption, fullcone bool) *dialer.Dialer {
 	_d, p := dialer.NewDirectDialer(option, true)
 	d := dialer.NewDialer(_d, option, dialer.InstanceOption{DisableCheck: false}, p)
@@ -41,7 +33,6 @@ func newDirectDialer(option *dialer.GlobalOption, fullcone bool) *dialer.Dialer 
 
 func TestDialerGroup_Select_Fixed(t *testing.T) {
 	option := &dialer.GlobalOption{
-		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
@@ -82,9 +73,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 }
 
 func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
-
 	option := &dialer.GlobalOption{
-		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
@@ -152,9 +141,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 }
 
 func TestDialerGroup_Select_Random(t *testing.T) {
-
 	option := &dialer.GlobalOption{
-		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,
@@ -192,9 +179,7 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 }
 
 func TestDialerGroup_SetAlive(t *testing.T) {
-
 	option := &dialer.GlobalOption{
-		Log:               log,
 		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
 		CheckInterval:     15 * time.Second,

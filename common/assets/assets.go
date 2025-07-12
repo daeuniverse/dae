@@ -8,7 +8,6 @@ package assets
 import (
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/common/consts"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,8 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
+
 	"github.com/adrg/xdg"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const CacheTimeout = 5 * time.Second
@@ -44,7 +45,7 @@ func NewLocationFinder(externDirPath []string) *LocationFinder {
 	}
 }
 
-func (c *LocationFinder) GetLocationAsset(log *logrus.Logger, filename string) (path string, err error) {
+func (c *LocationFinder) GetLocationAsset(filename string) (path string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Search cache.

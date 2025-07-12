@@ -11,11 +11,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 func ReportMemory(tag string) {
-	if !logrus.IsLevelEnabled(logrus.DebugLevel) {
+	if !log.IsLevelEnabled(log.DebugLevel) {
 		return
 	}
 	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(os.Getpid()), "status"))
@@ -25,5 +25,5 @@ func ReportMemory(tag string) {
 	str := strings.TrimSpace(string(b))
 	_, after, _ := strings.Cut(str, "VmHWM:")
 	usage, _, _ := strings.Cut(after, "\n")
-	logrus.Debugln(tag+": memory usage:", strings.TrimSpace(usage))
+	log.Debugln(tag+": memory usage:", strings.TrimSpace(usage))
 }

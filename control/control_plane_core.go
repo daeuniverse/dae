@@ -23,7 +23,7 @@ import (
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/safchain/ethtool"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -34,7 +34,6 @@ var coreFlip = 0
 type controlPlaneCore struct {
 	mu sync.Mutex
 
-	log             *logrus.Logger
 	deferFuncs      []func() error
 	bpf             *bpfObjects
 	outboundId2Name map[uint8]string
@@ -50,7 +49,7 @@ type controlPlaneCore struct {
 	ifmgr  *component.InterfaceManager
 }
 
-func newControlPlaneCore(log *logrus.Logger,
+func newControlPlaneCore(
 	bpf *bpfObjects,
 	outboundId2Name map[uint8]string,
 	kernelVersion *internal.Version,
@@ -64,10 +63,9 @@ func newControlPlaneCore(log *logrus.Logger,
 		deferFuncs = append(deferFuncs, bpf.Close)
 	}
 	closed, toClose := context.WithCancel(context.Background())
-	ifmgr := component.NewInterfaceManager(log)
+	ifmgr := component.NewInterfaceManager()
 	deferFuncs = append(deferFuncs, ifmgr.Close)
 	return &controlPlaneCore{
-		log:             log,
 		deferFuncs:      deferFuncs,
 		bpf:             bpf,
 		outboundId2Name: outboundId2Name,
@@ -151,7 +149,7 @@ func (c *controlPlaneCore) linkHdrLen(ifname string) (uint32, error) {
 	case "ether":
 		linkHdrLen = consts.LinkHdrLen_Ethernet
 	default:
-		c.log.Warnf("Maybe unsupported link type %v, using default link header length", link.Attrs().EncapType)
+		log.Warnf("Maybe unsupported link type %v, using default link header length", link.Attrs().EncapType)
 		linkHdrLen = consts.LinkHdrLen_Ethernet
 	}
 	return linkHdrLen, nil
@@ -210,16 +208,16 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 			SetForwarding(link.Attrs().Name, "1")
 		}
 		if err := c._bindLan(link.Attrs().Name); err != nil {
-			c.log.Errorf("bindLan: %v", err)
+			log.Errorf("bindLan: %v", err)
 		}
 	}
 	newlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == HostVethName {
 			return
 		}
-		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
+		log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
 		if err := c.addQdisc(link.Attrs().Name); err != nil {
-			c.log.Errorf("addQdisc: %v", err)
+			log.Errorf("addQdisc: %v", err)
 			return
 		}
 		initlinkCallback(link)
@@ -228,7 +226,7 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 		if link.Attrs().Name == HostVethName {
 			return
 		}
-		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
+		log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
 	}
 	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
 }
@@ -241,7 +239,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return nil
 	default:
 	}
-	c.log.Infof("Bind to LAN: %v", ifname)
+	log.Infof("Bind to LAN: %v", ifname)
 
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -420,16 +418,16 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		if err := c._bindWan(link.Attrs().Name); err != nil {
-			c.log.Errorf("bindWan: %v", err)
+			log.Errorf("bindWan: %v", err)
 		}
 	}
 	newlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == HostVethName {
 			return
 		}
-		c.log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
+		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
 		if err := c.addQdisc(link.Attrs().Name); err != nil {
-			c.log.Errorf("addQdisc: %v", err)
+			log.Errorf("addQdisc: %v", err)
 			return
 		}
 		initlinkCallback(link)
@@ -438,7 +436,7 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 		if link.Attrs().Name == HostVethName {
 			return
 		}
-		c.log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
+		log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
 	}
 	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
 }
@@ -451,7 +449,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return nil
 	default:
 	}
-	c.log.Infof("Bind to WAN: %v", ifname)
+	log.Infof("Bind to WAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err

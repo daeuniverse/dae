@@ -39,7 +39,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -54,11 +54,12 @@ var (
 		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
+	std = log.New()
 )
 
 func init() {
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
-	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to stdout and stderr.")
+	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to std and stderr.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
 	runCmd.PersistentFlags().BoolVar(&disableTimestamp, "disable-timestamp", false, "Disable timestamp.")
@@ -83,10 +84,10 @@ var (
 		Short: "To run dae in the foreground.",
 		Run: func(cmd *cobra.Command, args []string) {
 			if cfgFile == "" {
-				logrus.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
+				std.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
 			}
 			if disableAuthSudo && os.Geteuid() != 0 {
-				logrus.Fatalln("Auto-sudo is disabled and current user is not root.")
+				std.Fatalln("Auto-sudo is disabled and current user is not root.")
 			}
 			// Require "sudo" if necessary.
 			if !disableAuthSudo {
@@ -96,7 +97,7 @@ var (
 			// Read config from --config cfgFile.
 			conf, includes, err := readConfig(cfgFile)
 			if err != nil {
-				logrus.WithFields(logrus.Fields{
+				std.WithFields(log.Fields{
 					"err": err,
 				}).Fatalln("Failed to read config")
 			}
@@ -112,24 +113,22 @@ var (
 					Compress:   true,
 				}
 			}
-			log := logrus.New()
-			logger.SetLogger(log, conf.Global.LogLevel, disableTimestamp, logOpts)
-			logger.SetLogger(logrus.StandardLogger(), conf.Global.LogLevel, disableTimestamp, logOpts)
+			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 
-			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			if err := Run(log, conf, []string{filepath.Dir(cfgFile)}); err != nil {
-				log.Fatalln(err)
+			std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+			if err := Run(conf, []string{filepath.Dir(cfgFile)}); err != nil {
+				std.Fatalln(err)
 			}
 		},
 	}
 )
 
-func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+func Run(conf *config.Config, externGeoDataDirs []string) (err error) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
-	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
+	c, err := newControlPlane(nil, nil, conf, externGeoDataDirs)
 	if err != nil {
 		return err
 	}
@@ -157,7 +156,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		}()
 		control.GetDaeNetns().With(func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
-				log.Errorln("ListenAndServe:", err)
+				std.Errorln("ListenAndServe:", err)
 			}
 			return err
 		})
@@ -178,11 +177,11 @@ loop:
 				}
 				// Serve.
 				reloading = false
-				log.Warnln("[Reload] Serve")
+				std.Infoln("[Reload] Serve")
 				readyChan := make(chan bool, 1)
 				go func() {
 					if err := c.Serve(readyChan, listener); err != nil {
-						log.Errorln("ListenAndServe:", err)
+						std.Errorln("Serve:", err)
 					}
 					sigs <- nil
 				}()
@@ -193,7 +192,7 @@ loop:
 				} else {
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
 				}
-				log.Warnln("[Reload] Finished")
+				std.Warnln("[Reload] Finished")
 			} else {
 				// Listening error.
 				break loop
@@ -204,9 +203,9 @@ loop:
 		case syscall.SIGUSR1:
 			// Reload signal.
 			if isSuspend {
-				log.Warnln("[Reload] Received suspend signal; prepare to suspend")
+				std.Warnln("[Reload] Received suspend signal; prepare to suspend")
 			} else {
-				log.Warnln("[Reload] Received reload signal; prepare to reload")
+				std.Warnln("[Reload] Received reload signal; prepare to reload")
 			}
 			sdnotify.Reloading()
 			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
@@ -214,13 +213,13 @@ loop:
 
 			// Load new config.
 			abortConnections = os.Remove(AbortFile) == nil
-			log.Warnln("[Reload] Load new config")
+			std.Warnln("[Reload] Load new config")
 			var newConf *config.Config
 			if isSuspend {
 				isSuspend = false
 				newConf, err = emptyConfig()
 				if err != nil {
-					log.WithFields(logrus.Fields{
+					std.WithFields(log.Fields{
 						"err": err,
 					}).Errorln("[Reload] Failed to reload")
 					sdnotify.Ready()
@@ -235,22 +234,17 @@ loop:
 				var includes []string
 				newConf, includes, err = readConfig(cfgFile)
 				if err != nil {
-					log.WithFields(logrus.Fields{
+					std.WithFields(log.Fields{
 						"err": err,
 					}).Errorln("[Reload] Failed to reload")
 					sdnotify.Ready()
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
 					continue
 				}
-				log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+				std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 			}
 			// New logger.
-			oldLogOutput := log.Out
-			log = logrus.New()
-			logger.SetLogger(log, newConf.Global.LogLevel, disableTimestamp, nil)
-			logger.SetLogger(logrus.StandardLogger(), newConf.Global.LogLevel, disableTimestamp, nil)
-			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
-			logrus.SetOutput(oldLogOutput)
+			logger.SetLogger(newConf.Global.LogLevel, disableTimestamp, nil)
 
 			// New control plane.
 			obj := c.EjectBpf()
@@ -259,27 +253,27 @@ loop:
 				// Only keep dns cache when ip version preference not change.
 				dnsCache = c.CloneDnsCache()
 			}
-			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
+			std.Infoln("[Reload] Load new control plane")
+			newC, err := newControlPlane(obj, dnsCache, newConf, externGeoDataDirs)
 			if err != nil {
 				reloadingErr = err
-				log.WithFields(logrus.Fields{
+				std.WithFields(log.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
 				// Load last config back.
-				newC, err = newControlPlane(log, obj, dnsCache, conf, externGeoDataDirs)
+				newC, err = newControlPlane(obj, dnsCache, conf, externGeoDataDirs)
 				if err != nil {
 					sdnotify.Stopping()
 					obj.Close()
 					c.Close()
-					log.WithFields(logrus.Fields{
+					std.WithFields(log.Fields{
 						"err": err,
 					}).Fatalln("[Reload] Failed to roll back configuration")
 				}
 				newConf = conf
-				log.Errorln("[Reload] Last reload failed; rolled back configuration")
+				std.Errorln("[Reload] Last reload failed; rolled back configuration")
 			} else {
-				log.Warnln("[Reload] Stopped old control plane")
+				std.Warnln("[Reload] Stopped old control plane")
 			}
 
 			// Inject bpf objects into the new control plane life-cycle.
@@ -310,7 +304,7 @@ loop:
 			// Ignore.
 			continue
 		default:
-			log.Infof("Received signal: %v", sig.String())
+			std.Infof("Received signal: %v", sig.String())
 			break loop
 		}
 	}
@@ -322,7 +316,7 @@ loop:
 	return nil
 }
 
-func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -400,7 +394,7 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 		Timeout: 30 * time.Second,
 	}
 	for _, sub := range conf.Subscription {
-		tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(sub))
+		tag, nodes, err := subscription.ResolveSubscription(&client, filepath.Dir(cfgFile), string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 			resolvingfailed = true
@@ -442,7 +436,6 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	}
 
 	c, err = control.NewControlPlane(
-		log,
 		bpf,
 		dnsCache,
 		tagToNodeList,

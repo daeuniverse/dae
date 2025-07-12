@@ -16,11 +16,9 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
-	"github.com/sirupsen/logrus"
 )
 
 type ResponseMatcherBuilder struct {
-	log                *logrus.Logger
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
 	ipSet              []*trie.Trie
@@ -28,9 +26,9 @@ type ResponseMatcherBuilder struct {
 	rules              []responseMatchSet
 }
 
-func NewResponseMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *ResponseMatcherBuilder, err error) {
-	b = &ResponseMatcherBuilder{log: log, upstreamName2Id: upstreamName2Id}
-	rulesBuilder := routing.NewRulesBuilder(log)
+func NewResponseMatcherBuilder(rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *ResponseMatcherBuilder, err error) {
+	b = &ResponseMatcherBuilder{upstreamName2Id: upstreamName2Id}
+	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_QName, routing.PlainParserFactory(b.addQName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
@@ -181,7 +179,7 @@ func (b *ResponseMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrS
 func (b *ResponseMatcherBuilder) Build() (matcher *ResponseMatcher, err error) {
 	var m ResponseMatcher
 	// Build domainMatcher.
-	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(b.log, consts.MaxMatchSetLen)
+	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		m.domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

@@ -21,7 +21,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 type sip008 struct {
@@ -42,7 +42,7 @@ type sip008Server struct {
 	PluginOpts string `json:"plugin_opts"`
 }
 
-func ResolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) {
+func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 	log.Debugln("Try to resolve as base64")
 
 	// base64 decode
@@ -67,7 +67,7 @@ func ResolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) 
 	return nodes
 }
 
-func ResolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, err error) {
+func ResolveSubscriptionAsSIP008(b []byte) (nodes []string, err error) {
 	log.Debugln("Try to resolve as sip008")
 
 	var sip sip008
@@ -139,7 +139,7 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
-func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
+func ResolveSubscription(client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
 	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
@@ -222,10 +222,10 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		}
 	}
 resolve:
-	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
+	if nodes, err = ResolveSubscriptionAsSIP008(b); err == nil {
 		return tag, nodes, nil
 	} else {
 		log.Debugln(err)
 	}
-	return tag, ResolveSubscriptionAsBase64(log, b), nil
+	return tag, ResolveSubscriptionAsBase64(b), nil
 }

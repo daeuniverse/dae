@@ -7,10 +7,11 @@ package routing
 
 import (
 	"fmt"
+	"strconv"
+
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/sirupsen/logrus"
-	"strconv"
+	log "github.com/sirupsen/logrus"
 )
 
 type DomainSet struct {
@@ -26,13 +27,11 @@ type Outbound struct {
 }
 
 type RulesBuilder struct {
-	log     *logrus.Logger
 	parsers map[string]FunctionParser
 }
 
-func NewRulesBuilder(log *logrus.Logger) *RulesBuilder {
+func NewRulesBuilder() *RulesBuilder {
 	return &RulesBuilder{
-		log:     log,
 		parsers: make(map[string]FunctionParser),
 	}
 }
@@ -43,7 +42,7 @@ func (b *RulesBuilder) RegisterFunctionParser(funcName string, parser FunctionPa
 
 func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 	for _, rule := range rules {
-		b.log.Debugln("[rule]", rule.String(true, false, false))
+		log.Debugln("[rule]", rule.String(true, false, false))
 		outbound, err := ParseOutbound(&rule.Outbound)
 		if err != nil {
 			return err
@@ -78,10 +77,10 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 					if f.Not {
 						symNot = "!"
 					}
-					b.log.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound.Name)
+					log.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound.Name)
 				}
 
-				if err = functionParser(b.log, f, key, paramValueGroup, overrideOutbound); err != nil {
+				if err = functionParser(f, key, paramValueGroup, overrideOutbound); err != nil {
 					return fmt.Errorf("failed to parse '%v': %w", f.String(false, false, false), err)
 				}
 			}

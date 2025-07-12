@@ -30,7 +30,7 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const Timeout = 10 * time.Second
@@ -220,7 +220,6 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string, resolverNetw
 type TcpCheckOptionRaw struct {
 	opt             *TcpCheckOption
 	mu              sync.Mutex
-	Log             *logrus.Logger
 	Raw             []string
 	ResolverNetwork string
 	Method          string
@@ -232,7 +231,6 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 		defer cancel()
-		ctx = context.WithValue(ctx, "logger", c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
@@ -300,7 +298,7 @@ func (d *Dialer) aliveBackground() {
 				return false, err
 			}
 			if !opt.Ip4.IsValid() {
-				d.Log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"link":    d.TcpCheckOptionRaw.Raw,
 					"dialer":  d.property.Name,
 					"network": typ.String(),
@@ -322,7 +320,7 @@ func (d *Dialer) aliveBackground() {
 				return false, err
 			}
 			if !opt.Ip6.IsValid() {
-				d.Log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"link":    d.TcpCheckOptionRaw.Raw,
 					"dialer":  d.property.Name,
 					"network": typ.String(),
@@ -352,7 +350,7 @@ func (d *Dialer) aliveBackground() {
 				return false, err
 			}
 			if !opt.Ip4.IsValid() {
-				d.Log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"dialer":  d.property.Name,
 					"network": typ.String(),
@@ -374,7 +372,7 @@ func (d *Dialer) aliveBackground() {
 				return false, err
 			}
 			if !opt.Ip6.IsValid() {
-				d.Log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"dialer":  d.property.Name,
 					"network": typ.String(),
@@ -396,7 +394,7 @@ func (d *Dialer) aliveBackground() {
 				return false, err
 			}
 			if !opt.Ip4.IsValid() {
-				d.Log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
@@ -417,7 +415,7 @@ func (d *Dialer) aliveBackground() {
 				return false, err
 			}
 			if !opt.Ip6.IsValid() {
-				d.Log.WithFields(logrus.Fields{
+				log.WithFields(log.Fields{
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
@@ -460,7 +458,7 @@ func (d *Dialer) aliveBackground() {
 		}
 	}
 	if unused == len(CheckOpts) {
-		d.Log.WithField("dialer", d.Property().Name).
+		log.WithField("dialer", d.Property().Name).
 			WithField("p", unsafe.Pointer(d)).
 			Traceln("cleaned up due to unused")
 		return
@@ -540,7 +538,7 @@ func (d *Dialer) logUnavailable(
 			strings.HasSuffix(err.Error(), "non-IPv4 address") {
 			err = fmt.Errorf("IPv%v is not supported", network.IpVersion)
 		}
-		d.Log.WithFields(logrus.Fields{
+		log.WithFields(log.Fields{
 			"network": network.String(),
 			"node":    d.property.Name,
 			"err":     err.Error(),
@@ -581,7 +579,7 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 		collection.MovingAverage = (collection.MovingAverage + latency) / 2
 		collection.Alive = true
 
-		d.Log.WithFields(logrus.Fields{
+		log.WithFields(log.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.property.Name,
 			"last":    latency.Truncate(time.Millisecond).String(),
@@ -636,7 +634,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 			buf := pool.GetBuffer()
 			defer pool.PutBuffer(buf)
 			_ = resp.Request.Write(buf)
-			d.Log.Debugln(buf.String(), "Resp: ", string(b))
+			log.Debugln(buf.String(), "Resp: ", string(b))
 			return false, fmt.Errorf("unexpected status code: %v", resp.StatusCode)
 		}
 		return true, nil

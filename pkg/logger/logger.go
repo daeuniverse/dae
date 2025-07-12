@@ -6,15 +6,15 @@
 package logger
 
 import (
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-func SetLogger(log *logrus.Logger, logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
-	level, err := logrus.ParseLevel(logLevel)
+func SetLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
+	level, err := log.ParseLevel(logLevel)
 	if err != nil {
-		level = logrus.InfoLevel
+		level = log.InfoLevel
 	}
 
 	log.SetLevel(level)
