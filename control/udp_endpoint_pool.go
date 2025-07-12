@@ -38,22 +38,68 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) start() {
-	buf := pool.GetFullCap(consts.EthernetMtu)
-	defer pool.Put(buf)
+	// 使用buffered channel实现异步处理
+	const maxPendingPackets = 1000
+	packetChan := make(chan struct {
+		data []byte
+		from netip.AddrPort
+	}, maxPendingPackets)
+	
+	// 启动异步包处理器
+	go func() {
+		for packet := range packetChan {
+			// 异步处理每个包，避免阻塞读取循环
+			go func(data []byte, from netip.AddrPort) {
+				defer pool.Put(data) // 确保释放buffer
+				if err := ue.handler(data, from); err != nil {
+					// 处理错误但不阻塞
+					return
+				}
+			}(packet.data, packet.from)
+		}
+	}()
+	
+	// 高性能读取循环
 	for {
+		buf := pool.GetFullCap(consts.EthernetMtu)
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
+			pool.Put(buf)
 			break
 		}
+		
+		// 快速重置计时器，减少锁竞争
 		ue.mu.Lock()
-		ue.deadlineTimer.Reset(ue.NatTimeout)
+		if ue.deadlineTimer != nil {
+			ue.deadlineTimer.Reset(ue.NatTimeout)
+		}
 		ue.mu.Unlock()
-		if err = ue.handler(buf[:n], from); err != nil {
-			break
+		
+		// 复制数据到正确大小的buffer
+		data := pool.Get(n)
+		copy(data, buf[:n])
+		pool.Put(buf)
+		
+		// 非阻塞发送到处理器
+		select {
+		case packetChan <- struct {
+			data []byte
+			from netip.AddrPort
+		}{data, from}:
+			// 成功发送到处理队列
+		default:
+			// 队列满了，丢弃包（避免阻塞读取）
+			pool.Put(data)
+			// 可以在这里记录丢包统计
 		}
 	}
+	
+	// 清理
+	close(packetChan)
 	ue.mu.Lock()
-	ue.deadlineTimer.Stop()
+	if ue.deadlineTimer != nil {
+		ue.deadlineTimer.Stop()
+	}
 	ue.mu.Unlock()
 }
 
