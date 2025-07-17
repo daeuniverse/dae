@@ -177,7 +177,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 		anyfrom.RefreshTtl()
 		return anyfrom, false, nil
 	}
-	
+
 	// 使用更精确的双重检查锁定模式避免重复创建
 	// 创建临时key用于创建锁
 	createKey := lAddr + "_creating"
@@ -194,16 +194,16 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 		// 如果等待后仍未创建成功，返回错误而不是继续创建
 		return nil, false, fmt.Errorf("timeout waiting for connection creation on %s", lAddr)
 	}
-	
+
 	defer p.pool.Delete(createKey)
-	
+
 	// 再次检查是否已创建
 	if af, ok := p.pool.Load(lAddr); ok {
 		anyfrom := af.(*Anyfrom)
 		anyfrom.RefreshTtl()
 		return anyfrom, false, nil
 	}
-	
+
 	// 创建新的Anyfrom
 	d := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
@@ -217,9 +217,9 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 		return nil
 	})
 	if err != nil {
-		return nil, true, err
+		return nil, true, fmt.Errorf("failed to create UDP connection for %s: %w", lAddr, err)
 	}
-	
+
 	uConn := pc.(*net.UDPConn)
 	af := &Anyfrom{
 		UDPConn:       uConn,
@@ -236,7 +236,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 			}
 		})
 	}
-	
+
 	p.pool.Store(lAddr, af)
 	return af, true, nil
 }

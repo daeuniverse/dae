@@ -63,7 +63,10 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to ne
 		return err
 	}
 	_, err = uConn.WriteToUDPAddrPort(data, realTo)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to write UDP packet from %s to %s: %w", from, realTo, err)
+	}
+	return nil
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
