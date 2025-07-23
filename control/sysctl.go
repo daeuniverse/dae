@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const SysctlPrefixPath = "/proc/sys/"
@@ -20,25 +20,23 @@ const SysctlPrefixPath = "/proc/sys/"
 var sysctl *SysctlManager
 
 type SysctlManager struct {
-	log          *logrus.Logger
 	mux          sync.Mutex
 	watcher      *fsnotify.Watcher
 	expectations map[string]string
 }
 
-func InitSysctlManager(log *logrus.Logger) (err error) {
-	sysctl, err = NewSysctlManager(log)
+func InitSysctlManager() (err error) {
+	sysctl, err = NewSysctlManager()
 	return err
 }
 
-func NewSysctlManager(log *logrus.Logger) (*SysctlManager, error) {
+func NewSysctlManager() (*SysctlManager, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
 
 	manager := &SysctlManager{
-		log:          log,
 		mux:          sync.Mutex{},
 		watcher:      watcher,
 		expectations: map[string]string{},
@@ -55,20 +53,20 @@ func (s *SysctlManager) startWatch() {
 				return
 			}
 			if event.Has(fsnotify.Write) {
-				s.log.Tracef("sysctl write event: %+v", event)
+				log.Tracef("sysctl write event: %+v", event)
 				s.mux.Lock()
 				expected, ok := s.expectations[event.Name]
 				s.mux.Unlock()
 				if ok {
 					raw, err := os.ReadFile(event.Name)
 					if err != nil {
-						s.log.Errorf("failed to read sysctl file %s: %v", event.Name, err)
+						log.Errorf("failed to read sysctl file %s: %v", event.Name, err)
 					}
 					value := strings.TrimSpace(string(raw))
 					if value != expected {
-						s.log.Infof("sysctl %s has unexpected value %s, expected %s", event.Name, value, expected)
+						log.Infof("sysctl %s has unexpected value %s, expected %s", event.Name, value, expected)
 						if err := os.WriteFile(event.Name, []byte(expected), 0644); err != nil {
-							s.log.Errorf("failed to write sysctl file %s: %v", event.Name, err)
+							log.Errorf("failed to write sysctl file %s: %v", event.Name, err)
 						}
 					}
 				}
@@ -77,7 +75,7 @@ func (s *SysctlManager) startWatch() {
 			if !ok {
 				return
 			}
-			s.log.Errorf("sysctl watcher error: %v", err)
+			log.Errorf("sysctl watcher error: %v", err)
 		}
 	}
 }

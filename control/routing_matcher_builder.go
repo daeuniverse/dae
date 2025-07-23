@@ -20,11 +20,10 @@ import (
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 type RoutingMatcherBuilder struct {
-	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
 	bpf                *bpfObjects
 	rules              []bpfMatchSet
@@ -33,9 +32,9 @@ type RoutingMatcherBuilder struct {
 	fallback           *routing.Outbound
 }
 
-func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, bpf: bpf}
-	rulesBuilder := routing.NewRulesBuilder(log)
+func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
+	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, bpf: bpf}
+	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_SourceIp, routing.IpParserFactory(b.addSourceIp))
@@ -317,7 +316,7 @@ func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
+func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	// Update lpm_array_map.
 	for i, cidrs := range b.simulatedLpmTries {
 		var keys []_bpfLpmKey
@@ -356,7 +355,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 
 func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
 	// Build domainMatcher
-	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(b.log, consts.MaxMatchSetLen)
+	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}

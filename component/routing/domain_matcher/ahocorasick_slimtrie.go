@@ -12,15 +12,13 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/trie"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/v2rayA/ahocorasick-domain"
 )
 
 var ValidDomainChars = trie.NewValidChars([]byte("0123456789abcdefghijklmnopqrstuvwxyz-.^_"))
 
 type AhocorasickSlimtrie struct {
-	log *logrus.Logger
-
 	validAcIndexes     []int
 	validTrieIndexes   []int
 	validRegexpIndexes []int
@@ -33,9 +31,8 @@ type AhocorasickSlimtrie struct {
 	err         error
 }
 
-func NewAhocorasickSlimtrie(log *logrus.Logger, bitLength int) *AhocorasickSlimtrie {
+func NewAhocorasickSlimtrie(bitLength int) *AhocorasickSlimtrie {
 	return &AhocorasickSlimtrie{
-		log:         log,
 		ac:          make([]*ahocorasick.Matcher, bitLength),
 		trie:        make([]*trie.Trie, bitLength),
 		regexp:      make([][]*regexp.Regexp, bitLength),
@@ -53,7 +50,7 @@ nextPattern:
 		case consts.RoutingDomainKey_Full:
 			for _, r := range []byte(d) {
 				if !ValidDomainChars.IsValidChar(r) {
-					n.log.Warnf("DomainMatcher: skip bad full domain: %v: unexpected char: %v", d, string(r))
+					log.Warnf("DomainMatcher: skip bad full domain: %v: unexpected char: %v", d, string(r))
 					continue nextPattern
 				}
 			}
@@ -61,7 +58,7 @@ nextPattern:
 		case consts.RoutingDomainKey_Suffix:
 			for _, r := range []byte(d) {
 				if !ValidDomainChars.IsValidChar(r) {
-					n.log.Warnf("DomainMatcher: skip bad suffix domain: %v: unexpected char: %v", d, string(r))
+					log.Warnf("DomainMatcher: skip bad suffix domain: %v: unexpected char: %v", d, string(r))
 					continue nextPattern
 				}
 			}

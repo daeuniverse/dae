@@ -14,7 +14,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	_ "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
@@ -22,7 +22,6 @@ var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
 type DialerGroup struct {
 	netproxy.Dialer
 
-	log  *logrus.Logger
 	Name string
 
 	Dialers []*dialer.Dialer
@@ -40,7 +39,6 @@ func NewDialerGroup(
 	p DialerSelectionPolicy,
 	aliveChangeCallback func(alive bool, networkType *dialer.NetworkType, isInit bool),
 ) *DialerGroup {
-	log := option.Log
 	var aliveDnsTcp4DialerSet *dialer.AliveDialerSet
 	var aliveDnsTcp6DialerSet *dialer.AliveDialerSet
 	var aliveTcp4DialerSet *dialer.AliveDialerSet
@@ -73,7 +71,7 @@ func NewDialerGroup(
 	}
 	if needAliveState {
 		aliveTcp4DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
+			name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
 				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
@@ -88,7 +86,7 @@ func NewDialerGroup(
 	}
 	if needAliveState {
 		aliveTcp6DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
+			name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
 				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
@@ -103,7 +101,7 @@ func NewDialerGroup(
 	}
 	if needAliveState {
 		aliveDnsUdp4DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
+			name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
 				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
@@ -118,7 +116,7 @@ func NewDialerGroup(
 	}
 	if needAliveState {
 		aliveDnsUdp6DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
+			name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				// Use the trick to copy a pointer of *dialer.NetworkType.
 				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
@@ -127,13 +125,13 @@ func NewDialerGroup(
 	aliveChangeCallback(true, networkType, true)
 
 	if option.CheckDnsTcp && needAliveState {
-		aliveDnsTcp4DialerSet = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
+		aliveDnsTcp4DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     true,
 		}, option.CheckTolerance, p.Policy, dialers, dialersAnnotations, func(alive bool) {}, true)
 
-		aliveDnsTcp6DialerSet = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
+		aliveDnsTcp6DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     true,
@@ -150,7 +148,6 @@ func NewDialerGroup(
 	}
 
 	return &DialerGroup{
-		log:     log,
 		Name:    name,
 		Dialers: dialers,
 		aliveDialerSets: [6]*dialer.AliveDialerSet{

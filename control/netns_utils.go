@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -33,8 +33,6 @@ var (
 )
 
 type DaeNetns struct {
-	log *logrus.Logger
-
 	setupDone atomic.Bool
 	mu        sync.Mutex
 
@@ -42,11 +40,10 @@ type DaeNetns struct {
 	hostNs, daeNs  netns.NsHandle
 }
 
-func InitDaeNetns(log *logrus.Logger) {
+func InitDaeNetns() {
 	once.Do(func() {
 		daeNetns = &DaeNetns{}
 	})
-	daeNetns.log = log
 }
 
 func GetDaeNetns() *DaeNetns {
@@ -108,7 +105,7 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 }
 
 func (ns *DaeNetns) setup() (err error) {
-	ns.log.Trace("setting up dae netns")
+	log.Trace("setting up dae netns")
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -175,7 +172,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		if err = netlink.RouteAdd(&route); err != nil {
 			if len(route.Dst.IP) == net.IPv6len {
 				// ipv6
-				ns.log.Warnln("IpRouteAdd: Bad IPv6 support. Perhaps your machine disabled IPv6.")
+				log.Warnln("IpRouteAdd: Bad IPv6 support. Perhaps your machine disabled IPv6.")
 				continue
 			}
 			return fmt.Errorf("IpRouteAdd: %w", err)
@@ -212,7 +209,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		if err = netlink.RuleAdd(&rule); err != nil {
 			if rule.Family == unix.AF_INET6 {
 				// ipv6
-				ns.log.Warnln("IpRuleAdd: Bad IPv6 support. Perhaps your machine disabled IPv6 (need CONFIG_IPV6_MULTIPLE_TABLES).")
+				log.Warnln("IpRuleAdd: Bad IPv6 support. Perhaps your machine disabled IPv6 (need CONFIG_IPV6_MULTIPLE_TABLES).")
 				continue
 			}
 			return fmt.Errorf("IpRuleAdd: %w", err)
