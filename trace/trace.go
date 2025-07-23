@@ -109,7 +109,6 @@ func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects
 	}
 	var opts ebpf.CollectionOptions
 	opts.Programs.LogLevel = ebpf.LogLevelInstruction
-	opts.Programs.LogSize = ebpf.DefaultVerifierLogSize * 100
 	objs := bpfObjects{}
 	if err := spec.LoadAndAssign(&objs, &opts); err != nil {
 		var (
@@ -137,9 +136,10 @@ func searchAvailableTargets() (targets map[string]int, kfreeSkbReasons map[uint6
 		return
 	}
 
-	iter := btfSpec.Iterate()
-	for iter.Next() {
-		typ := iter.Type
+	for typ, err := range btfSpec.All() {
+		if err != nil {
+			continue
+		}
 		fn, ok := typ.(*btf.Func)
 		if !ok {
 			continue
