@@ -139,10 +139,10 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	return ifParams, nil
 }
 
-func (c *controlPlaneCore) mapLinkType(ifname string) error {
+func (c *controlPlaneCore) linkHdrLen(ifname string) (uint32, error) {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var linkHdrLen uint32
 	switch link.Attrs().EncapType {
@@ -151,9 +151,10 @@ func (c *controlPlaneCore) mapLinkType(ifname string) error {
 	case "ether":
 		linkHdrLen = consts.LinkHdrLen_Ethernet
 	default:
-		return nil
+		c.log.Warnf("Maybe unsupported link type %v, using default link header length", link.Attrs().EncapType)
+		linkHdrLen = consts.LinkHdrLen_Ethernet
 	}
-	return c.bpf.bpfMaps.LinklenMap.Update(uint32(link.Attrs().Index), linkHdrLen, ebpf.UpdateAny)
+	return linkHdrLen, nil
 }
 
 func (c *controlPlaneCore) addQdisc(ifname string) error {
@@ -253,7 +254,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return err
 	}
 	_ = c.addQdisc(ifname)
-	_ = c.mapLinkType(ifname)
+	linkHdrLen, err := c.linkHdrLen(ifname)
+	if err != nil {
+		return err
+	}
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
@@ -261,9 +265,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	}
 	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
-	}
-	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 
 	// Insert filters.
@@ -276,9 +277,15 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 			// Priority should be behind of WAN's
 			Priority: 2,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyLanIngress.FD(),
 		Name:         consts.AppName + "_lan_ingress",
 		DirectAction: true,
+	}
+	if linkHdrLen > 0 {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL2.FD()
+		filterIngress.Name = filterIngress.Name + "_l2"
+	} else {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL3.FD()
+		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	// Remove and add.
 	_ = netlink.FilterDel(filterIngress)
@@ -307,9 +314,15 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 			// Priority should be front of WAN's
 			Priority: 1,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyLanEgress.FD(),
 		Name:         consts.AppName + "_lan_egress",
 		DirectAction: true,
+	}
+	if linkHdrLen > 0 {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL2.FD()
+		filterEgress.Name = filterEgress.Name + "_l2"
+	} else {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL3.FD()
+		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	// Remove and add.
 	_ = netlink.FilterDel(filterEgress)
@@ -447,7 +460,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return fmt.Errorf("cannot bind to loopback interface")
 	}
 	_ = c.addQdisc(ifname)
-	_ = c.mapLinkType(ifname)
+	linkHdrLen, err := c.linkHdrLen(ifname)
+	if err != nil {
+		return err
+	}
 
 	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
@@ -456,9 +472,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
-	}
-	if err := c.bpf.IfindexParamsMap.Update(uint32(link.Attrs().Index), ifParams, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update IfindexIpsMap: %w", err)
 	}
 
 	/// Set-up WAN ingress/egress TC programs.
@@ -471,9 +484,15 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  2,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyWanEgress.FD(),
 		Name:         consts.AppName + "_wan_egress",
 		DirectAction: true,
+	}
+	if linkHdrLen > 0 {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL2.FD()
+		filterEgress.Name = filterEgress.Name + "_l2"
+	} else {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL3.FD()
+		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	_ = netlink.FilterDel(filterEgress)
 	// Remove and add.
@@ -501,9 +520,15 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  1,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyWanIngress.FD(),
 		Name:         consts.AppName + "_wan_ingress",
 		DirectAction: true,
+	}
+	if linkHdrLen > 0 {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL2.FD()
+		filterIngress.Name = filterIngress.Name + "_l2"
+	} else {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL3.FD()
+		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	_ = netlink.FilterDel(filterIngress)
 	// Remove and add.
