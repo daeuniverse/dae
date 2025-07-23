@@ -304,3 +304,7 @@ gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C
 gopkg.in/yaml.v3 v3.0.0-20200605160147-a5ece683394c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+github.com/daeuniverse/outbound v0.0.0-20250531131212-a58b4c6b39b2 h1:NUUI9tKUM+KZUUC51w0wu9Ci4myFaoTsTSA7sJS0rtc=
+github.com/daeuniverse/outbound v0.0.0-20250531131212-a58b4c6b39b2/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
+github.com/daeuniverse/outbound v0.0.0-20250722064253-00c4fbb38759 h1:aklFtuD9AJ9toFveiPNfstY0o4owduvJ+iNpc61mhkU=
+github.com/daeuniverse/outbound v0.0.0-20250722064253-00c4fbb38759/go.mod h1:fywFXIIfFeyG+oMat6h7MExY99CNtERbhrH0DYSr/6g=
