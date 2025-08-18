@@ -16,7 +16,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -44,7 +44,6 @@ type Dialer struct {
 
 type GlobalOption struct {
 	D.ExtraOption
-	Log               *logrus.Logger
 	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
@@ -63,7 +62,7 @@ type Property struct {
 
 type AliveDialerSetSet map[*AliveDialerSet]int
 
-func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
+func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
 		ExtraOption: D.ExtraOption{
 			AllowInsecure:       global.AllowInsecure,
@@ -76,8 +75,7 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 			TlsFragmentInterval: global.TlsFragmentInterval,
 			UDPHopInterval:      global.UDPHopInterval,
 		},
-		Log:               log,
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
+		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
@@ -105,7 +103,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		ctx:              ctx,
 		cancel:           cancel,
 	}
-	option.Log.WithField("dialer", d.Property().Name).
+	log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
 	return d

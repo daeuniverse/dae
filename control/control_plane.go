@@ -41,13 +41,11 @@ import (
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
 type ControlPlane struct {
-	log *logrus.Logger
-
 	core       *controlPlaneCore
 	deferFuncs []func() error
 	listenIp   string
@@ -80,7 +78,6 @@ type ControlPlane struct {
 }
 
 func NewControlPlane(
-	log *logrus.Logger,
 	_bpf interface{},
 	dnsCache map[string]*DnsCache,
 	tagToNodeList map[string][]string,
@@ -137,8 +134,8 @@ func NewControlPlane(
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 
-	InitDaeNetns(log)
-	if err = InitSysctlManager(log); err != nil {
+	InitDaeNetns()
+	if err = InitSysctlManager(); err != nil {
 		return nil, err
 	}
 
@@ -163,7 +160,7 @@ func NewControlPlane(
 		KernelTypes: nil,
 		LogSize:     ebpf.DefaultVerifierLogSize * 10,
 	}
-	if log.Level == logrus.PanicLevel {
+	if log.IsLevelEnabled(log.PanicLevel) {
 		ProgramOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
 		// ProgramOptions.LogLevel = ebpf.LogLevelInstruction | ebpf.LogLevelStats
 	}
@@ -182,12 +179,12 @@ func NewControlPlane(
 		}
 	} else {
 		bpf = new(bpfObjects)
-		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
+		if err = fullLoadBpfObjects(bpf, &loadBpfOptions{
 			PinPath:             pinPath,
 			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
 			CollectionOptions:   collectionOpts,
 		}); err != nil {
-			if log.Level == logrus.PanicLevel {
+			if log.IsLevelEnabled(log.PanicLevel) {
 				log.Panicln(err)
 			}
 			return nil, fmt.Errorf("load eBPF objects: %w", err)
@@ -197,7 +194,6 @@ func NewControlPlane(
 	// outboundId2Name can be modified later.
 	outboundId2Name := make(map[uint8]string)
 	core := newControlPlaneCore(
-		log,
 		bpf,
 		outboundId2Name,
 		&kernelVersion,
@@ -259,7 +255,7 @@ func NewControlPlane(
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
-	option := dialer.NewGlobalOption(global, log)
+	option := dialer.NewGlobalOption(global)
 
 	// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)
@@ -315,7 +311,7 @@ func NewControlPlane(
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
 		}
-		groupOption, err := ParseGroupOverrideOption(group, *global, log)
+		groupOption, err := ParseGroupOverrideOption(group, *global)
 		finalOption := option
 		if err == nil && groupOption != nil {
 			newDialers := make([]*dialer.Dialer, 0)
@@ -353,14 +349,14 @@ func NewControlPlane(
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
 		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder},
+		&routing.DatReaderOptimizer{LocationFinder: locationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
 	routingA.Rules = nil // Release.
-	if log.IsLevelEnabled(logrus.DebugLevel) {
+	if log.IsLevelEnabled(log.DebugLevel) {
 		var debugBuilder strings.Builder
 		for _, rule := range rules {
 			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
@@ -368,11 +364,11 @@ func NewControlPlane(
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
 	// Parse rules and build.
-	builder, err := NewRoutingMatcherBuilder(log, rules, outboundName2Id, core.bpf, routingA.Fallback)
+	builder, err := NewRoutingMatcherBuilder(rules, outboundName2Id, core.bpf, routingA.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
-	if err = builder.BuildKernspace(log); err != nil {
+	if err = builder.BuildKernspace(); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 	routingMatcher, err := builder.BuildUserspace()
@@ -383,7 +379,6 @@ func NewControlPlane(
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
-		log:               log,
 		core:              core,
 		deferFuncs:        deferFuncs,
 		listenIp:          "0.0.0.0",
@@ -412,7 +407,6 @@ func NewControlPlane(
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
-		Logger:                  log,
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
 		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp),
@@ -426,7 +420,6 @@ func NewControlPlane(
 		return nil, err
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
-		Log: log,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
@@ -521,7 +514,7 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 	return m, nil
 }
 
-func ParseGroupOverrideOption(group config.Group, global config.Global, log *logrus.Logger) (*dialer.GlobalOption, error) {
+func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer.GlobalOption, error) {
 	result := global
 	changed := false
 	if group.TcpCheckUrl != nil {
@@ -545,7 +538,7 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 		changed = true
 	}
 	if changed {
-		option := dialer.NewGlobalOption(&result, log)
+		option := dialer.NewGlobalOption(&result)
 		return option, nil
 	}
 	return nil, nil
@@ -702,7 +695,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		} else {
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 		}
-		c.log.WithFields(logrus.Fields{
+		log.WithFields(log.Fields{
 			"from": dst.String(),
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
@@ -775,7 +768,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			lconn, err := listener.tcpListener.Accept()
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
-					c.log.Errorf("Error when accept: %v", err)
+					log.Errorf("Error when accept: %v", err)
 				}
 				break
 			}
@@ -783,7 +776,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
 				if err := c.handleConn(lconn); err != nil {
-					c.log.Warnln("handleConn:", err)
+					log.Warnln("handleConn:", err)
 				}
 			}(lconn)
 		}
@@ -801,7 +794,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob[:])
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
-					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
+					log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
 				}
 				break
 			}
@@ -825,13 +818,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				pktDst := RetrieveOriginalDest(oob)
 				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
 				if err != nil {
-					c.log.Warnf("No AddrPort presented: %v", err)
+					log.Warnf("No AddrPort presented: %v", err)
 					return
 				} else {
 					realDst = pktDst
 				}
 				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
-					c.log.Warnln("handlePkt:", e)
+					log.Warnln("handlePkt:", e)
 				}
 			})
 			// if d := time.Since(t); d > 100*time.Millisecond {
@@ -960,8 +953,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	case consts.IpVersionStr_6:
 		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
 	}
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.WithFields(logrus.Fields{
+	if log.IsLevelEnabled(log.TraceLevel) {
+		log.WithFields(log.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
 			"upstream":   dnsUpstream.String(),

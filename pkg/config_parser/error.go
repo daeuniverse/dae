@@ -7,11 +7,12 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"reflect"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type ErrorType string
@@ -85,7 +86,7 @@ func BaseContext(ctx interface{}) (baseCtx *antlr.BaseParserRuleContext) {
 	} else {
 		baseCtxVal := val.FieldByName("BaseParserRuleContext")
 		if !baseCtxVal.IsValid() {
-			logrus.Debugf("%T", ctx)
+			log.Debugf("%T", ctx)
 			panic("has no field BaseParserRuleContext")
 		}
 		baseCtx = baseCtxVal.Interface().(*antlr.BaseParserRuleContext)

@@ -15,7 +15,7 @@ import (
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/trace"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +38,7 @@ func init() {
 			internal.AutoSu()
 
 			if IPv4 && IPv6 {
-				logrus.Fatalln("IPv4 and IPv6 cannot be set at the same time")
+				log.Fatalln("IPv4 and IPv6 cannot be set at the same time")
 			}
 			if !IPv4 && !IPv6 {
 				IPv4 = true
@@ -55,13 +55,13 @@ func init() {
 			case "udp":
 				L4ProtoNo = syscall.IPPROTO_UDP
 			default:
-				logrus.Fatalf("Unknown L4 protocol: %s\n", L4Proto)
+				log.Fatalf("Unknown L4 protocol: %s\n", L4Proto)
 			}
 
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 			if err := trace.StartTrace(ctx, IPVersion, L4ProtoNo, Port, DropOnly, OutputFile); err != nil {
-				logrus.Fatalln(err)
+				log.Fatalln(err)
 			}
 		},
 	}

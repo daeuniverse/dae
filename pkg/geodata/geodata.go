@@ -12,11 +12,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 )
 
-func UnmarshalGeoIp(log *logrus.Logger, filepath, code string) (*GeoIP, error) {
+func UnmarshalGeoIp(filepath, code string) (*GeoIP, error) {
 	geoipBytes, err := Decode(filepath, code)
 	switch err {
 	case nil:
@@ -53,7 +53,7 @@ func UnmarshalGeoIp(log *logrus.Logger, filepath, code string) (*GeoIP, error) {
 	return nil, fmt.Errorf("code %v not found in %v", code, filepath)
 }
 
-func UnmarshalGeoSite(log *logrus.Logger, filepath, code string) (*GeoSite, error) {
+func UnmarshalGeoSite(filepath, code string) (*GeoSite, error) {
 	geositeBytes, err := Decode(filepath, code)
 	switch err {
 	case nil:

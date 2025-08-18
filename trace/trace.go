@@ -23,7 +23,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
@@ -189,7 +189,7 @@ func getKFreeSKBReasons(spec *btf.Spec) (map[uint64]string, error) {
 func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.Link, err error) {
 	kp, err := link.Kprobe("kfree_skbmem", objs.KprobeSkbLifetimeTermination, nil)
 	if err != nil {
-		logrus.Warnf("failed to attach kprobe to kfree_skbmem: %+v\n", err)
+		log.Warnf("failed to attach kprobe to kfree_skbmem: %+v\n", err)
 	}
 
 	i := 0
@@ -210,7 +210,7 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 			kp, err = link.Kprobe(fn, objs.KprobeSkb5, nil)
 		}
 		if err != nil {
-			logrus.Debugf("failed to attach kprobe to %s: %+v\n", fn, err)
+			log.Debugf("failed to attach kprobe to %s: %+v\n", fn, err)
 			continue
 		}
 		links = append(links, kp)
@@ -269,13 +269,13 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 			if errors.Is(err, ringbuf.ErrClosed) {
 				return nil
 			}
-			logrus.Debugf("failed to read ringbuf: %+v", err)
+			log.Debugf("failed to read ringbuf: %+v", err)
 			continue
 		}
 
 		var event bpfEvent
 		if err = binary.Read(bytes.NewBuffer(rec.RawSample), nativeEndian, &event); err != nil {
-			logrus.Debugf("failed to parse ringbuf event: %+v", err)
+			log.Debugf("failed to parse ringbuf event: %+v", err)
 			continue
 		}
 		if skb2events[event.Skb] == nil {

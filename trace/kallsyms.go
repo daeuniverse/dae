@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
 )
 
@@ -29,7 +29,7 @@ var kallsymsByAddr map[uint64]Symbol = make(map[uint64]Symbol)
 func ReadKallsyms() {
 	file, err := os.Open("/proc/kallsyms")
 	if err != nil {
-		logrus.Fatalf("failed to open /proc/kallsyms: %v", err)
+		log.Fatalf("failed to open /proc/kallsyms: %v", err)
 	}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

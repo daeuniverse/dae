@@ -16,7 +16,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/geodata"
 	"github.com/mohae/deepcopy"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 type RulesOptimizer interface {
@@ -156,21 +156,20 @@ func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule
 
 type DatReaderOptimizer struct {
 	LocationFinder *assets.LocationFinder
-	Logger         *logrus.Logger
 }
 
 func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params []*config_parser.Param, err error) {
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
+	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		o.Logger.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
+		log.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
 		return nil, err
 	}
-	o.Logger.Debugf("Read geosite \"%v:%v\" from %v", filename, code, filePath)
+	log.Debugf("Read geosite \"%v:%v\" from %v", filename, code, filePath)
 	code, attr, _ := strings.Cut(code, "@")
-	geoSite, err := geodata.UnmarshalGeoSite(o.Logger, filePath, code)
+	geoSite, err := geodata.UnmarshalGeoSite(filePath, code)
 	if err != nil {
 		return nil, err
 	}
@@ -223,13 +222,13 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
+	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		o.Logger.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
+		log.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
 		return nil, err
 	}
-	o.Logger.Debugf("Read geoip \"%v:%v\" from %v", filename, code, filePath)
-	geoIp, err := geodata.UnmarshalGeoIp(o.Logger, filePath, code)
+	log.Debugf("Read geoip \"%v:%v\" from %v", filename, code, filePath)
+	geoIp, err := geodata.UnmarshalGeoIp(filePath, code)
 	if err != nil {
 		return nil, err
 	}

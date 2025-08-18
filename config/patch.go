@@ -6,9 +6,10 @@
 package config
 
 import (
-	"github.com/daeuniverse/dae/common"
-	"github.com/sirupsen/logrus"
 	"strings"
+
+	"github.com/daeuniverse/dae/common"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -24,7 +25,7 @@ var patches = []patch{
 
 func patchTcpCheckHttpMethod(params *Config) error {
 	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
-		logrus.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
+		log.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
 		params.Global.TcpCheckHttpMethod = "CONNECT"
 	}
 	return nil

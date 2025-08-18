@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package component
 
@@ -10,7 +10,7 @@ import (
 	"path"
 	"sync"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -22,7 +22,6 @@ type callbackSet struct {
 }
 
 type InterfaceManager struct {
-	log       *logrus.Logger
 	closed    context.Context
 	close     context.CancelFunc
 	mu        sync.Mutex
@@ -30,10 +29,9 @@ type InterfaceManager struct {
 	upLinks   map[string]bool
 }
 
-func NewInterfaceManager(log *logrus.Logger) *InterfaceManager {
+func NewInterfaceManager() *InterfaceManager {
 	closed, toClose := context.WithCancel(context.Background())
 	mgr := &InterfaceManager{
-		log:       log,
 		callbacks: make([]callbackSet, 0),
 		closed:    closed,
 		close:     toClose,
@@ -119,7 +117,7 @@ func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func
 			}
 		}
 	} else {
-		m.log.Errorf("Failed to get link list: %v", err)
+		log.Errorf("Failed to get link list: %v", err)
 	}
 
 	m.callbacks = append(m.callbacks, callbackSet{
