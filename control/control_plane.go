@@ -57,6 +57,7 @@ type ControlPlane struct {
 	inConnections sync.Map
 
 	dnsController    *DnsController
+	dnsListener      *DNSListener
 	onceNetworkReady sync.Once
 
 	dialMode consts.DialMode
@@ -463,6 +464,16 @@ func NewControlPlane(
 		FixedDomainTtl:  fixedDomainTtl,
 	}); err != nil {
 		return nil, err
+	}
+	
+	// Create and start DNS listener if configured
+	if dnsConfig.Bind != "" {
+		plane.dnsListener = NewDNSListener(log, dnsConfig.Bind, plane)
+		if err = plane.dnsListener.Start(); err != nil {
+			log.Errorf("Failed to start DNS listener: %v", err)
+		} else {
+			log.Infof("DNS listener started on %s", dnsConfig.Bind)
+		}
 	}
 	// Refresh domain routing cache with new routing.
 	// FIXME: We temperarily disable it because we want to make change of DNS section take effects immediately.

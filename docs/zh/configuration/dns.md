@@ -76,6 +76,9 @@ dns {
         test.example.org: 3600
     }
 
+    # 绑定到本地地址以监听 DNS 查询请求
+    #bind: '127.0.0.1:5353'
+
     upstream {
         # 支持协议：tcp, udp, tcp+udp, https, tls, http3, h3, quic, 详情见上面的 Schema。
         # 若主机为域名且具有 A 和 AAAA 记录，dae 自动选择 IPv4 或 IPv6 进行连接,
