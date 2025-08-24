@@ -122,6 +122,7 @@ type Dns struct {
 	FixedDomainTtl  []KeyableString `mapstructure:"fixed_domain_ttl"`
 	Upstream        []KeyableString `mapstructure:"upstream"`
 	Routing         DnsRouting      `mapstructure:"routing"`
+	Bind            string          `mapstructure:"bind"`
 }
 
 type Routing struct {
