@@ -55,10 +55,18 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 	if err != nil {
-		return
+		// 如果无法创建连接，记录详细错误但不崩溃
+		log.WithError(err).WithFields(logrus.Fields{
+			"from": from.String(),
+			"to":   realTo.String(),
+		}).Debug("Failed to get UDP connection from pool, skipping packet")
+		return err
 	}
 	_, err = uConn.WriteToUDPAddrPort(data, realTo)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to write UDP packet from %s to %s: %w", from, realTo, err)
+	}
+	return nil
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
