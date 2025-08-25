@@ -137,7 +137,7 @@ func (a *AliveDialerSet) printLatencies() {
 	for i, dl := range alive {
 		builder.WriteString(fmt.Sprintf("%4d. [%v] %v: %v\n", i+1, dl.d.property.SubscriptionTag, dl.d.property.Name, latencyString(dl.l, dl.o)))
 	}
-	a.log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
+	a.log.Debugln(strings.TrimSuffix(builder.String(), "\n"))
 }
 
 // NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.
@@ -174,7 +174,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				a.log.WithFields(logrus.Fields{
 					"dialer": dialer.property.Name,
 					"group":  a.dialerGroupName,
-				}).Infof("[NOT ALIVE --%v-> ALIVE]", a.CheckTyp.String())
+				}).Debugf("[NOT ALIVE --%v-> ALIVE]", a.CheckTyp.String())
 			}
 			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
 			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
@@ -186,7 +186,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			a.log.WithFields(logrus.Fields{
 				"dialer": dialer.property.Name,
 				"group":  a.dialerGroupName,
-			}).Infof("[ALIVE --%v-> NOT ALIVE]", a.CheckTyp.String())
+			}).Debugf("[ALIVE --%v-> NOT ALIVE]", a.CheckTyp.String())
 			// Remove the dialer from inorderedAliveDialerSet.
 			if index >= len(a.inorderedAliveDialerSet) {
 				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))
@@ -251,7 +251,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					"_old_dialer":             oldDialerName,
 					"group":                   a.dialerGroupName,
 					"network":                 a.CheckTyp.String(),
-				}).Infof("Group %vselects dialer", re)
+				}).Debugf("Group %vselects dialer", re)
 
 				a.printLatencies()
 			} else {
@@ -260,7 +260,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				a.log.WithFields(logrus.Fields{
 					"group":   a.dialerGroupName,
 					"network": a.CheckTyp.String(),
-				}).Infof("Group has no dialer alive")
+				}).Debugf("Group has no dialer alive")
 			}
 		}
 	} else {
