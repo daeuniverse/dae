@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -18,22 +20,76 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type Endpoint struct {
+	TCP  bool
+	UDP  bool
+	Addr string
+}
+
+var ErrBadLocalDNSBindFormat = errors.New("bad local dns bind format")
+
+func ParseEndpoint(raw string) (endpoint Endpoint, err error) {
+	_, perr := netip.ParseAddrPort(raw)
+	if perr == nil {
+		// try ip addr first
+		return Endpoint{false, true, raw}, nil
+	}
+	// try tcp+udp://127.0.0.1:5335
+	u, perr := url.Parse(raw)
+	if perr != nil {
+		err = fmt.Errorf("%w: %v", ErrBadLocalDNSBindFormat, perr)
+		return
+	}
+
+	// scheme maybe "tcp+udp"
+	schemes := strings.Split(u.Scheme, "+")
+
+	endpoint.Addr = u.Host
+	for _, s := range schemes {
+		switch s {
+		case "udp":
+			endpoint.UDP = true
+		case "tcp":
+			endpoint.TCP = true
+		default:
+			err = fmt.Errorf(
+				"%w: unsupported protocol: %s for %s",
+				ErrBadLocalDNSBindFormat, s, raw,
+			)
+			return
+		}
+	}
+
+	return
+}
+
 type DNSListener struct {
 	log        *logrus.Logger
-	addr       string
-	udpServer  *dnsmessage.Server
 	tcpServer  *dnsmessage.Server
+	udpServer  *dnsmessage.Server
+	endpoint   Endpoint
 	controller *ControlPlane
 	mu         sync.Mutex
 }
 
 // NewDNSListener creates a new DNS listener
-func NewDNSListener(log *logrus.Logger, addr string, controller *ControlPlane) *DNSListener {
-	return &DNSListener{
-		log:        log,
-		addr:       addr,
-		controller: controller,
+func NewDNSListener(log *logrus.Logger, endpoint string, controller *ControlPlane) (*DNSListener, error) {
+	e, err := ParseEndpoint(endpoint)
+	if err != nil {
+		return nil, err
 	}
+
+	ret := &DNSListener{
+		log:        log,
+		controller: controller,
+		endpoint:   e,
+	}
+
+	return ret, nil
+}
+
+func (d *DNSListener) Addr() string {
+	return d.endpoint.Addr
 }
 
 // Start starts the DNS listener
@@ -41,8 +97,11 @@ func (d *DNSListener) Start() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.udpServer != nil || d.tcpServer != nil {
-		return fmt.Errorf("DNS listener already started")
+	if d.udpServer != nil {
+		return fmt.Errorf("DNS udp listener already started")
+	}
+	if d.tcpServer != nil {
+		return fmt.Errorf("DNS tcp listener already started")
 	}
 
 	// Create DNS handler
@@ -51,36 +110,41 @@ func (d *DNSListener) Start() error {
 		log:        d.log,
 	}
 
-	// Create UDP server
-	d.udpServer = &dnsmessage.Server{
-		Addr:    d.addr,
-		Net:     "udp",
-		Handler: handler,
-		UDPSize: 65535,
-	}
-
-	// Start UDP server in goroutine
-	go func() {
-		d.log.Infof("Starting DNS UDP listener on %s", d.addr)
-		if err := d.udpServer.ListenAndServe(); err != nil {
-			d.log.Errorf("Failed to start DNS UDP listener: %v", err)
+	if d.endpoint.UDP {
+		// create dns servers
+		d.udpServer = &dnsmessage.Server{
+			Addr:    d.Addr(),
+			Net:     "udp",
+			Handler: handler,
+			UDPSize: 65535,
 		}
-	}()
 
-	// Create TCP server
-	d.tcpServer = &dnsmessage.Server{
-		Addr:    d.addr,
-		Net:     "tcp",
-		Handler: handler,
+		// Start UDP server in goroutine
+		go func() {
+			d.log.Infof("Starting DNS UDP listener on %s", d.udpServer.Addr)
+			if err := d.udpServer.ListenAndServe(); err != nil {
+				d.log.Errorf("Failed to start DNS UDP listener: %v", err)
+			}
+		}()
+
 	}
-
-	// Start TCP server in goroutine
-	go func() {
-		d.log.Infof("Starting DNS TCP listener on %s", d.addr)
-		if err := d.tcpServer.ListenAndServe(); err != nil {
-			d.log.Errorf("Failed to start DNS TCP listener: %v", err)
+	// also for tcp server
+	if d.endpoint.TCP {
+		d.tcpServer = &dnsmessage.Server{
+			Addr:    d.Addr(),
+			Net:     "tcp",
+			Handler: handler,
 		}
-	}()
+		// Start TCP server in goroutine
+		go func() {
+			d.log.Infof("Starting DNS TCP listener on %s", d.tcpServer.Addr)
+			if err := d.tcpServer.ListenAndServe(); err != nil {
+				if err := d.tcpServer.ListenAndServe(); err != nil {
+					d.log.Errorf("Failed to start DNS TCP listener: %v", err)
+				}
+			}
+		}()
+	}
 
 	return nil
 }
@@ -125,26 +189,26 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	// Create a fake udpRequest to pass to the DNS controller
 	clientAddr := w.RemoteAddr()
 	var clientIPPort netip.AddrPort
-	
+
 	// Parse client address
 	host, portStr, err := net.SplitHostPort(clientAddr.String())
 	if err != nil {
 		h.log.Errorf("Failed to parse client address: %v", err)
 		return
 	}
-	
+
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		h.log.Errorf("Failed to parse client port: %v", err)
 		return
 	}
-	
+
 	clientIP, err := netip.ParseAddr(host)
 	if err != nil {
 		h.log.Errorf("Failed to parse client IP: %v", err)
 		return
 	}
-	
+
 	clientIPPort = netip.AddrPortFrom(clientIP, uint16(port))
 
 	// Create routing result (fake)
@@ -161,7 +225,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	// Handle the DNS request using the existing DNS controller
 	udpReq := &udpRequest{
 		realSrc:       clientIPPort,
-		realDst:       netip.MustParseAddrPort(h.controller.dnsListener.addr),
+		realDst:       netip.MustParseAddrPort(h.controller.dnsListener.Addr()),
 		src:           clientIPPort,
 		lConn:         nil, // Not used in this context
 		routingResult: routingResult,
