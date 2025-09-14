@@ -1,5 +1,7 @@
 # Troubleshooting
 
+Before troubleshooting networking issues, you may wish to set the log level to 'debug' or 'trace' to obtain detailed information about connectivity and latencies.
+
 ## No network after `dae suspend`
 
 Do not set dae as the DNS in DHCP setting. For example, you can set `223.5.5.5` as DNS in your DHCP setting.
