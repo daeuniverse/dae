@@ -6,6 +6,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -18,11 +19,12 @@ import (
 )
 
 type DNSListener struct {
-	log      *logrus.Logger
-	addr     string
-	server   *dnsmessage.Server
+	log        *logrus.Logger
+	addr       string
+	udpServer  *dnsmessage.Server
+	tcpServer  *dnsmessage.Server
 	controller *ControlPlane
-	mu       sync.Mutex
+	mu         sync.Mutex
 }
 
 // NewDNSListener creates a new DNS listener
@@ -39,7 +41,7 @@ func (d *DNSListener) Start() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.server != nil {
+	if d.udpServer != nil || d.tcpServer != nil {
 		return fmt.Errorf("DNS listener already started")
 	}
 
@@ -49,32 +51,33 @@ func (d *DNSListener) Start() error {
 		log:        d.log,
 	}
 
-	// Create DNS server
-	d.server = &dnsmessage.Server{
+	// Create UDP server
+	d.udpServer = &dnsmessage.Server{
 		Addr:    d.addr,
 		Net:     "udp",
 		Handler: handler,
 		UDPSize: 65535,
 	}
 
-	// Start server in goroutine
+	// Start UDP server in goroutine
 	go func() {
-		d.log.Infof("Starting DNS listener on %s", d.addr)
-		if err := d.server.ListenAndServe(); err != nil {
-			d.log.Errorf("Failed to start DNS listener: %v", err)
+		d.log.Infof("Starting DNS UDP listener on %s", d.addr)
+		if err := d.udpServer.ListenAndServe(); err != nil {
+			d.log.Errorf("Failed to start DNS UDP listener: %v", err)
 		}
 	}()
 
-	// Also start TCP server
-	tcpServer := &dnsmessage.Server{
+	// Create TCP server
+	d.tcpServer = &dnsmessage.Server{
 		Addr:    d.addr,
 		Net:     "tcp",
 		Handler: handler,
 	}
 
+	// Start TCP server in goroutine
 	go func() {
 		d.log.Infof("Starting DNS TCP listener on %s", d.addr)
-		if err := tcpServer.ListenAndServe(); err != nil {
+		if err := d.tcpServer.ListenAndServe(); err != nil {
 			d.log.Errorf("Failed to start DNS TCP listener: %v", err)
 		}
 	}()
@@ -87,13 +90,28 @@ func (d *DNSListener) Stop() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.server == nil {
-		return nil
+	var errs []error
+
+	// Stop UDP server
+	if d.udpServer != nil {
+		if err := d.udpServer.Shutdown(); err != nil {
+			errs = append(errs, err)
+		}
+		d.udpServer = nil
 	}
 
-	err := d.server.Shutdown()
-	d.server = nil
-	return err
+	// Stop TCP server
+	if d.tcpServer != nil {
+		if err := d.tcpServer.Shutdown(); err != nil {
+			errs = append(errs, err)
+		}
+		d.tcpServer = nil
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to stop DNS servers: %v", errors.Join(errs...))
+	}
+	return nil
 }
 
 // dnsHandler implements the dns.Handler interface
