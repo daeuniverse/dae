@@ -259,6 +259,11 @@ loop:
 				// Only keep dns cache when ip version preference not change.
 				dnsCache = c.CloneDnsCache()
 			}
+			// Stop old DNS listener before creating new one to avoid port conflicts
+			if err := c.StopDNSListener(); err != nil {
+				log.Warnf("[Reload] Failed to stop old DNS listener: %v", err)
+			}
+			
 			log.Warnln("[Reload] Load new control plane")
 			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
 			if err != nil {

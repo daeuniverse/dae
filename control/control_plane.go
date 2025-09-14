@@ -473,6 +473,8 @@ func NewControlPlane(
 			log.Errorf("Failed to start DNS listener: %v", err)
 		} else {
 			log.Infof("DNS listener started on %s", dnsConfig.Bind)
+			// Add DNS listener stop to defer functions
+			deferFuncs = append(deferFuncs, plane.dnsListener.Stop)
 		}
 	}
 	// Refresh domain routing cache with new routing.
@@ -1017,4 +1019,12 @@ func (c *ControlPlane) Close() (err error) {
 	}
 	c.cancel()
 	return c.core.Close()
+}
+
+// StopDNSListener stops the DNS listener if it's running
+func (c *ControlPlane) StopDNSListener() error {
+	if c.dnsListener != nil {
+		return c.dnsListener.Stop()
+	}
+	return nil
 }
