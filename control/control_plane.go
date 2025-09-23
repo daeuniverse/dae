@@ -159,8 +159,8 @@ func NewControlPlane(
 		log.Infof("Loading eBPF programs and maps into the kernel...")
 		log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	}
-	//var bpf bpfObjects
-	var ProgramOptions = ebpf.ProgramOptions{
+	// var bpf bpfObjects
+	ProgramOptions := ebpf.ProgramOptions{
 		KernelTypes: nil,
 		LogSize:     ebpf.DefaultVerifierLogSize * 10,
 	}
@@ -465,10 +465,13 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
-	
+
 	// Create and start DNS listener if configured
 	if dnsConfig.Bind != "" {
-		plane.dnsListener = NewDNSListener(log, dnsConfig.Bind, plane)
+		plane.dnsListener, err = NewDNSListener(log, dnsConfig.Bind, plane)
+		if err != nil {
+			return nil, err
+		}
 		if err = plane.dnsListener.Start(); err != nil {
 			log.Errorf("Failed to start DNS listener: %v", err)
 		} else {
@@ -568,6 +571,7 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 func (c *ControlPlane) EjectBpf() *bpfObjects {
 	return c.core.EjectBpf()
 }
+
 func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
@@ -645,6 +649,7 @@ func (c *ControlPlane) ActivateCheck() {
 		}
 	}
 }
+
 func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
 	dialMode := consts.DialMode_Ip
 
@@ -711,7 +716,6 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		} else if _, _, err := net.SplitHostPort(domain); err == nil {
 			// domain is already domain:port
 			dialTarget = domain
-
 		} else {
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 		}
@@ -859,7 +863,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
 	// Listen.
-	var listenConfig = net.ListenConfig{
+	listenConfig := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			return dialer.TproxyControl(c)
 		},
@@ -1005,6 +1009,7 @@ func (c *ControlPlane) AbortConnections() (err error) {
 	})
 	return errors.Join(errs...)
 }
+
 func (c *ControlPlane) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
