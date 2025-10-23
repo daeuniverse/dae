@@ -147,7 +147,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("failed to setup dae netns: %w", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
-	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
+	if err = os.MkdirAll(pinPath, 0o755); err != nil && !os.IsExist(err) {
 		if os.IsNotExist(err) {
 			log.Warnln("Perhaps you are in a container environment (such as lxc). If so, please use higher virtualization (kvm/qemu).")
 		}
@@ -901,8 +901,6 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	req *udpRequest,
 	dnsUpstream *dns.Upstream,
 ) (*dialArgument, error) {
-	/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
-	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
 	var (
 		bestLatency  time.Duration

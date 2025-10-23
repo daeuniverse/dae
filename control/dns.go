@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -55,6 +55,10 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 				return &DoQ{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_H3:
 				return &DoH{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument, http3: true}, nil
+			case dns.UpstreamScheme_Fakeip:
+				return &DoFakeip{
+					pool: GetGlobalFakeipPool(),
+				}, nil
 			default:
 				return nil, fmt.Errorf("unexpected scheme: %v", upstream.Scheme)
 			}
@@ -202,8 +206,8 @@ func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, err
 	}
 	return msg, nil
 }
-func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
 
+func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
 	udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
 	conn, err := d.dialArgument.bestDialer.DialContext(
 		ctx,
@@ -226,7 +230,6 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 		return nil, err
 	}
 	return qc, nil
-
 }
 
 func (d *DoQ) Close() error {
@@ -439,4 +442,60 @@ func sendStreamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, 
 		return nil, err
 	}
 	return &msg, nil
+}
+
+type DoFakeip struct {
+	pool *fakeipPool
+}
+
+func (d *DoFakeip) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	var query dnsmessage.Msg
+	if err := query.Unpack(data); err != nil {
+		return nil, fmt.Errorf("failed to unpack DNS query: %w", err)
+	}
+
+	if len(query.Question) == 0 {
+		return nil, fmt.Errorf("no questions in DNS query")
+	}
+
+	question := query.Question[0]
+	domain := question.Name
+
+	resp := &dnsmessage.Msg{
+		MsgHdr: dnsmessage.MsgHdr{
+			Id:                 query.Id,
+			Response:           true,
+			Opcode:             query.Opcode,
+			Authoritative:      false,
+			Truncated:          false,
+			RecursionDesired:   query.RecursionDesired,
+			RecursionAvailable: true,
+			Rcode:              dnsmessage.RcodeSuccess,
+		},
+		Question: query.Question,
+	}
+
+	switch question.Qtype {
+	case dnsmessage.TypeA:
+		fakeIP := d.pool.allocate(domain)
+		resp.Answer = append(resp.Answer, &dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   question.Name,
+				Rrtype: dnsmessage.TypeA,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    300,
+			},
+			A: fakeIP,
+		})
+	case dnsmessage.TypeAAAA:
+		resp.Rcode = dnsmessage.RcodeSuccess
+	default:
+		resp.Rcode = dnsmessage.RcodeNameError
+	}
+
+	return resp, nil
+}
+
+func (d *DoFakeip) Close() error {
+	return nil
 }

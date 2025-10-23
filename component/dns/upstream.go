@@ -19,9 +19,7 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
-var (
-	ErrFormat = fmt.Errorf("format error")
-)
+var ErrFormat = fmt.Errorf("format error")
 
 type UpstreamScheme string
 
@@ -35,6 +33,7 @@ const (
 	UpstreamScheme_HTTPS         UpstreamScheme = "https"
 	upstreamScheme_H3_Alias      UpstreamScheme = "http3"
 	UpstreamScheme_H3            UpstreamScheme = "h3"
+	UpstreamScheme_Fakeip        UpstreamScheme = "fakeip"
 )
 
 func (s UpstreamScheme) ContainsTcp() bool {
@@ -75,6 +74,11 @@ func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, por
 		__port = raw.Port()
 		if __port == "" {
 			__port = "853"
+		}
+	case UpstreamScheme_Fakeip:
+		__port = raw.Port()
+		if __port == "" {
+			__port = "53"
 		}
 	default:
 		return "", "", 0, "", fmt.Errorf("unexpected scheme: %v", raw.Scheme)
@@ -139,7 +143,7 @@ func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4prot
 	switch u.Scheme {
 	case UpstreamScheme_TCP, UpstreamScheme_HTTPS, UpstreamScheme_TLS:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_TCP}
-	case UpstreamScheme_UDP, UpstreamScheme_QUIC, UpstreamScheme_H3:
+	case UpstreamScheme_UDP, UpstreamScheme_QUIC, UpstreamScheme_H3, UpstreamScheme_Fakeip:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP}
 	case UpstreamScheme_TCP_UDP:
 		// UDP first.

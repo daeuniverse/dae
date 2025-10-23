@@ -26,15 +26,6 @@ import (
 func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer lConn.Close()
 
-	// Sniff target domain.
-	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
-	// ConnSniffer should be used later, so we cannot close it now.
-	defer sniffer.Close()
-	domain, err := sniffer.SniffTcp()
-	if err != nil && !sniffing.IsSniffingError(err) {
-		return err
-	}
-
 	// Get tuples and outbound.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
@@ -44,6 +35,25 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
+
+	var domain string
+	var sniffer *sniffing.ConnSniffer
+	newLConn := lConn
+
+	realDomain, ok := GetGlobalFakeipPool().lookup(dst.Addr().AsSlice())
+	if ok {
+		domain = realDomain
+	} else {
+		// Sniff target domain.
+		sniffer = sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
+		// ConnSniffer should be used later, so we cannot close it now.
+		defer sniffer.Close()
+		domain, err = sniffer.SniffTcp()
+		if err != nil && !sniffing.IsSniffingError(err) {
+			return err
+		}
+		newLConn = sniffer
+	}
 
 	// Dial and relay.
 	rConn, err := c.RouteDialTcp(&RouteDialParam{
@@ -61,7 +71,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	}
 	defer rConn.Close()
 
-	if err = RelayTCP(sniffer, rConn); err != nil {
+	if err = RelayTCP(newLConn, rConn); err != nil {
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"),

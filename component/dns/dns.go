@@ -67,7 +67,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			Network: opt.UpstreamResolverNetwork,
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
 				return func(raw *url.URL, upstream *Upstream) (err error) {
-					if opt != nil && opt.UpstreamReadyCallback != nil {
+					if opt != nil && opt.UpstreamReadyCallback != nil && upstream.Scheme != UpstreamScheme_Fakeip {
 						if err = opt.UpstreamReadyCallback(upstream); err != nil {
 							return err
 						}

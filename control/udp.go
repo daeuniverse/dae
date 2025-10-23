@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -22,9 +21,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	DefaultNatTimeout = 3 * time.Minute
-)
+var DefaultNatTimeout = 3 * time.Minute
 
 const (
 	DnsNatTimeout  = 17 * time.Second // RFC 5452
@@ -44,7 +41,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 	if sniffDns {
 		var dnsmsg dnsmessage.Msg
 		if err := dnsmsg.Unpack(data); err == nil {
-			//log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
+			// log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
 			return &dnsmsg, DnsNatTimeout
 		}
 	}
@@ -280,6 +277,12 @@ getNew:
 	if domain == "" {
 		// It is used for showing.
 		domain = ue.SniffedDomain
+	}
+	fakeip, ok := GetGlobalFakeipPool().lookup(realDst.Addr().AsSlice())
+	if ok {
+		dialTarget = fmt.Sprintf("%s:%d", fakeip, realDst.Port())
+		domain = fakeip
+		dialIp = false
 	}
 
 	_, err = ue.WriteTo(data, dialTarget)
