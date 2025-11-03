@@ -32,7 +32,7 @@ jobs:
           private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       - name: Generate release changelogs
-        uses: daeuniverse/changelogs-generator-action@main
+        uses: daeuniverse/changelogs-generator-action@graphql-patch
         id: changelog
         with:
           # https://github.com/daeuniverse/changelogs-generator-action
