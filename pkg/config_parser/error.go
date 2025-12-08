@@ -7,10 +7,10 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"reflect"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -66,13 +66,13 @@ func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendin
 	strLine := token.GetInputStream().GetText(beginOfLine, wrap)
 	d.ErrorBuilder.WriteString(fmt.Sprintf("%v%v\n%v%v: %v\n", starting, strLine, strings.Repeat(" ", offset), strings.Repeat("^", token.GetStop()-token.GetStart()+1), msg))
 }
-func (d *ConsoleErrorListener) ReportAmbiguity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex int, exact bool, ambigAlts *antlr.BitSet, configs antlr.ATNConfigSet) {
+func (d *ConsoleErrorListener) ReportAmbiguity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex int, exact bool, ambigAlts *antlr.BitSet, configs *antlr.ATNConfigSet) {
 }
 
-func (d *ConsoleErrorListener) ReportAttemptingFullContext(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex int, conflictingAlts *antlr.BitSet, configs antlr.ATNConfigSet) {
+func (d *ConsoleErrorListener) ReportAttemptingFullContext(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex int, conflictingAlts *antlr.BitSet, configs *antlr.ATNConfigSet) {
 }
 
-func (d *ConsoleErrorListener) ReportContextSensitivity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex, prediction int, configs antlr.ATNConfigSet) {
+func (d *ConsoleErrorListener) ReportContextSensitivity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex, prediction int, configs *antlr.ATNConfigSet) {
 }
 
 func BaseContext(ctx interface{}) (baseCtx *antlr.BaseParserRuleContext) {
@@ -88,7 +88,13 @@ func BaseContext(ctx interface{}) (baseCtx *antlr.BaseParserRuleContext) {
 			logrus.Debugf("%T", ctx)
 			panic("has no field BaseParserRuleContext")
 		}
-		baseCtx = baseCtxVal.Interface().(*antlr.BaseParserRuleContext)
+		if baseCtxVal.Kind() == reflect.Ptr {
+			baseCtx = baseCtxVal.Interface().(*antlr.BaseParserRuleContext)
+		} else if baseCtxVal.CanAddr() {
+			baseCtx = baseCtxVal.Addr().Interface().(*antlr.BaseParserRuleContext)
+		} else {
+			panic(fmt.Sprintf("BaseParserRuleContext field in %T is not addressable", ctx))
+		}
 	}
 	return baseCtx
 }

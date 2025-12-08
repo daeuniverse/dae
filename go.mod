@@ -1,12 +1,10 @@
 module github.com/daeuniverse/dae
 
-go 1.22.0
-
-toolchain go1.23.2
+go 1.25.4
 
 require (
 	github.com/adrg/xdg v0.5.0
-	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df
+	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/bits-and-blooms/bloom/v3 v3.7.0
 	github.com/cilium/ebpf v0.15.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
@@ -103,4 +101,6 @@ require (
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
-//replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
+// replace github.com/daeuniverse/dae-config-dist/go/dae_config => /tmp/dae-config-antlr4/build/go/dae_config
+
+replace github.com/daeuniverse/dae-config-dist/go/dae_config => github.com/mnixry/dae-config-dist/go/dae_config v0.0.0-20251208172303-5838b9667cde
