@@ -78,6 +78,9 @@ dns {
         test.example.org: 3600
     }
 
+    # Bind to local address to listen for DNS queries
+    #bind: '127.0.0.1:5353'
+
     upstream {
         # Scheme list: tcp, udp, tcp+udp, https, tls, http3, h3, quic, details see above Schema.
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose

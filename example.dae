@@ -167,6 +167,12 @@ dns {
     #    test.example.org: 3600
     #}
 
+    # Bind to local address to listen for DNS queries
+    # bind: '127.0.0.1:5353'
+    # bind: 'tcp://127.0.0.1:5353'
+    # bind: 'udp://127.0.0.1:5353'
+    # bind: 'tcp+udp://127.0.0.1:5353'
+
     upstream {
         # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp/h3/http3/quic/https/tls.
         # If the protocol is h3/http3/https, it supports setting a custom path, that is, the format can be "protocol://host:port/custom path".
