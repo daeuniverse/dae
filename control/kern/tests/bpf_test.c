@@ -951,3 +951,121 @@ int testcheck_not_mismtach(struct __sk_buff *skb)
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
+
+SEC("tc/pktgen/domain_match")
+int testpktgen_domain_match(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
+}
+
+SEC("tc/setup/domain_match")
+int testsetup_domain_match(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dport(80) -> proxy */
+	struct match_set ms = {};
+	struct port_range pr = {80, 80};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* domain(one.one.one.one) -> proxy */
+	struct match_set ms2 = {};
+	ms2.not = false;
+	ms2.type = MatchType_DomainSet;
+	ms2.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms2.must = false;
+	ms2.mark = 0;
+	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
+
+	struct domain_routing dr = {};
+	dr.bitmap[0] = 0b10;
+	__be32 daddr[4] = {0, 0, bpf_ntohl(0xffff), bpf_ntohl(0x01010101)};
+	bpf_map_update_elem(&domain_routing_map, &daddr, &dr, BPF_ANY);
+
+	/* fallback: must_direct */
+	struct match_set ms3 = {};
+	ms3.not = false;
+	ms3.type = MatchType_Fallback;
+	ms3.outbound = OUTBOUND_DIRECT;
+	ms3.must = true;
+	ms3.mark = 0;
+	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_match")
+int testcheck_domain_match(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 79);
+}
+
+SEC("tc/pktgen/domain_mismatch")
+int testpktgen_domain_mismatch(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
+}
+
+SEC("tc/setup/domain_mismatch")
+int testsetup_domain_mismatch(struct __sk_buff *skb)
+{
+	__u32 linklen = ETH_HLEN;
+	bpf_map_update_elem(&linklen_map, &one_key, &linklen, BPF_ANY);
+
+	/* dport(80) -> proxy */
+	struct match_set ms = {};
+	struct port_range pr = {80, 80};
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	/* domain(one.one.one.one) -> proxy */
+	struct match_set ms2 = {};
+	ms2.not = false;
+	ms2.type = MatchType_DomainSet;
+	ms2.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms2.must = false;
+	ms2.mark = 0;
+	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
+
+	struct domain_routing dr = {};
+	dr.bitmap[0] = 1;
+	__be32 daddr[4] = {0, 0, bpf_ntohl(0xffff), bpf_ntohl(0x01010101)};
+	bpf_map_update_elem(&domain_routing_map, &daddr, &dr, BPF_ANY);
+
+	/* fallback: must_direct */
+	struct match_set ms3 = {};
+	ms3.not = false;
+	ms3.type = MatchType_Fallback;
+	ms3.outbound = OUTBOUND_DIRECT;
+	ms3.must = true;
+	ms3.mark = 0;
+	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_mismatch")
+int testcheck_domain_mismatch(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_OK,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 79);
+}
