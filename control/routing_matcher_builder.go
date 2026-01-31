@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/pkg/trie"
 
 	"github.com/cilium/ebpf"
@@ -21,11 +22,13 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 )
 
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
+	ifmgr              *component.InterfaceManager
 	bpf                *bpfObjects
 	rules              []bpfMatchSet
 	simulatedLpmTries  [][]netip.Prefix
@@ -33,8 +36,8 @@ type RoutingMatcherBuilder struct {
 	fallback           *routing.Outbound
 }
 
-func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, bpf: bpf}
+func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString, ifmgr *component.InterfaceManager) (b *RoutingMatcherBuilder, err error) {
+	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf}
 	rulesBuilder := routing.NewRulesBuilder(log)
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
@@ -44,6 +47,8 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 	rulesBuilder.RegisterFunctionParser(consts.Function_L4Proto, routing.L4ProtoParserFactory(b.addL4Proto))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Mac, routing.MacParserFactory(b.addSourceMac))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
+	rulesBuilder.RegisterFunctionParser(consts.Function_IfIndex, routing.UintParserFactory(b.addIfIndex))
+	rulesBuilder.RegisterFunctionParser(consts.Function_IfName, routing.EmptyKeyPlainParserFactory(b.addIfName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
 	if err = rulesBuilder.Apply(rules); err != nil {
@@ -272,6 +277,72 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 		}
 		copy(matchSet.Value[:], value[:])
 		b.rules = append(b.rules, matchSet)
+	}
+	return nil
+}
+
+func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []uint32, outbound *routing.Outbound) (err error) {
+	for i, value := range values {
+		outboundName := consts.OutboundLogicalOr.String()
+		if i == len(values)-1 {
+			outboundName = outbound.Name
+		}
+		outboundId, err := b.outboundToId(outboundName)
+		if err != nil {
+			return err
+		}
+		set := bpfMatchSet{
+			Value:    [16]byte{},
+			Type:     uint8(consts.MatchType_IfIndex),
+			Not:      f.Not,
+			Outbound: outboundId,
+			Mark:     outbound.Mark,
+			Must:     outbound.Must,
+		}
+		binary.LittleEndian.PutUint32(set.Value[:], uint32(value))
+		b.rules = append(b.rules, set)
+	}
+	return nil
+}
+
+func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
+	for i, value := range values {
+		outboundName := consts.OutboundLogicalOr.String()
+		if i == len(values)-1 {
+			outboundName = outbound.Name
+		}
+		outboundId, err := b.outboundToId(outboundName)
+		if err != nil {
+			return err
+		}
+		set := bpfMatchSet{
+			Value:    [16]byte{},
+			Type:     uint8(consts.MatchType_IfIndex),
+			Not:      f.Not,
+			Outbound: outboundId,
+			Mark:     outbound.Mark,
+			Must:     outbound.Must,
+		}
+		index := len(b.rules)
+		initlinkCallback := func(link netlink.Link) {
+			binary.LittleEndian.PutUint32(set.Value[:], uint32(link.Attrs().Index))
+			if err = b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
+				b.log.Errorf("Update failed: %v", err)
+			}
+		}
+		newlinkCallback := func(link netlink.Link) {
+			b.log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", link.Attrs().Name)
+			initlinkCallback(link)
+		}
+		dellinkCallback := func(link netlink.Link) {
+			b.log.Warnf("Link deletion of '%v' is detected. Re-fetching ifindex once it is re-created.", link.Attrs().Name)
+			binary.LittleEndian.PutUint32(set.Value[:], uint32(0))
+			if err = b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
+				b.log.Errorf("Update failed: %v", err)
+			}
+		}
+		b.ifmgr.Register(value, initlinkCallback, newlinkCallback, dellinkCallback)
+		b.rules = append(b.rules, set)
 	}
 	return nil
 }
