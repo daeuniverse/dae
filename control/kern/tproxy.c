@@ -1497,22 +1497,26 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 		}
 
 		if (unlikely(tcp_state_syn)) {
-			struct routing_result routing_result = {};
+			// Only save non-direct routing to avoid conflicts with LAN ingress.
+			// Direct traffic doesn't need control plane processing.
+			if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
+				struct routing_result routing_result = {};
 
-			routing_result.outbound = outbound;
-			routing_result.mark = mark;
-			routing_result.must = must;
-			routing_result.dscp = tuples.dscp;
-			__builtin_memcpy(routing_result.mac, ethh.h_source,
-					 sizeof(ethh.h_source));
-			if (pid_pname) {
-				__builtin_memcpy(routing_result.pname,
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-				routing_result.pid = pid_pname->pid;
+				routing_result.outbound = outbound;
+				routing_result.mark = mark;
+				routing_result.must = must;
+				routing_result.dscp = tuples.dscp;
+				__builtin_memcpy(routing_result.mac, ethh.h_source,
+						 sizeof(ethh.h_source));
+				if (pid_pname) {
+					__builtin_memcpy(routing_result.pname,
+							 pid_pname->pname,
+							 TASK_COMM_LEN);
+					routing_result.pid = pid_pname->pid;
+				}
+				bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+						    &routing_result, BPF_ANY);
 			}
-			bpf_map_update_elem(&routing_tuples_map, &tuples.five,
-					    &routing_result, BPF_ANY);
 		}
 
 	} else if (l4proto == IPPROTO_UDP) {
@@ -1566,22 +1570,31 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			bpf_printk("shot routing: %d", s64_ret);
 			return TC_ACT_SHOT;
 		}
-		// Construct new hdr to encap.
-		struct routing_result routing_result = {};
+		// Extract routing values.
+		__u8 outbound = s64_ret & 0xff;
+		__u32 mark = s64_ret >> 8;
+		bool must = (s64_ret >> 40) & 1;
 
-		routing_result.outbound = s64_ret;
-		routing_result.mark = s64_ret >> 8;
-		routing_result.must = (s64_ret >> 40) & 1;
-		routing_result.dscp = tuples.dscp;
-		__builtin_memcpy(routing_result.mac, ethh.h_source,
-				 sizeof(ethh.h_source));
-		if (pid_pname) {
-			__builtin_memcpy(routing_result.pname, pid_pname->pname,
-					 TASK_COMM_LEN);
-			routing_result.pid = pid_pname->pid;
+		// Only save non-direct routing to avoid conflicts with LAN ingress.
+		// Direct traffic doesn't need control plane processing.
+		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
+			// Construct new hdr to encap.
+			struct routing_result routing_result = {};
+
+			routing_result.outbound = outbound;
+			routing_result.mark = mark;
+			routing_result.must = must;
+			routing_result.dscp = tuples.dscp;
+			__builtin_memcpy(routing_result.mac, ethh.h_source,
+					 sizeof(ethh.h_source));
+			if (pid_pname) {
+				__builtin_memcpy(routing_result.pname, pid_pname->pname,
+						 TASK_COMM_LEN);
+				routing_result.pid = pid_pname->pid;
+			}
+			bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+					    &routing_result, BPF_ANY);
 		}
-		bpf_map_update_elem(&routing_tuples_map, &tuples.five,
-				    &routing_result, BPF_ANY);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		__u32 pid = pid_pname ? pid_pname->pid : 0;
 
@@ -1589,17 +1602,17 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			   tuples.five.sip.u6_addr32,
 			   bpf_ntohs(tuples.five.sport), pid);
 		bpf_printk("udp(wan): outbound: %u, %pI6:%u",
-			   routing_result.outbound, tuples.five.dip.u6_addr32,
+			   outbound, tuples.five.dip.u6_addr32,
 			   bpf_ntohs(tuples.five.dport));
 #endif
 
-		if (routing_result.outbound == OUTBOUND_DIRECT &&
-		    routing_result.mark == 0
+		if (outbound == OUTBOUND_DIRECT &&
+		    mark == 0
 		    // If mark is not zero, we should re-route it, so we send it to control
 		    // plane in WAN.
 		) {
 			return TC_ACT_OK;
-		} else if (unlikely(routing_result.outbound ==
+		} else if (unlikely(outbound ==
 				    OUTBOUND_BLOCK)) {
 			return TC_ACT_SHOT;
 		}
