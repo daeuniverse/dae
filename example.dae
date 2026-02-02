@@ -39,9 +39,6 @@ global {
     # Disable waiting for network before pulling subscriptions.
     disable_waiting_network: false
 
-    # Enable fast redirect for local TCP connections. There is a known kernel issue that breaks certain clients/proxies, such as nadoo/glider. Users may enable this experimental option at their own risks.
-    enable_local_tcp_fast_redirect: false
-
     ##### Interface and kernel options.
 
     # The LAN interface to bind. Use it if you want to proxy LAN.
@@ -134,11 +131,11 @@ global {
     bandwidth_max_tx: '200 mbps' # uplink, or '200 m' or '200 mb' or '200 mbps' or 25000000(which is 200/8*1000*1000)
     bandwidth_max_rx: '1 gbps' # downlink, or '1 g' or '1 gb' or '1 gbps' or 125000000(which is 1000/8*1000*1000)
 
-    # dae use system DNS to resolve DoH/DoT domain and subscription links. However, system DNS may not be reliable or may be 
-    # broken, so we specify a fallback DNS resolver to be used when DNS resolution using resolv.conf fails. This ensures DNS  
-    # resolution continues to work even when the system's default DNS servers are unavailable or not responding properly.  
-    # The default value is the Google's DNS (8.8.8.8:53). For IPv4 DNS servers, the format is "ipv4:port", such as "8.8.8.8:53". 
-    # For IPv6 DNS servers, the format is "[ipv6]:port", such as "[2001:4860:4860::8888]:53". 
+    # dae use system DNS to resolve DoH/DoT domain and subscription links. However, system DNS may not be reliable or may be
+    # broken, so we specify a fallback DNS resolver to be used when DNS resolution using resolv.conf fails. This ensures DNS
+    # resolution continues to work even when the system's default DNS servers are unavailable or not responding properly.
+    # The default value is the Google's DNS (8.8.8.8:53). For IPv4 DNS servers, the format is "ipv4:port", such as "8.8.8.8:53".
+    # For IPv6 DNS servers, the format is "[ipv6]:port", such as "[2001:4860:4860::8888]:53".
     # Fallback resolver will always be available, even if you do not specify it in the configuration file.
     # fallback_resolver: '8.8.8.8:53'
 }
@@ -323,7 +320,6 @@ routing {
     l4proto(udp) && dport(443) -> block
     dip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
-    
 
     fallback: my_group
 }
