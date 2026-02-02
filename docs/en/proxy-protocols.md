@@ -60,6 +60,10 @@
 
   [Hysteria2 URI Schema](https://v2.hysteria.network/docs/developers/URI-Scheme)
 
+- [x] AnyTLS
+
+  [AnyTLS URI Schema](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md)
+
 - [x] Proxy chain (flexible protocol)
 
   [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)

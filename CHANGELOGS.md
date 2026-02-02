@@ -14,6 +14,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v1.1.0rc1 (Pre-release)](#v110rc1-pre-release)
 - [v1.0.0 (Latest)](#v100-latest)
 - [v0.9.0)](#v090)
 - [v0.8.0](#v080)
@@ -46,6 +47,42 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v1.1.0rc1 (Pre-release)
+
+> Release date: 2025/11/03
+
+#### Features
+
+- optimize(bpf): Load separate programs for L2/L3 netdev in [#822](https://github.com/daeuniverse/dae/pull/822) by (@jschwinger233)
+- feat(anytls): support anytls tcp&&udp in [#852](https://github.com/daeuniverse/dae/pull/852) by (@cubatic45)
+- feat(outbound): support udphop for hysteria2 in [#786](https://github.com/daeuniverse/dae/pull/786) by (@LostAttractor)
+- feat: add TLS fragmentation in [#825](https://github.com/daeuniverse/dae/pull/825) by (@null)
+- feat(dns): support dns bind to local port in [#878](https://github.com/daeuniverse/dae/pull/878) by (@bradfordzhang)
+- feat(dns): support tcp+udp schema for dns local bind in [#885](https://github.com/daeuniverse/dae/pull/885) by (@tomaegg)
+
+#### Bug Fixes
+
+- fix(tproxy): refactor parse_transport and fix wrong ipv6 extension header offset calc in [#844](https://github.com/daeuniverse/dae/pull/844) by (@LostAttractor)
+- fix(bpf): Fix bpf timer in [#845](https://github.com/daeuniverse/dae/pull/845) by (@jschwinger233)
+- fix(outbound): Fix anytls dialer. in [#865](https://github.com/daeuniverse/dae/pull/865) by (@ppdragon16)
+- fix(dns): fix dns bind issue when reload in [#884](https://github.com/daeuniverse/dae/pull/884) by (@bradfordzhang)
+
+#### Others
+
+- ci(release): draft release v1.0.0 in [#832](https://github.com/daeuniverse/dae/pull/832) by (@dae-prow)
+- chore(bpf): Cleanup dead bpf code in [#842](https://github.com/daeuniverse/dae/pull/842) by (@jschwinger233)
+- docs(config): clarify domain rule comment in [#834](https://github.com/daeuniverse/dae/pull/834) by (@akiooo45)
+- docs(AnyTLS): add AnyTLS doc in [#856](https://github.com/daeuniverse/dae/pull/856) by (@cubatic45)
+- docs(user-guide): fix missing `chmod` after downloaded the sample config file and fix the link of release page in [#860](https://github.com/daeuniverse/dae/pull/860) by (@mozillazg)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v1.1.0rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v1.0.0...v1.1.0rc1
+
+#### New Contributors
+
+- @tomaegg made their first contribution in [#885](https://github.com/daeuniverse/dae/pull/885)
 
 ### v1.0.0 (Latest)
 

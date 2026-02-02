@@ -1,3 +1,20 @@
+#
+# You can split the configuration into multiple files with `include { ... }`.
+#
+# Notes about include paths:
+# - Relative paths (e.g. `config.d/*.dae`) are resolved relative to the directory of the entry config file
+#   (the file you pass to `dae -c ...`), NOT relative to your current working directory.
+# - Absolute paths (e.g. `/etc/dae/config.d/*.dae`) start with "/" and are used as-is.
+# - For security reasons, dae requires included files to be under the entry config directory.
+#
+# include {
+#     # Relative path example:
+#     config.d/*.dae
+#
+#     # Absolute path example:
+#     /etc/dae/config.d/*.dae
+# }
+
 global {
     ##### Software options.
 
@@ -166,6 +183,12 @@ dns {
     #    ddns.example.org: 10
     #    test.example.org: 3600
     #}
+
+    # Bind to local address to listen for DNS queries
+    # bind: '127.0.0.1:5353'
+    # bind: 'tcp://127.0.0.1:5353'
+    # bind: 'udp://127.0.0.1:5353'
+    # bind: 'tcp+udp://127.0.0.1:5353'
 
     upstream {
         # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp/h3/http3/quic/https/tls.
