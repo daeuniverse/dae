@@ -1622,7 +1622,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 		// Check outbound connectivity in specific ipversion and l4proto.
 		struct outbound_connectivity_query q = { 0 };
 
-		q.outbound = routing_result.outbound;
+		q.outbound = outbound;
 		q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
 		q.l4proto = l4proto;
 		__u32 *alive;
