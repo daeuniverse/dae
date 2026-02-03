@@ -139,9 +139,7 @@ func (d *DNSListener) Start() error {
 		go func() {
 			d.log.Infof("Starting DNS TCP listener on %s", d.tcpServer.Addr)
 			if err := d.tcpServer.ListenAndServe(); err != nil {
-				if err := d.tcpServer.ListenAndServe(); err != nil {
-					d.log.Errorf("Failed to start DNS TCP listener: %v", err)
-				}
+				d.log.Errorf("Failed to start DNS TCP listener: %v", err)
 			}
 		}()
 	}

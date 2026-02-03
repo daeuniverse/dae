@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -59,10 +61,13 @@ type DnsControllerOption struct {
 	TimeoutExceedCallback func(dialArgument *dialArgument, err error)
 	IpVersionPrefer       int
 	FixedDomainTtl        map[string]int
+	ConcurrencyLimit      int
 }
 
 type DnsController struct {
 	handling sync.Map
+
+	concurrencyLimiter chan struct{}
 
 	routing     *dns.Dns
 	qtypePrefer uint16
@@ -81,6 +86,7 @@ type DnsController struct {
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+	sf                  singleflight.Group
 }
 
 type handlingState struct {
@@ -108,9 +114,15 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		return nil, err
 	}
 
+	limit := option.ConcurrencyLimit
+	if limit <= 0 {
+		limit = 4096
+	}
+
 	return &DnsController{
-		routing:     routing,
-		qtypePrefer: prefer,
+		routing:            routing,
+		qtypePrefer:        prefer,
+		concurrencyLimiter: make(chan struct{}, limit),
 
 		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
@@ -362,6 +374,99 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 }
 
 func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	// Try to acquire semaphore
+	select {
+	case c.concurrencyLimiter <- struct{}{}:
+		defer func() { <-c.concurrencyLimiter }()
+	default:
+		return fmt.Errorf("DNS query concurrency limit exceeded")
+	}
+
+	// Singleflight Key Generation
+	// We use qname + qtype as the key. We don't distinguish between clients (client IP) here,
+	// because the result should be cacheable and shareable globally (standard DNS behavior).
+	// NOTE: If EDNS0 Client Subnet (ECS) is involved later, the key MUST include the subnet.
+	// Currently dae doesn't explicitly handle ECS for differentiation in 'resolve_',
+	// so merging requests is safe.
+	var sfKey string
+	if len(dnsMessage.Question) > 0 {
+		q := dnsMessage.Question[0]
+		sfKey = c.cacheKey(q.Name, q.Qtype)
+	}
+
+	if sfKey != "" && !dnsMessage.Response {
+		// execute via singleflight
+		res, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
+			// This goroutine performs the actual resolution.
+			// It returns the DNS response message, or an error.
+			return c.resolveForSingleflight(dnsMessage, req)
+		})
+
+		if err != nil {
+			return err
+		}
+
+		// res is the *dnsmessage.Msg
+		respMsg := res.(*dnsmessage.Msg)
+
+		// Fix the transaction ID for this client
+		respMsgUnique := deepcopy.Copy(respMsg).(*dnsmessage.Msg)
+		respMsgUnique.Id = dnsMessage.Id
+
+		// Write response
+		if responseWriter != nil {
+			return responseWriter.WriteMsg(respMsgUnique)
+		}
+		
+		// If no responseWriter (internal call?), pack and send
+		data, err := respMsgUnique.Pack()
+		if err != nil {
+			return fmt.Errorf("pack DNS packet: %w", err)
+		}
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return c.handleWithResponseWriterInternal(dnsMessage, req, responseWriter)
+}
+
+func (c *DnsController) resolveForSingleflight(dnsMessage *dnsmessage.Msg, req *udpRequest) (*dnsmessage.Msg, error) {
+	// We need a way to capture the response message from the resolution process.
+	// Currently `handleWithResponseWriterInternal` writes to a writer or sends a packet.
+	// We need to refactor or spy on it.
+	
+	// Since refactoring everything is risky, let's use a Fake ResponseWriter to capture the message.
+	capturer := &msgCapturer{}
+	err := c.handleWithResponseWriterInternal(dnsMessage, req, capturer)
+	if err != nil {
+		return nil, err
+	}
+	if capturer.msg == nil {
+		return nil, fmt.Errorf("no response captured during singleflight resolution")
+	}
+	return capturer.msg, nil
+}
+
+type msgCapturer struct {
+	msg *dnsmessage.Msg
+}
+
+func (m *msgCapturer) LocalAddr() net.Addr { return nil }
+func (m *msgCapturer) RemoteAddr() net.Addr { return nil }
+func (m *msgCapturer) WriteMsg(msg *dnsmessage.Msg) error {
+	m.msg = msg
+	return nil
+}
+func (m *msgCapturer) Write(b []byte) (int, error) { return 0, nil }
+func (m *msgCapturer) Close() error { return nil }
+func (m *msgCapturer) TsigStatus() error { return nil }
+func (m *msgCapturer) TsigTimersOnly(bool) {}
+func (m *msgCapturer) Hijack() {}
+
+// Renamed from HandleWithResponseWriter_ to internal to avoid recursion loop with SF
+func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
@@ -405,10 +510,16 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 	}
 	dnsMessage2.Question[0].Qtype = qtype2
 
-	done := make(chan struct{})
+	done := make(chan struct{}, 1)
 	go func() {
+		defer func() {
+			// Ensure the goroutine always signals completion, even if it panics.
+			if r := recover(); r != nil {
+				c.log.Errorf("Goroutine panic recovered in HandleWithResponseWriter_: %v\n%v", r, string(debug.Stack()))
+			}
+			done <- struct{}{}
+		}()
 		_ = c.handleWithResponseWriter_(dnsMessage2, req, false, responseWriter)
-		done <- struct{}{}
 	}()
 	err = c.handleWithResponseWriter_(dnsMessage, req, false, responseWriter)
 	<-done
@@ -535,25 +646,7 @@ func (c *DnsController) handleWithResponseWriter_(
 
 // sendReject_ send empty answer.
 func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
-	dnsMessage.Answer = nil
-	dnsMessage.Rcode = dnsmessage.RcodeSuccess
-	dnsMessage.Response = true
-	dnsMessage.RecursionAvailable = true
-	dnsMessage.Truncated = false
-	dnsMessage.Compress = true
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.WithFields(logrus.Fields{
-			"question": dnsMessage.Question,
-		}).Traceln("Reject")
-	}
-	data, err := dnsMessage.Pack()
-	if err != nil {
-		return fmt.Errorf("pack DNS packet: %w", err)
-	}
-	if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-		return err
-	}
-	return nil
+	return c.sendRejectWithResponseWriter_(dnsMessage, req, nil)
 }
 
 // sendRejectWithResponseWriter_ send empty answer using response writer.
@@ -632,14 +725,15 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// get forwarder from cache
 	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
+	forwarder, ok := c.dnsForwarderCache[key]
 	if !ok {
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
 			c.dnsForwarderCacheMu.Unlock()
 			return err
 		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
+		c.dnsForwarderCache[key] = forwarder
 	}
 	c.dnsForwarderCacheMu.Unlock()
 
