@@ -108,6 +108,10 @@ func parseIpVersionPreference(prefer int) (uint16, error) {
 }
 
 func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsController, err error) {
+	if option == nil {
+		option = &DnsControllerOption{}
+	}
+
 	// Parse ip version preference.
 	prefer, err := parseIpVersionPreference(option.IpVersionPrefer)
 	if err != nil {
