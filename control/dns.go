@@ -595,6 +595,13 @@ return
 l := binary.BigEndian.Uint16(header)
 pool.Put(header)
 
+if l == 0 {
+pc.errMu.Lock()
+pc.err = fmt.Errorf("invalid DNS payload length: %d", l)
+pc.errMu.Unlock()
+return
+}
+
 // Read payload
 buf := pool.Get(int(l))
 if _, err := io.ReadFull(pc.conn, buf); err != nil {
