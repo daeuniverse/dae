@@ -116,7 +116,14 @@ func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err 
 func isGSOSupported(uc *net.UDPConn) bool {
 	// TODO: We disable GSO because we haven't thought through how to design to use larger packets (we assume the max size of packet is 1500).
 	// See https://github.com/daeuniverse/dae/blob/cab1e4290967340923d7d5ca52b80f781711c18e/control/control_plane.go#L721C37-L721C37.
-	return false
+	// Check if GSO is explicitly enabled via environment variable.
+	if enabled, _ := strconv.ParseBool(os.Getenv("DAE_ENABLE_GSO")); enabled {
+		// GSO is explicitly enabled, proceed with detection.
+	} else {
+		// GSO is disabled by default.
+		return false
+	}
+
 	conn, err := uc.SyscallConn()
 	if err != nil {
 		return false

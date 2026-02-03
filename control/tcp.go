@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/zeroalloc/io"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
@@ -38,7 +37,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	// Get tuples and outbound.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
+	routingResult, err := c.core.RetrieveRoutingResult(src, dst, consts.IPPROTO_TCP)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
 	}
@@ -171,22 +170,50 @@ type WriteCloser interface {
 	CloseWrite() error
 }
 
+// copyWait copies from src to dst until either EOF is reached on src,
+// an error occurs, or the context is done.
+func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Context canceled, force Read to fail.
+			_ = src.SetReadDeadline(time.Unix(1, 0))
+		case <-done:
+			// Copy finished, stop monitoring.
+		}
+	}()
+	defer close(done)
+	return io.Copy(dst, src)
+}
+
+// RelayTCP copies data bidirectionally between two connections.
+// It uses a context to control the lifecycle of the relay. If one side exits with an error
+// (causing the function to return and the context to be canceled), the copy operation
+// on the other side will be interrupted immediately.
+//
+// The 10-second read deadline set after CloseWrite ensures the connection doesn't
+// hang indefinitely waiting for the other end to close during graceful shutdown.
 func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 	eCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
-		_, e := io.Copy(rConn, lConn)
+		_, e := copyWait(ctx, rConn, lConn)
 		if rConn, ok := rConn.(WriteCloser); ok {
 			rConn.CloseWrite()
 		}
 		rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		eCh <- e
 	}()
-	_, e := io.Copy(lConn, rConn)
+	_, e := copyWait(ctx, lConn, rConn)
 	if lConn, ok := lConn.(WriteCloser); ok {
 		lConn.CloseWrite()
 	}
 	lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if e != nil {
+		cancel()
 		e2 := <-eCh
 		if e2 != nil {
 			return fmt.Errorf("%w: %v", e, e2)

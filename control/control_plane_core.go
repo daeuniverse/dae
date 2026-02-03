@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -27,8 +28,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// coreFlip should be 0 or 1
-var coreFlip = 0
+// coreFlip should be 0 or 1; accessed atomically.
+var coreFlip int32
 
 type controlPlaneCore struct {
 	mu sync.Mutex
@@ -55,8 +56,12 @@ func newControlPlaneCore(log *logrus.Logger,
 	kernelVersion *internal.Version,
 	isReload bool,
 ) *controlPlaneCore {
+	var flip int
 	if isReload {
-		coreFlip = coreFlip&1 ^ 1
+		flip = int(atomic.LoadInt32(&coreFlip)&1 ^ 1)
+		atomic.StoreInt32(&coreFlip, int32(flip))
+	} else {
+		flip = int(atomic.LoadInt32(&coreFlip))
 	}
 	var deferFuncs []func() error
 	if !isReload {
@@ -71,7 +76,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		bpf:             bpf,
 		outboundId2Name: outboundId2Name,
 		kernelVersion:   kernelVersion,
-		flip:            coreFlip,
+		flip:            flip,
 		isReload:        isReload,
 		bpfEjected:      false,
 		ifmgr:           ifmgr,
@@ -81,7 +86,14 @@ func newControlPlaneCore(log *logrus.Logger,
 }
 
 func (c *controlPlaneCore) Flip() {
-	coreFlip = coreFlip&1 ^ 1
+	// Use CAS loop to avoid race condition between Load and Store.
+	for {
+		old := atomic.LoadInt32(&coreFlip)
+		newVal := old&1 ^ 1
+		if atomic.CompareAndSwapInt32(&coreFlip, old, newVal) {
+			break
+		}
+	}
 }
 func (c *controlPlaneCore) Close() (err error) {
 	c.mu.Lock()
@@ -252,6 +264,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err = CheckSendRedirects(ifname); err != nil {
 		return err
 	}
+	// Best effort to add qdisc; it may already exist.
 	_ = c.addQdisc(ifname)
 	linkHdrLen, err := c.linkHdrLen(ifname)
 	if err != nil {
@@ -287,11 +300,13 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	// Remove and add.
+	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterIngress)
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
 		filterIngressFlipped.FilterAttrs.Handle ^= 1
+		// Best effort to remove old flipped filter; it may not exist.
 		_ = netlink.FilterDel(filterIngressFlipped)
 	}
 	if err := netlink.FilterAdd(filterIngress); err != nil {
@@ -324,11 +339,13 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	// Remove and add.
+	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterEgress)
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
 		filterEgressFlipped.FilterAttrs.Handle ^= 1
+		// Best effort to remove old flipped filter; it may not exist.
 		_ = netlink.FilterDel(filterEgressFlipped)
 	}
 	if err := netlink.FilterAdd(filterEgress); err != nil {
@@ -432,6 +449,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if link.Attrs().Index == consts.LoopbackIfIndex {
 		return fmt.Errorf("cannot bind to loopback interface")
 	}
+	// Best effort to add qdisc; it may already exist.
 	_ = c.addQdisc(ifname)
 	linkHdrLen, err := c.linkHdrLen(ifname)
 	if err != nil {
@@ -467,12 +485,14 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL3.FD()
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
+	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterEgress)
 	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
 		filterEgressFlipped.FilterAttrs.Handle ^= 1
+		// Best effort to remove old flipped filter; it may not exist.
 		_ = netlink.FilterDel(filterEgressFlipped)
 	}
 	if err := netlink.FilterAdd(filterEgress); err != nil {
@@ -503,12 +523,14 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL3.FD()
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
+	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterIngress)
 	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
 		filterIngressFlipped.FilterAttrs.Handle ^= 1
+		// Best effort to remove old flipped filter; it may not exist.
 		_ = netlink.FilterDel(filterIngressFlipped)
 	}
 	if err := netlink.FilterAdd(filterIngress); err != nil {
@@ -568,6 +590,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	})
 
 	// tproxy_dae0_ingress@dae0 at host netns
+	// Best effort to add qdisc; it may already exist.
 	c.addQdisc(daens.Dae0().Attrs().Name)
 	filterDae0Ingress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -581,12 +604,14 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		Name:         consts.AppName + "_dae0_ingress",
 		DirectAction: true,
 	}
+	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterDae0Ingress)
 	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterEgressFlipped := deepcopy.Copy(filterDae0Ingress).(*netlink.BpfFilter)
 		filterEgressFlipped.FilterAttrs.Handle ^= 1
+		// Best effort to remove old flipped filter; it may not exist.
 		_ = netlink.FilterDel(filterEgressFlipped)
 	}
 	if err := netlink.FilterAdd(filterDae0Ingress); err != nil {

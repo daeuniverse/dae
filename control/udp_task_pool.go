@@ -63,6 +63,8 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	q, ok := p.m[key]
 	if !ok {
 		ch := p.queueChPool.Get().(chan UdpTask)
+		// Each queue has its own independent context for lifecycle management.
+		// The context is cancelled when the queue expires due to inactivity.
 		ctx, cancel := context.WithCancel(context.Background())
 		q = &UdpTaskQueue{
 			key:       key,
