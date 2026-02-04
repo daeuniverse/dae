@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -242,6 +243,10 @@ func (ns *DaeNetns) setupVeth() (err error) {
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
 		return fmt.Errorf("failed to set link dae0 up: %v", err)
 	}
+
+	if err = netlink.LinkSetMTU(ns.dae0, netutils.GetEthernetMtu()); err != nil {
+		return fmt.Errorf("failed to set mtu %d for dae0: %v", netutils.GetEthernetMtu(), err)
+	}
 	return
 }
 
@@ -268,6 +273,9 @@ func (ns *DaeNetns) setupNetns() (err error) {
 	// (ip net e daens) ip l s dae0peer up
 	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
 		return fmt.Errorf("failed to set link dae0peer up: %v", err)
+	}
+	if err = netlink.LinkSetMTU(ns.dae0peer, netutils.GetEthernetMtu()); err != nil {
+		return fmt.Errorf("failed to set mtu %d for dae0peer: %v", netutils.GetEthernetMtu(), err)
 	}
 	// re-fetch dae0peer to make sure we have the latest mac address
 	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
