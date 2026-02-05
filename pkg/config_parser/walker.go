@@ -9,9 +9,10 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"strconv"
 	"strings"
+
+	"github.com/antlr4-go/antlr/v4"
 
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 	"github.com/sirupsen/logrus"
@@ -58,15 +59,19 @@ func (p *paramParser) parseParam(ctx *dae_config.ParameterContext) *Param {
 			Val: getValueFromLiteral(children[0].(*dae_config.LiteralContext)),
 		}
 	}
-	panic("unexpected")
+	return nil
 }
 func (p *paramParser) parseNonEmptyParamList(ctx *dae_config.NonEmptyParameterListContext) {
 	children := ctx.GetChildren()
 	if len(children) == 3 {
 		p.parseNonEmptyParamList(children[0].(*dae_config.NonEmptyParameterListContext))
-		p.list = append(p.list, p.parseParam(children[2].(*dae_config.ParameterContext)))
+		if param := p.parseParam(children[2].(*dae_config.ParameterContext)); param != nil {
+			p.list = append(p.list, param)
+		}
 	} else if len(children) == 1 {
-		p.list = append(p.list, p.parseParam(children[0].(*dae_config.ParameterContext)))
+		if param := p.parseParam(children[0].(*dae_config.ParameterContext)); param != nil {
+			p.list = append(p.list, param)
+		}
 	}
 }
 
@@ -90,22 +95,38 @@ func (w *Walker) parseFunctionPrototype(ctx *dae_config.FunctionPrototypeContext
 		w.ReportError(ctx, ErrorType_Unsupported, "bad function prototype expression")
 		return nil
 	}
-	if children[0].(*antlr.TerminalNodeImpl).GetText() == "!" {
-		offset++
-		not = true
+	if terminal, ok := children[0].(*antlr.TerminalNodeImpl); ok {
+		if terminal.GetText() == "!" {
+			offset++
+			not = true
+		}
 	}
+
 	if len(children) <= offset+2 {
 		w.ReportError(ctx, ErrorType_Unsupported, "bad function prototype expression")
 		return nil
 	}
-	funcName := children[offset+0].(*antlr.TerminalNodeImpl).GetText()
-	paramList := children[offset+2].(*dae_config.OptParameterListContext)
+	funcNameNode, ok := children[offset+0].(*antlr.TerminalNodeImpl)
+	if !ok {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad function name")
+		return nil
+	}
+	funcName := funcNameNode.GetText()
+	paramList, ok := children[offset+2].(*dae_config.OptParameterListContext)
+	if !ok {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad parameter list")
+		return nil
+	}
 	children = paramList.GetChildren()
 	if len(children) == 0 {
 		w.ReportError(ctx, ErrorType_Unsupported, "empty parameter list")
 		return nil
 	}
-	nonEmptyParamList := children[0].(*dae_config.NonEmptyParameterListContext)
+	nonEmptyParamList, ok := children[0].(*dae_config.NonEmptyParameterListContext)
+	if !ok {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad parameter list type")
+		return nil
+	}
 	params := w.parseNonEmptyParamList(nonEmptyParamList)
 	f := &Function{
 		Name:   funcName,
@@ -150,11 +171,21 @@ type literalExpressionParser struct {
 
 func (p *literalExpressionParser) Parse(ctx *dae_config.LiteralExpressionContext) {
 	children := ctx.GetChildren()
-	p.literals = append(p.literals, getValueFromLiteral(children[0].(*dae_config.LiteralContext)))
+	if len(children) == 0 {
+		return
+	}
+	if literalCtx, ok := children[0].(*dae_config.LiteralContext); ok {
+		p.literals = append(p.literals, getValueFromLiteral(literalCtx))
+	}
+
 	if len(children) == 1 {
 		return
 	}
-	p.Parse(children[2].(*dae_config.LiteralExpressionContext))
+	if len(children) > 2 {
+		if nextCtx, ok := children[2].(*dae_config.LiteralExpressionContext); ok {
+			p.Parse(nextCtx)
+		}
+	}
 }
 
 func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
@@ -163,7 +194,12 @@ func (w *Walker) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 		w.ReportError(ctx, ErrorType_Unsupported, "bad declaration expression")
 		return nil
 	}
-	key := children[0].(*antlr.TerminalNodeImpl).GetText()
+	keyNode, ok := children[0].(*antlr.TerminalNodeImpl)
+	if !ok {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad declaration key")
+		return nil
+	}
+	key := keyNode.GetText()
 	var param *Param
 	switch valueCtx := children[2].(type) {
 	case *dae_config.LiteralExpressionContext:
@@ -249,14 +285,22 @@ func (w *Walker) parseRoutingRule(ctx dae_config.IRoutingRuleContext) *RoutingRu
 	andFunctions := w.parseFunctionPrototypeExpression(functionList, nil)
 
 	// Parse outbound.
-	outboundExpr := children[2].(*dae_config.OutboundExprContext)
+	outboundExpr, ok := children[2].(*dae_config.OutboundExprContext)
+	if !ok {
+		w.ReportError(ctx, ErrorType_Unsupported, "bad routing rule structure (outbound)")
+		return nil
+	}
 	var outbound *Function
 	if literal := outboundExpr.Bare_literal(); literal != nil {
 		outbound = &Function{Name: literal.GetText()}
 	} else if f := outboundExpr.FunctionPrototype(); f != nil {
 		outbound = w.parseFunctionPrototype(f.(*dae_config.FunctionPrototypeContext), nil)
 	} else {
-		panic("unknown outboundExpr")
+		w.ReportError(outboundExpr, ErrorType_Unsupported, "bad outbound expression")
+		return nil
+	}
+	if outbound == nil {
+		return nil
 	}
 	return &RoutingRule{
 		AndFunctions: andFunctions,
@@ -316,8 +360,16 @@ func (w *Walker) parseRoutingRuleOrDeclarationOrLiteralOrExpressionListContext(c
 
 func (w *Walker) parseExpression(exp dae_config.IExpressionContext) *Section {
 	children := exp.GetChildren()
+	if len(children) < 3 {
+		w.ReportError(exp, ErrorType_Unsupported, "bad expression")
+		return nil
+	}
 	name := children[0].(*antlr.TerminalNodeImpl).GetText()
-	list := children[2].(dae_config.IRoutingRuleOrDeclarationOrLiteralOrExpressionListContext)
+	list, ok := children[2].(dae_config.IRoutingRuleOrDeclarationOrLiteralOrExpressionListContext)
+	if !ok {
+		w.ReportError(exp, ErrorType_Unsupported, "bad expression body")
+		return nil
+	}
 	items := w.parseRoutingRuleOrDeclarationOrLiteralOrExpressionListContext(list)
 	return &Section{
 		Name:  name,
