@@ -157,7 +157,7 @@ struct dae_param {
 	__u8 padding[2];
 };
 
-static volatile const struct dae_param PARAM = {};
+volatile const struct dae_param PARAM = {};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
