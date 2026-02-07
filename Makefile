@@ -16,6 +16,7 @@ CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 NOSTRIP ?= n
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
 BUILD_TAGS_FILE := .build_tags
+KEEP_CGO_ENVS ?= 0
 ifeq ($(strip $(NOSTRIP)),y)
 	STRIP_FLAG := -no-strip
 else ifeq ($(wildcard $(STRIP_PATH)),)
@@ -24,7 +25,18 @@ else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
 endif
 
-GOARCH ?= $(shell go env GOARCH)
+ifndef CGO_ENABLED
+CGO_ENABLED_NDEF := 1
+CGO_ENABLED := $(shell go env CGO_ENABLED)
+endif
+ifndef CC
+CC_NDEF := 1
+CC := $(shell go env CC)
+endif
+ifndef GOARCH
+GOARCH_NDEF := 1
+GOARCH := $(shell go env GOARCH)
+endif
 
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
@@ -39,18 +51,23 @@ else
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 endif
 
-BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
+
+GO_BUILD_ARGS = -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN) $(GO_LDFLAGS)" $(BUILD_ARGS)
 
 .PHONY: clean-ebpf ebpf dae submodule submodules
 
 ## Begin Dae Build
 dae: export GOOS=linux
-ifndef CGO_ENABLED
-dae: export CGO_ENABLED=0
-endif
 dae: ebpf
-	@echo $(CFLAGS)
-	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
+	$(eval include cgo_enabled.mk)
+	$(info CFLAGS=$(CFLAGS))
+	$(info KEEP_CGO_ENVS=$(KEEP_CGO_ENVS))
+	$(info CGO_ENABLED=$(CGO_ENABLED))
+	$(info GO_LDFLAGS=$(GO_LDFLAGS))
+	$(info CC=$(CC))
+	$(info GOARCH=$(GOARCH))
+	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(GO_BUILD_ARGS) .
+	@$(STRIP) $(OUTPUT) || strip $(OUTPUT) || true
 ## End Dae Build
 
 ## Begin Git Submodules
