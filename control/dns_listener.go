@@ -231,6 +231,10 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 
 	err = h.controller.dnsController.HandleWithResponseWriter_(r, udpReq, w)
 	if err != nil {
+		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+			// REFUSED response has been written by DNS controller.
+			return
+		}
 		h.log.Errorf("Failed to handle DNS request: %v", err)
 		// Send error response
 		m := new(dnsmessage.Msg)

@@ -131,34 +131,20 @@ func BenchmarkPipelinedConn_Concurrent(b *testing.B) {
 // BenchmarkPipelinedConn_IDAllocation benchmarks ID allocation performance
 func BenchmarkPipelinedConn_IDAllocation(b *testing.B) {
 	pc := &pipelinedConn{
-		pending: make(map[uint16]chan *dnsmessage.Msg),
+		pending: sync.Map{},
+		idAlloc: newIdBitmap(),
 		closed:  make(chan struct{}),
-	}
-
-	// Pre-fill with some pending requests to simulate realistic conditions
-	for i := uint16(0); i < 100; i++ {
-		pc.pending[i] = make(chan *dnsmessage.Msg, 1)
 	}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		pc.pendingMu.Lock()
-		start := uint16(i)
-		allocSuccess := false
-		for j := uint16(0); j < 1000; j++ {
-			id := start + j
-			if _, ok := pc.pending[id]; !ok {
-				allocSuccess = true
-				break
-			}
+		id, err := pc.idAlloc.Allocate()
+		if err != nil {
+			b.Fatal("Failed to allocate ID:", err)
 		}
-		pc.pendingMu.Unlock()
-
-		if !allocSuccess {
-			b.Fatal("Failed to allocate ID")
-		}
+		pc.idAlloc.Release(id)
 	}
 }
 

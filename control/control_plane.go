@@ -40,7 +40,6 @@ import (
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -423,6 +422,10 @@ func NewControlPlane(
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
+		// ConcurrencyLimit: 0 uses default (8192)
+		// Based on CoreDNS best practices: min = expected_qps * upstream_latency
+		// Default 8192 supports ~4k QPS with 50ms latency, uses ~16MB memory
+		ConcurrencyLimit: 0,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
@@ -460,6 +463,7 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
+	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
 
 	// Create and start DNS listener if configured
 	if dnsConfig.Bind != "" {
@@ -472,7 +476,7 @@ func NewControlPlane(
 		} else {
 			log.Infof("DNS listener started on %s", dnsConfig.Bind)
 			// Add DNS listener stop to defer functions
-			deferFuncs = append(deferFuncs, plane.dnsListener.Stop)
+			plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
 		}
 	}
 	// Refresh domain routing cache with new routing.
@@ -572,9 +576,20 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
-	c.dnsController.dnsCacheMu.Lock()
-	defer c.dnsController.dnsCacheMu.Unlock()
-	return deepcopy.Copy(c.dnsController.dnsCache).(map[string]*DnsCache)
+	result := make(map[string]*DnsCache)
+	c.dnsController.dnsCache.Range(func(key, value interface{}) bool {
+		k, ok1 := key.(string)
+		v, ok2 := value.(*DnsCache)
+		if ok1 && ok2 {
+			// Deep copy to prevent data race on the returned map values
+			// Use manual Clone instead of reflection-based deepcopy for performance
+			result[k] = v.Clone()
+		} else {
+			logrus.Errorf("CloneDnsCache: invalid type found in sync.Map: key=%T, value=%T", key, value)
+		}
+		return true
+	})
+	return result
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
