@@ -6,6 +6,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -153,13 +154,18 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		routingResult.Mark = c.soMarkFromDae
 	}
 	if isDns {
-		return c.dnsController.Handle_(dnsMessage, &udpRequest{
+		err = c.dnsController.Handle_(dnsMessage, &udpRequest{
 			realSrc:       realSrc,
 			realDst:       realDst,
 			src:           src,
 			lConn:         lConn,
 			routingResult: routingResult,
 		})
+		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+			// REFUSED response has been sent by DNS controller.
+			return nil
+		}
+		return err
 	}
 
 	// Dial and send.

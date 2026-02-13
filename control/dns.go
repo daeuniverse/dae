@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -27,8 +28,101 @@ import (
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/sirupsen/logrus"
 )
+
+// responseSlot represents a pending DNS request response slot.
+// Uses atomic.Value for lock-free reads and a channel for waiting.
+type responseSlot struct {
+	msg  atomic.Value // *dnsmessage.Msg
+	done chan struct{}
+}
+
+// responseSlotPool is a pool of responseSlot objects to reduce allocations.
+var responseSlotPool = sync.Pool{
+	New: func() interface{} {
+		return &responseSlot{
+			done: make(chan struct{}),
+		}
+	},
+}
+
+func newResponseSlot() *responseSlot {
+	slot := responseSlotPool.Get().(*responseSlot)
+	// Reset the channel if it was closed
+	select {
+	case <-slot.done:
+		slot.done = make(chan struct{})
+	default:
+	}
+	return slot
+}
+
+func putResponseSlot(slot *responseSlot) {
+	// Clear the message reference
+	slot.msg.Store((*dnsmessage.Msg)(nil))
+	responseSlotPool.Put(slot)
+}
+
+func (s *responseSlot) set(msg *dnsmessage.Msg) {
+	s.msg.Store(msg)
+	close(s.done)
+}
+
+func (s *responseSlot) get(ctx context.Context) (*dnsmessage.Msg, error) {
+	select {
+	case <-s.done:
+		msg := s.msg.Load()
+		if msg == nil {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return msg.(*dnsmessage.Msg), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// idBitmap implements O(1) ID allocation using a bitmap
+type idBitmap struct {
+	bitmap [64]uint64 // 4096 bits
+	mu     sync.Mutex
+	next   uint32
+}
+
+func newIdBitmap() *idBitmap {
+	return &idBitmap{}
+}
+
+func (b *idBitmap) Allocate() (uint16, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i := 0; i < 4096; i++ {
+		id := (b.next + uint32(i)) % 4096
+		word := id / 64
+		bit := id % 64
+
+		if b.bitmap[word]&(1<<bit) == 0 {
+			b.bitmap[word] |= 1 << bit
+			b.next = (id + 1) % 4096
+			return uint16(id), nil
+		}
+	}
+
+	return 0, fmt.Errorf("no available ID")
+}
+
+func (b *idBitmap) Release(id uint16) {
+	if id >= 4096 {
+		return
+	}
+
+	b.mu.Lock()
+	word := id / 64
+	bit := id % 64
+	b.bitmap[word] &^= 1 << bit
+	b.mu.Unlock()
+}
 
 // channelPool is a pool of channels for DNS response routing.
 // This reduces allocations in the hot path.
@@ -56,7 +150,7 @@ type DnsForwarder interface {
 	Close() error
 }
 
-func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForwarder, error) {
+func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument, log *logrus.Logger) (DnsForwarder, error) {
 	forwarder, err := func() (DnsForwarder, error) {
 		switch dialArgument.l4proto {
 		case consts.L4ProtoStr_TCP:
@@ -73,7 +167,7 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 		case consts.L4ProtoStr_UDP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_UDP, dns.UpstreamScheme_TCP_UDP:
-				return &DoUDP{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoUDP{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument, log: log}, nil
 			case dns.UpstreamScheme_QUIC:
 				return &DoQ{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_H3:
@@ -262,49 +356,167 @@ func (d *DoQ) Close() error {
 	return nil
 }
 
-type DoTLS struct {
-	dns.Upstream
-	netproxy.Dialer
-	dialArgument dialArgument
-	
-	pConn *pipelinedConn
-	mu    sync.Mutex
+// connPool implements a connection pool for DNS forwarders.
+// Follows Go best practices from database/sql and net/http.
+type connPool struct {
+	conns    []*pipelinedConn
+	mu       sync.RWMutex
+	maxConns int
+	index    atomic.Uint32
+	dialer   func(context.Context) (netproxy.Conn, error)
 }
 
-func (d *DoTLS) getPConn(ctx context.Context) (*pipelinedConn, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+const connPoolScaleUpPendingThreshold int32 = 64
 
-	if d.pConn != nil {
+func newConnPool(maxConns int, dialer func(context.Context) (netproxy.Conn, error)) *connPool {
+	if maxConns <= 0 {
+		maxConns = 1
+	}
+	return &connPool{
+		conns:    make([]*pipelinedConn, 0, maxConns),
+		maxConns: maxConns,
+		dialer:   dialer,
+	}
+}
+
+func (p *connPool) get(ctx context.Context) (*pipelinedConn, error) {
+	// Fast path: lock-free-ish read on existing connections.
+	p.mu.RLock()
+	if len(p.conns) > 0 {
+		idx := p.index.Load() % uint32(len(p.conns))
+		conn := p.conns[idx]
+		load := conn.pendingCount.Load()
+		canScaleUp := len(p.conns) < p.maxConns && load >= connPoolScaleUpPendingThreshold
+
 		select {
-		case <-d.pConn.closed:
+		case <-conn.closed:
+			// Closed connection, fall through to slow path for cleanup.
 		default:
-			return d.pConn, nil
+			p.mu.RUnlock()
+			p.index.Add(1)
+			if !canScaleUp {
+				return conn, nil
+			}
+			goto slowPath
+		}
+	}
+	p.mu.RUnlock()
+
+	slowPath:
+	// Slow path: need to create new connection or clean up pool
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Clean up closed connections before attempting to get/create
+	var active []*pipelinedConn
+	for _, c := range p.conns {
+		select {
+		case <-c.closed:
+			// Connection is closed, skip it (already cleaned by readLoop)
+		default:
+			active = append(active, c)
+		}
+	}
+	p.conns = active
+
+	var selected *pipelinedConn
+	var selectedLoad int32
+	if len(p.conns) > 0 {
+		idx := p.index.Load() % uint32(len(p.conns))
+		selected = p.conns[idx]
+		selectedLoad = selected.pendingCount.Load()
+
+		// If pool is full or current load is low enough, reuse existing connection.
+		if len(p.conns) >= p.maxConns || selectedLoad < connPoolScaleUpPendingThreshold {
+			p.index.Add(1)
+			return selected, nil
 		}
 	}
 
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
+	// Create new connection when pool has room and current load suggests contention.
+	if len(p.conns) >= p.maxConns && selected != nil {
+		p.index.Add(1)
+		return selected, nil
+	}
+
+	rawConn, err := p.dialer(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
-		InsecureSkipVerify: false,
-		ServerName:         d.Upstream.Hostname,
-	})
-	if err = tlsConn.Handshake(); err != nil {
-		conn.Close()
-		return nil, err
+	conn := newPipelinedConn(rawConn)
+	p.conns = append(p.conns, conn)
+	p.index.Add(1)
+	return conn, nil
+}
+
+func (p *connPool) close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, conn := range p.conns {
+		conn.Close() // pipelinedConn.Close() has no return value
 	}
-	d.pConn = newPipelinedConn(tlsConn)
-	return d.pConn, nil
+	p.conns = nil
+	return nil
+}
+
+type DoTLS struct {
+	dns.Upstream
+	netproxy.Dialer
+	dialArgument dialArgument
+
+	pool *connPool
+	mu   sync.RWMutex
+}
+
+func (d *DoTLS) getPool() *connPool {
+	d.mu.RLock()
+	if d.pool != nil {
+		defer d.mu.RUnlock()
+		return d.pool
+	}
+	d.mu.RUnlock()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.pool != nil {
+		return d.pool
+	}
+
+	// Create connection pool with 4 connections (Go best practice)
+	d.pool = newConnPool(4, func(ctx context.Context) (netproxy.Conn, error) {
+		conn, err := d.dialArgument.bestDialer.DialContext(
+			ctx,
+			common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
+			d.dialArgument.bestTarget.String(),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
+			InsecureSkipVerify: false,
+			ServerName:         d.Upstream.Hostname,
+		})
+		if err = tlsConn.Handshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	})
+
+	return d.pool
+}
+
+func (d *DoTLS) getPConn(ctx context.Context) (*pipelinedConn, error) {
+	pool := d.getPool()
+	return pool.get(ctx)
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	// With connection pool, we can retry with different connections
 	for i := 0; i < 2; i++ {
 		pc, err := d.getPConn(ctx)
 		if err != nil {
@@ -316,12 +528,11 @@ func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 			return msg, nil
 		}
 
-		d.mu.Lock()
-		if d.pConn == pc {
-			pc.Close()
-			d.pConn = nil
-		}
-		d.mu.Unlock()
+		// Close the connection explicitly if RoundTrip fails
+		pc.Close()
+
+		// Connection might be broken, but pool will handle it
+		// Next retry will get a different connection from pool
 	}
 	return nil, fmt.Errorf("failed to forward DNS after retry")
 }
@@ -329,9 +540,10 @@ func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 func (d *DoTLS) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.pConn != nil {
-		d.pConn.Close()
-		d.pConn = nil
+	if d.pool != nil {
+		err := d.pool.close()
+		d.pool = nil
+		return err
 	}
 	return nil
 }
@@ -340,42 +552,45 @@ type DoTCP struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
-	
-	pConn *pipelinedConn
-	mu    sync.Mutex
+
+	pool *connPool
+	mu   sync.RWMutex
 }
 
-func (d *DoTCP) getPConn(ctx context.Context) (*pipelinedConn, error) {
+func (d *DoTCP) getPool() *connPool {
+	d.mu.RLock()
+	if d.pool != nil {
+		defer d.mu.RUnlock()
+		return d.pool
+	}
+	d.mu.RUnlock()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// If conn exists and is healthy, return it
-	if d.pConn != nil {
-		select {
-		case <-d.pConn.closed:
-			// Closed, create new one
-		default:
-			return d.pConn, nil
-		}
+	if d.pool != nil {
+		return d.pool
 	}
 
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
-	if err != nil {
-		return nil, err
-	}
-	d.pConn = newPipelinedConn(conn)
-	return d.pConn, nil
+	// Create connection pool with 4 connections (Go best practice)
+	d.pool = newConnPool(4, func(ctx context.Context) (netproxy.Conn, error) {
+		return d.dialArgument.bestDialer.DialContext(
+			ctx,
+			common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
+			d.dialArgument.bestTarget.String(),
+		)
+	})
+
+	return d.pool
+}
+
+func (d *DoTCP) getPConn(ctx context.Context) (*pipelinedConn, error) {
+	pool := d.getPool()
+	return pool.get(ctx)
 }
 
 func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	// Simple retry logic used to consist of 2 attempts.
-	// With pipelining, we just try to get a connection and send.
-	// If the connection dies during our request, we fail (or we could retry).
-	// Let's implement retry for robustness.
+	// With connection pool, we can retry with different connections
 	for i := 0; i < 2; i++ {
 		pc, err := d.getPConn(ctx)
 		if err != nil {
@@ -387,18 +602,11 @@ func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 			return msg, nil
 		}
 
-		// If error occurred, connection might be broken.
-		// If the error is not temporary, or we just want to be safe, we close it.
-		// Actually pipelinedConn handles its own closing on IO error.
-		// But we might need to invalidate d.pConn if it's the same one.
-		
-		d.mu.Lock()
-		if d.pConn == pc {
-			// pc.Close() is idempotent and might already be called by readLoop
-			pc.Close() 
-			d.pConn = nil
-		}
-		d.mu.Unlock()
+		// Close the connection explicitly if RoundTrip fails
+		pc.Close()
+
+		// Connection might be broken, but pool will handle it
+		// Next retry will get a different connection from pool
 	}
 	return nil, fmt.Errorf("failed to forward DNS after retry")
 }
@@ -406,9 +614,99 @@ func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 func (d *DoTCP) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.pConn != nil {
-		d.pConn.Close()
-		d.pConn = nil
+	if d.pool != nil {
+		err := d.pool.close()
+		d.pool = nil
+		return err
+	}
+	return nil
+}
+
+// udpConnWithTimestamp wraps a connection with its last use time
+type udpConnWithTimestamp struct {
+	conn     netproxy.Conn
+	lastUsed time.Time
+}
+
+// udpConnPool implements a UDP connection pool.
+// It uses a poor-man's pool (borrow/return) to reuse sockets sequentially.
+// Connections are tracked with timestamps to prevent stale packet issues.
+type udpConnPool struct {
+	idleConns   chan *udpConnWithTimestamp
+	dialer      func(context.Context) (netproxy.Conn, error)
+	closed      atomic.Bool
+	maxIdleTime time.Duration // Connections older than this are discarded
+}
+
+func newUdpConnPool(maxIdle int, dialer func(context.Context) (netproxy.Conn, error)) *udpConnPool {
+	return &udpConnPool{
+		idleConns:   make(chan *udpConnWithTimestamp, maxIdle),
+		dialer:      dialer,
+		maxIdleTime: 30 * time.Second, // Discard connections idle for more than 30s
+	}
+}
+
+func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
+	if p.closed.Load() {
+		return nil, io.ErrClosedPipe
+	}
+
+	// Try to get an idle connection, checking for expiry
+	for {
+		select {
+		case connWithTime := <-p.idleConns:
+			if connWithTime == nil { // Channel closed (double check)
+				return nil, io.ErrClosedPipe
+			}
+
+			// Check if connection is too old (prevent stale packets)
+			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
+				// Connection expired, close it and try next one
+				connWithTime.conn.Close()
+				continue
+			}
+
+			return connWithTime.conn, nil
+		default:
+			// No idle connection, create new one
+			if p.closed.Load() {
+				return nil, io.ErrClosedPipe
+			}
+			return p.dialer(ctx)
+		}
+	}
+}
+
+func (p *udpConnPool) put(conn netproxy.Conn) {
+	if p.closed.Load() {
+		conn.Close()
+		return
+	}
+
+	// Wrap connection with current timestamp
+	connWithTime := &udpConnWithTimestamp{
+		conn:     conn,
+		lastUsed: time.Now(),
+	}
+
+	select {
+	case p.idleConns <- connWithTime:
+		// Returned to pool
+	default:
+		// Pool full, close connection
+		conn.Close()
+	}
+}
+
+func (p *udpConnPool) close() error {
+	if p.closed.Swap(true) {
+		return nil
+	}
+	close(p.idleConns)
+	for connWithTime := range p.idleConns {
+		if connWithTime != nil && connWithTime.conn != nil {
+			connWithTime.conn.Close()
+		}
 	}
 	return nil
 }
@@ -417,27 +715,70 @@ type DoUDP struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
-	conn         netproxy.Conn
+
+	pool *udpConnPool
+	mu   sync.RWMutex
+	log  *logrus.Logger
+}
+
+func (d *DoUDP) getPool() *udpConnPool {
+	d.mu.RLock()
+	if d.pool != nil {
+		defer d.mu.RUnlock()
+		return d.pool
+	}
+	d.mu.RUnlock()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.pool != nil {
+		return d.pool
+	}
+
+	// Create UDP connection pool with 8 connections (UDP is lightweight)
+	d.pool = newUdpConnPool(8, func(ctx context.Context) (netproxy.Conn, error) {
+		return d.dialArgument.bestDialer.DialContext(
+			ctx,
+			common.MagicNetwork("udp", d.dialArgument.mark, d.dialArgument.mptcp),
+			d.dialArgument.bestTarget.String(),
+		)
+	})
+
+	return d.pool
 }
 
 func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("udp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
+	udpPool := d.getPool()
+	conn, err := udpPool.get(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close() // Ensure connection is closed
+
+	// Track if connection is bad to avoid returning it to pool
+	badConn := false
+	defer func() {
+		if !badConn {
+			udpPool.put(conn)
+		}
+		// If badConn is true, conn.Close() was already called
+	}()
 
 	timeout := 5 * time.Second
 	// SetDeadline may fail on connection types that don't support deadlines;
 	// the timeout is also handled by the context.
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
+	// Extract original DNS ID for validation
+	var originalID uint16
+	if len(data) >= 2 {
+		originalID = binary.BigEndian.Uint16(data[0:2])
+	}
+
 	// Send DNS request directly without creating goroutine
 	if _, err = conn.Write(data); err != nil {
+		conn.Close() // Mark as bad
+		badConn = true
 		return nil, err
 	}
 
@@ -446,8 +787,32 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	defer pool.Put(respBuf)
 	n, err := conn.Read(respBuf)
 	if err != nil {
+		// If timeout, we don't mark connection as bad to avoid expensive reconstruction
+		// (especially for SOCKS5 tunnel). Stale packets might be an issue but
+		// usually less critical than connection storm.
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return nil, err
+		}
+		conn.Close() // Mark as bad
+		badConn = true
 		return nil, err
 	}
+
+	// Validate DNS ID to detect stale packets
+	if n >= 2 {
+		responseID := binary.BigEndian.Uint16(respBuf[0:2])
+		if responseID != originalID {
+			// This is a stale packet from a previous request
+			// Log and close the connection to force fresh one
+			if d.log != nil {
+				d.log.Warnf("UDP DNS response ID mismatch: expected %d, got %d (stale packet detected)", originalID, responseID)
+			}
+			conn.Close()
+			badConn = true
+			return nil, fmt.Errorf("DNS response ID mismatch: stale packet")
+		}
+	}
+
 	var msg dnsmessage.Msg
 	if err = msg.Unpack(respBuf[:n]); err != nil {
 		return nil, err
@@ -456,8 +821,12 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 }
 
 func (d *DoUDP) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pool != nil {
+		err := d.pool.close()
+		d.pool = nil
+		return err
 	}
 	return nil
 }
@@ -537,187 +906,151 @@ func sendStreamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, 
 }
 
 type pipelinedConn struct {
-conn    netproxy.Conn
-writeMu sync.Mutex
+	conn    netproxy.Conn
+	writeMu sync.Mutex
 
-// routing
-pendingMu sync.Mutex
-pending   map[uint16]chan *dnsmessage.Msg
+	// routing: use sync.Map for better concurrent performance
+	pending sync.Map // map[uint16]*responseSlot
 
-// lifecycle
-errMu  sync.Mutex
-err    error
-closed chan struct{}
+	// ID allocation: use bitmap for O(1) allocation
+	idAlloc *idBitmap
+
+	// pendingCount tracks in-flight requests for adaptive pool scaling.
+	pendingCount atomic.Int32
+
+	// lifecycle
+	errMu  sync.Mutex
+	err    error
+	closed chan struct{}
 }
 
 func newPipelinedConn(conn netproxy.Conn) *pipelinedConn {
-pc := &pipelinedConn{
-conn:    conn,
-pending: make(map[uint16]chan *dnsmessage.Msg),
-closed:  make(chan struct{}),
-}
-go pc.readLoop()
-return pc
+	pc := &pipelinedConn{
+		conn:    conn,
+		pending: sync.Map{},
+		idAlloc: newIdBitmap(),
+		closed:  make(chan struct{}),
+	}
+	go pc.readLoop()
+	return pc
 }
 
 func (pc *pipelinedConn) readLoop() {
-defer func() {
-_ = pc.conn.Close()
-pc.errMu.Lock()
-if pc.err == nil {
-pc.err = io.ErrUnexpectedEOF
-}
-pc.errMu.Unlock()
-
-close(pc.closed)
-
-// Cleanup all pending
-pc.pendingMu.Lock()
-for _, ch := range pc.pending {
-close(ch)
-}
-pc.pending = nil
-pc.pendingMu.Unlock()
-}()
-
-for {
-// Read 2-byte length
-// We use a small buffer from pool or just stack alloc since it's 2 bytes?
-// Pool is safer for GC if high throughput.
-header := pool.Get(2)
-if _, err := io.ReadFull(pc.conn, header); err != nil {
-pc.errMu.Lock()
-pc.err = err
-pc.errMu.Unlock()
-pool.Put(header)
-return
-}
-l := binary.BigEndian.Uint16(header)
-pool.Put(header)
-
-if l == 0 {
-pc.errMu.Lock()
-pc.err = fmt.Errorf("invalid DNS payload length: %d", l)
-pc.errMu.Unlock()
-return
-}
-
-// Read payload
-buf := pool.Get(int(l))
-if _, err := io.ReadFull(pc.conn, buf); err != nil {
-pc.errMu.Lock()
-pc.err = err
-pc.errMu.Unlock()
-pool.Put(buf)
-return
-}
-
-var msg dnsmessage.Msg
-if err := msg.Unpack(buf); err != nil {
-// Protocol error, close connection
-pc.errMu.Lock()
-pc.err = fmt.Errorf("bad DNS packet: %w", err)
-pc.errMu.Unlock()
-pool.Put(buf)
-return
-	}
-	pool.Put(buf)
-
-	pc.pendingMu.Lock()
-	if ch, ok := pc.pending[msg.Id]; ok {
-		select {
-		case ch <- &msg:
-		default:
-			// Receiver abandoned channel or timed out.
-			// This is expected under high load when requests timeout before response arrives.
+	defer func() {
+		_ = pc.conn.Close()
+		pc.errMu.Lock()
+		if pc.err == nil {
+			pc.err = io.ErrUnexpectedEOF
 		}
-		// One-shot channel, remove after use.
-		delete(pc.pending, msg.Id)
-	}
-	pc.pendingMu.Unlock()
+		pc.errMu.Unlock()
+
+		close(pc.closed)
+
+		// Cleanup all pending - close all response slots
+		pc.pending.Range(func(key, value interface{}) bool {
+			if slot, ok := value.(*responseSlot); ok {
+				slot.set(nil) // Signal with nil to indicate error
+			}
+			return true
+		})
+	}()
+
+	for {
+		// Read 2-byte length
+		// We use a small buffer from pool or just stack alloc since it's 2 bytes?
+		// Pool is safer for GC if high throughput.
+		header := pool.Get(2)
+		if _, err := io.ReadFull(pc.conn, header); err != nil {
+			pc.errMu.Lock()
+			pc.err = err
+			pc.errMu.Unlock()
+			pool.Put(header)
+			return
+		}
+		l := binary.BigEndian.Uint16(header)
+		pool.Put(header)
+
+		if l == 0 {
+			pc.errMu.Lock()
+			pc.err = fmt.Errorf("invalid DNS payload length: %d", l)
+			pc.errMu.Unlock()
+			return
+		}
+
+		// Read payload
+		buf := pool.Get(int(l))
+		if _, err := io.ReadFull(pc.conn, buf); err != nil {
+			pc.errMu.Lock()
+			pc.err = err
+			pc.errMu.Unlock()
+			pool.Put(buf)
+			return
+		}
+
+		var msg dnsmessage.Msg
+		if err := msg.Unpack(buf); err != nil {
+			// Protocol error, close connection
+			pc.errMu.Lock()
+			pc.err = fmt.Errorf("bad DNS packet: %w", err)
+			pc.errMu.Unlock()
+			pool.Put(buf)
+			return
+		}
+		pool.Put(buf)
+
+		// Use sync.Map for lock-free pending request lookup
+		if val, ok := pc.pending.LoadAndDelete(msg.Id); ok {
+			slot := val.(*responseSlot)
+			slot.set(&msg)
+		}
 	}
 }
 
 func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	// Allocate ID using linear probe + random start
-	var id uint16
-
-	pc.pendingMu.Lock()
-	if pc.pending == nil {
-		pc.pendingMu.Unlock()
-		return nil, io.ErrClosedPipe
+	// Allocate ID using bitmap allocator (O(1) time complexity)
+	id, err := pc.idAlloc.Allocate()
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate ID: %w", err)
 	}
 
-	// Get channel from pool instead of allocating new one
-	ch := getResponseChannel()
-	defer putResponseChannel(ch)
+	// Get response slot from pool
+	slot := newResponseSlot()
+	defer putResponseSlot(slot)
 
-	// Allocate ID using linear probe + random start (Go best practice for hash collision resolution)
-	// This is more efficient than pure random under high contention.
-	// Reference: https://go.dev/src/net/http/transport.go
-	allocSuccess := false
-	start := uint16(fastrand.Uint32())
-	for i := uint16(0); i < 1000; i++ {
-		id = start + i
-		if _, ok := pc.pending[id]; !ok {
-			pc.pending[id] = ch
-			allocSuccess = true
-			break
-		}
-	}
-	pc.pendingMu.Unlock()
-
-	if !allocSuccess {
-		return nil, fmt.Errorf("failed to allocate transaction ID: too many in-flight requests (pending: %d)", len(pc.pending))
-	}
+	// Store the pending request
+	pc.pending.Store(id, slot)
+	pc.pendingCount.Add(1)
 
 	defer func() {
-		pc.pendingMu.Lock()
-		if pc.pending != nil {
-			delete(pc.pending, id)
-		}
-		pc.pendingMu.Unlock()
+		pc.pending.Delete(id)
+		pc.idAlloc.Release(id)
+		pc.pendingCount.Add(-1)
 	}()
 
 	// Write request
-// We need to copy data because we are modifying ID in-place and adding length prefix
-// data[0:2] is ID.
-reqLen := len(data)
-buf := pool.Get(2 + reqLen)
-defer pool.Put(buf)
+	// We need to copy data because we are modifying ID in-place and adding length prefix
+	// data[0:2] is ID.
+	reqLen := len(data)
+	buf := pool.Get(2 + reqLen)
+	defer pool.Put(buf)
 
-binary.BigEndian.PutUint16(buf[0:2], uint16(reqLen))
-copy(buf[2:], data)
-// Update ID in buffer
-binary.BigEndian.PutUint16(buf[2:4], id)
+	binary.BigEndian.PutUint16(buf[0:2], uint16(reqLen))
+	copy(buf[2:], data)
+	// Update ID in buffer
+	binary.BigEndian.PutUint16(buf[2:4], id)
 
-pc.writeMu.Lock()
-_, err := pc.conn.Write(buf)
-pc.writeMu.Unlock()
+	pc.writeMu.Lock()
+	_, err = pc.conn.Write(buf)
+	pc.writeMu.Unlock()
 
-if err != nil {
-return nil, err
-}
+	if err != nil {
+		return nil, err
+	}
 
-select {
-case msg, ok := <-ch:
-if !ok {
-// Channel closed -> connection closed
-pc.errMu.Lock()
-err := pc.err
-pc.errMu.Unlock()
-if err == nil {
-return nil, io.EOF
-}
-return nil, err
-}
-return msg, nil
-case <-ctx.Done():
-return nil, ctx.Err()
-}
+	return slot.get(ctx)
 }
 
 func (pc *pipelinedConn) Close() {
-_ = pc.conn.Close()
-// readLoop will detect close and clean up
+	_ = pc.conn.Close()
+	// readLoop will detect close and clean up
 }

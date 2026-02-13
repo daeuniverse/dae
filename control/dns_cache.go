@@ -10,7 +10,6 @@ import (
 	"time"
 
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 )
 
 type DnsCache struct {
@@ -21,11 +20,37 @@ type DnsCache struct {
 }
 
 func (c *DnsCache) FillInto(req *dnsmessage.Msg) {
-	req.Answer = deepcopy.Copy(c.Answer).([]dnsmessage.RR)
+	if c.Answer != nil {
+		req.Answer = make([]dnsmessage.RR, len(c.Answer))
+		for i, rr := range c.Answer {
+			req.Answer[i] = dnsmessage.Copy(rr)
+		}
+	}
 	req.Rcode = dnsmessage.RcodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true
 	req.Truncated = false
+}
+
+func (c *DnsCache) Clone() *DnsCache {
+	newCache := &DnsCache{
+		Deadline:         c.Deadline,
+		OriginalDeadline: c.OriginalDeadline,
+	}
+
+	if c.DomainBitmap != nil {
+		newCache.DomainBitmap = make([]uint32, len(c.DomainBitmap))
+		copy(newCache.DomainBitmap, c.DomainBitmap)
+	}
+
+	if c.Answer != nil {
+		newCache.Answer = make([]dnsmessage.RR, len(c.Answer))
+		for i, rr := range c.Answer {
+			newCache.Answer[i] = dnsmessage.Copy(rr)
+		}
+	}
+
+	return newCache
 }
 
 func (c *DnsCache) IncludeIp(ip netip.Addr) bool {
