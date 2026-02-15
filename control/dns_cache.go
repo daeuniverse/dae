@@ -20,6 +20,7 @@ type DnsCache struct {
 }
 
 func (c *DnsCache) FillInto(req *dnsmessage.Msg) {
+	req.Answer = nil
 	if c.Answer != nil {
 		req.Answer = make([]dnsmessage.RR, len(c.Answer))
 		for i, rr := range c.Answer {
