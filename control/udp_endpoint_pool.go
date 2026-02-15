@@ -19,6 +19,8 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 )
 
+var UdpRoutingResultCacheTtl = 300 * time.Millisecond
+
 type UdpHandler func(data []byte, from netip.AddrPort) error
 
 type UdpEndpoint struct {
@@ -35,6 +37,13 @@ type UdpEndpoint struct {
 	// Non-empty indicates this UDP Endpoint is related with a sniffed domain.
 	SniffedDomain string
 	DialTarget    string
+
+	routingMu         sync.RWMutex
+	routingCacheDst   netip.AddrPort
+	routingCacheProto uint8
+	routingCacheAt    time.Time
+	routingCache      bpfRoutingResult
+	hasRoutingCache   bool
 }
 
 func (ue *UdpEndpoint) start() {
@@ -67,7 +76,52 @@ func (ue *UdpEndpoint) Close() error {
 		ue.deadlineTimer.Stop()
 	}
 	ue.mu.Unlock()
+
+	ue.routingMu.Lock()
+	ue.hasRoutingCache = false
+	ue.routingMu.Unlock()
+
 	return ue.conn.Close()
+}
+
+func (ue *UdpEndpoint) GetCachedRoutingResult(dst netip.AddrPort, l4proto uint8) (*bpfRoutingResult, bool) {
+	ttl := UdpRoutingResultCacheTtl
+	if ttl <= 0 {
+		return nil, false
+	}
+
+	ue.routingMu.RLock()
+	defer ue.routingMu.RUnlock()
+
+	if !ue.hasRoutingCache {
+		return nil, false
+	}
+	if ue.routingCacheProto != l4proto || ue.routingCacheDst != dst {
+		return nil, false
+	}
+	if time.Since(ue.routingCacheAt) > ttl {
+		return nil, false
+	}
+
+	result := ue.routingCache
+	return &result, true
+}
+
+func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uint8, result *bpfRoutingResult) {
+	if result == nil {
+		return
+	}
+	if UdpRoutingResultCacheTtl <= 0 {
+		return
+	}
+
+	ue.routingMu.Lock()
+	ue.routingCacheDst = dst
+	ue.routingCacheProto = l4proto
+	ue.routingCacheAt = time.Now()
+	ue.routingCache = *result
+	ue.hasRoutingCache = true
+	ue.routingMu.Unlock()
 }
 
 // UdpEndpointPool is a full-cone udp conn pool

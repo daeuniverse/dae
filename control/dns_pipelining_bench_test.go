@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -131,7 +132,6 @@ func BenchmarkPipelinedConn_Concurrent(b *testing.B) {
 // BenchmarkPipelinedConn_IDAllocation benchmarks ID allocation performance
 func BenchmarkPipelinedConn_IDAllocation(b *testing.B) {
 	pc := &pipelinedConn{
-		pending: sync.Map{},
 		idAlloc: newIdBitmap(),
 		closed:  make(chan struct{}),
 	}
@@ -145,6 +145,45 @@ func BenchmarkPipelinedConn_IDAllocation(b *testing.B) {
 			b.Fatal("Failed to allocate ID:", err)
 		}
 		pc.idAlloc.Release(id)
+	}
+}
+
+func BenchmarkPipelinedConn_IDAllocation_Parallel(b *testing.B) {
+	alloc := newIdBitmap()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			for {
+				id, err := alloc.Allocate()
+				if err == nil {
+					alloc.Release(id)
+					break
+				}
+				runtime.Gosched()
+			}
+		}
+	})
+}
+
+// BenchmarkResponseSlot_Recycle benchmarks responseSlot get/put lifecycle.
+func BenchmarkResponseSlot_Recycle(b *testing.B) {
+	ctx := context.Background()
+	msg := &dnsmessage.Msg{}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		slot := newResponseSlot()
+		slot.set(msg)
+		_, err := slot.get(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		putResponseSlot(slot)
 	}
 }
 
