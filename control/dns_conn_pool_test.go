@@ -9,6 +9,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,52 @@ import (
 	dnsmessage "github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
+	p := newUdpConnPool(8, func(ctx context.Context) (netproxy.Conn, error) {
+		return newTestPipeConn(), nil
+	})
+
+	const workers = 8
+	stop := make(chan struct{})
+	start := make(chan struct{})
+	panicCh := make(chan interface{}, workers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicCh <- r
+				}
+			}()
+
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					p.put(newTestPipeConn())
+				}
+			}
+		}()
+	}
+
+	close(start)
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, p.close())
+	close(stop)
+	wg.Wait()
+
+	select {
+	case r := <-panicCh:
+		t.Fatalf("unexpected panic from concurrent put/close: %v", r)
+	default:
+	}
+}
 
 func newTestPipeConn() netproxy.Conn {
 	client, server := net.Pipe()
