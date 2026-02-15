@@ -25,7 +25,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -81,10 +80,9 @@ type DnsController struct {
 
 	fixedDomainTtl map[string]int
 	// dnsCache uses sync.Map for lock-free concurrent access
-	dnsCache            sync.Map // map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
-	sf                  singleflight.Group
+	dnsCache          sync.Map // map[string]*DnsCache
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
+	sf                singleflight.Group
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -149,24 +147,23 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 		fixedDomainTtl:      option.FixedDomainTtl,
 		dnsCache:            sync.Map{},
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		dnsForwarderCache:   sync.Map{},
 	}, nil
 }
 
 func (c *DnsController) Close() error {
-	c.dnsForwarderCacheMu.Lock()
-	defer c.dnsForwarderCacheMu.Unlock()
-
 	var errs []error
-	for k, forwarder := range c.dnsForwarderCache {
+	c.dnsForwarderCache.Range(func(key, value interface{}) bool {
+		k := key.(dnsForwarderKey)
+		forwarder := value.(DnsForwarder)
 		if forwarder != nil {
 			if err := forwarder.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close dns forwarder %q: %w", k.upstream, err))
 			}
 		}
-		delete(c.dnsForwarderCache, k)
-	}
+		c.dnsForwarderCache.Delete(k)
+		return true
+	})
 
 	return errors.Join(errs...)
 }
@@ -436,7 +433,7 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 		respMsg := res.(*dnsmessage.Msg)
 
 		// Fix the transaction ID for this client
-		respMsgUnique := deepcopy.Copy(respMsg).(*dnsmessage.Msg)
+		respMsgUnique := respMsg.Copy()
 		respMsgUnique.Id = dnsMessage.Id
 
 		// Write response
@@ -523,7 +520,7 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 	}
 
 	// Try to make both A and AAAA lookups.
-	dnsMessage2 := deepcopy.Copy(dnsMessage).(*dnsmessage.Msg)
+	dnsMessage2 := dnsMessage.Copy()
 	dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
 	var qtype2 uint16
 	switch qtype {
@@ -760,6 +757,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
+	var forwarder DnsForwarder
 	// defer in a recursive call will delay Close(), thus we Close() before
 	// the next recursive call. However, a connection cannot be closed twice.
 	// We should set a connClosed flag to avoid it.
@@ -767,22 +765,23 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
-	forwarder, ok := c.dnsForwarderCache[key]
-	if !ok {
-		forwarder, err = newDnsForwarder(upstream, *dialArgument, c.log)
-		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
-			return err
+	if cached, ok := c.dnsForwarderCache.Load(key); ok {
+		forwarder = cached.(DnsForwarder)
+	} else {
+		created, createErr := newDnsForwarder(upstream, *dialArgument, c.log)
+		if createErr != nil {
+			return createErr
 		}
-		c.dnsForwarderCache[key] = forwarder
-	}
-	c.dnsForwarderCacheMu.Unlock()
 
-	if err != nil {
-		return err
+		actual, loaded := c.dnsForwarderCache.LoadOrStore(key, created)
+		if loaded {
+			// Another goroutine won the race; close the redundant instance.
+			_ = created.Close()
+			forwarder = actual.(DnsForwarder)
+		} else {
+			forwarder = created
+		}
 	}
 
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)

@@ -36,6 +36,28 @@ const (
 	QuicReassemblePolicy_Slow
 )
 
+// IsLikelyQuicInitialPacket performs a very cheap header check to filter out
+// obvious non-QUIC datagrams before expensive parsing/decryption.
+func IsLikelyQuicInitialPacket(buf []byte) bool {
+	const minQuicInitialHeaderLen = 7
+	if len(buf) < minQuicInitialHeaderLen {
+		return false
+	}
+	protectedFlag := buf[0]
+
+	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b11) != QuicFlag_HeaderForm_LongHeader {
+		return false
+	}
+	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != QuicFlag_LongPacketType_Initial {
+		return false
+	}
+	if ((protectedFlag >> QuicFlag_FixedBit) & 0b1) == 0 {
+		return false
+	}
+
+	return true
+}
+
 func (s *Sniffer) SniffQuic() (d string, err error) {
 	nextBlock := s.buf.Bytes()[s.quicNextRead:]
 	isQuic := false

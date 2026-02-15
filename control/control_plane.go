@@ -847,18 +847,36 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 				defer data.Put()
 				defer oob.Put()
-				var realDst netip.AddrPort
 				var routingResult *bpfRoutingResult
+				var freshRoutingResult *bpfRoutingResult
 				pktDst := RetrieveOriginalDest(oob)
-				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
-				if err != nil {
-					c.log.Warnf("No AddrPort presented: %v", err)
-					return
-				} else {
-					realDst = pktDst
+				realDst := common.ConvergeAddrPort(pktDst)
+
+				if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
+					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
+						routingResult = cached
+					}
 				}
-				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
+
+				if routingResult == nil {
+					routingResult, err = c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
+					if err != nil {
+						c.log.Warnf("No AddrPort presented: %v", err)
+						return
+					}
+					rrCopy := *routingResult
+					freshRoutingResult = &rrCopy
+				}
+
+				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, realDst, routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
+					return
+				}
+
+				if freshRoutingResult != nil {
+					if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
+						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
+					}
 				}
 			})
 			// if d := time.Since(t); d > 100*time.Millisecond {

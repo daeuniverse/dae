@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/bits"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,61 +33,59 @@ import (
 )
 
 // responseSlot represents a pending DNS request response slot.
-// Uses atomic.Value for lock-free reads and a channel for waiting.
+// It uses a reusable one-element channel to avoid per-request channel reallocation.
 type responseSlot struct {
-	msg  atomic.Value // *dnsmessage.Msg
-	done chan struct{}
+	result chan *dnsmessage.Msg
 }
 
 // responseSlotPool is a pool of responseSlot objects to reduce allocations.
 var responseSlotPool = sync.Pool{
 	New: func() interface{} {
 		return &responseSlot{
-			done: make(chan struct{}),
+			result: make(chan *dnsmessage.Msg, 1),
 		}
 	},
 }
 
 func newResponseSlot() *responseSlot {
-	slot := responseSlotPool.Get().(*responseSlot)
-	// Reset the channel if it was closed
-	select {
-	case <-slot.done:
-		slot.done = make(chan struct{})
-	default:
-	}
-	return slot
+	return responseSlotPool.Get().(*responseSlot)
 }
 
 func putResponseSlot(slot *responseSlot) {
-	// Clear the message reference
-	slot.msg.Store((*dnsmessage.Msg)(nil))
+	// Drain stale result before putting back.
+	select {
+	case <-slot.result:
+	default:
+	}
 	responseSlotPool.Put(slot)
 }
 
 func (s *responseSlot) set(msg *dnsmessage.Msg) {
-	s.msg.Store(msg)
-	close(s.done)
+	// Never block read loop on duplicated/late responses.
+	select {
+	case s.result <- msg:
+	default:
+	}
 }
 
 func (s *responseSlot) get(ctx context.Context) (*dnsmessage.Msg, error) {
 	select {
-	case <-s.done:
-		msg := s.msg.Load()
+	case msg := <-s.result:
 		if msg == nil {
 			return nil, io.ErrUnexpectedEOF
 		}
-		return msg.(*dnsmessage.Msg), nil
+		return msg, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
+const dnsPipelineMaxIDs = 4096
+
 // idBitmap implements O(1) ID allocation using a bitmap
 type idBitmap struct {
-	bitmap [64]uint64 // 4096 bits
-	mu     sync.Mutex
-	next   uint32
+	bitmap [64]atomic.Uint64 // 4096 bits
+	next   atomic.Uint32
 }
 
 func newIdBitmap() *idBitmap {
@@ -94,18 +93,29 @@ func newIdBitmap() *idBitmap {
 }
 
 func (b *idBitmap) Allocate() (uint16, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	start := b.next.Add(1) - 1
+	startWord := (start >> 6) & 63
 
-	for i := 0; i < 4096; i++ {
-		id := (b.next + uint32(i)) % 4096
-		word := id / 64
-		bit := id % 64
+	for i := uint32(0); i < 64; i++ {
+		word := (startWord + i) & 63
 
-		if b.bitmap[word]&(1<<bit) == 0 {
-			b.bitmap[word] |= 1 << bit
-			b.next = (id + 1) % 4096
-			return uint16(id), nil
+		for {
+			old := b.bitmap[word].Load()
+			if old == ^uint64(0) {
+				break // this word is full
+			}
+
+			free := ^old
+			bit := uint32(bits.TrailingZeros64(free))
+			if bit >= 64 {
+				break
+			}
+			mask := uint64(1) << bit
+
+			if b.bitmap[word].CompareAndSwap(old, old|mask) {
+				id := (word << 6) | bit
+				return uint16(id), nil
+			}
 		}
 	}
 
@@ -113,15 +123,20 @@ func (b *idBitmap) Allocate() (uint16, error) {
 }
 
 func (b *idBitmap) Release(id uint16) {
-	if id >= 4096 {
+	if id >= dnsPipelineMaxIDs {
 		return
 	}
+	word := uint32(id) >> 6
+	bit := uint32(id) & 63
+	clearMask := ^(uint64(1) << bit)
 
-	b.mu.Lock()
-	word := id / 64
-	bit := id % 64
-	b.bitmap[word] &^= 1 << bit
-	b.mu.Unlock()
+	for {
+		old := b.bitmap[word].Load()
+		newVal := old & clearMask
+		if old == newVal || b.bitmap[word].CompareAndSwap(old, newVal) {
+			return
+		}
+	}
 }
 
 // channelPool is a pool of channels for DNS response routing.
@@ -402,13 +417,61 @@ func (p *connPool) get(ctx context.Context) (*pipelinedConn, error) {
 	}
 	p.mu.RUnlock()
 
-	slowPath:
-	// Slow path: need to create new connection or clean up pool
+slowPath:
+	// Slow path: clean up and decide whether to scale up.
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.pruneClosedLocked()
 
-	// Clean up closed connections before attempting to get/create
-	var active []*pipelinedConn
+	var selected *pipelinedConn
+	if len(p.conns) > 0 {
+		idx := p.index.Load() % uint32(len(p.conns))
+		selected = p.conns[idx]
+		selectedLoad := selected.pendingCount.Load()
+
+		// If pool is full or current load is low enough, reuse existing connection.
+		if len(p.conns) >= p.maxConns || selectedLoad < connPoolScaleUpPendingThreshold {
+			p.index.Add(1)
+			p.mu.Unlock()
+			return selected, nil
+		}
+	}
+
+	// Need to create a new connection. Unlock first to avoid blocking all get() calls during dial.
+	p.mu.Unlock()
+
+	rawConn, err := p.dialer(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	conn := newPipelinedConn(rawConn)
+
+	// Re-enter critical section: another goroutine may have filled pool while dialing.
+	p.mu.Lock()
+	p.pruneClosedLocked()
+	if len(p.conns) >= p.maxConns {
+		if len(p.conns) > 0 {
+			idx := p.index.Load() % uint32(len(p.conns))
+			selected = p.conns[idx]
+			p.index.Add(1)
+			p.mu.Unlock()
+			conn.Close()
+			return selected, nil
+		}
+		// Defensive: should not happen, but avoid leaking the newly dialed connection.
+		p.mu.Unlock()
+		conn.Close()
+		return nil, fmt.Errorf("conn pool is full but has no active connection")
+	}
+
+	p.conns = append(p.conns, conn)
+	p.index.Add(1)
+	p.mu.Unlock()
+	return conn, nil
+}
+
+func (p *connPool) pruneClosedLocked() {
+	active := p.conns[:0]
 	for _, c := range p.conns {
 		select {
 		case <-c.closed:
@@ -418,36 +481,6 @@ func (p *connPool) get(ctx context.Context) (*pipelinedConn, error) {
 		}
 	}
 	p.conns = active
-
-	var selected *pipelinedConn
-	var selectedLoad int32
-	if len(p.conns) > 0 {
-		idx := p.index.Load() % uint32(len(p.conns))
-		selected = p.conns[idx]
-		selectedLoad = selected.pendingCount.Load()
-
-		// If pool is full or current load is low enough, reuse existing connection.
-		if len(p.conns) >= p.maxConns || selectedLoad < connPoolScaleUpPendingThreshold {
-			p.index.Add(1)
-			return selected, nil
-		}
-	}
-
-	// Create new connection when pool has room and current load suggests contention.
-	if len(p.conns) >= p.maxConns && selected != nil {
-		p.index.Add(1)
-		return selected, nil
-	}
-
-	rawConn, err := p.dialer(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	conn := newPipelinedConn(rawConn)
-	p.conns = append(p.conns, conn)
-	p.index.Add(1)
-	return conn, nil
 }
 
 func (p *connPool) close() error {
@@ -909,8 +942,8 @@ type pipelinedConn struct {
 	conn    netproxy.Conn
 	writeMu sync.Mutex
 
-	// routing: use sync.Map for better concurrent performance
-	pending sync.Map // map[uint16]*responseSlot
+	// pending stores in-flight requests by DNS ID (0..4095), lock-free on hot path.
+	pending [dnsPipelineMaxIDs]atomic.Pointer[responseSlot]
 
 	// ID allocation: use bitmap for O(1) allocation
 	idAlloc *idBitmap
@@ -927,7 +960,6 @@ type pipelinedConn struct {
 func newPipelinedConn(conn netproxy.Conn) *pipelinedConn {
 	pc := &pipelinedConn{
 		conn:    conn,
-		pending: sync.Map{},
 		idAlloc: newIdBitmap(),
 		closed:  make(chan struct{}),
 	}
@@ -947,28 +979,23 @@ func (pc *pipelinedConn) readLoop() {
 		close(pc.closed)
 
 		// Cleanup all pending - close all response slots
-		pc.pending.Range(func(key, value interface{}) bool {
-			if slot, ok := value.(*responseSlot); ok {
+		for i := range pc.pending {
+			if slot := pc.pending[i].Swap(nil); slot != nil {
 				slot.set(nil) // Signal with nil to indicate error
 			}
-			return true
-		})
+		}
 	}()
 
 	for {
 		// Read 2-byte length
-		// We use a small buffer from pool or just stack alloc since it's 2 bytes?
-		// Pool is safer for GC if high throughput.
-		header := pool.Get(2)
-		if _, err := io.ReadFull(pc.conn, header); err != nil {
+		var header [2]byte
+		if _, err := io.ReadFull(pc.conn, header[:]); err != nil {
 			pc.errMu.Lock()
 			pc.err = err
 			pc.errMu.Unlock()
-			pool.Put(header)
 			return
 		}
-		l := binary.BigEndian.Uint16(header)
-		pool.Put(header)
+		l := binary.BigEndian.Uint16(header[:])
 
 		if l == 0 {
 			pc.errMu.Lock()
@@ -998,15 +1025,21 @@ func (pc *pipelinedConn) readLoop() {
 		}
 		pool.Put(buf)
 
-		// Use sync.Map for lock-free pending request lookup
-		if val, ok := pc.pending.LoadAndDelete(msg.Id); ok {
-			slot := val.(*responseSlot)
+		if msg.Id < dnsPipelineMaxIDs {
+			slot := pc.pending[msg.Id].Swap(nil)
+			if slot == nil {
+				continue
+			}
 			slot.set(&msg)
 		}
 	}
 }
 
 func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("invalid DNS request payload: too short")
+	}
+
 	// Allocate ID using bitmap allocator (O(1) time complexity)
 	id, err := pc.idAlloc.Allocate()
 	if err != nil {
@@ -1018,25 +1051,25 @@ func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessag
 	defer putResponseSlot(slot)
 
 	// Store the pending request
-	pc.pending.Store(id, slot)
+	if !pc.pending[id].CompareAndSwap(nil, slot) {
+		pc.idAlloc.Release(id)
+		return nil, fmt.Errorf("pending slot is unexpectedly occupied")
+	}
 	pc.pendingCount.Add(1)
 
 	defer func() {
-		pc.pending.Delete(id)
+		pc.pending[id].CompareAndSwap(slot, nil)
 		pc.idAlloc.Release(id)
 		pc.pendingCount.Add(-1)
 	}()
 
-	// Write request
-	// We need to copy data because we are modifying ID in-place and adding length prefix
-	// data[0:2] is ID.
+	// Write request with pooled contiguous buffer to keep a single write path and avoid mutating caller input.
 	reqLen := len(data)
 	buf := pool.Get(2 + reqLen)
 	defer pool.Put(buf)
 
 	binary.BigEndian.PutUint16(buf[0:2], uint16(reqLen))
 	copy(buf[2:], data)
-	// Update ID in buffer
 	binary.BigEndian.PutUint16(buf[2:4], id)
 
 	pc.writeMu.Lock()
