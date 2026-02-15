@@ -126,9 +126,16 @@ func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uin
 
 // UdpEndpointPool is a full-cone udp conn pool
 type UdpEndpointPool struct {
-	pool        sync.Map
-	createMuMap sync.Map
+	pool          sync.Map
+	createMuMap   map[netip.AddrPort]*endpointCreateMu
+	createMuMapMu sync.Mutex
 }
+
+type endpointCreateMu struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
@@ -139,7 +146,32 @@ type UdpEndpointOptions struct {
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
 
 func NewUdpEndpointPool() *UdpEndpointPool {
-	return &UdpEndpointPool{}
+	return &UdpEndpointPool{
+		createMuMap: make(map[netip.AddrPort]*endpointCreateMu),
+	}
+}
+
+func (p *UdpEndpointPool) acquireCreateMu(lAddr netip.AddrPort) *endpointCreateMu {
+	p.createMuMapMu.Lock()
+	defer p.createMuMapMu.Unlock()
+
+	cm, ok := p.createMuMap[lAddr]
+	if !ok {
+		cm = &endpointCreateMu{}
+		p.createMuMap[lAddr] = cm
+	}
+	cm.refs++
+	return cm
+}
+
+func (p *UdpEndpointPool) releaseCreateMu(lAddr netip.AddrPort, cm *endpointCreateMu) {
+	p.createMuMapMu.Lock()
+	defer p.createMuMapMu.Unlock()
+
+	cm.refs--
+	if cm.refs <= 0 {
+		delete(p.createMuMap, lAddr)
+	}
 }
 
 func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
@@ -165,10 +197,13 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 	_ue, ok := p.pool.Load(lAddr)
 begin:
 	if !ok {
-		createMu, _ := p.createMuMap.LoadOrStore(lAddr, &sync.Mutex{})
-		createMu.(*sync.Mutex).Lock()
-		defer createMu.(*sync.Mutex).Unlock()
-		defer p.createMuMap.Delete(lAddr)
+		createMu := p.acquireCreateMu(lAddr)
+		createMu.mu.Lock()
+		defer func() {
+			createMu.mu.Unlock()
+			p.releaseCreateMu(lAddr, createMu)
+		}()
+
 		_ue, ok = p.pool.Load(lAddr)
 		if ok {
 			goto begin
