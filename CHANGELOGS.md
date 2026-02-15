@@ -14,6 +14,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [Unreleased](#unreleased)
 - [v1.1.0rc1 (Pre-release)](#v110rc1-pre-release)
 - [v1.0.0 (Latest)](#v100-latest)
 - [v0.9.0)](#v090)
@@ -47,6 +48,21 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### Unreleased
+
+#### Features
+
+- feat(dns): add robust DNS forward fallback path for `tcp+udp` upstream (UDP-first with TCP fallback on request failure).
+
+#### Bug Fixes
+
+- fix(dns): report DNS forward failures to dialer health feedback path to improve failover quality.
+- fix(control): harden DNS/UDP connection lifecycle handling in high-concurrency paths.
+
+#### Others
+
+- test(control): add regression tests for DNS fallback, timeout cleanup, and pool concurrency safety.
 
 ### v1.1.0rc1 (Pre-release)
 
