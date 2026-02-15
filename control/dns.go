@@ -1040,8 +1040,8 @@ func (pc *pipelinedConn) readLoop() {
 			return
 		}
 
-		var msg dnsmessage.Msg
-		if err := msg.Unpack(buf); err != nil {
+		respMsg := new(dnsmessage.Msg)
+		if err := respMsg.Unpack(buf); err != nil {
 			// Protocol error, close connection
 			pc.errMu.Lock()
 			pc.err = fmt.Errorf("bad DNS packet: %w", err)
@@ -1051,12 +1051,12 @@ func (pc *pipelinedConn) readLoop() {
 		}
 		pool.Put(buf)
 
-		if msg.Id < dnsPipelineMaxIDs {
-			slot := pc.pending[msg.Id].Swap(nil)
+		if respMsg.Id < dnsPipelineMaxIDs {
+			slot := pc.pending[respMsg.Id].Swap(nil)
 			if slot == nil {
 				continue
 			}
-			slot.set(&msg)
+			slot.set(respMsg)
 		}
 	}
 }
