@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/bits"
@@ -668,6 +669,7 @@ type udpConnPool struct {
 	idleConns   chan *udpConnWithTimestamp
 	dialer      func(context.Context) (netproxy.Conn, error)
 	closed      atomic.Bool
+	opsMu       sync.Mutex
 	maxIdleTime time.Duration // Connections older than this are discarded
 }
 
@@ -692,6 +694,11 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 				return nil, io.ErrClosedPipe
 			}
 
+			if p.closed.Load() {
+				_ = connWithTime.conn.Close()
+				return nil, io.ErrClosedPipe
+			}
+
 			// Check if connection is too old (prevent stale packets)
 			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
 				// Connection expired, close it and try next one
@@ -711,8 +718,12 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 }
 
 func (p *udpConnPool) put(conn netproxy.Conn) {
+	if conn == nil {
+		return
+	}
+
 	if p.closed.Load() {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -722,12 +733,20 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 		lastUsed: time.Now(),
 	}
 
+	p.opsMu.Lock()
+	defer p.opsMu.Unlock()
+
+	if p.closed.Load() {
+		_ = conn.Close()
+		return
+	}
+
 	select {
 	case p.idleConns <- connWithTime:
 		// Returned to pool
 	default:
 		// Pool full, close connection
-		conn.Close()
+		_ = conn.Close()
 	}
 }
 
@@ -735,13 +754,20 @@ func (p *udpConnPool) close() error {
 	if p.closed.Swap(true) {
 		return nil
 	}
-	close(p.idleConns)
-	for connWithTime := range p.idleConns {
-		if connWithTime != nil && connWithTime.conn != nil {
-			connWithTime.conn.Close()
+
+	p.opsMu.Lock()
+	defer p.opsMu.Unlock()
+
+	for {
+		select {
+		case connWithTime := <-p.idleConns:
+			if connWithTime != nil && connWithTime.conn != nil {
+				_ = connWithTime.conn.Close()
+			}
+		default:
+			return nil
 		}
 	}
-	return nil
 }
 
 type DoUDP struct {
@@ -1080,7 +1106,18 @@ func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessag
 		return nil, err
 	}
 
-	return slot.get(ctx)
+	msg, err := slot.get(ctx)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			// Avoid stale-response cross-delivery after ID reuse.
+			// Once a request times out/cancels, late responses are no longer trustworthy
+			// for this transport-level pipeline, so we fail fast by recycling the connection.
+			pc.Close()
+		}
+		return nil, err
+	}
+
+	return msg, nil
 }
 
 func (pc *pipelinedConn) Close() {
