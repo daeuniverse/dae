@@ -387,6 +387,100 @@ type dnsForwarderKey struct {
 	dialArgument dialArgument
 }
 
+var dnsForwarderFactory = newDnsForwarder
+
+func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error) {
+	if c.timeoutExceedCallback == nil || dialArg == nil || err == nil {
+		return
+	}
+	// Caller-driven cancellation should not mark a dialer as unavailable.
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	c.timeoutExceedCallback(dialArg, err)
+}
+
+func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg *dialArgument) (DnsForwarder, error) {
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	if cached, ok := c.dnsForwarderCache.Load(key); ok {
+		return cached.(DnsForwarder), nil
+	}
+
+	created, createErr := dnsForwarderFactory(upstream, *dialArg, c.log)
+	if createErr != nil {
+		return nil, createErr
+	}
+
+	actual, loaded := c.dnsForwarderCache.LoadOrStore(key, created)
+	if loaded {
+		// Another goroutine won the race; close the redundant instance.
+		_ = created.Close()
+		return actual.(DnsForwarder), nil
+	}
+	return created, nil
+}
+
+func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Upstream, dialArg *dialArgument, data []byte) (*dnsmessage.Msg, error) {
+	forwarder, err := c.getOrCreateDnsForwarder(upstream, dialArg)
+	if err != nil {
+		return nil, err
+	}
+
+	respMsg, err := forwarder.ForwardDNS(ctx, data)
+	if err != nil {
+		c.reportDnsForwardFailure(dialArg, err)
+		return nil, err
+	}
+	return respMsg, nil
+}
+
+func (c *DnsController) forwardWithFallback(
+	ctx context.Context,
+	req *udpRequest,
+	upstream *dns.Upstream,
+	primaryDialArg *dialArgument,
+	data []byte,
+) (respMsg *dnsmessage.Msg, usedDialArg *dialArgument, err error) {
+	respMsg, err = c.forwardWithDialArg(ctx, upstream, primaryDialArg, data)
+	if err == nil {
+		return respMsg, primaryDialArg, nil
+	}
+
+	primaryErr := err
+
+	// For tcp+udp upstream, perform immediate same-request fallback:
+	// prefer UDP, fallback to TCP on failure.
+	if upstream == nil || upstream.Scheme != dns.UpstreamScheme_TCP_UDP || primaryDialArg.l4proto != consts.L4ProtoStr_UDP {
+		return nil, primaryDialArg, primaryErr
+	}
+
+	fallbackUpstream := *upstream
+	fallbackUpstream.Scheme = dns.UpstreamScheme_TCP
+
+	fallbackDialArg, chooseErr := c.bestDialerChooser(req, &fallbackUpstream)
+	if chooseErr != nil {
+		return nil, primaryDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback select failed: %v", primaryErr, chooseErr)
+	}
+	if fallbackDialArg == nil || fallbackDialArg.l4proto != consts.L4ProtoStr_TCP {
+		return nil, primaryDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback select returned invalid network", primaryErr)
+	}
+
+	if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(logrus.Fields{
+			"upstream": upstream.String(),
+			"from":     primaryDialArg.l4proto,
+			"to":       fallbackDialArg.l4proto,
+		}).Debugln("DNS fallback to TCP after UDP failure")
+	}
+
+	respMsg, err = c.forwardWithDialArg(ctx, upstream, fallbackDialArg, data)
+	if err != nil {
+		return nil, fallbackDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback failed: %v", primaryErr, err)
+	}
+
+	return respMsg, fallbackDialArg, nil
+}
+
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	return c.HandleWithResponseWriter_(dnsMessage, req, nil)
 }
@@ -749,44 +843,22 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		return err
 	}
 
-	networkType := &dialer.NetworkType{
-		L4Proto:   dialArgument.l4proto,
-		IpVersion: dialArgument.ipversion,
-		IsDns:     true,
-	}
-
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
-	var forwarder DnsForwarder
-	// defer in a recursive call will delay Close(), thus we Close() before
-	// the next recursive call. However, a connection cannot be closed twice.
-	// We should set a connClosed flag to avoid it.
+	usedDialArgument := dialArgument
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
-	if cached, ok := c.dnsForwarderCache.Load(key); ok {
-		forwarder = cached.(DnsForwarder)
-	} else {
-		created, createErr := newDnsForwarder(upstream, *dialArgument, c.log)
-		if createErr != nil {
-			return createErr
-		}
-
-		actual, loaded := c.dnsForwarderCache.LoadOrStore(key, created)
-		if loaded {
-			// Another goroutine won the race; close the redundant instance.
-			_ = created.Close()
-			forwarder = actual.(DnsForwarder)
-		} else {
-			forwarder = created
-		}
-	}
-
-	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
+	respMsg, usedDialArgument, err = c.forwardWithFallback(ctxDial, req, upstream, dialArgument, data)
 	if err != nil {
 		return err
+	}
+
+	networkType := &dialer.NetworkType{
+		L4Proto:   usedDialArgument.l4proto,
+		IpVersion: usedDialArgument.ipversion,
+		IsDns:     true,
 	}
 
 	// Route response.
@@ -835,9 +907,9 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 		fields := logrus.Fields{
 			"network":  networkType.String(),
-			"outbound": dialArgument.bestOutbound.Name,
-			"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
-			"dialer":   dialArgument.bestDialer.Property().Name,
+			"outbound": usedDialArgument.bestOutbound.Name,
+			"policy":   usedDialArgument.bestOutbound.GetSelectionPolicy(),
+			"dialer":   usedDialArgument.bestDialer.Property().Name,
 			"_qname":   qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,
@@ -847,7 +919,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 		switch upstreamIndex {
 		case consts.DnsResponseOutboundIndex_Accept:
-			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
+			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(usedDialArgument.bestTarget))
 		case consts.DnsResponseOutboundIndex_Reject:
 			c.log.WithFields(fields).Infof("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
 		default:
