@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/stretchr/testify/require"
 )
 
 var testPacketSnifferData = []string{
@@ -70,4 +72,20 @@ func TestPacketSniffer_Mismatched(t *testing.T) {
 		t.Fatal("unexpected found", domain)
 		return
 	}
+}
+
+func TestPacketSnifferPool_TtlExpire(t *testing.T) {
+	p := NewPacketSnifferPool()
+	key := PacketSnifferKey{
+		LAddr: netip.MustParseAddrPort("10.0.0.1:12345"),
+		RAddr: netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+
+	ps, isNew := p.GetOrCreate(key, &PacketSnifferOptions{Ttl: 80 * time.Millisecond})
+	require.True(t, isNew)
+	require.NotNil(t, ps)
+
+	require.Eventually(t, func() bool {
+		return p.Get(key) == nil
+	}, 2*time.Second, 20*time.Millisecond)
 }

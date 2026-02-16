@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -24,8 +25,8 @@ import (
 
 type Anyfrom struct {
 	*net.UDPConn
-	deadlineTimer *time.Timer
 	ttl           time.Duration
+	expiresAtNano atomic.Int64
 	// GSO support is modified from quic-go with many thanks.
 	gso         bool
 	gotGSOError bool
@@ -38,9 +39,14 @@ func (a *Anyfrom) afterWrite(err error) {
 	a.RefreshTtl()
 }
 func (a *Anyfrom) RefreshTtl() {
-	if a.deadlineTimer != nil {
-		a.deadlineTimer.Reset(a.ttl)
+	if a.ttl > 0 {
+		a.expiresAtNano.Store(time.Now().Add(a.ttl).UnixNano())
 	}
+}
+
+func (a *Anyfrom) IsExpired(nowNano int64) bool {
+	expiresAt := a.expiresAtNano.Load()
+	return expiresAt > 0 && nowNano >= expiresAt
 }
 func (a *Anyfrom) SupportGso(size int) bool {
 	if size > math.MaxUint16 {
@@ -167,28 +173,42 @@ func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
 }
 
 // AnyfromPool is a full-cone udp listener pool
-type AnyfromPool struct {
-	pool map[string]*Anyfrom
+const (
+	anyfromPoolShardCount = 64
+	anyfromJanitorPeriod  = 500 * time.Millisecond
+)
+
+type anyfromPoolShard struct {
 	mu   sync.RWMutex
+	pool map[netip.AddrPort]*Anyfrom
+}
+
+type AnyfromPool struct {
+	shards      [anyfromPoolShardCount]anyfromPoolShard
+	janitorOnce sync.Once
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
 func NewAnyfromPool() *AnyfromPool {
-	return &AnyfromPool{
-		pool: make(map[string]*Anyfrom, 64),
-		mu:   sync.RWMutex{},
+	p := &AnyfromPool{}
+	for i := 0; i < anyfromPoolShardCount; i++ {
+		p.shards[i].pool = make(map[netip.AddrPort]*Anyfrom, 16)
 	}
+	p.startJanitor()
+	return p
 }
 
-func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
-	p.mu.RLock()
-	af, ok := p.pool[lAddr]
+func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
+	shard := p.shardFor(lAddr)
+	shard.mu.RLock()
+	af, ok := shard.pool[lAddr]
 	if !ok {
-		p.mu.RUnlock()
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if af, ok = p.pool[lAddr]; ok {
+		shard.mu.RUnlock()
+		shard.mu.Lock()
+		defer shard.mu.Unlock()
+		if af, ok = shard.pool[lAddr]; ok {
+			af.RefreshTtl()
 			return af, false, nil
 		}
 		// Create an Anyfrom.
@@ -202,7 +222,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 		var err error
 		var pc net.PacketConn
 		GetDaeNetns().With(func() error {
-			pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+			pc, err = d.ListenPacket(context.Background(), "udp", lAddr.String())
 			return nil
 		})
 		if err != nil {
@@ -210,29 +230,59 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 		}
 		uConn := pc.(*net.UDPConn)
 		af = &Anyfrom{
-			UDPConn:       uConn,
-			deadlineTimer: nil,
-			ttl:           ttl,
-			gotGSOError:   false,
-			gso:           isGSOSupported(uConn),
+			UDPConn:     uConn,
+			ttl:         ttl,
+			gotGSOError: false,
+			gso:         isGSOSupported(uConn),
 		}
 
 		if ttl > 0 {
-			af.deadlineTimer = time.AfterFunc(ttl, func() {
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				_af := p.pool[lAddr]
-				if _af == af {
-					delete(p.pool, lAddr)
-					af.Close()
-				}
-			})
-			p.pool[lAddr] = af
+			af.RefreshTtl()
+			shard.pool[lAddr] = af
 		}
 		return af, true, nil
 	} else {
 		af.RefreshTtl()
-		p.mu.RUnlock()
+		shard.mu.RUnlock()
 		return af, false, nil
 	}
+}
+
+func (p *AnyfromPool) shardFor(lAddr netip.AddrPort) *anyfromPoolShard {
+	idx := int(hashAddrPort(lAddr) & uint64(anyfromPoolShardCount-1))
+	return &p.shards[idx]
+}
+
+func (p *AnyfromPool) startJanitor() {
+	p.janitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(anyfromJanitorPeriod)
+			defer ticker.Stop()
+
+			for now := range ticker.C {
+				nowNano := now.UnixNano()
+				for i := 0; i < anyfromPoolShardCount; i++ {
+					shard := &p.shards[i]
+					type expiredItem struct {
+						key netip.AddrPort
+						af  *Anyfrom
+					}
+					var expired []expiredItem
+
+					shard.mu.Lock()
+					for key, af := range shard.pool {
+						if af.IsExpired(nowNano) {
+							delete(shard.pool, key)
+							expired = append(expired, expiredItem{key: key, af: af})
+						}
+					}
+					shard.mu.Unlock()
+
+					for _, item := range expired {
+						_ = item.af.Close()
+					}
+				}
+			}
+		}()
+	})
 }
