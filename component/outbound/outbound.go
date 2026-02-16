@@ -20,6 +20,7 @@ import (
 	_ "github.com/daeuniverse/outbound/protocol/hysteria2"
 	_ "github.com/daeuniverse/outbound/protocol/juicity"
 	_ "github.com/daeuniverse/outbound/protocol/shadowsocks"
+	_ "github.com/daeuniverse/outbound/protocol/shadowsocks_2022"
 	_ "github.com/daeuniverse/outbound/protocol/trojanc"
 	_ "github.com/daeuniverse/outbound/protocol/tuic"
 	_ "github.com/daeuniverse/outbound/protocol/vless"
