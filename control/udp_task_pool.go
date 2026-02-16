@@ -50,9 +50,7 @@ func (q *UdpTaskQueue) convoy() {
 			if ok && current == q && q.refs.Load() == 0 && len(q.ch) == 0 {
 				delete(q.shard.m, q.key)
 				q.shard.mu.Unlock()
-				if len(q.ch) == 0 {
-					q.p.queueChPool.Put(q.ch)
-				}
+				q.p.queueChPool.Put(q.ch)
 				return
 			}
 			q.shard.mu.Unlock()
@@ -86,19 +84,14 @@ func NewUdpTaskPool() *UdpTaskPool {
 
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
 func (p *UdpTaskPool) EmitTask(key netip.AddrPort, task UdpTask) {
-	for {
-		q := p.acquireQueue(key)
-		select {
-		case q.ch <- task:
-			q.refs.Add(-1)
-			return
-		default:
-			// Queue is full; block send to preserve packet order for this key.
-			q.ch <- task
-			q.refs.Add(-1)
-			return
-		}
+	q := p.acquireQueue(key)
+	select {
+	case q.ch <- task:
+	default:
+		// Queue is full; block send to preserve packet order for this key.
+		q.ch <- task
 	}
+	q.refs.Add(-1)
 }
 
 func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
