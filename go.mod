@@ -50,14 +50,11 @@ require (
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/nwaples/rardecode v1.1.3 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
-	github.com/olicesx/quic-go v0.0.0-20260226044315-bb65418d151a // indirect
 	github.com/onsi/ginkgo/v2 v2.22.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
-	github.com/sagernet/sing v0.6.0 // indirect
-	github.com/sagernet/sing-shadowtls v0.2.0 // indirect
 	github.com/samber/lo v1.52.0 // indirect
 	github.com/samber/oops v1.19.4 // indirect
 	github.com/ulikunitz/xz v0.5.12 // indirect
@@ -101,7 +98,7 @@ require (
 	google.golang.org/grpc v1.65.0 // indirect
 )
 
-replace github.com/daeuniverse/outbound => ../outbound
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260216053822-bb1ed93c1e79
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
