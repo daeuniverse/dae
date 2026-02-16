@@ -847,39 +847,57 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	// Wait for response
 	respBuf := pool.GetFullCap(consts.EthernetMtu)
 	defer pool.Put(respBuf)
-	n, err := conn.Read(respBuf)
-	if err != nil {
-		// If timeout, we don't mark connection as bad to avoid expensive reconstruction
-		// (especially for SOCKS5 tunnel). Stale packets might be an issue but
-		// usually less critical than connection storm.
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	const maxStaleResponses = 8
+	staleResponses := 0
+
+	for {
+		n, err := conn.Read(respBuf)
+		if err != nil {
+			// If timeout, we don't mark connection as bad to avoid expensive reconstruction
+			// (especially for SOCKS5 tunnel). Stale packets might be an issue but
+			// usually less critical than connection storm.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return nil, err
+			}
+			conn.Close() // Mark as bad
+			badConn = true
 			return nil, err
 		}
-		conn.Close() // Mark as bad
-		badConn = true
-		return nil, err
-	}
 
-	// Validate DNS ID to detect stale packets
-	if n >= 2 {
+		if n < 2 {
+			staleResponses++
+			if staleResponses > maxStaleResponses {
+				conn.Close()
+				badConn = true
+				return nil, fmt.Errorf("too many malformed UDP DNS responses")
+			}
+			continue
+		}
+
 		responseID := binary.BigEndian.Uint16(respBuf[0:2])
 		if responseID != originalID {
-			// This is a stale packet from a previous request
-			// Log and close the connection to force fresh one
-			if d.log != nil {
-				d.log.Warnf("UDP DNS response ID mismatch: expected %d, got %d (stale packet detected)", originalID, responseID)
+			// Stale packet from previous request, discard and continue waiting
+			// for the response with matching request ID.
+			staleResponses++
+			if d.log != nil && d.log.IsLevelEnabled(logrus.DebugLevel) {
+				d.log.Debugf("discard stale UDP DNS response: expected %d, got %d", originalID, responseID)
 			}
+			if staleResponses > maxStaleResponses {
+				conn.Close()
+				badConn = true
+				return nil, fmt.Errorf("too many stale UDP DNS responses")
+			}
+			continue
+		}
+
+		var msg dnsmessage.Msg
+		if err = msg.Unpack(respBuf[:n]); err != nil {
 			conn.Close()
 			badConn = true
-			return nil, fmt.Errorf("DNS response ID mismatch: stale packet")
+			return nil, err
 		}
+		return &msg, nil
 	}
-
-	var msg dnsmessage.Msg
-	if err = msg.Unpack(respBuf[:n]); err != nil {
-		return nil, err
-	}
-	return &msg, nil
 }
 
 func (d *DoUDP) Close() error {
