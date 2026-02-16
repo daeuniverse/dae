@@ -518,20 +518,6 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 	}
 
 	if sfKey != "" && !dnsMessage.Response {
-		if resp := c.LookupDnsRespCache_(dnsMessage, sfKey, false); resp != nil {
-			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
-				q := dnsMessage.Question[0]
-				if req != nil {
-					c.log.Debugf("UDP(DNS) %v <-> Cache(sf-bypass): %v %v",
-						RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-					)
-				} else {
-					c.log.Debugf("UDP(DNS) Cache(sf-bypass): %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
-				}
-			}
-			return c.writeCachedResponse(resp, req, responseWriter)
-		}
-
 		// execute via singleflight
 		res, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
 			// This goroutine performs the actual resolution.
