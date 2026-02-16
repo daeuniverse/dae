@@ -60,7 +60,6 @@ jobs:
           test-name: dae-test
           image-version: ${{ matrix.kernel }}
           host-mount: ./
-          dns-resolver: '1.1.1.1'
           install-dependencies: 'true'
           cmd: |
             chmod +x /host/dae/dae
