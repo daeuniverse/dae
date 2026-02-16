@@ -50,6 +50,7 @@ var (
 var (
 	UnspecifiedAddressA    = netip.MustParseAddr("0.0.0.0")
 	UnspecifiedAddressAAAA = netip.MustParseAddr("::")
+	DnsCacheRouteRefreshInterval = time.Second
 )
 
 type DnsControllerOption struct {
@@ -193,9 +194,13 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 	if !deadline.After(time.Now()) {
 		return nil
 	}
-	if err := c.cacheAccessCallback(cache); err != nil {
-		c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
-		return nil
+	if c.cacheAccessCallback != nil {
+		if cache.ShouldRefreshRouteBinding(time.Now(), DnsCacheRouteRefreshInterval) {
+			if err := c.cacheAccessCallback(cache); err != nil {
+				c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
+				return nil
+			}
+		}
 	}
 	return cache
 }
@@ -336,6 +341,7 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	if err = c.cacheAccessCallback(newCache); err != nil {
 		return err
 	}
+	newCache.MarkRouteBindingRefreshed(now)
 
 	return nil
 }
@@ -512,6 +518,20 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 	}
 
 	if sfKey != "" && !dnsMessage.Response {
+		if resp := c.LookupDnsRespCache_(dnsMessage, sfKey, false); resp != nil {
+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+				q := dnsMessage.Question[0]
+				if req != nil {
+					c.log.Debugf("UDP(DNS) %v <-> Cache(sf-bypass): %v %v",
+						RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
+					)
+				} else {
+					c.log.Debugf("UDP(DNS) Cache(sf-bypass): %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
+				}
+			}
+			return c.writeCachedResponse(resp, req, responseWriter)
+		}
+
 		// execute via singleflight
 		res, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
 			// This goroutine performs the actual resolution.
@@ -539,6 +559,9 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 		data, err := respMsgUnique.Pack()
 		if err != nil {
 			return fmt.Errorf("pack DNS packet: %w", err)
+		}
+		if req == nil || req.lConn == nil {
+			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
 		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 			return err
@@ -709,22 +732,19 @@ func (c *DnsController) handleWithResponseWriter_(
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
 		if needResp {
-			if responseWriter != nil {
-				var respMsg dnsmessage.Msg
-				if err = respMsg.Unpack(resp); err != nil {
-					return fmt.Errorf("failed to unpack DNS response: %w", err)
-				}
-				return responseWriter.WriteMsg(&respMsg)
-			}
-			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-				return fmt.Errorf("failed to write cached DNS resp: %w", err)
+			if err = c.writeCachedResponse(resp, req, responseWriter); err != nil {
+				return err
 			}
 		}
 		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
 			q := dnsMessage.Question[0]
-			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-				RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-			)
+			if req != nil {
+				c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
+					RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
+				)
+			} else {
+				c.log.Debugf("UDP(DNS) Cache: %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
+			}
 		}
 		return nil
 	}
@@ -751,6 +771,24 @@ func (c *DnsController) handleWithResponseWriter_(
 // sendReject_ send empty answer.
 func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	return c.sendRejectWithResponseWriter_(dnsMessage, req, nil)
+}
+
+func (c *DnsController) writeCachedResponse(resp []byte, req *udpRequest, responseWriter dnsmessage.ResponseWriter) error {
+	if responseWriter != nil {
+		var respMsg dnsmessage.Msg
+		if err := respMsg.Unpack(resp); err != nil {
+			return fmt.Errorf("failed to unpack DNS response: %w", err)
+		}
+		return responseWriter.WriteMsg(&respMsg)
+	}
+
+	if req == nil || req.lConn == nil {
+		return fmt.Errorf("dns request connection is nil for cached response")
+	}
+	if err := sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		return fmt.Errorf("failed to write cached DNS resp: %w", err)
+	}
+	return nil
 }
 
 // sendRefusedWithResponseWriter_ sends REFUSED response when overload protection is triggered.
