@@ -17,10 +17,19 @@ const (
 )
 
 func hashAddrPort(ap netip.AddrPort) uint64 {
-	a := ap.Addr().As16()
-	hi := binary.BigEndian.Uint64(a[:8])
-	lo := binary.BigEndian.Uint64(a[8:])
+	addr := ap.Addr()
 	p := uint64(ap.Port())
+
+	var hi, lo uint64
+	if addr.Is4() {
+		// Fast path for IPv4 traffic.
+		a4 := addr.As4()
+		lo = uint64(binary.BigEndian.Uint32(a4[:]))
+	} else {
+		a16 := addr.As16()
+		hi = binary.BigEndian.Uint64(a16[:8])
+		lo = binary.BigEndian.Uint64(a16[8:])
+	}
 
 	// 低开销混合：避免逐字节循环，减少 hot path 指令数。
 	h := hi ^ bits.RotateLeft64(lo, 17) ^ (p << 48) ^ p

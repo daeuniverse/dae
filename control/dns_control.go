@@ -183,6 +183,7 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 		return nil
 	}
 	cache = val.(*DnsCache)
+	now := time.Now()
 	var deadline time.Time
 	if !ignoreFixedTtl {
 		deadline = cache.Deadline
@@ -191,11 +192,11 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 	}
 	// We should make sure the cache did not expire, or
 	// return nil and request a new lookup to refresh the cache.
-	if !deadline.After(time.Now()) {
+	if !deadline.After(now) {
 		return nil
 	}
 	if c.cacheAccessCallback != nil {
-		if cache.ShouldRefreshRouteBinding(time.Now(), DnsCacheRouteRefreshInterval) {
+		if cache.ShouldRefreshRouteBinding(now, DnsCacheRouteRefreshInterval) {
 			if err := c.cacheAccessCallback(cache); err != nil {
 				c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
 				return nil
