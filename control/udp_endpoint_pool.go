@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -21,13 +22,14 @@ import (
 
 var UdpRoutingResultCacheTtl = 300 * time.Millisecond
 
+const udpEndpointCreateShardCount = 64
+const udpEndpointJanitorInterval = 250 * time.Millisecond
+
 type UdpHandler func(data []byte, from netip.AddrPort) error
 
 type UdpEndpoint struct {
-	conn netproxy.PacketConn
-	// mu protects deadlineTimer
-	mu            sync.Mutex
-	deadlineTimer *time.Timer
+	conn          netproxy.PacketConn
+	expiresAtNano atomic.Int64
 	handler       UdpHandler
 	NatTimeout    time.Duration
 
@@ -54,16 +56,11 @@ func (ue *UdpEndpoint) start() {
 		if err != nil {
 			break
 		}
-		ue.mu.Lock()
-		ue.deadlineTimer.Reset(ue.NatTimeout)
-		ue.mu.Unlock()
+		ue.RefreshTtl()
 		if err = ue.handler(buf[:n], from); err != nil {
 			break
 		}
 	}
-	ue.mu.Lock()
-	ue.deadlineTimer.Stop()
-	ue.mu.Unlock()
 }
 
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
@@ -71,17 +68,25 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 }
 
 func (ue *UdpEndpoint) Close() error {
-	ue.mu.Lock()
-	if ue.deadlineTimer != nil {
-		ue.deadlineTimer.Stop()
-	}
-	ue.mu.Unlock()
+	ue.expiresAtNano.Store(0)
 
 	ue.routingMu.Lock()
 	ue.hasRoutingCache = false
 	ue.routingMu.Unlock()
 
 	return ue.conn.Close()
+}
+
+func (ue *UdpEndpoint) RefreshTtl() {
+	if ue.NatTimeout <= 0 {
+		return
+	}
+	ue.expiresAtNano.Store(time.Now().Add(ue.NatTimeout).UnixNano())
+}
+
+func (ue *UdpEndpoint) IsExpired(nowNano int64) bool {
+	expiresAt := ue.expiresAtNano.Load()
+	return expiresAt > 0 && nowNano >= expiresAt
 }
 
 func (ue *UdpEndpoint) GetCachedRoutingResult(dst netip.AddrPort, l4proto uint8) (*bpfRoutingResult, bool) {
@@ -127,13 +132,8 @@ func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uin
 // UdpEndpointPool is a full-cone udp conn pool
 type UdpEndpointPool struct {
 	pool          sync.Map
-	createMuMap   map[netip.AddrPort]*endpointCreateMu
-	createMuMapMu sync.Mutex
-}
-
-type endpointCreateMu struct {
-	mu   sync.Mutex
-	refs int
+	createMuShard [udpEndpointCreateShardCount]sync.Mutex
+	janitorOnce   sync.Once
 }
 
 type UdpEndpointOptions struct {
@@ -146,32 +146,9 @@ type UdpEndpointOptions struct {
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
 
 func NewUdpEndpointPool() *UdpEndpointPool {
-	return &UdpEndpointPool{
-		createMuMap: make(map[netip.AddrPort]*endpointCreateMu),
-	}
-}
-
-func (p *UdpEndpointPool) acquireCreateMu(lAddr netip.AddrPort) *endpointCreateMu {
-	p.createMuMapMu.Lock()
-	defer p.createMuMapMu.Unlock()
-
-	cm, ok := p.createMuMap[lAddr]
-	if !ok {
-		cm = &endpointCreateMu{}
-		p.createMuMap[lAddr] = cm
-	}
-	cm.refs++
-	return cm
-}
-
-func (p *UdpEndpointPool) releaseCreateMu(lAddr netip.AddrPort, cm *endpointCreateMu) {
-	p.createMuMapMu.Lock()
-	defer p.createMuMapMu.Unlock()
-
-	cm.refs--
-	if cm.refs <= 0 {
-		delete(p.createMuMap, lAddr)
-	}
+	p := &UdpEndpointPool{}
+	p.startJanitor()
+	return p
 }
 
 func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
@@ -195,18 +172,16 @@ func (p *UdpEndpointPool) Get(lAddr netip.AddrPort) (udpEndpoint *UdpEndpoint, o
 
 func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
 	_ue, ok := p.pool.Load(lAddr)
-begin:
 	if !ok {
-		createMu := p.acquireCreateMu(lAddr)
-		createMu.mu.Lock()
-		defer func() {
-			createMu.mu.Unlock()
-			p.releaseCreateMu(lAddr, createMu)
-		}()
+		mu := p.createMuFor(lAddr)
+		mu.Lock()
+		defer mu.Unlock()
 
 		_ue, ok = p.pool.Load(lAddr)
 		if ok {
-			goto begin
+			ue := _ue.(*UdpEndpoint)
+			ue.RefreshTtl()
+			return ue, false, nil
 		}
 		// Create an UdpEndpoint.
 		if createOption == nil {
@@ -234,7 +209,6 @@ begin:
 		}
 		ue := &UdpEndpoint{
 			conn:          udpConn.(netproxy.PacketConn),
-			deadlineTimer: nil,
 			handler:       createOption.Handler,
 			NatTimeout:    createOption.NatTimeout,
 			Dialer:        dialOption.Dialer,
@@ -242,26 +216,41 @@ begin:
 			SniffedDomain: dialOption.SniffedDomain,
 			DialTarget:    dialOption.Target,
 		}
-		ue.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
-			if _ue, ok := p.pool.LoadAndDelete(lAddr); ok {
-				if _ue == ue {
-					ue.Close()
-				} else {
-					// FIXME: ?
-				}
-			}
-		})
+		ue.RefreshTtl()
 		_ue = ue
 		p.pool.Store(lAddr, ue)
 		// Receive UDP messages.
 		go ue.start()
 		isNew = true
-	} else {
-		ue := _ue.(*UdpEndpoint)
-		// Postpone the deadline.
-		ue.mu.Lock()
-		ue.deadlineTimer.Reset(ue.NatTimeout)
-		ue.mu.Unlock()
 	}
+	ue := _ue.(*UdpEndpoint)
+	ue.RefreshTtl()
 	return _ue.(*UdpEndpoint), isNew, nil
+}
+
+func (p *UdpEndpointPool) createMuFor(lAddr netip.AddrPort) *sync.Mutex {
+	idx := int(hashAddrPort(lAddr) & uint64(udpEndpointCreateShardCount-1))
+	return &p.createMuShard[idx]
+}
+
+func (p *UdpEndpointPool) startJanitor() {
+	p.janitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(udpEndpointJanitorInterval)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				nowNano := now.UnixNano()
+				p.pool.Range(func(key, value any) bool {
+					ue := value.(*UdpEndpoint)
+					if !ue.IsExpired(nowNano) {
+						return true
+					}
+					if _ue, ok := p.pool.LoadAndDelete(key); ok && _ue == ue {
+						_ = ue.Close()
+					}
+					return true
+				})
+			}
+		}()
+	})
 }

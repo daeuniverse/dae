@@ -9,31 +9,42 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
 )
 
 const (
-	PacketSnifferTtl = 3 * time.Second
+	PacketSnifferTtl              = 3 * time.Second
+	packetSnifferCreateShardCount = 64
+	packetSnifferJanitorInterval  = 250 * time.Millisecond
 )
 
 type PacketSniffer struct {
 	*sniffing.Sniffer
-	deadlineTimer *time.Timer
 	Mu            sync.Mutex
+	ttl           time.Duration
+	expiresAtNano atomic.Int64
 }
 
-type packetCreateMu struct {
-	mu   sync.Mutex
-	refs int
+func (ps *PacketSniffer) RefreshTtl() {
+	if ps.ttl <= 0 {
+		return
+	}
+	ps.expiresAtNano.Store(time.Now().Add(ps.ttl).UnixNano())
+}
+
+func (ps *PacketSniffer) IsExpired(nowNano int64) bool {
+	expiresAt := ps.expiresAtNano.Load()
+	return expiresAt > 0 && nowNano >= expiresAt
 }
 
 // PacketSnifferPool is a full-cone udp conn pool
 type PacketSnifferPool struct {
 	pool          sync.Map
-	createMuMap   map[PacketSnifferKey]*packetCreateMu
-	createMuMapMu sync.Mutex
+	createMuShard [packetSnifferCreateShardCount]sync.Mutex
+	janitorOnce   sync.Once
 }
 type PacketSnifferOptions struct {
 	Ttl time.Duration
@@ -46,32 +57,9 @@ type PacketSnifferKey struct {
 var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
 
 func NewPacketSnifferPool() *PacketSnifferPool {
-	return &PacketSnifferPool{
-		createMuMap: make(map[PacketSnifferKey]*packetCreateMu),
-	}
-}
-
-func (p *PacketSnifferPool) acquireCreateMu(key PacketSnifferKey) *packetCreateMu {
-	p.createMuMapMu.Lock()
-	defer p.createMuMapMu.Unlock()
-
-	cm, ok := p.createMuMap[key]
-	if !ok {
-		cm = &packetCreateMu{}
-		p.createMuMap[key] = cm
-	}
-	cm.refs++
-	return cm
-}
-
-func (p *PacketSnifferPool) releaseCreateMu(key PacketSnifferKey, cm *packetCreateMu) {
-	p.createMuMapMu.Lock()
-	defer p.createMuMapMu.Unlock()
-
-	cm.refs--
-	if cm.refs <= 0 {
-		delete(p.createMuMap, key)
-	}
+	p := &PacketSnifferPool{}
+	p.startJanitor()
+	return p
 }
 
 func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
@@ -94,18 +82,14 @@ func (p *PacketSnifferPool) Get(key PacketSnifferKey) *PacketSniffer {
 
 func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
 	_qs, ok := p.pool.Load(key)
-begin:
 	if !ok {
-		createMu := p.acquireCreateMu(key)
-		createMu.mu.Lock()
-		defer func() {
-			createMu.mu.Unlock()
-			p.releaseCreateMu(key, createMu)
-		}()
+		mu := p.createMuFor(key)
+		mu.Lock()
+		defer mu.Unlock()
 
 		_qs, ok = p.pool.Load(key)
 		if ok {
-			goto begin
+			return _qs.(*PacketSniffer), false
 		}
 		// Create an PacketSniffer.
 		if createOption == nil {
@@ -116,23 +100,44 @@ begin:
 		}
 
 		qs = &PacketSniffer{
-			Sniffer:       sniffing.NewPacketSniffer(nil, createOption.Ttl),
-			Mu:            sync.Mutex{},
-			deadlineTimer: nil,
+			Sniffer: sniffing.NewPacketSniffer(nil, createOption.Ttl),
+			Mu:      sync.Mutex{},
+			ttl:     createOption.Ttl,
 		}
-		qs.deadlineTimer = time.AfterFunc(createOption.Ttl, func() {
-			if _qs, ok := p.pool.LoadAndDelete(key); ok {
-				if _qs.(*PacketSniffer) == qs {
-					qs.Close()
-				} else {
-					// FIXME: ?
-				}
-			}
-		})
+		qs.RefreshTtl()
 		_qs = qs
 		p.pool.Store(key, qs)
 		// Receive UDP messages.
 		isNew = true
 	}
-	return _qs.(*PacketSniffer), isNew
+	qs = _qs.(*PacketSniffer)
+	qs.RefreshTtl()
+	return qs, isNew
+}
+
+func (p *PacketSnifferPool) createMuFor(key PacketSnifferKey) *sync.Mutex {
+	idx := int(hashPacketSnifferKey(key) & uint64(packetSnifferCreateShardCount-1))
+	return &p.createMuShard[idx]
+}
+
+func (p *PacketSnifferPool) startJanitor() {
+	p.janitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(packetSnifferJanitorInterval)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				nowNano := now.UnixNano()
+				p.pool.Range(func(key, value any) bool {
+					ps := value.(*PacketSniffer)
+					if !ps.IsExpired(nowNano) {
+						return true
+					}
+					if _ps, ok := p.pool.LoadAndDelete(key); ok && _ps == ps {
+						ps.Close()
+					}
+					return true
+				})
+			}
+		}()
+	})
 }

@@ -54,7 +54,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
 	if err != nil {
 		return
 	}

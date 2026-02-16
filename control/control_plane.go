@@ -832,25 +832,21 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 				break
 			}
+			pktDst := RetrieveOriginalDest(oob[:oobn])
+			realDst := common.ConvergeAddrPort(pktDst)
 			newBuf := pool.Get(n)
 			copy(newBuf, buf[:n])
-			newOob := pool.Get(oobn)
-			copy(newOob, oob[:oobn])
 			newSrc := src
 			convergeSrc := common.ConvergeAddrPort(src)
 			// Debug:
 			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+			DefaultUdpTaskPool.EmitTask(convergeSrc, func() {
 				data := newBuf
-				oob := newOob
 				src := newSrc
 
 				defer data.Put()
-				defer oob.Put()
 				var routingResult *bpfRoutingResult
 				var freshRoutingResult *bpfRoutingResult
-				pktDst := RetrieveOriginalDest(oob)
-				realDst := common.ConvergeAddrPort(pktDst)
 
 				if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
 					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {

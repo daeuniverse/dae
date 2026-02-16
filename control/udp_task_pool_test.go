@@ -6,6 +6,7 @@
 package control
 
 import (
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 func TestUdpTaskPool_PreserveOrderPerKey(t *testing.T) {
 	pool := NewUdpTaskPool()
+	key := netip.MustParseAddrPort("127.0.0.1:10001")
 
 	const n = 200
 	got := make([]int, 0, n)
@@ -24,7 +26,7 @@ func TestUdpTaskPool_PreserveOrderPerKey(t *testing.T) {
 
 	for i := 0; i < n; i++ {
 		idx := i
-		pool.EmitTask("same-key", func() {
+		pool.EmitTask(key, func() {
 			mu.Lock()
 			got = append(got, idx)
 			mu.Unlock()
@@ -49,7 +51,7 @@ func TestUdpTaskPool_ConcurrentDifferentKeys(t *testing.T) {
 	const tasks = 40
 
 	for i := 0; i < tasks; i++ {
-		key := "k" + string(rune('a'+(i%8)))
+		key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(11000+i%8))
 		pool.EmitTask(key, func() {
 			cur := active.Add(1)
 			for {
@@ -75,13 +77,14 @@ func TestUdpTaskPool_RecreateQueueAfterIdle(t *testing.T) {
 	defer func() { DefaultNatTimeout = oldTimeout }()
 
 	pool := NewUdpTaskPool()
+	key := netip.MustParseAddrPort("127.0.0.1:10002")
 
 	var count atomic.Int32
-	pool.EmitTask("idle-key", func() { count.Add(1) })
+	pool.EmitTask(key, func() { count.Add(1) })
 	require.Eventually(t, func() bool { return count.Load() == 1 }, time.Second, 5*time.Millisecond)
 
 	// Wait for idle GC and re-emit task. It should still be executed successfully.
 	time.Sleep(2 * DefaultNatTimeout)
-	pool.EmitTask("idle-key", func() { count.Add(1) })
+	pool.EmitTask(key, func() { count.Add(1) })
 	require.Eventually(t, func() bool { return count.Load() == 2 }, time.Second, 5*time.Millisecond)
 }
