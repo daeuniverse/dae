@@ -7,6 +7,7 @@ package control
 
 import (
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	dnsmessage "github.com/miekg/dns"
@@ -17,6 +18,24 @@ type DnsCache struct {
 	Answer           []dnsmessage.RR
 	Deadline         time.Time
 	OriginalDeadline time.Time // This field is not impacted by `fixed_domain_ttl`.
+	lastRouteSyncNano atomic.Int64
+}
+
+func (c *DnsCache) MarkRouteBindingRefreshed(now time.Time) {
+	c.lastRouteSyncNano.Store(now.UnixNano())
+}
+
+func (c *DnsCache) ShouldRefreshRouteBinding(now time.Time, minInterval time.Duration) bool {
+	if minInterval <= 0 {
+		return true
+	}
+
+	nowNano := now.UnixNano()
+	last := c.lastRouteSyncNano.Load()
+	if last != 0 && nowNano-last < minInterval.Nanoseconds() {
+		return false
+	}
+	return c.lastRouteSyncNano.CompareAndSwap(last, nowNano)
 }
 
 func (c *DnsCache) FillInto(req *dnsmessage.Msg) {
@@ -50,6 +69,8 @@ func (c *DnsCache) Clone() *DnsCache {
 			newCache.Answer[i] = dnsmessage.Copy(rr)
 		}
 	}
+
+	newCache.lastRouteSyncNano.Store(c.lastRouteSyncNano.Load())
 
 	return newCache
 }

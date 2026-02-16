@@ -8,6 +8,7 @@ package control
 import (
 	"net"
 	"testing"
+	"time"
 
 	dnsmessage "github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
@@ -49,4 +50,23 @@ func TestDnsCache_FillInto_DeepCopyAnswer(t *testing.T) {
 	copiedA, ok := req.Answer[0].(*dnsmessage.A)
 	require.True(t, ok)
 	require.EqualValues(t, 9, copiedA.A[0], "copied answer should not be affected by source mutation")
+}
+
+func TestDnsCache_ShouldRefreshRouteBinding(t *testing.T) {
+	cache := &DnsCache{}
+	now := time.Now()
+
+	require.True(t, cache.ShouldRefreshRouteBinding(now, time.Second))
+	require.False(t, cache.ShouldRefreshRouteBinding(now.Add(100*time.Millisecond), time.Second))
+	require.True(t, cache.ShouldRefreshRouteBinding(now.Add(1100*time.Millisecond), time.Second))
+}
+
+func TestDnsCache_ClonePreservesRefreshTimestamp(t *testing.T) {
+	now := time.Now()
+	cache := &DnsCache{}
+	cache.MarkRouteBindingRefreshed(now)
+
+	clone := cache.Clone()
+	require.False(t, clone.ShouldRefreshRouteBinding(now.Add(100*time.Millisecond), time.Second))
+	require.True(t, clone.ShouldRefreshRouteBinding(now.Add(1100*time.Millisecond), time.Second))
 }

@@ -840,7 +840,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			convergeSrc := common.ConvergeAddrPort(src)
 			// Debug:
 			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc, func() {
+			task := func() {
 				data := newBuf
 				src := newSrc
 
@@ -855,11 +855,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 
 				if routingResult == nil {
-					routingResult, err = c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
-					if err != nil {
-						c.log.Warnf("No AddrPort presented: %v", err)
+					rr, retrieveErr := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
+					if retrieveErr != nil {
+						c.log.Warnf("No AddrPort presented: %v", retrieveErr)
 						return
 					}
+					routingResult = rr
 					rrCopy := *routingResult
 					freshRoutingResult = &rrCopy
 				}
@@ -874,7 +875,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
 					}
 				}
-			})
+			}
+
+			if realDst.Port() == 53 {
+				go task()
+			} else {
+				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
+			}
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
