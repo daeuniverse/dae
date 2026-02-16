@@ -877,11 +877,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			if realDst.Port() == 53 {
-				go task()
-			} else {
-				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
-			}
+			DefaultUdpTaskPool.EmitTask(convergeSrc, task)
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
