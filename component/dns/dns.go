@@ -87,22 +87,25 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		s.upstream = append(s.upstream, r)
 	}
 	// Optimize routings.
-	if dns.Routing.Request.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
+	requestRules, err := routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
 		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
-	if dns.Routing.Response.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Response.Rules,
+
+	responseRules, err := routing.ApplyRulesOptimizers(dns.Routing.Response.Rules,
 		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
 	// Parse request routing.
-	reqMatcherBuilder, err := NewRequestMatcherBuilder(opt.Logger, dns.Routing.Request.Rules, upstreamName2Id, dns.Routing.Request.Fallback)
+	reqMatcherBuilder, err := NewRequestMatcherBuilder(opt.Logger, requestRules, upstreamName2Id, dns.Routing.Request.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
@@ -111,7 +114,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
 	// Parse response routing.
-	respMatcherBuilder, err := NewResponseMatcherBuilder(opt.Logger, dns.Routing.Response.Rules, upstreamName2Id, dns.Routing.Response.Fallback)
+	respMatcherBuilder, err := NewResponseMatcherBuilder(opt.Logger, responseRules, upstreamName2Id, dns.Routing.Response.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS response routing: %w", err)
 	}
