@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
@@ -157,12 +158,49 @@ func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule
 type DatReaderOptimizer struct {
 	LocationFinder *assets.LocationFinder
 	Logger         *logrus.Logger
+	mu             sync.Mutex
+	geoSiteCache   map[string][]*config_parser.Param
+	geoIpCache     map[string][]*config_parser.Param
+}
+
+func cloneParams(params []*config_parser.Param) []*config_parser.Param {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make([]*config_parser.Param, len(params))
+	for i, p := range params {
+		if p == nil {
+			continue
+		}
+		cp := *p
+		out[i] = &cp
+	}
+	return out
+}
+
+func (o *DatReaderOptimizer) initCacheLocked() {
+	if o.geoSiteCache == nil {
+		o.geoSiteCache = make(map[string][]*config_parser.Param)
+	}
+	if o.geoIpCache == nil {
+		o.geoIpCache = make(map[string][]*config_parser.Param)
+	}
 }
 
 func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params []*config_parser.Param, err error) {
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
+
+	cacheKey := strings.ToLower(filename + ":" + code)
+	o.mu.Lock()
+	o.initCacheLocked()
+	if cached, ok := o.geoSiteCache[cacheKey]; ok {
+		o.mu.Unlock()
+		return cloneParams(cached), nil
+	}
+	o.mu.Unlock()
+
 	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
@@ -216,6 +254,12 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 			})
 		}
 	}
+
+	o.mu.Lock()
+	o.initCacheLocked()
+	o.geoSiteCache[cacheKey] = cloneParams(params)
+	o.mu.Unlock()
+
 	return params, nil
 }
 
@@ -223,6 +267,16 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
+
+	cacheKey := strings.ToLower(filename + ":" + code)
+	o.mu.Lock()
+	o.initCacheLocked()
+	if cached, ok := o.geoIpCache[cacheKey]; ok {
+		o.mu.Unlock()
+		return cloneParams(cached), nil
+	}
+	o.mu.Unlock()
+
 	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
@@ -249,6 +303,12 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 			Val: netip.PrefixFrom(ip, int(item.Prefix)).String(),
 		})
 	}
+
+	o.mu.Lock()
+	o.initCacheLocked()
+	o.geoIpCache[cacheKey] = cloneParams(params)
+	o.mu.Unlock()
+
 	return params, nil
 }
 
