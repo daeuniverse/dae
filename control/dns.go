@@ -823,10 +823,13 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 		// If badConn is true, conn.Close() was already called
 	}()
 
-	timeout := 5 * time.Second
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(consts.DefaultDialTimeout)
+	}
 	// SetDeadline may fail on connection types that don't support deadlines;
-	// the timeout is also handled by the context.
-	_ = conn.SetDeadline(time.Now().Add(timeout))
+	// context cancellation still provides timeout control.
+	_ = conn.SetDeadline(deadline)
 
 	// Extract original DNS ID for validation
 	var originalID uint16
