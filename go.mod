@@ -102,7 +102,7 @@ require (
 )
 
 // SS2022 P0/P1 fixes: pin to our outbound branch commit.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260216151938-64452cfee4ae
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260217135120-967c12a6d715
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
