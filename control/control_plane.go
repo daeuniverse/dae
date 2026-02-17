@@ -68,13 +68,14 @@ type ControlPlane struct {
 	cancel context.CancelFunc
 	ready  chan struct{}
 
-	muRealDomainSet  sync.RWMutex
-	realDomainSet    *bloom.BloomFilter
-	realDomainNegSet sync.Map // map[string]int64 (expiresAt unix nano)
-	realDomainProbeS singleflight.Group
-	negJanitorStop   chan struct{}
-	negJanitorDone   chan struct{}
-	negJanitorOnce   sync.Once
+	muRealDomainSet   sync.RWMutex
+	realDomainSet     *bloom.BloomFilter
+	realDomainNegSet  sync.Map // map[string]int64 (expiresAt unix nano)
+	dnsDialerSnapshot sync.Map // map[dnsDialerSnapshotKey]*dnsDialerSnapshotEntry
+	realDomainProbeS  singleflight.Group
+	negJanitorStop    chan struct{}
+	negJanitorDone    chan struct{}
+	negJanitorOnce    sync.Once
 
 	wanInterface []string
 	lanInterface []string
@@ -92,6 +93,10 @@ var (
 	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
 	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
 	realDomainProbeTimeout = 800 * time.Millisecond
+	// dnsDialerSnapshotTTL keeps a very short best-path snapshot to reduce repeated
+	// per-request dialer selection overhead under bursty DNS traffic without changing
+	// routing decision semantics.
+	dnsDialerSnapshotTTL         = 250 * time.Millisecond
 	realDomainNegJanitorInterval = 30 * time.Second
 
 	// Test seam: injected in tests to avoid external DNS dependency.
@@ -864,6 +869,93 @@ func (c *ControlPlane) cleanupRealDomainNegSet(now time.Time) {
 	})
 }
 
+type dnsDialerSnapshotKey struct {
+	realSrc      netip.AddrPort
+	upstream     string
+	upstreamIp4  netip.Addr
+	upstreamIp6  netip.Addr
+	routingPname [16]uint8
+	routingMac   [6]uint8
+	routingDscp  uint8
+}
+
+type dnsDialerSnapshotEntry struct {
+	expiresAtUnixNano int64
+	dialArg           dialArgument
+}
+
+func buildDnsDialerSnapshotKey(req *udpRequest, upstream *dns.Upstream) (dnsDialerSnapshotKey, bool) {
+	if req == nil || upstream == nil {
+		return dnsDialerSnapshotKey{}, false
+	}
+
+	key := dnsDialerSnapshotKey{
+		realSrc:     req.realSrc,
+		upstream:    upstream.String(),
+		upstreamIp4: upstream.Ip4,
+		upstreamIp6: upstream.Ip6,
+	}
+
+	if req.routingResult != nil {
+		key.routingPname = req.routingResult.Pname
+		key.routingMac = req.routingResult.Mac
+		key.routingDscp = req.routingResult.Dscp
+	}
+
+	return key, true
+}
+
+func (c *ControlPlane) loadDnsDialerSnapshot(key dnsDialerSnapshotKey, now time.Time) (*dialArgument, bool) {
+	if dnsDialerSnapshotTTL <= 0 {
+		return nil, false
+	}
+
+	v, ok := c.dnsDialerSnapshot.Load(key)
+	if !ok {
+		return nil, false
+	}
+
+	entry, ok := v.(*dnsDialerSnapshotEntry)
+	if !ok {
+		c.dnsDialerSnapshot.Delete(key)
+		return nil, false
+	}
+
+	if entry.expiresAtUnixNano <= now.UnixNano() {
+		c.dnsDialerSnapshot.CompareAndDelete(key, entry)
+		return nil, false
+	}
+
+	dialArg := entry.dialArg
+	return &dialArg, true
+}
+
+func (c *ControlPlane) storeDnsDialerSnapshot(key dnsDialerSnapshotKey, dialArg *dialArgument, now time.Time) {
+	if dnsDialerSnapshotTTL <= 0 || dialArg == nil {
+		return
+	}
+	entry := &dnsDialerSnapshotEntry{
+		expiresAtUnixNano: now.Add(dnsDialerSnapshotTTL).UnixNano(),
+		dialArg:           *dialArg,
+	}
+	c.dnsDialerSnapshot.Store(key, entry)
+}
+
+func (c *ControlPlane) cleanupDnsDialerSnapshot(now time.Time) {
+	nowNano := now.UnixNano()
+	c.dnsDialerSnapshot.Range(func(key, value any) bool {
+		entry, ok := value.(*dnsDialerSnapshotEntry)
+		if !ok {
+			c.dnsDialerSnapshot.Delete(key)
+			return true
+		}
+		if entry.expiresAtUnixNano <= nowNano {
+			c.dnsDialerSnapshot.CompareAndDelete(key, entry)
+		}
+		return true
+	})
+}
+
 func (c *ControlPlane) startRealDomainNegJanitor() {
 	go func() {
 		ticker := time.NewTicker(realDomainNegJanitorInterval)
@@ -875,6 +967,7 @@ func (c *ControlPlane) startRealDomainNegJanitor() {
 				return
 			case now := <-ticker.C:
 				c.cleanupRealDomainNegSet(now)
+				c.cleanupDnsDialerSnapshot(now)
 			}
 		}
 	}()
@@ -1082,6 +1175,14 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	req *udpRequest,
 	dnsUpstream *dns.Upstream,
 ) (*dialArgument, error) {
+	now := time.Now()
+	snapshotKey, snapshotEnabled := buildDnsDialerSnapshotKey(req, dnsUpstream)
+	if snapshotEnabled {
+		if cachedDialArg, hit := c.loadDnsDialerSnapshot(snapshotKey, now); hit {
+			return cachedDialArg, nil
+		}
+	}
+
 	/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
@@ -1169,7 +1270,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			"dialer":     bestDialer.Property().Name,
 		}).Traceln("Choose DNS path")
 	}
-	return &dialArgument{
+	selected := &dialArgument{
 		l4proto:      l4proto,
 		ipversion:    ipversion,
 		bestDialer:   bestDialer,
@@ -1177,7 +1278,11 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestTarget:   bestTarget,
 		mark:         dialMark,
 		mptcp:        c.mptcp,
-	}, nil
+	}
+	if snapshotEnabled {
+		c.storeDnsDialerSnapshot(snapshotKey, selected, now)
+	}
+	return selected, nil
 }
 
 func (c *ControlPlane) AbortConnections() (err error) {

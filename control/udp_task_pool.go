@@ -23,8 +23,94 @@ type UdpTaskQueue struct {
 	p         *UdpTaskPool
 	shard     *udpTaskShard
 	ch        chan UdpTask
+	wake      chan struct{}
 	agingTime time.Duration
 	refs      atomic.Int32
+
+	enqueueMu    sync.Mutex
+	overflow     []UdpTask
+	overflowMode bool
+}
+
+func (q *UdpTaskQueue) notifyWake() {
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (q *UdpTaskQueue) enqueue(task UdpTask) {
+	q.enqueueMu.Lock()
+	defer q.enqueueMu.Unlock()
+
+	if q.overflowMode {
+		q.overflow = append(q.overflow, task)
+		q.notifyWake()
+		return
+	}
+
+	select {
+	case q.ch <- task:
+		return
+	default:
+		// Hot-key degradation protection:
+		// when the per-key channel is saturated, switch this key into
+		// overflow mode so EmitTask stays non-blocking.
+		// convoy() drains channel first and then overflow FIFO, preserving
+		// in-order execution for this key.
+		q.overflowMode = true
+		q.overflow = append(q.overflow, task)
+		q.notifyWake()
+	}
+}
+
+func (q *UdpTaskQueue) popOverflowTask() (UdpTask, bool) {
+	q.enqueueMu.Lock()
+	defer q.enqueueMu.Unlock()
+
+	if len(q.overflow) == 0 {
+		q.overflowMode = false
+		return nil, false
+	}
+	task := q.overflow[0]
+	q.overflow[0] = nil
+	q.overflow = q.overflow[1:]
+	if len(q.overflow) == 0 {
+		q.overflowMode = false
+		if cap(q.overflow) > UdpTaskQueueLength*4 {
+			q.overflow = nil
+		} else {
+			q.overflow = q.overflow[:0]
+		}
+	}
+	return task, true
+}
+
+func (q *UdpTaskQueue) pendingOverflowLen() int {
+	q.enqueueMu.Lock()
+	defer q.enqueueMu.Unlock()
+	return len(q.overflow)
+}
+
+func (q *UdpTaskQueue) popReadyTask() (UdpTask, bool) {
+	select {
+	case task := <-q.ch:
+		return task, true
+	default:
+	}
+	return q.popOverflowTask()
+}
+
+func (q *UdpTaskQueue) executeTask(task UdpTask, timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+
+	task()
+	timer.Reset(q.agingTime)
 }
 
 func (q *UdpTaskQueue) convoy() {
@@ -32,22 +118,20 @@ func (q *UdpTaskQueue) convoy() {
 	defer timer.Stop()
 
 	for {
+		if task, ok := q.popReadyTask(); ok {
+			q.executeTask(task, timer)
+			continue
+		}
+
 		select {
 		case task := <-q.ch:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-
-			task()
-			timer.Reset(q.agingTime)
+			q.executeTask(task, timer)
+		case <-q.wake:
 		case <-timer.C:
 			// Idle GC: only remove queue when no in-flight EmitTask and no pending tasks.
 			q.shard.mu.Lock()
 			current, ok := q.shard.m[q.key]
-			if ok && current == q && q.refs.Load() == 0 && len(q.ch) == 0 {
+			if ok && current == q && q.refs.Load() == 0 && len(q.ch) == 0 && q.pendingOverflowLen() == 0 {
 				delete(q.shard.m, q.key)
 				q.shard.mu.Unlock()
 				q.p.queueChPool.Put(q.ch)
@@ -85,12 +169,7 @@ func NewUdpTaskPool() *UdpTaskPool {
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
 func (p *UdpTaskPool) EmitTask(key netip.AddrPort, task UdpTask) {
 	q := p.acquireQueue(key)
-	select {
-	case q.ch <- task:
-	default:
-		// Queue is full; block send to preserve packet order for this key.
-		q.ch <- task
-	}
+	q.enqueue(task)
 	q.refs.Add(-1)
 }
 
@@ -114,6 +193,7 @@ func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
 			p:         p,
 			shard:     shard,
 			ch:        ch,
+			wake:      make(chan struct{}, 1),
 			agingTime: DefaultNatTimeout,
 		}
 		shard.m[key] = q
