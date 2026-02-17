@@ -88,3 +88,61 @@ func TestUdpTaskPool_RecreateQueueAfterIdle(t *testing.T) {
 	pool.EmitTask(key, func() { count.Add(1) })
 	require.Eventually(t, func() bool { return count.Load() == 2 }, time.Second, 5*time.Millisecond)
 }
+
+func TestUdpTaskPool_HotKeyOverflow_NonBlockingAndOrdered(t *testing.T) {
+	pool := NewUdpTaskPool()
+	key := netip.MustParseAddrPort("127.0.0.1:19001")
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	pool.EmitTask(key, func() {
+		close(started)
+		<-release
+	})
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-started:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 5*time.Millisecond)
+
+	const n = UdpTaskQueueLength + 64
+	got := make([]int, 0, n)
+	var (
+		mu   sync.Mutex
+		done atomic.Int32
+	)
+
+	enqueued := make(chan struct{})
+	go func() {
+		for i := 0; i < n; i++ {
+			idx := i
+			pool.EmitTask(key, func() {
+				mu.Lock()
+				got = append(got, idx)
+				mu.Unlock()
+				done.Add(1)
+			})
+		}
+		close(enqueued)
+	}()
+
+	select {
+	case <-enqueued:
+		// enqueue path should not block even when per-key channel is saturated.
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("EmitTask blocked on hot key saturation")
+	}
+
+	close(release)
+	require.Eventually(t, func() bool { return done.Load() == n }, 3*time.Second, 10*time.Millisecond)
+
+	require.Len(t, got, n)
+	for i := 0; i < n; i++ {
+		require.Equal(t, i, got[i])
+	}
+}
