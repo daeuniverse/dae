@@ -19,6 +19,10 @@ import (
 )
 
 func newTestDialer(t *testing.T) *Dialer {
+	return newNamedTestDialer(t, "test-dialer")
+}
+
+func newNamedTestDialer(t *testing.T, name string) *Dialer {
 	t.Helper()
 
 	log := logrus.New()
@@ -33,7 +37,7 @@ func newTestDialer(t *testing.T) *Dialer {
 		},
 		InstanceOption{},
 		&Property{
-			Property: D.Property{Name: "test-dialer"},
+			Property: D.Property{Name: name},
 		},
 	)
 	t.Cleanup(func() {
@@ -95,6 +99,9 @@ func TestDialerCheck_SkipDoesNotCascadeToUnavailable(t *testing.T) {
 	if aliveSet.GetRand() == nil {
 		t.Fatal("alive dialer set should keep dialer alive after repeated skip checks")
 	}
+	if got := d.MustGetLatencies10(networkType).LastNLatencies.Len(); got != 0 {
+		t.Fatalf("skip checks should not append latency samples, got %d", got)
+	}
 	if _, has := d.MustGetLatencies10(networkType).LastLatency(); has {
 		t.Fatal("skip checks should not append timeout latency")
 	}
@@ -145,5 +152,118 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 	}
 	if last != Timeout {
 		t.Fatalf("expected timeout latency %v, got %v", Timeout, last)
+	}
+}
+
+func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	aliveSet := NewAliveDialerSet(
+		d.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_Random,
+		[]*Dialer{d},
+		[]*Annotation{{}},
+		func(bool) {},
+		true,
+	)
+	d.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	_, err := d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated health check failure")
+		},
+	})
+	if err == nil {
+		t.Fatal("expected initial failure")
+	}
+
+	for i := 0; i < 64; i++ {
+		ok, skipErr := d.Check(&CheckOption{
+			networkType: networkType,
+			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+				return false, nil
+			},
+		})
+		if skipErr != nil || ok {
+			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
+		}
+	}
+
+	if d.MustGetAlive(networkType) {
+		t.Fatal("skip checks must preserve existing unavailable state")
+	}
+	if aliveSet.GetRand() != nil {
+		t.Fatal("dialer should remain unavailable after skip checks")
+	}
+	if got := d.MustGetLatencies10(networkType).LastNLatencies.Len(); got != 1 {
+		t.Fatalf("skip checks should not append extra samples after failure, got %d", got)
+	}
+}
+
+func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
+	networkType := newTestNetworkType()
+	d1 := newNamedTestDialer(t, "test-dialer-1")
+	d2 := newNamedTestDialer(t, "test-dialer-2")
+
+	aliveSet := NewAliveDialerSet(
+		d1.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_Random,
+		[]*Dialer{d1, d2},
+		[]*Annotation{{}, {}},
+		func(bool) {},
+		true,
+	)
+	d1.RegisterAliveDialerSet(aliveSet)
+	d2.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d1.UnregisterAliveDialerSet(aliveSet)
+		d2.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	_, err := d1.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated health check failure")
+		},
+	})
+	if err == nil {
+		t.Fatal("expected failure from d1")
+	}
+
+	for i := 0; i < 128; i++ {
+		ok, skipErr := d2.Check(&CheckOption{
+			networkType: networkType,
+			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+				return false, nil
+			},
+		})
+		if skipErr != nil || ok {
+			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
+		}
+	}
+
+	if d1.MustGetAlive(networkType) {
+		t.Fatal("failed dialer should be unavailable")
+	}
+	if !d2.MustGetAlive(networkType) {
+		t.Fatal("skipped dialer should remain available")
+	}
+	selected := aliveSet.GetRand()
+	if selected == nil {
+		t.Fatal("alive set should still have an available dialer")
+	}
+	if selected != d2 {
+		t.Fatalf("expected alive dialer to be d2, got %s", selected.Property().Name)
 	}
 }
