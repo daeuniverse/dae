@@ -41,6 +41,7 @@ import (
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
 
@@ -67,8 +68,9 @@ type ControlPlane struct {
 	cancel context.CancelFunc
 	ready  chan struct{}
 
-	muRealDomainSet sync.Mutex
-	realDomainSet   *bloom.BloomFilter
+	muRealDomainSet  sync.RWMutex
+	realDomainSet    *bloom.BloomFilter
+	realDomainProbeS singleflight.Group
 
 	wanInterface []string
 	lanInterface []string
@@ -390,7 +392,7 @@ func NewControlPlane(
 		ctx:               ctx,
 		cancel:            cancel,
 		ready:             make(chan struct{}),
-		muRealDomainSet:   sync.Mutex{},
+		muRealDomainSet:   sync.RWMutex{},
 		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:      global.LanInterface,
 		wanInterface:      global.WanInterface,
@@ -670,34 +672,10 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
 			} else {
-				// Check if the domain is in real-domain set (bloom filter).
-				c.muRealDomainSet.Lock()
-				if c.realDomainSet.TestString(domain) {
-					c.muRealDomainSet.Unlock()
+				if c.isRealDomain(domain) {
 					dialMode = consts.DialMode_Domain
-
 					// Should use this domain to reroute
 					shouldReroute = true
-				} else {
-					c.muRealDomainSet.Unlock()
-					// Lookup A/AAAA to make sure it is a real domain.
-					ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
-					defer cancel()
-					// TODO: use DNS controller and re-route by control plane.
-					systemDns, err := netutils.SystemDns()
-					if err == nil {
-						if ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true); ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
-							// Has A/AAAA records. It is a real domain.
-							dialMode = consts.DialMode_Domain
-							// Add it to real-domain set.
-							c.muRealDomainSet.Lock()
-							c.realDomainSet.AddString(domain)
-							c.muRealDomainSet.Unlock()
-
-							// Should use this domain to reroute
-							shouldReroute = true
-						}
-					}
 				}
 
 			}
@@ -735,6 +713,40 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		}).Debugln("Rewrite dial target to domain")
 	}
 	return dialTarget, shouldReroute, dialIp
+}
+
+func (c *ControlPlane) isRealDomain(domain string) bool {
+	// Read-mostly fast path.
+	c.muRealDomainSet.RLock()
+	hit := c.realDomainSet.TestString(domain)
+	c.muRealDomainSet.RUnlock()
+	if hit {
+		return true
+	}
+
+	// Deduplicate concurrent probes for same domain to avoid stampede under bursty connection setup.
+	v, _, _ := c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+		ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+		defer cancel()
+
+		systemDns, err := netutils.SystemDns()
+		if err != nil {
+			return false, nil
+		}
+
+		// TODO: use DNS controller and re-route by control plane.
+		ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
+			return false, nil
+		}
+
+		c.muRealDomainSet.Lock()
+		c.realDomainSet.AddString(domain)
+		c.muRealDomainSet.Unlock()
+		return true, nil
+	})
+	isReal, _ := v.(bool)
+	return isReal
 }
 
 type Listener struct {
