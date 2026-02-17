@@ -343,3 +343,29 @@ func TestChooseDialTarget_DomainMode_WarmupEnablesReroute(t *testing.T) {
 		t.Fatal("expected reroute after warm-up cache hit")
 	}
 }
+
+func TestCleanupRealDomainNegSet_RemovesExpiredEntries(t *testing.T) {
+	cp := newTestControlPlaneForRealDomainProbe()
+
+	now := time.Now()
+	cp.realDomainNegSet.Store("expired.example", now.Add(-time.Second).UnixNano())
+	cp.realDomainNegSet.Store("live.example", now.Add(time.Second).UnixNano())
+	cp.realDomainNegSet.Store("bad.example", "invalid")
+
+	cp.cleanupRealDomainNegSet(now)
+
+	_, ok := cp.realDomainNegSet.Load("expired.example")
+	if ok {
+		t.Fatal("expired negative-cache item should be removed")
+	}
+
+	_, ok = cp.realDomainNegSet.Load("bad.example")
+	if ok {
+		t.Fatal("invalid negative-cache item should be removed")
+	}
+
+	_, ok = cp.realDomainNegSet.Load("live.example")
+	if !ok {
+		t.Fatal("unexpired negative-cache item should be kept")
+	}
+}

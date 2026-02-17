@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -52,6 +53,8 @@ var (
 	UnspecifiedAddressA          = netip.MustParseAddr("0.0.0.0")
 	UnspecifiedAddressAAAA       = netip.MustParseAddr("::")
 	DnsCacheRouteRefreshInterval = time.Second
+	dnsCacheJanitorInterval      = 30 * time.Second
+	dnsForwarderIdleTTL          = 2 * time.Minute
 )
 
 type DnsControllerOption struct {
@@ -83,8 +86,14 @@ type DnsController struct {
 	fixedDomainTtl map[string]int
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
-	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedDnsForwarder
 	sf                singleflight.Group
+
+	janitorStop chan struct{}
+	janitorDone chan struct{}
+	evictorDone chan struct{}
+	evictorQ    chan *DnsCache
+	closeOnce   sync.Once
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -135,7 +144,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		limit = 8192 // Default: handle ~4k QPS with 2s latency, ~16MB memory
 	}
 
-	return &DnsController{
+	controller := &DnsController{
 		routing:            routing,
 		qtypePrefer:        prefer,
 		concurrencyLimiter: make(chan struct{}, limit),
@@ -150,14 +159,34 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		fixedDomainTtl:    option.FixedDomainTtl,
 		dnsCache:          sync.Map{},
 		dnsForwarderCache: sync.Map{},
-	}, nil
+
+		janitorStop: make(chan struct{}),
+		janitorDone: make(chan struct{}),
+		evictorDone: make(chan struct{}),
+		evictorQ:    make(chan *DnsCache, 512),
+	}
+	controller.startDnsCacheJanitor()
+	controller.startCacheEvictor()
+	return controller, nil
 }
 
 func (c *DnsController) Close() error {
+	c.closeOnce.Do(func() {
+		if c.janitorStop != nil {
+			close(c.janitorStop)
+		}
+		if c.janitorDone != nil {
+			<-c.janitorDone
+		}
+		if c.evictorDone != nil {
+			<-c.evictorDone
+		}
+	})
+
 	var errs []error
 	c.dnsForwarderCache.Range(func(key, value interface{}) bool {
 		k := key.(dnsForwarderKey)
-		forwarder := value.(DnsForwarder)
+		forwarder := c.extractDnsForwarder(value)
 		if forwarder != nil {
 			if err := forwarder.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close dns forwarder %q: %w", k.upstream, err))
@@ -176,8 +205,123 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
-	c.dnsCache.Delete(cacheKey)
+	if removed, ok := c.dnsCache.LoadAndDelete(cacheKey); ok {
+		if cache, ok := removed.(*DnsCache); ok {
+			c.onDnsCacheEvicted(cache)
+		}
+	}
 }
+
+func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
+	if cache == nil || c.cacheRemoveCallback == nil {
+		return
+	}
+
+	if c.evictorQ == nil {
+		c.invokeCacheRemoveCallback(cache)
+		return
+	}
+
+	if c.janitorStop != nil {
+		select {
+		case <-c.janitorStop:
+			c.invokeCacheRemoveCallback(cache)
+			return
+		default:
+		}
+	}
+
+	select {
+	case c.evictorQ <- cache:
+	default:
+		// Keep datapath non-blocking under eviction bursts.
+		go c.invokeCacheRemoveCallback(cache)
+	}
+}
+
+func (c *DnsController) invokeCacheRemoveCallback(cache *DnsCache) {
+	if cache == nil || c.cacheRemoveCallback == nil {
+		return
+	}
+	if err := c.cacheRemoveCallback(cache); err != nil {
+		if c.log != nil {
+			c.log.Warnf("failed to remove dns cache side effects: %v", err)
+		}
+	}
+}
+
+func (c *DnsController) evictDnsRespCacheIfSame(cacheKey string, cache *DnsCache) {
+	if cache == nil {
+		return
+	}
+	if c.dnsCache.CompareAndDelete(cacheKey, cache) {
+		c.onDnsCacheEvicted(cache)
+	}
+}
+
+func (c *DnsController) evictExpiredDnsCache(now time.Time) {
+	c.dnsCache.Range(func(key, value interface{}) bool {
+		cacheKey, ok := key.(string)
+		if !ok {
+			c.dnsCache.Delete(key)
+			return true
+		}
+		cache, ok := value.(*DnsCache)
+		if !ok {
+			c.dnsCache.Delete(cacheKey)
+			return true
+		}
+		if cache.Deadline.After(now) {
+			return true
+		}
+		c.evictDnsRespCacheIfSame(cacheKey, cache)
+		return true
+	})
+}
+
+func (c *DnsController) startDnsCacheJanitor() {
+	go func() {
+		ticker := time.NewTicker(dnsCacheJanitorInterval)
+		defer ticker.Stop()
+		defer close(c.janitorDone)
+
+		for {
+			select {
+			case <-c.janitorStop:
+				return
+			case now := <-ticker.C:
+				c.evictExpiredDnsCache(now)
+				c.evictIdleDnsForwarders(now)
+			}
+		}
+	}()
+}
+
+func (c *DnsController) startCacheEvictor() {
+	go func() {
+		defer close(c.evictorDone)
+		if c.evictorQ == nil {
+			return
+		}
+
+		for {
+			select {
+			case cache := <-c.evictorQ:
+				c.invokeCacheRemoveCallback(cache)
+			case <-c.janitorStop:
+				for {
+					select {
+					case cache := <-c.evictorQ:
+						c.invokeCacheRemoveCallback(cache)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
 	val, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
@@ -194,6 +338,7 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 	// We should make sure the cache did not expire, or
 	// return nil and request a new lookup to refresh the cache.
 	if !deadline.After(now) {
+		c.evictDnsRespCacheIfSame(cacheKey, cache)
 		return nil
 	}
 	if c.cacheAccessCallback != nil {
@@ -395,7 +540,96 @@ type dnsForwarderKey struct {
 	dialArgument dialArgument
 }
 
+type cachedDnsForwarder struct {
+	forwarder    DnsForwarder
+	lastUsedNano atomic.Int64
+	inFlight     atomic.Int32
+}
+
+func newCachedDnsForwarder(forwarder DnsForwarder, now time.Time) *cachedDnsForwarder {
+	entry := &cachedDnsForwarder{forwarder: forwarder}
+	entry.touch(now)
+	return entry
+}
+
+func (c *cachedDnsForwarder) touch(now time.Time) {
+	c.lastUsedNano.Store(now.UnixNano())
+}
+
+func (c *cachedDnsForwarder) beginUse() {
+	c.inFlight.Add(1)
+	c.touch(time.Now())
+}
+
+func (c *cachedDnsForwarder) endUse() {
+	c.touch(time.Now())
+	c.inFlight.Add(-1)
+}
+
 var dnsForwarderFactory = newDnsForwarder
+
+func (c *DnsController) extractDnsForwarder(value interface{}) DnsForwarder {
+	switch v := value.(type) {
+	case *cachedDnsForwarder:
+		return v.forwarder
+	case DnsForwarder:
+		return v
+	default:
+		return nil
+	}
+}
+
+func (c *DnsController) evictIdleDnsForwarders(now time.Time) {
+	if dnsForwarderIdleTTL <= 0 {
+		return
+	}
+
+	nowNano := now.UnixNano()
+	idleNano := dnsForwarderIdleTTL.Nanoseconds()
+	var toClose []DnsForwarder
+
+	c.dnsForwarderCache.Range(func(key, value interface{}) bool {
+		k, ok := key.(dnsForwarderKey)
+		if !ok {
+			c.dnsForwarderCache.Delete(key)
+			return true
+		}
+
+		entry, ok := value.(*cachedDnsForwarder)
+		if !ok {
+			if forwarder := c.extractDnsForwarder(value); forwarder != nil {
+				if c.dnsForwarderCache.CompareAndDelete(k, value) {
+					toClose = append(toClose, forwarder)
+				}
+			} else {
+				c.dnsForwarderCache.Delete(k)
+			}
+			return true
+		}
+
+		if entry.inFlight.Load() > 0 {
+			return true
+		}
+		lastUsedNano := entry.lastUsedNano.Load()
+		if lastUsedNano == 0 || nowNano-lastUsedNano <= idleNano {
+			return true
+		}
+
+		if c.dnsForwarderCache.CompareAndDelete(k, entry) {
+			toClose = append(toClose, entry.forwarder)
+		}
+		return true
+	})
+
+	for _, forwarder := range toClose {
+		if forwarder == nil {
+			continue
+		}
+		if err := forwarder.Close(); err != nil && c.log != nil {
+			c.log.WithError(err).Debugln("failed to close idle dns forwarder")
+		}
+	}
+}
 
 func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error) {
 	if c.timeoutExceedCallback == nil || dialArg == nil || err == nil {
@@ -408,33 +642,70 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 	c.timeoutExceedCallback(dialArg, err)
 }
 
-func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg *dialArgument) (DnsForwarder, error) {
+func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg *dialArgument) (*cachedDnsForwarder, error) {
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	if cached, ok := c.dnsForwarderCache.Load(key); ok {
-		return cached.(DnsForwarder), nil
+	now := time.Now()
+
+	for i := 0; i < 3; i++ {
+		if cached, ok := c.dnsForwarderCache.Load(key); ok {
+			switch entry := cached.(type) {
+			case *cachedDnsForwarder:
+				entry.touch(now)
+				return entry, nil
+			case DnsForwarder:
+				wrapped := newCachedDnsForwarder(entry, now)
+				if c.dnsForwarderCache.CompareAndSwap(key, cached, wrapped) {
+					return wrapped, nil
+				}
+				continue
+			default:
+				c.dnsForwarderCache.CompareAndDelete(key, cached)
+				continue
+			}
+		}
+		break
 	}
 
-	created, createErr := dnsForwarderFactory(upstream, *dialArg, c.log)
+	createdForwarder, createErr := dnsForwarderFactory(upstream, *dialArg, c.log)
 	if createErr != nil {
 		return nil, createErr
 	}
+	created := newCachedDnsForwarder(createdForwarder, now)
 
 	actual, loaded := c.dnsForwarderCache.LoadOrStore(key, created)
 	if loaded {
 		// Another goroutine won the race; close the redundant instance.
-		_ = created.Close()
-		return actual.(DnsForwarder), nil
+		_ = createdForwarder.Close()
+		if entry, ok := actual.(*cachedDnsForwarder); ok {
+			entry.touch(now)
+			return entry, nil
+		}
+		if old, ok := actual.(DnsForwarder); ok {
+			wrapped := newCachedDnsForwarder(old, now)
+			if c.dnsForwarderCache.CompareAndSwap(key, actual, wrapped) {
+				return wrapped, nil
+			}
+			if latest, ok := c.dnsForwarderCache.Load(key); ok {
+				if latestEntry, ok := latest.(*cachedDnsForwarder); ok {
+					latestEntry.touch(now)
+					return latestEntry, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("unexpected cached dns forwarder type: %T", actual)
 	}
 	return created, nil
 }
 
 func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Upstream, dialArg *dialArgument, data []byte) (*dnsmessage.Msg, error) {
-	forwarder, err := c.getOrCreateDnsForwarder(upstream, dialArg)
+	entry, err := c.getOrCreateDnsForwarder(upstream, dialArg)
 	if err != nil {
 		return nil, err
 	}
+	entry.beginUse()
+	defer entry.endUse()
 
-	respMsg, err := forwarder.ForwardDNS(ctx, data)
+	respMsg, err := entry.forwarder.ForwardDNS(ctx, data)
 	if err != nil {
 		c.reportDnsForwardFailure(dialArg, err)
 		return nil, err

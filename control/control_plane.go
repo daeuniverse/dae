@@ -72,6 +72,9 @@ type ControlPlane struct {
 	realDomainSet    *bloom.BloomFilter
 	realDomainNegSet sync.Map // map[string]int64 (expiresAt unix nano)
 	realDomainProbeS singleflight.Group
+	negJanitorStop   chan struct{}
+	negJanitorDone   chan struct{}
+	negJanitorOnce   sync.Once
 
 	wanInterface []string
 	lanInterface []string
@@ -89,6 +92,7 @@ var (
 	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
 	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
 	realDomainProbeTimeout = 800 * time.Millisecond
+	realDomainNegJanitorInterval = 30 * time.Second
 
 	// Test seam: injected in tests to avoid external DNS dependency.
 	systemDnsForRealDomainProbe   = netutils.SystemDns
@@ -429,6 +433,8 @@ func NewControlPlane(
 		ready:             make(chan struct{}),
 		muRealDomainSet:   sync.RWMutex{},
 		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		negJanitorStop:    make(chan struct{}),
+		negJanitorDone:    make(chan struct{}),
 		lanInterface:      global.LanInterface,
 		wanInterface:      global.WanInterface,
 		sniffingTimeout:   sniffingTimeout,
@@ -436,6 +442,7 @@ func NewControlPlane(
 		soMarkFromDae:     global.SoMarkFromDae,
 		mptcp:             global.Mptcp,
 	}
+	plane.startRealDomainNegJanitor()
 	defer func() {
 		if err != nil {
 			cancel()
@@ -841,6 +848,49 @@ func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
 	return true
 }
 
+func (c *ControlPlane) cleanupRealDomainNegSet(now time.Time) {
+	nowNano := now.UnixNano()
+	c.realDomainNegSet.Range(func(key, value any) bool {
+		domain, ok := key.(string)
+		if !ok {
+			c.realDomainNegSet.Delete(key)
+			return true
+		}
+		expiresAt, ok := value.(int64)
+		if !ok || expiresAt <= nowNano {
+			c.realDomainNegSet.Delete(domain)
+		}
+		return true
+	})
+}
+
+func (c *ControlPlane) startRealDomainNegJanitor() {
+	go func() {
+		ticker := time.NewTicker(realDomainNegJanitorInterval)
+		defer ticker.Stop()
+		defer close(c.negJanitorDone)
+		for {
+			select {
+			case <-c.negJanitorStop:
+				return
+			case now := <-ticker.C:
+				c.cleanupRealDomainNegSet(now)
+			}
+		}
+	}()
+}
+
+func (c *ControlPlane) stopRealDomainNegJanitor() {
+	c.negJanitorOnce.Do(func() {
+		if c.negJanitorStop != nil {
+			close(c.negJanitorStop)
+		}
+		if c.negJanitorDone != nil {
+			<-c.negJanitorDone
+		}
+	})
+}
+
 type Listener struct {
 	tcpListener net.Listener
 	packetConn  net.PacketConn
@@ -1142,6 +1192,8 @@ func (c *ControlPlane) AbortConnections() (err error) {
 }
 
 func (c *ControlPlane) Close() (err error) {
+	c.stopRealDomainNegJanitor()
+
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
