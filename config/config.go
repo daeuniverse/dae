@@ -51,6 +51,7 @@ type Global struct {
 	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
 	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
 	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	SubscriptionUserAgent  string        `mapstructure:"subscription_user_agent"`
 }
 
 type Utls struct {

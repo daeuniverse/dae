@@ -58,6 +58,7 @@ var GlobalDesc = Desc{
 	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",
 	"utls_imitate":                 "The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls. See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17",
 	"mptcp":                        "Enable Multipath TCP.  If is true, dae will try to use MPTCP to connect all nodes, but it will only take effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.",
+	"subscription_user_agent":      "Custom User-Agent for fetching subscriptions. If not set, dae will use its default User-Agent. Per-subscription User-Agent can be set via URL fragment (e.g., https://example.com/sub#ua=V2rayA).",
 }
 
 var DnsDesc = Desc{
