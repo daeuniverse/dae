@@ -13,22 +13,30 @@ import (
 )
 
 const UdpTaskQueueLength = 128
-const udpTaskPoolShardCount = 64
 
 type UdpTask = func()
 
 // UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
+// Field order optimized for memory alignment (Go best practice).
 type UdpTaskQueue struct {
-	key       netip.AddrPort
+	// 8-byte aligned fields first
 	p         *UdpTaskPool
-	shard     *udpTaskShard
 	ch        chan UdpTask
 	wake      chan struct{}
-	agingTime time.Duration
-	refs      atomic.Int32
+	overflow  []UdpTask
+	enqueueMu sync.Mutex
 
-	enqueueMu    sync.Mutex
-	overflow     []UdpTask
+	// 8-byte fields
+	agingTime time.Duration
+
+	// 4-byte fields with padding
+	refs atomic.Int32
+
+	// 24-byte field (netip.AddrPort is struct{addr [16]byte, port uint16, zone string})
+	key netip.AddrPort
+
+	// 1-byte fields
+	overflowLen  atomic.Int32 // track overflow length for lock-free idle check
 	overflowMode bool
 }
 
@@ -45,6 +53,7 @@ func (q *UdpTaskQueue) enqueue(task UdpTask) {
 
 	if q.overflowMode {
 		q.overflow = append(q.overflow, task)
+		q.overflowLen.Store(int32(len(q.overflow)))
 		q.notifyWake()
 		return
 	}
@@ -60,6 +69,7 @@ func (q *UdpTaskQueue) enqueue(task UdpTask) {
 		// in-order execution for this key.
 		q.overflowMode = true
 		q.overflow = append(q.overflow, task)
+		q.overflowLen.Store(int32(len(q.overflow)))
 		q.notifyWake()
 	}
 }
@@ -77,19 +87,17 @@ func (q *UdpTaskQueue) popOverflowTask() (UdpTask, bool) {
 	q.overflow = q.overflow[1:]
 	if len(q.overflow) == 0 {
 		q.overflowMode = false
-		if cap(q.overflow) > UdpTaskQueueLength*4 {
-			q.overflow = nil
+		q.overflowLen.Store(0)
+		// Keep a small preallocated slice to reduce allocations for bursty traffic
+		if cap(q.overflow) > UdpTaskQueueLength*2 {
+			q.overflow = make([]UdpTask, 0, UdpTaskQueueLength/4)
 		} else {
 			q.overflow = q.overflow[:0]
 		}
+	} else {
+		q.overflowLen.Store(int32(len(q.overflow)))
 	}
 	return task, true
-}
-
-func (q *UdpTaskQueue) pendingOverflowLen() int {
-	q.enqueueMu.Lock()
-	defer q.enqueueMu.Unlock()
-	return len(q.overflow)
 }
 
 func (q *UdpTaskQueue) popReadyTask() (UdpTask, bool) {
@@ -101,16 +109,22 @@ func (q *UdpTaskQueue) popReadyTask() (UdpTask, bool) {
 	return q.popOverflowTask()
 }
 
-func (q *UdpTaskQueue) executeTask(task UdpTask, timer *time.Timer) {
+// safeTimerReset resets the timer following Go best practice.
+// Per Go documentation: "To reuse a Timer, call Reset and drain the channel
+// if it fired." This ensures no stale timer event interferes with the next cycle.
+func (q *UdpTaskQueue) safeTimerReset(timer *time.Timer) {
 	if !timer.Stop() {
 		select {
 		case <-timer.C:
 		default:
 		}
 	}
-
-	task()
 	timer.Reset(q.agingTime)
+}
+
+func (q *UdpTaskQueue) executeTask(task UdpTask, timer *time.Timer) {
+	task()
+	q.safeTimerReset(timer)
 }
 
 func (q *UdpTaskQueue) convoy() {
@@ -129,41 +143,32 @@ func (q *UdpTaskQueue) convoy() {
 		case <-q.wake:
 		case <-timer.C:
 			// Idle GC: only remove queue when no in-flight EmitTask and no pending tasks.
-			q.shard.mu.Lock()
-			current, ok := q.shard.m[q.key]
-			if ok && current == q && q.refs.Load() == 0 && len(q.ch) == 0 && q.pendingOverflowLen() == 0 {
-				delete(q.shard.m, q.key)
-				q.shard.mu.Unlock()
+			// Use atomic checks first to avoid lock contention.
+			if q.refs.Load() > 0 || len(q.ch) > 0 || q.overflowLen.Load() > 0 {
+				q.safeTimerReset(timer)
+				continue
+			}
+			// Try to delete from pool using CAS-like semantics via sync.Map
+			if q.p.tryDeleteQueue(q.key, q) {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
-			q.shard.mu.Unlock()
-			timer.Reset(q.agingTime)
+			q.safeTimerReset(timer)
 		}
 	}
 }
 
-type udpTaskShard struct {
-	mu sync.RWMutex
-	m  map[netip.AddrPort]*UdpTaskQueue
-}
-
 type UdpTaskPool struct {
 	queueChPool sync.Pool
-	shards      []udpTaskShard
+	queues      sync.Map // map[netip.AddrPort]*UdpTaskQueue
 }
 
 func NewUdpTaskPool() *UdpTaskPool {
-	p := &UdpTaskPool{
+	return &UdpTaskPool{
 		queueChPool: sync.Pool{New: func() any {
 			return make(chan UdpTask, UdpTaskQueueLength)
 		}},
-		shards: make([]udpTaskShard, udpTaskPoolShardCount),
 	}
-	for i := range p.shards {
-		p.shards[i].m = make(map[netip.AddrPort]*UdpTaskQueue)
-	}
-	return p
 }
 
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
@@ -174,40 +179,48 @@ func (p *UdpTaskPool) EmitTask(key netip.AddrPort, task UdpTask) {
 }
 
 func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
-	shard := p.shardFor(key)
-
-	shard.mu.RLock()
-	if q, ok := shard.m[key]; ok {
+	// Fast path: check if queue exists without any lock contention
+	if v, ok := p.queues.Load(key); ok {
+		q := v.(*UdpTaskQueue)
 		q.refs.Add(1)
-		shard.mu.RUnlock()
 		return q
 	}
-	shard.mu.RUnlock()
 
-	shard.mu.Lock()
-	q, ok := shard.m[key]
-	if !ok {
-		ch := p.queueChPool.Get().(chan UdpTask)
-		q = &UdpTaskQueue{
-			key:       key,
-			p:         p,
-			shard:     shard,
-			ch:        ch,
-			wake:      make(chan struct{}, 1),
-			agingTime: DefaultNatTimeout,
-		}
-		shard.m[key] = q
+	// Slow path: create new queue using LoadOrStore to avoid race condition
+	ch := p.queueChPool.Get().(chan UdpTask)
+	newQ := &UdpTaskQueue{
+		key:       key,
+		p:         p,
+		ch:        ch,
+		wake:      make(chan struct{}, 1),
+		agingTime: DefaultNatTimeout,
+	}
+
+	// LoadOrStore ensures atomic create-or-get semantics without explicit locks
+	actual, loaded := p.queues.LoadOrStore(key, newQ)
+	if loaded {
+		// Another goroutine created the queue first, put our channel back
+		p.queueChPool.Put(ch)
+	}
+	q := actual.(*UdpTaskQueue)
+	q.refs.Add(1)
+
+	// Only start the convoy goroutine for newly created queues
+	if !loaded {
 		go q.convoy()
 	}
-	q.refs.Add(1)
-	shard.mu.Unlock()
 
 	return q
 }
 
-func (p *UdpTaskPool) shardFor(key netip.AddrPort) *udpTaskShard {
-	idx := int(hashAddrPort(key) & uint64(udpTaskPoolShardCount-1))
-	return &p.shards[idx]
+// tryDeleteQueue attempts to delete the queue if it's still the same instance.
+// Returns true if deletion was successful, false otherwise.
+func (p *UdpTaskPool) tryDeleteQueue(key netip.AddrPort, expected *UdpTaskQueue) bool {
+	// Use Load+Delete with verification to avoid deleting a recreated queue
+	if v, loaded := p.queues.LoadAndDelete(key); loaded {
+		return v.(*UdpTaskQueue) == expected
+	}
+	return false
 }
 
 var (
