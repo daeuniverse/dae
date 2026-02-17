@@ -710,13 +710,19 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
+				shouldReroute = true
 			} else {
-				if c.isRealDomain(domain) {
-					dialMode = consts.DialMode_Domain
-					// Should use this domain to reroute
-					shouldReroute = true
+				if known, real := c.lookupRealDomainCache(domain); known {
+					if real {
+						dialMode = consts.DialMode_Domain
+						// Should use this domain to reroute
+						shouldReroute = true
+					}
+				} else {
+					// Unknown domain on first hit: warm it asynchronously to avoid
+					// blocking connection setup on webpage first paint path.
+					c.triggerRealDomainProbe(domain)
 				}
-
 			}
 		case consts.DialMode_DomainCao:
 			shouldReroute = true
@@ -754,13 +760,13 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	return dialTarget, shouldReroute, dialIp
 }
 
-func (c *ControlPlane) isRealDomain(domain string) bool {
+func (c *ControlPlane) lookupRealDomainCache(domain string) (known bool, real bool) {
 	// Read-mostly fast path.
 	c.muRealDomainSet.RLock()
 	hit := c.realDomainSet.TestString(domain)
 	c.muRealDomainSet.RUnlock()
 	if hit {
-		return true
+		return true, true
 	}
 
 	// Negative-cache fast path.
@@ -768,58 +774,71 @@ func (c *ControlPlane) isRealDomain(domain string) bool {
 	if v, ok := c.realDomainNegSet.Load(domain); ok {
 		expiresAt, _ := v.(int64)
 		if now.UnixNano() < expiresAt {
-			return false
+			return true, false
 		}
 		c.realDomainNegSet.Delete(domain)
+	}
+	return false, false
+}
+
+func (c *ControlPlane) triggerRealDomainProbe(domain string) {
+	if domain == "" || isIPLikeDomain(domain) {
+		return
+	}
+	if known, _ := c.lookupRealDomainCache(domain); known {
+		return
+	}
+	go func() {
+		_, _, _ = c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+			return c.probeAndUpdateRealDomain(domain), nil
+		})
+	}()
+}
+
+func (c *ControlPlane) isRealDomain(domain string) bool {
+	if known, real := c.lookupRealDomainCache(domain); known {
+		return real
 	}
 
 	// Deduplicate concurrent probes for same domain to avoid stampede under bursty connection setup.
 	v, _, _ := c.realDomainProbeS.Do(domain, func() (interface{}, error) {
-		// Re-check caches after entering singleflight critical section.
-		c.muRealDomainSet.RLock()
-		if c.realDomainSet.TestString(domain) {
-			c.muRealDomainSet.RUnlock()
-			return true, nil
-		}
-		c.muRealDomainSet.RUnlock()
-
-		now := time.Now()
-		if v, ok := c.realDomainNegSet.Load(domain); ok {
-			expiresAt, _ := v.(int64)
-			if now.UnixNano() < expiresAt {
-				return false, nil
-			}
-			c.realDomainNegSet.Delete(domain)
-		}
-
-		ctx, cancel := context.WithTimeout(context.TODO(), realDomainProbeTimeout)
-		defer cancel()
-
-		systemDns, err := systemDnsForRealDomainProbe()
-		if err != nil {
-			// Do not negative-cache probe infra errors.
-			return false, nil
-		}
-
-		// TODO: use DNS controller and re-route by control plane.
-		ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
-		if err4 != nil && err6 != nil {
-			// Probe failed for both families; avoid sticky false negatives.
-			return false, nil
-		}
-		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-			c.realDomainNegSet.Store(domain, now.Add(realDomainNegativeCacheTTL).UnixNano())
-			return false, nil
-		}
-
-		c.muRealDomainSet.Lock()
-		c.realDomainSet.AddString(domain)
-		c.muRealDomainSet.Unlock()
-		c.realDomainNegSet.Delete(domain)
-		return true, nil
+		return c.probeAndUpdateRealDomain(domain), nil
 	})
 	isReal, _ := v.(bool)
 	return isReal
+}
+
+func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
+	if known, real := c.lookupRealDomainCache(domain); known {
+		return real
+	}
+
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.TODO(), realDomainProbeTimeout)
+	defer cancel()
+
+	systemDns, err := systemDnsForRealDomainProbe()
+	if err != nil {
+		// Do not negative-cache probe infra errors.
+		return false
+	}
+
+	// TODO: use DNS controller and re-route by control plane.
+	ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+	if err4 != nil && err6 != nil {
+		// Probe failed for both families; avoid sticky false negatives.
+		return false
+	}
+	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
+		c.realDomainNegSet.Store(domain, now.Add(realDomainNegativeCacheTTL).UnixNano())
+		return false
+	}
+
+	c.muRealDomainSet.Lock()
+	c.realDomainSet.AddString(domain)
+	c.muRealDomainSet.Unlock()
+	c.realDomainNegSet.Delete(domain)
+	return true
 }
 
 type Listener struct {

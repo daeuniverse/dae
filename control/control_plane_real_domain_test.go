@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"io"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -17,11 +18,15 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/sirupsen/logrus"
 )
 
 func newTestControlPlaneForRealDomainProbe() *ControlPlane {
+	log := logrus.New()
+	log.SetOutput(io.Discard)
 	return &ControlPlane{
 		realDomainSet: bloom.NewWithEstimates(2048, 0.001),
+		log:           log,
 		soMarkFromDae: 0,
 		mptcp:         false,
 	}
@@ -237,5 +242,104 @@ func TestChooseDialTarget_DomainMode_IPLikeSkipsProbe(t *testing.T) {
 
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("expected ip-like domains to skip probe, got %d probe calls", got)
+	}
+}
+
+func TestChooseDialTarget_DomainMode_UnknownDomainDoesNotBlock(t *testing.T) {
+	oldTimeout := realDomainProbeTimeout
+	oldSystemDNS := systemDnsForRealDomainProbe
+	oldResolver := resolveIp46ForRealDomainProbe
+	defer func() {
+		realDomainProbeTimeout = oldTimeout
+		systemDnsForRealDomainProbe = oldSystemDNS
+		resolveIp46ForRealDomainProbe = oldResolver
+	}()
+
+	realDomainProbeTimeout = 500 * time.Millisecond
+	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
+		return netip.MustParseAddrPort("1.1.1.1:53"), nil
+	}
+
+	started := make(chan struct{}, 1)
+	unblock := make(chan struct{})
+	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-unblock
+		return &netutils.Ip46{Ip4: netip.MustParseAddr("93.184.216.34")}, nil, nil
+	}
+
+	cp := newTestControlPlaneForRealDomainProbe()
+	cp.dialMode = consts.DialMode_Domain
+	cp.dnsController = &DnsController{dnsCache: sync.Map{}}
+
+	dst := netip.MustParseAddrPort("8.8.8.8:443")
+
+	begin := time.Now()
+	_, reroute, _ := cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "youtube.com")
+	elapsed := time.Since(begin)
+
+	if reroute {
+		t.Fatal("first unknown domain request should not reroute before warm-up")
+	}
+	if elapsed > 60*time.Millisecond {
+		t.Fatalf("first unknown domain request should not block probe, elapsed=%v", elapsed)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("expected async probe to be triggered")
+	}
+
+	close(unblock)
+}
+
+func TestChooseDialTarget_DomainMode_WarmupEnablesReroute(t *testing.T) {
+	oldTimeout := realDomainProbeTimeout
+	oldSystemDNS := systemDnsForRealDomainProbe
+	oldResolver := resolveIp46ForRealDomainProbe
+	defer func() {
+		realDomainProbeTimeout = oldTimeout
+		systemDnsForRealDomainProbe = oldSystemDNS
+		resolveIp46ForRealDomainProbe = oldResolver
+	}()
+
+	realDomainProbeTimeout = 200 * time.Millisecond
+	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
+		return netip.MustParseAddrPort("1.1.1.1:53"), nil
+	}
+
+	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
+		return &netutils.Ip46{Ip4: netip.MustParseAddr("93.184.216.34")}, nil, nil
+	}
+
+	cp := newTestControlPlaneForRealDomainProbe()
+	cp.dialMode = consts.DialMode_Domain
+	cp.dnsController = &DnsController{dnsCache: sync.Map{}}
+
+	dst := netip.MustParseAddrPort("8.8.8.8:443")
+	_, reroute1, _ := cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "youtube.com")
+	if reroute1 {
+		t.Fatal("first unknown domain request should not reroute before warm-up")
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if known, real := cp.lookupRealDomainCache("youtube.com"); known && real {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if known, real := cp.lookupRealDomainCache("youtube.com"); !known || !real {
+		t.Fatal("expected async warm-up to populate positive real-domain cache")
+	}
+
+	_, reroute2, _ := cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "youtube.com")
+	if !reroute2 {
+		t.Fatal("expected reroute after warm-up cache hit")
 	}
 }
