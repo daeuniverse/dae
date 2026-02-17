@@ -649,7 +649,13 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 		_ = c.handleWithResponseWriter_(dnsMessage2, req, false, responseWriter)
 	}()
 	err = c.handleWithResponseWriter_(dnsMessage, req, false, responseWriter)
-	<-done
+
+	// If current query type is already preferred, the final response decision does not
+	// depend on the secondary lookup result. Avoid waiting here to reduce serial latency.
+	// The secondary lookup still runs asynchronously to keep cache warming behavior.
+	if c.qtypePrefer != qtype {
+		<-done
+	}
 	if err != nil {
 		return err
 	}
