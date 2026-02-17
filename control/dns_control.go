@@ -199,9 +199,30 @@ func (c *DnsController) Close() error {
 	return errors.Join(errs...)
 }
 
+var (
+	// Pre-computed strings for common DNS query types to reduce allocations
+	// in the hot path. Fallback to strconv.Itoa for uncommon types.
+	qtypeStrCache = map[uint16]string{
+		dnsmessage.TypeA:     "1",
+		dnsmessage.TypeNS:    "2",
+		dnsmessage.TypeCNAME: "5",
+		dnsmessage.TypePTR:   "12",
+		dnsmessage.TypeMX:    "15",
+		dnsmessage.TypeTXT:   "16",
+		dnsmessage.TypeAAAA:  "28",
+		dnsmessage.TypeSRV:   "33",
+	}
+)
+
 func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 	// To fqdn.
-	return dnsmessage.CanonicalName(qname) + strconv.Itoa(int(qtype))
+	qname = dnsmessage.CanonicalName(qname)
+	// Fast path: use pre-computed string for common qtypes
+	if s, ok := qtypeStrCache[qtype]; ok {
+		return qname + s
+	}
+	// Slow path: fallback to strconv for uncommon types
+	return qname + strconv.Itoa(int(qtype))
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
