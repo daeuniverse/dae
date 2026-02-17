@@ -70,6 +70,7 @@ type ControlPlane struct {
 
 	muRealDomainSet  sync.RWMutex
 	realDomainSet    *bloom.BloomFilter
+	realDomainNegSet sync.Map // map[string]int64 (expiresAt unix nano)
 	realDomainProbeS singleflight.Group
 
 	wanInterface []string
@@ -80,6 +81,16 @@ type ControlPlane struct {
 	soMarkFromDae     uint32
 	mptcp             bool
 }
+
+var (
+	// realDomainNegativeCacheTTL controls how long failed real-domain probes are cached.
+	// Keep it short to avoid stale negatives while still damping bursty probe storms.
+	realDomainNegativeCacheTTL = 10 * time.Second
+
+	// Test seam: injected in tests to avoid external DNS dependency.
+	systemDnsForRealDomainProbe   = netutils.SystemDns
+	resolveIp46ForRealDomainProbe = netutils.ResolveIp46
+)
 
 func NewControlPlane(
 	log *logrus.Logger,
@@ -724,25 +735,59 @@ func (c *ControlPlane) isRealDomain(domain string) bool {
 		return true
 	}
 
+	// Negative-cache fast path.
+	now := time.Now()
+	if v, ok := c.realDomainNegSet.Load(domain); ok {
+		expiresAt, _ := v.(int64)
+		if now.UnixNano() < expiresAt {
+			return false
+		}
+		c.realDomainNegSet.Delete(domain)
+	}
+
 	// Deduplicate concurrent probes for same domain to avoid stampede under bursty connection setup.
 	v, _, _ := c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+		// Re-check caches after entering singleflight critical section.
+		c.muRealDomainSet.RLock()
+		if c.realDomainSet.TestString(domain) {
+			c.muRealDomainSet.RUnlock()
+			return true, nil
+		}
+		c.muRealDomainSet.RUnlock()
+
+		now := time.Now()
+		if v, ok := c.realDomainNegSet.Load(domain); ok {
+			expiresAt, _ := v.(int64)
+			if now.UnixNano() < expiresAt {
+				return false, nil
+			}
+			c.realDomainNegSet.Delete(domain)
+		}
+
 		ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 		defer cancel()
 
-		systemDns, err := netutils.SystemDns()
+		systemDns, err := systemDnsForRealDomainProbe()
 		if err != nil {
+			// Do not negative-cache probe infra errors.
 			return false, nil
 		}
 
 		// TODO: use DNS controller and re-route by control plane.
-		ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+		ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+		if err4 != nil && err6 != nil {
+			// Probe failed for both families; avoid sticky false negatives.
+			return false, nil
+		}
 		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
+			c.realDomainNegSet.Store(domain, now.Add(realDomainNegativeCacheTTL).UnixNano())
 			return false, nil
 		}
 
 		c.muRealDomainSet.Lock()
 		c.realDomainSet.AddString(domain)
 		c.muRealDomainSet.Unlock()
+		c.realDomainNegSet.Delete(domain)
 		return true, nil
 	})
 	isReal, _ := v.(bool)
