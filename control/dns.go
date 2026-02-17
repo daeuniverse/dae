@@ -1086,6 +1086,9 @@ func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessag
 	if len(data) < 2 {
 		return nil, fmt.Errorf("invalid DNS request payload: too short")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Allocate ID using bitmap allocator (O(1) time complexity)
 	id, err := pc.idAlloc.Allocate()
@@ -1118,6 +1121,10 @@ func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessag
 	binary.BigEndian.PutUint16(buf[0:2], uint16(reqLen))
 	copy(buf[2:], data)
 	binary.BigEndian.PutUint16(buf[2:4], id)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	pc.writeMu.Lock()
 	_, err = pc.conn.Write(buf)

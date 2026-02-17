@@ -637,14 +637,20 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 	}
 	dnsMessage2.Question[0].Qtype = qtype2
 
-	done := make(chan struct{}, 1)
+	needWaitSecondary := c.qtypePrefer != qtype
+	var done chan struct{}
+	if needWaitSecondary {
+		done = make(chan struct{}, 1)
+	}
 	go func() {
 		defer func() {
 			// Ensure the goroutine always signals completion, even if it panics.
 			if r := recover(); r != nil {
 				c.log.Errorf("Goroutine panic recovered in HandleWithResponseWriter_: %v\n%v", r, string(debug.Stack()))
 			}
-			done <- struct{}{}
+			if done != nil {
+				done <- struct{}{}
+			}
 		}()
 		_ = c.handleWithResponseWriter_(dnsMessage2, req, false, responseWriter)
 	}()
@@ -653,7 +659,7 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 	// If current query type is already preferred, the final response decision does not
 	// depend on the secondary lookup result. Avoid waiting here to reduce serial latency.
 	// The secondary lookup still runs asynchronously to keep cache warming behavior.
-	if c.qtypePrefer != qtype {
+	if needWaitSecondary {
 		<-done
 	}
 	if err != nil {
