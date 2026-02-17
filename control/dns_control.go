@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -43,13 +44,13 @@ const (
 )
 
 var (
-	ErrUnsupportedQuestionType = fmt.Errorf("unsupported question type")
+	ErrUnsupportedQuestionType          = fmt.Errorf("unsupported question type")
 	ErrDNSQueryConcurrencyLimitExceeded = errors.New("dns query concurrency limit exceeded")
 )
 
 var (
-	UnspecifiedAddressA    = netip.MustParseAddr("0.0.0.0")
-	UnspecifiedAddressAAAA = netip.MustParseAddr("::")
+	UnspecifiedAddressA          = netip.MustParseAddr("0.0.0.0")
+	UnspecifiedAddressAAAA       = netip.MustParseAddr("::")
 	DnsCacheRouteRefreshInterval = time.Second
 )
 
@@ -146,9 +147,9 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCache:            sync.Map{},
-		dnsForwarderCache:   sync.Map{},
+		fixedDomainTtl:    option.FixedDomainTtl,
+		dnsCache:          sync.Map{},
+		dnsForwarderCache: sync.Map{},
 	}, nil
 }
 
@@ -533,19 +534,21 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 		// res is the *dnsmessage.Msg
 		respMsg := res.(*dnsmessage.Msg)
 
-		// Fix the transaction ID for this client
-		respMsgUnique := respMsg.Copy()
-		respMsgUnique.Id = dnsMessage.Id
-
-		// Write response
+		// Write response.
+		// For packet-send path, avoid deep-copying DNS message and just patch ID in packed bytes.
 		if responseWriter != nil {
+			respMsgUnique := respMsg.Copy()
+			respMsgUnique.Id = dnsMessage.Id
 			return responseWriter.WriteMsg(respMsgUnique)
 		}
 
-		// If no responseWriter (internal call?), pack and send
-		data, err := respMsgUnique.Pack()
+		// If no responseWriter (internal UDP path), pack and send directly.
+		data, err := respMsg.Pack()
 		if err != nil {
 			return fmt.Errorf("pack DNS packet: %w", err)
+		}
+		if len(data) >= 2 {
+			binary.BigEndian.PutUint16(data[:2], dnsMessage.Id)
 		}
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
