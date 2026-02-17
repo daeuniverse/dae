@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/netproxy"
 )
@@ -180,5 +181,61 @@ func TestIsRealDomain_PositivePathCachedInBloom(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("expected positive probe to run only once, got %d", got)
+	}
+}
+
+func TestIsIPLikeDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		isLike bool
+	}{
+		{name: "ipv4", input: "1.2.3.4", isLike: true},
+		{name: "ipv6-bracket", input: "[2606:4700:4700::1111]", isLike: true},
+		{name: "ipv4-hostport", input: "1.2.3.4:443", isLike: true},
+		{name: "ipv6-hostport", input: "[2606:4700:4700::1111]:443", isLike: true},
+		{name: "domain", input: "example.com", isLike: false},
+		{name: "domain-hostport", input: "example.com:443", isLike: false},
+		{name: "empty", input: "", isLike: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIPLikeDomain(tt.input); got != tt.isLike {
+				t.Fatalf("isIPLikeDomain(%q)=%v, want %v", tt.input, got, tt.isLike)
+			}
+		})
+	}
+}
+
+func TestChooseDialTarget_DomainMode_IPLikeSkipsProbe(t *testing.T) {
+	oldSystemDNS := systemDnsForRealDomainProbe
+	oldResolver := resolveIp46ForRealDomainProbe
+	defer func() {
+		systemDnsForRealDomainProbe = oldSystemDNS
+		resolveIp46ForRealDomainProbe = oldResolver
+	}()
+
+	var calls atomic.Int32
+	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
+		calls.Add(1)
+		return netip.MustParseAddrPort("1.1.1.1:53"), nil
+	}
+	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
+		calls.Add(1)
+		return &netutils.Ip46{}, nil, nil
+	}
+
+	cp := newTestControlPlaneForRealDomainProbe()
+	cp.dialMode = consts.DialMode_Domain
+	cp.dnsController = &DnsController{dnsCache: sync.Map{}}
+
+	dst := netip.MustParseAddrPort("8.8.8.8:443")
+	_, _, _ = cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "1.2.3.4")
+	_, _, _ = cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "1.2.3.4:443")
+	_, _, _ = cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "[2606:4700:4700::1111]:443")
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("expected ip-like domains to skip probe, got %d probe calls", got)
 	}
 }

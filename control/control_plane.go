@@ -86,11 +86,35 @@ var (
 	// realDomainNegativeCacheTTL controls how long failed real-domain probes are cached.
 	// Keep it short to avoid stale negatives while still damping bursty probe storms.
 	realDomainNegativeCacheTTL = 10 * time.Second
+	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
+	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
+	realDomainProbeTimeout = 800 * time.Millisecond
 
 	// Test seam: injected in tests to avoid external DNS dependency.
 	systemDnsForRealDomainProbe   = netutils.SystemDns
 	resolveIp46ForRealDomainProbe = netutils.ResolveIp46
 )
+
+func isIPLikeDomain(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
+		domain = domain[1 : len(domain)-1]
+	}
+	if _, err := netip.ParseAddr(domain); err == nil {
+		return true
+	}
+	if host, _, err := net.SplitHostPort(domain); err == nil {
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+		if _, err := netip.ParseAddr(host); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
 func NewControlPlane(
 	log *logrus.Logger,
@@ -679,6 +703,10 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
+			// Avoid blocking probe for literal IP / host:port values.
+			if isIPLikeDomain(domain) {
+				break
+			}
 			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
@@ -764,7 +792,7 @@ func (c *ControlPlane) isRealDomain(domain string) bool {
 			c.realDomainNegSet.Delete(domain)
 		}
 
-		ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.TODO(), realDomainProbeTimeout)
 		defer cancel()
 
 		systemDns, err := systemDnsForRealDomainProbe()
