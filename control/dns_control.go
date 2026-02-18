@@ -382,17 +382,33 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 }
 
 // LookupDnsRespCache_ will modify the msg in place.
+// Returns packed DNS response bytes ready to send (DNS ID = 0, caller should patch).
+// OPTIMIZED: Uses pre-packed response with approximate TTL for near-zero latency.
+// TTL is refreshed when difference exceeds ttlRefreshThresholdSeconds (5 seconds by default).
+// Falls back to FillInto+Pack if pre-packed response is not available.
 func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte) {
 	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
 	if cache != nil {
-		cache.FillInto(msg)
-		msg.Compress = true
-		b, err := msg.Pack()
-		if err != nil {
-			c.log.Warnf("failed to pack: %v", err)
-			return nil
+		// Extract qname and qtype from the message for TTL refresh
+		var qname string
+		var qtype uint16
+		if len(msg.Question) > 0 {
+			qname = msg.Question[0].Name
+			qtype = msg.Question[0].Qtype
 		}
-		return b
+		
+		// Fast path: use pre-packed response with approximate TTL
+		now := time.Now()
+		if resp := cache.GetPackedResponseWithApproximateTTL(qname, qtype, now); resp != nil {
+			return resp
+		}
+		
+		// Fallback: pre-packed response not available, use traditional path
+		// This handles cases where PrepackResponse failed or cache expired
+		if cache.Deadline.After(now) {
+			return cache.FillIntoWithTTL(msg, now)
+		}
+		return nil
 	}
 	return nil
 }
@@ -509,6 +525,13 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	newCache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
 	if err != nil {
 		return err
+	}
+
+	// OPTIMIZATION: Pre-pack the DNS response to avoid Pack() overhead on cache hits.
+	// This is done once during cache creation rather than on every cache hit.
+	if err = newCache.PrepackResponse(fqdn, dnsTyp); err != nil {
+		c.log.Warnf("failed to prepack DNS response: %v", err)
+		// Continue without pre-packed response - will fall back to Pack() on hit
 	}
 
 	// Store atomically - concurrent writes don't block each other
@@ -1037,7 +1060,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
 		if needResp {
-			if err = c.writeCachedResponse(resp, req, responseWriter); err != nil {
+			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
 			}
 		}
@@ -1078,18 +1101,41 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	return c.sendRejectWithResponseWriter_(dnsMessage, req, nil)
 }
 
-func (c *DnsController) writeCachedResponse(resp []byte, req *udpRequest, responseWriter dnsmessage.ResponseWriter) error {
+// writeCachedResponse sends a cached DNS response to the client.
+// OPTIMIZED: Uses pre-packed response with ID patching to avoid Pack() overhead.
+// For responseWriter path, uses Unpack/WriteMsg (slower but handles ID correctly).
+// For UDP path, patches the ID directly in the pre-packed bytes.
+func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpRequest, responseWriter dnsmessage.ResponseWriter) error {
 	if responseWriter != nil {
+		// For responseWriter, we need to use WriteMsg which handles ID properly.
 		var respMsg dnsmessage.Msg
 		if err := respMsg.Unpack(resp); err != nil {
 			return fmt.Errorf("failed to unpack DNS response: %w", err)
 		}
+		// Set the correct ID from the original request
+		respMsg.Id = reqId
 		return responseWriter.WriteMsg(&respMsg)
 	}
 
+	// For UDP path, directly send pre-packed response with patched ID
 	if req == nil || req.lConn == nil {
 		return fmt.Errorf("dns request connection is nil for cached response")
 	}
+	
+	// OPTIMIZATION: Patch the DNS ID directly in the pre-packed bytes.
+	// DNS Message ID is in the first 2 bytes (big-endian).
+	// We make a copy to avoid modifying the cached response.
+	if len(resp) >= 2 {
+		// Create a copy with patched ID
+		patchedResp := make([]byte, len(resp))
+		copy(patchedResp, resp)
+		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
+		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+			return fmt.Errorf("failed to write cached DNS resp: %w", err)
+		}
+		return nil
+	}
+	
 	if err := sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 		return fmt.Errorf("failed to write cached DNS resp: %w", err)
 	}
