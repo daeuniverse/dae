@@ -677,7 +677,7 @@ func newUdpConnPool(maxIdle int, dialer func(context.Context) (netproxy.Conn, er
 	return &udpConnPool{
 		idleConns:   make(chan *udpConnWithTimestamp, maxIdle),
 		dialer:      dialer,
-		maxIdleTime: 30 * time.Second, // Discard connections idle for more than 30s
+		maxIdleTime: 60 * time.Second, // Increased from 30s to reduce connection churn
 	}
 }
 
