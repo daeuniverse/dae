@@ -285,7 +285,12 @@ func (ss *Trie) init() {
 //	countZeros("010010", 4) == 3
 //	//          012345
 func countZeros(bm []uint64, ranks *bitlist.CompactBitList, i int) int {
-	return i - int(ranks.Get(i>>6)) - bits.OnesCount64(bm[i>>6]&(1<<uint(i&63)-1))
+	// Optimized: compute mask once and reuse
+	// i - popcount(bm[0..i)) = i - rank(i)
+	// where rank(i) = ranks.Get(i>>6) + popcount(bm[i>>6] & ((1<<(i&63))-1))
+	wordIdx := i >> 6
+	bitIdx := i & 63
+	return i - int(ranks.Get(wordIdx)) - bits.OnesCount64(bm[wordIdx]&(1<<bitIdx-1))
 }
 
 // selectIthOne returns the index of the i-th "1" in a bitmap, on behalf of rank
@@ -305,7 +310,10 @@ func selectIthOne(bm []uint64, ranks, selects *bitlist.CompactBitList, i int) in
 			if findIthOne < 0 {
 				return i<<6 + bitIdx
 			}
-			t0 := bits.TrailingZeros64(w &^ 1)
+			// Optimized: use w>>1 instead of w&^1 to save one bitwise operation.
+			// TrailingZeros64(w>>1) + 1 == TrailingZeros64(w &^ 1) when w has trailing zeros.
+			// When w ends with 1, w>>1 shifts it, and we add 1 to compensate.
+			t0 := bits.TrailingZeros64(w>>1) + 1
 			w >>= uint(t0)
 			bitIdx += t0
 		}

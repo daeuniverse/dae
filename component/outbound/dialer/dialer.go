@@ -122,6 +122,10 @@ func (d *Dialer) Close() error {
 		d.ticker.Stop()
 	}
 	d.tickerMu.Unlock()
+	// Note: We intentionally do NOT close checkCh here because:
+	// 1. The ticker goroutine may still be sending to it (race condition -> panic)
+	// 2. The channel will be garbage collected along with the Dialer
+	// 3. All goroutines should exit via d.ctx.Done() signal
 	return nil
 }
 

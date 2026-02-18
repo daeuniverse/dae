@@ -1312,6 +1312,19 @@ func (c *ControlPlane) Close() (err error) {
 		}
 	}
 	c.cancel()
+
+	// Clear sync.Maps to prevent memory leak on reload.
+	// These maps accumulate data over time and must be explicitly cleared.
+	c.realDomainNegSet.Range(func(key, value any) bool {
+		c.realDomainNegSet.Delete(key)
+		return true
+	})
+	c.dnsDialerSnapshot.Range(func(key, value any) bool {
+		c.dnsDialerSnapshot.Delete(key)
+		return true
+	})
+	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
+
 	return c.core.Close()
 }
 

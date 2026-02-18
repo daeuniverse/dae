@@ -448,8 +448,8 @@ func (d *Dialer) aliveBackground() {
 			select {
 			case <-ctx.Done():
 				return
-			default:
-				d.checkCh <- t
+			case d.checkCh <- t:
+				// sent successfully
 			}
 		}
 	}()
@@ -466,7 +466,13 @@ func (d *Dialer) aliveBackground() {
 		return
 	}
 	var wg sync.WaitGroup
-	for range d.checkCh {
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-d.checkCh:
+			// Process check
+		}
 		for _, opt := range CheckOpts {
 			// No need to test if there is no dialer selection policy using its latency.
 			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
