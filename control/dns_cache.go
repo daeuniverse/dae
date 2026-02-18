@@ -34,6 +34,9 @@ type DnsCache struct {
 	packedResponseTTL uint32
 	// packedResponseCreatedAt is the time when PackedResponse was created.
 	packedResponseCreatedAt atomic.Int64 // UnixNano
+	// deadlineNano caches the Deadline as UnixNano for fast comparison.
+	// This avoids time.Time method calls on every cache hit.
+	deadlineNano atomic.Int64
 }
 
 func (c *DnsCache) MarkRouteBindingRefreshed(now time.Time) {
@@ -112,6 +115,7 @@ func (c *DnsCache) Clone() *DnsCache {
 		newCache.packedResponseCreatedAt.Store(c.packedResponseCreatedAt.Load())
 	}
 
+	newCache.deadlineNano.Store(c.deadlineNano.Load())
 	newCache.lastRouteSyncNano.Store(c.lastRouteSyncNano.Load())
 
 	return newCache
@@ -125,12 +129,20 @@ func (c *DnsCache) Clone() *DnsCache {
 func (c *DnsCache) PrepackResponse(qname string, qtype uint16) error {
 	now := time.Now()
 	
+	// Cache deadline as UnixNano for fast comparison
+	c.deadlineNano.Store(c.Deadline.UnixNano())
+	
 	// Calculate remaining TTL
+	deadlineNano := c.Deadline.UnixNano()
+	nowNano := now.UnixNano()
+	
 	var ttl uint32
-	if c.Deadline.After(now) {
-		ttl = uint32(c.Deadline.Sub(now).Seconds())
-		if ttl < 1 {
+	if deadlineNano > nowNano {
+		ttlSeconds := (deadlineNano - nowNano) / 1e9
+		if ttlSeconds < 1 {
 			ttl = 1
+		} else {
+			ttl = uint32(ttlSeconds)
 		}
 	} else {
 		ttl = 0
@@ -178,38 +190,42 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 }
 
 // GetPackedResponseWithApproximateTTL returns pre-packed response with approximate TTL.
+// OPTIMIZED: Uses atomic operations and UnixNano comparison to avoid time.Time method calls.
 // Fast path: returns cached pre-packed response if TTL difference is within threshold.
 // Slow path: refreshes pre-packed response if TTL has changed significantly.
-// This provides near-zero latency for cache hits while maintaining reasonable TTL accuracy.
 func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint16, now time.Time) []byte {
-	// Calculate current remaining TTL
-	var currentTTL uint32
-	if c.Deadline.After(now) {
-		currentTTL = uint32(c.Deadline.Sub(now).Seconds())
-		if currentTTL < 1 {
-			currentTTL = 1
-		}
-	} else {
+	nowNano := now.UnixNano()
+	deadlineNano := c.deadlineNano.Load()
+	
+	// Fast expiry check using integer comparison
+	if deadlineNano <= nowNano {
 		return nil // Expired
+	}
+	
+	// Calculate current TTL in seconds (avoid float operations)
+	currentTTL := uint32((deadlineNano - nowNano) / 1e9)
+	if currentTTL < 1 {
+		currentTTL = 1
 	}
 	
 	// Fast path: use pre-packed response if TTL difference is acceptable
 	if c.PackedResponse != nil {
-		ttlDiff := int64(c.packedResponseTTL) - int64(currentTTL)
-		if ttlDiff < 0 {
-			ttlDiff = -ttlDiff
-		}
 		// Use cached response if TTL difference is within threshold
-		if ttlDiff <= ttlRefreshThresholdSeconds {
+		// Allow absolute difference comparison without float
+		cachedTTL := c.packedResponseTTL
+		if cachedTTL >= currentTTL {
+			if cachedTTL-currentTTL <= ttlRefreshThresholdSeconds {
+				return c.PackedResponse
+			}
+		} else if currentTTL-cachedTTL <= ttlRefreshThresholdSeconds {
 			return c.PackedResponse
 		}
 	}
 	
 	// Slow path: refresh pre-packed response with new TTL
-	// This is atomic - only one goroutine will do the refresh
+	// Use atomic to ensure only one goroutine refreshes per second
 	createdNano := c.packedResponseCreatedAt.Load()
-	if now.UnixNano()-createdNano > int64(time.Second) {
-		// Only refresh at most once per second to avoid thundering herd
+	if nowNano-createdNano > 1e9 { // 1 second in nanoseconds
 		_ = c.prepackResponseWithTTL(qname, qtype, currentTTL, now)
 	}
 	

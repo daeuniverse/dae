@@ -6,6 +6,7 @@
 package control
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"testing"
@@ -736,6 +737,186 @@ func BenchmarkDnsCache_GetPackedResponseWithApproximateTTL_Parallel(b *testing.B
 		now := time.Now()
 		for pb.Next() {
 			_ = cache.GetPackedResponseWithApproximateTTL("example.com.", dnsmessage.TypeA, now)
+		}
+	})
+}
+
+// BenchmarkDnsCache_SyncMapLookup benchmarks sync.Map lookup performance
+func BenchmarkDnsCache_SyncMapLookup(b *testing.B) {
+	var m sync.Map
+	
+	answers := []dnsmessage.RR{
+		&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   "example.com.",
+				Rrtype: dnsmessage.TypeA,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0,
+			},
+			A: []byte{93, 184, 216, 34},
+		},
+	}
+
+	cache := &DnsCache{
+		DomainBitmap:     []uint32{1, 2, 3},
+		Answer:           answers,
+		Deadline:         time.Now().Add(300 * time.Second),
+		OriginalDeadline: time.Now().Add(300 * time.Second),
+	}
+
+	if err := cache.PrepackResponse("example.com.", dnsmessage.TypeA); err != nil {
+		b.Fatalf("failed to prepack response: %v", err)
+	}
+
+	m.Store("example.com.:1", cache)
+	key := "example.com.:1"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if v, ok := m.Load(key); ok {
+			c := v.(*DnsCache)
+			_ = c.GetPackedResponseWithApproximateTTL("example.com.", dnsmessage.TypeA, time.Now())
+		}
+	}
+}
+
+// BenchmarkDnsCache_SyncMapLookup_Parallel benchmarks parallel sync.Map lookup
+func BenchmarkDnsCache_SyncMapLookup_Parallel(b *testing.B) {
+	var m sync.Map
+	
+	answers := []dnsmessage.RR{
+		&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   "example.com.",
+				Rrtype: dnsmessage.TypeA,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0,
+			},
+			A: []byte{93, 184, 216, 34},
+		},
+	}
+
+	cache := &DnsCache{
+		DomainBitmap:     []uint32{1, 2, 3},
+		Answer:           answers,
+		Deadline:         time.Now().Add(300 * time.Second),
+		OriginalDeadline: time.Now().Add(300 * time.Second),
+	}
+
+	if err := cache.PrepackResponse("example.com.", dnsmessage.TypeA); err != nil {
+		b.Fatalf("failed to prepack response: %v", err)
+	}
+
+	// Store multiple keys to simulate realistic contention
+	for i := 0; i < 100; i++ {
+		m.Store(fmt.Sprintf("example%d.com.:1", i), cache)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := fmt.Sprintf("example%d.com.:1", i%100)
+			if v, ok := m.Load(key); ok {
+				c := v.(*DnsCache)
+				now := time.Now()
+				_ = c.GetPackedResponseWithApproximateTTL(key, dnsmessage.TypeA, now)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkDnsCache_CacheKeyGeneration benchmarks cache key string generation
+func BenchmarkDnsCache_CacheKeyGeneration(b *testing.B) {
+	qname := "www.example.com."
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = dnsmessage.CanonicalName(qname) + "1"
+	}
+}
+
+// BenchmarkDnsCache_CacheKeyGeneration_Parallel benchmarks parallel key generation
+func BenchmarkDnsCache_CacheKeyGeneration_Parallel(b *testing.B) {
+	qname := "www.example.com."
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = dnsmessage.CanonicalName(qname) + "1"
+		}
+	})
+}
+
+// BenchmarkDnsCache_BufferPool benchmarks the buffer pool for ID patching
+func BenchmarkDnsCache_BufferPool(b *testing.B) {
+	resp := make([]byte, 78)
+	for i := range resp {
+		resp[i] = byte(i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bufPtr := dnsResponseBufPool.Get().(*[]byte)
+		patchedResp := (*bufPtr)[:len(resp)]
+		copy(patchedResp, resp)
+		binary.BigEndian.PutUint16(patchedResp[0:2], uint16(i))
+		dnsResponseBufPool.Put(bufPtr)
+	}
+}
+
+// BenchmarkDnsCache_BufferPool_Parallel benchmarks parallel buffer pool usage
+func BenchmarkDnsCache_BufferPool_Parallel(b *testing.B) {
+	resp := make([]byte, 78)
+	for i := range resp {
+		resp[i] = byte(i)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			bufPtr := dnsResponseBufPool.Get().(*[]byte)
+			patchedResp := (*bufPtr)[:len(resp)]
+			copy(patchedResp, resp)
+			binary.BigEndian.PutUint16(patchedResp[0:2], uint16(i))
+			dnsResponseBufPool.Put(bufPtr)
+			i++
+		}
+	})
+}
+
+// BenchmarkDnsCache_MakeCopy benchmarks the old way of making a copy
+func BenchmarkDnsCache_MakeCopy(b *testing.B) {
+	resp := make([]byte, 78)
+	for i := range resp {
+		resp[i] = byte(i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		patchedResp := make([]byte, len(resp))
+		copy(patchedResp, resp)
+		binary.BigEndian.PutUint16(patchedResp[0:2], uint16(i))
+	}
+}
+
+// BenchmarkDnsCache_MakeCopy_Parallel benchmarks parallel make+copy
+func BenchmarkDnsCache_MakeCopy_Parallel(b *testing.B) {
+	resp := make([]byte, 78)
+	for i := range resp {
+		resp[i] = byte(i)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			patchedResp := make([]byte, len(resp))
+			copy(patchedResp, resp)
+			binary.BigEndian.PutUint16(patchedResp[0:2], uint16(i))
+			i++
 		}
 	})
 }
