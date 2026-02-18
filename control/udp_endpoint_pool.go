@@ -46,6 +46,11 @@ type UdpEndpoint struct {
 	routingCacheAt    time.Time
 	routingCache      bpfRoutingResult
 	hasRoutingCache   bool
+
+	// dead indicates the endpoint's read loop has exited due to error.
+	// Once set to true, the endpoint should not be reused and will be
+	// cleaned up by the janitor or GetOrCreate's dead endpoint check.
+	dead atomic.Bool
 }
 
 func (ue *UdpEndpoint) start() {
@@ -54,10 +59,16 @@ func (ue *UdpEndpoint) start() {
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
+			// Mark this endpoint as dead so GetOrCreate won't reuse it.
+			// Also set expiration to past for immediate janitor cleanup.
+			ue.dead.Store(true)
+			ue.expiresAtNano.Store(1)
 			break
 		}
 		ue.RefreshTtl()
 		if err = ue.handler(buf[:n], from); err != nil {
+			ue.dead.Store(true)
+			ue.expiresAtNano.Store(1)
 			break
 		}
 	}
@@ -87,6 +98,11 @@ func (ue *UdpEndpoint) RefreshTtl() {
 func (ue *UdpEndpoint) IsExpired(nowNano int64) bool {
 	expiresAt := ue.expiresAtNano.Load()
 	return expiresAt > 0 && nowNano >= expiresAt
+}
+
+// IsDead returns true if the endpoint's read loop has exited and should not be reused.
+func (ue *UdpEndpoint) IsDead() bool {
+	return ue.dead.Load()
 }
 
 func (ue *UdpEndpoint) GetCachedRoutingResult(dst netip.AddrPort, l4proto uint8) (*bpfRoutingResult, bool) {
@@ -180,8 +196,14 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		_ue, ok = p.pool.Load(lAddr)
 		if ok {
 			ue := _ue.(*UdpEndpoint)
-			ue.RefreshTtl()
-			return ue, false, nil
+			// Check if the existing endpoint is dead (read loop exited).
+			// If so, remove it and create a new one.
+			if ue.IsDead() {
+				p.pool.Delete(lAddr)
+			} else {
+				ue.RefreshTtl()
+				return ue, false, nil
+			}
 		}
 		// Create an UdpEndpoint.
 		if createOption == nil {
@@ -224,6 +246,20 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		isNew = true
 	}
 	ue := _ue.(*UdpEndpoint)
+	// Check if the endpoint is dead (read loop exited).
+	// If so, remove it and try to create a new one.
+	if ue.IsDead() {
+		// Need to acquire lock before modifying the pool
+		mu := p.createMuFor(lAddr)
+		mu.Lock()
+		// Double check after acquiring lock
+		if _ue2, ok2 := p.pool.Load(lAddr); ok2 && _ue2 == ue {
+			p.pool.Delete(lAddr)
+		}
+		mu.Unlock()
+		// Recursively call GetOrCreate to create a new endpoint
+		return p.GetOrCreate(lAddr, createOption)
+	}
 	ue.RefreshTtl()
 	return _ue.(*UdpEndpoint), isNew, nil
 }
