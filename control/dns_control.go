@@ -31,6 +31,16 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// dnsResponseBufPool is a pool for DNS response buffers.
+// This avoids memory allocation on every cache hit for ID patching.
+// Typical DNS response size is under 512 bytes, we allocate 1024 to be safe.
+var dnsResponseBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 1024)
+		return &buf
+	},
+}
+
 const (
 	MaxDnsLookupDepth  = 3
 	minFirefoxCacheTtl = 120
@@ -1104,7 +1114,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 // writeCachedResponse sends a cached DNS response to the client.
 // OPTIMIZED: Uses pre-packed response with ID patching to avoid Pack() overhead.
 // For responseWriter path, uses Unpack/WriteMsg (slower but handles ID correctly).
-// For UDP path, patches the ID directly in the pre-packed bytes.
+// For UDP path, patches the ID directly using buffer pool to avoid allocations.
 func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpRequest, responseWriter dnsmessage.ResponseWriter) error {
 	if responseWriter != nil {
 		// For responseWriter, we need to use WriteMsg which handles ID properly.
@@ -1122,21 +1132,31 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		return fmt.Errorf("dns request connection is nil for cached response")
 	}
 	
-	// OPTIMIZATION: Patch the DNS ID directly in the pre-packed bytes.
+	// OPTIMIZATION: Use buffer pool to avoid memory allocation on every cache hit.
 	// DNS Message ID is in the first 2 bytes (big-endian).
-	// We make a copy to avoid modifying the cached response.
-	if len(resp) >= 2 {
-		// Create a copy with patched ID
-		patchedResp := make([]byte, len(resp))
+	if len(resp) >= 2 && len(resp) <= 1024 {
+		// Get buffer from pool
+		bufPtr := dnsResponseBufPool.Get().(*[]byte)
+		defer dnsResponseBufPool.Put(bufPtr)
+		
+		// Copy response and patch ID
+		patchedResp := (*bufPtr)[:len(resp)]
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
+		
 		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
 		return nil
 	}
 	
-	if err := sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+	// Fallback for oversized responses (rare)
+	patchedResp := make([]byte, len(resp))
+	copy(patchedResp, resp)
+	if len(resp) >= 2 {
+		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
+	}
+	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 		return fmt.Errorf("failed to write cached DNS resp: %w", err)
 	}
 	return nil
