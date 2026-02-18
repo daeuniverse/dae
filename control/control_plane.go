@@ -92,11 +92,12 @@ var (
 	realDomainNegativeCacheTTL = 10 * time.Second
 	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
 	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
-	realDomainProbeTimeout = 800 * time.Millisecond
-	// dnsDialerSnapshotTTL keeps a very short best-path snapshot to reduce repeated
-	// per-request dialer selection overhead under bursty DNS traffic without changing
-	// routing decision semantics.
-	dnsDialerSnapshotTTL         = 250 * time.Millisecond
+	// Reduced from 800ms to 500ms for faster fallback under poor network conditions.
+	realDomainProbeTimeout = 500 * time.Millisecond
+	// dnsDialerSnapshotTTL caches dialer selection results to reduce selection overhead.
+	// Set to 2s since dialer health status only updates every 30s (default CheckInterval).
+	// This provides good cache hit rate without missing dialer state changes.
+	dnsDialerSnapshotTTL         = 2 * time.Second
 	realDomainNegJanitorInterval = 30 * time.Second
 
 	// Test seam: injected in tests to avoid external DNS dependency.
