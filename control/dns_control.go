@@ -196,6 +196,14 @@ func (c *DnsController) Close() error {
 		return true
 	})
 
+	// Clear dnsCache to prevent memory leak on reload.
+	// Each DnsCache entry contains DomainBitmap and Answer which can accumulate
+	// significant memory over time if not released.
+	c.dnsCache.Range(func(key, value interface{}) bool {
+		c.dnsCache.Delete(key)
+		return true
+	})
+
 	return errors.Join(errs...)
 }
 
@@ -1010,6 +1018,9 @@ func (c *DnsController) handleWithResponseWriter_(
 	}
 
 	// Route request.
+	if c.routing == nil {
+		return fmt.Errorf("dns routing is not configured")
+	}
 	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
 	if err != nil {
 		return err
