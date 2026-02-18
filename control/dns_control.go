@@ -1059,7 +1059,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp)
+	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp, responseWriter)
 }
 
 // sendReject_ send empty answer.
@@ -1143,7 +1143,7 @@ func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg
 	return nil
 }
 
-func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
+func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool, responseWriter dnsmessage.ResponseWriter) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
@@ -1225,7 +1225,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				"next_upstream": nextUpstream.String(),
 			}).Traceln("Change DNS upstream and resend")
 		}
-		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp)
+		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter)
 	}
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
 		var (
@@ -1265,6 +1265,10 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		// Keep the id the same with request.
 		respMsg.Id = id
 		respMsg.Compress = true
+		// If responseWriter is provided (e.g., for singleflight), use it to write the response.
+		if responseWriter != nil {
+			return responseWriter.WriteMsg(respMsg)
+		}
 		data, err = respMsg.Pack()
 		if err != nil {
 			return err
