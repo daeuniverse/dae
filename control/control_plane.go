@@ -1103,13 +1103,11 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			realDst := common.ConvergeAddrPort(pktDst)
 			newBuf := pool.Get(n)
 			copy(newBuf, buf[:n])
-			newSrc := src
 			convergeSrc := common.ConvergeAddrPort(src)
 			// Debug:
 			// t := time.Now()
 			task := func() {
 				data := newBuf
-				src := newSrc
 
 				defer data.Put()
 				var routingResult *bpfRoutingResult
@@ -1122,14 +1120,30 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 
 				if routingResult == nil {
-					rr, retrieveErr := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
+					rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP)
 					if retrieveErr != nil {
-						c.log.Warnf("No AddrPort presented: %v", retrieveErr)
-						return
+						if errors.Is(retrieveErr, ebpf.ErrKeyNotExist) {
+							// Keep behavior consistent with TCP path: missing tuple can happen
+							// in short race windows; fallback to userspace routing instead of
+							// dropping the packet.
+							routingResult = &bpfRoutingResult{
+								Outbound: uint8(consts.OutboundControlPlaneRouting),
+							}
+							if c.log.IsLevelEnabled(logrus.DebugLevel) {
+								c.log.WithFields(logrus.Fields{
+									"src": convergeSrc.String(),
+									"dst": realDst.String(),
+								}).WithError(retrieveErr).Debug("UDP routing tuple missing; fallback to userspace routing")
+							}
+						} else {
+							c.log.Warnf("No AddrPort presented: %v", retrieveErr)
+							return
+						}
+					} else {
+						routingResult = rr
+						rrCopy := *routingResult
+						freshRoutingResult = &rrCopy
 					}
-					routingResult = rr
-					rrCopy := *routingResult
-					freshRoutingResult = &rrCopy
 				}
 
 				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, realDst, routingResult, false); e != nil {
