@@ -911,12 +911,30 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		cacheKey = c.cacheKey(qname, qtype)
 	}
 
-	// OPTIMIZATION: Check cache FIRST, before singleflight.
-	// This ensures cache hits return immediately without waiting for
-	// concurrent requests that may be slow (e.g., proxy connection setup).
-	// Only cache misses should be coalesced via singleflight.
+	// OPTIMIZATION: Check cache FIRST, before any routing or singleflight.
+	// This ensures cache hits return immediately without any overhead.
+	// Only cache misses should go through routing and singleflight.
 	if cacheKey != "" && !dnsMessage.Response {
-		// Route request to get upstream
+		// Try cache lookup first - fastest path
+		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+			// Cache hit - return immediately
+			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
+				return err
+			}
+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+				q := dnsMessage.Question[0]
+				if req != nil {
+					c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
+						RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
+					)
+				} else {
+					c.log.Debugf("UDP(DNS) Cache: %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
+				}
+			}
+			return nil
+		}
+
+		// Cache miss - now do routing
 		if c.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
@@ -925,25 +943,10 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			return err
 		}
 
-		// Check cache before singleflight
-		if upstreamIndex != consts.DnsRequestOutboundIndex_Reject {
-			if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-				// Cache hit - return immediately without singleflight
-				if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
-					return err
-				}
-				if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
-					q := dnsMessage.Question[0]
-					if req != nil {
-						c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-							RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-						)
-					} else {
-						c.log.Debugf("UDP(DNS) Cache: %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
-					}
-				}
-				return nil
-			}
+		// Check if rejected
+		if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
+			c.RemoveDnsRespCache(cacheKey)
+			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 		}
 
 		// Cache miss - use singleflight to coalesce concurrent requests
@@ -1213,7 +1216,9 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 // For UDP path, patches the ID directly using buffer pool to avoid allocations.
 func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpRequest, responseWriter dnsmessage.ResponseWriter) error {
 	if responseWriter != nil {
-		// For responseWriter, we need to use WriteMsg which handles ID properly.
+		// For responseWriter, we need to use WriteMsg which properly handles
+		// TCP length prefix and other protocol-specific details.
+		// The Unpack overhead is acceptable compared to correctness.
 		var respMsg dnsmessage.Msg
 		if err := respMsg.Unpack(resp); err != nil {
 			return fmt.Errorf("failed to unpack DNS response: %w", err)
