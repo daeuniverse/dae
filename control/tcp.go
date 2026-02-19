@@ -161,7 +161,9 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
-	// Use the provided context with timeout for proper cancel propagation
+	// Use the provided context with timeout for dial operation.
+	// The context is expected to be a per-connection context with its own lifetime,
+	// not the ControlPlane's lifecycle context (c.ctx).
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 	return d.DialContext(dialCtx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)

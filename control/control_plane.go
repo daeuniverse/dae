@@ -1070,7 +1070,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			go func(lconn net.Conn) {
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
-				if err := c.handleConn(c.ctx, lconn); err != nil {
+				// Create a new context for each connection that is independent
+				// of the ControlPlane's lifecycle. This ensures each connection
+				// has its own timeout and won't be canceled when the plane shuts down.
+				// The connection will be closed when the listener is closed.
+				ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+				defer cancel()
+				if err := c.handleConn(ctx, lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
 			}(lconn)
