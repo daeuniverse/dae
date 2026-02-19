@@ -93,6 +93,11 @@ type DnsController struct {
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
+	// asyncRouteUpdateQueue is a channel for async BPF map updates.
+	// This prevents blocking DNS queries on slow BPF operations.
+	asyncRouteUpdateQueue chan *DnsCache
+	asyncRouteUpdateDone  chan struct{}
+
 	fixedDomainTtl map[string]int
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
@@ -133,31 +138,41 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	// Set concurrency limit for DNS queries
 	// This prevents resource exhaustion from DNS query storms.
 	//
-	// Best Practice (based on CoreDNS):
-	// max_concurrent should be at least: expected_qps * upstream_latency
-	// - Example: 1000 QPS * 0.05s latency = 50 minimum
-	// - Upper bound: Each concurrent query uses ~2KB memory
-	//   * 8192 concurrent = ~16MB memory footprint
-	//   * 16384 concurrent = ~32MB memory footprint
+	// Best Practice (based on CoreDNS/AdGuard Home):
+	// Go DNS apps typically don't have hard concurrency limits because:
+	// - Go goroutines are lightweight (~2KB stack)
+	// - Real bottleneck is upstream latency, not goroutine count
 	//
-	// Default: 8192 (suitable for most scenarios)
-	// - Handles up to ~4000 QPS with 50ms upstream latency
-	// - Memory usage: ~16MB for concurrent queries
-	// - Protects against DNS query storms while allowing high throughput
+	// However, for proxy chains (Shadowsocks/VMess), each query takes longer,
+	// so we need a higher limit to maintain throughput.
 	//
-	// Tuning Guidelines:
-	// - Too low (<1000): DNS queries may be rejected under normal load
-	// - Recommended (4096-16384): Suitable for most production deployments
-	// - Too high (>32768): May exhaust memory under attack scenarios
+	// Memory calculation: Each concurrent query uses ~4KB
+	//   * 16384 concurrent = ~64MB memory (default)
+	//   * 32768 concurrent = ~128MB memory
+	//
+	// Comparison with other DNS apps:
+	//   * CoreDNS: No hard limit (relies on Go runtime)
+	//   * AdGuard Home: No hard limit
+	//   * Unbound (C): 10000 (outgoing-range)
+	//   * PowerDNS: 2048 (max-mthreads)
+	//
+	// Default: 16384 (suitable for proxy scenarios)
+	// - Handles up to ~8000 QPS with 2s upstream latency
+	// - Memory usage: ~64MB for concurrent queries
+	//
+	// Configuration:
+	// - <= 0: Use default (16384)
+	// - > 0: Use specified value
+	const defaultConcurrencyLimit = 16384
 	limit := option.ConcurrencyLimit
 	if limit <= 0 {
-		limit = 8192 // Default: handle ~4k QPS with 2s latency, ~16MB memory
+		limit = defaultConcurrencyLimit
 	}
 
 	controller := &DnsController{
 		routing:            routing,
 		qtypePrefer:        prefer,
-		concurrencyLimiter: make(chan struct{}, limit),
+		concurrencyLimiter: make(chan struct{}, limit), // 0 means no limit (unbuffered channel, always non-blocking)
 
 		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
@@ -166,9 +181,11 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:    option.FixedDomainTtl,
-		dnsCache:          sync.Map{},
-		dnsForwarderCache: sync.Map{},
+		fixedDomainTtl:        option.FixedDomainTtl,
+		dnsCache:              sync.Map{},
+		dnsForwarderCache:     sync.Map{},
+		asyncRouteUpdateQueue: make(chan *DnsCache, 256), // Buffer for async BPF updates
+		asyncRouteUpdateDone:  make(chan struct{}),
 
 		janitorStop: make(chan struct{}),
 		janitorDone: make(chan struct{}),
@@ -177,6 +194,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	}
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
+	controller.startAsyncRouteUpdater()
 	return controller, nil
 }
 
@@ -190,6 +208,13 @@ func (c *DnsController) Close() error {
 		}
 		if c.evictorDone != nil {
 			<-c.evictorDone
+		}
+		// Stop async route updater
+		if c.asyncRouteUpdateQueue != nil {
+			close(c.asyncRouteUpdateQueue)
+		}
+		if c.asyncRouteUpdateDone != nil {
+			<-c.asyncRouteUpdateDone
 		}
 	})
 
@@ -361,6 +386,29 @@ func (c *DnsController) startCacheEvictor() {
 	}()
 }
 
+// startAsyncRouteUpdater starts a background goroutine that handles
+// asynchronous BPF map updates. This prevents blocking DNS queries
+// on slow BPF operations while maintaining route binding freshness.
+func (c *DnsController) startAsyncRouteUpdater() {
+	if c.cacheAccessCallback == nil {
+		close(c.asyncRouteUpdateDone)
+		return
+	}
+
+	go func() {
+		defer close(c.asyncRouteUpdateDone)
+
+		for cache := range c.asyncRouteUpdateQueue {
+			if err := c.cacheAccessCallback(cache); err != nil {
+				c.log.Warnf("async BatchUpdateDomainRouting failed: %v", err)
+			} else {
+				// Mark as successfully updated with current data hash
+				cache.MarkBpfUpdated(time.Now())
+			}
+		}
+	}()
+}
+
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
 	val, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
@@ -380,11 +428,21 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 		c.evictDnsRespCacheIfSame(cacheKey, cache)
 		return nil
 	}
+	// OPTIMIZATION: Differential async BPF map update.
+	// Only triggers update when:
+	// 1. Data has changed (IP addresses or DomainBitmap) AND
+	// 2. Minimum interval (1s) has passed since last update
+	// Also enforces maximum interval (60s) for periodic refresh.
 	if c.cacheAccessCallback != nil {
-		if cache.ShouldRefreshRouteBinding(now, DnsCacheRouteRefreshInterval) {
-			if err := c.cacheAccessCallback(cache); err != nil {
-				c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
-				return nil
+		if cache.NeedsBpfUpdate(now) {
+			// Non-blocking send to async queue. If queue is full, skip this update
+			// to avoid blocking the hot path. The next cache access will retry.
+			select {
+			case c.asyncRouteUpdateQueue <- cache:
+			default:
+				// Queue full, mark as checked to prevent busy loop.
+				// Next retry will be after MinBpfUpdateInterval.
+				cache.MarkRouteBindingRefreshed(now)
 			}
 		}
 	}
@@ -827,34 +885,70 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 }
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
-	// Try to acquire semaphore
-	select {
-	case c.concurrencyLimiter <- struct{}{}:
-		defer func() { <-c.concurrencyLimiter }()
-	default:
-		if responseWriter != nil || (req != nil && req.lConn != nil) {
-			if sendErr := c.sendRefusedWithResponseWriter_(dnsMessage, req, responseWriter); sendErr != nil {
-				return errors.Join(ErrDNSQueryConcurrencyLimitExceeded, sendErr)
+	// Try to acquire semaphore (skip if unlimited)
+	if cap(c.concurrencyLimiter) > 0 {
+		select {
+		case c.concurrencyLimiter <- struct{}{}:
+			defer func() { <-c.concurrencyLimiter }()
+		default:
+			if responseWriter != nil || (req != nil && req.lConn != nil) {
+				if sendErr := c.sendRefusedWithResponseWriter_(dnsMessage, req, responseWriter); sendErr != nil {
+					return errors.Join(ErrDNSQueryConcurrencyLimitExceeded, sendErr)
+				}
 			}
+			return ErrDNSQueryConcurrencyLimitExceeded
 		}
-		return ErrDNSQueryConcurrencyLimitExceeded
 	}
 
-	// Singleflight Key Generation
-	// We use qname + qtype as the key. We don't distinguish between clients (client IP) here,
-	// because the result should be cacheable and shareable globally (standard DNS behavior).
-	// NOTE: If EDNS0 Client Subnet (ECS) is involved later, the key MUST include the subnet.
-	// Currently dae doesn't explicitly handle ECS for differentiation in 'resolve_',
-	// so merging requests is safe.
-	var sfKey string
+	// Prepare qname, qtype for cache lookup
+	var qname string
+	var qtype uint16
+	var cacheKey string
 	if len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
-		sfKey = c.cacheKey(q.Name, q.Qtype)
+		qname = q.Name
+		qtype = q.Qtype
+		cacheKey = c.cacheKey(qname, qtype)
 	}
 
-	if sfKey != "" && !dnsMessage.Response {
-		// execute via singleflight
-		res, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
+	// OPTIMIZATION: Check cache FIRST, before singleflight.
+	// This ensures cache hits return immediately without waiting for
+	// concurrent requests that may be slow (e.g., proxy connection setup).
+	// Only cache misses should be coalesced via singleflight.
+	if cacheKey != "" && !dnsMessage.Response {
+		// Route request to get upstream
+		if c.routing == nil {
+			return fmt.Errorf("dns routing is not configured")
+		}
+		upstreamIndex, _, err := c.routing.RequestSelect(qname, qtype)
+		if err != nil {
+			return err
+		}
+
+		// Check cache before singleflight
+		if upstreamIndex != consts.DnsRequestOutboundIndex_Reject {
+			if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+				// Cache hit - return immediately without singleflight
+				if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
+					return err
+				}
+				if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+					q := dnsMessage.Question[0]
+					if req != nil {
+						c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
+							RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
+						)
+					} else {
+						c.log.Debugf("UDP(DNS) Cache: %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
+					}
+				}
+				return nil
+			}
+		}
+
+		// Cache miss - use singleflight to coalesce concurrent requests
+		// This prevents thundering herd on upstream DNS servers
+		res, err, _ := c.sf.Do(cacheKey, func() (interface{}, error) {
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
 			return c.resolveForSingleflight(ctx, dnsMessage, req)
