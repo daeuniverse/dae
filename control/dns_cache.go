@@ -18,12 +18,30 @@ import (
 // This balances between performance (avoiding frequent repack) and TTL accuracy.
 const ttlRefreshThresholdSeconds = 5
 
+// BPF update configuration
+const (
+	// MinBpfUpdateInterval is the minimum time between BPF map updates for the same cache.
+	// This prevents excessive BPF map updates while maintaining freshness.
+	MinBpfUpdateInterval = 1 * time.Second
+	
+	// MaxBpfUpdateInterval is the maximum time before forcing a BPF map update.
+	// Even if data hasn't changed, we refresh periodically to handle edge cases.
+	MaxBpfUpdateInterval = 60 * time.Second
+)
+
 type DnsCache struct {
 	DomainBitmap     []uint32
 	Answer           []dnsmessage.RR
 	Deadline         time.Time
 	OriginalDeadline time.Time // This field is not impacted by `fixed_domain_ttl`.
+	
+	// lastRouteSyncNano tracks when route binding was last synced to BPF.
 	lastRouteSyncNano atomic.Int64
+	
+	// lastBpfDataHash stores a hash of the data used for BPF update.
+	// This enables differential updates - only update when data changes.
+	lastBpfDataHash atomic.Uint64
+	
 	// PackedResponse is a pre-packed DNS response message with compression enabled.
 	// This avoids repeated Pack() calls on cache hits, significantly reducing latency.
 	// The packed response includes: Answer, Rcode=Success, Response=true, RecursionAvailable=true.
@@ -43,6 +61,8 @@ func (c *DnsCache) MarkRouteBindingRefreshed(now time.Time) {
 	c.lastRouteSyncNano.Store(now.UnixNano())
 }
 
+// ShouldRefreshRouteBinding checks if route binding needs to be refreshed.
+// Deprecated: Use NeedsBpfUpdate for differential updates.
 func (c *DnsCache) ShouldRefreshRouteBinding(now time.Time, minInterval time.Duration) bool {
 	if minInterval <= 0 {
 		return true
@@ -54,6 +74,96 @@ func (c *DnsCache) ShouldRefreshRouteBinding(now time.Time, minInterval time.Dur
 		return false
 	}
 	return c.lastRouteSyncNano.CompareAndSwap(last, nowNano)
+}
+
+// ComputeBpfDataHash computes a hash of the data used for BPF updates.
+// This includes IP addresses from Answer and the DomainBitmap.
+// Returns 0 if there are no valid IPs (no update needed).
+func (c *DnsCache) ComputeBpfDataHash() uint64 {
+	if len(c.Answer) == 0 {
+		return 0
+	}
+	
+	var hash uint64 = 14695981039346656037 // FNV-1a offset basis
+	
+	// Hash IP addresses from Answer
+	for _, ans := range c.Answer {
+		var ipBytes []byte
+		switch body := ans.(type) {
+		case *dnsmessage.A:
+			ipBytes = body.A
+		case *dnsmessage.AAAA:
+			ipBytes = body.AAAA
+		}
+		if len(ipBytes) > 0 {
+			for _, b := range ipBytes {
+				hash ^= uint64(b)
+				hash *= 1099511628211 // FNV-1a prime
+			}
+		}
+	}
+	
+	// Hash DomainBitmap
+	for _, v := range c.DomainBitmap {
+		hash ^= uint64(v)
+		hash *= 1099511628211
+	}
+	
+	return hash
+}
+
+// NeedsBpfUpdate checks if BPF map update is needed using differential detection.
+// Returns true if:
+// 1. Minimum interval has passed since last update AND
+//    (data has changed OR maximum interval has passed)
+// 2. Never been updated before
+//
+// IMPORTANT: This method uses CAS to prevent race conditions. Only one goroutine
+// will successfully trigger an update request.
+func (c *DnsCache) NeedsBpfUpdate(now time.Time) bool {
+	nowNano := now.UnixNano()
+	lastSync := c.lastRouteSyncNano.Load()
+	
+	// Never updated - needs update (use CAS to claim first update)
+	if lastSync == 0 {
+		return c.lastRouteSyncNano.CompareAndSwap(0, nowNano)
+	}
+	
+	timeSinceLastSync := time.Duration(nowNano - lastSync)
+	
+	// Haven't reached minimum interval - skip
+	if timeSinceLastSync < MinBpfUpdateInterval {
+		return false
+	}
+	
+	// Maximum interval reached - force update (use CAS to claim)
+	if timeSinceLastSync >= MaxBpfUpdateInterval {
+		return c.lastRouteSyncNano.CompareAndSwap(lastSync, nowNano)
+	}
+	
+	// Check if data has changed
+	currentHash := c.ComputeBpfDataHash()
+	if currentHash == 0 {
+		// No valid IPs - no update needed
+		return false
+	}
+	
+	lastHash := c.lastBpfDataHash.Load()
+	if currentHash == lastHash {
+		// Data unchanged - no update needed
+		return false
+	}
+	
+	// Data changed - use CAS to claim this update
+	// Only one goroutine will succeed
+	return c.lastRouteSyncNano.CompareAndSwap(lastSync, nowNano)
+}
+
+// MarkBpfUpdated marks the BPF map as updated with the current data hash.
+// This should be called after a successful BPF update.
+func (c *DnsCache) MarkBpfUpdated(now time.Time) {
+	c.lastRouteSyncNano.Store(now.UnixNano())
+	c.lastBpfDataHash.Store(c.ComputeBpfDataHash())
 }
 
 func (c *DnsCache) FillInto(req *dnsmessage.Msg) {

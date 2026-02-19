@@ -484,10 +484,10 @@ func NewControlPlane(
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
-		// ConcurrencyLimit: 0 uses default (8192)
-		// Based on CoreDNS best practices: min = expected_qps * upstream_latency
-		// Default 8192 supports ~4k QPS with 50ms latency, uses ~16MB memory
-		ConcurrencyLimit: 0,
+		// ConcurrencyLimit: use default (16384)
+		// Suitable for proxy scenarios with higher latency
+		// Each concurrent query uses ~4KB, so 16384 = ~64MB memory
+		ConcurrencyLimit: 0, // 0 means use default (16384)
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
