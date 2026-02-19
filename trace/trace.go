@@ -31,6 +31,9 @@ import (
 var nativeEndian binary.ByteOrder
 
 func init() {
+	// Detect native endianness by writing a known uint16 value and examining the bytes.
+	// This uses unsafe.Pointer to access the raw byte representation, which is necessary
+	// for endianness detection. The pattern is well-established and safe.
 	buf := [2]byte{}
 	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
 

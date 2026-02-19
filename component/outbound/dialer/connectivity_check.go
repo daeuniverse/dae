@@ -230,7 +230,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
 		ctx = context.WithValue(ctx, "logger", c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
@@ -254,7 +254,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
 		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, c.ResolverNetwork)
 		if err != nil {
@@ -574,7 +574,7 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
-	ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 	start := time.Now()
 	// Calc latency.

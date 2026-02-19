@@ -175,7 +175,7 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 				u.init = true
 			}
 		}()
-		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"sync"
@@ -74,7 +75,7 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
 		Handler:    func(data []byte, from netip.AddrPort) error { return nil },
 		NatTimeout: DefaultNatTimeout,
-		GetDialOption: func() (option *DialOption, err error) {
+		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			// Return error to simulate dial failure - but dead endpoint should still be removed first
 			return nil, fmt.Errorf("simulated dial error")
 		},
@@ -114,7 +115,7 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 	_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
 		Handler:    func(data []byte, from netip.AddrPort) error { return nil },
 		NatTimeout: DefaultNatTimeout,
-		GetDialOption: func() (option *DialOption, err error) {
+		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			return nil, fmt.Errorf("simulated dial error")
 		},
 	})
@@ -153,7 +154,7 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 			_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
 				Handler:    func(data []byte, from netip.AddrPort) error { return nil },
 				NatTimeout: DefaultNatTimeout,
-				GetDialOption: func() (option *DialOption, err error) {
+				GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 					return nil, fmt.Errorf("simulated dial error")
 				},
 			})

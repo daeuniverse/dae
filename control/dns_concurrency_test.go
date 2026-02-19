@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -43,7 +44,7 @@ func TestDnsController_ConcurrencyLimit(t *testing.T) {
 
 	// Call HandleWithResponseWriter_
 	// It should fail immediately because the semaphore is full
-	err = ctrl.HandleWithResponseWriter_(msg, req, nil)
+	err = ctrl.HandleWithResponseWriter_(context.Background(), msg, req, nil)
 
 	if err == nil {
 		t.Fatal("Expected error due to concurrency limit, got nil")

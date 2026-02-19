@@ -156,7 +156,7 @@ type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
 	// GetTarget is useful only if the underlay does not support Full-cone.
-	GetDialOption func() (option *DialOption, err error)
+	GetDialOption func(ctx context.Context) (option *DialOption, err error)
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -216,12 +216,16 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			return nil, true, fmt.Errorf("createOption.Handler cannot be nil")
 		}
 
-		dialOption, err := createOption.GetDialOption()
+		// Use context.Background() as base for UDP endpoint creation.
+		// The timeout context ensures the dial operation doesn't hang indefinitely.
+		ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+		defer cancel()
+
+		dialOption, err := createOption.GetDialOption(ctx)
 		if err != nil {
+			cancel()
 			return nil, false, err
 		}
-		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
-		defer cancel()
 		udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
 		if err != nil {
 			return nil, true, err

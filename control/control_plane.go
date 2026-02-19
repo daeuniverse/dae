@@ -52,7 +52,11 @@ type ControlPlane struct {
 	deferFuncs []func() error
 	listenIp   string
 
-	// TODO: add mutex?
+	// outbounds is an immutable slice set during NewControlPlane initialization.
+	// It is safe for concurrent reads without synchronization because:
+	// 1. The slice is never modified after initialization
+	// 2. The ready channel is closed only after outbounds is fully populated
+	// 3. All reads happen-after the ready channel is closed
 	outbounds     []*outbound.DialerGroup
 	inConnections sync.Map
 
@@ -262,8 +266,14 @@ func NewControlPlane(
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
 		if global.AutoConfigKernelParameter {
-			_ = SetIpv4forward("1")
-			_ = setForwarding("all", consts.IpVersionStr_6, "1")
+			// Enable IP forwarding for LAN interfaces
+			if err := SetIpv4forward("1"); err != nil {
+				// Log warning but don't fail - may be running in restricted environment (e.g., container)
+				log.WithError(err).Warnln("Failed to enable IPv4 forwarding; proxy functionality may be limited")
+			}
+			if err := setForwarding("all", consts.IpVersionStr_6, "1"); err != nil {
+				log.WithError(err).Warnln("Failed to enable IPv6 forwarding; proxy functionality may be limited")
+			}
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
@@ -283,9 +293,11 @@ func NewControlPlane(
 				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
 				if global.AutoConfigKernelParameter {
 					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
-					val, _ := acceptRa.Get()
-					if val == "1" {
-						_ = acceptRa.Set("2", false)
+					val, err := acceptRa.Get()
+					if err == nil && val == "1" {
+						if err := acceptRa.Set("2", false); err != nil {
+							log.WithError(err).Warnf("Failed to set accept_ra=2 for %v; IPv6 autoconfig may not work as expected", ifname)
+						}
 					}
 				}
 			}
@@ -827,7 +839,8 @@ func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
 	}
 
 	now := time.Now()
-	ctx, cancel := context.WithTimeout(context.TODO(), realDomainProbeTimeout)
+	// Use ControlPlane's context for real domain probe to enable proper cancel propagation
+	ctx, cancel := context.WithTimeout(c.ctx, realDomainProbeTimeout)
 	defer cancel()
 
 	systemDns, err := systemDnsForRealDomainProbe()
@@ -1057,7 +1070,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			go func(lconn net.Conn) {
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
-				if err := c.handleConn(lconn); err != nil {
+				if err := c.handleConn(c.ctx, lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
 			}(lconn)
@@ -1144,11 +1157,11 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 		},
 	}
 	listenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
-	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
+	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("listenTCP: %w", err)
 	}
-	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", listenAddr)
+	packetConn, err := listenConfig.ListenPacket(context.Background(), "udp", listenAddr)
 	if err != nil {
 		_ = tcpListener.Close()
 		return nil, fmt.Errorf("listenUDP: %w", err)
@@ -1289,8 +1302,15 @@ func (c *ControlPlane) chooseBestDnsDialer(
 func (c *ControlPlane) AbortConnections() (err error) {
 	var errs []error
 	c.inConnections.Range(func(key, value any) bool {
-		if err = key.(net.Conn).Close(); err != nil {
-			errs = append(errs, err)
+		// Use comma-ok pattern for type safety to prevent panic if key is not net.Conn
+		conn, ok := key.(net.Conn)
+		if !ok {
+			// Unexpected type in inConnections - this should never happen
+			errs = append(errs, fmt.Errorf("unexpected type %T in inConnections", key))
+			return true
+		}
+		if cerr := conn.Close(); cerr != nil {
+			errs = append(errs, cerr)
 		}
 		return true
 	})
