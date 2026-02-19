@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -229,7 +230,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		routingResult: routingResult,
 	}
 
-	err = h.controller.dnsController.HandleWithResponseWriter_(r, udpReq, w)
+	err = h.controller.dnsController.HandleWithResponseWriter_(context.Background(), r, udpReq, w)
 	if err != nil {
 		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 			// REFUSED response has been written by DNS controller.

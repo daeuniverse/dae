@@ -24,11 +24,14 @@ import (
 func newTestControlPlaneForRealDomainProbe() *ControlPlane {
 	log := logrus.New()
 	log.SetOutput(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ControlPlane{
 		realDomainSet: bloom.NewWithEstimates(2048, 0.001),
 		log:           log,
 		soMarkFromDae: 0,
 		mptcp:         false,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 

@@ -822,11 +822,11 @@ func (c *DnsController) forwardWithFallback(
 	return respMsg, fallbackDialArg, nil
 }
 
-func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
-	return c.HandleWithResponseWriter_(dnsMessage, req, nil)
+func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
+	return c.HandleWithResponseWriter_(ctx, dnsMessage, req, nil)
 }
 
-func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	// Try to acquire semaphore
 	select {
 	case c.concurrencyLimiter <- struct{}{}:
@@ -857,7 +857,7 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 		res, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
-			return c.resolveForSingleflight(dnsMessage, req)
+			return c.resolveForSingleflight(ctx, dnsMessage, req)
 		})
 
 		if err != nil {
@@ -892,17 +892,17 @@ func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, re
 		return nil
 	}
 
-	return c.handleWithResponseWriterInternal(dnsMessage, req, responseWriter)
+	return c.handleWithResponseWriterInternal(ctx, dnsMessage, req, responseWriter)
 }
 
-func (c *DnsController) resolveForSingleflight(dnsMessage *dnsmessage.Msg, req *udpRequest) (*dnsmessage.Msg, error) {
+func (c *DnsController) resolveForSingleflight(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest) (*dnsmessage.Msg, error) {
 	// We need a way to capture the response message from the resolution process.
 	// Currently `handleWithResponseWriterInternal` writes to a writer or sends a packet.
 	// We need to refactor or spy on it.
 
 	// Since refactoring everything is risky, let's use a Fake ResponseWriter to capture the message.
 	capturer := &msgCapturer{}
-	err := c.handleWithResponseWriterInternal(dnsMessage, req, capturer)
+	err := c.handleWithResponseWriterInternal(ctx, dnsMessage, req, capturer)
 	if err != nil {
 		return nil, err
 	}
@@ -929,7 +929,7 @@ func (m *msgCapturer) TsigTimersOnly(bool)         {}
 func (m *msgCapturer) Hijack()                     {}
 
 // Renamed from HandleWithResponseWriter_ to internal to avoid recursion loop with SF
-func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
@@ -953,10 +953,10 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 	switch qtype {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 		if c.qtypePrefer == 0 {
-			return c.handleWithResponseWriter_(dnsMessage, req, true, responseWriter)
+			return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter)
 		}
 	default:
-		return c.handleWithResponseWriter_(dnsMessage, req, true, responseWriter)
+		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter)
 	}
 
 	// Try to make both A and AAAA lookups.
@@ -988,9 +988,9 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 				done <- struct{}{}
 			}
 		}()
-		_ = c.handleWithResponseWriter_(dnsMessage2, req, false, responseWriter)
+		_ = c.handleWithResponseWriter_(ctx, dnsMessage2, req, false, responseWriter)
 	}()
-	err = c.handleWithResponseWriter_(dnsMessage, req, false, responseWriter)
+	err = c.handleWithResponseWriter_(ctx, dnsMessage, req, false, responseWriter)
 
 	// If current query type is already preferred, the final response decision does not
 	// depend on the secondary lookup result. Avoid waiting here to reduce serial latency.
@@ -1028,14 +1028,16 @@ func (c *DnsController) handleWithResponseWriterInternal(dnsMessage *dnsmessage.
 }
 
 func (c *DnsController) handle_(
+	ctx context.Context,
 	dnsMessage *dnsmessage.Msg,
 	req *udpRequest,
 	needResp bool,
 ) (err error) {
-	return c.handleWithResponseWriter_(dnsMessage, req, needResp, nil)
+	return c.handleWithResponseWriter_(ctx, dnsMessage, req, needResp, nil)
 }
 
 func (c *DnsController) handleWithResponseWriter_(
+	ctx context.Context,
 	dnsMessage *dnsmessage.Msg,
 	req *udpRequest,
 	needResp bool,
@@ -1103,7 +1105,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp, responseWriter)
+	return c.dialSend(ctx, 0, req, data, dnsMessage.Id, upstream, needResp, responseWriter)
 }
 
 // sendReject_ send empty answer.
@@ -1220,7 +1222,7 @@ func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg
 	return nil
 }
 
-func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool, responseWriter dnsmessage.ResponseWriter) (err error) {
+func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool, responseWriter dnsmessage.ResponseWriter) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
@@ -1256,10 +1258,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	var respMsg *dnsmessage.Msg
 	usedDialArgument := dialArgument
 
-	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	// Use the provided context with timeout for proper cancel propagation
+	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 
-	respMsg, usedDialArgument, err = c.forwardWithFallback(ctxDial, req, upstream, dialArgument, data)
+	respMsg, usedDialArgument, err = c.forwardWithFallback(dialCtx, req, upstream, dialArgument, data)
 	if err != nil {
 		return err
 	}
@@ -1302,7 +1305,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				"next_upstream": nextUpstream.String(),
 			}).Traceln("Change DNS upstream and resend")
 		}
-		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter)
+		return c.dialSend(ctx, invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter)
 	}
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
 		var (

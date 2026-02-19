@@ -281,7 +281,7 @@ func TestDnsController_ResolveForSingleflight_MockTest(t *testing.T) {
 	// Test the resolveForSingleflight function
 	// Note: This will fail because we don't have a real DNS upstream configured
 	// But it demonstrates the test pattern
-	_, err = ctrl.resolveForSingleflight(dnsMsg, req)
+	_, err = ctrl.resolveForSingleflight(context.Background(), dnsMsg, req)
 
 	// We expect an error because there's no routing configured (nil routing)
 	// The error indicates the DnsController needs proper initialization

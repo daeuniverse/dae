@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -162,7 +163,7 @@ afterSniffing:
 		routingResult.Mark = c.soMarkFromDae
 	}
 	if isDns {
-		err = c.dnsController.Handle_(dnsMessage, &udpRequest{
+		err = c.dnsController.Handle_(c.ctx, dnsMessage, &udpRequest{
 			realSrc:       realSrc,
 			realDst:       realDst,
 			src:           src,
@@ -219,7 +220,7 @@ getNew:
 			return sendPkt(c.log, data, from, realSrc, src, lConn)
 		},
 		NatTimeout: natTimeout,
-		GetDialOption: func() (option *DialOption, err error) {
+		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			if shouldReroute {
 				outboundIndex = consts.OutboundControlPlaneRouting
 			}

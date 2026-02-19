@@ -22,7 +22,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
+func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {
 	defer lConn.Close()
 
 	// Sniff target domain.
@@ -45,7 +45,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	dst = common.ConvergeAddrPort(dst)
 
 	// Dial and relay.
-	rConn, err := c.RouteDialTcp(&RouteDialParam{
+	rConn, err := c.RouteDialTcp(ctx, &RouteDialParam{
 		Outbound:    consts.OutboundIndex(routingResult.Outbound),
 		Domain:      domain,
 		Mac:         routingResult.Mac,
@@ -87,7 +87,7 @@ type RouteDialParam struct {
 	Mark        uint32
 }
 
-func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
+func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
 	routingResult := &bpfRoutingResult{
 		Mark:     p.Mark,
 		Must:     0,
@@ -161,9 +161,10 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 			"mac":      Mac2String(routingResult.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
-	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	// Use the provided context with timeout for proper cancel propagation
+	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
-	return d.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	return d.DialContext(dialCtx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
 }
 
 type WriteCloser interface {
