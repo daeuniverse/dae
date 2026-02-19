@@ -7,12 +7,14 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"strings"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -35,14 +37,28 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	}
 
 	// Get tuples and outbound.
-	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
+	// Converge IPv4-mapped IPv6 addresses before looking up eBPF routing tuples.
+	src := common.ConvergeAddrPort(lConn.RemoteAddr().(*net.TCPAddr).AddrPort())
+	dst := common.ConvergeAddrPort(lConn.LocalAddr().(*net.TCPAddr).AddrPort())
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, consts.IPPROTO_TCP)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			// Graceful fallback: routing tuple might be unavailable due to race/window
+			// during connection handoff. Continue with userspace routing instead of
+			// aborting the TCP connection.
+			routingResult = &bpfRoutingResult{
+				Outbound: uint8(consts.OutboundControlPlaneRouting),
+			}
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src": src.String(),
+					"dst": dst.String(),
+				}).WithError(err).Debug("Routing tuple missing; fallback to userspace routing")
+			}
+		} else {
+			return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
+		}
 	}
-	src = common.ConvergeAddrPort(src)
-	dst = common.ConvergeAddrPort(dst)
 
 	// Dial and relay.
 	rConn, err := c.RouteDialTcp(ctx, &RouteDialParam{
@@ -162,7 +178,7 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
 	// Use the provided context with timeout for dial operation.
-	// The context is expected to be a per-connection context with its own lifetime,
+	// The context is expected to be a per-connection context with its own lifetime, 
 	// not the ControlPlane's lifecycle context (c.ctx).
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
