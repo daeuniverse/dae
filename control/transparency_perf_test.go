@@ -65,7 +65,7 @@ func BenchmarkDnsCache_LookupLatency(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if val, ok := dnsCache.Load("example.com.:1"); ok {
 			c := val.(*DnsCache)
-			_ = c.PackedResponse
+			_ = c.GetPackedResponse()
 		}
 	}
 }
@@ -106,7 +106,7 @@ func BenchmarkDnsCache_LookupLatency_Parallel(b *testing.B) {
 			key := fmt.Sprintf("domain%d.com.:1", i%1000)
 			if val, ok := dnsCache.Load(key); ok {
 				c := val.(*DnsCache)
-				_ = c.PackedResponse
+				_ = c.GetPackedResponse()
 			}
 			i++
 		}
@@ -480,7 +480,7 @@ func BenchmarkCriticalPath_DNSThenRoute(b *testing.B) {
 		// Step 1: DNS cache lookup
 		if val, ok := cache.Load("example.com.:1"); ok {
 			c := val.(*DnsCache)
-			_ = c.PackedResponse
+			_ = c.GetPackedResponse()
 		}
 
 		// Step 2: Routing decision
@@ -548,7 +548,7 @@ func BenchmarkCriticalPath_FullDnsFlow(b *testing.B) {
 		// Step 2: DNS cache lookup
 		if val, ok := cache.Load("example.com.:1"); ok {
 			c := val.(*DnsCache)
-			_ = c.PackedResponse
+			_ = c.GetPackedResponse()
 		}
 
 		// Step 3: DNS response routing (accept/reject based on response)
@@ -618,7 +618,7 @@ func BenchmarkCriticalPath_FullDnsFlow_Parallel(b *testing.B) {
 			// Step 2: DNS cache lookup
 			if val, ok := cache.Load(cacheKey); ok {
 				c := val.(*DnsCache)
-				_ = c.PackedResponse
+				_ = c.GetPackedResponse()
 			}
 
 			// Step 3: DNS response routing
@@ -685,7 +685,7 @@ func BenchmarkCriticalPath_FullParallel(b *testing.B) {
 			key := fmt.Sprintf("domain%d.com.:1", i%100)
 			if val, ok := cache.Load(key); ok {
 				c := val.(*DnsCache)
-				_ = c.PackedResponse
+				_ = c.GetPackedResponse()
 			}
 
 			// Routing decision

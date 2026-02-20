@@ -66,7 +66,9 @@ func BenchmarkDnsQPS_CacheHit(b *testing.B) {
 			key := fmt.Sprintf("domain%d.com.:1", i%10000)
 			if val, ok := cache.Load(key); ok {
 				c := val.(*DnsCache)
-				_ = c.PackedResponse
+				if ptr := c.GetPackedResponse(); ptr != nil {
+					_ = ptr
+				}
 				ops.Add(1)
 			}
 			i++
@@ -113,7 +115,9 @@ func BenchmarkDnsQPS_VariousCacheSizes(b *testing.B) {
 					key := fmt.Sprintf("domain%d.com.:1", i%size)
 					if val, ok := cache.Load(key); ok {
 						c := val.(*DnsCache)
-						_ = c.PackedResponse
+						if ptr := c.GetPackedResponse(); ptr != nil {
+							_ = ptr
+						}
 					}
 					i++
 				}
@@ -361,7 +365,9 @@ func runMixedWorkload(b *testing.B, cfg MixedWorkloadConfig) {
 				key := fmt.Sprintf("domain%d.com.:1", i%10000)
 				if val, ok := cache.Load(key); ok {
 					c := val.(*DnsCache)
-					_ = c.PackedResponse
+					if ptr := c.GetPackedResponse(); ptr != nil {
+						_ = ptr
+					}
 					dnsOps.Add(1)
 				}
 			}
@@ -475,7 +481,9 @@ func BenchmarkStress_MemoryPressure(b *testing.B) {
 			key := fmt.Sprintf("domain%d.com.:1", i%50000)
 			if val, ok := cache.Load(key); ok {
 				c := val.(*DnsCache)
-				_ = c.PackedResponse
+				if ptr := c.GetPackedResponse(); ptr != nil {
+					_ = ptr
+				}
 			}
 
 			// Routing decision

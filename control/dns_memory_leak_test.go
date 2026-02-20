@@ -244,8 +244,8 @@ func TestDnsCache_PackedResponseRefresh_MemoryStress(t *testing.T) {
 	var wg sync.WaitGroup
 	var successfulRefreshes atomic.Int64
 
-	// Track how many times PackedResponse is replaced
-	originalPtr := &cache.PackedResponse
+	// Track the initial TTL
+	originalTTL := cache.packedResponseTTL.Load()
 
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
@@ -258,7 +258,8 @@ func TestDnsCache_PackedResponseRefresh_MemoryStress(t *testing.T) {
 				now := time.Now().Add(offset)
 
 				resp := cache.GetPackedResponseWithApproximateTTL("stress.example.com.", dnsmessage.TypeA, now)
-				if resp != nil && &cache.PackedResponse != originalPtr {
+				currentTTL := cache.packedResponseTTL.Load()
+				if resp != nil && currentTTL != originalTTL {
 					successfulRefreshes.Add(1)
 				}
 			}
