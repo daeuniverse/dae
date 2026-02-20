@@ -896,16 +896,18 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
 			}
-			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+			// Log cache hit with dest addr for CI compatibility.
+			// Format includes "-> dest:port" so CI grep can verify routing.
+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 && req != nil {
 				q := dnsMessage.Question[0]
-				if req != nil {
-					c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-						RefineSourceToShow(req.realSrc, req.realDst.Addr()),
-						strings.ToLower(q.Name), QtypeToString(q.Qtype),
-					)
-				} else {
-					c.log.Debugf("UDP(DNS) Cache: %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
-				}
+				c.log.WithFields(logrus.Fields{
+					"network": "udp(dns)",
+					"_qname":  strings.ToLower(q.Name),
+					"qtype":   QtypeToString(q.Qtype),
+				}).Debugf("%v <-> %v (cache)",
+					RefineSourceToShow(req.realSrc, req.realDst.Addr()),
+					RefineAddrPortToShow(req.realDst),
+				)
 			}
 			return nil
 		}
