@@ -32,12 +32,13 @@ type UdpTaskQueue struct {
 	// 4-byte fields with padding
 	refs atomic.Int32
 
-	// 24-byte field (netip.AddrPort is struct{addr [16]byte, port uint16, zone string})
-	key netip.AddrPort
-
 	// 1-byte fields
+	draining     atomic.Bool  // prevents new acquisitions during cleanup
 	overflowLen  atomic.Int32 // track overflow length for lock-free idle check
 	overflowMode bool
+
+	// 24-byte field (netip.AddrPort is struct{addr [16]byte, port uint16, zone string})
+	key netip.AddrPort
 }
 
 func (q *UdpTaskQueue) notifyWake() {
@@ -148,11 +149,26 @@ func (q *UdpTaskQueue) convoy() {
 				q.safeTimerReset(timer)
 				continue
 			}
+			
+			// Set draining flag to prevent new acquisitions
+			q.draining.Store(true)
+			
+			// Brief wait for in-flight acquireQueue calls to complete
+			time.Sleep(10 * time.Millisecond)
+			
+			// Final check: ensure no new tasks arrived
+			if q.refs.Load() > 0 || len(q.ch) > 0 || q.overflowLen.Load() > 0 {
+				q.draining.Store(false)
+				q.safeTimerReset(timer)
+				continue
+			}
+			
 			// Try to delete from pool using CAS-like semantics via sync.Map
 			if q.p.tryDeleteQueue(q.key, q) {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
+			q.draining.Store(false)
 			q.safeTimerReset(timer)
 		}
 	}
@@ -182,9 +198,14 @@ func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
 	// Fast path: check if queue exists without any lock contention
 	if v, ok := p.queues.Load(key); ok {
 		q := v.(*UdpTaskQueue)
+		if q.draining.Load() {
+			goto createNew
+		}
 		q.refs.Add(1)
 		return q
 	}
+
+createNew:
 
 	// Slow path: create new queue using LoadOrStore to avoid race condition
 	ch := p.queueChPool.Get().(chan UdpTask)
@@ -201,6 +222,13 @@ func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
 	if loaded {
 		// Another goroutine created the queue first, put our channel back
 		p.queueChPool.Put(ch)
+		q := actual.(*UdpTaskQueue)
+		if q.draining.Load() {
+			p.queues.Delete(key)
+			goto createNew
+		}
+		q.refs.Add(1)
+		return q
 	}
 	q := actual.(*UdpTaskQueue)
 	q.refs.Add(1)
