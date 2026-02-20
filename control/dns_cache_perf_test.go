@@ -555,12 +555,12 @@ func TestDnsCache_GetPackedResponseWithApproximateTTL(t *testing.T) {
 	ttl2 := msg2.Answer[0].Header().Ttl
 	t.Logf("TTL after 3s: %d (should be ~%d, using cached response)", ttl2, initialTTL)
 
-	// Test 3: After 10 seconds, TTL should be refreshed
-	// because TTL difference (10s) > ttlRefreshThresholdSeconds (5s)
-	time10s := time.Now().Add(10 * time.Second)
-	resp3 := cache.GetPackedResponseWithApproximateTTL("test.example.com.", dnsmessage.TypeA, time10s)
+	// Test 3: After 20 seconds, TTL should be refreshed
+	// because TTL difference (20s) > ttlRefreshThresholdSeconds (15s)
+	time20s := time.Now().Add(20 * time.Second)
+	resp3 := cache.GetPackedResponseWithApproximateTTL("test.example.com.", dnsmessage.TypeA, time20s)
 	if resp3 == nil {
-		t.Fatal("GetPackedResponseWithApproximateTTL returned nil for time10s")
+		t.Fatal("GetPackedResponseWithApproximateTTL returned nil for time20s")
 	}
 
 	var msg3 dnsmessage.Msg
@@ -569,11 +569,11 @@ func TestDnsCache_GetPackedResponseWithApproximateTTL(t *testing.T) {
 	}
 
 	ttl3 := msg3.Answer[0].Header().Ttl
-	expectedTTL3 := uint32(290) // 300 - 10 = 290
+	expectedTTL3 := uint32(280) // 300 - 20 = 280
 	if ttl3 < expectedTTL3-2 || ttl3 > expectedTTL3+2 {
-		t.Errorf("expected TTL ~%d after 10s, got %d", expectedTTL3, ttl3)
+		t.Errorf("expected TTL ~%d after 20s, got %d", expectedTTL3, ttl3)
 	}
-	t.Logf("TTL after 10s: %d (should be ~%d, refreshed)", ttl3, expectedTTL3)
+	t.Logf("TTL after 20s: %d (should be ~%d, refreshed)", ttl3, expectedTTL3)
 
 	// Test 4: After 100 seconds, TTL should be ~200
 	time100s := time.Now().Add(100 * time.Second)
