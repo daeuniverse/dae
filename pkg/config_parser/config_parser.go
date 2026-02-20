@@ -7,7 +7,8 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 )
 
@@ -16,13 +17,13 @@ func Parse(in string) (sections []*Section, err error) {
 	lexer := dae_config.Newdae_configLexer(antlr.NewInputStream(in))
 	lexer.RemoveErrorListeners()
 	lexer.AddErrorListener(errorListener)
-	input := antlr.NewCommonTokenStream(lexer, 0)
+	input := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
 
 	parser := dae_config.Newdae_configParser(input)
 	parser.RemoveErrorListeners()
 	parser.AddErrorListener(errorListener)
 	parser.BuildParseTrees = true
-	tree := parser.Start()
+	tree := parser.Start_()
 
 	walker := NewWalker(parser)
 	antlr.ParseTreeWalkerDefault.Walk(walker, tree)
