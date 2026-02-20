@@ -204,6 +204,7 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 type loadBpfOptions struct {
 	PinPath             string
 	BigEndianTproxyPort uint32
+	SoMarkFromDae       uint32
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
@@ -234,6 +235,7 @@ retryLoadBpf:
 			controlPlanePid uint32
 			dae0Ifindex     uint32
 			dae0NetnsId     uint32
+			soMarkFromDae   uint32
 			dae0peerMac     [6]byte
 			padding         [2]byte
 		}{
@@ -241,6 +243,7 @@ retryLoadBpf:
 			controlPlanePid: uint32(os.Getpid()),
 			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
 			dae0NetnsId:     uint32(netnsID),
+			soMarkFromDae:   uint32(opts.SoMarkFromDae),
 			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 		},
 	}

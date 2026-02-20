@@ -186,6 +186,7 @@ func NewControlPlane(
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
 			PinPath:             pinPath,
 			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
+			SoMarkFromDae:       global.SoMarkFromDae,
 			CollectionOptions:   collectionOpts,
 		}); err != nil {
 			if log.Level == logrus.PanicLevel {
@@ -226,8 +227,22 @@ func NewControlPlane(
 	}
 	// Bind to WAN
 	if len(global.WanInterface) > 0 {
-		if err = core.setupSkPidMonitor(); err != nil {
-			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
+		hasPnameRouting := false
+	searchRoutingRules:
+		for _, routingRule := range routingA.Rules {
+			for _, f := range routingRule.AndFunctions {
+				if f.Name == "pname" {
+					hasPnameRouting = true
+					break searchRoutingRules
+				}
+			}
+		}
+		if global.SoMarkFromDae == 0 || hasPnameRouting {
+			if err = core.setupSkPidMonitor(); err != nil {
+				log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
+			}
+		} else {
+			log.Infof("cgroup hooks are not enabled, because so_mark_from_dae is set to %d, and pname routing is not used", global.SoMarkFromDae)
 		}
 		for _, ifname := range global.WanInterface {
 			if len(global.LanInterface) > 0 {
