@@ -52,6 +52,9 @@ ipversion(6) -> ipv6_group
 mac('02:42:ac:11:00:02') -> direct
 
 ### 进程名称规则（绑定WAN时仅支持本机进程）
+### pname 抽取算法可以简单理解为： cmdline.split(' ').split('/')[-1]
+### "/usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1" ⇒ sddm-helper
+### "/game/SteamLibrary/steamapps/common/Counter-Strike Global Offensive/game/bin/linuxsteamrt64/cs2" ⇒ Counter-Strike
 pname(curl) -> direct
 
 ### DSCP规则（匹配 DSCP，可用于绕过 BT），见 https://github.com/daeuniverse/dae/discussions/295
