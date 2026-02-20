@@ -46,7 +46,9 @@ func BenchmarkDnsCache_PackedResponse(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Simulate cache hit path - just return pre-packed response
-		_ = cache.PackedResponse
+		if ptr := cache.GetPackedResponse(); ptr != nil {
+			_ = ptr
+		}
 	}
 }
 
@@ -78,7 +80,9 @@ func BenchmarkDnsCache_PackedResponse_Parallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = cache.PackedResponse
+			if ptr := cache.GetPackedResponse(); ptr != nil {
+				_ = ptr
+			}
 		}
 	})
 }
@@ -180,7 +184,9 @@ func BenchmarkDnsCache_SyncMap(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if val, ok := cache.Load("example.com.:1"); ok {
 			c := val.(*DnsCache)
-			_ = c.PackedResponse
+			if ptr := c.GetPackedResponse(); ptr != nil {
+				_ = ptr
+			}
 		}
 	}
 }
@@ -219,7 +225,9 @@ func BenchmarkDnsCache_SyncMap_Parallel(b *testing.B) {
 		for pb.Next() {
 			if val, ok := cache.Load("example.com.:1"); ok {
 				c := val.(*DnsCache)
-				_ = c.PackedResponse
+				if ptr := c.GetPackedResponse(); ptr != nil {
+					_ = ptr
+				}
 			}
 		}
 	})
@@ -254,7 +262,9 @@ func BenchmarkDnsCache_MultipleAnswers(b *testing.B) {
 
 	b.Run("PackedResponse", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_ = cache.PackedResponse
+			if ptr := cache.GetPackedResponse(); ptr != nil {
+				_ = ptr
+			}
 		}
 	})
 
@@ -372,13 +382,14 @@ func TestDnsCache_PrepackResponse_Correctness(t *testing.T) {
 		t.Fatalf("failed to prepack A response: %v", err)
 	}
 
-	if cache.PackedResponse == nil {
+	packedPtr := cache.GetPackedResponse()
+	if packedPtr == nil {
 		t.Fatal("PackedResponse should not be nil")
 	}
 
 	// Verify the packed response can be unpacked
 	var msg dnsmessage.Msg
-	if err := msg.Unpack(cache.PackedResponse); err != nil {
+	if err := msg.Unpack(packedPtr); err != nil {
 		t.Fatalf("failed to unpack prepacked response: %v", err)
 	}
 
@@ -402,7 +413,9 @@ func TestDnsCache_PrepackResponse_Correctness(t *testing.T) {
 		t.Errorf("expected question name 'test.example.com.', got '%s'", msg.Question[0].Name)
 	}
 
-	fmt.Printf("Pre-packed response size: %d bytes\n", len(cache.PackedResponse))
+	if packedPtr := cache.GetPackedResponse(); packedPtr != nil {
+		fmt.Printf("Pre-packed response size: %d bytes\n", len(packedPtr))
+	}
 }
 
 // TestDnsCache_FillIntoWithTTL_Correctness verifies TTL is calculated correctly
