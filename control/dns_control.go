@@ -871,33 +871,11 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		cacheKey = c.cacheKey(qname, qtype)
 	}
 
-	// OPTIMIZATION: Check cache FIRST, before any routing or singleflight.
-	// This ensures cache hits return immediately without any overhead.
-	// Only cache misses should go through routing and singleflight.
+	// Route request first, then check cache.
+	// This ensures Reject rules are always applied, even if cache exists.
+	// Cache lookup overhead (~1µs) is negligible compared to network latency (~ms).
 	if cacheKey != "" && !dnsMessage.Response {
-		// Try cache lookup first - fastest path
-		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-			// Cache hit - return immediately
-			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
-				return err
-			}
-			// Log cache hit at trace level to avoid performance impact at high QPS.
-			// Format matches dialSend log: "source <-> upstream (target: ...)"
-			if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
-				q := dnsMessage.Question[0]
-				c.log.WithFields(logrus.Fields{
-					"network": "udp(dns)",
-					"_qname":  strings.ToLower(q.Name),
-					"qtype":   QtypeToString(q.Qtype),
-				}).Tracef("%v <-> %v (target: Cache)",
-					RefineSourceToShow(req.realSrc, req.realDst.Addr()),
-					RefineAddrPortToShow(req.realDst),
-				)
-			}
-			return nil
-		}
-
-		// Cache miss - now do routing
+		// Route request to get upstream
 		if c.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
@@ -906,10 +884,30 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			return err
 		}
 
-		// Check if rejected
+		// Check if rejected - Reject rules take priority over cache
 		if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
 			c.RemoveDnsRespCache(cacheKey)
 			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
+		}
+
+		// Check cache after routing (non-reject case)
+		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+			// Cache hit - return immediately without singleflight
+			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
+				return err
+			}
+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
+				q := dnsMessage.Question[0]
+				if req != nil {
+					c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
+						RefineSourceToShow(req.realSrc, req.realDst.Addr()),
+						strings.ToLower(q.Name), QtypeToString(q.Qtype),
+					)
+				} else {
+					c.log.Debugf("UDP(DNS) Cache: %v %v", strings.ToLower(q.Name), QtypeToString(q.Qtype))
+				}
+			}
+			return nil
 		}
 
 		// Cache miss - use singleflight to coalesce concurrent requests
