@@ -25,7 +25,11 @@ import (
 )
 
 var (
-	DefaultNatTimeout = 3 * time.Minute
+	// DefaultNatTimeout is the default NAT timeout for UDP connections.
+	// Reduced from 3 minutes to 30 seconds for faster resource cleanup.
+	// Most DNS queries complete within seconds, and long-lived connections
+	// can use longer timeouts via DialOption.
+	DefaultNatTimeout = 30 * time.Second
 )
 
 const (
