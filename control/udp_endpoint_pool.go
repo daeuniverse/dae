@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/sirupsen/logrus"
 )
 
 type UdpHandler func(data []byte, from netip.AddrPort) error
@@ -43,17 +44,23 @@ func (ue *UdpEndpoint) start() {
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
+			logrus.WithError(err).Warnln("UdpEndpoint read loop exited")
 			break
 		}
 		ue.mu.Lock()
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
 		if err = ue.handler(buf[:n], from); err != nil {
+			logrus.WithError(err).Warnln("UdpEndpoint handler error, scheduling immediate cleanup")
 			break
 		}
 	}
+	// Trigger immediate pool cleanup: Reset(0) fires the deadline timer callback which calls
+	// pool.LoadAndDelete + ue.Close(), removing the endpoint without waiting for NatTimeout.
 	ue.mu.Lock()
-	ue.deadlineTimer.Stop()
+	if ue.deadlineTimer != nil {
+		ue.deadlineTimer.Reset(0)
+	}
 	ue.mu.Unlock()
 }
 

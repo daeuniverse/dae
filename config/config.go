@@ -17,6 +17,11 @@ var (
 	Version string
 )
 
+type DnsIngressManual struct {
+	Workers uint16 `mapstructure:"workers" default:"0"`
+	Queue   uint16 `mapstructure:"queue" default:"0"`
+}
+
 type Global struct {
 	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
@@ -37,15 +42,17 @@ type Global struct {
 	EnableLocalTcpFastRedirect bool          `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
 	AutoConfigKernelParameter  bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/458
-	AutoConfigFirewallRule bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
-	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
-	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
-	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
-	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
-	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
-	FallbackResolver       string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
-	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
-	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
+	AutoConfigFirewallRule bool             `mapstructure:"auto_config_firewall_rule" default:"false"`
+	SniffingTimeout        time.Duration    `mapstructure:"sniffing_timeout" default:"100ms"`
+	TlsImplementation      string           `mapstructure:"tls_implementation" default:"tls"`
+	UtlsImitate            string           `mapstructure:"utls_imitate" default:"chrome_auto"`
+	PprofPort              uint16           `mapstructure:"pprof_port" default:"0"`
+	Mptcp                  bool             `mapstructure:"mptcp" default:"false"`
+	FallbackResolver       string           `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
+	BandwidthMaxTx         string           `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx         string           `mapstructure:"bandwidth_max_rx" default:"0"`
+	DnsPerformanceLevel    string           `mapstructure:"dns_performance_level" default:"balanced"`
+	DnsIngressManual       DnsIngressManual `mapstructure:"dns_ingress_manual"`
 }
 
 type Utls struct {

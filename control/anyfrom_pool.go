@@ -163,69 +163,96 @@ func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
 type AnyfromPool struct {
 	pool map[string]*Anyfrom
 	mu   sync.RWMutex
+	// createAnyfromFn is a test seam. Production defaults to createAnyfrom.
+	createAnyfromFn func(lAddr string) (*Anyfrom, error)
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
 func NewAnyfromPool() *AnyfromPool {
-	return &AnyfromPool{
+	p := &AnyfromPool{
 		pool: make(map[string]*Anyfrom, 64),
 		mu:   sync.RWMutex{},
 	}
+	p.createAnyfromFn = p.createAnyfrom
+	return p
 }
 
+// createAnyfrom creates a new Anyfrom socket bound to lAddr.
+// It must be called without holding p.mu; TTL timer is NOT set here
+// (the caller sets it after winning the write-lock race).
+func (p *AnyfromPool) createAnyfrom(lAddr string) (af *Anyfrom, err error) {
+	d := net.ListenConfig{
+		Control: func(network string, address string, c syscall.RawConn) error {
+			return dialer.TransparentControl(c)
+		},
+		KeepAlive: 0,
+	}
+	var pc net.PacketConn
+	GetDaeNetns().With(func() error {
+		pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	uConn := pc.(*net.UDPConn)
+	return &Anyfrom{
+		UDPConn:     uConn,
+		gso:         isGSOSupported(uConn),
+		gotGSOError: false,
+	}, nil
+}
+
+// GetOrCreate returns the existing Anyfrom for lAddr (fast read-lock path)
+// or creates a new one (optimistic create outside lock, then write-lock to
+// insert; racing creators close the loser's socket immediately).
 func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
+	// Fast path: existing socket.
 	p.mu.RLock()
 	af, ok := p.pool[lAddr]
-	if !ok {
-		p.mu.RUnlock()
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if af, ok = p.pool[lAddr]; ok {
-			return af, false, nil
-		}
-		// Create an Anyfrom.
-		isNew = true
-		d := net.ListenConfig{
-			Control: func(network string, address string, c syscall.RawConn) error {
-				return dialer.TransparentControl(c)
-			},
-			KeepAlive: 0,
-		}
-		var err error
-		var pc net.PacketConn
-		GetDaeNetns().With(func() error {
-			pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
-			return nil
-		})
-		if err != nil {
-			return nil, true, err
-		}
-		uConn := pc.(*net.UDPConn)
-		af = &Anyfrom{
-			UDPConn:       uConn,
-			deadlineTimer: nil,
-			ttl:           ttl,
-			gotGSOError:   false,
-			gso:           isGSOSupported(uConn),
-		}
-
-		if ttl > 0 {
-			af.deadlineTimer = time.AfterFunc(ttl, func() {
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				_af := p.pool[lAddr]
-				if _af == af {
-					delete(p.pool, lAddr)
-					af.Close()
-				}
-			})
-			p.pool[lAddr] = af
-		}
-		return af, true, nil
-	} else {
+	if ok {
 		af.RefreshTtl()
 		p.mu.RUnlock()
 		return af, false, nil
 	}
+	p.mu.RUnlock()
+
+	// Slow path: create socket OUTSIDE the lock to avoid serialising kernel
+	// fd allocation (ListenPacket) under a global write lock.
+	// Two goroutines may both reach here concurrently; the loser discards its
+	// socket.  This wastes one fd transiently but avoids lock contention.
+	createAnyfromFn := p.createAnyfromFn
+	if createAnyfromFn == nil {
+		createAnyfromFn = p.createAnyfrom
+	}
+	newAf, createErr := createAnyfromFn(lAddr)
+	if createErr != nil {
+		return nil, true, createErr
+	}
+
+	p.mu.Lock()
+	if af, ok = p.pool[lAddr]; ok {
+		// Lost the race: another goroutine inserted first.
+		p.mu.Unlock()
+		if newAf.UDPConn != nil {
+			_ = newAf.UDPConn.Close() // discard the extra socket
+		}
+		return af, false, nil
+	}
+	// Won the race: register the socket and arm the TTL timer.
+	newAf.ttl = ttl
+	if ttl > 0 {
+		newAf.deadlineTimer = time.AfterFunc(ttl, func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if p.pool[lAddr] == newAf {
+				delete(p.pool, lAddr)
+				newAf.Close()
+			}
+		})
+	}
+	p.pool[lAddr] = newAf
+	p.mu.Unlock()
+	return newAf, true, nil
 }

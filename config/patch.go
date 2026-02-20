@@ -19,6 +19,7 @@ type patch func(params *Config) error
 var patches = []patch{
 	patchTcpCheckHttpMethod,
 	patchEmptyDns,
+	patchDnsPerformanceLevel,
 	patchMustOutbound,
 }
 
@@ -36,6 +37,46 @@ func patchEmptyDns(params *Config) error {
 	}
 	if params.Dns.Routing.Response.Fallback == nil {
 		params.Dns.Routing.Response.Fallback = consts.DnsResponseOutboundIndex_Accept.String()
+	}
+	return nil
+}
+
+func patchDnsPerformanceLevel(params *Config) error {
+	level := strings.ToLower(strings.TrimSpace(params.Global.DnsPerformanceLevel))
+	switch level {
+	case "lean", "balanced", "aggressive", "manual":
+		params.Global.DnsPerformanceLevel = level
+	case "":
+		params.Global.DnsPerformanceLevel = "balanced"
+	default:
+		logrus.Warnf("Unknown dns_performance_level '%s', falling back to 'balanced'", params.Global.DnsPerformanceLevel)
+		params.Global.DnsPerformanceLevel = "balanced"
+	}
+
+	if params.Global.DnsPerformanceLevel == "manual" {
+		m := &params.Global.DnsIngressManual
+		const minW, maxW uint16 = 32, 1024
+		const minQ, maxQ uint16 = 128, 16384
+		if m.Workers == 0 {
+			m.Workers = 256
+		}
+		if m.Queue == 0 {
+			m.Queue = 2048
+		}
+		if m.Workers < minW {
+			logrus.Warnf("dns_ingress_manual.workers %d below min %d, clamping", m.Workers, minW)
+			m.Workers = minW
+		} else if m.Workers > maxW {
+			logrus.Warnf("dns_ingress_manual.workers %d above max %d, clamping", m.Workers, maxW)
+			m.Workers = maxW
+		}
+		if m.Queue < minQ {
+			logrus.Warnf("dns_ingress_manual.queue %d below min %d, clamping", m.Queue, minQ)
+			m.Queue = minQ
+		} else if m.Queue > maxQ {
+			logrus.Warnf("dns_ingress_manual.queue %d above max %d, clamping", m.Queue, maxQ)
+			m.Queue = maxQ
+		}
 	}
 	return nil
 }

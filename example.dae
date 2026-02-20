@@ -12,6 +12,21 @@ global {
     # Set non-zero value to enable pprof.
     pprof_port: 0
 
+    # DNS ingress performance level.
+    # Options: lean, balanced (default), aggressive, manual.
+    # - lean: for low-power/embedded devices (32 workers)
+    # - balanced: for typical home/small office (256 workers)
+    # - aggressive: for high-load environments (1024 workers)
+    # - manual: expert tuning, requires dns_ingress_manual section below
+    # dns_performance_level: balanced
+
+    # Only effective when dns_performance_level is "manual".
+    # Workers: 32-1024, Queue: 128-16384.
+    # dns_ingress_manual {
+    #     workers: 512
+    #     queue: 2048
+    # }
+
     # If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy
     # rules.
     so_mark_from_dae: 0

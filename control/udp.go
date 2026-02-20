@@ -6,9 +6,11 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"syscall"
 
 	"time"
 
@@ -51,14 +53,30 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 	return nil, DefaultNatTimeout
 }
 
-// sendPkt uses bind first, and fallback to send hdr if addr is in use.
+// sendPkt uses bind first, and fallback to lConn if the bind address conflicts with dae's own listener.
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 	if err != nil {
-		return
+		// Only fallback when dae's own listener address conflicts with the bind address.
+		// Other errors (permission denied, resource exhaustion, etc.) are surfaced as-is.
+		if errors.Is(err, syscall.EADDRINUSE) && lConn != nil && isConnLocalAddr(lConn, from) {
+			_, err = lConn.WriteToUDPAddrPort(data, realTo)
+			return err
+		}
+		return err
 	}
 	_, err = uConn.WriteToUDPAddrPort(data, realTo)
 	return err
+}
+
+// isConnLocalAddr reports whether from equals the local address of lConn.
+func isConnLocalAddr(lConn *net.UDPConn, from netip.AddrPort) bool {
+	localAddr, ok := lConn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return false
+	}
+	localAddrPort := localAddr.AddrPort()
+	return localAddrPort == from
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
@@ -89,10 +107,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		}
 
 		_, err = ue.WriteTo(data, dialTarget)
-		if err != nil {
-			return err
+		if err == nil {
+			return nil
 		}
-		return nil
+		// fast path write failed: remove stale endpoint and fall through to slow path for rebuild + retry.
+		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
@@ -297,6 +316,12 @@ getNew:
 				"err":     err.Error(),
 				"retry":   retry,
 			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+		}
+		// Two-phase demotion: on first failure only rebuild the endpoint; on repeated failure
+		// within the same request (retry > 0) mark the dialer as unavailable so the next
+		// GetOrCreate selects a different node instead of retrying the broken tunnel.
+		if retry > 0 {
+			ue.Dialer.ReportUnavailable(networkType, err)
 		}
 		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
 		retry++

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -45,6 +46,45 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	// DNS packets are handled by dedicated workers instead of per-src queue.
+	dnsIngressQueueLogEvery = 100
+	// handlePktLogEvery controls how often non-DNS handlePkt errors are logged.
+	handlePktLogEvery = 100
+)
+
+type dnsIngressProfile struct {
+	workers  int
+	queueLen int
+}
+
+var dnsIngressProfiles = map[string]dnsIngressProfile{
+	"lean":       {workers: 32, queueLen: 128},
+	"balanced":   {workers: 256, queueLen: 2048},
+	"aggressive": {workers: 1024, queueLen: 4096},
+}
+
+func resolveDnsIngressProfile(level string, manual config.DnsIngressManual) dnsIngressProfile {
+	if level == "manual" {
+		return dnsIngressProfile{
+			workers:  int(manual.Workers),
+			queueLen: int(manual.Queue),
+		}
+	}
+	if p, ok := dnsIngressProfiles[level]; ok {
+		return p
+	}
+	return dnsIngressProfiles["balanced"]
+}
+
+type dnsIngressTask struct {
+	data          pool.PB
+	convergeSrc   netip.AddrPort
+	pktDst        netip.AddrPort
+	realDst       netip.AddrPort
+	routingResult *bpfRoutingResult
+}
+
 type ControlPlane struct {
 	log *logrus.Logger
 
@@ -56,8 +96,19 @@ type ControlPlane struct {
 	outbounds     []*outbound.DialerGroup
 	inConnections sync.Map
 
-	dnsController    *DnsController
-	onceNetworkReady sync.Once
+	dnsController         *DnsController
+	onceNetworkReady      sync.Once
+	dnsIngressQueue       chan dnsIngressTask
+	dnsIngressWorkerCount int
+	emitUdpTask           func(key string, task UdpTask)
+	// dnsIngressQueueFullTotal tracks how many DNS packets hit full lane queue.
+	dnsIngressQueueFullTotal uint64
+	// dnsIngressDropTotal tracks dropped DNS packets at ingress (queue full).
+	dnsIngressDropTotal uint64
+	// handlePktDnsErrTotal tracks DNS worker handlePkt errors for log throttling.
+	handlePktDnsErrTotal uint64
+	// handlePktErrTotal tracks non-DNS handlePkt errors for log throttling.
+	handlePktErrTotal uint64
 
 	dialMode consts.DialMode
 
@@ -382,28 +433,34 @@ func NewControlPlane(
 
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
+	dnsIngressCfg := resolveDnsIngressProfile(global.DnsPerformanceLevel, global.DnsIngressManual)
 	plane := &ControlPlane{
-		log:               log,
-		core:              core,
-		deferFuncs:        deferFuncs,
-		listenIp:          "0.0.0.0",
-		outbounds:         outbounds,
-		dnsController:     nil,
-		onceNetworkReady:  sync.Once{},
-		dialMode:          dialMode,
-		routingMatcher:    routingMatcher,
-		ctx:               ctx,
-		cancel:            cancel,
-		ready:             make(chan struct{}),
-		muRealDomainSet:   sync.Mutex{},
-		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
-		lanInterface:      global.LanInterface,
-		wanInterface:      global.WanInterface,
-		sniffingTimeout:   sniffingTimeout,
-		tproxyPortProtect: global.TproxyPortProtect,
-		soMarkFromDae:     global.SoMarkFromDae,
-		mptcp:             global.Mptcp,
+		log:                   log,
+		core:                  core,
+		deferFuncs:            deferFuncs,
+		listenIp:              "0.0.0.0",
+		outbounds:             outbounds,
+		dnsController:         nil,
+		onceNetworkReady:      sync.Once{},
+		dnsIngressQueue:       make(chan dnsIngressTask, dnsIngressCfg.queueLen),
+		dnsIngressWorkerCount: dnsIngressCfg.workers,
+		emitUdpTask:           DefaultUdpTaskPool.EmitTask,
+		dialMode:              dialMode,
+		routingMatcher:        routingMatcher,
+		ctx:                   ctx,
+		cancel:                cancel,
+		ready:                 make(chan struct{}),
+		muRealDomainSet:       sync.Mutex{},
+		realDomainSet:         bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:          global.LanInterface,
+		wanInterface:          global.WanInterface,
+		sniffingTimeout:       sniffingTimeout,
+		tproxyPortProtect:     global.TproxyPortProtect,
+		soMarkFromDae:         global.SoMarkFromDae,
+		mptcp:                 global.Mptcp,
 	}
+	log.Infof("DNS ingress: level=%s, workers=%d, queue_len=%d",
+		global.DnsPerformanceLevel, dnsIngressCfg.workers, dnsIngressCfg.queueLen)
 	defer func() {
 		if err != nil {
 			cancel()
@@ -731,6 +788,94 @@ func (l *Listener) Close() error {
 	return err
 }
 
+func isDnsPort(port uint16) bool {
+	return port == 53 || port == 5353
+}
+
+func (c *ControlPlane) releaseDnsIngressTask(task dnsIngressTask) {
+	if task.data != nil {
+		task.data.Put()
+	}
+}
+
+func (c *ControlPlane) onDnsIngressQueueFull(task dnsIngressTask) {
+	c.releaseDnsIngressTask(task)
+	queueFullTotal := atomic.AddUint64(&c.dnsIngressQueueFullTotal, 1)
+	dropTotal := atomic.AddUint64(&c.dnsIngressDropTotal, 1)
+	if queueFullTotal == 1 || queueFullTotal%dnsIngressQueueLogEvery == 0 {
+		c.log.WithFields(logrus.Fields{
+			"dns_ingress_queue_full_total": queueFullTotal,
+			"dns_ingress_drop_total":       dropTotal,
+		}).Warnln("DNS ingress queue full, dropping packet")
+	}
+}
+
+func (c *ControlPlane) drainDnsIngressQueue() {
+	for {
+		select {
+		case task := <-c.dnsIngressQueue:
+			c.releaseDnsIngressTask(task)
+		default:
+			return
+		}
+	}
+}
+
+func (c *ControlPlane) enqueueDnsIngressTask(task dnsIngressTask) bool {
+	select {
+	case <-c.ctx.Done():
+		c.releaseDnsIngressTask(task)
+		return false
+	case c.dnsIngressQueue <- task:
+		return true
+	default:
+		c.onDnsIngressQueueFull(task)
+		return false
+	}
+}
+
+func (c *ControlPlane) dispatchDnsOrQueue(convergeSrc, pktDst netip.AddrPort, dnsTask dnsIngressTask, nonDnsTask UdpTask) {
+	if isDnsPort(pktDst.Port()) {
+		if !c.enqueueDnsIngressTask(dnsTask) {
+			return
+		}
+		return
+	}
+	if c.emitUdpTask != nil {
+		c.emitUdpTask(convergeSrc.String(), nonDnsTask)
+		return
+	}
+	DefaultUdpTaskPool.EmitTask(convergeSrc.String(), nonDnsTask)
+}
+
+func (c *ControlPlane) startDnsIngressWorkers(udpConn *net.UDPConn) {
+	for i := 0; i < c.dnsIngressWorkerCount; i++ {
+		go func() {
+			for {
+				select {
+				case <-c.ctx.Done():
+					c.drainDnsIngressQueue()
+					return
+				case task := <-c.dnsIngressQueue:
+					if c.ctx.Err() != nil {
+						c.releaseDnsIngressTask(task)
+						continue
+					}
+					if e := c.handlePkt(udpConn, task.data, task.convergeSrc, task.pktDst, task.realDst, task.routingResult, false); e != nil {
+						total := atomic.AddUint64(&c.handlePktDnsErrTotal, 1)
+						if total == 1 || total%dnsIngressQueueLogEvery == 0 {
+							c.log.WithFields(logrus.Fields{
+								"total": total,
+							}).Warnln("handlePkt(dns):", e)
+						}
+					}
+					c.releaseDnsIngressTask(task)
+				}
+			}
+		}()
+	}
+}
+
 func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	sentReady := false
 	defer func() {
@@ -765,6 +910,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 	sentReady = true
 	readyChan <- true
+	c.startDnsIngressWorkers(udpConn)
 	go func() {
 		for {
 			select {
@@ -811,9 +957,34 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			copy(newOob, oob[:oobn])
 			newSrc := src
 			convergeSrc := common.ConvergeAddrPort(src)
+			pktDst := RetrieveOriginalDest(newOob)
+
+			if isDnsPort(pktDst.Port()) {
+				routingResult, routeErr := c.core.RetrieveRoutingResult(newSrc, pktDst, unix.IPPROTO_UDP)
+				if routeErr != nil {
+					c.log.Warnf("No AddrPort presented: %v", routeErr)
+					newBuf.Put()
+					newOob.Put()
+					continue
+				}
+				newOob.Put()
+				c.dispatchDnsOrQueue(
+					convergeSrc,
+					pktDst,
+					dnsIngressTask{
+						data:          newBuf,
+						convergeSrc:   convergeSrc,
+						pktDst:        common.ConvergeAddrPort(pktDst),
+						realDst:       common.ConvergeAddrPort(pktDst),
+						routingResult: routingResult,
+					},
+					nil,
+				)
+				continue
+			}
 			// Debug:
 			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+			c.dispatchDnsOrQueue(convergeSrc, pktDst, dnsIngressTask{}, func() {
 				data := newBuf
 				oob := newOob
 				src := newSrc
@@ -831,7 +1002,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					realDst = pktDst
 				}
 				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
-					c.log.Warnln("handlePkt:", e)
+					total := atomic.AddUint64(&c.handlePktErrTotal, 1)
+					if total == 1 || total%handlePktLogEvery == 0 {
+						c.log.WithFields(logrus.Fields{
+							"total": total,
+						}).Warnln("handlePkt:", e)
+					}
 				}
 			})
 			// if d := time.Since(t); d > 100*time.Millisecond {

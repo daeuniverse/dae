@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -72,15 +73,14 @@ type DnsController struct {
 	cacheRemoveCallback func(cache *DnsCache) (err error)
 	newCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	bestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	dialSendInvoker     func(ctx context.Context, invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error)
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
 	fixedDomainTtl map[string]int
 	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
-	dnsCache            map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+	dnsCacheMu sync.Mutex
+	dnsCache   map[string]*DnsCache
 }
 
 type handlingState struct {
@@ -108,7 +108,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		return nil, err
 	}
 
-	return &DnsController{
+	c = &DnsController{
 		routing:     routing,
 		qtypePrefer: prefer,
 
@@ -119,12 +119,12 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
-		dnsCache:            make(map[string]*DnsCache),
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
-	}, nil
+		fixedDomainTtl: option.FixedDomainTtl,
+		dnsCacheMu:     sync.Mutex{},
+		dnsCache:       make(map[string]*DnsCache),
+	}
+	c.dialSendInvoker = c.dialSend
+	return c, nil
 }
 
 func (c *DnsController) cacheKey(qname string, qtype uint16) string {
@@ -352,11 +352,6 @@ type dialArgument struct {
 	mptcp        bool
 }
 
-type dnsForwarderKey struct {
-	upstream     string
-	dialArgument dialArgument
-}
-
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
@@ -387,7 +382,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 		return c.handle_(dnsMessage, req, true)
 	}
 
-	// Try to make both A and AAAA lookups.
+	// Query preferred qtype first, and only fallback to the opposite qtype when needed.
 	dnsMessage2 := deepcopy.Copy(dnsMessage).(*dnsmessage.Msg)
 	dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
 	var qtype2 uint16
@@ -401,13 +396,7 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 	}
 	dnsMessage2.Question[0].Qtype = qtype2
 
-	done := make(chan struct{})
-	go func() {
-		_ = c.handle_(dnsMessage2, req, false)
-		done <- struct{}{}
-	}()
 	err = c.handle_(dnsMessage, req, false)
-	<-done
 	if err != nil {
 		return err
 	}
@@ -422,12 +411,28 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 		return c.sendReject_(dnsMessage, req)
 	}
 	// resp is valid.
-	cache2 := c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
-	if c.qtypePrefer == qtype || cache2 == nil || !cache2.IncludeAnyIp() {
+	if c.qtypePrefer == qtype {
 		return sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn)
-	} else {
+	}
+
+	cache2 := c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
+	if cache2 == nil || !cache2.IncludeAnyIp() {
+		if err = c.handle_(dnsMessage2, req, false); err != nil {
+			return err
+		}
+		cache2 = c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
+	}
+	if cache2 != nil && cache2.IncludeAnyIp() {
 		return c.sendReject_(dnsMessage, req)
 	}
+	return sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn)
+}
+
+func (c *DnsController) invokeDialSend(ctx context.Context, invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
+	if c.dialSendInvoker != nil {
+		return c.dialSendInvoker(ctx, invokingDepth, req, data, id, upstream, needResp)
+	}
+	return c.dialSend(ctx, invokingDepth, req, data, id, upstream, needResp)
 }
 
 func (c *DnsController) handle_(
@@ -503,7 +508,13 @@ func (c *DnsController) handle_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp)
+	// Use a context bounded by DnsNatTimeout so that dialSend (and any
+	// recursive calls) can be cancelled when the overall DNS request
+	// deadline is exceeded.  dialSend will further narrow this with
+	// DefaultDialTimeout for the individual upstream connection.
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), DnsNatTimeout)
+	defer dialCancel()
+	return c.invokeDialSend(dialCtx, 0, req, data, dnsMessage.Id, upstream, needResp)
 }
 
 // sendReject_ send empty answer.
@@ -529,7 +540,7 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 	return nil
 }
 
-func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
+func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
@@ -569,45 +580,48 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
-	// defer in a recursive call will delay Close(), thus we Close() before
-	// the next recursive call. However, a connection cannot be closed twice.
-	// We should set a connClosed flag to avoid it.
-	var connClosed bool
 
-	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	ctxDial, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
-	if !ok {
-		forwarder, err = newDnsForwarder(upstream, *dialArgument)
-		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
-			return err
-		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
-	}
-	c.dnsForwarderCacheMu.Unlock()
-
-	defer func() {
-		if !connClosed {
-			forwarder.Close()
-		}
-	}()
-
+	// Create a new forwarder for each request (no caching: cached forwarders
+	// are always closed after use, making cache hits indistinguishable from
+	// dead connections and causing failures for TCP/TLS upstreams).
+	forwarder, err := newDnsForwarder(upstream, *dialArgument)
 	if err != nil {
 		return err
 	}
+	defer forwarder.Close()
 
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
 	if err != nil {
-		return err
+		if c.timeoutExceedCallback != nil && isTimeoutError(err) {
+			c.timeoutExceedCallback(dialArgument, err)
+		}
+		if fallbackDialArgument := tcpFallbackDialArgument(upstream, dialArgument, err); fallbackDialArgument != nil {
+			fallbackForwarder, fallbackErr := newDnsForwarder(upstream, *fallbackDialArgument)
+			if fallbackErr != nil {
+				return fmt.Errorf("tcp fallback forwarder creation failed: %w (original: %v)", fallbackErr, err)
+			}
+			defer fallbackForwarder.Close()
+			respMsg, fallbackErr = fallbackForwarder.ForwardDNS(ctxDial, data)
+			if fallbackErr == nil {
+				dialArgument = fallbackDialArgument
+				err = nil
+			} else {
+				if c.timeoutExceedCallback != nil && isTimeoutError(fallbackErr) {
+					c.timeoutExceedCallback(fallbackDialArgument, fallbackErr)
+				}
+				return fallbackErr
+			}
+		} else {
+			return err
+		}
 	}
 
-	// Close conn before the recursive call.
-	forwarder.Close()
-	connClosed = true
+	if err != nil {
+		return err
+	}
 
 	// Route response.
 	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
@@ -641,7 +655,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				"next_upstream": nextUpstream.String(),
 			}).Traceln("Change DNS upstream and resend")
 		}
-		return c.dialSend(invokingDepth+1, req, data, id, nextUpstream, needResp)
+		return c.dialSend(ctx, invokingDepth+1, req, data, id, nextUpstream, needResp)
 	}
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
 		var (
@@ -690,4 +704,33 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 	}
 	return nil
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+	return false
+}
+
+func tcpFallbackDialArgument(upstream *dns.Upstream, dialArgument *dialArgument, err error) *dialArgument {
+	if upstream == nil || upstream.Scheme != dns.UpstreamScheme_TCP_UDP {
+		return nil
+	}
+	if dialArgument == nil || dialArgument.l4proto != consts.L4ProtoStr_UDP {
+		return nil
+	}
+	if !isTimeoutError(err) {
+		return nil
+	}
+	fallback := *dialArgument
+	fallback.l4proto = consts.L4ProtoStr_TCP
+	return &fallback
 }
