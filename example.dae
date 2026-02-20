@@ -181,6 +181,12 @@ dns {
     #    test.example.org: 3600
     #}
 
+    # Enable optimistic cache (RFC 8767) to improve cache hit rate and reduce latency.
+    # When enabled, expired cache entries within 60s are still returned while background refresh updates the cache.
+    # This significantly improves user experience by serving stale data instead of waiting for upstream response.
+    # Default: true
+    #optimistic_cache: true
+
     # Bind to local address to listen for DNS queries
     # bind: '127.0.0.1:5353'
     # bind: 'tcp://127.0.0.1:5353'

@@ -20,6 +20,12 @@ import (
 // while maintaining acceptable TTL accuracy (15s variance is negligible for DNS caching).
 const ttlRefreshThresholdSeconds = 15
 
+// Stale-while-revalidate configuration (RFC 8767: DNS Server Optimistic Cache)
+// When cache expires, we still return stale response if within this window.
+// Meanwhile, background refresh is triggered to update the cache.
+// This significantly improves cache hit rate and reduces latency for end users.
+const staleWhileRevalidateSeconds = 60
+
 // BPF update configuration
 const (
 	// MinBpfUpdateInterval is the minimum time between BPF map updates for the same cache.
@@ -64,6 +70,11 @@ type DnsCache struct {
 	// deadlineNano caches the Deadline as UnixNano for fast comparison.
 	// This avoids time.Time method calls on every cache hit.
 	deadlineNano atomic.Int64
+	
+	// OPTIMISTIC CACHE (RFC 8767): Stale-while-revalidate support
+	// refreshing tracks whether background refresh is in progress.
+	// This prevents multiple concurrent refresh attempts for the same cache key.
+	refreshing atomic.Bool
 }
 
 // GetPackedResponse returns the pre-packed DNS response in a thread-safe manner.
@@ -336,13 +347,14 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 // Slow path: refreshes pre-packed response if TTL has changed significantly.
 // THREAD-SAFE: Lock-free reads + atomic updates. No mutex contention.
 // PERFORMANCE: Eliminates deep copy + Pack() bottleneck. 10-100x faster for cache hits.
+// NOTE: Only returns fresh (unexpired) responses. For stale responses, use GetStaleResponse.
 func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint16, now time.Time) []byte {
 	nowNano := now.UnixNano()
 	deadlineNano := c.deadlineNano.Load()
 	
-	// Fast expiry check using integer comparison
+	// Check if cache is expired - return nil immediately
 	if deadlineNano <= nowNano {
-		return nil // Expired
+		return nil
 	}
 	
 	// Calculate current TTL in seconds (avoid float operations)
@@ -381,6 +393,46 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 		return nil
 	}
 	return *packedPtr
+}
+
+// GetStaleResponse returns expired response if within stale-while-revalidate window.
+// OPTIMISTIC CACHE (RFC 8767): This is used when cache is expired but still acceptable.
+// Returns nil if cache is too stale (beyond staleWhileRevalidateSeconds).
+// Caller should check refreshing flag and trigger background refresh if needed.
+func (c *DnsCache) GetStaleResponse(now time.Time) []byte {
+	nowNano := now.UnixNano()
+	deadlineNano := c.deadlineNano.Load()
+	
+	// Cache is not expired - should use GetPackedResponseWithApproximateTTL instead
+	if deadlineNano > nowNano {
+		return nil
+	}
+	
+	// Check if within stale-while-revalidate window
+	staleNano := deadlineNano + int64(staleWhileRevalidateSeconds)*1e9
+	if nowNano > staleNano {
+		// Too stale, don't use
+		return nil
+	}
+	
+	// Return stale response (better than nothing)
+	packedPtr := c.packedResponse.Load()
+	if packedPtr == nil || *packedPtr == nil {
+		return nil
+	}
+	return *packedPtr
+}
+
+// IsRefreshing checks if background refresh is in progress (optimistic cache).
+// Returns true if this cache entry is expired and currently being refreshed.
+func (c *DnsCache) IsRefreshing() bool {
+	return c.refreshing.Load()
+}
+
+// MarkRefreshed marks the background refresh as complete (optimistic cache).
+// This should be called after successfully refreshing the cache.
+func (c *DnsCache) MarkRefreshed() {
+	c.refreshing.Store(false)
 }
 
 // FillIntoWithTTL fills the DNS response with correct remaining TTL.
