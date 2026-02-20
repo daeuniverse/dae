@@ -291,6 +291,15 @@ struct {
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_routing_map SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __be32[4]);
+	__type(value, struct domain_routing);
+	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
+	/// NOTICE: No persistence.
+	// __uint(pinning, LIBBPF_PIN_BY_NAME);
+} domain_bump_map SEC(".maps");
+
 struct ip_port_proto {
 	__u32 ip[4];
 	__be16 port;
@@ -581,7 +590,10 @@ struct route_ctx {
 	__u16 h_sport;
 	__s64 result; // high -> low: sign(1b) unused(23b) mark(32b) outbound(8b)
 	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
-	volatile __u8 isdns_must_goodsubrule_badrule;
+	volatile bool goodsubrule : 1;
+	volatile bool badrule : 1;
+	volatile bool must : 1;
+	bool isdns : 1;
 };
 
 static int route_loop_cb(__u32 index, void *data)
@@ -600,6 +612,8 @@ static int route_loop_cb(__u32 index, void *data)
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
 	struct domain_routing *domain_routing;
+	struct domain_routing *domain_bump;
+	bool need_control_plane_routing = false;
 
 	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
 		ctx->result = -EFAULT;
@@ -613,12 +627,11 @@ static int route_loop_cb(__u32 index, void *data)
 		ctx->result = -EFAULT;
 		return 1;
 	}
-	if (ctx->isdns_must_goodsubrule_badrule & 0b11) {
+	if (ctx->goodsubrule || ctx->badrule) {
 #ifdef __DEBUG_ROUTING
 		bpf_printk("key(match_set->type): %llu", match_set->type);
 		bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
-			   ctx->isdns_must_goodsubrule_badrule & 0b10,
-			   ctx->isdns_must_goodsubrule_badrule & 0b1);
+			   ctx->badrule, ctx->goodsubrule);
 #endif
 		goto before_next_loop;
 	}
@@ -645,7 +658,7 @@ lookup_lpm:
 		}
 		if (bpf_map_lookup_elem(lpm, lpm_key)) {
 			// match_set hits.
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		}
 		break;
 	case MatchType_Port:
@@ -659,7 +672,7 @@ lookup_lpm:
 #endif
 		if (match_set->port_range.port_start <= ctx->h_dport &&
 		    ctx->h_dport <= match_set->port_range.port_end) {
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		}
 		break;
 	case MatchType_SourcePort:
@@ -673,7 +686,7 @@ lookup_lpm:
 #endif
 		if (match_set->port_range.port_start <= ctx->h_sport &&
 		    ctx->h_sport <= match_set->port_range.port_end) {
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		}
 		break;
 	case MatchType_L4Proto:
@@ -683,7 +696,7 @@ lookup_lpm:
 			match_set->type, match_set->not, match_set->outbound);
 #endif
 		if (_l4proto_type & match_set->l4proto_type)
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		break;
 	case MatchType_IpVersion:
 #ifdef __DEBUG_ROUTING
@@ -692,7 +705,7 @@ lookup_lpm:
 			match_set->type, match_set->not, match_set->outbound);
 #endif
 		if (_ipversion_type & match_set->ip_version)
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		break;
 	case MatchType_DomainSet:
 #ifdef __DEBUG_ROUTING
@@ -707,8 +720,21 @@ lookup_lpm:
 
 		// We use key instead of k to pass checker.
 		if (domain_routing &&
-		    (domain_routing->bitmap[index / 32] >> (index % 32)) & 1)
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		    (domain_routing->bitmap[index / 32] >> (index % 32)) & 1) {
+			// All domains mapeed by the current IP address are matched.
+			ctx->goodsubrule = true;
+		} else {
+			// Get domain bump bitmap.
+			domain_bump = bpf_map_lookup_elem(&domain_bump_map,
+							  ctx->params->daddr);
+			if (domain_bump &&
+			    (domain_bump->bitmap[index / 32] >> (index % 32)) & 1) {
+				ctx->goodsubrule = true;
+				// The current IP has mapped domains that match this rule, but not all of them do.
+				// jump to control plane.
+				need_control_plane_routing = true;
+			}
+		}
 		break;
 	case MatchType_ProcessName:
 #ifdef __DEBUG_ROUTING
@@ -717,7 +743,7 @@ lookup_lpm:
 			match_set->type, match_set->not, match_set->outbound);
 #endif
 		if (_is_wan && equal16(match_set->pname, _pname))
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		break;
 	case MatchType_Dscp:
 #ifdef __DEBUG_ROUTING
@@ -726,13 +752,13 @@ lookup_lpm:
 			match_set->type, match_set->not, match_set->outbound);
 #endif
 		if (_dscp == match_set->dscp)
-			ctx->isdns_must_goodsubrule_badrule |= 0b10;
+			ctx->goodsubrule = true;
 		break;
 	case MatchType_Fallback:
 #ifdef __DEBUG_ROUTING
 		bpf_printk("CHECK: hit fallback");
 #endif
-		ctx->isdns_must_goodsubrule_badrule |= 0b10;
+		ctx->goodsubrule = true;
 		break;
 	default:
 #ifdef __DEBUG_ROUTING
@@ -747,31 +773,29 @@ lookup_lpm:
 before_next_loop:
 #ifdef __DEBUG_ROUTING
 	bpf_printk("good_subrule: %d, bad_rule: %d",
-		   ctx->isdns_must_goodsubrule_badrule & 0b10,
-		   ctx->isdns_must_goodsubrule_badrule & 0b1);
+		   ctx->goodsubrule, ctx->badrule);
 #endif
 	if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
 		// This match_set reaches the end of subrule.
 		// We are now at end of rule, or next match_set belongs to another
 		// subrule.
 
-		if ((ctx->isdns_must_goodsubrule_badrule & 0b10) > 0 ==
-		    match_set->not ) {
+		if (ctx->goodsubrule == match_set->not) {
 			// This subrule does not hit.
-			ctx->isdns_must_goodsubrule_badrule |= 0b1;
+			ctx->badrule = true;
 		}
 
 		// Reset good_subrule.
-		ctx->isdns_must_goodsubrule_badrule &= ~0b10;
+		ctx->goodsubrule = false;
 	}
 #ifdef __DEBUG_ROUTING
-	bpf_printk("_bad_rule: %d", ctx->isdns_must_goodsubrule_badrule & 0b1);
+	bpf_printk("_bad_rule: %d", ctx->badrule);
 #endif
 	if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
 	    OUTBOUND_LOGICAL_MASK) {
 		// Tail of a rule (line).
 		// Decide whether to hit.
-		if (!(ctx->isdns_must_goodsubrule_badrule & 0b1)) {
+		if (!ctx->badrule) {
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
 				"MATCHED: match_set->type: %u, match_set->not: %d",
@@ -781,16 +805,12 @@ before_next_loop:
 			// DNS requests should routed by control plane if outbound is not
 			// must_direct.
 
-			if (unlikely(match_set->outbound ==
-				     OUTBOUND_MUST_RULES)) {
-				ctx->isdns_must_goodsubrule_badrule |= 0b100;
+			if (unlikely(match_set->outbound == OUTBOUND_MUST_RULES)) {
+				ctx->must = true;
 			} else {
-				bool must = ctx->isdns_must_goodsubrule_badrule & 0b100 ||
-							match_set->must;
+				bool must = ctx->must || match_set->must;
 
-				if (!must &&
-				    (ctx->isdns_must_goodsubrule_badrule &
-				     0b1000)) {
+				if ((!must && ctx->isdns) || need_control_plane_routing) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
@@ -812,7 +832,7 @@ before_next_loop:
 				return 1;
 			}
 		}
-		ctx->isdns_must_goodsubrule_badrule &= ~0b1;
+		ctx->badrule = false;
 	}
 	return 0;
 #undef _l4proto_type
@@ -831,9 +851,8 @@ static __always_inline __s64 route(const struct route_params *params)
 #define _dscp params->flag[6]
 
 	int ret;
-	struct route_ctx ctx;
+	struct route_ctx ctx = {};
 
-	__builtin_memset(&ctx, 0, sizeof(ctx));
 	ctx.params = params;
 	ctx.result = -ENOEXEC;
 
@@ -851,8 +870,7 @@ static __always_inline __s64 route(const struct route_params *params)
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
-	ctx.isdns_must_goodsubrule_badrule =
-		(ctx.h_dport == 53 && _l4proto_type == L4ProtoType_UDP) << 3;
+	ctx.isdns = ctx.h_dport == 53 && _l4proto_type == L4ProtoType_UDP;
 
 	struct lpm_key lpm_key_saddr = {
 		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
