@@ -63,7 +63,9 @@
 
 #define TPROXY_MARK 0x8000000
 
-#define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
+// UDP timeout constants (Palo Alto best practice)
+#define TIMEOUT_UDP_DNS    17e9  /* 17s - RFC 5452 for DNS */
+#define TIMEOUT_UDP_NORMAL 6e10  /* 60s - Normal UDP traffic */
 
 #define NDP_REDIRECT 137
 
@@ -973,6 +975,7 @@ static __always_inline struct udp_conn_state *
 refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_direction)
 {
 	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
+	__u64 timeout;
 
 	if (state)
 		goto rearm;
@@ -991,7 +994,14 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 	bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
 
 rearm:
-	bpf_timer_start(&state->timer, TIMEOUT_UDP_CONN_STATE, 0);
+	// Select timeout based on port (Palo Alto best practice)
+	if (key->l4proto == IPPROTO_UDP &&
+	    (key->dport == bpf_htons(53) || key->sport == bpf_htons(53))) {
+		timeout = TIMEOUT_UDP_DNS;    // 17s for DNS (RFC 5452)
+	} else {
+		timeout = TIMEOUT_UDP_NORMAL;  // 60s for other UDP
+	}
+	bpf_timer_start(&state->timer, timeout, 0);
 	return state;
 }
 
