@@ -77,6 +77,7 @@ type DnsControllerOption struct {
 	IpVersionPrefer       int
 	FixedDomainTtl        map[string]int
 	ConcurrencyLimit      int
+	OptimisticCache       bool
 }
 
 type DnsController struct {
@@ -84,6 +85,8 @@ type DnsController struct {
 
 	routing     *dns.Dns
 	qtypePrefer uint16
+
+	optimisticCacheEnabled bool
 
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
@@ -168,6 +171,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		routing:            routing,
 		qtypePrefer:        prefer,
 		concurrencyLimiter: make(chan struct{}, limit), // 0 means no limit (unbuffered channel, always non-blocking)
+
+		optimisticCacheEnabled: option.OptimisticCache,
 
 		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
@@ -411,33 +416,74 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 // LookupDnsRespCache_ will modify the msg in place.
 // Returns packed DNS response bytes ready to send (DNS ID = 0, caller should patch).
 // OPTIMIZED: Uses pre-packed response with approximate TTL for near-zero latency.
-// TTL is refreshed when difference exceeds ttlRefreshThresholdSeconds (5 seconds by default).
+// TTL is refreshed when difference exceeds ttlRefreshThresholdSeconds (15 seconds by default).
+// OPTIMISTIC CACHE (RFC 8767): Returns stale response while background refresh is in progress.
 // Falls back to FillInto+Pack if pre-packed response is not available.
-func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte) {
-	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
-	if cache != nil {
-		// Extract qname and qtype from the message for TTL refresh
-		var qname string
-		var qtype uint16
-		if len(msg.Question) > 0 {
-			qname = msg.Question[0].Name
-			qtype = msg.Question[0].Qtype
-		}
-		
-		// Fast path: use pre-packed response with approximate TTL
-		now := time.Now()
+func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte, needRefresh bool) {
+	// Load cache directly without expiry check (to support optimistic cache)
+	val, ok := c.dnsCache.Load(cacheKey)
+	if !ok {
+		return nil, false
+	}
+	cache := val.(*DnsCache)
+	
+	// Extract qname and qtype from the message for TTL refresh
+	var qname string
+	var qtype uint16
+	if len(msg.Question) > 0 {
+		qname = msg.Question[0].Name
+		qtype = msg.Question[0].Qtype
+	}
+	
+	// Determine deadline based on ignoreFixedTtl
+	var deadline time.Time
+	if !ignoreFixedTtl {
+		deadline = cache.Deadline
+	} else {
+		deadline = cache.OriginalDeadline
+	}
+	
+	now := time.Now()
+	
+	// Fast path: use pre-packed response with approximate TTL (fresh response)
+	if deadline.After(now) {
 		if resp := cache.GetPackedResponseWithApproximateTTL(qname, qtype, now); resp != nil {
-			return resp
+			// Fresh cache hit - return immediately
+			// Trigger BPF update if needed
+			if c.cacheAccessCallback != nil && cache.NeedsBpfUpdate(now) {
+				if err := c.cacheAccessCallback(cache); err != nil {
+					c.log.Warnf("BatchUpdateDomainRouting failed: %v", err)
+				} else {
+					cache.MarkBpfUpdated(now)
+				}
+			}
+			return resp, false
 		}
 		
 		// Fallback: pre-packed response not available, use traditional path
-		// This handles cases where PrepackResponse failed or cache expired
-		if cache.Deadline.After(now) {
-			return cache.FillIntoWithTTL(msg, now)
+		if resp = cache.FillIntoWithTTL(msg, now); resp != nil {
+			return resp, false
 		}
-		return nil
+		return nil, false
 	}
-	return nil
+	
+	// Cache expired - check if optimistic cache is enabled
+	if c.optimisticCacheEnabled {
+		// Try stale response (RFC 8767)
+		if resp = cache.GetStaleResponse(now); resp != nil {
+			// Within stale window - return stale response and trigger background refresh
+			// Use CAS to ensure only one goroutine triggers refresh
+			if cache.refreshing.CompareAndSwap(false, true) {
+				needRefresh = true
+			}
+			return resp, needRefresh
+		}
+	}
+	
+	// Cache expired and beyond stale window (or optimistic cache disabled)
+	// Evict the cache
+	c.evictDnsRespCacheIfSame(cacheKey, cache)
+	return nil, false
 }
 
 // NormalizeAndCacheDnsResp_ handle DNS resp in place.
@@ -891,8 +937,14 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		}
 
 		// Check cache after routing (non-reject case)
-		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+		if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 			// Cache hit - return immediately without singleflight
+			// OPTIMISTIC CACHE: resp may be stale, trigger background refresh if needed
+			if needRefresh {
+				// Background refresh - don't block the current request
+				go c.backgroundRefresh(cacheKey, dnsMessage, req)
+			}
+			
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
 			}
@@ -1063,7 +1115,7 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 	}
 
 	// Join results and consider whether to response.
-	resp := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
+	resp, _ := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
 	if resp == nil {
 		// resp is not valid.
 		c.log.WithFields(logrus.Fields{
@@ -1129,8 +1181,13 @@ func (c *DnsController) handleWithResponseWriter_(
 		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 	}
 
-	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+	if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
 		// Send cache to client directly.
+		// OPTIMISTIC CACHE: Trigger background refresh if stale
+		if needRefresh {
+			go c.backgroundRefresh(cacheKey, dnsMessage, req)
+		}
+		
 		if needResp {
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
