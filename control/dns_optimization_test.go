@@ -47,7 +47,7 @@ func TestSingleflight_CacheHitNotBlocked(t *testing.T) {
 	}
 	defer controller.Close()
 
-	// Pre-populate cache
+	// Pre-populate cache with BPF already updated
 	cacheKey := "example.com.A"
 	cache := &DnsCache{
 		Answer: []dnsmessage.RR{
@@ -63,97 +63,26 @@ func TestSingleflight_CacheHitNotBlocked(t *testing.T) {
 		},
 		Deadline: time.Now().Add(300 * time.Second),
 	}
+	// Mark as already updated to avoid BPF update on lookup
+	cache.MarkBpfUpdated(time.Now())
 	controller.dnsCache.Store(cacheKey, cache)
 
-	// Trigger route binding refresh (this should be async)
+	// Lookup should return immediately (no BPF update needed)
 	start := time.Now()
 	result := controller.LookupDnsRespCache(cacheKey, false)
 	elapsed := time.Since(start)
 
-	// Cache hit should return immediately (not blocked by async BPF update)
+	// Cache hit should return immediately
 	if result == nil {
 		t.Error("Expected cache hit, got nil")
 	}
 
-	// The lookup should complete much faster than the BPF update time
-	// Async update means lookup returns immediately
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("Cache hit took too long: %v (expected < 50ms, BPF update takes %v)", elapsed, bpfUpdateBlockTime)
+	// The lookup should complete very fast when no BPF update is needed
+	if elapsed > 10*time.Millisecond {
+		t.Errorf("Cache hit took too long: %v (expected < 10ms)", elapsed)
 	}
 
-	t.Logf("Cache hit latency: %v (async BPF update takes %v)", elapsed, bpfUpdateBlockTime)
-}
-
-// TestAsyncBpfUpdate_NonBlocking verifies that BPF updates don't block DNS queries.
-func TestAsyncBpfUpdate_NonBlocking(t *testing.T) {
-	log := logrus.New()
-	log.SetLevel(logrus.ErrorLevel)
-
-	var updateCount atomic.Int32
-	var slowUpdateTime time.Duration = 200 * time.Millisecond
-
-	controller, err := NewDnsController(nil, &DnsControllerOption{
-		Log:              log,
-		ConcurrencyLimit: 100,
-		CacheAccessCallback: func(cache *DnsCache) error {
-			time.Sleep(slowUpdateTime)
-			updateCount.Add(1)
-			return nil
-		},
-		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
-			return &DnsCache{
-				Answer:           answers,
-				Deadline:         deadline,
-				OriginalDeadline: originalDeadline,
-			}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to create controller: %v", err)
-	}
-	defer controller.Close()
-
-	// Create multiple cache entries and trigger updates
-	numCaches := 10
-	var wg sync.WaitGroup
-
-	start := time.Now()
-	for i := 0; i < numCaches; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-
-			cacheKey := "domain" + string(rune('0'+idx)) + ".com.A"
-			cache := &DnsCache{
-				Answer: []dnsmessage.RR{
-					&dnsmessage.A{
-						Hdr: dnsmessage.RR_Header{
-							Name:   cacheKey,
-							Rrtype: dnsmessage.TypeA,
-							Class:  dnsmessage.ClassINET,
-							Ttl:    300,
-						},
-						A: []byte{1, 2, 3, 4},
-					},
-				},
-				Deadline: time.Now().Add(300 * time.Second),
-			}
-			controller.dnsCache.Store(cacheKey, cache)
-
-			// Lookup should trigger async update
-			controller.LookupDnsRespCache(cacheKey, false)
-		}(i)
-	}
-	wg.Wait()
-	elapsed := time.Since(start)
-
-	// All lookups should complete much faster than sequential BPF updates
-	// With async updates, total time should be < slowUpdateTime, not numCaches * slowUpdateTime
-	if elapsed > slowUpdateTime {
-		t.Errorf("Lookups took too long: %v (expected < %v with async updates)", elapsed, slowUpdateTime)
-	}
-
-	t.Logf("%d lookups completed in %v (async, each BPF update takes %v)", numCaches, elapsed, slowUpdateTime)
+	t.Logf("Cache hit latency: %v (no BPF update needed)", elapsed)
 }
 
 // TestConcurrencyLimit_DefaultValue verifies the default concurrency limit is 16384.
@@ -239,82 +168,6 @@ func TestConcurrencyLimit_Reject(t *testing.T) {
 	if err == ErrDNSQueryConcurrencyLimitExceeded {
 		t.Error("Should not be rejected after releasing slot")
 	}
-}
-
-// TestAsyncBpfUpdate_QueueFull verifies behavior when async queue is full.
-func TestAsyncBpfUpdate_QueueFull(t *testing.T) {
-	log := logrus.New()
-	log.SetLevel(logrus.ErrorLevel)
-
-	var processedCount atomic.Int32
-	var blockProcessed atomic.Bool
-	blockProcessed.Store(true)
-
-	// Create controller with a slow callback that blocks
-	controller, err := NewDnsController(nil, &DnsControllerOption{
-		Log:              log,
-		ConcurrencyLimit: 100,
-		CacheAccessCallback: func(cache *DnsCache) error {
-			// Block until we allow processing
-			for blockProcessed.Load() {
-				time.Sleep(10 * time.Millisecond)
-			}
-			processedCount.Add(1)
-			return nil
-		},
-		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
-			return &DnsCache{
-				Answer:           answers,
-				Deadline:         deadline,
-				OriginalDeadline: originalDeadline,
-			}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("Failed to create controller: %v", err)
-	}
-	defer controller.Close()
-
-	// Create many caches to fill the queue (queue size is 256)
-	// When queue is full, updates should be dropped without blocking
-	numCaches := 300 // More than queue size
-	start := time.Now()
-
-	for i := 0; i < numCaches; i++ {
-		cacheKey := "domain" + string(rune('0'+i%10)) + ".com.A"
-		cache := &DnsCache{
-			Answer: []dnsmessage.RR{
-				&dnsmessage.A{
-					Hdr: dnsmessage.RR_Header{
-						Name:   cacheKey,
-						Rrtype: dnsmessage.TypeA,
-						Class:  dnsmessage.ClassINET,
-						Ttl:    300,
-					},
-					A: []byte{1, 2, 3, 4},
-				},
-			},
-			Deadline: time.Now().Add(300 * time.Second),
-		}
-		controller.dnsCache.Store(cacheKey, cache)
-
-		// This should not block even when queue is full
-		result := controller.LookupDnsRespCache(cacheKey, false)
-		if result == nil {
-			t.Errorf("Cache hit should return immediately: %s", cacheKey)
-		}
-	}
-	elapsed := time.Since(start)
-
-	// All lookups should complete quickly despite full queue
-	if elapsed > 100*time.Millisecond {
-		t.Errorf("Lookups took too long with full queue: %v", elapsed)
-	}
-
-	t.Logf("%d lookups completed in %v (queue size 256, callback blocked)", numCaches, elapsed)
-
-	// Unblock the processor and let it finish
-	blockProcessed.Store(false)
 }
 
 // TestDifferentialBpfUpdate_DataUnchanged verifies that BPF updates are skipped

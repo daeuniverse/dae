@@ -93,11 +93,6 @@ type DnsController struct {
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
-	// asyncRouteUpdateQueue is a channel for async BPF map updates.
-	// This prevents blocking DNS queries on slow BPF operations.
-	asyncRouteUpdateQueue chan *DnsCache
-	asyncRouteUpdateDone  chan struct{}
-
 	fixedDomainTtl map[string]int
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
@@ -181,11 +176,9 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:        option.FixedDomainTtl,
-		dnsCache:              sync.Map{},
-		dnsForwarderCache:     sync.Map{},
-		asyncRouteUpdateQueue: make(chan *DnsCache, 256), // Buffer for async BPF updates
-		asyncRouteUpdateDone:  make(chan struct{}),
+		fixedDomainTtl:    option.FixedDomainTtl,
+		dnsCache:          sync.Map{},
+		dnsForwarderCache: sync.Map{},
 
 		janitorStop: make(chan struct{}),
 		janitorDone: make(chan struct{}),
@@ -194,7 +187,6 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	}
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
-	controller.startAsyncRouteUpdater()
 	return controller, nil
 }
 
@@ -208,13 +200,6 @@ func (c *DnsController) Close() error {
 		}
 		if c.evictorDone != nil {
 			<-c.evictorDone
-		}
-		// Stop async route updater
-		if c.asyncRouteUpdateQueue != nil {
-			close(c.asyncRouteUpdateQueue)
-		}
-		if c.asyncRouteUpdateDone != nil {
-			<-c.asyncRouteUpdateDone
 		}
 	})
 
@@ -386,29 +371,6 @@ func (c *DnsController) startCacheEvictor() {
 	}()
 }
 
-// startAsyncRouteUpdater starts a background goroutine that handles
-// asynchronous BPF map updates. This prevents blocking DNS queries
-// on slow BPF operations while maintaining route binding freshness.
-func (c *DnsController) startAsyncRouteUpdater() {
-	if c.cacheAccessCallback == nil {
-		close(c.asyncRouteUpdateDone)
-		return
-	}
-
-	go func() {
-		defer close(c.asyncRouteUpdateDone)
-
-		for cache := range c.asyncRouteUpdateQueue {
-			if err := c.cacheAccessCallback(cache); err != nil {
-				c.log.Warnf("async BatchUpdateDomainRouting failed: %v", err)
-			} else {
-				// Mark as successfully updated with current data hash
-				cache.MarkBpfUpdated(time.Now())
-			}
-		}
-	}()
-}
-
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
 	val, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
@@ -428,21 +390,18 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 		c.evictDnsRespCacheIfSame(cacheKey, cache)
 		return nil
 	}
-	// OPTIMIZATION: Differential async BPF map update.
+	// OPTIMIZATION: Differential BPF map update with synchronous execution.
+	// BPF operations are fast (<100μs), so synchronous execution is simpler and more reliable.
 	// Only triggers update when:
 	// 1. Data has changed (IP addresses or DomainBitmap) AND
 	// 2. Minimum interval (1s) has passed since last update
 	// Also enforces maximum interval (60s) for periodic refresh.
 	if c.cacheAccessCallback != nil {
 		if cache.NeedsBpfUpdate(now) {
-			// Non-blocking send to async queue. If queue is full, skip this update
-			// to avoid blocking the hot path. The next cache access will retry.
-			select {
-			case c.asyncRouteUpdateQueue <- cache:
-			default:
-				// Queue full, mark as checked to prevent busy loop.
-				// Next retry will be after MinBpfUpdateInterval.
-				cache.MarkRouteBindingRefreshed(now)
+			if err := c.cacheAccessCallback(cache); err != nil {
+				c.log.Warnf("BatchUpdateDomainRouting failed: %v", err)
+			} else {
+				cache.MarkBpfUpdated(now)
 			}
 		}
 	}
@@ -608,7 +567,8 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	if err = c.cacheAccessCallback(newCache); err != nil {
 		return err
 	}
-	newCache.MarkRouteBindingRefreshed(now)
+	// Mark BPF as updated with current data hash to enable differential updates
+	newCache.MarkBpfUpdated(now)
 
 	return nil
 }
@@ -921,16 +881,15 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
 			}
-			// Log cache hit with upstream info for CI compatibility.
+			// Log cache hit at trace level to avoid performance impact at high QPS.
 			// Format matches dialSend log: "source <-> upstream (target: ...)"
-			// This allows CI tests to verify routing even on cache hits.
-			if c.log.IsLevelEnabled(logrus.InfoLevel) && len(dnsMessage.Question) > 0 {
+			if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 				q := dnsMessage.Question[0]
 				c.log.WithFields(logrus.Fields{
 					"network": "udp(dns)",
 					"_qname":  strings.ToLower(q.Name),
 					"qtype":   QtypeToString(q.Qtype),
-				}).Infof("%v <-> %v (target: Cache)",
+				}).Tracef("%v <-> %v (target: Cache)",
 					RefineSourceToShow(req.realSrc, req.realDst.Addr()),
 					RefineAddrPortToShow(req.realDst),
 				)
