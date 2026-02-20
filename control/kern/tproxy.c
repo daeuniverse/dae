@@ -1128,6 +1128,13 @@ new_connection:;
 		if (!(tcph.syn && !tcph.ack)) {
 			// Not a new TCP connection.
 			// Perhaps single-arm.
+			// Re-apply fwmark so that non-SYN packets of a direct(mark:N)
+			// flow still follow fwmark-based policy routing.
+			struct routing_result *routing_result =
+				bpf_map_lookup_elem(&routing_tuples_map,
+						    &tuples.five);
+			if (routing_result)
+				skb->mark = routing_result->mark;
 			return TC_ACT_OK;
 		}
 		params.l4hdr = &tcph;
