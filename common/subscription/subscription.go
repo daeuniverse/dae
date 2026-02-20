@@ -139,7 +139,24 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
-func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
+// parseUAFromFragment extracts the ua parameter from URL fragment.
+// URL fragment format: #ua=xxx or #ua=xxx&other=yyy
+// The value is URL-decoded to handle encoded characters (e.g., %20 for space).
+func parseUAFromFragment(fragment string) string {
+	for _, part := range strings.Split(fragment, "&") {
+		if strings.HasPrefix(part, "ua=") {
+			ua := strings.TrimPrefix(part, "ua=")
+			// URL decode the value to handle encoded characters
+			if decoded, err := url.QueryUnescape(ua); err == nil {
+				return decoded
+			}
+			return ua
+		}
+	}
+	return ""
+}
+
+func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string, globalUA string) (tag string, nodes []string, err error) {
 	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
@@ -149,6 +166,24 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
 	}
 	log.Debugf("ResolveSubscription: %v", subscription)
+
+	// Extract per-subscription UA from fragment before clearing it
+	subscriptionUA := parseUAFromFragment(u.Fragment)
+
+	// Determine User-Agent: subscription-level > global > default
+	defaultUA := fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version)
+	userAgent := defaultUA
+	if globalUA != "" {
+		userAgent = globalUA
+	}
+	if subscriptionUA != "" {
+		userAgent = subscriptionUA
+	}
+
+	// Clear fragment from URL after extracting UA (fragment should not be sent to server)
+	u.Fragment = ""
+	subscription = u.String()
+
 	var (
 		b    []byte
 		req  *http.Request
@@ -173,11 +208,13 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		break
 	default:
 	}
+
 	req, err = http.NewRequest("GET", subscription, nil)
 	if err != nil {
 		return "", nil, err
 	}
-	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
+
+	req.Header.Set("User-Agent", userAgent)
 	resp, err = client.Do(req)
 	if err != nil {
 		if persistToFile {
