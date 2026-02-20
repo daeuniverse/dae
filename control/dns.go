@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -19,6 +19,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
@@ -346,7 +347,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	}()
 
 	// We can block here because we are in a coroutine.
-	respBuf := pool.GetFullCap(consts.EthernetMtu)
+	respBuf := pool.GetFullCap(netutils.GetEthernetMtu())
 	defer pool.Put(respBuf)
 	// Wait for response.
 	n, err := conn.Read(respBuf)

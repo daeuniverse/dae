@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
@@ -255,7 +254,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 		}()
 	}
 	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
+		buf := pool.GetFullCap(GetEthernetMtu())
 		defer buf.Put()
 		if magicNetwork.Network == "tcp" {
 			// Read DNS response length
