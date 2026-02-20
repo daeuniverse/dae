@@ -16,7 +16,9 @@ import (
 // Approximate TTL refresh threshold in seconds.
 // Pre-packed response is refreshed when TTL difference exceeds this value.
 // This balances between performance (avoiding frequent repack) and TTL accuracy.
-const ttlRefreshThresholdSeconds = 5
+// NOTE: Increased from 5 to 15 to reduce memory allocation frequency under high load
+// while maintaining acceptable TTL accuracy (15s variance is negligible for DNS caching).
+const ttlRefreshThresholdSeconds = 15
 
 // BPF update configuration
 const (
@@ -303,6 +305,7 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 // OPTIMIZED: Uses atomic operations and UnixNano comparison to avoid time.Time method calls.
 // Fast path: returns cached pre-packed response if TTL difference is within threshold.
 // Slow path: refreshes pre-packed response if TTL has changed significantly.
+// THREAD-SAFE: Uses CAS to ensure only one goroutine performs refresh.
 func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint16, now time.Time) []byte {
 	nowNano := now.UnixNano()
 	deadlineNano := c.deadlineNano.Load()
@@ -333,10 +336,14 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 	}
 	
 	// Slow path: refresh pre-packed response with new TTL
-	// Use atomic to ensure only one goroutine refreshes per second
+	// Use CAS to ensure only one goroutine refreshes per second
+	// This prevents memory allocation storm under high concurrency
 	createdNano := c.packedResponseCreatedAt.Load()
 	if nowNano-createdNano > 1e9 { // 1 second in nanoseconds
-		_ = c.prepackResponseWithTTL(qname, qtype, currentTTL, now)
+		// CAS ensures only one goroutine wins the refresh race
+		if c.packedResponseCreatedAt.CompareAndSwap(createdNano, nowNano) {
+			_ = c.prepackResponseWithTTL(qname, qtype, currentTTL, now)
+		}
 	}
 	
 	return c.PackedResponse
