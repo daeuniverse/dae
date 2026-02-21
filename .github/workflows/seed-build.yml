@@ -137,7 +137,7 @@ jobs:
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
+          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
 
       - name: Report result
