@@ -75,6 +75,9 @@ type DnsCache struct {
 	// refreshing tracks whether background refresh is in progress.
 	// This prevents multiple concurrent refresh attempts for the same cache key.
 	refreshing atomic.Bool
+	
+	// lastAccessNano tracks when this cache was last accessed (for LRU eviction).
+	lastAccessNano atomic.Int64
 }
 
 // GetPackedResponse returns the pre-packed DNS response in a thread-safe manner.
@@ -397,9 +400,10 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 
 // GetStaleResponse returns expired response if within stale-while-revalidate window.
 // OPTIMISTIC CACHE (RFC 8767): This is used when cache is expired but still acceptable.
-// Returns nil if cache is too stale (beyond staleWhileRevalidateSeconds).
+// staleTtl: stale window in seconds. 0 means never expire (always return stale response).
+// Returns nil if cache is too stale (beyond staleTtl seconds).
 // Caller should check refreshing flag and trigger background refresh if needed.
-func (c *DnsCache) GetStaleResponse(now time.Time) []byte {
+func (c *DnsCache) GetStaleResponse(now time.Time, staleTtl int) []byte {
 	nowNano := now.UnixNano()
 	deadlineNano := c.deadlineNano.Load()
 	
@@ -409,10 +413,13 @@ func (c *DnsCache) GetStaleResponse(now time.Time) []byte {
 	}
 	
 	// Check if within stale-while-revalidate window
-	staleNano := deadlineNano + int64(staleWhileRevalidateSeconds)*1e9
-	if nowNano > staleNano {
-		// Too stale, don't use
-		return nil
+	// staleTtl = 0 means never expire (always return stale response)
+	if staleTtl > 0 {
+		staleNano := deadlineNano + int64(staleTtl)*1e9
+		if nowNano > staleNano {
+			// Too stale, don't use
+			return nil
+		}
 	}
 	
 	// Return stale response (better than nothing)

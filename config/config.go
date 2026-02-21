@@ -119,12 +119,14 @@ type DnsRouting struct {
 }
 type KeyableString string
 type Dns struct {
-	IpVersionPrefer  int             `mapstructure:"ipversion_prefer"`
-	FixedDomainTtl   []KeyableString `mapstructure:"fixed_domain_ttl"`
-	Upstream         []KeyableString `mapstructure:"upstream"`
-	Routing          DnsRouting      `mapstructure:"routing"`
-	Bind             string          `mapstructure:"bind"`
-	OptimisticCache  bool            `mapstructure:"optimistic_cache" default:"true"`
+	IpVersionPrefer   int             `mapstructure:"ipversion_prefer"`
+	FixedDomainTtl    []KeyableString `mapstructure:"fixed_domain_ttl"`
+	Upstream          []KeyableString `mapstructure:"upstream"`
+	Routing           DnsRouting      `mapstructure:"routing"`
+	Bind              string          `mapstructure:"bind"`
+	OptimisticCache   bool            `mapstructure:"optimistic_cache" default:"true"`
+	OptimisticCacheTtl int            `mapstructure:"optimistic_cache_ttl" default:"60"`
+	MaxCacheSize      int            `mapstructure:"max_cache_size" default:"0"`
 }
 
 type Routing struct {
