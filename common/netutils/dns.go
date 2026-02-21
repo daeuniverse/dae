@@ -160,6 +160,9 @@ func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host
 }
 
 func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
+	if d == nil {
+		return nil, fmt.Errorf("nil dialer")
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	fqdn := dnsmessage.CanonicalName(host)

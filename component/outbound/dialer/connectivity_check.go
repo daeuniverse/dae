@@ -230,7 +230,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
 		ctx = context.WithValue(ctx, "logger", c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
@@ -254,7 +254,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
 		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, c.ResolverNetwork)
 		if err != nil {
@@ -448,8 +448,8 @@ func (d *Dialer) aliveBackground() {
 			select {
 			case <-ctx.Done():
 				return
-			default:
-				d.checkCh <- t
+			case d.checkCh <- t:
+				// sent successfully
 			}
 		}
 	}()
@@ -466,7 +466,13 @@ func (d *Dialer) aliveBackground() {
 		return
 	}
 	var wg sync.WaitGroup
-	for range d.checkCh {
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-d.checkCh:
+			// Process check
+		}
 		for _, opt := range CheckOpts {
 			// No need to test if there is no dialer selection policy using its latency.
 			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
@@ -568,13 +574,14 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
-	ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 	start := time.Now()
 	// Calc latency.
 	collection := d.mustGetCollection(opts.networkType)
-	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
-		// No error.
+	ok, err = opts.CheckFunc(ctx, opts.networkType)
+	if ok && err == nil {
+		// Success: update latency and mark alive.
 		latency := time.Since(start)
 		collection.Latencies10.AppendLatency(latency)
 		avg, _ := collection.Latencies10.AvgLatency()
@@ -588,10 +595,13 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 			"avg_10":  avg.Truncate(time.Millisecond),
 			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")
-	} else {
+		d.informDialerGroupUpdate(collection)
+	} else if err != nil {
+		// Failure: mark unavailable only if there's an actual error.
 		d.logUnavailable(collection, opts.networkType, err)
+		d.informDialerGroupUpdate(collection)
 	}
-	d.informDialerGroupUpdate(collection)
+	// Skip update when (ok=false, err=nil): preserve existing alive state.
 	return ok, err
 }
 

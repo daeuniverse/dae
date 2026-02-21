@@ -9,26 +9,52 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
 )
 
 const (
-	PacketSnifferTtl = 3 * time.Second
+	PacketSnifferTtl             = 3 * time.Second
+	packetSnifferJanitorInterval = 250 * time.Millisecond
 )
 
+// PacketSniffer holds sniffing state for a UDP flow.
+// Field order optimized for memory alignment (Go best practice).
 type PacketSniffer struct {
 	*sniffing.Sniffer
-	deadlineTimer *time.Timer
-	Mu            sync.Mutex
+	// 8-byte aligned pointer first
+
+	// 8-byte field
+	ttl time.Duration
+
+	// 8-byte atomic
+	expiresAtNano atomic.Int64
+
+	// Mutex for protecting sniffing operations
+	Mu sync.Mutex
 }
 
-// PacketSnifferPool is a full-cone udp conn pool
+func (ps *PacketSniffer) RefreshTtl() {
+	if ps.ttl <= 0 {
+		return
+	}
+	ps.expiresAtNano.Store(time.Now().Add(ps.ttl).UnixNano())
+}
+
+func (ps *PacketSniffer) IsExpired(nowNano int64) bool {
+	expiresAt := ps.expiresAtNano.Load()
+	return expiresAt > 0 && nowNano >= expiresAt
+}
+
+// PacketSnifferPool is a full-cone udp conn pool.
+// Uses sync.Map for lock-free concurrent access.
 type PacketSnifferPool struct {
 	pool        sync.Map
-	createMuMap sync.Map
+	janitorOnce sync.Once
 }
+
 type PacketSnifferOptions struct {
 	Ttl time.Duration
 }
@@ -40,7 +66,9 @@ type PacketSnifferKey struct {
 var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
 
 func NewPacketSnifferPool() *PacketSnifferPool {
-	return &PacketSnifferPool{}
+	p := &PacketSnifferPool{}
+	p.startJanitor()
+	return p
 }
 
 func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
@@ -62,43 +90,52 @@ func (p *PacketSnifferPool) Get(key PacketSnifferKey) *PacketSniffer {
 }
 
 func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
-	_qs, ok := p.pool.Load(key)
-begin:
-	if !ok {
-		createMu, _ := p.createMuMap.LoadOrStore(key, &sync.Mutex{})
-		createMu.(*sync.Mutex).Lock()
-		defer createMu.(*sync.Mutex).Unlock()
-		defer p.createMuMap.Delete(key)
-		_qs, ok = p.pool.Load(key)
-		if ok {
-			goto begin
-		}
-		// Create an PacketSniffer.
-		if createOption == nil {
-			createOption = &PacketSnifferOptions{}
-		}
-		if createOption.Ttl == 0 {
-			createOption.Ttl = PacketSnifferTtl
-		}
-
-		qs = &PacketSniffer{
-			Sniffer:       sniffing.NewPacketSniffer(nil, createOption.Ttl),
-			Mu:            sync.Mutex{},
-			deadlineTimer: nil,
-		}
-		qs.deadlineTimer = time.AfterFunc(createOption.Ttl, func() {
-			if _qs, ok := p.pool.LoadAndDelete(key); ok {
-				if _qs.(*PacketSniffer) == qs {
-					qs.Close()
-				} else {
-					// FIXME: ?
-				}
-			}
-		})
-		_qs = qs
-		p.pool.Store(key, qs)
-		// Receive UDP messages.
-		isNew = true
+	// Fast path: check if exists without any lock
+	if _qs, ok := p.pool.Load(key); ok {
+		qs = _qs.(*PacketSniffer)
+		qs.RefreshTtl()
+		return qs, false
 	}
-	return _qs.(*PacketSniffer), isNew
+
+	// Slow path: create using LoadOrStore for atomic semantics
+	if createOption == nil {
+		createOption = &PacketSnifferOptions{}
+	}
+	if createOption.Ttl == 0 {
+		createOption.Ttl = PacketSnifferTtl
+	}
+
+	newQs := &PacketSniffer{
+		Sniffer: sniffing.NewPacketSniffer(nil, createOption.Ttl),
+		ttl:     createOption.Ttl,
+	}
+	newQs.RefreshTtl()
+
+	// LoadOrStore ensures atomic create-or-get semantics
+	actual, loaded := p.pool.LoadOrStore(key, newQs)
+	qs = actual.(*PacketSniffer)
+	qs.RefreshTtl()
+	return qs, !loaded
+}
+
+func (p *PacketSnifferPool) startJanitor() {
+	p.janitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(packetSnifferJanitorInterval)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				nowNano := now.UnixNano()
+				p.pool.Range(func(key, value any) bool {
+					ps := value.(*PacketSniffer)
+					if !ps.IsExpired(nowNano) {
+						return true
+					}
+					if _ps, ok := p.pool.LoadAndDelete(key); ok && _ps == ps {
+						ps.Close()
+					}
+					return true
+				})
+			}
+		}()
+	})
 }

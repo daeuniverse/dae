@@ -9,16 +9,16 @@ import (
 	"strconv"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 func FormatL4Proto(l4proto uint8) string {
-	if l4proto == unix.IPPROTO_TCP {
+	if l4proto == consts.IPPROTO_TCP {
 		return "tcp"
 	}
-	if l4proto == unix.IPPROTO_UDP {
+	if l4proto == consts.IPPROTO_UDP {
 		return "udp"
 	}
 	return strconv.Itoa(int(l4proto))

@@ -71,3 +71,19 @@ func TestQuic(t *testing.T) {
 	}
 	t.Log(d)
 }
+
+func TestIsLikelyQuicInitialPacket(t *testing.T) {
+	if !IsLikelyQuicInitialPacket(QuicStream2_1) {
+		t.Fatal("expected QUIC initial packet to be recognized")
+	}
+
+	if IsLikelyQuicInitialPacket([]byte{0x00, 0x01, 0x02}) {
+		t.Fatal("short random payload should not be recognized as QUIC initial")
+	}
+
+	mutated := append([]byte(nil), QuicStream2_1...)
+	mutated[0] &^= 1 << QuicFlag_FixedBit
+	if IsLikelyQuicInitialPacket(mutated) {
+		t.Fatal("packet with fixed bit cleared should not be recognized")
+	}
+}

@@ -40,8 +40,8 @@ import (
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
 
@@ -52,7 +52,11 @@ type ControlPlane struct {
 	deferFuncs []func() error
 	listenIp   string
 
-	// TODO: add mutex?
+	// outbounds is an immutable slice set during NewControlPlane initialization.
+	// It is safe for concurrent reads without synchronization because:
+	// 1. The slice is never modified after initialization
+	// 2. The ready channel is closed only after outbounds is fully populated
+	// 3. All reads happen-after the ready channel is closed
 	outbounds     []*outbound.DialerGroup
 	inConnections sync.Map
 
@@ -68,8 +72,14 @@ type ControlPlane struct {
 	cancel context.CancelFunc
 	ready  chan struct{}
 
-	muRealDomainSet sync.Mutex
-	realDomainSet   *bloom.BloomFilter
+	muRealDomainSet   sync.RWMutex
+	realDomainSet     *bloom.BloomFilter
+	realDomainNegSet  sync.Map // map[string]int64 (expiresAt unix nano)
+	dnsDialerSnapshot sync.Map // map[dnsDialerSnapshotKey]*dnsDialerSnapshotEntry
+	realDomainProbeS  singleflight.Group
+	negJanitorStop    chan struct{}
+	negJanitorDone    chan struct{}
+	negJanitorOnce    sync.Once
 
 	wanInterface []string
 	lanInterface []string
@@ -78,6 +88,46 @@ type ControlPlane struct {
 	tproxyPortProtect bool
 	soMarkFromDae     uint32
 	mptcp             bool
+}
+
+var (
+	// realDomainNegativeCacheTTL controls how long failed real-domain probes are cached.
+	// Keep it short to avoid stale negatives while still damping bursty probe storms.
+	realDomainNegativeCacheTTL = 10 * time.Second
+	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
+	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
+	// Reduced from 800ms to 500ms for faster fallback under poor network conditions.
+	realDomainProbeTimeout = 500 * time.Millisecond
+	// dnsDialerSnapshotTTL caches dialer selection results to reduce selection overhead.
+	// Set to 2s since dialer health status only updates every 30s (default CheckInterval).
+	// This provides good cache hit rate without missing dialer state changes.
+	dnsDialerSnapshotTTL         = 2 * time.Second
+	realDomainNegJanitorInterval = 30 * time.Second
+
+	// Test seam: injected in tests to avoid external DNS dependency.
+	systemDnsForRealDomainProbe   = netutils.SystemDns
+	resolveIp46ForRealDomainProbe = netutils.ResolveIp46
+)
+
+func isIPLikeDomain(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
+		domain = domain[1 : len(domain)-1]
+	}
+	if _, err := netip.ParseAddr(domain); err == nil {
+		return true
+	}
+	if host, _, err := net.SplitHostPort(domain); err == nil {
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+		if _, err := netip.ParseAddr(host); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func NewControlPlane(
@@ -216,8 +266,14 @@ func NewControlPlane(
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
 		if global.AutoConfigKernelParameter {
-			_ = SetIpv4forward("1")
-			_ = setForwarding("all", consts.IpVersionStr_6, "1")
+			// Enable IP forwarding for LAN interfaces
+			if err := SetIpv4forward("1"); err != nil {
+				// Log warning but don't fail - may be running in restricted environment (e.g., container)
+				log.WithError(err).Warnln("Failed to enable IPv4 forwarding; proxy functionality may be limited")
+			}
+			if err := setForwarding("all", consts.IpVersionStr_6, "1"); err != nil {
+				log.WithError(err).Warnln("Failed to enable IPv6 forwarding; proxy functionality may be limited")
+			}
 		}
 		global.LanInterface = common.Deduplicate(global.LanInterface)
 		for _, ifname := range global.LanInterface {
@@ -237,9 +293,11 @@ func NewControlPlane(
 				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
 				if global.AutoConfigKernelParameter {
 					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
-					val, _ := acceptRa.Get()
-					if val == "1" {
-						_ = acceptRa.Set("2", false)
+					val, err := acceptRa.Get()
+					if err == nil && val == "1" {
+						if err := acceptRa.Set("2", false); err != nil {
+							log.WithError(err).Warnf("Failed to set accept_ra=2 for %v; IPv6 autoconfig may not work as expected", ifname)
+						}
 					}
 				}
 			}
@@ -391,8 +449,10 @@ func NewControlPlane(
 		ctx:               ctx,
 		cancel:            cancel,
 		ready:             make(chan struct{}),
-		muRealDomainSet:   sync.Mutex{},
+		muRealDomainSet:   sync.RWMutex{},
 		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		negJanitorStop:    make(chan struct{}),
+		negJanitorDone:    make(chan struct{}),
 		lanInterface:      global.LanInterface,
 		wanInterface:      global.WanInterface,
 		sniffingTimeout:   sniffingTimeout,
@@ -400,6 +460,7 @@ func NewControlPlane(
 		soMarkFromDae:     global.SoMarkFromDae,
 		mptcp:             global.Mptcp,
 	}
+	plane.startRealDomainNegJanitor()
 	defer func() {
 		if err != nil {
 			cancel()
@@ -423,6 +484,13 @@ func NewControlPlane(
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
+		// ConcurrencyLimit: use default (16384)
+		// Suitable for proxy scenarios with higher latency
+		// Each concurrent query uses ~4KB, so 16384 = ~64MB memory
+		ConcurrencyLimit:   0, // 0 means use default (16384)
+		OptimisticCache:    dnsConfig.OptimisticCache,
+		OptimisticCacheTtl: dnsConfig.OptimisticCacheTtl,
+		MaxCacheSize:       dnsConfig.MaxCacheSize,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
@@ -460,6 +528,7 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
+	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
 
 	// Create and start DNS listener if configured
 	if dnsConfig.Bind != "" {
@@ -472,7 +541,7 @@ func NewControlPlane(
 		} else {
 			log.Infof("DNS listener started on %s", dnsConfig.Bind)
 			// Add DNS listener stop to defer functions
-			deferFuncs = append(deferFuncs, plane.dnsListener.Stop)
+			plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
 		}
 	}
 	// Refresh domain routing cache with new routing.
@@ -572,9 +641,20 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
-	c.dnsController.dnsCacheMu.Lock()
-	defer c.dnsController.dnsCacheMu.Unlock()
-	return deepcopy.Copy(c.dnsController.dnsCache).(map[string]*DnsCache)
+	result := make(map[string]*DnsCache)
+	c.dnsController.dnsCache.Range(func(key, value interface{}) bool {
+		k, ok1 := key.(string)
+		v, ok2 := value.(*DnsCache)
+		if ok1 && ok2 {
+			// Deep copy to prevent data race on the returned map values
+			// Use manual Clone instead of reflection-based deepcopy for performance
+			result[k] = v.Clone()
+		} else {
+			logrus.Errorf("CloneDnsCache: invalid type found in sync.Map: key=%T, value=%T", key, value)
+		}
+		return true
+	})
+	return result
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
@@ -651,40 +731,26 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
+			// Avoid blocking probe for literal IP / host:port values.
+			if isIPLikeDomain(domain) {
+				break
+			}
 			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
+				shouldReroute = true
 			} else {
-				// Check if the domain is in real-domain set (bloom filter).
-				c.muRealDomainSet.Lock()
-				if c.realDomainSet.TestString(domain) {
-					c.muRealDomainSet.Unlock()
-					dialMode = consts.DialMode_Domain
-
-					// Should use this domain to reroute
-					shouldReroute = true
-				} else {
-					c.muRealDomainSet.Unlock()
-					// Lookup A/AAAA to make sure it is a real domain.
-					ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
-					defer cancel()
-					// TODO: use DNS controller and re-route by control plane.
-					systemDns, err := netutils.SystemDns()
-					if err == nil {
-						if ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true); ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
-							// Has A/AAAA records. It is a real domain.
-							dialMode = consts.DialMode_Domain
-							// Add it to real-domain set.
-							c.muRealDomainSet.Lock()
-							c.realDomainSet.AddString(domain)
-							c.muRealDomainSet.Unlock()
-
-							// Should use this domain to reroute
-							shouldReroute = true
-						}
+				if known, real := c.lookupRealDomainCache(domain); known {
+					if real {
+						dialMode = consts.DialMode_Domain
+						// Should use this domain to reroute
+						shouldReroute = true
 					}
+				} else {
+					// Unknown domain on first hit: warm it asynchronously to avoid
+					// blocking connection setup on webpage first paint path.
+					c.triggerRealDomainProbe(domain)
 				}
-
 			}
 		case consts.DialMode_DomainCao:
 			shouldReroute = true
@@ -720,6 +786,219 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		}).Debugln("Rewrite dial target to domain")
 	}
 	return dialTarget, shouldReroute, dialIp
+}
+
+func (c *ControlPlane) lookupRealDomainCache(domain string) (known bool, real bool) {
+	// Read-mostly fast path.
+	c.muRealDomainSet.RLock()
+	hit := c.realDomainSet.TestString(domain)
+	c.muRealDomainSet.RUnlock()
+	if hit {
+		return true, true
+	}
+
+	// Negative-cache fast path.
+	now := time.Now()
+	if v, ok := c.realDomainNegSet.Load(domain); ok {
+		expiresAt, _ := v.(int64)
+		if now.UnixNano() < expiresAt {
+			return true, false
+		}
+		c.realDomainNegSet.Delete(domain)
+	}
+	return false, false
+}
+
+func (c *ControlPlane) triggerRealDomainProbe(domain string) {
+	if domain == "" || isIPLikeDomain(domain) {
+		return
+	}
+	if known, _ := c.lookupRealDomainCache(domain); known {
+		return
+	}
+	go func() {
+		_, _, _ = c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+			return c.probeAndUpdateRealDomain(domain), nil
+		})
+	}()
+}
+
+func (c *ControlPlane) isRealDomain(domain string) bool {
+	if known, real := c.lookupRealDomainCache(domain); known {
+		return real
+	}
+
+	// Deduplicate concurrent probes for same domain to avoid stampede under bursty connection setup.
+	v, _, _ := c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+		return c.probeAndUpdateRealDomain(domain), nil
+	})
+	isReal, _ := v.(bool)
+	return isReal
+}
+
+func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
+	if known, real := c.lookupRealDomainCache(domain); known {
+		return real
+	}
+
+	now := time.Now()
+	// Use ControlPlane's context for real domain probe to enable proper cancel propagation
+	ctx, cancel := context.WithTimeout(c.ctx, realDomainProbeTimeout)
+	defer cancel()
+
+	systemDns, err := systemDnsForRealDomainProbe()
+	if err != nil {
+		// Do not negative-cache probe infra errors.
+		return false
+	}
+
+	// TODO: use DNS controller and re-route by control plane.
+	ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+	if err4 != nil && err6 != nil {
+		// Probe failed for both families; avoid sticky false negatives.
+		return false
+	}
+	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
+		c.realDomainNegSet.Store(domain, now.Add(realDomainNegativeCacheTTL).UnixNano())
+		return false
+	}
+
+	c.muRealDomainSet.Lock()
+	c.realDomainSet.AddString(domain)
+	c.muRealDomainSet.Unlock()
+	c.realDomainNegSet.Delete(domain)
+	return true
+}
+
+func (c *ControlPlane) cleanupRealDomainNegSet(now time.Time) {
+	nowNano := now.UnixNano()
+	c.realDomainNegSet.Range(func(key, value any) bool {
+		domain, ok := key.(string)
+		if !ok {
+			c.realDomainNegSet.Delete(key)
+			return true
+		}
+		expiresAt, ok := value.(int64)
+		if !ok || expiresAt <= nowNano {
+			c.realDomainNegSet.Delete(domain)
+		}
+		return true
+	})
+}
+
+type dnsDialerSnapshotKey struct {
+	realSrc      netip.AddrPort
+	upstream     string
+	upstreamIp4  netip.Addr
+	upstreamIp6  netip.Addr
+	routingPname [16]uint8
+	routingMac   [6]uint8
+	routingDscp  uint8
+}
+
+type dnsDialerSnapshotEntry struct {
+	expiresAtUnixNano int64
+	dialArg           dialArgument
+}
+
+func buildDnsDialerSnapshotKey(req *udpRequest, upstream *dns.Upstream) (dnsDialerSnapshotKey, bool) {
+	if req == nil || upstream == nil {
+		return dnsDialerSnapshotKey{}, false
+	}
+
+	key := dnsDialerSnapshotKey{
+		realSrc:     req.realSrc,
+		upstream:    upstream.String(),
+		upstreamIp4: upstream.Ip4,
+		upstreamIp6: upstream.Ip6,
+	}
+
+	if req.routingResult != nil {
+		key.routingPname = req.routingResult.Pname
+		key.routingMac = req.routingResult.Mac
+		key.routingDscp = req.routingResult.Dscp
+	}
+
+	return key, true
+}
+
+func (c *ControlPlane) loadDnsDialerSnapshot(key dnsDialerSnapshotKey, now time.Time) (*dialArgument, bool) {
+	if dnsDialerSnapshotTTL <= 0 {
+		return nil, false
+	}
+
+	v, ok := c.dnsDialerSnapshot.Load(key)
+	if !ok {
+		return nil, false
+	}
+
+	entry, ok := v.(*dnsDialerSnapshotEntry)
+	if !ok {
+		c.dnsDialerSnapshot.Delete(key)
+		return nil, false
+	}
+
+	if entry.expiresAtUnixNano <= now.UnixNano() {
+		c.dnsDialerSnapshot.CompareAndDelete(key, entry)
+		return nil, false
+	}
+
+	dialArg := entry.dialArg
+	return &dialArg, true
+}
+
+func (c *ControlPlane) storeDnsDialerSnapshot(key dnsDialerSnapshotKey, dialArg *dialArgument, now time.Time) {
+	if dnsDialerSnapshotTTL <= 0 || dialArg == nil {
+		return
+	}
+	entry := &dnsDialerSnapshotEntry{
+		expiresAtUnixNano: now.Add(dnsDialerSnapshotTTL).UnixNano(),
+		dialArg:           *dialArg,
+	}
+	c.dnsDialerSnapshot.Store(key, entry)
+}
+
+func (c *ControlPlane) cleanupDnsDialerSnapshot(now time.Time) {
+	nowNano := now.UnixNano()
+	c.dnsDialerSnapshot.Range(func(key, value any) bool {
+		entry, ok := value.(*dnsDialerSnapshotEntry)
+		if !ok {
+			c.dnsDialerSnapshot.Delete(key)
+			return true
+		}
+		if entry.expiresAtUnixNano <= nowNano {
+			c.dnsDialerSnapshot.CompareAndDelete(key, entry)
+		}
+		return true
+	})
+}
+
+func (c *ControlPlane) startRealDomainNegJanitor() {
+	go func() {
+		ticker := time.NewTicker(realDomainNegJanitorInterval)
+		defer ticker.Stop()
+		defer close(c.negJanitorDone)
+		for {
+			select {
+			case <-c.negJanitorStop:
+				return
+			case now := <-ticker.C:
+				c.cleanupRealDomainNegSet(now)
+				c.cleanupDnsDialerSnapshot(now)
+			}
+		}
+	}()
+}
+
+func (c *ControlPlane) stopRealDomainNegJanitor() {
+	c.negJanitorOnce.Do(func() {
+		if c.negJanitorStop != nil {
+			close(c.negJanitorStop)
+		}
+		if c.negJanitorDone != nil {
+			<-c.negJanitorDone
+		}
+	})
 }
 
 type Listener struct {
@@ -794,7 +1073,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			go func(lconn net.Conn) {
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
-				if err := c.handleConn(lconn); err != nil {
+				// Create a new context for each connection that is independent
+				// of the ControlPlane's lifecycle. This ensures each connection
+				// has its own timeout and won't be canceled when the plane shuts down.
+				// The connection will be closed when the listener is closed.
+				ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+				defer cancel()
+				if err := c.handleConn(ctx, lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
 			}(lconn)
@@ -817,35 +1102,66 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 				break
 			}
+			pktDst := RetrieveOriginalDest(oob[:oobn])
+			realDst := common.ConvergeAddrPort(pktDst)
 			newBuf := pool.Get(n)
 			copy(newBuf, buf[:n])
-			newOob := pool.Get(oobn)
-			copy(newOob, oob[:oobn])
-			newSrc := src
 			convergeSrc := common.ConvergeAddrPort(src)
 			// Debug:
 			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+			task := func() {
 				data := newBuf
-				oob := newOob
-				src := newSrc
 
 				defer data.Put()
-				defer oob.Put()
-				var realDst netip.AddrPort
 				var routingResult *bpfRoutingResult
-				pktDst := RetrieveOriginalDest(oob)
-				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
-				if err != nil {
-					c.log.Warnf("No AddrPort presented: %v", err)
-					return
-				} else {
-					realDst = pktDst
+				var freshRoutingResult *bpfRoutingResult
+
+				if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
+					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
+						routingResult = cached
+					}
 				}
-				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
+
+				if routingResult == nil {
+					rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP)
+					if retrieveErr != nil {
+						if errors.Is(retrieveErr, ebpf.ErrKeyNotExist) {
+							// Keep behavior consistent with TCP path: missing tuple can happen
+							// in short race windows; fallback to userspace routing instead of
+							// dropping the packet.
+							routingResult = &bpfRoutingResult{
+								Outbound: uint8(consts.OutboundControlPlaneRouting),
+							}
+							if c.log.IsLevelEnabled(logrus.DebugLevel) {
+								c.log.WithFields(logrus.Fields{
+									"src": convergeSrc.String(),
+									"dst": realDst.String(),
+								}).WithError(retrieveErr).Debug("UDP routing tuple missing; fallback to userspace routing")
+							}
+						} else {
+							c.log.Warnf("No AddrPort presented: %v", retrieveErr)
+							return
+						}
+					} else {
+						routingResult = rr
+						rrCopy := *routingResult
+						freshRoutingResult = &rrCopy
+					}
+				}
+
+				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, realDst, routingResult, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
+					return
 				}
-			})
+
+				if freshRoutingResult != nil {
+					if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
+						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
+					}
+				}
+			}
+
+			DefaultUdpTaskPool.EmitTask(convergeSrc, task)
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
@@ -864,11 +1180,11 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 		},
 	}
 	listenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
-	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
+	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("listenTCP: %w", err)
 	}
-	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", listenAddr)
+	packetConn, err := listenConfig.ListenPacket(context.Background(), "udp", listenAddr)
 	if err != nil {
 		_ = tcpListener.Close()
 		return nil, fmt.Errorf("listenUDP: %w", err)
@@ -896,6 +1212,14 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	req *udpRequest,
 	dnsUpstream *dns.Upstream,
 ) (*dialArgument, error) {
+	now := time.Now()
+	snapshotKey, snapshotEnabled := buildDnsDialerSnapshotKey(req, dnsUpstream)
+	if snapshotEnabled {
+		if cachedDialArg, hit := c.loadDnsDialerSnapshot(snapshotKey, now); hit {
+			return cachedDialArg, nil
+		}
+	}
+
 	/// Choose the best l4proto+ipversion dialer, and change taregt DNS to the best ipversion DNS upstream for DNS request.
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
@@ -983,7 +1307,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			"dialer":     bestDialer.Property().Name,
 		}).Traceln("Choose DNS path")
 	}
-	return &dialArgument{
+	selected := &dialArgument{
 		l4proto:      l4proto,
 		ipversion:    ipversion,
 		bestDialer:   bestDialer,
@@ -991,14 +1315,25 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestTarget:   bestTarget,
 		mark:         dialMark,
 		mptcp:        c.mptcp,
-	}, nil
+	}
+	if snapshotEnabled {
+		c.storeDnsDialerSnapshot(snapshotKey, selected, now)
+	}
+	return selected, nil
 }
 
 func (c *ControlPlane) AbortConnections() (err error) {
 	var errs []error
 	c.inConnections.Range(func(key, value any) bool {
-		if err = key.(net.Conn).Close(); err != nil {
-			errs = append(errs, err)
+		// Use comma-ok pattern for type safety to prevent panic if key is not net.Conn
+		conn, ok := key.(net.Conn)
+		if !ok {
+			// Unexpected type in inConnections - this should never happen
+			errs = append(errs, fmt.Errorf("unexpected type %T in inConnections", key))
+			return true
+		}
+		if cerr := conn.Close(); cerr != nil {
+			errs = append(errs, cerr)
 		}
 		return true
 	})
@@ -1006,6 +1341,8 @@ func (c *ControlPlane) AbortConnections() (err error) {
 }
 
 func (c *ControlPlane) Close() (err error) {
+	c.stopRealDomainNegJanitor()
+
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
@@ -1018,6 +1355,19 @@ func (c *ControlPlane) Close() (err error) {
 		}
 	}
 	c.cancel()
+
+	// Clear sync.Maps to prevent memory leak on reload.
+	// These maps accumulate data over time and must be explicitly cleared.
+	c.realDomainNegSet.Range(func(key, value any) bool {
+		c.realDomainNegSet.Delete(key)
+		return true
+	})
+	c.dnsDialerSnapshot.Range(func(key, value any) bool {
+		c.dnsDialerSnapshot.Delete(key)
+		return true
+	})
+	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
+
 	return c.core.Close()
 }
 

@@ -6,6 +6,8 @@
 package control
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -23,7 +25,11 @@ import (
 )
 
 var (
-	DefaultNatTimeout = 3 * time.Minute
+	// DefaultNatTimeout is the default NAT timeout for UDP connections.
+	// Reduced from 3 minutes to 30 seconds for faster resource cleanup.
+	// Most DNS queries complete within seconds, and long-lived connections
+	// can use longer timeouts via DialOption.
+	DefaultNatTimeout = 30 * time.Second
 )
 
 const (
@@ -53,7 +59,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
 	if err != nil {
 		return
 	}
@@ -100,11 +106,17 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
 	if !isDns && !skipSniffing && !ueExists {
-		// Sniff Quic, ...
 		key := PacketSnifferKey{
 			LAddr: realSrc,
 			RAddr: realDst,
 		}
+
+		// Fast reject for obvious non-QUIC UDP packets when no existing sniff session.
+		if DefaultPacketSnifferSessionMgr.Get(key) == nil && !sniffing.IsLikelyQuicInitialPacket(data) {
+			goto afterSniffing
+		}
+
+		// Sniff Quic, ...
 		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		_sniffer.Mu.Lock()
 		// Re-get sniffer from pool to confirm the transaction is not done.
@@ -146,6 +158,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			// sniffer may be nil.
 		}
 	}
+
+afterSniffing:
 	if routingResult.Must > 0 {
 		isDns = false // Regard as plain traffic.
 	}
@@ -153,13 +167,18 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		routingResult.Mark = c.soMarkFromDae
 	}
 	if isDns {
-		return c.dnsController.Handle_(dnsMessage, &udpRequest{
+		err = c.dnsController.Handle_(c.ctx, dnsMessage, &udpRequest{
 			realSrc:       realSrc,
 			realDst:       realDst,
 			src:           src,
 			lConn:         lConn,
 			routingResult: routingResult,
 		})
+		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+			// REFUSED response has been sent by DNS controller.
+			return nil
+		}
+		return err
 	}
 
 	// Dial and send.
@@ -205,7 +224,7 @@ getNew:
 			return sendPkt(c.log, data, from, realSrc, src, lConn)
 		},
 		NatTimeout: natTimeout,
-		GetDialOption: func() (option *DialOption, err error) {
+		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			if shouldReroute {
 				outboundIndex = consts.OutboundControlPlaneRouting
 			}

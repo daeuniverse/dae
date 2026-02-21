@@ -427,17 +427,20 @@ func AddrToDnsType(addr netip.Addr) uint16 {
 	}
 }
 
-// Htons converts the unsigned short integer hostshort from host byte order to network byte order.
+// Htons converts the unsigned short integer from host byte order to network byte order (big-endian).
+// This is used when communicating with eBPF programs which expect network byte order.
 func Htons(i uint16) uint16 {
 	b := make([]byte, 2)
 	binary.BigEndian.PutUint16(b, i)
 	return *(*uint16)(unsafe.Pointer(&b[0]))
 }
 
-// Ntohs converts the unsigned short integer hostshort from host byte order to network byte order.
+// Ntohs converts the unsigned short integer from network byte order (big-endian) to host byte order.
+// This is used when reading values from eBPF programs which are in network byte order.
 func Ntohs(i uint16) uint16 {
-	bytes := *(*[2]byte)(unsafe.Pointer(&i))
-	return binary.BigEndian.Uint16(bytes[:])
+	b := make([]byte, 2)
+	internal.NativeEndian.PutUint16(b, i)
+	return binary.BigEndian.Uint16(b)
 }
 
 func GetDefaultIfnames() (defaultIfs []string, err error) {

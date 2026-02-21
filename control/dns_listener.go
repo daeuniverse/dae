@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -139,9 +140,7 @@ func (d *DNSListener) Start() error {
 		go func() {
 			d.log.Infof("Starting DNS TCP listener on %s", d.tcpServer.Addr)
 			if err := d.tcpServer.ListenAndServe(); err != nil {
-				if err := d.tcpServer.ListenAndServe(); err != nil {
-					d.log.Errorf("Failed to start DNS TCP listener: %v", err)
-				}
+				d.log.Errorf("Failed to start DNS TCP listener: %v", err)
 			}
 		}()
 	}
@@ -231,8 +230,12 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		routingResult: routingResult,
 	}
 
-	err = h.controller.dnsController.HandleWithResponseWriter_(r, udpReq, w)
+	err = h.controller.dnsController.HandleWithResponseWriter_(context.Background(), r, udpReq, w)
 	if err != nil {
+		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+			// REFUSED response has been written by DNS controller.
+			return
+		}
 		h.log.Errorf("Failed to handle DNS request: %v", err)
 		// Send error response
 		m := new(dnsmessage.Msg)

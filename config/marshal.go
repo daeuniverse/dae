@@ -148,9 +148,26 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		if from.Len() == 0 {
 			return nil
 		}
+		if from.Type().Elem().Kind() == reflect.Slice && from.Type().Elem().Elem() == reflect.TypeOf((*config_parser.Function)(nil)) {
+			for i := 0; i < from.Len(); i++ {
+				andFuncs := from.Index(i)
+				if andFuncs.Len() == 0 {
+					continue
+				}
+				vals := make([]string, 0, andFuncs.Len())
+				for j := 0; j < andFuncs.Len(); j++ {
+					v := andFuncs.Index(j).Interface().(*config_parser.Function)
+					vals = append(vals, v.String(true, true, false))
+				}
+				m.writeLine(depth, key+":"+strings.Join(vals, "&&"))
+			}
+			return nil
+		}
 		switch from.Index(0).Interface().(type) {
 		case fmt.Stringer, string,
+			uint,
 			uint8, uint16, uint32, uint64,
+			int,
 			int8, int16, int32, int64,
 			float32, float64,
 			bool:
@@ -178,7 +195,9 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 	default:
 		switch val := from.Interface().(type) {
 		case fmt.Stringer, string,
+			uint,
 			uint8, uint16, uint32, uint64,
+			int,
 			int8, int16, int32, int64,
 			float32, float64,
 			bool:
@@ -210,6 +229,8 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		if key == "_" {
 			switch structField.Name {
 			case "Name":
+			case "FilterAnnotation":
+				continue
 			case "Rules":
 				// Expand.
 				rules, ok := field.Interface().([]*config_parser.RoutingRule)

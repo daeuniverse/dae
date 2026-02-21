@@ -25,8 +25,8 @@ type RoutingMatcher struct {
 
 // Match is modified from kern/tproxy.c; please keep sync.
 func (m *RoutingMatcher) Match(
-	sourceAddr []byte,
-	destAddr []byte,
+	sourceAddr [16]uint8,
+	destAddr [16]uint8,
 	sourcePort uint16,
 	destPort uint16,
 	ipVersion consts.IpVersionType,
@@ -34,16 +34,15 @@ func (m *RoutingMatcher) Match(
 	domain string,
 	processName [16]uint8,
 	tos uint8,
-	mac []byte,
+	mac [16]uint8,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
 		return 0, 0, false, fmt.Errorf("bad address length")
 	}
 
-	bin128s := make([]string, consts.MatchType_Mac+1)
-	bin128s[consts.MatchType_IpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(destAddr)), 128))
-	bin128s[consts.MatchType_SourceIpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(sourceAddr)), 128))
-	bin128s[consts.MatchType_Mac] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(mac)), 128))
+	ipSetBin := trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(destAddr), 128))
+	sourceIpSetBin := trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(sourceAddr), 128))
+	macBin := trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(mac), 128))
 
 	var domainMatchBitmap []uint32
 	if domain != "" {
@@ -60,7 +59,16 @@ func (m *RoutingMatcher) Match(
 		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
 			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
 			m := m.lpmMatcher[lpmIndex]
-			if m.HasPrefix(bin128s[match.Type]) {
+			var targetBin string
+			switch consts.MatchType(match.Type) {
+			case consts.MatchType_IpSet:
+				targetBin = ipSetBin
+			case consts.MatchType_SourceIpSet:
+				targetBin = sourceIpSetBin
+			case consts.MatchType_Mac:
+				targetBin = macBin
+			}
+			if m.HasPrefix(targetBin) {
 				goodSubrule = true
 			}
 		case consts.MatchType_DomainSet:

@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/stretchr/testify/require"
 )
 
 var testPacketSnifferData = []string{
@@ -18,13 +20,19 @@ var testPacketSnifferData = []string{
 	"ce0000000108e8da6ed9f385c987000044d0f34f94dcc26b99261ea264742abe4e552a146e16e89e4b7ef0ab3d6f3a34227b59742e4ba83a1e18cea494d2f67e469be4a7ff01334b151e9b7ca63b53735008eecc1f5c618419982292eca5731bb163ba81c1300e0bb99f2536d89ab0faf2dbd37ebfdb3d71f7343296a2190914bda556b8f9ccf5219964eb3cd373966fcfaca8a4735fb59fbaf69bbbdfc3a81b11570bb81fd3f5ef780fb7036e0666b997b0f4ed3305b68eafa1a99b3c8a6a2142ad9fe1e6b0a0eade6ace92b57416d4bf68fa2e9295bfc22757b0542ce91c8af3f547ef0ad385788db230a50158a0009fd95a7e8ee6e0dd11d6f9a906cbe8117e85bd507cdbd8f1a5a6cabf2617de7227d1ae8a8c6086b8ec325df90c0e16b37b4ed0ce617a00c7598a21924a19aec1b08c31b69430b23eefbe555ca2433431d28a4ffec548e463e8e6363b6b4fe9b8477c686c393571273c30b2e1785261faa0fd6f560c12418b27cd0491e013db5a8b3294e01a46a6e4c6b52e32756ab4be6f4ebc886c0c472d63f117ce30115182a97f1308c7f28989ce301cabced825154b0f4fa3bf4a55ce2f384ff11d9cbc0460d69db363664f92dc014bdb771b9b1e1ab6672c6da71c90aa514dcdc3a4ce45298bf9e5a395ebac3dff2a738c4b4690ee06fdab572a277addac7035d94afe794df05da75a56c79c37f42de1d727dc65e3060d9331e2fc82de2d7cef6cb9ae46f648b9930593975c35960b24deb770d5ee4332f8f57a05503399ca7bfdf7207f66a0f73d6b53269a944d5a3043b225adddfdd29d20ea8f500bb09ea3bb724083dd29ea8839e8192c4360ba3c5a6db0d695af5d357d6c4ed94aa28305033629201689764189774bbd4f0ae41b878b8f29a0fe0e124075ea08c5054871506a05be2f90e9ec0c2db48c0780580312e9ff4071054386e4206841f575f7ca06c228f7ee11e2333d08652b9b4f0b97f473a46a3d79c4f9a3416fb20fdbd88cacfa36f06fe1d73618195c6f0bf759a77c6a16b7e271c6cdb672ea53f6edfac860fcaf03313564abde1f66bca441d844d289a9e1025711c284f2c7c805353f2a89e9aeb52e3f452e879f0fafcdc0b48a0676afcf617a85037d991762664f6db64847eff2308447c4e8ea6688838bb7237a5fdfe0f1695afaa0bbb821b0004585adf151b029bd3458e28ba49dfc17eef1d2dd14ccda88d0848d4cd36d33cc5bab173c2448785ec1bdabc8873c904b95d7847d1b89857f2c7e078c6e2eb96029aa91c077e0efcf7b2ed2f30c7abc12189627793c7870dc0e70342cc27402ee1d6dec5ceea0ca06159002ea14a20c63b85689ed1840f404e46cb83d91c5e02f3ed938462364d3349f689310234083f7044e4b338ac54bed94530640d684c9688651b915d8c8895ef0f05f376292871b589751ac5b233e3d85572bb0c11bbbe91cc49a4ef0422f2676a2f3cc62bc88dbb7acf03cb5e847e976bfca6a90b9cee743ea77be5472ef162ff101c6873043df94c53c252840fd6a2662018f0897a06cd215997d6050917876500796fef718957212c773c39d1c7b839931af1e7dfae6e2c1d2251e78896521bb35b20057bad77df85aaed90288c17edb081398815e47239aeb77293a02a61a5125109fc3953593233fa83c17770a815fad7831c1b8647c6089ec621ee774a12a714def498d4335d0bb8a4a6a3dddead8ddb1176f58218477d55317df88cd2ca5a06b72679cf2ff7253ebd76a5ed3",
 }
 
+func resetPacketSnifferPoolForTest() {
+	DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
+}
+
 func TestPacketSniffer_Normal(t *testing.T) {
+	resetPacketSnifferPoolForTest()
+	key := PacketSnifferKey{
+		LAddr: netip.MustParseAddrPort("1.1.1.1:1111"),
+		RAddr: netip.MustParseAddrPort("2.2.2.2:2222"),
+	}
 	for _, _data := range testPacketSnifferData {
 		data, _ := hex.DecodeString(_data)
-		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(PacketSnifferKey{
-			LAddr: netip.MustParseAddrPort("1.1.1.1:1111"),
-			RAddr: netip.MustParseAddrPort("2.2.2.2:2222"),
-		}, nil)
+		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		sniffer.AppendData(data)
 		domain, err := sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
@@ -33,7 +41,7 @@ func TestPacketSniffer_Normal(t *testing.T) {
 		if sniffer.NeedMore() {
 			continue
 		}
-		sniffer.Close()
+		_ = DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 		t.Log(domain)
 		return
 	}
@@ -41,24 +49,43 @@ func TestPacketSniffer_Normal(t *testing.T) {
 }
 
 func TestPacketSniffer_Mismatched(t *testing.T) {
+	resetPacketSnifferPoolForTest()
 	dst := netip.MustParseAddrPort("2.2.2.2:2222")
 	for _, _data := range testPacketSnifferData {
 		data, _ := hex.DecodeString(_data)
-		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(PacketSnifferKey{
+		key := PacketSnifferKey{
 			LAddr: netip.MustParseAddrPort("1.1.1.1:1111"),
 			RAddr: dst,
-		}, nil)
+		}
+		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		sniffer.AppendData(data)
 		domain, err := sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			t.Fatal(err)
 		}
 		if sniffer.NeedMore() {
+			_ = DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 			dst = netip.AddrPortFrom(dst.Addr(), dst.Port()+1)
 			continue
 		}
-		sniffer.Close()
+		_ = DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 		t.Fatal("unexpected found", domain)
 		return
 	}
+}
+
+func TestPacketSnifferPool_TtlExpire(t *testing.T) {
+	p := NewPacketSnifferPool()
+	key := PacketSnifferKey{
+		LAddr: netip.MustParseAddrPort("10.0.0.1:12345"),
+		RAddr: netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+
+	ps, isNew := p.GetOrCreate(key, &PacketSnifferOptions{Ttl: 80 * time.Millisecond})
+	require.True(t, isNew)
+	require.NotNil(t, ps)
+
+	require.Eventually(t, func() bool {
+		return p.Get(key) == nil
+	}, 2*time.Second, 20*time.Millisecond)
 }
