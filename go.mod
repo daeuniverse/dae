@@ -101,8 +101,9 @@ require (
 	google.golang.org/grpc v1.65.0 // indirect
 )
 
-// SS2022 P0/P1 fixes: pin to our outbound branch commit.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260217135120-967c12a6d715
+// SS2022 P0/P1 fixes + performance optimizations (2026-02-21)
+// Includes: UDP cipher cache (SS: 6.6x, SS2022: 20.5x), zero-copy splice (1.76x)
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260221053530-159974f8afa5
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
