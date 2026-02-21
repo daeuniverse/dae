@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pkg/zeroalloc/io"
 	"github.com/sirupsen/logrus"
 )
 
@@ -191,6 +190,7 @@ type WriteCloser interface {
 
 // copyWait copies from src to dst until either EOF is reached on src,
 // an error occurs, or the context is done.
+// Uses zero-copy splice optimization when available.
 func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
 	done := make(chan struct{})
 	go func() {
@@ -203,7 +203,10 @@ func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64,
 		}
 	}()
 	defer close(done)
-	return io.Copy(dst, src)
+
+	// Try zero-copy splice optimization first (Linux only)
+	// This will automatically fallback to standard copy if splice is not available
+	return netproxy.ReadFrom(dst, src)
 }
 
 // RelayTCP copies data bidirectionally between two connections.
