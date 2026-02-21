@@ -487,8 +487,10 @@ func NewControlPlane(
 		// ConcurrencyLimit: use default (16384)
 		// Suitable for proxy scenarios with higher latency
 		// Each concurrent query uses ~4KB, so 16384 = ~64MB memory
-		ConcurrencyLimit: 0, // 0 means use default (16384)
-		OptimisticCache:  dnsConfig.OptimisticCache,
+		ConcurrencyLimit:   0, // 0 means use default (16384)
+		OptimisticCache:    dnsConfig.OptimisticCache,
+		OptimisticCacheTtl: dnsConfig.OptimisticCacheTtl,
+		MaxCacheSize:       dnsConfig.MaxCacheSize,
 		CacheAccessCallback: func(cache *DnsCache) (err error) {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing

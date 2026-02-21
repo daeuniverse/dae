@@ -78,6 +78,8 @@ type DnsControllerOption struct {
 	FixedDomainTtl        map[string]int
 	ConcurrencyLimit      int
 	OptimisticCache       bool
+	OptimisticCacheTtl    int  // 0 means never expire (rely on LRU eviction)
+	MaxCacheSize          int  // maximum number of cache entries (0 = unlimited)
 }
 
 type DnsController struct {
@@ -87,6 +89,8 @@ type DnsController struct {
 	qtypePrefer uint16
 
 	optimisticCacheEnabled bool
+	optimisticCacheTtl     int // seconds, 0 means never expire
+	maxCacheSize          int // maximum number of cache entries (0 = unlimited)
 
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
@@ -166,6 +170,15 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	if limit <= 0 {
 		limit = defaultConcurrencyLimit
 	}
+	
+	// Backward compatibility: if both optimistic_cache_ttl and maxCacheSize are 0,
+	// use optimistic_cache_ttl=60 (old default behavior)
+	// This ensures existing code continues to work without configuration changes
+	optimisticCacheTtl := option.OptimisticCacheTtl
+	maxCacheSize := option.MaxCacheSize
+	if optimisticCacheTtl == 0 && maxCacheSize == 0 {
+		optimisticCacheTtl = 60 // Old default
+	}
 
 	controller := &DnsController{
 		routing:            routing,
@@ -173,6 +186,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		concurrencyLimiter: make(chan struct{}, limit), // 0 means no limit (unbuffered channel, always non-blocking)
 
 		optimisticCacheEnabled: option.OptimisticCache,
+		optimisticCacheTtl:     optimisticCacheTtl,
+		maxCacheSize:           maxCacheSize,
 
 		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
@@ -314,23 +329,114 @@ func (c *DnsController) evictDnsRespCacheIfSame(cacheKey string, cache *DnsCache
 }
 
 func (c *DnsController) evictExpiredDnsCache(now time.Time) {
+	// Step 1: Time-based eviction
+	// - When optimistic_cache_ttl > 0: evict entries older than (deadline + stale_window)
+	// - When optimistic_cache_ttl == 0 AND maxCacheSize > 0: skip time-based eviction (rely on LRU)
+	// - When both are 0 (backward compat / direct struct creation): use deadline-based eviction
+	useTimeBasedEviction := c.optimisticCacheTtl > 0 || (c.optimisticCacheTtl == 0 && c.maxCacheSize == 0)
+	
+	if useTimeBasedEviction {
+		c.dnsCache.Range(func(key, value interface{}) bool {
+			cacheKey, ok := key.(string)
+			if !ok {
+				c.dnsCache.Delete(key)
+				return true
+			}
+			cache, ok := value.(*DnsCache)
+			if !ok {
+				c.dnsCache.Delete(cacheKey)
+				return true
+			}
+			
+			// Calculate effective deadline
+			// - If optimistic cache is enabled and ttl > 0: use (deadline + optimisticCacheTtl)
+			// - Otherwise: use deadline directly
+			effectiveDeadline := cache.Deadline
+			if c.optimisticCacheEnabled && c.optimisticCacheTtl > 0 {
+				effectiveDeadline = cache.Deadline.Add(time.Duration(c.optimisticCacheTtl) * time.Second)
+			}
+			
+			if effectiveDeadline.After(now) {
+				return true // Still valid, keep it
+			}
+			
+			// Too stale or expired without optimistic cache, evict it
+			c.evictDnsRespCacheIfSame(cacheKey, cache)
+			return true
+		})
+	}
+	
+	// Step 2: LRU eviction if cache size exceeds limit
+	// This is important when optimistic_cache_ttl=0 (never expire)
+	if c.maxCacheSize > 0 {
+		c.evictLRUIfFull(now)
+	}
+}
+
+// evictLRUIfFull evicts least recently used entries if cache size exceeds limit
+func (c *DnsController) evictLRUIfFull(now time.Time) {
+	// Count current cache size
+	var count int
+	c.dnsCache.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	
+	// Check if eviction is needed
+	if count <= c.maxCacheSize {
+		return
+	}
+	
+	// Find and evict oldest entries
+	// Need to evict (count - maxCacheSize) entries
+	numToEvict := count - c.maxCacheSize
+	
+	// Collect all cache entries with their access times
+	type cacheEntry struct {
+		key        string
+		lastAccess int64
+	}
+	
+	var entries []cacheEntry
 	c.dnsCache.Range(func(key, value interface{}) bool {
 		cacheKey, ok := key.(string)
 		if !ok {
-			c.dnsCache.Delete(key)
 			return true
 		}
 		cache, ok := value.(*DnsCache)
 		if !ok {
-			c.dnsCache.Delete(cacheKey)
 			return true
 		}
-		if cache.Deadline.After(now) {
-			return true
-		}
-		c.evictDnsRespCacheIfSame(cacheKey, cache)
+		entries = append(entries, cacheEntry{
+			key:        cacheKey,
+			lastAccess: cache.lastAccessNano.Load(),
+		})
 		return true
 	})
+	
+	// Sort by last access time (oldest first)
+	// Simple insertion sort (good enough for small number of entries to evict)
+	for i := 1; i < len(entries); i++ {
+		for j := i; j > 0 && entries[j].lastAccess < entries[j-1].lastAccess; j-- {
+			entries[j], entries[j-1] = entries[j-1], entries[j]
+		}
+	}
+	
+	// Evict oldest entries
+	evicted := 0
+	for _, entry := range entries {
+		if evicted >= numToEvict {
+			break
+		}
+		
+		// Load cache again to get current reference
+		if val, ok := c.dnsCache.Load(entry.key); ok {
+			if cache, ok := val.(*DnsCache); ok {
+				c.evictDnsRespCacheIfSame(entry.key, cache)
+				evicted++
+			}
+		}
+	}
 }
 
 func (c *DnsController) startDnsCacheJanitor() {
@@ -445,6 +551,9 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	
 	now := time.Now()
 	
+	// Update last access time for LRU eviction (atomic operation)
+	cache.lastAccessNano.Store(now.UnixNano())
+	
 	// Fast path: use pre-packed response with approximate TTL (fresh response)
 	if deadline.After(now) {
 		if resp := cache.GetPackedResponseWithApproximateTTL(qname, qtype, now); resp != nil {
@@ -470,7 +579,8 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	// Cache expired - check if optimistic cache is enabled
 	if c.optimisticCacheEnabled {
 		// Try stale response (RFC 8767)
-		if resp = cache.GetStaleResponse(now); resp != nil {
+		// Use optimisticCacheTtl (0 means never expire)
+		if resp = cache.GetStaleResponse(now, c.optimisticCacheTtl); resp != nil {
 			// Within stale window - return stale response and trigger background refresh
 			// Use CAS to ensure only one goroutine triggers refresh
 			if cache.refreshing.CompareAndSwap(false, true) {

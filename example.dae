@@ -182,10 +182,24 @@ dns {
     #}
 
     # Enable optimistic cache (RFC 8767) to improve cache hit rate and reduce latency.
-    # When enabled, expired cache entries within 60s are still returned while background refresh updates the cache.
-    # This significantly improves user experience by serving stale data instead of waiting for upstream response.
+    # When enabled, expired cache entries within stale window are still returned while 
+    # background refresh updates the cache.
+    # This significantly improves user experience by serving stale data instead of waiting.
     # Default: true
     #optimistic_cache: true
+
+    # Stale window duration in seconds for optimistic cache (RFC 8767).
+    # Expired cache entries within this window will be returned while background refresh happens.
+    # Set to 0 to never expire (rely on LRU eviction when cache is full).
+    # Default: 60
+    #optimistic_cache_ttl: 60
+
+    # Maximum number of DNS cache entries.
+    # When cache size exceeds this limit, least recently used entries will be evicted.
+    # Set to 0 for unlimited cache size (default, original behavior).
+    # Recommended to set a limit when using optimistic_cache_ttl=0 to prevent memory leaks.
+    # Default: 0
+    #max_cache_size: 0
 
     # Bind to local address to listen for DNS queries
     # bind: '127.0.0.1:5353'
