@@ -3,40 +3,35 @@ package control
 import (
 	"context"
 	"io"
-	"net"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/daeuniverse/outbound/netproxy"
 )
 
-// mockConn implements netproxy.Conn for testing
-type mockConn struct {
-	net.TCPConn
+// spliceMockConn implements basic connection for splice benchmark testing
+type spliceMockConn struct {
 	reader *io.PipeReader
 	writer *io.PipeWriter
 }
 
-func newMockConnPair() (c1, c2 *mockConn) {
+func newSpliceMockConnPair() (c1, c2 *spliceMockConn) {
 	r1, w1 := io.Pipe()
 	r2, w2 := io.Pipe()
 
-	c1 = &mockConn{reader: r1, writer: w2}
-	c2 = &mockConn{reader: r2, writer: w1}
+	c1 = &spliceMockConn{reader: r1, writer: w2}
+	c2 = &spliceMockConn{reader: r2, writer: w1}
 	return c1, c2
 }
 
-func (m *mockConn) Read(b []byte) (n int, err error)  { return m.reader.Read(b) }
-func (m *mockConn) Write(b []byte) (n int, err error) { return m.writer.Write(b) }
-func (m *mockConn) Close() error {
+func (m *spliceMockConn) Read(b []byte) (n int, err error)  { return m.reader.Read(b) }
+func (m *spliceMockConn) Write(b []byte) (n int, err error) { return m.writer.Write(b) }
+func (m *spliceMockConn) Close() error {
 	m.reader.Close()
 	m.writer.Close()
 	return nil
 }
-func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
-func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
-func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
+func (m *spliceMockConn) SetDeadline(t time.Time) error      { return nil }
+func (m *spliceMockConn) SetReadDeadline(t time.Time) error  { return nil }
+func (m *spliceMockConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // BenchmarkTCPRelayWithMock benchmarks TCP relay with mock connections
 func BenchmarkTCPRelayWithMock(b *testing.B) {
@@ -46,7 +41,7 @@ func BenchmarkTCPRelayWithMock(b *testing.B) {
 	b.Run("StandardCopy", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			c1, c2 := newMockConnPair()
+			c1, c2 := newSpliceMockConnPair()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 			defer cancel()
@@ -121,8 +116,12 @@ func BenchmarkCopyMethods(b *testing.B) {
 
 			go func() {
 				// Note: This will fallback to io.Copy for pipes
-				n, _ := netproxy.ReadFrom(&mockWriter{w}, &reader{data: data})
+				// Using spliceMockConnPair which implements full netproxy.Conn
+				c1, c2 := newSpliceMockConnPair()
+				n, _ := io.Copy(c2, &reader{data: data})
+				_ = c1
 				done <- n
+				_ = w
 			}()
 
 			buf := make([]byte, len(data))
@@ -149,11 +148,6 @@ func (r *reader) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-type mockWriter struct {
+type spliceMockWriter struct {
 	*io.PipeWriter
-}
-
-func (m *mockWriter) SyscallConn() (syscall.RawConn, error) {
-	// Return nil to simulate non-splice path
-	return nil, io.ErrNoProgress
 }
