@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const UdpTaskQueueLength = 128
+const UdpTaskQueueLength = 4096
 
 type UdpTask = func()
 
