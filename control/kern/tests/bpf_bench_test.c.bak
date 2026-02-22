@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+
+//go:build exclude
+
+// Benchmark tests for parse_transport optimization
+// This file measures the performance difference between:
+// 1. Original parse_transport using bpf_skb_load_bytes()
+// 2. Optimized parse_transport_direct using direct packet access
+
+#include "../tproxy.c"
+
+// Counter for benchmark iterations
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, 4);
+} bench_counters SEC(".maps");
+
+enum bench_counter_idx {
+	COUNTER_ITERATIONS = 0,
+	COUNTER_PARSE_OLD_NS = 1,
+	COUNTER_PARSE_DIRECT_NS = 2,
+	COUNTER_TOTAL_PACKETS = 3,
+};
+
+// Helper to get timestamp in nanoseconds
+static __always_inline __u64 get_ns(void)
+{
+	return bpf_ktime_get_ns();
+}
+
+/*
+ * Benchmark: Original parse_transport using bpf_skb_load_bytes
+ * 
+ * Expected overhead per call:
+ * - 3-4 bpf_skb_load_bytes() calls for IPv4/TCP
+ * - Each call: ~100-300ns for context switch + copy
+ * - Total: ~300-1200ns overhead
+ */
+SEC("tc/bench/parse_old")
+int bench_parse_old(struct __sk_buff *skb)
+{
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl, l4proto;
+
+	// Temporarily disable direct access to use old implementation
+#ifdef USE_DIRECT_PACKET_ACCESS
+#undef USE_DIRECT_PACKET_ACCESS
+#define RESTORE_DIRECT_ACCESS 1
+#endif
+
+	__u64 start = get_ns();
+	
+	int ret = parse_transport(skb, ETH_HLEN, &ethh, &iph, &ipv6h, 
+				  &icmp6h, &tcph, &udph, &ihl, &l4proto);
+	
+	__u64 end = get_ns();
+	__u64 delta = end - start;
+
+	// Update counters
+	__u32 key = COUNTER_PARSE_OLD_NS;
+	__u64 *val = bpf_map_lookup_elem(&bench_counters, &key);
+	if (val)
+		__sync_fetch_and_add(val, delta);
+
+	key = COUNTER_ITERATIONS;
+	val = bpf_map_lookup_elem(&bench_counters, &key);
+	if (val)
+		__sync_fetch_and_add(val, 1);
+
+#ifdef RESTORE_DIRECT_ACCESS
+#define USE_DIRECT_PACKET_ACCESS 1
+#undef RESTORE_DIRECT_ACCESS
+#endif
+
+	return ret;
+}
+
+/*
+ * Benchmark: Optimized parse_transport_direct using direct access
+ * 
+ * Expected overhead per call:
+ * - Direct pointer access: ~50-150ns
+ * - No context switch or copy overhead
+ * - Savings: ~200-500ns per call vs original
+ */
+SEC("tc/bench/parse_direct")
+int bench_parse_direct(struct __sk_buff *skb)
+{
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl, l4proto;
+
+	__u64 start = get_ns();
+	
+	int ret = parse_transport_direct(skb, ETH_HLEN, &ethh, &iph, &ipv6h,
+					 &icmp6h, &tcph, &udph, &ihl, &l4proto);
+	
+	__u64 end = get_ns();
+	__u64 delta = end - start;
+
+	// Update counters
+	__u32 key = COUNTER_PARSE_DIRECT_NS;
+	__u64 *val = bpf_map_lookup_elem(&bench_counters, &key);
+	if (val)
+		__sync_fetch_and_add(val, delta);
+
+	key = COUNTER_ITERATIONS;
+	val = bpf_map_lookup_elem(&bench_counters, &key);
+	if (val)
+		__sync_fetch_and_add(val, 1);
+
+	return ret;
+}
+
+/*
+ * Benchmark: Full routing path with optimized parse
+ * 
+ * This measures the end-to-end impact of the optimization
+ * on the complete routing decision path.
+ */
+SEC("tc/bench/route_full")
+int bench_route_full(struct __sk_buff *skb)
+{
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl, l4proto;
+
+	__u64 start = get_ns();
+
+	// Parse packet
+	int ret = parse_transport_direct(skb, ETH_HLEN, &ethh, &iph, &ipv6h,
+					 &icmp6h, &tcph, &udph, &ihl, &l4proto);
+	if (ret)
+		return TC_ACT_OK;
+
+	// Extract tuples for routing
+	struct tuples tuples;
+	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+
+	// Prepare routing parameters
+	struct route_params params;
+	__builtin_memset(&params, 0, sizeof(params));
+	
+	if (l4proto == IPPROTO_TCP) {
+		params.l4hdr = &tcph;
+		params.flag[0] = L4ProtoType_TCP;
+	} else {
+		params.l4hdr = &udph;
+		params.flag[0] = L4ProtoType_UDP;
+	}
+	
+	if (skb->protocol == bpf_htons(ETH_P_IP))
+		params.flag[1] = IpVersionType_4;
+	else
+		params.flag[1] = IpVersionType_6;
+
+	__u64 end = get_ns();
+
+	// Update counter
+	__u32 key = COUNTER_TOTAL_PACKETS;
+	__u64 *val = bpf_map_lookup_elem(&bench_counters, &key);
+	if (val)
+		__sync_fetch_and_add(val, end - start);
+
+	return TC_ACT_OK;
+}
+
+char __license[] SEC("license") = "GPL";

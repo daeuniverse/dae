@@ -294,10 +294,13 @@ struct {
 } domain_routing_map SEC(".maps");
 
 // LPM cache for accelerating IpSet/SourceIpSet/Mac lookups
-// Key: (match_set_index, IP address)
+// Key: (match_set_index, match_type, IP address)
 // Value: 1 if the IP matches the LPM trie, 0 otherwise
+// Note: match_type is included to prevent cache collision between
+// different match types (e.g., Mac vs IpSet) with the same index
 struct lpm_cache_key {
 	__u32 match_set_index;
+	__u32 match_type;  // MatchType_Mac, MatchType_IpSet, MatchType_SourceIpSet
 	__u32 ip[4];  // IPv6 address (IPv4 uses last 32 bits)
 };
 
@@ -821,43 +824,24 @@ static int route_loop_cb(__u32 index, void *data)
 		lpm_key = &ctx->lpm_key_saddr;
 lookup_lpm:
 	{
-		// Try LPM cache first for better performance
-		struct lpm_cache_key cache_key = {
-			.match_set_index = match_set->index,
-			.ip = {lpm_key->data[0], lpm_key->data[1],
-			       lpm_key->data[2], lpm_key->data[3]}
-		};
+		// LPM cache temporarily disabled for testing
+		// TODO: Re-enable after fixing cache invalidation
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
 			match_set->type, match_set->not, match_set->outbound);
 		bpf_printk("\tip: %pI6", lpm_key->data);
 #endif
-		__u8 *cached = bpf_map_lookup_elem(&lpm_cache_map, &cache_key);
+		// Direct LPM lookup without cache
+		lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
+		if (unlikely(!lpm)) {
+			ctx->result = -EFAULT;
+			return 1;
+		}
 
-		if (cached) {
-			// Cache hit: use cached result
-			if (*cached)
-				ctx->isdns_must_goodsubrule_badrule |= 0b10;
-		} else {
-			// Cache miss: perform LPM lookup and cache result
-			lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
-			if (unlikely(!lpm)) {
-				ctx->result = -EFAULT;
-				return 1;
-			}
-
-			__u8 match_result = 0;
-
-			if (bpf_map_lookup_elem(lpm, lpm_key)) {
-				// match_set hits.
-				ctx->isdns_must_goodsubrule_badrule |= 0b10;
-				match_result = 1;
-			}
-
-			// Update cache
-			bpf_map_update_elem(&lpm_cache_map, &cache_key,
-					    &match_result, BPF_ANY);
+		if (bpf_map_lookup_elem(lpm, lpm_key)) {
+			// match_set hits.
+			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 		}
 		break;
 	}
