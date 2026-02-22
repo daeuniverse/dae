@@ -177,11 +177,16 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
 	// Use the provided context with timeout for dial operation.
-	// The context is expected to be a per-connection context with its own lifetime, 
+	// The context is expected to be a per-connection context with its own lifetime,
 	// not the ControlPlane's lifecycle context (c.ctx).
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
-	return d.DialContext(dialCtx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	conn, err = d.DialContext(dialCtx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	if err != nil {
+		return nil, err
+	}
+	c.AddTcpConnectionTotal(networkType.StringWithoutDns(), outbound.Name)
+	return conn, nil
 }
 
 type WriteCloser interface {

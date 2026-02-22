@@ -118,12 +118,22 @@ type DnsController struct {
 	bpfUpdateStop chan struct{}
 	bpfUpdateWg   sync.WaitGroup
 	bpfUpdateOnce sync.Once
+
+	dnsMetricsInit       sync.Once
+	dnsQueryTotal        atomic.Uint64
+	dnsCacheHitTotal     atomic.Uint64
+	dnsCacheLazyHitTotal atomic.Uint64
+	dnsCacheMissTotal    atomic.Uint64
+	dnsRejectedTotal     atomic.Uint64
+	dnsRefusedTotal      atomic.Uint64
+	dnsResponseLatency   *dnsLatencyHistogram
+	dnsUpstreamMetrics   sync.Map // map[string]*dnsUpstreamMetric
 }
 
 // bpfUpdateTask represents a BPF map update request.
 type bpfUpdateTask struct {
 	cache *DnsCache
-	now    time.Time
+	now   time.Time
 }
 
 // cacheEntry represents a DNS cache entry with its access time for LRU eviction.
@@ -227,6 +237,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		// Async BPF update: lazy initialization in startBpfUpdateWorker
 		bpfUpdateCh:   nil,
 		bpfUpdateStop: nil,
+
+		dnsResponseLatency: newDnsLatencyHistogram(),
 	}
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
@@ -305,21 +317,35 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) CacheSize() int {
-	c.dnsCacheMu.Lock()
-	defer c.dnsCacheMu.Unlock()
-	return len(c.dnsCache)
+	var count int
+	c.dnsCache.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 func (c *DnsController) ConcurrencyInfo() (inUse, limit int) {
-	// Legacy dns controller has no explicit concurrency limiter.
-	return 0, 0
+	limit = cap(c.concurrencyLimiter)
+	if limit == 0 {
+		return 0, 0
+	}
+	return len(c.concurrencyLimiter), limit
 }
 
 func (c *DnsController) ForwarderCacheInfo() (count int, inFlightByUpstream map[string]int32) {
 	inFlightByUpstream = make(map[string]int32)
-	c.dnsForwarderCacheMu.Lock()
-	defer c.dnsForwarderCacheMu.Unlock()
-	count = len(c.dnsForwarderCache)
+	c.dnsForwarderCache.Range(func(key, value any) bool {
+		k, ok := key.(dnsForwarderKey)
+		if !ok {
+			return true
+		}
+		count++
+		if entry, ok := value.(*cachedDnsForwarder); ok {
+			inFlightByUpstream[k.upstream] += entry.inFlight.Load()
+		}
+		return true
+	})
 	return
 }
 
@@ -570,17 +596,17 @@ func (c *DnsController) evictLRUIfFull(now time.Time) {
 	if numToEvict < len(entries) {
 		// Build min-heap based on lastAccess (smallest = oldest)
 		buildMinHeap(entries)
-		
+
 		// Extract k oldest entries from heap
 		for i := 0; i < numToEvict; i++ {
 			// Swap root (minimum) with last element
 			lastIdx := len(entries) - 1 - i
 			entries[0], entries[lastIdx] = entries[lastIdx], entries[0]
-			
+
 			// Restore heap property for remaining elements
 			heapifyMin(entries, 0, lastIdx)
 		}
-		
+
 		// The k oldest are now at the end of entries (indices len-n to len-1)
 		entries = entries[len(entries)-numToEvict:]
 	}
@@ -1147,6 +1173,12 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 }
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsQueryTotal.Add(1)
+	start := time.Now()
+	defer func() {
+		c.observeDnsResponseLatency(time.Since(start))
+	}()
+
 	// Try to acquire semaphore (skip if unlimited)
 	if cap(c.concurrencyLimiter) > 0 {
 		select {
@@ -1194,9 +1226,11 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 
 		// Check cache after routing (non-reject case)
 		if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+			c.dnsCacheHitTotal.Add(1)
 			// Cache hit - return immediately without singleflight
 			// OPTIMISTIC CACHE: resp may be stale, trigger background refresh if needed
 			if needRefresh {
+				c.dnsCacheLazyHitTotal.Add(1)
 				// Background refresh - don't block the current request
 				go c.backgroundRefresh(cacheKey, dnsMessage, req)
 			}
@@ -1220,6 +1254,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			return nil
 		}
 
+		c.dnsCacheMissTotal.Add(1)
 		// Cache miss - use singleflight to coalesce concurrent requests
 		// This prevents thundering herd on upstream DNS servers
 		res, err, _ := c.sf.Do(cacheKey, func() (any, error) {
@@ -1541,6 +1576,8 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 
 // sendRefusedWithResponseWriter_ sends REFUSED response when overload protection is triggered.
 func (c *DnsController) sendRefusedWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsRefusedTotal.Add(1)
+
 	dnsMessage.Answer = nil
 	dnsMessage.Rcode = dnsmessage.RcodeRefused
 	dnsMessage.Response = true
@@ -1573,6 +1610,8 @@ func (c *DnsController) sendRefusedWithResponseWriter_(dnsMessage *dnsmessage.Ms
 
 // sendRejectWithResponseWriter_ send empty answer using response writer.
 func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsRejectedTotal.Add(1)
+
 	dnsMessage.Answer = nil
 	dnsMessage.Rcode = dnsmessage.RcodeSuccess
 	dnsMessage.Response = true
@@ -1622,6 +1661,8 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 	} else {
 		upstreamName = upstream.String()
 	}
+	upstreamMetric := c.getOrCreateDnsUpstreamMetric(upstreamName)
+	upstreamMetric.queryTotal.Add(1)
 
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
 	dialArgument, err := c.bestDialerChooser(req, upstream)
@@ -1637,8 +1678,11 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 
+	forwardStart := time.Now()
 	respMsg, usedDialArgument, err = c.forwardWithFallback(dialCtx, req, upstream, dialArgument, data)
+	upstreamMetric.latency.Observe(time.Since(forwardStart).Seconds())
 	if err != nil {
+		upstreamMetric.errTotal.Add(1)
 		return err
 	}
 

@@ -267,3 +267,43 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 		t.Fatalf("expected alive dialer to be d2, got %s", selected.Property().Name)
 	}
 }
+
+func TestDialerCheck_Counters(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	if _, err := d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return true, nil
+		},
+	}); err != nil {
+		t.Fatalf("unexpected success check error: %v", err)
+	}
+
+	if _, err := d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, nil
+		},
+	}); err != nil {
+		t.Fatalf("unexpected skip check error: %v", err)
+	}
+
+	if _, err := d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("failed")
+		},
+	}); err == nil {
+		t.Fatal("expected failure check error")
+	}
+
+	checkTotal, checkFailureTotal := d.GetCollectionCounters(networkType)
+	if checkTotal != 3 {
+		t.Fatalf("unexpected check total: got=%d want=3", checkTotal)
+	}
+	if checkFailureTotal != 1 {
+		t.Fatalf("unexpected check failure total: got=%d want=1", checkFailureTotal)
+	}
+}

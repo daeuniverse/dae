@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -60,6 +61,8 @@ type collection struct {
 	Latencies10       *LatenciesN
 	MovingAverage     time.Duration
 	Alive             bool
+	CheckTotal        atomic.Uint64
+	CheckFailureTotal atomic.Uint64
 }
 
 func newCollection() *collection {
@@ -483,7 +486,7 @@ func (d *Dialer) aliveBackground() {
 
 	var wg sync.WaitGroup
 	workerPool := getConnectivityCheckPool()
-	
+
 	for {
 		select {
 		case <-d.ctx.Done():
@@ -494,7 +497,7 @@ func (d *Dialer) aliveBackground() {
 
 		// Process initial check immediately
 		d.submitCheckTasks(workerPool, &wg, CheckOpts)
-		
+
 		// Wait for all checks to complete before next cycle
 		wg.Wait()
 	}
@@ -553,6 +556,11 @@ func (d *Dialer) GetCollectionState(typ *NetworkType) (alive bool, lastLatency, 
 	lastLatency, _ = col.Latencies10.LastLatency()
 	avg10, _ = col.Latencies10.AvgLatency()
 	return
+}
+
+func (d *Dialer) GetCollectionCounters(typ *NetworkType) (checkTotal, checkFailureTotal uint64) {
+	col := d.mustGetCollection(typ)
+	return col.CheckTotal.Load(), col.CheckFailureTotal.Load()
 }
 
 // RegisterAliveDialerSet is thread-safe.
@@ -625,11 +633,12 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	start := time.Now()
 	// Calc latency.
 	collection := d.mustGetCollection(opts.networkType)
+	collection.CheckTotal.Add(1)
 	ok, err = opts.CheckFunc(ctx, opts.networkType)
 	if ok && err == nil {
 		// Success: update latency and mark alive.
 		latency := time.Since(start)
-		
+
 		// Use lock to protect all collection updates
 		d.collectionFineMu.Lock()
 		collection.Latencies10.AppendLatency(latency)
@@ -648,6 +657,7 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 		d.informDialerGroupUpdate(collection)
 	} else if err != nil {
 		// Failure: mark unavailable only if there's an actual error.
+		collection.CheckFailureTotal.Add(1)
 		d.logUnavailable(collection, opts.networkType, err)
 		d.informDialerGroupUpdate(collection)
 	}
