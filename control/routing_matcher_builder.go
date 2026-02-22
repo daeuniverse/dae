@@ -163,7 +163,7 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 		}
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint8(consts.MatchType_Port),
-			Value: _bpfPortRange{
+			Value: bpfPortRange{
 				PortStart: value[0],
 				PortEnd:   value[1],
 			}.Encode(),
@@ -208,7 +208,7 @@ func (b *RoutingMatcherBuilder) addSourcePort(f *config_parser.Function, values 
 		}
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint8(consts.MatchType_SourcePort),
-			Value: _bpfPortRange{
+			Value: bpfPortRange{
 				PortStart: value[0],
 				PortEnd:   value[1],
 			}.Encode(),
