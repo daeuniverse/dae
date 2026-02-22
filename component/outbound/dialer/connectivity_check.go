@@ -503,6 +503,18 @@ func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
 	return d.mustGetCollection(typ).Latencies10
 }
 
+// GetCollectionState returns a snapshot of the dialer's health state for the given network type.
+func (d *Dialer) GetCollectionState(typ *NetworkType) (alive bool, lastLatency, avg10, movingAvg time.Duration) {
+	d.collectionFineMu.Lock()
+	col := d.mustGetCollection(typ)
+	alive = col.Alive
+	movingAvg = col.MovingAverage
+	d.collectionFineMu.Unlock()
+	lastLatency, _ = col.Latencies10.LastLatency()
+	avg10, _ = col.Latencies10.AvgLatency()
+	return
+}
+
 // RegisterAliveDialerSet is thread-safe.
 func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
 	if a == nil {
