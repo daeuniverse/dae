@@ -31,7 +31,7 @@ global {
 
     # Endpoint configuration for metrics and diagnostics.
     # Set a listen address to enable the endpoint server (disabled by default).
-    #endpoint_listen_address: 0.0.0.0:5556
+    #endpoint_listen_address: '0.0.0.0:5556'
     #endpoint_username: ''
     #endpoint_password: ''
     #endpoint_tls_certificate: ''
