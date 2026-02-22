@@ -102,6 +102,12 @@ func (a *AliveDialerSet) GetRand() *Dialer {
 	return a.inorderedAliveDialerSet[ind]
 }
 
+func (a *AliveDialerSet) AliveCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.inorderedAliveDialerSet)
+}
+
 func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
 	return a.dialerToLatency[d] + a.dialerToLatencyOffset[d]
 }
