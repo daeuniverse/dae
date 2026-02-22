@@ -586,12 +586,12 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 
 /*
  * Optimized version: parse_transport_fast
- * 
+ *
  * Uses direct packet access instead of bpf_skb_load_bytes() to avoid
  * memory copy overhead. Safe to use when:
  * - skb is linear (no fragments)
  * - Called from TC ingress/egress hooks where data is available
- * 
+ *
  * Performance: Eliminates ~200-500ns per call from bpf_skb_load_bytes overhead
  */
 __attribute__((unused))
@@ -617,6 +617,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 	// Parse Ethernet header (if L2 header present)
 	if (link_h_len == ETH_HLEN) {
 		struct ethhdr *eth = data;
+
 		if ((void *)(eth + 1) > data_end)
 			return -EFAULT;
 		*out_ethh = *eth;
@@ -631,9 +632,10 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 	if (proto == bpf_htons(ETH_P_IP)) {
 		// IPv4 path
 		struct iphdr *ip = data + offset;
+
 		if ((void *)(ip + 1) > data_end)
 			return -EFAULT;
-		
+
 		*out_iph = *ip;
 		*out_ihl = ip->ihl;
 		*out_l4proto = ip->protocol;
@@ -643,6 +645,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		switch (ip->protocol) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcp = data + l4_off;
+
 			if ((void *)(tcp + 1) > data_end)
 				return -EFAULT;
 			*out_tcph = *tcp;
@@ -650,6 +653,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udp = data + l4_off;
+
 			if ((void *)(udp + 1) > data_end)
 				return -EFAULT;
 			*out_udph = *udp;
@@ -663,6 +667,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 	} else if (proto == bpf_htons(ETH_P_IPV6)) {
 		// IPv6 path
 		struct ipv6hdr *ip6 = data + offset;
+
 		if ((void *)(ip6 + 1) > data_end)
 			return -EFAULT;
 
@@ -682,20 +687,21 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		};
 
 		int ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb, &ext_ctx, 0);
+
 		if (ret < 0)
 			return ret;
 		if (ext_ctx.result)
 			return ext_ctx.result;
 
-		if (is_extension_header(nexthdr)) {
+		if (is_extension_header(nexthdr))
 			return 1;
-		}
 
 		*out_l4proto = nexthdr;
 
 		switch (nexthdr) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcp = data + offset;
+
 			if ((void *)(tcp + 1) > data_end)
 				return -EFAULT;
 			*out_tcph = *tcp;
@@ -703,6 +709,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udp = data + offset;
+
 			if ((void *)(udp + 1) > data_end)
 				return -EFAULT;
 			*out_udph = *udp;
@@ -710,6 +717,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_ICMPV6: {
 			struct icmp6hdr *icmp6 = data + offset;
+
 			if ((void *)(icmp6 + 1) > data_end)
 				return -EFAULT;
 			*out_icmp6h = *icmp6;
@@ -816,7 +824,7 @@ lookup_lpm:
 		// Try LPM cache first for better performance
 		struct lpm_cache_key cache_key = {
 			.match_set_index = match_set->index,
-			.ip = {lpm_key->data[0], lpm_key->data[1], 
+			.ip = {lpm_key->data[0], lpm_key->data[1],
 			       lpm_key->data[2], lpm_key->data[3]}
 		};
 #ifdef __DEBUG_ROUTING
@@ -826,12 +834,11 @@ lookup_lpm:
 		bpf_printk("\tip: %pI6", lpm_key->data);
 #endif
 		__u8 *cached = bpf_map_lookup_elem(&lpm_cache_map, &cache_key);
-		
+
 		if (cached) {
 			// Cache hit: use cached result
-			if (*cached) {
+			if (*cached)
 				ctx->isdns_must_goodsubrule_badrule |= 0b10;
-			}
 		} else {
 			// Cache miss: perform LPM lookup and cache result
 			lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
@@ -839,17 +846,18 @@ lookup_lpm:
 				ctx->result = -EFAULT;
 				return 1;
 			}
-			
+
 			__u8 match_result = 0;
+
 			if (bpf_map_lookup_elem(lpm, lpm_key)) {
 				// match_set hits.
 				ctx->isdns_must_goodsubrule_badrule |= 0b10;
 				match_result = 1;
 			}
-			
+
 			// Update cache
-			bpf_map_update_elem(&lpm_cache_map, &cache_key, 
-			                    &match_result, BPF_ANY);
+			bpf_map_update_elem(&lpm_cache_map, &cache_key,
+					    &match_result, BPF_ANY);
 		}
 		break;
 	}
@@ -863,7 +871,7 @@ lookup_lpm:
 			   match_set->port_range.port_end);
 #endif
 		if (check_port_range(ctx->h_dport, match_set->port_range.port_start,
-		                     match_set->port_range.port_end))
+				     match_set->port_range.port_end))
 			mark_matched(ctx);
 		break;
 	case MatchType_SourcePort:
@@ -876,7 +884,7 @@ lookup_lpm:
 			   match_set->port_range.port_end);
 #endif
 		if (check_port_range(ctx->h_sport, match_set->port_range.port_start,
-		                     match_set->port_range.port_end))
+				     match_set->port_range.port_end))
 			mark_matched(ctx);
 		break;
 	case MatchType_L4Proto:
@@ -1402,7 +1410,7 @@ new_connection:;
 			__u8 outbound;
 			__u32 mark;
 			bool must;
-			int ret = handle_non_syn_tcp(skb, &tuples.five, 
+			int ret = handle_non_syn_tcp(skb, &tuples.five,
 						     &outbound, &mark, &must);
 			if (ret == TC_ACT_OK)
 				return TC_ACT_OK;
