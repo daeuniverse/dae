@@ -124,3 +124,12 @@ func TestDnsController_HandleWithResponseWriterCountsQuery(t *testing.T) {
 		t.Fatalf("unexpected response latency count: got=%d want=1", latency.Count)
 	}
 }
+
+func TestDnsController_ConcurrencyInfo(t *testing.T) {
+	c := &DnsController{}
+
+	inUse, limit := c.ConcurrencyInfo()
+	if limit != 0 || inUse != 0 {
+		t.Fatalf("unexpected legacy concurrency info: inUse=%d limit=%d", inUse, limit)
+	}
+}
