@@ -164,7 +164,12 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	}
 	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	return d.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	conn, err = d.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	if err != nil {
+		return nil, err
+	}
+	c.AddTcpConnectionTotal(networkType.StringWithoutDns(), outbound.Name)
+	return conn, nil
 }
 
 type WriteCloser interface {

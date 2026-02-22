@@ -55,6 +55,9 @@ type ControlPlane struct {
 	// TODO: add mutex?
 	outbounds     []*outbound.DialerGroup
 	inConnections sync.Map
+	// key: ConnMetricKey, value: *atomic.Uint64
+	tcpConnectionTotals sync.Map
+	udpConnectionTotals sync.Map
 
 	dnsController    *DnsController
 	dnsListener      *DNSListener

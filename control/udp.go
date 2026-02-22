@@ -302,6 +302,9 @@ getNew:
 		retry++
 		goto getNew
 	}
+	if isNew {
+		c.AddUdpConnectionTotal(networkType.StringWithoutDns(), ue.Outbound.Name)
+	}
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).

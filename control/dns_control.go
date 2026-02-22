@@ -81,6 +81,16 @@ type DnsController struct {
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+
+	dnsMetricsInit       sync.Once
+	dnsQueryTotal        atomic.Uint64
+	dnsCacheHitTotal     atomic.Uint64
+	dnsCacheLazyHitTotal atomic.Uint64
+	dnsCacheMissTotal    atomic.Uint64
+	dnsRejectedTotal     atomic.Uint64
+	dnsRefusedTotal      atomic.Uint64
+	dnsResponseLatency   *dnsLatencyHistogram
+	dnsUpstreamMetrics   sync.Map // map[string]*dnsUpstreamMetric
 }
 
 type handlingState struct {
@@ -124,6 +134,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
 		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		dnsResponseLatency:  newDnsLatencyHistogram(),
 	}, nil
 }
 
@@ -381,6 +392,12 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 }
 
 func (c *DnsController) HandleWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsQueryTotal.Add(1)
+	start := time.Now()
+	defer func() {
+		c.observeDnsResponseLatency(time.Since(start))
+	}()
+
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
@@ -511,6 +528,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	}()
 
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+		c.dnsCacheHitTotal.Add(1)
 		// Send cache to client directly.
 		if needResp {
 			if responseWriter != nil {
@@ -532,6 +550,7 @@ func (c *DnsController) handleWithResponseWriter_(
 		}
 		return nil
 	}
+	c.dnsCacheMissTotal.Add(1)
 
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		upstreamName := upstreamIndex.String()
@@ -554,6 +573,8 @@ func (c *DnsController) handleWithResponseWriter_(
 
 // sendReject_ send empty answer.
 func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
+	c.dnsRejectedTotal.Add(1)
+
 	dnsMessage.Answer = nil
 	dnsMessage.Rcode = dnsmessage.RcodeSuccess
 	dnsMessage.Response = true
@@ -577,6 +598,8 @@ func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest)
 
 // sendRejectWithResponseWriter_ send empty answer using response writer.
 func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsRejectedTotal.Add(1)
+
 	dnsMessage.Answer = nil
 	dnsMessage.Rcode = dnsmessage.RcodeSuccess
 	dnsMessage.Response = true
@@ -626,6 +649,8 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	} else {
 		upstreamName = upstream.String()
 	}
+	upstreamMetric := c.getOrCreateDnsUpstreamMetric(upstreamName)
+	upstreamMetric.queryTotal.Add(1)
 
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
 	dialArgument, err := c.bestDialerChooser(req, upstream)
@@ -656,6 +681,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
 			c.dnsForwarderCacheMu.Unlock()
+			upstreamMetric.errTotal.Add(1)
 			return err
 		}
 		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
@@ -672,8 +698,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		return err
 	}
 
+	forwardStart := time.Now()
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
+	upstreamMetric.latency.Observe(time.Since(forwardStart).Seconds())
 	if err != nil {
+		upstreamMetric.errTotal.Add(1)
 		return err
 	}
 
