@@ -52,6 +52,14 @@ type Global struct {
 	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
 	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
 	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	// Endpoint (metrics + diagnostics)
+	EndpointListenAddress     string `mapstructure:"endpoint_listen_address" default:""`
+	EndpointUsername          string `mapstructure:"endpoint_username" default:""`
+	EndpointPassword          string `mapstructure:"endpoint_password" default:""`
+	EndpointTlsCertificate    string `mapstructure:"endpoint_tls_certificate" default:""`
+	EndpointTlsKey            string `mapstructure:"endpoint_tls_key" default:""`
+	EndpointPrometheusEnabled bool   `mapstructure:"endpoint_prometheus_enabled" default:"false"`
+	EndpointPrometheusPath    string `mapstructure:"endpoint_prometheus_path" default:"/metrics"`
 }
 
 type Utls struct {

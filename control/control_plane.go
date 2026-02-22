@@ -970,6 +970,23 @@ func (c *ControlPlane) acquireDrainTicket() func() {
 	return c.drainTracker.Acquire()
 }
 
+func (c *ControlPlane) Outbounds() []*outbound.DialerGroup {
+	return c.outbounds
+}
+
+func (c *ControlPlane) GetDnsController() *DnsController {
+	return c.dnsController
+}
+
+func (c *ControlPlane) CountTcpConnections() int {
+	count := 0
+	c.inConnections.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 	if c == nil {
 		return nil

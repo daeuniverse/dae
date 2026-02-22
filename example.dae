@@ -33,6 +33,15 @@ global {
     # If omitted, dae auto-selects an internal mark to prevent UDP self-capture.
     # Set a non-zero value to override that mark.
     # Set 0 explicitly to keep the internal protection mark without the unset warning.
+    # Endpoint configuration for metrics and diagnostics.
+    # Set a listen address to enable the endpoint server (disabled by default).
+    #endpoint_listen_address: 0.0.0.0:5556
+    #endpoint_username: ''
+    #endpoint_password: ''
+    #endpoint_tls_certificate: ''
+    #endpoint_tls_key: ''
+    #endpoint_prometheus_enabled: true
+    #endpoint_prometheus_path: /metrics
     so_mark_from_dae: 0
 
     # Log level: error, warn, info, debug, trace.

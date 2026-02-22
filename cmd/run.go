@@ -26,8 +26,6 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"gopkg.in/natefinch/lumberjack.v2"
 
-	_ "net/http/pprof"
-
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -40,6 +38,7 @@ import (
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/daeuniverse/dae/pkg/metrics"
 	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
@@ -331,12 +330,25 @@ func (r *Runner) Run() (err error) {
 		return err
 	}
 
-	var pprofServer *http.Server
-	if conf.Global.PprofPort != 0 {
-		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go func() { _ = pprofServer.ListenAndServe() }()
+	metricsState := metrics.NewState()
+	metricsState.SetControlPlane(c)
+	metricsRegistry := metrics.NewRegistry(metricsState)
+
+	var endpointServer *http.Server
+	startEndpointServer := func(cfg metrics.EndpointConfig) {
+		if cfg.ListenAddress == "" {
+			endpointServer = nil
+			return
+		}
+		endpointServer = metrics.NewEndpointServer(cfg, metricsRegistry)
+		go func(server *http.Server, endpointCfg metrics.EndpointConfig) {
+			if e := metrics.StartEndpointServer(server, endpointCfg); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				log.WithError(e).Errorln("Endpoint server stopped with error")
+			}
+		}(endpointServer, cfg)
 	}
+	endpointCfg := endpointConfigFromGlobal(conf, log)
+	startEndpointServer(endpointCfg)
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
@@ -637,6 +649,15 @@ func (r *Runner) Run() (err error) {
 			reloadManager.clearPendingRetirement()
 			reloadManager.setPendingReloadMetadata(reloadStartedAt, reloadStartedAtMono)
 			reloadManager.beginHandoff()
+			metricsState.SetControlPlane(newC)
+			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
+			if endpointConfigChanged(endpointCfg, newEndpointCfg) {
+				if endpointServer != nil {
+					_ = endpointServer.Shutdown(context.Background())
+				}
+				endpointCfg = newEndpointCfg
+				startEndpointServer(endpointCfg)
+			}
 
 			// Ready to close.
 			if oldC != nil && reloadManager.currentPendingStagedHandoff() == nil {
@@ -647,8 +668,6 @@ func (r *Runner) Run() (err error) {
 				}
 				reloadManager.startControlPlaneRetirement(log, oldC, newC, oldCancel, abortConnections, hasOverlap)
 			}
-
-			reloadManager.refreshPprofServer(log, &pprofServer, newConf.Global.PprofPort)
 
 			notifyRunStateChange(runStateChanges)
 
@@ -836,10 +855,10 @@ loop:
 
 	defer func() {
 		_ = sdnotify.Stopping()
-		if pprofServer != nil {
-			log.Infoln("Shutting down pprof server")
+		if endpointServer != nil {
+			log.Infoln("Shutting down endpoint server")
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_ = pprofServer.Shutdown(ctx)
+			_ = endpointServer.Shutdown(ctx)
 			cancel()
 		}
 		_ = os.Remove(PidFilePath)
@@ -1069,6 +1088,10 @@ func shutdownAfterSignalWithHandoff(
 		return nil
 	}
 
+	if endpointServer != nil {
+		_ = endpointServer.Shutdown(context.Background())
+	}
+
 	if netns != nil {
 		if e := netns.Close(); e != nil {
 			log.Warnf("close dae netns: %v", e)
@@ -1095,6 +1118,28 @@ func shutdownAfterSignalWithHandoff(
 		return fmt.Errorf("close control plane: %w", errors.Join(closeErrs...))
 	}
 	return nil
+}
+
+func endpointConfigFromGlobal(conf *config.Config, log *logrus.Logger) metrics.EndpointConfig {
+	cfg := metrics.EndpointConfig{
+		ListenAddress:     conf.Global.EndpointListenAddress,
+		Username:          conf.Global.EndpointUsername,
+		Password:          conf.Global.EndpointPassword,
+		TlsCertificate:    conf.Global.EndpointTlsCertificate,
+		TlsKey:            conf.Global.EndpointTlsKey,
+		PrometheusEnabled: conf.Global.EndpointPrometheusEnabled,
+		PrometheusPath:    conf.Global.EndpointPrometheusPath,
+		PprofEnabled:      conf.Global.PprofPort != 0,
+	}
+	if cfg.ListenAddress == "" && conf.Global.PprofPort != 0 {
+		log.Warnln("pprof_port is deprecated, please use endpoint_listen_address instead")
+		cfg.ListenAddress = fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
+	}
+	return cfg
+}
+
+func endpointConfigChanged(a, b metrics.EndpointConfig) bool {
+	return a != b
 }
 
 func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {

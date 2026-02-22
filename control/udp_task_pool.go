@@ -276,6 +276,18 @@ createNew:
 	return q
 }
 
+func (p *UdpTaskPool) Count() int {
+	if p == nil {
+		return 0
+	}
+	count := 0
+	p.queues.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // Reset clears all UDP task queues.
 // Called on reload to clear queued tasks from pre-reload state.
 func (p *UdpTaskPool) Reset() {
