@@ -147,6 +147,15 @@ type DnsController struct {
 	dnsForwarderIdleTTL    time.Duration
 	log                    *logrus.Logger
 	runtimeState           atomic.Pointer[dnsControllerRuntimeState]
+	dnsMetricsInit         sync.Once
+	dnsQueryTotal          atomic.Uint64
+	dnsCacheHitTotal       atomic.Uint64
+	dnsCacheLazyHitTotal   atomic.Uint64
+	dnsCacheMissTotal      atomic.Uint64
+	dnsRejectedTotal       atomic.Uint64
+	dnsRefusedTotal        atomic.Uint64
+	dnsResponseLatency     *dnsLatencyHistogram
+	dnsUpstreamMetrics     sync.Map // map[string]*dnsUpstreamMetric
 }
 
 func newDnsControllerStore() *dnsControllerStore {
@@ -2189,6 +2198,12 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	c.requireStore()
+	c.dnsQueryTotal.Add(1)
+	start := time.Now()
+	defer func() {
+		c.observeDnsResponseLatency(time.Since(start))
+	}()
+
 	var upstreamIndex consts.DnsRequestOutboundIndex
 	var upstream *dns.Upstream
 
@@ -2244,8 +2259,11 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			// Cache hit - return immediately without singleflight
 			// OPTIMISTIC CACHE: resp may be stale, trigger background refresh if needed
 			if needRefresh {
+				c.dnsCacheLazyHitTotal.Add(1)
 				// Background refresh - don't block the current request
 				go c.backgroundRefresh(responseCacheKey, dnsMessage, req, upstreamIndex, upstream)
+			} else {
+				c.dnsCacheHitTotal.Add(1)
 			}
 
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
@@ -2603,6 +2621,7 @@ func (c *DnsController) sendDnsErrorResponse_(
 
 // sendRefusedWithResponseWriter_ sends REFUSED response when overload protection is triggered.
 func (c *DnsController) sendRefusedWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsRefusedTotal.Add(1)
 	return c.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeRefused, "Refused due to concurrency limit", req, responseWriter)
 }
 
@@ -2636,6 +2655,7 @@ func (c *DnsController) sendDnsTruncatedResponse_(dnsMessage *dnsmessage.Msg, re
 
 // sendRejectWithResponseWriter_ send empty answer.
 func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.dnsRejectedTotal.Add(1)
 	return c.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeSuccess, "Reject", req, responseWriter)
 }
 

@@ -60,6 +60,9 @@ type ControlPlane struct {
 	inConnections        sync.Map
 	rejectNewConnections atomic.Bool
 	drainTracker         *controlPlaneDrainTracker
+	// key: ConnMetricKey, value: *atomic.Uint64
+	tcpConnectionTotals sync.Map
+	udpConnectionTotals sync.Map
 
 	controlPlaneDNSRuntime
 	dnsHandoffMu         sync.Mutex

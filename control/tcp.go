@@ -248,6 +248,9 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
+	if res != nil && res.Outbound != nil && res.SelectionNetworkTypeObj != nil {
+		c.AddTcpConnectionTotal(res.SelectionNetworkTypeObj.StringWithoutDns(), res.Outbound.Name)
+	}
 	defer func() { _ = rConn.Close() }()
 
 	offloaded := false
@@ -308,7 +311,11 @@ func (c *ControlPlane) RouteDialTcpContext(ctx context.Context, p *RouteDialPara
 		Mark:        p.Mark,
 		Network:     "tcp",
 	}
-	conn, _, err = c.routeDial(ctx, dialParam)
+	var res *proxyDialResult
+	conn, res, err = c.routeDial(ctx, dialParam)
+	if err == nil && res != nil && res.Outbound != nil && res.SelectionNetworkTypeObj != nil {
+		c.AddTcpConnectionTotal(res.SelectionNetworkTypeObj.StringWithoutDns(), res.Outbound.Name)
+	}
 	return conn, err
 }
 

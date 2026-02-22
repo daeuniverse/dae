@@ -27,6 +27,8 @@ type DialerCollector struct {
 	dialerLatencyLast      *prometheus.Desc
 	dialerLatencyAvg10     *prometheus.Desc
 	dialerLatencyMovingAvg *prometheus.Desc
+	healthCheckTotal       *prometheus.Desc
+	healthCheckFailure     *prometheus.Desc
 	groupAliveDialers      *prometheus.Desc
 }
 
@@ -57,6 +59,18 @@ func NewDialerCollector(state *State) *DialerCollector {
 			[]string{"group", "dialer", "network"},
 			nil,
 		),
+		healthCheckTotal: prometheus.NewDesc(
+			"dae_health_check_total",
+			"Total number of dialer connectivity health checks",
+			[]string{"group", "dialer", "network"},
+			nil,
+		),
+		healthCheckFailure: prometheus.NewDesc(
+			"dae_health_check_failure_total",
+			"Total number of failed dialer connectivity health checks",
+			[]string{"group", "dialer", "network"},
+			nil,
+		),
 		groupAliveDialers: prometheus.NewDesc(
 			"dae_group_alive_dialers_total",
 			"The number of currently alive dialers in the group",
@@ -71,6 +85,8 @@ func (c *DialerCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.dialerLatencyLast
 	ch <- c.dialerLatencyAvg10
 	ch <- c.dialerLatencyMovingAvg
+	ch <- c.healthCheckTotal
+	ch <- c.healthCheckFailure
 	ch <- c.groupAliveDialers
 }
 
@@ -106,6 +122,9 @@ func (c *DialerCollector) Collect(ch chan<- prometheus.Metric) {
 				ch <- prometheus.MustNewConstMetric(c.dialerLatencyLast, prometheus.GaugeValue, lastLatency.Seconds(), labels...)
 				ch <- prometheus.MustNewConstMetric(c.dialerLatencyAvg10, prometheus.GaugeValue, avg10.Seconds(), labels...)
 				ch <- prometheus.MustNewConstMetric(c.dialerLatencyMovingAvg, prometheus.GaugeValue, movingAvg.Seconds(), labels...)
+				checkTotal, checkFailureTotal := d.GetCollectionCounters(&typ)
+				ch <- prometheus.MustNewConstMetric(c.healthCheckTotal, prometheus.CounterValue, float64(checkTotal), labels...)
+				ch <- prometheus.MustNewConstMetric(c.healthCheckFailure, prometheus.CounterValue, float64(checkFailureTotal), labels...)
 			}
 		}
 		for i, set := range group.AliveDialerSets() {
