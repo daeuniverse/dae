@@ -197,6 +197,12 @@ func NewUdpTaskPool() *UdpTaskPool {
 	}
 }
 
+func (p *UdpTaskPool) Count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.m)
+}
+
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
 func (p *UdpTaskPool) EmitTask(key netip.AddrPort, task UdpTask) {
 	q := p.acquireQueue(key)

@@ -622,6 +622,23 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
+func (c *ControlPlane) Outbounds() []*outbound.DialerGroup {
+	return c.outbounds
+}
+
+func (c *ControlPlane) GetDnsController() *DnsController {
+	return c.dnsController
+}
+
+func (c *ControlPlane) CountTcpConnections() int {
+	count := 0
+	c.inConnections.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 	result := make(map[string]*DnsCache)
 	c.dnsController.dnsCache.Range(func(key, value any) bool {

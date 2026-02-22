@@ -304,6 +304,25 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 	return qname + strconv.Itoa(int(qtype))
 }
 
+func (c *DnsController) CacheSize() int {
+	c.dnsCacheMu.Lock()
+	defer c.dnsCacheMu.Unlock()
+	return len(c.dnsCache)
+}
+
+func (c *DnsController) ConcurrencyInfo() (inUse, limit int) {
+	// Legacy dns controller has no explicit concurrency limiter.
+	return 0, 0
+}
+
+func (c *DnsController) ForwarderCacheInfo() (count int, inFlightByUpstream map[string]int32) {
+	inFlightByUpstream = make(map[string]int32)
+	c.dnsForwarderCacheMu.Lock()
+	defer c.dnsForwarderCacheMu.Unlock()
+	count = len(c.dnsForwarderCache)
+	return
+}
+
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 	if removed, ok := c.dnsCache.LoadAndDelete(cacheKey); ok {
 		if cache, ok := removed.(*DnsCache); ok {
