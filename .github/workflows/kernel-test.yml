@@ -23,11 +23,13 @@ jobs:
         cache-dependency-path: |
           go.mod
           go.sum
-        go-version: '1.24'
+        go-version: '1.26'
 
     - name: Generate and build
       run: |
         git submodule update --init
+        # Go 1.26 optimization flags
+        export GOEXPERIMENT="newinliner,runtimefreegc,simd,arenas,loopvar"
         make GOFLAGS="-buildvcs=false" CC=clang
 
     - name: Store executable

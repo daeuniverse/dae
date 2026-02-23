@@ -102,7 +102,7 @@ jobs:
           cache-dependency-path: |
             go.mod
             go.sum          
-          go-version: '1.24'
+          go-version: '1.26'
 
       - name: Install Dependencies
         run: |
@@ -120,6 +120,8 @@ jobs:
         run: |
           mkdir -p ./build/
           export GOFLAGS="-trimpath -modcacherw"
+          # Go 1.26 optimization flags: new inliner, runtime free GC, SIMD, arenas, loopvar
+          export GOEXPERIMENT="newinliner,runtimefreegc,simd,arenas,loopvar"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export CLANG=clang-15
