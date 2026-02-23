@@ -71,13 +71,23 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Go 1.26
+        run: |
+          wget -q https://go.dev/dl/go1.26.0.linux-amd64.tar.gz
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf go1.26.0.linux-amd64.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+          echo "GOPATH=$(go env GOPATH)" >> $GITHUB_ENV
+
+      - name: Go cache
+        uses: actions/cache@v4
         with:
-          cache-dependency-path: |
-            go.mod
-            go.sum          
-          go-version: '1.26'
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
 
       - name: Install Dependencies
         run: |
