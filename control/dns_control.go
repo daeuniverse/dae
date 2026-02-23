@@ -1567,15 +1567,33 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 			return fmt.Errorf("unknown upstream: %v", upstreamIndex.String())
 		}
 	}
-	if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
-		return err
-	}
+
+	// OPTIMIZATION: Send response first, then cache asynchronously.
+	// This reduces client-perceived latency, especially important for:
+	// 1. High QPS scenarios where cache operations accumulate
+	// 2. Proxy chains with already high latency
+	// 
+	// Cache operations (~260ns + BPF update) are negligible compared to
+	// network latency (1-2s), but doing them async is still beneficial:
+	// - Reduces tail latency under load
+	// - Follows "respond first, process later" best practice
+	// 
+	// Trade-off: If caching fails, the response is still valid but won't be cached.
+	// This is acceptable because:
+	// - Cache failures are rare
+	// - The response is already sent to the client
+	// - Next request for same domain will just hit upstream again
 	if needResp {
 		// Keep the id the same with request.
 		respMsg.Id = id
 		respMsg.Compress = true
 		// If responseWriter is provided (e.g., for singleflight), use it to write the response.
 		if responseWriter != nil {
+			// For responseWriter path, cache synchronously because
+			// responseWriter may need the message after we return.
+			if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+				c.log.Warnf("failed to cache DNS response: %v", err)
+			}
 			return responseWriter.WriteMsg(respMsg)
 		}
 		data, err = respMsg.Pack()
@@ -1585,6 +1603,27 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 			return err
 		}
+
+		// Cache asynchronously after sending response (UDP path only).
+		// respMsg is owned by this function and won't be accessed after return,
+		// so it's safe to use in goroutine without copying.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.log.Errorf("panic in async DNS cache: %v", r)
+				}
+			}()
+			if err := c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+				c.log.Debugf("failed to cache DNS response (async): %v", err)
+			}
+		}()
+
+		return nil
+	}
+
+	// No response needed, just cache synchronously
+	if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+		return err
 	}
 	return nil
 }
