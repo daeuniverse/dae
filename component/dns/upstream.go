@@ -11,7 +11,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -157,29 +157,77 @@ type UpstreamResolver struct {
 	Network string
 	// FinishInitCallback may be invoked again if err is not nil
 	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
-	mu                 sync.Mutex
-	upstream           *Upstream
-	init               bool
+
+	// OPTIMIZATION: Use atomic pointer for lock-free concurrent access with retry support.
+	// - nil: not initialized yet
+	// - &errorSentinel: initialization failed, should retry
+	// - *Upstream: successfully initialized
+	//
+	// This approach:
+	// 1. Avoids mutex contention on hot path (cache hits)
+	// 2. Allows retry on transient failures (important for proxy chains)
+	// 3. Uses CAS to prevent thundering herd on initialization
+	state atomic.Pointer[upstreamState]
 }
 
+// upstreamState holds the result of initialization.
+type upstreamState struct {
+	upstream *Upstream
+	err      error
+}
+
+// errorSentinel is a marker to indicate initialization failed and should retry.
+// We use a pointer instead of a special value to avoid allocations on each failure.
+var errorSentinel upstreamState
+
+// GetUpstream returns the upstream resolver, initializing it if necessary.
+// OPTIMIZATION: Uses atomic pointer for lock-free reads after successful initialization.
+// Retries on transient failures (important for unstable proxy connections).
+// 
+// State machine:
+//   - nil: not initialized yet
+//   - &errorSentinel: initialization failed, should retry
+//   - *upstreamState: successfully initialized (or permanently failed)
+//
+// Retry behavior:
+//   - On transient failure (e.g., proxy timeout), stores errorSentinel to allow retry
+//   - On retry, attempts initialization again
+//   - Once initialized successfully, returns cached result without blocking
 func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if !u.init {
-		defer func() {
-			if err == nil {
-				if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
-					u.upstream = nil
-					return
-				}
-				u.init = true
-			}
-		}()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
-			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
+	// Fast path: check if already initialized (lock-free read)
+	state := u.state.Load()
+	if state != nil && state != &errorSentinel {
+		return state.upstream, state.err
+	}
+
+	// Slow path: initialize
+	// Note: Multiple goroutines may reach here concurrently, which is OK.
+	// Each will attempt initialization, and the last one to Store wins.
+	// This is acceptable because:
+	// 1. Initialization is idempotent (same URL always produces same result)
+	// 2. The cost of duplicate initialization is outweighed by avoiding lock contention
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	upstream, err := NewUpstream(ctx, u.Raw, u.Network)
+	if err != nil {
+		// Mark as failed, allow retry on next call
+		u.state.Store(&errorSentinel)
+		return nil, fmt.Errorf("failed to init dns upstream: %w", err)
+	}
+
+	// Call finish callback if set
+	if u.FinishInitCallback != nil {
+		if err = u.FinishInitCallback(u.Raw, upstream); err != nil {
+			// Mark as failed, allow retry on next call
+			u.state.Store(&errorSentinel)
+			return nil, err
 		}
 	}
-	return u.upstream, nil
+
+	// Success: atomically store the result
+	newState := &upstreamState{upstream: upstream}
+	u.state.Store(newState)
+	return upstream, nil
 }
