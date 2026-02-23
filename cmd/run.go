@@ -348,6 +348,9 @@ func (r *Runner) Run() (err error) {
 		}(endpointServer, cfg)
 	}
 	endpointCfg := endpointConfigFromGlobal(conf, log)
+	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
+		return fmt.Errorf("invalid endpoint tls config: %w", err)
+	}
 	startEndpointServer(endpointCfg)
 
 	// Serve tproxy TCP/UDP server util signals.
@@ -455,6 +458,15 @@ func (r *Runner) Run() (err error) {
 			log.SetOutput(oldLogOutput) // NOTE: Restore log output after creating new logger during reload.
 			logrus.SetOutput(oldLogOutput)
 
+			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
+			if err = validateEndpointTLSFiles(newEndpointCfg); err != nil {
+				log.WithFields(logrus.Fields{
+					"err": err,
+				}).Errorln("[Reload] Failed to reload")
+				_ = sdnotify.Ready()
+				_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+				continue
+			}
 			portChanged := conf.Global.TproxyPort != newConf.Global.TproxyPort
 			stagedHotHandoff := !portChanged && listener != nil
 
@@ -650,7 +662,6 @@ func (r *Runner) Run() (err error) {
 			reloadManager.setPendingReloadMetadata(reloadStartedAt, reloadStartedAtMono)
 			reloadManager.beginHandoff()
 			metricsState.SetControlPlane(newC)
-			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
 			if endpointConfigChanged(endpointCfg, newEndpointCfg) {
 				if endpointServer != nil {
 					_ = endpointServer.Shutdown(context.Background())
@@ -1140,6 +1151,42 @@ func endpointConfigFromGlobal(conf *config.Config, log *logrus.Logger) metrics.E
 
 func endpointConfigChanged(a, b metrics.EndpointConfig) bool {
 	return a != b
+}
+
+func validateEndpointTLSFiles(cfg metrics.EndpointConfig) error {
+	if cfg.TlsCertificate == "" && cfg.TlsKey == "" {
+		return nil
+	}
+	if cfg.TlsCertificate == "" || cfg.TlsKey == "" {
+		return fmt.Errorf("endpoint_tls_certificate and endpoint_tls_key must be configured together")
+	}
+
+	certFile, err := os.Open(cfg.TlsCertificate)
+	if err != nil {
+		return fmt.Errorf("cannot open endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
+	}
+	certFi, err := certFile.Stat()
+	certFile.Close()
+	if err != nil {
+		return fmt.Errorf("cannot stat endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
+	}
+	if err = common.ValidateFilePermissionAllowed(cfg.TlsCertificate, certFi, 0o640, 0o644); err != nil {
+		return fmt.Errorf("invalid endpoint_tls_certificate: %w", err)
+	}
+
+	keyFile, err := os.Open(cfg.TlsKey)
+	if err != nil {
+		return fmt.Errorf("cannot open endpoint_tls_key '%s': %w", cfg.TlsKey, err)
+	}
+	keyFi, err := keyFile.Stat()
+	keyFile.Close()
+	if err != nil {
+		return fmt.Errorf("cannot stat endpoint_tls_key '%s': %w", cfg.TlsKey, err)
+	}
+	if err = common.ValidateFilePermissionAllowed(cfg.TlsKey, keyFi, 0o600); err != nil {
+		return fmt.Errorf("invalid endpoint_tls_key: %w", err)
+	}
+	return nil
 }
 
 func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
