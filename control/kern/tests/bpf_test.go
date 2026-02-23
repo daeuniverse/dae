@@ -60,7 +60,6 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 				PinPath: pinPath,
 			},
 			Programs: ebpf.ProgramOptions{
-				LogSize: ebpf.DefaultVerifierLogSize * 10,
 			},
 		},
 	); err != nil {

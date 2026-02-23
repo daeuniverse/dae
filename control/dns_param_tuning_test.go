@@ -55,8 +55,8 @@ func TestParamTuning_RouteRefreshInterval(t *testing.T) {
 			// Simulate 1000 cache accesses
 			var callbackCount atomic.Int32
 			controller := &DnsController{
-				log:        logrus.New(),
-				dnsCache:   sync.Map{},
+				log:      logrus.New(),
+				dnsCache: sync.Map{},
 				cacheAccessCallback: func(cache *DnsCache) error {
 					callbackCount.Add(1)
 					return nil
@@ -78,7 +78,7 @@ func TestParamTuning_RouteRefreshInterval(t *testing.T) {
 			start := time.Now()
 			iterations := 1000
 
-			for i := 0; i < iterations; i++ {
+			for range iterations {
 				controller.LookupDnsRespCache("test.com.1", false)
 				time.Sleep(time.Microsecond) // Simulate real-world spacing
 			}
@@ -245,7 +245,7 @@ func TestParamTuning_DnsDialerSnapshotTTL(t *testing.T) {
 			burstSize := 100
 			cacheHits := 0
 
-			for i := 0; i < burstSize; i++ {
+			for i := range burstSize {
 				now := start.Add(time.Duration(i) * 5 * time.Millisecond)
 
 				// First request stores
@@ -363,11 +363,11 @@ func (m *mockNetConn) SetWriteDeadline(t time.Time) error { return nil }
 func TestParamTuning_ComprehensiveLatencySimulation(t *testing.T) {
 	// Test different parameter combinations
 	combos := []struct {
-		name           string
-		refresh        time.Duration
-		probeTimeout   time.Duration
-		snapshotTTL    time.Duration
-		udpMaxIdle     time.Duration
+		name         string
+		refresh      time.Duration
+		probeTimeout time.Duration
+		snapshotTTL  time.Duration
+		udpMaxIdle   time.Duration
 	}{
 		{"Conservative", 1 * time.Second, 800 * time.Millisecond, 250 * time.Millisecond, 30 * time.Second},
 		{"Balanced", 2 * time.Second, 500 * time.Millisecond, 500 * time.Millisecond, 45 * time.Second},

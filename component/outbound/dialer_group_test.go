@@ -67,7 +67,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 			Policy:     consts.DialerSelectionPolicy_Fixed,
 			FixedIndex: fixedIndex,
 		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
@@ -79,7 +79,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 
 	fixedIndex = 0
 	g.selectionPolicy.FixedIndex = fixedIndex
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
@@ -116,7 +116,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 
 	// Test 1000 times.
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		var minLatency time.Duration
 		jMinLatency := -1
 		for j, d := range dialers {
@@ -186,7 +186,7 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 			Policy: consts.DialerSelectionPolicy_Random,
 		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 	count := make([]int, len(dialers))
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)
@@ -228,7 +228,7 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	zeroTarget := 3
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[zeroTarget], false)
 	count := make([]int, len(dialers))
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
 			t.Fatal(err)

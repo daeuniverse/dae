@@ -31,7 +31,7 @@ type OutlineElem struct {
 
 func ExportOutline(version string) *Outline {
 	// Get structure.
-	t := reflect.TypeOf(Config{})
+	t := reflect.TypeFor[Config]()
 	exporter := outlineExporter{
 		leaves:       make(map[string]reflect.Type),
 		pkgPathScope: t.PkgPath(),
@@ -65,8 +65,8 @@ type outlineExporter struct {
 }
 
 func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritSource bool) (outlines []*OutlineElem) {
-	for i := 0; i < t.NumField(); i++ {
-		section := t.Field(i)
+	for section := range t.Fields() {
+		section := section
 		// Parse desc.
 		var desc string
 		if descSource != nil {

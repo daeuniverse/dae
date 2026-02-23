@@ -263,7 +263,7 @@ loop:
 			if err := c.StopDNSListener(); err != nil {
 				log.Warnf("[Reload] Failed to stop old DNS listener: %v", err)
 			}
-			
+
 			log.Warnln("[Reload] Load new control plane")
 			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
 			if err != nil {
@@ -327,7 +327,7 @@ loop:
 	return nil
 }
 
-func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 

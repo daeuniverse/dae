@@ -41,7 +41,7 @@ type responseSlot struct {
 
 // responseSlotPool is a pool of responseSlot objects to reduce allocations.
 var responseSlotPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &responseSlot{
 			result: make(chan *dnsmessage.Msg, 1),
 		}
@@ -97,7 +97,7 @@ func (b *idBitmap) Allocate() (uint16, error) {
 	start := b.next.Add(1) - 1
 	startWord := (start >> 6) & 63
 
-	for i := uint32(0); i < 64; i++ {
+	for i := range uint32(64) {
 		word := (startWord + i) & 63
 
 		for {
@@ -143,7 +143,7 @@ func (b *idBitmap) Release(id uint16) {
 // channelPool is a pool of channels for DNS response routing.
 // This reduces allocations in the hot path.
 var channelPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return make(chan *dnsmessage.Msg, 1)
 	},
 }
@@ -551,7 +551,7 @@ func (d *DoTLS) getPConn(ctx context.Context) (*pipelinedConn, error) {
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
 	// With connection pool, we can retry with different connections
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		pc, err := d.getPConn(ctx)
 		if err != nil {
 			return nil, err
@@ -625,7 +625,7 @@ func (d *DoTCP) getPConn(ctx context.Context) (*pipelinedConn, error) {
 
 func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
 	// With connection pool, we can retry with different connections
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		pc, err := d.getPConn(ctx)
 		if err != nil {
 			return nil, err

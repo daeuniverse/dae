@@ -29,15 +29,12 @@ func NewConsoleErrorListener() *ConsoleErrorListener {
 	return &ConsoleErrorListener{}
 }
 
-func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendingSymbol interface{}, line, column int, msg string, e antlr.RecognitionException) {
+func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendingSymbol any, line, column int, msg string, e antlr.RecognitionException) {
 	// Do not accumulate errors.
 	if d.ErrorBuilder.Len() > 0 {
 		return
 	}
-	backtrack := column
-	if backtrack > 30 {
-		backtrack = 30
-	}
+	backtrack := min(column, 30)
 	starting := fmt.Sprintf("line %v:%v ", line, column)
 	offset := len(starting) + backtrack
 	var (
@@ -75,12 +72,12 @@ func (d *ConsoleErrorListener) ReportAttemptingFullContext(recognizer antlr.Pars
 func (d *ConsoleErrorListener) ReportContextSensitivity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex, prediction int, configs antlr.ATNConfigSet) {
 }
 
-func BaseContext(ctx interface{}) (baseCtx *antlr.BaseParserRuleContext) {
+func BaseContext(ctx any) (baseCtx *antlr.BaseParserRuleContext) {
 	val := reflect.ValueOf(ctx)
-	for val.Kind() == reflect.Pointer && val.Type() != reflect.TypeOf(&antlr.BaseParserRuleContext{}) {
+	for val.Kind() == reflect.Pointer && val.Type() != reflect.TypeFor[*antlr.BaseParserRuleContext]() {
 		val = val.Elem()
 	}
-	if val.Type() == reflect.TypeOf(&antlr.BaseParserRuleContext{}) {
+	if val.Type() == reflect.TypeFor[*antlr.BaseParserRuleContext]() {
 		baseCtx = val.Interface().(*antlr.BaseParserRuleContext)
 	} else {
 		baseCtxVal := val.FieldByName("BaseParserRuleContext")

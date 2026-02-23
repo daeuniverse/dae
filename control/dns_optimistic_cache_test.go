@@ -322,9 +322,9 @@ func TestDnsController_LRUEviction(t *testing.T) {
 
 	// Create 3 cache entries (all expired but never-expire policy)
 	now := time.Now()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		cache := &DnsCache{
-			DomainBitmap:     []uint32{1},
+			DomainBitmap: []uint32{1},
 			Answer: []dnsmessage.RR{
 				&dnsmessage.A{
 					Hdr: dnsmessage.RR_Header{
@@ -339,39 +339,39 @@ func TestDnsController_LRUEviction(t *testing.T) {
 			Deadline:         now.Add(-time.Duration(i+1) * time.Minute),
 			OriginalDeadline: now.Add(-time.Duration(i+1) * time.Minute),
 		}
-		
-		domain := string(rune('a' + i)) + ".example.com."
+
+		domain := string(rune('a'+i)) + ".example.com."
 		if err := cache.PrepackResponse(domain, dnsmessage.TypeA); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		cacheKey := domain + ":1"
 		cache.lastAccessNano.Store(now.Add(-time.Duration(3-i) * time.Minute).UnixNano())
 		controller.dnsCache.Store(cacheKey, cache)
 	}
-	
+
 	// Verify we have 3 entries
 	var count int
-	controller.dnsCache.Range(func(_, _ interface{}) bool {
+	controller.dnsCache.Range(func(_, _ any) bool {
 		count++
 		return true
 	})
 	require.Equal(t, 3, count, "should have 3 cache entries")
-	
+
 	// Trigger LRU eviction by calling evictExpiredDnsCache
 	controller.evictExpiredDnsCache(now)
-	
+
 	// Should still have 3 entries (no time-based eviction with ttl=0)
 	count = 0
-	controller.dnsCache.Range(func(_, _ interface{}) bool {
+	controller.dnsCache.Range(func(_, _ any) bool {
 		count++
 		return true
 	})
 	require.Equal(t, 3, count, "should still have 3 entries (no time-based eviction)")
-	
+
 	// Add one more entry to trigger LRU eviction
 	cache4 := &DnsCache{
-		DomainBitmap:     []uint32{1},
+		DomainBitmap: []uint32{1},
 		Answer: []dnsmessage.RR{
 			&dnsmessage.A{
 				Hdr: dnsmessage.RR_Header{
@@ -391,22 +391,22 @@ func TestDnsController_LRUEviction(t *testing.T) {
 	}
 	cache4.lastAccessNano.Store(now.UnixNano())
 	controller.dnsCache.Store("d.example.com.:1", cache4)
-	
+
 	// Trigger LRU eviction
 	controller.evictExpiredDnsCache(now)
-	
+
 	// Should have 3 entries (LRU eviction removed oldest one)
 	count = 0
-	controller.dnsCache.Range(func(_, _ interface{}) bool {
+	controller.dnsCache.Range(func(_, _ any) bool {
 		count++
 		return true
 	})
 	require.Equal(t, 3, count, "should have 3 entries after LRU eviction")
-	
+
 	// Verify oldest entry was evicted (a.example.com has oldest access time)
 	_, exists := controller.dnsCache.Load("a.example.com.:1")
 	require.False(t, exists, "oldest entry should be evicted by LRU")
-	
+
 	// Verify newest entry still exists
 	_, exists = controller.dnsCache.Load("d.example.com.:1")
 	require.True(t, exists, "newest entry should still exist")

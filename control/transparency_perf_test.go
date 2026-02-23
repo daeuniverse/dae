@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -93,7 +94,7 @@ func BenchmarkDnsCache_LookupLatency_Parallel(b *testing.B) {
 	_ = cache.PrepackResponse("example.com.", dnsmessage.TypeA)
 
 	var dnsCache sync.Map
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		key := fmt.Sprintf("domain%d.com.:1", i)
 		dnsCache.Store(key, cache)
 	}
@@ -591,7 +592,7 @@ func BenchmarkCriticalPath_FullDnsFlow_Parallel(b *testing.B) {
 	}
 
 	var cache sync.Map
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		dnsCache := &DnsCache{
 			DomainBitmap:     []uint32{1, 2, 3},
 			Answer:           answers,
@@ -668,7 +669,7 @@ func BenchmarkCriticalPath_FullParallel(b *testing.B) {
 	_ = dnsCache.PrepackResponse("example.com.", dnsmessage.TypeA)
 
 	var cache sync.Map
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		cache.Store(fmt.Sprintf("domain%d.com.:1", i), dnsCache)
 	}
 
@@ -788,7 +789,7 @@ func BenchmarkRoutingMatcher_LatencyDistribution(b *testing.B) {
 	warmup := 1000
 
 	// Warmup
-	for i := 0; i < warmup; i++ {
+	for range warmup {
 		_, _, _, _ = matcher.Match(
 			srcAddr.As16(),
 			dstAddr.As16(),
@@ -928,7 +929,7 @@ func reportLatencyPercentiles(b *testing.B, latencies []time.Duration) {
 	// Sort latencies
 	sorted := make([]time.Duration, len(latencies))
 	copy(sorted, latencies)
-	for i := 0; i < len(sorted); i++ {
+	for i := range sorted {
 		for j := i + 1; j < len(sorted); j++ {
 			if sorted[j] < sorted[i] {
 				sorted[i], sorted[j] = sorted[j], sorted[i]
@@ -1042,11 +1043,8 @@ func (m *mockDnsResponseMatcher) Match(qName string, qType uint16, ips []netip.A
 				goodSubrule = true
 			}
 		case consts.MatchType_IpSet:
-			for _, bin128 := range bin128List {
-				if m.ipSet[match.Value].HasPrefix(bin128) {
-					goodSubrule = true
-					break
-				}
+			if slices.ContainsFunc(bin128List, m.ipSet[match.Value].HasPrefix) {
+				goodSubrule = true
 			}
 		case consts.MatchType_QType:
 			if qType == uint16(match.Value) {
@@ -1326,7 +1324,7 @@ func BenchmarkDnsFlow_CompleteCacheHit_Parallel(b *testing.B) {
 	}
 
 	var cache sync.Map
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		dnsCache := &DnsCache{
 			DomainBitmap:     []uint32{1, 2, 3},
 			Answer:           answers,
@@ -1374,7 +1372,7 @@ func BenchmarkDnsFlow_SyncMapOverhead(b *testing.B) {
 			}
 
 			var cache sync.Map
-			for i := 0; i < size; i++ {
+			for i := range size {
 				dnsCache := &DnsCache{
 					DomainBitmap:     []uint32{1, 2, 3},
 					Answer:           answers,
@@ -1649,7 +1647,7 @@ func BenchmarkDnsFlow_OptimizedListenerPath(b *testing.B) {
 
 	// Buffer pool simulation
 	var bufPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			buf := make([]byte, 1024)
 			return &buf
 		},
@@ -1766,7 +1764,7 @@ func BenchmarkDnsFlow_DirectIDPatch(b *testing.B) {
 	prepacked, _ := msg.Pack()
 
 	var bufPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			buf := make([]byte, 1024)
 			return &buf
 		},
@@ -1953,4 +1951,3 @@ func BenchmarkDnsFlow_MiekgOverhead(b *testing.B) {
 		_, _ = resp.Pack()
 	}
 }
-

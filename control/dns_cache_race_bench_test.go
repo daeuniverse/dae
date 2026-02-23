@@ -21,7 +21,7 @@ import (
 func BenchmarkAsyncCacheWithSingleflight(b *testing.B) {
 	log := logrus.New()
 	log.SetLevel(logrus.WarnLevel)
-	
+
 	scenarios := []struct {
 		name       string
 		concurrent int
@@ -31,41 +31,39 @@ func BenchmarkAsyncCacheWithSingleflight(b *testing.B) {
 		{"100-concurrent", 100},
 		{"1000-concurrent", 1000},
 	}
-	
+
 	for _, scenario := range scenarios {
 		b.Run(scenario.name, func(b *testing.B) {
 			controller := &DnsController{
 				log: log,
 			}
 			controller.dnsCache = sync.Map{}
-			
+
 			var sf singleflight.Group
 			var upstreamCallCount atomic.Int32
-			
+
 			b.ResetTimer()
-			
+
 			for i := 0; i < b.N; i++ {
 				var wg sync.WaitGroup
-				
+
 				for j := 0; j < scenario.concurrent; j++ {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						
+					wg.Go(func() {
+
 						cacheKey := "example.com1"
-						
+
 						// Check cache
 						if _, ok := controller.dnsCache.Load(cacheKey); ok {
 							return // Cache hit
 						}
-						
+
 						// Use singleflight
-						_, _, _ = sf.Do(cacheKey, func() (interface{}, error) {
+						_, _, _ = sf.Do(cacheKey, func() (any, error) {
 							upstreamCallCount.Add(1)
-							
+
 							// Simulate upstream
 							time.Sleep(10 * time.Millisecond)
-							
+
 							// Async cache
 							go func() {
 								cache := &DnsCache{
@@ -73,18 +71,18 @@ func BenchmarkAsyncCacheWithSingleflight(b *testing.B) {
 								}
 								controller.dnsCache.Store(cacheKey, cache)
 							}()
-							
+
 							return nil, nil
 						})
-					}()
+					})
 				}
-				
+
 				wg.Wait()
-				
+
 				// Clear cache for next iteration
 				controller.dnsCache.Delete("example.com1")
 			}
-			
+
 			b.ReportMetric(float64(upstreamCallCount.Load())/float64(b.N), "upstream_calls/op")
 		})
 	}
@@ -94,16 +92,16 @@ func BenchmarkAsyncCacheWithSingleflight(b *testing.B) {
 func BenchmarkAsyncCacheVsSyncCache(b *testing.B) {
 	log := logrus.New()
 	log.SetLevel(logrus.WarnLevel)
-	
+
 	slowCacheDuration := 1 * time.Millisecond // Simulate BPF update
-	
+
 	b.Run("AsyncCache", func(b *testing.B) {
 		var cache sync.Map
-		
+
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			// Send response (instant)
-			
+
 			// Async cache (should not block)
 			go func(key int) {
 				time.Sleep(slowCacheDuration)
@@ -111,14 +109,14 @@ func BenchmarkAsyncCacheVsSyncCache(b *testing.B) {
 			}(i)
 		}
 	})
-	
+
 	b.Run("SyncCache", func(b *testing.B) {
 		var cache sync.Map
-		
+
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			// Send response (instant)
-			
+
 			// Sync cache (blocks)
 			time.Sleep(slowCacheDuration)
 			cache.Store(i, "cached")
@@ -130,21 +128,21 @@ func BenchmarkAsyncCacheVsSyncCache(b *testing.B) {
 func BenchmarkSingleflightOverhead(b *testing.B) {
 	log := logrus.New()
 	log.SetLevel(logrus.WarnLevel)
-	
+
 	var sf singleflight.Group
-	
+
 	b.Run("WithSingleflight", func(b *testing.B) {
 		b.RunParallel(func(pb *testing.PB) {
 			i := 0
 			for pb.Next() {
-				_, _, _ = sf.Do(fmt.Sprintf("key%d", i%10), func() (interface{}, error) {
+				_, _, _ = sf.Do(fmt.Sprintf("key%d", i%10), func() (any, error) {
 					return nil, nil
 				})
 				i++
 			}
 		})
 	})
-	
+
 	b.Run("WithoutSingleflight", func(b *testing.B) {
 		b.RunParallel(func(pb *testing.PB) {
 			i := 0
@@ -161,18 +159,18 @@ func BenchmarkSingleflightOverhead(b *testing.B) {
 func BenchmarkRealisticDnsQuery(b *testing.B) {
 	log := logrus.New()
 	log.SetLevel(logrus.WarnLevel)
-	
+
 	controller := &DnsController{
 		log: log,
 	}
 	controller.dnsCache = sync.Map{}
-	
+
 	var sf singleflight.Group
 	var upstreamCallCount atomic.Int32
-	
+
 	// Pre-populate 50% cache
 	domains := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		domains[i] = fmt.Sprintf("domain%d.com", i)
 		if i < 50 {
 			cache := &DnsCache{
@@ -181,29 +179,29 @@ func BenchmarkRealisticDnsQuery(b *testing.B) {
 			controller.dnsCache.Store(domains[i]+"1", cache)
 		}
 	}
-	
+
 	b.ResetTimer()
-	
+
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			domain := domains[i%100]
 			cacheKey := domain + "1"
-			
+
 			// Check cache
 			if _, ok := controller.dnsCache.Load(cacheKey); ok {
 				// Cache hit
 				i++
 				continue
 			}
-			
+
 			// Cache miss - use singleflight
-			_, _, _ = sf.Do(cacheKey, func() (interface{}, error) {
+			_, _, _ = sf.Do(cacheKey, func() (any, error) {
 				upstreamCallCount.Add(1)
-				
+
 				// Simulate upstream (50ms latency)
 				time.Sleep(50 * time.Millisecond)
-				
+
 				// Async cache
 				go func() {
 					cache := &DnsCache{
@@ -211,19 +209,19 @@ func BenchmarkRealisticDnsQuery(b *testing.B) {
 					}
 					controller.dnsCache.Store(cacheKey, cache)
 				}()
-				
+
 				return nil, nil
 			})
-			
+
 			i++
 		}
 	})
-	
+
 	// Calculate cache hit rate
 	totalOps := b.N
 	hits := totalOps / 2 // Roughly 50% due to pre-population
 	hitRate := float64(hits) / float64(totalOps) * 100
-	
+
 	b.ReportMetric(hitRate, "cache_hit_rate_%")
 	b.ReportMetric(float64(upstreamCallCount.Load()), "total_upstream_calls")
 }
@@ -232,40 +230,40 @@ func BenchmarkRealisticDnsQuery(b *testing.B) {
 func BenchmarkHighQpsScenario(b *testing.B) {
 	log := logrus.New()
 	log.SetLevel(logrus.WarnLevel)
-	
+
 	controller := &DnsController{
 		log: log,
 	}
 	controller.dnsCache = sync.Map{}
-	
+
 	var sf singleflight.Group
 	var upstreamCallCount atomic.Int32
 	var requestCount atomic.Int32
-	
+
 	// Simulate 10 unique domains
-	domains := []string{"a.com", "b.com", "c.com", "d.com", "e.com", 
+	domains := []string{"a.com", "b.com", "c.com", "d.com", "e.com",
 		"f.com", "g.com", "h.com", "i.com", "j.com"}
-	
+
 	b.ResetTimer()
-	
+
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			reqNum := requestCount.Add(1)
 			domain := domains[int(reqNum)%len(domains)]
 			cacheKey := domain + "1"
-			
+
 			// Check cache
 			if _, ok := controller.dnsCache.Load(cacheKey); ok {
 				continue // Cache hit
 			}
-			
+
 			// Cache miss - use singleflight
-			_, _, _ = sf.Do(cacheKey, func() (interface{}, error) {
+			_, _, _ = sf.Do(cacheKey, func() (any, error) {
 				upstreamCallCount.Add(1)
-				
+
 				// Fast upstream (10ms)
 				time.Sleep(10 * time.Millisecond)
-				
+
 				// Async cache
 				go func() {
 					cache := &DnsCache{
@@ -273,16 +271,16 @@ func BenchmarkHighQpsScenario(b *testing.B) {
 					}
 					controller.dnsCache.Store(cacheKey, cache)
 				}()
-				
+
 				return nil, nil
 			})
 		}
 	})
-	
+
 	// Calculate deduplication rate
 	upstreamCalls := upstreamCallCount.Load()
 	dedupRate := float64(int(b.N)-int(upstreamCalls)) / float64(b.N) * 100
-	
+
 	b.ReportMetric(dedupRate, "deduplication_rate_%")
 	b.ReportMetric(float64(upstreamCalls), "upstream_calls")
 }

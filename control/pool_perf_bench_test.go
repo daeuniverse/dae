@@ -17,7 +17,7 @@ func BenchmarkUdpTaskPool_ParallelManyKeys(b *testing.B) {
 	p := NewUdpTaskPool()
 	const keyN = 1024
 	keys := make([]netip.AddrPort, 0, keyN)
-	for i := 0; i < keyN; i++ {
+	for i := range keyN {
 		keys = append(keys, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1}), uint16(10000+i)))
 	}
 	var counter atomic.Uint64

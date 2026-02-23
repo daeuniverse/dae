@@ -35,7 +35,7 @@ import (
 // This avoids memory allocation on every cache hit for ID patching.
 // Typical DNS response size is under 512 bytes, we allocate 1024 to be safe.
 var dnsResponseBufPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		buf := make([]byte, 1024)
 		return &buf
 	},
@@ -78,8 +78,8 @@ type DnsControllerOption struct {
 	FixedDomainTtl        map[string]int
 	ConcurrencyLimit      int
 	OptimisticCache       bool
-	OptimisticCacheTtl    int  // 0 means never expire (rely on LRU eviction)
-	MaxCacheSize          int  // maximum number of cache entries (0 = unlimited)
+	OptimisticCacheTtl    int // 0 means never expire (rely on LRU eviction)
+	MaxCacheSize          int // maximum number of cache entries (0 = unlimited)
 }
 
 type DnsController struct {
@@ -90,7 +90,7 @@ type DnsController struct {
 
 	optimisticCacheEnabled bool
 	optimisticCacheTtl     int // seconds, 0 means never expire
-	maxCacheSize          int // maximum number of cache entries (0 = unlimited)
+	maxCacheSize           int // maximum number of cache entries (0 = unlimited)
 
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
@@ -170,7 +170,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	if limit <= 0 {
 		limit = defaultConcurrencyLimit
 	}
-	
+
 	// Backward compatibility: if both optimistic_cache_ttl and maxCacheSize are 0,
 	// use optimistic_cache_ttl=60 (old default behavior)
 	// This ensures existing code continues to work without configuration changes
@@ -224,7 +224,7 @@ func (c *DnsController) Close() error {
 	})
 
 	var errs []error
-	c.dnsForwarderCache.Range(func(key, value interface{}) bool {
+	c.dnsForwarderCache.Range(func(key, value any) bool {
 		k := key.(dnsForwarderKey)
 		forwarder := c.extractDnsForwarder(value)
 		if forwarder != nil {
@@ -239,7 +239,7 @@ func (c *DnsController) Close() error {
 	// Clear dnsCache to prevent memory leak on reload.
 	// Each DnsCache entry contains DomainBitmap and Answer which can accumulate
 	// significant memory over time if not released.
-	c.dnsCache.Range(func(key, value interface{}) bool {
+	c.dnsCache.Range(func(key, value any) bool {
 		c.dnsCache.Delete(key)
 		return true
 	})
@@ -334,9 +334,9 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 	// - When optimistic_cache_ttl == 0 AND maxCacheSize > 0: skip time-based eviction (rely on LRU)
 	// - When both are 0 (backward compat / direct struct creation): use deadline-based eviction
 	useTimeBasedEviction := c.optimisticCacheTtl > 0 || (c.optimisticCacheTtl == 0 && c.maxCacheSize == 0)
-	
+
 	if useTimeBasedEviction {
-		c.dnsCache.Range(func(key, value interface{}) bool {
+		c.dnsCache.Range(func(key, value any) bool {
 			cacheKey, ok := key.(string)
 			if !ok {
 				c.dnsCache.Delete(key)
@@ -347,7 +347,7 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 				c.dnsCache.Delete(cacheKey)
 				return true
 			}
-			
+
 			// Calculate effective deadline
 			// - If optimistic cache is enabled and ttl > 0: use (deadline + optimisticCacheTtl)
 			// - Otherwise: use deadline directly
@@ -355,17 +355,17 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 			if c.optimisticCacheEnabled && c.optimisticCacheTtl > 0 {
 				effectiveDeadline = cache.Deadline.Add(time.Duration(c.optimisticCacheTtl) * time.Second)
 			}
-			
+
 			if effectiveDeadline.After(now) {
 				return true // Still valid, keep it
 			}
-			
+
 			// Too stale or expired without optimistic cache, evict it
 			c.evictDnsRespCacheIfSame(cacheKey, cache)
 			return true
 		})
 	}
-	
+
 	// Step 2: LRU eviction if cache size exceeds limit
 	// This is important when optimistic_cache_ttl=0 (never expire)
 	if c.maxCacheSize > 0 {
@@ -377,28 +377,28 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 func (c *DnsController) evictLRUIfFull(now time.Time) {
 	// Count current cache size
 	var count int
-	c.dnsCache.Range(func(_, _ interface{}) bool {
+	c.dnsCache.Range(func(_, _ any) bool {
 		count++
 		return true
 	})
-	
+
 	// Check if eviction is needed
 	if count <= c.maxCacheSize {
 		return
 	}
-	
+
 	// Find and evict oldest entries
 	// Need to evict (count - maxCacheSize) entries
 	numToEvict := count - c.maxCacheSize
-	
+
 	// Collect all cache entries with their access times
 	type cacheEntry struct {
 		key        string
 		lastAccess int64
 	}
-	
+
 	var entries []cacheEntry
-	c.dnsCache.Range(func(key, value interface{}) bool {
+	c.dnsCache.Range(func(key, value any) bool {
 		cacheKey, ok := key.(string)
 		if !ok {
 			return true
@@ -413,7 +413,7 @@ func (c *DnsController) evictLRUIfFull(now time.Time) {
 		})
 		return true
 	})
-	
+
 	// Sort by last access time (oldest first)
 	// Simple insertion sort (good enough for small number of entries to evict)
 	for i := 1; i < len(entries); i++ {
@@ -421,14 +421,14 @@ func (c *DnsController) evictLRUIfFull(now time.Time) {
 			entries[j], entries[j-1] = entries[j-1], entries[j]
 		}
 	}
-	
+
 	// Evict oldest entries
 	evicted := 0
 	for _, entry := range entries {
 		if evicted >= numToEvict {
 			break
 		}
-		
+
 		// Load cache again to get current reference
 		if val, ok := c.dnsCache.Load(entry.key); ok {
 			if cache, ok := val.(*DnsCache); ok {
@@ -532,7 +532,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 		return nil, false
 	}
 	cache := val.(*DnsCache)
-	
+
 	// Extract qname and qtype from the message for TTL refresh
 	var qname string
 	var qtype uint16
@@ -540,7 +540,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 		qname = msg.Question[0].Name
 		qtype = msg.Question[0].Qtype
 	}
-	
+
 	// Determine deadline based on ignoreFixedTtl
 	var deadline time.Time
 	if !ignoreFixedTtl {
@@ -548,12 +548,12 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	} else {
 		deadline = cache.OriginalDeadline
 	}
-	
+
 	now := time.Now()
-	
+
 	// Update last access time for LRU eviction (atomic operation)
 	cache.lastAccessNano.Store(now.UnixNano())
-	
+
 	// Fast path: use pre-packed response with approximate TTL (fresh response)
 	if deadline.After(now) {
 		if resp := cache.GetPackedResponseWithApproximateTTL(qname, qtype, now); resp != nil {
@@ -568,14 +568,14 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 			}
 			return resp, false
 		}
-		
+
 		// Fallback: pre-packed response not available, use traditional path
 		if resp = cache.FillIntoWithTTL(msg, now); resp != nil {
 			return resp, false
 		}
 		return nil, false
 	}
-	
+
 	// Cache expired - check if optimistic cache is enabled
 	if c.optimisticCacheEnabled {
 		// Try stale response (RFC 8767)
@@ -589,7 +589,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 			return resp, needRefresh
 		}
 	}
-	
+
 	// Cache expired and beyond stale window (or optimistic cache disabled)
 	// Evict the cache
 	c.evictDnsRespCacheIfSame(cacheKey, cache)
@@ -804,7 +804,7 @@ func (c *cachedDnsForwarder) endUse() {
 
 var dnsForwarderFactory = newDnsForwarder
 
-func (c *DnsController) extractDnsForwarder(value interface{}) DnsForwarder {
+func (c *DnsController) extractDnsForwarder(value any) DnsForwarder {
 	switch v := value.(type) {
 	case *cachedDnsForwarder:
 		return v.forwarder
@@ -824,7 +824,7 @@ func (c *DnsController) evictIdleDnsForwarders(now time.Time) {
 	idleNano := dnsForwarderIdleTTL.Nanoseconds()
 	var toClose []DnsForwarder
 
-	c.dnsForwarderCache.Range(func(key, value interface{}) bool {
+	c.dnsForwarderCache.Range(func(key, value any) bool {
 		k, ok := key.(dnsForwarderKey)
 		if !ok {
 			c.dnsForwarderCache.Delete(key)
@@ -882,7 +882,7 @@ func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg 
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
 	now := time.Now()
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if cached, ok := c.dnsForwarderCache.Load(key); ok {
 			switch entry := cached.(type) {
 			case *cachedDnsForwarder:
@@ -1054,7 +1054,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 				// Background refresh - don't block the current request
 				go c.backgroundRefresh(cacheKey, dnsMessage, req)
 			}
-			
+
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
 			}
@@ -1076,7 +1076,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 
 		// Cache miss - use singleflight to coalesce concurrent requests
 		// This prevents thundering herd on upstream DNS servers
-		res, err, _ := c.sf.Do(cacheKey, func() (interface{}, error) {
+		res, err, _ := c.sf.Do(cacheKey, func() (any, error) {
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
 			return c.resolveForSingleflight(ctx, dnsMessage, req)
@@ -1297,7 +1297,7 @@ func (c *DnsController) handleWithResponseWriter_(
 		if needRefresh {
 			go c.backgroundRefresh(cacheKey, dnsMessage, req)
 		}
-		
+
 		if needResp {
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 				return err
@@ -1362,25 +1362,25 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	if req == nil || req.lConn == nil {
 		return fmt.Errorf("dns request connection is nil for cached response")
 	}
-	
+
 	// OPTIMIZATION: Use buffer pool to avoid memory allocation on every cache hit.
 	// DNS Message ID is in the first 2 bytes (big-endian).
 	if len(resp) >= 2 && len(resp) <= 1024 {
 		// Get buffer from pool
 		bufPtr := dnsResponseBufPool.Get().(*[]byte)
 		defer dnsResponseBufPool.Put(bufPtr)
-		
+
 		// Copy response and patch ID
 		patchedResp := (*bufPtr)[:len(resp)]
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
-		
+
 		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
 		return nil
 	}
-	
+
 	// Fallback for oversized responses (rare)
 	patchedResp := make([]byte, len(resp))
 	copy(patchedResp, resp)
@@ -1572,12 +1572,12 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 	// This reduces client-perceived latency, especially important for:
 	// 1. High QPS scenarios where cache operations accumulate
 	// 2. Proxy chains with already high latency
-	// 
+	//
 	// Cache operations (~260ns + BPF update) are negligible compared to
 	// network latency (1-2s), but doing them async is still beneficial:
 	// - Reduces tail latency under load
 	// - Follows "respond first, process later" best practice
-	// 
+	//
 	// Trade-off: If caching fails, the response is still valid but won't be cached.
 	// This is acceptable because:
 	// - Cache failures are rare

@@ -24,7 +24,7 @@ func TestUdpTaskPool_PreserveOrderPerKey(t *testing.T) {
 	var mu sync.Mutex
 	var done atomic.Int32
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		idx := i
 		pool.EmitTask(key, func() {
 			mu.Lock()
@@ -37,7 +37,7 @@ func TestUdpTaskPool_PreserveOrderPerKey(t *testing.T) {
 	require.Eventually(t, func() bool { return done.Load() == n }, 2*time.Second, 10*time.Millisecond)
 
 	require.Len(t, got, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.Equal(t, i, got[i])
 	}
 }
@@ -50,7 +50,7 @@ func TestUdpTaskPool_ConcurrentDifferentKeys(t *testing.T) {
 
 	const tasks = 40
 
-	for i := 0; i < tasks; i++ {
+	for i := range tasks {
 		key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(11000+i%8))
 		pool.EmitTask(key, func() {
 			cur := active.Add(1)
@@ -119,7 +119,7 @@ func TestUdpTaskPool_HotKeyOverflow_NonBlockingAndOrdered(t *testing.T) {
 
 	enqueued := make(chan struct{})
 	go func() {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			idx := i
 			pool.EmitTask(key, func() {
 				mu.Lock()
@@ -142,7 +142,7 @@ func TestUdpTaskPool_HotKeyOverflow_NonBlockingAndOrdered(t *testing.T) {
 	require.Eventually(t, func() bool { return done.Load() == n }, 3*time.Second, 10*time.Millisecond)
 
 	require.Len(t, got, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.Equal(t, i, got[i])
 	}
 }

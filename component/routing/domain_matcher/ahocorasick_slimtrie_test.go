@@ -39,7 +39,7 @@ func TestAhocorasickSlimtrie(t *testing.T) {
 	}
 
 	rand.Seed(200)
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		sample := TestSample[rand.Intn(len(TestSample))]
 		choice := rand.Intn(10)
 		switch {

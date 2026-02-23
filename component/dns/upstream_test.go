@@ -94,10 +94,8 @@ func TestUpstreamResolver_ConcurrentCalls(t *testing.T) {
 	var successCount atomic.Int32
 	var stateSnapshot atomic.Pointer[upstreamState]
 
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			_, err := resolver.GetUpstream()
 			if err != nil {
 				errorCount.Add(1)
@@ -106,7 +104,7 @@ func TestUpstreamResolver_ConcurrentCalls(t *testing.T) {
 			}
 			// Capture state after call
 			stateSnapshot.Store(resolver.state.Load())
-		}()
+		})
 	}
 
 	wg.Wait()

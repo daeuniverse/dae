@@ -27,13 +27,11 @@ func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
 	const workers = 8
 	stop := make(chan struct{})
 	start := make(chan struct{})
-	panicCh := make(chan interface{}, workers)
+	panicCh := make(chan any, workers)
 	var wg sync.WaitGroup
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					panicCh <- r
@@ -49,7 +47,7 @@ func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
 					p.put(newTestPipeConn())
 				}
 			}
-		}()
+		})
 	}
 
 	close(start)
