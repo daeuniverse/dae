@@ -112,11 +112,8 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if fi.IsDir() {
-		return nil, fmt.Errorf("subscription file cannot be a directory: %v", path)
-	}
-	if fi.Mode()&0037 > 0 {
-		return nil, fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, path)
+	if err = common.ValidateFilePermissionNotTooOpen(path, fi); err != nil {
+		return nil, err
 	}
 	// Resolve the first line instruction.
 	fReader := bufio.NewReader(f)

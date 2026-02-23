@@ -151,6 +151,9 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		}(endpointServer, cfg)
 	}
 	endpointCfg := endpointConfigFromGlobal(conf, log)
+	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
+		return fmt.Errorf("invalid endpoint tls config: %w", err)
+	}
 	startEndpointServer(endpointCfg)
 
 	// Serve tproxy TCP/UDP server util signals.
@@ -264,6 +267,16 @@ loop:
 			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
 			logrus.SetOutput(oldLogOutput)
 
+			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
+			if err = validateEndpointTLSFiles(newEndpointCfg); err != nil {
+				log.WithFields(logrus.Fields{
+					"err": err,
+				}).Errorln("[Reload] Failed to reload")
+				sdnotify.Ready()
+				_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+				continue
+			}
+
 			// New control plane.
 			obj := c.EjectBpf()
 			var dnsCache map[string]*control.DnsCache
@@ -315,7 +328,6 @@ loop:
 			}
 			oldC.Close()
 
-			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
 			if endpointConfigChanged(endpointCfg, newEndpointCfg) {
 				if endpointServer != nil {
 					_ = endpointServer.Shutdown(context.Background())
@@ -362,6 +374,42 @@ func endpointConfigFromGlobal(conf *config.Config, log *logrus.Logger) metrics.E
 
 func endpointConfigChanged(a, b metrics.EndpointConfig) bool {
 	return a != b
+}
+
+func validateEndpointTLSFiles(cfg metrics.EndpointConfig) error {
+	if cfg.TlsCertificate == "" && cfg.TlsKey == "" {
+		return nil
+	}
+	if cfg.TlsCertificate == "" || cfg.TlsKey == "" {
+		return fmt.Errorf("endpoint_tls_certificate and endpoint_tls_key must be configured together")
+	}
+
+	certFile, err := os.Open(cfg.TlsCertificate)
+	if err != nil {
+		return fmt.Errorf("cannot open endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
+	}
+	certFi, err := certFile.Stat()
+	certFile.Close()
+	if err != nil {
+		return fmt.Errorf("cannot stat endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
+	}
+	if err = common.ValidateFilePermissionAllowed(cfg.TlsCertificate, certFi, 0o640, 0o644); err != nil {
+		return fmt.Errorf("invalid endpoint_tls_certificate: %w", err)
+	}
+
+	keyFile, err := os.Open(cfg.TlsKey)
+	if err != nil {
+		return fmt.Errorf("cannot open endpoint_tls_key '%s': %w", cfg.TlsKey, err)
+	}
+	keyFi, err := keyFile.Stat()
+	keyFile.Close()
+	if err != nil {
+		return fmt.Errorf("cannot stat endpoint_tls_key '%s': %w", cfg.TlsKey, err)
+	}
+	if err = common.ValidateFilePermissionAllowed(cfg.TlsKey, keyFi, 0o600); err != nil {
+		return fmt.Errorf("invalid endpoint_tls_key: %w", err)
+	}
+	return nil
 }
 
 func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {

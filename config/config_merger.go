@@ -71,11 +71,8 @@ func (m *Merger) readEntry(entry string) (err error) {
 	if err != nil {
 		return err
 	}
-	if fi.IsDir() {
-		return fmt.Errorf("cannot include a directory: %v", entry)
-	}
-	if fi.Mode()&0037 > 0 {
-		return fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, entry)
+	if err = common.ValidateFilePermissionNotTooOpen(entry, fi); err != nil {
+		return err
 	}
 	// Read and parse.
 	b, err := io.ReadAll(f)
