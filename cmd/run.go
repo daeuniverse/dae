@@ -127,6 +127,11 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
+	endpointCfg := endpointConfigFromGlobal(conf, log)
+	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
+		return fmt.Errorf("invalid endpoint tls config: %w", err)
+	}
+
 	// New ControlPlane.
 	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
 	if err != nil {
@@ -149,10 +154,6 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				log.WithError(e).Errorln("Endpoint server stopped with error")
 			}
 		}(endpointServer, cfg)
-	}
-	endpointCfg := endpointConfigFromGlobal(conf, log)
-	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
-		return fmt.Errorf("invalid endpoint tls config: %w", err)
 	}
 	startEndpointServer(endpointCfg)
 
