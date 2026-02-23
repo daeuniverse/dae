@@ -159,7 +159,10 @@ struct dae_param {
 	__u8 padding[2];
 };
 
-static volatile const struct dae_param PARAM = {};
+/* Use const volatile for cilium/ebpf v0.20.0 compatibility.
+ * This ensures the variable is placed in .rodata section and
+ * can be rewritten from userspace via RewriteConstants. */
+const volatile struct dae_param PARAM = {};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);

@@ -130,7 +130,6 @@ func TestSS2022_NewFromLink_Matrix(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			link := tc.buildLink()
 			d, err := dialer.NewFromLink(option, iOption, link, "matrix-sub")

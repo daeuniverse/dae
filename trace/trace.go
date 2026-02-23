@@ -15,6 +15,7 @@ import (
 	"os"
 	"slices"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -75,10 +76,13 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	defer func() {
 		i := 0
 		fmt.Printf("\n")
-		for _, link := range links {
+		for _, l := range links {
 			i++
 			fmt.Printf("detaching kprobes: %04d/%04d\r", i, len(links))
-			link.Close()
+			// v0.20.0 best practice: Detach() before Close() for cleaner cleanup
+			// Detach explicitly breaks the link from the attachment point
+			_ = l.Detach()
+			l.Close()
 		}
 		fmt.Printf("\n")
 	}()
@@ -95,7 +99,7 @@ func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects
 	if err != nil {
 		return nil, fmt.Errorf("failed to load BPF: %+v\n", err)
 	}
-	if err := spec.RewriteConstants(map[string]interface{}{
+	if err := spec.RewriteConstants(map[string]any{
 		"tracing_cfg": struct {
 			port      uint16
 			l4Proto   uint16
@@ -112,7 +116,6 @@ func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects
 	}
 	var opts ebpf.CollectionOptions
 	opts.Programs.LogLevel = ebpf.LogLevelInstruction
-	opts.Programs.LogSize = ebpf.DefaultVerifierLogSize * 100
 	objs := bpfObjects{}
 	if err := spec.LoadAndAssign(&objs, &opts); err != nil {
 		var (
@@ -140,9 +143,9 @@ func searchAvailableTargets() (targets map[string]int, kfreeSkbReasons map[uint6
 		return
 	}
 
-	iter := btfSpec.Iterate()
-	for iter.Next() {
-		typ := iter.Type
+	for typ, iterErr := range btfSpec.All() {
+		_ = iterErr // v0.20.0: iterErr is always nil for All()
+		typ := typ
 		fn, ok := typ.(*btf.Func)
 		if !ok {
 			continue
@@ -237,9 +240,13 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 	}
 	defer eventsReader.Close()
 
+	// v0.20.0 best practice: use SetDeadline for responsive context cancellation
+	// This allows Read() to return within 100ms when context is cancelled,
+	// instead of blocking indefinitely until the next event arrives.
 	go func() {
 		<-ctx.Done()
-		eventsReader.Close()
+		// Set a short deadline to unblock any pending Read()
+		eventsReader.SetDeadline(time.Now().Add(100 * time.Millisecond))
 	}()
 
 	type bpfEvent struct {

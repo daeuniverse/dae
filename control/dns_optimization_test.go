@@ -146,7 +146,7 @@ func TestConcurrencyLimit_Reject(t *testing.T) {
 	defer controller.Close()
 
 	// Fill up the semaphore
-	for i := 0; i < smallLimit; i++ {
+	for range smallLimit {
 		controller.concurrencyLimiter <- struct{}{}
 	}
 
@@ -390,17 +390,15 @@ func TestDifferentialBpfUpdate_ConcurrentSafety(t *testing.T) {
 	startWg := sync.WaitGroup{}
 	startWg.Add(1)
 
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range numGoroutines {
+		wg.Go(func() {
 			startWg.Wait() // Wait for all goroutines to be ready
-			
+
 			now := time.Now()
 			if cache.NeedsBpfUpdate(now) {
 				successCount.Add(1)
 			}
-		}()
+		})
 	}
 
 	// Start all goroutines at once

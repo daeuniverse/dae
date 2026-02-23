@@ -7,15 +7,15 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/mholt/archiver/v3"
+	"github.com/mholt/archives"
 	"github.com/shirou/gopsutil/v4/net"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"
@@ -33,7 +33,7 @@ var (
 )
 
 func dumpNetworkInfo() {
-	tempDir, err := ioutil.TempDir("", "sysdump")
+	tempDir, err := os.MkdirTemp("", "sysdump")
 	if err != nil {
 		fmt.Printf("Failed to create temp directory: %v\n", err)
 		return
@@ -47,7 +47,7 @@ func dumpNetworkInfo() {
 	dumpIPTables(tempDir)
 
 	tarFile := fmt.Sprintf("dae-sysdump.%d.tar.gz", time.Now().Unix())
-	if err := archiver.Archive([]string{tempDir}, tarFile); err != nil {
+	if err := createTarGz(tempDir, tarFile); err != nil {
 		fmt.Printf("Failed to create tar archive: %v\n", err)
 		return
 	}
@@ -190,7 +190,7 @@ func dumpRouting(outputDir string) {
 		}
 
 		if route.Protocol != 0 {
-			routeStr += fmt.Sprintf(" proto %s", protocolToString(route.Protocol))
+			routeStr += fmt.Sprintf(" proto %s", protocolToString(int(route.Protocol)))
 		}
 
 		if route.Type != 0 {
@@ -203,7 +203,7 @@ func dumpRouting(outputDir string) {
 
 		buffer.WriteString(routeStr + "\n")
 	}
-	err = ioutil.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
+	err = os.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
 	if err != nil {
 		fmt.Printf("Failed to write routing information to file: %v\n", err)
 	}
@@ -226,7 +226,7 @@ func dumpNetInterfaces(outputDir string) {
 		}
 	}
 
-	ioutil.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
+	os.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
 }
 
 func dumpSysctl(outputDir string) {
@@ -239,7 +239,7 @@ func dumpSysctl(outputDir string) {
 		}
 
 		if !info.IsDir() {
-			value, err := ioutil.ReadFile(path)
+			value, err := os.ReadFile(path)
 			if err != nil {
 				fmt.Printf("Fail in filepath.Walk: %v\n", err)
 			}
@@ -254,7 +254,7 @@ func dumpSysctl(outputDir string) {
 		fmt.Printf("Failed to get sysctl settings: %v\n", err)
 	}
 
-	ioutil.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
+	os.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
 }
 
 func dumpNetfilter(outputDir string) {
@@ -265,7 +265,7 @@ func dumpNetfilter(outputDir string) {
 		return
 	}
 
-	ioutil.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
+	os.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
 }
 
 func dumpIPTables(outputDir string) {
@@ -274,7 +274,7 @@ func dumpIPTables(outputDir string) {
 	if err != nil {
 		fmt.Printf("Failed to get iptables: %v\n", err)
 	} else {
-		ioutil.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
+		os.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
 	}
 
 	ip6tables := exec.Command("ip6tables-save", "-c")
@@ -282,8 +282,36 @@ func dumpIPTables(outputDir string) {
 	if err != nil {
 		fmt.Printf("Failed to get ip6tables: %v\n", err)
 	} else {
-		ioutil.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
+		os.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
 	}
+}
+
+// createTarGz creates a tar.gz archive from a directory using the modern archives library
+func createTarGz(srcDir, outputFile string) error {
+	ctx := context.Background()
+
+	// Map files from disk to archive paths
+	files, err := archives.FilesFromDisk(ctx, nil, map[string]string{
+		srcDir: "",
+	})
+	if err != nil {
+		return err
+	}
+
+	// Create the output file
+	out, err := os.Create(outputFile)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Create a gzipped tarball
+	format := archives.CompressedArchive{
+		Compression: archives.Gz{},
+		Archival:    archives.Tar{},
+	}
+
+	return format.Archive(ctx, out, files)
 }
 
 func init() {

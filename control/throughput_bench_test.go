@@ -44,7 +44,7 @@ func BenchmarkDnsQPS_CacheHit(b *testing.B) {
 	}
 
 	var cache sync.Map
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		dnsCache := &DnsCache{
 			DomainBitmap:     []uint32{1, 2, 3},
 			Answer:           answers,
@@ -95,7 +95,7 @@ func BenchmarkDnsQPS_VariousCacheSizes(b *testing.B) {
 			}
 
 			var cache sync.Map
-			for i := 0; i < size; i++ {
+			for i := range size {
 				dnsCache := &DnsCache{
 					DomainBitmap:     []uint32{1, 2, 3},
 					Answer:           answers,
@@ -240,7 +240,7 @@ func BenchmarkConnectionThroughput_UDP(b *testing.B) {
 	var processed atomic.Int64
 
 	keys := make([]netip.AddrPort, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		keys[i] = netip.AddrPortFrom(
 			netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1}),
 			uint16(10000+i),
@@ -335,7 +335,7 @@ func runMixedWorkload(b *testing.B, cfg MixedWorkloadConfig) {
 	}
 
 	var cache sync.Map
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		dnsCache := &DnsCache{
 			DomainBitmap:     []uint32{1, 2, 3},
 			Answer:           answers,
@@ -456,7 +456,7 @@ func BenchmarkStress_MemoryPressure(b *testing.B) {
 	}
 
 	// Pre-populate with many entries
-	for i := 0; i < 50000; i++ {
+	for i := range 50000 {
 		dnsCache := &DnsCache{
 			DomainBitmap:     []uint32{1, 2, 3},
 			Answer:           answers,

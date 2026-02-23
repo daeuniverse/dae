@@ -26,16 +26,14 @@ func TestPacketSnifferPool_CreateMuMap_NoLeakUnderConcurrency(t *testing.T) {
 	var created atomic.Int32
 	var wg sync.WaitGroup
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			sniffer, isNew := p.GetOrCreate(key, &PacketSnifferOptions{Ttl: time.Second})
 			require.NotNil(t, sniffer)
 			if isNew {
 				created.Add(1)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -54,13 +52,11 @@ func TestUdpEndpointPool_CreateMuMap_NoLeakOnConcurrentError(t *testing.T) {
 	const workers = 64
 	var wg sync.WaitGroup
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{})
 			require.Error(t, err)
-		}()
+		})
 	}
 
 	wg.Wait()

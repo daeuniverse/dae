@@ -192,7 +192,7 @@ var DefaultAnyfromPool = NewAnyfromPool()
 
 func NewAnyfromPool() *AnyfromPool {
 	p := &AnyfromPool{}
-	for i := 0; i < anyfromPoolShardCount; i++ {
+	for i := range anyfromPoolShardCount {
 		p.shards[i].pool = make(map[netip.AddrPort]*Anyfrom, 16)
 	}
 	p.startJanitor()
@@ -261,7 +261,7 @@ func (p *AnyfromPool) startJanitor() {
 
 			for now := range ticker.C {
 				nowNano := now.UnixNano()
-				for i := 0; i < anyfromPoolShardCount; i++ {
+				for i := range anyfromPoolShardCount {
 					shard := &p.shards[i]
 					type expiredItem struct {
 						key netip.AddrPort

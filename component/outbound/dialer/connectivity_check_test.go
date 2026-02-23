@@ -83,7 +83,7 @@ func TestDialerCheck_SkipDoesNotCascadeToUnavailable(t *testing.T) {
 		},
 	}
 
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		ok, err := d.Check(checkOpt)
 		if err != nil {
 			t.Fatalf("unexpected error at round %d: %v", i, err)
@@ -185,7 +185,7 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 		t.Fatal("expected initial failure")
 	}
 
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		ok, skipErr := d.Check(&CheckOption{
 			networkType: networkType,
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
@@ -241,7 +241,7 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 		t.Fatal("expected failure from d1")
 	}
 
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		ok, skipErr := d2.Check(&CheckOption{
 			networkType: networkType,
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {

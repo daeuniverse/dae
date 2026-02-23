@@ -17,12 +17,10 @@ func TestControlPlaneCore_Flip_Race(t *testing.T) {
 	var wg sync.WaitGroup
 	iterations := 1000 // Must be even
 
-	for i := 0; i < iterations; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range iterations {
+		wg.Go(func() {
 			c.Flip()
-		}()
+		})
 	}
 
 	wg.Wait()

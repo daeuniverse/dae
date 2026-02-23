@@ -35,13 +35,13 @@ func TestUdpTaskPoolNoLeak(t *testing.T) {
 	const tasksPerKey = 10
 
 	var wg sync.WaitGroup
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := netip.AddrPortFrom(
 			netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}),
 			12345,
 		)
-		
-		for j := 0; j < tasksPerKey; j++ {
+
+		for range tasksPerKey {
 			wg.Add(1)
 			go func(k netip.AddrPort) {
 				defer wg.Done()
@@ -52,10 +52,10 @@ func TestUdpTaskPoolNoLeak(t *testing.T) {
 			}(key)
 		}
 	}
-	
+
 	wg.Wait()
 	t.Logf("All tasks emitted and completed")
-	
+
 	// Check goroutine count immediately after
 	afterStress := runtime.NumGoroutine()
 	t.Logf("After stress test goroutines: %d (delta: +%d)", afterStress, afterStress-initialGoroutines)
@@ -83,12 +83,12 @@ func TestUdpTaskPoolNoLeak(t *testing.T) {
 
 	// Check queue count in pool
 	queueCount := 0
-	pool.queues.Range(func(key, value interface{}) bool {
+	pool.queues.Range(func(key, value any) bool {
 		queueCount++
 		return true
 	})
 	t.Logf("Remaining queues in pool: %d", queueCount)
-	
+
 	if queueCount > 10 {
 		t.Errorf("Queue leak detected: %d queues still in pool", queueCount)
 	}
@@ -150,7 +150,7 @@ func TestUdpTaskPoolDrainingFlag(t *testing.T) {
 		t.Fatal("Queue not found after cleanup")
 	}
 	q2 := v2.(*UdpTaskQueue)
-	
+
 	// The queue should be a new instance (or at least not draining)
 	if q == q2 && q.draining.Load() {
 		t.Log("Note: Old queue still exists but should be cleaned up soon")
@@ -172,18 +172,18 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 	// - Many goroutines
 	// - Concurrent emit
 	// - Some keys are hot (frequent access), some are cold (rare access)
-	
+
 	const numGoroutines = 100
 	const tasksPerGoroutine = 100
-	
+
 	var wg sync.WaitGroup
-	
+
 	// Hot keys (20% of traffic)
-	for i := 0; i < numGoroutines/5; i++ {
+	for i := range numGoroutines / 5 {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			for j := 0; j < tasksPerGoroutine; j++ {
+			for j := range tasksPerGoroutine {
 				key := netip.AddrPortFrom(
 					netip.AddrFrom4([4]byte{1, 1, 1, byte(j % 10)}), // 10 hot keys
 					80,
@@ -194,13 +194,13 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 			}
 		}(i)
 	}
-	
+
 	// Cold keys (80% of traffic)
-	for i := 0; i < numGoroutines*4/5; i++ {
+	for i := range numGoroutines * 4 / 5 {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			for j := 0; j < tasksPerGoroutine/10; j++ { // Fewer tasks for cold keys
+			for j := range tasksPerGoroutine / 10 { // Fewer tasks for cold keys
 				key := netip.AddrPortFrom(
 					netip.AddrFrom4([4]byte{
 						byte(goroutineID),
@@ -228,7 +228,7 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 	afterCleanup := runtime.NumGoroutine()
 	leaked := afterCleanup - initialGoroutines
 
-	t.Logf("Goroutines: initial=%d, after=%d, leaked=%d", 
+	t.Logf("Goroutines: initial=%d, after=%d, leaked=%d",
 		initialGoroutines, afterCleanup, leaked)
 
 	if leaked > 10 {

@@ -282,7 +282,7 @@ func BenchmarkHighConcurrency_CacheHit(b *testing.B) {
 	// Pre-populate multiple cache entries
 	numCaches := 1000
 	cacheKeys := make([]string, numCaches)
-	for i := 0; i < numCaches; i++ {
+	for i := range numCaches {
 		cacheKeys[i] = "domain" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + ".com.A"
 		cache := &DnsCache{
 			Answer: []dnsmessage.RR{
@@ -346,13 +346,11 @@ func BenchmarkComparison_SyncVsAsyncBpf(b *testing.B) {
 	// Async setup
 	asyncQueue := make(chan *DnsCache, 256)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for range asyncQueue {
 			time.Sleep(100 * time.Microsecond)
 		}
-	}()
+	})
 
 	b.Run("Sync", func(b *testing.B) {
 		b.ResetTimer()

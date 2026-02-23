@@ -145,10 +145,8 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Multiple goroutines try to get the endpoint concurrently
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			// This should fail to create a valid endpoint but should
 			// properly handle the dead endpoint
 			_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
@@ -161,7 +159,7 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 			if err != nil {
 				errorCount.Add(1)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -186,25 +184,21 @@ func TestUdpEndpoint_DeadFlagConsistency(t *testing.T) {
 	var writeCount atomic.Int32
 
 	// Concurrent readers
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
+	for range 100 {
+		wg.Go(func() {
+			for range 100 {
 				ue.IsDead()
 				readCount.Add(1)
 			}
-		}()
+		})
 	}
 
 	// One writer sets the flag
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		time.Sleep(1 * time.Millisecond)
 		ue.dead.Store(true)
 		writeCount.Add(1)
-	}()
+	})
 
 	wg.Wait()
 

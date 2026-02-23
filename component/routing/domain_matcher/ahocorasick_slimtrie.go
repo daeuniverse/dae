@@ -149,7 +149,7 @@ func ToSuffixTrieString(s string) string {
 	b := []byte(strings.TrimSuffix(s, "$"))
 	// Reverse.
 	half := len(b) / 2
-	for i := 0; i < half; i++ {
+	for i := range half {
 		b[i], b[len(b)-i-1] = b[len(b)-i-1], b[i]
 	}
 	return string(b)

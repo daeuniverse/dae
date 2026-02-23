@@ -55,7 +55,7 @@ func NewSectionItem(section *Section) *Item {
 
 type Item struct {
 	Type  ItemType
-	Value interface{}
+	Value any
 }
 
 func (i *Item) String(compact bool, quoteVal bool) string {

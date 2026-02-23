@@ -267,10 +267,8 @@ func BenchmarkPipelinedConn_Contention(b *testing.B) {
 	// Use multiple goroutines to create contention
 	const numGoroutines = 10
 	var wg sync.WaitGroup
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range numGoroutines {
+		wg.Go(func() {
 			for j := 0; j < b.N/numGoroutines; j++ {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				_, err := pc.RoundTrip(ctx, data)
@@ -279,7 +277,7 @@ func BenchmarkPipelinedConn_Contention(b *testing.B) {
 					b.Error(err)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

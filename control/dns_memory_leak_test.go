@@ -61,11 +61,11 @@ func TestDnsCache_MemoryPressure(t *testing.T) {
 	var wg sync.WaitGroup
 	var refreshCount atomic.Int64
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				// Simulate varying time offsets (like real DNS queries over time)
 				offset := time.Duration(i%100) * time.Second
 				now := time.Now().Add(offset)
@@ -118,7 +118,7 @@ func TestDnsCache_MemoryLeak_DetailedProfile(t *testing.T) {
 	const numCaches = 10000
 	caches := make([]*DnsCache, numCaches)
 
-	for i := 0; i < numCaches; i++ {
+	for i := range numCaches {
 		domain := fmt.Sprintf("domain%d.example.com.", i)
 		deadline := time.Now().Add(300 * time.Second)
 
@@ -158,11 +158,11 @@ func TestDnsCache_MemoryLeak_DetailedProfile(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				cacheIdx := (id + i) % numCaches
 				cache := caches[cacheIdx]
 				domain := fmt.Sprintf("domain%d.example.com.", cacheIdx)
@@ -247,11 +247,11 @@ func TestDnsCache_PackedResponseRefresh_MemoryStress(t *testing.T) {
 	// Track the initial TTL
 	originalTTL := cache.packedResponseTTL.Load()
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				// Use time offsets that would trigger refresh (beyond threshold)
 				// This simulates the race condition scenario
 				offset := time.Duration(20+i%10) * time.Second
@@ -393,11 +393,11 @@ func TestDnsController_MemoryPressure(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Phase 1: Create cache entries (simulating DNS lookups)
-	for w := 0; w < concurrentWorkers; w++ {
+	for w := range concurrentWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for i := 0; i < numDomains/concurrentWorkers; i++ {
+			for i := range numDomains / concurrentWorkers {
 				domain := fmt.Sprintf("domain%d.worker%d.example.com.", i, workerID)
 				cacheKey := controller.cacheKey(domain, dnsmessage.TypeA)
 
@@ -440,11 +440,11 @@ func TestDnsController_MemoryPressure(t *testing.T) {
 	t.Logf("After creating %d cache entries: heap = %.2f MB", numDomains, float64(m2.HeapAlloc)/1024/1024)
 
 	// Phase 2: Concurrent cache lookups (simulating DNS queries)
-	for w := 0; w < concurrentWorkers; w++ {
+	for w := range concurrentWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				domain := fmt.Sprintf("domain%d.worker%d.example.com.", i%50, workerID)
 				cacheKey := controller.cacheKey(domain, dnsmessage.TypeA)
 
@@ -469,7 +469,7 @@ func TestDnsController_MemoryPressure(t *testing.T) {
 	<-controller.janitorDone
 
 	// Manually clear cache (simulating Close())
-	controller.dnsCache.Range(func(key, value interface{}) bool {
+	controller.dnsCache.Range(func(key, value any) bool {
 		controller.dnsCache.Delete(key)
 		return true
 	})
@@ -505,7 +505,7 @@ func TestDnsController_CacheEvictionMemory(t *testing.T) {
 	const numEntries = 10000
 
 	// Create many cache entries with short TTL
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		domain := fmt.Sprintf("short%d.example.com.", i)
 		cacheKey := controller.cacheKey(domain, dnsmessage.TypeA)
 
@@ -553,7 +553,7 @@ func TestDnsController_CacheEvictionMemory(t *testing.T) {
 
 	// Count remaining entries
 	remaining := 0
-	controller.dnsCache.Range(func(key, value interface{}) bool {
+	controller.dnsCache.Range(func(key, value any) bool {
 		remaining++
 		return true
 	})
@@ -600,7 +600,7 @@ func TestDnsCache_PackedResponseLeak(t *testing.T) {
 
 	// Force many refreshes by accessing with different time offsets
 	// Each refresh creates a new PackedResponse, old one should be GC'd
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		// Use time offset that triggers refresh (beyond threshold)
 		offset := time.Duration(20+i%100) * time.Second
 		now := time.Now().Add(offset)
@@ -634,7 +634,7 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 	runtime.GC()
 	var m1 runtime.MemStats
 	runtime.ReadMemStats(&m1)
-	t.Logf("Initial heap: %.2f MB, Sys: %.2f MB", 
+	t.Logf("Initial heap: %.2f MB, Sys: %.2f MB",
 		float64(m1.HeapAlloc)/1024/1024, float64(m1.Sys)/1024/1024)
 
 	// Create DnsController
@@ -662,12 +662,12 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 
 	// Phase 1: Concurrent cache creation (simulating DNS lookups)
 	startTime := time.Now()
-	for w := 0; w < numWorkers; w++ {
+	for w := range numWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 			domainsPerWorker := numDomains / numWorkers
-			for i := 0; i < domainsPerWorker; i++ {
+			for i := range domainsPerWorker {
 				domain := fmt.Sprintf("domain%d.worker%d.pressure.test", i, workerID)
 				cacheKey := controller.cacheKey(domain+".", dnsmessage.TypeA)
 
@@ -685,7 +685,7 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 				}
 
 				cache := &DnsCache{
-					DomainBitmap:     []uint32{uint32(workerID * 1000 + i)},
+					DomainBitmap:     []uint32{uint32(workerID*1000 + i)},
 					Answer:           answers,
 					Deadline:         deadline,
 					OriginalDeadline: deadline,
@@ -703,16 +703,16 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 	runtime.GC()
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
-	t.Logf("After creating %d entries (%.1fs): heap = %.2f MB, Sys = %.2f MB", 
+	t.Logf("After creating %d entries (%.1fs): heap = %.2f MB, Sys = %.2f MB",
 		cacheCount.Load(), time.Since(startTime).Seconds(),
 		float64(m2.HeapAlloc)/1024/1024, float64(m2.Sys)/1024/1024)
 
 	// Phase 2: Concurrent cache access (simulating DNS queries)
-	for w := 0; w < numWorkers; w++ {
+	for w := range numWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for i := 0; i < iterationsPerWorker; i++ {
+			for i := range iterationsPerWorker {
 				domain := fmt.Sprintf("domain%d.worker%d.pressure.test", i%100, workerID)
 				cacheKey := controller.cacheKey(domain+".", dnsmessage.TypeA)
 
@@ -739,7 +739,7 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 	<-controller.janitorDone
 
 	// Clear all cache entries
-	controller.dnsCache.Range(func(key, value interface{}) bool {
+	controller.dnsCache.Range(func(key, value any) bool {
 		controller.dnsCache.Delete(key)
 		return true
 	})
@@ -766,7 +766,7 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 	}
 
 	// Sys memory (memory obtained from OS) might not shrink, but heap should
-	t.Logf("Heap/InUse: %.2f MB / %.2f MB", 
+	t.Logf("Heap/InUse: %.2f MB / %.2f MB",
 		float64(m4.HeapAlloc)/1024/1024, float64(m4.HeapInuse)/1024/1024)
 }
 
@@ -808,13 +808,11 @@ func TestDnsCache_PackedResponseRefreshConcurrency(t *testing.T) {
 	var startWg sync.WaitGroup
 	startWg.Add(1)
 
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range goroutines {
+		wg.Go(func() {
 			startWg.Wait() // Wait for all goroutines to be ready
 
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				// Use time offset that triggers refresh
 				offset := time.Duration(20+i%50) * time.Second
 				now := time.Now().Add(offset)
@@ -824,7 +822,7 @@ func TestDnsCache_PackedResponseRefreshConcurrency(t *testing.T) {
 					// Response was returned successfully
 				}
 			}
-		}()
+		})
 	}
 
 	// Start all goroutines simultaneously
@@ -855,7 +853,7 @@ func TestSyncMap_MemoryBehavior(t *testing.T) {
 
 	// Add many entries
 	const numEntries = 100000
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		key := fmt.Sprintf("key%d", i)
 		value := make([]byte, 100) // 100 bytes each
 		m.Store(key, value)
@@ -867,7 +865,7 @@ func TestSyncMap_MemoryBehavior(t *testing.T) {
 	t.Logf("After adding %d entries: heap = %.2f MB", numEntries, float64(m2.HeapAlloc)/1024/1024)
 
 	// Clear all entries
-	m.Range(func(key, value interface{}) bool {
+	m.Range(func(key, value any) bool {
 		m.Delete(key)
 		return true
 	})
@@ -884,7 +882,7 @@ func TestSyncMap_MemoryBehavior(t *testing.T) {
 
 	// Note: sync.Map may retain some internal structures, so expect some growth
 	// but it should be significantly less than the data size
-	dataSize := float64(numEntries * 100) / 1024 / 1024 // ~9.5 MB
+	dataSize := float64(numEntries*100) / 1024 / 1024 // ~9.5 MB
 	t.Logf("Data size was: %.2f MB, retained: %.2f MB (%.1f%%)",
 		dataSize, heapGrowth/1024/1024, heapGrowth/(dataSize*1024*1024)*100)
 }
@@ -1141,7 +1139,7 @@ func TestDnsCache_OriginalDeadlineWithFixedTtl(t *testing.T) {
 	// OriginalDeadline is set by caller, Deadline uses fixed TTL
 	now := time.Now()
 	originalDeadline := now.Add(300 * time.Second) // Original TTL would be 300s
-	fixedDeadline := now.Add(10 * time.Second)    // But fixed TTL is 10s
+	fixedDeadline := now.Add(10 * time.Second)     // But fixed TTL is 10s
 
 	answers := []dnsmessage.RR{
 		&dnsmessage.A{

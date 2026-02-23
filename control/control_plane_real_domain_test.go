@@ -136,7 +136,7 @@ func TestIsRealDomain_ConcurrentProbeDeduplicated(t *testing.T) {
 	results := make(chan bool, goroutines)
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			<-start

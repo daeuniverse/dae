@@ -132,7 +132,7 @@ func isIPLikeDomain(domain string) bool {
 
 func NewControlPlane(
 	log *logrus.Logger,
-	_bpf interface{},
+	_bpf any,
 	dnsCache map[string]*DnsCache,
 	tagToNodeList map[string][]string,
 	groups []config.Group,
@@ -212,7 +212,6 @@ func NewControlPlane(
 	// var bpf bpfObjects
 	ProgramOptions := ebpf.ProgramOptions{
 		KernelTypes: nil,
-		LogSize:     ebpf.DefaultVerifierLogSize * 10,
 	}
 	if log.Level == logrus.PanicLevel {
 		ProgramOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
@@ -642,7 +641,7 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 	result := make(map[string]*DnsCache)
-	c.dnsController.dnsCache.Range(func(key, value interface{}) bool {
+	c.dnsController.dnsCache.Range(func(key, value any) bool {
 		k, ok1 := key.(string)
 		v, ok2 := value.(*DnsCache)
 		if ok1 && ok2 {
@@ -817,7 +816,7 @@ func (c *ControlPlane) triggerRealDomainProbe(domain string) {
 		return
 	}
 	go func() {
-		_, _, _ = c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+		_, _, _ = c.realDomainProbeS.Do(domain, func() (any, error) {
 			return c.probeAndUpdateRealDomain(domain), nil
 		})
 	}()
@@ -829,7 +828,7 @@ func (c *ControlPlane) isRealDomain(domain string) bool {
 	}
 
 	// Deduplicate concurrent probes for same domain to avoid stampede under bursty connection setup.
-	v, _, _ := c.realDomainProbeS.Do(domain, func() (interface{}, error) {
+	v, _, _ := c.realDomainProbeS.Do(domain, func() (any, error) {
 		return c.probeAndUpdateRealDomain(domain), nil
 	})
 	isReal, _ := v.(bool)

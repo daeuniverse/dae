@@ -77,12 +77,12 @@ func TestDnsController_RealisticMemoryProfile(t *testing.T) {
 	t.Logf("\n=== Phase 1: Populating %d DNS cache entries ===", numDomains)
 	startTime := time.Now()
 
-	for w := 0; w < numWorkers; w++ {
+	for w := range numWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 			domainsPerWorker := numDomains / numWorkers
-			for i := 0; i < domainsPerWorker; i++ {
+			for i := range domainsPerWorker {
 				domain := fmt.Sprintf("domain%d.worker%d.test.example.com.", i, workerID)
 				cacheKey := controller.cacheKey(domain, dnsmessage.TypeA)
 
@@ -138,11 +138,11 @@ func TestDnsController_RealisticMemoryProfile(t *testing.T) {
 	var missCount atomic.Int64
 
 	startTime = time.Now()
-	for w := 0; w < queryWorkers; w++ {
+	for w := range queryWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for i := 0; i < numQueries/queryWorkers; i++ {
+			for i := range numQueries / queryWorkers {
 				// 80% queries hit popular domains (first 20% of domains)
 				var domain string
 				if i%10 < 8 {
@@ -204,7 +204,7 @@ func TestDnsController_RealisticMemoryProfile(t *testing.T) {
 	close(controller.janitorStop)
 	<-controller.janitorDone
 
-	controller.dnsCache.Range(func(key, value interface{}) bool {
+	controller.dnsCache.Range(func(key, value any) bool {
 		controller.dnsCache.Delete(key)
 		return true
 	})
@@ -274,9 +274,7 @@ func TestDnsController_MemoryUnderSustainedLoad(t *testing.T) {
 	var createCount atomic.Int64
 
 	// Worker 1: Create cache entries (bounded)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		i := 0
 		for {
 			select {
@@ -314,10 +312,10 @@ func TestDnsController_MemoryUnderSustainedLoad(t *testing.T) {
 				i++
 			}
 		}
-	}()
+	})
 
 	// Worker 2-N: Access cache entries
-	for w := 0; w < workers-1; w++ {
+	for w := range workers - 1 {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
@@ -411,7 +409,7 @@ func TestDnsController_MemoryUnderSustainedLoad(t *testing.T) {
 
 	// Count remaining cache entries
 	remaining := 0
-	controller.dnsCache.Range(func(key, value interface{}) bool {
+	controller.dnsCache.Range(func(key, value any) bool {
 		remaining++
 		return true
 	})
@@ -524,7 +522,7 @@ func TestDnsCache_PackedResponseMemoryAllocation(t *testing.T) {
 	runtime.ReadMemStats(&m1)
 
 	// Simulate 1000 refreshes (without CAS, this would be a problem)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		offset := time.Duration(30+i%50) * time.Second
 		now := time.Now().Add(offset)
 		_ = cache.GetPackedResponseWithApproximateTTL("alloc.example.com.", dnsmessage.TypeA, now)

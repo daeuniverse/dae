@@ -80,7 +80,7 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 		case reflect.String:
 			keyable := false
 			switch elemType {
-			case reflect.TypeOf(KeyableString("")):
+			case reflect.TypeFor[KeyableString]():
 				keyable = true
 			default:
 			}
@@ -148,7 +148,7 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		if from.Len() == 0 {
 			return nil
 		}
-		if from.Type().Elem().Kind() == reflect.Slice && from.Type().Elem().Elem() == reflect.TypeOf((*config_parser.Function)(nil)) {
+		if from.Type().Elem().Kind() == reflect.Slice && from.Type().Elem().Elem() == reflect.TypeFor[*config_parser.Function]() {
 			for i := 0; i < from.Len(); i++ {
 				andFuncs := from.Index(i)
 				if andFuncs.Len() == 0 {

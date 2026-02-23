@@ -49,7 +49,7 @@ func BenchmarkRoutingMatcher_DomainMatch(b *testing.B) {
 
 	// Pre-generate domains to test
 	domains := make([]string, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		domains[i] = fmt.Sprintf("domain%d.example.com", i)
 	}
 

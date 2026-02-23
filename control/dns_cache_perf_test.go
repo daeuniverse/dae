@@ -237,7 +237,7 @@ func BenchmarkDnsCache_SyncMap_Parallel(b *testing.B) {
 func BenchmarkDnsCache_MultipleAnswers(b *testing.B) {
 	// Simulate a more realistic response with multiple answers
 	answers := make([]dnsmessage.RR, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		answers[i] = &dnsmessage.A{
 			Hdr: dnsmessage.RR_Header{
 				Name:   "example.com.",
@@ -276,7 +276,7 @@ func BenchmarkDnsCache_MultipleAnswers(b *testing.B) {
 			_, _ = msg.Pack()
 		}
 	})
-	
+
 	b.Run("FillIntoWithTTL", func(b *testing.B) {
 		now := time.Now()
 		for i := 0; i < b.N; i++ {
@@ -757,7 +757,7 @@ func BenchmarkDnsCache_GetPackedResponseWithApproximateTTL_Parallel(b *testing.B
 // BenchmarkDnsCache_SyncMapLookup benchmarks sync.Map lookup performance
 func BenchmarkDnsCache_SyncMapLookup(b *testing.B) {
 	var m sync.Map
-	
+
 	answers := []dnsmessage.RR{
 		&dnsmessage.A{
 			Hdr: dnsmessage.RR_Header{
@@ -796,7 +796,7 @@ func BenchmarkDnsCache_SyncMapLookup(b *testing.B) {
 // BenchmarkDnsCache_SyncMapLookup_Parallel benchmarks parallel sync.Map lookup
 func BenchmarkDnsCache_SyncMapLookup_Parallel(b *testing.B) {
 	var m sync.Map
-	
+
 	answers := []dnsmessage.RR{
 		&dnsmessage.A{
 			Hdr: dnsmessage.RR_Header{
@@ -821,7 +821,7 @@ func BenchmarkDnsCache_SyncMapLookup_Parallel(b *testing.B) {
 	}
 
 	// Store multiple keys to simulate realistic contention
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		m.Store(fmt.Sprintf("example%d.com.:1", i), cache)
 	}
 

@@ -285,7 +285,7 @@ func file_common_protoext_extensions_proto_rawDescGZIP() []byte {
 }
 
 var file_common_protoext_extensions_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_common_protoext_extensions_proto_goTypes = []interface{}{
+var file_common_protoext_extensions_proto_goTypes = []any{
 	(*MessageOpt)(nil),                  // 0: v2ray.core.common.protoext.MessageOpt
 	(*FieldOpt)(nil),                    // 1: v2ray.core.common.protoext.FieldOpt
 	(*descriptorpb.MessageOptions)(nil), // 2: google.protobuf.MessageOptions
@@ -309,7 +309,7 @@ func file_common_protoext_extensions_proto_init() {
 		return
 	}
 	if !protoimpl.UnsafeEnabled {
-		file_common_protoext_extensions_proto_msgTypes[0].Exporter = func(v interface{}, i int) interface{} {
+		file_common_protoext_extensions_proto_msgTypes[0].Exporter = func(v any, i int) any {
 			switch v := v.(*MessageOpt); i {
 			case 0:
 				return &v.state
@@ -321,7 +321,7 @@ func file_common_protoext_extensions_proto_init() {
 				return nil
 			}
 		}
-		file_common_protoext_extensions_proto_msgTypes[1].Exporter = func(v interface{}, i int) interface{} {
+		file_common_protoext_extensions_proto_msgTypes[1].Exporter = func(v any, i int) any {
 			switch v := v.(*FieldOpt); i {
 			case 0:
 				return &v.state
@@ -337,7 +337,7 @@ func file_common_protoext_extensions_proto_init() {
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
-			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+			GoPackagePath: reflect.TypeFor[x]().PkgPath(),
 			RawDescriptor: file_common_protoext_extensions_proto_rawDesc,
 			NumEnums:      0,
 			NumMessages:   2,

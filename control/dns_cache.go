@@ -31,7 +31,7 @@ const (
 	// MinBpfUpdateInterval is the minimum time between BPF map updates for the same cache.
 	// This prevents excessive BPF map updates while maintaining freshness.
 	MinBpfUpdateInterval = 1 * time.Second
-	
+
 	// MaxBpfUpdateInterval is the maximum time before forcing a BPF map update.
 	// Even if data hasn't changed, we refresh periodically to handle edge cases.
 	MaxBpfUpdateInterval = 60 * time.Second
@@ -42,14 +42,14 @@ type DnsCache struct {
 	Answer           []dnsmessage.RR
 	Deadline         time.Time
 	OriginalDeadline time.Time // This field is not impacted by `fixed_domain_ttl`.
-	
+
 	// lastRouteSyncNano tracks when route binding was last synced to BPF.
 	lastRouteSyncNano atomic.Int64
-	
+
 	// lastBpfDataHash stores a hash of the data used for BPF update.
 	// This enables differential updates - only update when data changes.
 	lastBpfDataHash atomic.Uint64
-	
+
 	// packedResponse is a pre-packed DNS response message with compression enabled.
 	// This avoids repeated Pack() calls on cache hits, significantly reducing latency.
 	// The packed response includes: Answer, Rcode=Success, Response=true, RecursionAvailable=true.
@@ -70,12 +70,12 @@ type DnsCache struct {
 	// deadlineNano caches the Deadline as UnixNano for fast comparison.
 	// This avoids time.Time method calls on every cache hit.
 	deadlineNano atomic.Int64
-	
+
 	// OPTIMISTIC CACHE (RFC 8767): Stale-while-revalidate support
 	// refreshing tracks whether background refresh is in progress.
 	// This prevents multiple concurrent refresh attempts for the same cache key.
 	refreshing atomic.Bool
-	
+
 	// lastAccessNano tracks when this cache was last accessed (for LRU eviction).
 	lastAccessNano atomic.Int64
 }
@@ -120,9 +120,9 @@ func (c *DnsCache) ComputeBpfDataHash() uint64 {
 	if len(c.Answer) == 0 {
 		return 0
 	}
-	
+
 	var hash uint64 = 14695981039346656037 // FNV-1a offset basis
-	
+
 	// Hash IP addresses from Answer
 	for _, ans := range c.Answer {
 		var ipBytes []byte
@@ -139,58 +139,58 @@ func (c *DnsCache) ComputeBpfDataHash() uint64 {
 			}
 		}
 	}
-	
+
 	// Hash DomainBitmap
 	for _, v := range c.DomainBitmap {
 		hash ^= uint64(v)
 		hash *= 1099511628211
 	}
-	
+
 	return hash
 }
 
 // NeedsBpfUpdate checks if BPF map update is needed using differential detection.
 // Returns true if:
-// 1. Minimum interval has passed since last update AND
-//    (data has changed OR maximum interval has passed)
-// 2. Never been updated before
+//  1. Minimum interval has passed since last update AND
+//     (data has changed OR maximum interval has passed)
+//  2. Never been updated before
 //
 // IMPORTANT: This method uses CAS to prevent race conditions. Only one goroutine
 // will successfully trigger an update request.
 func (c *DnsCache) NeedsBpfUpdate(now time.Time) bool {
 	nowNano := now.UnixNano()
 	lastSync := c.lastRouteSyncNano.Load()
-	
+
 	// Never updated - needs update (use CAS to claim first update)
 	if lastSync == 0 {
 		return c.lastRouteSyncNano.CompareAndSwap(0, nowNano)
 	}
-	
+
 	timeSinceLastSync := time.Duration(nowNano - lastSync)
-	
+
 	// Haven't reached minimum interval - skip
 	if timeSinceLastSync < MinBpfUpdateInterval {
 		return false
 	}
-	
+
 	// Maximum interval reached - force update (use CAS to claim)
 	if timeSinceLastSync >= MaxBpfUpdateInterval {
 		return c.lastRouteSyncNano.CompareAndSwap(lastSync, nowNano)
 	}
-	
+
 	// Check if data has changed
 	currentHash := c.ComputeBpfDataHash()
 	if currentHash == 0 {
 		// No valid IPs - no update needed
 		return false
 	}
-	
+
 	lastHash := c.lastBpfDataHash.Load()
 	if currentHash == lastHash {
 		// Data unchanged - no update needed
 		return false
 	}
-	
+
 	// Data changed - use CAS to claim this update
 	// Only one goroutine will succeed
 	return c.lastRouteSyncNano.CompareAndSwap(lastSync, nowNano)
@@ -277,14 +277,14 @@ func (c *DnsCache) Clone() *DnsCache {
 // by more than ttlRefreshThresholdSeconds.
 func (c *DnsCache) PrepackResponse(qname string, qtype uint16) error {
 	now := time.Now()
-	
+
 	// Cache deadline as UnixNano for fast comparison
 	c.deadlineNano.Store(c.Deadline.UnixNano())
-	
+
 	// Calculate remaining TTL
 	deadlineNano := c.Deadline.UnixNano()
 	nowNano := now.UnixNano()
-	
+
 	var ttl uint32
 	if deadlineNano > nowNano {
 		ttlSeconds := (deadlineNano - nowNano) / 1e9
@@ -296,7 +296,7 @@ func (c *DnsCache) PrepackResponse(qname string, qtype uint16) error {
 	} else {
 		ttl = 0
 	}
-	
+
 	return c.prepackResponseWithTTL(qname, qtype, ttl, now)
 }
 
@@ -317,7 +317,7 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 		},
 		Compress: true,
 	}
-	
+
 	// Copy answers with calculated TTL
 	// NOTE: This is in the slow path (only when TTL differs by >15s)
 	// The overhead is acceptable because it happens rarely
@@ -329,13 +329,13 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 			msg.Answer[i] = copiedRR
 		}
 	}
-	
+
 	// Pack the message
 	packed, err := msg.Pack()
 	if err != nil {
 		return err
 	}
-	
+
 	// Copy-on-Write: atomically swap the pointer
 	// Readers will immediately see the new response
 	c.packedResponse.Store(&packed)
@@ -354,18 +354,15 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint16, now time.Time) []byte {
 	nowNano := now.UnixNano()
 	deadlineNano := c.deadlineNano.Load()
-	
+
 	// Check if cache is expired - return nil immediately
 	if deadlineNano <= nowNano {
 		return nil
 	}
-	
+
 	// Calculate current TTL in seconds (avoid float operations)
-	currentTTL := uint32((deadlineNano - nowNano) / 1e9)
-	if currentTTL < 1 {
-		currentTTL = 1
-	}
-	
+	currentTTL := max(uint32((deadlineNano-nowNano)/1e9), 1)
+
 	// Lock-free read: atomic pointer load (no mutex, no blocking)
 	packedPtr := c.packedResponse.Load()
 	if packedPtr != nil && *packedPtr != nil {
@@ -379,7 +376,7 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 			return *packedPtr
 		}
 	}
-	
+
 	// Slow path: refresh pre-packed response with new TTL
 	// CAS ensures only one goroutine refreshes per second
 	createdNano := c.packedResponseCreatedAt.Load()
@@ -389,7 +386,7 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 			_ = c.prepackResponseWithTTL(qname, qtype, currentTTL, now)
 		}
 	}
-	
+
 	// Return current response (might be slightly stale, but acceptable)
 	packedPtr = c.packedResponse.Load()
 	if packedPtr == nil {
@@ -406,12 +403,12 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 func (c *DnsCache) GetStaleResponse(now time.Time, staleTtl int) []byte {
 	nowNano := now.UnixNano()
 	deadlineNano := c.deadlineNano.Load()
-	
+
 	// Cache is not expired - should use GetPackedResponseWithApproximateTTL instead
 	if deadlineNano > nowNano {
 		return nil
 	}
-	
+
 	// Check if within stale-while-revalidate window
 	// staleTtl = 0 means never expire (always return stale response)
 	if staleTtl > 0 {
@@ -421,7 +418,7 @@ func (c *DnsCache) GetStaleResponse(now time.Time, staleTtl int) []byte {
 			return nil
 		}
 	}
-	
+
 	// Return stale response (better than nothing)
 	packedPtr := c.packedResponse.Load()
 	if packedPtr == nil || *packedPtr == nil {
@@ -451,24 +448,23 @@ func (c *DnsCache) FillIntoWithTTL(req *dnsmessage.Msg, now time.Time) []byte {
 	req.Response = true
 	req.RecursionAvailable = true
 	req.Truncated = false
-	
+
 	if c.Answer == nil {
 		req.Compress = true
 		b, _ := req.Pack()
 		return b
 	}
-	
+
 	// Calculate remaining TTL based on the provided time
 	var remainingTTL uint32
 	if c.Deadline.After(now) {
-		remainingTTL = uint32(c.Deadline.Sub(now).Seconds())
-		if remainingTTL < 1 {
-			remainingTTL = 1 // Minimum TTL of 1 second
-		}
+		remainingTTL = max(uint32(c.Deadline.Sub(now).Seconds()),
+			// Minimum TTL of 1 second
+			1)
 	} else {
 		remainingTTL = 0 // Expired
 	}
-	
+
 	// Copy answers with updated TTL
 	req.Answer = make([]dnsmessage.RR, len(c.Answer))
 	for i, rr := range c.Answer {
@@ -477,7 +473,7 @@ func (c *DnsCache) FillIntoWithTTL(req *dnsmessage.Msg, now time.Time) []byte {
 		copiedRR.Header().Ttl = remainingTTL
 		req.Answer[i] = copiedRR
 	}
-	
+
 	req.Compress = true
 	b, err := req.Pack()
 	if err != nil {

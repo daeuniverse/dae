@@ -22,7 +22,7 @@ func TestIdBitmap_ConcurrentUniqueAllocation(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		i := i
 		go func() {
 			defer wg.Done()
@@ -60,7 +60,7 @@ func TestIdBitmap_FullAndReuse(t *testing.T) {
 	alloc := newIdBitmap()
 	ids := make([]uint16, 0, 4096)
 
-	for i := 0; i < 4096; i++ {
+	for range 4096 {
 		id, err := alloc.Allocate()
 		require.NoError(t, err)
 		ids = append(ids, id)

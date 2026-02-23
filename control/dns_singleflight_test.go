@@ -194,12 +194,12 @@ func TestConcurrentSingleflightCalls(t *testing.T) {
 	// Simulate concurrent singleflight calls
 	sfGroup := &singleflightGroup{}
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numCallsPerGoroutine; j++ {
+			for range numCallsPerGoroutine {
 				// Simulate the singleflight Do call
-				_, _, _ = sfGroup.Do("test-key", func() (interface{}, error) {
+				_, _, _ = sfGroup.Do("test-key", func() (any, error) {
 					callCount.Add(1)
 					return "result", nil
 				})
@@ -224,11 +224,11 @@ type singleflightGroup struct {
 
 type call struct {
 	wg  sync.WaitGroup
-	val interface{}
+	val any
 	err error
 }
 
-func (g *singleflightGroup) Do(key string, fn func() (interface{}, error)) (interface{}, error, bool) {
+func (g *singleflightGroup) Do(key string, fn func() (any, error)) (any, error, bool) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*call)
@@ -362,7 +362,7 @@ func TestSingleflight_ResponseCapture_Integration(t *testing.T) {
 		sfCalls := make(map[string]*sfCall)
 
 		// Simulate concurrent callers using singleflight
-		for i := 0; i < numCallers; i++ {
+		for i := range numCallers {
 			go func(id int) {
 				defer wg.Done()
 
