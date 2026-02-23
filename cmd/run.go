@@ -321,6 +321,11 @@ func (r *Runner) Run() (err error) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
+	endpointCfg := endpointConfigFromGlobal(conf, log)
+	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
+		return fmt.Errorf("invalid endpoint tls config: %w", err)
+	}
+
 	// New ControlPlane.
 	ctx, cancel := context.WithCancel(context.Background())
 	currCancel = cancel
@@ -346,10 +351,6 @@ func (r *Runner) Run() (err error) {
 				log.WithError(e).Errorln("Endpoint server stopped with error")
 			}
 		}(endpointServer, cfg)
-	}
-	endpointCfg := endpointConfigFromGlobal(conf, log)
-	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
-		return fmt.Errorf("invalid endpoint tls config: %w", err)
 	}
 	startEndpointServer(endpointCfg)
 
