@@ -856,27 +856,22 @@ lookup_lpm:
 			return 1;
 		}
 
+		// Perform LPM lookup and check result
+#ifndef __BPF_TEST_DISABLE_LPM_CACHE
+		__u8 lpm_match = 0;
+#endif
+
 		if (bpf_map_lookup_elem(lpm, lpm_key)) {
 			// match_set hits.
 			ctx->isdns_must_goodsubrule_badrule |= 0b10;
 #ifndef __BPF_TEST_DISABLE_LPM_CACHE
-			// Update cache for future lookups
-			{
-				__u8 match_result = 1;
-
-				bpf_map_update_elem(&lpm_cache_map, &cache_key,
-						    &match_result, BPF_ANY);
-			}
+			lpm_match = 1;
 #endif
 		}
 #ifndef __BPF_TEST_DISABLE_LPM_CACHE
-		else {
-			// Cache negative result too
-			__u8 match_result = 0;
-
-			bpf_map_update_elem(&lpm_cache_map, &cache_key,
-					    &match_result, BPF_ANY);
-		}
+		// Update cache with lookup result
+		bpf_map_update_elem(&lpm_cache_map, &cache_key,
+				    &lpm_match, BPF_ANY);
 #endif
 		break;
 	}
