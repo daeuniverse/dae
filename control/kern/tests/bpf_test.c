@@ -6,6 +6,7 @@
 #define __DEBUG
 #define __DEBUG_ROUTING
 #define __PRINT_ROUTING_RESULT
+#define __BPF_TEST_DISABLE_LPM_CACHE  // Disable LPM cache in test mode
 
 #include "../tproxy.c"
 #include "./bpf_test.h"
