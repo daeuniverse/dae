@@ -1231,6 +1231,7 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 
 	// Initialize timer with error handling
 	int ret = bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
+
 	if (ret != 0) {
 		// Timer init failed, delete entry to prevent leak
 		bpf_map_delete_elem(&udp_conn_state_map, key);
@@ -1245,11 +1246,10 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 
 rearm:
 	// Select timeout based on port (Palo Alto best practice)
-	if (is_dns_traffic(key)) {
+	if (is_dns_traffic(key))
 		timeout = TIMEOUT_UDP_DNS;    // 17s for DNS (RFC 5452)
-	} else {
+	else
 		timeout = TIMEOUT_UDP_NORMAL;  // 60s for other UDP
-	}
 
 	ret = bpf_timer_start(&state->timer, timeout, 0);
 	if (ret != 0) {
