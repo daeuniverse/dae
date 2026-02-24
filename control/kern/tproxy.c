@@ -1534,7 +1534,8 @@ new_connection:;
 	if (l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53)) {
 		// Skip routing cache for DNS queries - let userspace handle routing
 #ifdef __DEBUG_DNS_FASTPATH
-		bpf_printk("dns(lan): skip routing cache, source port %u", bpf_ntohs(tuples.five.sport));
+		bpf_printk("dns(lan): skip cache, sport %u",
+			   bpf_ntohs(tuples.five.sport));
 #endif
 	} else {
 		ret = bpf_map_update_elem(&routing_tuples_map, &tuples.five,
@@ -1964,7 +1965,8 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			if (l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53)) {
 				// Skip routing cache for DNS queries
 #ifdef __DEBUG_DNS_FASTPATH
-				bpf_printk("dns(wan): skip routing cache, source port %u", bpf_ntohs(tuples.five.sport));
+				bpf_printk("dns(wan): skip cache, sport %u",
+					   bpf_ntohs(tuples.five.sport));
 #endif
 			} else {
 				// Construct new hdr to encap.
