@@ -1528,11 +1528,21 @@ new_connection:;
 	//}
 
 	// Save routing result.
-	ret = bpf_map_update_elem(&routing_tuples_map, &tuples.five,
-				  &routing_result, BPF_ANY);
-	if (ret) {
-		bpf_printk("shot save routing result: %d", ret);
-		return TC_ACT_SHOT;
+	// DNS fast path: Skip routing cache for DNS queries to prevent map bloat from random source ports.
+	// Each DNS query uses a random source port, creating a unique 4-tuple that would bloat the map.
+	// Userspace will handle routing via fallback when BPF map entry is not found.
+	if (l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53)) {
+		// Skip routing cache for DNS queries - let userspace handle routing
+#ifdef __DEBUG_DNS_FASTPATH
+		bpf_printk("dns(lan): skip routing cache, source port %u", bpf_ntohs(tuples.five.sport));
+#endif
+	} else {
+		ret = bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+					  &routing_result, BPF_ANY);
+		if (ret) {
+			bpf_printk("shot save routing result: %d", ret);
+			return TC_ACT_SHOT;
+		}
 	}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 	if (l4proto == IPPROTO_TCP) {
@@ -1950,22 +1960,30 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 		// Only save non-direct routing to avoid conflicts with LAN ingress.
 		// Direct traffic doesn't need control plane processing.
 		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			// Construct new hdr to encap.
-			struct routing_result routing_result = {};
+			// DNS fast path: Skip routing cache for DNS queries to prevent map bloat
+			if (l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53)) {
+				// Skip routing cache for DNS queries
+#ifdef __DEBUG_DNS_FASTPATH
+				bpf_printk("dns(wan): skip routing cache, source port %u", bpf_ntohs(tuples.five.sport));
+#endif
+			} else {
+				// Construct new hdr to encap.
+				struct routing_result routing_result = {};
 
-			routing_result.outbound = outbound;
-			routing_result.mark = mark;
-			routing_result.must = must;
-			routing_result.dscp = tuples.dscp;
-			__builtin_memcpy(routing_result.mac, ethh.h_source,
-					 sizeof(ethh.h_source));
-			if (pid_pname) {
-				__builtin_memcpy(routing_result.pname, pid_pname->pname,
-						 TASK_COMM_LEN);
-				routing_result.pid = pid_pname->pid;
+				routing_result.outbound = outbound;
+				routing_result.mark = mark;
+				routing_result.must = must;
+				routing_result.dscp = tuples.dscp;
+				__builtin_memcpy(routing_result.mac, ethh.h_source,
+						 sizeof(ethh.h_source));
+				if (pid_pname) {
+					__builtin_memcpy(routing_result.pname, pid_pname->pname,
+							 TASK_COMM_LEN);
+					routing_result.pid = pid_pname->pid;
+				}
+				bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+						    &routing_result, BPF_ANY);
 			}
-			bpf_map_update_elem(&routing_tuples_map, &tuples.five,
-					    &routing_result, BPF_ANY);
 		}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		__u32 pid = pid_pname ? pid_pname->pid : 0;

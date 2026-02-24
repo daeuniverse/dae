@@ -102,3 +102,108 @@ func TestControlPlane_DnsDialerSnapshotCache_HitAndExpire(t *testing.T) {
 	_, stillExists := cp.dnsDialerSnapshot.Load(key)
 	require.False(t, stillExists)
 }
+
+// TestDnsDialerSnapshot_PortExemption verifies that DNS queries from the same client
+// but with different source ports generate the same cache key, enabling cache reuse.
+func TestDnsDialerSnapshot_PortExemption(t *testing.T) {
+	upstream := testDnsDialerSnapshotUpstream()
+
+	tests := []struct {
+		name        string
+		realSrc     netip.AddrPort
+		realDst     netip.AddrPort
+		expectMatch string // empty means no match, or name of matching test case
+	}{
+		{
+			name:        "DNS same client different port 1",
+			realSrc:     netip.MustParseAddrPort("192.168.1.100:54321"),
+			realDst:     netip.MustParseAddrPort("8.8.8.8:53"),
+			expectMatch: "DNS same client different port 2",
+		},
+		{
+			name:        "DNS same client different port 2",
+			realSrc:     netip.MustParseAddrPort("192.168.1.100:40000"),
+			realDst:     netip.MustParseAddrPort("8.8.8.8:53"),
+			expectMatch: "DNS same client different port 1",
+		},
+		{
+			name:        "DNS same client different port 3",
+			realSrc:     netip.MustParseAddrPort("192.168.1.100:12345"),
+			realDst:     netip.MustParseAddrPort("8.8.8.8:53"),
+			expectMatch: "DNS same client different port 1",
+		},
+		{
+			name:        "DNS different client",
+			realSrc:     netip.MustParseAddrPort("192.168.1.200:54321"),
+			realDst:     netip.MustParseAddrPort("8.8.8.8:53"),
+			expectMatch: "",
+		},
+		{
+			name:        "Non-DNS traffic (port 443)",
+			realSrc:     netip.MustParseAddrPort("192.168.1.100:54321"),
+			realDst:     netip.MustParseAddrPort("1.1.1.1:443"),
+			expectMatch: "",
+		},
+		{
+			name:        "Non-DNS traffic different port",
+			realSrc:     netip.MustParseAddrPort("192.168.1.100:54322"),
+			realDst:     netip.MustParseAddrPort("10.0.0.1:80"),
+			expectMatch: "",
+		},
+	}
+
+	keys := make(map[string]dnsDialerSnapshotKey)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &udpRequest{
+				realSrc: tc.realSrc,
+				realDst: tc.realDst,
+			}
+			key, ok := buildDnsDialerSnapshotKey(req, upstream)
+			require.True(t, ok)
+
+			// Store key for matching
+			keys[tc.name] = key
+
+			// Verify port is zero for DNS traffic
+			if tc.realDst.Port() == 53 {
+				require.Equal(t, uint16(0), key.realSrc.Port(), "DNS traffic should have port 0 in cache key")
+			}
+		})
+	}
+
+	// Verify matching behavior
+	for _, tc := range tests {
+		if tc.expectMatch == "" {
+			continue
+		}
+		t.Run(tc.name+" match", func(t *testing.T) {
+			key1 := keys[tc.name]
+			key2 := keys[tc.expectMatch]
+			require.Equal(t, key1, key2, "same client DNS queries should match regardless of source port")
+		})
+	}
+
+	// Verify non-matching behavior
+	for _, tc := range tests {
+		if tc.expectMatch != "" {
+			continue
+		}
+		t.Run(tc.name+" no match", func(t *testing.T) {
+			key1 := keys[tc.name]
+			// Should not match DNS queries
+			dnsQueries := []string{
+				"DNS same client different port 1",
+				"DNS same client different port 2",
+				"DNS same client different port 3",
+			}
+			for _, dnsName := range dnsQueries {
+				key2 := keys[dnsName]
+				if key1 == key2 {
+					t.Errorf("%s should not match %s", tc.name, dnsName)
+				}
+			}
+		})
+	}
+}

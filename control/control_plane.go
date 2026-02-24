@@ -905,8 +905,16 @@ func buildDnsDialerSnapshotKey(req *udpRequest, upstream *dns.Upstream) (dnsDial
 		return dnsDialerSnapshotKey{}, false
 	}
 
+	realSrc := req.realSrc
+	// DNS fast path: exempt source port from cache key to enable cache reuse.
+	// DNS queries use random source ports; including the port would completely invalidate the cache.
+	// Routing decisions do not depend on the DNS query's source port (port is only for transport layer multiplexing).
+	if req.realDst.Port() == 53 {
+		realSrc = netip.AddrPortFrom(req.realSrc.Addr(), 0)
+	}
+
 	key := dnsDialerSnapshotKey{
-		realSrc:     req.realSrc,
+		realSrc:     realSrc,
 		upstream:    upstream.String(),
 		upstreamIp4: upstream.Ip4,
 		upstreamIp6: upstream.Ip6,
@@ -1160,7 +1168,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			DefaultUdpTaskPool.EmitTask(convergeSrc, task)
+			// DNS fast path: Skip UdpTaskPool for DNS traffic to reduce memory overhead.
+			// DNS queries use random source ports, each creating a unique UdpTaskPool queue.
+			// DNS is stateless and doesn't require ordered processing for the same 4-tuple.
+			if realDst.Port() == 53 {
+				// Execute DNS task directly without going through UdpTaskPool
+				go task()
+			} else {
+				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
+			}
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
