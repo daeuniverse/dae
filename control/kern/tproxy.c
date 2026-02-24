@@ -345,7 +345,7 @@ struct udp_conn_state {
 
 // Use LRU_HASH to prevent memory leaks from timer failures
 // Use LRU_HASH to prevent memory leaks from timer failures
-// DNS traffic skips conntrack entirely (see is_dns_traffic checks)
+// Short-lived UDP traffic skips conntrack entirely (see is_short_lived_udp_traffic checks)
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
@@ -1203,11 +1203,58 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
-// Helper function to check if traffic is DNS
-static __always_inline bool is_dns_traffic(struct tuples_key *key)
+// Helper function to check if traffic is short-lived UDP that doesn't need conntrack
+// Includes: DNS, DHCP, NTP, SNMP, UPnP, mDNS, WireGuard, etc.
+// These protocols are stateless request-response or manage their own state.
+static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 {
-	return key->l4proto == IPPROTO_UDP &&
-	       (key->dport == bpf_htons(53) || key->sport == bpf_htons(53));
+	if (key->l4proto != IPPROTO_UDP)
+		return false;
+
+	__u16 dport = bpf_ntohs(key->dport);
+	__u16 sport = bpf_ntohs(key->sport);
+
+	// Check if either port matches a short-lived protocol
+	return (dport == 53 || sport == 53 ||       // DNS
+		dport == 67 || sport == 67 ||           // DHCP Server
+		dport == 68 || sport == 68 ||           // DHCP Client
+		dport == 123 || sport == 123 ||         // NTP
+		dport == 161 || sport == 161 ||         // SNMP
+		dport == 162 || sport == 162 ||         // SNMP Trap
+		dport == 1900 || sport == 1900 ||       // UPnP
+		dport == 5353 || sport == 5353 ||       // mDNS
+		dport == 51820 || sport == 51820);      // WireGuard
+}
+
+// Helper functions to check if IP addresses are multicast
+// IPv4 multicast: 224.0.0.0 to 239.255.255.255 (Class D, first 4 bits: 1110)
+// IPv6 multicast: ff00::/8 (first byte: 0xff)
+// Multicast packets should bypass transparent proxying as eBPF redirect
+// only supports unicast redirection.
+static __always_inline bool is_ipv4_multicast(__be32 addr)
+{
+	return (addr & bpf_htonl(0xf0000000)) == bpf_htonl(0xe0000000);
+}
+
+static __always_inline bool is_ipv6_multicast(const __be32 addr[4])
+{
+	return (addr[0] & bpf_htonl(0xff000000)) == bpf_htonl(0xff000000);
+}
+
+// Check if packet contains multicast addresses (source or destination)
+// Returns true if either source or destination IP is multicast
+static __always_inline bool is_multicast_packet(const struct iphdr *iph,
+						const struct ipv6hdr *ipv6h,
+						__be16 protocol)
+{
+	if (protocol == bpf_htons(ETH_P_IP)) {
+		return is_ipv4_multicast(iph->daddr) ||
+		       is_ipv4_multicast(iph->saddr);
+	} else if (protocol == bpf_htons(ETH_P_IPV6)) {
+		return is_ipv6_multicast(ipv6h->daddr.in6_u.u6_addr32) ||
+		       is_ipv6_multicast(ipv6h->saddr.in6_u.u6_addr32);
+	}
+	return false;
 }
 
 static __always_inline struct udp_conn_state *
@@ -1246,7 +1293,7 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 
 rearm:
 	// Select timeout based on port (Palo Alto best practice)
-	if (is_dns_traffic(key))
+	if (is_short_lived_udp_traffic(key))
 		timeout = TIMEOUT_UDP_DNS;    // 17s for DNS (RFC 5452)
 	else
 		timeout = TIMEOUT_UDP_NORMAL;  // 60s for other UDP
@@ -1317,6 +1364,10 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 		return TC_ACT_OK;
 	}
 
+	// Skip multicast/broadcast packets - eBPF redirect only supports unicast
+	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
+		return TC_ACT_OK;
+
 	if (skb->ingress_ifindex == NOWHERE_IFINDEX &&  // Only drop NDP_REDIRECT packets from localhost
 		l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
 		// REDIRECT (NDP)
@@ -1355,7 +1406,7 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 
 		// Optimisation: Skip conntrack for DNS traffic
 		// DNS is stateless request-response, doesn't need connection tracking
-		if (!is_dns_traffic(&reversed_tuples_key)) {
+		if (!is_short_lived_udp_traffic(&reversed_tuples_key)) {
 			if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
 				return TC_ACT_SHOT;
 		}
@@ -1395,6 +1446,10 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 		return TC_ACT_OK;
 	}
 	if (l4proto == IPPROTO_ICMPV6)
+		return TC_ACT_OK;
+
+	// Skip multicast/broadcast packets - eBPF redirect only supports unicast
+	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
 		return TC_ACT_OK;
 
 	// Prepare five tuples.
@@ -1464,8 +1519,17 @@ new_connection:;
 			bool must;
 			int ret = handle_non_syn_tcp(skb, &tuples.five,
 						     &outbound, &mark, &must);
-			if (ret == TC_ACT_OK)
-				return TC_ACT_OK;
+			if (ret == TC_ACT_OK) {
+				// Found cached routing. Check outbound to decide action.
+				if (outbound == OUTBOUND_DIRECT && mark == 0) {
+					// Direct traffic, let it pass.
+					return TC_ACT_OK;
+				} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+					return TC_ACT_SHOT;
+				}
+				// Non-direct routing: send to control plane.
+				goto control_plane;
+			}
 			// No cached routing, continue to establish new connection
 			// (single-arm mode or pre-existing connection)
 		}
@@ -1474,7 +1538,7 @@ new_connection:;
 	} else {
 		// Optimisation: Skip conntrack for DNS traffic
 		// DNS is stateless request-response, doesn't need connection tracking
-		if (!is_dns_traffic(&tuples.five)) {
+		if (!is_short_lived_udp_traffic(&tuples.five)) {
 			struct udp_conn_state *conn_state =
 				refresh_udp_conn_state_timer(&tuples.five, false);
 			if (!conn_state)
@@ -1528,14 +1592,14 @@ new_connection:;
 	//}
 
 	// Save routing result.
-	// DNS fast path: Skip routing cache for DNS queries to prevent map bloat from random source ports.
-	// Each DNS query uses a random source port, creating a unique 4-tuple that would bloat the map.
+	// Short-lived UDP fast path: Skip routing cache for stateless protocols to prevent map bloat.
+	// Each request uses a random source port, creating a unique 4-tuple that would bloat the map.
 	// Userspace will handle routing via fallback when BPF map entry is not found.
-	if (l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53)) {
-		// Skip routing cache for DNS queries - let userspace handle routing
+	if (l4proto == IPPROTO_UDP && is_short_lived_udp_traffic(&tuples.five)) {
+		// Skip routing cache for short-lived UDP - let userspace handle routing
 #ifdef __DEBUG_DNS_FASTPATH
-		bpf_printk("dns(lan): skip cache, sport %u",
-			   bpf_ntohs(tuples.five.sport));
+		bpf_printk("short-lived udp(lan): skip cache, dport %u",
+			   bpf_ntohs(tuples.five.dport));
 #endif
 	} else {
 		ret = bpf_map_update_elem(&routing_tuples_map, &tuples.five,
@@ -1678,6 +1742,10 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		return TC_ACT_OK;
 	}
 
+	// Skip multicast/broadcast packets - eBPF redirect only supports unicast
+	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
+		return TC_ACT_OK;
+
 	// Unified non-SYN TCP handling for wan_ingress
 	if (l4proto == IPPROTO_TCP) {
 		// Check if this is a non-SYN TCP packet (established connection)
@@ -1710,7 +1778,7 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 
 		// Optimisation: Skip conntrack for DNS traffic
 		// DNS is stateless request-response, doesn't need connection tracking
-		if (!is_dns_traffic(&reversed_tuples_key)) {
+		if (!is_short_lived_udp_traffic(&reversed_tuples_key)) {
 			if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
 				return TC_ACT_SHOT;
 		}
@@ -1758,6 +1826,10 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 	if (ret)
 		return TC_ACT_OK;
 	if (l4proto == IPPROTO_ICMPV6)
+		return TC_ACT_OK;
+
+	// Skip multicast/broadcast packets - eBPF redirect only supports unicast
+	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
 		return TC_ACT_OK;
 
 	// Backup for further use.
@@ -1920,7 +1992,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 
 		// Optimisation: Skip conntrack for DNS traffic
 		// DNS is stateless request-response, doesn't need connection tracking
-		if (!is_dns_traffic(&tuples.five)) {
+		if (!is_short_lived_udp_traffic(&tuples.five)) {
 			struct udp_conn_state *conn_state =
 				refresh_udp_conn_state_timer(&tuples.five, false);
 			if (!conn_state)
