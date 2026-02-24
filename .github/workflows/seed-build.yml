@@ -130,8 +130,8 @@ jobs:
         run: |
           mkdir -p ./build/
           export GOFLAGS="-trimpath -modcacherw"
-          # Go 1.26 optimization flags: new inliner, runtime free GC, SIMD, arenas, loopvar
-          export GOEXPERIMENT="newinliner,runtimefreegc,simd,arenas,loopvar"
+          # Go 1.26 optimization flags: new inliner, SIMD, arenas, loopvar (removed runtimefreegc to reduce CPU overhead)
+          export GOEXPERIMENT="newinliner,simd,arenas,loopvar"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export CLANG=clang-15
