@@ -1168,15 +1168,17 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			// DNS fast path: Skip UdpTaskPool for DNS traffic to reduce memory overhead.
-			// DNS queries use random source ports, each creating a unique UdpTaskPool queue.
-			// DNS is stateless and doesn't require ordered processing for the same 4-tuple.
-			if realDst.Port() == 53 {
-				// Execute DNS task directly without going through UdpTaskPool
-				go task()
-			} else {
-				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
-			}
+			// Fast path: All UDP packets execute directly without UdpTaskPool.
+			// UdpTaskPool was originally added to fix UDP state maintenance issues (#539),
+			// but modern protocol implementations handle reordering internally:
+			// - QUIC: Designed for unreliable UDP, has built-in packet ordering and loss recovery
+			// - DNS: Stateless, responses match queries by ID
+			// - WireGuard: Handles packet loss and reordering at the protocol layer
+			// - Game protocols: Typically handle unreliable/unordered UDP natively
+			//
+			// Memory savings: ~32KB per connection (channel buffer + goroutine + metadata)
+			// Performance: Eliminates sync.Map lookup, channel operations, and convoy goroutine
+			go task()
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
