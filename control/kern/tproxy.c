@@ -343,8 +343,11 @@ struct udp_conn_state {
 	struct bpf_timer timer;
 };
 
+// Use LRU_HASH to prevent memory leaks from timer failures
+// Use LRU_HASH to prevent memory leaks from timer failures
+// DNS traffic skips conntrack entirely (see is_dns_traffic checks)
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
 	__type(key, struct tuples_key);
 	__type(value, struct udp_conn_state);
@@ -424,6 +427,7 @@ struct ipv6_ext_ctx {
 
 static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 {
+	(void)index;  // Unused parameter required by bpf_loop callback
 	struct ipv6_ext_ctx *ctx = data;
 
 	if (*ctx->nexthdr == IPPROTO_NONE)
@@ -1182,6 +1186,8 @@ static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
 					   struct tuples_key *key,
 					   struct udp_conn_state *val)
 {
+	(void)_udp_conn_state_map;  // Unused parameter (map is implicit)
+	(void)val;                   // Unused parameter (we only need the key)
 	bpf_map_delete_elem(&udp_conn_state_map, key);
 	return 0;
 }
@@ -1195,6 +1201,13 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->sport = key->dport;
 	dst->dport = key->sport;
 	dst->l4proto = key->l4proto;
+}
+
+// Helper function to check if traffic is DNS
+static __always_inline bool is_dns_traffic(struct tuples_key *key)
+{
+	return key->l4proto == IPPROTO_UDP &&
+	       (key->dport == bpf_htons(53) || key->sport == bpf_htons(53));
 }
 
 static __always_inline struct udp_conn_state *
@@ -1216,18 +1229,35 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 	if (unlikely(!state))
 		return NULL;
 
-	bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
-	bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
+	// Initialize timer with error handling
+	int ret = bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
+	if (ret != 0) {
+		// Timer init failed, delete entry to prevent leak
+		bpf_map_delete_elem(&udp_conn_state_map, key);
+		return NULL;
+	}
+
+	ret = bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
+	if (ret != 0) {
+		bpf_map_delete_elem(&udp_conn_state_map, key);
+		return NULL;
+	}
 
 rearm:
 	// Select timeout based on port (Palo Alto best practice)
-	if (key->l4proto == IPPROTO_UDP &&
-	    (key->dport == bpf_htons(53) || key->sport == bpf_htons(53))) {
+	if (is_dns_traffic(key)) {
 		timeout = TIMEOUT_UDP_DNS;    // 17s for DNS (RFC 5452)
 	} else {
 		timeout = TIMEOUT_UDP_NORMAL;  // 60s for other UDP
 	}
-	bpf_timer_start(&state->timer, timeout, 0);
+
+	ret = bpf_timer_start(&state->timer, timeout, 0);
+	if (ret != 0) {
+		// Timer start failed, delete entry
+		bpf_map_delete_elem(&udp_conn_state_map, key);
+		return NULL;
+	}
+
 	return state;
 }
 
@@ -1323,8 +1353,13 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
+		// Optimisation: Skip conntrack for DNS traffic
+		// DNS is stateless request-response, doesn't need connection tracking
+		if (!is_dns_traffic(&reversed_tuples_key)) {
+			if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+				return TC_ACT_SHOT;
+		}
+		// For DNS, we skip conntrack entirely and let the packet flow through
 	}
 
 	return TC_ACT_PIPE;
@@ -1437,15 +1472,20 @@ new_connection:;
 		params.l4hdr = &tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
-		struct udp_conn_state *conn_state =
-			refresh_udp_conn_state_timer(&tuples.five, false);
-		if (!conn_state)
-			return TC_ACT_SHOT;
-		if (conn_state->is_wan_ingress_direction) {
-			// Replay (outbound) of an inbound flow
-			// => direct.
-			return TC_ACT_OK;
+		// Optimisation: Skip conntrack for DNS traffic
+		// DNS is stateless request-response, doesn't need connection tracking
+		if (!is_dns_traffic(&tuples.five)) {
+			struct udp_conn_state *conn_state =
+				refresh_udp_conn_state_timer(&tuples.five, false);
+			if (!conn_state)
+				return TC_ACT_SHOT;
+			if (conn_state->is_wan_ingress_direction) {
+				// Replay (outbound) of an inbound flow
+				// => direct.
+				return TC_ACT_OK;
+			}
 		}
+		// For DNS, we skip conntrack and proceed directly to routing
 		params.l4hdr = &udph;
 		params.flag[0] = L4ProtoType_UDP;
 	}
@@ -1657,8 +1697,13 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
+		// Optimisation: Skip conntrack for DNS traffic
+		// DNS is stateless request-response, doesn't need connection tracking
+		if (!is_dns_traffic(&reversed_tuples_key)) {
+			if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+				return TC_ACT_SHOT;
+		}
+		// For DNS, we skip conntrack entirely and let the packet flow through
 	}
 
 	return TC_ACT_PIPE;
@@ -1862,15 +1907,20 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			return TC_ACT_OK;
 		}
 
-		struct udp_conn_state *conn_state =
-			refresh_udp_conn_state_timer(&tuples.five, false);
-		if (!conn_state)
-			return TC_ACT_SHOT;
-		if (conn_state->is_wan_ingress_direction) {
-			// Replay (outbound) of an inbound flow
-			// => direct.
-			return TC_ACT_OK;
+		// Optimisation: Skip conntrack for DNS traffic
+		// DNS is stateless request-response, doesn't need connection tracking
+		if (!is_dns_traffic(&tuples.five)) {
+			struct udp_conn_state *conn_state =
+				refresh_udp_conn_state_timer(&tuples.five, false);
+			if (!conn_state)
+				return TC_ACT_SHOT;
+			if (conn_state->is_wan_ingress_direction) {
+				// Replay (outbound) of an inbound flow
+				// => direct.
+				return TC_ACT_OK;
+			}
 		}
+		// For DNS, we skip conntrack and proceed directly to routing
 
 		if (pid_pname) {
 			// 2, 3, 4, 5
