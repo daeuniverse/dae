@@ -114,8 +114,8 @@ jobs:
         run: |
           export CGO_ENABLED=0
           export GOFLAGS="-trimpath -modcacherw"
-          # Go 1.26 optimization flags
-          export GOEXPERIMENT="newinliner,runtimefreegc,simd,arenas,loopvar"
+          # Go 1.26 optimization flags (removed runtimefreegc to reduce CPU overhead in high-throughput scenarios)
+          export GOEXPERIMENT="newinliner,simd,arenas,loopvar"
           export OUTPUT=pkgdir/usr/bin/dae
           export VERSION=${{ env.VERSION }}
           export CLANG=clang-15

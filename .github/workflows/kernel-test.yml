@@ -39,8 +39,8 @@ jobs:
     - name: Generate and build
       run: |
         git submodule update --init
-        # Go 1.26 optimization flags
-        export GOEXPERIMENT="newinliner,runtimefreegc,simd,arenas,loopvar"
+        # Go 1.26 optimization flags (removed runtimefreegc to reduce CPU overhead in high-throughput scenarios)
+        export GOEXPERIMENT="newinliner,simd,arenas,loopvar"
         make GOFLAGS="-buildvcs=false" CC=clang
 
     - name: Store executable
