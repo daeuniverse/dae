@@ -75,6 +75,10 @@ func (ue *UdpEndpoint) start() {
 }
 
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
+	// Refresh TTL on write to keep endpoint alive for active connections
+	// This is especially important for QUIC connections where the server
+	// might respond slowly during handshake
+	ue.RefreshTtl()
 	return ue.conn.WriteTo(b, addr)
 }
 
