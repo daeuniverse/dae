@@ -27,8 +27,8 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	tc "github.com/daeuniverse/outbound/protocol/tuic/common"
-	"github.com/daeuniverse/quic-go"
-	"github.com/daeuniverse/quic-go/http3"
+	"github.com/olicesx/quic-go"
+	"github.com/olicesx/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
