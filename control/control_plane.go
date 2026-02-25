@@ -32,6 +32,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
@@ -1150,17 +1151,14 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			// Fast path: All UDP packets execute directly without UdpTaskPool.
-			// UdpTaskPool was originally added to fix UDP state maintenance issues (#539),
-			// but modern protocol implementations handle reordering internally:
-			// - QUIC: Designed for unreliable UDP, has built-in packet ordering and loss recovery
-			// - DNS: Stateless, responses match queries by ID
-			// - WireGuard: Handles packet loss and reordering at the protocol layer
-			// - Game protocols: Typically handle unreliable/unordered UDP natively
-			//
-			// Memory savings: ~32KB per connection (channel buffer + goroutine + metadata)
-			// Performance: Eliminates sync.Map lookup, channel operations, and convoy goroutine
-			go task()
+			// Use UdpTaskPool only for QUIC Initial packets to ensure ordering for SNI sniffing.
+			// QUIC Initial packets need ordered processing to correctly reassemble ClientHello.
+			// All other UDP traffic (DNS, WireGuard, games, established QUIC) executes directly.
+			if sniffing.IsLikelyQuicInitialPacket(newBuf) {
+				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
+			} else {
+				go task()
+			}
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
