@@ -27,9 +27,9 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	tc "github.com/daeuniverse/outbound/protocol/tuic/common"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/olicesx/quic-go"
 	"github.com/olicesx/quic-go/http3"
-	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
 
@@ -241,6 +241,11 @@ func (d *DoH) getClient() *http.Client {
 
 func (d *DoH) getHttpRoundTripper() *http.Transport {
 	httpTransport := http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig: &tls.Config{
 			ServerName:         d.Upstream.Hostname,
 			InsecureSkipVerify: false,
