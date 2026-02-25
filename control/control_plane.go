@@ -286,10 +286,10 @@ func NewControlPlane(
 		}
 		for _, ifname := range global.WanInterface {
 			if len(global.LanInterface) > 0 {
-				// FIXME: Code is not elegant here.
-				// bindLan setting conf.ipv6.all.forwarding=1 suppresses accept_ra=1,
-				// thus we set it 2 as a workaround.
-				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
+				// NOTE: Linux kernel behavior: ipv6.forwarding=1 suppresses accept_ra=1.
+				// We set accept_ra=2 to enable RA reception without auto-configuring
+				// default routes. This allows LAN+WAN coexistence with IPv6 SLAAC.
+				// Ref: https://sysctl-explorer.net/net/ipv6/accept_ra/
 				if global.AutoConfigKernelParameter {
 					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
 					val, err := acceptRa.Get()
@@ -543,30 +543,12 @@ func NewControlPlane(
 			plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
 		}
 	}
-	// Refresh domain routing cache with new routing.
-	// FIXME: We temperarily disable it because we want to make change of DNS section take effects immediately.
-	// TODO: Add change detection.
-	if false && len(dnsCache) > 0 {
-		for cacheKey, cache := range dnsCache {
-			// Also refresh out-dated routing because kernel map items have no expiration.
-			lastDot := strings.LastIndex(cacheKey, ".")
-			if lastDot == -1 || lastDot == len(cacheKey)-1 {
-				// Not a valid key.
-				log.Warnln("Invalid cache key:", cacheKey)
-				continue
-			}
-			host := cacheKey[:lastDot]
-			_typ := cacheKey[lastDot+1:]
-			typ, err := strconv.ParseUint(_typ, 10, 16)
-			if err != nil {
-				// Unexpected.
-				return nil, err
-			}
-			_ = plane.dnsController.UpdateDnsCacheDeadline(host, uint16(typ), cache.Answer, cache.Deadline)
-		}
-	} else if _bpf != nil {
-		// Is reloading, and dnsCache == nil.
-		// Remove all map items.
+	// On reload, clear the BPF domain routing map to ensure DNS configuration
+	// changes take effect immediately. The dnsCache parameter is preserved for
+	// dae-wing compatibility but not used for cache refresh.
+	// TODO: Implement selective cache refresh based on what changed in DNS config.
+	if _bpf != nil {
+		// Is reloading, remove all map items.
 		// Normally, it is due to the change of ip version preference.
 		var key [4]uint32
 		var val bpfDomainRouting
@@ -1360,15 +1342,11 @@ func (c *ControlPlane) AbortConnections() (err error) {
 func (c *ControlPlane) Close() (err error) {
 	c.stopRealDomainNegJanitor()
 
-	// Invoke defer funcs in reverse order.
+	// Collect errors from defer funcs using errors.Join (Go 1.26 best practice)
+	var errs []error
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
-			// Combine errors.
-			if err != nil {
-				err = fmt.Errorf("%w; %v", err, e)
-			} else {
-				err = e
-			}
+			errs = append(errs, e)
 		}
 	}
 	c.cancel()
@@ -1385,7 +1363,11 @@ func (c *ControlPlane) Close() (err error) {
 	})
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
-	return c.core.Close()
+	// Combine defer errors with core.Close error
+	if coreErr := c.core.Close(); coreErr != nil {
+		errs = append(errs, coreErr)
+	}
+	return errors.Join(errs...)
 }
 
 // StopDNSListener stops the DNS listener if it's running

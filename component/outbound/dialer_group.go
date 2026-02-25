@@ -175,7 +175,6 @@ func (g *DialerGroup) Close() error {
 }
 
 func (g *DialerGroup) SetSelectionPolicy(policy DialerSelectionPolicy) {
-	// TODO:
 	g.selectionPolicy = &policy
 }
 

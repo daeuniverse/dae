@@ -7,6 +7,7 @@ package control
 
 import (
 	"net/netip"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -244,9 +245,9 @@ func (c *DnsCache) Clone() *DnsCache {
 		OriginalDeadline: c.OriginalDeadline,
 	}
 
+	// Use slices.Clone for better performance (Go 1.26 best practice)
 	if c.DomainBitmap != nil {
-		newCache.DomainBitmap = make([]uint32, len(c.DomainBitmap))
-		copy(newCache.DomainBitmap, c.DomainBitmap)
+		newCache.DomainBitmap = slices.Clone(c.DomainBitmap)
 	}
 
 	if c.Answer != nil {
@@ -257,8 +258,8 @@ func (c *DnsCache) Clone() *DnsCache {
 	}
 
 	if packedPtr := c.packedResponse.Load(); packedPtr != nil && *packedPtr != nil {
-		packedCopy := make([]byte, len(*packedPtr))
-		copy(packedCopy, *packedPtr)
+		// Use slices.Clone for better performance (Go 1.26 best practice)
+		packedCopy := slices.Clone(*packedPtr)
 		newCache.packedResponse.Store(&packedCopy)
 		newCache.packedResponseTTL.Store(c.packedResponseTTL.Load())
 		newCache.packedResponseCreatedAt.Store(c.packedResponseCreatedAt.Load())
