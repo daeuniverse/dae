@@ -30,6 +30,7 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
+	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
 )
 
@@ -280,6 +281,25 @@ func (d *Dialer) ActivateCheck() {
 	go d.aliveBackground()
 }
 
+// 全局 connectivity check worker pool
+var (
+	connectivityCheckPool *ants.Pool
+	poolOnce              sync.Once
+)
+
+// getConnectivityCheckPool 返回全局 connectivity check worker pool
+func getConnectivityCheckPool() *ants.Pool {
+	poolOnce.Do(func() {
+		// 限制并发数为 40，足以处理大量节点而不会过度消耗资源
+		p, err := ants.NewPool(40, ants.WithPreAlloc(true))
+		if err != nil {
+			panic("failed to initialize ants pool for connectivity check: " + err.Error())
+		}
+		connectivityCheckPool = p
+	})
+	return connectivityCheckPool
+}
+
 func (d *Dialer) aliveBackground() {
 	cycle := d.CheckInterval
 	var tcpSomark uint32
@@ -435,24 +455,6 @@ func (d *Dialer) aliveBackground() {
 		tcp6CheckDnsOpt,
 	}
 
-	ctx, cancel := context.WithCancel(d.ctx)
-	defer cancel()
-	go func() {
-		/// Splice ticker.C to checkCh.
-		// Sleep to avoid avalanche.
-		time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
-		d.tickerMu.Lock()
-		d.ticker = time.NewTicker(cycle)
-		d.tickerMu.Unlock()
-		for t := range d.ticker.C {
-			select {
-			case <-ctx.Done():
-				return
-			case d.checkCh <- t:
-				// sent successfully
-			}
-		}
-	}()
 	var unused int
 	for _, opt := range CheckOpts {
 		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
@@ -465,28 +467,60 @@ func (d *Dialer) aliveBackground() {
 			Traceln("cleaned up due to unused")
 		return
 	}
+
+	time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
+
+	d.tickerMu.Lock()
+	d.ticker = time.NewTicker(cycle)
+	d.tickerMu.Unlock()
+	defer func() {
+		d.tickerMu.Lock()
+		if d.ticker != nil {
+			d.ticker.Stop()
+		}
+		d.tickerMu.Unlock()
+	}()
+
 	var wg sync.WaitGroup
+	workerPool := getConnectivityCheckPool()
+	
 	for {
 		select {
 		case <-d.ctx.Done():
 			return
+		case <-d.ticker.C:
 		case <-d.checkCh:
-			// Process check
 		}
-		for _, opt := range CheckOpts {
-			// No need to test if there is no dialer selection policy using its latency.
-			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
-				continue
-			}
 
-			wg.Add(1)
-			go func(opt *CheckOption) {
-				_, _ = d.Check(opt)
-				wg.Done()
-			}(opt)
-		}
-		// Wait to block the loop.
+		// Process initial check immediately
+		d.submitCheckTasks(workerPool, &wg, CheckOpts)
+		
+		// Wait for all checks to complete before next cycle
 		wg.Wait()
+	}
+}
+
+// submitCheckTasks 提交检查任务到 worker pool
+func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption) {
+	for _, opt := range opts {
+		// No need to test if there is no dialer selection policy using its latency.
+		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			continue
+		}
+
+		wg.Add(1)
+		checkOpt := opt
+		err := workerPool.Submit(func() {
+			defer wg.Done()
+			_, _ = d.Check(checkOpt)
+		})
+		if err != nil {
+			// If pool is closed or errors out, fallback to goroutine to ensure check proceeds
+			go func() {
+				defer wg.Done()
+				_, _ = d.Check(checkOpt)
+			}()
+		}
 	}
 }
 
@@ -583,10 +617,14 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	if ok && err == nil {
 		// Success: update latency and mark alive.
 		latency := time.Since(start)
+		
+		// Use lock to protect all collection updates
+		d.collectionFineMu.Lock()
 		collection.Latencies10.AppendLatency(latency)
 		avg, _ := collection.Latencies10.AvgLatency()
 		collection.MovingAverage = (collection.MovingAverage + latency) / 2
 		collection.Alive = true
+		d.collectionFineMu.Unlock()
 
 		d.Log.WithFields(logrus.Fields{
 			"network": opts.networkType.String(),
