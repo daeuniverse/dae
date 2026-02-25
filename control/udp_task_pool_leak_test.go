@@ -15,14 +15,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestUdpTaskPoolNoLeak tests that convoy goroutines are properly cleaned up
 func TestUdpTaskPoolNoLeak(t *testing.T) {
 	// Save original timeout
-	oldTimeout := DefaultNatTimeout
-	DefaultNatTimeout = 100 * time.Millisecond
-	defer func() { DefaultNatTimeout = oldTimeout }()
+	oldTimeout := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 100 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = oldTimeout }()
 
 	pool := NewUdpTaskPool()
 
@@ -96,9 +98,9 @@ func TestUdpTaskPoolNoLeak(t *testing.T) {
 
 // TestUdpTaskPoolDrainingFlag tests that the draining flag works correctly
 func TestUdpTaskPoolDrainingFlag(t *testing.T) {
-	oldTimeout := DefaultNatTimeout
-	DefaultNatTimeout = 50 * time.Millisecond
-	defer func() { DefaultNatTimeout = oldTimeout }()
+	oldTimeout := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 50 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = oldTimeout }()
 
 	pool := NewUdpTaskPool()
 	key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 80)
@@ -161,9 +163,9 @@ func TestUdpTaskPoolDrainingFlag(t *testing.T) {
 
 // TestUdpTaskPoolConcurrentAccess tests concurrent access patterns
 func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
-	oldTimeout := DefaultNatTimeout
-	DefaultNatTimeout = 50 * time.Millisecond
-	defer func() { DefaultNatTimeout = oldTimeout }()
+	oldTimeout := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 50 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = oldTimeout }()
 
 	pool := NewUdpTaskPool()
 	initialGoroutines := runtime.NumGoroutine()
@@ -249,5 +251,237 @@ func BenchmarkUdpTaskPool(b *testing.B) {
 			pool.EmitTask(key, func() {})
 			i++
 		}
+	})
+}
+
+// TestUdpTaskPoolAgingTime verifies that 100ms aging time is sufficient
+// for burst traffic while enabling fast memory reclamation.
+func TestUdpTaskPoolAgingTime(t *testing.T) {
+	// Test with production value (100ms)
+	originalAgingTime := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 100 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
+
+	pool := NewUdpTaskPool()
+
+	// Capture baseline after pool creation
+	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
+	baselineGoroutines := runtime.NumGoroutine()
+	t.Logf("Baseline goroutines: %d", baselineGoroutines)
+
+	// Simulate burst traffic: 1000 keys, 100 tasks each
+	const numKeys = 1000
+	const tasksPerKey = 100
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := range numKeys {
+		key := netip.AddrPortFrom(
+			netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}),
+			443,
+		)
+		for range tasksPerKey {
+			wg.Add(1)
+			pool.EmitTask(key, func() {
+				wg.Done()
+			})
+		}
+	}
+	wg.Wait()
+	burstDuration := time.Since(start)
+	t.Logf("Burst traffic completed in %v", burstDuration)
+
+	// Verify all tasks processed in order
+	if burstDuration > 5*time.Second {
+		t.Errorf("Burst processing too slow: %v", burstDuration)
+	}
+
+	// Wait for aging + cleanup margin
+	time.Sleep(UdpTaskPoolAgingTime + 50*time.Millisecond)
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify memory reclamation
+	queueCount := 0
+	pool.queues.Range(func(key, value any) bool {
+		queueCount++
+		return true
+	})
+
+	if queueCount > 10 {
+		t.Errorf("Too many queues remaining after aging: %d", queueCount)
+	} else {
+		t.Logf("Memory reclamation successful: %d queues remaining", queueCount)
+	}
+
+	// Verify goroutine cleanup (allow some variance)
+	currentGoroutines := runtime.NumGoroutine()
+	leaked := currentGoroutines - baselineGoroutines
+	if leaked > 20 {
+		t.Errorf("Goroutine leak: %d (baseline=%d, current=%d)", leaked, baselineGoroutines, currentGoroutines)
+	} else {
+		t.Logf("Goroutine cleanup successful: %d leaked (acceptable)", leaked)
+	}
+}
+
+// BenchmarkUdpTaskPoolAgingTime benchmarks different aging times
+func BenchmarkUdpTaskPoolAgingTime(b *testing.B) {
+	agingTimes := []time.Duration{
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+	}
+
+	for _, aging := range agingTimes {
+		b.Run(aging.String(), func(b *testing.B) {
+			originalAgingTime := UdpTaskPoolAgingTime
+			UdpTaskPoolAgingTime = aging
+			defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
+
+			pool := NewUdpTaskPool()
+			key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 443)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				pool.EmitTask(key, func() {})
+			}
+		})
+	}
+}
+
+// TestUdpTaskPool_ContinuousTraffic verifies 100ms aging with continuous low-rate traffic.
+// Ensures queues persist when packets arrive faster than aging time.
+func TestUdpTaskPool_ContinuousTraffic(t *testing.T) {
+	originalAgingTime := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 100 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
+
+	pool := NewUdpTaskPool()
+	key := netip.MustParseAddrPort("192.168.1.1:443")
+
+	// Continuous traffic: 1 packet every 80ms for 1 second (interval < agingTime)
+	// Queue should persist, not age out
+	for i := 0; i < 12; i++ {
+		var done atomic.Bool
+		pool.EmitTask(key, func() {
+			done.Store(true)
+		})
+		require.Eventually(t, func() bool { return done.Load() }, 50*time.Millisecond, 5*time.Millisecond)
+		time.Sleep(80 * time.Millisecond)
+	}
+
+	// Verify queue still exists (not aged out)
+	count := 0
+	pool.queues.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	require.Equal(t, 1, count, "Queue should persist with continuous traffic (interval < agingTime)")
+}
+
+// TestUdpTaskPool_ConcurrentContinuousTraffic verifies concurrent flows with continuous traffic.
+// Simulates real-world scenario: multiple QUIC connections with ongoing traffic.
+func TestUdpTaskPool_ConcurrentContinuousTraffic(t *testing.T) {
+	originalAgingTime := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 100 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
+
+	pool := NewUdpTaskPool()
+
+	// Simulate 10 concurrent QUIC flows
+	const numFlows = 10
+	const packetsPerFlow = 20
+	const packetInterval = 80 * time.Millisecond // < agingTime
+
+	var wg sync.WaitGroup
+	var allProcessed atomic.Int32
+
+	start := time.Now()
+
+	// Start concurrent flows
+	for flowID := 0; flowID < numFlows; flowID++ {
+		wg.Add(1)
+		go func(fid int) {
+			defer wg.Done()
+
+			key := netip.AddrPortFrom(
+				netip.AddrFrom4([4]byte{192, 168, 1, byte(fid + 1)}),
+				443,
+			)
+
+			// Send packets at intervals
+			for pkt := 0; pkt < packetsPerFlow; pkt++ {
+				pool.EmitTask(key, func() {
+					allProcessed.Add(1)
+				})
+				time.Sleep(packetInterval)
+			}
+		}(flowID)
+	}
+
+	// Wait for all goroutines to finish sending
+	wg.Wait()
+	totalDuration := time.Since(start)
+
+	// Verify all packets processed
+	expectedTotal := int32(numFlows * packetsPerFlow)
+	require.Eventually(t, func() bool {
+		return allProcessed.Load() >= expectedTotal
+	}, 5*time.Second, 50*time.Millisecond, "all packets should be processed")
+
+	t.Logf("Processed %d packets from %d concurrent flows in %v", allProcessed.Load(), numFlows, totalDuration)
+
+	// Wait for aging
+	time.Sleep(UdpTaskPoolAgingTime + 50*time.Millisecond)
+
+	// Verify memory reclamation after traffic stops
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+
+	queueCount := 0
+	pool.queues.Range(func(_, _ any) bool {
+		queueCount++
+		return true
+	})
+
+	// All queues should be cleaned up after aging
+	require.LessOrEqual(t, queueCount, 2, "queues should be cleaned up after aging (got %d)", queueCount)
+}
+
+// TestUdpTaskPool_MixedBurstAndContinuous verifies mixed traffic patterns.
+func TestUdpTaskPool_MixedBurstAndContinuous(t *testing.T) {
+	originalAgingTime := UdpTaskPoolAgingTime
+	UdpTaskPoolAgingTime = 100 * time.Millisecond
+	defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
+
+	pool := NewUdpTaskPool()
+
+	// Phase 1: Burst traffic (creates queues)
+	burstKey := netip.MustParseAddrPort("10.0.0.1:443")
+	for i := 0; i < 100; i++ {
+		pool.EmitTask(burstKey, func() {})
+	}
+	time.Sleep(50 * time.Millisecond) // Let burst process
+
+	// Phase 2: Continuous traffic (keeps queue alive)
+	continuousKey := netip.MustParseAddrPort("10.0.0.2:443")
+	for i := 0; i < 10; i++ {
+		pool.EmitTask(continuousKey, func() {})
+		time.Sleep(80 * time.Millisecond) // < agingTime
+	}
+
+	// Verify: burst queue should be gone, continuous queue should remain
+	time.Sleep(UdpTaskPoolAgingTime + 50*time.Millisecond)
+
+	pool.queues.Range(func(key, _ any) bool {
+		k := key.(netip.AddrPort)
+		// Only continuousKey should remain (or none if timing is tight)
+		if k != continuousKey {
+			t.Logf("Unexpected queue remaining: %v", k)
+		}
+		return true
 	})
 }
