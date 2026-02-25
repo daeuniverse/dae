@@ -34,6 +34,7 @@ var (
 
 const (
 	DnsNatTimeout  = 17 * time.Second // RFC 5452
+	QuicNatTimeout = 60 * time.Second // QUIC needs longer timeout for slow handshake
 	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
 	MaxRetry       = 2
 )
@@ -53,6 +54,10 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 			//log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
 			return &dnsmsg, DnsNatTimeout
 		}
+	}
+	// QUIC traffic needs longer timeout for slow handshake scenarios
+	if sniffing.IsLikelyQuicInitialPacket(data) {
+		return nil, QuicNatTimeout
 	}
 	return nil, DefaultNatTimeout
 }
