@@ -249,7 +249,7 @@ loop:
 			log = logrus.New()
 			logger.SetLogger(log, newConf.Global.LogLevel, disableTimestamp, nil)
 			logger.SetLogger(logrus.StandardLogger(), newConf.Global.LogLevel, disableTimestamp, nil)
-			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
+			log.SetOutput(oldLogOutput) // NOTE: Restore log output after creating new logger during reload.
 			logrus.SetOutput(oldLogOutput)
 
 			// New control plane.
