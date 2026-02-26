@@ -81,38 +81,57 @@ func (a *Anyfrom) SyscallConn() (syscall.RawConn, error) {
 func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
 	defer a.afterWrite(err)
 	if a.SupportGso(len(b)) {
-		return a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(oob, uint16(len(b))), addr)
+		// Only request UDP GSO when the payload will actually be segmented.
+		// Some drivers/devices misbehave when UDP_SEGMENT is set for single-segment sends.
+		// This mirrors the fix in quic-go: https://github.com/MetaCubeX/quic-go/commit/4df8f0d
+		gsoSize := uint16(1500) // Standard MTU
+		if len(b) > int(gsoSize) {
+			return a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(oob, gsoSize), addr)
+		}
 	}
 	return a.UDPConn.WriteMsgUDP(b, oob, addr)
 }
 func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
 	defer a.afterWrite(err)
 	if a.SupportGso(len(b)) {
-		return a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(oob, uint16(len(b))), addr)
+		// Only request UDP GSO when the payload will actually be segmented.
+		gsoSize := uint16(1500)
+		if len(b) > int(gsoSize) {
+			return a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(oob, gsoSize), addr)
+		}
 	}
 	return a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
 }
 func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	defer a.afterWrite(err)
 	if a.SupportGso(len(b)) {
-		n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr.(*net.UDPAddr))
-		return n, err
+		gsoSize := uint16(1500)
+		if len(b) > int(gsoSize) {
+			n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, gsoSize), addr.(*net.UDPAddr))
+			return n, err
+		}
 	}
 	return a.UDPConn.WriteTo(b, addr)
 }
 func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
 	defer a.afterWrite(err)
 	if a.SupportGso(len(b)) {
-		n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr)
-		return n, err
+		gsoSize := uint16(1500)
+		if len(b) > int(gsoSize) {
+			n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, gsoSize), addr)
+			return n, err
+		}
 	}
 	return a.UDPConn.WriteToUDP(b, addr)
 }
 func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
 	defer a.afterWrite(err)
 	if a.SupportGso(len(b)) {
-		n, _, err = a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr)
-		return n, err
+		gsoSize := uint16(1500)
+		if len(b) > int(gsoSize) {
+			n, _, err = a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(nil, gsoSize), addr)
+			return n, err
+		}
 	}
 	return a.UDPConn.WriteToUDPAddrPort(b, addr)
 }
