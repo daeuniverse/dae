@@ -7,7 +7,7 @@ package dialer
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,7 +22,7 @@ import (
 	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
-
+	commonerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -574,10 +574,11 @@ func (d *Dialer) logUnavailable(
 ) {
 	// Append timeout if there is any error or unexpected status code.
 	if err != nil {
-		if strings.HasSuffix(err.Error(), "network is unreachable") {
+		// Use common/errors package for type-safe error checking
+		// instead of string matching for better reliability.
+		if commonerrors.IsNetworkUnreachable(err) {
 			err = fmt.Errorf("network is unreachable")
-		} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
-			strings.HasSuffix(err.Error(), "non-IPv4 address") {
+		} else if commonerrors.IsAddressNotSuitable(err) {
 			err = fmt.Errorf("IPv%v is not supported", network.IpVersion)
 		}
 		d.Log.WithFields(logrus.Fields{
@@ -671,7 +672,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 	resp, err := cli.Do(req)
 	if err != nil {
 		var netErr net.Error
-		if errors.As(err, &netErr); netErr.Timeout() {
+		if stderrors.As(err, &netErr); netErr.Timeout() {
 			err = fmt.Errorf("timeout")
 		}
 		return false, err

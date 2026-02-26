@@ -279,13 +279,9 @@ retryLoadBpf:
 				}
 			}
 		}
-		if strings.Contains(err.Error(), "no BTF found for kernel version") {
-			err = fmt.Errorf("%w: you should re-compile linux kernel with BTF configurations; see docs for more information", err)
-		} else if strings.Contains(err.Error(), "unknown func bpf_trace_printk") {
-			err = fmt.Errorf(`%w: please try to compile dae without bpf_printk"`, err)
-		} else if strings.Contains(err.Error(), "unknown func bpf_probe_read") {
-			err = fmt.Errorf(`%w: please re-compile linux kernel with CONFIG_BPF_EVENTS=y and CONFIG_KPROBE_EVENTS=y"`, err)
-		}
+		// Use wrapBPFError to add helpful context to BPF errors.
+		// This replaces string matching with structured error handling.
+		err = wrapBPFError(err)
 		return err
 	}
 	return nil

@@ -111,7 +111,7 @@ require (
 )
 
 // Use remote dependencies with specific commits for GSO fixes and performance optimizations
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260226044936-f99a24018bac
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260226165827-58fcbfe
 
 // Uncomment to use local dependencies for development:
 // replace github.com/daeuniverse/outbound => ../outbound

@@ -7,11 +7,10 @@ package control
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -41,7 +40,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	dst := common.ConvergeAddrPort(lConn.LocalAddr().(*net.TCPAddr).AddrPort())
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, consts.IPPROTO_TCP)
 	if err != nil {
-		if errors.Is(err, ebpf.ErrKeyNotExist) {
+		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			// Graceful fallback: routing tuple might be unavailable due to race/window
 			// during connection handoff. Continue with userspace routing instead of
 			// aborting the TCP connection.
@@ -76,17 +75,10 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	defer rConn.Close()
 
 	if err = RelayTCP(sniffer, rConn); err != nil {
-		switch {
-		case strings.HasSuffix(err.Error(), "write: broken pipe"),
-			strings.HasSuffix(err.Error(), "i/o timeout"),
-			strings.HasPrefix(err.Error(), "EOF"),
-			strings.HasSuffix(err.Error(), "connection reset by peer"),
-			strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
-			strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
-			return nil // ignore
-		default:
-			return fmt.Errorf("handleTCP relay error: %w", err)
+		if isIgnorableTCPRelayError(err) {
+			return nil // ignore normal connection closure errors
 		}
+		return fmt.Errorf("handleTCP relay error: %w", err)
 	}
 	return nil
 }

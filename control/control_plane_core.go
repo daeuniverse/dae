@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -103,19 +104,20 @@ func (c *controlPlaneCore) Close() (err error) {
 		return nil
 	default:
 	}
-	// Invoke defer funcs in reverse order.
+	// Invoke defer funcs in reverse order and collect errors.
+	// Use errors.Join (Go 1.20+) for clean multi-error handling.
+	var errs []error
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
-			// Combine errors.
-			if err != nil {
-				err = fmt.Errorf("%w; %v", err, e)
-			} else {
-				err = e
-			}
+			errs = append(errs, e)
 		}
 	}
 	c.close()
-	return err
+	
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {

@@ -7,7 +7,7 @@ package control
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -27,6 +27,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
+	commonerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -1055,7 +1056,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			lconn, err := listener.tcpListener.Accept()
 			if err != nil {
-				if !strings.Contains(err.Error(), "use of closed network connection") {
+				if !commonerrors.IsClosedConnection(err) {
 					c.log.Errorf("Error when accept: %v", err)
 				}
 				break
@@ -1087,7 +1088,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob[:])
 			if err != nil {
-				if !strings.Contains(err.Error(), "use of closed network connection") {
+				if !commonerrors.IsClosedConnection(err) {
 					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
 				}
 				break
@@ -1115,7 +1116,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				if routingResult == nil {
 					rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP)
 					if retrieveErr != nil {
-						if errors.Is(retrieveErr, ebpf.ErrKeyNotExist) {
+						if stderrors.Is(retrieveErr, ebpf.ErrKeyNotExist) {
 							// Keep behavior consistent with TCP path: missing tuple can happen
 							// in short race windows; fallback to userspace routing instead of
 							// dropping the packet.
@@ -1334,7 +1335,7 @@ func (c *ControlPlane) AbortConnections() (err error) {
 		}
 		return true
 	})
-	return errors.Join(errs...)
+	return stderrors.Join(errs...)
 }
 
 func (c *ControlPlane) Close() (err error) {
@@ -1365,7 +1366,7 @@ func (c *ControlPlane) Close() (err error) {
 	if coreErr := c.core.Close(); coreErr != nil {
 		errs = append(errs, coreErr)
 	}
-	return errors.Join(errs...)
+	return stderrors.Join(errs...)
 }
 
 // StopDNSListener stops the DNS listener if it's running
