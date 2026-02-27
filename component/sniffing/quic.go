@@ -36,8 +36,10 @@ const (
 	QuicReassemblePolicy_Slow
 )
 
-// IsLikelyQuicInitialPacket performs a very cheap header check to filter out
-// obvious non-QUIC datagrams before expensive parsing/decryption.
+const (
+	QuicVersion1 = 0x00000001
+)
+
 func IsLikelyQuicInitialPacket(buf []byte) bool {
 	const minQuicInitialHeaderLen = 7
 	if len(buf) < minQuicInitialHeaderLen {
@@ -52,6 +54,11 @@ func IsLikelyQuicInitialPacket(buf []byte) bool {
 		return false
 	}
 	if ((protectedFlag >> QuicFlag_FixedBit) & 0b1) == 0 {
+		return false
+	}
+
+	version := uint32(buf[1])<<24 | uint32(buf[2])<<16 | uint32(buf[3])<<8 | uint32(buf[4])
+	if version != QuicVersion1 {
 		return false
 	}
 

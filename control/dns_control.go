@@ -114,10 +114,11 @@ type DnsController struct {
 
 	// Async BPF update: uses a single goroutine with bounded channel
 	// to process BPF map updates off the hot path.
-	bpfUpdateCh   chan *bpfUpdateTask
-	bpfUpdateStop chan struct{}
-	bpfUpdateWg   sync.WaitGroup
-	bpfUpdateOnce sync.Once
+	bpfUpdateCh     chan *bpfUpdateTask
+	bpfUpdateStop   chan struct{}
+	bpfUpdateWg     sync.WaitGroup
+	bpfUpdateOnce   sync.Once
+	bpfUpdateClosed atomic.Bool
 }
 
 // bpfUpdateTask represents a BPF map update request.
@@ -238,6 +239,7 @@ func (c *DnsController) Close() error {
 		// Stop BPF update worker (if it was started)
 		// Check by checking if the channel was initialized
 		if c.bpfUpdateStop != nil && c.bpfUpdateCh != nil {
+			c.bpfUpdateClosed.Store(true)
 			close(c.bpfUpdateStop)
 			close(c.bpfUpdateCh)
 			c.bpfUpdateWg.Wait()
@@ -395,20 +397,34 @@ func (c *DnsController) triggerBpfUpdateIfNeeded(cache *DnsCache, now time.Time)
 		return
 	}
 
-	// Lazy-start the worker on first use
+	if c.bpfUpdateClosed.Load() {
+		return
+	}
+
 	c.startBpfUpdateWorker()
 
-	// Non-blocking send: skip if queue is full
-	select {
-	case c.bpfUpdateCh <- &bpfUpdateTask{cache: cache, now: now}:
-		// Successfully enqueued
-	default:
-		// Queue full - skip this update.
-		// CAS in NeedsBpfUpdate already updated lastRouteSyncNano,
-		// so next check will return false until MinBpfUpdateInterval passes.
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.Debug("BPF update queue full, skipping update")
+	if c.bpfUpdateClosed.Load() {
+		return
+	}
+
+	if !c.sendBpfUpdateTask(&bpfUpdateTask{cache: cache, now: now}) {
+		if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.Debug("BPF update queue full or closed, skipping update")
 		}
+	}
+}
+
+func (c *DnsController) sendBpfUpdateTask(task *bpfUpdateTask) (sent bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			sent = false
+		}
+	}()
+	select {
+	case c.bpfUpdateCh <- task:
+		return true
+	default:
+		return false
 	}
 }
 

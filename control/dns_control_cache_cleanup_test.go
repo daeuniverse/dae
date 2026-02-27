@@ -6,6 +6,8 @@
 package control
 
 import (
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -104,4 +106,63 @@ func TestDnsController_RemoveDnsRespCacheTriggersCallback(t *testing.T) {
 	_, ok := c.dnsCache.Load(cacheKey)
 	require.False(t, ok, "cache should be removed")
 	require.EqualValues(t, 1, removed.Load(), "remove callback should be called")
+}
+
+func TestDnsController_CloseNoPanicDuringBpfUpdate(t *testing.T) {
+	var callbackCount atomic.Int32
+	c := &DnsController{
+		cacheAccessCallback: func(cache *DnsCache) error {
+			callbackCount.Add(1)
+			return nil
+		},
+		janitorStop: make(chan struct{}),
+		janitorDone: make(chan struct{}),
+		evictorDone: make(chan struct{}),
+		evictorQ:    nil,
+		log:         nil,
+	}
+
+	c.startDnsCacheJanitor()
+	c.startCacheEvictor()
+
+	var wg sync.WaitGroup
+	stopCh := make(chan struct{})
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					cache := &DnsCache{
+						Deadline:         time.Now().Add(time.Minute),
+						OriginalDeadline: time.Now().Add(time.Minute),
+					}
+					c.triggerBpfUpdateIfNeeded(cache, time.Now())
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(5 * time.Millisecond)
+
+	close(stopCh)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Close()
+	}()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "Close should not return error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close took too long - possible deadlock")
+	}
+
+	wg.Wait()
 }

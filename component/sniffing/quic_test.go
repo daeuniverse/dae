@@ -87,3 +87,36 @@ func TestIsLikelyQuicInitialPacket(t *testing.T) {
 		t.Fatal("packet with fixed bit cleared should not be recognized")
 	}
 }
+
+func TestIsLikelyQuicInitialPacket_VersionCheck(t *testing.T) {
+	buf := make([]byte, 16)
+	buf[0] = 0xC0
+	buf[1] = 0x00
+	buf[2] = 0x00
+	buf[3] = 0x00
+	buf[4] = 0x01
+
+	if !IsLikelyQuicInitialPacket(buf) {
+		t.Fatal("valid QUIC v1 initial packet should be recognized")
+	}
+
+	invalidVersion := make([]byte, 16)
+	invalidVersion[0] = 0xC0
+	invalidVersion[1] = 0xFF
+	invalidVersion[2] = 0xFF
+	invalidVersion[3] = 0xFF
+	invalidVersion[4] = 0xFF
+	if IsLikelyQuicInitialPacket(invalidVersion) {
+		t.Fatal("packet with invalid version should be rejected")
+	}
+
+	randomPacket := make([]byte, 16)
+	randomPacket[0] = 0xC0
+	randomPacket[1] = 0x12
+	randomPacket[2] = 0x34
+	randomPacket[3] = 0x56
+	randomPacket[4] = 0x78
+	if IsLikelyQuicInitialPacket(randomPacket) {
+		t.Fatal("random packet with non-v1 version should be rejected")
+	}
+}
