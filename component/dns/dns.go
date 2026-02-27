@@ -23,11 +23,11 @@ import (
 var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 
 type Dns struct {
-	log              *logrus.Logger
-	upstream         []*UpstreamResolver
-	upstream2Index   sync.Map
-	reqMatcher       *RequestMatcher
-	respMatcher      *ResponseMatcher
+	log            *logrus.Logger
+	upstream       []*UpstreamResolver
+	upstream2Index sync.Map
+	reqMatcher     *RequestMatcher
+	respMatcher    *ResponseMatcher
 }
 
 type NewOption struct {

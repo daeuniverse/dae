@@ -21,9 +21,9 @@ import (
 // TestDNSFastPath_DNSPortDetection verifies that DNS traffic (port 53) is correctly identified.
 func TestDNSFastPath_DNSPortDetection(t *testing.T) {
 	tests := []struct {
-		name     string
-		port     uint16
-		isDNS    bool
+		name  string
+		port  uint16
+		isDNS bool
 	}{
 		{"DNS standard port", 53, true},
 		{"HTTP port", 80, false},
@@ -292,9 +292,9 @@ func buildTestNonDNSPacket(t *testing.T) []byte {
 // TestHandlePkt_DNSFastPath_PortDetection verifies that DNS port detection works
 func TestHandlePkt_DNSFastPath_PortDetection(t *testing.T) {
 	tests := []struct {
-		name     string
-		port     uint16
-		isDNS    bool
+		name  string
+		port  uint16
+		isDNS bool
 	}{
 		{"DNS standard port", 53, true},
 		{"DNS over port 5353", 5353, false}, // mDNS, not standard DNS
@@ -496,7 +496,7 @@ func TestChooseNatTimeout_SNIDetection(t *testing.T) {
 // TestHandlePkt_DNSFastPath_Qtypes tests various DNS query types
 func TestHandlePkt_DNSFastPath_Qtypes(t *testing.T) {
 	qtypes := []struct {
-		name string
+		name  string
 		qtype uint16
 	}{
 		{"A record", dnsmessage.TypeA},

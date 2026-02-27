@@ -189,13 +189,12 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 }
 
 func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
-	if ue, ok := p.pool.LoadAndDelete(lAddr); ok {
-		if ue != udpEndpoint {
-			udpEndpoint.Close()
-			return fmt.Errorf("target udp endpoint is not in the pool")
-		}
-		ue.(*UdpEndpoint).Close()
+	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
+	if !p.pool.CompareAndDelete(lAddr, udpEndpoint) {
+		udpEndpoint.Close()
+		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
+	udpEndpoint.Close()
 	return nil
 }
 
@@ -217,10 +216,10 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		_ue, ok = p.pool.Load(lAddr)
 		if ok {
 			ue := _ue.(*UdpEndpoint)
-			// Check if the existing endpoint is dead (read loop exited).
-			// If so, remove it and create a new one.
+
 			if ue.IsDead() {
-				p.pool.Delete(lAddr)
+				// Use CompareAndDelete for atomic CAS (best practice)
+				p.pool.CompareAndDelete(lAddr, ue)
 			} else {
 				ue.RefreshTtl()
 				return ue, false, nil
@@ -273,16 +272,13 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		isNew = true
 	}
 	ue := _ue.(*UdpEndpoint)
-	// Check if the endpoint is dead (read loop exited).
-	// If so, remove it and try to create a new one.
+
 	if ue.IsDead() {
 		// Need to acquire lock before modifying the pool
 		mu := p.createMuFor(lAddr)
 		mu.Lock()
-		// Double check after acquiring lock
-		if _ue2, ok2 := p.pool.Load(lAddr); ok2 && _ue2 == ue {
-			p.pool.Delete(lAddr)
-		}
+		// Use CompareAndDelete for atomic CAS - only delete if still the same dead endpoint
+		p.pool.CompareAndDelete(lAddr, ue)
 		mu.Unlock()
 		// Recursively call GetOrCreate to create a new endpoint
 		return p.GetOrCreate(lAddr, createOption)
@@ -308,7 +304,8 @@ func (p *UdpEndpointPool) startJanitor() {
 					if !ue.IsExpired(nowNano) {
 						return true
 					}
-					if _ue, ok := p.pool.LoadAndDelete(key); ok && _ue == ue {
+					// Use CompareAndDelete for atomic CAS - only delete if still the same expired endpoint
+					if p.pool.CompareAndDelete(key, ue) {
 						_ = ue.Close()
 					}
 					return true

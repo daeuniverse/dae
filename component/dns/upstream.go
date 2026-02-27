@@ -183,7 +183,7 @@ var errorSentinel upstreamState
 // GetUpstream returns the upstream resolver, initializing it if necessary.
 // OPTIMIZATION: Uses atomic pointer for lock-free reads after successful initialization.
 // Retries on transient failures (important for unstable proxy connections).
-// 
+//
 // State machine:
 //   - nil: not initialized yet
 //   - &errorSentinel: initialization failed, should retry

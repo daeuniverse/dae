@@ -249,7 +249,7 @@ func TestBpfUpdateWorker_ConcurrentAccess(t *testing.T) {
 // when actually needed.
 func TestBpfUpdateWorker_LazyStart(t *testing.T) {
 	controller := &DnsController{
-		log:     testLogger,
+		log:      testLogger,
 		dnsCache: sync.Map{},
 	}
 

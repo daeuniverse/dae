@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cilium/ebpf v0.20.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20250722064253-00c4fbb38759
+	github.com/daeuniverse/outbound v0.0.0-20260227044608-adfc5fac27e7
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mholt/archives v0.1.5
@@ -110,12 +110,10 @@ require (
 	google.golang.org/grpc v1.79.1 // indirect
 )
 
-// Use remote dependencies with specific commits for GSO fixes and performance optimizations
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260226085827-58fcbfec35b6
-
 // Uncomment to use local dependencies for development:
-// replace github.com/daeuniverse/outbound => ../outbound
 // replace github.com/olicesx/quic-go => ../daeuniverse-quic-go
 
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
+
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260227044608-adfc5fac27e7

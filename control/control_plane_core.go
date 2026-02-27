@@ -113,7 +113,7 @@ func (c *controlPlaneCore) Close() (err error) {
 		}
 	}
 	c.close()
-	
+
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}

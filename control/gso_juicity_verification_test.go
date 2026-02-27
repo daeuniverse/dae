@@ -17,7 +17,7 @@ import (
 // the GSO fix completely resolves the juicity performance issue.
 //
 // Background:
-// - User reported: "juicity客户端开gso 性能极差" (juicity with GSO enabled has very poor performance)
+// - User reported: juicity with GSO enabled has very poor performance
 // - Root cause: UDP_SEGMENT was set for single-segment sends (payload <= segment_size)
 // - Fix: Only set UDP_SEGMENT when payload > segment_size (1500 bytes)
 //
@@ -86,8 +86,8 @@ func TestGSOComprehensiveFixVerification(t *testing.T) {
 	t.Run("anyfrom_Write_methods_correctness", func(t *testing.T) {
 		// Test that all 5 Write methods in anyfrom apply the fix correctly
 		testCases := []struct {
-			name       string
-			payload    []byte
+			name         string
+			payload      []byte
 			shouldUseGSO bool
 		}{
 			{"small_500B", make([]byte, 500), false},

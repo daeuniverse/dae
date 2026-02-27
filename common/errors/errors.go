@@ -248,9 +248,10 @@ var (
 //   - Avoid pure string matching when possible
 //
 // Example:
-//   if IsDNSTimeout(err) {
-//       // Handle DNS timeout
-//   }
+//
+//	if IsDNSTimeout(err) {
+//	    // Handle DNS timeout
+//	}
 func IsDNSTimeout(err error) bool {
 	if err == nil {
 		return false

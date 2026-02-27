@@ -159,20 +159,18 @@ func (q *UdpTaskQueue) convoy() {
 				q.safeTimerReset(timer)
 				continue
 			}
-			
-			// Set draining flag to prevent new acquisitions
+
 			q.draining.Store(true)
-			
+
 			// Brief wait for in-flight acquireQueue calls to complete
 			time.Sleep(10 * time.Millisecond)
-			
-			// Final check: ensure no new tasks arrived
+
 			if q.refs.Load() > 0 || len(q.ch) > 0 || q.overflowLen.Load() > 0 {
 				q.draining.Store(false)
 				q.safeTimerReset(timer)
 				continue
 			}
-			
+
 			// Try to delete from pool using CAS-like semantics via sync.Map
 			if q.p.tryDeleteQueue(q.key, q) {
 				q.p.queueChPool.Put(q.ch)
@@ -234,7 +232,8 @@ createNew:
 		p.queueChPool.Put(ch)
 		q := actual.(*UdpTaskQueue)
 		if q.draining.Load() {
-			p.queues.Delete(key)
+			// Use CompareAndDelete to only delete if still the same draining queue
+			p.queues.CompareAndDelete(key, q)
 			goto createNew
 		}
 		q.refs.Add(1)
@@ -253,12 +252,9 @@ createNew:
 
 // tryDeleteQueue attempts to delete the queue if it's still the same instance.
 // Returns true if deletion was successful, false otherwise.
+// Uses CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice).
 func (p *UdpTaskPool) tryDeleteQueue(key netip.AddrPort, expected *UdpTaskQueue) bool {
-	// Use Load+Delete with verification to avoid deleting a recreated queue
-	if v, loaded := p.queues.LoadAndDelete(key); loaded {
-		return v.(*UdpTaskQueue) == expected
-	}
-	return false
+	return p.queues.CompareAndDelete(key, expected)
 }
 
 var (

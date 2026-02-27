@@ -31,7 +31,7 @@ func hashAddrPort(ap netip.AddrPort) uint64 {
 		lo = binary.BigEndian.Uint64(a16[8:])
 	}
 
-	// 低开销混合：避免逐字节循环，减少 hot path 指令数。
+	// Low-overhead mixing: avoid byte-by-byte loops, reduce hot path instruction count.
 	h := hi ^ bits.RotateLeft64(lo, 17) ^ (p << 48) ^ p
 	h ^= h >> 33
 	h *= hashMix1

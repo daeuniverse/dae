@@ -123,7 +123,7 @@ type DnsController struct {
 // bpfUpdateTask represents a BPF map update request.
 type bpfUpdateTask struct {
 	cache *DnsCache
-	now    time.Time
+	now   time.Time
 }
 
 // cacheEntry represents a DNS cache entry with its access time for LRU eviction.
@@ -517,7 +517,6 @@ func (c *DnsController) evictLRUIfFull(now time.Time) {
 		return true
 	})
 
-	// Check if eviction is needed
 	if count <= c.maxCacheSize {
 		return
 	}
@@ -551,17 +550,17 @@ func (c *DnsController) evictLRUIfFull(now time.Time) {
 	if numToEvict < len(entries) {
 		// Build min-heap based on lastAccess (smallest = oldest)
 		buildMinHeap(entries)
-		
+
 		// Extract k oldest entries from heap
 		for i := 0; i < numToEvict; i++ {
 			// Swap root (minimum) with last element
 			lastIdx := len(entries) - 1 - i
 			entries[0], entries[lastIdx] = entries[lastIdx], entries[0]
-			
+
 			// Restore heap property for remaining elements
 			heapifyMin(entries, 0, lastIdx)
 		}
-		
+
 		// The k oldest are now at the end of entries (indices len-n to len-1)
 		entries = entries[len(entries)-numToEvict:]
 	}
@@ -653,7 +652,7 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 }
 
 // LookupDnsRespCache_ will modify the msg in place.
-// Returns packed DNS response bytes ready to send (DNS ID = 0, caller should patch).
+
 // OPTIMIZED: Uses pre-packed response with approximate TTL for near-zero latency.
 // TTL is refreshed when difference exceeds ttlRefreshThresholdSeconds (15 seconds by default).
 // OPTIMISTIC CACHE (RFC 8767): Returns stale response while background refresh is in progress.
@@ -768,7 +767,6 @@ func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err erro
 		msg.Answer[i].Header().Ttl = 0
 	}
 
-	// Check if request A/AAAA record.
 	var reqIpRecord bool
 loop:
 	for i := range msg.Question {
@@ -1167,7 +1165,6 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			return err
 		}
 
-		// Check if rejected - Reject rules take priority over cache
 		if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
 			c.RemoveDnsRespCache(cacheKey)
 			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)

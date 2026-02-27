@@ -460,7 +460,7 @@ nextLink:
 				return nil, err
 			}
 			for _, route := range rs {
-				// Check if this is a default route.
+
 				// In netlink v1.3.1+, default routes have Dst as 0.0.0.0/0 or ::/0
 				// instead of nil (behavior change from v1.1.0).
 				isDefault := false
@@ -469,13 +469,13 @@ nextLink:
 					isDefault = true
 				} else if route.Dst.IP.IsUnspecified() && route.Dst.Mask != nil {
 					// New behavior: 0.0.0.0/0 or ::/0 means default route
-					// Check if mask is all zeros (prefix length 0)
+
 					ones, _ := route.Dst.Mask.Size()
 					if ones == 0 {
 						isDefault = true
 					}
 				}
-				
+
 				if isDefault {
 					defaultIfs = append(defaultIfs, link.Attrs().Name)
 					continue nextLink

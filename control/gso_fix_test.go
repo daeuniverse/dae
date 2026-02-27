@@ -13,10 +13,10 @@ import (
 // This ensures that UDP_SEGMENT is only set when the payload will actually be segmented.
 func TestAnyfromGSOFix(t *testing.T) {
 	tests := []struct {
-		name              string
-		payloadSize       int
-		gsoEnabled        bool
-		shouldUseGSO      bool
+		name         string
+		payloadSize  int
+		gsoEnabled   bool
+		shouldUseGSO bool
 	}{
 		{
 			name:         "small packet (500B)",
@@ -59,7 +59,7 @@ func TestAnyfromGSOFix(t *testing.T) {
 
 			// Check if GSO would be used
 			wouldUseGSO := a.SupportGso(tt.payloadSize)
-			
+
 			// The actual GSO usage depends on both SupportGso and the size check in Write methods
 			actualUse := wouldUseGSO && tt.payloadSize > 1500
 
@@ -76,9 +76,9 @@ func TestGSOSizeVerification(t *testing.T) {
 	gsoSize := uint16(1500) // Standard MTU
 
 	tests := []struct {
-		name     string
-		payload  []byte
-		wantGSO  bool
+		name    string
+		payload []byte
+		wantGSO bool
 	}{
 		{
 			name:    "100 bytes",

@@ -18,11 +18,11 @@ func BenchmarkCacheAccessWithLastAccessUpdate(b *testing.B) {
 		DomainBitmap: []uint32{1},
 		Deadline:     time.Now().Add(time.Hour),
 	}
-	
+
 	now := time.Now()
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		// Simulate cache access pattern
 		cache.lastAccessNano.Store(now.UnixNano())
@@ -36,9 +36,9 @@ func BenchmarkCacheAccessWithoutLastAccess(b *testing.B) {
 		DomainBitmap: []uint32{1},
 		Deadline:     time.Now().Add(time.Hour),
 	}
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		// Simulate cache access without update
 		_ = cache.lastAccessNano.Load()
@@ -49,9 +49,9 @@ func BenchmarkCacheAccessWithoutLastAccess(b *testing.B) {
 func BenchmarkAtomicInt64Store(b *testing.B) {
 	var val atomic.Int64
 	now := time.Now().UnixNano()
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		val.Store(now)
 	}
@@ -60,9 +60,9 @@ func BenchmarkAtomicInt64Store(b *testing.B) {
 func BenchmarkAtomicInt64Load(b *testing.B) {
 	var val atomic.Int64
 	val.Store(time.Now().UnixNano())
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_ = val.Load()
 	}
@@ -72,9 +72,9 @@ func BenchmarkAtomicInt64Swap(b *testing.B) {
 	var val atomic.Int64
 	val.Store(time.Now().UnixNano())
 	now := time.Now().UnixNano()
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_ = val.Swap(now)
 	}
@@ -82,8 +82,8 @@ func BenchmarkAtomicInt64Swap(b *testing.B) {
 
 // BenchmarkMutexVsAtomic compares mutex vs atomic for frequent updates
 type CacheWithMutex struct {
-	mu          sync.RWMutex
-	lastAccess  int64
+	mu         sync.RWMutex
+	lastAccess int64
 }
 
 type CacheWithAtomic struct {
@@ -93,9 +93,9 @@ type CacheWithAtomic struct {
 func BenchmarkLastAccess_Mutex(b *testing.B) {
 	cache := &CacheWithMutex{}
 	now := time.Now().UnixNano()
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		cache.mu.Lock()
 		cache.lastAccess = now
@@ -106,9 +106,9 @@ func BenchmarkLastAccess_Mutex(b *testing.B) {
 func BenchmarkLastAccess_MutexRWMutex(b *testing.B) {
 	cache := &CacheWithMutex{}
 	cache.lastAccess = time.Now().UnixNano()
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		cache.mu.RLock()
 		_ = cache.lastAccess
@@ -119,9 +119,9 @@ func BenchmarkLastAccess_MutexRWMutex(b *testing.B) {
 func BenchmarkLastAccess_Atomic(b *testing.B) {
 	cache := &CacheWithAtomic{}
 	now := time.Now().UnixNano()
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		cache.lastAccess.Store(now)
 	}
@@ -130,9 +130,9 @@ func BenchmarkLastAccess_Atomic(b *testing.B) {
 func BenchmarkLastAccess_AtomicRead(b *testing.B) {
 	cache := &CacheWithAtomic{}
 	cache.lastAccess.Store(time.Now().UnixNano())
-	
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_ = cache.lastAccess.Load()
 	}
@@ -144,9 +144,9 @@ func BenchmarkConcurrentAccess_Atomic(b *testing.B) {
 		DomainBitmap: []uint32{1},
 		Deadline:     time.Now().Add(time.Hour),
 	}
-	
+
 	now := time.Now()
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -161,7 +161,7 @@ func BenchmarkConcurrentAccess_AtomicRead(b *testing.B) {
 		Deadline:     time.Now().Add(time.Hour),
 	}
 	cache.lastAccessNano.Store(time.Now().UnixNano())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {

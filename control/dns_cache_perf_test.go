@@ -525,7 +525,6 @@ func TestDnsCache_GetPackedResponseWithApproximateTTL(t *testing.T) {
 		OriginalDeadline: deadline,
 	}
 
-	// Initialize pre-packed response
 	if err := cache.PrepackResponse("test.example.com.", dnsmessage.TypeA); err != nil {
 		t.Fatalf("failed to prepack response: %v", err)
 	}

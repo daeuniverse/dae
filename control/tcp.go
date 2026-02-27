@@ -169,7 +169,7 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
 	// Use the provided context with timeout for dial operation.
-	// The context is expected to be a per-connection context with its own lifetime, 
+	// The context is expected to be a per-connection context with its own lifetime,
 	// not the ControlPlane's lifecycle context (c.ctx).
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()

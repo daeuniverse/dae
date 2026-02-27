@@ -704,7 +704,6 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 				return nil, io.ErrClosedPipe
 			}
 
-			// Check if connection is too old (prevent stale packets)
 			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
 				// Connection expired, close it and try next one
 				connWithTime.conn.Close()
@@ -748,7 +747,7 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 
 	select {
 	case p.idleConns <- connWithTime:
-		// Returned to pool
+
 	default:
 		// Pool full, close connection
 		_ = conn.Close()

@@ -22,8 +22,8 @@ import (
 	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
-	commonerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/common/consts"
+	commonerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
@@ -281,16 +281,16 @@ func (d *Dialer) ActivateCheck() {
 	go d.aliveBackground()
 }
 
-// 全局 connectivity check worker pool
+// Global connectivity check worker pool
 var (
 	connectivityCheckPool *ants.Pool
 	poolOnce              sync.Once
 )
 
-// getConnectivityCheckPool 返回全局 connectivity check worker pool
+// getConnectivityCheckPool returns the global connectivity check worker pool
 func getConnectivityCheckPool() *ants.Pool {
 	poolOnce.Do(func() {
-		// 限制并发数为 40，足以处理大量节点而不会过度消耗资源
+		// Limit concurrency to 40, sufficient to handle many nodes without excessive resource consumption
 		p, err := ants.NewPool(40, ants.WithPreAlloc(true))
 		if err != nil {
 			panic("failed to initialize ants pool for connectivity check: " + err.Error())
@@ -483,7 +483,7 @@ func (d *Dialer) aliveBackground() {
 
 	var wg sync.WaitGroup
 	workerPool := getConnectivityCheckPool()
-	
+
 	for {
 		select {
 		case <-d.ctx.Done():
@@ -494,13 +494,13 @@ func (d *Dialer) aliveBackground() {
 
 		// Process initial check immediately
 		d.submitCheckTasks(workerPool, &wg, CheckOpts)
-		
+
 		// Wait for all checks to complete before next cycle
 		wg.Wait()
 	}
 }
 
-// submitCheckTasks 提交检查任务到 worker pool
+// submitCheckTasks submits check tasks to worker pool
 func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption) {
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
@@ -618,7 +618,7 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	if ok && err == nil {
 		// Success: update latency and mark alive.
 		latency := time.Since(start)
-		
+
 		// Use lock to protect all collection updates
 		d.collectionFineMu.Lock()
 		collection.Latencies10.AppendLatency(latency)

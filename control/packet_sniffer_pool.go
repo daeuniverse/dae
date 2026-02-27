@@ -72,12 +72,12 @@ func NewPacketSnifferPool() *PacketSnifferPool {
 }
 
 func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
-	if ue, ok := p.pool.LoadAndDelete(key); ok {
+	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
+	if !p.pool.CompareAndDelete(key, sniffer) {
 		sniffer.Close()
-		if ue != sniffer {
-			return fmt.Errorf("target udp endpoint is not in the pool")
-		}
+		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
+	sniffer.Close()
 	return nil
 }
 
@@ -130,7 +130,8 @@ func (p *PacketSnifferPool) startJanitor() {
 					if !ps.IsExpired(nowNano) {
 						return true
 					}
-					if _ps, ok := p.pool.LoadAndDelete(key); ok && _ps == ps {
+					// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
+					if p.pool.CompareAndDelete(key, ps) {
 						ps.Close()
 					}
 					return true
