@@ -18,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/sirupsen/logrus"
 )
 
 var UdpRoutingResultCacheTtl = 300 * time.Millisecond
@@ -47,10 +48,23 @@ type UdpEndpoint struct {
 	routingCache      bpfRoutingResult
 	hasRoutingCache   bool
 
-	// dead indicates the endpoint's read loop has exited due to error.
-	// Once set to true, the endpoint should not be reused and will be
-	// cleaned up by the janitor or GetOrCreate's dead endpoint check.
+	lAddr netip.AddrPort
+
+	log *logrus.Logger
+
 	dead atomic.Bool
+}
+
+func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
+	if ue.log == nil {
+		return
+	}
+	entry := ue.log.WithError(err).WithField("lAddr", ue.lAddr.String())
+	if isUDPEndpointNormalClose(err) {
+		entry.Debugln("UdpEndpoint " + msg + " closed normally")
+	} else {
+		entry.Warnln("UdpEndpoint " + msg + " exited with error")
+	}
 }
 
 func (ue *UdpEndpoint) start() {
@@ -59,16 +73,16 @@ func (ue *UdpEndpoint) start() {
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
-			// Mark this endpoint as dead so GetOrCreate won't reuse it.
-			// Also set expiration to past for immediate janitor cleanup.
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
+			ue.logEndpointExit(err, "read loop")
 			break
 		}
 		ue.RefreshTtl()
 		if err = ue.handler(buf[:n], from); err != nil {
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
+			ue.logEndpointExit(err, "handler")
 			break
 		}
 	}
@@ -161,6 +175,9 @@ type UdpEndpointOptions struct {
 	NatTimeout time.Duration
 	// GetTarget is useful only if the underlay does not support Full-cone.
 	GetDialOption func(ctx context.Context) (option *DialOption, err error)
+	// Log is the logger to use for endpoint lifecycle events.
+	// If nil, logs are discarded.
+	Log *logrus.Logger
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -245,6 +262,8 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 			Outbound:      dialOption.Outbound,
 			SniffedDomain: dialOption.SniffedDomain,
 			DialTarget:    dialOption.Target,
+			lAddr:         lAddr,
+			log:           createOption.Log,
 		}
 		ue.RefreshTtl()
 		_ue = ue

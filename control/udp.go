@@ -256,6 +256,7 @@ getNew:
 			return sendPkt(c.log, data, from, realSrc, src, lConn)
 		},
 		NatTimeout: natTimeout,
+		Log:        c.log,
 		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			if shouldReroute {
 				outboundIndex = consts.OutboundControlPlaneRouting

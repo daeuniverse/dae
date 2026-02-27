@@ -633,7 +633,7 @@ func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 			// Use manual Clone instead of reflection-based deepcopy for performance
 			result[k] = v.Clone()
 		} else {
-			logrus.Errorf("CloneDnsCache: invalid type found in sync.Map: key=%T, value=%T", key, value)
+			c.log.Errorf("CloneDnsCache: invalid type found in sync.Map: key=%T, value=%T", key, value)
 		}
 		return true
 	})

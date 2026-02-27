@@ -119,6 +119,25 @@ func isClosedConnectionError(err error) bool {
 	return contains(err.Error(), "use of closed network connection")
 }
 
+// isUDPEndpointNormalClose reports whether err is a normal UDP endpoint closure.
+func isUDPEndpointNormalClose(err error) bool {
+	if err == nil {
+		return true
+	}
+
+	// Check for EOF (normal connection closure)
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	// Reuse isClosedConnectionError for standard connection closure detection
+	if isClosedConnectionError(err) {
+		return true
+	}
+
+	return false
+}
+
 // isNetworkUnreachableError checks if the error is due to network unreachability.
 func isNetworkUnreachableError(err error) bool {
 	if err == nil {
