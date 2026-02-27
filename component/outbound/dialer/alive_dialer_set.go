@@ -108,6 +108,8 @@ func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
 
 // GetMinLatency acquires correct selectionPolicy.
 func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.minLatency.dialer, a.minLatency.sortingLatency
 }
 

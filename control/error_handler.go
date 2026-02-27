@@ -135,6 +135,19 @@ func isUDPEndpointNormalClose(err error) bool {
 		return true
 	}
 
+	// Check for timeout errors (normal for UDP NAT expiration)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+	}
+
+	// Fallback: check error message for timeout pattern
+	if contains(err.Error(), "i/o timeout") {
+		return true
+	}
+
 	return false
 }
 
