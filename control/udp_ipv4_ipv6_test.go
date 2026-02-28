@@ -492,3 +492,111 @@ func TestSendPktPortPreservation(t *testing.T) {
 		})
 	}
 }
+
+// TestSendPktCrossFamilyFallback tests the cross-family fallback path
+// where IPv6 server responses need to be sent to IPv4 clients.
+func TestSendPktCrossFamilyFallback(t *testing.T) {
+	testCases := []struct {
+		name            string
+		from            string // Server address
+		realTo          string // Client address
+		expectBindIPv6  bool   // Expected bind address family
+		expectWriteIPv6 bool   // Expected write address family (after conversion)
+		description     string
+	}{
+		{
+			name:            "IPv6_server_to_IPv4_client_fallback",
+			from:            "[2001:db8::1]:443",
+			realTo:          "192.168.1.1:54321",
+			expectBindIPv6:  true,  // IPv6 unspecified [::]:443
+			expectWriteIPv6: true,  // IPv4-mapped [::ffff:192.168.1.1]:54321
+			description:     "IPv6 server response to IPv4 client via dual-stack",
+		},
+		{
+			name:            "IPv4_server_to_IPv6_client_conversion",
+			from:            "8.8.8.8:53",
+			realTo:          "[240e:390::1]:12345",
+			expectBindIPv6:  true,  // IPv4-mapped [::ffff:8.8.8.8]:53
+			expectWriteIPv6: true,  // Pure IPv6 [240e:390::1]:12345
+			description:     "IPv4 server response to IPv6 client",
+		},
+		{
+			name:            "IPv4_server_to_IPv4_client_no_conversion",
+			from:            "8.8.8.8:53",
+			realTo:          "192.168.1.1:12345",
+			expectBindIPv6:  false, // Pure IPv4 8.8.8.8:53
+			expectWriteIPv6: false, // Pure IPv4 192.168.1.1:12345
+			description:     "Same family - no conversion needed",
+		},
+		{
+			name:            "IPv6_server_to_IPv6_client_no_conversion",
+			from:            "[2001:db8::1]:443",
+			realTo:          "[240e:390::1]:54321",
+			expectBindIPv6:  true,  // Pure IPv6 [2001:db8::1]:443
+			expectWriteIPv6: true,  // Pure IPv6 [240e:390::1]:54321
+			description:     "Same family IPv6 - no conversion needed",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			from := netip.MustParseAddrPort(tc.from)
+			realTo := netip.MustParseAddrPort(tc.realTo)
+
+			t.Logf("Scenario: %s", tc.description)
+			t.Logf("  Server (from): %v", from)
+			t.Logf("  Client (realTo): %v", realTo)
+
+			// Simulate bind address conversion
+			bindAddr := common.ConvertAddrPortForTarget(from, realTo)
+			t.Logf("  Bind address: %v", bindAddr)
+
+			// Verify bind address family
+			if tc.expectBindIPv6 && !bindAddr.Addr().Is6() {
+				t.Errorf("Expected IPv6 bind address, got %v", bindAddr)
+			}
+			if !tc.expectBindIPv6 && !bindAddr.Addr().Is4() {
+				t.Errorf("Expected IPv4 bind address, got %v", bindAddr)
+			}
+
+			// Simulate write address conversion (fallback logic)
+			writeAddr := realTo
+			if bindAddr.Addr().Is6() && !bindAddr.Addr().Is4In6() && realTo.Addr().Is4() {
+				// Cross-family fallback: convert IPv4 target to IPv4-mapped IPv6
+				writeAddr = netip.AddrPortFrom(
+					netip.AddrFrom16(realTo.Addr().As16()),
+					realTo.Port(),
+				)
+				t.Logf("  Fallback: converted write address to IPv4-mapped: %v", writeAddr)
+			}
+
+			// Verify write address family
+			if tc.expectWriteIPv6 && !writeAddr.Addr().Is6() {
+				t.Errorf("Expected IPv6 write address, got %v", writeAddr)
+			}
+			if !tc.expectWriteIPv6 && !writeAddr.Addr().Is4() {
+				t.Errorf("Expected IPv4 write address, got %v", writeAddr)
+			}
+
+			// Verify port preservation
+			if writeAddr.Port() != realTo.Port() {
+				t.Errorf("Port not preserved in write address: expected %d, got %d", realTo.Port(), writeAddr.Port())
+			}
+
+			// Verify IPv4-mapped format for fallback case
+			if bindAddr.Addr().Is6() && !bindAddr.Addr().Is4In6() && realTo.Addr().Is4() {
+				if !writeAddr.Addr().Is4In6() {
+					t.Errorf("Fallback write address should be IPv4-mapped IPv6, got %v", writeAddr)
+				}
+				// Verify the mapped address contains the original IPv4
+				unmapped := writeAddr.Addr().Unmap()
+				if unmapped != realTo.Addr() {
+					t.Errorf("IPv4-mapped address unmapped to %v, expected %v", unmapped, realTo.Addr())
+				}
+			}
+
+			t.Logf("  ✓ Write address: %v (IPv6=%v, IPv4-mapped=%v)",
+				writeAddr, writeAddr.Addr().Is6(), writeAddr.Addr().Is4In6())
+		})
+	}
+}

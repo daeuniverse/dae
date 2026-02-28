@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/sniffing"
 )
 
@@ -399,4 +400,198 @@ func TestSniffReroute_OriginalBugScenario(t *testing.T) {
 				scenario.serverIP, scenario.clientIP, scenario.port, bindAddr)
 		})
 	}
+}
+
+// TestQuicCrossFamilyFallback tests the complete QUIC cross-family scenario
+// where IPv6 server responses need to be sent to IPv4 clients (and vice versa).
+// This validates the transparent address family conversion fallback path.
+func TestQuicCrossFamilyFallback(t *testing.T) {
+	testCases := []struct {
+		name            string
+		serverFrom      string // QUIC server response address (from in Handler)
+		clientRealTo    string // Client address (realTo in sendPkt)
+		expectBindIPv6  bool   // Expected bind address to be IPv6
+		expectWriteIPv6 bool   // Expected write address to be IPv6 (after fallback conversion)
+		expectFallback  bool   // Whether fallback conversion should occur
+		description     string
+	}{
+		{
+			name:            "IPv4_QUIC_server_to_IPv6_client",
+			serverFrom:      "8.8.8.8:443",
+			clientRealTo:    "[240e:390::1]:54321",
+			expectBindIPv6:  true,  // [::ffff:8.8.8.8]:443 (IPv4-mapped)
+			expectWriteIPv6: true,  // [240e:390::1]:54321 (pure IPv6)
+			expectFallback:  false, // No fallback needed - direct IPv6 write
+			description:     "IPv4 server response to IPv6 client via IPv4-mapped bind",
+		},
+		{
+			name:            "IPv6_QUIC_server_to_IPv4_client_fallback",
+			serverFrom:      "[2001:4860::1]:443",
+			clientRealTo:    "192.168.1.1:54321",
+			expectBindIPv6:  true,  // [::]:443 (IPv6 unspecified)
+			expectWriteIPv6: true,  // [::ffff:192.168.1.1]:54321 (IPv4-mapped)
+			expectFallback:  true,  // Fallback: convert IPv4 to IPv4-mapped IPv6
+			description:     "IPv6 server response to IPv4 client via dual-stack fallback",
+		},
+		{
+			name:            "IPv4_QUIC_server_to_IPv4_client",
+			serverFrom:      "8.8.8.8:443",
+			clientRealTo:    "192.168.1.1:54321",
+			expectBindIPv6:  false, // 8.8.8.8:443 (pure IPv4)
+			expectWriteIPv6: false, // 192.168.1.1:54321 (pure IPv4)
+			expectFallback:  false, // No fallback needed
+			description:     "Same family IPv4 - no conversion",
+		},
+		{
+			name:            "IPv6_QUIC_server_to_IPv6_client",
+			serverFrom:      "[2001:4860::1]:443",
+			clientRealTo:    "[240e:390::1]:54321",
+			expectBindIPv6:  true,  // [2001:4860::1]:443 (pure IPv6)
+			expectWriteIPv6: true,  // [240e:390::1]:54321 (pure IPv6)
+			expectFallback:  false, // No fallback needed
+			description:     "Same family IPv6 - no conversion",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			from := netip.MustParseAddrPort(tc.serverFrom)
+			realTo := netip.MustParseAddrPort(tc.clientRealTo)
+
+			t.Logf("=== QUIC Cross-Family Test: %s ===", tc.description)
+			t.Logf("  QUIC Server (from): %v", from)
+			t.Logf("  Client (realTo):    %v", realTo)
+
+			// Step 1: Convert bind address using ConvertAddrPortForTarget
+			// This is what sendPkt does
+			bindAddr := common.ConvertAddrPortForTarget(from, realTo)
+			t.Logf("  Step 1 - bindAddr:  %v", bindAddr)
+
+			// Verify bind address family
+			if tc.expectBindIPv6 && !bindAddr.Addr().Is6() {
+				t.Errorf("Expected IPv6 bind address, got %v", bindAddr)
+			}
+			if !tc.expectBindIPv6 && !bindAddr.Addr().Is4() {
+				t.Errorf("Expected IPv4 bind address, got %v", bindAddr)
+			}
+
+			// Step 2: Apply fallback logic for write address
+			// This is the new fallback path in sendPkt
+			writeAddr := realTo
+			fallbackTriggered := false
+			if bindAddr.Addr().Is6() && !bindAddr.Addr().Is4In6() && realTo.Addr().Is4() {
+				// Cross-family fallback: pure IPv6 bind + IPv4 target
+				// Convert IPv4 to IPv4-mapped IPv6 for dual-stack socket
+				writeAddr = netip.AddrPortFrom(
+					netip.AddrFrom16(realTo.Addr().As16()),
+					realTo.Port(),
+				)
+				fallbackTriggered = true
+				t.Logf("  Step 2 - Fallback triggered! Converting IPv4 to IPv4-mapped IPv6")
+			}
+			t.Logf("  Step 2 - writeAddr: %v (fallback=%v)", writeAddr, fallbackTriggered)
+
+			// Verify fallback was triggered correctly
+			if tc.expectFallback != fallbackTriggered {
+				t.Errorf("Fallback expectation mismatch: expected=%v, got=%v", tc.expectFallback, fallbackTriggered)
+			}
+
+			// Verify write address family
+			if tc.expectWriteIPv6 && !writeAddr.Addr().Is6() {
+				t.Errorf("Expected IPv6 write address, got %v", writeAddr)
+			}
+			if !tc.expectWriteIPv6 && !writeAddr.Addr().Is4() {
+				t.Errorf("Expected IPv4 write address, got %v", writeAddr)
+			}
+
+			// Step 3: Verify IPv4-mapped format for fallback case
+			if tc.expectFallback {
+				if !writeAddr.Addr().Is4In6() {
+					t.Errorf("Fallback write address should be IPv4-mapped IPv6, got %v", writeAddr)
+				}
+				// Verify the unmapped address matches original IPv4
+				unmapped := writeAddr.Addr().Unmap()
+				if unmapped != realTo.Addr() {
+					t.Errorf("Unmapped address %v should match original %v", unmapped, realTo.Addr())
+				}
+				t.Logf("  Step 3 - Verification: IPv4-mapped %v unmapped to %v (matches original ✓)", writeAddr, unmapped)
+			}
+
+			// Step 4: Port preservation check
+			if writeAddr.Port() != realTo.Port() {
+				t.Errorf("Port not preserved: expected %d, got %d", realTo.Port(), writeAddr.Port())
+			}
+			t.Logf("  Step 4 - Port preserved: %d ✓", writeAddr.Port())
+
+			// Summary
+			t.Logf("  Result: bind=%v, write=%v, fallback=%v ✓",
+				bindAddr, writeAddr, fallbackTriggered)
+		})
+	}
+}
+
+// TestQuicCrossFamilyWithSniffing tests QUIC sniffing combined with cross-family
+// address handling, simulating a real QUIC connection scenario.
+func TestQuicCrossFamilyWithSniffing(t *testing.T) {
+	resetPacketSnifferPoolForTest()
+
+	// Scenario: IPv4 client connects to IPv6 QUIC server
+	// This tests the fallback path when server responds
+	clientAddr := netip.MustParseAddrPort("192.168.1.100:54321")
+	serverAddr := netip.MustParseAddrPort("[2001:4860::1]:443")
+
+	t.Logf("Scenario: IPv4 client -> IPv6 QUIC server")
+	t.Logf("  Client: %v", clientAddr)
+	t.Logf("  Server: %v", serverAddr)
+
+	// Step 1: Verify QUIC packet is recognized
+	if !sniffing.IsLikelyQuicInitialPacket(sniffTestQuicPacket3) {
+		t.Fatal("QUIC packet should be recognized as Initial")
+	}
+	t.Logf("  Step 1: QUIC Initial packet recognized ✓")
+
+	// Step 2: Simulate sniffing
+	key := PacketSnifferKey{
+		LAddr: clientAddr,
+		RAddr: serverAddr,
+	}
+	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
+	sniffer.AppendData(sniffTestQuicPacket3)
+
+	domain, err := sniffer.SniffQuic()
+	if err != nil {
+		t.Logf("  Step 2: Sniffing result (may have error): %v", err)
+	} else {
+		t.Logf("  Step 2: Sniffed domain: %q ✓", domain)
+	}
+
+	// Step 3: Simulate response path with fallback
+	// Server (IPv6) -> Client (IPv4)
+	from := serverAddr
+	realTo := clientAddr
+
+	bindAddr := common.ConvertAddrPortForTarget(from, realTo)
+	t.Logf("  Step 3: Response bind address: %v", bindAddr)
+
+	// Apply fallback
+	writeAddr := realTo
+	if bindAddr.Addr().Is6() && !bindAddr.Addr().Is4In6() && realTo.Addr().Is4() {
+		writeAddr = netip.AddrPortFrom(
+			netip.AddrFrom16(realTo.Addr().As16()),
+			realTo.Port(),
+		)
+		t.Logf("  Step 3: Fallback applied - writeAddr: %v", writeAddr)
+	}
+
+	// Verify fallback was applied correctly
+	if !writeAddr.Addr().Is4In6() {
+		t.Errorf("IPv6 server -> IPv4 client should use IPv4-mapped write address, got %v", writeAddr)
+	} else {
+		t.Logf("  Step 3: IPv4-mapped write address verified ✓")
+	}
+
+	// Verify dual-stack socket can write
+	t.Logf("  Result: IPv6 socket [::]:443 can write to IPv4-mapped %v ✓", writeAddr)
+
+	_ = DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 }

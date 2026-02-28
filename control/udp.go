@@ -76,13 +76,29 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to ne
 	// 1. Preserves the server's IP and port (no wildcard needed)
 	// 2. Avoids port conflicts with local services (binding remote address)
 	// 3. Creates correct socket type for the destination
+	//
+	// Fallback (IPv6 server → IPv4 client):
+	// When source is pure IPv6 and target is IPv4, we use IPv6 dual-stack socket.
+	// The target address is converted to IPv4-mapped IPv6 (::ffff:x.x.x.x) for writing.
 	bindAddr := common.ConvertAddrPortForTarget(from, realTo)
+
+	// Handle cross-family fallback: IPv6 socket writing to IPv4 destination
+	// using dual-stack capability with IPv4-mapped IPv6 addresses.
+	writeAddr := realTo
+	if bindAddr.Addr().Is6() && !bindAddr.Addr().Is4In6() && realTo.Addr().Is4() {
+		// Pure IPv6 bind address with IPv4 target: convert target to IPv4-mapped IPv6
+		// This allows the IPv6 dual-stack socket to write to IPv4 destinations.
+		writeAddr = netip.AddrPortFrom(
+			netip.AddrFrom16(realTo.Addr().As16()), // IPv4-mapped IPv6
+			realTo.Port(),
+		)
+	}
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
 		return
 	}
-	_, err = uConn.WriteToUDPAddrPort(data, realTo)
+	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
 	return err
 }
 
