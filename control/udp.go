@@ -252,6 +252,9 @@ getNew:
 	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
+			if from.Addr().Is4() != realSrc.Addr().Is4() {
+				from = realDst
+			}
 			// Do not return conn-unrelated err in this func.
 			return sendPkt(c.log, data, from, realSrc, src, lConn)
 		},
@@ -296,19 +299,8 @@ getNew:
 			outbound := c.outbounds[outboundIndex]
 
 			// Select dialer from outbound (dialer group).
-			// Ensure dialer's address family matches client's to prevent
-			// "non-IPv4/IPv6 address" errors when writing responses.
-			// Example: IPv6 client accessing IPv4 target should use IPv6 dialer.
-			selectionNetworkType := networkType
-			if clientIpVersion := consts.IpVersionFromAddr(realSrc.Addr()); clientIpVersion != networkType.IpVersion {
-				selectionNetworkType = &dialer.NetworkType{
-					L4Proto:   networkType.L4Proto,
-					IpVersion: clientIpVersion,
-					IsDns:     networkType.IsDns,
-				}
-			}
 			strictIpVersion := dialIp
-			dialerForNew, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
+			dialerForNew, _, err := outbound.Select(networkType, strictIpVersion)
 			if err != nil {
 				return nil, fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
 			}
