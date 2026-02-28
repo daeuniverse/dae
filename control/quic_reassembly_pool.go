@@ -41,11 +41,31 @@ func NewQuicReassemblyPool() *QuicReassemblyPool {
 	return p
 }
 
+// shardIdx computes the shard index for a given key using a hash function
+// with good avalanche properties for both IPv4 and IPv6 addresses.
+// Uses FNV-1a-like mixing for uniform distribution across shards.
 func (p *QuicReassemblyPool) shardIdx(key netip.AddrPort) int {
-	h := key.Addr().As16()
-	v := uint64(h[0]) ^ uint64(h[1])<<8 ^ uint64(h[2])<<16 ^ uint64(h[3])<<24
-	v ^= uint64(key.Port())
-	return int(v % quicReassemblyShards)
+	// Use AsSlice() which returns 4 bytes for IPv4 and 16 bytes for IPv6
+	// (unlike As16() which always returns 16 bytes with IPv4-mapped prefix)
+	addrBytes := key.Addr().AsSlice()
+
+	// FNV-1a inspired hash with good avalanche properties
+	// This ensures uniform distribution even for IPs with similar prefixes
+	const (
+		fnvOffset64 = 14695981039346656037
+		fnvPrime64  = 1099511628211
+	)
+	h := uint64(fnvOffset64)
+	for _, b := range addrBytes {
+		h ^= uint64(b)
+		h *= fnvPrime64
+	}
+
+	// Mix in port number
+	h ^= uint64(key.Port())
+	h *= fnvPrime64
+
+	return int(h % quicReassemblyShards)
 }
 
 func (p *QuicReassemblyPool) Emit(key netip.AddrPort, data []byte, task func([]byte)) {
@@ -67,11 +87,17 @@ func (p *QuicReassemblyPool) Emit(key netip.AddrPort, data []byte, task func([]b
 
 	session.buf = append(session.buf, data...)
 	session.lastSeen = now
-	accumulated := session.buf
 
-	task(accumulated)
+	// Deep copy buffer before releasing lock to:
+	// 1. Avoid sync.Pool data races (buffer may be reused after Put)
+	// 2. Allow task to execute outside critical section
+	accumulated := make([]byte, len(session.buf))
+	copy(accumulated, session.buf)
 
 	shard.Unlock()
+
+	// Execute task outside lock to avoid blocking other packets
+	task(accumulated)
 }
 
 func (p *QuicReassemblyPool) EmitWithDone(key netip.AddrPort, data []byte, task func([]byte) bool) {
@@ -94,13 +120,26 @@ func (p *QuicReassemblyPool) EmitWithDone(key netip.AddrPort, data []byte, task 
 	session.buf = append(session.buf, data...)
 	session.lastSeen = now
 
-	if task(session.buf) {
-		delete(shard.sessions, key)
-		session.buf = session.buf[:0]
-		p.bufPool.Put(&session.buf)
-	}
+	// Deep copy buffer before releasing lock
+	accumulated := make([]byte, len(session.buf))
+	copy(accumulated, session.buf)
 
 	shard.Unlock()
+
+	// Execute task outside lock
+	done := task(accumulated)
+
+	if done {
+		shard.Lock()
+		// Re-check session identity to handle concurrent modifications
+		// Only delete if it's still the same session object we had before
+		if current, exists := shard.sessions[key]; exists && current == session {
+			delete(shard.sessions, key)
+			session.buf = session.buf[:0]
+			p.bufPool.Put(&session.buf)
+		}
+		shard.Unlock()
+	}
 }
 
 func (p *QuicReassemblyPool) CleanupExpired() {

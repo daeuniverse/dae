@@ -40,6 +40,14 @@ const (
 	QuicVersion1 = 0x00000001
 )
 
+// IsLikelyQuicInitialPacket checks if the buffer appears to be a QUIC Initial packet.
+// It validates the Long Header format, Initial packet type, and Fixed bit.
+// Version is NOT strictly checked to maintain compatibility with:
+//   - QUIC v1 (0x00000001)
+//   - QUIC v2 (0x709a50c4)
+//   - Draft versions (e.g., 0xff00001d)
+//
+// This follows the principle of being liberal in what we accept for sniffing purposes.
 func IsLikelyQuicInitialPacket(buf []byte) bool {
 	const minQuicInitialHeaderLen = 7
 	if len(buf) < minQuicInitialHeaderLen {
@@ -57,10 +65,9 @@ func IsLikelyQuicInitialPacket(buf []byte) bool {
 		return false
 	}
 
-	version := uint32(buf[1])<<24 | uint32(buf[2])<<16 | uint32(buf[3])<<8 | uint32(buf[4])
-	if version != QuicVersion1 {
-		return false
-	}
+	// Note: Version check intentionally omitted to support all QUIC versions.
+	// The header form, packet type, and fixed bit checks are sufficient for
+	// identifying likely QUIC Initial packets for sniffing purposes.
 
 	return true
 }

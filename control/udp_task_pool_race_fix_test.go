@@ -101,30 +101,31 @@ func TestCompareAndDelete_AcquireQueueRace(t *testing.T) {
 
 	// Simulate two concurrent acquireQueue calls
 	var wg sync.WaitGroup
-	var q2, q3 *UdpTaskQueue
+	queues := make([]*UdpTaskQueue, 2) // Fixed-size array avoids data race
 	var createCount atomic.Int32
 
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
 			q := pool.acquireQueue(key)
 			createCount.Add(1)
-			if q2 == nil {
-				q2 = q
-			} else {
-				q3 = q
-			}
-		}()
+			queues[idx] = q // Each goroutine writes to its own slot
+		}(i)
 	}
 	wg.Wait()
 
+	q2, q3 := queues[0], queues[1]
+
 	// Both should get the same queue (LoadOrStore semantics)
 	if q2 != q3 {
-		t.Errorf("Both goroutines should get the same queue, got different queues")
+		t.Errorf("Both goroutines should get the same queue, got different queues: q2=%p, q3=%p", q2, q3)
 	}
 
 	// The new queue should not be draining
+	if q2 == nil {
+		t.Fatal("Queue should not be nil")
+	}
 	if q2.draining.Load() {
 		t.Error("New queue should not be draining")
 	}

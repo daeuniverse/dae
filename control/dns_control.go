@@ -114,11 +114,12 @@ type DnsController struct {
 
 	// Async BPF update: uses a single goroutine with bounded channel
 	// to process BPF map updates off the hot path.
-	bpfUpdateCh     chan *bpfUpdateTask
-	bpfUpdateStop   chan struct{}
-	bpfUpdateWg     sync.WaitGroup
-	bpfUpdateOnce   sync.Once
-	bpfUpdateClosed atomic.Bool
+	bpfUpdateCh       chan *bpfUpdateTask
+	bpfUpdateStop     chan struct{}
+	bpfUpdateStopMu   sync.Mutex // Protects bpfUpdateStop initialization and closing
+	bpfUpdateWg       sync.WaitGroup
+	bpfUpdateOnce     sync.Once
+	bpfUpdateClosed   atomic.Bool
 }
 
 // bpfUpdateTask represents a BPF map update request.
@@ -235,14 +236,25 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 }
 
 func (c *DnsController) Close() error {
+	// Acquire lock before closeOnce to synchronize with startBpfUpdateWorker.
+	// This prevents the race where Close and startBpfUpdateWorker access
+	// bpfUpdateStop concurrently.
+	c.bpfUpdateStopMu.Lock()
+	defer c.bpfUpdateStopMu.Unlock()
+
 	c.closeOnce.Do(func() {
-		// Stop BPF update worker (if it was started)
-		// Check by checking if the channel was initialized
-		if c.bpfUpdateStop != nil && c.bpfUpdateCh != nil {
+		// Stop BPF update worker (if it was started).
+		if c.bpfUpdateStop != nil {
+			// Signal shutdown first - this prevents new sends
 			c.bpfUpdateClosed.Store(true)
+			// Signal worker to stop and drain remaining tasks
 			close(c.bpfUpdateStop)
-			close(c.bpfUpdateCh)
+			// Wait for worker to finish draining
 			c.bpfUpdateWg.Wait()
+			// Note: We intentionally do NOT close bpfUpdateCh here.
+			// Closing the channel while concurrent sends might be in progress
+			// would cause panics. Instead, the channel will be garbage collected
+			// when the DnsController is no longer referenced.
 		}
 
 		if c.janitorStop != nil {
@@ -318,26 +330,25 @@ func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 // This is called on-demand when the first BPF update is needed.
 func (c *DnsController) startBpfUpdateWorker() {
 	c.bpfUpdateOnce.Do(func() {
+		c.bpfUpdateStopMu.Lock()
 		const bpfUpdateQueueSize = 1024
 		c.bpfUpdateCh = make(chan *bpfUpdateTask, bpfUpdateQueueSize)
 		c.bpfUpdateStop = make(chan struct{})
 		c.bpfUpdateWg.Add(1)
+		c.bpfUpdateStopMu.Unlock()
 		go c.bpfUpdateWorker()
 	})
 }
 
 // bpfUpdateWorker processes BPF map updates asynchronously.
-// It runs until bpfUpdateStop is closed, then processes remaining tasks.
+// It runs until bpfUpdateStop is closed, then drains remaining tasks and exits.
+// Note: bpfUpdateCh is never closed; the worker exits when bpfUpdateStop is signaled.
 func (c *DnsController) bpfUpdateWorker() {
 	defer c.bpfUpdateWg.Done()
 
 	for {
 		select {
-		case task, ok := <-c.bpfUpdateCh:
-			if !ok {
-				// Channel closed, exit immediately
-				return
-			}
+		case task := <-c.bpfUpdateCh:
 			// Guard against nil task
 			if task == nil || task.cache == nil {
 				continue
@@ -359,11 +370,7 @@ func (c *DnsController) bpfUpdateWorker() {
 			// This ensures all pending updates are processed
 			for {
 				select {
-				case task, ok := <-c.bpfUpdateCh:
-					if !ok {
-						// Channel closed, exit
-						return
-					}
+				case task := <-c.bpfUpdateCh:
 					// Guard against nil task
 					if task == nil || task.cache == nil {
 						continue
@@ -415,15 +422,19 @@ func (c *DnsController) triggerBpfUpdateIfNeeded(cache *DnsCache, now time.Time)
 }
 
 func (c *DnsController) sendBpfUpdateTask(task *bpfUpdateTask) (sent bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			sent = false
-		}
-	}()
+	// Check if controller is shutting down before attempting send.
+	// This avoids the data race of reading bpfUpdateStop while it's being initialized.
+	if c.bpfUpdateClosed.Load() {
+		return false
+	}
+
+	// Try to send without blocking - if queue is full, skip this update.
+	// The worker will be notified on the next trigger.
 	select {
 	case c.bpfUpdateCh <- task:
 		return true
 	default:
+		// Queue is full, skip this update (will be retried on next access)
 		return false
 	}
 }

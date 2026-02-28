@@ -116,4 +116,4 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260227073319-c8ead0d46915
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260228030502-6653a8d49ad4

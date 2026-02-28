@@ -130,12 +130,10 @@ func isUDPEndpointNormalClose(err error) bool {
 		return true
 	}
 
-	// Reuse isClosedConnectionError for standard connection closure detection
-	if isClosedConnectionError(err) {
-		return true
-	}
-
 	// Check for timeout errors (normal for UDP NAT expiration)
+	// Do this BEFORE isClosedConnectionError to avoid heavy string-allocation
+	// caused by backwards-compatible contains(err.Error(), "...") logic
+	// in high-frequency NAT closure events.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
@@ -143,8 +141,8 @@ func isUDPEndpointNormalClose(err error) bool {
 		}
 	}
 
-	// Fallback: check error message for timeout pattern
-	if contains(err.Error(), "i/o timeout") {
+	// Reuse isClosedConnectionError for standard connection closure detection
+	if isClosedConnectionError(err) {
 		return true
 	}
 

@@ -38,7 +38,7 @@ type AliveDialerSet struct {
 
 	aliveChangeCallback func(alive bool)
 
-	mu                      sync.Mutex
+	mu                      sync.RWMutex
 	dialerToIndex           map[*Dialer]int // *Dialer -> index of inorderedAliveDialerSet
 	dialerToLatency         map[*Dialer]time.Duration
 	dialerToLatencyOffset   map[*Dialer]time.Duration
@@ -93,8 +93,8 @@ func NewAliveDialerSet(
 }
 
 func (a *AliveDialerSet) GetRand() *Dialer {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if len(a.inorderedAliveDialerSet) == 0 {
 		return nil
 	}
@@ -108,8 +108,8 @@ func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
 
 // GetMinLatency acquires correct selectionPolicy.
 func (a *AliveDialerSet) GetMinLatency() (d *Dialer, latency time.Duration) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.minLatency.dialer, a.minLatency.sortingLatency
 }
 

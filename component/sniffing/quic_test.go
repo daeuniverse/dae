@@ -88,35 +88,125 @@ func TestIsLikelyQuicInitialPacket(t *testing.T) {
 	}
 }
 
-func TestIsLikelyQuicInitialPacket_VersionCheck(t *testing.T) {
-	buf := make([]byte, 16)
-	buf[0] = 0xC0
-	buf[1] = 0x00
-	buf[2] = 0x00
-	buf[3] = 0x00
-	buf[4] = 0x01
-
-	if !IsLikelyQuicInitialPacket(buf) {
-		t.Fatal("valid QUIC v1 initial packet should be recognized")
+// TestIsLikelyQuicInitialPacket_MultiVersionSupport verifies that the sniffing
+// function accepts all valid QUIC versions, not just v1.
+func TestIsLikelyQuicInitialPacket_MultiVersionSupport(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    []byte
+		shouldPass bool
+	}{
+		{
+			name:       "QUIC v1 (0x00000001)",
+			version:    []byte{0x00, 0x00, 0x00, 0x01},
+			shouldPass: true,
+		},
+		{
+			name:       "QUIC v2 (0x709a50c4)",
+			version:    []byte{0x70, 0x9a, 0x50, 0xc4},
+			shouldPass: true,
+		},
+		{
+			name:       "Draft-29 (0xff00001d)",
+			version:    []byte{0xff, 0x00, 0x00, 0x1d},
+			shouldPass: true,
+		},
+		{
+			name:       "Draft-27 (0xff00001b)",
+			version:    []byte{0xff, 0x00, 0x00, 0x1b},
+			shouldPass: true,
+		},
+		{
+			name:       "Arbitrary version",
+			version:    []byte{0x12, 0x34, 0x56, 0x78},
+			shouldPass: true,
+		},
 	}
 
-	invalidVersion := make([]byte, 16)
-	invalidVersion[0] = 0xC0
-	invalidVersion[1] = 0xFF
-	invalidVersion[2] = 0xFF
-	invalidVersion[3] = 0xFF
-	invalidVersion[4] = 0xFF
-	if IsLikelyQuicInitialPacket(invalidVersion) {
-		t.Fatal("packet with invalid version should be rejected")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, 16)
+			// Set Long Header + Initial packet type + Fixed bit
+			buf[0] = 0xC0
+			copy(buf[1:5], tt.version)
+
+			result := IsLikelyQuicInitialPacket(buf)
+			if result != tt.shouldPass {
+				t.Errorf("IsLikelyQuicInitialPacket() = %v, want %v", result, tt.shouldPass)
+			}
+		})
+	}
+}
+
+func TestIsLikelyQuicInitialPacket_HeaderValidation(t *testing.T) {
+	// Test that header form, packet type, and fixed bit are still validated
+	tests := []struct {
+		name       string
+		setupBuf   func([]byte)
+		shouldPass bool
+	}{
+		{
+			name: "valid QUIC Initial header",
+			setupBuf: func(buf []byte) {
+				buf[0] = 0xC0 // Long Header + Initial + Fixed bit
+			},
+			shouldPass: true,
+		},
+		{
+			name: "Short header should fail",
+			setupBuf: func(buf []byte) {
+				buf[0] = 0x40 // Short header
+			},
+			shouldPass: false,
+		},
+		{
+			name: "Fixed bit cleared should fail",
+			setupBuf: func(buf []byte) {
+				buf[0] = 0x80 // Long Header + Initial but no Fixed bit
+			},
+			shouldPass: false,
+		},
+		{
+			name: "Non-Initial packet type should fail",
+			setupBuf: func(buf []byte) {
+				buf[0] = 0xD0 // Long Header + 0-RTT + Fixed bit
+			},
+			shouldPass: false,
+		},
+		{
+			name: "too short buffer should fail",
+			setupBuf: func(buf []byte) {
+				// just don't set anything
+			},
+			shouldPass: false,
+		},
 	}
 
-	randomPacket := make([]byte, 16)
-	randomPacket[0] = 0xC0
-	randomPacket[1] = 0x12
-	randomPacket[2] = 0x34
-	randomPacket[3] = 0x56
-	randomPacket[4] = 0x78
-	if IsLikelyQuicInitialPacket(randomPacket) {
-		t.Fatal("random packet with non-v1 version should be rejected")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.shouldPass {
+				buf := make([]byte, 16)
+				tt.setupBuf(buf)
+				result := IsLikelyQuicInitialPacket(buf)
+				if result != tt.shouldPass {
+					t.Errorf("IsLikelyQuicInitialPacket() = %v, want %v", result, tt.shouldPass)
+				}
+			} else {
+				if tt.name == "too short buffer should fail" {
+					buf := make([]byte, 3)
+					result := IsLikelyQuicInitialPacket(buf)
+					if result {
+						t.Error("short buffer should not be recognized as QUIC")
+					}
+				} else {
+					buf := make([]byte, 16)
+					tt.setupBuf(buf)
+					result := IsLikelyQuicInitialPacket(buf)
+					if result {
+						t.Errorf("invalid header should not be recognized: %s", tt.name)
+					}
+				}
+			}
+		})
 	}
 }
