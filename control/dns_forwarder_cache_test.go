@@ -31,14 +31,10 @@ func (c *countingDnsForwarder) Close() error {
 }
 
 func TestDnsController_EvictIdleDnsForwarders(t *testing.T) {
-	oldTTL := dnsForwarderIdleTTL
-	defer func() {
-		dnsForwarderIdleTTL = oldTTL
-	}()
-	dnsForwarderIdleTTL = 40 * time.Millisecond
+	testTTL := 40 * time.Millisecond
 
 	forwarder := &countingDnsForwarder{}
-	entry := newCachedDnsForwarder(forwarder, time.Now().Add(-2*dnsForwarderIdleTTL))
+	entry := newCachedDnsForwarder(forwarder, time.Now().Add(-2*testTTL))
 
 	key := dnsForwarderKey{
 		upstream: "dns.example:53",
@@ -47,7 +43,10 @@ func TestDnsController_EvictIdleDnsForwarders(t *testing.T) {
 		},
 	}
 
-	c := &DnsController{log: logrus.New()}
+	c := &DnsController{
+		log:                  logrus.New(),
+		dnsForwarderIdleTTL:  testTTL,
+	}
 	c.dnsForwarderCache.Store(key, entry)
 
 	c.evictIdleDnsForwarders(time.Now())
@@ -58,14 +57,10 @@ func TestDnsController_EvictIdleDnsForwarders(t *testing.T) {
 }
 
 func TestDnsController_EvictIdleDnsForwarders_SkipInFlight(t *testing.T) {
-	oldTTL := dnsForwarderIdleTTL
-	defer func() {
-		dnsForwarderIdleTTL = oldTTL
-	}()
-	dnsForwarderIdleTTL = 40 * time.Millisecond
+	testTTL := 40 * time.Millisecond
 
 	forwarder := &countingDnsForwarder{}
-	entry := newCachedDnsForwarder(forwarder, time.Now().Add(-2*dnsForwarderIdleTTL))
+	entry := newCachedDnsForwarder(forwarder, time.Now().Add(-2*testTTL))
 	entry.inFlight.Store(1)
 
 	key := dnsForwarderKey{
@@ -75,7 +70,10 @@ func TestDnsController_EvictIdleDnsForwarders_SkipInFlight(t *testing.T) {
 		},
 	}
 
-	c := &DnsController{log: logrus.New()}
+	c := &DnsController{
+		log:                  logrus.New(),
+		dnsForwarderIdleTTL:  testTTL,
+	}
 	c.dnsForwarderCache.Store(key, entry)
 
 	c.evictIdleDnsForwarders(time.Now())

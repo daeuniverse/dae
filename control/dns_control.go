@@ -100,7 +100,8 @@ type DnsController struct {
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
-	fixedDomainTtl map[string]int
+	fixedDomainTtl      map[string]int
+	dnsForwarderIdleTTL time.Duration // TTL for idle DNS forwarders
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedDnsForwarder
@@ -114,12 +115,12 @@ type DnsController struct {
 
 	// Async BPF update: uses a single goroutine with bounded channel
 	// to process BPF map updates off the hot path.
-	bpfUpdateCh       chan *bpfUpdateTask
-	bpfUpdateStop     chan struct{}
-	bpfUpdateStopMu   sync.Mutex // Protects bpfUpdateStop initialization and closing
-	bpfUpdateWg       sync.WaitGroup
-	bpfUpdateOnce     sync.Once
-	bpfUpdateClosed   atomic.Bool
+	bpfUpdateCh     chan *bpfUpdateTask
+	bpfUpdateStop   chan struct{}
+	bpfUpdateStopMu sync.Mutex // Protects bpfUpdateStop initialization and closing
+	bpfUpdateWg     sync.WaitGroup
+	bpfUpdateOnce   sync.Once
+	bpfUpdateClosed atomic.Bool
 }
 
 // bpfUpdateTask represents a BPF map update request.
@@ -217,9 +218,10 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:    option.FixedDomainTtl,
-		dnsCache:          sync.Map{},
-		dnsForwarderCache: sync.Map{},
+		fixedDomainTtl:      option.FixedDomainTtl,
+		dnsForwarderIdleTTL: dnsForwarderIdleTTL, // Use package-level default
+		dnsCache:            sync.Map{},
+		dnsForwarderCache:   sync.Map{},
 
 		janitorStop: make(chan struct{}),
 		janitorDone: make(chan struct{}),
@@ -968,12 +970,12 @@ func (c *DnsController) extractDnsForwarder(value any) DnsForwarder {
 }
 
 func (c *DnsController) evictIdleDnsForwarders(now time.Time) {
-	if dnsForwarderIdleTTL <= 0 {
+	if c.dnsForwarderIdleTTL <= 0 {
 		return
 	}
 
 	nowNano := now.UnixNano()
-	idleNano := dnsForwarderIdleTTL.Nanoseconds()
+	idleNano := c.dnsForwarderIdleTTL.Nanoseconds()
 	var toClose []DnsForwarder
 
 	c.dnsForwarderCache.Range(func(key, value any) bool {

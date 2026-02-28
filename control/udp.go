@@ -58,8 +58,21 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
+// The from parameter is the remote server's address (used as local bind for responses).
+// The realTo parameter is the client's address (destination for the response).
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
+	// Convert the source address (from) to match the destination's (realTo) address family.
+	// This fixes the "non-IPv4 address" error when an IPv4 socket tries to write to an IPv6 destination.
+	//
+	// Scenario: IPv6 client (realTo) accessing IPv4 server (from)
+	//   - The response must come from an IPv6-compatible source to reach the IPv6 client
+	//   - We convert the IPv4 source to IPv4-mapped IPv6 for socket binding
+	//
+	// Scenario: IPv4 client (realTo) with IPv4-mapped IPv6 source (from)
+	//   - We unmap the source to pure IPv4 for proper socket binding
+	sourceAddr := common.ConvertAddrPortForTarget(from, realTo)
+
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(sourceAddr, AnyfromTimeout)
 	if err != nil {
 		return
 	}

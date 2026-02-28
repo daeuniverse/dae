@@ -299,7 +299,6 @@ func TestComparison_RetryTiming(t *testing.T) {
 		go func() {
 			time.Sleep(20 * time.Millisecond)
 			delayMs.Store(0)
-			t.Logf("At %v: Error condition resolved", time.Since(start))
 		}()
 
 		wg.Wait()
@@ -340,8 +339,6 @@ func TestComparison_RetryTiming(t *testing.T) {
 				for attempt := 0; attempt < 3; attempt++ {
 					_, _, err := p.GetOrCreate(lAddr, createFunc)
 					if err == nil {
-						t.Logf("Goroutine #%d succeeded on attempt %d at %v",
-							id, attempt+1, time.Since(start))
 						return
 					}
 				}
@@ -352,7 +349,6 @@ func TestComparison_RetryTiming(t *testing.T) {
 		go func() {
 			time.Sleep(10 * time.Millisecond)
 			shouldFail.Store(false)
-			t.Logf("At %v: Error condition resolved", time.Since(start))
 		}()
 
 		wg.Wait()
