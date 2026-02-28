@@ -183,6 +183,17 @@ func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy)
 	return g.selectionPolicy.Policy
 }
 
+func (g *DialerGroup) AliveDialerSets() [6]*dialer.AliveDialerSet {
+	return g.aliveDialerSets
+}
+
+func (g *DialerGroup) SelectionPolicyName() string {
+	if g.selectionPolicy == nil {
+		return ""
+	}
+	return string(g.selectionPolicy.Policy)
+}
+
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
 	if typ.IsDns {
 		switch typ.L4Proto {

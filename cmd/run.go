@@ -26,8 +26,6 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"gopkg.in/natefinch/lumberjack.v2"
 
-	_ "net/http/pprof"
-
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -37,6 +35,7 @@ import (
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/daeuniverse/dae/pkg/metrics"
 	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
@@ -128,18 +127,35 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
+	endpointCfg := endpointConfigFromGlobal(conf, log)
+	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
+		return fmt.Errorf("invalid endpoint tls config: %w", err)
+	}
+
 	// New ControlPlane.
 	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
 	if err != nil {
 		return err
 	}
 
-	var pprofServer *http.Server
-	if conf.Global.PprofPort != 0 {
-		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go pprofServer.ListenAndServe()
+	metricsState := metrics.NewState()
+	metricsState.SetControlPlane(c)
+	metricsRegistry := metrics.NewRegistry(metricsState)
+
+	var endpointServer *http.Server
+	startEndpointServer := func(cfg metrics.EndpointConfig) {
+		if cfg.ListenAddress == "" {
+			endpointServer = nil
+			return
+		}
+		endpointServer = metrics.NewEndpointServer(cfg, metricsRegistry)
+		go func(server *http.Server, endpointCfg metrics.EndpointConfig) {
+			if e := metrics.StartEndpointServer(server, endpointCfg); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				log.WithError(e).Errorln("Endpoint server stopped with error")
+			}
+		}(endpointServer, cfg)
 	}
+	startEndpointServer(endpointCfg)
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
@@ -252,6 +268,16 @@ loop:
 			log.SetOutput(oldLogOutput) // FIXME: THIS IS A HACK.
 			logrus.SetOutput(oldLogOutput)
 
+			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
+			if err = validateEndpointTLSFiles(newEndpointCfg); err != nil {
+				log.WithFields(logrus.Fields{
+					"err": err,
+				}).Errorln("[Reload] Failed to reload")
+				sdnotify.Ready()
+				_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+				continue
+			}
+
 			// New control plane.
 			obj := c.EjectBpf()
 			var dnsCache map[string]*control.DnsCache
@@ -295,6 +321,7 @@ loop:
 			c = newC
 			conf = newConf
 			reloading = true
+			metricsState.SetControlPlane(newC)
 
 			// Ready to close.
 			if abortConnections {
@@ -302,14 +329,12 @@ loop:
 			}
 			oldC.Close()
 
-			if pprofServer != nil {
-				pprofServer.Shutdown(context.Background())
-				pprofServer = nil
-			}
-			if newConf.Global.PprofPort != 0 {
-				pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-				pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-				go pprofServer.ListenAndServe()
+			if endpointConfigChanged(endpointCfg, newEndpointCfg) {
+				if endpointServer != nil {
+					_ = endpointServer.Shutdown(context.Background())
+				}
+				endpointCfg = newEndpointCfg
+				startEndpointServer(endpointCfg)
 			}
 		case syscall.SIGHUP:
 			// Ignore.
@@ -321,8 +346,69 @@ loop:
 	}
 	defer os.Remove(PidFilePath)
 	defer control.GetDaeNetns().Close()
+	if endpointServer != nil {
+		_ = endpointServer.Shutdown(context.Background())
+	}
 	if e := c.Close(); e != nil {
 		return fmt.Errorf("close control plane: %w", e)
+	}
+	return nil
+}
+
+func endpointConfigFromGlobal(conf *config.Config, log *logrus.Logger) metrics.EndpointConfig {
+	cfg := metrics.EndpointConfig{
+		ListenAddress:     conf.Global.EndpointListenAddress,
+		Username:          conf.Global.EndpointUsername,
+		Password:          conf.Global.EndpointPassword,
+		TlsCertificate:    conf.Global.EndpointTlsCertificate,
+		TlsKey:            conf.Global.EndpointTlsKey,
+		PrometheusEnabled: conf.Global.EndpointPrometheusEnabled,
+		PrometheusPath:    conf.Global.EndpointPrometheusPath,
+		PprofEnabled:      conf.Global.PprofPort != 0,
+	}
+	if cfg.ListenAddress == "" && conf.Global.PprofPort != 0 {
+		log.Warnln("pprof_port is deprecated, please use endpoint_listen_address instead")
+		cfg.ListenAddress = fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
+	}
+	return cfg
+}
+
+func endpointConfigChanged(a, b metrics.EndpointConfig) bool {
+	return a != b
+}
+
+func validateEndpointTLSFiles(cfg metrics.EndpointConfig) error {
+	if cfg.TlsCertificate == "" && cfg.TlsKey == "" {
+		return nil
+	}
+	if cfg.TlsCertificate == "" || cfg.TlsKey == "" {
+		return fmt.Errorf("endpoint_tls_certificate and endpoint_tls_key must be configured together")
+	}
+
+	certFile, err := os.Open(cfg.TlsCertificate)
+	if err != nil {
+		return fmt.Errorf("cannot open endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
+	}
+	certFi, err := certFile.Stat()
+	certFile.Close()
+	if err != nil {
+		return fmt.Errorf("cannot stat endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
+	}
+	if err = common.ValidateFilePermissionAllowed(cfg.TlsCertificate, certFi, 0o640, 0o644); err != nil {
+		return fmt.Errorf("invalid endpoint_tls_certificate: %w", err)
+	}
+
+	keyFile, err := os.Open(cfg.TlsKey)
+	if err != nil {
+		return fmt.Errorf("cannot open endpoint_tls_key '%s': %w", cfg.TlsKey, err)
+	}
+	keyFi, err := keyFile.Stat()
+	keyFile.Close()
+	if err != nil {
+		return fmt.Errorf("cannot stat endpoint_tls_key '%s': %w", cfg.TlsKey, err)
+	}
+	if err = common.ValidateFilePermissionAllowed(cfg.TlsKey, keyFi, 0o600); err != nil {
+		return fmt.Errorf("invalid endpoint_tls_key: %w", err)
 	}
 	return nil
 }

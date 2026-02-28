@@ -29,6 +29,16 @@ global {
     # Set non-zero value to enable pprof.
     pprof_port: 0
 
+    # Endpoint configuration for metrics and diagnostics.
+    # Set a listen address to enable the endpoint server (disabled by default).
+    #endpoint_listen_address: '0.0.0.0:5556'
+    #endpoint_username: ''
+    #endpoint_password: ''
+    #endpoint_tls_certificate: ''
+    #endpoint_tls_key: ''
+    #endpoint_prometheus_enabled: true
+    #endpoint_prometheus_path: /metrics
+
     # If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy
     # rules.
     so_mark_from_dae: 0
