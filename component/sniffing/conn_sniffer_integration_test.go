@@ -18,7 +18,7 @@ import (
 
 // TestConnSnifferSplicePath verifies the actual splice path through netproxy.ReadFrom
 func TestConnSnifferSplicePath(t *testing.T) {
-	// 创建 echo 服务器
+	// Create echo server
 	echoServer, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -34,29 +34,29 @@ func TestConnSnifferSplicePath(t *testing.T) {
 		io.Copy(conn, conn) // Echo back
 	}()
 
-	// 创建客户端连接
+	// Create client connection
 	clientConn, err := net.Dial("tcp", echoServer.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer clientConn.Close()
 
-	// 创建 ConnSniffer 包装客户端连接
+	// Wrap client connection with ConnSniffer
 	sniffer := NewConnSniffer(clientConn, 0)
-	// 模拟缓冲区数据
+	// Simulate buffered data
 	sniffer.Sniffer.buf.Reset()
 	sniffer.Sniffer.buf.Write([]byte("BUFFERED"))
 
-	// 发送测试数据
+	// Send test data
 	testData := make([]byte, 10*1024) // 10KB
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
 
-	// 通过 sniffer 写入数据
+	// Write data through sniffer
 	go func() {
 		sniffer.Write(testData)
-		// 读取回显数据
+		// Read echoed data
 		recvBuf := make([]byte, len(testData))
 		n, _ := sniffer.Read(recvBuf)
 		t.Logf("Received %d bytes", n)
@@ -85,26 +85,26 @@ func TestWriterToCalledByIoCopy(t *testing.T) {
 	}
 	defer conn1.Close()
 
-	// 创建带缓冲区的 ConnSniffer
+	// Create ConnSniffer with buffered data
 	sniffer := NewConnSniffer(conn1, 0)
 	sniffer.Sniffer.buf.Reset()
 	sniffer.Sniffer.buf.Write([]byte("HEAD"))
 
-	// 写入额外数据到 conn2
+	// Write extra data to conn2
 	extraData := []byte("DATA")
 	go func() {
 		conn2.Write(extraData)
 		conn2.Close()
 	}()
 
-	// 使用 io.Copy - 应该调用 WriteTo
+	// Use io.Copy - should call WriteTo
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, sniffer)
 	if err != nil {
 		t.Logf("io.Copy error: %v", err)
 	}
 
-	// 验证数据
+	// Verify data
 	result := buf.String()
 	expected := "HEADDATA"
 
@@ -116,7 +116,7 @@ func TestWriterToCalledByIoCopy(t *testing.T) {
 		t.Errorf("Expected %q, got %q", expected, result)
 	}
 
-	t.Logf("Successfully transferred %d bytes via io.Copy → WriteTo", n)
+	t.Logf("Successfully transferred %d bytes via io.Copy -> WriteTo", n)
 }
 
 // BenchmarkSpliceVsCopy compares performance with and without splice
@@ -254,7 +254,7 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 	}
 	defer l.Close()
 
-	// 接收端
+	// Receiver
 	done := make(chan struct{})
 	var received bytes.Buffer
 	go func() {
@@ -267,7 +267,7 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 		close(done)
 	}()
 
-	// 发送端（使用 ConnSniffer）
+	// Sender (using ConnSniffer)
 	conn, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -278,24 +278,24 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 	sniffer.Sniffer.buf.Reset()
 	sniffer.Sniffer.buf.Write([]byte("HEADER"))
 
-	// 写入额外数据到连接（这些数据会留在 socket 接收缓冲区）
+	// Write extra data to connection (data stays in socket receive buffer)
 	testData := make([]byte, 100*1024)
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
-	// 从另一端写入数据
+	// Write data from other end
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		// 这里不能直接写，因为 conn 是发送端
-		// 我们需要从接收端读取数据
+		// Cannot write directly here because conn is the sender
+		// We need to read data from the receiver
 	}()
 
-	// 使用 WriteTo 来传输数据（包括缓冲区的数据）
-	// 由于 sniffer 是 ConnSniffer，io.Copy 会调用 WriteTo
-	// 但我们需要从 sniffer 的底层连接读取数据
-	// 所以这个测试需要重新设计
+	// Use WriteTo to transfer data (including buffered data)
+	// Since sniffer is a ConnSniffer, io.Copy will call WriteTo
+	// But we need to read data from sniffer's underlying connection
+	// So this test needs to be redesigned
 
-	// 简化测试：只验证 WriteTo 被正确调用
+	// Simplified test: only verify WriteTo is called correctly
 	t.Skip("Test needs redesign - WriteTo is for reading FROM sniffer, not writing TO it")
 
 	_ = testData
