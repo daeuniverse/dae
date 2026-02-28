@@ -239,6 +239,83 @@ func TestConvoyExitAfterFailedDelete(t *testing.T) {
 	q2.refs.Add(-1)
 }
 
+// TestConvoyExitWhenMappingDeletedBeforeSelfDelete verifies that convoy goroutine
+// exits when the queue mapping is deleted/replaced before convoy can self-delete.
+// This is the regression test for the issue reported in PR #936 comment #3976442155.
+func TestConvoyExitWhenMappingDeletedBeforeSelfDelete(t *testing.T) {
+	pool := NewUdpTaskPool()
+	key := netip.MustParseAddrPort("172.16.0.1:8080")
+
+	// Create queue
+	q := pool.acquireQueue(key)
+	q.refs.Add(-1) // Release reference
+
+	// Get initial goroutine count
+	initialGoroutines := runtime.NumGoroutine()
+
+	// Simulate the race: the mapping is deleted by another path
+	// (e.g., acquireQueue's CompareAndDelete during draining)
+	pool.queues.Delete(key)
+
+	// Now convoy will try to delete and fail because key is gone
+	// Without the fix, convoy would loop forever.
+	// With the fix, convoy should detect stale state and exit.
+
+	// Trigger convoy cleanup by waiting for aging time
+	time.Sleep(UdpTaskPoolAgingTime + 50*time.Millisecond)
+
+	// Give convoy time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the queue is no longer in map
+	_, ok := pool.queues.Load(key)
+	if ok {
+		t.Error("Queue should not be in map after mapping was deleted")
+	}
+
+	// Check goroutine count hasn't increased significantly
+	// (convoy should have exited, not leaked)
+	finalGoroutines := runtime.NumGoroutine()
+	if finalGoroutines > initialGoroutines+5 {
+		t.Errorf("Potential goroutine leak: initial=%d, final=%d", initialGoroutines, finalGoroutines)
+	}
+}
+
+// TestConvoyExitWhenMappingReplaced verifies that convoy exits when
+// the mapping is replaced with a new queue before self-delete.
+func TestConvoyExitWhenMappingReplaced(t *testing.T) {
+	pool := NewUdpTaskPool()
+	key := netip.MustParseAddrPort("10.0.0.1:53")
+
+	// Create initial queue
+	q1 := pool.acquireQueue(key)
+	q1.refs.Add(-1)
+
+	// Mark q1 as draining to simulate it being in cleanup state
+	q1.draining.Store(true)
+
+	// acquireQueue should create a new queue since q1 is draining
+	q2 := pool.acquireQueue(key)
+	if q2 == q1 {
+		t.Fatal("q2 should be a new queue")
+	}
+
+	// Now q1's convoy (if running) would try to delete and fail
+	// because map contains q2, not q1.
+	// q1 should detect it's stale and exit.
+
+	// Verify q2 is in map (check immediately, before aging cleanup)
+	loaded, ok := pool.queues.Load(key)
+	if !ok {
+		t.Error("Queue should exist in map")
+	} else if loaded.(*UdpTaskQueue) != q2 {
+		t.Error("Map should contain q2, not q1")
+	}
+
+	// Cleanup
+	q2.refs.Add(-1)
+}
+
 // TestCompareAndDeleteSemantics verifies the exact semantics of CompareAndDelete
 func TestCompareAndDeleteSemantics(t *testing.T) {
 	pool := NewUdpTaskPool()

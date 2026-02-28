@@ -176,6 +176,12 @@ func (q *UdpTaskQueue) convoy() {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
+			// Check if mapping still points to current queue.
+			// If not, this convoy is stale and must exit to prevent goroutine leak.
+			if v, ok := q.p.queues.Load(q.key); !ok || v.(*UdpTaskQueue) != q {
+				q.p.queueChPool.Put(q.ch)
+				return
+			}
 			q.draining.Store(false)
 			q.safeTimerReset(timer)
 		}

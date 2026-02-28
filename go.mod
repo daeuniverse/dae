@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cilium/ebpf v0.20.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20260227073319-c8ead0d46915
+	github.com/daeuniverse/outbound v0.0.0-20260228060020-a7a5c727a48d
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mholt/archives v0.1.5
@@ -116,4 +116,4 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260228030502-6653a8d49ad4
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260228060020-a7a5c727a48d
