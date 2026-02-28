@@ -63,19 +63,15 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 // The from parameter is the remote server's address (used as local bind for responses).
 // The realTo parameter is the client's address (destination for the response).
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	// The socket family MUST match the destination (realTo) to write successfully.
-	// We use a wildcard bind address with the port from 'from' to ensure compatibility.
+	// Bind to 'from' directly (the remote server's address) using IP_TRANSPARENT.
+	// The caller is responsible for ensuring 'from' has the correct address family
+	// to match 'realTo' (the client). For cross-family cases, the UdpEndpoint
+	// handler replaces 'from' with an address of the correct family before calling here.
 	//
-	// For IPv6 destination: bind to [::]:from.Port (creates IPv6 socket)
-	// For IPv4 destination: bind to 0.0.0.0:from.Port (creates IPv4 socket)
-	var bindAddr netip.AddrPort
-	if realTo.Addr().Is6() {
-		// IPv6 destination - use IPv6 wildcard to create IPv6 socket
-		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), from.Port())
-	} else {
-		// IPv4 destination - use IPv4 wildcard to create IPv4 socket
-		bindAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), from.Port())
-	}
+	// We use ConvergeAddrPort to unmap any IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+	// to pure IPv4, since binding to IPv4-mapped addresses creates IPv4 sockets which
+	// cannot write to IPv6 destinations.
+	bindAddr := common.ConvergeAddrPort(from)
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
@@ -287,6 +283,20 @@ getNew:
 	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
+			// Cross-family fix: when the server (from) and client (realSrc) are in
+			// different address families, sendPkt cannot bind to 'from' and write to
+			// 'realSrc' (e.g. IPv4 socket cannot write to IPv6 destination).
+			// Use realDst instead: it has the same address family as the server,
+			// which creates a correctly-typed socket while IP_TRANSPARENT allows
+			// binding to it even though it's not a local address.
+			//
+			// Port handling: We replace 'from' with 'realDst' entirely (both IP and port).
+			// This is correct because in transparent proxying, the client expects responses
+			// to come from realDst (the original destination), including the port.
+			// For example, if client sent to 8.8.8.8:53, response must appear from 8.8.8.8:53.
+			if from.Addr().Is4() != realSrc.Addr().Is4() {
+				from = realDst
+			}
 			// Do not return conn-unrelated err in this func.
 			return sendPkt(c.log, data, from, realSrc, src, lConn)
 		},

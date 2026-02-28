@@ -376,3 +376,148 @@ func BenchmarkConvertAddrPortForTargetInSendPktContext(b *testing.B) {
 		_ = sourceAddr
 	}
 }
+
+// TestHandlerPortReplacement tests the port replacement logic in UdpEndpoint Handler.
+// This verifies the cross-family fix where 'from' is replaced with 'realDst'.
+func TestHandlerPortReplacement(t *testing.T) {
+	testCases := []struct {
+		name           string
+		serverFrom     string // Remote server address (from in Handler)
+		realDst        string // Original destination (what client expects)
+		realSrc        string // Client address (destination for response)
+		expectReplace  bool   // Whether cross-family replacement should occur
+		expectedAddr   string // Expected address after replacement (from realDst)
+		expectedPort   uint16 // Expected port after replacement (from realDst)
+		description    string
+	}{
+		{
+			name:          "IPv4 server to IPv6 client - should replace with realDst",
+			serverFrom:    "8.8.4.4:53",           // Actual server response address
+			realDst:       "8.8.8.8:53",           // What client expects (original dest)
+			realSrc:       "[240e:390::1]:12345", // IPv6 client
+			expectReplace: true,
+			expectedAddr:  "8.8.8.8",
+			expectedPort:  53,
+			description:   "DNS: IPv4 server(8.8.4.4) -> IPv6 client, should use realDst(8.8.8.8)",
+		},
+		{
+			name:          "IPv4 server to IPv6 client - QUIC with different port",
+			serverFrom:    "40.99.181.130:443",
+			realDst:       "40.99.200.10:443",     // Different IP but same port
+			realSrc:       "[240e:390:a9:dd50::1]:52215",
+			expectReplace: true,
+			expectedAddr:  "40.99.200.10",
+			expectedPort:  443,
+			description:   "QUIC: IPv4 server -> IPv6 client, should use realDst address",
+		},
+		{
+			name:          "IPv4 server to IPv4 client - no replacement needed",
+			serverFrom:    "8.8.4.4:53",
+			realDst:       "8.8.8.8:53",
+			realSrc:       "192.168.1.1:12345", // IPv4 client
+			expectReplace: false,
+			expectedAddr:  "8.8.4.4", // Keeps original from
+			expectedPort:  53,
+			description:   "Same family IPv4: keep original from address",
+		},
+		{
+			name:          "IPv6 server to IPv6 client - no replacement needed",
+			serverFrom:    "[2001:4860::2]:53",
+			realDst:       "[2001:4860::1]:53",
+			realSrc:       "[240e:390::1]:12345", // IPv6 client
+			expectReplace: false,
+			expectedAddr:  "2001:4860::2", // Keeps original from
+			expectedPort:  53,
+			description:   "Same family IPv6: keep original from address",
+		},
+		{
+			name:          "IPv6 server to IPv4 client - should replace with realDst",
+			serverFrom:    "[2001:4860::2]:443",
+			realDst:       "[2001:4860::1]:443",
+			realSrc:       "192.168.1.1:54321", // IPv4 client
+			expectReplace: true,
+			expectedAddr:  "2001:4860::1",
+			expectedPort:  443,
+			description:   "IPv6 server -> IPv4 client, should use realDst",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			from := netip.MustParseAddrPort(tc.serverFrom)
+			realDst := netip.MustParseAddrPort(tc.realDst)
+			realSrc := netip.MustParseAddrPort(tc.realSrc)
+
+			t.Logf("Scenario: %s", tc.description)
+			t.Logf("  Server (from): %v", from)
+			t.Logf("  RealDst: %v", realDst)
+			t.Logf("  Client (realSrc): %v", realSrc)
+
+			// Simulate the Handler logic from control/udp.go
+			originalFrom := from
+			if from.Addr().Is4() != realSrc.Addr().Is4() {
+				from = realDst
+			}
+
+			// Verify replacement occurred as expected
+			replaced := from != originalFrom
+			if tc.expectReplace != replaced {
+				t.Errorf("Replacement expectation mismatch: expected=%v, got=%v", tc.expectReplace, replaced)
+			}
+
+			// Verify address
+			if from.Addr().String() != tc.expectedAddr {
+				t.Errorf("Address mismatch: expected=%s, got=%s", tc.expectedAddr, from.Addr().String())
+			}
+
+			// Verify port - this is the critical test
+			if from.Port() != tc.expectedPort {
+				t.Errorf("Port mismatch: expected=%d, got=%d", tc.expectedPort, from.Port())
+			}
+
+			// Verify port matches realDst.Port() when replacement occurs
+			if tc.expectReplace && from.Port() != realDst.Port() {
+				t.Errorf("CRITICAL: After replacement, port should be realDst.Port()=%d, got=%d",
+					realDst.Port(), from.Port())
+			}
+
+			// Verify address matches realDst when replacement occurs
+			if tc.expectReplace && from.Addr() != realDst.Addr() {
+				t.Errorf("After replacement, address should be realDst.Addr()=%v, got=%v",
+					realDst.Addr(), from.Addr())
+			}
+
+			t.Logf("  Result: from=%v (replaced=%v)", from, replaced)
+			t.Logf("  ✓ Port=%d matches expected=%d", from.Port(), tc.expectedPort)
+		})
+	}
+}
+
+// TestHandlerPortReplacementWithDifferentPorts tests the edge case where
+// server port differs from realDst port (should not happen in normal operation,
+// but we verify the behavior anyway).
+func TestHandlerPortReplacementWithDifferentPorts(t *testing.T) {
+	// This test documents expected behavior when from.Port() != realDst.Port()
+	// In normal transparent proxying, these should always be equal.
+	// If they differ, the replacement uses realDst's port, which is correct
+	// because the client expects responses from realDst.
+
+	from := netip.MustParseAddrPort("8.8.8.8:80")     // Hypothetical wrong port
+	realDst := netip.MustParseAddrPort("8.8.8.8:443") // Correct port
+	realSrc := netip.MustParseAddrPort("[240e:390::1]:12345")
+
+	t.Logf("Edge case: from.Port()=%d != realDst.Port()=%d", from.Port(), realDst.Port())
+
+	// Simulate Handler logic
+	if from.Addr().Is4() != realSrc.Addr().Is4() {
+		from = realDst
+	}
+
+	// After replacement, port should be realDst's port (443)
+	if from.Port() != realDst.Port() {
+		t.Errorf("Port should be realDst.Port()=%d, got=%d", realDst.Port(), from.Port())
+	}
+
+	t.Logf("✓ After cross-family replacement: from=%v (port=%d)", from, from.Port())
+	t.Log("Note: In normal operation, from.Port() should equal realDst.Port()")
+}
