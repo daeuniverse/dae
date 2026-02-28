@@ -29,7 +29,9 @@ var (
 	// Reduced from 3 minutes to 30 seconds for faster resource cleanup.
 	// Most DNS queries complete within seconds, and long-lived connections
 	// can use longer timeouts via DialOption.
-	DefaultNatTimeout = 30 * time.Second
+	DefaultNatTimeout = 60 * time.Second
+	// QuicNatTimeout defaults to 5 minutes to prevent QUIC connections from timing out prematurely.
+	QuicNatTimeout = 5 * time.Minute
 )
 
 const (
@@ -61,18 +63,21 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 // The from parameter is the remote server's address (used as local bind for responses).
 // The realTo parameter is the client's address (destination for the response).
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	// Convert the source address (from) to match the destination's (realTo) address family.
-	// This fixes the "non-IPv4 address" error when an IPv4 socket tries to write to an IPv6 destination.
+	// The socket family MUST match the destination (realTo) to write successfully.
+	// We use a wildcard bind address with the port from 'from' to ensure compatibility.
 	//
-	// Scenario: IPv6 client (realTo) accessing IPv4 server (from)
-	//   - The response must come from an IPv6-compatible source to reach the IPv6 client
-	//   - We convert the IPv4 source to IPv4-mapped IPv6 for socket binding
-	//
-	// Scenario: IPv4 client (realTo) with IPv4-mapped IPv6 source (from)
-	//   - We unmap the source to pure IPv4 for proper socket binding
-	sourceAddr := common.ConvertAddrPortForTarget(from, realTo)
+	// For IPv6 destination: bind to [::]:from.Port (creates IPv6 socket)
+	// For IPv4 destination: bind to 0.0.0.0:from.Port (creates IPv4 socket)
+	var bindAddr netip.AddrPort
+	if realTo.Addr().Is6() {
+		// IPv6 destination - use IPv6 wildcard to create IPv6 socket
+		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), from.Port())
+	} else {
+		// IPv4 destination - use IPv4 wildcard to create IPv4 socket
+		bindAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), from.Port())
+	}
 
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(sourceAddr, AnyfromTimeout)
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
 		return
 	}
@@ -117,33 +122,45 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 	// Non-DNS traffic: use UdpEndpoint for connection tracking (QUIC, etc.)
 	ue, ueExists := DefaultUdpEndpointPool.Get(realSrc)
-	if ueExists && ue.SniffedDomain != "" {
-		// It is quic ...
-		// Fast path.
-		domain := ue.SniffedDomain
-		dialTarget := realDst.String()
-
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			fields := logrus.Fields{
-				"network":  "udp(fp)",
-				"outbound": ue.Outbound.Name,
-				"policy":   ue.Outbound.GetSelectionPolicy(),
-				"dialer":   ue.Dialer.Property().Name,
-				"sniffed":  domain,
-				"ip":       RefineAddrPortToShow(realDst),
-				"pid":      routingResult.Pid,
-				"dscp":     routingResult.Dscp,
-				"pname":    ProcessName2String(routingResult.Pname[:]),
-				"mac":      Mac2String(routingResult.Mac[:]),
+	if ueExists {
+		if ue.SniffedDomain == "" && sniffing.IsLikelyQuicInitialPacket(data) {
+			// We received a new QUIC connection on a socket currently trapped in a domain-less fallback endpoint.
+			// This happens because Chrome multiplexes and reuses UDP sockets. Background QUIC data packets keep
+			// the socket alive but are missing the SNI, causing dae to recreate a fallback domain-less endpoint.
+			// Remove the broken endpoint so the new QUIC Initial packet can be properly sniffed and routed.
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
 			}
-			c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
-		}
+			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
+			ueExists = false
+		} else if ue.SniffedDomain != "" {
+			// It is quic ...
+			// Fast path.
+			domain := ue.SniffedDomain
+			dialTarget := realDst.String()
 
-		_, err = ue.WriteTo(data, dialTarget)
-		if err != nil {
-			return err
+			if c.log.IsLevelEnabled(logrus.TraceLevel) {
+				fields := logrus.Fields{
+					"network":  "udp(fp)",
+					"outbound": ue.Outbound.Name,
+					"policy":   ue.Outbound.GetSelectionPolicy(),
+					"dialer":   ue.Dialer.Property().Name,
+					"sniffed":  domain,
+					"ip":       RefineAddrPortToShow(realDst),
+					"pid":      routingResult.Pid,
+					"dscp":     routingResult.Dscp,
+					"pname":    ProcessName2String(routingResult.Pname[:]),
+					"mac":      Mac2String(routingResult.Mac[:]),
+				}
+				c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+			}
+
+			_, err = ue.WriteTo(data, dialTarget)
+			if err != nil {
+				return err
+			}
+			return nil
 		}
-		return nil
 	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
@@ -262,6 +279,11 @@ getNew:
 		}).Warnln("Touch max retry limit.")
 		return fmt.Errorf("touch max retry limit")
 	}
+
+	if domain != "" && !isDns {
+		natTimeout = QuicNatTimeout
+	}
+
 	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {

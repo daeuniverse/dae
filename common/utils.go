@@ -417,6 +417,7 @@ func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
 //
 // Rules:
 //   - If target is IPv6 and source is IPv4: convert source to IPv4-mapped IPv6
+//   - If target is IPv6 and source is IPv4-mapped IPv6: keep as-is (already compatible)
 //   - If target is IPv4 and source is IPv4-mapped IPv6: unmap source to IPv4
 //   - If target is IPv4 and source is pure IPv6: return IPv6 unspecified (can't convert)
 //   - Otherwise: return source unchanged
@@ -427,9 +428,12 @@ func ConvertAddrPortForTarget(source, target netip.AddrPort) netip.AddrPort {
 	sourceAddr := source.Addr()
 	targetAddr := target.Addr()
 
-	// Same address family - no conversion needed
-	if sourceAddr.Is4() == targetAddr.Is4() || sourceAddr.Is6() == targetAddr.Is6() {
-		return source
+	// If both are the same concrete type (both IPv4 or both pure IPv6), no conversion
+	if sourceAddr.Is4() && targetAddr.Is4() {
+		return source // Both IPv4
+	}
+	if !sourceAddr.Is4() && !sourceAddr.Is4In6() && !targetAddr.Is4() && !targetAddr.Is4In6() {
+		return source // Both pure IPv6
 	}
 
 	// Target is IPv6, source is IPv4 - convert to IPv4-mapped IPv6
@@ -450,6 +454,7 @@ func ConvertAddrPortForTarget(source, target netip.AddrPort) netip.AddrPort {
 		return netip.AddrPortFrom(netip.IPv6Unspecified(), source.Port())
 	}
 
+	// Target is IPv6, source is IPv4-mapped IPv6 or pure IPv6 - already compatible
 	return source
 }
 
