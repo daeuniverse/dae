@@ -63,24 +63,29 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 // The from parameter is the remote server's address (used as local bind for responses).
 // The realTo parameter is the client's address (destination for the response).
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	// CRITICAL: We must use the original 'from' address as the bind address to ensure
-	// each server response gets its own UDP socket. Using ConvertAddrPortForTarget
-	// was causing different IPv6 servers to all map to [::]:port, sharing one socket
-	// and causing response mixing in proxy chain scenarios (dae -> xray/sing-box).
+	// Proxy chain support: Use original 'from' address as bindAddr to ensure
+	// each server response gets its own UDP socket. This prevents response mixing
+	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
 	//
-	// For cross-family scenarios (IPv6 server -> IPv4 client), we still bind to the
-	// IPv6 server address and convert the write address to IPv4-mapped IPv6.
-	// The IPv6 dual-stack socket can write to IPv4 destinations this way.
+	// Cross-family handling ensures socket type matches write address family:
+	// - IPv6->IPv4: Convert writeAddr to IPv4-mapped IPv6 for dual-stack socket
+	// - IPv4->IPv6: Convert bindAddr to IPv4-mapped IPv6 to create IPv6 socket
 	bindAddr := from
 	writeAddr := realTo
 
-	// Handle cross-family: IPv6 server responding to IPv4 client
-	if from.Addr().Is6() && !from.Addr().Is4In6() && realTo.Addr().Is4() {
-		// Pure IPv6 bind address with IPv4 target: convert target to IPv4-mapped IPv6
-		// This allows the IPv6 dual-stack socket to write to IPv4 destinations.
+	// Case 1: IPv6 socket writing to IPv4 target
+	if realTo.Addr().Is4() && from.Addr().Is6() {
 		writeAddr = netip.AddrPortFrom(
-			netip.AddrFrom16(realTo.Addr().As16()), // IPv4-mapped IPv6
+			netip.AddrFrom16(realTo.Addr().As16()),
 			realTo.Port(),
+		)
+	}
+
+	// Case 2: IPv4 socket writing to IPv6 target (NAT64)
+	if from.Addr().Is4() && realTo.Addr().Is6() && !realTo.Addr().Is4In6() {
+		bindAddr = netip.AddrPortFrom(
+			netip.AddrFrom16(from.Addr().As16()),
+			from.Port(),
 		)
 	}
 
