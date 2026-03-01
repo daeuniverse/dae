@@ -180,13 +180,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	// Note: valid DNS packets on port 53 are already handled and returned in the
-	// fast path above (L114-138). Any port-53 packet reaching this point has
-	// already failed DNS parsing once, so sniffDns=false avoids a redundant
-	// dnsmessage.Unpack() call that is guaranteed to return nil.
-	dnsMessage, natTimeout := ChooseNatTimeout(data, false)
-	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
-	isDns := dnsMessage != nil
-	if !isDns && !skipSniffing && !ueExists {
+	// fast path above (L114-138).
+	natTimeout := DefaultNatTimeout
+	if !skipSniffing && !ueExists {
 		key := PacketSnifferKey{
 			LAddr: realSrc,
 			RAddr: realDst,
@@ -244,25 +240,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 
 afterSniffing:
-	if routingResult.Must > 0 {
-		isDns = false // Regard as plain traffic.
-	}
 	if routingResult.Mark == 0 {
 		routingResult.Mark = c.soMarkFromDae
-	}
-	if isDns {
-		err = c.dnsController.Handle_(c.ctx, dnsMessage, &udpRequest{
-			realSrc:       realSrc,
-			realDst:       realDst,
-			src:           src,
-			lConn:         lConn,
-			routingResult: routingResult,
-		})
-		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
-			// REFUSED response has been sent by DNS controller.
-			return nil
-		}
-		return err
 	}
 
 	// Dial and send.
@@ -302,13 +281,13 @@ getNew:
 		return fmt.Errorf("touch max retry limit")
 	}
 
-	if domain != "" && !isDns {
+	if domain != "" {
 		natTimeout = QuicNatTimeout
 	}
 
 	// QUIC (domain != "") uses Symmetric NAT.
 	ueKey = UdpEndpointKey{Src: realSrc}
-	if domain != "" && !isDns {
+	if domain != "" {
 		ueKey.Dst = realDst
 	}
 
@@ -328,11 +307,6 @@ getNew:
 			switch outboundIndex {
 			case consts.OutboundDirect:
 			case consts.OutboundControlPlaneRouting:
-				if isDns {
-					// Routing of DNS packets are managed by DNS controller.
-					break
-				}
-
 				if outboundIndex, routingResult.Mark, _, err = c.Route(realSrc, realDst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
 					return nil, err
 				}
@@ -373,7 +347,7 @@ getNew:
 			strictIpVersion := dialIp
 			dialerForNew, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
 			if err != nil {
-				return nil, fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
+				return nil, fmt.Errorf("failed to select dialer from group %v (%v, from: %v): %w", outbound.Name, networkType.StringWithoutDns(), realSrc.String(), err)
 			}
 			return &DialOption{
 				Target:        dialTarget,

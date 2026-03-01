@@ -411,53 +411,6 @@ func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
 	return addrPort
 }
 
-// ConvertAddrPortForTarget converts a source AddrPort to match the target's address family.
-// This is used when sending UDP packets where the source address family must be
-// compatible with the destination address family.
-//
-// Rules:
-//   - If target is IPv6 and source is IPv4: convert source to IPv4-mapped IPv6
-//   - If target is IPv6 and source is IPv4-mapped IPv6: keep as-is (already compatible)
-//   - If target is IPv4 and source is IPv4-mapped IPv6: unmap source to IPv4
-//   - If target is IPv4 and source is pure IPv6: return IPv6 unspecified (can't convert)
-//   - Otherwise: return source unchanged
-//
-// IPv4-mapped IPv6 addresses have the format ::ffff:x.x.x.x and allow IPv4 addresses
-// to be represented in an IPv6 format that dual-stack sockets can handle.
-func ConvertAddrPortForTarget(source, target netip.AddrPort) netip.AddrPort {
-	sourceAddr := source.Addr()
-	targetAddr := target.Addr()
-
-	// If both are the same concrete type (both IPv4 or both pure IPv6), no conversion
-	if sourceAddr.Is4() && targetAddr.Is4() {
-		return source // Both IPv4
-	}
-	if !sourceAddr.Is4() && !sourceAddr.Is4In6() && !targetAddr.Is4() && !targetAddr.Is4In6() {
-		return source // Both pure IPv6
-	}
-
-	// Target is IPv6, source is IPv4 - convert to IPv4-mapped IPv6
-	if targetAddr.Is6() && sourceAddr.Is4() {
-		// As16() for IPv4 returns the IPv4-mapped IPv6 representation
-		mappedAddr := netip.AddrFrom16(sourceAddr.As16())
-		return netip.AddrPortFrom(mappedAddr, source.Port())
-	}
-
-	// Target is IPv4, source is IPv4-mapped IPv6 - unmap to IPv4
-	if targetAddr.Is4() && sourceAddr.Is4In6() {
-		return netip.AddrPortFrom(sourceAddr.Unmap(), source.Port())
-	}
-
-	// Target is IPv4, source is pure IPv6 - can't convert, return unspecified
-	// The caller should handle this case (e.g., use IPv6 fallback)
-	if targetAddr.Is4() && sourceAddr.Is6() {
-		return netip.AddrPortFrom(netip.IPv6Unspecified(), source.Port())
-	}
-
-	// Target is IPv6, source is IPv4-mapped IPv6 or pure IPv6 - already compatible
-	return source
-}
-
 func NewGcm(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

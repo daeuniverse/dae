@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/sniffing"
 )
 
@@ -462,9 +461,13 @@ func TestQuicCrossFamilyFallback(t *testing.T) {
 			t.Logf("  QUIC Server (from): %v", from)
 			t.Logf("  Client (realTo):    %v", realTo)
 
-			// Step 1: Convert bind address using ConvertAddrPortForTarget
-			// This is what sendPkt does
-			bindAddr := common.ConvertAddrPortForTarget(from, realTo)
+			// Step 1: Convert bind address (manual implementation of the logic)
+			bindAddr := from
+			if from.Addr().Is4() && realTo.Addr().Is6() && !realTo.Addr().Is4In6() {
+				bindAddr = netip.AddrPortFrom(netip.AddrFrom16(from.Addr().As16()), from.Port())
+			} else if from.Addr().Is4In6() && realTo.Addr().Is4() {
+				bindAddr = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
+			}
 			t.Logf("  Step 1 - bindAddr:  %v", bindAddr)
 
 			// Verify bind address family
@@ -570,7 +573,10 @@ func TestQuicCrossFamilyWithSniffing(t *testing.T) {
 	from := serverAddr
 	realTo := clientAddr
 
-	bindAddr := common.ConvertAddrPortForTarget(from, realTo)
+	bindAddr := from
+	if from.Addr().Is4() && realTo.Addr().Is6() && !realTo.Addr().Is4In6() {
+		bindAddr = netip.AddrPortFrom(netip.AddrFrom16(from.Addr().As16()), from.Port())
+	}
 	t.Logf("  Step 3: Response bind address: %v", bindAddr)
 
 	// Apply fallback
