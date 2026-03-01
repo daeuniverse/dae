@@ -1542,9 +1542,8 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	}
 	if (p)
 		*p = NULL;
-	if ((skb->mark & 0x100) == 0x100) {
+	if ((skb->mark & 0x100) == 0x100)
 		return true;
-	}
 	return false;
 }
 
@@ -2099,9 +2098,8 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie,
 
 	// Update map.
 	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, val, BPF_ANY);
-	if (unlikely(ret)) {
+	if (unlikely(ret))
 		return ret;
-	}
 
 #ifdef __PRINT_SETUP_PROCESS_CONNNECTION
 	bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val->pname,
