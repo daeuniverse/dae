@@ -105,6 +105,7 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to ne
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
 	var realSrc netip.AddrPort
 	var domain string
+	var ueKey UdpEndpointKey
 	realSrc = src
 
 	// DNS Fast Path: Skip UdpEndpoint lookup for DNS traffic (port 53).
@@ -137,18 +138,20 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// Not a valid DNS packet (port 53 but not DNS format) - fall through to normal UDP path
 	}
 
-	// Non-DNS traffic: use UdpEndpoint for connection tracking (QUIC, etc.)
-	ue, ueExists := DefaultUdpEndpointPool.Get(realSrc)
+	// Non-DNS traffic: QUIC uses Symmetric NAT (key includes Dst).
+	ueKey = UdpEndpointKey{Src: realSrc}
+	ue, ueExists := DefaultUdpEndpointPool.Get(ueKey)
+	if !ueExists {
+		ueKey.Dst = realDst
+		ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
+	}
 	if ueExists {
 		if ue.SniffedDomain == "" && sniffing.IsLikelyQuicInitialPacket(data) {
-			// We received a new QUIC connection on a socket currently trapped in a domain-less fallback endpoint.
-			// This happens because Chrome multiplexes and reuses UDP sockets. Background QUIC data packets keep
-			// the socket alive but are missing the SNI, causing dae to recreate a fallback domain-less endpoint.
-			// Remove the broken endpoint so the new QUIC Initial packet can be properly sniffed and routed.
+			// Chrome reuses UDP sockets; remove domain-less endpoint for new QUIC Initial.
 			if c.log.IsLevelEnabled(logrus.DebugLevel) {
 				c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
 			}
-			_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
+			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 			ueExists = false
 		} else if ue.SniffedDomain != "" {
 			// It is quic ...
@@ -308,7 +311,13 @@ getNew:
 		natTimeout = QuicNatTimeout
 	}
 
-	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
+	// QUIC (domain != "") uses Symmetric NAT.
+	ueKey = UdpEndpointKey{Src: realSrc}
+	if domain != "" && !isDns {
+		ueKey.Dst = realDst
+	}
+
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
@@ -395,7 +404,7 @@ getNew:
 				"retry":   retry,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
-		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
+		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 		retry++
 		goto getNew
 	}
@@ -420,7 +429,7 @@ getNew:
 				"retry":   retry,
 			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 		}
-		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
+		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 		retry++
 		goto getNew
 	}

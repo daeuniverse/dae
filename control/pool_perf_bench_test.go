@@ -73,12 +73,13 @@ func BenchmarkUdpTaskPool_ParallelHotKey(b *testing.B) {
 func BenchmarkUdpEndpointPool_GetOrCreateError_Parallel(b *testing.B) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.2:54321")
+	key := UdpEndpointKey{Src: lAddr}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{})
+			_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{})
 			if err == nil {
 				b.Fatal("expected error")
 			}

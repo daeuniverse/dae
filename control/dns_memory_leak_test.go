@@ -755,8 +755,18 @@ func TestDnsController_RealisticMemoryPressure(t *testing.T) {
 	t.Logf("After cleanup and GC: heap = %.2f MB, Sys = %.2f MB",
 		float64(m4.HeapAlloc)/1024/1024, float64(m4.Sys)/1024/1024)
 
-	heapGrowth := float64(m4.HeapAlloc - m1.HeapAlloc)
-	sysGrowth := float64(m4.Sys - m1.Sys)
+	// Calculate growth safely to avoid uint64 underflow when m4 < m1
+	var heapGrowth, sysGrowth float64
+	if m4.HeapAlloc >= m1.HeapAlloc {
+		heapGrowth = float64(m4.HeapAlloc - m1.HeapAlloc)
+	} else {
+		heapGrowth = -float64(m1.HeapAlloc - m4.HeapAlloc)
+	}
+	if m4.Sys >= m1.Sys {
+		sysGrowth = float64(m4.Sys - m1.Sys)
+	} else {
+		sysGrowth = -float64(m1.Sys - m4.Sys)
+	}
 	t.Logf("Total heap growth: %.2f MB, Sys growth: %.2f MB", heapGrowth/1024/1024, sysGrowth/1024/1024)
 
 	// Check for memory leak: heap should return close to initial level

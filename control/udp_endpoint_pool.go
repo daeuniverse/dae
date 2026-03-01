@@ -163,7 +163,13 @@ func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uin
 	ue.routingMu.Unlock()
 }
 
-// UdpEndpointPool is a full-cone udp conn pool
+// UdpEndpointKey is the pool key. Dst=0 for Full-Cone NAT, non-zero for QUIC.
+type UdpEndpointKey struct {
+	Src netip.AddrPort
+	Dst netip.AddrPort
+}
+
+// UdpEndpointPool is a UDP connection pool.
 type UdpEndpointPool struct {
 	pool          sync.Map
 	createMuShard [udpEndpointCreateShardCount]sync.Mutex
@@ -188,9 +194,9 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 	return p
 }
 
-func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint) (err error) {
+func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
 	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
-	if !p.pool.CompareAndDelete(lAddr, udpEndpoint) {
+	if !p.pool.CompareAndDelete(key, udpEndpoint) {
 		udpEndpoint.Close()
 		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
@@ -198,8 +204,8 @@ func (p *UdpEndpointPool) Remove(lAddr netip.AddrPort, udpEndpoint *UdpEndpoint)
 	return nil
 }
 
-func (p *UdpEndpointPool) Get(lAddr netip.AddrPort) (udpEndpoint *UdpEndpoint, ok bool) {
-	_ue, ok := p.pool.Load(lAddr)
+func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok bool) {
+	_ue, ok := p.pool.Load(key)
 	if !ok {
 		return nil, ok
 	}
@@ -207,8 +213,8 @@ func (p *UdpEndpointPool) Get(lAddr netip.AddrPort) (udpEndpoint *UdpEndpoint, o
 }
 
 // createEndpointLocked dials and registers a new UdpEndpoint under the caller's shard lock.
-// The caller MUST hold the shard mutex for lAddr before calling this function.
-func (p *UdpEndpointPool) createEndpointLocked(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (*UdpEndpoint, error) {
+// The caller MUST hold the shard mutex for key before calling this function.
+func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption *UdpEndpointOptions) (*UdpEndpoint, error) {
 	if createOption == nil {
 		createOption = &UdpEndpointOptions{}
 	}
@@ -243,36 +249,36 @@ func (p *UdpEndpointPool) createEndpointLocked(lAddr netip.AddrPort, createOptio
 		Outbound:      dialOption.Outbound,
 		SniffedDomain: dialOption.SniffedDomain,
 		DialTarget:    dialOption.Target,
-		lAddr:         lAddr,
+		lAddr:         key.Src,
 		log:           createOption.Log,
 	}
 	ue.RefreshTtl()
-	p.pool.Store(lAddr, ue)
+	p.pool.Store(key, ue)
 	// Receive UDP messages.
 	go ue.start()
 	return ue, nil
 }
 
-func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
-	_ue, ok := p.pool.Load(lAddr)
+func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
+	_ue, ok := p.pool.Load(key)
 	if !ok {
-		mu := p.createMuFor(lAddr)
+		mu := p.createMuFor(key)
 		mu.Lock()
 		defer mu.Unlock()
 
-		_ue, ok = p.pool.Load(lAddr)
+		_ue, ok = p.pool.Load(key)
 		if ok {
 			ue := _ue.(*UdpEndpoint)
 			if ue.IsDead() {
 				// Use CompareAndDelete for atomic CAS (best practice)
-				p.pool.CompareAndDelete(lAddr, ue)
+				p.pool.CompareAndDelete(key, ue)
 			} else {
 				ue.RefreshTtl()
 				return ue, false, nil
 			}
 		}
 		// Create a new endpoint under the shard lock.
-		newUe, createErr := p.createEndpointLocked(lAddr, createOption)
+		newUe, createErr := p.createEndpointLocked(key, createOption)
 		if createErr != nil {
 			return nil, true, createErr
 		}
@@ -284,23 +290,23 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		// Fast path returned a dead endpoint. Acquire the shard lock and handle
 		// it non-recursively — equivalent to what a recursive GetOrCreate would do,
 		// but without stack overhead or unbounded recursion risk.
-		mu := p.createMuFor(lAddr)
+		mu := p.createMuFor(key)
 		mu.Lock()
 		defer mu.Unlock()
 		// CAS-delete the dead entry (safe: no-op if another goroutine already replaced it).
-		p.pool.CompareAndDelete(lAddr, ue)
+		p.pool.CompareAndDelete(key, ue)
 		// Double-check: another goroutine may have already placed a live replacement.
-		if v, loaded := p.pool.Load(lAddr); loaded {
+		if v, loaded := p.pool.Load(key); loaded {
 			fresh := v.(*UdpEndpoint)
 			if !fresh.IsDead() {
 				fresh.RefreshTtl()
 				return fresh, false, nil
 			}
 			// Still dead — remove it too and fall through to create.
-			p.pool.CompareAndDelete(lAddr, fresh)
+			p.pool.CompareAndDelete(key, fresh)
 		}
 		// Create a fresh endpoint under the lock.
-		newUe, createErr := p.createEndpointLocked(lAddr, createOption)
+		newUe, createErr := p.createEndpointLocked(key, createOption)
 		if createErr != nil {
 			return nil, true, createErr
 		}
@@ -310,8 +316,8 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 	return _ue.(*UdpEndpoint), isNew, nil
 }
 
-func (p *UdpEndpointPool) createMuFor(lAddr netip.AddrPort) *sync.Mutex {
-	idx := int(hashAddrPort(lAddr) & uint64(udpEndpointCreateShardCount-1))
+func (p *UdpEndpointPool) createMuFor(key UdpEndpointKey) *sync.Mutex {
+	idx := int(hashAddrPort(key.Src) & uint64(udpEndpointCreateShardCount-1))
 	return &p.createMuShard[idx]
 }
 

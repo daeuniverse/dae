@@ -1107,7 +1107,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				var routingResult *bpfRoutingResult
 				var freshRoutingResult *bpfRoutingResult
 
-				if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
+				if ue, ok := DefaultUdpEndpointPool.Get(UdpEndpointKey{Src: convergeSrc}); ok {
 					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
 						routingResult = cached
 					}
@@ -1146,7 +1146,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 
 				if freshRoutingResult != nil {
-					if ue, ok := DefaultUdpEndpointPool.Get(convergeSrc); ok {
+					if ue, ok := DefaultUdpEndpointPool.Get(UdpEndpointKey{Src: convergeSrc}); ok {
 						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
 					}
 				}

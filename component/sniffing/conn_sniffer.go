@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -24,12 +25,52 @@ type syscallConner interface {
 type ConnSniffer struct {
 	net.Conn
 	*Sniffer
+	// spliceFailed tracks whether splice has failed. Once failed, use io.Copy.
+	spliceFailed atomic.Bool
+	// skipSplice indicates splice should be skipped (incompatible protocols).
+	skipSplice bool
+}
+
+// spliceIncompatiblePorts contains ports for protocols incompatible with splice(2).
+// These protocols use PTY/pipes, command/response mode, or character-by-character I/O.
+var spliceIncompatiblePorts = map[uint16]bool{
+	// Terminal
+	22: true, 23: true, 2222: true, 22222: true,
+	// Mail
+	25: true, 110: true, 143: true, 465: true, 587: true, 993: true, 995: true,
+	// File transfer
+	21: true,
+	// Database
+	3306: true, 5432: true, 6379: true, 27017: true,
+	// Other
+	119: true, 194: true, 6667: true,
+}
+
+// shouldSkipSplice determines if splice should be skipped for this connection.
+func shouldSkipSplice(conn net.Conn) bool {
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return false
+	}
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		port := uint16(tcpAddr.Port)
+		// Check incompatible list
+		if spliceIncompatiblePorts[port] {
+			return true
+		}
+		// Known compatible ports will try splice
+		// Unknown ports will also try splice (optimistic)
+		// Failure will be handled by spliceFailed flag
+		return false
+	}
+	return false
 }
 
 func NewConnSniffer(conn net.Conn, timeout time.Duration) *ConnSniffer {
 	s := &ConnSniffer{
-		Conn:    conn,
-		Sniffer: NewStreamSniffer(conn, timeout),
+		Conn:       conn,
+		Sniffer:    NewStreamSniffer(conn, timeout),
+		skipSplice: shouldSkipSplice(conn),
 	}
 	return s
 }
@@ -82,52 +123,76 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 		}
 	}
 
-	// Now attempt zero-copy splice for the remaining data
-	// Check if the underlying connection and destination support SyscallConn
-	srcConnI, srcOk := s.Conn.(syscallConner)
-	if !srcOk {
-		return s.fallbackWriteTo(w, n)
-	}
-	dstConnI, dstOk := w.(syscallConner)
-	if !dstOk {
+	// If splice has failed before or should be skipped, use fallback.
+	if s.skipSplice || s.spliceFailed.Load() {
 		return s.fallbackWriteTo(w, n)
 	}
 
-	rawSrc, err := srcConnI.SyscallConn()
-	if err != nil {
-		return s.fallbackWriteTo(w, n)
+	// Try zero-copy splice.
+	if spliced, spliceErr := s.trySplice(w); spliced > 0 || spliceErr != nil {
+		if spliceErr != nil {
+			// Splice failed - disable it for future calls on this connection.
+			s.spliceFailed.Store(true)
+			if spliced == 0 {
+				// Complete failure before any transfer - safe to fallback
+				return s.fallbackWriteTo(w, n)
+			}
+			// Partial success: data has been transferred but connection may be broken.
+			// Return the error so caller (like SSH) can detect the issue.
+			return n + spliced, spliceErr
+		}
+		// Complete success
+		return n + spliced, nil
 	}
-	rawDst, err := dstConnI.SyscallConn()
+	// Splice unavailable (not supported) - use fallback
+	return s.fallbackWriteTo(w, n)
+}
+
+// trySplice attempts zero-copy splice. Returns (bytes, error) on success/partial.
+// Returns (0, nil) if unavailable - caller should fallback to io.Copy.
+func (s *ConnSniffer) trySplice(w io.Writer) (int64, error) {
+	src, ok := s.Conn.(syscallConner)
+	if !ok {
+		return 0, nil
+	}
+	dst, ok := w.(syscallConner)
+	if !ok {
+		return 0, nil
+	}
+
+	rawSrc, err := src.SyscallConn()
 	if err != nil {
-		return s.fallbackWriteTo(w, n)
+		return 0, nil
+	}
+	rawDst, err := dst.SyscallConn()
+	if err != nil {
+		return 0, nil
 	}
 
 	srcFD, ok := extractFD(rawSrc)
 	if !ok {
-		return s.fallbackWriteTo(w, n)
+		return 0, nil
 	}
 	dstFD, ok := extractFD(rawDst)
 	if !ok {
-		return s.fallbackWriteTo(w, n)
+		return 0, nil
 	}
 
-	// Perform zero-copy splice for the remaining data
-	spliced, spliceErr := spliceDirect(dstFD, srcFD)
-	if spliceErr != nil {
-		return s.fallbackWriteTo(w, n)
+	spliced, err := spliceDirect(dstFD, srcFD)
+	if err != nil && spliced == 0 {
+		// Complete failure before any transfer - safe to fallback
+		return 0, nil
 	}
-	return n + spliced, nil
+	// Return both count and error (if any). For partial success, the caller
+	// needs the error to detect connection issues (critical for SSH, etc).
+	return spliced, err
 }
 
 // spliceDirect performs zero-copy splice between two file descriptors.
-// This is the low-level implementation that directly calls syscall.Splice.
 func spliceDirect(dstFD, srcFD int) (int64, error) {
 	const (
-		// maxSpliceSize is the maximum size for a single splice(2) syscall.
-		maxSpliceSize = 1 << 30 // 1GB
-		// spliceToEOFLimit is a large limit for "transfer until EOF".
-		// 1TB is far larger than any realistic TCP connection will transfer.
-		spliceToEOFLimit = 1 << 40 // 1TB, effectively unlimited
+		maxSpliceSize    = 1 << 30 // 1GB
+		spliceToEOFLimit = 1 << 40 // 1TB
 	)
 	var total int64
 
@@ -137,16 +202,13 @@ func spliceDirect(dstFD, srcFD int) (int64, error) {
 			remaining = maxSpliceSize
 		}
 
-		// Use splice to transfer data directly in kernel space
 		n, err := syscall.Splice(srcFD, nil, dstFD, nil, int(remaining), 0)
 		if err != nil {
 			return total, err
 		}
 
 		total += int64(n)
-
-		// EOF reached
-		if n == 0 {
+		if n == 0 { // EOF
 			break
 		}
 	}
@@ -170,39 +232,63 @@ func (s *ConnSniffer) fallbackWriteTo(w io.Writer, n int64) (int64, error) {
 //
 // Data flow: remote (server) -> ConnSniffer (client)
 func (s *ConnSniffer) ReadFrom(r io.Reader) (n int64, err error) {
-	// For server -> client direction, we don't need the read buffer
-	// (which is only for sniffing client -> server data).
-	// Write directly to the underlying connection.
-
-	// Check if source supports SyscallConn for zero-copy splice
-	srcConnI, srcOk := r.(syscallConner)
-	dstConnI, dstOk := s.Conn.(syscallConner)
-	if !srcOk || !dstOk {
+	// If splice has failed before or should be skipped, use fallback.
+	if s.skipSplice || s.spliceFailed.Load() {
 		return io.Copy(s.Conn, r)
 	}
 
-	rawSrc, err := srcConnI.SyscallConn()
-	if err != nil {
-		return io.Copy(s.Conn, r)
+	// Try zero-copy splice.
+	if spliced, spliceErr := s.trySpliceFrom(r); spliced > 0 || spliceErr != nil {
+		if spliceErr != nil {
+			// Splice failed - disable it for future calls on this connection.
+			s.spliceFailed.Store(true)
+			if spliced == 0 {
+				// Complete failure before any transfer - safe to fallback
+				return io.Copy(s.Conn, r)
+			}
+			// Partial success: return error so caller can detect connection issue.
+			return spliced, spliceErr
+		}
+		// Complete success
+		return spliced, nil
 	}
-	rawDst, err := dstConnI.SyscallConn()
+	// Splice unavailable - use fallback
+	return io.Copy(s.Conn, r)
+}
+
+// trySpliceFrom attempts zero-copy splice from r to the underlying connection.
+// Same semantics as trySplice.
+func (s *ConnSniffer) trySpliceFrom(r io.Reader) (int64, error) {
+	src, ok := r.(syscallConner)
+	if !ok {
+		return 0, nil
+	}
+	dst, ok := s.Conn.(syscallConner)
+	if !ok {
+		return 0, nil
+	}
+
+	rawSrc, err := src.SyscallConn()
 	if err != nil {
-		return io.Copy(s.Conn, r)
+		return 0, nil
+	}
+	rawDst, err := dst.SyscallConn()
+	if err != nil {
+		return 0, nil
 	}
 
 	srcFD, ok := extractFD(rawSrc)
 	if !ok {
-		return io.Copy(s.Conn, r)
+		return 0, nil
 	}
 	dstFD, ok := extractFD(rawDst)
 	if !ok {
-		return io.Copy(s.Conn, r)
+		return 0, nil
 	}
 
-	// Perform zero-copy splice
-	spliced, spliceErr := spliceDirect(dstFD, srcFD)
-	if spliceErr != nil {
-		return io.Copy(s.Conn, r)
+	spliced, err := spliceDirect(dstFD, srcFD)
+	if err != nil && spliced == 0 {
+		return 0, nil
 	}
-	return spliced, nil
+	return spliced, err
 }

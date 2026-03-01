@@ -55,6 +55,7 @@ func TestUdpEndpoint_ExpiresAtOnDead(t *testing.T) {
 func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.1:12345")
+	key := UdpEndpointKey{Src: lAddr}
 
 	// Create a dead endpoint manually
 	deadEndpoint := &UdpEndpoint{
@@ -62,17 +63,17 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	}
 	deadEndpoint.RefreshTtl()
 	deadEndpoint.dead.Store(true) // Mark as dead
-	p.pool.Store(lAddr, deadEndpoint)
+	p.pool.Store(key, deadEndpoint)
 
 	// Verify it's in the pool
-	ue, ok := p.Get(lAddr)
+	ue, ok := p.Get(key)
 	require.True(t, ok)
 	require.True(t, ue.IsDead())
 
 	// Now try to get or create - should remove the dead one
 	// We use a Handler that returns error to force failure, but the important
 	// thing is that the dead endpoint should be removed from the pool
-	_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
+	_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
 		Handler:    func(data []byte, from netip.AddrPort) error { return nil },
 		NatTimeout: DefaultNatTimeout,
 		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
@@ -86,7 +87,7 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	require.Contains(t, err.Error(), "simulated dial error")
 
 	// But the dead endpoint should be removed from the pool
-	ue, ok = p.Get(lAddr)
+	ue, ok = p.Get(key)
 	require.False(t, ok, "dead endpoint should be removed from pool")
 	require.Nil(t, ue)
 }
@@ -96,6 +97,7 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.1:12346")
+	key := UdpEndpointKey{Src: lAddr}
 
 	// Create a dead endpoint
 	deadEndpoint := &UdpEndpoint{
@@ -103,7 +105,7 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 	}
 	deadEndpoint.dead.Store(true)
 	deadEndpoint.expiresAtNano.Store(1) // Past time
-	p.pool.Store(lAddr, deadEndpoint)
+	p.pool.Store(key, deadEndpoint)
 
 	// Even if someone calls RefreshTtl on it (which shouldn't happen, but let's be safe)
 	deadEndpoint.RefreshTtl()
@@ -112,8 +114,8 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 	require.True(t, deadEndpoint.IsDead())
 
 	// GetOrCreate should still reject it
-	_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
-		Handler:    func(data []byte, from netip.AddrPort) error { return nil },
+	_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(data [] byte, from netip.AddrPort) error { return nil },
 		NatTimeout: DefaultNatTimeout,
 		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			return nil, fmt.Errorf("simulated dial error")
@@ -122,7 +124,7 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 	require.Error(t, err)
 
 	// Dead endpoint should be removed
-	ue, ok := p.Get(lAddr)
+	ue, ok := p.Get(key)
 	require.False(t, ok)
 	require.Nil(t, ue)
 }
@@ -132,6 +134,7 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.1:12347")
+	key := UdpEndpointKey{Src: lAddr}
 
 	// Create a dead endpoint
 	deadEndpoint := &UdpEndpoint{
@@ -139,7 +142,7 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 	}
 	deadEndpoint.RefreshTtl()
 	deadEndpoint.dead.Store(true)
-	p.pool.Store(lAddr, deadEndpoint)
+	p.pool.Store(key, deadEndpoint)
 
 	var errorCount atomic.Int32
 	var wg sync.WaitGroup
@@ -149,7 +152,7 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 		wg.Go(func() {
 			// This should fail to create a valid endpoint but should
 			// properly handle the dead endpoint
-			_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{
+			_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
 				Handler:    func(data []byte, from netip.AddrPort) error { return nil },
 				NatTimeout: DefaultNatTimeout,
 				GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
@@ -169,7 +172,7 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 	require.Equal(t, int32(10), errorCount.Load())
 
 	// The dead endpoint should eventually be removed
-	ue, ok := p.Get(lAddr)
+	ue, ok := p.Get(key)
 	require.False(t, ok)
 	require.Nil(t, ue)
 }

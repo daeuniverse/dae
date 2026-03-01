@@ -48,20 +48,21 @@ func TestPacketSnifferPool_CreateMuMap_NoLeakUnderConcurrency(t *testing.T) {
 func TestUdpEndpointPool_CreateMuMap_NoLeakOnConcurrentError(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.2:54321")
+	key := UdpEndpointKey{Src: lAddr}
 
 	const workers = 64
 	var wg sync.WaitGroup
 
 	for range workers {
 		wg.Go(func() {
-			_, _, err := p.GetOrCreate(lAddr, &UdpEndpointOptions{})
+			_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{})
 			require.Error(t, err)
 		})
 	}
 
 	wg.Wait()
 
-	ue, ok := p.Get(lAddr)
+	ue, ok := p.Get(key)
 	require.False(t, ok)
 	require.Nil(t, ue)
 

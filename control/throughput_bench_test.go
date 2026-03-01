@@ -283,7 +283,8 @@ func BenchmarkConnectionThroughput_UDPEndpointPool(b *testing.B) {
 				netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i >> 16), byte(i)}),
 				uint16(10000+i%55000),
 			)
-			_, _, _ = p.GetOrCreate(lAddr, &UdpEndpointOptions{})
+			key := UdpEndpointKey{Src: lAddr}
+			_, _, _ = p.GetOrCreate(key, &UdpEndpointOptions{})
 			i++
 		}
 	})
