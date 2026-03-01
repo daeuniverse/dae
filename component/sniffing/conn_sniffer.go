@@ -26,51 +26,14 @@ type ConnSniffer struct {
 	net.Conn
 	*Sniffer
 	// spliceFailed tracks whether splice has failed. Once failed, use io.Copy.
+	// This provides automatic fallback without needing port-based detection.
 	spliceFailed atomic.Bool
-	// skipSplice indicates splice should be skipped (incompatible protocols).
-	skipSplice bool
-}
-
-// spliceIncompatiblePorts contains ports for protocols incompatible with splice(2).
-// These protocols use PTY/pipes, command/response mode, or character-by-character I/O.
-var spliceIncompatiblePorts = map[uint16]bool{
-	// Terminal
-	22: true, 23: true, 2222: true, 22222: true,
-	// Mail
-	25: true, 110: true, 143: true, 465: true, 587: true, 993: true, 995: true,
-	// File transfer
-	21: true,
-	// Database
-	3306: true, 5432: true, 6379: true, 27017: true,
-	// Other
-	119: true, 194: true, 6667: true,
-}
-
-// shouldSkipSplice determines if splice should be skipped for this connection.
-func shouldSkipSplice(conn net.Conn) bool {
-	addr := conn.RemoteAddr()
-	if addr == nil {
-		return false
-	}
-	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
-		port := uint16(tcpAddr.Port)
-		// Check incompatible list
-		if spliceIncompatiblePorts[port] {
-			return true
-		}
-		// Known compatible ports will try splice
-		// Unknown ports will also try splice (optimistic)
-		// Failure will be handled by spliceFailed flag
-		return false
-	}
-	return false
 }
 
 func NewConnSniffer(conn net.Conn, timeout time.Duration) *ConnSniffer {
 	s := &ConnSniffer{
-		Conn:       conn,
-		Sniffer:    NewStreamSniffer(conn, timeout),
-		skipSplice: shouldSkipSplice(conn),
+		Conn:    conn,
+		Sniffer: NewStreamSniffer(conn, timeout),
 	}
 	return s
 }
@@ -123,8 +86,8 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 		}
 	}
 
-	// If splice has failed before or should be skipped, use fallback.
-	if s.skipSplice || s.spliceFailed.Load() {
+	// If splice has failed before, use fallback.
+	if s.spliceFailed.Load() {
 		return s.fallbackWriteTo(w, n)
 	}
 
@@ -232,8 +195,8 @@ func (s *ConnSniffer) fallbackWriteTo(w io.Writer, n int64) (int64, error) {
 //
 // Data flow: remote (server) -> ConnSniffer (client)
 func (s *ConnSniffer) ReadFrom(r io.Reader) (n int64, err error) {
-	// If splice has failed before or should be skipped, use fallback.
-	if s.skipSplice || s.spliceFailed.Load() {
+	// If splice has failed before, use fallback.
+	if s.spliceFailed.Load() {
 		return io.Copy(s.Conn, r)
 	}
 
