@@ -31,10 +31,12 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 	// This will update the cache with fresh data
 	_, err := c.resolveForSingleflight(ctx, dnsMessage, req)
 	if err != nil {
-		c.log.WithFields(logrus.Fields{
-			"cacheKey": cacheKey,
-			"error":    err,
-		}).Debugf("background refresh failed")
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"cacheKey": cacheKey,
+				"error":    err,
+			}).Debugf("background refresh failed")
+		}
 		return
 	}
 
@@ -43,7 +45,9 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 		cache.MarkRefreshed()
 	}
 
-	c.log.WithFields(logrus.Fields{
-		"cacheKey": cacheKey,
-	}).Debugf("background refresh completed")
+	if c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(logrus.Fields{
+			"cacheKey": cacheKey,
+		}).Debugf("background refresh completed")
+	}
 }

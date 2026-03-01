@@ -333,8 +333,7 @@ struct udp_conn_state {
 	struct bpf_timer timer;
 };
 
-// Use LRU_HASH to prevent memory leaks from timer failures
-// Use LRU_HASH to prevent memory leaks from timer failures
+// Use LRU_HASH to prevent memory leaks from timer failures.
 // Short-lived UDP traffic skips conntrack entirely (see is_short_lived_udp_traffic checks)
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -581,154 +580,6 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		return 0;
 	}
 	// bpf_printk("unknown link proto: %u", bpf_ntohl(ethh->h_proto));
-	return 1;
-}
-
-/*
- * Optimized version: parse_transport_fast
- *
- * Uses direct packet access instead of bpf_skb_load_bytes() to avoid
- * memory copy overhead. Safe to use when:
- * - skb is linear (no fragments)
- * - Called from TC ingress/egress hooks where data is available
- *
- * Performance: Eliminates ~200-500ns per call from bpf_skb_load_bytes overhead
- */
-__attribute__((unused))
-static __always_inline int
-parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
-		     struct ethhdr *out_ethh, struct iphdr *out_iph,
-		     struct ipv6hdr *out_ipv6h, struct icmp6hdr *out_icmp6h,
-		     struct tcphdr *out_tcph, struct udphdr *out_udph,
-		     __u8 *out_ihl, __u8 *out_l4proto)
-{
-	void *data = (void *)(long)skb->data;
-	void *data_end = (void *)(long)skb->data_end;
-	__u32 offset = 0;
-
-	*out_ihl = 0;
-	*out_l4proto = 0;
-	__builtin_memset(out_iph, 0, sizeof(*out_iph));
-	__builtin_memset(out_ipv6h, 0, sizeof(*out_ipv6h));
-	__builtin_memset(out_icmp6h, 0, sizeof(*out_icmp6h));
-	__builtin_memset(out_tcph, 0, sizeof(*out_tcph));
-	__builtin_memset(out_udph, 0, sizeof(*out_udph));
-
-	// Parse Ethernet header (if L2 header present)
-	if (link_h_len == ETH_HLEN) {
-		struct ethhdr *eth = data;
-
-		if ((void *)(eth + 1) > data_end)
-			return -EFAULT;
-		*out_ethh = *eth;
-		offset = ETH_HLEN;
-	} else {
-		__builtin_memset(out_ethh, 0, sizeof(*out_ethh));
-		out_ethh->h_proto = skb->protocol;
-	}
-
-	__be16 proto = out_ethh->h_proto;
-
-	if (proto == bpf_htons(ETH_P_IP)) {
-		// IPv4 path
-		struct iphdr *ip = data + offset;
-
-		if ((void *)(ip + 1) > data_end)
-			return -EFAULT;
-
-		*out_iph = *ip;
-		*out_ihl = ip->ihl;
-		*out_l4proto = ip->protocol;
-
-		__u32 l4_off = offset + (ip->ihl << 2);
-
-		switch (ip->protocol) {
-		case IPPROTO_TCP: {
-			struct tcphdr *tcp = data + l4_off;
-
-			if ((void *)(tcp + 1) > data_end)
-				return -EFAULT;
-			*out_tcph = *tcp;
-			break;
-		}
-		case IPPROTO_UDP: {
-			struct udphdr *udp = data + l4_off;
-
-			if ((void *)(udp + 1) > data_end)
-				return -EFAULT;
-			*out_udph = *udp;
-			break;
-		}
-		default:
-			return 1; // Unsupported protocol
-		}
-		return 0;
-
-	} else if (proto == bpf_htons(ETH_P_IPV6)) {
-		// IPv6 path
-		struct ipv6hdr *ip6 = data + offset;
-
-		if ((void *)(ip6 + 1) > data_end)
-			return -EFAULT;
-
-		*out_ipv6h = *ip6;
-		*out_ihl = sizeof(*ip6) >> 2;
-		*out_l4proto = ip6->nexthdr;
-
-		offset += sizeof(*ip6);
-
-		// Handle IPv6 extension headers using existing helper
-		__u8 nexthdr = ip6->nexthdr;
-		struct ipv6_ext_ctx ext_ctx = {
-			.skb = skb,
-			.offset = &offset,
-			.nexthdr = &nexthdr,
-			.result = 0
-		};
-
-		int ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb, &ext_ctx, 0);
-
-		if (ret < 0)
-			return ret;
-		if (ext_ctx.result)
-			return ext_ctx.result;
-
-		if (is_extension_header(nexthdr))
-			return 1;
-
-		*out_l4proto = nexthdr;
-
-		switch (nexthdr) {
-		case IPPROTO_TCP: {
-			struct tcphdr *tcp = data + offset;
-
-			if ((void *)(tcp + 1) > data_end)
-				return -EFAULT;
-			*out_tcph = *tcp;
-			break;
-		}
-		case IPPROTO_UDP: {
-			struct udphdr *udp = data + offset;
-
-			if ((void *)(udp + 1) > data_end)
-				return -EFAULT;
-			*out_udph = *udp;
-			break;
-		}
-		case IPPROTO_ICMPV6: {
-			struct icmp6hdr *icmp6 = data + offset;
-
-			if ((void *)(icmp6 + 1) > data_end)
-				return -EFAULT;
-			*out_icmp6h = *icmp6;
-			break;
-		}
-		default:
-			return 1;
-		}
-		return 0;
-	}
-
 	return 1;
 }
 
@@ -1099,8 +950,10 @@ static __always_inline __s64 route(const struct route_params *params)
 		return ret;
 	if (ctx.result >= 0)
 		return ctx.result;
+#ifdef __DEBUG_ROUTING
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
+#endif
 	return -EPERM;
 #undef _l4proto_type
 #undef _ipversion_type
@@ -1690,25 +1543,6 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	if (p)
 		*p = NULL;
 	if ((skb->mark & 0x100) == 0x100) {
-		bpf_printk("No pid_pname found. But it should not happen");
-		/*
-     *		if (l4proto == IPPROTO_TCP) {
-     *if (tcph.syn && !tcph.ack) {
-     *	bpf_printk("No pid_pname found. But it should not happen: local:%u "
-     *			 "(%u)[%llu]",
-     *			 bpf_ntohs(sport), l4proto, cookie);
-     *} else {
-     *	bpf_printk("No pid_pname found. But it should not happen: (Old "
-     *			 "Connection): local:%u "
-     *			 "(%u)[%llu]",
-     *			 bpf_ntohs(sport), l4proto, cookie);
-     *}
-     *		} else {
-     *bpf_printk("No pid_pname found. But it should not happen: local:%u "
-     *		 "(%u)[%llu]",
-     *		 bpf_ntohs(sport), l4proto, cookie);
-     *		}
-     */
 		return true;
 	}
 	return false;
@@ -1797,9 +1631,6 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
 		return TC_ACT_OK;
-	// if ((skb->mark & 0x80) == 0x80) {
-	//	 return TC_ACT_OK;
-	// }
 
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1838,7 +1669,6 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 
 		if (unlikely(tcp_state_syn)) {
 			// New TCP connection.
-			// bpf_printk("[%X]New Connection", bpf_ntohl(tcph.seq));
 			struct route_params params;
 
 			__builtin_memset(&params, 0, sizeof(params));
@@ -1891,7 +1721,6 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				   bpf_ntohs(tuples.five.dport));
 #endif
 		} else {
-			// bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
 			// The TCP connection exists. Apply cached routing decision.
 			int ret = handle_non_syn_tcp(skb, &tuples.five,
 						     &outbound, &mark, &must);
@@ -2271,7 +2100,6 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie,
 	// Update map.
 	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, val, BPF_ANY);
 	if (unlikely(ret)) {
-		// bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
 		return ret;
 	}
 

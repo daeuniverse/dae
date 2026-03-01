@@ -19,6 +19,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	IdxDnsTcp4 = 0
+	IdxDnsTcp6 = 1
+	IdxDnsUdp4 = 2
+	IdxDnsUdp6 = 3
+	IdxTcp4    = 4
+	IdxTcp6    = 5
+)
+
 var (
 	UnexpectedFieldErr  = fmt.Errorf("unexpected field")
 	InvalidParameterErr = fmt.Errorf("invalid parameters")

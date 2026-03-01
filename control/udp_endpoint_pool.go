@@ -206,6 +206,53 @@ func (p *UdpEndpointPool) Get(lAddr netip.AddrPort) (udpEndpoint *UdpEndpoint, o
 	return _ue.(*UdpEndpoint), ok
 }
 
+// createEndpointLocked dials and registers a new UdpEndpoint under the caller's shard lock.
+// The caller MUST hold the shard mutex for lAddr before calling this function.
+func (p *UdpEndpointPool) createEndpointLocked(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (*UdpEndpoint, error) {
+	if createOption == nil {
+		createOption = &UdpEndpointOptions{}
+	}
+	if createOption.NatTimeout == 0 {
+		createOption.NatTimeout = DefaultNatTimeout
+	}
+	if createOption.Handler == nil {
+		return nil, fmt.Errorf("createOption.Handler cannot be nil")
+	}
+
+	// Use context.Background() as base for UDP endpoint creation.
+	// The timeout context ensures the dial operation doesn't hang indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+	defer cancel()
+
+	dialOption, err := createOption.GetDialOption(ctx)
+	if err != nil {
+		return nil, err
+	}
+	udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := udpConn.(netproxy.PacketConn); !ok {
+		return nil, fmt.Errorf("protocol does not support udp")
+	}
+	ue := &UdpEndpoint{
+		conn:          udpConn.(netproxy.PacketConn),
+		handler:       createOption.Handler,
+		NatTimeout:    createOption.NatTimeout,
+		Dialer:        dialOption.Dialer,
+		Outbound:      dialOption.Outbound,
+		SniffedDomain: dialOption.SniffedDomain,
+		DialTarget:    dialOption.Target,
+		lAddr:         lAddr,
+		log:           createOption.Log,
+	}
+	ue.RefreshTtl()
+	p.pool.Store(lAddr, ue)
+	// Receive UDP messages.
+	go ue.start()
+	return ue, nil
+}
+
 func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
 	_ue, ok := p.pool.Load(lAddr)
 	if !ok {
@@ -216,7 +263,6 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 		_ue, ok = p.pool.Load(lAddr)
 		if ok {
 			ue := _ue.(*UdpEndpoint)
-
 			if ue.IsDead() {
 				// Use CompareAndDelete for atomic CAS (best practice)
 				p.pool.CompareAndDelete(lAddr, ue)
@@ -225,63 +271,40 @@ func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEnd
 				return ue, false, nil
 			}
 		}
-		// Create an UdpEndpoint.
-		if createOption == nil {
-			createOption = &UdpEndpointOptions{}
+		// Create a new endpoint under the shard lock.
+		newUe, createErr := p.createEndpointLocked(lAddr, createOption)
+		if createErr != nil {
+			return nil, true, createErr
 		}
-		if createOption.NatTimeout == 0 {
-			createOption.NatTimeout = DefaultNatTimeout
-		}
-		if createOption.Handler == nil {
-			return nil, true, fmt.Errorf("createOption.Handler cannot be nil")
-		}
-
-		// Use context.Background() as base for UDP endpoint creation.
-		// The timeout context ensures the dial operation doesn't hang indefinitely.
-		ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
-		defer cancel()
-
-		dialOption, err := createOption.GetDialOption(ctx)
-		if err != nil {
-			cancel()
-			return nil, false, err
-		}
-		udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
-		if err != nil {
-			return nil, true, err
-		}
-		if _, ok = udpConn.(netproxy.PacketConn); !ok {
-			return nil, true, fmt.Errorf("protocol does not support udp")
-		}
-		ue := &UdpEndpoint{
-			conn:          udpConn.(netproxy.PacketConn),
-			handler:       createOption.Handler,
-			NatTimeout:    createOption.NatTimeout,
-			Dialer:        dialOption.Dialer,
-			Outbound:      dialOption.Outbound,
-			SniffedDomain: dialOption.SniffedDomain,
-			DialTarget:    dialOption.Target,
-			lAddr:         lAddr,
-			log:           createOption.Log,
-		}
-		ue.RefreshTtl()
-		_ue = ue
-		p.pool.Store(lAddr, ue)
-		// Receive UDP messages.
-		go ue.start()
-		isNew = true
+		return newUe, true, nil
 	}
 	ue := _ue.(*UdpEndpoint)
 
 	if ue.IsDead() {
-		// Need to acquire lock before modifying the pool
+		// Fast path returned a dead endpoint. Acquire the shard lock and handle
+		// it non-recursively — equivalent to what a recursive GetOrCreate would do,
+		// but without stack overhead or unbounded recursion risk.
 		mu := p.createMuFor(lAddr)
 		mu.Lock()
-		// Use CompareAndDelete for atomic CAS - only delete if still the same dead endpoint
+		defer mu.Unlock()
+		// CAS-delete the dead entry (safe: no-op if another goroutine already replaced it).
 		p.pool.CompareAndDelete(lAddr, ue)
-		mu.Unlock()
-		// Recursively call GetOrCreate to create a new endpoint
-		return p.GetOrCreate(lAddr, createOption)
+		// Double-check: another goroutine may have already placed a live replacement.
+		if v, loaded := p.pool.Load(lAddr); loaded {
+			fresh := v.(*UdpEndpoint)
+			if !fresh.IsDead() {
+				fresh.RefreshTtl()
+				return fresh, false, nil
+			}
+			// Still dead — remove it too and fall through to create.
+			p.pool.CompareAndDelete(lAddr, fresh)
+		}
+		// Create a fresh endpoint under the lock.
+		newUe, createErr := p.createEndpointLocked(lAddr, createOption)
+		if createErr != nil {
+			return nil, true, createErr
+		}
+		return newUe, true, nil
 	}
 	ue.RefreshTtl()
 	return _ue.(*UdpEndpoint), isNew, nil

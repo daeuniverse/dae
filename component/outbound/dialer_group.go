@@ -41,12 +41,6 @@ func NewDialerGroup(
 	aliveChangeCallback func(alive bool, networkType *dialer.NetworkType, isInit bool),
 ) *DialerGroup {
 	log := option.Log
-	var aliveDnsTcp4DialerSet *dialer.AliveDialerSet
-	var aliveDnsTcp6DialerSet *dialer.AliveDialerSet
-	var aliveTcp4DialerSet *dialer.AliveDialerSet
-	var aliveTcp6DialerSet *dialer.AliveDialerSet
-	var aliveDnsUdp4DialerSet *dialer.AliveDialerSet
-	var aliveDnsUdp6DialerSet *dialer.AliveDialerSet
 
 	var needAliveState bool
 
@@ -66,74 +60,54 @@ func NewDialerGroup(
 		log.Panicf("Unexpected dialer selection policy: %v", p.Policy)
 	}
 
-	networkType := &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_TCP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     false,
+	// networkTypeSpecs defines the 4 standard probe network types in the order
+	// expected by aliveDialerSets (indices 0-3 map to DNS-TCP4/6, DNS-UDP4/6;
+	// indices 4-5 map to TCP4/6 which are appended below).
+	type networkTypeSpec struct {
+		l4proto   consts.L4ProtoStr
+		ipVersion consts.IpVersionStr
+		isDns     bool
 	}
-	if needAliveState {
-		aliveTcp4DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
-			func(networkType *dialer.NetworkType) func(alive bool) {
-				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
-			}(networkType), true)
+	specs := [4]networkTypeSpec{
+		// aliveDialerSets[IdxDnsTcp4..IdxDnsTcp6]: DNS-TCP sets (for CheckDnsTcp path – filled below).
+		// aliveDialerSets[IdxDnsUdp4..IdxDnsUdp6]: DNS-UDP
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_4, true},  // [2] aliveDnsUdp4
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_6, true},  // [3] aliveDnsUdp6
+		// aliveDialerSets[IdxTcp4..IdxTcp6]: plain TCP
+		{consts.L4ProtoStr_TCP, consts.IpVersionStr_4, false}, // [4] aliveTcp4
+		{consts.L4ProtoStr_TCP, consts.IpVersionStr_6, false}, // [5] aliveTcp6
 	}
-	aliveChangeCallback(true, networkType, true)
 
-	networkType = &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_TCP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
-	}
-	if needAliveState {
-		aliveTcp6DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
-			func(networkType *dialer.NetworkType) func(alive bool) {
-				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
-			}(networkType), true)
-	}
-	aliveChangeCallback(true, networkType, true)
+	// Indices within aliveDialerSets that correspond to specs[0..3].
+	setIdx := [4]int{dialer.IdxDnsUdp4, dialer.IdxDnsUdp6, dialer.IdxTcp4, dialer.IdxTcp6}
 
-	networkType = &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     true,
-	}
-	if needAliveState {
-		aliveDnsUdp4DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
-			func(networkType *dialer.NetworkType) func(alive bool) {
-				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
-			}(networkType), true)
-	}
-	aliveChangeCallback(true, networkType, true)
+	var aliveDialerSets [6]*dialer.AliveDialerSet
 
-	networkType = &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     true,
+	for i, spec := range specs {
+		nt := &dialer.NetworkType{
+			L4Proto:   spec.l4proto,
+			IpVersion: spec.ipVersion,
+			IsDns:     spec.isDns,
+		}
+		if needAliveState {
+			aliveDialerSets[setIdx[i]] = dialer.NewAliveDialerSet(
+				log, name, nt, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
+				func(networkType *dialer.NetworkType) func(alive bool) {
+					// Use the trick to copy a pointer of *dialer.NetworkType.
+					return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
+				}(nt), true)
+		}
+		aliveChangeCallback(true, nt, true)
 	}
-	if needAliveState {
-		aliveDnsUdp6DialerSet = dialer.NewAliveDialerSet(
-			log, name, networkType, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
-			func(networkType *dialer.NetworkType) func(alive bool) {
-				// Use the trick to copy a pointer of *dialer.NetworkType.
-				return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
-			}(networkType), true)
-	}
-	aliveChangeCallback(true, networkType, true)
 
 	if option.CheckDnsTcp && needAliveState {
-		aliveDnsTcp4DialerSet = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
+		aliveDialerSets[dialer.IdxDnsTcp4] = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     true,
 		}, option.CheckTolerance, p.Policy, dialers, dialersAnnotations, func(alive bool) {}, true)
 
-		aliveDnsTcp6DialerSet = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
+		aliveDialerSets[dialer.IdxDnsTcp6] = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     true,
@@ -141,28 +115,19 @@ func NewDialerGroup(
 	}
 
 	for _, d := range dialers {
-		d.RegisterAliveDialerSet(aliveTcp4DialerSet)
-		d.RegisterAliveDialerSet(aliveTcp6DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsTcp4DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsTcp6DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsUdp4DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsUdp6DialerSet)
+		for _, a := range aliveDialerSets {
+			d.RegisterAliveDialerSet(a)
+		}
 	}
 
 	return &DialerGroup{
-		log:     log,
-		Name:    name,
-		Dialers: dialers,
-		aliveDialerSets: [6]*dialer.AliveDialerSet{
-			aliveDnsTcp4DialerSet,
-			aliveDnsTcp6DialerSet,
-			aliveDnsUdp4DialerSet,
-			aliveDnsUdp6DialerSet,
-			aliveTcp4DialerSet,
-			aliveTcp6DialerSet,
-		},
+		log:             log,
+		Name:            name,
+		Dialers:         dialers,
+		aliveDialerSets: aliveDialerSets,
 		selectionPolicy: &p,
 	}
+
 }
 
 func (g *DialerGroup) Close() error {
@@ -188,16 +153,16 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[0]
+				return d.aliveDialerSets[dialer.IdxDnsTcp4]
 			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[1]
+				return d.aliveDialerSets[dialer.IdxDnsTcp6]
 			}
 		case consts.L4ProtoStr_UDP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[2]
+				return d.aliveDialerSets[dialer.IdxDnsUdp4]
 			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[3]
+				return d.aliveDialerSets[dialer.IdxDnsUdp6]
 			}
 		}
 	} else {
@@ -205,17 +170,17 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[4]
+				return d.aliveDialerSets[dialer.IdxTcp4]
 			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[5]
+				return d.aliveDialerSets[dialer.IdxTcp6]
 			}
 		case consts.L4ProtoStr_UDP:
 			// UDP share the DNS check result.
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[2]
+				return d.aliveDialerSets[dialer.IdxDnsUdp4]
 			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[3]
+				return d.aliveDialerSets[dialer.IdxDnsUdp6]
 			}
 		}
 	}

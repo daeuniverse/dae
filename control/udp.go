@@ -181,7 +181,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
-	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
+	// Note: valid DNS packets on port 53 are already handled and returned in the
+	// fast path above (L114-138). Any port-53 packet reaching this point has
+	// already failed DNS parsing once, so sniffDns=false avoids a redundant
+	// dnsmessage.Unpack() call that is guaranteed to return nil.
+	dnsMessage, natTimeout := ChooseNatTimeout(data, false)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil
 	if !isDns && !skipSniffing && !ueExists {
@@ -227,7 +231,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 						for _, d := range toRehandle {
 							dCopy := pool.Get(len(d))
 							copy(dCopy, d)
-							go c.handlePkt(lConn, dCopy, src, pktDst, realDst, routingResult, true)
+							go func(data pool.PB) {
+								defer data.Put()
+								c.handlePkt(lConn, data, src, pktDst, realDst, routingResult, true)
+							}(dCopy)
 						}
 					}
 				}()
@@ -421,7 +428,7 @@ getNew:
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).
 	if (isNew && c.log.IsLevelEnabled(logrus.InfoLevel)) || c.log.IsLevelEnabled(logrus.DebugLevel) {
-		fields := logrus.Fields{
+		entry := c.log.WithFields(logrus.Fields{
 			"network":  networkType.StringWithoutDns(),
 			"outbound": ue.Outbound.Name,
 			"policy":   ue.Outbound.GetSelectionPolicy(),
@@ -432,10 +439,11 @@ getNew:
 			"dscp":     routingResult.Dscp,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
-		}
-		logger := c.log.WithFields(fields).Infof
+		})
+		// Build entry once; select level without a second WithFields allocation.
+		logger := entry.Infof
 		if !isNew && c.log.IsLevelEnabled(logrus.DebugLevel) {
-			logger = c.log.WithFields(fields).Debugf
+			logger = entry.Debugf
 		}
 		logger("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 	}

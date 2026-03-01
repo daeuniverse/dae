@@ -242,7 +242,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				var oldDialerName string
 				if bakOldBestDialer == nil {
 					// Not alive -> alive
-					defer a.aliveChangeCallback(true)
+					a.mu.Unlock()
+					a.aliveChangeCallback(true)
+					a.mu.Lock()
 					re = ""
 					oldDialerName = "<nil>"
 				} else {
@@ -259,7 +261,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				a.printLatencies()
 			} else {
 				// Alive -> not alive
-				defer a.aliveChangeCallback(false)
+				a.mu.Unlock()
+				a.aliveChangeCallback(false)
+				a.mu.Lock()
 				a.log.WithFields(logrus.Fields{
 					"group":   a.dialerGroupName,
 					"network": a.CheckTyp.String(),

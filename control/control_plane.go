@@ -504,7 +504,7 @@ func NewControlPlane(
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
 			if err = core.BatchRemoveDomainRouting(cache); err != nil {
-				return fmt.Errorf("BatchUpdateDomainRouting: %w", err)
+				return fmt.Errorf("BatchRemoveDomainRouting: %w", err)
 			}
 			return nil
 		},

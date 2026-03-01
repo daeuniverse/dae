@@ -95,19 +95,11 @@ type RouteDialParam struct {
 }
 
 func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
-	routingResult := &bpfRoutingResult{
-		Mark:     p.Mark,
-		Must:     0,
-		Mac:      p.Mac,
-		Outbound: uint8(p.Outbound),
-		Pname:    p.ProcessName,
-		Pid:      0,
-		Dscp:     p.Dscp,
-	}
-	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
+	outboundIndex := p.Outbound
 	domain := p.Domain
 	src := p.Src
 	dst := p.Dest
+	mark := p.Mark
 
 	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, dst, domain)
 	if shouldReroute {
@@ -117,10 +109,18 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneRouting:
-		if outboundIndex, routingResult.Mark, _, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
+		routingResult := &bpfRoutingResult{
+			Mark:     mark,
+			Mac:      p.Mac,
+			Outbound: uint8(p.Outbound),
+			Pname:    p.ProcessName,
+			Dscp:     p.Dscp,
+		}
+		var newMark uint32
+		if outboundIndex, newMark, _, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
 			return nil, err
 		}
-		routingResult.Outbound = uint8(outboundIndex)
+		mark = newMark
 
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.Tracef("outbound: %v => %v",
@@ -132,8 +132,8 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 		dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, dst, domain)
 	default:
 	}
-	if routingResult.Mark == 0 {
-		routingResult.Mark = c.soMarkFromDae
+	if mark == 0 {
+		mark = c.soMarkFromDae
 	}
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if int(outboundIndex) >= len(c.outbounds) {
@@ -162,10 +162,9 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 			"dialer":   d.Property().Name,
 			"sniffed":  domain,
 			"ip":       RefineAddrPortToShow(dst),
-			"pid":      routingResult.Pid,
-			"dscp":     routingResult.Dscp,
-			"pname":    ProcessName2String(routingResult.Pname[:]),
-			"mac":      Mac2String(routingResult.Mac[:]),
+			"dscp":     p.Dscp,
+			"pname":    ProcessName2String(p.ProcessName[:]),
+			"mac":      Mac2String(p.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
 	// Use the provided context with timeout for dial operation.
@@ -173,7 +172,7 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 	// not the ControlPlane's lifecycle context (c.ctx).
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
-	return d.DialContext(dialCtx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	return d.DialContext(dialCtx, common.MagicNetwork("tcp", mark, c.mptcp), dialTarget)
 }
 
 type WriteCloser interface {

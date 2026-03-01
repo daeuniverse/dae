@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -357,10 +358,10 @@ func isAddressFamilyError(err error) bool {
 	}
 	// Check error message for known patterns
 	errMsg := err.Error()
-	return contains(errMsg, "non-IPv4") ||
-		contains(errMsg, "non-IPv6") ||
-		contains(errMsg, "address family") ||
-		contains(errMsg, "EAFNOSUPPORT")
+	return strings.Contains(errMsg, "non-IPv4") ||
+		strings.Contains(errMsg, "non-IPv6") ||
+		strings.Contains(errMsg, "address family") ||
+		strings.Contains(errMsg, "EAFNOSUPPORT")
 }
 
 // BenchmarkConvertAddrPortForTargetInSendPktContext benchmarks the conversion

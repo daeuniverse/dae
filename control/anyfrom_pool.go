@@ -282,24 +282,17 @@ func (p *AnyfromPool) startJanitor() {
 				nowNano := now.UnixNano()
 				for i := range anyfromPoolShardCount {
 					shard := &p.shards[i]
-					type expiredItem struct {
-						key netip.AddrPort
-						af  *Anyfrom
-					}
-					var expired []expiredItem
-
+					// UDPConn.Close() is a non-blocking O(1) syscall; safe to call
+					// under the shard lock — eliminates the temporary expiredItem
+					// slice allocation that occurred every janitor tick.
 					shard.mu.Lock()
 					for key, af := range shard.pool {
 						if af.IsExpired(nowNano) {
 							delete(shard.pool, key)
-							expired = append(expired, expiredItem{key: key, af: af})
+							_ = af.Close()
 						}
 					}
 					shard.mu.Unlock()
-
-					for _, item := range expired {
-						_ = item.af.Close()
-					}
 				}
 			}
 		}()

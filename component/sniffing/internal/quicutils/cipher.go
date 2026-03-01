@@ -114,7 +114,7 @@ func (k *Keys) HeaderProtection_(sample []byte, longHeader bool, firstByte *byte
 	return packetNumber, nil
 }
 
-func (k *Keys) PayloadDecrypt(ciphertext []byte, packetNumber []byte, header []byte) (plaintext []byte, err error) {
+func (k *Keys) PayloadDecrypt(ciphertext []byte, packetNumber []byte, header []byte) (plaintext pool.PB, err error) {
 	// https://datatracker.ietf.org/doc/html/rfc9001#name-initial-secrets
 
 	aead, err := k.newAead(k.key)
@@ -126,15 +126,16 @@ func (k *Keys) PayloadDecrypt(ciphertext []byte, packetNumber []byte, header []b
 	for i := range packetNumber {
 		k.iv[len(k.iv)-len(packetNumber)+i] ^= packetNumber[i]
 	}
-	plaintext = make([]byte, len(ciphertext)-aead.Overhead())
+	plaintext = pool.Get(len(ciphertext) - aead.Overhead())
 	plaintext, err = aead.Open(plaintext[:0], k.iv, ciphertext, header)
 	if err != nil {
-		// Do nothing.
+		plaintext.Put()
+		return nil, err
 	}
 	return plaintext, nil
 }
 
-func DecryptQuic_(header []byte, blockEnd int, destConnId []byte) (plaintext []byte, err error) {
+func DecryptQuic_(header []byte, blockEnd int, destConnId []byte) (plaintext pool.PB, err error) {
 	_version := binary.BigEndian.Uint32(header[1:])
 	version, err := ParseVersion(_version)
 	if err != nil {

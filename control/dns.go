@@ -500,53 +500,74 @@ func (p *connPool) close() error {
 	return nil
 }
 
+// lazyConnPool provides a thread-safe lazy-initialization wrapper around *connPool.
+// It uses a RLock fast-path (pool already created) and a Lock slow-path (first creation),
+// replacing the duplicated double-check pattern in DoTLS and DoTCP.
+type lazyConnPool struct {
+	pool *connPool
+	mu   sync.RWMutex
+}
+
+// getOrInit returns the existing pool if already initialised, or calls init() under
+// a write-lock (with double-check) to create it exactly once.
+func (l *lazyConnPool) getOrInit(init func() *connPool) *connPool {
+	l.mu.RLock()
+	if l.pool != nil {
+		defer l.mu.RUnlock()
+		return l.pool
+	}
+	l.mu.RUnlock()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.pool == nil {
+		l.pool = init()
+	}
+	return l.pool
+}
+
+// closePool closes and nils the underlying pool under the write-lock.
+func (l *lazyConnPool) closePool() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.pool != nil {
+		err := l.pool.close()
+		l.pool = nil
+		return err
+	}
+	return nil
+}
+
 type DoTLS struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
 
-	pool *connPool
-	mu   sync.RWMutex
+	lazyConnPool // embeds getOrInit / closePool
 }
 
 func (d *DoTLS) getPool() *connPool {
-	d.mu.RLock()
-	if d.pool != nil {
-		defer d.mu.RUnlock()
-		return d.pool
-	}
-	d.mu.RUnlock()
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.pool != nil {
-		return d.pool
-	}
-
-	// Create connection pool with 4 connections (Go best practice)
-	d.pool = newConnPool(4, func(ctx context.Context) (netproxy.Conn, error) {
-		conn, err := d.dialArgument.bestDialer.DialContext(
-			ctx,
-			common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-			d.dialArgument.bestTarget.String(),
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
-			InsecureSkipVerify: false,
-			ServerName:         d.Upstream.Hostname,
+	return d.getOrInit(func() *connPool {
+		return newConnPool(4, func(ctx context.Context) (netproxy.Conn, error) {
+			conn, err := d.dialArgument.bestDialer.DialContext(
+				ctx,
+				common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
+				d.dialArgument.bestTarget.String(),
+			)
+			if err != nil {
+				return nil, err
+			}
+			tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
+				InsecureSkipVerify: false,
+				ServerName:         d.Upstream.Hostname,
+			})
+			if err = tlsConn.Handshake(); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			return tlsConn, nil
 		})
-		if err = tlsConn.Handshake(); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		return tlsConn, nil
 	})
-
-	return d.pool
 }
 
 func (d *DoTLS) getPConn(ctx context.Context) (*pipelinedConn, error) {
@@ -577,14 +598,7 @@ func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 }
 
 func (d *DoTLS) Close() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.pool != nil {
-		err := d.pool.close()
-		d.pool = nil
-		return err
-	}
-	return nil
+	return d.closePool()
 }
 
 type DoTCP struct {
@@ -592,35 +606,19 @@ type DoTCP struct {
 	netproxy.Dialer
 	dialArgument dialArgument
 
-	pool *connPool
-	mu   sync.RWMutex
+	lazyConnPool // embeds getOrInit / closePool
 }
 
 func (d *DoTCP) getPool() *connPool {
-	d.mu.RLock()
-	if d.pool != nil {
-		defer d.mu.RUnlock()
-		return d.pool
-	}
-	d.mu.RUnlock()
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.pool != nil {
-		return d.pool
-	}
-
-	// Create connection pool with 4 connections (Go best practice)
-	d.pool = newConnPool(4, func(ctx context.Context) (netproxy.Conn, error) {
-		return d.dialArgument.bestDialer.DialContext(
-			ctx,
-			common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-			d.dialArgument.bestTarget.String(),
-		)
+	return d.getOrInit(func() *connPool {
+		return newConnPool(4, func(ctx context.Context) (netproxy.Conn, error) {
+			return d.dialArgument.bestDialer.DialContext(
+				ctx,
+				common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
+				d.dialArgument.bestTarget.String(),
+			)
+		})
 	})
-
-	return d.pool
 }
 
 func (d *DoTCP) getPConn(ctx context.Context) (*pipelinedConn, error) {
@@ -651,14 +649,7 @@ func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 }
 
 func (d *DoTCP) Close() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.pool != nil {
-		err := d.pool.close()
-		d.pool = nil
-		return err
-	}
-	return nil
+	return d.closePool()
 }
 
 // udpConnWithTimestamp wraps a connection with its last use time

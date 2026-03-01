@@ -14,26 +14,15 @@ import (
 )
 
 const (
-	QuicFlag_PacketNumberLength = iota
-	QuicFlag_PacketNumberLength1
-	QuicFlag_Reserved
-	QuicFlag_Reserved1
-	QuicFlag_LongPacketType
-	QuicFlag_LongPacketType1
-	QuicFlag_FixedBit
-	QuicFlag_HeaderForm
+	QuicFlag_PacketNumberLength = 0
+	QuicFlag_Reserved           = 2
+	QuicFlag_LongPacketType     = 4
+	QuicFlag_FixedBit           = 6
+	QuicFlag_HeaderForm         = 7
 )
 const (
 	QuicFlag_HeaderForm_LongHeader  = 1
 	QuicFlag_LongPacketType_Initial = 0
-)
-
-type QuicReassemblePolicy int
-
-const (
-	QuicReassemblePolicy_ReassembleCryptoToBytesFromPool QuicReassemblePolicy = iota
-	QuicReassemblePolicy_LinearLocator
-	QuicReassemblePolicy_Slow
 )
 
 const (
@@ -76,7 +65,7 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 	nextBlock := s.buf.Bytes()[s.quicNextRead:]
 	isQuic := false
 	for {
-		s.quicCryptos, nextBlock, err = sniffQuicBlock(s.quicCryptos, nextBlock)
+		s.quicCryptos, nextBlock, err = sniffQuicBlock(s, s.quicCryptos, nextBlock)
 		if err != nil {
 			// If block is not a quic block, return it.
 			if errors.Is(err, ErrNotApplicable) {
@@ -110,7 +99,7 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 	return sni, nil
 }
 
-func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*quicutils.CryptoFrameOffset, next []byte, err error) {
+func sniffQuicBlock(s *Sniffer, cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*quicutils.CryptoFrameOffset, next []byte, err error) {
 	// QUIC: A UDP-Based Multiplexed and Secure Transport
 	// https://datatracker.ietf.org/doc/html/rfc9000#name-initial-packet
 	const dstConnIdPos = 6
@@ -184,6 +173,7 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 	if err != nil {
 		return cryptos, nil, ErrNotApplicable
 	}
+	s.quicPlaintexts = append(s.quicPlaintexts, plaintext)
 	// Now, we confirm it is exact a quic frame.
 	// After here, we should not return NotApplicableError.
 	// And we should return nextFrame.

@@ -32,7 +32,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	copy(mac16[10:], routingResult.Mac[:])
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
-	if outboundIndex, mark, must, err = c.routingMatcher.Match(
+	outboundIndex, mark, must, err = c.routingMatcher.Match(
 		bSrc,
 		bDst,
 		src.Port(),
@@ -43,11 +43,8 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		routingResult.Pname,
 		routingResult.Dscp,
 		mac16,
-	); err != nil {
-		return 0, 0, false, err
-	}
-
-	return outboundIndex, mark, false, nil
+	)
+	return
 }
 
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
@@ -169,19 +166,11 @@ func CheckIpforward(ifname string) error {
 
 func setForwarding(ifname string, ipversion consts.IpVersionStr, val string) error {
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
-	err := os.WriteFile(path, []byte(val), 0644)
-	if err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(path, []byte(val), 0644)
 }
 
 func SetIpv4forward(val string) error {
-	err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte(val), 0644)
-	if err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte(val), 0644)
 }
 
 func SetForwarding(ifname string, val string) {
@@ -210,11 +199,7 @@ func CheckSendRedirects(ifname string) error {
 
 func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) error {
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
-	err := os.WriteFile(path, []byte(val), 0644)
-	if err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(path, []byte(val), 0644)
 }
 
 func SetSendRedirects(ifname string, val string) {

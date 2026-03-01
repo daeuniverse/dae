@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// syscallConner is the interface implemented by connections that expose
+// their underlying file descriptor via SyscallConn().
+// Defined at package scope to avoid repeating the inline type in WriteTo and ReadFrom.
+type syscallConner interface {
+	SyscallConn() (syscall.RawConn, error)
+}
+
 type ConnSniffer struct {
 	net.Conn
 	*Sniffer
@@ -45,6 +52,14 @@ func (s *ConnSniffer) Close() (err error) {
 	return nil
 }
 
+// extractFD extracts the raw file descriptor from a SyscallConn.
+// Returns the fd and true on success, or 0 and false on failure.
+func extractFD(raw syscall.RawConn) (int, bool) {
+	var fd int
+	err := raw.Control(func(f uintptr) { fd = int(f) })
+	return fd, err == nil
+}
+
 // WriteTo implements io.WriterTo for zero-copy splice optimization.
 //
 // This is called by io.Copy when ConnSniffer is the source (client -> server direction).
@@ -69,52 +84,38 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 
 	// Now attempt zero-copy splice for the remaining data
 	// Check if the underlying connection and destination support SyscallConn
-	type syscallConn interface {
-		SyscallConn() (syscall.RawConn, error)
-	}
-
-	srcConn, srcOk := s.Conn.(syscallConn)
+	srcConnI, srcOk := s.Conn.(syscallConner)
 	if !srcOk {
-		// Underlying connection doesn't support SyscallConn, fall back to standard copy
 		return s.fallbackWriteTo(w, n)
 	}
-
-	dstConn, dstOk := w.(syscallConn)
+	dstConnI, dstOk := w.(syscallConner)
 	if !dstOk {
-		// Destination doesn't support SyscallConn, fall back to standard copy
 		return s.fallbackWriteTo(w, n)
 	}
 
-	// Both sides support SyscallConn, attempt splice
-	rawSrc, err := srcConn.SyscallConn()
+	rawSrc, err := srcConnI.SyscallConn()
+	if err != nil {
+		return s.fallbackWriteTo(w, n)
+	}
+	rawDst, err := dstConnI.SyscallConn()
 	if err != nil {
 		return s.fallbackWriteTo(w, n)
 	}
 
-	rawDst, err := dstConn.SyscallConn()
-	if err != nil {
+	srcFD, ok := extractFD(rawSrc)
+	if !ok {
 		return s.fallbackWriteTo(w, n)
 	}
-
-	var srcFD, dstFD int
-
-	// Extract file descriptors
-	// Note: Control() returns error before invoking callback if it fails,
-	// so we don't need to check for errors inside the callback.
-	rawSrc.Control(func(fd uintptr) {
-		srcFD = int(fd)
-	})
-	rawDst.Control(func(fd uintptr) {
-		dstFD = int(fd)
-	})
+	dstFD, ok := extractFD(rawDst)
+	if !ok {
+		return s.fallbackWriteTo(w, n)
+	}
 
 	// Perform zero-copy splice for the remaining data
 	spliced, spliceErr := spliceDirect(dstFD, srcFD)
 	if spliceErr != nil {
-		// Splice failed, fall back to standard copy
 		return s.fallbackWriteTo(w, n)
 	}
-
 	return n + spliced, nil
 }
 
@@ -174,47 +175,34 @@ func (s *ConnSniffer) ReadFrom(r io.Reader) (n int64, err error) {
 	// Write directly to the underlying connection.
 
 	// Check if source supports SyscallConn for zero-copy splice
-	type syscallConn interface {
-		SyscallConn() (syscall.RawConn, error)
-	}
-
-	srcConn, srcOk := r.(syscallConn)
-	dstConn, dstOk := s.Conn.(syscallConn)
-
+	srcConnI, srcOk := r.(syscallConner)
+	dstConnI, dstOk := s.Conn.(syscallConner)
 	if !srcOk || !dstOk {
-		// Either side doesn't support SyscallConn, use standard copy
 		return io.Copy(s.Conn, r)
 	}
 
-	// Both sides support SyscallConn, attempt splice
-	rawSrc, err := srcConn.SyscallConn()
+	rawSrc, err := srcConnI.SyscallConn()
+	if err != nil {
+		return io.Copy(s.Conn, r)
+	}
+	rawDst, err := dstConnI.SyscallConn()
 	if err != nil {
 		return io.Copy(s.Conn, r)
 	}
 
-	rawDst, err := dstConn.SyscallConn()
-	if err != nil {
+	srcFD, ok := extractFD(rawSrc)
+	if !ok {
 		return io.Copy(s.Conn, r)
 	}
-
-	var srcFD, dstFD int
-
-	// Extract file descriptors
-	// Note: Control() returns error before invoking callback if it fails,
-	// so we don't need to check for errors inside the callback.
-	rawSrc.Control(func(fd uintptr) {
-		srcFD = int(fd)
-	})
-	rawDst.Control(func(fd uintptr) {
-		dstFD = int(fd)
-	})
+	dstFD, ok := extractFD(rawDst)
+	if !ok {
+		return io.Copy(s.Conn, r)
+	}
 
 	// Perform zero-copy splice
 	spliced, spliceErr := spliceDirect(dstFD, srcFD)
 	if spliceErr != nil {
-		// Splice failed, fall back to standard copy
 		return io.Copy(s.Conn, r)
 	}
-
 	return spliced, nil
 }

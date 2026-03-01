@@ -58,11 +58,9 @@ func TproxyControl(c syscall.RawConn) error {
 		e4 := unix.SetsockoptInt(int(fd), syscall.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
 		e6 := unix.SetsockoptInt(int(fd), syscall.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
 		if e4 != nil && e6 != nil {
-			if e4 != nil {
-				sockOptErr = fmt.Errorf("error setting IP_RECVORIGDSTADDR socket option: %w", e4)
-			} else {
-				sockOptErr = fmt.Errorf("error setting IPV6_RECVORIGDSTADDR socket option: %w", e6)
-			}
+			// Both IPv4 and IPv6 original destination retrieval failed.
+			// Surface e4 as the primary error (IPv4 is the more common path).
+			sockOptErr = fmt.Errorf("error setting IP_RECVORIGDSTADDR socket option: %w", e4)
 			return
 		}
 	})

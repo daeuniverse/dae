@@ -76,16 +76,16 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[0]
+				return d.collections[IdxDnsTcp4]
 			case consts.IpVersionStr_6:
-				return d.collections[1]
+				return d.collections[IdxDnsTcp6]
 			}
 		case consts.L4ProtoStr_UDP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[2]
+				return d.collections[IdxDnsUdp4]
 			case consts.IpVersionStr_6:
-				return d.collections[3]
+				return d.collections[IdxDnsUdp6]
 			}
 		}
 	} else {
@@ -93,17 +93,17 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[4]
+				return d.collections[IdxTcp4]
 			case consts.IpVersionStr_6:
-				return d.collections[5]
+				return d.collections[IdxTcp6]
 			}
 		case consts.L4ProtoStr_UDP:
 			// UDP share the DNS check result.
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[2]
+				return d.collections[IdxDnsUdp4]
 			case consts.IpVersionStr_6:
-				return d.collections[3]
+				return d.collections[IdxDnsUdp6]
 			}
 		}
 	}
@@ -360,27 +360,38 @@ func (d *Dialer) aliveBackground() {
 		Network: "udp",
 		Mark:    d.CheckDnsOptionRaw.Somark,
 	}.Encode()
+	// makeDnsCheckFunc returns a CheckFunc for DNS connectivity checks.
+	// The ip selector selects Ip4 or Ip6 from the option; network is the encoded
+	// magic network string (tcpNetwork or udpNetwork).
+	// This factory eliminates the verbatim duplication across the 4 DNS CheckOption blocks.
+	makeDnsCheckFunc := func(
+		ip func(opt *CheckDnsOption) netip.Addr,
+		network *string,
+	) func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
+		return func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
+			opt, err := d.CheckDnsOptionRaw.Option()
+			if err != nil {
+				return false, err
+			}
+			addr := ip(opt)
+			if !addr.IsValid() {
+				d.Log.WithFields(logrus.Fields{
+					"link":    d.CheckDnsOptionRaw.Raw,
+					"network": typ.String(),
+				}).Debugln("Skip check due to no DNS record.")
+				return false, nil
+			}
+			return d.DnsCheck(ctx, netip.AddrPortFrom(addr, opt.DnsPort), *network)
+		}
+	}
+
 	tcp4CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip4.IsValid() {
-				d.Log.WithFields(logrus.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"dialer":  d.property.Name,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), tcpNetwork)
-		},
+		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip4 }, &tcpNetwork),
 	}
 	tcp6CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
@@ -388,21 +399,7 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip6.IsValid() {
-				d.Log.WithFields(logrus.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"dialer":  d.property.Name,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), tcpNetwork)
-		},
+		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &tcpNetwork),
 	}
 	udp4CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
@@ -410,20 +407,7 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_4,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip4.IsValid() {
-				d.Log.WithFields(logrus.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), udpNetwork)
-		},
+		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip4 }, &udpNetwork),
 	}
 	udp6CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
@@ -431,41 +415,40 @@ func (d *Dialer) aliveBackground() {
 			IpVersion: consts.IpVersionStr_6,
 			IsDns:     true,
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip6.IsValid() {
-				d.Log.WithFields(logrus.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), udpNetwork)
-		},
+		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &udpNetwork),
 	}
-	var CheckOpts = []*CheckOption{
-		tcp4CheckOpt,
-		tcp6CheckOpt,
-		udp4CheckDnsOpt,
-		udp6CheckDnsOpt,
-		tcp4CheckDnsOpt,
-		tcp6CheckDnsOpt,
+	var CheckOpts = make([]*CheckOption, 6)
+	CheckOpts[IdxTcp4] = tcp4CheckOpt
+	CheckOpts[IdxTcp6] = tcp6CheckOpt
+	CheckOpts[IdxDnsUdp4] = udp4CheckDnsOpt
+	CheckOpts[IdxDnsUdp6] = udp6CheckDnsOpt
+	CheckOpts[IdxDnsTcp4] = tcp4CheckDnsOpt
+	CheckOpts[IdxDnsTcp6] = tcp6CheckDnsOpt
+
+	var unusedOnce bool
+	checkUnused := func() bool {
+		var unused int
+		for _, opt := range CheckOpts {
+			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+				unused++
+			}
+		}
+		if unused == len(CheckOpts) {
+			if !unusedOnce {
+				d.Log.WithField("dialer", d.Property().Name).
+					WithField("p", unsafe.Pointer(d)).
+					Debugln("dialer connectivity check is sleeping due to unused")
+				unusedOnce = true
+			}
+			return true
+		}
+		unusedOnce = false
+		return false
 	}
 
-	var unused int
-	for _, opt := range CheckOpts {
-		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
-			unused++
-		}
-	}
-	if unused == len(CheckOpts) {
-		d.Log.WithField("dialer", d.Property().Name).
-			WithField("p", unsafe.Pointer(d)).
-			Traceln("cleaned up due to unused")
-		return
+	if checkUnused() {
+		// Just for early exit if initial state is unused.
+		// But we wait for first check below.
 	}
 
 	time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
@@ -485,6 +468,21 @@ func (d *Dialer) aliveBackground() {
 	workerPool := getConnectivityCheckPool()
 
 	for {
+		// Check if the dialer is still useful. If not, exit the goroutine.
+		if checkUnused() {
+			d.tickerMu.Lock()
+			if d.ticker != nil {
+				d.ticker.Stop()
+				d.ticker = nil
+			}
+			d.checkActivated = false
+			d.tickerMu.Unlock()
+			d.Log.WithField("dialer", d.Property().Name).
+				WithField("p", unsafe.Pointer(d)).
+				Traceln("cleaned up due to unused")
+			return
+		}
+
 		select {
 		case <-d.ctx.Done():
 			return
