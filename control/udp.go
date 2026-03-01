@@ -28,10 +28,10 @@ var (
 	// DefaultNatTimeout is the default NAT timeout for UDP connections.
 	// Reduced from 3 minutes to 30 seconds for faster resource cleanup.
 	// Most DNS queries complete within seconds, and long-lived connections
-	// can use longer timeouts via DialOption.
-	DefaultNatTimeout = 60 * time.Second
-	// QuicNatTimeout defaults to 5 minutes to prevent QUIC connections from timing out prematurely.
-	QuicNatTimeout = 5 * time.Minute
+	// (like QUIC) can use longer timeouts via QuicNatTimeout.
+	DefaultNatTimeout = 30 * time.Second
+	// QuicNatTimeout is 2 minutes for QUIC long-lived connections.
+	QuicNatTimeout = 2 * time.Minute
 )
 
 const (
