@@ -71,8 +71,8 @@ func NewDialerGroup(
 	specs := [4]networkTypeSpec{
 		// aliveDialerSets[IdxDnsTcp4..IdxDnsTcp6]: DNS-TCP sets (for CheckDnsTcp path – filled below).
 		// aliveDialerSets[IdxDnsUdp4..IdxDnsUdp6]: DNS-UDP
-		{consts.L4ProtoStr_UDP, consts.IpVersionStr_4, true},  // [2] aliveDnsUdp4
-		{consts.L4ProtoStr_UDP, consts.IpVersionStr_6, true},  // [3] aliveDnsUdp6
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_4, true}, // [2] aliveDnsUdp4
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_6, true}, // [3] aliveDnsUdp6
 		// aliveDialerSets[IdxTcp4..IdxTcp6]: plain TCP
 		{consts.L4ProtoStr_TCP, consts.IpVersionStr_4, false}, // [4] aliveTcp4
 		{consts.L4ProtoStr_TCP, consts.IpVersionStr_6, false}, // [5] aliveTcp6
@@ -148,43 +148,7 @@ func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy)
 }
 
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
-	if typ.IsDns {
-		switch typ.L4Proto {
-		case consts.L4ProtoStr_TCP:
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[dialer.IdxDnsTcp4]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[dialer.IdxDnsTcp6]
-			}
-		case consts.L4ProtoStr_UDP:
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[dialer.IdxDnsUdp4]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[dialer.IdxDnsUdp6]
-			}
-		}
-	} else {
-		switch typ.L4Proto {
-		case consts.L4ProtoStr_TCP:
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[dialer.IdxTcp4]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[dialer.IdxTcp6]
-			}
-		case consts.L4ProtoStr_UDP:
-			// UDP share the DNS check result.
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[dialer.IdxDnsUdp4]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[dialer.IdxDnsUdp6]
-			}
-		}
-	}
-	panic("invalid param")
+	return d.aliveDialerSets[typ.Index()]
 }
 
 // Select selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.

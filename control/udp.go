@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 
 	"time"
 
@@ -32,13 +33,82 @@ var (
 	DefaultNatTimeout = 30 * time.Second
 	// QuicNatTimeout is 2 minutes for QUIC long-lived connections.
 	QuicNatTimeout = 2 * time.Minute
+
+	udpNoAliveDialerLogLimiter sync.Map // map[udpNoAliveDialerLogKey]int64(unix nano)
 )
 
 const (
 	DnsNatTimeout  = 17 * time.Second // RFC 5452
 	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
 	MaxRetry       = 2
+
+	noAliveDialerLogInterval = 10 * time.Second
 )
+
+type udpNoAliveDialerLogKey struct {
+	outbound             string
+	origNetworkType      string
+	selectionNetworkType string
+	strictIpVersion      bool
+}
+
+func allowNoAliveDialerLog(key udpNoAliveDialerLogKey, now time.Time) bool {
+	nowNano := now.UnixNano()
+	for {
+		prev, ok := udpNoAliveDialerLogLimiter.Load(key)
+		if !ok {
+			if _, loaded := udpNoAliveDialerLogLimiter.LoadOrStore(key, nowNano); !loaded {
+				return true
+			}
+			continue
+		}
+
+		last, ok := prev.(int64)
+		if !ok {
+			udpNoAliveDialerLogLimiter.Store(key, nowNano)
+			return true
+		}
+		if nowNano-last < int64(noAliveDialerLogInterval) {
+			return false
+		}
+		if udpNoAliveDialerLogLimiter.CompareAndSwap(key, last, nowNano) {
+			return true
+		}
+	}
+}
+
+func (c *ControlPlane) logNoAliveDialerLimited(
+	outbound string,
+	policy consts.DialerSelectionPolicy,
+	origNetworkType string,
+	selectionNetworkType string,
+	src netip.AddrPort,
+	dst netip.AddrPort,
+	domain string,
+	strictIpVersion bool,
+) {
+	key := udpNoAliveDialerLogKey{
+		outbound:             outbound,
+		origNetworkType:      origNetworkType,
+		selectionNetworkType: selectionNetworkType,
+		strictIpVersion:      strictIpVersion,
+	}
+	if !allowNoAliveDialerLog(key, time.Now()) {
+		return
+	}
+
+	c.log.WithFields(logrus.Fields{
+		"outbound":               outbound,
+		"policy":                 policy,
+		"orig_network_type":      origNetworkType,
+		"selection_network_type": selectionNetworkType,
+		"strict_ip_version":      strictIpVersion,
+		"from":                   src.String(),
+		"to":                     dst.String(),
+		"sniffed":                domain,
+		"interval":               noAliveDialerLogInterval.String(),
+	}).Warn("no alive dialer for UDP selection (rate-limited)")
+}
 
 type DialOption struct {
 	Target        string
@@ -324,7 +394,7 @@ getNew:
 			switch outboundIndex {
 			case consts.OutboundDirect:
 			case consts.OutboundControlPlaneRouting:
-				if outboundIndex, routingResult.Mark, _, err = c.Route(realSrc, realDst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
+				if outboundIndex, routingResult.Mark, _, err = c.Route(realSrc, realDst, domain, consts.L4ProtoType_UDP, routingResult); err != nil {
 					return nil, err
 				}
 				routingResult.Outbound = uint8(outboundIndex)
@@ -364,7 +434,29 @@ getNew:
 			strictIpVersion := dialIp
 			dialerForNew, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
 			if err != nil {
-				return nil, fmt.Errorf("failed to select dialer from group %v (%v, from: %v): %w", outbound.Name, networkType.StringWithoutDns(), realSrc.String(), err)
+				origType := networkType.StringWithoutDns()
+				selectedType := selectionNetworkType.StringWithoutDns()
+				if errors.Is(err, ob.ErrNoAliveDialer) {
+					c.logNoAliveDialerLimited(
+						outbound.Name,
+						outbound.GetSelectionPolicy(),
+						origType,
+						selectedType,
+						realSrc,
+						realDst,
+						domain,
+						strictIpVersion,
+					)
+					return nil, err
+				}
+				return nil, fmt.Errorf(
+					"failed to select dialer from group %v (orig:%v, selected:%v, from:%v): %w",
+					outbound.Name,
+					origType,
+					selectedType,
+					realSrc.String(),
+					err,
+				)
 			}
 			return &DialOption{
 				Target:        dialTarget,
@@ -376,6 +468,10 @@ getNew:
 		},
 	})
 	if err != nil {
+		if errors.Is(err, ob.ErrNoAliveDialer) {
+			// Already emitted a rate-limited diagnostic log above.
+			return nil
+		}
 		return fmt.Errorf("failed to GetOrCreate: %w", err)
 	}
 

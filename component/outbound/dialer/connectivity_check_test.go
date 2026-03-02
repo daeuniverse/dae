@@ -99,7 +99,7 @@ func TestDialerCheck_SkipDoesNotCascadeToUnavailable(t *testing.T) {
 	if aliveSet.GetRand() == nil {
 		t.Fatal("alive dialer set should keep dialer alive after repeated skip checks")
 	}
-	if got := d.MustGetLatencies10(networkType).LastNLatencies.Len(); got != 0 {
+	if got := d.MustGetLatencies10(networkType).Len(); got != 0 {
 		t.Fatalf("skip checks should not append latency samples, got %d", got)
 	}
 	if _, has := d.MustGetLatencies10(networkType).LastLatency(); has {
@@ -203,7 +203,7 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 	if aliveSet.GetRand() != nil {
 		t.Fatal("dialer should remain unavailable after skip checks")
 	}
-	if got := d.MustGetLatencies10(networkType).LastNLatencies.Len(); got != 1 {
+	if got := d.MustGetLatencies10(networkType).Len(); got != 1 {
 		t.Fatalf("skip checks should not append extra samples after failure, got %d", got)
 	}
 }

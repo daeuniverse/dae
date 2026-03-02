@@ -8,6 +8,9 @@ package dialer
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 	"unsafe"
@@ -49,6 +52,9 @@ type Dialer struct {
 	cancel   context.CancelFunc
 
 	checkActivated bool
+
+	httpClients  map[string]*http.Client
+	httpClientMu sync.Mutex
 }
 
 type GlobalOption struct {
@@ -113,6 +119,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		checkCh:          make(chan time.Time, 1),
 		ctx:              ctx,
 		cancel:           cancel,
+		httpClients:      make(map[string]*http.Client),
 	}
 	option.Log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
@@ -131,6 +138,17 @@ func (d *Dialer) Close() error {
 		d.ticker.Stop()
 	}
 	d.tickerMu.Unlock()
+
+	d.httpClientMu.Lock()
+	for k, cli := range d.httpClients {
+		if cli != nil {
+			if t, ok := cli.Transport.(*http.Transport); ok {
+				t.CloseIdleConnections()
+			}
+			delete(d.httpClients, k)
+		}
+	}
+	d.httpClientMu.Unlock()
 	// Note: We intentionally do NOT close checkCh here because:
 	// 1. The ticker goroutine may still be sending to it (race condition -> panic)
 	// 2. The channel will be garbage collected along with the Dialer
@@ -140,4 +158,40 @@ func (d *Dialer) Close() error {
 
 func (d *Dialer) Property() *Property {
 	return d.property
+}
+
+func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
+	key := fmt.Sprintf("%d-%s", idx, ip.String())
+
+	d.httpClientMu.Lock()
+	defer d.httpClientMu.Unlock()
+
+	if cli, ok := d.httpClients[key]; ok {
+		return cli
+	}
+
+	cli := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
+				// Use the specific IP resolved for this probe to ensure accurate measurement.
+				// Connection reuse will happen naturally at the Transport level for the same host/IP.
+				_, port, _ := net.SplitHostPort(addr)
+				addr = net.JoinHostPort(ip.String(), port)
+
+				conn, err := d.Dialer.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), addr)
+				if err != nil {
+					return nil, err
+				}
+				return &netproxy.FakeNetConn{
+					Conn:  conn,
+					LAddr: nil,
+					RAddr: nil,
+				}, nil
+			},
+			IdleConnTimeout:       30 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
+	d.httpClients[key] = cli
+	return cli
 }
