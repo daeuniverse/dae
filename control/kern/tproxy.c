@@ -1369,29 +1369,8 @@ new_connection:;
 	if (l4proto == IPPROTO_TCP) {
 		if (!(tcph.syn && !tcph.ack)) {
 			// Not a new TCP connection.
-			// Apply cached routing decision from routing_tuples_map.
-			__u8 outbound;
-			__u32 mark;
-			bool must;
-			int nsyn_ret = handle_non_syn_tcp(skb, &tuples.five,
-						     &outbound, &mark, &must);
-			if (nsyn_ret == TC_ACT_OK) {
-				// Found cached routing. Check outbound to decide action.
-				if (outbound == OUTBOUND_DIRECT && mark == 0) {
-					// Direct traffic, let it pass.
-					return TC_ACT_OK;
-				} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
-					return TC_ACT_SHOT;
-				}
-				// Non-direct routing: send to control plane.
-				goto control_plane;
-			}
-			if (nsyn_ret == TC_ACT_PIPE) {
-				// No cached routing for a non-SYN packet.
-				// Keep main-compatible behavior and bypass routing to avoid
-				// hijacking forwarded return traffic (e.g. WAN->LAN 回源场景).
-				return TC_ACT_OK;
-			}
+			// Keep main branch behavior for forwarded/return-path safety.
+			return TC_ACT_OK;
 		}
 		params.l4hdr = &tcph;
 		params.flag[0] = L4ProtoType_TCP;
@@ -1587,16 +1566,6 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
 		return TC_ACT_OK;
 
-	// Only handle UDP for WAN ingress.
-	// TCP forwarding traffic (e.g. Cloudflare origin pull, port forwarding,
-	// any DNAT scenario) must NOT be intercepted here; doing so would apply
-	// routing decisions to packets that belong to the kernel's forwarding
-	// path, causing connectivity failures.  TCP is handled exclusively on
-	// lan_ingress/lan_egress where the traffic originates from a local
-	// application.
-	if (l4proto != IPPROTO_UDP)
-		return TC_ACT_PIPE;
-
 	// Update UDP Conntrack
 	if (l4proto == IPPROTO_UDP) {
 		struct tuples tuples;
@@ -1605,13 +1574,8 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-		// Optimisation: Skip conntrack for DNS traffic
-		// DNS is stateless request-response, doesn't need connection tracking
-		if (!is_short_lived_udp_traffic(&reversed_tuples_key)) {
-			if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-				return TC_ACT_SHOT;
-		}
-		// For DNS, we skip conntrack entirely and let the packet flow through
+		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+			return TC_ACT_SHOT;
 	}
 
 	return TC_ACT_PIPE;

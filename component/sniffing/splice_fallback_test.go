@@ -113,6 +113,35 @@ func TestReadFromForwardsAllBytes(t *testing.T) {
 	}
 }
 
+// TestSniffTcpWithFtpPayloadPreservesData verifies that non-TLS/HTTP payloads
+// (e.g. FTP control channel banners/commands) are not recognized as domains
+// but are still fully preserved for relay after sniffing.
+func TestSniffTcpWithFtpPayloadPreservesData(t *testing.T) {
+	ftpPayload := []byte("220 FTP Service Ready\r\nUSER anonymous\r\nPASS guest@example.com\r\n")
+	mock := &mockConn{data: ftpPayload}
+	sniffer := NewConnSniffer(mock, 200*time.Millisecond)
+
+	domain, err := sniffer.SniffTcp()
+	if err != nil && !IsSniffingError(err) {
+		t.Fatalf("unexpected sniff error: %v", err)
+	}
+	if domain != "" {
+		t.Fatalf("expected empty domain for FTP payload, got %q", domain)
+	}
+
+	var buf bytes.Buffer
+	n, copyErr := io.Copy(&buf, sniffer)
+	if copyErr != nil && copyErr != io.EOF {
+		t.Fatalf("unexpected relay error: %v", copyErr)
+	}
+	if int(n) != len(ftpPayload) {
+		t.Fatalf("expected %d bytes, got %d", len(ftpPayload), n)
+	}
+	if !bytes.Equal(buf.Bytes(), ftpPayload) {
+		t.Fatalf("payload mismatch: got %q, want %q", buf.Bytes(), ftpPayload)
+	}
+}
+
 // writeCaptureMock is a net.Conn whose Write method captures all written bytes.
 type writeCaptureMock struct {
 	net.Conn
