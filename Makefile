@@ -85,6 +85,10 @@ fmt:
 	go fmt ./...
 
 ebpf-sync:
+	@unset GOOS && \
+	unset GOARCH && \
+	unset GOARM && \
+	unset GOAMD64 && \
 	go generate ./common/consts/ebpf.go
 
 ebpf-sync-check: ebpf-sync

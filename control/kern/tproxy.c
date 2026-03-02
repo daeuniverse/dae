@@ -2131,9 +2131,8 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie)
 
 	// Update map.
 	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY);
-	if (unlikely(ret)) {
+	if (unlikely(ret))
 		return ret;
-	}
 
 #ifdef __PRINT_SETUP_PROCESS_CONNNECTION
 	bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val.pname,
