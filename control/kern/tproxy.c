@@ -134,6 +134,7 @@ struct routing_result {
 	__u8 pname[TASK_COMM_LEN];
 	__u32 pid;
 	__u8 dscp;
+	__u32 ifindex;
 };
 
 struct tuples_key {
@@ -1046,27 +1047,15 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
-// Helper function to check if traffic is short-lived UDP that doesn't need conntrack
-// Includes: DNS, DHCP, NTP, SNMP, UPnP, mDNS, WireGuard, etc.
-// These protocols are stateless request-response or manage their own state.
+// Helper function to check if traffic can safely bypass UDP conntrack/cache.
+// Keep this conservative for correctness: currently only DNS (port 53) is
+// treated as short-lived in kernel fast-path.
+// NOTE: Expanding this list requires protocol-specific validation to avoid
+// breaking reply-direction detection for stateful UDP services.
 static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 {
-	if (key->l4proto != IPPROTO_UDP)
-		return false;
-
-	__u16 dport = bpf_ntohs(key->dport);
-	__u16 sport = bpf_ntohs(key->sport);
-
-	// Check if either port matches a short-lived protocol
-	return (dport == 53 || sport == 53 ||       // DNS
-		dport == 67 || sport == 67 ||           // DHCP Server
-		dport == 68 || sport == 68 ||           // DHCP Client
-		dport == 123 || sport == 123 ||         // NTP
-		dport == 161 || sport == 161 ||         // SNMP
-		dport == 162 || sport == 162 ||         // SNMP Trap
-		dport == 1900 || sport == 1900 ||       // UPnP
-		dport == 5353 || sport == 5353 ||       // mDNS
-		dport == 51820 || sport == 51820);      // WireGuard
+	return key->l4proto == IPPROTO_UDP &&
+	       (key->dport == bpf_htons(53) || key->sport == bpf_htons(53));
 }
 
 // Helper functions to check if IP addresses are multicast
@@ -1177,6 +1166,12 @@ handle_non_syn_tcp(struct __sk_buff *skb, struct tuples_key *five_tuple,
 		// Let it pass through normal routing.
 		return TC_ACT_PIPE;
 	}
+
+	// Guard against cache pollution across different interfaces.
+	// The same 5-tuple can appear on WAN/LAN paths and should not reuse
+	// each other's cached routing decision.
+	if (routing_result->ifindex != skb->ifindex)
+		return TC_ACT_PIPE;
 
 	// Apply the cached routing decision
 	*outbound = routing_result->outbound;
@@ -1373,8 +1368,12 @@ new_connection:;
 				// Non-direct routing: send to control plane.
 				goto control_plane;
 			}
-			// No cached routing, continue to establish new connection
-			// (single-arm mode or pre-existing connection)
+			if (ret == TC_ACT_PIPE) {
+				// No cached routing for a non-SYN packet.
+				// Keep main-compatible behavior and bypass routing to avoid
+				// hijacking forwarded return traffic (e.g. WAN->LAN 回源场景).
+				return TC_ACT_OK;
+			}
 		}
 		params.l4hdr = &tcph;
 		params.flag[0] = L4ProtoType_TCP;
@@ -1420,6 +1419,7 @@ new_connection:;
 	routing_result.mark = s64_ret >> 8;
 	routing_result.must = (s64_ret >> 40) & 1;
 	routing_result.dscp = tuples.dscp;
+	routing_result.ifindex = skb->ifindex;
 	__builtin_memcpy(routing_result.mac, ethh.h_source,
 			 sizeof(routing_result.mac));
 	/// NOTICE: No pid pname info for LAN packet.
@@ -1774,6 +1774,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				routing_result.mark = mark;
 				routing_result.must = must;
 				routing_result.dscp = tuples.dscp;
+				routing_result.ifindex = skb->ifindex;
 				__builtin_memcpy(routing_result.mac, ethh.h_source,
 						 sizeof(ethh.h_source));
 				if (pid_pname) {
@@ -1866,6 +1867,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				routing_result.mark = mark;
 				routing_result.must = must;
 				routing_result.dscp = tuples.dscp;
+				routing_result.ifindex = skb->ifindex;
 				__builtin_memcpy(routing_result.mac, ethh.h_source,
 						 sizeof(ethh.h_source));
 				if (pid_pname) {

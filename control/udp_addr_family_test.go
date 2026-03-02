@@ -1,12 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
- *
- * Unit tests for UDP address family selection logic
- *
- * These tests verify that when a client and target have different
- * address families (e.g., IPv6 client accessing IPv4 server via NAT64),
- * the dialer selection correctly matches the client's address family.
  */
 
 package control
@@ -18,6 +12,87 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
+
+func TestNormalizeSendPktAddrFamily(t *testing.T) {
+	testCases := []struct {
+		name      string
+		from      string
+		realTo    string
+		wantBind  string
+		wantWrite string
+	}{
+		{
+			name:      "IPv4 server to pure IPv6 client",
+			from:      "8.8.8.8:53",
+			realTo:    "[240e:390::1]:12345",
+			wantBind:  "[::ffff:8.8.8.8]:53",
+			wantWrite: "[240e:390::1]:12345",
+		},
+		{
+			name:      "IPv4 server to IPv4-mapped IPv6 client",
+			from:      "8.8.8.8:53",
+			realTo:    "[::ffff:192.168.1.2]:12345",
+			wantBind:  "[::ffff:8.8.8.8]:53",
+			wantWrite: "[::ffff:192.168.1.2]:12345",
+		},
+		{
+			name:      "IPv6 server to IPv4 client",
+			from:      "[2001:db8::1]:443",
+			realTo:    "192.168.1.2:12345",
+			wantBind:  "[2001:db8::1]:443",
+			wantWrite: "[::ffff:192.168.1.2]:12345",
+		},
+		{
+			name:      "IPv4 server to IPv4 client",
+			from:      "8.8.8.8:53",
+			realTo:    "192.168.1.2:12345",
+			wantBind:  "8.8.8.8:53",
+			wantWrite: "192.168.1.2:12345",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			from := netip.MustParseAddrPort(tc.from)
+			realTo := netip.MustParseAddrPort(tc.realTo)
+			wantBind := netip.MustParseAddrPort(tc.wantBind)
+			wantWrite := netip.MustParseAddrPort(tc.wantWrite)
+
+			gotBind, gotWrite := normalizeSendPktAddrFamily(from, realTo)
+
+			if gotBind != wantBind {
+				t.Fatalf("bindAddr mismatch: want %v, got %v", wantBind, gotBind)
+			}
+			if gotWrite != wantWrite {
+				t.Fatalf("writeAddr mismatch: want %v, got %v", wantWrite, gotWrite)
+			}
+		})
+	}
+}
+
+func TestNormalizeSendPktAddrFamily_IPv4ToIPv4MappedIPv6(t *testing.T) {
+	from := netip.MustParseAddrPort("40.99.181.130:443")
+	realTo := netip.MustParseAddrPort("[::ffff:10.0.0.2]:52215")
+
+	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
+
+	if !bindAddr.Addr().Is6() {
+		t.Fatalf("bindAddr should be IPv6 for IPv4-mapped IPv6 target, got %v", bindAddr)
+	}
+	if !bindAddr.Addr().Is4In6() {
+		t.Fatalf("bindAddr should be IPv4-mapped IPv6, got %v", bindAddr)
+	}
+	if bindAddr.Port() != from.Port() {
+		t.Fatalf("bindAddr port should be preserved, want %d got %d", from.Port(), bindAddr.Port())
+	}
+
+	if !writeAddr.Addr().Is6() {
+		t.Fatalf("writeAddr should remain IPv6, got %v", writeAddr)
+	}
+	if !writeAddr.Addr().Is4In6() {
+		t.Fatalf("writeAddr should remain IPv4-mapped IPv6, got %v", writeAddr)
+	}
+}
 
 // TestUDPAddressFamilySelection_Unit tests the address family selection logic
 func TestUDPAddressFamilySelection_Unit(t *testing.T) {

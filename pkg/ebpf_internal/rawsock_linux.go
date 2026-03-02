@@ -10,10 +10,10 @@ import (
 // Htons converts the unsigned short integer from host byte order to network byte order (big-endian).
 // This is used for socket protocol numbers which are expected in network byte order.
 func Htons(i uint16) uint16 {
-	// Use binary.BigEndian.Uint16 to properly convert from big-endian bytes to uint16.
-	// This ensures the result is correct regardless of the host's native endianness.
+	// Convert from native-endian host value to big-endian network value.
+	// Example on little-endian host: 0x0003 -> 0x0300.
 	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, i)
+	NativeEndian.PutUint16(b, i)
 	return binary.BigEndian.Uint16(b)
 }
 

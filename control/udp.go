@@ -59,6 +59,30 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 	return nil, DefaultNatTimeout
 }
 
+func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAddr netip.AddrPort) {
+	bindAddr = from
+	writeAddr = realTo
+
+	// Case 1: IPv6 socket writing to IPv4 target.
+	if realTo.Addr().Is4() && from.Addr().Is6() {
+		writeAddr = netip.AddrPortFrom(
+			netip.AddrFrom16(realTo.Addr().As16()),
+			realTo.Port(),
+		)
+	}
+
+	// Case 2: IPv4 source with IPv6 destination (including IPv4-mapped IPv6)
+	// should use an IPv6 bind address so socket family matches write target.
+	if from.Addr().Is4() && realTo.Addr().Is6() {
+		bindAddr = netip.AddrPortFrom(
+			netip.AddrFrom16(from.Addr().As16()),
+			from.Port(),
+		)
+	}
+
+	return bindAddr, writeAddr
+}
+
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 // The from parameter is the remote server's address (used as local bind for responses).
 // The realTo parameter is the client's address (destination for the response).
@@ -70,24 +94,7 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to ne
 	// Cross-family handling ensures socket type matches write address family:
 	// - IPv6->IPv4: Convert writeAddr to IPv4-mapped IPv6 for dual-stack socket
 	// - IPv4->IPv6: Convert bindAddr to IPv4-mapped IPv6 to create IPv6 socket
-	bindAddr := from
-	writeAddr := realTo
-
-	// Case 1: IPv6 socket writing to IPv4 target
-	if realTo.Addr().Is4() && from.Addr().Is6() {
-		writeAddr = netip.AddrPortFrom(
-			netip.AddrFrom16(realTo.Addr().As16()),
-			realTo.Port(),
-		)
-	}
-
-	// Case 2: IPv4 socket writing to IPv6 target (NAT64)
-	if from.Addr().Is4() && realTo.Addr().Is6() && !realTo.Addr().Is4In6() {
-		bindAddr = netip.AddrPortFrom(
-			netip.AddrFrom16(from.Addr().As16()),
-			from.Port(),
-		)
-	}
+	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
