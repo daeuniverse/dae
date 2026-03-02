@@ -1109,6 +1109,51 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				var routingResult *bpfRoutingResult
 				var freshRoutingResult *bpfRoutingResult
 
+				// DNS ingress fast path: valid DNS packets to port 53 do not need
+				// UdpEndpoint state tracking on ingress. Keep userspace handling to
+				// reduce hot-path overhead, but best-effort preserve tuple metadata
+				// for rules matching (pname/mac/dscp).
+				if realDst.Port() == 53 {
+					if dnsMessage, _ := ChooseNatTimeout(data, true); dnsMessage != nil {
+						dnsRoutingResult := &bpfRoutingResult{
+							Outbound: uint8(consts.OutboundControlPlaneRouting),
+							Mark:     c.soMarkFromDae,
+						}
+						if rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP); retrieveErr == nil {
+							dnsRoutingResult = rr
+							if dnsRoutingResult.Mark == 0 {
+								dnsRoutingResult.Mark = c.soMarkFromDae
+							}
+						} else if !stderrors.Is(retrieveErr, ebpf.ErrKeyNotExist) && c.log.IsLevelEnabled(logrus.DebugLevel) {
+							c.log.WithFields(logrus.Fields{
+								"src": convergeSrc.String(),
+								"dst": realDst.String(),
+							}).WithError(retrieveErr).Debug("UDP routing tuple lookup failed for DNS ingress fast path; fallback to minimal routing metadata")
+						}
+						req := &udpRequest{
+							realSrc:       convergeSrc,
+							realDst:       realDst,
+							src:           convergeSrc,
+							lConn:         udpConn,
+							routingResult: dnsRoutingResult,
+						}
+
+						if e := c.dnsController.Handle_(c.ctx, dnsMessage, req); e != nil {
+							if stderrors.Is(e, ErrDNSQueryConcurrencyLimitExceeded) {
+								return
+							}
+							if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns ingress fast path)", req, nil); sendErr != nil {
+								c.log.WithError(stderrors.Join(e, sendErr)).Warnln("handlePkt(dns ingress):")
+								return
+							}
+							if c.log.IsLevelEnabled(logrus.DebugLevel) {
+								c.log.WithError(e).Debug("DNS ingress fast path failed; SERVFAIL sent")
+							}
+						}
+						return
+					}
+				}
+
 				if ue, ok := DefaultUdpEndpointPool.Get(UdpEndpointKey{Src: convergeSrc}); ok {
 					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
 						routingResult = cached
@@ -1131,6 +1176,16 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 									"dst": realDst.String(),
 								}).WithError(retrieveErr).Debug("UDP routing tuple missing; fallback to userspace routing")
 							}
+						} else if realDst.Port() == 53 {
+							// DNS should never be silently dropped due to transient eBPF lookup
+							// failures. Fall back to userspace routing to preserve availability.
+							routingResult = &bpfRoutingResult{
+								Outbound: uint8(consts.OutboundControlPlaneRouting),
+							}
+							c.log.WithFields(logrus.Fields{
+								"src": convergeSrc.String(),
+								"dst": realDst.String(),
+							}).WithError(retrieveErr).Warn("UDP routing tuple lookup failed for DNS; fallback to userspace routing")
 						} else {
 							c.log.Warnf("No AddrPort presented: %v", retrieveErr)
 							return

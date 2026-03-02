@@ -1466,19 +1466,41 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	// However, most responseWriters here are either UDP or wrappers that handle message framing.
 	
 	if responseWriter != nil {
-		// Detect if it's likely a UDP writer by checking for the lack of WriteCloser interface or similar,
-		// but since we want to be safe, we check if it's a known internal wrapper or just use a more efficient path.
-		
-		// If it's a TCP connection, WriteMsg is safer but slower.
-		// For now, let's keep it safe but optimize the UDP path if we can identify it.
-		// In dae, DNS listener is mostly UDP.
-		
-		var respMsg dnsmessage.Msg
-		if err := respMsg.Unpack(resp); err != nil {
-			return fmt.Errorf("failed to unpack DNS response: %w", err)
+		// msgCapturer is used by singleflight path to capture *Msg value.
+		// Keep WriteMsg semantics for this internal writer.
+		if _, ok := responseWriter.(*msgCapturer); ok {
+			var respMsg dnsmessage.Msg
+			if err := respMsg.Unpack(resp); err != nil {
+				return fmt.Errorf("failed to unpack DNS response: %w", err)
+			}
+			respMsg.Id = reqId
+			return responseWriter.WriteMsg(&respMsg)
 		}
-		respMsg.Id = reqId
-		return responseWriter.WriteMsg(&respMsg)
+
+		// Fast path for DNS listener response writers: patch ID in packed bytes,
+		// then write raw message directly to avoid Unpack/Pack overhead.
+		if len(resp) >= 2 && len(resp) <= 1024 {
+			bufPtr := dnsResponseBufPool.Get().(*[]byte)
+			defer dnsResponseBufPool.Put(bufPtr)
+
+			patchedResp := (*bufPtr)[:len(resp)]
+			copy(patchedResp, resp)
+			binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
+			if _, err := responseWriter.Write(patchedResp); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		patchedResp := make([]byte, len(resp))
+		copy(patchedResp, resp)
+		if len(patchedResp) >= 2 {
+			binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
+		}
+		if _, err := responseWriter.Write(patchedResp); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	// For UDP path, directly send pre-packed response with patched ID

@@ -177,6 +177,47 @@ func (d *DNSListener) Stop() error {
 	return nil
 }
 
+func dnsFallbackAddr(preferV6 bool) netip.Addr {
+	if preferV6 {
+		return UnspecifiedAddressAAAA
+	}
+	return UnspecifiedAddressA
+}
+
+// parseDNSListenerAddrPort parses listener bind address to AddrPort for request metadata.
+// It is tolerant to wildcard/hostname forms (e.g. ":53", "localhost:53").
+func parseDNSListenerAddrPort(raw string, preferV6 bool) (netip.AddrPort, error) {
+	if addrPort, err := netip.ParseAddrPort(raw); err == nil {
+		return addrPort, nil
+	}
+
+	host, portStr, err := net.SplitHostPort(raw)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	if i := strings.LastIndex(host, "%"); i >= 0 {
+		// Strip IPv6 zone suffix, netip.ParseAddr does not accept zones.
+		host = host[:i]
+	}
+
+	if host == "" || host == "*" {
+		return netip.AddrPortFrom(dnsFallbackAddr(preferV6), uint16(port)), nil
+	}
+
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return netip.AddrPortFrom(ip, uint16(port)), nil
+	}
+
+	// Hostname or unknown format: keep port and fallback to unspecified address.
+	return netip.AddrPortFrom(dnsFallbackAddr(preferV6), uint16(port)), nil
+}
+
 // dnsHandler implements the dns.Handler interface
 type dnsHandler struct {
 	controller *ControlPlane
@@ -185,30 +226,76 @@ type dnsHandler struct {
 
 // ServeDNS handles DNS requests
 func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			h.log.Errorf("Panic in DNS listener handler: %v", rec)
+			if w != nil && r != nil {
+				m := new(dnsmessage.Msg)
+				m.SetRcode(r, dnsmessage.RcodeServerFailure)
+				_ = w.WriteMsg(m)
+			}
+		}
+	}()
+
+	if w == nil || r == nil {
+		return
+	}
+
 	// Create a fake udpRequest to pass to the DNS controller
 	clientAddr := w.RemoteAddr()
+	if clientAddr == nil {
+		h.log.Errorf("Failed to parse client address: nil RemoteAddr")
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+		return
+	}
 	var clientIPPort netip.AddrPort
 
 	// Parse client address
 	host, portStr, err := net.SplitHostPort(clientAddr.String())
 	if err != nil {
 		h.log.Errorf("Failed to parse client address: %v", err)
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
 		return
 	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		h.log.Errorf("Failed to parse client port: %v", err)
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
 		return
+	}
+
+	if i := strings.LastIndex(host, "%"); i >= 0 {
+		host = host[:i]
 	}
 
 	clientIP, err := netip.ParseAddr(host)
 	if err != nil {
 		h.log.Errorf("Failed to parse client IP: %v", err)
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
 		return
 	}
 
 	clientIPPort = netip.AddrPortFrom(clientIP, uint16(port))
+	preferV6 := clientIP.Is6() && !clientIP.Is4In6()
+
+	listenerAddr := ":53"
+	if h.controller != nil && h.controller.dnsListener != nil && h.controller.dnsListener.Addr() != "" {
+		listenerAddr = h.controller.dnsListener.Addr()
+	}
+	realDst, err := parseDNSListenerAddrPort(listenerAddr, preferV6)
+	if err != nil {
+		h.log.WithError(err).Warnf("Failed to parse local DNS bind address %q, fallback to unspecified address", listenerAddr)
+		realDst = netip.AddrPortFrom(dnsFallbackAddr(preferV6), 53)
+	}
 
 	// Create routing result (fake)
 	routingResult := &bpfRoutingResult{
@@ -224,7 +311,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	// Handle the DNS request using the existing DNS controller
 	udpReq := &udpRequest{
 		realSrc:       clientIPPort,
-		realDst:       netip.MustParseAddrPort(h.controller.dnsListener.Addr()),
+		realDst:       realDst,
 		src:           clientIPPort,
 		lConn:         nil, // Not used in this context
 		routingResult: routingResult,

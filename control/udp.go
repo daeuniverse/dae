@@ -133,7 +133,15 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 					return nil
 				}
-				return err
+				// For DNS fast path, never leave client waiting on internal errors.
+				// Respond with SERVFAIL so resolver can retry/fallback promptly.
+				if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns fast path)", req, nil); sendErr != nil {
+					return errors.Join(err, sendErr)
+				}
+				if c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.WithError(err).Debug("DNS fast path failed; SERVFAIL sent")
+				}
+				return nil
 			}
 			return nil
 		}
