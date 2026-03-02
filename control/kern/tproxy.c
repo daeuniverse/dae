@@ -1587,6 +1587,16 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
 		return TC_ACT_OK;
 
+	// Only handle UDP for WAN ingress.
+	// TCP forwarding traffic (e.g. Cloudflare origin pull, port forwarding,
+	// any DNAT scenario) must NOT be intercepted here; doing so would apply
+	// routing decisions to packets that belong to the kernel's forwarding
+	// path, causing connectivity failures.  TCP is handled exclusively on
+	// lan_ingress/lan_egress where the traffic originates from a local
+	// application.
+	if (l4proto != IPPROTO_UDP)
+		return TC_ACT_PIPE;
+
 	// Update UDP Conntrack
 	if (l4proto == IPPROTO_UDP) {
 		struct tuples tuples;
@@ -1595,8 +1605,13 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
+		// Optimisation: Skip conntrack for DNS traffic
+		// DNS is stateless request-response, doesn't need connection tracking
+		if (!is_short_lived_udp_traffic(&reversed_tuples_key)) {
+			if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+				return TC_ACT_SHOT;
+		}
+		// For DNS, we skip conntrack entirely and let the packet flow through
 	}
 
 	return TC_ACT_PIPE;
