@@ -14,6 +14,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -28,6 +29,18 @@ type programSet struct {
 	setup  *ebpf.Program
 	check  *ebpf.Program
 }
+
+const maxMatchSetLen = 32 * 32
+
+// testMaxMatchSetLen is the number of routing_map slots the routing engine
+// should iterate during BPF unit tests.  The most rule-intensive test
+// (and_match_1) uses 5 slots (indices 0–4).  Using maxMatchSetLen (1024) here
+// causes the engine to iterate over 1019+ zero-initialized entries after the
+// real rules; each zeroed entry has MatchType_DomainSet (= 0), triggering a
+// domain-routing-map lookup per iteration.  For tests whose fallback uses
+// must=false (e.g. IpsetMatch), the engine never exits the loop early and the
+// 1022 extra domain lookups cause the test to run for multiple minutes.
+const testMaxMatchSetLen = 5
 
 func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dataOut, ctxOut []byte, err error) {
 	dataOut = make([]byte, len(data))
@@ -47,8 +60,8 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 	return ret, opts.DataOut, ctxOut, err
 }
 
-func collectPrograms(t *testing.T) (progset []programSet, err error) {
-	obj := &bpftestObjects{}
+func collectPrograms(t *testing.T) (obj *bpftestObjects, progset []programSet, err error) {
+	obj = &bpftestObjects{}
 	pinPath := "/sys/fs/bpf/dae"
 	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		return
@@ -72,7 +85,7 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 
 		t.Fatalf("Failed to load objects: %s\n%+v", verifierLog, err)
 
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err = obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
@@ -106,28 +119,64 @@ func printBpfDebugLog(t *testing.T) {
 }
 
 func readBpfDebugLog(t *testing.T) string {
-	file, err := os.Open("/sys/kernel/tracing/trace_pipe")
+	fd, err := syscall.Open("/sys/kernel/tracing/trace_pipe", syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatalf("Failed to open trace_pipe: %v", err)
 	}
-	defer file.Close()
+	defer syscall.Close(fd)
 
 	buffer := make([]byte, 1024*64)
-	n, err := file.Read(buffer)
-	if err != nil {
-		t.Fatalf("Failed to read from trace_pipe: %v", err)
+	var logs strings.Builder
+
+	for {
+		n, err := syscall.Read(fd, buffer)
+		if err != nil {
+			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+				break
+			}
+			t.Fatalf("Failed to read from trace_pipe: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		logs.Write(buffer[:n])
 	}
 
-	return string(buffer[:n])
+	return logs.String()
 }
 
 func Test(t *testing.T) {
-	progsets, err := collectPrograms(t)
+	obj, progsets, err := collectPrograms(t)
 	if err != nil {
 		t.Fatalf("error while collecting programs: %s", err)
 	}
 
+	key := uint32(0)
+	activeRulesLen := uint32(testMaxMatchSetLen)
+
+	// zeroEntry is used to clear routing_map slots between tests.
+	// Stale entries from a previous test (e.g. and_match writes to slots 0–4)
+	// would corrupt later tests that only write slots 0–1 if not cleared.
+	// We lazily initialise the slice from the map's actual value-size so there
+	// is no hard-coded dependency on the C struct layout.
+	var zeroEntry []byte
+
 	for _, progset := range progsets {
+		if err = obj.RoutingMetaMap.Update(key, activeRulesLen, ebpf.UpdateAny); err != nil {
+			t.Fatalf("failed to initialize routing_meta_map: %v", err)
+		}
+
+		// Zero routing_map[0..testMaxMatchSetLen-1] before running the test so
+		// leftover data from the previous test cannot affect this one.
+		if zeroEntry == nil {
+			zeroEntry = make([]byte, obj.RoutingMap.ValueSize())
+		}
+		for i := uint32(0); i < testMaxMatchSetLen; i++ {
+			if err = obj.RoutingMap.Update(i, zeroEntry, ebpf.UpdateAny); err != nil {
+				t.Fatalf("failed to clear routing_map[%d]: %v", i, err)
+			}
+		}
+
 		t.Logf("Running test: %s\n", progset.id)
 		// create ctx with the max allowed size(4k - head room - tailroom)
 		data := make([]byte, 4096-256-320)

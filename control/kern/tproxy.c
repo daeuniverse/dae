@@ -274,6 +274,17 @@ struct {
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_map SEC(".maps");
 
+// Runtime routing metadata.
+// key=0 => active routing rules length in routing_map.
+// Userspace updates this after rebuilding routing rules so route() can avoid
+// scanning up to MAX_MATCH_SET_LEN on every packet.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u32);
+	__uint(max_entries, 1);
+} routing_meta_map SEC(".maps");
+
 struct domain_routing {
 	__u32 bitmap[MAX_MATCH_SET_LEN / 32];
 };
@@ -946,7 +957,14 @@ static __always_inline __s64 route(const struct route_params *params)
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
 
-	ret = bpf_loop(MAX_MATCH_SET_LEN, route_loop_cb, &ctx, 0);
+	__u32 active_rules_len = MAX_MATCH_SET_LEN;
+	__u32 *active_rules_len_ptr =
+		bpf_map_lookup_elem(&routing_meta_map, &zero_key);
+	if (active_rules_len_ptr && *active_rules_len_ptr > 0 &&
+	    *active_rules_len_ptr <= MAX_MATCH_SET_LEN)
+		active_rules_len = *active_rules_len_ptr;
+
+	ret = bpf_loop(active_rules_len, route_loop_cb, &ctx, 0);
 	if (unlikely(ret < 0))
 		return ret;
 	if (ctx.result >= 0)
@@ -1222,11 +1240,11 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 			bool must;
 
 			get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-			int ret = handle_non_syn_tcp(skb, &tuples.five,
+			int nsyn_ret = handle_non_syn_tcp(skb, &tuples.five,
 						     &outbound, &mark, &must);
 			// For lan_egress, we apply the mark and let it continue
 			// regardless of whether we found cached routing or not
-			if (ret == TC_ACT_OK) {
+			if (nsyn_ret == TC_ACT_OK) {
 				// Found cached routing, mark is already applied
 				return TC_ACT_PIPE;
 			}
@@ -1355,9 +1373,9 @@ new_connection:;
 			__u8 outbound;
 			__u32 mark;
 			bool must;
-			int ret = handle_non_syn_tcp(skb, &tuples.five,
+			int nsyn_ret = handle_non_syn_tcp(skb, &tuples.five,
 						     &outbound, &mark, &must);
-			if (ret == TC_ACT_OK) {
+			if (nsyn_ret == TC_ACT_OK) {
 				// Found cached routing. Check outbound to decide action.
 				if (outbound == OUTBOUND_DIRECT && mark == 0) {
 					// Direct traffic, let it pass.
@@ -1368,7 +1386,7 @@ new_connection:;
 				// Non-direct routing: send to control plane.
 				goto control_plane;
 			}
-			if (ret == TC_ACT_PIPE) {
+			if (nsyn_ret == TC_ACT_PIPE) {
 				// No cached routing for a non-SYN packet.
 				// Keep main-compatible behavior and bypass routing to avoid
 				// hijacking forwarded return traffic (e.g. WAN->LAN 回源场景).
@@ -1569,27 +1587,15 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 	if (is_multicast_packet(&iph, &ipv6h, skb->protocol))
 		return TC_ACT_OK;
 
-	// Unified non-SYN TCP handling for wan_ingress
-	if (l4proto == IPPROTO_TCP) {
-		// Check if this is a non-SYN TCP packet (established connection)
-		if (!(tcph.syn && !tcph.ack)) {
-			struct tuples tuples;
-			__u8 outbound;
-			__u32 mark;
-			bool must;
-
-			get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-			int ret = handle_non_syn_tcp(skb, &tuples.five,
-						     &outbound, &mark, &must);
-			// For wan_ingress, we apply the mark and let it continue
-			// regardless of whether we found cached routing or not
-			if (ret == TC_ACT_OK) {
-				// Found cached routing, mark is already applied
-				return TC_ACT_PIPE;
-			}
-			// No cached routing, continue normal processing
-		}
-	}
+	// Only handle UDP for WAN ingress.
+	// TCP forwarding traffic (e.g. Cloudflare origin pull, port forwarding,
+	// any DNAT scenario) must NOT be intercepted here; doing so would apply
+	// routing decisions to packets that belong to the kernel's forwarding
+	// path, causing connectivity failures.  TCP is handled exclusively on
+	// lan_ingress/lan_egress where the traffic originates from a local
+	// application.
+	if (l4proto != IPPROTO_UDP)
+		return TC_ACT_PIPE;
 
 	// Update UDP Conntrack
 	if (l4proto == IPPROTO_UDP) {
@@ -1721,9 +1727,9 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 #endif
 		} else {
 			// The TCP connection exists. Apply cached routing decision.
-			int ret = handle_non_syn_tcp(skb, &tuples.five,
+			int nsyn_ret = handle_non_syn_tcp(skb, &tuples.five,
 						     &outbound, &mark, &must);
-			if (ret == TC_ACT_PIPE) {
+			if (nsyn_ret == TC_ACT_PIPE) {
 				// No cached routing. This is a pre-existing connection
 				// or server connection. Let it pass.
 				return TC_ACT_OK;

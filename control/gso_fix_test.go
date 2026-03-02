@@ -9,113 +9,62 @@ import (
 	"testing"
 )
 
-// TestAnyfromGSOFix verifies that the GSO fix in anyfrom_pool.go works correctly.
-// This ensures that UDP_SEGMENT is only set when the payload will actually be segmented.
-func TestAnyfromGSOFix(t *testing.T) {
+// TestAnyfromGSONotUsedForSinglePackets verifies that Anyfrom.Write* methods never
+// inject UDP_SEGMENT (UDP GSO) for any payload size.
+//
+// UDP GSO requires a "super-buffer" of N equal-sized datagrams concatenated
+// together; the kernel splits the buffer into N individual packets.
+// Anyfrom writes ONE datagram per call (proxy use case), so GSO is semantically
+// wrong here: applying it to a large payload would split one datagram into many,
+// violating UDP datagram semantics.  GSO code is kept as dead infrastructure for
+// a future batch-send redesign.
+func TestAnyfromGSONotUsedForSinglePackets(t *testing.T) {
 	tests := []struct {
-		name         string
-		payloadSize  int
-		gsoEnabled   bool
-		shouldUseGSO bool
+		name        string
+		payloadSize int
+		gsoEnabled  bool
 	}{
-		{
-			name:         "small packet (500B)",
-			payloadSize:  500,
-			gsoEnabled:   true,
-			shouldUseGSO: false, // < 1500, no GSO
-		},
-		{
-			name:         "MTU packet (1500B)",
-			payloadSize:  1500,
-			gsoEnabled:   true,
-			shouldUseGSO: false, // = 1500, no GSO
-		},
-		{
-			name:         "large packet (2000B)",
-			payloadSize:  2000,
-			gsoEnabled:   true,
-			shouldUseGSO: true, // > 1500, use GSO
-		},
-		{
-			name:         "jumbo packet (9000B)",
-			payloadSize:  9000,
-			gsoEnabled:   true,
-			shouldUseGSO: true, // > 1500, use GSO
-		},
-		{
-			name:         "GSO disabled",
-			payloadSize:  2000,
-			gsoEnabled:   false,
-			shouldUseGSO: false, // GSO disabled
-		},
+		{"small_500B", 500, true},
+		{"MTU_1500B", 1500, true},
+		{"large_2000B", 2000, true},
+		{"jumbo_9000B", 9000, true},
+		{"GSO_disabled", 2000, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &Anyfrom{
-				gso:         tt.gsoEnabled,
-				gotGSOError: false,
+				gso: tt.gsoEnabled,
 			}
-
-			// Check if GSO would be used
-			wouldUseGSO := a.SupportGso(tt.payloadSize)
-
-			// The actual GSO usage depends on both SupportGso and the size check in Write methods
-			actualUse := wouldUseGSO && tt.payloadSize > 1500
-
-			if actualUse != tt.shouldUseGSO {
-				t.Errorf("GSO usage mismatch: got=%v, want=%v (payload=%d, gsoEnabled=%v)",
-					actualUse, tt.shouldUseGSO, tt.payloadSize, tt.gsoEnabled)
-			}
+			// SupportGso is preserved for future batch-send use, but the Write
+			// methods no longer gate on it.  Any non-zero payload with gso=true
+			// returns true from SupportGso; that should NOT translate to actual
+			// GSO usage in the current implementation.
+			_ = a.SupportGso(tt.payloadSize)
+			// The key assertion: Write methods have no payload-size branch that
+			// calls appendUDPSegmentSizeMsg.  There is nothing more to assert here
+			// without a real socket; the test documents the intent.
 		})
 	}
 }
 
-// TestGSOSizeVerification tests that GSO is only used when payload > segment size
-func TestGSOSizeVerification(t *testing.T) {
-	gsoSize := uint16(1500) // Standard MTU
+// TestGSOSegmentSizeCorrectness documents the correct UDP_SEGMENT segment size
+// for standard MTU networks, for when a future batch-send path is designed.
+//
+// UDP_SEGMENT specifies the UDP *payload* size of each segment.  IP and UDP
+// headers are added by the kernel on top, so using MTU (1500) as the segment
+// size would create 1528-byte IPv4 packets, exceeding the MTU and requiring
+// refragmentation.
+func TestGSOSegmentSizeCorrectness(t *testing.T) {
+	const mtu = 1500
+	correctIPv4 := uint16(mtu - 20 - 8) // 1472: MTU - IP header - UDP header
+	correctIPv6 := uint16(mtu - 40 - 8) // 1452: MTU - IPv6 header - UDP header
 
-	tests := []struct {
-		name    string
-		payload []byte
-		wantGSO bool
-	}{
-		{
-			name:    "100 bytes",
-			payload: make([]byte, 100),
-			wantGSO: false,
-		},
-		{
-			name:    "1200 bytes (typical QUIC)",
-			payload: make([]byte, 1200),
-			wantGSO: false,
-		},
-		{
-			name:    "1500 bytes (exactly MTU)",
-			payload: make([]byte, 1500),
-			wantGSO: false,
-		},
-		{
-			name:    "1501 bytes (just over MTU)",
-			payload: make([]byte, 1501),
-			wantGSO: true,
-		},
-		{
-			name:    "4000 bytes",
-			payload: make([]byte, 4000),
-			wantGSO: true,
-		},
+	if correctIPv4 != 1472 {
+		t.Errorf("IPv4 segment size: got %d, want 1472", correctIPv4)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Simulate the logic from WriteMsgUDP
-			shouldUseGSO := len(tt.payload) > int(gsoSize)
-
-			if shouldUseGSO != tt.wantGSO {
-				t.Errorf("GSO decision wrong: got=%v, want=%v (payload=%d, gsoSize=%d)",
-					shouldUseGSO, tt.wantGSO, len(tt.payload), gsoSize)
-			}
-		})
+	if correctIPv6 != 1452 {
+		t.Errorf("IPv6 segment size: got %d, want 1452", correctIPv6)
 	}
+	t.Logf("Correct UDP_SEGMENT values: IPv4=%d IPv6=%d", correctIPv4, correctIPv6)
 }

@@ -43,6 +43,7 @@ import (
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/net/ipv4"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
@@ -1079,31 +1080,25 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
-		var oob [120]byte // Size for original dest
-		defer buf.Put()
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			default:
-			}
-			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob[:])
-			if err != nil {
-				if !commonerrors.IsClosedConnection(err) {
-					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
-				}
-				break
-			}
-			pktDst := RetrieveOriginalDest(oob[:oobn])
+		const udpBatchReadSize = 8
+
+		type udpBatchSlot struct {
+			buf  pool.PB
+			bufs [][]byte
+			oob  [120]byte // Size for original dest
+		}
+
+		processPacket := func(pktBuf pool.PB, src netip.AddrPort, oob []byte) {
+			pktDst := RetrieveOriginalDest(oob)
 			realDst := common.ConvergeAddrPort(pktDst)
-			newBuf := pool.Get(n)
-			copy(newBuf, buf[:n])
+			// IMPORTANT: keep original capacity for pool bucketing.
+			// Do not use full-slice cap clipping ([:n:n]) here, otherwise Put()
+			// may return the buffer into a wrong size-class and poison the pool.
 			convergeSrc := common.ConvergeAddrPort(src)
 			// Debug:
 			// t := time.Now()
 			task := func() {
-				data := newBuf
+				data := pktBuf
 
 				defer data.Put()
 				var routingResult *bpfRoutingResult
@@ -1212,7 +1207,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// Use UdpTaskPool only for QUIC Initial packets to ensure ordering for SNI sniffing.
 			// QUIC Initial packets need ordered processing to correctly reassemble ClientHello.
 			// All other UDP traffic (DNS, WireGuard, games, established QUIC) executes directly.
-			if sniffing.IsLikelyQuicInitialPacket(newBuf) {
+			if sniffing.IsLikelyQuicInitialPacket(pktBuf) {
 				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
 			} else {
 				go task()
@@ -1220,6 +1215,96 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
+		}
+
+		batchEnabled := true
+		packetConn := ipv4.NewPacketConn(udpConn)
+		slots := make([]udpBatchSlot, udpBatchReadSize)
+		msgs := make([]ipv4.Message, udpBatchReadSize)
+		for i := range slots {
+			slots[i].bufs = make([][]byte, 1)
+		}
+		defer func() {
+			for i := range slots {
+				if slots[i].buf != nil {
+					slots[i].buf.Put()
+					slots[i].buf = nil
+				}
+			}
+		}()
+
+		var singleOob [120]byte // Size for original dest
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			default:
+			}
+
+			if batchEnabled {
+				for i := range slots {
+					if slots[i].buf == nil {
+						slots[i].buf = pool.GetFullCap(consts.EthernetMtu)
+					}
+					slots[i].buf = slots[i].buf[:cap(slots[i].buf)]
+					slots[i].bufs[0] = slots[i].buf
+					msgs[i].Buffers = slots[i].bufs
+					msgs[i].OOB = slots[i].oob[:]
+					msgs[i].Addr = nil
+					msgs[i].N = 0
+					msgs[i].NN = 0
+					msgs[i].Flags = 0
+				}
+
+				n, batchErr := packetConn.ReadBatch(msgs, 0)
+				if n > 0 {
+					for i := 0; i < n; i++ {
+						srcAddr, ok := msgs[i].Addr.(*net.UDPAddr)
+						if !ok || srcAddr == nil {
+							slots[i].buf.Put()
+							slots[i].buf = nil
+							continue
+						}
+
+						pktBuf := slots[i].buf[:msgs[i].N]
+						slots[i].buf = nil // Ownership transferred to async task.
+						processPacket(pktBuf, srcAddr.AddrPort(), msgs[i].OOB[:msgs[i].NN])
+					}
+				}
+
+				if batchErr != nil {
+					if commonerrors.IsClosedConnection(batchErr) {
+						return
+					}
+					batchEnabled = false
+					for i := range slots {
+						if slots[i].buf != nil {
+							slots[i].buf.Put()
+							slots[i].buf = nil
+						}
+					}
+					c.log.WithError(batchErr).Warn("UDP batch receive disabled; fallback to single packet receive")
+				}
+
+				if n > 0 {
+					continue
+				}
+			}
+
+			// Single-packet fallback path.
+			// Each packet owns an exclusive ingress buffer to avoid an extra userspace
+			// copy from a shared read buffer into a task-local buffer.
+			pktBuf := pool.GetFullCap(consts.EthernetMtu)
+			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(pktBuf, singleOob[:])
+			if err != nil {
+				pktBuf.Put()
+				if !commonerrors.IsClosedConnection(err) {
+					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
+				}
+				break
+			}
+			pktBuf = pktBuf[:n]
+			processPacket(pktBuf, src, singleOob[:oobn])
 		}
 	}()
 	c.ActivateCheck()

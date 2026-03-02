@@ -28,13 +28,18 @@ type Anyfrom struct {
 	ttl           time.Duration
 	expiresAtNano atomic.Int64
 	// GSO support is modified from quic-go with many thanks.
-	gso         bool
-	gotGSOError bool
+	gso bool
+	// gotGSOError is set true the first time a GSO-related error is seen.
+	// Declared as atomic.Bool because Anyfrom is shared across goroutines:
+	// multiple goroutines may call Write methods concurrently, each triggering
+	// afterWrite.  A plain bool would be a data race under go test -race.
+	gotGSOError atomic.Bool
 }
 
 func (a *Anyfrom) afterWrite(err error) {
-	if !a.gotGSOError && isGSOError(err) {
-		a.gotGSOError = true
+	// CAS-style: only pay the atomic-store cost when transitioning false→true.
+	if !a.gotGSOError.Load() && isGSOError(err) {
+		a.gotGSOError.Store(true)
 	}
 	a.RefreshTtl()
 }
@@ -52,7 +57,7 @@ func (a *Anyfrom) SupportGso(size int) bool {
 	if size > math.MaxUint16 {
 		return false
 	}
-	return a.gso && !a.gotGSOError
+	return a.gso && !a.gotGSOError.Load()
 }
 func (a *Anyfrom) ReadFrom(b []byte) (int, net.Addr, error) {
 	defer a.RefreshTtl()
@@ -79,82 +84,49 @@ func (a *Anyfrom) SyscallConn() (syscall.RawConn, error) {
 	return a.UDPConn.SyscallConn()
 }
 func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
-	defer a.afterWrite(err)
-	if a.SupportGso(len(b)) {
-		// Only request UDP GSO when the payload will actually be segmented.
-		// Some drivers/devices misbehave when UDP_SEGMENT is set for single-segment sends.
-		// This mirrors the fix in quic-go: https://github.com/MetaCubeX/quic-go/commit/4df8f0d
-		gsoSize := uint16(1500) // Standard MTU
-		if len(b) > int(gsoSize) {
-			return a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(oob, gsoSize), addr)
-		}
-	}
+	defer func() { a.afterWrite(err) }()
+	// UDP GSO (UDP_SEGMENT) is NOT used here.
+	// UDP GSO is designed for "super-buffer" sends: the caller concatenates multiple
+	// equal-sized datagrams into one large buffer and the kernel splits them into
+	// individual packets in hardware.  Anyfrom proxies ONE datagram per Write call;
+	// there is no super-buffer.  Setting UDP_SEGMENT on a single payload would split
+	// one large datagram into multiple smaller ones, breaking UDP datagram semantics.
+	// Additionally, gsoSize=1500 would create 1528-byte IPv4 packets (1500+20+8),
+	// exceeding the standard MTU.  The correct value for UDP_SEGMENT is MTU-28 (IPv4)
+	// or MTU-48 (IPv6).  GSO support is retained for future batch-send redesign.
 	return a.UDPConn.WriteMsgUDP(b, oob, addr)
 }
 func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
-	defer a.afterWrite(err)
-	if a.SupportGso(len(b)) {
-		// Only request UDP GSO when the payload will actually be segmented.
-		gsoSize := uint16(1500)
-		if len(b) > int(gsoSize) {
-			return a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(oob, gsoSize), addr)
-		}
-	}
+	defer func() { a.afterWrite(err) }()
 	return a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
 }
 func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	defer a.afterWrite(err)
-	if a.SupportGso(len(b)) {
-		gsoSize := uint16(1500)
-		if len(b) > int(gsoSize) {
-			n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, gsoSize), addr.(*net.UDPAddr))
-			return n, err
-		}
-	}
+	defer func() { a.afterWrite(err) }()
 	return a.UDPConn.WriteTo(b, addr)
 }
 func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
-	defer a.afterWrite(err)
-	if a.SupportGso(len(b)) {
-		gsoSize := uint16(1500)
-		if len(b) > int(gsoSize) {
-			n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, gsoSize), addr)
-			return n, err
-		}
-	}
+	defer func() { a.afterWrite(err) }()
 	return a.UDPConn.WriteToUDP(b, addr)
 }
 func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
-	defer a.afterWrite(err)
-	if a.SupportGso(len(b)) {
-		gsoSize := uint16(1500)
-		if len(b) > int(gsoSize) {
-			n, _, err = a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(nil, gsoSize), addr)
-			return n, err
-		}
-	}
+	defer func() { a.afterWrite(err) }()
 	return a.UDPConn.WriteToUDPAddrPort(b, addr)
 }
 
 // isGSOSupported tests if the kernel supports GSO.
 // Sending with GSO might still fail later on, if the interface doesn't support it (see isGSOError).
+// isGSOSupported probes whether the kernel and interface support UDP GSO
+// (UDP_SEGMENT socket option).  GSO is disabled by default — set DAE_ENABLE_GSO=1
+// to opt in.  Note that the current Write methods do NOT use GSO because Anyfrom
+// proxies one datagram per call (no super-buffer).  This detection is retained
+// for a future batch-send redesign where multiple datagrams are coalesced.
 func isGSOSupported(uc *net.UDPConn) bool {
-	// TODO: We disable GSO because we haven't thought through how to design to use larger packets (we assume the max size of packet is 1500).
-	// See https://github.com/daeuniverse/dae/blob/cab1e4290967340923d7d5ca52b80f781711c18e/control/control_plane.go#L721C37-L721C37.
-
-	if enabled, _ := strconv.ParseBool(os.Getenv("DAE_ENABLE_GSO")); enabled {
-		// GSO is explicitly enabled, proceed with detection.
-	} else {
-		// GSO is disabled by default.
+	if enabled, _ := strconv.ParseBool(os.Getenv("DAE_ENABLE_GSO")); !enabled {
 		return false
 	}
 
 	conn, err := uc.SyscallConn()
 	if err != nil {
-		return false
-	}
-	disabled, err := strconv.ParseBool(os.Getenv("DAE_DISABLE_GSO"))
-	if err == nil && disabled {
 		return false
 	}
 	var serr error
@@ -249,10 +221,10 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 		}
 		uConn := pc.(*net.UDPConn)
 		af = &Anyfrom{
-			UDPConn:     uConn,
-			ttl:         ttl,
-			gotGSOError: false,
-			gso:         isGSOSupported(uConn),
+			UDPConn: uConn,
+			ttl:     ttl,
+			gso:     isGSOSupported(uConn),
+			// gotGSOError zero-value (false) is correct; set atomically on first error.
 		}
 
 		if ttl > 0 {

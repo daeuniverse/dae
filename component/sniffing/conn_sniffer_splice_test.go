@@ -16,9 +16,11 @@ import (
 	"testing"
 )
 
-// TestConnSnifferWriteToSplice verifies that WriteTo implements zero-copy splice
-func TestConnSnifferWriteToSplice(t *testing.T) {
-	// Create a TCP connection pair
+// TestConnSnifferWriteToBufferFlush verifies that WriteTo first flushes the
+// pre-buffered sniff data, then streams the remainder of the connection.
+// NOTE: splice(2) is NOT used — socket→socket always returns EINVAL on Linux;
+// the relay path is always io.Copy.
+func TestConnSnifferWriteToBufferFlush(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -37,17 +39,14 @@ func TestConnSnifferWriteToSplice(t *testing.T) {
 	}
 	defer conn1.Close()
 
-	// Create ConnSniffer with buffered data
+	// Simulate pre-buffered sniff data (e.g. TLS ClientHello).
 	sniffer := NewConnSniffer(conn1, 0)
-	// Simulate buffered data (like TLS ClientHello)
 	sniffer.Sniffer.buf.Reset()
 	sniffer.Sniffer.buf.Write([]byte("BUFFERED_DATA"))
 
-	// Check that ConnSniffer implements io.WriterTo
-	var _ io.WriterTo = sniffer
+	var _ io.WriterTo = sniffer // interface must be satisfied
 
-	// Write test data to conn2 (will be received by conn1)
-	testData := make([]byte, 100*1024) // 100KB
+	testData := make([]byte, 100*1024)
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
@@ -56,50 +55,43 @@ func TestConnSnifferWriteToSplice(t *testing.T) {
 		conn2.Close()
 	}()
 
-	// Use WriteTo to transfer data
 	var buf bytes.Buffer
 	n, err := sniffer.WriteTo(&buf)
 	if err != nil {
 		t.Fatalf("WriteTo error: %v", err)
 	}
 
-	// Verify we received all data
 	expected := int64(len("BUFFERED_DATA") + len(testData))
 	if n != expected {
-		t.Errorf("Expected %d bytes, got %d", expected, n)
+		t.Errorf("expected %d bytes, got %d", expected, n)
 	}
-
-	// Verify the buffered data came first
-	result := buf.Bytes()
-	if !bytes.HasPrefix(result, []byte("BUFFERED_DATA")) {
-		t.Error("Buffered data should come first")
+	if !bytes.HasPrefix(buf.Bytes(), []byte("BUFFERED_DATA")) {
+		t.Error("buffered data should come first")
 	}
-
-	// Verify the rest of the data matches
-	rest := result[len("BUFFERED_DATA"):]
-	if !bytes.Equal(rest, testData) {
-		t.Error("Remaining data doesn't match")
+	if !bytes.Equal(buf.Bytes()[len("BUFFERED_DATA"):], testData) {
+		t.Error("remaining data mismatch")
 	}
 }
 
-// TestConnSnifferReadFromSplice verifies that ReadFrom implements zero-copy splice
-func TestConnSnifferReadFromSplice(t *testing.T) {
-	// Create a TCP connection pair
+// TestConnSnifferReadFromForwardsData verifies that ReadFrom forwards all bytes
+// to the underlying connection.
+func TestConnSnifferReadFromForwardsData(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
 
-	// First accept and then dial to avoid race
-	done := make(chan struct{})
+	done := make(chan []byte, 1)
 	go func() {
-		conn2, err := l.Accept()
+		conn, err := l.Accept()
 		if err != nil {
+			done <- nil
 			return
 		}
-		defer conn2.Close()
-		close(done)
+		defer conn.Close()
+		data, _ := io.ReadAll(conn)
+		done <- data
 	}()
 
 	conn1, err := net.Dial("tcp", l.Addr().String())
@@ -108,56 +100,32 @@ func TestConnSnifferReadFromSplice(t *testing.T) {
 	}
 	defer conn1.Close()
 
-	<-done // Wait for connection to be accepted
-
-	// Create ConnSniffer
 	sniffer := NewConnSniffer(conn1, 0)
 
-	// Check that ConnSniffer implements io.ReaderFrom
-	var _ io.ReaderFrom = sniffer
+	var _ io.ReaderFrom = sniffer // interface must be satisfied
 
-	// Create another connection pair for testing
-	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	testData := make([]byte, 50*1024)
+	for i := range testData {
+		testData[i] = byte(i % 256)
+	}
+	n, err := sniffer.ReadFrom(bytes.NewReader(testData))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadFrom error: %v", err)
 	}
-	defer l2.Close()
-
-	go func() {
-		c2, _ := net.Dial("tcp", l2.Addr().String())
-		testData := make([]byte, 100*1024) // 100KB
-		for i := range testData {
-			testData[i] = byte(i % 256)
-		}
-		c2.Write(testData)
-		// Close write side but keep connection open for reading
-		if tcpConn, ok := c2.(*net.TCPConn); ok {
-			tcpConn.CloseWrite()
-		}
-		// Delay closing to allow read
-		c2.Close()
-	}()
-
-	srcConn, err := l2.Accept()
-	if err != nil {
-		t.Fatal(err)
+	if n != int64(len(testData)) {
+		t.Errorf("expected %d bytes, got %d", len(testData), n)
 	}
-	defer srcConn.Close()
+	conn1.Close()
 
-	// Use ReadFrom to transfer data from srcConn to sniffer (which wraps conn1)
-	n, err := sniffer.ReadFrom(srcConn)
-	if err != nil && err != io.EOF {
-		t.Logf("ReadFrom error (may be expected): %v", err)
+	received := <-done
+	if !bytes.Equal(received, testData) {
+		t.Error("data mismatch after ReadFrom")
 	}
-
-	if n == 0 {
-		t.Error("Expected to read some data")
-	}
-	t.Logf("Read %d bytes via ReadFrom", n)
 }
 
-// TestConnSnifferSyscallConnNotExposed verifies that ConnSniffer does NOT expose SyscallConn
-// This ensures that netproxy.ReadFrom will use io.Copy path, which will call our WriteTo/ReadFrom
+// TestConnSnifferSyscallConnNotExposed verifies that ConnSniffer does NOT
+// expose SyscallConn directly. This ensures callers (e.g. netproxy.ReadFrom)
+// take the io.Copy branch, which triggers our WriteTo/ReadFrom implementations.
 func TestConnSnifferSyscallConnNotExposed(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -173,84 +141,48 @@ func TestConnSnifferSyscallConnNotExposed(t *testing.T) {
 
 	sniffer := NewConnSniffer(conn, 0)
 
-	// Verify that ConnSniffer does NOT implement SyscallConn directly
 	type syscallConn interface {
 		SyscallConn() (syscall.RawConn, error)
 	}
-
-	_, ok := interface{}(sniffer).(syscallConn)
-	if ok {
-		t.Error("ConnSniffer should NOT directly expose SyscallConn")
+	if _, ok := interface{}(sniffer).(syscallConn); ok {
+		t.Error("ConnSniffer must NOT directly expose SyscallConn")
 	}
-
-	// But the underlying connection should support it
-	_, ok = sniffer.Conn.(syscallConn)
-	if !ok {
-		t.Error("Underlying connection should support SyscallConn")
-	}
-
-	// And we can get the raw connection from it
-	_, ok = conn.(syscallConn)
-	if !ok {
-		t.Error("Original TCP connection should support SyscallConn")
+	if _, ok := sniffer.Conn.(syscallConn); !ok {
+		t.Error("underlying TCP connection should support SyscallConn")
 	}
 }
 
-// BenchmarkWriteToWithSplice benchmarks WriteTo with splice
-func BenchmarkWriteToWithSplice(b *testing.B) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer l.Close()
-
-	conn2, err := net.Dial("tcp", l.Addr().String())
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer conn2.Close()
-
-	conn1, err := l.Accept()
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer conn1.Close()
-
-	sniffer := NewConnSniffer(conn1, 0)
-	// Add some buffered data
-	sniffer.Sniffer.buf.Write([]byte("BUFFERED"))
-
-	data := make([]byte, 1024*1024) // 1MB
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
+// BenchmarkWriteToBufferFlush benchmarks the WriteTo hot path (buffer flush + relay).
+func BenchmarkWriteToBufferFlush(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		// Create new connections for each iteration
-		l2, err := net.Listen("tcp", "127.0.0.1:0")
+		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			b.Fatal(err)
 		}
-		c2, _ := net.Dial("tcp", l2.Addr().String())
-		c1, _ := l2.Accept()
+		c2, _ := net.Dial("tcp", l.Addr().String())
+		c1, _ := l.Accept()
 
 		sniffer := NewConnSniffer(c1, 0)
 		sniffer.Sniffer.buf.Write([]byte("BUFFERED"))
 
-		go c2.Write(data)
+		data := make([]byte, 1024*1024)
+		go func() {
+			c2.Write(data)
+			c2.Close()
+		}()
 
 		var buf bytes.Buffer
 		sniffer.WriteTo(&buf)
 
 		c1.Close()
 		c2.Close()
-		l2.Close()
+		l.Close()
 	}
 }
 
-// TestConnSnifferWithNetproxyReadFrom tests integration with netproxy.ReadFrom
-func TestConnSnifferWithNetproxyReadFrom(t *testing.T) {
-	// Create a TCP connection pair
+// TestConnSnifferWriteToViaCopy verifies the io.Copy integration: when data is
+// copied from a ConnSniffer via io.Copy, pre-buffered bytes come first.
+func TestConnSnifferWriteToViaCopy(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -269,14 +201,11 @@ func TestConnSnifferWithNetproxyReadFrom(t *testing.T) {
 	}
 	defer conn1.Close()
 
-	// Wrap conn1 in ConnSniffer
 	sniffer := NewConnSniffer(conn1, 0)
-	// Add buffered data
 	sniffer.Sniffer.buf.Reset()
 	sniffer.Sniffer.buf.Write([]byte("HELLO"))
 
-	// Write test data
-	testData := make([]byte, 10*1024) // 10KB
+	testData := make([]byte, 10*1024)
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
@@ -285,7 +214,6 @@ func TestConnSnifferWithNetproxyReadFrom(t *testing.T) {
 		conn2.Close()
 	}()
 
-	// Use io.Copy (this will use our WriteTo implementation)
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, sniffer)
 	if err != nil {
@@ -294,11 +222,9 @@ func TestConnSnifferWithNetproxyReadFrom(t *testing.T) {
 
 	expected := int64(len("HELLO") + len(testData))
 	if n != expected {
-		t.Errorf("Expected %d bytes, got %d", expected, n)
+		t.Errorf("expected %d bytes, got %d", expected, n)
 	}
-
-	result := buf.Bytes()
-	if !bytes.HasPrefix(result, []byte("HELLO")) {
-		t.Error("Buffered data should come first")
+	if !bytes.HasPrefix(buf.Bytes(), []byte("HELLO")) {
+		t.Error("buffered data should come first")
 	}
 }

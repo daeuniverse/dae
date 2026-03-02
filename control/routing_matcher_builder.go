@@ -318,6 +318,24 @@ func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 }
 
 func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
+	// Rule reload safety: clear LPM cache to avoid stale cache hits across
+	// different rule generations (e.g. index reuse after config changes).
+	{
+		var (
+			key bpfLpmCacheKey
+			val uint8
+		)
+		iter := b.bpf.LpmCacheMap.Iterate()
+		for iter.Next(&key, &val) {
+			if err = b.bpf.LpmCacheMap.Delete(&key); err != nil {
+				return fmt.Errorf("clear lpm_cache_map: %w", err)
+			}
+		}
+		if err = iter.Err(); err != nil {
+			return fmt.Errorf("iterate lpm_cache_map: %w", err)
+		}
+	}
+
 	// Update lpm_array_map.
 	for i, cidrs := range b.simulatedLpmTries {
 		var keys []_bpfLpmKey
@@ -348,6 +366,9 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
+	}
+	if err = b.bpf.RoutingMetaMap.Update(uint32(0), routingsLen, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("update routing_meta_map: %w", err)
 	}
 	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
 

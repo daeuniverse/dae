@@ -13,13 +13,14 @@ import (
 	"time"
 )
 
-// mockConn implements net.Conn for testing splice-unavailable fallback path.
-// It intentionally does not implement SyscallConn.
+// mockConn implements net.Conn for testing.
+// It intentionally does not implement SyscallConn so that WriteTo/ReadFrom
+// takes the io.Copy code path rather than any syscall shortcut.
 type mockConn struct {
-	net.Conn
-	data  []byte
-	read  int
-	delay time.Duration
+	net.Conn // nil — only the methods below are used
+	data     []byte
+	read     int
+	delay    time.Duration
 }
 
 func (m *mockConn) Read(b []byte) (n int, err error) {
@@ -34,61 +35,97 @@ func (m *mockConn) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (m *mockConn) Write(b []byte) (n int, err error) {
-	return len(b), nil
-}
+func (m *mockConn) Write(b []byte) (n int, err error)    { return len(b), nil }
+func (m *mockConn) Close() error                         { return nil }
+func (m *mockConn) RemoteAddr() net.Addr                 { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345} }
+func (m *mockConn) LocalAddr() net.Addr                  { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080} }
+func (m *mockConn) SetDeadline(_ time.Time) error        { return nil }
+func (m *mockConn) SetReadDeadline(_ time.Time) error    { return nil }
+func (m *mockConn) SetWriteDeadline(_ time.Time) error   { return nil }
 
-func (m *mockConn) Close() error {
-	return nil
-}
-
-func (m *mockConn) RemoteAddr() net.Addr {
-	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 21}
-}
-
-// TestSpliceUnavailableFallbackTransparency tests that splice-unavailable path doesn't break connection.
-func TestSpliceUnavailableFallbackTransparency(t *testing.T) {
-	// Create a mock connection with data
-	data := bytes.Repeat([]byte("test data for splice fallback\n"), 100)
+// TestWriteToDataIntegrity verifies that WriteTo transfers all bytes correctly
+// when the underlying connection does not support SyscallConn (the io.Copy path).
+// splice(2) is never attempted socket→socket; this test documents that fact.
+func TestWriteToDataIntegrity(t *testing.T) {
+	data := bytes.Repeat([]byte("test data for relay\n"), 100)
 	mock := &mockConn{data: data}
 
-	// Create sniffer
 	sniffer := NewConnSniffer(mock, 1*time.Second)
 
-	// Write to buffer
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, sniffer)
 
-	// Verify data was transferred completely when splice is unavailable.
 	if err != nil && err != io.EOF {
 		t.Errorf("unexpected error: %v", err)
 	}
-
 	if int(n) != len(data) {
 		t.Errorf("expected %d bytes, got %d", len(data), n)
 	}
-
-	// Verify data integrity
 	if !bytes.Equal(buf.Bytes(), data) {
 		t.Error("data corruption detected")
 	}
 }
 
-// TestSpliceFailedFlagState tests spliceFailed flag access without forcing splice path.
-func TestSpliceFailedFlagState(t *testing.T) {
-	mock := &mockConn{data: []byte("test")}
+// TestWriteToFlushesPrebufferedData verifies that data already buffered during
+// protocol sniffing is flushed to the writer before the stream continues.
+func TestWriteToFlushesPrebufferedData(t *testing.T) {
+	streamData := []byte("STREAM_PAYLOAD")
+	mock := &mockConn{data: streamData}
 	sniffer := NewConnSniffer(mock, 1*time.Second)
 
-	// Initially splice should not be marked as failed
-	if sniffer.spliceFailed.Load() {
-		t.Error("splice should not be marked as failed initially")
+	// Simulate bytes already consumed into the sniff buffer (e.g. TLS ClientHello).
+	prebuf := []byte("PRE_BUFFERED")
+	sniffer.Sniffer.buf.Write(prebuf)
+
+	var buf bytes.Buffer
+	n, err := io.Copy(&buf, sniffer)
+	if err != nil && err != io.EOF {
+		t.Errorf("unexpected error: %v", err)
 	}
 
-	// Perform one copy through the splice-unavailable path.
-	var buf bytes.Buffer
-	io.Copy(&buf, sniffer)
-
-	// This test intentionally does not force a splice failure; it only verifies
-	// flag state can be read safely after data transfer.
-	_ = sniffer.spliceFailed.Load()
+	expected := append(prebuf, streamData...)
+	if int(n) != len(expected) {
+		t.Errorf("expected %d bytes, got %d", len(expected), n)
+	}
+	if !bytes.Equal(buf.Bytes(), expected) {
+		t.Errorf("data mismatch: got %q, want %q", buf.Bytes(), expected)
+	}
 }
+
+// TestReadFromForwardsAllBytes verifies that ReadFrom delivers every byte to
+// the underlying connection.
+func TestReadFromForwardsAllBytes(t *testing.T) {
+	var written []byte
+	wMock := &writeCaptureMock{}
+	sniffer := NewConnSniffer(wMock, 1*time.Second)
+
+	payload := bytes.Repeat([]byte("payload"), 200)
+	n, err := sniffer.ReadFrom(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("ReadFrom error: %v", err)
+	}
+	written = wMock.written
+	if int(n) != len(payload) {
+		t.Errorf("expected %d bytes written, got %d", len(payload), n)
+	}
+	if !bytes.Equal(written, payload) {
+		t.Error("data mismatch in ReadFrom output")
+	}
+}
+
+// writeCaptureMock is a net.Conn whose Write method captures all written bytes.
+type writeCaptureMock struct {
+	net.Conn
+	written []byte
+}
+
+func (w *writeCaptureMock) Write(b []byte) (int, error) {
+	w.written = append(w.written, b...)
+	return len(b), nil
+}
+func (w *writeCaptureMock) Close() error                        { return nil }
+func (w *writeCaptureMock) RemoteAddr() net.Addr                { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9999} }
+func (w *writeCaptureMock) LocalAddr() net.Addr                 { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080} }
+func (w *writeCaptureMock) SetDeadline(_ time.Time) error       { return nil }
+func (w *writeCaptureMock) SetReadDeadline(_ time.Time) error   { return nil }
+func (w *writeCaptureMock) SetWriteDeadline(_ time.Time) error  { return nil }

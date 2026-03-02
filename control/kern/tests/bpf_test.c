@@ -97,13 +97,13 @@ int testcheck_dport_mismatch(struct __sk_buff *skb)
 SEC("tc/pktgen/ipset_match")
 int testpktgen_ipset_match(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(224,1,0,2), 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(100,64,0,2), 19233, 80);
 }
 
 SEC("tc/setup/ipset_match")
 int testsetup_ipset_match(struct __sk_buff *skb)
 {
-	/* dip(224.1.0.0/16) -> direct */
+	/* dip(100.64.0.0/16) -> direct */
 	struct match_set ms = {};
 	ms.not = false;
 	ms.type = MatchType_IpSet;
@@ -116,7 +116,7 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 		.trie_key = { .prefixlen = 112 , {} }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
-	lpm_key.data[3] = bpf_ntohl(0xe0010000); // 224.1.0.0
+	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
@@ -132,20 +132,20 @@ int testcheck_ipset_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      IPV4(192,168,0,1), IPV4(224,1,0,2),
+				      IPV4(192,168,0,1), IPV4(100,64,0,2),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/ipset_mismatch")
 int testpktgen_ipset_mismatch(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(225,1,0,2), 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(100,65,0,2), 19233, 80);
 }
 
 SEC("tc/setup/ipset_mismatch")
 int testsetup_ipset_mismatch(struct __sk_buff *skb)
 {
-	// dip(224.1.0.0/16) -> direct
+	// dip(100.64.0.0/16) -> direct
 	struct match_set ms = {};
 	ms.not = false;
 	ms.type = MatchType_IpSet;
@@ -158,7 +158,7 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 		.trie_key = { .prefixlen = 112, {} }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
-	lpm_key.data[3] = bpf_ntohl(0xe0010000); // 224.1.0.0
+	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
@@ -174,14 +174,14 @@ int testcheck_ipset_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      IPV4(192,168,0,1), IPV4(225,1,0,2),
+				      IPV4(192,168,0,1), IPV4(100,65,0,2),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/source_ipset_match")
 int testpktgen_source_ipset_match(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp(skb, IPV4(192,168,50,1), IPV4(224,1,0,2), 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,50,1), IPV4(1,1,1,1), 19233, 80);
 }
 
 SEC("tc/setup/source_ipset_match")
@@ -216,14 +216,14 @@ int testcheck_source_ipset_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
-				      IPV4(192,168,50,1), IPV4(224,1,0,2),
+				      IPV4(192,168,50,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
 
 SEC("tc/pktgen/source_ipset_mismatch")
 int testpktgen_source_ipset_mismatch(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp(skb, IPV4(192,168,51,1), IPV4(224,1,0,2), 19233, 80);
+	return set_ipv4_tcp(skb, IPV4(192,168,51,1), IPV4(1,1,1,1), 19233, 80);
 }
 
 SEC("tc/setup/source_ipset_mismatch")
@@ -258,7 +258,7 @@ int testcheck_source_ipset_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
-				      IPV4(192,168,51,1), IPV4(224,1,0,2),
+				      IPV4(192,168,51,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
 
