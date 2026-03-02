@@ -43,7 +43,6 @@ import (
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/ipv4"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
@@ -1080,14 +1079,6 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
-		const udpBatchReadSize = 8
-
-		type udpBatchSlot struct {
-			buf  pool.PB
-			bufs [][]byte
-			oob  [120]byte // Size for original dest
-		}
-
 		processPacket := func(pktBuf pool.PB, src netip.AddrPort, oob []byte) {
 			pktDst := RetrieveOriginalDest(oob)
 			realDst := common.ConvergeAddrPort(pktDst)
@@ -1217,22 +1208,6 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// }
 		}
 
-		batchEnabled := true
-		packetConn := ipv4.NewPacketConn(udpConn)
-		slots := make([]udpBatchSlot, udpBatchReadSize)
-		msgs := make([]ipv4.Message, udpBatchReadSize)
-		for i := range slots {
-			slots[i].bufs = make([][]byte, 1)
-		}
-		defer func() {
-			for i := range slots {
-				if slots[i].buf != nil {
-					slots[i].buf.Put()
-					slots[i].buf = nil
-				}
-			}
-		}()
-
 		var singleOob [120]byte // Size for original dest
 		for {
 			select {
@@ -1241,57 +1216,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			default:
 			}
 
-			if batchEnabled {
-				for i := range slots {
-					if slots[i].buf == nil {
-						slots[i].buf = pool.GetFullCap(consts.EthernetMtu)
-					}
-					slots[i].buf = slots[i].buf[:cap(slots[i].buf)]
-					slots[i].bufs[0] = slots[i].buf
-					msgs[i].Buffers = slots[i].bufs
-					msgs[i].OOB = slots[i].oob[:]
-					msgs[i].Addr = nil
-					msgs[i].N = 0
-					msgs[i].NN = 0
-					msgs[i].Flags = 0
-				}
-
-				n, batchErr := packetConn.ReadBatch(msgs, 0)
-				if n > 0 {
-					for i := 0; i < n; i++ {
-						srcAddr, ok := msgs[i].Addr.(*net.UDPAddr)
-						if !ok || srcAddr == nil {
-							slots[i].buf.Put()
-							slots[i].buf = nil
-							continue
-						}
-
-						pktBuf := slots[i].buf[:msgs[i].N]
-						slots[i].buf = nil // Ownership transferred to async task.
-						processPacket(pktBuf, srcAddr.AddrPort(), msgs[i].OOB[:msgs[i].NN])
-					}
-				}
-
-				if batchErr != nil {
-					if commonerrors.IsClosedConnection(batchErr) {
-						return
-					}
-					batchEnabled = false
-					for i := range slots {
-						if slots[i].buf != nil {
-							slots[i].buf.Put()
-							slots[i].buf = nil
-						}
-					}
-					c.log.WithError(batchErr).Warn("UDP batch receive disabled; fallback to single packet receive")
-				}
-
-				if n > 0 {
-					continue
-				}
-			}
-
-			// Single-packet fallback path.
+			// Single-packet path.
 			// Each packet owns an exclusive ingress buffer to avoid an extra userspace
 			// copy from a shared read buffer into a task-local buffer.
 			pktBuf := pool.GetFullCap(consts.EthernetMtu)
