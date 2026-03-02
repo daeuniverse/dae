@@ -25,6 +25,7 @@ const (
 	NsName       = "daens"
 	HostVethName = "dae0"
 	NsVethName   = "dae0peer"
+	DaeVethTxQLen = 1000
 )
 
 // ptrToUint32 returns a pointer to the given uint32 value.
@@ -232,9 +233,10 @@ func (ns *DaeNetns) setupVeth() (err error) {
 	if err = netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:   HostVethName,
-			TxQLen: 1000,
+			TxQLen: DaeVethTxQLen,
 		},
-		PeerName: NsVethName,
+		PeerName:   NsVethName,
+		PeerTxQLen: DaeVethTxQLen,
 	}); err != nil {
 		return fmt.Errorf("failed to add veth pair: %v", err)
 	}

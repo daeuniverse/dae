@@ -538,7 +538,11 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 
 	// tproxy_dae0peer_ingress@eth0 at dae netns
 	daens.With(func() error {
-		return c.addQdisc(daens.Dae0Peer().Attrs().Name)
+		err := netlink.LinkSetTxQLen(daens.Dae0Peer(), DaeVethTxQLen)
+		if err == nil {
+			err = c.addQdisc(daens.Dae0Peer().Attrs().Name)
+		}
+		return err
 	})
 	filterDae0peerIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
