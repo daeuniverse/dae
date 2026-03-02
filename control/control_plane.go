@@ -245,6 +245,11 @@ func NewControlPlane(
 			return nil, fmt.Errorf("load eBPF objects: %w", err)
 		}
 	}
+	// Ensure critical maps are always present. DNS fast-path optimizations only
+	// skip per-flow map updates, never map object creation.
+	if err = validateRequiredBpfMapsLoaded(bpf); err != nil {
+		return nil, fmt.Errorf("validate bpf maps: %w", err)
+	}
 	log.Infof("Loaded eBPF programs and maps")
 	// outboundId2Name can be modified later.
 	outboundId2Name := make(map[uint8]string)
@@ -550,13 +555,11 @@ func NewControlPlane(
 	// dae-wing compatibility but not used for cache refresh.
 	// TODO: Implement selective cache refresh based on what changed in DNS config.
 	if _bpf != nil {
-		// Is reloading, remove all map items.
-		// Normally, it is due to the change of ip version preference.
-		var key [4]uint32
-		var val bpfDomainRouting
-		iter := core.bpf.DomainRoutingMap.Iterate()
-		for iter.Next(&key, &val) {
-			_ = core.bpf.DomainRoutingMap.Delete(&key)
+		// Keep reload behavior aligned with main: clear domain_routing_map only.
+		// Connection-state maps are intentionally preserved to avoid affecting
+		// established flows during reload.
+		if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
+			return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 		}
 	}
 
@@ -612,6 +615,42 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 		return option, nil
 	}
 	return nil, nil
+}
+
+// clearReloadDomainRoutingMap keeps reload behavior aligned with main:
+// only clear domain_routing_map on reload.
+//
+// IMPORTANT:
+// Do NOT clear connection-state maps (routing_tuples_map/udp_conn_state_map)
+// here, otherwise established flows may lose cached state and get rerouted.
+func clearReloadDomainRoutingMap(bpf *bpfObjects) error {
+	return BpfMapDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
+}
+
+// validateRequiredBpfMapsLoaded checks maps that are required by both DNS and
+// non-DNS datapaths. DNS fast-path may skip per-flow entry updates, but these
+// map objects must always exist.
+func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
+	if bpf == nil {
+		return fmt.Errorf("nil bpf objects")
+	}
+	required := []struct {
+		name string
+		m    *ebpf.Map
+	}{
+		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
+		{name: "routing_tuples_map", m: bpf.RoutingTuplesMap},
+		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
+		{name: "routing_map", m: bpf.RoutingMap},
+		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
+		{name: "lpm_cache_map", m: bpf.LpmCacheMap},
+	}
+	for _, r := range required {
+		if r.m == nil {
+			return fmt.Errorf("required map %q is nil", r.name)
+		}
+	}
+	return nil
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.

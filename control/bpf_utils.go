@@ -173,6 +173,26 @@ func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
 	return vKeys.Len(), nil
 }
 
+// BpfMapDeleteAll deletes all entries in a map via iterator scan.
+// It tolerates concurrent key disappearance during deletion.
+func BpfMapDeleteAll[K any, V any](m *ebpf.Map) error {
+	var (
+		key K
+		val V
+	)
+
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("delete key in map %s: %w", m.String(), err)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate map %s: %w", m.String(), err)
+	}
+	return nil
+}
+
 // detectCgroupPath returns the first-found mount point of type cgroup2
 // and stores it in the cgroupPath global variable.
 // Copied from https://github.com/cilium/ebpf/blob/v0.10.0/examples/cgroup_skb/main.go

@@ -1,0 +1,76 @@
+{
+  "match_types": [
+    "DomainSet",
+    "IpSet",
+    "SourceIpSet",
+    "Port",
+    "SourcePort",
+    "L4Proto",
+    "IpVersion",
+    "Mac",
+    "ProcessName",
+    "Dscp",
+    "Fallback",
+    "MustRules",
+    "Upstream",
+    "QType"
+  ],
+  "l4_proto": [
+    {
+      "name": "TCP",
+      "value": 1
+    },
+    {
+      "name": "UDP",
+      "value": 2
+    },
+    {
+      "name": "X",
+      "value": 3
+    }
+  ],
+  "ip_version": [
+    {
+      "name": "4",
+      "value": 1
+    },
+    {
+      "name": "6",
+      "value": 2
+    },
+    {
+      "name": "X",
+      "value": 3
+    }
+  ],
+  "outbound": [
+    {
+      "name": "DIRECT",
+      "value": 0
+    },
+    {
+      "name": "BLOCK",
+      "value": 1
+    },
+    {
+      "name": "MUST_RULES",
+      "value": 252
+    },
+    {
+      "name": "CONTROL_PLANE_ROUTING",
+      "value": 253
+    },
+    {
+      "name": "LOGICAL_OR",
+      "value": 254
+    },
+    {
+      "name": "LOGICAL_AND",
+      "value": 255
+    },
+    {
+      "name": "LOGICAL_MASK",
+      "value": 254
+    }
+  ]
+}

@@ -3,9 +3,14 @@
 
 //go:build exclude
 
+// Keep BPF tests close to production code size by default.
+// Enable verbose debug output only when explicitly requested via CFLAGS:
+//   -D__BPF_TEST_ENABLE_DEBUG
+#ifdef __BPF_TEST_ENABLE_DEBUG
 #define __DEBUG
 #define __DEBUG_ROUTING
 #define __PRINT_ROUTING_RESULT
+#endif
 #define __BPF_TEST_DISABLE_LPM_CACHE  // Disable LPM cache in test mode
 
 #include "../tproxy.c"

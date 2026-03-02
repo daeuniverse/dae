@@ -321,18 +321,8 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	// Rule reload safety: clear LPM cache to avoid stale cache hits across
 	// different rule generations (e.g. index reuse after config changes).
 	{
-		var (
-			key bpfLpmCacheKey
-			val uint8
-		)
-		iter := b.bpf.LpmCacheMap.Iterate()
-		for iter.Next(&key, &val) {
-			if err = b.bpf.LpmCacheMap.Delete(&key); err != nil {
-				return fmt.Errorf("clear lpm_cache_map: %w", err)
-			}
-		}
-		if err = iter.Err(); err != nil {
-			return fmt.Errorf("iterate lpm_cache_map: %w", err)
+		if err = BpfMapDeleteAll[bpfLpmCacheKey, uint8](b.bpf.LpmCacheMap); err != nil {
+			return fmt.Errorf("clear lpm_cache_map: %w", err)
 		}
 	}
 

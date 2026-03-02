@@ -41,7 +41,7 @@ endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
 
-.PHONY: clean-ebpf ebpf dae submodule submodules
+.PHONY: clean-ebpf ebpf ebpf-sync ebpf-sync-check ebpf-test-tagged ebpf-test-debug ebpf-test-debug-tagged dae submodule submodules
 
 ## Begin Dae Build
 dae: export GOOS=linux
@@ -84,19 +84,29 @@ clean-ebpf:
 fmt:
 	go fmt ./...
 
+ebpf-sync:
+	go generate ./common/consts/ebpf.go
+
+ebpf-sync-check: ebpf-sync
+	git diff --exit-code -- common/consts/ebpf_generated.go control/kern/ebpf_sync_defs.h
+
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET := $(GOARCH)
-ebpf: submodule clean-ebpf
+ebpf: ebpf-sync submodule clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     go generate ./control/control.go && \
-    go generate ./trace/trace.go && echo trace > $(BUILD_TAGS_FILE) || echo > $(BUILD_TAGS_FILE)
+    if go generate ./trace/trace.go; then \
+		echo dae_real_ebpf,trace > $(BUILD_TAGS_FILE); \
+	else \
+		echo dae_real_ebpf > $(BUILD_TAGS_FILE); \
+	fi
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
@@ -106,7 +116,7 @@ ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf-test: export BPF_CFLAGS := $(CFLAGS)
 ebpf-test: export BPF_TARGET := $(TARGET)
 ebpf-test: export BPF_TRACE_TARGET := $(GOARCH)
-ebpf-test: submodule clean-ebpf
+ebpf-test: ebpf-sync submodule clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
@@ -114,5 +124,47 @@ ebpf-test: submodule clean-ebpf
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
     go test -v ./control/kern/tests/...
+
+ebpf-test-tagged: export BPF_CLANG := $(CLANG)
+ebpf-test-tagged: export BPF_STRIP_FLAG := $(STRIP_FLAG)
+ebpf-test-tagged: export BPF_CFLAGS := $(CFLAGS)
+ebpf-test-tagged: export BPF_TARGET := $(TARGET)
+ebpf-test-tagged: export BPF_TRACE_TARGET := $(GOARCH)
+ebpf-test-tagged: ebpf-sync submodule clean-ebpf
+	@unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
+    echo $(STRIP_FLAG) && \
+    go generate ./control/kern/tests/bpf_test.go && \
+    go clean -testcache && \
+    go test -v -tags dae_bpf_tests ./control/kern/tests/...
+
+ebpf-test-debug: export BPF_CLANG := $(CLANG)
+ebpf-test-debug: export BPF_STRIP_FLAG := $(STRIP_FLAG)
+ebpf-test-debug: export BPF_CFLAGS := $(CFLAGS) -D__BPF_TEST_ENABLE_DEBUG
+ebpf-test-debug: export BPF_TARGET := $(TARGET)
+ebpf-test-debug: export BPF_TRACE_TARGET := $(GOARCH)
+ebpf-test-debug: ebpf-sync submodule clean-ebpf
+	@unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
+    echo $(STRIP_FLAG) && \
+    go generate ./control/kern/tests/bpf_test.go && \
+    go clean -testcache && \
+    go test -v ./control/kern/tests/...
+
+ebpf-test-debug-tagged: export BPF_CLANG := $(CLANG)
+ebpf-test-debug-tagged: export BPF_STRIP_FLAG := $(STRIP_FLAG)
+ebpf-test-debug-tagged: export BPF_CFLAGS := $(CFLAGS) -D__BPF_TEST_ENABLE_DEBUG
+ebpf-test-debug-tagged: export BPF_TARGET := $(TARGET)
+ebpf-test-debug-tagged: export BPF_TRACE_TARGET := $(GOARCH)
+ebpf-test-debug-tagged: ebpf-sync submodule clean-ebpf
+	@unset GOOS && \
+    unset GOARCH && \
+    unset GOARM && \
+    echo $(STRIP_FLAG) && \
+    go generate ./control/kern/tests/bpf_test.go && \
+    go clean -testcache && \
+    go test -v -tags dae_bpf_tests ./control/kern/tests/...
 
 ## End Ebpf
