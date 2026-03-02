@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	daerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -60,7 +61,7 @@ func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 		return
 	}
 	entry := ue.log.WithError(err).WithField("lAddr", ue.lAddr.String())
-	if isUDPEndpointNormalClose(err) {
+	if daerrors.IsUDPEndpointNormalClose(err) {
 		entry.Debugln("UdpEndpoint " + msg + " closed normally")
 	} else {
 		entry.Warnln("UdpEndpoint " + msg + " exited with error")

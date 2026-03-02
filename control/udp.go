@@ -217,10 +217,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				return nil
 			}
 			if err != nil {
-				logrus.WithError(err).
-					WithField("from", realSrc).
-					WithField("to", realDst).
-					Trace("sniffUdp")
+				if logrus.IsLevelEnabled(logrus.TraceLevel) {
+					logrus.WithError(err).
+						WithField("from", realSrc).
+						WithField("to", realDst).
+						Trace("sniffUdp")
+				}
 			}
 			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 			// Re-handlePkt after self func.

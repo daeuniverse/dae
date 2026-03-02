@@ -16,6 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	daerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -75,7 +76,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	defer rConn.Close()
 
 	if err = RelayTCP(sniffer, rConn); err != nil {
-		if isIgnorableTCPRelayError(err) {
+		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}
 		return fmt.Errorf("handleTCP relay error: %w", err)

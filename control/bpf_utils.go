@@ -20,6 +20,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	daerrors "github.com/daeuniverse/dae/common/errors"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 )
@@ -279,9 +280,9 @@ retryLoadBpf:
 				}
 			}
 		}
-		// Use wrapBPFError to add helpful context to BPF errors.
+		// Use daerrors.WrapBPFError to add helpful context to BPF errors.
 		// This replaces string matching with structured error handling.
-		err = wrapBPFError(err)
+		err = daerrors.WrapBPFError(err)
 		return err
 	}
 	return nil

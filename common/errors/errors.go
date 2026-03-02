@@ -14,6 +14,8 @@ import (
 	"net"
 	"os"
 	"syscall"
+
+	"github.com/olicesx/quic-go"
 )
 
 // ============================================================================
@@ -156,11 +158,91 @@ func IsIgnorableConnectionError(err error) bool {
 	}
 
 	// Check by error message for backward compatibility
-	errStr := err.Error()
-	return Contains(errStr, "write: broken pipe") ||
-		Contains(errStr, "i/o timeout") ||
-		Contains(errStr, "connection reset by peer") ||
-		Contains(errStr, "use of closed network connection")
+	return ContainsIgnorableErrorPattern(err.Error())
+}
+
+// IsIgnorableTCPRelayError checks if the error is an ignorable connection error
+// that occurs during normal TCP relay operation.
+func IsIgnorableTCPRelayError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check standard library errors first
+	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+
+	// Check for broken pipe (EPIPE) and connection reset (ECONNRESET)
+	var sysErr *os.SyscallError
+	if errors.As(err, &sysErr) {
+		if errors.Is(sysErr.Err, syscall.EPIPE) || errors.Is(sysErr.Err, syscall.ECONNRESET) {
+			return true
+		}
+	}
+
+	// QUIC stream cancellation with error code 0 is a normal closure.
+	// Keep this typed check to avoid relying on error string format.
+	var streamErr *quic.StreamError
+	if errors.As(err, &streamErr) && streamErr.ErrorCode == 0 {
+		return true
+	}
+
+	// Check for network timeout errors
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+	}
+
+	// Fallback: check if error message contains known patterns
+	return ContainsIgnorableErrorPattern(err.Error())
+}
+
+// IsUDPEndpointNormalClose reports whether err is a normal UDP endpoint closure.
+func IsUDPEndpointNormalClose(err error) bool {
+	if err == nil {
+		return true
+	}
+
+	// Check for EOF (normal connection closure)
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	// Check for timeout errors (normal for UDP NAT expiration)
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	// Check if connection was closed
+	if IsClosedConnection(err) {
+		return true
+	}
+
+	return false
+}
+
+// ContainsIgnorableErrorPattern provides fallback pattern matching
+// for errors that don't properly implement error wrapping.
+func ContainsIgnorableErrorPattern(s string) bool {
+	patterns := []string{
+		"write: broken pipe",
+		"i/o timeout",
+		"connection reset by peer",
+		"canceled by local with error code 0",
+		"canceled by remote with error code 0",
+		"use of closed network connection",
+	}
+
+	for _, p := range patterns {
+		if Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ============================================================================

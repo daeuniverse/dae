@@ -763,10 +763,12 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		} else {
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 		}
-		c.log.WithFields(logrus.Fields{
-			"from": dst.String(),
-			"to":   dialTarget,
-		}).Debugln("Rewrite dial target to domain")
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"from": dst.String(),
+				"to":   dialTarget,
+			}).Debugln("Rewrite dial target to domain")
+		}
 	}
 	return dialTarget, shouldReroute, dialIp
 }
