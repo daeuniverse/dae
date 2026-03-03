@@ -1945,16 +1945,25 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
-/*
- * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
- * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
- */
-static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
-{
-	// Skip packets not from localhost.
-	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
-		return TC_ACT_OK;
+struct wan_egress_parsed {
+	struct ethhdr ethh;
+	struct tuples tuples;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 l4proto;
+};
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct wan_egress_parsed);
+	__uint(max_entries, 1);
+} wan_egress_scratch_map SEC(".maps");
+
+static __noinline int
+parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
+			struct wan_egress_parsed *out)
+{
 	struct ethhdr ethh;
 	struct iphdr iph;
 	struct ipv6hdr ipv6h;
@@ -1965,22 +1974,51 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	__u8 l4proto;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
+
+	if (ret)
+		return ret;
+	if (l4proto == IPPROTO_ICMPV6)
+		return 1;
+
+	__builtin_memset(out, 0, sizeof(*out));
+	out->ethh = ethh;
+	out->tcph = tcph;
+	out->udph = udph;
+	out->l4proto = l4proto;
+	get_tuples(skb, &out->tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+	return 0;
+}
+
+/*
+ * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
+ * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
+ */
+static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
+{
+	// Skip packets not from localhost.
+	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
+		return TC_ACT_OK;
+
+	__u32 scratch_key = 0;
+	struct wan_egress_parsed *pkt =
+		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
+	if (unlikely(!pkt))
+		return TC_ACT_SHOT;
+
+	/* Initialize stack bytes for verifier friendliness across subprogram
+	 * pointer writes. */
+	__builtin_memset(pkt, 0, sizeof(*pkt));
+	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
+
 	if (ret)
 		return TC_ACT_OK;
-	if (l4proto == IPPROTO_ICMPV6)
-		return TC_ACT_OK;
 
-	// Backup for further use.
-	struct tuples tuples;
-
-	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
-
-	if (l4proto == IPPROTO_TCP)
-		return do_tproxy_wan_egress_tcp(skb, link_h_len, &tuples, &ethh,
-						&tcph);
-	if (l4proto == IPPROTO_UDP)
-		return do_tproxy_wan_egress_udp(skb, link_h_len, &tuples, &ethh,
-						&udph);
+	if (pkt->l4proto == IPPROTO_TCP)
+		return do_tproxy_wan_egress_tcp(skb, link_h_len, &pkt->tuples,
+						&pkt->ethh, &pkt->tcph);
+	if (pkt->l4proto == IPPROTO_UDP)
+		return do_tproxy_wan_egress_udp(skb, link_h_len, &pkt->tuples,
+						&pkt->ethh, &pkt->udph);
 	return TC_ACT_OK;
 }
 
