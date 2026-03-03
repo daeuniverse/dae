@@ -809,63 +809,63 @@ route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 	return 0;
 }
 
-static int route_loop_cb(__u32 index, void *data)
+static __always_inline struct lpm_key *
+route_select_lpm_key(struct route_ctx *ctx, __u8 match_type)
 {
-#define _l4proto_type ctx->params->flag[0]
-#define _ipversion_type ctx->params->flag[1]
-#define _pname (&ctx->params->flag[2])
-#define _is_wan ctx->params->flag[2]
-#define _dscp ctx->params->flag[6]
+	if (match_type == MatchType_Mac)
+		return &ctx->lpm_key_mac;
+	if (match_type == MatchType_IpSet)
+		return &ctx->lpm_key_daddr;
+	return &ctx->lpm_key_saddr;
+}
 
-	struct route_ctx *ctx = data;
-	struct match_set *match_set;
-	struct lpm_key *lpm_key;
-	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
-	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
-	// set is like: suffix:baidu.com
+static __always_inline int route_match_domain_set(struct route_ctx *ctx,
+						  __u32 index)
+{
+	__u32 bitmap_word_idx = index / 32;
+	struct domain_routing *domain_routing;
 
-	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
+	if (unlikely(bitmap_word_idx >= MAX_MATCH_SET_LEN / 32)) {
 		ctx->result = -EFAULT;
 		return 1;
 	}
 
-	__u32 k = index; // Clone to pass code checker.
-
-	match_set = bpf_map_lookup_elem(&routing_map, &k);
-	if (unlikely(!match_set)) {
-		ctx->result = -EFAULT;
-		return 1;
+	if (!ctx->domain_word_cached || ctx->domain_word_idx != bitmap_word_idx) {
+		// Refresh one 32-rule bitmap word at a time.
+		domain_routing = bpf_map_lookup_elem(&domain_routing_map,
+						     ctx->params->daddr);
+		ctx->domain_word_idx = bitmap_word_idx;
+		if (domain_routing)
+			ctx->domain_word_bits =
+				domain_routing->bitmap[bitmap_word_idx];
+		else
+			ctx->domain_word_bits = 0;
+		ctx->domain_word_cached = true;
 	}
+
+	if ((ctx->domain_word_bits >> (index % 32)) & 1)
+		mark_matched(ctx);
+	return 0;
+}
+
+static __always_inline int
+route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
+		 __u32 index, __u8 l4proto_type, __u8 ipversion_type,
+		 const __u32 *pname, __u8 is_wan, __u8 dscp)
+{
 	__u8 match_type = match_set->type;
-	__u8 match_outbound = match_set->outbound;
-	bool match_not = match_set->not;
 
-	if (route_state_has(
-		    ctx, ROUTE_STATE_BAD_RULE | ROUTE_STATE_GOOD_SUBRULE)) {
-#ifdef __DEBUG_ROUTING
-		bpf_printk("key(match_set->type): %llu", match_type);
-		bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
-			   route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE),
-			   route_state_has(ctx, ROUTE_STATE_BAD_RULE));
-#endif
-		goto before_next_loop;
-	}
 	switch (match_type) {
 	case MatchType_Mac:
 	case MatchType_IpSet:
 	case MatchType_SourceIpSet:
 	{
-		if (match_type == MatchType_Mac)
-			lpm_key = &ctx->lpm_key_mac;
-		else if (match_type == MatchType_IpSet)
-			lpm_key = &ctx->lpm_key_daddr;
-		else
-			lpm_key = &ctx->lpm_key_saddr;
+		struct lpm_key *lpm_key = route_select_lpm_key(ctx, match_type);
 
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
-			match_type, match_not, match_outbound);
+			match_type, match_set->not, match_set->outbound);
 		bpf_printk("\tip: %pI6", lpm_key->data);
 #endif
 		if (route_match_lpm(ctx, match_set, lpm_key))
@@ -880,7 +880,7 @@ static int route_loop_cb(__u32 index, void *data)
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
-			match_type, match_not, match_outbound);
+			match_type, match_set->not, match_set->outbound);
 		bpf_printk("\tport: %u, range: [%u, %u]", check_port,
 			   match_set->port_range.port_start,
 			   match_set->port_range.port_end);
@@ -893,9 +893,8 @@ static int route_loop_cb(__u32 index, void *data)
 	case MatchType_L4Proto:
 	case MatchType_IpVersion:
 	{
-		__u8 value =
-			match_type == MatchType_L4Proto ? _l4proto_type :
-							  _ipversion_type;
+		__u8 value = match_type == MatchType_L4Proto ? l4proto_type :
+							      ipversion_type;
 		__u8 mask = match_type == MatchType_L4Proto ?
 				    match_set->l4proto_type :
 				    match_set->ip_version;
@@ -903,11 +902,13 @@ static int route_loop_cb(__u32 index, void *data)
 		if (match_type == MatchType_L4Proto) {
 			bpf_printk(
 				"CHECK: l4proto, match_set->type: %u, not: %d, outbound: %u",
-				match_type, match_not, match_outbound);
+				match_type, match_set->not,
+				match_set->outbound);
 		} else {
 			bpf_printk(
 				"CHECK: ipversion, match_set->type: %u, not: %d, outbound: %u",
-				match_type, match_not, match_outbound);
+				match_type, match_set->not,
+				match_set->outbound);
 		}
 #endif
 		if (check_bitmask(value, mask))
@@ -915,52 +916,30 @@ static int route_loop_cb(__u32 index, void *data)
 		break;
 	}
 	case MatchType_DomainSet:
-	{
-		__u32 bitmap_word_idx = index / 32;
-		__u32 bitmap_word;
-		struct domain_routing *domain_routing;
-
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: domain, match_set->type: %u, not: %d, outbound: %u",
-			match_type, match_not, match_outbound);
+			match_type, match_set->not, match_set->outbound);
 #endif
-		if (!ctx->domain_word_cached ||
-		    ctx->domain_word_idx != bitmap_word_idx) {
-			// Refresh one 32-rule bitmap word at a time.
-			domain_routing =
-				bpf_map_lookup_elem(&domain_routing_map,
-						    ctx->params->daddr);
-			ctx->domain_word_idx = bitmap_word_idx;
-			if (domain_routing) {
-				ctx->domain_word_bits =
-					domain_routing->bitmap[bitmap_word_idx];
-			} else {
-				ctx->domain_word_bits = 0;
-			}
-			ctx->domain_word_cached = true;
-		}
-		bitmap_word = ctx->domain_word_bits;
-		if ((bitmap_word >> (index % 32)) & 1)
-			mark_matched(ctx);
+		if (route_match_domain_set(ctx, index))
+			return 1;
 		break;
-	}
 	case MatchType_ProcessName:
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: pname, match_set->type: %u, not: %d, outbound: %u",
-			match_type, match_not, match_outbound);
+			match_type, match_set->not, match_set->outbound);
 #endif
-		if (_is_wan && equal16(match_set->pname, _pname))
+		if (is_wan && equal16(match_set->pname, pname))
 			mark_matched(ctx);
 		break;
 	case MatchType_Dscp:
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: dscp, match_set->type: %u, not: %d, outbound: %u",
-			match_type, match_not, match_outbound);
+			match_type, match_set->not, match_set->outbound);
 #endif
-		if (_dscp == match_set->dscp)
+		if (dscp == match_set->dscp)
 			mark_matched(ctx);
 		break;
 	case MatchType_Fallback:
@@ -973,13 +952,21 @@ static int route_loop_cb(__u32 index, void *data)
 #ifdef __DEBUG_ROUTING
 		bpf_printk(
 			"CHECK: <unknown>, match_set->type: %u, not: %d, outbound: %u",
-			match_type, match_not, match_outbound);
+			match_type, match_set->not, match_set->outbound);
 #endif
 		ctx->result = -EINVAL;
 		return 1;
 	}
 
-before_next_loop:
+	return 0;
+}
+
+static __always_inline int
+route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
+{
+	__u8 match_outbound = match_set->outbound;
+	bool match_not = match_set->not;
+
 #ifdef __DEBUG_ROUTING
 	bpf_printk("good_subrule: %d, bad_rule: %d",
 		   route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE),
@@ -989,12 +976,9 @@ before_next_loop:
 		// This match_set reaches the end of subrule.
 		// We are now at end of rule, or next match_set belongs to another
 		// subrule.
-
-		if (route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE) ==
-		    match_not) {
+		if (route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE) == match_not)
 			// This subrule does not hit.
 			route_state_set(ctx, ROUTE_STATE_BAD_RULE);
-		}
 
 		// Reset good_subrule.
 		route_state_clear(ctx, ROUTE_STATE_GOOD_SUBRULE);
@@ -1002,22 +986,18 @@ before_next_loop:
 #ifdef __DEBUG_ROUTING
 	bpf_printk("_bad_rule: %d", route_state_has(ctx, ROUTE_STATE_BAD_RULE));
 #endif
-	if ((match_outbound & OUTBOUND_LOGICAL_MASK) !=
-	    OUTBOUND_LOGICAL_MASK) {
+	if ((match_outbound & OUTBOUND_LOGICAL_MASK) != OUTBOUND_LOGICAL_MASK) {
 		// Tail of a rule (line).
 		// Decide whether to hit.
 		if (!route_state_has(ctx, ROUTE_STATE_BAD_RULE)) {
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
 				"MATCHED: match_set->type: %u, match_set->not: %d",
-				match_type, match_not);
+				match_set->type, match_not);
 #endif
-
 			// DNS requests should routed by control plane if outbound is not
 			// must_direct.
-
-			if (unlikely(match_outbound ==
-				     OUTBOUND_MUST_RULES)) {
+			if (unlikely(match_outbound == OUTBOUND_MUST_RULES)) {
 				route_state_set(ctx, ROUTE_STATE_MUST);
 			} else {
 				bool must = route_state_has(ctx, ROUTE_STATE_MUST) ||
@@ -1049,11 +1029,49 @@ before_next_loop:
 		route_state_clear(ctx, ROUTE_STATE_BAD_RULE);
 	}
 	return 0;
-#undef _l4proto_type
-#undef _ipversion_type
-#undef _pname
-#undef _is_wan
-#undef _dscp
+}
+
+static int route_loop_cb(__u32 index, void *data)
+{
+	struct route_ctx *ctx = data;
+	struct match_set *match_set;
+	__u8 l4proto_type = ctx->params->flag[0];
+	__u8 ipversion_type = ctx->params->flag[1];
+	const __u32 *pname = &ctx->params->flag[2];
+	__u8 is_wan = ctx->params->flag[2];
+	__u8 dscp = ctx->params->flag[6];
+
+	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
+	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
+	// set is like: suffix:baidu.com
+	if (unlikely(index >= MAX_MATCH_SET_LEN)) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
+
+	__u32 k = index; // Clone to pass code checker.
+
+	match_set = bpf_map_lookup_elem(&routing_map, &k);
+	if (unlikely(!match_set)) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
+
+	if (!route_state_has(
+		    ctx, ROUTE_STATE_BAD_RULE | ROUTE_STATE_GOOD_SUBRULE)) {
+		if (route_eval_match(ctx, match_set, k, l4proto_type,
+				     ipversion_type, pname, is_wan, dscp))
+			return 1;
+	} else {
+#ifdef __DEBUG_ROUTING
+		bpf_printk("key(match_set->type): %llu", match_set->type);
+		bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
+			   route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE),
+			   route_state_has(ctx, ROUTE_STATE_BAD_RULE));
+#endif
+	}
+
+	return route_finalize_match(ctx, match_set);
 }
 
 static __noinline __s64 route(const struct route_params *params)

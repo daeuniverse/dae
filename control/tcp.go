@@ -39,7 +39,11 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	// Converge IPv4-mapped IPv6 addresses before looking up eBPF routing tuples.
 	src := common.ConvergeAddrPort(lConn.RemoteAddr().(*net.TCPAddr).AddrPort())
 	dst := common.ConvergeAddrPort(lConn.LocalAddr().(*net.TCPAddr).AddrPort())
-	routingResult, err := c.core.RetrieveRoutingResult(src, dst, consts.IPPROTO_TCP)
+	routingResult, err := c.core.RetrieveRoutingResultWithRetry(
+		src, dst, consts.IPPROTO_TCP,
+		routingTupleLookupRetryAttempts,
+		routingTupleLookupRetryInterval,
+	)
 	if err != nil {
 		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			// Graceful fallback: routing tuple might be unavailable due to race/window
