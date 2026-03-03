@@ -56,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel_line: [ '6.1', '6.6', '6.12' ]
+        kernel: [ '6.1-20250527.055456', '6.6-20250527.055456', '6.12-20250527.055456' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
@@ -67,42 +67,11 @@ jobs:
           name: dae
           path: dae
 
-      - name: Resolve latest LVH kernel tag
-        id: resolve_kernel
-        env:
-          KERNEL_LINE: ${{ matrix.kernel_line }}
-        run: |
-          set -euo pipefail
-
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-
-          TAGS_JSON="$(curl -fsSL 'https://quay.io/api/v1/repository/lvh-images/kind/tag/?onlyActiveTags=true&limit=200')"
-          # Match tags like:
-          # 6.1-20250527.055456
-          # 6.1-20250527.055456-amd64
-          PATTERN="^${KERNEL_LINE//./\\.}-[0-9]{8}\\.[0-9]{6}(-amd64)?$"
-
-          KERNEL_TAG="$(
-            printf '%s' "$TAGS_JSON" | \
-              jq -r --arg p "$PATTERN" '.tags[].name | select(test($p))' | \
-              sort -r | \
-              head -n1
-          )"
-
-          if [[ -z "${KERNEL_TAG}" ]]; then
-            echo "Failed to resolve rolling kernel tag for ${KERNEL_LINE}" >&2
-            exit 1
-          fi
-
-          echo "Resolved ${KERNEL_LINE} -> ${KERNEL_TAG}"
-          echo "kernel_tag=${KERNEL_TAG}" >> "$GITHUB_OUTPUT"
-
       - name: Provision LVH VMs
         uses: cilium/little-vm-helper@v0.0.28
         with:
           test-name: dae-test
-          image-version: ${{ steps.resolve_kernel.outputs.kernel_tag }}
+          image-version: ${{ matrix.kernel }}
           host-mount: ./
           dns-resolver: '1.1.1.1'
           install-dependencies: 'true'
@@ -213,12 +182,17 @@ jobs:
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -q 'Loaded eBPF programs and maps' dae.log; then
+              if ! docker exec dae sh -c 'pidof dae >/dev/null'; then
+                echo "dae exited before ready"
+                cat dae.log
+                exit 1
+              fi
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
                 break
               fi
               sleep 1
             done
-            grep -q 'Loaded eBPF programs and maps' dae.log
+            docker exec dae sh -c 'pidof dae >/dev/null'
             cat dae.log
 
       - name: Check WAN IPv4 TCP
@@ -275,12 +249,17 @@ jobs:
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -q 'Loaded eBPF programs and maps' dae.log; then
+              if ! docker exec dae sh -c 'pidof dae >/dev/null'; then
+                echo "dae exited before ready"
+                cat dae.log
+                exit 1
+              fi
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
                 break
               fi
               sleep 1
             done
-            grep -q 'Loaded eBPF programs and maps' dae.log
+            docker exec dae sh -c 'pidof dae >/dev/null'
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check WAN IPv4 UDP with port conflict
@@ -378,12 +357,17 @@ jobs:
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -q 'Loaded eBPF programs and maps' dae.log; then
+              if ! docker exec dae sh -c 'pidof dae >/dev/null'; then
+                echo "dae exited before ready"
+                cat dae.log
+                exit 1
+              fi
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
                 break
               fi
               sleep 1
             done
-            grep -q 'Loaded eBPF programs and maps' dae.log
+            docker exec dae sh -c 'pidof dae >/dev/null'
             cat dae.log
 
       - name: Check LAN IPv4 TCP
@@ -446,12 +430,17 @@ jobs:
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -q 'Loaded eBPF programs and maps' dae.log; then
+              if ! docker exec dae sh -c 'pidof dae >/dev/null'; then
+                echo "dae exited before ready"
+                cat dae.log
+                exit 1
+              fi
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
                 break
               fi
               sleep 1
             done
-            grep -q 'Loaded eBPF programs and maps' dae.log
+            docker exec dae sh -c 'pidof dae >/dev/null'
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check LAN IPv4 UDP with port conflict

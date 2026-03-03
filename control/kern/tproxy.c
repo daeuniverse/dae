@@ -1668,6 +1668,260 @@ int tproxy_wan_ingress_l3(struct __sk_buff *skb)
 
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
+static __noinline bool
+wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
+		      __be16 dport)
+{
+	struct outbound_connectivity_query q = { 0 };
+	__u32 *alive;
+
+	q.outbound = outbound;
+	q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
+	q.l4proto = l4proto;
+	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+	if (alive && *alive == 0 &&
+	    !(l4proto == IPPROTO_UDP && dport == bpf_htons(53))) {
+		// Outbound is not alive. Dns is an exception.
+		return false;
+	}
+	return true;
+}
+
+static __noinline int
+do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
+			 struct tuples *tuples, struct ethhdr *ethh,
+			 struct tcphdr *tcph)
+{
+	bool tcp_state_syn = is_new_tcp_connection(tcph);
+	__u8 outbound;
+	bool must;
+	__u32 mark;
+	struct pid_pname *pid_pname = NULL;
+
+	if (unlikely(tcp_state_syn)) {
+		// New TCP connection.
+		struct route_params params;
+
+		__builtin_memset(&params, 0, sizeof(params));
+		params.l4hdr = tcph;
+		params.flag[0] = L4ProtoType_TCP;
+		if (skb->protocol == bpf_htons(ETH_P_IP))
+			params.flag[1] = IpVersionType_4;
+		else
+			params.flag[1] = IpVersionType_6;
+		params.flag[6] = tuples->dscp;
+		if (pid_is_control_plane(skb, &pid_pname)) {
+			// From control plane. Direct.
+			return TC_ACT_OK;
+		}
+		if (pid_pname) {
+			// 2, 3, 4, 5
+			__builtin_memcpy(&params.flag[2], pid_pname->pname,
+					 TASK_COMM_LEN);
+		}
+		params.mac[2] =
+			bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
+		params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
+					  (ethh->h_source[3] << 16) |
+					  (ethh->h_source[4] << 8) |
+					  (ethh->h_source[5]));
+		params.saddr = tuples->five.sip.u6_addr32;
+		params.daddr = tuples->five.dip.u6_addr32;
+
+		__s64 s64_ret = route(&params);
+
+		if (s64_ret < 0) {
+			bpf_printk("shot routing: %d", s64_ret);
+			return TC_ACT_SHOT;
+		}
+
+		outbound = s64_ret & 0xff;
+		mark = s64_ret >> 8;
+		must = (s64_ret >> 40) & 1;
+
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		// Print only new connection.
+		__u32 pid = pid_pname ? pid_pname->pid : 0;
+
+		bpf_printk("tcp(wan): from %pI6:%u [PID %u]",
+			   tuples->five.sip.u6_addr32,
+			   bpf_ntohs(tuples->five.sport), pid);
+		bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound,
+			   tuples->five.dip.u6_addr32,
+			   bpf_ntohs(tuples->five.dport));
+#endif
+	} else {
+		// Existing TCP connection.
+		if (!load_non_syn_tcp_wan_egress(&tuples->five, &outbound, &mark,
+						 &must)) {
+			// No cached routing. This is a pre-existing connection
+			// or server connection. Let it pass.
+			return TC_ACT_OK;
+		}
+	}
+
+	if (outbound == OUTBOUND_DIRECT &&
+	    mark == 0 // If mark is not zero, we should re-route it.
+	) {
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("GO OUTBOUND_DIRECT");
+#endif
+		skb->mark = mark;
+		return TC_ACT_OK;
+	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("SHOT OUTBOUND_BLOCK");
+#endif
+		return TC_ACT_SHOT;
+	}
+
+	if (!wan_outbound_is_alive(skb, outbound, IPPROTO_TCP,
+				   tuples->five.dport))
+		return TC_ACT_SHOT;
+
+	if (unlikely(tcp_state_syn)) {
+		// Only save non-direct routing to avoid conflicts with LAN ingress.
+		// Direct traffic doesn't need control plane processing.
+		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
+			struct routing_result routing_result = {};
+
+			routing_result.outbound = outbound;
+			routing_result.mark = mark;
+			routing_result.must = must;
+			routing_result.dscp = tuples->dscp;
+			__builtin_memcpy(routing_result.mac, ethh->h_source,
+					 sizeof(ethh->h_source));
+			if (pid_pname) {
+				__builtin_memcpy(routing_result.pname,
+						 pid_pname->pname,
+						 TASK_COMM_LEN);
+				routing_result.pid = pid_pname->pid;
+			}
+			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
+					    &routing_result, BPF_ANY);
+		}
+	}
+
+	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
+				       1, tcph);
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
+static __noinline int
+do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
+			 struct tuples *tuples, struct ethhdr *ethh,
+			 struct udphdr *udph)
+{
+	// Routing. It decides if we redirect traffic to control plane.
+	struct route_params params;
+	struct pid_pname *pid_pname;
+	__u8 outbound;
+	__u32 mark;
+	bool must;
+	struct tcphdr dummy_tcph = {};
+
+	__builtin_memset(&params, 0, sizeof(params));
+	params.l4hdr = udph;
+	params.flag[0] = L4ProtoType_UDP;
+	if (skb->protocol == bpf_htons(ETH_P_IP))
+		params.flag[1] = IpVersionType_4;
+	else
+		params.flag[1] = IpVersionType_6;
+	params.flag[6] = tuples->dscp;
+
+	if (pid_is_control_plane(skb, &pid_pname)) {
+		// From control plane => direct.
+		return TC_ACT_OK;
+	}
+
+	if (!is_short_lived_udp_traffic(&tuples->five)) {
+		struct udp_conn_state *conn_state =
+			refresh_udp_conn_state_timer(&tuples->five, false);
+		if (!conn_state)
+			return TC_ACT_SHOT;
+		if (conn_state->is_wan_ingress_direction) {
+			// Replay (outbound) of an inbound flow => direct.
+			return TC_ACT_OK;
+		}
+	}
+
+	if (pid_pname) {
+		// 2, 3, 4, 5
+		__builtin_memcpy(&params.flag[2], pid_pname->pname,
+				 TASK_COMM_LEN);
+	}
+	params.mac[2] =
+		bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
+	params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
+				  (ethh->h_source[3] << 16) |
+				  (ethh->h_source[4] << 8) |
+				  (ethh->h_source[5]));
+	params.saddr = tuples->five.sip.u6_addr32;
+	params.daddr = tuples->five.dip.u6_addr32;
+
+	__s64 s64_ret = route(&params);
+
+	if (s64_ret < 0) {
+		bpf_printk("shot routing: %d", s64_ret);
+		return TC_ACT_SHOT;
+	}
+
+	// Extract routing values.
+	outbound = s64_ret & 0xff;
+	mark = s64_ret >> 8;
+	must = (s64_ret >> 40) & 1;
+
+	// Only save non-direct routing to avoid conflicts with LAN ingress.
+	// Direct traffic doesn't need control plane processing.
+	if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
+		if (tuples->five.dport == bpf_htons(53)) {
+			// Skip cache for DNS queries.
+		} else {
+			// Construct new hdr to encap.
+			struct routing_result routing_result = {};
+
+			routing_result.outbound = outbound;
+			routing_result.mark = mark;
+			routing_result.must = must;
+			routing_result.dscp = tuples->dscp;
+			__builtin_memcpy(routing_result.mac, ethh->h_source,
+					 sizeof(ethh->h_source));
+			if (pid_pname) {
+				__builtin_memcpy(routing_result.pname,
+						 pid_pname->pname,
+						 TASK_COMM_LEN);
+				routing_result.pid = pid_pname->pid;
+			}
+			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
+					    &routing_result, BPF_ANY);
+		}
+	}
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+	__u32 pid = pid_pname ? pid_pname->pid : 0;
+
+	bpf_printk("udp(wan): from %pI6:%u [PID %u]", tuples->five.sip.u6_addr32,
+		   bpf_ntohs(tuples->five.sport), pid);
+	bpf_printk("udp(wan): outbound: %u, %pI6:%u", outbound,
+		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
+#endif
+
+	if (outbound == OUTBOUND_DIRECT &&
+	    mark == 0 // If mark is not zero, we should re-route it.
+	) {
+		return TC_ACT_OK;
+	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+		return TC_ACT_SHOT;
+	}
+
+	if (!wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,
+				   tuples->five.dport))
+		return TC_ACT_SHOT;
+
+	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
+				       1, &dummy_tcph);
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
 /*
  * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
  * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
@@ -1686,8 +1940,6 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-
-	bool tcp_state_syn;
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret)
@@ -1700,263 +1952,13 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 
 	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
-	// Normal packets.
-	if (l4proto == IPPROTO_TCP) {
-		// Backup for further use.
-		tcp_state_syn = is_new_tcp_connection(&tcph);
-		__u8 outbound;
-		bool must;
-		__u32 mark;
-		struct pid_pname *pid_pname = NULL;
-
-		if (unlikely(tcp_state_syn)) {
-			// New TCP connection.
-			struct route_params params;
-
-			__builtin_memset(&params, 0, sizeof(params));
-			params.l4hdr = &tcph;
-			params.flag[0] = L4ProtoType_TCP;
-			if (skb->protocol == bpf_htons(ETH_P_IP))
-				params.flag[1] = IpVersionType_4;
-			else
-				params.flag[1] = IpVersionType_6;
-			params.flag[6] = tuples.dscp;
-			if (pid_is_control_plane(skb, &pid_pname)) {
-				// From control plane. Direct.
-				return TC_ACT_OK;
-			}
-			if (pid_pname) {
-				// 2, 3, 4, 5
-				__builtin_memcpy(&params.flag[2],
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-			}
-			params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) |
-						  (ethh.h_source[1]));
-			params.mac[3] = bpf_htonl((ethh.h_source[2] << 24) |
-						  (ethh.h_source[3] << 16) |
-						  (ethh.h_source[4] << 8) |
-						  (ethh.h_source[5]));
-			params.saddr = tuples.five.sip.u6_addr32;
-			params.daddr = tuples.five.dip.u6_addr32;
-			__s64 s64_ret;
-
-			s64_ret = route(&params);
-			if (s64_ret < 0) {
-				bpf_printk("shot routing: %d", s64_ret);
-				return TC_ACT_SHOT;
-			}
-
-			outbound = s64_ret & 0xff;
-			mark = s64_ret >> 8;
-			must = (s64_ret >> 40) & 1;
-
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-			// Print only new connection.
-			__u32 pid = pid_pname ? pid_pname->pid : 0;
-
-			bpf_printk("tcp(wan): from %pI6:%u [PID %u]",
-				   tuples.five.sip.u6_addr32,
-				   bpf_ntohs(tuples.five.sport), pid);
-			bpf_printk("tcp(wan): outbound: %u, %pI6:%u", outbound,
-				   tuples.five.dip.u6_addr32,
-				   bpf_ntohs(tuples.five.dport));
-#endif
-		} else {
-			// bpf_printk("[%X]Old Connection", bpf_ntohl(tcph.seq));
-			// The TCP connection exists.
-			if (!load_non_syn_tcp_wan_egress(&tuples.five, &outbound,
-							 &mark, &must)) {
-				// No cached routing. This is a pre-existing connection
-				// or server connection. Let it pass.
-				return TC_ACT_OK;
-			}
-		}
-
-		if (outbound == OUTBOUND_DIRECT &&
-		    mark == 0 // If mark is not zero, we should re-route it, so we send it
-		    // to control plane in WAN.
-		) {
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-			bpf_printk("GO OUTBOUND_DIRECT");
-#endif
-
-			skb->mark = mark;
-			return TC_ACT_OK;
-		} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-			bpf_printk("SHOT OUTBOUND_BLOCK");
-#endif
-			return TC_ACT_SHOT;
-		}
-		// Rewrite to control plane.
-
-		// Check outbound connectivity in specific ipversion and l4proto.
-		struct outbound_connectivity_query q = { 0 };
-
-		q.outbound = outbound;
-		q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-		q.l4proto = l4proto;
-		__u32 *alive;
-
-		alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-		if (alive && *alive == 0 &&
-		    !(l4proto == IPPROTO_UDP &&
-		      tuples.five.dport == bpf_htons(53))) {
-			// Outbound is not alive. Dns is an exception.
-			return TC_ACT_SHOT;
-		}
-
-		if (unlikely(tcp_state_syn)) {
-			// Only save non-direct routing to avoid conflicts with LAN ingress.
-			// Direct traffic doesn't need control plane processing.
-			if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-				struct routing_result routing_result = {};
-
-				routing_result.outbound = outbound;
-				routing_result.mark = mark;
-				routing_result.must = must;
-				routing_result.dscp = tuples.dscp;
-				__builtin_memcpy(routing_result.mac, ethh.h_source,
-						 sizeof(ethh.h_source));
-				if (pid_pname) {
-					__builtin_memcpy(routing_result.pname,
-							 pid_pname->pname,
-							 TASK_COMM_LEN);
-					routing_result.pid = pid_pname->pid;
-				}
-				bpf_map_update_elem(&routing_tuples_map, &tuples.five,
-						    &routing_result, BPF_ANY);
-			}
-		}
-
-	} else if (l4proto == IPPROTO_UDP) {
-		// Routing. It decides if we redirect traffic to control plane.
-		struct route_params params;
-
-		__builtin_memset(&params, 0, sizeof(params));
-		params.l4hdr = &udph;
-		params.flag[0] = L4ProtoType_UDP;
-		if (skb->protocol == bpf_htons(ETH_P_IP))
-			params.flag[1] = IpVersionType_4;
-		else
-			params.flag[1] = IpVersionType_6;
-		params.flag[6] = tuples.dscp;
-
-		struct pid_pname *pid_pname;
-
-		if (pid_is_control_plane(skb, &pid_pname)) {
-			// from control plane
-			// => direct.
-			return TC_ACT_OK;
-		}
-
-		if (!is_short_lived_udp_traffic(&tuples.five)) {
-			struct udp_conn_state *conn_state =
-				refresh_udp_conn_state_timer(&tuples.five, false);
-			if (!conn_state)
-				return TC_ACT_SHOT;
-			if (conn_state->is_wan_ingress_direction) {
-				// Replay (outbound) of an inbound flow
-				// => direct.
-				return TC_ACT_OK;
-			}
-		}
-
-		if (pid_pname) {
-			// 2, 3, 4, 5
-			__builtin_memcpy(&params.flag[2], pid_pname->pname,
-					 TASK_COMM_LEN);
-		}
-		params.mac[2] =
-			bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
-		params.mac[3] = bpf_htonl(
-			(ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
-			(ethh.h_source[4] << 8) | (ethh.h_source[5]));
-		params.saddr = tuples.five.sip.u6_addr32;
-		params.daddr = tuples.five.dip.u6_addr32;
-
-		__s64 s64_ret;
-
-		s64_ret = route(&params);
-		if (s64_ret < 0) {
-			bpf_printk("shot routing: %d", s64_ret);
-			return TC_ACT_SHOT;
-		}
-		// Extract routing values.
-		__u8 outbound = s64_ret & 0xff;
-		__u32 mark = s64_ret >> 8;
-		bool must = (s64_ret >> 40) & 1;
-
-		// Only save non-direct routing to avoid conflicts with LAN ingress.
-		// Direct traffic doesn't need control plane processing.
-		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			if (l4proto == IPPROTO_UDP &&
-			    tuples.five.dport == bpf_htons(53)) {
-				// Skip cache for DNS queries.
-			} else {
-				// Construct new hdr to encap.
-				struct routing_result routing_result = {};
-
-				routing_result.outbound = outbound;
-				routing_result.mark = mark;
-				routing_result.must = must;
-				routing_result.dscp = tuples.dscp;
-				__builtin_memcpy(routing_result.mac, ethh.h_source,
-						 sizeof(ethh.h_source));
-				if (pid_pname) {
-					__builtin_memcpy(routing_result.pname, pid_pname->pname,
-							 TASK_COMM_LEN);
-					routing_result.pid = pid_pname->pid;
-				}
-				bpf_map_update_elem(&routing_tuples_map, &tuples.five,
-						    &routing_result, BPF_ANY);
-			}
-		}
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		__u32 pid = pid_pname ? pid_pname->pid : 0;
-
-		bpf_printk("udp(wan): from %pI6:%u [PID %u]",
-			   tuples.five.sip.u6_addr32,
-			   bpf_ntohs(tuples.five.sport), pid);
-		bpf_printk("udp(wan): outbound: %u, %pI6:%u",
-			   outbound, tuples.five.dip.u6_addr32,
-			   bpf_ntohs(tuples.five.dport));
-#endif
-
-		if (outbound == OUTBOUND_DIRECT &&
-		    mark == 0
-		    // If mark is not zero, we should re-route it, so we send it to control
-		    // plane in WAN.
-		) {
-			return TC_ACT_OK;
-		} else if (unlikely(outbound ==
-				    OUTBOUND_BLOCK)) {
-			return TC_ACT_SHOT;
-		}
-
-		// Rewrite to control plane.
-
-		// Check outbound connectivity in specific ipversion and l4proto.
-		struct outbound_connectivity_query q = { 0 };
-
-		q.outbound = outbound;
-		q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-		q.l4proto = l4proto;
-		__u32 *alive;
-
-		alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-		if (alive && *alive == 0 &&
-		    !(l4proto == IPPROTO_UDP &&
-		      tuples.five.dport == bpf_htons(53))) {
-			// Outbound is not alive. Dns is an exception.
-			return TC_ACT_SHOT;
-		}
-	}
-
-	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh,
-				       1, &tcph);
-	return bpf_redirect(PARAM.dae0_ifindex, 0);
+	if (l4proto == IPPROTO_TCP)
+		return do_tproxy_wan_egress_tcp(skb, link_h_len, &tuples, &ethh,
+						&tcph);
+	if (l4proto == IPPROTO_UDP)
+		return do_tproxy_wan_egress_udp(skb, link_h_len, &tuples, &ethh,
+						&udph);
+	return TC_ACT_OK;
 }
 
 SEC("tc/wan_egress_l2")
