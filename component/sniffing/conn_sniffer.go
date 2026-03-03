@@ -10,7 +10,10 @@ import (
 	"io"
 	"net"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 type ConnSniffer struct {
@@ -65,7 +68,19 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 			s.Sniffer.readMu.Unlock()
 		}
 	}
-	// Forward the rest of the stream from the underlying connection.
+
+	// Fast path: try netproxy splice strategy (direct splice -> pipe+splice).
+	if srcSC, ok := s.Conn.(interface {
+		SyscallConn() (syscall.RawConn, error)
+	}); ok {
+		copied, usedSplice, serr := netproxy.SpliceTo(w, srcSC)
+		n += copied
+		if usedSplice {
+			return n, serr
+		}
+	}
+
+	// Fallback: forward the rest of the stream in userspace.
 	copied, err := io.Copy(w, s.Conn)
 	return n + copied, err
 }

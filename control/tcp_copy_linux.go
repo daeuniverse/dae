@@ -129,7 +129,7 @@ func splicePipeToEOF(ctx context.Context, dst syscallConn, src syscallConn) (int
 
 		var in int64
 		for {
-			in, err = unix.Splice(srcFD, nil, pipeFD[1], nil, relaySpliceChunkSize, unix.SPLICE_F_MOVE)
+			in, err = spliceCount(srcFD, pipeFD[1], relaySpliceChunkSize)
 			if err == unix.EINTR {
 				continue
 			}
@@ -150,11 +150,11 @@ func splicePipeToEOF(ctx context.Context, dst syscallConn, src syscallConn) (int
 			return copied, nil
 		}
 
-		remaining := int(in)
+		remaining := in
 		for remaining > 0 {
 			var out int64
 			for {
-				out, err = unix.Splice(pipeFD[0], nil, dstFD, nil, remaining, unix.SPLICE_F_MOVE)
+				out, err = spliceCount(pipeFD[0], dstFD, int(remaining))
 				if err == unix.EINTR {
 					continue
 				}
@@ -170,7 +170,7 @@ func splicePipeToEOF(ctx context.Context, dst syscallConn, src syscallConn) (int
 				}
 				break
 			}
-			remaining -= int(out)
+			remaining -= out
 		}
 		copied += in
 	}
