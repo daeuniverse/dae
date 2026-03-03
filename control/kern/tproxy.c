@@ -579,6 +579,8 @@ parse_transport_slow(const struct __sk_buff *skb, __u32 link_h_len,
 					 sizeof(struct iphdr));
 		if (ret)
 			return -EFAULT;
+		if (iph->ihl < 5)
+			return -EFAULT;
 		// Skip ipv4hdr and options for next hdr.
 		offset += iph->ihl * 4;
 
@@ -2059,31 +2061,103 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
+// load_redirect_tuple_fast returns this code when it cannot safely parse via
+// direct packet access and should fall back to bpf_skb_load_bytes.
+#define LOAD_REDIRECT_TUPLE_FALLBACK 2
+
+static __always_inline int
+load_redirect_tuple_fast(const struct __sk_buff *skb,
+			 struct redirect_tuple *redirect_tuple)
+{
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct ethhdr *eth = data;
+
+	if ((void *)(eth + 1) > data_end)
+		return LOAD_REDIRECT_TUPLE_FALLBACK;
+	if (eth->h_proto == bpf_htons(ETH_P_IP)) {
+		struct iphdr *iph = data + ETH_HLEN;
+
+		if ((void *)(iph + 1) > data_end)
+			return LOAD_REDIRECT_TUPLE_FALLBACK;
+		redirect_tuple->sip.u6_addr32[3] = iph->daddr;
+		redirect_tuple->dip.u6_addr32[3] = iph->saddr;
+		return 0;
+	}
+	if (eth->h_proto == bpf_htons(ETH_P_IPV6)) {
+		struct ipv6hdr *ipv6h = data + ETH_HLEN;
+
+		if ((void *)(ipv6h + 1) > data_end)
+			return LOAD_REDIRECT_TUPLE_FALLBACK;
+		__builtin_memcpy(&redirect_tuple->sip, &ipv6h->daddr,
+				 sizeof(redirect_tuple->sip));
+		__builtin_memcpy(&redirect_tuple->dip, &ipv6h->saddr,
+				 sizeof(redirect_tuple->dip));
+		return 0;
+	}
+	return 1;
+}
+
+static __always_inline int
+load_redirect_tuple_slow(const struct __sk_buff *skb,
+			 struct redirect_tuple *redirect_tuple)
+{
+	int ret;
+
+	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		ret = bpf_skb_load_bytes(skb,
+					 ETH_HLEN + offsetof(struct iphdr, daddr),
+					 &redirect_tuple->sip.u6_addr32[3],
+					 sizeof(redirect_tuple->sip.u6_addr32[3]));
+		if (ret)
+			return ret;
+		ret = bpf_skb_load_bytes(skb,
+					 ETH_HLEN + offsetof(struct iphdr, saddr),
+					 &redirect_tuple->dip.u6_addr32[3],
+					 sizeof(redirect_tuple->dip.u6_addr32[3]));
+		if (ret)
+			return ret;
+		return 0;
+	}
+	if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+		ret = bpf_skb_load_bytes(skb,
+					 ETH_HLEN + offsetof(struct ipv6hdr, daddr),
+					 &redirect_tuple->sip,
+					 sizeof(redirect_tuple->sip));
+		if (ret)
+			return ret;
+		ret = bpf_skb_load_bytes(skb,
+					 ETH_HLEN + offsetof(struct ipv6hdr, saddr),
+					 &redirect_tuple->dip,
+					 sizeof(redirect_tuple->dip));
+		if (ret)
+			return ret;
+		return 0;
+	}
+	return 1;
+}
+
+static __always_inline int
+load_redirect_tuple(const struct __sk_buff *skb,
+		    struct redirect_tuple *redirect_tuple)
+{
+	int ret = load_redirect_tuple_fast(skb, redirect_tuple);
+
+	if (ret == LOAD_REDIRECT_TUPLE_FALLBACK)
+		return load_redirect_tuple_slow(skb, redirect_tuple);
+	return ret;
+}
+
 SEC("tc/dae0_ingress")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
 	// reverse the tuple!
 	struct redirect_tuple redirect_tuple = {};
+	int ret;
 
-	if (skb->protocol == bpf_htons(ETH_P_IP)) {
-		bpf_skb_load_bytes(skb,
-				   ETH_HLEN + offsetof(struct iphdr, daddr),
-				   &redirect_tuple.sip.u6_addr32[3],
-				   sizeof(redirect_tuple.sip.u6_addr32[3]));
-		bpf_skb_load_bytes(skb,
-				   ETH_HLEN + offsetof(struct iphdr, saddr),
-				   &redirect_tuple.dip.u6_addr32[3],
-				   sizeof(redirect_tuple.dip.u6_addr32[3]));
-	} else {
-		bpf_skb_load_bytes(skb,
-				   ETH_HLEN + offsetof(struct ipv6hdr, daddr),
-				   &redirect_tuple.sip,
-				   sizeof(redirect_tuple.sip));
-		bpf_skb_load_bytes(skb,
-				   ETH_HLEN + offsetof(struct ipv6hdr, saddr),
-				   &redirect_tuple.dip,
-				   sizeof(redirect_tuple.dip));
-	}
+	ret = load_redirect_tuple(skb, &redirect_tuple);
+	if (ret)
+		return TC_ACT_OK;
 	struct redirect_entry *redirect_entry =
 		bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
 
