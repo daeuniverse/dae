@@ -1054,7 +1054,7 @@ before_next_loop:
 #undef _dscp
 }
 
-static __always_inline __s64 route(const struct route_params *params)
+static __noinline __s64 route(const struct route_params *params)
 {
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
@@ -1668,7 +1668,11 @@ int tproxy_wan_ingress_l3(struct __sk_buff *skb)
 
 // Routing and redirect the packet back.
 // We cannot modify the dest address here. So we cooperate with wan_ingress.
-static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
+/*
+ * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
+ * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
+ */
+static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
