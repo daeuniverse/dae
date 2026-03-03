@@ -1423,6 +1423,10 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct lan_ingress_parsed pkt;
+
+	/* Ensure stack bytes are initialized even if verifier can't precisely
+	 * track writes done through callee pointer arguments. */
+	__builtin_memset(&pkt, 0, sizeof(pkt));
 	int ret = parse_lan_ingress_packet(skb, link_h_len, &pkt);
 
 	if (ret) {
