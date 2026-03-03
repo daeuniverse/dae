@@ -182,7 +182,8 @@ type WriteCloser interface {
 
 // copyWait copies from src to dst until either EOF is reached on src,
 // an error occurs, or the context is done.
-// Uses zero-copy splice optimization when available.
+// It prefers low-latency copy for initial bytes, then upgrades to zero-copy
+// relay on Linux for bulk streams.
 func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
 	done := make(chan struct{})
 	go func() {
@@ -196,9 +197,7 @@ func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64,
 	}()
 	defer close(done)
 
-	// Try zero-copy splice optimization first (Linux only)
-	// This will automatically fallback to standard copy if splice is not available
-	return netproxy.ReadFrom(dst, src)
+	return relayAdaptiveCopy(ctx, dst, src)
 }
 
 // RelayTCP copies data bidirectionally between two connections.
@@ -225,8 +224,8 @@ func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 	if lConn, ok := lConn.(WriteCloser); ok {
 		lConn.CloseWrite()
 	}
-	lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if e != nil {
+		_ = lConn.SetReadDeadline(time.Unix(1, 0))
 		cancel()
 		e2 := <-eCh
 		if e2 != nil {
@@ -234,5 +233,6 @@ func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 		}
 		return e
 	}
+	lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	return <-eCh
 }

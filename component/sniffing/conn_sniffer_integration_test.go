@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// TestConnSnifferSplicePath verifies the actual splice path through netproxy.ReadFrom
-func TestConnSnifferSplicePath(t *testing.T) {
+// TestConnSnifferRelayPath verifies the relay path through netproxy.ReadFrom.
+func TestConnSnifferRelayPath(t *testing.T) {
 	// Create echo server
 	echoServer, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -119,14 +119,14 @@ func TestWriterToCalledByIoCopy(t *testing.T) {
 	t.Logf("Successfully transferred %d bytes via io.Copy -> WriteTo", n)
 }
 
-// BenchmarkSpliceVsCopy compares performance with and without splice
-func BenchmarkSpliceVsCopy(b *testing.B) {
+// BenchmarkConnSnifferRelay compares relay performance with and without ConnSniffer.
+func BenchmarkConnSnifferRelay(b *testing.B) {
 	data := make([]byte, 1024*1024) // 1MB
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
 
-	b.Run("WithSplice", func(b *testing.B) {
+	b.Run("WithConnSniffer", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			l, err := net.Listen("tcp", "127.0.0.1:0")

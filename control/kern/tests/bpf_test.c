@@ -339,6 +339,77 @@ int testcheck_sport_mismatch(struct __sk_buff *skb)
 				      19233, 79);
 }
 
+SEC("tc/pktgen/tcp_non_syn_mark_restore")
+int testpktgen_tcp_non_syn_mark_restore(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_with_flags(skb,
+				       IPV4(192,168,0,1), IPV4(1,1,1,1),
+				       19233, 80,
+				       false, true, true);
+}
+
+SEC("tc/setup/tcp_non_syn_mark_restore")
+int testsetup_tcp_non_syn_mark_restore(struct __sk_buff *skb)
+{
+	struct tuples_key key = {};
+	struct routing_result result = {};
+
+	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
+	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.dip.u6_addr32[3] = bpf_htonl(IPV4(1,1,1,1));
+	key.sport = bpf_htons(19233);
+	key.dport = bpf_htons(80);
+	key.l4proto = IPPROTO_TCP;
+
+	result.mark = TPROXY_MARK;
+	bpf_map_update_elem(&routing_tuples_map, &key, &result, BPF_ANY);
+
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/tcp_non_syn_mark_restore")
+int testcheck_tcp_non_syn_mark_restore(struct __sk_buff *skb)
+{
+	return check_status_and_mark(skb, TC_ACT_OK, TPROXY_MARK);
+}
+
+SEC("tc/pktgen/tcp_non_syn_cached_proxy_redirect")
+int testpktgen_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_with_flags(skb,
+				       IPV4(192,168,0,1), IPV4(8,8,8,8),
+				       23456, 443,
+				       false, true, false);
+}
+
+SEC("tc/setup/tcp_non_syn_cached_proxy_redirect")
+int testsetup_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
+{
+	struct tuples_key key = {};
+	struct routing_result result = {};
+
+	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
+	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.dip.u6_addr32[3] = bpf_htonl(IPV4(8,8,8,8));
+	key.sport = bpf_htons(23456);
+	key.dport = bpf_htons(443);
+	key.l4proto = IPPROTO_TCP;
+
+	result.outbound = OUTBOUND_USER_DEFINED_MIN;
+	result.mark = TPROXY_MARK;
+	bpf_map_update_elem(&routing_tuples_map, &key, &result, BPF_ANY);
+
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/tcp_non_syn_cached_proxy_redirect")
+int testcheck_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
+{
+	return check_redirect_non_syn_tcp(skb);
+}
+
 SEC("tc/pktgen/l4proto_match")
 int testpktgen_l4proto_match(struct __sk_buff *skb)
 {

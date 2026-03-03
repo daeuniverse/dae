@@ -18,8 +18,7 @@ import (
 
 // TestConnSnifferWriteToBufferFlush verifies that WriteTo first flushes the
 // pre-buffered sniff data, then streams the remainder of the connection.
-// NOTE: splice(2) is NOT used — socket→socket always returns EINVAL on Linux;
-// the relay path is always io.Copy.
+// NOTE: relay uses io.Copy after flushing the sniff buffer.
 func TestConnSnifferWriteToBufferFlush(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

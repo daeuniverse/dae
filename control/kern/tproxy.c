@@ -1311,28 +1311,6 @@ static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 	return tcph->syn && !tcph->ack;
 }
 
-// Unified non-syn TCP handling entry for LAN ingress.
-// Keep main-equivalent behavior:
-// - If an established (non-listen) local socket exists, redirect to control plane.
-// - Otherwise let packet continue.
-static __always_inline bool
-should_redirect_non_syn_tcp_lan_ingress(struct __sk_buff *skb,
-					struct bpf_sock_tuple *tuple,
-					__u32 tuple_size)
-{
-	struct bpf_sock *sk =
-		bpf_skc_lookup_tcp(skb, tuple, tuple_size, PARAM.dae_netns_id, 0);
-
-	if (!sk)
-		return false;
-	if (sk->state != BPF_TCP_LISTEN) {
-		bpf_sk_release(sk);
-		return true;
-	}
-	bpf_sk_release(sk);
-	return false;
-}
-
 // Unified non-syn TCP handling entry for WAN egress.
 // Keep main-equivalent behavior:
 // - Reuse cached routing result for established connections.
@@ -1466,47 +1444,41 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
    * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
    * ip -6 route del local default dev lo table 2023
    */
-	if (pkt.l4proto == IPPROTO_TCP) {
-		// Socket lookup and assign skb to existing socket connection.
-		struct bpf_sock_tuple tuple = { 0 };
-		__u32 tuple_size;
+	if (pkt.l4proto == IPPROTO_TCP &&
+	    !is_new_tcp_connection(&pkt.tcph)) {
+		__u8 outbound;
+		__u32 mark;
+		bool must;
 
-		if (skb->protocol == bpf_htons(ETH_P_IP)) {
-			tuple.ipv4.daddr = pkt.tuples.five.dip.u6_addr32[3];
-			tuple.ipv4.saddr = pkt.tuples.five.sip.u6_addr32[3];
-			tuple.ipv4.dport = pkt.tuples.five.dport;
-			tuple.ipv4.sport = pkt.tuples.five.sport;
-			tuple_size = sizeof(tuple.ipv4);
-		} else {
-			__builtin_memcpy(tuple.ipv6.daddr, &pkt.tuples.five.dip,
-					 IPV6_BYTE_LENGTH);
-			__builtin_memcpy(tuple.ipv6.saddr, &pkt.tuples.five.sip,
-					 IPV6_BYTE_LENGTH);
-			tuple.ipv6.dport = pkt.tuples.five.dport;
-			tuple.ipv6.sport = pkt.tuples.five.sport;
-			tuple_size = sizeof(tuple.ipv6);
+		/*
+		 * Compatibility restore for 030902f behavior and align with WAN
+		 * non-SYN session handling: reuse cached routing result for
+		 * established TCP packets.
+		 */
+		if (!load_cached_routing_result(&pkt.tuples.five, &outbound, &mark,
+						&must)) {
+			/* No cache: keep historical direct-pass semantics (e.g.
+			 * single-arm / reply-path traffic).
+			 */
+			return TC_ACT_OK;
 		}
 
-		// TCP.
-		if (is_new_tcp_connection(&pkt.tcph))
-			goto new_connection;
-
-		if (should_redirect_non_syn_tcp_lan_ingress(skb, &tuple,
-							    tuple_size))
-			goto control_plane;
+		skb->mark = mark;
+		if (outbound == OUTBOUND_DIRECT)
+			return TC_ACT_OK;
+		if (unlikely(outbound == OUTBOUND_BLOCK))
+			return TC_ACT_SHOT;
+		if (!wan_outbound_is_alive(skb, outbound, pkt.l4proto,
+					   pkt.tuples.five.dport))
+			return TC_ACT_SHOT;
+		goto control_plane;
 	}
 
-// Routing for new connection.
-new_connection:;
+	// Routing for new connection.
 	struct route_params params;
 
 	__builtin_memset(&params, 0, sizeof(params));
 	if (pkt.l4proto == IPPROTO_TCP) {
-		if (!is_new_tcp_connection(&pkt.tcph)) {
-			// Not a new TCP connection.
-			// Perhaps single-arm.
-			return TC_ACT_OK;
-		}
 		params.l4hdr = &pkt.tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
