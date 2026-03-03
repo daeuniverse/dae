@@ -1379,7 +1379,17 @@ int tproxy_lan_egress_l3(struct __sk_buff *skb)
 	return do_tproxy_lan_egress(skb, 0);
 }
 
-static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
+struct lan_ingress_parsed {
+	struct ethhdr ethh;
+	struct tuples tuples;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 l4proto;
+};
+
+static __noinline int
+parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
+			 struct lan_ingress_parsed *out)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1389,20 +1399,37 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
+
+	if (ret)
+		return ret;
+	if (l4proto == IPPROTO_ICMPV6)
+		return 1;
+
+	__builtin_memset(out, 0, sizeof(*out));
+	out->ethh = ethh;
+	out->tcph = tcph;
+	out->udph = udph;
+	out->l4proto = l4proto;
+	get_tuples(skb, &out->tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+	return 0;
+}
+
+static __noinline bool
+wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
+		      __be16 dport);
+
+static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
+{
+	struct lan_ingress_parsed pkt;
+	int ret = parse_lan_ingress_packet(skb, link_h_len, &pkt);
+
 	if (ret) {
-		bpf_printk("parse_transport: %d", ret);
+		if (ret < 0)
+			bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_OK;
 	}
-	if (l4proto == IPPROTO_ICMPV6)
-		return TC_ACT_OK;
-
-	// Prepare five tuples.
-	struct tuples tuples;
-
-	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 
 	/*
    * ip rule add fwmark 0x8000000/0x8000000 table 2023
@@ -1415,29 +1442,29 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
    * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
    * ip -6 route del local default dev lo table 2023
    */
-	if (l4proto == IPPROTO_TCP) {
+	if (pkt.l4proto == IPPROTO_TCP) {
 		// Socket lookup and assign skb to existing socket connection.
 		struct bpf_sock_tuple tuple = { 0 };
 		__u32 tuple_size;
 
 		if (skb->protocol == bpf_htons(ETH_P_IP)) {
-			tuple.ipv4.daddr = tuples.five.dip.u6_addr32[3];
-			tuple.ipv4.saddr = tuples.five.sip.u6_addr32[3];
-			tuple.ipv4.dport = tuples.five.dport;
-			tuple.ipv4.sport = tuples.five.sport;
+			tuple.ipv4.daddr = pkt.tuples.five.dip.u6_addr32[3];
+			tuple.ipv4.saddr = pkt.tuples.five.sip.u6_addr32[3];
+			tuple.ipv4.dport = pkt.tuples.five.dport;
+			tuple.ipv4.sport = pkt.tuples.five.sport;
 			tuple_size = sizeof(tuple.ipv4);
 		} else {
-			__builtin_memcpy(tuple.ipv6.daddr, &tuples.five.dip,
+			__builtin_memcpy(tuple.ipv6.daddr, &pkt.tuples.five.dip,
 					 IPV6_BYTE_LENGTH);
-			__builtin_memcpy(tuple.ipv6.saddr, &tuples.five.sip,
+			__builtin_memcpy(tuple.ipv6.saddr, &pkt.tuples.five.sip,
 					 IPV6_BYTE_LENGTH);
-			tuple.ipv6.dport = tuples.five.dport;
-			tuple.ipv6.sport = tuples.five.sport;
+			tuple.ipv6.dport = pkt.tuples.five.dport;
+			tuple.ipv6.sport = pkt.tuples.five.sport;
 			tuple_size = sizeof(tuple.ipv6);
 		}
 
 		// TCP.
-		if (is_new_tcp_connection(&tcph))
+		if (is_new_tcp_connection(&pkt.tcph))
 			goto new_connection;
 
 		if (should_redirect_non_syn_tcp_lan_ingress(skb, &tuple,
@@ -1450,18 +1477,18 @@ new_connection:;
 	struct route_params params;
 
 	__builtin_memset(&params, 0, sizeof(params));
-	if (l4proto == IPPROTO_TCP) {
-		if (!is_new_tcp_connection(&tcph)) {
+	if (pkt.l4proto == IPPROTO_TCP) {
+		if (!is_new_tcp_connection(&pkt.tcph)) {
 			// Not a new TCP connection.
 			// Perhaps single-arm.
 			return TC_ACT_OK;
 		}
-		params.l4hdr = &tcph;
+		params.l4hdr = &pkt.tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
-		if (!is_short_lived_udp_traffic(&tuples.five)) {
+		if (!is_short_lived_udp_traffic(&pkt.tuples.five)) {
 			struct udp_conn_state *conn_state =
-				refresh_udp_conn_state_timer(&tuples.five, false);
+				refresh_udp_conn_state_timer(&pkt.tuples.five, false);
 			if (!conn_state)
 				return TC_ACT_SHOT;
 			if (conn_state->is_wan_ingress_direction) {
@@ -1470,20 +1497,22 @@ new_connection:;
 				return TC_ACT_OK;
 			}
 		}
-		params.l4hdr = &udph;
+		params.l4hdr = &pkt.udph;
 		params.flag[0] = L4ProtoType_UDP;
 	}
 	if (skb->protocol == bpf_htons(ETH_P_IP))
 		params.flag[1] = IpVersionType_4;
 	else
 		params.flag[1] = IpVersionType_6;
-	params.flag[6] = tuples.dscp;
-	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
+	params.flag[6] = pkt.tuples.dscp;
+	params.mac[2] =
+		bpf_htonl((pkt.ethh.h_source[0] << 8) | (pkt.ethh.h_source[1]));
 	params.mac[3] =
-		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
-			  (ethh.h_source[4] << 8) | (ethh.h_source[5]));
-	params.saddr = tuples.five.sip.u6_addr32;
-	params.daddr = tuples.five.dip.u6_addr32;
+		bpf_htonl((pkt.ethh.h_source[2] << 24) |
+			  (pkt.ethh.h_source[3] << 16) |
+			  (pkt.ethh.h_source[4] << 8) | (pkt.ethh.h_source[5]));
+	params.saddr = pkt.tuples.five.sip.u6_addr32;
+	params.daddr = pkt.tuples.five.dip.u6_addr32;
 	__s64 s64_ret;
 
 	s64_ret = route(&params);
@@ -1496,8 +1525,8 @@ new_connection:;
 	routing_result.outbound = s64_ret;
 	routing_result.mark = s64_ret >> 8;
 	routing_result.must = (s64_ret >> 40) & 1;
-	routing_result.dscp = tuples.dscp;
-	__builtin_memcpy(routing_result.mac, ethh.h_source,
+	routing_result.dscp = pkt.tuples.dscp;
+	__builtin_memcpy(routing_result.mac, pkt.ethh.h_source,
 			 sizeof(routing_result.mac));
 	/// NOTICE: No pid pname info for LAN packet.
 	// // Maybe this packet is also in the host (such as docker) ?
@@ -1512,10 +1541,11 @@ new_connection:;
 	//}
 
 	// Save routing result.
-	if (l4proto == IPPROTO_UDP && is_short_lived_udp_traffic(&tuples.five)) {
+	if (pkt.l4proto == IPPROTO_UDP &&
+	    is_short_lived_udp_traffic(&pkt.tuples.five)) {
 		// Skip cache for short-lived DNS to avoid map churn.
 	} else {
-		ret = bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+		ret = bpf_map_update_elem(&routing_tuples_map, &pkt.tuples.five,
 					  &routing_result, BPF_ANY);
 		if (ret) {
 			bpf_printk("shot save routing result: %d", ret);
@@ -1523,14 +1553,14 @@ new_connection:;
 		}
 	}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-	if (l4proto == IPPROTO_TCP) {
+	if (pkt.l4proto == IPPROTO_TCP) {
 		bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", ret,
-			   tuples.five.dip.u6_addr32,
-			   bpf_ntohs(tuples.five.dport));
+			   pkt.tuples.five.dip.u6_addr32,
+			   bpf_ntohs(pkt.tuples.five.dport));
 	} else {
 		bpf_printk("udp(lan): outbound: %u, target: %pI6:%u",
-			   routing_result.outbound, tuples.five.dip.u6_addr32,
-			   bpf_ntohs(tuples.five.dport));
+			   routing_result.outbound, pkt.tuples.five.dip.u6_addr32,
+			   bpf_ntohs(pkt.tuples.five.dport));
 	}
 #endif
 	if (routing_result.outbound == OUTBOUND_DIRECT) {
@@ -1546,25 +1576,14 @@ new_connection:;
 		goto block;
 	}
 
-	// Check outbound connectivity in specific ipversion and l4proto.
-	struct outbound_connectivity_query q = { 0 };
-
-	q.outbound = routing_result.outbound;
-	q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-	q.l4proto = l4proto;
-	__u32 *alive;
-
-	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-	if (alive && *alive == 0 &&
-	    !(l4proto == IPPROTO_UDP && tuples.five.dport == bpf_htons(53))) {
-		// Outbound is not alive. Dns is an exception.
+	if (!wan_outbound_is_alive(skb, routing_result.outbound, pkt.l4proto,
+				   pkt.tuples.five.dport))
 		goto block;
-	}
 
 	// Assign to control plane.
 control_plane:
-	prep_redirect_to_control_plane(skb, link_h_len, &tuples, l4proto, &ethh,
-				       0, &tcph);
+	prep_redirect_to_control_plane(skb, link_h_len, &pkt.tuples, pkt.l4proto,
+				       &pkt.ethh, 0, &pkt.tcph);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
