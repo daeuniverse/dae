@@ -181,17 +181,7 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
-                break
-              fi
-              sleep 1
-            done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
-              cat dae.log
-              exit 1
-            fi
+            sleep 5s
             cat dae.log
 
       - name: Check WAN IPv4 TCP
@@ -247,17 +237,7 @@ jobs:
             docker restart -t0 dae v2ray
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
-                break
-              fi
-              sleep 1
-            done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
-              cat dae.log
-              exit 1
-            fi
+            sleep 5s
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check WAN IPv4 UDP with port conflict
@@ -354,17 +334,7 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
-                break
-              fi
-              sleep 1
-            done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
-              cat dae.log
-              exit 1
-            fi
+            sleep 5s
             cat dae.log
 
       - name: Check LAN IPv4 TCP
@@ -426,17 +396,7 @@ jobs:
 
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
-                break
-              fi
-              sleep 1
-            done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
-              cat dae.log
-              exit 1
-            fi
+            sleep 5s
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check LAN IPv4 UDP with port conflict

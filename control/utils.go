@@ -9,26 +9,16 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"structs"
 	"syscall"
-	"time"
 	"unsafe"
 
-	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"golang.org/x/sys/unix"
-)
-
-const (
-	// Small bounded retry window to bridge short races between packet redirect
-	// and tuple visibility in routing_tuples_map.
-	routingTupleLookupRetryAttempts = 3
-	routingTupleLookupRetryInterval = 2 * time.Millisecond
 )
 
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
@@ -80,25 +70,6 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
 	}
 	return &routingResult, nil
-}
-
-func (c *controlPlaneCore) RetrieveRoutingResultWithRetry(src, dst netip.AddrPort, l4proto uint8, attempts int, interval time.Duration) (result *bpfRoutingResult, err error) {
-	if attempts < 1 {
-		attempts = 1
-	}
-	for i := 0; i < attempts; i++ {
-		result, err = c.RetrieveRoutingResult(src, dst, l4proto)
-		if err == nil {
-			return result, nil
-		}
-		if !errors.Is(err, ebpf.ErrKeyNotExist) || i == attempts-1 {
-			return nil, err
-		}
-		if interval > 0 {
-			time.Sleep(interval)
-		}
-	}
-	return nil, err
 }
 
 func RetrieveOriginalDest(oob []byte) netip.AddrPort {

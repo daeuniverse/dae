@@ -27,7 +27,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -tags dae_real_ebpf -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
 
 var nativeEndian binary.ByteOrder
 

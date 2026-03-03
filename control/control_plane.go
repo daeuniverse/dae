@@ -1144,11 +1144,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 							Outbound: uint8(consts.OutboundControlPlaneRouting),
 							Mark:     c.soMarkFromDae,
 						}
-						if rr, retrieveErr := c.core.RetrieveRoutingResultWithRetry(
-							convergeSrc, realDst, unix.IPPROTO_UDP,
-							routingTupleLookupRetryAttempts,
-							routingTupleLookupRetryInterval,
-						); retrieveErr == nil {
+						if rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP); retrieveErr == nil {
 							dnsRoutingResult = rr
 							if dnsRoutingResult.Mark == 0 {
 								dnsRoutingResult.Mark = c.soMarkFromDae
@@ -1190,11 +1186,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 
 				if routingResult == nil {
-					rr, retrieveErr := c.core.RetrieveRoutingResultWithRetry(
-						convergeSrc, realDst, unix.IPPROTO_UDP,
-						routingTupleLookupRetryAttempts,
-						routingTupleLookupRetryInterval,
-					)
+					rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP)
 					if retrieveErr != nil {
 						if stderrors.Is(retrieveErr, ebpf.ErrKeyNotExist) {
 							// Keep behavior consistent with TCP path: missing tuple can happen

@@ -884,17 +884,12 @@ func buildTestRoutingMatcher(b *testing.B, ruleCount int) *RoutingMatcher {
 		Outbound: 0,
 	})
 
-	compiledMatches, err := compileRoutingMatches(matches)
-	if err != nil {
-		b.Fatalf("failed to compile routing matches: %v", err)
-	}
-
 	// Create domain matcher with enough bitmap size
 	totalRules := len(matches)
 	return &RoutingMatcher{
-		lpmMatcher:      lpmMatchers,
-		domainMatcher:   &mockDomainMatcher{domainCount: totalRules},
-		compiledMatches: compiledMatches,
+		lpmMatcher:    lpmMatchers,
+		domainMatcher: &mockDomainMatcher{domainCount: totalRules},
+		matches:       matches,
 	}
 }
 
