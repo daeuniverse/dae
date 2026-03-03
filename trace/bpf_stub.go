@@ -1,4 +1,4 @@
-//go:build !dae_real_ebpf
+//go:build dae_stub_ebpf
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
@@ -13,7 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-var errBpfObjectsUnavailable = errors.New("eBPF objects are unavailable in this build; run make ebpf and build with -tags dae_real_ebpf")
+var errBpfObjectsUnavailable = errors.New("eBPF objects are unavailable in this build; this is a stub build (tag dae_stub_ebpf); run make ebpf before building")
 
 type bpfObjects struct {
 	KprobeSkb1                   *ebpf.Program

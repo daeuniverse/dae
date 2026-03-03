@@ -13,14 +13,22 @@ import (
 	"strings"
 )
 
+type compiledDomainSet struct {
+	set          routing.DomainSet
+	lowerDomains []string
+	regexps      []*regexp.Regexp
+}
+
 type Bruteforce struct {
 	simulatedDomainSet []routing.DomainSet
+	compiledDomainSet  []compiledDomainSet
 	err                error
 }
 
 func NewBruteforce(bitLength int) *Bruteforce {
 	return &Bruteforce{
 		simulatedDomainSet: make([]routing.DomainSet, bitLength),
+		compiledDomainSet:  make([]compiledDomainSet, bitLength),
 	}
 }
 func (n *Bruteforce) AddSet(bitIndex int, patterns []string, typ consts.RoutingDomainKey) {
@@ -44,10 +52,10 @@ func (n *Bruteforce) MatchDomainBitmap(domain string) (bitmap []uint32) {
 	}
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 	bitmap = make([]uint32, N)
-	for _, s := range n.simulatedDomainSet {
-		for _, d := range s.Domains {
+	for _, s := range n.compiledDomainSet {
+		for i, d := range s.set.Domains {
 			var hit bool
-			switch s.Key {
+			switch s.set.Key {
 			case consts.RoutingDomainKey_Suffix:
 				if domain == d || strings.HasSuffix(domain, "."+strings.TrimPrefix(d, ".")) {
 					hit = true
@@ -57,17 +65,17 @@ func (n *Bruteforce) MatchDomainBitmap(domain string) (bitmap []uint32) {
 					hit = true
 				}
 			case consts.RoutingDomainKey_Keyword:
-				if strings.Contains(strings.ToLower(domain), strings.ToLower(d)) {
+				if strings.Contains(domain, s.lowerDomains[i]) {
 					hit = true
 				}
 			case consts.RoutingDomainKey_Regex:
-				if regexp.MustCompile(d).MatchString(strings.ToLower(domain)) {
+				if s.regexps[i].MatchString(domain) {
 					hit = true
 				}
 			}
 			if hit {
 				//logrus.Traceln(d, s.Key, "matched given", domain)
-				bitmap[s.RuleIndex/32] |= 1 << (s.RuleIndex % 32)
+				bitmap[s.set.RuleIndex/32] |= 1 << (s.set.RuleIndex % 32)
 				break
 			}
 		}
@@ -77,6 +85,25 @@ func (n *Bruteforce) MatchDomainBitmap(domain string) (bitmap []uint32) {
 func (n *Bruteforce) Build() error {
 	if n.err != nil {
 		return n.err
+	}
+	for i, s := range n.simulatedDomainSet {
+		n.compiledDomainSet[i].set = s
+		switch s.Key {
+		case consts.RoutingDomainKey_Keyword:
+			n.compiledDomainSet[i].lowerDomains = make([]string, len(s.Domains))
+			for j, d := range s.Domains {
+				n.compiledDomainSet[i].lowerDomains[j] = strings.ToLower(d)
+			}
+		case consts.RoutingDomainKey_Regex:
+			n.compiledDomainSet[i].regexps = make([]*regexp.Regexp, len(s.Domains))
+			for j, d := range s.Domains {
+				r, err := regexp.Compile(d)
+				if err != nil {
+					return err
+				}
+				n.compiledDomainSet[i].regexps[j] = r
+			}
+		}
 	}
 	return nil
 }

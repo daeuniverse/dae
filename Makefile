@@ -85,6 +85,10 @@ fmt:
 	go fmt ./...
 
 ebpf-sync:
+	@unset GOOS && \
+	unset GOARCH && \
+	unset GOARM && \
+	unset GOAMD64 && \
 	go generate ./common/consts/ebpf.go
 
 ebpf-sync-check: ebpf-sync
@@ -103,9 +107,9 @@ ebpf: ebpf-sync submodule clean-ebpf
     echo $(STRIP_FLAG) && \
     go generate ./control/control.go && \
     if go generate ./trace/trace.go; then \
-		echo dae_real_ebpf,trace > $(BUILD_TAGS_FILE); \
+		echo trace > $(BUILD_TAGS_FILE); \
 	else \
-		echo dae_real_ebpf > $(BUILD_TAGS_FILE); \
+		echo > $(BUILD_TAGS_FILE); \
 	fi
 
 ebpf-lint:
