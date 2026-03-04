@@ -182,43 +182,50 @@ type WriteCloser interface {
 
 // RelayTCP copies data bidirectionally between two connections.
 // Uses a clean Goroutine model avoiding redundant cancellable copy waits.
-// When one side of the copy finishes/errors, it closes or sets deadlines
-// perfectly unblocking the concurrent splice/copy immediately.
+// When one side of the copy finishes/errors, it proactively unblocks the
+// concurrent splice/copy immediately via Close() or SetReadDeadline.
 func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
-        eCh := make(chan error, 1)
-        
-        go func() {
-                _, e := relayAdaptiveCopy(context.Background(), rConn, lConn)
-                if rConn, ok := rConn.(WriteCloser); ok {
-                        rConn.CloseWrite()
-                }
-                
-                // Set deadlines to unblock the other relay operation if still blocked
-                _ = rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-                _ = lConn.SetReadDeadline(time.Unix(1, 0))
-                
-                // For zero-copy paths that may ignore read deadlines while blocked in kernel,
-                // Closing the source connection guarantees prompt unblocking.
-                _ = lConn.Close()
-                eCh <- e
-        }()
-        
-        _, e := relayAdaptiveCopy(context.Background(), lConn, rConn)
-        if lConn, ok := lConn.(WriteCloser); ok {
-                lConn.CloseWrite()
-        }
-        
-        // Unblock the background goroutine if it's still running
-        _ = lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-        _ = rConn.SetReadDeadline(time.Unix(1, 0))
-        _ = rConn.Close()
+	eCh := make(chan error, 1)
+	
+	go func() {
+		// Reads from lConn, writes to rConn
+		_, e := relayAdaptiveCopy(context.Background(), rConn, lConn)
+		if rConn, ok := rConn.(WriteCloser); ok {
+			_ = rConn.CloseWrite()
+		}
+		
+		if e != nil {
+			// Foreground read errored, immediately force unblock the background read
+			_ = rConn.SetReadDeadline(time.Unix(1, 0))
+			_ = rConn.Close()
+		} else {
+			// Graceful EOF, allow max 10s for the other end to finish pending data
+			_ = rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		}
+		eCh <- e
+	}()
+	
+	// Reads from rConn, writes to lConn
+	_, e := relayAdaptiveCopy(context.Background(), lConn, rConn)
+	if lConn, ok := lConn.(WriteCloser); ok {
+		_ = lConn.CloseWrite()
+	}
+	
+	if e != nil {
+		// Background read errored, immediately force unblock the foreground read
+		_ = lConn.SetReadDeadline(time.Unix(1, 0))
+		_ = lConn.Close()
+	} else {
+		// Graceful EOF, give 10s back
+		_ = lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	}
 
-        e2 := <-eCh
-        if e != nil {
-                if e2 != nil {
-                        return fmt.Errorf("%w: %v", e, e2)
-                }
-                return e
-        }
-        return e2
+	e2 := <-eCh
+	if e != nil {
+		if e2 != nil {
+			return fmt.Errorf("%w: %v", e, e2)
+		}
+		return e
+	}
+	return e2
 }
