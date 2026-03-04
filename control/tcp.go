@@ -122,6 +122,14 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 		return fmt.Errorf("handleTCP relay error: %w", err)
 	}
+
+	if c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(logrus.Fields{
+			"src": src.String(),
+			"dst": dst.String(),
+		}).Debug("TCP relay completed")
+	}
+
 	return nil
 }
 

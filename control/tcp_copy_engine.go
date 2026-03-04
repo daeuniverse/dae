@@ -33,6 +33,7 @@ func (defaultRelayCopyEngine) Copy(ctx context.Context, dst netproxy.Conn, src n
 	if shouldUseRelayFastPath(dst, src) {
 		return relayFastCopy(ctx, dst, src)
 	}
+	// Slow path: will call Read() on wrapped connections
 	buf := relayCopyBufferPool.Get().([]byte)
 	defer relayCopyBufferPool.Put(buf)
 	return relayCopyLoop(ctx, dst, src, buf)

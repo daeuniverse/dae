@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/daeuniverse/dae/common/consts"
+	daerrors "github.com/daeuniverse/dae/common/errors"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -224,6 +225,27 @@ type dnsHandler struct {
 	log        *logrus.Logger
 }
 
+func isDNSClientWriteGoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "write" {
+		return daerrors.IsIgnorableConnectionError(err) || daerrors.IsClosedConnection(err)
+	}
+	// Fallback for wrapped errors where net.OpError is lost.
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "write") && daerrors.ContainsIgnorableErrorPattern(errStr)
+}
+
+func isDNSTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // ServeDNS handles DNS requests
 func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	defer func() {
@@ -323,11 +345,25 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 			// REFUSED response has been written by DNS controller.
 			return
 		}
-		h.log.Errorf("Failed to handle DNS request: %v", err)
+		if isDNSClientWriteGoneError(err) {
+			if h.log.IsLevelEnabled(logrus.DebugLevel) {
+				h.log.WithError(err).Debug("Drop DNS response because client connection is already gone")
+			}
+			return
+		}
+		if isDNSTimeoutError(err) {
+			h.log.WithError(err).Warn("DNS request handling timed out")
+		} else {
+			h.log.WithError(err).Error("Failed to handle DNS request")
+		}
 		// Send error response
 		m := new(dnsmessage.Msg)
 		m.SetRcode(r, dnsmessage.RcodeServerFailure)
-		_ = w.WriteMsg(m)
+		if writeErr := w.WriteMsg(m); writeErr != nil && !isDNSClientWriteGoneError(writeErr) {
+			if h.log.IsLevelEnabled(logrus.DebugLevel) {
+				h.log.WithError(writeErr).Debug("Failed to write DNS SERVFAIL response")
+			}
+		}
 		return
 	}
 }

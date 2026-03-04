@@ -155,12 +155,14 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			}
 			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadDone}, 0644)
 		}()
-		control.GetDaeNetns().With(func() error {
+		if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
 				log.Errorln("ListenAndServe:", err)
 			}
 			return err
-		})
+		}); runErr != nil {
+			log.Errorln("GetDaeNetns.With:", runErr)
+		}
 		sigs <- nil
 	}()
 	reloading := false

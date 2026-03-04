@@ -1,8 +1,11 @@
 package control
 
 import (
+	"errors"
 	"net"
 	"net/netip"
+	"os"
+	"syscall"
 	"testing"
 
 	dnsmessage "github.com/miekg/dns"
@@ -177,5 +180,41 @@ func TestDnsHandlerServeDNS_BadRemoteAddrFormatNoPanic(t *testing.T) {
 	}
 	if w.msg.Rcode != dnsmessage.RcodeServerFailure {
 		t.Fatalf("expected SERVFAIL rcode, got: %v", w.msg.Rcode)
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+func TestIsDNSClientWriteGoneError(t *testing.T) {
+	err := &net.OpError{
+		Op:  "write",
+		Net: "tcp",
+		Err: &os.SyscallError{Syscall: "write", Err: syscall.EPIPE},
+	}
+	if !isDNSClientWriteGoneError(err) {
+		t.Fatal("expected broken pipe write error to be ignorable for DNS client write")
+	}
+}
+
+func TestDNSTimeoutClassification(t *testing.T) {
+	err := &net.OpError{
+		Op:  "read",
+		Net: "udp",
+		Err: timeoutErr{},
+	}
+	if !isDNSTimeoutError(err) {
+		t.Fatal("expected read timeout to be recognized as DNS timeout")
+	}
+	if isDNSClientWriteGoneError(err) {
+		t.Fatal("read timeout should not be treated as client write-gone error")
+	}
+
+	wrapped := errors.Join(err)
+	if !isDNSTimeoutError(wrapped) {
+		t.Fatal("expected wrapped timeout to still be recognized")
 	}
 }

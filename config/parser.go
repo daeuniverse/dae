@@ -260,8 +260,6 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		goto unsupported
 	}
 
-	panic("code should not reach here")
-
 unsupported:
 	return fmt.Errorf("unsupported section type %v", to.Type())
 }

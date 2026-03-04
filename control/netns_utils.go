@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	NsName       = "daens"
-	HostVethName = "dae0"
-	NsVethName   = "dae0peer"
+	NsName        = "daens"
+	HostVethName  = "dae0"
+	NsVethName    = "dae0peer"
 	DaeVethTxQLen = 1000
 )
 
@@ -96,7 +96,7 @@ func (ns *DaeNetns) Close() (err error) {
 }
 
 func (ns *DaeNetns) With(f func() error) (err error) {
-	if err = daeNetns.Setup(); err != nil {
+	if err = ns.Setup(); err != nil {
 		return fmt.Errorf("failed to setup dae netns: %v", err)
 	}
 
@@ -112,6 +112,28 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 		return fmt.Errorf("failed to run func in dae netns: %v", err)
 	}
 	return
+}
+
+// WithRequired runs f in dae netns and wraps the error with operation context.
+func (ns *DaeNetns) WithRequired(op string, f func() error) error {
+	if err := ns.With(f); err != nil {
+		if op == "" {
+			return err
+		}
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
+}
+
+// WithBestEffort runs f in dae netns and only logs debug info on failure.
+func (ns *DaeNetns) WithBestEffort(op string, f func() error) {
+	if err := ns.With(f); err != nil && ns.log != nil {
+		if op == "" {
+			ns.log.WithError(err).Debug("best-effort dae netns operation failed")
+			return
+		}
+		ns.log.WithError(err).Debugf("best-effort dae netns operation failed: %s", op)
+	}
 }
 
 func (ns *DaeNetns) setup() (err error) {

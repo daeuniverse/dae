@@ -537,7 +537,8 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	daens := GetDaeNetns()
 
 	// tproxy_dae0peer_ingress@eth0 at dae netns
-	daens.With(func() error {
+	// Best effort: qdisc may already exist and tx queue tuning is non-critical.
+	daens.WithBestEffort("set dae0peer tx queue and add clsact qdisc", func() error {
 		err := netlink.LinkSetTxQLen(daens.Dae0Peer(), DaeVethTxQLen)
 		if err == nil {
 			err = c.addQdisc(daens.Dae0Peer().Attrs().Name)
@@ -556,7 +557,8 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		Name:         consts.AppName + "_dae0peer_ingress",
 		DirectAction: true,
 	}
-	daens.With(func() error {
+	// Best effort to remove old filter; it may not exist.
+	daens.WithBestEffort("delete old dae0peer ingress filter", func() error {
 		return netlink.FilterDel(filterDae0peerIngress)
 	})
 	// Remove and add.
@@ -564,25 +566,27 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		// Clean up thoroughly: delete the filter with the flipped handle.
 		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
 		filterIngressFlipped.FilterAttrs.Handle ^= 1
-		daens.With(func() error {
+		daens.WithBestEffort("delete flipped dae0peer ingress filter", func() error {
 			return netlink.FilterDel(filterIngressFlipped) // R-07 fixed: was filterDae0peerIngress
 		})
 	}
-	if err = daens.With(func() error {
+	if err = daens.WithRequired("add dae0peer ingress filter", func() error {
 		return netlink.FilterAdd(filterDae0peerIngress)
 	}); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		daens.With(func() error {
-			return netlink.FilterDel(filterDae0peerIngress)
+		return daens.WithRequired("delete dae0peer ingress filter", func() error {
+			if err := netlink.FilterDel(filterDae0peerIngress); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
+			}
+			return nil
 		})
-		return nil
 	})
 
 	// tproxy_dae0_ingress@dae0 at host netns
 	// Best effort to add qdisc; it may already exist.
-	c.addQdisc(daens.Dae0().Attrs().Name)
+	_ = c.addQdisc(daens.Dae0().Attrs().Name)
 	filterDae0Ingress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: daens.Dae0().Attrs().Index,

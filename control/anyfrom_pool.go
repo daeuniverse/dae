@@ -210,13 +210,12 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 			},
 			KeepAlive: 0,
 		}
-		var err error
 		var pc net.PacketConn
-		GetDaeNetns().With(func() error {
-			pc, err = d.ListenPacket(context.Background(), "udp", lAddr.String())
-			return nil
-		})
-		if err != nil {
+		if err = GetDaeNetns().WithRequired("listen anyfrom udp socket", func() error {
+			var listenErr error
+			pc, listenErr = d.ListenPacket(context.Background(), "udp", lAddr.String())
+			return listenErr
+		}); err != nil {
 			return nil, true, err
 		}
 		uConn := pc.(*net.UDPConn)

@@ -6,13 +6,45 @@
 package sniffing
 
 import (
-	"bufio"
 	"bytes"
-	"strings"
 	"unicode"
 
 	"github.com/daeuniverse/dae/common"
 )
+
+var (
+	httpHeaderHost = []byte("host")
+	httpHeaderSep  = []byte{':'}
+	httpLineSep    = []byte("\r\n")
+)
+
+func sniffHTTPHostHeader(data []byte) (string, error) {
+	for lineStart := 0; lineStart <= len(data); {
+		lineEnd := bytes.Index(data[lineStart:], httpLineSep)
+		var line []byte
+		if lineEnd >= 0 {
+			line = data[lineStart : lineStart+lineEnd]
+			lineStart += lineEnd + len(httpLineSep)
+		} else {
+			line = data[lineStart:]
+			lineStart = len(data) + 1
+		}
+
+		// Empty line marks end-of-headers.
+		if len(line) == 0 {
+			break
+		}
+		key, value, found := bytes.Cut(line, httpHeaderSep)
+		if !found {
+			// Bad key value.
+			continue
+		}
+		if bytes.EqualFold(bytes.TrimSpace(key), httpHeaderHost) {
+			return string(value), nil
+		}
+	}
+	return "", ErrNotFound
+}
 
 func (s *Sniffer) SniffHttp() (d string, err error) {
 	// First byte should be printable.
@@ -35,33 +67,5 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 
 	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
 
-	// Search Host.
-	scanner := bufio.NewScanner(bytes.NewReader(s.buf.Bytes()))
-	// \r\n
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		if atEOF && len(data) == 0 {
-			return 0, nil, nil
-		}
-		if i := bytes.Index(data, []byte("\r\n")); i >= 0 {
-			// We have a full newline-terminated line.
-			return i + 2, data[0:i], nil
-		}
-		// If we're at EOF, we have a final, non-terminated line. Return it.
-		if atEOF {
-			return len(data), data, nil
-		}
-		// Request more data.
-		return 0, nil, nil
-	})
-	for scanner.Scan() && len(scanner.Bytes()) > 0 {
-		key, value, found := bytes.Cut(scanner.Bytes(), []byte{':'})
-		if !found {
-			// Bad key value.
-			continue
-		}
-		if strings.EqualFold(string(key), "host") {
-			return string(value), nil
-		}
-	}
-	return "", ErrNotFound
+	return sniffHTTPHostHeader(s.buf.Bytes())
 }

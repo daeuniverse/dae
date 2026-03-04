@@ -132,8 +132,6 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 		goto unsupported
 	}
 
-	panic("code should not reach here")
-
 unsupported:
 	return fmt.Errorf("unsupported section type %v", from.Type())
 }

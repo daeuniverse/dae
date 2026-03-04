@@ -188,8 +188,22 @@ func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool
 					RAddr: nil,
 				}, nil
 			},
-			IdleConnTimeout:       30 * time.Second,
+			// TLSHandshakeTimeout bounds the TLS setup phase so that a slow
+			// or unresponsive proxy server does not indefinitely delay the
+			// latency measurement for this probe target.
+			TLSHandshakeTimeout: 10 * time.Second,
+			// IdleConnTimeout and ResponseHeaderTimeout are per-connection knobs
+			// that prevent resource leaks on idle or stalled connections.
+			IdleConnTimeout:       90 * time.Second,
 			ResponseHeaderTimeout: 30 * time.Second,
+			// Allow a small pool of persistent connections per probe IP so that
+			// repeated health checks reuse TCP connections instead of re-doing
+			// the full TCP + TLS handshake each interval.
+			MaxIdleConnsPerHost: 2,
+			// Health checks send minimal HEAD/GET requests; disabling transparent
+			// compression avoids the deflate/gzip overhead on the response path
+			// and keeps latency measurements free from decompression noise.
+			DisableCompression: true,
 		},
 	}
 	d.httpClients[key] = cli

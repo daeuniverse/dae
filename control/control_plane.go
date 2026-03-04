@@ -78,6 +78,8 @@ type ControlPlane struct {
 	realDomainSet     *bloom.BloomFilter
 	realDomainNegSet  sync.Map // map[string]int64 (expiresAt unix nano)
 	dnsDialerSnapshot sync.Map // map[dnsDialerSnapshotKey]*dnsDialerSnapshotEntry
+	tcpSniffNegMu     sync.RWMutex
+	tcpSniffNegSet    map[tcpSniffNegKey]tcpSniffNegEntry
 	realDomainProbeS  singleflight.Group
 	negJanitorStop    chan struct{}
 	negJanitorDone    chan struct{}
@@ -457,6 +459,7 @@ func NewControlPlane(
 		ready:             make(chan struct{}),
 		muRealDomainSet:   sync.RWMutex{},
 		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		tcpSniffNegSet:    make(map[tcpSniffNegKey]tcpSniffNegEntry),
 		negJanitorStop:    make(chan struct{}),
 		negJanitorDone:    make(chan struct{}),
 		lanInterface:      global.LanInterface,
@@ -1105,13 +1108,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			go func(lconn net.Conn) {
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
-				// Create a new context for each connection that is independent
-				// of the ControlPlane's lifecycle. This ensures each connection
-				// has its own timeout and won't be canceled when the plane shuts down.
-				// The connection will be closed when the listener is closed.
-				ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
-				defer cancel()
-				if err := c.handleConn(ctx, lconn); err != nil {
+				// Keep the ControlPlane lifecycle context so shutdown/reload can cancel
+				// in-flight connection handling. Dial timeout is applied independently
+				// inside RouteDialTcp and is not reduced by sniffing time.
+				if err := c.handleConn(c.ctx, lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
 			}(lconn)
@@ -1466,6 +1466,7 @@ func (c *ControlPlane) Close() (err error) {
 		c.dnsDialerSnapshot.Delete(key)
 		return true
 	})
+	c.clearAllTcpSniffNegative()
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
 	// Combine defer errors with core.Close error

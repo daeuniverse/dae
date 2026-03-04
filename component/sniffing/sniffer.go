@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ type Sniffer struct {
 	// Stream
 	stream    bool
 	r         io.Reader
+	conn      net.Conn
 	dataReady chan struct{}
 	dataError error
 
@@ -33,10 +35,10 @@ type Sniffer struct {
 	cancel  func()
 
 	// Packet
-	data         [][]byte
-	needMore     bool
-	quicNextRead int
-	quicCryptos  []*quicutils.CryptoFrameOffset
+	data           [][]byte
+	needMore       bool
+	quicNextRead   int
+	quicCryptos    []*quicutils.CryptoFrameOffset
 	quicPlaintexts []pool.PB
 }
 
@@ -45,9 +47,11 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 	buffer := pool.GetBuffer()
 	buffer.Grow(AssumedTlsClientHelloMaxLength)
 	buffer.Reset()
+	conn, _ := r.(net.Conn)
 	s := &Sniffer{
 		stream:    true,
 		r:         r,
+		conn:      conn,
 		buf:       buffer,
 		dataReady: make(chan struct{}),
 		ctx:       ctx,
@@ -87,6 +91,69 @@ func sniffGroup(sniffs ...sniff) (d string, err error) {
 	return "", ErrNotApplicable
 }
 
+var errReadDeadlineUnsupported = errors.New("read deadline unsupported")
+
+func (s *Sniffer) readStreamOnce() error {
+	s.dataError = nil
+
+	if s.conn != nil {
+		if err := s.readStreamOnceWithReadDeadline(); err == nil {
+			return nil
+		} else if !errors.Is(err, errReadDeadlineUnsupported) {
+			return err
+		}
+	}
+	return s.readStreamOnceAsync()
+}
+
+func (s *Sniffer) readStreamOnceWithReadDeadline() error {
+	if deadline, ok := s.ctx.Deadline(); ok {
+		if err := s.conn.SetReadDeadline(deadline); err != nil {
+			return fmt.Errorf("%w: %w", errReadDeadlineUnsupported, err)
+		}
+		defer func() {
+			// Best effort restore: sniff deadline must not leak into relay phase.
+			_ = s.conn.SetReadDeadline(time.Time{})
+		}()
+	}
+
+	_, err := s.buf.ReadFromOnce(s.conn)
+	if err == nil {
+		close(s.dataReady)
+		return nil
+	}
+	close(s.dataReady)
+	s.dataError = err
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		// Keep behavior consistent with context timeout path in the legacy async read.
+		return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+	}
+	return err
+}
+
+func (s *Sniffer) readStreamOnceAsync() error {
+	go func() {
+		// Read once.
+		_, err := s.buf.ReadFromOnce(s.r)
+		if err != nil {
+			s.dataError = err
+		}
+		close(s.dataReady)
+	}()
+
+	select {
+	case <-s.dataReady:
+		if s.dataError != nil {
+			return s.dataError
+		}
+	case <-s.ctx.Done():
+		return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+	}
+	return nil
+}
+
 func (s *Sniffer) SniffTcp() (d string, err error) {
 	if s.sniffed != "" {
 		return s.sniffed, nil
@@ -106,23 +173,8 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	}()
 	for {
 		if s.stream {
-			go func() {
-				// Read once.
-				_, err := s.buf.ReadFromOnce(s.r)
-				if err != nil {
-					s.dataError = err
-				}
-				close(s.dataReady)
-			}()
-
-			// Waiting 100ms for data.
-			select {
-			case <-s.dataReady:
-				if s.dataError != nil {
-					return "", s.dataError
-				}
-			case <-s.ctx.Done():
-				return "", fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+			if err := s.readStreamOnce(); err != nil {
+				return "", err
 			}
 		} else {
 			close(s.dataReady)

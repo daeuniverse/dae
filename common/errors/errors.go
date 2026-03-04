@@ -217,6 +217,12 @@ func IsUDPEndpointNormalClose(err error) bool {
 		return true
 	}
 
+	// UDP connected sockets may report ICMP port unreachable as ECONNREFUSED.
+	// This is expected when remote peer/port is not listening and should not be warned.
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+
 	// Check if connection was closed
 	if IsClosedConnection(err) {
 		return true
