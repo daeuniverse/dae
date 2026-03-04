@@ -191,6 +191,9 @@ func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64,
 		case <-ctx.Done():
 			// Context canceled, force Read to fail.
 			_ = src.SetReadDeadline(time.Unix(1, 0))
+			// Some zero-copy paths may ignore read deadlines while blocked in kernel.
+			// Closing the source connection guarantees prompt unblocking.
+			_ = src.Close()
 		case <-done:
 			// Copy finished, stop monitoring.
 		}

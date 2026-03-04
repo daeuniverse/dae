@@ -69,14 +69,12 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 		}
 	}
 
-	// Fast path: try netproxy splice strategy (direct splice -> pipe+splice).
-	if srcSC, ok := s.Conn.(interface {
+	// Upgrade to zero-copy relay when both ends expose file descriptors.
+	if srcConn, ok := s.Conn.(interface {
 		SyscallConn() (syscall.RawConn, error)
 	}); ok {
-		copied, usedSplice, serr := netproxy.SpliceTo(w, srcSC)
-		n += copied
-		if usedSplice {
-			return n, serr
+		if spliced, usedSplice, spliceErr := netproxy.SpliceTo(w, srcConn); usedSplice {
+			return n + spliced, spliceErr
 		}
 	}
 
