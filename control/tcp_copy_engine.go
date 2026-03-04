@@ -7,9 +7,19 @@ package control
 
 import (
 	"context"
+	"io"
+	"sync"
 
 	"github.com/daeuniverse/outbound/netproxy"
 )
+
+const relayCopyBufferSize = 32 << 10
+
+var relayCopyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, relayCopyBufferSize)
+	},
+}
 
 // relayCopyEngine defines the pluggable data plane used by relayCore.
 // Implementations can optimize copy strategy without changing relay semantics.
@@ -20,5 +30,38 @@ type relayCopyEngine interface {
 type defaultRelayCopyEngine struct{}
 
 func (defaultRelayCopyEngine) Copy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
-	return relayAdaptiveCopy(ctx, dst, src)
+	if shouldUseRelayFastPath(dst, src) {
+		return relayFastCopy(ctx, dst, src)
+	}
+	buf := relayCopyBufferPool.Get().([]byte)
+	defer relayCopyBufferPool.Put(buf)
+	return relayCopyLoop(ctx, dst, src, buf)
+}
+
+func relayCopyLoop(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, buf []byte) (written int64, err error) {
+	for {
+		if ctx != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return written, cerr
+			}
+		}
+
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			written += int64(nw)
+			if ew != nil {
+				return written, ew
+			}
+			if nw < nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return written, nil
+			}
+			return written, er
+		}
+	}
 }
