@@ -45,8 +45,8 @@ func TproxyControl(c syscall.RawConn) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
 		// - https://www.kernel.org/doc/Documentation/networking/tproxy.txt
-		if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); err != nil {
-			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		if err := setTransparentSocketOptions(int(fd)); err != nil {
+			sockOptErr = err
 			return
 		}
 
@@ -70,11 +70,25 @@ func TproxyControl(c syscall.RawConn) error {
 	return sockOptErr
 }
 
+func setTransparentSocketOptions(fd int) error {
+	e4 := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1)
+	e6 := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1)
+	if e4 != nil && e6 != nil {
+		return fmt.Errorf("error setting transparent socket options: ipv4=%v, ipv6=%v", e4, e6)
+	}
+	return nil
+}
+
 func TransparentControl(c syscall.RawConn) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
-			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		if err := setTransparentSocketOptions(int(fd)); err != nil {
+			sockOptErr = err
+			return
+		}
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting SO_REUSEADDR socket option: %w", err)
+			return
 		}
 	})
 	if controlErr != nil {
@@ -86,11 +100,13 @@ func TransparentControl(c syscall.RawConn) error {
 func BindControl(c syscall.RawConn, lAddrPort netip.AddrPort) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
-			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		if err := setTransparentSocketOptions(int(fd)); err != nil {
+			sockOptErr = err
+			return
 		}
 		if err := bindAddr(fd, lAddrPort); err != nil {
 			sockOptErr = fmt.Errorf("error bindAddr %v: %w", lAddrPort.String(), err)
+			return
 		}
 	})
 	if controlErr != nil {

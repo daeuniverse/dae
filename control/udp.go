@@ -133,24 +133,40 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 	bindAddr = from
 	writeAddr = realTo
 
+	// Normalize IPv4-mapped source to pure IPv4 so socket family selection
+	// matches transparent bind semantics on Linux.
+	if bindAddr.Addr().Is4In6() {
+		bindAddr = netip.AddrPortFrom(bindAddr.Addr().Unmap(), bindAddr.Port())
+	}
+
 	// Case 1: IPv6 socket writing to IPv4 target.
-	if realTo.Addr().Is4() && from.Addr().Is6() {
+	if writeAddr.Addr().Is4() && bindAddr.Addr().Is6() {
 		writeAddr = netip.AddrPortFrom(
-			netip.AddrFrom16(realTo.Addr().As16()),
-			realTo.Port(),
+			netip.AddrFrom16(writeAddr.Addr().As16()),
+			writeAddr.Port(),
 		)
 	}
 
-	// Case 2: IPv4 source with IPv6 destination (including IPv4-mapped IPv6)
-	// should use an IPv6 bind address so socket family matches write target.
-	if from.Addr().Is4() && realTo.Addr().Is6() {
-		bindAddr = netip.AddrPortFrom(
-			netip.AddrFrom16(from.Addr().As16()),
-			from.Port(),
-		)
+	// Case 2: IPv4 socket writing to IPv4-mapped IPv6 target should unmap
+	// write address back to IPv4 to avoid "non-IPv4 address" errors.
+	if bindAddr.Addr().Is4() && writeAddr.Addr().Is4In6() {
+		writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
+	}
+
+	// Case 3: IPv4 wildcard with IPv6 target must become IPv6 wildcard.
+	// This guarantees net.ListenPacket("udp") creates an AF_INET6 socket.
+	if bindAddr.Addr().Is4() && bindAddr.Addr().IsUnspecified() && writeAddr.Addr().Is6() {
+		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), bindAddr.Port())
 	}
 
 	return bindAddr, writeAddr
+}
+
+func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
+	// Transparent UDP cannot preserve a concrete IPv4 source while emitting a
+	// pure IPv6 packet. The address-family pair is unsupported by kernel socket
+	// semantics and should fail fast with a clear error.
+	return bindAddr.Addr().Is4() && writeAddr.Addr().Is6()
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
@@ -163,8 +179,12 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to ne
 	//
 	// Cross-family handling ensures socket type matches write address family:
 	// - IPv6->IPv4: Convert writeAddr to IPv4-mapped IPv6 for dual-stack socket
-	// - IPv4->IPv6: Convert bindAddr to IPv4-mapped IPv6 to create IPv6 socket
+	// - IPv4->IPv4-mapped IPv6: Unmap writeAddr to IPv4 for IPv4 socket writes
+	// - 0.0.0.0->IPv6: Convert bindAddr to [::] to force AF_INET6 wildcard socket
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
+	if isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
+		return fmt.Errorf("unsupported transparent UDP address family pair: bind=%v write=%v", bindAddr, writeAddr)
+	}
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {

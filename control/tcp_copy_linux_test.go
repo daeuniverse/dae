@@ -58,7 +58,7 @@ func TestRelayAdaptiveCopy_SmallPayload(t *testing.T) {
 }
 
 func TestRelayAdaptiveCopy_LargePayload(t *testing.T) {
-	testRelayAdaptiveCopy(t, relaySpliceThreshold*4)
+	testRelayAdaptiveCopy(t, 256*1024) // 256 KB: well above buffer size to exercise splice path
 }
 
 func testRelayAdaptiveCopy(t *testing.T, size int) {

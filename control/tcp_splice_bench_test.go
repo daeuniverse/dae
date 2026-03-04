@@ -48,7 +48,7 @@ func BenchmarkTCPRelayWithMock(b *testing.B) {
 
 			// Start relay in goroutine
 			go func() {
-				_, _ = copyWait(ctx, c1, c2)
+				_, _ = relayAdaptiveCopy(ctx, c1, c2)
 			}()
 
 			// Send some data

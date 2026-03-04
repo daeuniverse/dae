@@ -43,7 +43,6 @@ type UdpTaskQueue struct {
 	refs atomic.Int32
 
 	// 1-byte fields
-	draining     atomic.Bool  // prevents new acquisitions during cleanup
 	overflowLen  atomic.Int32 // track overflow length for lock-free idle check
 	overflowMode bool
 
@@ -107,6 +106,12 @@ func (q *UdpTaskQueue) popOverflowTask() (UdpTask, bool) {
 		}
 	} else {
 		q.overflowLen.Store(int32(len(q.overflow)))
+		if len(q.overflow) > 0 && len(q.overflow) < cap(q.overflow)/4 && cap(q.overflow) > UdpTaskQueueLength {
+			// Slice Drift Memory Leak prevention: shrink active capacity.
+			shrunk := make([]UdpTask, len(q.overflow))
+			copy(shrunk, q.overflow)
+			q.overflow = shrunk
+		}
 	}
 	return task, true
 }
@@ -160,13 +165,8 @@ func (q *UdpTaskQueue) convoy() {
 				continue
 			}
 
-			q.draining.Store(true)
-
-			// Brief wait for in-flight acquireQueue calls to complete
-			time.Sleep(10 * time.Millisecond)
-
-			if q.refs.Load() > 0 || len(q.ch) > 0 || q.overflowLen.Load() > 0 {
-				q.draining.Store(false)
+			// CAS refs to lock out new acquireQueue and avoid time.Sleep
+			if !q.refs.CompareAndSwap(0, -1000000) {
 				q.safeTimerReset(timer)
 				continue
 			}
@@ -182,7 +182,9 @@ func (q *UdpTaskQueue) convoy() {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
-			q.draining.Store(false)
+			
+			// Restore refs to 0 if deletion failed
+			q.refs.Store(0)
 			q.safeTimerReset(timer)
 		}
 	}
@@ -212,11 +214,15 @@ func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
 	// Fast path: check if queue exists without any lock contention
 	if v, ok := p.queues.Load(key); ok {
 		q := v.(*UdpTaskQueue)
-		if q.draining.Load() {
-			goto createNew
+		for {
+			refs := q.refs.Load()
+			if refs < 0 {
+				goto createNew
+			}
+			if q.refs.CompareAndSwap(refs, refs+1) {
+				return q
+			}
 		}
-		q.refs.Add(1)
-		return q
 	}
 
 createNew:
@@ -237,13 +243,17 @@ createNew:
 		// Another goroutine created the queue first, put our channel back
 		p.queueChPool.Put(ch)
 		q := actual.(*UdpTaskQueue)
-		if q.draining.Load() {
-			// Use CompareAndDelete to only delete if still the same draining queue
-			p.queues.CompareAndDelete(key, q)
-			goto createNew
+		for {
+			refs := q.refs.Load()
+			if refs < 0 {
+				// Use CompareAndDelete to only delete if still the same draining queue
+				p.queues.CompareAndDelete(key, q)
+				goto createNew
+			}
+			if q.refs.CompareAndSwap(refs, refs+1) {
+				return q
+			}
 		}
-		q.refs.Add(1)
-		return q
 	}
 	q := actual.(*UdpTaskQueue)
 	q.refs.Add(1)

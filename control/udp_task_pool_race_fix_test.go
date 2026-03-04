@@ -39,7 +39,7 @@ func TestCompareAndDelete_RaceCondition(t *testing.T) {
 	go func() {
 		defer deleteWg.Done()
 		// Simulate convoy cleanup: set draining, wait, try delete
-		q1.draining.Store(true)
+		q1.refs.Store(-1000000)
 		time.Sleep(5 * time.Millisecond) // Allow race window
 
 		// This should only delete Q1, not any new queue
@@ -68,7 +68,7 @@ func TestCompareAndDelete_RaceCondition(t *testing.T) {
 	}
 
 	// Verify: Q2 is not draining
-	if q2.draining.Load() {
+	if q2.refs.Load() < 0 {
 		t.Error("Q2 should not be draining")
 	}
 
@@ -97,7 +97,7 @@ func TestCompareAndDelete_AcquireQueueRace(t *testing.T) {
 	// Create queue and mark as draining
 	q1 := pool.acquireQueue(key)
 	q1.refs.Add(-1)
-	q1.draining.Store(true)
+	q1.refs.Store(-1000000)
 
 	// Simulate two concurrent acquireQueue calls
 	var wg sync.WaitGroup
@@ -126,7 +126,7 @@ func TestCompareAndDelete_AcquireQueueRace(t *testing.T) {
 	if q2 == nil {
 		t.Fatal("Queue should not be nil")
 	}
-	if q2.draining.Load() {
+	if q2.refs.Load() < 0 {
 		t.Error("New queue should not be draining")
 	}
 
@@ -211,7 +211,7 @@ func TestConvoyExitAfterFailedDelete(t *testing.T) {
 
 	// Simulate the race: create new queue via acquireQueue
 	// This happens when q1 is draining
-	q1.draining.Store(true)
+	q1.refs.Store(-1000000)
 	q2 := pool.acquireQueue(key)
 
 	// q2 should be different from q1
@@ -292,7 +292,7 @@ func TestConvoyExitWhenMappingReplaced(t *testing.T) {
 	q1.refs.Add(-1)
 
 	// Mark q1 as draining to simulate it being in cleanup state
-	q1.draining.Store(true)
+	q1.refs.Store(-1000000)
 
 	// acquireQueue should create a new queue since q1 is draining
 	q2 := pool.acquireQueue(key)

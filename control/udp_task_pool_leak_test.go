@@ -123,7 +123,7 @@ func TestUdpTaskPoolDrainingFlag(t *testing.T) {
 	q := v.(*UdpTaskQueue)
 
 	// Check that draining is initially false
-	if q.draining.Load() {
+	if q.refs.Load() < 0 {
 		t.Error("Queue should not be draining initially")
 	}
 
@@ -154,7 +154,7 @@ func TestUdpTaskPoolDrainingFlag(t *testing.T) {
 	q2 := v2.(*UdpTaskQueue)
 
 	// The queue should be a new instance (or at least not draining)
-	if q == q2 && q.draining.Load() {
+	if q == q2 && q.refs.Load() < 0 {
 		t.Log("Note: Old queue still exists but should be cleaned up soon")
 	}
 

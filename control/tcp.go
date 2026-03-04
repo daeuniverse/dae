@@ -180,62 +180,45 @@ type WriteCloser interface {
 	CloseWrite() error
 }
 
-// copyWait copies from src to dst until either EOF is reached on src,
-// an error occurs, or the context is done.
-// It prefers low-latency copy for initial bytes, then upgrades to zero-copy
-// relay on Linux for bulk streams.
-func copyWait(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Context canceled, force Read to fail.
-			_ = src.SetReadDeadline(time.Unix(1, 0))
-			// Some zero-copy paths may ignore read deadlines while blocked in kernel.
-			// Closing the source connection guarantees prompt unblocking.
-			_ = src.Close()
-		case <-done:
-			// Copy finished, stop monitoring.
-		}
-	}()
-	defer close(done)
-
-	return relayAdaptiveCopy(ctx, dst, src)
-}
-
 // RelayTCP copies data bidirectionally between two connections.
-// It uses a context to control the lifecycle of the relay. If one side exits with an error
-// (causing the function to return and the context to be canceled), the copy operation
-// on the other side will be interrupted immediately.
-//
-// The 10-second read deadline set after CloseWrite ensures the connection doesn't
-// hang indefinitely waiting for the other end to close during graceful shutdown.
+// Uses a clean Goroutine model avoiding redundant cancellable copy waits.
+// When one side of the copy finishes/errors, it closes or sets deadlines
+// perfectly unblocking the concurrent splice/copy immediately.
 func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
-	eCh := make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+        eCh := make(chan error, 1)
+        
+        go func() {
+                _, e := relayAdaptiveCopy(context.Background(), rConn, lConn)
+                if rConn, ok := rConn.(WriteCloser); ok {
+                        rConn.CloseWrite()
+                }
+                
+                // Set deadlines to unblock the other relay operation if still blocked
+                _ = rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+                _ = lConn.SetReadDeadline(time.Unix(1, 0))
+                
+                // For zero-copy paths that may ignore read deadlines while blocked in kernel,
+                // Closing the source connection guarantees prompt unblocking.
+                _ = lConn.Close()
+                eCh <- e
+        }()
+        
+        _, e := relayAdaptiveCopy(context.Background(), lConn, rConn)
+        if lConn, ok := lConn.(WriteCloser); ok {
+                lConn.CloseWrite()
+        }
+        
+        // Unblock the background goroutine if it's still running
+        _ = lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+        _ = rConn.SetReadDeadline(time.Unix(1, 0))
+        _ = rConn.Close()
 
-	go func() {
-		_, e := copyWait(ctx, rConn, lConn)
-		if rConn, ok := rConn.(WriteCloser); ok {
-			rConn.CloseWrite()
-		}
-		rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		eCh <- e
-	}()
-	_, e := copyWait(ctx, lConn, rConn)
-	if lConn, ok := lConn.(WriteCloser); ok {
-		lConn.CloseWrite()
-	}
-	if e != nil {
-		_ = lConn.SetReadDeadline(time.Unix(1, 0))
-		cancel()
-		e2 := <-eCh
-		if e2 != nil {
-			return fmt.Errorf("%w: %v", e, e2)
-		}
-		return e
-	}
-	lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	return <-eCh
+        e2 := <-eCh
+        if e != nil {
+                if e2 != nil {
+                        return fmt.Errorf("%w: %v", e, e2)
+                }
+                return e
+        }
+        return e2
 }
