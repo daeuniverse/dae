@@ -26,16 +26,7 @@ import (
 func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {
 	defer lConn.Close()
 
-	// Sniff target domain.
-	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
-	// ConnSniffer should be used later, so we cannot close it now.
-	defer sniffer.Close()
-	domain, err := sniffer.SniffTcp()
-	if err != nil && !sniffing.IsSniffingError(err) {
-		return err
-	}
-
-	// Get tuples and outbound.
+	// Get tuples and outbound first so we can decide whether sniffing is needed.
 	// Converge IPv4-mapped IPv6 addresses before looking up eBPF routing tuples.
 	src := common.ConvergeAddrPort(lConn.RemoteAddr().(*net.TCPAddr).AddrPort())
 	dst := common.ConvergeAddrPort(lConn.LocalAddr().(*net.TCPAddr).AddrPort())
@@ -59,8 +50,56 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 	}
 
-	// Dial and relay.
-	rConn, err := c.RouteDialTcp(ctx, &RouteDialParam{
+	var (
+		domain     string
+		lRelayConn netproxy.Conn = lConn
+	)
+	if c.shouldTryTcpSniff(dst, routingResult) {
+		cacheKey := newTcpSniffNegKey(dst, routingResult)
+		now := time.Now()
+		if c.shouldSkipTcpSniffByNegativeCache(cacheKey, now) {
+			if c.log.IsLevelEnabled(logrus.TraceLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src": src.String(),
+					"dst": dst.String(),
+				}).Trace("Skip TCP sniffing by negative cache")
+			}
+		} else {
+			probeConn, prefetched, ready, probeErr := prefetchForTcpSniff(lConn, tcpSniffFirstPayloadWait, tcpSniffPrefetchBytes)
+			if probeErr != nil {
+				return probeErr
+			}
+			if !ready {
+				// No early payload; treat as non-sniffable to avoid stalling server-first/established flows.
+				c.noteTcpSniffFailure(cacheKey, now)
+				lRelayConn = probeConn
+			} else if !isLikelyHttpOrTLSPrefix(prefetched) {
+				// Fast reject for non HTTP/TLS prefixes.
+				c.noteTcpSniffFailure(cacheKey, now)
+				lRelayConn = probeConn
+			} else {
+				// ConnSniffer should be used later, so we cannot close it now.
+				sniffer := sniffing.NewConnSniffer(probeConn, c.sniffingTimeout)
+				defer sniffer.Close()
+				lRelayConn = sniffer
+
+				domain, err = sniffer.SniffTcp()
+				if err != nil {
+					if !sniffing.IsSniffingError(err) {
+						return err
+					}
+					// Non-sniffable/timeout traffic should not pay repeated sniff cost.
+					c.noteTcpSniffFailure(cacheKey, now)
+					domain = ""
+				} else {
+					// Any success means this flow signature is sniffable; clear suppression.
+					c.clearTcpSniffNegative(cacheKey)
+				}
+			}
+		}
+	}
+
+	routeParam := &RouteDialParam{
 		Outbound:    consts.OutboundIndex(routingResult.Outbound),
 		Domain:      domain,
 		Mac:         routingResult.Mac,
@@ -69,13 +108,15 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		Src:         src,
 		Dest:        dst,
 		Mark:        routingResult.Mark,
-	})
+	}
+	// Dial and relay.
+	rConn, err := c.RouteDialTcp(ctx, routeParam)
 	if err != nil {
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()
 
-	if err = RelayTCP(sniffer, rConn); err != nil {
+	if err = RelayTCP(lRelayConn, rConn); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}
@@ -96,6 +137,10 @@ type RouteDialParam struct {
 }
 
 func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	outboundIndex := p.Outbound
 	domain := p.Domain
 	src := p.Src
@@ -168,9 +213,9 @@ func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (con
 			"mac":      Mac2String(p.Mac[:]),
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
 	}
-	// Use the provided context with timeout for dial operation.
-	// The context is expected to be a per-connection context with its own lifetime,
-	// not the ControlPlane's lifecycle context (c.ctx).
+	// Apply a dedicated dial timeout while still inheriting caller cancellation
+	// (for shutdown/reload). The caller context no longer carries a per-connection
+	// deadline, so sniffing latency does not reduce the dial budget.
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 	return d.DialContext(dialCtx, common.MagicNetwork("tcp", mark, c.mptcp), dialTarget)
@@ -181,51 +226,8 @@ type WriteCloser interface {
 }
 
 // RelayTCP copies data bidirectionally between two connections.
-// Uses a clean Goroutine model avoiding redundant cancellable copy waits.
-// When one side of the copy finishes/errors, it proactively unblocks the
-// concurrent splice/copy immediately via Close() or SetReadDeadline.
+// A relayCore orchestrates shared cancellation and force-close fallback.
 func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
-	eCh := make(chan error, 1)
-	
-	go func() {
-		// Reads from lConn, writes to rConn
-		_, e := relayAdaptiveCopy(context.Background(), rConn, lConn)
-		if rConn, ok := rConn.(WriteCloser); ok {
-			_ = rConn.CloseWrite()
-		}
-		
-		if e != nil {
-			// Foreground read errored, immediately force unblock the background read
-			_ = rConn.SetReadDeadline(time.Unix(1, 0))
-			_ = rConn.Close()
-		} else {
-			// Graceful EOF, allow max 10s for the other end to finish pending data
-			_ = rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		}
-		eCh <- e
-	}()
-	
-	// Reads from rConn, writes to lConn
-	_, e := relayAdaptiveCopy(context.Background(), lConn, rConn)
-	if lConn, ok := lConn.(WriteCloser); ok {
-		_ = lConn.CloseWrite()
-	}
-	
-	if e != nil {
-		// Background read errored, immediately force unblock the foreground read
-		_ = lConn.SetReadDeadline(time.Unix(1, 0))
-		_ = lConn.Close()
-	} else {
-		// Graceful EOF, give 10s back
-		_ = lConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	}
-
-	e2 := <-eCh
-	if e != nil {
-		if e2 != nil {
-			return fmt.Errorf("%w: %v", e, e2)
-		}
-		return e
-	}
-	return e2
+	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{})
+	return core.run(context.Background())
 }
