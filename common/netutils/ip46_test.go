@@ -12,18 +12,31 @@ import (
 	"time"
 
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveIp46(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	direct.InitDirectDialers("223.5.5.5:53")
-	ip46, err4, err6 := ResolveIp46(ctx, direct.SymmetricDirect, netip.MustParseAddrPort("223.5.5.5:53"), "ipv6.google.com", "udp", false)
-	if err4 != nil && err6 != nil {
-		t.Skipf("network unavailable or DNS blocked in test environment: err4=%v err6=%v", err4, err6)
-	}
-	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-		t.Fatal("No record")
-	}
-	t.Log(ip46)
+
+	t.Run("ipv4_literal", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ip46, err4, err6 := ResolveIp46(ctx, direct.SymmetricDirect, netip.MustParseAddrPort("223.5.5.5:53"), "1.1.1.1", "udp", false)
+		require.NoError(t, err4)
+		require.NoError(t, err6)
+		require.True(t, ip46.Ip4.IsValid())
+		require.False(t, ip46.Ip6.IsValid())
+	})
+
+	t.Run("ipv6_literal", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ip46, err4, err6 := ResolveIp46(ctx, direct.SymmetricDirect, netip.MustParseAddrPort("223.5.5.5:53"), "2001:4860:4860::8888", "udp", false)
+		require.NoError(t, err4)
+		require.NoError(t, err6)
+		require.False(t, ip46.Ip4.IsValid())
+		require.True(t, ip46.Ip6.IsValid())
+	})
 }
