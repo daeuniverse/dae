@@ -5,7 +5,7 @@
 
 package consts
 
-//go:generate go run ../../scripts/gen_ebpf_sync.go
+//go:generate go run ../../cmd/generators/gen_ebpf_sync
 
 import (
 	"strconv"
