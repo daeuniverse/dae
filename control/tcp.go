@@ -85,10 +85,22 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 
 				domain, err = sniffer.SniffTcp()
 				if err != nil {
-					if !sniffing.IsSniffingError(err) {
+					// Best practice:
+					// 1) Sniffing-domain errors (not applicable/need more/not found) are expected.
+					// 2) Ignorable connection errors (EOF/reset/timeout) should not break relay.
+					// 3) Other unexpected errors should fail fast instead of being silently hidden.
+					if !sniffing.IsSniffingError(err) && !daerrors.IsIgnorableConnectionError(err) {
 						return err
 					}
-					// Non-sniffable/timeout traffic should not pay repeated sniff cost.
+					if !sniffing.IsSniffingError(err) {
+						if c.log.IsLevelEnabled(logrus.DebugLevel) {
+							c.log.WithError(err).WithFields(logrus.Fields{
+								"src": src.String(),
+								"dst": dst.String(),
+							}).Debug("TCP sniffing encountered ignorable connection error; continue relay")
+						}
+					}
+					// Non-sniffable or ignorable cases suppress repeated sniff attempts.
 					c.noteTcpSniffFailure(cacheKey, now)
 					domain = ""
 				} else {

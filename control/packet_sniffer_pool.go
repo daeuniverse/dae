@@ -18,6 +18,8 @@ import (
 const (
 	PacketSnifferTtl             = 3 * time.Second
 	packetSnifferJanitorInterval = 250 * time.Millisecond
+	udpSniffNoSniThreshold       = 6
+	udpSniffNoSniBypassTtl       = 10 * time.Second
 )
 
 // PacketSniffer holds sniffing state for a UDP flow.
@@ -34,6 +36,11 @@ type PacketSniffer struct {
 
 	// Mutex for protecting sniffing operations
 	Mu sync.Mutex
+
+	// Soft negative cache for UDP sniffing: after repeated no-SNI attempts
+	// (timeouts / need-more / not-applicable), bypass sniffing temporarily.
+	noSniStreak      int
+	bypassSniffUntil time.Time
 }
 
 func (ps *PacketSniffer) RefreshTtl() {
@@ -46,6 +53,23 @@ func (ps *PacketSniffer) RefreshTtl() {
 func (ps *PacketSniffer) IsExpired(nowNano int64) bool {
 	expiresAt := ps.expiresAtNano.Load()
 	return expiresAt > 0 && nowNano >= expiresAt
+}
+
+func (ps *PacketSniffer) ShouldBypassSniff(now time.Time) bool {
+	return now.Before(ps.bypassSniffUntil)
+}
+
+func (ps *PacketSniffer) RecordSniffNoSni(now time.Time) {
+	ps.noSniStreak++
+	if ps.noSniStreak >= udpSniffNoSniThreshold {
+		ps.bypassSniffUntil = now.Add(udpSniffNoSniBypassTtl)
+		ps.noSniStreak = 0
+	}
+}
+
+func (ps *PacketSniffer) RecordSniffSuccess() {
+	ps.noSniStreak = 0
+	ps.bypassSniffUntil = time.Time{}
 }
 
 // PacketSnifferPool is a full-cone udp conn pool.

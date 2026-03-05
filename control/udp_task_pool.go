@@ -26,6 +26,18 @@ var (
 
 type UdpTask = func()
 
+type UdpTaskPoolKey struct {
+	Src netip.AddrPort
+	Dst netip.AddrPort
+}
+
+func makeUdpTaskPoolKey(src, dst netip.AddrPort) any {
+	if !dst.IsValid() {
+		return src
+	}
+	return UdpTaskPoolKey{Src: src, Dst: dst}
+}
+
 // UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
 // Field order optimized for memory alignment (Go best practice).
 type UdpTaskQueue struct {
@@ -47,7 +59,7 @@ type UdpTaskQueue struct {
 	overflowMode bool
 
 	// 24-byte field (netip.AddrPort is struct{addr [16]byte, port uint16, zone string})
-	key netip.AddrPort
+	key any
 }
 
 func (q *UdpTaskQueue) notifyWake() {
@@ -172,7 +184,7 @@ func (q *UdpTaskQueue) convoy() {
 			}
 
 			// Try to delete from pool using CAS-like semantics via sync.Map
-			if q.p.tryDeleteQueue(q.key, q) {
+			if q.p.tryDeleteQueueKey(q.key, q) {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
@@ -182,7 +194,7 @@ func (q *UdpTaskQueue) convoy() {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
-			
+
 			// Restore refs to 0 if deletion failed
 			q.refs.Store(0)
 			q.safeTimerReset(timer)
@@ -192,7 +204,7 @@ func (q *UdpTaskQueue) convoy() {
 
 type UdpTaskPool struct {
 	queueChPool sync.Pool
-	queues      sync.Map // map[netip.AddrPort]*UdpTaskQueue
+	queues      sync.Map // map[netip.AddrPort|UdpTaskPoolKey]*UdpTaskQueue
 }
 
 func NewUdpTaskPool() *UdpTaskPool {
@@ -205,12 +217,21 @@ func NewUdpTaskPool() *UdpTaskPool {
 
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
 func (p *UdpTaskPool) EmitTask(key netip.AddrPort, task UdpTask) {
-	q := p.acquireQueue(key)
+	p.EmitTaskByFlow(key, netip.AddrPort{}, task)
+}
+
+// EmitTaskByFlow serializes tasks by src+dst flow key.
+func (p *UdpTaskPool) EmitTaskByFlow(src, dst netip.AddrPort, task UdpTask) {
+	q := p.acquireQueueKey(makeUdpTaskPoolKey(src, dst))
 	q.enqueue(task)
 	q.refs.Add(-1)
 }
 
 func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
+	return p.acquireQueueKey(key)
+}
+
+func (p *UdpTaskPool) acquireQueueKey(key any) *UdpTaskQueue {
 	// Fast path: check if queue exists without any lock contention
 	if v, ok := p.queues.Load(key); ok {
 		q := v.(*UdpTaskQueue)
@@ -270,6 +291,10 @@ createNew:
 // Returns true if deletion was successful, false otherwise.
 // Uses CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice).
 func (p *UdpTaskPool) tryDeleteQueue(key netip.AddrPort, expected *UdpTaskQueue) bool {
+	return p.tryDeleteQueueKey(key, expected)
+}
+
+func (p *UdpTaskPool) tryDeleteQueueKey(key any, expected *UdpTaskQueue) bool {
 	return p.queues.CompareAndDelete(key, expected)
 }
 

@@ -209,11 +209,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 	// Priority:
 	// 1. Symmetric NAT (Src+Dst) for session isolation (QUIC/BT).
-	// 2. Full-Cone NAT (Src) only for non-QUIC-initial compatibility.
-	isQuicInitial := sniffing.IsLikelyQuicInitialPacket(data)
+	// 2. Full-Cone NAT (Src) only for non-QUIC compatibility.
+	isQuicLongHeader := sniffing.IsLikelyQuicLongHeaderPacket(data)
+	isQuicInitial := isQuicLongHeader && sniffing.IsLikelyQuicInitialPacket(data)
 	ueKey = UdpEndpointKey{Src: realSrc, Dst: realDst}
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
-	if !ueExists && !isQuicInitial {
+	if !ueExists && !isQuicLongHeader {
 		ueKey = UdpEndpointKey{Src: realSrc}
 		ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
 	}
@@ -264,7 +265,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		}
 
 		// Fast reject for obvious non-QUIC UDP packets when no existing sniff session.
-		if DefaultPacketSnifferSessionMgr.Get(key) == nil && !sniffing.IsLikelyQuicInitialPacket(data) {
+		if DefaultPacketSnifferSessionMgr.Get(key) == nil && !isQuicInitial {
 			goto afterSniffing
 		}
 
@@ -274,15 +275,36 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		// Re-get sniffer from pool to confirm the transaction is not done.
 		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
+			now := time.Now()
+			if sniffer.ShouldBypassSniff(now) {
+				sniffer.Mu.Unlock()
+				goto afterSniffing
+			}
 			sniffer.AppendData(data)
 			domain, err = sniffer.SniffUdp()
-			if err != nil && !sniffing.IsSniffingError(err) {
-				sniffer.Mu.Unlock()
-				return err
+			if err != nil {
+				// Sniffing failure should not drop the packet.
+				// Whether it's a sniffing error or unexpected error,
+				// we continue to process the packet with IP-based routing.
+				if !sniffing.IsSniffingError(err) {
+					// Log unexpected errors for debugging but don't drop packet
+					if logrus.IsLevelEnabled(logrus.DebugLevel) {
+						logrus.WithError(err).
+							WithField("from", realSrc).
+							WithField("to", realDst).
+							Debug("UDP sniffing encountered unexpected error but continue processing")
+					}
+				}
 			}
 			if sniffer.NeedMore() {
+				sniffer.RecordSniffNoSni(now)
 				sniffer.Mu.Unlock()
 				return nil
+			}
+			if err != nil || domain == "" {
+				sniffer.RecordSniffNoSni(now)
+			} else {
+				sniffer.RecordSniffSuccess()
 			}
 			if err != nil {
 				if logrus.IsLevelEnabled(logrus.TraceLevel) {
@@ -346,13 +368,13 @@ getNew:
 		return fmt.Errorf("touch max retry limit")
 	}
 
-	if domain != "" {
+	if domain != "" || isQuicLongHeader {
 		natTimeout = QuicNatTimeout
 	}
 
-	// QUIC (domain != "") or likely QUIC Initial packets use Symmetric NAT.
+	// QUIC (domain != "") or likely QUIC long-header packets use Symmetric NAT.
 	ueKey = UdpEndpointKey{Src: realSrc}
-	if domain != "" || isQuicInitial {
+	if domain != "" || isQuicLongHeader {
 		ueKey.Dst = realDst
 	}
 

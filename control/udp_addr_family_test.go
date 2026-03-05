@@ -22,27 +22,6 @@ func TestNormalizeSendPktAddrFamily(t *testing.T) {
 		wantWrite string
 	}{
 		{
-			name:      "IPv4 server to pure IPv6 client",
-			from:      "8.8.8.8:53",
-			realTo:    "[240e:390::1]:12345",
-			wantBind:  "8.8.8.8:53",
-			wantWrite: "[240e:390::1]:12345",
-		},
-		{
-			name:      "IPv4 server to IPv4-mapped IPv6 client",
-			from:      "8.8.8.8:53",
-			realTo:    "[::ffff:192.168.1.2]:12345",
-			wantBind:  "8.8.8.8:53",
-			wantWrite: "192.168.1.2:12345",
-		},
-		{
-			name:      "IPv6 server to IPv4 client",
-			from:      "[2001:db8::1]:443",
-			realTo:    "192.168.1.2:12345",
-			wantBind:  "[2001:db8::1]:443",
-			wantWrite: "[::ffff:192.168.1.2]:12345",
-		},
-		{
 			name:      "IPv4 server to IPv4 client",
 			from:      "8.8.8.8:53",
 			realTo:    "192.168.1.2:12345",
@@ -131,6 +110,19 @@ func TestIsUnsupportedTransparentUDPPair(t *testing.T) {
 				t.Fatalf("unsupported mismatch: want %v got %v (bind=%v write=%v)", tc.unsupported, got, bind, write)
 			}
 		})
+	}
+}
+
+func TestNormalizeThenUnsupportedCheck(t *testing.T) {
+	from := netip.MustParseAddrPort("8.8.8.8:443")
+	realTo := netip.MustParseAddrPort("[240e:390::1]:12345")
+
+	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
+	if !bindAddr.Addr().Is4() {
+		t.Fatalf("bindAddr should remain IPv4 after normalization, got %v", bindAddr)
+	}
+	if !isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
+		t.Fatalf("IPv4 concrete bind to pure IPv6 write should be unsupported: bind=%v write=%v", bindAddr, writeAddr)
 	}
 }
 

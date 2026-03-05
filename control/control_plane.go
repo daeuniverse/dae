@@ -1242,11 +1242,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			// Use UdpTaskPool only for QUIC Initial packets to ensure ordering for SNI sniffing.
-			// QUIC Initial packets need ordered processing to correctly reassemble ClientHello.
-			// All other UDP traffic (DNS, WireGuard, games, established QUIC) executes directly.
-			if sniffing.IsLikelyQuicInitialPacket(pktBuf) {
-				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
+			// Use UdpTaskPool for QUIC long-header packets to preserve handshake ordering
+			// (Initial/0-RTT/Handshake) and avoid races with endpoint creation.
+			// Other UDP traffic (DNS, WireGuard, games, established short-header QUIC)
+			// executes directly.
+			if sniffing.IsLikelyQuicLongHeaderPacket(pktBuf) {
+				DefaultUdpTaskPool.EmitTaskByFlow(convergeSrc, realDst, task)
 			} else {
 				go task()
 			}
