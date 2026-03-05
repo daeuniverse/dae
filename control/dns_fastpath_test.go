@@ -7,6 +7,7 @@ package control
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"runtime"
 	"sync"
@@ -472,6 +473,27 @@ func TestChooseNatTimeout_SNIDetection(t *testing.T) {
 			sniffDns: true,
 			buildPacket: func(t *testing.T) []byte {
 				return buildTestNonDNSPacket(t)
+			},
+			expectDNS: false,
+		},
+		{
+			// DNS response packets must not be treated as queries;
+			// doing so would cause the ingress fast path to handle
+			// upstream replies as new requests.
+			name:     "DNS response with sniffing enabled",
+			sniffDns: true,
+			buildPacket: func(t *testing.T) []byte {
+				q := buildTestDNSQuery(t, "test.com.", dnsmessage.TypeA)
+				var msg dnsmessage.Msg
+				require.NoError(t, msg.Unpack(q))
+				msg.Response = true
+				msg.Answer = []dnsmessage.RR{&dnsmessage.A{
+					Hdr: dnsmessage.RR_Header{Name: "test.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
+					A:   net.ParseIP("1.2.3.4").To4(),
+				}}
+				b, err := msg.Pack()
+				require.NoError(t, err)
+				return b
 			},
 			expectDNS: false,
 		},

@@ -718,7 +718,11 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
+		ttl := int(deadline.Sub(time.Now()).Seconds())
+		if ttl < 0 {
+			ttl = 0
+		}
+		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, ttl); err != nil {
 			return err
 		}
 	}
@@ -734,7 +738,11 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
+		ttl := int(deadline.Sub(time.Now()).Seconds())
+		if ttl < 0 {
+			ttl = 0
+		}
+		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, ttl); err != nil {
 			return err
 		}
 	}

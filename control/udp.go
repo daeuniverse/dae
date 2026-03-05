@@ -121,7 +121,7 @@ type DialOption struct {
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
 	if sniffDns {
 		var dnsmsg dnsmessage.Msg
-		if err := dnsmsg.Unpack(data); err == nil {
+		if err := dnsmsg.Unpack(data); err == nil && !dnsmsg.Response && dnsmsg.Rcode == dnsmessage.RcodeSuccess {
 			//log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
 			return &dnsmsg, DnsNatTimeout
 		}
@@ -200,44 +200,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	var ueKey UdpEndpointKey
 	realSrc = src
 
-	// DNS Fast Path: Skip UdpEndpoint lookup for DNS traffic (port 53).
-	// DNS is a stateless protocol and doesn't need the connection tracking
-	// features that UdpEndpoint provides (designed for QUIC and other long-lived UDP).
-	// This optimization eliminates a sync.Map.Load() operation for every DNS query.
-	if realDst.Port() == 53 {
-		// Potential DNS query - verify with DNS message parsing
-		dnsMessage, _ := ChooseNatTimeout(data, true)
-		if dnsMessage != nil {
-			// Confirmed DNS request - take fast path
-			if routingResult.Mark == 0 {
-				routingResult.Mark = c.soMarkFromDae
-			}
-			req := &udpRequest{
-				realSrc:       realSrc,
-				realDst:       realDst,
-				src:           src,
-				lConn:         lConn,
-				routingResult: routingResult,
-			}
-			if err := c.dnsController.Handle_(c.ctx, dnsMessage, req); err != nil {
-				if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
-					return nil
-				}
-				// For DNS fast path, never leave client waiting on internal errors.
-				// Respond with SERVFAIL so resolver can retry/fallback promptly.
-				if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns fast path)", req, nil); sendErr != nil {
-					return errors.Join(err, sendErr)
-				}
-				if c.log.IsLevelEnabled(logrus.DebugLevel) {
-					c.log.WithError(err).Debug("DNS fast path failed; SERVFAIL sent")
-				}
-				return nil
-			}
-			return nil
-		}
-		// Not a valid DNS packet (port 53 but not DNS format) - fall through to normal UDP path
-	}
-
 	// Non-DNS traffic: QUIC uses Symmetric NAT (key includes Dst).
 	ueKey = UdpEndpointKey{Src: realSrc}
 	ue, ueExists := DefaultUdpEndpointPool.Get(ueKey)
@@ -284,8 +246,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
-	// Note: valid DNS packets on port 53 are already handled and returned in the
-	// fast path above (L114-138).
 	natTimeout := DefaultNatTimeout
 	if !skipSniffing && !ueExists {
 		key := PacketSnifferKey{

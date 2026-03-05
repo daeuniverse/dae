@@ -766,6 +766,11 @@ func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err erro
 		ttl = minFirefoxCacheTtl
 	}
 
+	// Clamp TTL to 1 year max to prevent integer overflow when casting to int on 32-bit platforms
+	if ttl > 31536000 {
+		ttl = 31536000
+	}
+
 	// For A/AAAA records, we set TTL to 0 to prevent downstream caching while we manage it.
 	if q.Qtype == dnsmessage.TypeA || q.Qtype == dnsmessage.TypeAAAA {
 		for i := range msg.Answer {
@@ -839,18 +844,6 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	return nil
 }
 
-func (c *DnsController) UpdateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadline time.Time) (err error) {
-	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
-		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
-			/// NOTICE: Cannot set TTL accurately.
-			if now.Sub(deadline).Seconds() > float64(fixedTtl) {
-				deadline := now.Add(time.Duration(fixedTtl) * time.Second)
-				return deadline, deadline
-			}
-		}
-		return deadline, deadline
-	})
-}
 
 func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers []dnsmessage.RR, ttl int) (err error) {
 	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
@@ -1060,13 +1053,18 @@ func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Up
 }
 
 func (c *DnsController) forwardWithFallback(
-	ctx context.Context,
+	ctx context.Context, // Request-scoped context from dialSend/handler
 	req *udpRequest,
 	upstream *dns.Upstream,
 	primaryDialArg *dialArgument,
 	data []byte,
 ) (respMsg *dnsmessage.Msg, usedDialArg *dialArgument, err error) {
-	respMsg, err = c.forwardWithDialArg(ctx, upstream, primaryDialArg, data)
+	// Per-attempt timeout derived from request context:
+	// preserves cancel propagation while avoiding timeout reuse between UDP/TCP tries.
+	primaryCtx, primaryCancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+	defer primaryCancel()
+
+	respMsg, err = c.forwardWithDialArg(primaryCtx, upstream, primaryDialArg, data)
 	if err == nil {
 		return respMsg, primaryDialArg, nil
 	}
@@ -1098,7 +1096,10 @@ func (c *DnsController) forwardWithFallback(
 		}).Debugln("DNS fallback to TCP after UDP failure")
 	}
 
-	respMsg, err = c.forwardWithDialArg(ctx, upstream, fallbackDialArg, data)
+	fallbackCtx, fallbackCancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+	defer fallbackCancel()
+
+	respMsg, err = c.forwardWithDialArg(fallbackCtx, upstream, fallbackDialArg, data)
 	if err != nil {
 		return nil, fallbackDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback failed: %v", primaryErr, err)
 	}
@@ -1330,9 +1331,9 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 				done <- struct{}{}
 			}
 		}()
-		_ = c.handleWithResponseWriter_(ctx, dnsMessage2, req, false, responseWriter)
+		_ = c.handleWithResponseWriter_(ctx, dnsMessage2, req, false, nil)
 	}()
-	err = c.handleWithResponseWriter_(ctx, dnsMessage, req, false, responseWriter)
+	err = c.handleWithResponseWriter_(ctx, dnsMessage, req, false, nil)
 
 	// If current query type is already preferred, the final response decision does not
 	// depend on the secondary lookup result. Avoid waiting here to reduce serial latency.
@@ -1365,15 +1366,6 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 	}
 }
 
-func (c *DnsController) handle_(
-	ctx context.Context,
-	dnsMessage *dnsmessage.Msg,
-	req *udpRequest,
-	needResp bool,
-) (err error) {
-	return c.handleWithResponseWriter_(ctx, dnsMessage, req, needResp, nil)
-}
-
 func (c *DnsController) handleWithResponseWriter_(
 	ctx context.Context,
 	dnsMessage *dnsmessage.Msg,
@@ -1404,6 +1396,9 @@ func (c *DnsController) handleWithResponseWriter_(
 	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
 		// Reject with empty answer.
 		c.RemoveDnsRespCache(cacheKey)
+		if !needResp {
+			return nil
+		}
 		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 	}
 
@@ -1449,11 +1444,6 @@ func (c *DnsController) handleWithResponseWriter_(
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	return c.dialSend(ctx, 0, req, data, dnsMessage.Id, upstream, needResp, responseWriter)
-}
-
-// sendReject_ send empty answer.
-func (c *DnsController) sendReject_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
-	return c.sendRejectWithResponseWriter_(dnsMessage, req, nil)
 }
 
 // writeCachedResponse sends a cached DNS response to the client.
@@ -1621,11 +1611,7 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 	var respMsg *dnsmessage.Msg
 	usedDialArgument := dialArgument
 
-	// Use the provided context with timeout for proper cancel propagation
-	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-	defer cancel()
-
-	respMsg, usedDialArgument, err = c.forwardWithFallback(dialCtx, req, upstream, dialArgument, data)
+	respMsg, usedDialArgument, err = c.forwardWithFallback(ctx, req, upstream, dialArgument, data)
 	if err != nil {
 		return err
 	}
