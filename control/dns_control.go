@@ -391,7 +391,6 @@ func (c *DnsController) bpfUpdateWorker() {
 	}
 }
 
-
 // triggerBpfUpdateIfNeeded enqueues a BPF update task if needed.
 // This is non-blocking: if the queue is full, the update is skipped
 // (CAS in NeedsBpfUpdate ensures it will be retried next time).
@@ -844,7 +843,6 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	return nil
 }
 
-
 func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers []dnsmessage.RR, ttl int) (err error) {
 	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
@@ -1229,7 +1227,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
 			return err
 		}
 		return nil
@@ -1454,7 +1452,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	// Optimization: Patch ID directly in the packed buffer if possible.
 	// For UDP, we can use Write() directly. For TCP, we might need WriteMsg or manual length.
 	// However, most responseWriters here are either UDP or wrappers that handle message framing.
-	
+
 	if responseWriter != nil {
 		// msgCapturer is used by singleflight path to capture *Msg value.
 		// Keep WriteMsg semantics for this internal writer.
@@ -1510,7 +1508,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
-		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
 			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
 		return nil
@@ -1522,7 +1520,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	if len(resp) >= 2 {
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
-	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
 		return fmt.Errorf("failed to write cached DNS resp: %w", err)
 	}
 	return nil
@@ -1559,7 +1557,7 @@ func (c *DnsController) sendDnsErrorResponse_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+	if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
 		return err
 	}
 	return nil
@@ -1720,7 +1718,7 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 		if err != nil {
 			return err
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
 			return err
 		}
 

@@ -7,7 +7,7 @@ package control
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -15,7 +15,6 @@ import (
 
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -170,28 +169,33 @@ func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-// The from parameter is the remote server's address (used as local bind for responses).
-// The realTo parameter is the client's address (destination for the response).
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	// Proxy chain support: Use original 'from' address as bindAddr to ensure
-	// each server response gets its own UDP socket. This prevents response mixing
-	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
-	//
-	// Cross-family handling ensures socket type matches write address family:
-	// - IPv6->IPv4: Convert writeAddr to IPv4-mapped IPv6 for dual-stack socket
-	// - IPv4->IPv4-mapped IPv6: Unmap writeAddr to IPv4 for IPv4 socket writes
-	// - 0.0.0.0->IPv6: Convert bindAddr to [::] to force AF_INET6 wildcard socket
+// afp, if non-nil, provides a pre-cached Anyfrom socket for the hot path;
+// on a successful pool fallback, *afp is updated so future calls skip the lookup.
+func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 	if isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
 		return fmt.Errorf("unsupported transparent UDP address family pair: bind=%v write=%v", bindAddr, writeAddr)
+	}
+
+	if afp != nil && *afp != nil {
+		if _, err = (*afp).WriteToUDPAddrPort(data, writeAddr); err == nil {
+			return nil
+		}
+		// cached socket is stale; fall through to fresh pool lookup
 	}
 
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
 		return
 	}
-	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
-	return err
+	if _, err = uConn.WriteToUDPAddrPort(data, writeAddr); err != nil {
+		return err
+	}
+	// Update caller's cached socket so future calls skip the pool lookup.
+	if afp != nil {
+		*afp = uConn
+	}
+	return nil
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
@@ -200,15 +204,21 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	var ueKey UdpEndpointKey
 	realSrc = src
 
-	// Non-DNS traffic: QUIC uses Symmetric NAT (key includes Dst).
-	ueKey = UdpEndpointKey{Src: realSrc}
-	ue, ueExists := DefaultUdpEndpointPool.Get(ueKey)
-	if !ueExists {
-		ueKey.Dst = realDst
+	var ue *UdpEndpoint
+	var ueExists bool
+
+	// Priority:
+	// 1. Symmetric NAT (Src+Dst) for session isolation (QUIC/BT).
+	// 2. Full-Cone NAT (Src) only for non-QUIC-initial compatibility.
+	isQuicInitial := sniffing.IsLikelyQuicInitialPacket(data)
+	ueKey = UdpEndpointKey{Src: realSrc, Dst: realDst}
+	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
+	if !ueExists && !isQuicInitial {
+		ueKey = UdpEndpointKey{Src: realSrc}
 		ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
 	}
 	if ueExists {
-		if ue.SniffedDomain == "" && sniffing.IsLikelyQuicInitialPacket(data) {
+		if ue.SniffedDomain == "" && isQuicInitial {
 			// Chrome reuses UDP sockets; remove domain-less endpoint for new QUIC Initial.
 			if c.log.IsLevelEnabled(logrus.DebugLevel) {
 				c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
@@ -323,20 +333,8 @@ afterSniffing:
 		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
 		IsDns:     false,
 	}
-	// Get outbound.
-	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
-	var (
-		dialTarget    string
-		shouldReroute bool
-		dialIp        bool
-	)
-	_, shouldReroute, _ = c.ChooseDialTarget(outboundIndex, realDst, domain)
-	// Do not overwrite target.
-	// This fixes a problem that quic connection to google servers.
-	// Reproduce:
-	// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
-	dialTarget = realDst.String()
-	dialIp = true
+	// Keep UDP target pinned to original destination IP to avoid QUIC session issues.
+	dialTarget := realDst.String()
 getNew:
 	if retry > MaxRetry {
 		c.log.WithFields(logrus.Fields{
@@ -352,103 +350,63 @@ getNew:
 		natTimeout = QuicNatTimeout
 	}
 
-	// QUIC (domain != "") uses Symmetric NAT.
+	// QUIC (domain != "") or likely QUIC Initial packets use Symmetric NAT.
 	ueKey = UdpEndpointKey{Src: realSrc}
-	if domain != "" {
+	if domain != "" || isQuicInitial {
 		ueKey.Dst = realDst
 	}
 
 	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.
-		Handler: func(data []byte, from netip.AddrPort) (err error) {
+		Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
-			return sendPkt(c.log, data, from, realSrc, src, lConn)
+			return sendPkt(c.log, data, from, realSrc, &ue.respConn)
 		},
 		NatTimeout: natTimeout,
 		Log:        c.log,
 		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
-			if shouldReroute {
-				outboundIndex = consts.OutboundControlPlaneRouting
+			dialParam := &proxyDialParam{
+				Outbound:    consts.OutboundIndex(routingResult.Outbound),
+				Domain:      domain,
+				Mac:         routingResult.Mac,
+				Dscp:        routingResult.Dscp,
+				ProcessName: routingResult.Pname,
+				Src:         realSrc,
+				Dest:        realDst,
+				Mark:        routingResult.Mark,
+				Network:     "udp",
 			}
 
-			switch outboundIndex {
-			case consts.OutboundDirect:
-			case consts.OutboundControlPlaneRouting:
-				if outboundIndex, routingResult.Mark, _, err = c.Route(realSrc, realDst, domain, consts.L4ProtoType_UDP, routingResult); err != nil {
-					return nil, err
-				}
-				routingResult.Outbound = uint8(outboundIndex)
-				if c.log.IsLevelEnabled(logrus.TraceLevel) {
-					c.log.Tracef("outbound: %v => %v",
-						consts.OutboundControlPlaneRouting.String(),
-						outboundIndex.String(),
-					)
-				}
-				// Do not overwrite target.
-				// This fixes quic problem from google.
-				// Reproduce:
-				// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
-			default:
-			}
-
-			if int(outboundIndex) >= len(c.outbounds) {
-				if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
-					return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
-				}
-				return nil, fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
-			}
-			outbound := c.outbounds[outboundIndex]
-
-			// Select dialer from outbound (dialer group).
-			// Ensure dialer's address family matches client's to prevent
-			// "non-IPv4/IPv6 address" errors when writing responses.
-			// Example: IPv6 client accessing IPv4 target should use IPv6 dialer.
-			selectionNetworkType := networkType
-			if clientIpVersion := consts.IpVersionFromAddr(realSrc.Addr()); clientIpVersion != networkType.IpVersion {
-				selectionNetworkType = &dialer.NetworkType{
-					L4Proto:   networkType.L4Proto,
-					IpVersion: clientIpVersion,
-					IsDns:     networkType.IsDns,
-				}
-			}
-			strictIpVersion := dialIp
-			dialerForNew, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
+			res, err := c.chooseProxyDialer(ctx, dialParam)
 			if err != nil {
-				origType := networkType.StringWithoutDns()
-				selectedType := selectionNetworkType.StringWithoutDns()
-				if errors.Is(err, ob.ErrNoAliveDialer) {
+				if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 					c.logNoAliveDialerLimited(
-						outbound.Name,
-						outbound.GetSelectionPolicy(),
-						origType,
-						selectedType,
+						res.Outbound.Name,
+						res.Outbound.GetSelectionPolicy(),
+						res.OrigNetworkType,
+						res.SelectionNetworkType,
 						realSrc,
 						realDst,
 						domain,
-						strictIpVersion,
+						res.IsDialIp,
 					)
 					return nil, err
 				}
-				return nil, fmt.Errorf(
-					"failed to select dialer from group %v (orig:%v, selected:%v, from:%v): %w",
-					outbound.Name,
-					origType,
-					selectedType,
-					realSrc.String(),
-					err,
-				)
+				return nil, err
 			}
+
 			return &DialOption{
+				// Keep fixed-IP target even if chooseProxyDialer selected a domain target.
 				Target:        dialTarget,
-				Dialer:        dialerForNew,
-				Outbound:      outbound,
-				Network:       common.MagicNetwork("udp", routingResult.Mark, c.mptcp),
-				SniffedDomain: domain,
+				Dialer:        res.Dialer,
+				Outbound:      res.Outbound,
+				Network:       res.Network,
+				SniffedDomain: res.SniffedDomain,
 			}, nil
 		},
 	})
 	if err != nil {
-		if errors.Is(err, ob.ErrNoAliveDialer) {
+		if stderrors.Is(err, ob.ErrNoAliveDialer) {
 			// Already emitted a rate-limited diagnostic log above.
 			return nil
 		}

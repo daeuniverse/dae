@@ -131,7 +131,7 @@ func TestSingleflightResponseCapture_BeforeAndAfter(t *testing.T) {
 					return err
 				}
 				// BUG: Always uses sendPkt, ignoring responseWriter
-				if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+				if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn, nil); err != nil {
 					return err
 				}
 			}
@@ -163,7 +163,7 @@ func TestSingleflightResponseCapture_BeforeAndAfter(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+				if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn, nil); err != nil {
 					return err
 				}
 			}

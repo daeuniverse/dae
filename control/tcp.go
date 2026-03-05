@@ -17,7 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	daerrors "github.com/daeuniverse/dae/common/errors"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
+	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
@@ -99,7 +99,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 	}
 
-	routeParam := &RouteDialParam{
+	dialParam := &proxyDialParam{
 		Outbound:    consts.OutboundIndex(routingResult.Outbound),
 		Domain:      domain,
 		Mac:         routingResult.Mac,
@@ -108,13 +108,41 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		Src:         src,
 		Dest:        dst,
 		Mark:        routingResult.Mark,
+		Network:     "tcp",
 	}
 	// Dial and relay.
-	rConn, err := c.RouteDialTcp(ctx, routeParam)
+	rConn, res, err := c.routeDial(ctx, dialParam)
 	if err != nil {
+		if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
+			c.logNoAliveDialerLimited(
+				res.Outbound.Name,
+				res.Outbound.GetSelectionPolicy(),
+				res.OrigNetworkType,
+				res.SelectionNetworkType,
+				src,
+				dst,
+				domain,
+				res.IsDialIp,
+			)
+			return nil
+		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()
+
+	if c.log.IsLevelEnabled(logrus.InfoLevel) {
+		c.log.WithFields(logrus.Fields{
+			"network":  res.OrigNetworkType,
+			"outbound": res.Outbound.Name,
+			"policy":   res.Outbound.GetSelectionPolicy(),
+			"dialer":   res.Dialer.Property().Name,
+			"sniffed":  domain,
+			"ip":       RefineAddrPortToShow(dst),
+			"dscp":     dialParam.Dscp,
+			"pname":    ProcessName2String(dialParam.ProcessName[:]),
+			"mac":      Mac2String(dialParam.Mac[:]),
+		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
+	}
 
 	if err = RelayTCP(lRelayConn, rConn); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
@@ -145,88 +173,19 @@ type RouteDialParam struct {
 }
 
 func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
-	if ctx == nil {
-		ctx = context.Background()
+	dialParam := &proxyDialParam{
+		Outbound:    p.Outbound,
+		Domain:      p.Domain,
+		Mac:         p.Mac,
+		Dscp:        p.Dscp,
+		ProcessName: p.ProcessName,
+		Src:         p.Src,
+		Dest:        p.Dest,
+		Mark:        p.Mark,
+		Network:     "tcp",
 	}
-
-	outboundIndex := p.Outbound
-	domain := p.Domain
-	src := p.Src
-	dst := p.Dest
-	mark := p.Mark
-
-	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, dst, domain)
-	if shouldReroute {
-		outboundIndex = consts.OutboundControlPlaneRouting
-	}
-
-	switch outboundIndex {
-	case consts.OutboundDirect:
-	case consts.OutboundControlPlaneRouting:
-		routingResult := &bpfRoutingResult{
-			Mark:     mark,
-			Mac:      p.Mac,
-			Outbound: uint8(p.Outbound),
-			Pname:    p.ProcessName,
-			Dscp:     p.Dscp,
-		}
-		var newMark uint32
-		if outboundIndex, newMark, _, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
-			return nil, err
-		}
-		mark = newMark
-
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.Tracef("outbound: %v => %v",
-				consts.OutboundControlPlaneRouting.String(),
-				outboundIndex.String(),
-			)
-		}
-		// Reset dialTarget.
-		dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, dst, domain)
-	default:
-	}
-	if mark == 0 {
-		mark = c.soMarkFromDae
-	}
-	// TODO: Set-up ip to domain mapping and show domain if possible.
-	if int(outboundIndex) >= len(c.outbounds) {
-		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
-			return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
-		}
-		return nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
-	}
-	outbound := c.outbounds[outboundIndex]
-	networkType := &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_TCP,
-		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
-		IsDns:     false,
-	}
-	strictIpVersion := dialIp
-	d, _, err := outbound.Select(networkType, strictIpVersion)
-	if err != nil {
-		return nil, fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
-	}
-
-	if c.log.IsLevelEnabled(logrus.InfoLevel) {
-		c.log.WithFields(logrus.Fields{
-			"network":  networkType.String(),
-			"outbound": outbound.Name,
-			"policy":   outbound.GetSelectionPolicy(),
-			"dialer":   d.Property().Name,
-			"sniffed":  domain,
-			"ip":       RefineAddrPortToShow(dst),
-			"dscp":     p.Dscp,
-			"pname":    ProcessName2String(p.ProcessName[:]),
-			"mac":      Mac2String(p.Mac[:]),
-		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), dialTarget)
-	}
-	// Apply a dedicated dial timeout while still inheriting caller cancellation
-	// (for shutdown/reload). The caller context no longer carries a per-connection
-	// deadline, so sniffing latency does not reduce the dial budget.
-	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-	defer cancel()
-	return d.DialContext(dialCtx, common.MagicNetwork("tcp", mark, c.mptcp), dialTarget)
+	conn, _, err = c.routeDial(ctx, dialParam)
+	return conn, err
 }
 
 type WriteCloser interface {

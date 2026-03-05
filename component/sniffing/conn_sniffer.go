@@ -35,6 +35,11 @@ func NewConnSniffer(conn net.Conn, timeout time.Duration) *ConnSniffer {
 	return s
 }
 
+// UnderlyingConn returns the wrapped net.Conn before sniffing.
+// Use this instead of accessing the embedded field directly so that
+// call-sites remain correct if ConnSniffer's internals are refactored.
+func (s *ConnSniffer) UnderlyingConn() net.Conn { return s.Conn }
+
 func (s *ConnSniffer) Read(p []byte) (n int, err error) {
 	return s.Sniffer.Read(p)
 }

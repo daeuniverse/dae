@@ -159,8 +159,11 @@ type DatReaderOptimizer struct {
 	LocationFinder *assets.LocationFinder
 	Logger         *logrus.Logger
 	mu             sync.Mutex
-	geoSiteCache   map[string][]*config_parser.Param
-	geoIpCache     map[string][]*config_parser.Param
+	// Cached params are immutable by contract once stored.
+	// cloneParams only copies the slice container while sharing *Param objects.
+	// Downstream optimizers must not mutate Param fields.
+	geoSiteCache map[string][]*config_parser.Param
+	geoIpCache   map[string][]*config_parser.Param
 }
 
 func cloneParams(params []*config_parser.Param) []*config_parser.Param {
@@ -168,13 +171,7 @@ func cloneParams(params []*config_parser.Param) []*config_parser.Param {
 		return nil
 	}
 	out := make([]*config_parser.Param, len(params))
-	for i, p := range params {
-		if p == nil {
-			continue
-		}
-		cp := *p
-		out[i] = &cp
-	}
+	copy(out, params)
 	return out
 }
 

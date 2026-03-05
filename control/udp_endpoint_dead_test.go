@@ -74,7 +74,7 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	// We use a Handler that returns error to force failure, but the important
 	// thing is that the dead endpoint should be removed from the pool
 	_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
-		Handler:    func(data []byte, from netip.AddrPort) error { return nil },
+		Handler:    func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error { return nil },
 		NatTimeout: DefaultNatTimeout,
 		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			// Return error to simulate dial failure - but dead endpoint should still be removed first
@@ -115,7 +115,7 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 
 	// GetOrCreate should still reject it
 	_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
-		Handler:    func(data [] byte, from netip.AddrPort) error { return nil },
+		Handler:    func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error { return nil },
 		NatTimeout: DefaultNatTimeout,
 		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 			return nil, fmt.Errorf("simulated dial error")
@@ -153,7 +153,7 @@ func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 			// This should fail to create a valid endpoint but should
 			// properly handle the dead endpoint
 			_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
-				Handler:    func(data []byte, from netip.AddrPort) error { return nil },
+				Handler:    func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error { return nil },
 				NatTimeout: DefaultNatTimeout,
 				GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 					return nil, fmt.Errorf("simulated dial error")

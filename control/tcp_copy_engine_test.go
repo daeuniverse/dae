@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -118,6 +119,48 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 
 	if shouldUseRelayFastPath(wrappedConn{client}, server) {
 		t.Fatal("wrapped connections should not pass fast-path concrete-type whitelist")
+	}
+}
+
+func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	snifferConn := sniffing.NewConnSniffer(client, time.Second)
+	defer snifferConn.Close()
+
+	got := shouldUseRelayFastPath(snifferConn, server)
+	want := runtime.GOOS == "linux"
+	if got != want {
+		t.Fatalf("unexpected whitelist decision for ConnSniffer over TCP: got %v want %v", got, want)
 	}
 }
 

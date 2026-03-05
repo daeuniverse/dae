@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/trie"
 
@@ -363,7 +364,68 @@ func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 	return nil
 }
 
+// globalNextLpmIndex is process-wide to avoid reusing the same lpm_array_map
+// slots during hot-reload windows where old and new rules may overlap briefly.
+// BuildKernspace is expected to run serially; atomic protects against
+// accidental concurrent invocation.
+var globalNextLpmIndex atomic.Uint32
+
+func getNextRingLpmIndex(count uint32) uint32 {
+	maxEntries := uint32(consts.MaxMatchSetLen)
+	for {
+		start := globalNextLpmIndex.Load()
+		next := (start + count) % maxEntries
+		if globalNextLpmIndex.CompareAndSwap(start, next) {
+			return start
+		}
+	}
+}
+
+func reserveLpmRingSlots(count uint32) (uint32, error) {
+	maxEntries := uint32(consts.MaxMatchSetLen)
+	if count > maxEntries {
+		return 0, fmt.Errorf("too many lpm tries: %d > %d", count, maxEntries)
+	}
+	if count == 0 {
+		return globalNextLpmIndex.Load(), nil
+	}
+	return getNextRingLpmIndex(count), nil
+}
+
+func rewriteKernRulesWithRingLpmIndex(rules []bpfMatchSet, allocStartIdx uint32, lpmCount uint32) ([]bpfMatchSet, error) {
+	maxEntries := uint32(consts.MaxMatchSetLen)
+	kernRules := make([]bpfMatchSet, len(rules))
+	copy(kernRules, rules)
+
+	for i, rule := range kernRules {
+		matchType := consts.MatchType(rule.Type)
+		switch matchType {
+		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
+			oldLpmIndex := binary.LittleEndian.Uint32(rule.Value[:4])
+			if oldLpmIndex >= lpmCount {
+				return nil, fmt.Errorf("bad lpm index in rule[%d]: %d >= %d", i, oldLpmIndex, lpmCount)
+			}
+			newLpmIndex := (allocStartIdx + oldLpmIndex) % maxEntries
+			binary.LittleEndian.PutUint32(kernRules[i].Value[:4], newLpmIndex)
+		}
+	}
+	return kernRules, nil
+}
+
+// BuildKernspace constructs BPF maps and loads routing rules into kernel space.
+//
+// IMPORTANT: This method MUST be called serially (not concurrently). The control plane
+// ensures serialization through higher-level locks. Concurrent invocations will cause
+// race conditions in globalNextLpmIndex allocation and LPM map updates.
+//
+// Thread Safety: NOT thread-safe. Caller must ensure mutual exclusion.
 func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
+	lpmCount := uint32(len(b.simulatedLpmTries))
+	allocStartIdx, err := reserveLpmRingSlots(lpmCount)
+	if err != nil {
+		return err
+	}
+
 	// Rule reload safety: clear LPM cache to avoid stale cache hits across
 	// different rule generations (e.g. index reuse after config changes).
 	{
@@ -374,6 +436,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 
 	// Update lpm_array_map.
 	for i, cidrs := range b.simulatedLpmTries {
+		realLpmIndex := (allocStartIdx + uint32(i)) % uint32(consts.MaxMatchSetLen)
 		var keys []_bpfLpmKey
 		var values []uint32
 		for _, cidr := range cidrs {
@@ -385,7 +448,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 			return fmt.Errorf("newLpmMap: %w", err)
 		}
 		// We cannot invoke BpfMapBatchUpdate when value is ebpf.Map.
-		if err = b.bpf.LpmArrayMap.Update(uint32(i), m, ebpf.UpdateAny); err != nil {
+		if err = b.bpf.LpmArrayMap.Update(realLpmIndex, m, ebpf.UpdateAny); err != nil {
 			m.Close()
 			return fmt.Errorf("Update: %w", err)
 		}
@@ -397,8 +460,12 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 		return fmt.Errorf("fallback rule MUST be the last")
 	}
 	routingsLen := uint32(len(b.rules))
+	kernRules, err := rewriteKernRulesWithRingLpmIndex(b.rules, allocStartIdx, lpmCount)
+	if err != nil {
+		return err
+	}
 	routingsKeys := common.ARangeU32(routingsLen)
-	if _, err = BpfMapBatchUpdate(b.bpf.RoutingMap, routingsKeys, b.rules, &ebpf.BatchOptions{
+	if _, err = BpfMapBatchUpdate(b.bpf.RoutingMap, routingsKeys, kernRules, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)

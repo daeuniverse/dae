@@ -27,7 +27,7 @@ var UdpRoutingResultCacheTtl = 300 * time.Millisecond
 const udpEndpointCreateShardCount = 64
 const udpEndpointJanitorInterval = 250 * time.Millisecond
 
-type UdpHandler func(data []byte, from netip.AddrPort) error
+type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
 
 type UdpEndpoint struct {
 	conn          netproxy.PacketConn
@@ -50,6 +50,9 @@ type UdpEndpoint struct {
 	hasRoutingCache   bool
 
 	lAddr netip.AddrPort
+	// respConn is a cached Anyfrom socket used to send responses back to the client.
+	// This avoids repeated pool lookups and bind syscalls in the hot path.
+	respConn *Anyfrom
 
 	log *logrus.Logger
 
@@ -80,7 +83,7 @@ func (ue *UdpEndpoint) start() {
 			break
 		}
 		ue.RefreshTtl()
-		if err = ue.handler(buf[:n], from); err != nil {
+		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
 			ue.logEndpointExit(err, "handler")
@@ -253,6 +256,19 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		lAddr:         key.Src,
 		log:           createOption.Log,
 	}
+
+	// Pre-cache the Anyfrom socket for responses. Caching is only safe for
+	// fixed-destination sessions (Symmetric NAT) where the response bind address
+	// remains constant. Full-Cone sessions must lookup on every packet as the
+	// server source can change.
+	if key.Dst.Port() != 0 {
+		if bindAddr, writeAddr := normalizeSendPktAddrFamily(key.Dst, key.Src); !isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
+			if af, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout); err == nil {
+				ue.respConn = af
+			}
+		}
+	}
+
 	ue.RefreshTtl()
 	p.pool.Store(key, ue)
 	// Receive UDP messages.

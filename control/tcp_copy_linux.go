@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -24,6 +25,16 @@ func shouldUseRelayFastPath(dst netproxy.Conn, src netproxy.Conn) bool {
 }
 
 func isRelayFastPathWhitelistedConn(c netproxy.Conn) bool {
-	_, ok := c.(*net.TCPConn)
-	return ok
+	// Fast path: direct *net.TCPConn
+	if _, ok := c.(*net.TCPConn); ok {
+		return true
+	}
+
+	// Sniffing path: unwrap ConnSniffer when its underlying connection is TCP.
+	if snifferConn, ok := c.(*sniffing.ConnSniffer); ok {
+		if _, ok := snifferConn.UnderlyingConn().(*net.TCPConn); ok {
+			return true
+		}
+	}
+	return false
 }
