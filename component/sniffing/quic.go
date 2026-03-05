@@ -29,50 +29,6 @@ const (
 	QuicVersion1 = 0x00000001
 )
 
-// IsLikelyQuicLongHeaderPacket checks whether the buffer looks like a QUIC
-// long-header packet. It is intentionally permissive and does not validate
-// packet type or version so control-plane routing can recognize QUIC handshake
-// traffic like Initial/0-RTT/Handshake consistently.
-func IsLikelyQuicLongHeaderPacket(buf []byte) bool {
-	const minQuicLongHeaderLen = 7
-	if len(buf) < minQuicLongHeaderLen {
-		return false
-	}
-	protectedFlag := buf[0]
-
-	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b1) != QuicFlag_HeaderForm_LongHeader {
-		return false
-	}
-	if ((protectedFlag >> QuicFlag_FixedBit) & 0b1) == 0 {
-		return false
-	}
-	// QUIC Version Negotiation packets (version=0) are server responses and
-	// should not classify client-originated handshake traffic in control path.
-	version := uint32(buf[1])<<24 | uint32(buf[2])<<16 | uint32(buf[3])<<8 | uint32(buf[4])
-	if version == 0 {
-		return false
-	}
-
-	// Validate Connection ID length layout per RFC 9000/8999 invariants:
-	// DCID Len (1B), DCID, SCID Len (1B), SCID. CID lengths are max 20 bytes.
-	destConnIDLen := int(buf[5])
-	if destConnIDLen > 20 {
-		return false
-	}
-	srcConnIDLenPos := 6 + destConnIDLen
-	if len(buf) <= srcConnIDLenPos {
-		return false
-	}
-	srcConnIDLen := int(buf[srcConnIDLenPos])
-	if srcConnIDLen > 20 {
-		return false
-	}
-	if len(buf) < srcConnIDLenPos+1+srcConnIDLen {
-		return false
-	}
-	return true
-}
-
 // IsLikelyQuicInitialPacket checks if the buffer appears to be a QUIC Initial packet.
 // It validates the Long Header format, Initial packet type, and Fixed bit.
 // Version is NOT strictly checked to maintain compatibility with:
@@ -82,12 +38,19 @@ func IsLikelyQuicLongHeaderPacket(buf []byte) bool {
 //
 // This follows the principle of being liberal in what we accept for sniffing purposes.
 func IsLikelyQuicInitialPacket(buf []byte) bool {
-	if !IsLikelyQuicLongHeaderPacket(buf) {
+	const minQuicInitialHeaderLen = 7
+	if len(buf) < minQuicInitialHeaderLen {
 		return false
 	}
 	protectedFlag := buf[0]
 
+	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b11) != QuicFlag_HeaderForm_LongHeader {
+		return false
+	}
 	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != QuicFlag_LongPacketType_Initial {
+		return false
+	}
+	if ((protectedFlag >> QuicFlag_FixedBit) & 0b1) == 0 {
 		return false
 	}
 

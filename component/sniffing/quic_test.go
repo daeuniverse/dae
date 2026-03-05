@@ -88,57 +88,6 @@ func TestIsLikelyQuicInitialPacket(t *testing.T) {
 	}
 }
 
-func TestIsLikelyQuicLongHeaderPacket(t *testing.T) {
-	tests := []struct {
-		name string
-		b0   byte
-		ok   bool
-	}{
-		{name: "Initial", b0: 0xC0, ok: true},
-		{name: "0-RTT", b0: 0xD0, ok: true},
-		{name: "Handshake", b0: 0xE0, ok: true},
-		{name: "Retry", b0: 0xF0, ok: true},
-		{name: "ShortHeader", b0: 0x40, ok: false},
-		{name: "FixedBitCleared", b0: 0x90, ok: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := make([]byte, 16)
-			buf[0] = tt.b0
-			buf[4] = 1 // non-zero version
-			buf[5] = 0 // dcid len
-			buf[6] = 0 // scid len
-			if got := IsLikelyQuicLongHeaderPacket(buf); got != tt.ok {
-				t.Fatalf("IsLikelyQuicLongHeaderPacket()=%v want=%v", got, tt.ok)
-			}
-		})
-	}
-
-	if IsLikelyQuicLongHeaderPacket([]byte{0xC0, 0x00, 0x00}) {
-		t.Fatal("short buffer should not be recognized as QUIC long header")
-	}
-
-	t.Run("VersionNegotiationShouldFail", func(t *testing.T) {
-		buf := make([]byte, 16)
-		buf[0] = 0xC0
-		buf[5] = 0
-		buf[6] = 0
-		if IsLikelyQuicLongHeaderPacket(buf) {
-			t.Fatal("version=0 packet should not be recognized as QUIC long header")
-		}
-	})
-
-	t.Run("InvalidCIDLengthShouldFail", func(t *testing.T) {
-		buf := make([]byte, 16)
-		buf[0] = 0xC0
-		buf[4] = 1
-		buf[5] = 21 // invalid dcid len
-		if IsLikelyQuicLongHeaderPacket(buf) {
-			t.Fatal("invalid cid length should not be recognized as QUIC long header")
-		}
-	})
-}
-
 // TestIsLikelyQuicInitialPacket_MultiVersionSupport verifies that the sniffing
 // function accepts all valid QUIC versions, not just v1.
 func TestIsLikelyQuicInitialPacket_MultiVersionSupport(t *testing.T) {
@@ -237,9 +186,6 @@ func TestIsLikelyQuicInitialPacket_HeaderValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.shouldPass {
 				buf := make([]byte, 16)
-				buf[4] = 1
-				buf[5] = 0
-				buf[6] = 0
 				tt.setupBuf(buf)
 				result := IsLikelyQuicInitialPacket(buf)
 				if result != tt.shouldPass {
@@ -254,9 +200,6 @@ func TestIsLikelyQuicInitialPacket_HeaderValidation(t *testing.T) {
 					}
 				} else {
 					buf := make([]byte, 16)
-					buf[4] = 1
-					buf[5] = 0
-					buf[6] = 0
 					tt.setupBuf(buf)
 					result := IsLikelyQuicInitialPacket(buf)
 					if result {

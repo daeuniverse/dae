@@ -36,17 +36,11 @@ type Sniffer struct {
 
 	// Packet
 	data           [][]byte
-	packetStarts   []int
 	needMore       bool
 	quicNextRead   int
 	quicCryptos    []*quicutils.CryptoFrameOffset
 	quicPlaintexts []pool.PB
 }
-
-const (
-	quicInitialSearchMaxPackets = 8
-	quicInitialSearchMaxBytes   = 12 * 1024
-)
 
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -71,13 +65,10 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 	buffer.Write(data)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	s := &Sniffer{
-		stream: false,
-		r:      nil,
-		buf:    buffer,
-		data:   [][]byte{buffer.Bytes()},
-		packetStarts: []int{
-			0,
-		},
+		stream:    false,
+		r:         nil,
+		buf:       buffer,
+		data:      [][]byte{buffer.Bytes()},
 		dataReady: make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -233,12 +224,7 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	if len(s.quicCryptos) == 0 {
 		nextBlock := s.buf.Bytes()[s.quicNextRead:]
 		if !IsLikelyQuicInitialPacket(nextBlock) {
-			if off, ok := s.findQuicInitialPacketStart(); ok {
-				s.quicNextRead = off
-			} else {
-				s.needMore = true
-				return "", ErrNotApplicable
-			}
+			return "", ErrNotApplicable
 		}
 	}
 
@@ -251,35 +237,7 @@ func (s *Sniffer) AppendData(data []byte) {
 	s.needMore = false
 	ori := s.buf.Len()
 	s.buf.Write(data)
-	s.packetStarts = append(s.packetStarts, ori)
 	s.data = append(s.data, s.buf.Bytes()[ori:])
-}
-
-func (s *Sniffer) findQuicInitialPacketStart() (int, bool) {
-	if len(s.packetStarts) == 0 {
-		return 0, false
-	}
-	buf := s.buf.Bytes()
-	limitStart := len(buf) - quicInitialSearchMaxBytes
-	if limitStart < 0 {
-		limitStart = 0
-	}
-	pktBudget := quicInitialSearchMaxPackets
-
-	for i := len(s.packetStarts) - 1; i >= 0; i-- {
-		start := s.packetStarts[i]
-		if start < s.quicNextRead || start < limitStart {
-			break
-		}
-		if pktBudget <= 0 {
-			break
-		}
-		pktBudget--
-		if IsLikelyQuicInitialPacket(buf[start:]) {
-			return start, true
-		}
-	}
-	return 0, false
 }
 
 func (s *Sniffer) Data() [][]byte {

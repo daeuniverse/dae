@@ -25,7 +25,7 @@ func TestQuicOrderingIsLikelyQuicInitialPacket(t *testing.T) {
 	}{
 		{
 			name:     "QUIC_Initial_packet",
-			data:     []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}, // Long header + Initial + v1 + zero-length CIDs
+			data:     []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00}, // Long header + Initial type + Fixed bit
 			expected: true,
 		},
 		{
@@ -64,7 +64,7 @@ func TestUdpTaskPool_QuicPacketOrdering(t *testing.T) {
 	var mu sync.Mutex
 	var done atomic.Int32
 
-	quicInitialPacket := []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}
+	quicInitialPacket := []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00}
 	require.True(t, sniffing.IsLikelyQuicInitialPacket(quicInitialPacket), "test data should be QUIC Initial")
 
 	for i := range n {
@@ -105,7 +105,7 @@ func TestUdpTaskPool_NonQuicDirectExecution(t *testing.T) {
 
 // BenchmarkIsLikelyQuicInitialPacket benchmarks the QUIC detection overhead.
 func BenchmarkIsLikelyQuicInitialPacket(b *testing.B) {
-	quicPacket := []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}
+	quicPacket := []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00}
 	nonQuicPacket := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}
 
 	b.Run("QUIC_packet", func(b *testing.B) {

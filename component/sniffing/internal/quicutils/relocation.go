@@ -6,7 +6,6 @@
 package quicutils
 
 import (
-	"bytes"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -15,12 +14,6 @@ import (
 var (
 	ErrUnknownFrameType = fmt.Errorf("unknown frame type")
 	ErrOutOfRange       = fmt.Errorf("index out of range")
-	ErrCryptoLimit      = fmt.Errorf("quic crypto reassembly limit reached")
-)
-
-const (
-	maxCryptoFramesPerSniff = 256
-	maxCryptoBytesPerSniff  = 64 * 1024
 )
 
 const (
@@ -51,18 +44,9 @@ func ReassembleCryptos(offsets []*CryptoFrameOffset, newPayload []byte) (newOffs
 		if offset == nil {
 			continue
 		}
-		if hasDuplicateCryptoOffset(offsets, offset) {
-			continue
-		}
 		offsets = append(offsets, offset)
-		if len(offsets) > maxCryptoFramesPerSniff {
-			return nil, ErrCryptoLimit
-		}
 		if offset.UpperAppOffset+len(offset.Data) > boundary {
 			boundary = offset.UpperAppOffset + len(offset.Data)
-		}
-		if boundary > maxCryptoBytesPerSniff {
-			return nil, ErrCryptoLimit
 		}
 	}
 	// Sort the new part.
@@ -90,21 +74,6 @@ func ReassembleCryptos(offsets []*CryptoFrameOffset, newPayload []byte) (newOffs
 		}
 	}
 	return offsets, nil
-}
-
-func hasDuplicateCryptoOffset(offsets []*CryptoFrameOffset, candidate *CryptoFrameOffset) bool {
-	for _, ex := range offsets {
-		if ex.UpperAppOffset != candidate.UpperAppOffset {
-			continue
-		}
-		if len(ex.Data) != len(candidate.Data) {
-			continue
-		}
-		if bytes.Equal(ex.Data, candidate.Data) {
-			return true
-		}
-	}
-	return false
 }
 
 func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *CryptoFrameOffset, frameSize int, err error) {
@@ -230,7 +199,7 @@ func (l *LinearLocator) Range(i, j int) ([]byte, error) {
 		n := copy(b[k:], l.baseData[i-l.baseStart:])
 		k += n
 		i += n
-		if l.iOuter+1 >= len(l.o) || l.o[l.iOuter].UpperAppOffset+len(l.o[l.iOuter].Data) != l.o[l.iOuter+1].UpperAppOffset {
+		if l.iOuter+1 >= len(l.o) || l.o[l.iOuter].UpperAppOffset+len(l.o[l.iOuter+1].Data) != l.o[l.iOuter].UpperAppOffset {
 			// Some crypto is missing.
 			return nil, ErrMissingCrypto
 		}
