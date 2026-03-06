@@ -407,6 +407,12 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 		return nil
 	}
 
+	if c.bpf.FastSock == nil ||
+		c.bpf.TproxyFastRedirectParser == nil ||
+		c.bpf.TproxyFastRedirectVerdict == nil {
+		return nil
+	}
+
 	attachments := []struct {
 		prog   *ebpf.Program
 		attach ebpf.AttachType

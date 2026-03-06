@@ -300,12 +300,7 @@ func BenchmarkRelayContinuousStream(b *testing.B) {
 func benchContinuousStream(b *testing.B, totalBytes int, bufferSize int) {
 	srcWriter, srcRelay := unixConnPair(b)
 	dstRelay, dstReader := unixConnPair(b)
-	defer srcWriter.Close()
-	defer srcRelay.Close()
-	defer dstRelay.Close()
-	defer dstReader.Close()
 
-	// Generate MTU-sized chunks
 	chunkSize := 1460
 	chunks := totalBytes / chunkSize
 
@@ -317,35 +312,36 @@ func benchContinuousStream(b *testing.B, totalBytes int, bufferSize int) {
 		var wg sync.WaitGroup
 		wg.Add(2)
 
-		// Writer: send chunks with small delays (simulate network)
 		go func() {
 			defer wg.Done()
 			chunk := bytes.Repeat([]byte{0x7f}, chunkSize)
 			for j := 0; j < chunks; j++ {
 				srcWriter.Write(chunk)
-				// Small delay to simulate network timing
 				time.Sleep(2 * time.Microsecond)
 			}
 			srcWriter.CloseWrite()
 		}()
 
-		// Reader
 		go func() {
 			defer wg.Done()
 			io.Copy(io.Discard, dstReader)
 		}()
 
-		// Relay
 		buf := make([]byte, bufferSize)
 		io.CopyBuffer(netproxy.Conn(dstRelay), netproxy.Conn(srcRelay), buf)
 		dstRelay.CloseWrite()
 
 		wg.Wait()
 
-		// Reset
+		closeUnixPair(srcWriter, srcRelay)
+		closeUnixPair(dstRelay, dstReader)
+
 		srcWriter, srcRelay = unixConnPair(b)
 		dstRelay, dstReader = unixConnPair(b)
 	}
+
+	closeUnixPair(srcWriter, srcRelay)
+	closeUnixPair(dstRelay, dstReader)
 }
 
 // Benchmark with context (dae's real implementation)
@@ -362,10 +358,6 @@ func BenchmarkRelayWithEngine(b *testing.B) {
 func benchRelayWithEngine(b *testing.B, payloadSize int, engine relayCopyEngine) {
 	srcWriter, srcRelay := unixConnPair(b)
 	dstRelay, dstReader := unixConnPair(b)
-	defer srcWriter.Close()
-	defer srcRelay.Close()
-	defer dstRelay.Close()
-	defer dstReader.Close()
 
 	payload := bytes.Repeat([]byte{0x7f}, payloadSize)
 
@@ -388,16 +380,21 @@ func benchRelayWithEngine(b *testing.B, payloadSize int, engine relayCopyEngine)
 			io.Copy(io.Discard, dstReader)
 		}()
 
-		// Use dae's actual relay implementation
 		ctx := context.Background()
 		engine.Copy(ctx, netproxy.Conn(dstRelay), netproxy.Conn(srcRelay))
 		dstRelay.CloseWrite()
 
 		wg.Wait()
 
+		closeUnixPair(srcWriter, srcRelay)
+		closeUnixPair(dstRelay, dstReader)
+
 		srcWriter, srcRelay = unixConnPair(b)
 		dstRelay, dstReader = unixConnPair(b)
 	}
+
+	closeUnixPair(srcWriter, srcRelay)
+	closeUnixPair(dstRelay, dstReader)
 }
 
 // unixConnPair is defined in tcp_copy_linux_test.go

@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"net/netip"
 	"runtime"
@@ -239,5 +240,102 @@ func TestMakeTuplesKey_UsesRemoteToLocalSocketOrientation(t *testing.T) {
 	}
 	if !bytes.Equal(key.Dip.U6Addr8[:], dst16[:]) {
 		t.Fatal("destination ip encoding mismatch")
+	}
+}
+
+func TestNewTCPRelayOffloadSession_ConnSnifferRejected(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("eBPF offload is only available on linux")
+	}
+
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	snifferConn := sniffing.NewConnSniffer(client, time.Second)
+	defer snifferConn.Close()
+
+	_, err = newTCPRelayOffloadSession(nil, netproxy.Conn(snifferConn), netproxy.Conn(server))
+	if err == nil {
+		t.Fatal("newTCPRelayOffloadSession should reject ConnSniffer on left side")
+	}
+	if !errors.Is(err, errTCPRelayOffloadUnavailable) {
+		t.Fatalf("expected errTCPRelayOffloadUnavailable, got: %v", err)
+	}
+}
+
+func TestNewTCPRelayOffloadSession_PrefixedConnRejected(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("eBPF offload is only available on linux")
+	}
+
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	prefixedConn := &struct {
+		net.Conn
+	}{Conn: client}
+
+	_, err = newTCPRelayOffloadSession(nil, netproxy.Conn(prefixedConn), netproxy.Conn(server))
+	if err == nil {
+		t.Fatal("newTCPRelayOffloadSession should reject prefixedConn on left side")
+	}
+	if !errors.Is(err, errTCPRelayOffloadUnavailable) {
+		t.Fatalf("expected errTCPRelayOffloadUnavailable, got: %v", err)
 	}
 }

@@ -16,6 +16,21 @@ import (
 	bufferredconn "github.com/daeuniverse/outbound/pkg/bufferred_conn"
 )
 
+func withRelayGatherWriteTestHook(hook func(prefixLen, bodyLen int), fn func()) {
+	relayGatherWriteTestHookMu.Lock()
+	old := relayGatherWriteTestHook
+	relayGatherWriteTestHook = hook
+	relayGatherWriteTestHookMu.Unlock()
+
+	defer func() {
+		relayGatherWriteTestHookMu.Lock()
+		relayGatherWriteTestHook = old
+		relayGatherWriteTestHookMu.Unlock()
+	}()
+
+	fn()
+}
+
 func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 	srcLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
@@ -86,38 +101,37 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 		_ = srcClient.CloseWrite()
 	}()
 
-	hookCalled := false
-	relayGatherWriteTestHook = func(prefixLen, bodyLen int) {
+	var hookCalled bool
+	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
 		hookCalled = true
 		if prefixLen != len(prefix) {
 			t.Fatalf("unexpected prefix len: got %d want %d", prefixLen, len(prefix))
 		}
-	}
-	defer func() { relayGatherWriteTestHook = nil }()
+	}, func() {
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, &prefixedConn{
+			Conn:   srcServer,
+			prefix: append([]byte(nil), prefix...),
+		})
+		if err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if n != int64(len(prefix)+len(payload)) {
+			t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
+		}
+		if !hookCalled {
+			t.Fatal("expected gather-write path to be used")
+		}
 
-	n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, &prefixedConn{
-		Conn:   srcServer,
-		prefix: append([]byte(nil), prefix...),
+		_ = dstServer.CloseWrite()
+		got, err := io.ReadAll(dstClient)
+		if err != nil {
+			t.Fatalf("read destination failed: %v", err)
+		}
+		want := append(append([]byte(nil), prefix...), payload...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %q want %q", got, want)
+		}
 	})
-	if err != nil {
-		t.Fatalf("copy failed: %v", err)
-	}
-	if n != int64(len(prefix)+len(payload)) {
-		t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
-	}
-	if !hookCalled {
-		t.Fatal("expected gather-write path to be used")
-	}
-
-	_ = dstServer.CloseWrite()
-	got, err := io.ReadAll(dstClient)
-	if err != nil {
-		t.Fatalf("read destination failed: %v", err)
-	}
-	want := append(append([]byte(nil), prefix...), payload...)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("payload mismatch: got %q want %q", got, want)
-	}
 }
 
 func TestRelayAdvanceSegments(t *testing.T) {
@@ -208,39 +222,38 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 		_ = srcClient.CloseWrite()
 	}()
 
-	hookCalled := false
-	relayGatherWriteTestHook = func(prefixLen, bodyLen int) {
+	var hookCalled bool
+	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
 		hookCalled = true
 		if prefixLen != len(prefix) {
 			t.Fatalf("unexpected prefix len: got %d want %d", prefixLen, len(prefix))
 		}
-	}
-	defer func() { relayGatherWriteTestHook = nil }()
+	}, func() {
+		n, err := (defaultRelayCopyEngine{}).Copy(
+			context.Background(),
+			underlyingTCPWrapper{Conn: dstServer, inner: dstServer},
+			&prefixedConn{Conn: srcServer, prefix: append([]byte(nil), prefix...)},
+		)
+		if err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if n != int64(len(prefix)+len(payload)) {
+			t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
+		}
+		if !hookCalled {
+			t.Fatal("expected gather-write path to use UnderlyingConn destination")
+		}
 
-	n, err := (defaultRelayCopyEngine{}).Copy(
-		context.Background(),
-		underlyingTCPWrapper{Conn: dstServer, inner: dstServer},
-		&prefixedConn{Conn: srcServer, prefix: append([]byte(nil), prefix...)},
-	)
-	if err != nil {
-		t.Fatalf("copy failed: %v", err)
-	}
-	if n != int64(len(prefix)+len(payload)) {
-		t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
-	}
-	if !hookCalled {
-		t.Fatal("expected gather-write path to use UnderlyingConn destination")
-	}
-
-	_ = dstServer.CloseWrite()
-	got, err := io.ReadAll(dstClient)
-	if err != nil {
-		t.Fatalf("read destination failed: %v", err)
-	}
-	want := append(append([]byte(nil), prefix...), payload...)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("payload mismatch: got %q want %q", got, want)
-	}
+		_ = dstServer.CloseWrite()
+		got, err := io.ReadAll(dstClient)
+		if err != nil {
+			t.Fatalf("read destination failed: %v", err)
+		}
+		want := append(append([]byte(nil), prefix...), payload...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %q want %q", got, want)
+		}
+	})
 }
 
 func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t *testing.T) {
@@ -320,35 +333,34 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 	}
 	defer snifferConn.Close()
 
-	hookCalled := false
-	relayGatherWriteTestHook = func(prefixLen, bodyLen int) {
+	var hookCalled bool
+	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
 		hookCalled = true
 		if prefixLen == 0 {
 			t.Fatal("expected prefetched bytes from ConnSniffer")
 		}
-	}
-	defer func() { relayGatherWriteTestHook = nil }()
+	}, func() {
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, snifferConn)
+		if err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if n != int64(len(prefix)+len(payload)) {
+			t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
+		}
+		if !hookCalled {
+			t.Fatal("expected gather-write to run before fast path for ConnSniffer")
+		}
 
-	n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, snifferConn)
-	if err != nil {
-		t.Fatalf("copy failed: %v", err)
-	}
-	if n != int64(len(prefix)+len(payload)) {
-		t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
-	}
-	if !hookCalled {
-		t.Fatal("expected gather-write to run before fast path for ConnSniffer")
-	}
-
-	_ = dstServer.CloseWrite()
-	got, err := io.ReadAll(dstClient)
-	if err != nil {
-		t.Fatalf("read destination failed: %v", err)
-	}
-	want := append(append([]byte(nil), prefix...), payload...)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("payload mismatch: got %q want %q", got, want)
-	}
+		_ = dstServer.CloseWrite()
+		got, err := io.ReadAll(dstClient)
+		if err != nil {
+			t.Fatalf("read destination failed: %v", err)
+		}
+		want := append(append([]byte(nil), prefix...), payload...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %q want %q", got, want)
+		}
+	})
 }
 
 func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.T) {
@@ -428,33 +440,32 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 		t.Fatalf("peek failed: %v", err)
 	}
 
-	hookCalled := false
-	relayGatherWriteTestHook = func(prefixLen, bodyLen int) {
+	var hookCalled bool
+	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
 		hookCalled = true
 		if prefixLen < len(prefix) {
 			t.Fatalf("expected at least %d buffered bytes, got %d", len(prefix), prefixLen)
 		}
-	}
-	defer func() { relayGatherWriteTestHook = nil }()
+	}, func() {
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered)
+		if err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if n != int64(len(prefix)+len(payload)) {
+			t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
+		}
+		if !hookCalled {
+			t.Fatal("expected gather-write path to use BufferedConn prefix")
+		}
 
-	n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered)
-	if err != nil {
-		t.Fatalf("copy failed: %v", err)
-	}
-	if n != int64(len(prefix)+len(payload)) {
-		t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
-	}
-	if !hookCalled {
-		t.Fatal("expected gather-write path to use BufferedConn prefix")
-	}
-
-	_ = dstServer.CloseWrite()
-	got, err := io.ReadAll(dstClient)
-	if err != nil {
-		t.Fatalf("read destination failed: %v", err)
-	}
-	want := append(append([]byte(nil), prefix...), payload...)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("payload mismatch: got %q want %q", got, want)
-	}
+		_ = dstServer.CloseWrite()
+		got, err := io.ReadAll(dstClient)
+		if err != nil {
+			t.Fatalf("read destination failed: %v", err)
+		}
+		want := append(append([]byte(nil), prefix...), payload...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %q want %q", got, want)
+		}
+	})
 }

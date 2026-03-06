@@ -7,13 +7,17 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"syscall"
 
 	"github.com/daeuniverse/outbound/netproxy"
 	"golang.org/x/sys/unix"
 )
 
-var relayGatherWriteTestHook func(prefixLen, bodyLen int)
+var (
+	relayGatherWriteTestHookMu sync.Mutex
+	relayGatherWriteTestHook   func(prefixLen, bodyLen int)
+)
 var relayGatherWriteEnabled = true
 
 func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (written int64, err error, ok bool) {
@@ -62,8 +66,14 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		}
 	}
 
+	// Fast path: check nil without lock to avoid overhead in production
 	if relayGatherWriteTestHook != nil {
-		relayGatherWriteTestHook(len(prefix), len(body))
+		relayGatherWriteTestHookMu.Lock()
+		hook := relayGatherWriteTestHook
+		relayGatherWriteTestHookMu.Unlock()
+		if hook != nil {
+			hook(len(prefix), len(body))
+		}
 	}
 
 	nw, err := relayWritevAll(dstFD, prefix, body)

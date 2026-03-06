@@ -61,9 +61,9 @@ func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*
 		return nil, fmt.Errorf("%w: fast_sock map is unavailable", errTCPRelayOffloadUnavailable)
 	}
 
-	leftTCP, ok := unwrapRelayTCPConn(left)
+	leftTCP, ok := unwrapPlainTCPConn(left)
 	if !ok {
-		return nil, fmt.Errorf("%w: left connection cannot be unwrapped to plain tcp (type: %T)", errTCPRelayOffloadUnavailable, left)
+		return nil, fmt.Errorf("%w: left is not a plain *net.TCPConn, has buffered data (type: %T)", errTCPRelayOffloadUnavailable, left)
 	}
 	rightTCP, ok := unwrapRelayTCPConn(right)
 	if !ok {

@@ -15,8 +15,10 @@ import (
 )
 
 // canOffloadToEBPF checks if both connections are plain *net.TCPConn.
-// This is primarily used in tests. Production code uses unwrapPlainTCPConn
-// to avoid redundant type assertions.
+// This is primarily used in tests to verify that sniffing/prefetch wrappers
+// are correctly rejected. Production code in newTCPRelayOffloadSession uses
+// unwrapPlainTCPConn for the left (client) side and unwrapRelayTCPConn for
+// the right (outbound) side.
 func canOffloadToEBPF(left, right netproxy.Conn) bool {
 	_, leftOK := left.(*net.TCPConn)
 	_, rightOK := right.(*net.TCPConn)
