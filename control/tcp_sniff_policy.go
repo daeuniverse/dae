@@ -49,6 +49,17 @@ type prefixedConn struct {
 	off    int
 }
 
+// TakeRelayPrefix returns the remaining prefetched bytes and marks them as
+// consumed so relay can flush them without copying through the generic buffer.
+func (c *prefixedConn) TakeRelayPrefix() []byte {
+	if c.off >= len(c.prefix) {
+		return nil
+	}
+	remaining := c.prefix[c.off:]
+	c.off = len(c.prefix)
+	return remaining
+}
+
 func (c *prefixedConn) Read(p []byte) (int, error) {
 	if c.off < len(c.prefix) {
 		n := copy(p, c.prefix[c.off:])

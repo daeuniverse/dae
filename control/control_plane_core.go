@@ -39,6 +39,7 @@ type controlPlaneCore struct {
 	deferFuncs      []func() error
 	bpf             *bpfObjects
 	outboundId2Name map[uint8]string
+	tcpRelayOffload bool
 
 	kernelVersion *internal.Version
 
@@ -396,6 +397,60 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 			return nil
 		})
 	}
+	return nil
+}
+
+func (c *controlPlaneCore) setupTCPRelayOffload() error {
+	if c.bpf.FastSock == nil ||
+		c.bpf.TproxyFastRedirectParser == nil ||
+		c.bpf.TproxyFastRedirectVerdict == nil {
+		return nil
+	}
+
+	attachments := []struct {
+		prog   *ebpf.Program
+		attach ebpf.AttachType
+	}{
+		{prog: c.bpf.TproxyFastRedirectParser, attach: ebpf.AttachSkSKBStreamParser},
+		{prog: c.bpf.TproxyFastRedirectVerdict, attach: ebpf.AttachSkSKBStreamVerdict},
+	}
+
+	var attached []struct {
+		prog   *ebpf.Program
+		attach ebpf.AttachType
+	}
+	for _, item := range attachments {
+		if err := ciliumLink.RawAttachProgram(ciliumLink.RawAttachProgramOptions{
+			Target:  c.bpf.FastSock.FD(),
+			Program: item.prog,
+			Attach:  item.attach,
+		}); err != nil {
+			for i := len(attached) - 1; i >= 0; i-- {
+				_ = ciliumLink.RawDetachProgram(ciliumLink.RawDetachProgramOptions{
+					Target:  c.bpf.FastSock.FD(),
+					Program: attached[i].prog,
+					Attach:  attached[i].attach,
+				})
+			}
+			return fmt.Errorf("attach %s: %w", item.prog.String(), err)
+		}
+		attached = append(attached, item)
+	}
+
+	c.tcpRelayOffload = true
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		var errs []error
+		for i := len(attached) - 1; i >= 0; i-- {
+			if err := ciliumLink.RawDetachProgram(ciliumLink.RawDetachProgramOptions{
+				Target:  c.bpf.FastSock.FD(),
+				Program: attached[i].prog,
+				Attach:  attached[i].attach,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("detach %s: %w", attached[i].prog.String(), err))
+			}
+		}
+		return errors.Join(errs...)
+	})
 	return nil
 }
 

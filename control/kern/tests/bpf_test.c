@@ -27,6 +27,44 @@ struct {
 	},
 };
 
+struct test_routing_cache_ctx {
+	struct tuples_key key;
+	struct routing_result result;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct test_routing_cache_ctx);
+	__uint(max_entries, 1);
+} test_routing_cache_ctx_map SEC(".maps");
+
+static __always_inline int
+setup_cached_routing_result(__u32 saddr, __u32 daddr,
+			    __u16 sport, __u16 dport,
+			    __u8 outbound, __u32 mark)
+{
+	struct test_routing_cache_ctx *ctx =
+		bpf_map_lookup_elem(&test_routing_cache_ctx_map, &zero_key);
+
+	if (!ctx)
+		return TC_ACT_SHOT;
+
+	__builtin_memset(ctx, 0, sizeof(*ctx));
+	ctx->key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	ctx->key.sip.u6_addr32[3] = bpf_htonl(saddr);
+	ctx->key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	ctx->key.dip.u6_addr32[3] = bpf_htonl(daddr);
+	ctx->key.sport = bpf_htons(sport);
+	ctx->key.dport = bpf_htons(dport);
+	ctx->key.l4proto = IPPROTO_TCP;
+	ctx->result.outbound = outbound;
+	ctx->result.mark = mark;
+
+	return bpf_map_update_elem(&routing_tuples_map, &ctx->key, &ctx->result,
+				   BPF_ANY);
+}
+
 SEC("tc/pktgen/dport_match")
 int testpktgen_dport_match(struct __sk_buff *skb)
 {
@@ -351,19 +389,11 @@ int testpktgen_tcp_non_syn_mark_restore(struct __sk_buff *skb)
 SEC("tc/setup/tcp_non_syn_mark_restore")
 int testsetup_tcp_non_syn_mark_restore(struct __sk_buff *skb)
 {
-	struct tuples_key key = {};
-	struct routing_result result = {};
+	int ret = setup_cached_routing_result(IPV4(192,168,0,1), IPV4(1,1,1,1),
+					      19233, 80, 0, TPROXY_MARK);
 
-	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
-	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
-	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
-	key.dip.u6_addr32[3] = bpf_htonl(IPV4(1,1,1,1));
-	key.sport = bpf_htons(19233);
-	key.dport = bpf_htons(80);
-	key.l4proto = IPPROTO_TCP;
-
-	result.mark = TPROXY_MARK;
-	bpf_map_update_elem(&routing_tuples_map, &key, &result, BPF_ANY);
+	if (ret)
+		return TC_ACT_SHOT;
 
 	return do_tproxy_lan_ingress(skb, 14);
 }
@@ -386,20 +416,13 @@ int testpktgen_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
 SEC("tc/setup/tcp_non_syn_cached_proxy_redirect")
 int testsetup_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
 {
-	struct tuples_key key = {};
-	struct routing_result result = {};
+	int ret = setup_cached_routing_result(IPV4(192,168,0,1), IPV4(8,8,8,8),
+					      23456, 443,
+					      OUTBOUND_USER_DEFINED_MIN,
+					      TPROXY_MARK);
 
-	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
-	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
-	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
-	key.dip.u6_addr32[3] = bpf_htonl(IPV4(8,8,8,8));
-	key.sport = bpf_htons(23456);
-	key.dport = bpf_htons(443);
-	key.l4proto = IPPROTO_TCP;
-
-	result.outbound = OUTBOUND_USER_DEFINED_MIN;
-	result.mark = TPROXY_MARK;
-	bpf_map_update_elem(&routing_tuples_map, &key, &result, BPF_ANY);
+	if (ret)
+		return TC_ACT_SHOT;
 
 	return do_tproxy_lan_ingress(skb, 14);
 }

@@ -117,4 +117,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use optimized outbound from olicesx fork
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260304200647-b2b0c453f019
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260306045200-3ffead271f2f

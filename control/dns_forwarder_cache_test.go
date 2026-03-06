@@ -44,8 +44,8 @@ func TestDnsController_EvictIdleDnsForwarders(t *testing.T) {
 	}
 
 	c := &DnsController{
-		log:                  logrus.New(),
-		dnsForwarderIdleTTL:  testTTL,
+		log:                 logrus.New(),
+		dnsForwarderIdleTTL: testTTL,
 	}
 	c.dnsForwarderCache.Store(key, entry)
 
@@ -71,8 +71,8 @@ func TestDnsController_EvictIdleDnsForwarders_SkipInFlight(t *testing.T) {
 	}
 
 	c := &DnsController{
-		log:                  logrus.New(),
-		dnsForwarderIdleTTL:  testTTL,
+		log:                 logrus.New(),
+		dnsForwarderIdleTTL: testTTL,
 	}
 	c.dnsForwarderCache.Store(key, entry)
 

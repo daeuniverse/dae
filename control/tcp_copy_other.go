@@ -15,7 +15,9 @@ func relayAdaptiveCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn
 }
 
 func relayFastCopy(_ context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
-	return io.Copy(dst, src)
+	buf := relayCopyBufferPool.Get().([]byte)
+	defer relayCopyBufferPool.Put(buf)
+	return io.CopyBuffer(dst, src, buf)
 }
 
 func shouldUseRelayFastPath(_ netproxy.Conn, _ netproxy.Conn) bool {

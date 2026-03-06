@@ -166,7 +166,7 @@ struct {
 } routing_tuples_map SEC(".maps");
 
 /* Sockets in fast_sock map are used for fast-redirecting via
- * sk_msg/fast_redirect. Sockets are automactically deleted from map once
+ * sk_skb/stream_verdict. Sockets are automactically deleted from map once
  * closed, so we don't need to worry about stale entries.
  */
 struct {
@@ -1234,6 +1234,38 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
+static __always_inline bool
+get_fast_redirect_key(const struct __sk_buff *skb, struct tuples_key *key)
+{
+	__u32 family = skb->family;
+	__u32 remote_port = skb->remote_port;
+	__u32 local_port = skb->local_port;
+
+	__builtin_memset(key, 0, sizeof(*key));
+	key->l4proto = IPPROTO_TCP;
+
+	switch (family) {
+	case AF_INET:
+		key->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		key->sip.u6_addr32[3] = skb->remote_ip4;
+		key->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		key->dip.u6_addr32[3] = skb->local_ip4;
+		break;
+	case AF_INET6:
+		__builtin_memcpy(key->sip.u6_addr32, skb->remote_ip6,
+				 sizeof(key->sip.u6_addr32));
+		__builtin_memcpy(key->dip.u6_addr32, skb->local_ip6,
+				 sizeof(key->dip.u6_addr32));
+		break;
+	default:
+		return false;
+	}
+
+	key->sport = remote_port >> 16;
+	key->dport = bpf_htons((__u16)local_port);
+	return true;
+}
+
 // DNS queries/replies are short-lived; skipping conntrack/cache for them
 // reduces unnecessary UDP state churn.
 static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
@@ -1385,6 +1417,13 @@ struct lan_ingress_parsed {
 	__u8 l4proto;
 };
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct lan_ingress_parsed);
+	__uint(max_entries, 1);
+} lan_ingress_scratch_map SEC(".maps");
+
 static __noinline int
 parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 			 struct lan_ingress_parsed *out)
@@ -1420,12 +1459,17 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 
 static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
-	struct lan_ingress_parsed pkt;
+	__u32 scratch_key = 0;
+	struct lan_ingress_parsed *pkt =
+		bpf_map_lookup_elem(&lan_ingress_scratch_map, &scratch_key);
 
-	/* Ensure stack bytes are initialized even if verifier can't precisely
+	if (unlikely(!pkt))
+		return TC_ACT_SHOT;
+
+	/* Ensure scratch bytes are initialized even if verifier can't precisely
 	 * track writes done through callee pointer arguments. */
-	__builtin_memset(&pkt, 0, sizeof(pkt));
-	int ret = parse_lan_ingress_packet(skb, link_h_len, &pkt);
+	__builtin_memset(pkt, 0, sizeof(*pkt));
+	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
 
 	if (ret) {
 		if (ret < 0)
@@ -1444,8 +1488,8 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
    * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
    * ip -6 route del local default dev lo table 2023
    */
-	if (pkt.l4proto == IPPROTO_TCP &&
-	    !is_new_tcp_connection(&pkt.tcph)) {
+	if (pkt->l4proto == IPPROTO_TCP &&
+	    !is_new_tcp_connection(&pkt->tcph)) {
 		__u8 outbound;
 		__u32 mark;
 		bool must;
@@ -1455,7 +1499,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 		 * non-SYN session handling: reuse cached routing result for
 		 * established TCP packets.
 		 */
-		if (!load_cached_routing_result(&pkt.tuples.five, &outbound, &mark,
+		if (!load_cached_routing_result(&pkt->tuples.five, &outbound, &mark,
 						&must)) {
 			/* No cache: keep historical direct-pass semantics (e.g.
 			 * single-arm / reply-path traffic).
@@ -1468,8 +1512,8 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 			return TC_ACT_OK;
 		if (unlikely(outbound == OUTBOUND_BLOCK))
 			return TC_ACT_SHOT;
-		if (!wan_outbound_is_alive(skb, outbound, pkt.l4proto,
-					   pkt.tuples.five.dport))
+		if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
+					   pkt->tuples.five.dport))
 			return TC_ACT_SHOT;
 		goto control_plane;
 	}
@@ -1478,13 +1522,13 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	struct route_params params;
 
 	__builtin_memset(&params, 0, sizeof(params));
-	if (pkt.l4proto == IPPROTO_TCP) {
-		params.l4hdr = &pkt.tcph;
+	if (pkt->l4proto == IPPROTO_TCP) {
+		params.l4hdr = &pkt->tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
-		if (!is_short_lived_udp_traffic(&pkt.tuples.five)) {
+		if (!is_short_lived_udp_traffic(&pkt->tuples.five)) {
 			struct udp_conn_state *conn_state =
-				refresh_udp_conn_state_timer(&pkt.tuples.five, false);
+				refresh_udp_conn_state_timer(&pkt->tuples.five, false);
 			if (!conn_state)
 				return TC_ACT_SHOT;
 			if (conn_state->is_wan_ingress_direction) {
@@ -1493,22 +1537,22 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 				return TC_ACT_OK;
 			}
 		}
-		params.l4hdr = &pkt.udph;
+		params.l4hdr = &pkt->udph;
 		params.flag[0] = L4ProtoType_UDP;
 	}
 	if (skb->protocol == bpf_htons(ETH_P_IP))
 		params.flag[1] = IpVersionType_4;
 	else
 		params.flag[1] = IpVersionType_6;
-	params.flag[6] = pkt.tuples.dscp;
+	params.flag[6] = pkt->tuples.dscp;
 	params.mac[2] =
-		bpf_htonl((pkt.ethh.h_source[0] << 8) | (pkt.ethh.h_source[1]));
+		bpf_htonl((pkt->ethh.h_source[0] << 8) | (pkt->ethh.h_source[1]));
 	params.mac[3] =
-		bpf_htonl((pkt.ethh.h_source[2] << 24) |
-			  (pkt.ethh.h_source[3] << 16) |
-			  (pkt.ethh.h_source[4] << 8) | (pkt.ethh.h_source[5]));
-	params.saddr = pkt.tuples.five.sip.u6_addr32;
-	params.daddr = pkt.tuples.five.dip.u6_addr32;
+		bpf_htonl((pkt->ethh.h_source[2] << 24) |
+			  (pkt->ethh.h_source[3] << 16) |
+			  (pkt->ethh.h_source[4] << 8) | (pkt->ethh.h_source[5]));
+	params.saddr = pkt->tuples.five.sip.u6_addr32;
+	params.daddr = pkt->tuples.five.dip.u6_addr32;
 	__s64 s64_ret;
 
 	s64_ret = route(&params);
@@ -1521,8 +1565,8 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	routing_result.outbound = s64_ret;
 	routing_result.mark = s64_ret >> 8;
 	routing_result.must = (s64_ret >> 40) & 1;
-	routing_result.dscp = pkt.tuples.dscp;
-	__builtin_memcpy(routing_result.mac, pkt.ethh.h_source,
+	routing_result.dscp = pkt->tuples.dscp;
+	__builtin_memcpy(routing_result.mac, pkt->ethh.h_source,
 			 sizeof(routing_result.mac));
 	/// NOTICE: No pid pname info for LAN packet.
 	// // Maybe this packet is also in the host (such as docker) ?
@@ -1537,11 +1581,11 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	//}
 
 	// Save routing result.
-	if (pkt.l4proto == IPPROTO_UDP &&
-	    is_short_lived_udp_traffic(&pkt.tuples.five)) {
+	if (pkt->l4proto == IPPROTO_UDP &&
+	    is_short_lived_udp_traffic(&pkt->tuples.five)) {
 		// Skip cache for short-lived DNS to avoid map churn.
 	} else {
-		ret = bpf_map_update_elem(&routing_tuples_map, &pkt.tuples.five,
+		ret = bpf_map_update_elem(&routing_tuples_map, &pkt->tuples.five,
 					  &routing_result, BPF_ANY);
 		if (ret) {
 			bpf_printk("shot save routing result: %d", ret);
@@ -1549,14 +1593,14 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 		}
 	}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-	if (pkt.l4proto == IPPROTO_TCP) {
+	if (pkt->l4proto == IPPROTO_TCP) {
 		bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", ret,
-			   pkt.tuples.five.dip.u6_addr32,
-			   bpf_ntohs(pkt.tuples.five.dport));
+			   pkt->tuples.five.dip.u6_addr32,
+			   bpf_ntohs(pkt->tuples.five.dport));
 	} else {
 		bpf_printk("udp(lan): outbound: %u, target: %pI6:%u",
-			   routing_result.outbound, pkt.tuples.five.dip.u6_addr32,
-			   bpf_ntohs(pkt.tuples.five.dport));
+			   routing_result.outbound, pkt->tuples.five.dip.u6_addr32,
+			   bpf_ntohs(pkt->tuples.five.dport));
 	}
 #endif
 	if (routing_result.outbound == OUTBOUND_DIRECT) {
@@ -1572,14 +1616,14 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 		goto block;
 	}
 
-	if (!wan_outbound_is_alive(skb, routing_result.outbound, pkt.l4proto,
-				   pkt.tuples.five.dport))
+	if (!wan_outbound_is_alive(skb, routing_result.outbound, pkt->l4proto,
+				   pkt->tuples.five.dport))
 		goto block;
 
 	// Assign to control plane.
 control_plane:
-	prep_redirect_to_control_plane(skb, link_h_len, &pkt.tuples, pkt.l4proto,
-				       &pkt.ethh, 0, &pkt.tcph);
+	prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
+				       &pkt->ethh, 0, &pkt->tcph);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
@@ -2294,6 +2338,27 @@ int tproxy_wan_cg_sock_create(struct bpf_sock *sk)
 {
 	update_map_elem_by_cookie(bpf_get_socket_cookie(sk));
 	return 1;
+}
+
+SEC("sk_skb/stream_parser")
+int tproxy_fast_redirect_parser(struct __sk_buff *skb)
+{
+	return skb->len;
+}
+
+SEC("sk_skb/stream_verdict")
+int tproxy_fast_redirect_verdict(struct __sk_buff *skb)
+{
+	struct tuples_key key;
+	int verdict;
+
+	if (!get_fast_redirect_key(skb, &key))
+		return SK_PASS;
+
+	verdict = bpf_sk_redirect_hash(skb, &fast_sock, &key, 0);
+	if (verdict == SK_DROP)
+		return SK_PASS;
+	return verdict;
 }
 
 // Remove cookie to pid, pname mapping.

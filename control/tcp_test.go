@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ type mockConn struct {
 	deadline   time.Time
 	mu         sync.Mutex
 	once       sync.Once
-	closed     bool
+	closed     atomic.Bool
 }
 
 func newMockConn(block bool, retErr error) *mockConn {
@@ -38,7 +39,7 @@ func newMockConn(block bool, retErr error) *mockConn {
 }
 
 func (m *mockConn) Read(b []byte) (n int, err error) {
-	if m.closed {
+	if m.closed.Load() {
 		return 0, io.EOF
 	}
 	<-m.readBlock
@@ -62,7 +63,7 @@ func (m *mockConn) Write(b []byte) (n int, err error) {
 }
 
 func (m *mockConn) Close() error {
-	m.closed = true
+	m.closed.Store(true)
 	return nil
 }
 

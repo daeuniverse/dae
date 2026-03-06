@@ -291,7 +291,10 @@ func NewControlPlane(
 	// Bind to WAN
 	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
-			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
+			log.WithError(err).Debugln("cgroup2 is not enabled; pname routing cannot be used")
+		}
+		if err = core.setupTCPRelayOffload(); err != nil {
+			log.WithError(err).Debugln("TCP relay eBPF offload disabled")
 		}
 		for _, ifname := range global.WanInterface {
 			if len(global.LanInterface) > 0 {

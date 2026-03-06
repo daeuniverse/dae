@@ -44,6 +44,26 @@ func (s *ConnSniffer) Read(p []byte) (n int, err error) {
 	return s.Sniffer.Read(p)
 }
 
+// TakeRelayPrefix returns buffered sniff bytes and marks them consumed so the
+// relay path can flush them directly to the destination socket.
+//
+// The returned slice is only safe for immediate synchronous use by the relay
+// goroutine before the next read or write on this ConnSniffer.
+func (s *ConnSniffer) TakeRelayPrefix() []byte {
+	if s.Sniffer == nil {
+		return nil
+	}
+	<-s.Sniffer.dataReady
+
+	s.Sniffer.readMu.Lock()
+	defer s.Sniffer.readMu.Unlock()
+
+	if s.Sniffer.buf == nil || s.Sniffer.buf.Len() == 0 {
+		return nil
+	}
+	return s.Sniffer.buf.Next(s.Sniffer.buf.Len())
+}
+
 func (s *ConnSniffer) Close() (err error) {
 	var errs []string
 	if err = s.Sniffer.Close(); err != nil {

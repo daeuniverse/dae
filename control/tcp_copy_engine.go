@@ -30,6 +30,9 @@ type relayCopyEngine interface {
 type defaultRelayCopyEngine struct{}
 
 func (defaultRelayCopyEngine) Copy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
+	if n, err, ok := tryRelayGatherWrite(ctx, dst, src); ok {
+		return n, err
+	}
 	if shouldUseRelayFastPath(dst, src) {
 		return relayFastCopy(ctx, dst, src)
 	}

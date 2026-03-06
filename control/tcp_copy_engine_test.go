@@ -79,6 +79,15 @@ type wrappedConn struct {
 	netproxy.Conn
 }
 
+type underlyingTCPWrapper struct {
+	netproxy.Conn
+	inner net.Conn
+}
+
+func (c underlyingTCPWrapper) UnderlyingConn() net.Conn {
+	return c.inner
+}
+
 func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
@@ -122,6 +131,48 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 	}
 }
 
+func TestShouldUseRelayFastPath_AcceptsUnderlyingConnProvider(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	got := shouldUseRelayFastPath(
+		underlyingTCPWrapper{Conn: client, inner: client},
+		underlyingTCPWrapper{Conn: server, inner: server},
+	)
+	want := runtime.GOOS == "linux"
+	if got != want {
+		t.Fatalf("unexpected whitelist decision for UnderlyingConn wrapper: got %v want %v", got, want)
+	}
+}
+
 func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
@@ -161,6 +212,48 @@ func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 	want := runtime.GOOS == "linux"
 	if got != want {
 		t.Fatalf("unexpected whitelist decision for ConnSniffer over TCP: got %v want %v", got, want)
+	}
+}
+
+func TestShouldUseRelayFastPath_AcceptsFakeNetConnOverTCP(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	fakeClient := &netproxy.FakeNetConn{Conn: client, LAddr: client.LocalAddr(), RAddr: client.RemoteAddr()}
+	fakeServer := &netproxy.FakeNetConn{Conn: server, LAddr: server.LocalAddr(), RAddr: server.RemoteAddr()}
+
+	got := shouldUseRelayFastPath(fakeClient, fakeServer)
+	want := runtime.GOOS == "linux"
+	if got != want {
+		t.Fatalf("unexpected whitelist decision for FakeNetConn over TCP: got %v want %v", got, want)
 	}
 }
 

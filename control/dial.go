@@ -114,17 +114,17 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	d, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
 	if err != nil {
 		return &proxyDialResult{
-			Outbound:             outbound,
-			IsDialIp:             strictIpVersion,
-			OrigNetworkType:      networkType.StringWithoutDns(),
-			SelectionNetworkType: selectionNetworkType.StringWithoutDns(),
-		}, fmt.Errorf("select dialer from group %v (orig:%v sel:%v src:%v): %w",
-			outbound.Name,
-			networkType.StringWithoutDns(),
-			selectionNetworkType.StringWithoutDns(),
-			p.Src.String(),
-			err,
-		)
+				Outbound:             outbound,
+				IsDialIp:             strictIpVersion,
+				OrigNetworkType:      networkType.StringWithoutDns(),
+				SelectionNetworkType: selectionNetworkType.StringWithoutDns(),
+			}, fmt.Errorf("select dialer from group %v (orig:%v sel:%v src:%v): %w",
+				outbound.Name,
+				networkType.StringWithoutDns(),
+				selectionNetworkType.StringWithoutDns(),
+				p.Src.String(),
+				err,
+			)
 	}
 
 	return &proxyDialResult{

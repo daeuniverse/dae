@@ -29,10 +29,10 @@ var sniffTestQuicPacket3, _ = hex.DecodeString("c00000000110787cb250e5ebaa307053
 // TestSniffQuic_ExtractDomain tests that QUIC SNI extraction works correctly
 func TestSniffQuic_ExtractDomain(t *testing.T) {
 	testCases := []struct {
-		name          string
-		packets       [][]byte
-		expectDomain  bool
-		domainHint    string
+		name         string
+		packets      [][]byte
+		expectDomain bool
+		domainHint   string
 	}{
 		{
 			name:         "Complete QUIC Initial packet",
@@ -91,11 +91,11 @@ func TestSniffQuic_ExtractDomain(t *testing.T) {
 // is correctly selected.
 func TestSniffReroute_CrossFamilyBindAddress(t *testing.T) {
 	testCases := []struct {
-		name         string
-		serverAddr   string // Remote server (from)
-		clientAddr   string // Local client (realTo)
-		expectIPv6   bool
-		description  string
+		name        string
+		serverAddr  string // Remote server (from)
+		clientAddr  string // Local client (realTo)
+		expectIPv6  bool
+		description string
 	}{
 		{
 			name:        "IPv4_server_to_IPv6_client",
@@ -241,7 +241,7 @@ func TestSniffReroute_ConcurrentSniffingWithCrossFamily(t *testing.T) {
 		client string
 		server string
 	}{
-		{"[240e:390::1]:12345", "8.8.8.8:443"},        // IPv6 client, IPv4 server
+		{"[240e:390::1]:12345", "8.8.8.8:443"},       // IPv6 client, IPv4 server
 		{"192.168.1.1:12345", "8.8.8.8:443"},         // IPv4 client, IPv4 server
 		{"[240e:390::1]:12345", "[2001:db8::1]:443"}, // IPv6 client, IPv6 server
 		{"192.168.1.1:12345", "[2001:db8::1]:443"},   // IPv4 client, IPv6 server
@@ -427,9 +427,9 @@ func TestQuicCrossFamilyFallback(t *testing.T) {
 			name:            "IPv6_QUIC_server_to_IPv4_client_fallback",
 			serverFrom:      "[2001:4860::1]:443",
 			clientRealTo:    "192.168.1.1:54321",
-			expectBindIPv6:  true,  // [::]:443 (IPv6 unspecified)
-			expectWriteIPv6: true,  // [::ffff:192.168.1.1]:54321 (IPv4-mapped)
-			expectFallback:  true,  // Fallback: convert IPv4 to IPv4-mapped IPv6
+			expectBindIPv6:  true, // [::]:443 (IPv6 unspecified)
+			expectWriteIPv6: true, // [::ffff:192.168.1.1]:54321 (IPv4-mapped)
+			expectFallback:  true, // Fallback: convert IPv4 to IPv4-mapped IPv6
 			description:     "IPv6 server response to IPv4 client via dual-stack fallback",
 		},
 		{

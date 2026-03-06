@@ -1300,68 +1300,161 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter)
 	}
 
-	// Try to make both A and AAAA lookups.
-	dnsMessage2 := dnsMessage.Copy()
-	dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
-	var qtype2 uint16
-	switch qtype {
+	preferredQtype := c.qtypePrefer
+	var secondaryQtype uint16
+	switch preferredQtype {
 	case dnsmessage.TypeA:
-		qtype2 = dnsmessage.TypeAAAA
+		secondaryQtype = dnsmessage.TypeAAAA
 	case dnsmessage.TypeAAAA:
-		qtype2 = dnsmessage.TypeA
+		secondaryQtype = dnsmessage.TypeA
 	default:
 		return fmt.Errorf("unexpected qtype path")
 	}
-	dnsMessage2.Question[0].Qtype = qtype2
 
-	needWaitSecondary := c.qtypePrefer != qtype
-	var done chan struct{}
-	if needWaitSecondary {
-		done = make(chan struct{}, 1)
-	}
-	go func() {
-		defer func() {
-			// Ensure the goroutine always signals completion, even if it panics.
-			if r := recover(); r != nil {
-				c.log.Errorf("Goroutine panic recovered in HandleWithResponseWriter_: %v\n%v", r, string(debug.Stack()))
-			}
-			if done != nil {
-				done <- struct{}{}
-			}
-		}()
-		_ = c.handleWithResponseWriter_(ctx, dnsMessage2, req, false, nil)
-	}()
-	err = c.handleWithResponseWriter_(ctx, dnsMessage, req, false, nil)
-
-	// If current query type is already preferred, the final response decision does not
-	// depend on the secondary lookup result. Avoid waiting here to reduce serial latency.
-	// The secondary lookup still runs asynchronously to keep cache warming behavior.
-	if needWaitSecondary {
-		<-done
-	}
-	if err != nil {
-		return err
-	}
-
-	// Join results and consider whether to response.
-	resp, _ := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
-	if resp == nil {
-		// resp is not valid.
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			c.log.WithFields(logrus.Fields{
-				"qname": qname,
-			}).Tracef("Reject %v due to resp not valid", qtype)
+	resolveQtype := func(lookupQtype uint16) error {
+		if lookupQtype == qtype {
+			return c.handleWithResponseWriter_(ctx, dnsMessage, req, false, nil)
 		}
-		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
+		msg := dnsMessage.Copy()
+		msg.Id = uint16(fastrand.Intn(math.MaxUint16))
+		msg.Question[0].Qtype = lookupQtype
+		return c.handleWithResponseWriter_(ctx, msg, req, false, nil)
 	}
 
-	// resp is valid.
-	cache2 := c.LookupDnsRespCache(c.cacheKey(qname, qtype2), true)
-	if c.qtypePrefer == qtype || cache2 == nil || !cache2.IncludeAnyIp() {
-		return c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter)
-	} else {
-		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
+	runLookup := func(lookupQtype uint16, cleanupOnReturn *atomic.Bool) <-chan ipVersionLookupResult {
+		ch := make(chan ipVersionLookupResult, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.log.Errorf("Goroutine panic recovered in HandleWithResponseWriter_: %v\n%v", r, string(debug.Stack()))
+					ch <- ipVersionLookupResult{err: fmt.Errorf("lookup panic for qtype=%v", lookupQtype)}
+				}
+			}()
+			err := resolveQtype(lookupQtype)
+			cacheKey := c.cacheKey(qname, lookupQtype)
+			if cleanupOnReturn != nil && cleanupOnReturn.Load() {
+				c.RemoveDnsRespCache(cacheKey)
+			}
+			cache := c.LookupDnsRespCache(cacheKey, true)
+			hasIP := cache != nil && cache.IncludeAnyIp()
+			ch <- ipVersionLookupResult{err: err, hasIP: hasIP}
+		}()
+		return ch
 	}
+
+	writeResponseByQtype := func(respQtype uint16) error {
+		lookupMsg := dnsMessage
+		if respQtype != qtype {
+			lookupMsg = dnsMessage.Copy()
+			lookupMsg.Question[0].Qtype = respQtype
+		}
+		resp, _ := c.LookupDnsRespCache_(lookupMsg, c.cacheKey(qname, respQtype), true)
+		if resp == nil {
+			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
+		}
+		return c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter)
+	}
+
+	secondaryKey := c.cacheKey(qname, secondaryQtype)
+
+	if qtype == preferredQtype {
+		var cleanupSecondary atomic.Bool
+		_ = runLookup(secondaryQtype, &cleanupSecondary)
+
+		preferRes := ipVersionLookupResult{err: resolveQtype(preferredQtype)}
+		resp, _ := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
+		decision := decideIPVersionResponse(qtype, preferredQtype, resp != nil, preferRes, ipVersionLookupResult{})
+		cleanupSecondary.Store(decision.cleanupSecondary)
+		if decision.cleanupSecondary {
+			c.RemoveDnsRespCache(secondaryKey)
+		}
+
+		switch {
+		case decision.err != nil:
+			return decision.err
+		case decision.reject:
+			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
+		default:
+			return writeResponseByQtype(qtype)
+		}
+	}
+
+	preferCh := runLookup(preferredQtype, nil)
+	secondaryCh := runLookup(secondaryQtype, nil)
+	preferRes := <-preferCh
+	secondaryRes := <-secondaryCh
+
+	resp, _ := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
+	decision := decideIPVersionResponse(qtype, preferredQtype, resp != nil, preferRes, secondaryRes)
+	if decision.cleanupSecondary {
+		c.RemoveDnsRespCache(secondaryKey)
+	}
+
+	switch {
+	case decision.err != nil:
+		return decision.err
+	case decision.reject:
+		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
+	default:
+		return writeResponseByQtype(qtype)
+	}
+}
+
+type ipVersionLookupResult struct {
+	err   error
+	hasIP bool
+}
+
+type ipVersionDecision struct {
+	responseQtype    uint16
+	reject           bool
+	cleanupSecondary bool
+	err              error
+}
+
+func decideIPVersionResponse(
+	requestedQtype uint16,
+	preferredQtype uint16,
+	requestedRespAvailable bool,
+	preferRes ipVersionLookupResult,
+	secondaryRes ipVersionLookupResult,
+) ipVersionDecision {
+	decision := ipVersionDecision{
+		responseQtype: requestedQtype,
+	}
+
+	if requestedQtype == preferredQtype {
+		decision.cleanupSecondary = true
+		if preferRes.err != nil {
+			decision.err = preferRes.err
+			return decision
+		}
+		decision.reject = !requestedRespAvailable
+		return decision
+	}
+
+	if preferRes.hasIP {
+		decision.cleanupSecondary = true
+		decision.reject = true
+		return decision
+	}
+
+	if secondaryRes.hasIP {
+		decision.reject = !requestedRespAvailable
+		return decision
+	}
+
+	if preferRes.err != nil {
+		decision.err = preferRes.err
+		return decision
+	}
+	if secondaryRes.err != nil {
+		decision.err = secondaryRes.err
+		return decision
+	}
+
+	decision.reject = true
+	return decision
 }
 
 func (c *DnsController) handleWithResponseWriter_(
@@ -1573,7 +1666,16 @@ func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg
 	return c.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeSuccess, "Reject", req, responseWriter)
 }
 
-func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *udpRequest, data []byte, id uint16, upstream *dns.Upstream, needResp bool, responseWriter dnsmessage.ResponseWriter) (err error) {
+func (c *DnsController) dialSend(
+	ctx context.Context,
+	invokingDepth int,
+	req *udpRequest,
+	data []byte,
+	id uint16,
+	upstream *dns.Upstream,
+	needResp bool,
+	responseWriter dnsmessage.ResponseWriter,
+) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}

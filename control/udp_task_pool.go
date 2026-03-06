@@ -182,7 +182,7 @@ func (q *UdpTaskQueue) convoy() {
 				q.p.queueChPool.Put(q.ch)
 				return
 			}
-			
+
 			// Restore refs to 0 if deletion failed
 			q.refs.Store(0)
 			q.safeTimerReset(timer)

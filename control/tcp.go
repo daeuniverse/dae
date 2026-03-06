@@ -156,6 +156,12 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
 	}
 
+	if offloaded, offloadErr := c.tryOffloadTCPRelay(ctx, lRelayConn, rConn); offloadErr != nil {
+		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
+	} else if offloaded {
+		return nil
+	}
+
 	if err = RelayTCP(lRelayConn, rConn); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
