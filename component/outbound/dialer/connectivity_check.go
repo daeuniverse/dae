@@ -10,6 +10,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -287,20 +288,69 @@ func (d *Dialer) ActivateCheck() {
 // Global connectivity check worker pool
 var (
 	connectivityCheckPool *ants.Pool
-	poolOnce              sync.Once
+	poolMu               sync.Mutex
+	poolActiveCount      int
 )
 
-// getConnectivityCheckPool returns the global connectivity check worker pool
+// calcPoolSize scales the pool sub-linearly with the number of active dialers
+// so cold-start throughput grows with fleet size without goroutine explosion.
+// Formula: clamp(40 + ceil(sqrt(nodes)*10), 40, 256)
+func calcPoolSize(nodes int) int {
+	if nodes <= 0 {
+		return 40
+	}
+	size := 40 + int(math.Ceil(math.Sqrt(float64(nodes))*10))
+	if size > 256 {
+		return 256
+	}
+	return size
+}
+
+// getConnectivityCheckPool returns the global worker pool.
+// The pool pointer is stable (Tune never replaces it), so callers may
+// capture it once before entering a loop.
 func getConnectivityCheckPool() *ants.Pool {
-	poolOnce.Do(func() {
-		// Limit concurrency to 40, sufficient to handle many nodes without excessive resource consumption
-		p, err := ants.NewPool(40, ants.WithPreAlloc(true))
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	return connectivityCheckPool
+}
+
+// registerConnectivityCheckDialer increments the active-dialer count and
+// lazily initialises or grows the worker pool via Tune.
+func registerConnectivityCheckDialer() {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	poolActiveCount++
+	size := calcPoolSize(poolActiveCount)
+	if connectivityCheckPool == nil {
+		// No WithPreAlloc: lazy allocation lets Tune() resize freely.
+		p, err := ants.NewPool(size)
 		if err != nil {
 			panic("failed to initialize ants pool for connectivity check: " + err.Error())
 		}
 		connectivityCheckPool = p
-	})
-	return connectivityCheckPool
+	} else {
+		connectivityCheckPool.Tune(size)
+	}
+}
+
+// releaseConnectivityCheckDialer decrements the active-dialer count and
+// tunes the pool down accordingly.
+func releaseConnectivityCheckDialer() {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if poolActiveCount > 0 {
+		poolActiveCount--
+	}
+	if connectivityCheckPool != nil {
+		connectivityCheckPool.Tune(calcPoolSize(poolActiveCount))
+	}
+}
+
+func getActiveDialerCount() int {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	return poolActiveCount
 }
 
 func (d *Dialer) aliveBackground() {
@@ -454,10 +504,32 @@ func (d *Dialer) aliveBackground() {
 		// But we wait for first check below.
 	}
 
-	time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
+	registerConnectivityCheckDialer()
 
+	// Cold-start stagger: spread initial checks to avoid thundering herd.
+	//
+	// Problem: timer=0 fires all N dialers at once, causing a connection spike
+	// through proxy servers. Overloaded proxies fail health checks → Alive=false
+	// → handleUDP tears down UDP endpoints → ErrNoAliveDialer → packet loss.
+	//
+	// Solution: use poolActiveCount (the dialer's registration index) to give
+	// each dialer a progressively wider jitter window:
+	//   window = clamp(index * 50ms, 1s, cycle/4)
+	// For 10 nodes:  ≤500ms → fires within 1s (minimum floor)
+	// For 100 nodes: ≤5s    → first results within ~5s
+	// For 1000 nodes: capped at cycle/4 (e.g. 7.5s for 30s cycle)
+	//
+	// After the first check completes we re-spread within the full cycle
+	// so steady-state checks are evenly distributed.
+	coldStartWindow := time.Duration(getActiveDialerCount()) * 50 * time.Millisecond
+	if maxWindow := cycle / 4; coldStartWindow > maxWindow {
+		coldStartWindow = maxWindow
+	}
+	if coldStartWindow < time.Second {
+		coldStartWindow = time.Second
+	}
 	d.tickerMu.Lock()
-	d.ticker = time.NewTicker(cycle)
+	d.ticker = time.NewTimer(time.Duration(fastrand.Int63n(int64(coldStartWindow))))
 	d.tickerMu.Unlock()
 	defer func() {
 		d.tickerMu.Lock()
@@ -467,13 +539,16 @@ func (d *Dialer) aliveBackground() {
 		}
 		d.checkActivated = false
 		d.tickerMu.Unlock()
+		releaseConnectivityCheckDialer()
 		d.Log.WithField("dialer", d.Property().Name).
 			WithField("p", unsafe.Pointer(d)).
 			Traceln("cleaned up connectivity check goroutine")
 	}()
 
 	var wg sync.WaitGroup
+	// Pool pointer is stable (Tune never replaces it); capture once.
 	workerPool := getConnectivityCheckPool()
+	isFirstCheck := true
 
 	for {
 		// Check if the dialer is still useful. If not, exit the goroutine.
@@ -493,6 +568,28 @@ func (d *Dialer) aliveBackground() {
 
 		// Wait for all checks to complete before next cycle
 		wg.Wait()
+
+		// After the cold-start check completes, re-spread once within the
+		// cycle window so dialers don't all enter steady-state at the same
+		// phase offset. Subsequent checks strictly honour check_interval.
+		nextDelay := cycle
+		if isFirstCheck {
+			nextDelay = time.Duration(fastrand.Int63n(int64(cycle)))
+			isFirstCheck = false
+		}
+		d.tickerMu.Lock()
+		if d.ticker != nil {
+			// Stop and drain before Reset: if the select was woken by checkCh,
+			// a pending timer tick would cause a spurious immediate re-check.
+			if !d.ticker.Stop() {
+				select {
+				case <-d.ticker.C:
+				default:
+				}
+			}
+			d.ticker.Reset(nextDelay)
+		}
+		d.tickerMu.Unlock()
 	}
 }
 

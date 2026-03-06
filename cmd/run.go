@@ -335,6 +335,10 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
+	// On initial startup (not reload), purge stale TC filters left by any previous process.
+	if bpf == nil {
+		control.PurgeStaleTCFilters(log)
+	}
 	if len(conf.Node) > 0 {
 		for _, node := range conf.Node {
 			tagToNodeList[""] = append(tagToNodeList[""], string(node))

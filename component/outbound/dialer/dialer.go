@@ -46,7 +46,7 @@ type Dialer struct {
 	collections      [6]*collection
 
 	tickerMu sync.Mutex
-	ticker   *time.Ticker
+	ticker   *time.Timer
 	checkCh  chan time.Time
 	ctx      context.Context
 	cancel   context.CancelFunc
