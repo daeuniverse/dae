@@ -65,10 +65,16 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	deadEndpoint.dead.Store(true) // Mark as dead
 	p.pool.Store(key, deadEndpoint)
 
-	// Verify it's in the pool
+	// Verify the dead entry is physically in the pool (use pool.Load, not Get,
+	// since Get() intentionally hides dead endpoints from callers).
+	raw, ok := p.pool.Load(key)
+	require.True(t, ok, "dead endpoint should be physically in pool")
+	require.True(t, raw.(*UdpEndpoint).IsDead())
+
+	// Get() must hide the dead entry from callers.
 	ue, ok := p.Get(key)
-	require.True(t, ok)
-	require.True(t, ue.IsDead())
+	require.False(t, ok, "Get() must not return dead endpoints")
+	require.Nil(t, ue)
 
 	// Now try to get or create - should remove the dead one
 	// We use a Handler that returns error to force failure, but the important

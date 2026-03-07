@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	// UdpTaskQueueLength is the buffer size for each UDP task queue.
-	UdpTaskQueueLength = 4096
+	// UdpTaskQueueLength is the buffer size for each per-flow UDP task queue.
+	// QUIC sniff needs at most 3-5 ordered Initial packets; 128 is deliberately
+	// chosen as a safe ceiling that is still 25× larger than the typical sniff
+	// window but reduces per-flow channel allocation by 32× vs the old 4096.
+	UdpTaskQueueLength = 128
 )
 
 var (

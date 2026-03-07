@@ -346,7 +346,13 @@ afterSniffing:
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 
 	// Get udp endpoint.
+	// foundUeKey captures the endpoint key that the initial Get succeeded with.
+	// When the target key at dial time equals foundUeKey, we can reuse ue directly
+	// and skip the redundant GetOrCreate sync.Map lookup (common path: non-QUIC
+	// existing endpoint, zero domain upgrade).
+	foundUeKey := ueKey
 	retry := 0
+	var isNew bool
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
@@ -372,61 +378,69 @@ getNew:
 	// QUIC (domain != "") or likely QUIC Initial packets use Symmetric NAT.
 	ueKey = flowDecision.EndpointKeyForDial(domain)
 
-	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
-		// Handler handles response packets and send it to the client.
-		Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
-			// Do not return conn-unrelated err in this func.
-			return sendPkt(c.log, data, from, realSrc, &ue.respConn)
-		},
-		NatTimeout: natTimeout,
-		Log:        c.log,
-		GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
-			dialParam := &proxyDialParam{
-				Outbound:    consts.OutboundIndex(routingResult.Outbound),
-				Domain:      domain,
-				Mac:         routingResult.Mac,
-				Dscp:        routingResult.Dscp,
-				ProcessName: routingResult.Pname,
-				Src:         realSrc,
-				Dest:        realDst,
-				Mark:        routingResult.Mark,
-				Network:     "udp",
-			}
+	// Fast path: reuse the endpoint already loaded by the initial Get when the
+	// target key is unchanged (non-QUIC existing flow, no domain upgrade).
+	// On any retry the endpoint was removed, so we always call GetOrCreate.
+	if retry == 0 && ueExists && ueKey == foundUeKey {
+		ue.RefreshTtl()
+		isNew = false
+	} else {
+		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
+			// Handler handles response packets and send it to the client.
+			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
+				// Do not return conn-unrelated err in this func.
+				return sendPkt(c.log, data, from, realSrc, &ue.respConn)
+			},
+			NatTimeout: natTimeout,
+			Log:        c.log,
+			GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
+				dialParam := &proxyDialParam{
+					Outbound:    consts.OutboundIndex(routingResult.Outbound),
+					Domain:      domain,
+					Mac:         routingResult.Mac,
+					Dscp:        routingResult.Dscp,
+					ProcessName: routingResult.Pname,
+					Src:         realSrc,
+					Dest:        realDst,
+					Mark:        routingResult.Mark,
+					Network:     "udp",
+				}
 
-			res, err := c.chooseProxyDialer(ctx, dialParam)
-			if err != nil {
-				if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
-					c.logNoAliveDialerLimited(
-						res.Outbound.Name,
-						res.Outbound.GetSelectionPolicy(),
-						res.OrigNetworkType,
-						res.SelectionNetworkType,
-						realSrc,
-						realDst,
-						domain,
-						res.IsDialIp,
-					)
+				res, err := c.chooseProxyDialer(ctx, dialParam)
+				if err != nil {
+					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
+						c.logNoAliveDialerLimited(
+							res.Outbound.Name,
+							res.Outbound.GetSelectionPolicy(),
+							res.OrigNetworkType,
+							res.SelectionNetworkType,
+							realSrc,
+							realDst,
+							domain,
+							res.IsDialIp,
+						)
+						return nil, err
+					}
 					return nil, err
 				}
-				return nil, err
-			}
 
-			return &DialOption{
-				// Keep fixed-IP target even if chooseProxyDialer selected a domain target.
-				Target:        dialTarget,
-				Dialer:        res.Dialer,
-				Outbound:      res.Outbound,
-				Network:       res.Network,
-				SniffedDomain: res.SniffedDomain,
-			}, nil
-		},
-	})
-	if err != nil {
-		if stderrors.Is(err, ob.ErrNoAliveDialer) {
-			// Already emitted a rate-limited diagnostic log above.
-			return nil
+				return &DialOption{
+					// Keep fixed-IP target even if chooseProxyDialer selected a domain target.
+					Target:        dialTarget,
+					Dialer:        res.Dialer,
+					Outbound:      res.Outbound,
+					Network:       res.Network,
+					SniffedDomain: res.SniffedDomain,
+				}, nil
+			},
+		})
+		if err != nil {
+			if stderrors.Is(err, ob.ErrNoAliveDialer) {
+				// Already emitted a rate-limited diagnostic log above.
+				return nil
+			}
+			return fmt.Errorf("failed to GetOrCreate: %w", err)
 		}
-		return fmt.Errorf("failed to GetOrCreate: %w", err)
 	}
 
 	// If the udp endpoint has been not alive, remove it from pool and get a new one.

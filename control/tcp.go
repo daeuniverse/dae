@@ -73,10 +73,13 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	}
 
 	var (
-		domain     string
-		lRelayConn netproxy.Conn = lConn
+		domain             string
+		lRelayConn         netproxy.Conn = lConn
+		tcpSniffAttempted  bool
+		clientPayloadReady = true
 	)
 	if c.shouldTryTcpSniff(dst, routingResult) {
+		tcpSniffAttempted = true
 		cacheKey := newTcpSniffNegKey(dst, routingResult)
 		now := time.Now()
 		if c.shouldSkipTcpSniffByNegativeCache(cacheKey, now) {
@@ -91,6 +94,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			if probeErr != nil {
 				return probeErr
 			}
+			clientPayloadReady = ready
 			if !ready {
 				// No early payload; treat as non-sniffable to avoid stalling server-first/established flows.
 				c.noteTcpSniffFailure(cacheKey, now)
@@ -164,7 +168,12 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	}
 	defer rConn.Close()
 
-	offloaded, offloadReason, offloadErr := c.tryOffloadTCPRelay(ctx, lRelayConn, rConn)
+	offloaded := false
+	offloadReason := tcpRelayPrefetchOffloadSkipReason(tcpSniffAttempted, clientPayloadReady)
+	var offloadErr error
+	if offloadReason == "" {
+		offloaded, offloadReason, offloadErr = c.tryOffloadTCPRelay(ctx, lRelayConn, rConn)
+	}
 	if offloadErr != nil {
 		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
 	}

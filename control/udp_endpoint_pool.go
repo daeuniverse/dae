@@ -8,6 +8,8 @@ package control
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -24,7 +26,10 @@ import (
 
 var UdpRoutingResultCacheTtl = 300 * time.Millisecond
 
-const udpEndpointCreateShardCount = 64
+// udpEndpointCreateShardCount is the number of sharded mutexes that guard
+// concurrent endpoint creation. 16 shards give near-zero contention for
+// typical concurrent-create rates while using 4× less mutex memory than 64.
+const udpEndpointCreateShardCount = 16
 const udpEndpointJanitorInterval = 250 * time.Millisecond
 
 type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
@@ -34,6 +39,7 @@ type UdpEndpoint struct {
 	expiresAtNano atomic.Int64
 	handler       UdpHandler
 	NatTimeout    time.Duration
+	writeMu       sync.Mutex
 
 	Dialer   *dialer.Dialer
 	Outbound *outbound.DialerGroup
@@ -57,6 +63,13 @@ type UdpEndpoint struct {
 	log *logrus.Logger
 
 	dead atomic.Bool
+
+	// poolRef and poolKey allow the read loop to self-remove from the pool the
+	// instant it detects death. This minimises the window during which a stale
+	// dead entry lurks in the pool and forces callers through the slower
+	// dead-check recovery branch in GetOrCreate.
+	poolRef *UdpEndpointPool
+	poolKey UdpEndpointKey
 }
 
 func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
@@ -79,6 +92,7 @@ func (ue *UdpEndpoint) start() {
 		if err != nil {
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
+			ue.selfRemoveFromPool()
 			ue.logEndpointExit(err, "read loop")
 			break
 		}
@@ -86,18 +100,55 @@ func (ue *UdpEndpoint) start() {
 		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
+			ue.selfRemoveFromPool()
 			ue.logEndpointExit(err, "handler")
 			break
 		}
 	}
 }
 
+// selfRemoveFromPool performs a best-effort CAS delete of this endpoint from
+// its owning pool. It is called by the read loop on exit so that the dead entry
+// is evicted immediately — before any writer goroutine has a chance to observe
+// it and be forced through the slower dead-check recovery path.
+func (ue *UdpEndpoint) selfRemoveFromPool() {
+	if ue.poolRef == nil {
+		return
+	}
+	ue.poolRef.pool.CompareAndDelete(ue.poolKey, ue)
+}
+
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
+	// Fast pre-lock dead check: avoid acquiring mutex for an already-dead endpoint.
+	if ue.dead.Load() {
+		return 0, net.ErrClosed
+	}
 	// Refresh TTL on write to keep endpoint alive for active connections
 	// This is especially important for QUIC connections where the server
 	// might respond slowly during handshake
 	ue.RefreshTtl()
-	return ue.conn.WriteTo(b, addr)
+	ue.writeMu.Lock()
+	defer ue.writeMu.Unlock()
+
+	// Post-lock dead check: endpoint may have died while this goroutine was
+	// waiting for the mutex. Without this, stale goroutines write to a dead
+	// conn whose physical socket is still open — data disappears silently.
+	if ue.dead.Load() {
+		return 0, net.ErrClosed
+	}
+
+	n, err := ue.conn.WriteTo(b, addr)
+	if err != nil {
+		// Mark dead immediately so goroutines queued behind us fail fast
+		// instead of each discovering the error in turn.
+		ue.dead.Store(true)
+		return n, err
+	}
+	if n != len(b) {
+		ue.dead.Store(true)
+		return n, fmt.Errorf("%w: udp endpoint wrote %d/%d bytes to %s", io.ErrShortWrite, n, len(b), addr)
+	}
+	return n, nil
 }
 
 func (ue *UdpEndpoint) Close() error {
@@ -213,7 +264,11 @@ func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok 
 	if !ok {
 		return nil, ok
 	}
-	return _ue.(*UdpEndpoint), ok
+	ue := _ue.(*UdpEndpoint)
+	if ue.IsDead() {
+		return nil, false
+	}
+	return ue, ok
 }
 
 // createEndpointLocked dials and registers a new UdpEndpoint under the caller's shard lock.
@@ -255,6 +310,8 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		DialTarget:    dialOption.Target,
 		lAddr:         key.Src,
 		log:           createOption.Log,
+		poolRef:       p,
+		poolKey:       key,
 	}
 
 	// Pre-cache the Anyfrom socket for responses. Caching is only safe for

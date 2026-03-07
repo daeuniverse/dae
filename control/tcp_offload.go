@@ -44,6 +44,13 @@ func tcpRelayOffloadReason(err error) string {
 	return msg
 }
 
+func tcpRelayPrefetchOffloadSkipReason(sniffAttempted bool, clientPayloadReady bool) string {
+	if sniffAttempted && !clientPayloadReady {
+		return "server-first/no-early-client-payload flow"
+	}
+	return ""
+}
+
 func canAnnotateTCPRelayOffload(conn netproxy.Conn) bool {
 	if conn == nil {
 		return false
