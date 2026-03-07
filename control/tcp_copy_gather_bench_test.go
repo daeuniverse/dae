@@ -16,6 +16,78 @@ import (
 	bufferredconn "github.com/daeuniverse/outbound/pkg/bufferred_conn"
 )
 
+type gatherWriteBenchMultiSegmentConn struct {
+	net.Conn
+	segments [][]byte
+}
+
+type gatherWriteBenchWrappedDstConn struct {
+	netproxy.Conn
+}
+
+type gatherWritePrefixBenchSource struct {
+	benchNoopConn
+	prefix []byte
+}
+
+func (s *gatherWritePrefixBenchSource) TakeRelayPrefix() []byte {
+	return s.prefix
+}
+
+type gatherWriteSegmentBenchSource struct {
+	benchNoopConn
+	segments [][]byte
+}
+
+func (s *gatherWriteSegmentBenchSource) TakeRelaySegments() [][]byte {
+	return s.segments
+}
+
+type benchNoopConn struct{}
+
+func (benchNoopConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (benchNoopConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (benchNoopConn) Close() error                     { return nil }
+func (benchNoopConn) SetDeadline(time.Time) error      { return nil }
+func (benchNoopConn) SetReadDeadline(time.Time) error  { return nil }
+func (benchNoopConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *gatherWriteBenchMultiSegmentConn) Read(p []byte) (int, error) {
+	for len(c.segments) > 0 {
+		if len(c.segments[0]) == 0 {
+			c.segments = c.segments[1:]
+			continue
+		}
+		n := copy(p, c.segments[0])
+		c.segments[0] = c.segments[0][n:]
+		if len(c.segments[0]) == 0 {
+			c.segments = c.segments[1:]
+		}
+		return n, nil
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *gatherWriteBenchMultiSegmentConn) UnderlyingConn() net.Conn {
+	if c == nil {
+		return nil
+	}
+	return c.Conn
+}
+
+func (c *gatherWriteBenchMultiSegmentConn) TakeRelaySegments() [][]byte {
+	if c == nil || len(c.segments) == 0 {
+		return nil
+	}
+	segs := c.segments
+	c.segments = nil
+	return segs
+}
+
+func (c *gatherWriteBenchMultiSegmentConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+	return io.CopyBuffer(dst, c.Conn, buf)
+}
+
 func BenchmarkRelayGatherWrite_PrefixedConn(b *testing.B) {
 	benchmarkRelayGatherWrite(b, gatherWriteBenchOptions{
 		name:   "prefixed",
@@ -25,6 +97,55 @@ func BenchmarkRelayGatherWrite_PrefixedConn(b *testing.B) {
 				Conn:   conn,
 				prefix: append([]byte(nil), prefix...),
 			}
+		},
+	})
+}
+
+func BenchmarkRelayGatherWrite_MultiSegmentSource(b *testing.B) {
+	benchmarkRelayGatherWrite(b, gatherWriteBenchOptions{
+		name:   "multi_segment_src",
+		prefix: []byte("GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: dae\r\n\r\n"),
+		makeSrc: func(conn *net.TCPConn, prefix []byte) netproxy.Conn {
+			splits := []int{4, 14, 33, len(prefix)}
+			segments := make([][]byte, 0, len(splits))
+			start := 0
+			for _, end := range splits {
+				if end > len(prefix) {
+					end = len(prefix)
+				}
+				if end <= start {
+					continue
+				}
+				segments = append(segments, append([]byte(nil), prefix[start:end]...))
+				start = end
+			}
+			return &gatherWriteBenchMultiSegmentConn{Conn: conn, segments: segments}
+		},
+	})
+}
+
+func BenchmarkRelayGatherWrite_MultiSegmentSourceWrappedDestination(b *testing.B) {
+	benchmarkRelayGatherWrite(b, gatherWriteBenchOptions{
+		name:   "multi_segment_wrapped_dst",
+		prefix: []byte("GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: dae\r\n\r\n"),
+		makeSrc: func(conn *net.TCPConn, prefix []byte) netproxy.Conn {
+			splits := []int{4, 14, 33, len(prefix)}
+			segments := make([][]byte, 0, len(splits))
+			start := 0
+			for _, end := range splits {
+				if end > len(prefix) {
+					end = len(prefix)
+				}
+				if end <= start {
+					continue
+				}
+				segments = append(segments, append([]byte(nil), prefix[start:end]...))
+				start = end
+			}
+			return &gatherWriteBenchMultiSegmentConn{Conn: conn, segments: segments}
+		},
+		wrapDst: func(conn *net.TCPConn) netproxy.Conn {
+			return &gatherWriteBenchWrappedDstConn{Conn: conn}
 		},
 	})
 }
@@ -90,6 +211,38 @@ func BenchmarkRelayGatherWrite_BufferedConnSource(b *testing.B) {
 			defer func() { relayGatherWriteEnabled = true }()
 			runRelayBufferedConnBenchmark(b, prefix, payloadSize.size)
 		})
+	}
+}
+
+func BenchmarkRelayGatherSegmentAssembly_PrefixSource(b *testing.B) {
+	src := &gatherWritePrefixBenchSource{prefix: []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")}
+	body := make([]byte, 1400)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var sourceScratch [relayGatherInlineSegmentCap][]byte
+		segments := relayTakeSourceSegments(src, &sourceScratch)
+		var writeScratch [relayGatherInlineSegmentCap + 1][]byte
+		_ = relayBuildWriteSegments(segments, body, &writeScratch)
+	}
+}
+
+func BenchmarkRelayGatherSegmentAssembly_MultiSegmentSource(b *testing.B) {
+	src := &gatherWriteSegmentBenchSource{segments: [][]byte{
+		[]byte("GET "),
+		[]byte("/ HTTP/1.1\r\nHost: "),
+		[]byte("example.com\r\n\r\n"),
+	}}
+	body := make([]byte, 1400)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var sourceScratch [relayGatherInlineSegmentCap][]byte
+		segments := relayTakeSourceSegments(src, &sourceScratch)
+		var writeScratch [relayGatherInlineSegmentCap + 1][]byte
+		_ = relayBuildWriteSegments(segments, body, &writeScratch)
 	}
 }
 

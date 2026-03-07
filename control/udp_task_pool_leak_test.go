@@ -38,14 +38,14 @@ func TestUdpTaskPoolNoLeak(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range numKeys {
-		key := netip.AddrPortFrom(
+		key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 			netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}),
 			12345,
-		)
+		))
 
 		for range tasksPerKey {
 			wg.Add(1)
-			go func(k netip.AddrPort) {
+			go func(k UdpFlowKey) {
 				defer wg.Done()
 				pool.EmitTask(k, func() {
 					// Simulate some work
@@ -103,7 +103,7 @@ func TestUdpTaskPoolDrainingFlag(t *testing.T) {
 	defer func() { UdpTaskPoolAgingTime = oldTimeout }()
 
 	pool := NewUdpTaskPool()
-	key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 80)
+	key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 80))
 
 	// Emit a task to create a queue
 	var executed atomic.Bool
@@ -186,10 +186,10 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 		go func(goroutineID int) {
 			defer wg.Done()
 			for j := range tasksPerGoroutine {
-				key := netip.AddrPortFrom(
+				key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 					netip.AddrFrom4([4]byte{1, 1, 1, byte(j % 10)}), // 10 hot keys
 					80,
-				)
+				))
 				pool.EmitTask(key, func() {
 					time.Sleep(time.Microsecond)
 				})
@@ -203,7 +203,7 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 		go func(goroutineID int) {
 			defer wg.Done()
 			for j := range tasksPerGoroutine / 10 { // Fewer tasks for cold keys
-				key := netip.AddrPortFrom(
+				key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 					netip.AddrFrom4([4]byte{
 						byte(goroutineID),
 						byte(j >> 16),
@@ -211,7 +211,7 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 						byte(j),
 					}),
 					uint16(goroutineID),
-				)
+				))
 				pool.EmitTask(key, func() {
 					time.Sleep(time.Microsecond)
 				})
@@ -243,7 +243,7 @@ func TestUdpTaskPoolConcurrentAccess(t *testing.T) {
 // BenchmarkUdpTaskPool benchmarks the pool performance
 func BenchmarkUdpTaskPool(b *testing.B) {
 	pool := NewUdpTaskPool()
-	key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 80)
+	key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 80))
 
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -277,10 +277,10 @@ func TestUdpTaskPoolAgingTime(t *testing.T) {
 	start := time.Now()
 	var wg sync.WaitGroup
 	for i := range numKeys {
-		key := netip.AddrPortFrom(
+		key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 			netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}),
 			443,
-		)
+		))
 		for range tasksPerKey {
 			wg.Add(1)
 			pool.EmitTask(key, func() {
@@ -342,7 +342,7 @@ func BenchmarkUdpTaskPoolAgingTime(b *testing.B) {
 			defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
 
 			pool := NewUdpTaskPool()
-			key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 443)
+			key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 443))
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -360,7 +360,7 @@ func TestUdpTaskPool_ContinuousTraffic(t *testing.T) {
 	defer func() { UdpTaskPoolAgingTime = originalAgingTime }()
 
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("192.168.1.1:443")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("192.168.1.1:443"))
 
 	// Continuous traffic: 1 packet every 80ms for 1 second (interval < agingTime)
 	// Queue should persist, not age out
@@ -407,10 +407,10 @@ func TestUdpTaskPool_ConcurrentContinuousTraffic(t *testing.T) {
 		go func(fid int) {
 			defer wg.Done()
 
-			key := netip.AddrPortFrom(
+			key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 				netip.AddrFrom4([4]byte{192, 168, 1, byte(fid + 1)}),
 				443,
-			)
+			))
 
 			// Send packets at intervals
 			for pkt := 0; pkt < packetsPerFlow; pkt++ {
@@ -460,14 +460,14 @@ func TestUdpTaskPool_MixedBurstAndContinuous(t *testing.T) {
 	pool := NewUdpTaskPool()
 
 	// Phase 1: Burst traffic (creates queues)
-	burstKey := netip.MustParseAddrPort("10.0.0.1:443")
+	burstKey := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("10.0.0.1:443"))
 	for i := 0; i < 100; i++ {
 		pool.EmitTask(burstKey, func() {})
 	}
 	time.Sleep(50 * time.Millisecond) // Let burst process
 
 	// Phase 2: Continuous traffic (keeps queue alive)
-	continuousKey := netip.MustParseAddrPort("10.0.0.2:443")
+	continuousKey := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("10.0.0.2:443"))
 	for i := 0; i < 10; i++ {
 		pool.EmitTask(continuousKey, func() {})
 		time.Sleep(80 * time.Millisecond) // < agingTime
@@ -477,7 +477,7 @@ func TestUdpTaskPool_MixedBurstAndContinuous(t *testing.T) {
 	time.Sleep(UdpTaskPoolAgingTime + 50*time.Millisecond)
 
 	pool.queues.Range(func(key, _ any) bool {
-		k := key.(netip.AddrPort)
+		k := key.(UdpFlowKey)
 		// Only continuousKey should remain (or none if timing is tight)
 		if k != continuousKey {
 			t.Logf("Unexpected queue remaining: %v", k)

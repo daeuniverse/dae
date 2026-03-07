@@ -6,7 +6,6 @@
 package control
 
 import (
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +25,7 @@ var (
 
 type UdpTask = func()
 
-// UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
+// UdpTaskQueue makes sure packets with the same UDP flow key are sent in order.
 // Field order optimized for memory alignment (Go best practice).
 type UdpTaskQueue struct {
 	// 8-byte aligned fields first
@@ -46,8 +45,7 @@ type UdpTaskQueue struct {
 	overflowLen  atomic.Int32 // track overflow length for lock-free idle check
 	overflowMode bool
 
-	// 24-byte field (netip.AddrPort is struct{addr [16]byte, port uint16, zone string})
-	key netip.AddrPort
+	key UdpFlowKey
 }
 
 func (q *UdpTaskQueue) notifyWake() {
@@ -192,7 +190,7 @@ func (q *UdpTaskQueue) convoy() {
 
 type UdpTaskPool struct {
 	queueChPool sync.Pool
-	queues      sync.Map // map[netip.AddrPort]*UdpTaskQueue
+	queues      sync.Map // map[UdpFlowKey]*UdpTaskQueue
 }
 
 func NewUdpTaskPool() *UdpTaskPool {
@@ -203,14 +201,14 @@ func NewUdpTaskPool() *UdpTaskPool {
 	}
 }
 
-// EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
-func (p *UdpTaskPool) EmitTask(key netip.AddrPort, task UdpTask) {
+// EmitTask makes sure packets with the same UDP flow key are sent in order.
+func (p *UdpTaskPool) EmitTask(key UdpFlowKey, task UdpTask) {
 	q := p.acquireQueue(key)
 	q.enqueue(task)
 	q.refs.Add(-1)
 }
 
-func (p *UdpTaskPool) acquireQueue(key netip.AddrPort) *UdpTaskQueue {
+func (p *UdpTaskPool) acquireQueue(key UdpFlowKey) *UdpTaskQueue {
 	// Fast path: check if queue exists without any lock contention
 	if v, ok := p.queues.Load(key); ok {
 		q := v.(*UdpTaskQueue)
@@ -269,7 +267,7 @@ createNew:
 // tryDeleteQueue attempts to delete the queue if it's still the same instance.
 // Returns true if deletion was successful, false otherwise.
 // Uses CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice).
-func (p *UdpTaskPool) tryDeleteQueue(key netip.AddrPort, expected *UdpTaskQueue) bool {
+func (p *UdpTaskPool) tryDeleteQueue(key UdpFlowKey, expected *UdpTaskQueue) bool {
 	return p.queues.CompareAndDelete(key, expected)
 }
 

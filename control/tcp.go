@@ -23,6 +23,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+func buildTCPLinkLogFields(res *proxyDialResult, dialParam *proxyDialParam, dst netip.AddrPort, domain string, annotateOffload bool, offloaded bool, offloadReason string) logrus.Fields {
+	fields := logrus.Fields{
+		"network":  res.OrigNetworkType,
+		"outbound": res.Outbound.Name,
+		"policy":   res.Outbound.GetSelectionPolicy(),
+		"dialer":   res.Dialer.Property().Name,
+		"sniffed":  domain,
+		"ip":       RefineAddrPortToShow(dst),
+		"dscp":     dialParam.Dscp,
+		"pname":    ProcessName2String(dialParam.ProcessName[:]),
+		"mac":      Mac2String(dialParam.Mac[:]),
+	}
+	if !annotateOffload {
+		return fields
+	}
+	fields["ebpf_offload"] = offloaded
+	if !offloaded && offloadReason != "" {
+		fields["ebpf_offload_reason"] = offloadReason
+	}
+	return fields
+}
+
 func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {
 	defer lConn.Close()
 
@@ -142,23 +164,17 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	}
 	defer rConn.Close()
 
-	if c.log.IsLevelEnabled(logrus.InfoLevel) {
-		c.log.WithFields(logrus.Fields{
-			"network":  res.OrigNetworkType,
-			"outbound": res.Outbound.Name,
-			"policy":   res.Outbound.GetSelectionPolicy(),
-			"dialer":   res.Dialer.Property().Name,
-			"sniffed":  domain,
-			"ip":       RefineAddrPortToShow(dst),
-			"dscp":     dialParam.Dscp,
-			"pname":    ProcessName2String(dialParam.ProcessName[:]),
-			"mac":      Mac2String(dialParam.Mac[:]),
-		}).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
+	offloaded, offloadReason, offloadErr := c.tryOffloadTCPRelay(ctx, lRelayConn, rConn)
+	if offloadErr != nil {
+		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
+	}
+	annotateOffload := canAnnotateTCPRelayOffload(rConn)
+
+	if c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(buildTCPLinkLogFields(res, dialParam, dst, domain, annotateOffload, offloaded, offloadReason)).Debugf("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
 	}
 
-	if offloaded, offloadErr := c.tryOffloadTCPRelay(ctx, lRelayConn, rConn); offloadErr != nil {
-		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
-	} else if offloaded {
+	if offloaded {
 		return nil
 	}
 

@@ -49,6 +49,18 @@ type prefixedConn struct {
 	off    int
 }
 
+func (c *prefixedConn) TakeRelaySegments() [][]byte {
+	prefix := c.TakeRelayPrefix()
+	if len(prefix) == 0 {
+		return nil
+	}
+	return [][]byte{prefix}
+}
+
+func (c *prefixedConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+	return io.CopyBuffer(dst, c.Conn, buf)
+}
+
 // TakeRelayPrefix returns the remaining prefetched bytes and marks them as
 // consumed so relay can flush them without copying through the generic buffer.
 func (c *prefixedConn) TakeRelayPrefix() []byte {

@@ -26,10 +26,10 @@ func resetPacketSnifferPoolForTest() {
 
 func TestPacketSniffer_Normal(t *testing.T) {
 	resetPacketSnifferPoolForTest()
-	key := PacketSnifferKey{
-		LAddr: netip.MustParseAddrPort("1.1.1.1:1111"),
-		RAddr: netip.MustParseAddrPort("2.2.2.2:2222"),
-	}
+	key := NewUdpFlowKey(
+		netip.MustParseAddrPort("1.1.1.1:1111"),
+		netip.MustParseAddrPort("2.2.2.2:2222"),
+	).PacketSnifferKey()
 	for _, _data := range testPacketSnifferData {
 		data, _ := hex.DecodeString(_data)
 		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
@@ -53,10 +53,10 @@ func TestPacketSniffer_Mismatched(t *testing.T) {
 	dst := netip.MustParseAddrPort("2.2.2.2:2222")
 	for _, _data := range testPacketSnifferData {
 		data, _ := hex.DecodeString(_data)
-		key := PacketSnifferKey{
-			LAddr: netip.MustParseAddrPort("1.1.1.1:1111"),
-			RAddr: dst,
-		}
+		key := NewUdpFlowKey(
+			netip.MustParseAddrPort("1.1.1.1:1111"),
+			dst,
+		).PacketSnifferKey()
 		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		sniffer.AppendData(data)
 		domain, err := sniffer.SniffUdp()
@@ -76,10 +76,10 @@ func TestPacketSniffer_Mismatched(t *testing.T) {
 
 func TestPacketSnifferPool_TtlExpire(t *testing.T) {
 	p := NewPacketSnifferPool()
-	key := PacketSnifferKey{
-		LAddr: netip.MustParseAddrPort("10.0.0.1:12345"),
-		RAddr: netip.MustParseAddrPort("8.8.8.8:53"),
-	}
+	key := NewUdpFlowKey(
+		netip.MustParseAddrPort("10.0.0.1:12345"),
+		netip.MustParseAddrPort("8.8.8.8:53"),
+	).PacketSnifferKey()
 
 	ps, isNew := p.GetOrCreate(key, &PacketSnifferOptions{Ttl: 80 * time.Millisecond})
 	require.True(t, isNew)

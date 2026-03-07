@@ -6,11 +6,13 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/pkg/bufferred_conn"
 )
 
 func TestCanOffloadToEBPF_DirectTCPOnly(t *testing.T) {
@@ -221,6 +223,61 @@ func TestCanOffloadToEBPF_WrappedConnWithUnderlyingConn(t *testing.T) {
 	}
 }
 
+func TestRelayConnChain_UsesOutboundDependencyWrappers(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("socket offload eligibility is only meaningful on linux")
+	}
+
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	wrapped := bufferred_conn.NewBufferedConn(client)
+	chain := relayConnChain(wrapped)
+	if !strings.Contains(chain, "*bufferred_conn.BufferedConn") || !strings.Contains(chain, "*net.TCPConn") {
+		t.Fatalf("unexpected wrapper chain: %s", chain)
+	}
+
+	fake := &netproxy.FakeNetConn{Conn: wrapped, LAddr: client.LocalAddr(), RAddr: client.RemoteAddr()}
+	chain = relayConnChain(fake)
+	if !strings.Contains(chain, "*netproxy.FakeNetConn") || !strings.Contains(chain, "*bufferred_conn.BufferedConn") || !strings.Contains(chain, "*net.TCPConn") {
+		t.Fatalf("unexpected fake wrapper chain: %s", chain)
+	}
+
+	if _, ok := unwrapRelayTCPConn(fake); !ok {
+		t.Fatal("FakeNetConn over BufferedConn should unwrap to TCP for offload")
+	}
+
+	_ = server
+}
+
 func TestMakeTuplesKey_UsesRemoteToLocalSocketOrientation(t *testing.T) {
 	src := netip.MustParseAddrPort("198.51.100.10:54321")
 	dst := netip.MustParseAddrPort("203.0.113.80:443")
@@ -337,5 +394,51 @@ func TestNewTCPRelayOffloadSession_PrefixedConnRejected(t *testing.T) {
 	}
 	if !errors.Is(err, errTCPRelayOffloadUnavailable) {
 		t.Fatalf("expected errTCPRelayOffloadUnavailable, got: %v", err)
+	}
+}
+
+func TestNewTCPRelayOffloadSession_RightWrapperChainReported(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("eBPF offload is only available on linux")
+	}
+
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	right := wrappedConn{Conn: server}
+	_, err = newTCPRelayOffloadSession(nil, netproxy.Conn(client), netproxy.Conn(right))
+	if err == nil {
+		t.Fatal("newTCPRelayOffloadSession should reject non-unwrappable right wrapper")
+	}
+	if !strings.Contains(err.Error(), "chain:") || !strings.Contains(err.Error(), "control.wrappedConn") {
+		t.Fatalf("expected wrapper chain in error, got: %v", err)
 	}
 }

@@ -18,31 +18,79 @@ var (
 	relayGatherWriteTestHookMu sync.Mutex
 	relayGatherWriteTestHook   func(prefixLen, bodyLen int)
 )
+
+const relayGatherInlineSegmentCap = 8
+
 var relayGatherWriteEnabled = true
+
+func relayTakeSourceSegments(src netproxy.Conn, scratch *[relayGatherInlineSegmentCap][]byte) [][]byte {
+	if segmentSource, ok := src.(relaySegmentSource); ok {
+		segments := relayNonEmptySegments(segmentSource.TakeRelaySegments())
+		if len(segments) > 0 {
+			return segments
+		}
+	}
+	if prefixSource, ok := src.(relayPrefixSource); ok {
+		prefix := prefixSource.TakeRelayPrefix()
+		if len(prefix) > 0 {
+			scratch[0] = prefix
+			return scratch[:1]
+		}
+	}
+	return nil
+}
+
+func relayBuildWriteSegments(prefixSegs [][]byte, body []byte, scratch *[relayGatherInlineSegmentCap + 1][]byte) [][]byte {
+	if len(prefixSegs) == 0 {
+		if len(body) == 0 {
+			return nil
+		}
+		scratch[0] = body
+		return scratch[:1]
+	}
+
+	extra := 0
+	if len(body) > 0 {
+		extra = 1
+	}
+	total := len(prefixSegs) + extra
+
+	if total <= len(scratch) {
+		copy(scratch[:], prefixSegs)
+		if extra == 1 {
+			scratch[len(prefixSegs)] = body
+		}
+		return scratch[:total]
+	}
+
+	if extra == 0 {
+		return prefixSegs
+	}
+
+	writeSegs := make([][]byte, 0, total)
+	writeSegs = append(writeSegs, prefixSegs...)
+	writeSegs = append(writeSegs, body)
+	return writeSegs
+}
+
+func relaySegmentsLen(segs [][]byte) int {
+	total := 0
+	for _, seg := range segs {
+		total += len(seg)
+	}
+	return total
+}
 
 func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (written int64, err error, ok bool) {
 	if !relayGatherWriteEnabled {
 		return 0, nil, false
 	}
-	prefixSource, ok := src.(relayPrefixSource)
-	if !ok {
+	var sourceSegScratch [relayGatherInlineSegmentCap][]byte
+	segments := relayTakeSourceSegments(src, &sourceSegScratch)
+	if len(segments) == 0 {
 		return 0, nil, false
 	}
-
-	dstTCP, ok := relayGatherWriteTCPConn(dst)
-	if !ok {
-		return 0, nil, false
-	}
-
-	prefix := prefixSource.TakeRelayPrefix()
-	if len(prefix) == 0 {
-		return 0, nil, false
-	}
-
-	dstFD, err := tcpConnFD(dstTCP)
-	if err != nil {
-		return 0, err, true
-	}
+	prefixLen := relaySegmentsLen(segments)
 
 	buf := relayCopyBufferPool.Get().([]byte)
 	defer relayCopyBufferPool.Put(buf)
@@ -72,11 +120,14 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		hook := relayGatherWriteTestHook
 		relayGatherWriteTestHookMu.Unlock()
 		if hook != nil {
-			hook(len(prefix), len(body))
+			hook(prefixLen, len(body))
 		}
 	}
 
-	nw, err := relayWritevAll(dstFD, prefix, body)
+	var writeSegScratch [relayGatherInlineSegmentCap + 1][]byte
+	writeSegs := relayBuildWriteSegments(segments, body, &writeSegScratch)
+
+	nw, err := relayGatherWriteTo(dst, writeSegs)
 	written += int64(nw)
 	if err != nil {
 		return written, err, true
@@ -89,6 +140,21 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		return written, readErr, true
 	}
 
+	if shouldUseRelayFastPath(dst, src) {
+		n, err := relayFastCopy(ctx, dst, src)
+		return written + n, err, true
+	}
+
+	if continuationSource, ok := src.(relayContinuationSource); ok {
+		if ctx != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return written, cerr, true
+			}
+		}
+		n, err := continuationSource.CopyRelayRemainder(dst, buf)
+		return written + n, err, true
+	}
+
 	n, err := relayCopyLoop(ctx, dst, src, buf)
 	return written + n, err, true
 }
@@ -97,7 +163,26 @@ func relayGatherWriteTCPConn(conn netproxy.Conn) (*net.TCPConn, bool) {
 	return unwrapRelayTCPConn(conn)
 }
 
-func relayWritevAll(fd int, segs ...[]byte) (written int, err error) {
+func relayGatherWriteTo(dst netproxy.Conn, segs [][]byte) (written int, err error) {
+	if dstTCP, ok := relayGatherWriteTCPConn(dst); ok {
+		dstFD, err := tcpConnFD(dstTCP)
+		if err != nil {
+			return 0, err
+		}
+		return relayWritevAll(dstFD, segs)
+	}
+
+	segments := relayNonEmptySegments(segs)
+	if len(segments) == 0 {
+		return 0, nil
+	}
+
+	buffers := net.Buffers(segments)
+	n, err := buffers.WriteTo(dst)
+	return int(n), err
+}
+
+func relayWritevAll(fd int, segs [][]byte) (written int, err error) {
 	segments := relayNonEmptySegments(segs)
 	for len(segments) > 0 {
 		n, err := unix.Writev(fd, segments)

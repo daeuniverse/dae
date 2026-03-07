@@ -33,7 +33,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
@@ -1136,6 +1135,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// Do not use full-slice cap clipping ([:n:n]) here, otherwise Put()
 			// may return the buffer into a wrong size-class and poison the pool.
 			convergeSrc := common.ConvergeAddrPort(src)
+			flowDecision := ClassifyUdpFlow(convergeSrc, realDst, pktBuf)
+			if flowDecision.IsQuicInitial {
+				flowDecision = flowDecision.EnsureSnifferSession()
+			}
 			// Debug:
 			// t := time.Now()
 			task := func() {
@@ -1190,7 +1193,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 				}
 
-				if ue, ok := DefaultUdpEndpointPool.Get(UdpEndpointKey{Src: convergeSrc}); ok {
+				if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
 					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
 						routingResult = cached
 					}
@@ -1233,23 +1236,23 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 				}
 
-				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, realDst, routingResult, false); e != nil {
+				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, realDst, routingResult, flowDecision, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 					return
 				}
 
 				if freshRoutingResult != nil {
-					if ue, ok := DefaultUdpEndpointPool.Get(UdpEndpointKey{Src: convergeSrc}); ok {
+					if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
 						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
 					}
 				}
 			}
 
-			// Use UdpTaskPool only for QUIC Initial packets to ensure ordering for SNI sniffing.
-			// QUIC Initial packets need ordered processing to correctly reassemble ClientHello.
-			// All other UDP traffic (DNS, WireGuard, games, established QUIC) executes directly.
-			if sniffing.IsLikelyQuicInitialPacket(pktBuf) {
-				DefaultUdpTaskPool.EmitTask(convergeSrc, task)
+			// Keep ordered ingress scoped to QUIC Initial flows and flows with an
+			// active sniff session so multi-packet ClientHello reassembly stays
+			// deterministic; other UDP traffic stays on the direct path.
+			if flowDecision.ShouldUseOrderedIngress() {
+				DefaultUdpTaskPool.EmitTask(flowDecision.Key, task)
 			} else {
 				go task()
 			}

@@ -28,11 +28,14 @@ type Sniffer struct {
 	dataError error
 
 	// Common
-	sniffed string
-	buf     *bytes.Buffer
-	readMu  sync.Mutex
-	ctx     context.Context
-	cancel  func()
+	sniffed  string
+	buf      *bytes.Buffer
+	readMu   sync.Mutex
+	ctxOnce  sync.Once
+	closeMu  sync.Once
+	ctx      context.Context
+	cancel   func()
+	deadline time.Time
 
 	// Packet
 	data           [][]byte
@@ -43,7 +46,6 @@ type Sniffer struct {
 }
 
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	buffer := pool.GetBuffer()
 	buffer.Grow(AssumedTlsClientHelloMaxLength)
 	buffer.Reset()
@@ -54,8 +56,7 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 		conn:      conn,
 		buf:       buffer,
 		dataReady: make(chan struct{}),
-		ctx:       ctx,
-		cancel:    cancel,
+		deadline:  time.Now().Add(timeout),
 	}
 	return s
 }
@@ -63,17 +64,22 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 	buffer := pool.GetBuffer()
 	buffer.Write(data)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	s := &Sniffer{
 		stream:    false,
 		r:         nil,
 		buf:       buffer,
 		data:      [][]byte{buffer.Bytes()},
 		dataReady: make(chan struct{}),
-		ctx:       ctx,
-		cancel:    cancel,
+		deadline:  time.Now().Add(timeout),
 	}
 	return s
+}
+
+func (s *Sniffer) ensureAsyncContext() context.Context {
+	s.ctxOnce.Do(func() {
+		s.ctx, s.cancel = context.WithDeadline(context.Background(), s.deadline)
+	})
+	return s.ctx
 }
 
 type sniff func() (d string, err error)
@@ -107,15 +113,13 @@ func (s *Sniffer) readStreamOnce() error {
 }
 
 func (s *Sniffer) readStreamOnceWithReadDeadline() error {
-	if deadline, ok := s.ctx.Deadline(); ok {
-		if err := s.conn.SetReadDeadline(deadline); err != nil {
-			return fmt.Errorf("%w: %w", errReadDeadlineUnsupported, err)
-		}
-		defer func() {
-			// Best effort restore: sniff deadline must not leak into relay phase.
-			_ = s.conn.SetReadDeadline(time.Time{})
-		}()
+	if err := s.conn.SetReadDeadline(s.deadline); err != nil {
+		return fmt.Errorf("%w: %w", errReadDeadlineUnsupported, err)
 	}
+	defer func() {
+		// Best effort restore: sniff deadline must not leak into relay phase.
+		_ = s.conn.SetReadDeadline(time.Time{})
+	}()
 
 	_, err := s.buf.ReadFromOnce(s.conn)
 	if err == nil {
@@ -134,6 +138,7 @@ func (s *Sniffer) readStreamOnceWithReadDeadline() error {
 }
 
 func (s *Sniffer) readStreamOnceAsync() error {
+	ctx := s.ensureAsyncContext()
 	go func() {
 		// Read once.
 		_, err := s.buf.ReadFromOnce(s.r)
@@ -148,7 +153,7 @@ func (s *Sniffer) readStreamOnceAsync() error {
 		if s.dataError != nil {
 			return s.dataError
 		}
-	case <-s.ctx.Done():
+	case <-ctx.Done():
 		return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
 	}
 	return nil
@@ -270,10 +275,10 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 }
 
 func (s *Sniffer) Close() (err error) {
-	select {
-	case <-s.ctx.Done():
-	default:
-		s.cancel()
+	s.closeMu.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
 		if s.buf != nil {
 			pool.PutBuffer(s.buf)
 			s.buf = nil
@@ -282,6 +287,6 @@ func (s *Sniffer) Close() (err error) {
 			p.Put()
 		}
 		s.quicPlaintexts = nil
-	}
+	})
 	return nil
 }

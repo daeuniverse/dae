@@ -1756,7 +1756,7 @@ func (c *DnsController) dialSend(
 		}
 		return c.dialSend(ctx, invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter)
 	}
-	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
+	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.DebugLevel) {
 		var (
 			qname string
 			qtype string
@@ -1780,9 +1780,9 @@ func (c *DnsController) dialSend(
 		}
 		switch upstreamIndex {
 		case consts.DnsResponseOutboundIndex_Accept:
-			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(usedDialArgument.bestTarget))
+			c.log.WithFields(fields).Debugf("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(usedDialArgument.bestTarget))
 		case consts.DnsResponseOutboundIndex_Reject:
-			c.log.WithFields(fields).Infof("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
+			c.log.WithFields(fields).Debugf("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
 		default:
 			return fmt.Errorf("unknown upstream: %v", upstreamIndex.String())
 		}

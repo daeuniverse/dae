@@ -24,7 +24,7 @@ import (
 // - Old convoy should NOT delete Q2
 func TestCompareAndDelete_RaceCondition(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("192.168.1.1:12345")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("192.168.1.1:12345"))
 
 	// Create initial queue
 	q1 := pool.acquireQueue(key)
@@ -92,7 +92,7 @@ func TestCompareAndDelete_RaceCondition(t *testing.T) {
 // - Only one should succeed in deleting the correct queue
 func TestCompareAndDelete_AcquireQueueRace(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("10.0.0.1:53")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("10.0.0.1:53"))
 
 	// Create queue and mark as draining
 	q1 := pool.acquireQueue(key)
@@ -148,13 +148,13 @@ func TestNoGoroutineLeak(t *testing.T) {
 	// Create and release many queues rapidly
 	// This simulates the scenario that caused the original leak
 	const numQueues = 100
-	keys := make([]netip.AddrPort, numQueues)
+	keys := make([]UdpFlowKey, numQueues)
 	for i := 0; i < numQueues; i++ {
-		keys[i] = netip.MustParseAddrPort("192.168.1.1:1234")
-		keys[i] = netip.AddrPortFrom(
+		keys[i] = NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("192.168.1.1:1234"))
+		keys[i] = NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 			netip.AddrFrom4([4]byte{192, 168, byte(i / 256), byte(i % 256)}),
 			uint16(10000+i),
-		)
+		))
 	}
 
 	// Rapidly create and abandon queues
@@ -197,7 +197,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 // prevents queue corruption when convoy tries to delete a replaced queue.
 func TestConvoyExitAfterFailedDelete(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("172.16.0.1:8080")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("172.16.0.1:8080"))
 
 	// Create queue and immediately release
 	q1 := pool.acquireQueue(key)
@@ -244,7 +244,7 @@ func TestConvoyExitAfterFailedDelete(t *testing.T) {
 // This is the regression test for the issue reported in PR #936 comment #3976442155.
 func TestConvoyExitWhenMappingDeletedBeforeSelfDelete(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("172.16.0.1:8080")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("172.16.0.1:8080"))
 
 	// Create queue
 	q := pool.acquireQueue(key)
@@ -285,7 +285,7 @@ func TestConvoyExitWhenMappingDeletedBeforeSelfDelete(t *testing.T) {
 // the mapping is replaced with a new queue before self-delete.
 func TestConvoyExitWhenMappingReplaced(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("10.0.0.1:53")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("10.0.0.1:53"))
 
 	// Create initial queue
 	q1 := pool.acquireQueue(key)
@@ -319,7 +319,7 @@ func TestConvoyExitWhenMappingReplaced(t *testing.T) {
 // TestCompareAndDeleteSemantics verifies the exact semantics of CompareAndDelete
 func TestCompareAndDeleteSemantics(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("8.8.8.8:53")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("8.8.8.8:53"))
 
 	// Create queue
 	q1 := pool.acquireQueue(key)
@@ -365,7 +365,7 @@ func TestCompareAndDeleteSemantics(t *testing.T) {
 // BenchmarkCompareAndDelete vs LoadAndDelete pattern
 func BenchmarkCompareAndDelete(b *testing.B) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("1.2.3.4:5678")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("1.2.3.4:5678"))
 
 	q := pool.acquireQueue(key)
 	q.refs.Add(-1)
@@ -380,7 +380,7 @@ func BenchmarkCompareAndDelete(b *testing.B) {
 
 func BenchmarkLoadAndDeletePattern(b *testing.B) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("1.2.3.4:5678")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("1.2.3.4:5678"))
 
 	q := pool.acquireQueue(key)
 	q.refs.Add(-1)
@@ -416,10 +416,10 @@ func TestHighConcurrencyStress(t *testing.T) {
 		go func(goroutineID int) {
 			defer wg.Done()
 			for i := 0; i < numOperations; i++ {
-				key := netip.AddrPortFrom(
+				key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 					netip.AddrFrom4([4]byte{192, 168, byte(goroutineID % 256), byte(i % 256)}),
 					uint16(10000+i),
-				)
+				))
 
 				q := pool.acquireQueue(key)
 

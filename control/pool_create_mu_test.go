@@ -17,10 +17,10 @@ import (
 
 func TestPacketSnifferPool_CreateMuMap_NoLeakUnderConcurrency(t *testing.T) {
 	p := NewPacketSnifferPool()
-	key := PacketSnifferKey{
-		LAddr: netip.MustParseAddrPort("10.0.0.1:12345"),
-		RAddr: netip.MustParseAddrPort("8.8.8.8:53"),
-	}
+	key := NewUdpFlowKey(
+		netip.MustParseAddrPort("10.0.0.1:12345"),
+		netip.MustParseAddrPort("8.8.8.8:53"),
+	).PacketSnifferKey()
 
 	const workers = 64
 	var created atomic.Int32
@@ -48,7 +48,7 @@ func TestPacketSnifferPool_CreateMuMap_NoLeakUnderConcurrency(t *testing.T) {
 func TestUdpEndpointPool_CreateMuMap_NoLeakOnConcurrentError(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.2:54321")
-	key := UdpEndpointKey{Src: lAddr}
+	key := NewUdpSrcOnlyFlowKey(lAddr).FullConeNatEndpointKey()
 
 	const workers = 64
 	var wg sync.WaitGroup

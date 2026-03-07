@@ -198,7 +198,7 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	return nil
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
+func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
 	var realSrc netip.AddrPort
 	var domain string
 	var ueKey UdpEndpointKey
@@ -210,11 +210,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// Priority:
 	// 1. Symmetric NAT (Src+Dst) for session isolation (QUIC/BT).
 	// 2. Full-Cone NAT (Src) only for non-QUIC-initial compatibility.
-	isQuicInitial := sniffing.IsLikelyQuicInitialPacket(data)
-	ueKey = UdpEndpointKey{Src: realSrc, Dst: realDst}
+	isQuicInitial := flowDecision.IsQuicInitial
+	ueKey = flowDecision.SymmetricNatEndpointKey()
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
-	if !ueExists && !isQuicInitial {
-		ueKey = UdpEndpointKey{Src: realSrc}
+	if !ueExists && !flowDecision.PreferSymmetricNat() {
+		ueKey = flowDecision.FullConeNatEndpointKey()
 		ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
 	}
 	if ueExists {
@@ -258,13 +258,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	natTimeout := DefaultNatTimeout
 	if !skipSniffing && !ueExists {
-		key := PacketSnifferKey{
-			LAddr: realSrc,
-			RAddr: realDst,
-		}
+		key := flowDecision.PacketSnifferKey()
 
 		// Fast reject for obvious non-QUIC UDP packets when no existing sniff session.
-		if DefaultPacketSnifferSessionMgr.Get(key) == nil && !sniffing.IsLikelyQuicInitialPacket(data) {
+		if !flowDecision.ShouldAttemptSniff() {
 			goto afterSniffing
 		}
 
@@ -325,7 +322,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 							copy(dCopy, d)
 							go func(data pool.PB) {
 								defer data.Put()
-								c.handlePkt(lConn, data, src, pktDst, realDst, routingResult, true)
+								rehandleDecision := ClassifyUdpFlow(src, realDst, data)
+								c.handlePkt(lConn, data, src, pktDst, realDst, routingResult, rehandleDecision, true)
 							}(dCopy)
 						}
 					}
@@ -372,10 +370,7 @@ getNew:
 	}
 
 	// QUIC (domain != "") or likely QUIC Initial packets use Symmetric NAT.
-	ueKey = UdpEndpointKey{Src: realSrc}
-	if domain != "" || isQuicInitial {
-		ueKey.Dst = realDst
-	}
+	ueKey = flowDecision.EndpointKeyForDial(domain)
 
 	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
 		// Handler handles response packets and send it to the client.

@@ -181,10 +181,7 @@ func TestSniffReroute_PacketSnifferWithCrossFamily(t *testing.T) {
 	clientAddr := netip.MustParseAddrPort("[240e:390:a9:dd50:34fb:3697:2b2e:d14]:53101")
 	serverAddr := netip.MustParseAddrPort("40.99.10.34:443")
 
-	key := PacketSnifferKey{
-		LAddr: clientAddr,
-		RAddr: serverAddr,
-	}
+	key := NewUdpFlowKey(clientAddr, serverAddr).PacketSnifferKey()
 
 	// Verify QUIC packet is recognized
 	if !sniffing.IsLikelyQuicInitialPacket(sniffTestQuicPacket3) {
@@ -262,10 +259,7 @@ func TestSniffReroute_ConcurrentSniffingWithCrossFamily(t *testing.T) {
 			serverAddr = netip.AddrPortFrom(serverAddr.Addr(), uint16(20000+id))
 
 			// Simulate packet sniffing with unique key
-			key := PacketSnifferKey{
-				LAddr: clientAddr,
-				RAddr: serverAddr,
-			}
+			key := NewUdpFlowKey(clientAddr, serverAddr).PacketSnifferKey()
 
 			if sniffing.IsLikelyQuicInitialPacket(sniffTestQuicPacket3) {
 				sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
@@ -304,10 +298,7 @@ func TestSniffReroute_FragmentedQuicWithCrossFamily(t *testing.T) {
 	clientAddr := netip.MustParseAddrPort("[240e:390:a9:dd50:34fb:3697:2b2e:d14]:64695")
 	serverAddr := netip.MustParseAddrPort("40.99.33.130:443")
 
-	key := PacketSnifferKey{
-		LAddr: clientAddr,
-		RAddr: serverAddr,
-	}
+	key := NewUdpFlowKey(clientAddr, serverAddr).PacketSnifferKey()
 
 	// First fragment
 	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
@@ -554,10 +545,7 @@ func TestQuicCrossFamilyWithSniffing(t *testing.T) {
 	t.Logf("  Step 1: QUIC Initial packet recognized ✓")
 
 	// Step 2: Simulate sniffing
-	key := PacketSnifferKey{
-		LAddr: clientAddr,
-		RAddr: serverAddr,
-	}
+	key := NewUdpFlowKey(clientAddr, serverAddr).PacketSnifferKey()
 	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 	sniffer.AppendData(sniffTestQuicPacket3)
 

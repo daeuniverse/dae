@@ -17,7 +17,7 @@ import (
 
 func TestUdpTaskPool_PreserveOrderPerKey(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("127.0.0.1:10001")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("127.0.0.1:10001"))
 
 	const n = 200
 	got := make([]int, 0, n)
@@ -51,7 +51,7 @@ func TestUdpTaskPool_ConcurrentDifferentKeys(t *testing.T) {
 	const tasks = 40
 
 	for i := range tasks {
-		key := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(11000+i%8))
+		key := NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(11000+i%8)))
 		pool.EmitTask(key, func() {
 			cur := active.Add(1)
 			for {
@@ -77,7 +77,7 @@ func TestUdpTaskPool_RecreateQueueAfterIdle(t *testing.T) {
 	defer func() { DefaultNatTimeout = oldTimeout }()
 
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("127.0.0.1:10002")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("127.0.0.1:10002"))
 
 	var count atomic.Int32
 	pool.EmitTask(key, func() { count.Add(1) })
@@ -91,7 +91,7 @@ func TestUdpTaskPool_RecreateQueueAfterIdle(t *testing.T) {
 
 func TestUdpTaskPool_HotKeyOverflow_NonBlockingAndOrdered(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("127.0.0.1:19001")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("127.0.0.1:19001"))
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -145,4 +145,34 @@ func TestUdpTaskPool_HotKeyOverflow_NonBlockingAndOrdered(t *testing.T) {
 	for i := range n {
 		require.Equal(t, i, got[i])
 	}
+}
+
+func TestUdpTaskPool_SameSourceDifferentDestinationRunConcurrently(t *testing.T) {
+	pool := NewUdpTaskPool()
+	src := netip.MustParseAddrPort("127.0.0.1:23001")
+	keyA := NewUdpFlowKey(src, netip.MustParseAddrPort("1.1.1.1:443"))
+	keyB := NewUdpFlowKey(src, netip.MustParseAddrPort("8.8.8.8:443"))
+
+	var active atomic.Int32
+	var peak atomic.Int32
+	var done atomic.Int32
+
+	runTask := func() {
+		cur := active.Add(1)
+		for {
+			old := peak.Load()
+			if cur <= old || peak.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		active.Add(-1)
+		done.Add(1)
+	}
+
+	pool.EmitTask(keyA, runTask)
+	pool.EmitTask(keyB, runTask)
+
+	require.Eventually(t, func() bool { return done.Load() == 2 }, time.Second, 5*time.Millisecond)
+	require.GreaterOrEqual(t, peak.Load(), int32(2), "same source but different destinations should not serialize")
 }

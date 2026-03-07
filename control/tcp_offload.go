@@ -6,8 +6,10 @@
 package control
 
 import (
+	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"structs"
 
 	"github.com/daeuniverse/dae/common"
@@ -23,6 +25,31 @@ func canOffloadToEBPF(left, right netproxy.Conn) bool {
 	_, leftOK := left.(*net.TCPConn)
 	_, rightOK := right.(*net.TCPConn)
 	return leftOK && rightOK
+}
+
+func tcpRelayOffloadReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if errors.Is(err, errTCPRelayOffloadUnavailable) {
+		prefix := errTCPRelayOffloadUnavailable.Error()
+		msg = strings.TrimPrefix(msg, prefix)
+		msg = strings.TrimPrefix(msg, ":")
+		msg = strings.TrimSpace(msg)
+		if msg == "" {
+			return "unavailable"
+		}
+	}
+	return msg
+}
+
+func canAnnotateTCPRelayOffload(conn netproxy.Conn) bool {
+	if conn == nil {
+		return false
+	}
+	_, ok := unwrapRelayTCPConn(conn)
+	return ok
 }
 
 func makeTuplesKey(src, dst netip.AddrPort, l4proto uint8) bpfTuplesKey {

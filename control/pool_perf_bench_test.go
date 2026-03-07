@@ -16,9 +16,9 @@ import (
 func BenchmarkUdpTaskPool_ParallelManyKeys(b *testing.B) {
 	p := NewUdpTaskPool()
 	const keyN = 1024
-	keys := make([]netip.AddrPort, 0, keyN)
+	keys := make([]UdpFlowKey, 0, keyN)
 	for i := range keyN {
-		keys = append(keys, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1}), uint16(10000+i)))
+		keys = append(keys, NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1}), uint16(10000+i))))
 	}
 	var counter atomic.Uint64
 	var done atomic.Int64
@@ -47,7 +47,7 @@ func BenchmarkUdpTaskPool_ParallelManyKeys(b *testing.B) {
 
 func BenchmarkUdpTaskPool_ParallelHotKey(b *testing.B) {
 	p := NewUdpTaskPool()
-	k := netip.MustParseAddrPort("10.0.0.1:12345")
+	k := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("10.0.0.1:12345"))
 	var done atomic.Int64
 
 	b.ReportAllocs()
@@ -73,7 +73,7 @@ func BenchmarkUdpTaskPool_ParallelHotKey(b *testing.B) {
 func BenchmarkUdpEndpointPool_GetOrCreateError_Parallel(b *testing.B) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.2:54321")
-	key := UdpEndpointKey{Src: lAddr}
+	key := NewUdpSrcOnlyFlowKey(lAddr).FullConeNatEndpointKey()
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -96,10 +96,10 @@ func BenchmarkPacketSnifferPool_CreateRemove_ParallelManyKeys(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			i := counter.Add(1)
-			key := PacketSnifferKey{
-				LAddr: netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), uint16(i)),
-				RAddr: netip.AddrPortFrom(netip.AddrFrom4([4]byte{8, 8, byte(i >> 8), byte(i)}), uint16(53+i%128)),
-			}
+			key := NewUdpFlowKey(
+				netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), uint16(i)),
+				netip.AddrPortFrom(netip.AddrFrom4([4]byte{8, 8, byte(i >> 8), byte(i)}), uint16(53+i%128)),
+			).PacketSnifferKey()
 			sniffer, _ := p.GetOrCreate(key, &PacketSnifferOptions{Ttl: time.Second})
 			_ = p.Remove(key, sniffer)
 		}

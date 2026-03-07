@@ -35,13 +35,17 @@ func (m *mockConn) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (m *mockConn) Write(b []byte) (n int, err error)    { return len(b), nil }
-func (m *mockConn) Close() error                         { return nil }
-func (m *mockConn) RemoteAddr() net.Addr                 { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345} }
-func (m *mockConn) LocalAddr() net.Addr                  { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080} }
-func (m *mockConn) SetDeadline(_ time.Time) error        { return nil }
-func (m *mockConn) SetReadDeadline(_ time.Time) error    { return nil }
-func (m *mockConn) SetWriteDeadline(_ time.Time) error   { return nil }
+func (m *mockConn) Write(b []byte) (n int, err error) { return len(b), nil }
+func (m *mockConn) Close() error                      { return nil }
+func (m *mockConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+}
+func (m *mockConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}
+}
+func (m *mockConn) SetDeadline(_ time.Time) error      { return nil }
+func (m *mockConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (m *mockConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 // TestWriteToDataIntegrity verifies that WriteTo transfers all bytes correctly
 // when the underlying connection does not support SyscallConn (the io.Copy path).
@@ -152,9 +156,13 @@ func (w *writeCaptureMock) Write(b []byte) (int, error) {
 	w.written = append(w.written, b...)
 	return len(b), nil
 }
-func (w *writeCaptureMock) Close() error                        { return nil }
-func (w *writeCaptureMock) RemoteAddr() net.Addr                { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9999} }
-func (w *writeCaptureMock) LocalAddr() net.Addr                 { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080} }
-func (w *writeCaptureMock) SetDeadline(_ time.Time) error       { return nil }
-func (w *writeCaptureMock) SetReadDeadline(_ time.Time) error   { return nil }
-func (w *writeCaptureMock) SetWriteDeadline(_ time.Time) error  { return nil }
+func (w *writeCaptureMock) Close() error { return nil }
+func (w *writeCaptureMock) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9999}
+}
+func (w *writeCaptureMock) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}
+}
+func (w *writeCaptureMock) SetDeadline(_ time.Time) error      { return nil }
+func (w *writeCaptureMock) SetReadDeadline(_ time.Time) error  { return nil }
+func (w *writeCaptureMock) SetWriteDeadline(_ time.Time) error { return nil }

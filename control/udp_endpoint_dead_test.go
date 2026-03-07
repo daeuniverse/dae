@@ -55,7 +55,7 @@ func TestUdpEndpoint_ExpiresAtOnDead(t *testing.T) {
 func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.1:12345")
-	key := UdpEndpointKey{Src: lAddr}
+	key := NewUdpSrcOnlyFlowKey(lAddr).FullConeNatEndpointKey()
 
 	// Create a dead endpoint manually
 	deadEndpoint := &UdpEndpoint{
@@ -97,7 +97,7 @@ func TestUdpEndpointPool_GetOrCreate_DeadEndpointRemoval(t *testing.T) {
 func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.1:12346")
-	key := UdpEndpointKey{Src: lAddr}
+	key := NewUdpSrcOnlyFlowKey(lAddr).FullConeNatEndpointKey()
 
 	// Create a dead endpoint
 	deadEndpoint := &UdpEndpoint{
@@ -134,7 +134,7 @@ func TestUdpEndpointPool_DeadEndpointNotRevived(t *testing.T) {
 func TestUdpEndpointPool_ConcurrentDeadEndpointHandling(t *testing.T) {
 	p := NewUdpEndpointPool()
 	lAddr := netip.MustParseAddrPort("10.0.0.1:12347")
-	key := UdpEndpointKey{Src: lAddr}
+	key := NewUdpSrcOnlyFlowKey(lAddr).FullConeNatEndpointKey()
 
 	// Create a dead endpoint
 	deadEndpoint := &UdpEndpoint{

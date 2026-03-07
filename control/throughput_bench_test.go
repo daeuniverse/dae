@@ -239,12 +239,12 @@ func BenchmarkConnectionThroughput_UDP(b *testing.B) {
 	var counter atomic.Uint64
 	var processed atomic.Int64
 
-	keys := make([]netip.AddrPort, 1000)
+	keys := make([]UdpFlowKey, 1000)
 	for i := range 1000 {
-		keys[i] = netip.AddrPortFrom(
+		keys[i] = NewUdpSrcOnlyFlowKey(netip.AddrPortFrom(
 			netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1}),
 			uint16(10000+i),
-		)
+		))
 	}
 
 	b.ReportAllocs()
@@ -283,7 +283,7 @@ func BenchmarkConnectionThroughput_UDPEndpointPool(b *testing.B) {
 				netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i >> 16), byte(i)}),
 				uint16(10000+i%55000),
 			)
-			key := UdpEndpointKey{Src: lAddr}
+			key := NewUdpSrcOnlyFlowKey(lAddr).FullConeNatEndpointKey()
 			_, _, _ = p.GetOrCreate(key, &UdpEndpointOptions{})
 			i++
 		}

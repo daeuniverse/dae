@@ -56,7 +56,10 @@ func TestQuicOrderingIsLikelyQuicInitialPacket(t *testing.T) {
 // TestUdpTaskPool_QuicPacketOrdering verifies that QUIC Initial packets are processed in order.
 func TestUdpTaskPool_QuicPacketOrdering(t *testing.T) {
 	pool := NewUdpTaskPool()
-	udpKey := netip.MustParseAddrPort("192.168.1.1:443")
+	udpKey := NewUdpFlowKey(
+		netip.MustParseAddrPort("192.168.1.1:12345"),
+		netip.MustParseAddrPort("93.184.216.34:443"),
+	)
 
 	// Simulate QUIC Initial packets (need ordering)
 	const n = 100

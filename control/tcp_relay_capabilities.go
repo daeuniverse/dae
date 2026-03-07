@@ -5,10 +5,22 @@
 
 package control
 
-import "net"
+import (
+	"fmt"
+	"io"
+	"net"
+)
 
 type relayUnderlyingConn interface {
 	UnderlyingConn() net.Conn
+}
+
+type relaySegmentSource interface {
+	TakeRelaySegments() [][]byte
+}
+
+type relayContinuationSource interface {
+	CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error)
 }
 
 type relayPrefixSource interface {
@@ -22,6 +34,10 @@ const relayUnderlyingConnMaxDepth = 8
 // in by exposing UnderlyingConn without hard-coding protocol types here.
 func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
 	return unwrapRelayTCPConnDepth(conn, 0)
+}
+
+func relayConnChain(conn any) string {
+	return relayConnChainDepth(conn, 0)
 }
 
 func unwrapRelayTCPConnDepth(conn any, depth int) (*net.TCPConn, bool) {
@@ -38,5 +54,25 @@ func unwrapRelayTCPConnDepth(conn any, depth int) (*net.TCPConn, bool) {
 		return unwrapRelayTCPConnDepth(c.UnderlyingConn(), depth+1)
 	default:
 		return nil, false
+	}
+}
+
+func relayConnChainDepth(conn any, depth int) string {
+	if conn == nil {
+		return "<nil>"
+	}
+	if depth >= relayUnderlyingConnMaxDepth {
+		return fmt.Sprintf("%T -> <max-depth>", conn)
+	}
+
+	switch c := conn.(type) {
+	case *net.TCPConn:
+		return fmt.Sprintf("%T", c)
+	case *prefixedConn:
+		return fmt.Sprintf("%T -> %s", c, relayConnChainDepth(c.Conn, depth+1))
+	case relayUnderlyingConn:
+		return fmt.Sprintf("%T -> %s", c, relayConnChainDepth(c.UnderlyingConn(), depth+1))
+	default:
+		return fmt.Sprintf("%T", c)
 	}
 }

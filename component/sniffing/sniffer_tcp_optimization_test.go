@@ -156,6 +156,7 @@ func (c *deadlineBlockConn) readDeadlines() []time.Time {
 func sniffTcpLegacyOnce(s *Sniffer) (string, error) {
 	dataReady := make(chan struct{})
 	var dataErr error
+	ctx := s.ensureAsyncContext()
 	go func() {
 		_, err := s.buf.ReadFromOnce(s.r)
 		if err != nil {
@@ -169,7 +170,7 @@ func sniffTcpLegacyOnce(s *Sniffer) (string, error) {
 		if dataErr != nil {
 			return "", dataErr
 		}
-	case <-s.ctx.Done():
+	case <-ctx.Done():
 		return "", fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
 	}
 
@@ -178,6 +179,36 @@ func sniffTcpLegacyOnce(s *Sniffer) (string, error) {
 	}
 	return sniffGroup(s.SniffTls, s.SniffHttp)
 }
+
+type unsupportedDeadlineConn struct {
+	payload []byte
+	offset  int
+}
+
+func newUnsupportedDeadlineConn(payload []byte) *unsupportedDeadlineConn {
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+	return &unsupportedDeadlineConn{payload: buf}
+}
+
+func (c *unsupportedDeadlineConn) Read(p []byte) (int, error) {
+	if c.offset >= len(c.payload) {
+		return 0, io.EOF
+	}
+	n := copy(p, c.payload[c.offset:])
+	c.offset += n
+	return n, nil
+}
+
+func (c *unsupportedDeadlineConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *unsupportedDeadlineConn) Close() error                { return nil }
+func (c *unsupportedDeadlineConn) LocalAddr() net.Addr         { return testAddr("127.0.0.1:10003") }
+func (c *unsupportedDeadlineConn) RemoteAddr() net.Addr        { return testAddr("127.0.0.1:20003") }
+func (c *unsupportedDeadlineConn) SetDeadline(time.Time) error { return c.SetReadDeadline(time.Time{}) }
+func (c *unsupportedDeadlineConn) SetReadDeadline(time.Time) error {
+	return fmt.Errorf("unsupported")
+}
+func (c *unsupportedDeadlineConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestSniffTcp_NetConnReadDeadlineLifecycle(t *testing.T) {
 	conn := newBenchPayloadConn([]byte(
@@ -242,6 +273,57 @@ func TestSniffTcp_NetConnTimeoutBehavior(t *testing.T) {
 	}
 	if !deadlines[len(deadlines)-1].IsZero() {
 		t.Fatal("last read deadline should restore zero value")
+	}
+}
+
+func TestSniffTcp_NetConnAvoidsAsyncContextOnDeadlinePath(t *testing.T) {
+	conn := newBenchPayloadConn([]byte(
+		"GET / HTTP/1.1\r\n" +
+			"Host: noasync.example.com\r\n\r\n",
+	))
+	s := NewStreamSniffer(conn, 100*time.Millisecond)
+	defer s.Close()
+
+	if s.ctx != nil {
+		t.Fatal("expected async context to be nil before sniffing")
+	}
+
+	domain, err := s.SniffTcp()
+	if err != nil {
+		t.Fatalf("sniff failed: %v", err)
+	}
+	if domain != "noasync.example.com" {
+		t.Fatalf("unexpected domain: %q", domain)
+	}
+	if s.ctx != nil {
+		t.Fatal("expected deadline path to avoid async context allocation")
+	}
+}
+
+func TestSniffTcp_AsyncFallbackCreatesContextLazily(t *testing.T) {
+	conn := newUnsupportedDeadlineConn([]byte(
+		"GET / HTTP/1.1\r\n" +
+			"Host: async.example.com\r\n\r\n",
+	))
+	s := NewStreamSniffer(conn, 100*time.Millisecond)
+	defer s.Close()
+
+	if s.ctx != nil {
+		t.Fatal("expected async context to be nil before fallback")
+	}
+
+	domain, err := s.SniffTcp()
+	if err != nil {
+		t.Fatalf("sniff failed: %v", err)
+	}
+	if domain != "async.example.com" {
+		t.Fatalf("unexpected domain: %q", domain)
+	}
+	if s.ctx == nil {
+		t.Fatal("expected async fallback to initialize context lazily")
+	}
+	if s.cancel == nil {
+		t.Fatal("expected async fallback to initialize cancel func")
 	}
 }
 

@@ -33,9 +33,15 @@ type tcpRelayOffloadSession struct {
 	closeOnce sync.Once
 }
 
-func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netproxy.Conn) (bool, error) {
-	if c == nil || c.core == nil || !c.core.tcpRelayOffload {
-		return false, nil
+func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netproxy.Conn) (bool, string, error) {
+	if c == nil || c.core == nil {
+		return false, "", nil
+	}
+	if !c.core.tcpRelayOffload {
+		if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.Debugf("Skip TCP relay eBPF offload: feature disabled (left=%s, right=%s)", relayConnChain(left), relayConnChain(right))
+		}
+		return false, "feature disabled", nil
 	}
 
 	session, err := newTCPRelayOffloadSession(c.core.bpf.FastSock, left, right)
@@ -44,30 +50,26 @@ func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netpr
 			if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
 				c.log.Debugf("Skip TCP relay eBPF offload: %v", err)
 			}
-			return false, nil
+			return false, tcpRelayOffloadReason(err), nil
 		}
-		return false, err
+		return false, "", err
 	}
 	defer session.Close()
 
 	if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
 		c.log.Debug("Use TCP relay eBPF offload")
 	}
-	return true, session.Run(ctx)
+	return true, "", session.Run(ctx)
 }
 
 func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*tcpRelayOffloadSession, error) {
-	if fastSock == nil {
-		return nil, fmt.Errorf("%w: fast_sock map is unavailable", errTCPRelayOffloadUnavailable)
-	}
-
 	leftTCP, ok := unwrapPlainTCPConn(left)
 	if !ok {
-		return nil, fmt.Errorf("%w: left is not a plain *net.TCPConn, has buffered data (type: %T)", errTCPRelayOffloadUnavailable, left)
+		return nil, fmt.Errorf("%w: left is not a plain *net.TCPConn, has buffered data (chain: %s)", errTCPRelayOffloadUnavailable, relayConnChain(left))
 	}
 	rightTCP, ok := unwrapRelayTCPConn(right)
 	if !ok {
-		return nil, fmt.Errorf("%w: right connection cannot be unwrapped to plain tcp (type: %T)", errTCPRelayOffloadUnavailable, right)
+		return nil, fmt.Errorf("%w: right connection cannot be unwrapped to plain tcp (chain: %s)", errTCPRelayOffloadUnavailable, relayConnChain(right))
 	}
 	if !tcpConnSupportsEBPFRedirect(leftTCP) {
 		return nil, fmt.Errorf("%w: left connection is not ipv4/ipv6 tcp", errTCPRelayOffloadUnavailable)
@@ -108,6 +110,9 @@ func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*
 	rightFD, err := tcpConnFD(rightTCP)
 	if err != nil {
 		return nil, fmt.Errorf("%w: right fd: %v", errTCPRelayOffloadUnavailable, err)
+	}
+	if fastSock == nil {
+		return nil, fmt.Errorf("%w: fast_sock map is unavailable", errTCPRelayOffloadUnavailable)
 	}
 
 	session := &tcpRelayOffloadSession{

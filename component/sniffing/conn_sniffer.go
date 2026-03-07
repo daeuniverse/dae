@@ -44,6 +44,18 @@ func (s *ConnSniffer) Read(p []byte) (n int, err error) {
 	return s.Sniffer.Read(p)
 }
 
+func (s *ConnSniffer) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+	return io.CopyBuffer(dst, s.Conn, buf)
+}
+
+func (s *ConnSniffer) TakeRelaySegments() [][]byte {
+	prefix := s.TakeRelayPrefix()
+	if len(prefix) == 0 {
+		return nil
+	}
+	return [][]byte{prefix}
+}
+
 // TakeRelayPrefix returns buffered sniff bytes and marks them consumed so the
 // relay path can flush them directly to the destination socket.
 //

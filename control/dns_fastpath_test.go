@@ -96,7 +96,7 @@ func TestDNSFastPath_ConcurrentDNSQueries(t *testing.T) {
 // TestUdpTaskPool_NonDNSPreserveOrder verifies that non-DNS traffic still preserves order via UdpTaskPool.
 func TestUdpTaskPool_NonDNSPreserveOrder(t *testing.T) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("127.0.0.1:8080") // Non-DNS port
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("127.0.0.1:8080")) // Non-DNS port
 
 	const n = 100
 	got := make([]int, 0, n)
@@ -130,9 +130,9 @@ func TestDNSFastPath_MemoryProfile(t *testing.T) {
 	pool := NewUdpTaskPool()
 
 	// Simulate 1000 different DNS source ports (random port scenario)
-	ports := make([]netip.AddrPort, 1000)
+	ports := make([]UdpFlowKey, 1000)
 	for i := range ports {
-		ports[i] = netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", 20000+i))
+		ports[i] = NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", 20000+i)))
 	}
 
 	var m1, m2, m3 runtime.MemStats
@@ -194,7 +194,7 @@ func BenchmarkDNSFastPath_DirectExecution(b *testing.B) {
 // BenchmarkDNSFastPath_WithTaskPool benchmarks UdpTaskPool execution (non-DNS path).
 func BenchmarkDNSFastPath_WithTaskPool(b *testing.B) {
 	pool := NewUdpTaskPool()
-	key := netip.MustParseAddrPort("127.0.0.1:8080")
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("127.0.0.1:8080"))
 
 	var done atomic.Int64
 	b.ResetTimer()
@@ -226,7 +226,7 @@ func BenchmarkDNSFastPath_ManySourcePorts(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			port := uint16(20000 + (i % 1000))
-			key := netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", port))
+			key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", port)))
 			pool.EmitTask(key, func() { done.Add(1) })
 		}
 		for done.Load() < int64(b.N) {

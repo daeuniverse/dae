@@ -9,6 +9,6 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-func (c *ControlPlane) tryOffloadTCPRelay(_ context.Context, _ netproxy.Conn, _ netproxy.Conn) (bool, error) {
-	return false, nil
+func (c *ControlPlane) tryOffloadTCPRelay(_ context.Context, _ netproxy.Conn, _ netproxy.Conn) (bool, string, error) {
+	return false, "platform unsupported", nil
 }
