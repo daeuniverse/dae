@@ -173,23 +173,13 @@ func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
 //   - data: packet data to send
 //   - from: source address of the packet (for logging/metadata only)
 //   - realTo: destination address where the packet should be sent
-//   - lConn: original local connection (used for responses to avoid rebinding)
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, lConn *net.UDPConn, afp **Anyfrom) (err error) {
-	// Prefer using the original local connection for responses.
-	// This is the STUN/SS proxy case: we received response from SS server,
-	// and need to send it back to the client using the original socket.
-	if lConn != nil {
-		// Convert netip.AddrPort to *net.UDPAddr for WriteToUDP
-		udpAddr := &net.UDPAddr{
-			IP:   realTo.Addr().AsSlice(),
-			Port: int(realTo.Port()),
-		}
-		_, err = lConn.WriteToUDP(data, udpAddr)
-		return err
-	}
-
-	// Fallback to Anyfrom pool for outbound packets (Symmetric NAT path).
+func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
+	// Transparent UDP replies must preserve the original destination as the
+	// packet source. The ingress listener socket cannot safely do that for
+	// redirected local DNS traffic, so all reply paths resolve a transparent
+	// Anyfrom socket bound to the desired source address instead of writing
+	// directly on the listener.
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 	if isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
 		return fmt.Errorf("unsupported transparent UDP address family pair: bind=%v write=%v", bindAddr, writeAddr)
@@ -423,7 +413,7 @@ getNew:
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				// Do not return conn-unrelated err in this func.
-				return sendPkt(c.log, data, from, realSrc, nil, ue.responseConnCacheSlot())
+				return sendPkt(c.log, data, from, realSrc, ue.responseConnCacheSlot())
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,

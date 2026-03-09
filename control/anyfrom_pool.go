@@ -23,10 +23,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ttlRefreshMinInterval is the minimum time between TTL refreshes.
+// This throttles atomic stores on hot paths to reduce overhead under high QPS.
+const ttlRefreshMinInterval = int64(200 * time.Millisecond)
+
 type Anyfrom struct {
 	*net.UDPConn
 	ttl           time.Duration
 	expiresAtNano atomic.Int64
+	// lastRefreshNano tracks the last TTL refresh time for throttling.
+	// Reduces atomic store frequency under high QPS from every I/O to ~5/sec max.
+	lastRefreshNano atomic.Int64
 	// GSO support is modified from quic-go with many thanks.
 	gso bool
 	// gotGSOError is set true the first time a GSO-related error is seen.
@@ -43,9 +50,28 @@ func (a *Anyfrom) afterWrite(err error) {
 	}
 	a.RefreshTtl()
 }
+
+// RefreshTtl updates the expiration time. Uses throttling to reduce atomic
+// store overhead: only refreshes if at least ttlRefreshMinInterval has passed
+// since the last refresh, or if TTL > 10s (refresh interval = TTL/50).
 func (a *Anyfrom) RefreshTtl() {
-	if a.ttl > 0 {
-		a.expiresAtNano.Store(time.Now().Add(a.ttl).UnixNano())
+	if a.ttl <= 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := a.lastRefreshNano.Load()
+	// Throttle: skip if refreshed recently.
+	// For long TTLs, use TTL/50 as interval; for short TTLs, use minimum.
+	minInterval := ttlRefreshMinInterval
+	if ttlNano := int64(a.ttl); ttlNano > 10*ttlRefreshMinInterval {
+		minInterval = ttlNano / 50
+	}
+	if now-last < minInterval {
+		return
+	}
+	// CAS to avoid thundering herd on the same connection.
+	if a.lastRefreshNano.CompareAndSwap(last, now) {
+		a.expiresAtNano.Store(now + int64(a.ttl))
 	}
 }
 
@@ -260,21 +286,28 @@ func (p *AnyfromPool) startJanitor() {
 			ticker := time.NewTicker(anyfromJanitorPeriod)
 			defer ticker.Stop()
 
+			// Reuse slice to reduce allocations across janitor cycles.
+			var toClose []*Anyfrom
+
 			for now := range ticker.C {
 				nowNano := now.UnixNano()
 				for i := range anyfromPoolShardCount {
 					shard := &p.shards[i]
-					// UDPConn.Close() is a non-blocking O(1) syscall; safe to call
-					// under the shard lock — eliminates the temporary expiredItem
-					// slice allocation that occurred every janitor tick.
+					// Collect expired connections under lock, close after release.
+					// This minimizes lock hold time even with many expired entries.
 					shard.mu.Lock()
+					toClose = toClose[:0] // reset without reallocating
 					for key, af := range shard.pool {
 						if af.IsExpired(nowNano) {
 							delete(shard.pool, key)
-							_ = af.Close()
+							toClose = append(toClose, af)
 						}
 					}
 					shard.mu.Unlock()
+					// Close connections outside the critical section.
+					for _, af := range toClose {
+						_ = af.Close()
+					}
 				}
 			}
 		}()

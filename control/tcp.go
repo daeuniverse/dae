@@ -6,13 +6,15 @@
 package control
 
 import (
+	"bufio"
 	"context"
-	stderrors "errors"
 	"encoding/binary"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -79,13 +81,18 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	// DNS is a stateless protocol and doesn't need the connection tracking
 	// features that TCP relay provides. This optimization handles DNS queries
 	// directly through the DNS controller.
+	// Uses bufio.Reader to peek at data without consuming it,
+	// allowing proper fallback if this isn't DNS traffic.
 	if dst.Port() == 53 {
-		handled, dnsErr := c.handleTCPDnsFastPath(ctx, lConn, src, dst, routingResult)
+		bufReader := bufio.NewReader(lConn)
+		handled, dnsErr := c.handleTCPDnsFastPath(ctx, lConn, bufReader, src, dst, routingResult)
 		if handled {
 			// Connection was handled as DNS - any errors are already logged
 			return dnsErr
 		}
 		// Not DNS traffic (or failed to read as DNS) - fall through to normal TCP handling
+		// Wrap the connection to include buffered data that was peeked but not consumed
+		lConn = &bufioConn{Conn: lConn, reader: bufReader}
 	}
 
 	var (
@@ -265,6 +272,27 @@ func RelayTCPContext(ctx context.Context, lConn, rConn netproxy.Conn) (err error
 	return core.run(ctx)
 }
 
+// TCP DNS Fast Path constants
+const (
+	// TCPDNSFirstReadTimeout is the timeout for reading the first DNS query
+	// to determine if the connection is DNS traffic.
+	TCPDNSFirstReadTimeout = 5 * time.Second
+	// TCPDNSNextReadTimeout is the timeout for reading subsequent queries
+	// on an established DNS-over-TCP connection.
+	TCPDNSNextReadTimeout = 60 * time.Second
+	// TCPDNSMaxMessageSize is the maximum allowed DNS message size (64KB).
+	TCPDNSMaxMessageSize = 65535
+)
+
+// tcpDnsBufPool is a pool for TCP DNS response buffers.
+// DNS-over-TCP adds a 2-byte length prefix, so we allocate 2 extra bytes.
+var tcpDnsBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 1026) // 1024 + 2 for length prefix
+		return &buf
+	},
+}
+
 // tcpDnsResponseWriter implements dnsmessage.ResponseWriter for TCP DNS.
 // It handles the 2-byte length prefix required by the DNS-over-TCP protocol.
 type tcpDnsResponseWriter struct {
@@ -289,7 +317,21 @@ func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 		return err
 	}
 	// DNS-over-TCP requires a 2-byte length prefix
-	buf := make([]byte, 2+len(data))
+	totalLen := 2 + len(data)
+
+	// Use buffer pool for small messages
+	if totalLen <= 1026 {
+		bufPtr := tcpDnsBufPool.Get().(*[]byte)
+		defer tcpDnsBufPool.Put(bufPtr)
+		buf := (*bufPtr)[:totalLen]
+		binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
+		copy(buf[2:], data)
+		_, err = w.conn.Write(buf)
+		return err
+	}
+
+	// Fallback for large messages
+	buf := make([]byte, totalLen)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
 	copy(buf[2:], data)
 	_, err = w.conn.Write(buf)
@@ -298,7 +340,20 @@ func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 
 func (w *tcpDnsResponseWriter) Write(b []byte) (int, error) {
 	// Write with length prefix
-	buf := make([]byte, 2+len(b))
+	totalLen := 2 + len(b)
+
+	// Use buffer pool for small messages
+	if totalLen <= 1026 {
+		bufPtr := tcpDnsBufPool.Get().(*[]byte)
+		defer tcpDnsBufPool.Put(bufPtr)
+		buf := (*bufPtr)[:totalLen]
+		binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
+		copy(buf[2:], b)
+		_, err := w.conn.Write(buf)
+		return len(b), err
+	}
+
+	buf := make([]byte, totalLen)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
 	copy(buf[2:], b)
 	_, err := w.conn.Write(buf)
@@ -313,9 +368,10 @@ func (w *tcpDnsResponseWriter) TsigTimersOnly(bool) {}
 
 func (w *tcpDnsResponseWriter) Hijack() {}
 
-// readDnsMsgFromTCP reads a single DNS message from a TCP connection.
+// readDnsMsgFromBufio reads a single DNS message from a buffered reader.
 // DNS-over-TCP messages are prefixed with a 2-byte length field.
-func readDnsMsgFromTCP(conn net.Conn, timeout time.Duration) (*dnsmessage.Msg, error) {
+// Returns the message or error. Does not consume data on parse failure.
+func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.Conn) (*dnsmessage.Msg, error) {
 	// Set read deadline
 	if timeout > 0 {
 		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
@@ -323,43 +379,96 @@ func readDnsMsgFromTCP(conn net.Conn, timeout time.Duration) (*dnsmessage.Msg, e
 		}
 	}
 
-	// Read 2-byte length prefix
-	lenBuf := make([]byte, 2)
-	_, err := io.ReadFull(conn, lenBuf)
+	// Peek 2-byte length prefix first (don't consume)
+	lenBuf, err := reader.Peek(2)
 	if err != nil {
 		return nil, err
 	}
 	length := binary.BigEndian.Uint16(lenBuf)
 
-	// Safety check: limit message size to 64KB (DNS over TCP max)
-	if length > 65535 {
-		return nil, fmt.Errorf("DNS message too large: %d bytes", length)
+	// Validate message size
+	if length > TCPDNSMaxMessageSize {
+		return nil, fmt.Errorf("DNS message too large: %d bytes (max %d)", length, TCPDNSMaxMessageSize)
+	}
+	if length < 12 {
+		return nil, fmt.Errorf("DNS message too small: %d bytes (min 12)", length)
 	}
 
-	// Read the DNS message
-	data := make([]byte, length)
-	_, err = io.ReadFull(conn, data)
+	// Now read and consume the full message (length prefix + data)
+	fullData, err := reader.Peek(int(2 + length))
 	if err != nil {
 		return nil, err
 	}
+	data := fullData[2:]
 
-	// Parse DNS message
+	// Parse DNS message before consuming
 	var msg dnsmessage.Msg
 	if err := msg.Unpack(data); err != nil {
+		return nil, err
+	}
+
+	// Consume the data by discarding it
+	_, err = reader.Discard(int(2 + length))
+	if err != nil {
 		return nil, err
 	}
 
 	return &msg, nil
 }
 
+// bufioConn wraps a net.Conn with a bufio.Reader, allowing buffered data
+// to be read first before falling back to the underlying connection.
+// This is used when DNS fast path detection fails and we need to pass
+// the connection to normal TCP handling with any peeked data preserved.
+type bufioConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufioConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
+}
+
+func (c *bufioConn) Write(b []byte) (int, error) {
+	return c.Conn.Write(b)
+}
+
+func (c *bufioConn) Close() error {
+	return c.Conn.Close()
+}
+
+func (c *bufioConn) LocalAddr() net.Addr {
+	return c.Conn.LocalAddr()
+}
+
+func (c *bufioConn) RemoteAddr() net.Addr {
+	return c.Conn.RemoteAddr()
+}
+
+func (c *bufioConn) SetDeadline(t time.Time) error {
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *bufioConn) SetReadDeadline(t time.Time) error {
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *bufioConn) SetWriteDeadline(t time.Time) error {
+	return c.Conn.SetWriteDeadline(t)
+}
+
 // handleTCPDnsFastPath handles DNS-over-TCP transparent proxy.
 // It reads DNS queries from the connection, processes them through the DNS controller,
 // and writes responses back. Returns true if the connection was handled as DNS.
-func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (bool, error) {
+// Uses bufio.Reader to support peeking at data without consuming it,
+// allowing proper fallback to normal TCP handling if this isn't DNS traffic.
+func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn, bufReader *bufio.Reader, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (handled bool, err error) {
 	// Try to read the first DNS query to verify this is actually DNS traffic
-	msg, err := readDnsMsgFromTCP(lConn, 5*time.Second)
+	msg, err := readDnsMsgFromBufio(bufReader, TCPDNSFirstReadTimeout, lConn)
 	if err != nil {
 		// Not a valid DNS query - not DNS traffic, fall through to normal TCP handling
+		// The bufio.Reader has buffered but not consumed the data, so the caller
+		// should use a bufioConn wrapper to preserve the buffered data.
 		return false, nil
 	}
 
@@ -403,7 +512,7 @@ func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn,
 		}
 
 		// Try to read next query
-		msg, err = readDnsMsgFromTCP(lConn, 60*time.Second)
+		msg, err = readDnsMsgFromBufio(bufReader, TCPDNSNextReadTimeout, lConn)
 		if err != nil {
 			// Connection closed or timeout - normal termination
 			if daerrors.IsIgnorableConnectionError(err) || err == io.EOF {
