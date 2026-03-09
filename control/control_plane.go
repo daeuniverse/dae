@@ -91,6 +91,8 @@ type ControlPlane struct {
 	tproxyPortProtect bool
 	soMarkFromDae     uint32
 	mptcp             bool
+	fixedTcpDialGuards map[*dialer.Dialer]chan struct{}
+	udpUnorderedRunner *udpUnorderedTaskRunner
 }
 
 var (
@@ -470,6 +472,8 @@ func NewControlPlane(
 		tproxyPortProtect: global.TproxyPortProtect,
 		soMarkFromDae:     global.SoMarkFromDae,
 		mptcp:             global.Mptcp,
+		fixedTcpDialGuards: buildFixedTcpDialGuards(outbounds, defaultFixedTcpDialConcurrencyLimit()),
+		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
 	}
 	plane.startRealDomainNegJanitor()
 	defer func() {
@@ -1254,14 +1258,17 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			if flowDecision.ShouldUseOrderedIngress() {
 				DefaultUdpTaskPool.EmitTask(flowDecision.Key, task)
 			} else {
-				go task()
+				if !c.udpUnorderedRunner.Submit(flowDecision.Key, task) {
+					pktBuf.Put()
+				}
 			}
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	logrus.Println(d)
 			// }
 		}
 
-		var singleOob [120]byte // Size for original dest
+		batchReader := newUdpIngressBatchReader(udpConn, 0)
+		defer batchReader.Close()
 		for {
 			select {
 			case <-c.ctx.Done():
@@ -1269,20 +1276,23 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			default:
 			}
 
-			// Single-packet path.
-			// Each packet owns an exclusive ingress buffer to avoid an extra userspace
-			// copy from a shared read buffer into a task-local buffer.
-			pktBuf := pool.GetFullCap(consts.EthernetMtu)
-			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(pktBuf, singleOob[:])
+			// Batch read path.
+			// Each message still owns an exclusive ingress buffer, so downstream async
+			// processing keeps the same ownership semantics as the previous single-read path.
+			n, err := batchReader.ReadBatch()
 			if err != nil {
-				pktBuf.Put()
 				if !commonerrors.IsClosedConnection(err) {
-					c.log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
+					c.log.Errorf("ReadBatchUDP: %v", err)
 				}
 				break
 			}
-			pktBuf = pktBuf[:n]
-			processPacket(pktBuf, src, singleOob[:oobn])
+			for i := 0; i < n; i++ {
+				pktBuf, src, oob, ok := batchReader.Take(i)
+				if !ok {
+					continue
+				}
+				processPacket(pktBuf, src, oob)
+			}
 		}
 	}()
 	c.ActivateCheck()

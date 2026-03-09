@@ -164,6 +164,10 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			)
 			return nil
 		}
+		if res != nil && res.Outbound != nil && stderrors.Is(err, ErrFixedTcpDialConcurrencyLimitExceeded) {
+			c.logFixedTcpDialLimitLimited(res, src, dst, domain)
+			return nil
+		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()

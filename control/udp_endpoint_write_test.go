@@ -167,6 +167,36 @@ func TestUdpEndpoint_SelfRemovesFromPool_OnReadLoopExit(t *testing.T) {
 	require.True(t, ue.IsDead())
 }
 
+func TestUdpEndpointResponseConnCacheSlot_FullConeReturnsNil(t *testing.T) {
+	ue := &UdpEndpoint{
+		poolKey:   UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:12345")},
+		respConn:  &Anyfrom{},
+		NatTimeout: time.Minute,
+	}
+
+	require.Nil(t, ue.responseConnCacheSlot(), "full-cone endpoint must not expose respConn cache slot")
+}
+
+func TestUdpEndpointResponseConnCacheSlot_SymmetricReturnsRespConnPointer(t *testing.T) {
+	cached := &Anyfrom{}
+	ue := &UdpEndpoint{
+		poolKey: UdpEndpointKey{
+			Src: netip.MustParseAddrPort("127.0.0.1:12345"),
+			Dst: netip.MustParseAddrPort("198.51.100.10:3478"),
+		},
+		respConn: cached,
+	}
+
+	slot := ue.responseConnCacheSlot()
+	if slot == nil {
+		t.Fatal("symmetric endpoint should expose respConn cache slot")
+	}
+	require.Same(t, cached, *slot)
+	replacement := &Anyfrom{}
+	*slot = replacement
+	require.Same(t, replacement, ue.respConn)
+}
+
 // blockingConn blocks ReadFrom until unblock is closed, then returns io.EOF.
 type blockingConn struct {
 	writeTrackingPacketConn

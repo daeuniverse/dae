@@ -5,6 +5,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -17,6 +18,7 @@ import (
 var (
 	relayGatherWriteTestHookMu sync.Mutex
 	relayGatherWriteTestHook   func(prefixLen, bodyLen int)
+	relayWritevFunc            = unix.Writev
 )
 
 const relayGatherInlineSegmentCap = 8
@@ -165,11 +167,11 @@ func relayGatherWriteTCPConn(conn netproxy.Conn) (*net.TCPConn, bool) {
 
 func relayGatherWriteTo(dst netproxy.Conn, segs [][]byte) (written int, err error) {
 	if dstTCP, ok := relayGatherWriteTCPConn(dst); ok {
-		dstFD, err := tcpConnFD(dstTCP)
+		rawConn, err := dstTCP.SyscallConn()
 		if err != nil {
 			return 0, err
 		}
-		return relayWritevAll(dstFD, segs)
+		return relayWritevAll(rawConn, segs)
 	}
 
 	segments := relayNonEmptySegments(segs)
@@ -182,23 +184,43 @@ func relayGatherWriteTo(dst netproxy.Conn, segs [][]byte) (written int, err erro
 	return int(n), err
 }
 
-func relayWritevAll(fd int, segs [][]byte) (written int, err error) {
+
+func relayWritevAll(rawConn syscall.RawConn, segs [][]byte) (written int, err error) {
 	segments := relayNonEmptySegments(segs)
-	for len(segments) > 0 {
-		n, err := unix.Writev(fd, segments)
-		if n > 0 {
-			written += n
-			segments = relayAdvanceSegments(segments, n)
-		}
-		if err != nil {
-			if err == syscall.EINTR {
-				continue
+	if len(segments) == 0 {
+		return 0, nil
+	}
+
+	var writeErr error
+	err = rawConn.Write(func(fd uintptr) bool {
+		for len(segments) > 0 {
+			n, err := relayWritevFunc(int(fd), segments)
+			if n > 0 {
+				written += n
+				segments = relayAdvanceSegments(segments, n)
 			}
-			return written, err
+			if err != nil {
+				if errors.Is(err, syscall.EINTR) {
+					continue
+				}
+				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+					return false
+				}
+				writeErr = err
+				return true
+			}
+			if n == 0 {
+				writeErr = io.ErrShortWrite
+				return true
+			}
 		}
-		if n == 0 {
-			return written, io.ErrShortWrite
-		}
+		return true
+	})
+	if err != nil {
+		return written, err
+	}
+	if writeErr != nil {
+		return written, writeErr
 	}
 	return written, nil
 }

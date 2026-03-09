@@ -72,6 +72,19 @@ type UdpEndpoint struct {
 	poolKey UdpEndpointKey
 }
 
+func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
+	if ue == nil {
+		return nil
+	}
+	// Only fixed-destination sessions (Symmetric NAT) may reuse a cached
+	// Anyfrom response socket. Full-Cone sessions must re-resolve on every
+	// packet because the remote source can legitimately change.
+	if ue.poolKey.Dst.Port() == 0 {
+		return nil
+	}
+	return &ue.respConn
+}
+
 func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 	if ue.log == nil {
 		return

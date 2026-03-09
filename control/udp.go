@@ -169,8 +169,10 @@ func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-// afp, if non-nil, provides a pre-cached Anyfrom socket for the hot path;
-// on a successful pool fallback, *afp is updated so future calls skip the lookup.
+// afp, if non-nil, provides a pre-cached Anyfrom socket for fixed-destination
+// response paths (for example Symmetric NAT sessions). Callers that need
+// per-packet source rebinding semantics, such as Full-Cone response handling,
+// must pass nil so each send resolves the correct socket from the pool.
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 	if isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
@@ -389,7 +391,7 @@ getNew:
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				// Do not return conn-unrelated err in this func.
-				return sendPkt(c.log, data, from, realSrc, &ue.respConn)
+				return sendPkt(c.log, data, from, realSrc, ue.responseConnCacheSlot())
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,

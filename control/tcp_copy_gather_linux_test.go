@@ -6,8 +6,10 @@ package control
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -213,6 +215,67 @@ func TestRelayAdvanceSegments(t *testing.T) {
 	}
 	if string(segs[1]) != "ghi" {
 		t.Fatalf("unexpected second remaining segment: %q", segs[1])
+	}
+}
+
+type relayWritevRawConnStub struct {
+	writeCalls int
+}
+
+func (s *relayWritevRawConnStub) Control(func(uintptr)) error { return nil }
+
+func (s *relayWritevRawConnStub) Read(func(uintptr) bool) error { return nil }
+
+func (s *relayWritevRawConnStub) Write(fn func(uintptr) bool) error {
+	for {
+		s.writeCalls++
+		if fn(1) {
+			return nil
+		}
+	}
+}
+
+func TestRelayWritevAll_RetriesOnEAGAINViaRawConn(t *testing.T) {
+	oldWritev := relayWritevFunc
+	defer func() { relayWritevFunc = oldWritev }()
+
+	var calls int
+	relayWritevFunc = func(_ int, segs [][]byte) (int, error) {
+		calls++
+		switch calls {
+		case 1:
+			if len(segs) != 2 || string(segs[0]) != "ab" || string(segs[1]) != "cd" {
+				t.Fatalf("unexpected initial segments: %q %q", segs[0], segs[1])
+			}
+			return 2, nil
+		case 2:
+			if len(segs) != 1 || string(segs[0]) != "cd" {
+				t.Fatalf("segments were not advanced before EAGAIN retry: %q", segs[0])
+			}
+			return 0, syscall.EAGAIN
+		case 3:
+			if len(segs) != 1 || string(segs[0]) != "cd" {
+				t.Fatalf("unexpected retry segments: %q", segs[0])
+			}
+			return 2, nil
+		default:
+			return 0, errors.New("unexpected extra writev call")
+		}
+	}
+
+	rawConn := &relayWritevRawConnStub{}
+	written, err := relayWritevAll(rawConn, [][]byte{[]byte("ab"), []byte("cd")})
+	if err != nil {
+		t.Fatalf("relayWritevAll failed: %v", err)
+	}
+	if written != 4 {
+		t.Fatalf("unexpected bytes written: got %d want 4", written)
+	}
+	if rawConn.writeCalls != 2 {
+		t.Fatalf("expected RawConn.Write to be retried after EAGAIN, got %d calls", rawConn.writeCalls)
+	}
+	if calls != 3 {
+		t.Fatalf("unexpected writev call count: got %d want 3", calls)
 	}
 }
 
