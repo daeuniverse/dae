@@ -89,3 +89,35 @@ func TestPacketSnifferPool_TtlExpire(t *testing.T) {
 		return p.Get(key) == nil
 	}, 2*time.Second, 20*time.Millisecond)
 }
+
+func TestPacketSniffer_ObserveQuicInitial_PreservesSameConnection(t *testing.T) {
+	resetPacketSnifferPoolForTest()
+	key := NewUdpFlowKey(
+		netip.MustParseAddrPort("10.0.0.1:12345"),
+		netip.MustParseAddrPort("40.99.33.130:443"),
+	).PacketSnifferKey()
+
+	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
+	defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
+
+	sniffer.Mu.Lock()
+	defer sniffer.Mu.Unlock()
+	require.False(t, sniffer.ObserveQuicInitial(sniffTestQuicPacket2))
+	require.False(t, sniffer.ObserveQuicInitial(sniffTestQuicPacket1))
+}
+
+func TestPacketSniffer_ObserveQuicInitial_ResetsDifferentConnection(t *testing.T) {
+	resetPacketSnifferPoolForTest()
+	key := NewUdpFlowKey(
+		netip.MustParseAddrPort("10.0.0.2:12345"),
+		netip.MustParseAddrPort("40.99.33.130:443"),
+	).PacketSnifferKey()
+
+	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
+	defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
+
+	sniffer.Mu.Lock()
+	defer sniffer.Mu.Unlock()
+	require.False(t, sniffer.ObserveQuicInitial(sniffTestQuicPacket2))
+	require.True(t, sniffer.ObserveQuicInitial(sniffTestQuicPacket3))
+}

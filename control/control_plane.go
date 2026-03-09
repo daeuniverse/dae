@@ -1056,6 +1056,43 @@ type Listener struct {
 	port        uint16
 }
 
+const udpDualStackListenIP = "::"
+
+func udpDualStackListenAddr(port uint16) string {
+	return net.JoinHostPort(udpDualStackListenIP, strconv.Itoa(int(port)))
+}
+
+func enableUDPDualStackSocket(c syscall.RawConn) error {
+	var sockOptErr error
+	controlErr := c.Control(func(fd uintptr) {
+		if err := unix.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, unix.IPV6_V6ONLY, 0); err != nil {
+			sockOptErr = fmt.Errorf("error setting IPV6_V6ONLY socket option: %w", err)
+		}
+	})
+	if controlErr != nil {
+		return fmt.Errorf("error invoking socket control function: %w", controlErr)
+	}
+	return sockOptErr
+}
+
+func udpDualStackListenControl(c syscall.RawConn) error {
+	if err := dialer.TproxyControl(c); err != nil {
+		return err
+	}
+	return enableUDPDualStackSocket(c)
+}
+
+func udpIngressSupportsBatch(conn *net.UDPConn) bool {
+	if conn == nil {
+		return false
+	}
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return false
+	}
+	return common.ConvergeAddrPort(addr.AddrPort()).Addr().Is4()
+}
+
 func (l *Listener) Close() error {
 	var (
 		err  error
@@ -1267,8 +1304,38 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// }
 		}
 
-		batchReader := newUdpIngressBatchReader(udpConn, 0)
-		defer batchReader.Close()
+		if udpIngressSupportsBatch(udpConn) {
+			batchReader := newUdpIngressBatchReader(udpConn, 0)
+			defer batchReader.Close()
+
+			for {
+				select {
+				case <-c.ctx.Done():
+					return
+				default:
+				}
+
+				// IPv4 listener fast path: batch read reduces syscall overhead while
+				// preserving one exclusive ingress buffer per packet.
+				n, err := batchReader.ReadBatch()
+				if err != nil {
+					if !commonerrors.IsClosedConnection(err) {
+						c.log.Errorf("ReadBatchUDP: %v", err)
+					}
+					break
+				}
+				for i := 0; i < n; i++ {
+					pktBuf, src, oob, ok := batchReader.Take(i)
+					if !ok {
+						continue
+					}
+					processPacket(pktBuf, src, oob)
+				}
+			}
+			return
+		}
+
+		var oob [udpIngressOobSize]byte
 		for {
 			select {
 			case <-c.ctx.Done():
@@ -1276,23 +1343,20 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			default:
 			}
 
-			// Batch read path.
-			// Each message still owns an exclusive ingress buffer, so downstream async
-			// processing keeps the same ownership semantics as the previous single-read path.
-			n, err := batchReader.ReadBatch()
+			pktBuf := pool.GetFullCap(consts.EthernetMtu)
+			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(pktBuf, oob[:])
 			if err != nil {
+				pktBuf.Put()
 				if !commonerrors.IsClosedConnection(err) {
-					c.log.Errorf("ReadBatchUDP: %v", err)
+					c.log.Errorf("ReadMsgUDPAddrPort: %v", err)
 				}
 				break
 			}
-			for i := 0; i < n; i++ {
-				pktBuf, src, oob, ok := batchReader.Take(i)
-				if !ok {
-					continue
-				}
-				processPacket(pktBuf, src, oob)
-			}
+
+			// Dual-stack UDP listener path: prefer correctness and IPv6 coverage
+			// over batch-read optimization. OOB is consumed synchronously in
+			// processPacket, so reusing the stack buffer is safe here.
+			processPacket(pktBuf[:n], src, oob[:oobn])
 		}
 	}()
 	c.ActivateCheck()
@@ -1302,20 +1366,31 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
 	// Listen.
-	listenConfig := net.ListenConfig{
+	tcpListenConfig := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			return dialer.TproxyControl(c)
 		},
 	}
-	listenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
-	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
+	udpListenConfig := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return udpDualStackListenControl(c)
+		},
+	}
+	tcpListenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
+	tcpListener, err := tcpListenConfig.Listen(context.Background(), "tcp", tcpListenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("listenTCP: %w", err)
 	}
-	packetConn, err := listenConfig.ListenPacket(context.Background(), "udp", listenAddr)
+	packetConn, err := udpListenConfig.ListenPacket(context.Background(), "udp6", udpDualStackListenAddr(port))
 	if err != nil {
-		_ = tcpListener.Close()
-		return nil, fmt.Errorf("listenUDP: %w", err)
+		if c.log != nil {
+			c.log.WithError(err).Warn("Failed to open dual-stack UDP listener; fallback to IPv4-only UDP listener")
+		}
+		packetConn, err = tcpListenConfig.ListenPacket(context.Background(), "udp", tcpListenAddr)
+		if err != nil {
+			_ = tcpListener.Close()
+			return nil, fmt.Errorf("listenUDP: %w", err)
+		}
 	}
 	listener = &Listener{
 		tcpListener: tcpListener,

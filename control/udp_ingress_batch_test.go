@@ -68,3 +68,49 @@ func TestUdpIngressBatchReader_ReadsLoopbackPackets(t *testing.T) {
 		}
 	}
 }
+
+func TestUdpIngressBatchReader_SinglePacketReturnsWithoutFillingBatch(t *testing.T) {
+	recv, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer recv.Close()
+
+	send, err := net.DialUDP("udp4", nil, recv.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("dial udp: %v", err)
+	}
+	defer send.Close()
+
+	reader := newUdpIngressBatchReader(recv, 8)
+	defer reader.Close()
+
+	if _, err := send.Write([]byte("single-packet")); err != nil {
+		t.Fatalf("send payload: %v", err)
+	}
+
+	if err := recv.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+
+	n, err := reader.ReadBatch()
+	if err != nil {
+		t.Fatalf("read batch: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected a single immediately available packet, got %d", n)
+	}
+
+	pktBuf, src, _, ok := reader.Take(0)
+	if !ok {
+		t.Fatal("expected first batch slot to be populated")
+	}
+	defer pktBuf.Put()
+
+	if string(pktBuf) != "single-packet" {
+		t.Fatalf("unexpected payload %q", string(pktBuf))
+	}
+	if !src.IsValid() {
+		t.Fatal("expected valid source address")
+	}
+}

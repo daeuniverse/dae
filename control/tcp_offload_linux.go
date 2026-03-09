@@ -44,6 +44,20 @@ func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netpr
 		return false, "feature disabled", nil
 	}
 
+	// Flush any userspace-buffered prefix (sniff/prefetch bytes) from left to
+	// right before attempting offload registration. After the flush the inner
+	// *net.TCPConn's kernel receive queue is the sole source of "pending data",
+	// which the TIOCINQ check inside newTCPRelayOffloadSession can evaluate
+	// cleanly. Prefix bytes flushed here are already delivered to rConn; if
+	// offload is subsequently skipped (e.g. TIOCINQ > 0), RelayTCP continues
+	// transparently from the next byte — no data loss or duplication.
+	if err := tcpOffloadFlushLeftPrefix(left, right); err != nil {
+		if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.Debugf("Skip TCP relay eBPF offload: left prefix flush failed: %v", err)
+		}
+		return false, "left prefix flush failed", err
+	}
+
 	session, err := newTCPRelayOffloadSession(c.core.bpf.FastSock, left, right)
 	if err != nil {
 		if errors.Is(err, errTCPRelayOffloadUnavailable) {
@@ -63,9 +77,13 @@ func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netpr
 }
 
 func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*tcpRelayOffloadSession, error) {
-	leftTCP, ok := unwrapPlainTCPConn(left)
+	// unwrapRelayTCPConn traverses transparent wrapper chains (ConnSniffer,
+	// prefixedConn, FakeNetConn, etc.) to reach the underlying socket.
+	// Callers must flush any userspace prefix via tcpOffloadFlushLeftPrefix
+	// before this call; only the kernel receive queue matters for TIOCINQ.
+	leftTCP, ok := unwrapRelayTCPConn(left)
 	if !ok {
-		return nil, fmt.Errorf("%w: left is not a plain *net.TCPConn, has buffered data (chain: %s)", errTCPRelayOffloadUnavailable, relayConnChain(left))
+		return nil, fmt.Errorf("%w: left connection cannot be unwrapped to *net.TCPConn (chain: %s)", errTCPRelayOffloadUnavailable, relayConnChain(left))
 	}
 	rightTCP, ok := unwrapRelayTCPConn(right)
 	if !ok {
@@ -126,6 +144,27 @@ func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*
 		return nil, err
 	}
 	return session, nil
+}
+
+// tcpOffloadFlushLeftPrefix writes any userspace-buffered prefix from left
+// to right via writev (single syscall when possible). After this call the
+// wrapper's in-memory buffer is empty, so tcpConnHasPendingReadData on the
+// inner *net.TCPConn accurately reflects only kernel-buffered data.
+// If left carries no prefix this is a no-op.
+func tcpOffloadFlushLeftPrefix(left, right netproxy.Conn) error {
+	var segs [][]byte
+	if ss, ok := left.(relaySegmentSource); ok {
+		segs = relayNonEmptySegments(ss.TakeRelaySegments())
+	} else if ps, ok := left.(relayPrefixSource); ok {
+		if p := ps.TakeRelayPrefix(); len(p) > 0 {
+			segs = [][]byte{p}
+		}
+	}
+	if len(segs) == 0 {
+		return nil
+	}
+	_, err := relayGatherWriteTo(right, segs)
+	return err
 }
 
 func unwrapPlainTCPConn(conn netproxy.Conn) (*net.TCPConn, bool) {

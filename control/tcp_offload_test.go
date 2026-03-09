@@ -300,7 +300,13 @@ func TestMakeTuplesKey_UsesRemoteToLocalSocketOrientation(t *testing.T) {
 	}
 }
 
-func TestNewTCPRelayOffloadSession_ConnSnifferRejected(t *testing.T) {
+// TestNewTCPRelayOffloadSession_ConnSnifferAcceptedNilFastSock verifies that
+// *sniffing.ConnSniffer is now transparently unwrapped by newTCPRelayOffloadSession
+// (it is no longer rejected at the wrapper check). Offload still fails here
+// because a nil fastSock represents eBPF being unavailable, returning
+// errTCPRelayOffloadUnavailable as before. Callers must flush any userspace
+// prefix via tcpOffloadFlushLeftPrefix before calling newTCPRelayOffloadSession.
+func TestNewTCPRelayOffloadSession_ConnSnifferAcceptedNilFastSock(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("eBPF offload is only available on linux")
 	}
@@ -339,15 +345,22 @@ func TestNewTCPRelayOffloadSession_ConnSnifferRejected(t *testing.T) {
 	snifferConn := sniffing.NewConnSniffer(client, time.Second)
 	defer snifferConn.Close()
 
+	// ConnSniffer is now traversable via UnderlyingConn(); the session fails
+	// at the nil fastSock guard, not at the unwrap step.
 	_, err = newTCPRelayOffloadSession(nil, netproxy.Conn(snifferConn), netproxy.Conn(server))
 	if err == nil {
-		t.Fatal("newTCPRelayOffloadSession should reject ConnSniffer on left side")
+		t.Fatal("newTCPRelayOffloadSession should fail with nil fastSock")
 	}
 	if !errors.Is(err, errTCPRelayOffloadUnavailable) {
 		t.Fatalf("expected errTCPRelayOffloadUnavailable, got: %v", err)
 	}
 }
 
+// TestNewTCPRelayOffloadSession_PrefixedConnRejected verifies that an opaque
+// net.Conn wrapper that does NOT expose UnderlyingConn() is correctly
+// rejected by unwrapRelayTCPConn. Note: the actual *prefixedConn type used
+// in production IS traversable; this test uses an anonymous struct to cover
+// the opaque-wrapper rejection path.
 func TestNewTCPRelayOffloadSession_PrefixedConnRejected(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("eBPF offload is only available on linux")

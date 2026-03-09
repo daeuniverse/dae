@@ -269,12 +269,28 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 		// Sniff Quic, ...
 		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
+	retrySniffer:
 		_sniffer.Mu.Lock()
 		// Re-get sniffer from pool to confirm the transaction is not done.
 		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
 			now := time.Now()
-			if sniffer.ShouldBypassSniff(now) {
+			if isQuicInitial && sniffer.ObserveQuicInitial(data) {
+				sniffer.Mu.Unlock()
+				if c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.WithFields(logrus.Fields{
+						"src": realSrc.String(),
+						"dst": realDst.String(),
+					}).Debug("Reset PacketSniffer for new QUIC Initial connection on reused UDP flow")
+				}
+				_ = DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
+				_sniffer, _ = DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
+				goto retrySniffer
+			}
+			// Only bypass sniffing for non-QUIC flows. QUIC Initial packets must
+			// always be sniffed to extract SNI for proper routing, regardless of
+			// past failures on this flow key.
+			if !isQuicInitial && sniffer.ShouldBypassSniff(now) {
 				sniffer.Mu.Unlock()
 				goto afterSniffing
 			}
