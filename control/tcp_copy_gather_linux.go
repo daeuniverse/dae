@@ -142,16 +142,10 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		return written, readErr, true
 	}
 
-	if shouldUseRelayFastPath(dst, src) {
-		n, err := relayFastCopy(ctx, dst, src)
-		return written + n, err, true
-	}
-
 	if continuationSource, ok := src.(relayContinuationSource); ok {
-		if ctx != nil {
-			if cerr := ctx.Err(); cerr != nil {
-				return written, cerr, true
-			}
+		// Check context cancellation. relayCore.run ensures ctx is never nil.
+		if cerr := ctx.Err(); cerr != nil {
+			return written, cerr, true
 		}
 		n, err := continuationSource.CopyRelayRemainder(dst, buf)
 		return written + n, err, true

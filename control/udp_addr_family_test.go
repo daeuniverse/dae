@@ -40,7 +40,7 @@ func TestNormalizeSendPktAddrFamily(t *testing.T) {
 			from:      "[2001:db8::1]:443",
 			realTo:    "192.168.1.2:12345",
 			wantBind:  "[2001:db8::1]:443",
-			wantWrite: "[::ffff:192.168.1.2]:12345",
+			wantWrite: "192.168.1.2:12345", // No longer wraps in IPv4-mapped IPv6; caught by isUnsupportedTransparentUDPPair
 		},
 		{
 			name:      "IPv4 server to IPv4 client",
@@ -106,6 +106,12 @@ func TestIsUnsupportedTransparentUDPPair(t *testing.T) {
 			name:        "IPv4 bind to pure IPv6 write is unsupported",
 			bind:        "8.8.8.8:443",
 			write:       "[240e:390::1]:12345",
+			unsupported: true,
+		},
+		{
+			name:        "IPv6 bind to pure IPv4 write is unsupported",
+			bind:        "[2001:db8::1]:443",
+			write:       "192.168.1.2:12345",
 			unsupported: true,
 		},
 		{

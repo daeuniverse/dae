@@ -91,7 +91,6 @@ type ControlPlane struct {
 	tproxyPortProtect bool
 	soMarkFromDae     uint32
 	mptcp             bool
-	fixedTcpDialGuards map[*dialer.Dialer]chan struct{}
 	udpUnorderedRunner *udpUnorderedTaskRunner
 }
 
@@ -472,7 +471,6 @@ func NewControlPlane(
 		tproxyPortProtect: global.TproxyPortProtect,
 		soMarkFromDae:     global.SoMarkFromDae,
 		mptcp:             global.Mptcp,
-		fixedTcpDialGuards: buildFixedTcpDialGuards(outbounds, defaultFixedTcpDialConcurrencyLimit()),
 		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
 	}
 	plane.startRealDomainNegJanitor()

@@ -5,6 +5,8 @@ package control
 
 import (
 	"context"
+	"time"
+
 	"github.com/daeuniverse/outbound/netproxy"
 	"io"
 )
@@ -13,7 +15,7 @@ func relayAdaptiveCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn
 	return defaultRelayCopyEngine{}.Copy(ctx, dst, src)
 }
 
-func relayFastCopy(_ context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
+func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
 	// shouldUseRelayFastPath guarantees both sides resolve to a *net.TCPConn.
 	// Bypass outer wrapper interfaces (*ConnSniffer, *prefixedConn) and operate
 	// on the raw socket pair directly: io.Copy on two *net.TCPConn invokes
@@ -29,16 +31,51 @@ func relayFastCopy(_ context.Context, dst netproxy.Conn, src netproxy.Conn) (int
 	// Safety: tryRelayGatherWrite has already drained any userspace prefix via
 	// TakeRelayPrefix/TakeRelaySegments before this function is called, so the
 	// inner socket pair is at the correct read/write position in both directions.
+	//
+	// Cancellation handling: This function runs inside relayCore's directional
+	// goroutines. When an error occurs in one direction, relayCore.forceClose()
+	// sets SetReadDeadline(past) on both connections, which causes io.Copy to
+	// return with a timeout error, unblocking the pending direction immediately.
+
 	dstTCP, dstOk := unwrapRelayTCPConn(dst)
 	srcTCP, srcOk := unwrapRelayTCPConn(src)
+
+	// Fast path: both sides are plain TCP connections
+	if dstOk && srcOk {
+		// Propagate context deadline to TCP connections if present.
+		// relayCore.run ensures ctx is never nil.
+		if ctx != nil {
+			if deadline, ok := ctx.Deadline(); ok {
+				// Check if already canceled (only when we have a deadline)
+				select {
+				case <-ctx.Done():
+					return 0, ctx.Err()
+				default:
+				}
+				// Set deadline on both connections.
+				// Ignore errors: connections may be closed by forceClose concurrently.
+				_ = dstTCP.SetReadDeadline(deadline)
+				_ = srcTCP.SetWriteDeadline(deadline)
+				defer func() {
+					// Clear deadline on exit. Ignore errors for same reason.
+					_ = dstTCP.SetReadDeadline(time.Time{})
+					_ = srcTCP.SetWriteDeadline(time.Time{})
+				}()
+			}
+		}
+		// Direct splice: zero-copy, zero extra goroutine
+		// relayCore.forceClose() will unblock via SetReadDeadline(past)
+		return io.Copy(dstTCP, srcTCP)
+	}
+
+	// Fallback: use WriterTo if available, or buffered copy
 	if dstOk {
 		if _, ok := src.(io.WriterTo); ok {
 			return io.Copy(dstTCP, src)
 		}
 	}
-	if dstOk && srcOk {
-		return io.Copy(dstTCP, srcTCP)
-	}
+
+	// Slow path: buffered copy (e.g., when wrapper doesn't support fast path)
 	buf := relayCopyBufferPool.Get().([]byte)
 	defer relayCopyBufferPool.Put(buf)
 	return io.CopyBuffer(dst, src, buf)

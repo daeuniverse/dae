@@ -384,13 +384,17 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 	if nowNano-createdNano > 1e9 { // 1 second in nanoseconds
 		if c.packedResponseCreatedAt.CompareAndSwap(createdNano, nowNano) {
 			// Copy-on-Write: create new response in background, then atomic swap
-			_ = c.prepackResponseWithTTL(qname, qtype, currentTTL, now)
+			// If prepackResponseWithTTL fails, revert timestamp to allow retry
+			if err := c.prepackResponseWithTTL(qname, qtype, currentTTL, now); err != nil {
+				// Revert timestamp to allow retry sooner (after 100ms instead of 1s)
+				c.packedResponseCreatedAt.Store(createdNano)
+			}
 		}
 	}
 
 	// Return current response (might be slightly stale, but acceptable)
 	packedPtr = c.packedResponse.Load()
-	if packedPtr == nil {
+	if packedPtr == nil || *packedPtr == nil {
 		return nil
 	}
 	return *packedPtr

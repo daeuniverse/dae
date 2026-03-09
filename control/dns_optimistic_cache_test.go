@@ -59,6 +59,8 @@ func TestDnsCache_GetStaleResponse(t *testing.T) {
 
 // TestDnsController_OptimisticCache_Enabled tests optimistic cache with optimistic_cache=true
 func TestDnsController_OptimisticCache_Enabled(t *testing.T) {
+	t.Parallel() // Allow parallel execution with timeout
+	t.Helper()
 	controller := &DnsController{
 		optimisticCacheEnabled: true,
 		dnsCache:               sync.Map{},

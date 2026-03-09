@@ -30,9 +30,14 @@ type relayCopyEngine interface {
 type defaultRelayCopyEngine struct{}
 
 func (defaultRelayCopyEngine) Copy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (int64, error) {
+	// First, handle any prefix via gather-write path.
+	// This ensures FTP/server-first flows use stable copy loops for continuation.
 	if n, err, ok := tryRelayGatherWrite(ctx, dst, src); ok {
 		return n, err
 	}
+	// Fast path for unwrapped TCP pairs: use splice(2) on Linux.
+	// Only enabled when both ends resolve to concrete *net.TCPConn without wrappers.
+	// This preserves performance for pure TCP-to-TCP relay while keeping FTP safe.
 	if shouldUseRelayFastPath(dst, src) {
 		return relayFastCopy(ctx, dst, src)
 	}
@@ -44,12 +49,35 @@ func (defaultRelayCopyEngine) Copy(ctx context.Context, dst netproxy.Conn, src n
 
 func relayCopyLoop(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, buf []byte) (written int64, err error) {
 	for {
-		if ctx != nil {
-			if cerr := ctx.Err(); cerr != nil {
-				return written, cerr
-			}
+		// Check context cancellation. relayCore.run ensures ctx is never nil.
+		if cerr := ctx.Err(); cerr != nil {
+			return written, cerr
 		}
 
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			written += int64(nw)
+			if ew != nil {
+				return written, ew
+			}
+			if nw < nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return written, nil
+			}
+			return written, er
+		}
+	}
+}
+
+// relayCopyDirect copies from src to dst using the provided buf.
+// buf must be non-empty and is typically obtained from relayCopyBufferPool.
+func relayCopyDirect(dst io.Writer, src io.Reader, buf []byte) (written int64, err error) {
+	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
 			nw, ew := dst.Write(buf[:nr])

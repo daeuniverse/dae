@@ -45,7 +45,7 @@ func (s *ConnSniffer) Read(p []byte) (n int, err error) {
 }
 
 func (s *ConnSniffer) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
-	return io.CopyBuffer(dst, s.Conn, buf)
+	return copyDirect(dst, s.Conn, buf)
 }
 
 func (s *ConnSniffer) TakeRelaySegments() [][]byte {

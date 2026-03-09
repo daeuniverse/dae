@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -32,49 +31,6 @@ type ctxCaptureDialer struct {
 func (d *ctxCaptureDialer) DialContext(ctx context.Context, network, addr string) (netproxy.Conn, error) {
 	d.ctx = ctx
 	return nil, errTestDialFailure
-}
-
-type blockingDialer struct {
-	mu        sync.RWMutex
-	active    atomic.Int32
-	maxActive atomic.Int32
-	entered   chan struct{}
-	release   <-chan struct{}
-}
-
-func (d *blockingDialer) setRelease(ch <-chan struct{}) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.release = ch
-}
-
-func (d *blockingDialer) currentRelease() <-chan struct{} {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.release
-}
-
-func (d *blockingDialer) DialContext(ctx context.Context, network, addr string) (netproxy.Conn, error) {
-	current := d.active.Add(1)
-	for {
-		seen := d.maxActive.Load()
-		if current <= seen || d.maxActive.CompareAndSwap(seen, current) {
-			break
-		}
-	}
-	select {
-	case d.entered <- struct{}{}:
-	default:
-	}
-	defer d.active.Add(-1)
-	release := d.currentRelease()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-release:
-		return nil, errTestDialFailure
-	}
 }
 
 type instantErrorDialer struct {
@@ -105,10 +61,9 @@ func newFixedSingleDialerControlPlaneForTest(t testing.TB, log *logrus.Logger, u
 	)
 
 	cp := &ControlPlane{
-		log:                log,
-		outbounds:          []*outbound.DialerGroup{group},
-		soMarkFromDae:      1234,
-		fixedTcpDialGuards: map[*dialer.Dialer]chan struct{}{wrapped: make(chan struct{}, limit)},
+		log:           log,
+		outbounds:     []*outbound.DialerGroup{group},
+		soMarkFromDae: 1234,
 	}
 	return cp, wrapped
 }
@@ -176,75 +131,61 @@ func TestRouteDialTcp_NilContextDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestRouteDialTcp_FixedSingleDialerConcurrencyGuard(t *testing.T) {
+func TestRouteDialTcp_ConcurrentCallsAreSafe(t *testing.T) {
 	log := logrus.New()
 	log.SetOutput(io.Discard)
 
-	release := make(chan struct{})
-	stub := &blockingDialer{
-		entered: make(chan struct{}, 16),
-		release: release,
+	stub := &instantErrorDialer{}
+	gOption := &dialer.GlobalOption{Log: log}
+	wrapped := dialer.NewDialer(stub, gOption, dialer.InstanceOption{}, &dialer.Property{
+		Property: odialer.Property{Name: "stub"},
+	})
+	group := outbound.NewDialerGroup(
+		gOption,
+		"direct",
+		[]*dialer.Dialer{wrapped},
+		[]*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		},
+		func(alive bool, networkType *dialer.NetworkType, isInit bool) {},
+	)
+
+	cp := &ControlPlane{
+		log:           log,
+		outbounds:     []*outbound.DialerGroup{group},
+		soMarkFromDae: 1234,
+	}
+	p := &RouteDialParam{
+		Outbound: consts.OutboundDirect,
+		Src:      netip.MustParseAddrPort("127.0.0.1:20000"),
+		Dest:     netip.MustParseAddrPort("1.1.1.1:443"),
 	}
 
-	const limit = 2
-	cp, _ := newFixedSingleDialerControlPlaneForTest(t, log, stub, limit)
-	p := newRouteDialParamForTest()
+	const goroutines = 100
+	const callsPerGoroutine = 100
 
-	const total = 6
-	results := make(chan error, total)
-	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for range total {
-		wg.Add(1)
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			<-start
-			_, err := cp.RouteDialTcp(context.Background(), p)
-			results <- err
+			for j := 0; j < callsPerGoroutine; j++ {
+				_, err := cp.RouteDialTcp(context.Background(), p)
+				if err != nil && !errors.Is(err, errTestDialFailure) {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
 		}()
-	}
-	close(start)
-
-	for i := 0; i < limit; i++ {
-		select {
-		case <-stub.entered:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for admitted dial %d", i)
-		}
-	}
-
-	for i := 0; i < total-limit; i++ {
-		select {
-		case err := <-results:
-			if !errors.Is(err, ErrFixedTcpDialConcurrencyLimitExceeded) {
-				t.Fatalf("expected concurrency guard error, got %v", err)
-			}
-		case <-time.After(500 * time.Millisecond):
-			t.Fatal("excess dials should fail fast when guard is saturated")
-		}
-	}
-
-	if got := stub.maxActive.Load(); got != limit {
-		t.Fatalf("expected max active dials %d, got %d", limit, got)
-	}
-
-	close(release)
-	for i := 0; i < limit; i++ {
-		select {
-		case err := <-results:
-			if !errors.Is(err, errTestDialFailure) {
-				t.Fatalf("expected underlying dial failure after release, got %v", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for admitted dial result %d", i)
-		}
 	}
 
 	wg.Wait()
-	close(results)
-	for err := range results {
-		if err != nil {
-			t.Fatalf("unexpected extra result: %v", err)
-		}
+
+	// Verify all calls reached the dialer
+	expectedCalls := int64(goroutines * callsPerGoroutine)
+	if got := stub.called.Load(); got != expectedCalls {
+		t.Errorf("expected %d dialer calls, got %d", expectedCalls, got)
 	}
 }

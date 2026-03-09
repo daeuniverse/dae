@@ -59,32 +59,37 @@ func (a *Anyfrom) SupportGso(size int) bool {
 	}
 	return a.gso && !a.gotGSOError.Load()
 }
-func (a *Anyfrom) ReadFrom(b []byte) (int, net.Addr, error) {
-	defer a.RefreshTtl()
-	return a.UDPConn.ReadFrom(b)
+func (a *Anyfrom) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
+	n, addr, err = a.UDPConn.ReadFrom(b)
+	a.RefreshTtl()
+	return n, addr, err
 }
 func (a *Anyfrom) ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error) {
-	defer a.RefreshTtl()
-	return a.UDPConn.ReadFromUDP(b)
+	n, addr, err = a.UDPConn.ReadFromUDP(b)
+	a.RefreshTtl()
+	return n, addr, err
 }
 func (a *Anyfrom) ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error) {
-	defer a.RefreshTtl()
-	return a.UDPConn.ReadFromUDPAddrPort(b)
+	n, addr, err = a.UDPConn.ReadFromUDPAddrPort(b)
+	a.RefreshTtl()
+	return n, addr, err
 }
 func (a *Anyfrom) ReadMsgUDP(b []byte, oob []byte) (n int, oobn int, flags int, addr *net.UDPAddr, err error) {
-	defer a.RefreshTtl()
-	return a.UDPConn.ReadMsgUDP(b, oob)
+	n, oobn, flags, addr, err = a.UDPConn.ReadMsgUDP(b, oob)
+	a.RefreshTtl()
+	return n, oobn, flags, addr, err
 }
 func (a *Anyfrom) ReadMsgUDPAddrPort(b []byte, oob []byte) (n int, oobn int, flags int, addr netip.AddrPort, err error) {
-	defer a.RefreshTtl()
-	return a.UDPConn.ReadMsgUDPAddrPort(b, oob)
+	n, oobn, flags, addr, err = a.UDPConn.ReadMsgUDPAddrPort(b, oob)
+	a.RefreshTtl()
+	return n, oobn, flags, addr, err
 }
-func (a *Anyfrom) SyscallConn() (syscall.RawConn, error) {
-	defer a.RefreshTtl()
-	return a.UDPConn.SyscallConn()
+func (a *Anyfrom) SyscallConn() (rc syscall.RawConn, err error) {
+	rc, err = a.UDPConn.SyscallConn()
+	a.RefreshTtl()
+	return rc, err
 }
 func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
-	defer func() { a.afterWrite(err) }()
 	// UDP GSO (UDP_SEGMENT) is NOT used here.
 	// UDP GSO is designed for "super-buffer" sends: the caller concatenates multiple
 	// equal-sized datagrams into one large buffer and the kernel splits them into
@@ -94,23 +99,29 @@ func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, o
 	// Additionally, gsoSize=1500 would create 1528-byte IPv4 packets (1500+20+8),
 	// exceeding the standard MTU.  The correct value for UDP_SEGMENT is MTU-28 (IPv4)
 	// or MTU-48 (IPv6).  GSO support is retained for future batch-send redesign.
-	return a.UDPConn.WriteMsgUDP(b, oob, addr)
+	n, oobn, err = a.UDPConn.WriteMsgUDP(b, oob, addr)
+	a.afterWrite(err)
+	return n, oobn, err
 }
 func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
-	defer func() { a.afterWrite(err) }()
-	return a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
+	n, oobn, err = a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
+	a.afterWrite(err)
+	return n, oobn, err
 }
 func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	defer func() { a.afterWrite(err) }()
-	return a.UDPConn.WriteTo(b, addr)
+	n, err = a.UDPConn.WriteTo(b, addr)
+	a.afterWrite(err)
+	return n, err
 }
 func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
-	defer func() { a.afterWrite(err) }()
-	return a.UDPConn.WriteToUDP(b, addr)
+	n, err = a.UDPConn.WriteToUDP(b, addr)
+	a.afterWrite(err)
+	return n, err
 }
 func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
-	defer func() { a.afterWrite(err) }()
-	return a.UDPConn.WriteToUDPAddrPort(b, addr)
+	n, err = a.UDPConn.WriteToUDPAddrPort(b, addr)
+	a.afterWrite(err)
+	return n, err
 }
 
 // isGSOSupported tests if the kernel supports GSO.

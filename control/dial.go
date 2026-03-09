@@ -149,13 +149,6 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 	if err != nil {
 		return nil, res, err
 	}
-	releaseDialGuard, err := c.acquireFixedTcpDialSlot(ctx, p, res)
-	if err != nil {
-		return nil, res, err
-	}
-	if releaseDialGuard != nil {
-		defer releaseDialGuard()
-	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()

@@ -27,6 +27,16 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Ensure refreshing flag is cleared even if refresh fails
+	// This prevents permanent deadlock if background refresh fails
+	defer func() {
+		if cache := c.LookupDnsRespCache(cacheKey, false); cache != nil {
+			if cache.IsRefreshing() {
+				cache.MarkRefreshed()
+			}
+		}
+	}()
+
 	// Perform the actual DNS resolution
 	// This will update the cache with fresh data
 	_, err := c.resolveForSingleflight(ctx, dnsMessage, req)
@@ -38,11 +48,6 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 			}).Debugf("background refresh failed")
 		}
 		return
-	}
-
-	// Mark refresh complete
-	if cache := c.LookupDnsRespCache(cacheKey, false); cache != nil {
-		cache.MarkRefreshed()
 	}
 
 	if c.log.IsLevelEnabled(logrus.DebugLevel) {

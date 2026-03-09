@@ -132,27 +132,17 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 	bindAddr = from
 	writeAddr = realTo
 
-	// Normalize IPv4-mapped source to pure IPv4 so socket family selection
-	// matches transparent bind semantics on Linux.
+	// Step 1: Unmap any IPv4-mapped addresses first, before other conversions.
+	// This ensures we work with canonical addresses.
 	if bindAddr.Addr().Is4In6() {
 		bindAddr = netip.AddrPortFrom(bindAddr.Addr().Unmap(), bindAddr.Port())
 	}
-
-	// Case 1: IPv6 socket writing to IPv4 target.
-	if writeAddr.Addr().Is4() && bindAddr.Addr().Is6() {
-		writeAddr = netip.AddrPortFrom(
-			netip.AddrFrom16(writeAddr.Addr().As16()),
-			writeAddr.Port(),
-		)
-	}
-
-	// Case 2: IPv4 socket writing to IPv4-mapped IPv6 target should unmap
-	// write address back to IPv4 to avoid "non-IPv4 address" errors.
-	if bindAddr.Addr().Is4() && writeAddr.Addr().Is4In6() {
+	if writeAddr.Addr().Is4In6() {
 		writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
 	}
 
-	// Case 3: IPv4 wildcard with IPv6 target must become IPv6 wildcard.
+	// Step 2: Handle address family mismatches.
+	// IPv4 wildcard with IPv6 target must become IPv6 wildcard.
 	// This guarantees net.ListenPacket("udp") creates an AF_INET6 socket.
 	if bindAddr.Addr().Is4() && bindAddr.Addr().IsUnspecified() && writeAddr.Addr().Is6() {
 		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), bindAddr.Port())
@@ -165,15 +155,41 @@ func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
 	// Transparent UDP cannot preserve a concrete IPv4 source while emitting a
 	// pure IPv6 packet. The address-family pair is unsupported by kernel socket
 	// semantics and should fail fast with a clear error.
-	return bindAddr.Addr().Is4() && writeAddr.Addr().Is6()
+	//
+	// Also check the reverse: IPv6 source with IPv4 destination (after unmapping).
+	if bindAddr.Addr().Is4() && writeAddr.Addr().Is6() && !writeAddr.Addr().Is4In6() {
+		return true
+	}
+	// IPv6 bind with IPv4 write is also unsupported (writeAddr was unmapped from IPv4-mapped IPv6)
+	if bindAddr.Addr().Is6() && writeAddr.Addr().Is4() {
+		return true
+	}
+	return false
 }
 
-// sendPkt uses bind first, and fallback to send hdr if addr is in use.
-// afp, if non-nil, provides a pre-cached Anyfrom socket for fixed-destination
-// response paths (for example Symmetric NAT sessions). Callers that need
-// per-packet source rebinding semantics, such as Full-Cone response handling,
-// must pass nil so each send resolves the correct socket from the pool.
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
+// sendPkt sends a UDP packet to the destination.
+// Parameters:
+//   - log: logger for debug output
+//   - data: packet data to send
+//   - from: source address of the packet (for logging/metadata only)
+//   - realTo: destination address where the packet should be sent
+//   - lConn: original local connection (used for responses to avoid rebinding)
+//   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
+func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, lConn *net.UDPConn, afp **Anyfrom) (err error) {
+	// Prefer using the original local connection for responses.
+	// This is the STUN/SS proxy case: we received response from SS server,
+	// and need to send it back to the client using the original socket.
+	if lConn != nil {
+		// Convert netip.AddrPort to *net.UDPAddr for WriteToUDP
+		udpAddr := &net.UDPAddr{
+			IP:   realTo.Addr().AsSlice(),
+			Port: int(realTo.Port()),
+		}
+		_, err = lConn.WriteToUDP(data, udpAddr)
+		return err
+	}
+
+	// Fallback to Anyfrom pool for outbound packets (Symmetric NAT path).
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 	if isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
 		return fmt.Errorf("unsupported transparent UDP address family pair: bind=%v write=%v", bindAddr, writeAddr)
@@ -407,7 +423,7 @@ getNew:
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				// Do not return conn-unrelated err in this func.
-				return sendPkt(c.log, data, from, realSrc, ue.responseConnCacheSlot())
+				return sendPkt(c.log, data, from, realSrc, nil, ue.responseConnCacheSlot())
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,

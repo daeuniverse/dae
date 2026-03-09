@@ -7,7 +7,7 @@ package control
 
 import (
 	"context"
-	"fmt"
+	stderrors "errors"
 	"sync"
 	"time"
 
@@ -57,6 +57,8 @@ func (c *relayCore) run(ctx context.Context) error {
 	forceClose := func() {
 		forceCloseOnce.Do(func() {
 			past := time.Unix(1, 0)
+			// Ignore errors: connections may already be closed or deadline operations
+			// may fail on certain connection types. The goal is to unblock pending reads.
 			_ = c.left.SetReadDeadline(past)
 			_ = c.right.SetReadDeadline(past)
 			_ = c.left.Close()
@@ -105,12 +107,8 @@ func (c *relayCore) run(ctx context.Context) error {
 	return mergeRelayErrors(first.err, second.err)
 }
 
+// mergeRelayErrors combines errors from both relay directions.
+// Uses errors.Join to preserve both errors for inspection with errors.Is/As.
 func mergeRelayErrors(err1, err2 error) error {
-	if err1 != nil {
-		if err2 != nil {
-			return fmt.Errorf("%w: %v", err1, err2)
-		}
-		return err1
-	}
-	return err2
+	return stderrors.Join(err1, err2)
 }

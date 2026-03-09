@@ -164,10 +164,6 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			)
 			return nil
 		}
-		if res != nil && res.Outbound != nil && stderrors.Is(err, ErrFixedTcpDialConcurrencyLimitExceeded) {
-			c.logFixedTcpDialLimitLimited(res, src, dst, domain)
-			return nil
-		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()
@@ -242,6 +238,13 @@ type WriteCloser interface {
 // RelayTCP copies data bidirectionally between two connections.
 // A relayCore orchestrates shared cancellation and force-close fallback.
 func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
+	return RelayTCPContext(context.Background(), lConn, rConn)
+}
+
+// RelayTCPContext copies data bidirectionally between two connections with
+// the given context. The context can be used to cancel the relay operation
+// or set a deadline. A nil context is treated as context.Background().
+func RelayTCPContext(ctx context.Context, lConn, rConn netproxy.Conn) (err error) {
 	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{})
-	return core.run(context.Background())
+	return core.run(ctx)
 }

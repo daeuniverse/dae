@@ -29,6 +29,13 @@ type multiSegmentRelaySource struct {
 	writeToCalled bool
 }
 
+type writerToOnlyRelaySource struct {
+	net.Conn
+	prefix        []byte
+	off           int
+	writeToCalled bool
+}
+
 type gatherWriteWrappedDstConn struct {
 	netproxy.Conn
 	writeCalls int
@@ -80,6 +87,27 @@ func (c *multiSegmentRelaySource) WriteTo(w io.Writer) (int64, error) {
 func (c *multiSegmentRelaySource) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
 	c.writeToCalled = true
 	return io.CopyBuffer(dst, c.Conn, buf)
+}
+
+func (c *writerToOnlyRelaySource) UnderlyingConn() net.Conn {
+	if c == nil {
+		return nil
+	}
+	return c.Conn
+}
+
+func (c *writerToOnlyRelaySource) TakeRelaySegments() [][]byte {
+	if c == nil || c.off >= len(c.prefix) {
+		return nil
+	}
+	seg := c.prefix[c.off:]
+	c.off = len(c.prefix)
+	return [][]byte{seg}
+}
+
+func (c *writerToOnlyRelaySource) WriteTo(w io.Writer) (int64, error) {
+	c.writeToCalled = true
+	return io.Copy(w, c.Conn)
 }
 
 func withRelayGatherWriteTestHook(hook func(prefixLen, bodyLen int), fn func()) {
@@ -691,6 +719,115 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 		}
 		if !trackedSrc.writeToCalled {
 			t.Fatal("expected gather-write path to continue with fast path WriterTo for remaining payload")
+		}
+
+		_ = dstServer.CloseWrite()
+		got, err := io.ReadAll(dstClient)
+		if err != nil {
+			t.Fatalf("read destination failed: %v", err)
+		}
+		want := append(append([]byte(nil), prefix...), payload...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %d bytes want %d bytes", len(got), len(want))
+		}
+	})
+}
+
+func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *testing.T) {
+	srcLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcLn.Close()
+
+	srcAccepted := make(chan *net.TCPConn, 1)
+	srcErr := make(chan error, 1)
+	go func() {
+		conn, err := srcLn.AcceptTCP()
+		if err != nil {
+			srcErr <- err
+			return
+		}
+		srcAccepted <- conn
+	}()
+
+	srcClient, err := net.DialTCP("tcp", nil, srcLn.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcClient.Close()
+
+	var srcServer *net.TCPConn
+	select {
+	case err := <-srcErr:
+		t.Fatal(err)
+	case srcServer = <-srcAccepted:
+	}
+	defer srcServer.Close()
+
+	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstLn.Close()
+
+	dstAccepted := make(chan *net.TCPConn, 1)
+	dstErr := make(chan error, 1)
+	go func() {
+		conn, err := dstLn.AcceptTCP()
+		if err != nil {
+			dstErr <- err
+			return
+		}
+		dstAccepted <- conn
+	}()
+
+	dstClient, err := net.DialTCP("tcp", nil, dstLn.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstClient.Close()
+
+	var dstServer *net.TCPConn
+	select {
+	case err := <-dstErr:
+		t.Fatal(err)
+	case dstServer = <-dstAccepted:
+	}
+	defer dstServer.Close()
+
+	prefix := []byte("prefetched-")
+	payload := bytes.Repeat([]byte("x"), relayCopyBufferSize*2)
+	go func() {
+		_, _ = srcClient.Write(payload)
+		_ = srcClient.CloseWrite()
+	}()
+
+	trackedSrc := &writerToOnlyRelaySource{
+		Conn:   srcServer,
+		prefix: append([]byte(nil), prefix...),
+	}
+
+	var hookCalled bool
+	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
+		hookCalled = true
+		if prefixLen != len(prefix) {
+			t.Fatalf("unexpected prefix len: got %d want %d", prefixLen, len(prefix))
+		}
+		_ = bodyLen
+	}, func() {
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc)
+		if err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if n != int64(len(prefix)+len(payload)) {
+			t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
+		}
+		if !hookCalled {
+			t.Fatal("expected gather-write hook to be hit")
+		}
+		if trackedSrc.writeToCalled {
+			t.Fatal("expected gather-write continuation to stay on stable read loop instead of WriterTo fast path")
 		}
 
 		_ = dstServer.CloseWrite()
