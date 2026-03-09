@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"syscall"
 	"time"
@@ -31,6 +32,107 @@ type tcpRelayOffloadSession struct {
 	rightFD  int
 
 	closeOnce sync.Once
+}
+
+var hostLocalAddrCache struct {
+	mu      sync.RWMutex
+	expires time.Time
+	checker func(netip.Addr) bool
+}
+
+const hostLocalAddrCacheTTL = time.Minute
+
+// isLocalConnection checks whether both relay peers live on the current host.
+// This is used to skip eBPF offload for host-local relays, which can otherwise
+// spin in the epoll loop when dae bridges two local TCP peers.
+func isLocalConnection(left, right *net.TCPConn) bool {
+	leftPeer, ok := tcpConnPeerIP(left)
+	if !ok {
+		return false
+	}
+	rightPeer, ok := tcpConnPeerIP(right)
+	if !ok {
+		return false
+	}
+	isHostLocal := hostLocalAddrChecker()
+	return isHostLocal(leftPeer) && isHostLocal(rightPeer)
+}
+
+func tcpConnPeerIP(conn *net.TCPConn) (netip.Addr, bool) {
+	peer, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	ip, ok := netip.AddrFromSlice(peer.IP)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return common.ConvergeAddr(ip), true
+}
+
+func hostLocalAddrChecker() func(netip.Addr) bool {
+	now := time.Now()
+	hostLocalAddrCache.mu.RLock()
+	if hostLocalAddrCache.checker != nil && now.Before(hostLocalAddrCache.expires) {
+		checker := hostLocalAddrCache.checker
+		hostLocalAddrCache.mu.RUnlock()
+		return checker
+	}
+	hostLocalAddrCache.mu.RUnlock()
+
+	checker := loadHostLocalAddrChecker()
+
+	hostLocalAddrCache.mu.Lock()
+	defer hostLocalAddrCache.mu.Unlock()
+	if hostLocalAddrCache.checker == nil || now.After(hostLocalAddrCache.expires) {
+		hostLocalAddrCache.checker = checker
+		hostLocalAddrCache.expires = now.Add(hostLocalAddrCacheTTL)
+	}
+	return hostLocalAddrCache.checker
+}
+
+func loadHostLocalAddrChecker() func(netip.Addr) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return makeHostLocalAddrChecker(nil)
+	}
+
+	localAddrs := make([]netip.Addr, 0, len(addrs))
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipNet.IP)
+		if !ok {
+			continue
+		}
+		localAddrs = append(localAddrs, common.ConvergeAddr(ip))
+	}
+	return makeHostLocalAddrChecker(localAddrs)
+}
+
+func makeHostLocalAddrChecker(localAddrs []netip.Addr) func(netip.Addr) bool {
+	localSet := make(map[netip.Addr]struct{}, len(localAddrs))
+	for _, addr := range localAddrs {
+		addr = common.ConvergeAddr(addr)
+		if !addr.IsValid() {
+			continue
+		}
+		localSet[addr] = struct{}{}
+	}
+
+	return func(addr netip.Addr) bool {
+		addr = common.ConvergeAddr(addr)
+		if !addr.IsValid() {
+			return false
+		}
+		if addr.IsLoopback() || addr.IsUnspecified() {
+			return true
+		}
+		_, ok := localSet[addr]
+		return ok
+	}
 }
 
 func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netproxy.Conn) (bool, string, error) {
@@ -94,6 +196,16 @@ func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*
 	}
 	if !tcpConnSupportsEBPFRedirect(rightTCP) {
 		return nil, fmt.Errorf("%w: right connection is not ipv4/ipv6 tcp", errTCPRelayOffloadUnavailable)
+	}
+
+	// Check for local-to-local connections. eBPF offload for local connections
+	// can cause high CPU usage due to epoll loop behavior when both ends are on
+	// the same host.
+	if isLocalConnection(leftTCP, rightTCP) {
+		leftAddr := leftTCP.LocalAddr().String()
+		rightAddr := rightTCP.LocalAddr().String()
+		leftRemote := leftTCP.RemoteAddr().String()
+		return nil, fmt.Errorf("%w: local to local connection (left=%s->%s, right=%s)", errTCPRelayOffloadUnavailable, leftAddr, leftRemote, rightAddr)
 	}
 
 	leftPending, err := tcpConnHasPendingReadData(leftTCP)
