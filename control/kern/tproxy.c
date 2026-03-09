@@ -387,7 +387,7 @@ struct ipv6_ext_ctx {
 	int result;
 };
 
-static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
+static __noinline int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 {
 	(void)index;  // Unused parameter required by bpf_loop callback
 	struct ipv6_ext_ctx *ctx = data;
@@ -1031,7 +1031,7 @@ route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
 	return 0;
 }
 
-static int route_loop_cb(__u32 index, void *data)
+static __noinline int route_loop_cb(__u32 index, void *data)
 {
 	struct route_ctx *ctx = data;
 	struct match_set *match_set;
@@ -2205,10 +2205,10 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
 	pid_pname->pid = pid_tgid >> 32;
-	if (bpf_get_current_comm(&pid_pname->pname, sizeof(pid_pname->pname))) {
+	if (bpf_get_current_comm(&pid_pname->pname, sizeof(pid_pname->pname)))
 		pid_pname->pname[0] = '\0';
-	}
 	return 0;
 }
 
