@@ -8,7 +8,9 @@ package control
 import (
 	"context"
 	stderrors "errors"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"time"
@@ -20,6 +22,7 @@ import (
 	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
 
@@ -70,6 +73,19 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		} else {
 			return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
 		}
+	}
+
+	// DNS Fast Path: Check for DNS-over-TCP traffic (port 53).
+	// DNS is a stateless protocol and doesn't need the connection tracking
+	// features that TCP relay provides. This optimization handles DNS queries
+	// directly through the DNS controller.
+	if dst.Port() == 53 {
+		handled, dnsErr := c.handleTCPDnsFastPath(ctx, lConn, src, dst, routingResult)
+		if handled {
+			// Connection was handled as DNS - any errors are already logged
+			return dnsErr
+		}
+		// Not DNS traffic (or failed to read as DNS) - fall through to normal TCP handling
 	}
 
 	var (
@@ -247,4 +263,162 @@ func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 func RelayTCPContext(ctx context.Context, lConn, rConn netproxy.Conn) (err error) {
 	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{})
 	return core.run(ctx)
+}
+
+// tcpDnsResponseWriter implements dnsmessage.ResponseWriter for TCP DNS.
+// It handles the 2-byte length prefix required by the DNS-over-TCP protocol.
+type tcpDnsResponseWriter struct {
+	conn net.Conn
+}
+
+func (w *tcpDnsResponseWriter) Close() error {
+	return w.conn.Close()
+}
+
+func (w *tcpDnsResponseWriter) LocalAddr() net.Addr {
+	return w.conn.LocalAddr()
+}
+
+func (w *tcpDnsResponseWriter) RemoteAddr() net.Addr {
+	return w.conn.RemoteAddr()
+}
+
+func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
+	data, err := m.Pack()
+	if err != nil {
+		return err
+	}
+	// DNS-over-TCP requires a 2-byte length prefix
+	buf := make([]byte, 2+len(data))
+	binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
+	copy(buf[2:], data)
+	_, err = w.conn.Write(buf)
+	return err
+}
+
+func (w *tcpDnsResponseWriter) Write(b []byte) (int, error) {
+	// Write with length prefix
+	buf := make([]byte, 2+len(b))
+	binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
+	copy(buf[2:], b)
+	_, err := w.conn.Write(buf)
+	return len(b), err
+}
+
+func (w *tcpDnsResponseWriter) TsigStatus() error {
+	return nil
+}
+
+func (w *tcpDnsResponseWriter) TsigTimersOnly(bool) {}
+
+func (w *tcpDnsResponseWriter) Hijack() {}
+
+// readDnsMsgFromTCP reads a single DNS message from a TCP connection.
+// DNS-over-TCP messages are prefixed with a 2-byte length field.
+func readDnsMsgFromTCP(conn net.Conn, timeout time.Duration) (*dnsmessage.Msg, error) {
+	// Set read deadline
+	if timeout > 0 {
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, err
+		}
+	}
+
+	// Read 2-byte length prefix
+	lenBuf := make([]byte, 2)
+	_, err := io.ReadFull(conn, lenBuf)
+	if err != nil {
+		return nil, err
+	}
+	length := binary.BigEndian.Uint16(lenBuf)
+
+	// Safety check: limit message size to 64KB (DNS over TCP max)
+	if length > 65535 {
+		return nil, fmt.Errorf("DNS message too large: %d bytes", length)
+	}
+
+	// Read the DNS message
+	data := make([]byte, length)
+	_, err = io.ReadFull(conn, data)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse DNS message
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(data); err != nil {
+		return nil, err
+	}
+
+	return &msg, nil
+}
+
+// handleTCPDnsFastPath handles DNS-over-TCP transparent proxy.
+// It reads DNS queries from the connection, processes them through the DNS controller,
+// and writes responses back. Returns true if the connection was handled as DNS.
+func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (bool, error) {
+	// Try to read the first DNS query to verify this is actually DNS traffic
+	msg, err := readDnsMsgFromTCP(lConn, 5*time.Second)
+	if err != nil {
+		// Not a valid DNS query - not DNS traffic, fall through to normal TCP handling
+		return false, nil
+	}
+
+	// Verify it's a query, not a response
+	if msg.Response {
+		// Received a response instead of a query - not DNS client traffic
+		return false, nil
+	}
+
+	// This is DNS-over-TCP traffic - handle all queries on this connection
+	if routingResult.Mark == 0 {
+		routingResult.Mark = c.soMarkFromDae
+	}
+
+	writer := &tcpDnsResponseWriter{conn: lConn}
+	req := &udpRequest{
+		realSrc:       src,
+		realDst:       dst,
+		src:           src,
+		lConn:         nil,
+		routingResult: routingResult,
+	}
+
+	// Handle DNS queries in a loop (TCP connections can be persistent)
+	for {
+		// Handle the query
+		err := c.dnsController.HandleWithResponseWriter_(ctx, msg, req, writer)
+		if err != nil {
+			if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+				// REFUSED was already sent by the controller
+				return true, nil
+			}
+			// Send SERVFAIL for other errors
+			errMsg := new(dnsmessage.Msg)
+			errMsg.SetRcode(msg, dnsmessage.RcodeServerFailure)
+			_ = writer.WriteMsg(errMsg)
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithError(err).Debug("TCP DNS fast path failed; SERVFAIL sent")
+			}
+			return true, nil
+		}
+
+		// Try to read next query
+		msg, err = readDnsMsgFromTCP(lConn, 60*time.Second)
+		if err != nil {
+			// Connection closed or timeout - normal termination
+			if daerrors.IsIgnorableConnectionError(err) || err == io.EOF {
+				return true, nil
+			}
+			// Other errors - log and close
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithError(err).Debug("TCP DNS connection read error")
+			}
+			return true, nil
+		}
+
+		if msg.Response {
+			// Client sent a response - unexpected, close connection
+			return true, nil
+		}
+	}
 }
