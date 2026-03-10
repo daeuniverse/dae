@@ -125,12 +125,12 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	// Get link offload features.
 	et, err := ethtool.NewEthtool()
 	if err != nil {
-		return bpfIfParams{}, err
+		return bpfIfParams{}, nil
 	}
 	defer et.Close()
 	features, err := et.Features(link.Attrs().Name)
 	if err != nil {
-		return bpfIfParams{}, err
+		return bpfIfParams{}, nil
 	}
 	if features["tx-checksum-ip-generic"] {
 		ifParams.TxL4CksmIp4Offload = true
@@ -195,7 +195,7 @@ func (c *controlPlaneCore) addQdisc(ifname string) error {
 	if err != nil {
 		return err
 	}
-	if err := netlink.QdiscAdd(qdisc); err != nil {
+	if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot add clsact qdisc: %w", err)
 	}
 	return nil
@@ -206,10 +206,8 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 	if err != nil {
 		return err
 	}
-	if err := netlink.QdiscDel(qdisc); err != nil {
-		if !os.IsExist(err) {
-			return fmt.Errorf("cannot add clsact qdisc: %w", err)
-		}
+	if err := netlink.QdiscDel(qdisc); err != nil && !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("cannot delete clsact qdisc: %w", err)
 	}
 	return nil
 }
@@ -235,10 +233,6 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		c.log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
-		if err := c.addQdisc(link.Attrs().Name); err != nil {
-			c.log.Errorf("addQdisc: %v", err)
-			return
-		}
 		initlinkCallback(link)
 	}
 	dellinkCallback := func(link netlink.Link) {
@@ -246,6 +240,9 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
+		if err := c.delQdisc(link.Attrs().Name); err != nil {
+			c.log.Errorf("delQdisc: %v", err)
+		}
 	}
 	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
 }
@@ -315,7 +312,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil {
+		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
@@ -350,7 +347,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil {
+		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
 		}
 		return nil
@@ -401,6 +398,10 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 }
 
 func (c *controlPlaneCore) setupTCPRelayOffload() error {
+	if os.Getenv("DAE_DISABLE_TCP_RELAY_OFFLOAD") == "1" {
+		c.log.Debug("TCP relay eBPF offload disabled by DAE_DISABLE_TCP_RELAY_OFFLOAD=1")
+		return nil
+	}
 	if c.bpf.FastSock == nil ||
 		c.bpf.TproxyFastRedirectParser == nil ||
 		c.bpf.TproxyFastRedirectVerdict == nil {
@@ -470,10 +471,6 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		c.log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
-		if err := c.addQdisc(link.Attrs().Name); err != nil {
-			c.log.Errorf("addQdisc: %v", err)
-			return
-		}
 		initlinkCallback(link)
 	}
 	dellinkCallback := func(link netlink.Link) {
@@ -481,6 +478,9 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		c.log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
+		if err := c.delQdisc(link.Attrs().Name); err != nil {
+			c.log.Errorf("delQdisc: %v", err)
+		}
 	}
 	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
 }
