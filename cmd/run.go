@@ -175,8 +175,30 @@ loop:
 		case nil:
 			if reloading {
 				if listener == nil {
-					// Failed to listen. Exit.
-					break loop
+					// Re-listen if port changed.
+					log.Warnln("[Reload] Port changed; re-listening")
+					readyChan := make(chan bool, 1)
+					go func() {
+						if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
+							if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
+								log.Errorln("ListenAndServe:", err)
+							}
+							return err
+						}); runErr != nil {
+							log.Errorln("GetDaeNetns.With:", runErr)
+						}
+						sigs <- nil
+					}()
+					<-readyChan
+					sdnotify.Ready()
+					if reloadingErr == nil {
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+					} else {
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+					}
+					log.Warnln("[Reload] Finished (with port change)")
+					reloading = false
+					continue
 				}
 				// Serve.
 				reloading = false
@@ -256,6 +278,17 @@ loop:
 
 			// New control plane.
 			obj := c.EjectBpf()
+			portChanged := conf.Global.TproxyPort != newConf.Global.TproxyPort
+			if portChanged {
+				log.Warnf("[Reload] Tproxy port changed from %d to %d; will perform a full reload of eBPF programs", conf.Global.TproxyPort, newConf.Global.TproxyPort)
+				obj.Close()
+				obj = nil
+				if listener != nil {
+					listener.Close()
+					listener = nil
+				}
+			}
+
 			var dnsCache map[string]*control.DnsCache
 			if conf.Dns.IpVersionPrefer == newConf.Dns.IpVersionPrefer {
 				// Only keep dns cache when ip version preference not change.
@@ -274,10 +307,18 @@ loop:
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
 				// Load last config back.
+				if portChanged {
+					// If port changed, it's impossible to roll back easily because we already closed things.
+					// But we can try to re-load the old configuration with fresh objects.
+					log.Warnln("[Reload] Port already changed; attempting rollback with fresh eBPF objects")
+					obj = nil
+				}
 				newC, err = newControlPlane(log, obj, dnsCache, conf, externGeoDataDirs)
 				if err != nil {
 					sdnotify.Stopping()
-					obj.Close()
+					if obj != nil {
+						obj.Close()
+					}
 					c.Close()
 					log.WithFields(logrus.Fields{
 						"err": err,

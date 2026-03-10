@@ -308,7 +308,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if !c.isReload {
 		tryDeleteFlippedFilter(filterIngress)
 	}
-	if err := netlink.FilterAdd(filterIngress); err != nil {
+	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
@@ -343,7 +343,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if !c.isReload {
 		tryDeleteFlippedFilter(filterEgress)
 	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
+	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
@@ -542,11 +542,11 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if !c.isReload {
 		tryDeleteFlippedFilter(filterEgress)
 	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
+	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) {
+		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
 		}
 		return nil
@@ -575,11 +575,11 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if !c.isReload {
 		tryDeleteFlippedFilter(filterIngress)
 	}
-	if err := netlink.FilterAdd(filterIngress); err != nil {
+	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) {
+		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
@@ -626,13 +626,16 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		})
 	}
 	if err = daens.WithRequired("add dae0peer ingress filter", func() error {
-		return netlink.FilterAdd(filterDae0peerIngress)
+		if err := netlink.FilterAdd(filterDae0peerIngress); err != nil && !errors.Is(err, unix.EEXIST) {
+			return err
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return daens.WithRequired("delete dae0peer ingress filter", func() error {
-			if err := netlink.FilterDel(filterDae0peerIngress); err != nil && !os.IsNotExist(err) {
+			if err := netlink.FilterDel(filterDae0peerIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 				return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
 			}
 			return nil
@@ -660,11 +663,11 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	if !c.isReload {
 		tryDeleteFlippedFilter(filterDae0Ingress)
 	}
-	if err := netlink.FilterAdd(filterDae0Ingress); err != nil {
+	if err := netlink.FilterAdd(filterDae0Ingress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) {
+		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
 		}
 		return nil
