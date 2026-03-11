@@ -121,29 +121,6 @@ func (c *controlPlaneCore) Close() (err error) {
 	return nil
 }
 
-// CloseFast is used only on process exit. It avoids the full sequential teardown
-// chain and instead performs the minimal explicit cleanup needed to prevent
-// persistent datapath residue.
-func (c *controlPlaneCore) CloseFast() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	select {
-	case <-c.closed.Done():
-		return nil
-	default:
-	}
-
-	c.close()
-	if c.ifmgr != nil {
-		_ = c.ifmgr.Close()
-	}
-	PurgeAllDaeTCFilters(c.log)
-	if !c.bpfEjected {
-		RemovePinnedBpfObjects(c.log)
-	}
-	return nil
-}
-
 func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	// Get link offload features.
 	et, err := ethtool.NewEthtool()

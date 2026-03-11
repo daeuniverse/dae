@@ -66,14 +66,12 @@ func ParseEndpoint(raw string) (endpoint Endpoint, err error) {
 }
 
 type DNSListener struct {
-	log           *logrus.Logger
-	tcpServer     *dnsmessage.Server
-	udpServer     *dnsmessage.Server
-	tcpListener   net.Listener
-	udpPacketConn net.PacketConn
-	endpoint      Endpoint
-	controller    *ControlPlane
-	mu            sync.Mutex
+	log        *logrus.Logger
+	tcpServer  *dnsmessage.Server
+	udpServer  *dnsmessage.Server
+	endpoint   Endpoint
+	controller *ControlPlane
+	mu         sync.Mutex
 }
 
 // NewDNSListener creates a new DNS listener
@@ -96,14 +94,6 @@ func (d *DNSListener) Addr() string {
 	return d.endpoint.Addr
 }
 
-func isDNSServerNotStartedError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "server not started")
-}
-
-func isIgnorableDNSCloseError(err error) bool {
-	return err == nil || isDNSServerNotStartedError(err) || daerrors.IsClosedConnection(err)
-}
-
 // Start starts the DNS listener
 func (d *DNSListener) Start() error {
 	d.mu.Lock()
@@ -122,61 +112,38 @@ func (d *DNSListener) Start() error {
 		log:        d.log,
 	}
 
-	var (
-		err           error
-		tcpListener   net.Listener
-		udpPacketConn net.PacketConn
-	)
-
 	if d.endpoint.UDP {
-		udpPacketConn, err := net.ListenPacket("udp", d.Addr())
-		if err != nil {
-			return fmt.Errorf("listen udp dns listener: %w", err)
-		}
-		d.udpPacketConn = udpPacketConn
+		// create dns servers
 		d.udpServer = &dnsmessage.Server{
-			Addr:       d.Addr(),
-			Net:        "udp",
-			PacketConn: udpPacketConn,
-			Handler:    handler,
-			UDPSize:    65535,
+			Addr:    d.Addr(),
+			Net:     "udp",
+			Handler: handler,
+			UDPSize: 65535,
 		}
+
+		// Start UDP server in goroutine
+		go func() {
+			d.log.Infof("Starting DNS UDP listener on %s", d.udpServer.Addr)
+			if err := d.udpServer.ListenAndServe(); err != nil {
+				d.log.Errorf("Failed to start DNS UDP listener: %v", err)
+			}
+		}()
+
 	}
 	// also for tcp server
 	if d.endpoint.TCP {
-		tcpListener, err = net.Listen("tcp", d.Addr())
-		if err != nil {
-			if udpPacketConn != nil {
-				_ = udpPacketConn.Close()
-				d.udpPacketConn = nil
-				d.udpServer = nil
-			}
-			return fmt.Errorf("listen tcp dns listener: %w", err)
-		}
-		d.tcpListener = tcpListener
 		d.tcpServer = &dnsmessage.Server{
-			Addr:     d.Addr(),
-			Net:      "tcp",
-			Listener: tcpListener,
-			Handler:  handler,
+			Addr:    d.Addr(),
+			Net:     "tcp",
+			Handler: handler,
 		}
-	}
-
-	if d.endpoint.UDP {
-		go func(server *dnsmessage.Server) {
-			d.log.Infof("Starting DNS UDP listener on %s", server.Addr)
-			if err := server.ActivateAndServe(); !isIgnorableDNSCloseError(err) {
-				d.log.Errorf("Failed to start DNS UDP listener: %v", err)
-			}
-		}(d.udpServer)
-	}
-	if d.endpoint.TCP {
-		go func(server *dnsmessage.Server) {
-			d.log.Infof("Starting DNS TCP listener on %s", server.Addr)
-			if err := server.ActivateAndServe(); !isIgnorableDNSCloseError(err) {
+		// Start TCP server in goroutine
+		go func() {
+			d.log.Infof("Starting DNS TCP listener on %s", d.tcpServer.Addr)
+			if err := d.tcpServer.ListenAndServe(); err != nil {
 				d.log.Errorf("Failed to start DNS TCP listener: %v", err)
 			}
-		}(d.tcpServer)
+		}()
 	}
 
 	return nil
@@ -191,55 +158,22 @@ func (d *DNSListener) Stop() error {
 
 	// Stop UDP server
 	if d.udpServer != nil {
-		if err := d.udpServer.Shutdown(); err != nil && !isDNSServerNotStartedError(err) {
+		if err := d.udpServer.Shutdown(); err != nil {
 			errs = append(errs, err)
 		}
 		d.udpServer = nil
-		d.udpPacketConn = nil
 	}
 
 	// Stop TCP server
 	if d.tcpServer != nil {
-		if err := d.tcpServer.Shutdown(); err != nil && !isDNSServerNotStartedError(err) {
+		if err := d.tcpServer.Shutdown(); err != nil {
 			errs = append(errs, err)
 		}
 		d.tcpServer = nil
-		d.tcpListener = nil
 	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("failed to stop DNS servers: %v", errors.Join(errs...))
-	}
-	return nil
-}
-
-// StopFast is used on process stop. It closes the underlying sockets directly
-// instead of waiting for dns.Server shutdown.
-func (d *DNSListener) StopFast() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	var errs []error
-
-	udpPacketConn := d.udpPacketConn
-	tcpListener := d.tcpListener
-	d.udpServer = nil
-	d.tcpServer = nil
-	d.udpPacketConn = nil
-	d.tcpListener = nil
-
-	if udpPacketConn != nil {
-		if err := udpPacketConn.Close(); !isIgnorableDNSCloseError(err) {
-			errs = append(errs, err)
-		}
-	}
-	if tcpListener != nil {
-		if err := tcpListener.Close(); !isIgnorableDNSCloseError(err) {
-			errs = append(errs, err)
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to fast stop DNS listeners: %v", errors.Join(errs...))
 	}
 	return nil
 }

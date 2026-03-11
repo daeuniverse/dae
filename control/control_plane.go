@@ -87,26 +87,11 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout    time.Duration
-	tproxyPortProtect  bool
-	soMarkFromDae      uint32
-	mptcp              bool
+	sniffingTimeout   time.Duration
+	tproxyPortProtect bool
+	soMarkFromDae     uint32
+	mptcp             bool
 	udpUnorderedRunner *udpUnorderedTaskRunner
-}
-
-type NewControlPlaneOption struct {
-	StartDNSListener bool
-	ApplyReloadState bool
-}
-
-func normalizeNewControlPlaneOption(opt *NewControlPlaneOption) NewControlPlaneOption {
-	if opt == nil {
-		return NewControlPlaneOption{
-			StartDNSListener: true,
-			ApplyReloadState: true,
-		}
-	}
-	return *opt
 }
 
 var (
@@ -159,14 +144,13 @@ func NewControlPlane(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
-	opt *NewControlPlaneOption,
-) (plane *ControlPlane, err error) {
-	options := normalizeNewControlPlaneOption(opt)
-
+) (*ControlPlane, error) {
 	// TODO: Some users reported that enabling GSO on the client would affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
+
+	var err error
 
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -280,15 +264,9 @@ func NewControlPlane(
 	)
 	defer func() {
 		if err != nil {
-			if plane != nil {
-				_ = plane.Close()
-			} else {
-				// Fallback cleanup if plane was not yet fully constructed.
-				for i := len(deferFuncs) - 1; i >= 0; i-- {
-					_ = deferFuncs[i]()
-				}
-				_ = core.Close()
-			}
+			// Flip back.
+			core.Flip()
+			_ = core.Close()
 		}
 	}()
 
@@ -469,33 +447,38 @@ func NewControlPlane(
 
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
-	plane = &ControlPlane{
-		log:                log,
-		core:               core,
-		deferFuncs:         deferFuncs,
-		listenIp:           "0.0.0.0",
-		outbounds:          outbounds,
-		dnsController:      nil,
-		onceNetworkReady:   sync.Once{},
-		dialMode:           dialMode,
-		routingMatcher:     routingMatcher,
-		ctx:                ctx,
-		cancel:             cancel,
-		ready:              make(chan struct{}),
-		muRealDomainSet:    sync.RWMutex{},
-		realDomainSet:      bloom.NewWithEstimates(2048, 0.001),
-		tcpSniffNegSet:     make(map[tcpSniffNegKey]tcpSniffNegEntry),
-		negJanitorStop:     make(chan struct{}),
-		negJanitorDone:     make(chan struct{}),
-		lanInterface:       global.LanInterface,
-		wanInterface:       global.WanInterface,
-		sniffingTimeout:    sniffingTimeout,
-		tproxyPortProtect:  global.TproxyPortProtect,
-		soMarkFromDae:      global.SoMarkFromDae,
-		mptcp:              global.Mptcp,
+	plane := &ControlPlane{
+		log:               log,
+		core:              core,
+		deferFuncs:        deferFuncs,
+		listenIp:          "0.0.0.0",
+		outbounds:         outbounds,
+		dnsController:     nil,
+		onceNetworkReady:  sync.Once{},
+		dialMode:          dialMode,
+		routingMatcher:    routingMatcher,
+		ctx:               ctx,
+		cancel:            cancel,
+		ready:             make(chan struct{}),
+		muRealDomainSet:   sync.RWMutex{},
+		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		tcpSniffNegSet:    make(map[tcpSniffNegKey]tcpSniffNegEntry),
+		negJanitorStop:    make(chan struct{}),
+		negJanitorDone:    make(chan struct{}),
+		lanInterface:      global.LanInterface,
+		wanInterface:      global.WanInterface,
+		sniffingTimeout:   sniffingTimeout,
+		tproxyPortProtect: global.TproxyPortProtect,
+		soMarkFromDae:     global.SoMarkFromDae,
+		mptcp:             global.Mptcp,
 		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
 	}
 	plane.startRealDomainNegJanitor()
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
@@ -566,21 +549,24 @@ func NewControlPlane(
 		if err != nil {
 			return nil, err
 		}
-		plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
-		if options.StartDNSListener {
-			if err = plane.dnsListener.Start(); err != nil {
-				return nil, fmt.Errorf("start dns listener: %w", err)
-			}
+		if err = plane.dnsListener.Start(); err != nil {
+			log.Errorf("Failed to start DNS listener: %v", err)
+		} else {
 			log.Infof("DNS listener started on %s", dnsConfig.Bind)
+			// Add DNS listener stop to defer functions
+			plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
 		}
 	}
-	if _bpf != nil && options.ApplyReloadState {
-		if err = plane.ApplyReloadState(dnsCache); err != nil {
-			return nil, err
-		}
-	} else if dnsCache != nil {
-		if err = plane.ApplyReloadState(dnsCache); err != nil {
-			return nil, err
+	// On reload, clear the BPF domain routing map to ensure DNS configuration
+	// changes take effect immediately. The dnsCache parameter is preserved for
+	// dae-wing compatibility but not used for cache refresh.
+	// TODO: Implement selective cache refresh based on what changed in DNS config.
+	if _bpf != nil {
+		// Keep reload behavior aligned with main: clear domain_routing_map only.
+		// Connection-state maps are intentionally preserved to avoid affecting
+		// established flows during reload.
+		if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
+			return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 		}
 	}
 
@@ -648,34 +634,6 @@ func clearReloadDomainRoutingMap(bpf *bpfObjects) error {
 	return BpfMapDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
 }
 
-func (c *ControlPlane) ApplyReloadState(dnsCache map[string]*DnsCache) error {
-	if c == nil {
-		return fmt.Errorf("nil control plane")
-	}
-	if err := clearReloadDomainRoutingMap(c.core.bpf); err != nil {
-		return fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
-	}
-	if dnsCache == nil {
-		return nil
-	}
-
-	count := 0
-	now := time.Now()
-	for k, v := range dnsCache {
-		if v == nil {
-			continue
-		}
-		v.DomainBitmap = c.routingMatcher.domainMatcher.MatchDomainBitmap(v.GetFqdn())
-		c.dnsController.dnsCache.Store(k, v)
-		c.dnsController.triggerBpfUpdateIfNeeded(v, now)
-		count++
-	}
-	if count > 0 && c.log != nil {
-		c.log.Infof("Restored %d DNS cache entries from previous control plane", count)
-	}
-	return nil
-}
-
 // validateRequiredBpfMapsLoaded checks maps that are required by both DNS and
 // non-DNS datapaths. DNS fast-path may skip per-flow entry updates, but these
 // map objects must always exist.
@@ -709,15 +667,6 @@ func (c *ControlPlane) EjectBpf() *bpfObjects {
 
 func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
-}
-
-func (c *ControlPlane) AttachBpf(bpf any) error {
-	obj, ok := bpf.(*bpfObjects)
-	if !ok {
-		return fmt.Errorf("unexpected bpf type: %T", bpf)
-	}
-	c.core.InjectBpf(obj)
-	return nil
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
@@ -1088,31 +1037,13 @@ func (c *ControlPlane) startRealDomainNegJanitor() {
 	}()
 }
 
-func (c *ControlPlane) stopRealDomainNegJanitor() (err error) {
+func (c *ControlPlane) stopRealDomainNegJanitor() {
 	c.negJanitorOnce.Do(func() {
 		if c.negJanitorStop != nil {
 			close(c.negJanitorStop)
 		}
 		if c.negJanitorDone != nil {
-			timer := time.NewTimer(5 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-c.negJanitorDone:
-			case <-timer.C:
-				err = fmt.Errorf("stopRealDomainNegJanitor: timeout waiting for janitor to exit")
-			}
-		}
-	})
-	if err != nil && c.log != nil {
-		c.log.Warn(err)
-	}
-	return err
-}
-
-func (c *ControlPlane) signalRealDomainNegJanitorStop() {
-	c.negJanitorOnce.Do(func() {
-		if c.negJanitorStop != nil {
-			close(c.negJanitorStop)
+			<-c.negJanitorDone
 		}
 	})
 }
@@ -1431,7 +1362,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	return nil
 }
 
-func (c *ControlPlane) Listen(port uint16) (listener *Listener, err error) {
+func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
 	// Listen.
 	tcpListenConfig := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -1469,15 +1400,6 @@ func (c *ControlPlane) Listen(port uint16) (listener *Listener, err error) {
 			_ = listener.Close()
 		}
 	}()
-
-	return listener, nil
-}
-
-func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
-	listener, err = c.Listen(port)
-	if err != nil {
-		return nil, err
-	}
 
 	// Serve
 	if err = c.Serve(readyChan, listener); err != nil {
@@ -1620,17 +1542,16 @@ func (c *ControlPlane) AbortConnections() (err error) {
 }
 
 func (c *ControlPlane) Close() (err error) {
+	c.stopRealDomainNegJanitor()
+
 	// Collect errors from defer funcs using errors.Join (Go 1.26 best practice)
 	var errs []error
-	c.cancel()
-	if janitorErr := c.stopRealDomainNegJanitor(); janitorErr != nil {
-		errs = append(errs, janitorErr)
-	}
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
 			errs = append(errs, e)
 		}
 	}
+	c.cancel()
 
 	// Clear sync.Maps to prevent memory leak on reload.
 	// These maps accumulate data over time and must be explicitly cleared.
@@ -1645,43 +1566,8 @@ func (c *ControlPlane) Close() (err error) {
 	c.clearAllTcpSniffNegative()
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
-	// Combine defer errors with full core.Close error for reload semantics.
+	// Combine defer errors with core.Close error
 	if coreErr := c.core.Close(); coreErr != nil {
-		errs = append(errs, coreErr)
-	}
-	return stderrors.Join(errs...)
-}
-
-// CloseFast is used only on process exit. It prioritizes deterministic
-// teardown of eBPF/kernel state and does not wait for Go-only background work.
-func (c *ControlPlane) CloseFast() (err error) {
-	var errs []error
-
-	c.cancel()
-	c.signalRealDomainNegJanitorStop()
-
-	if c.dnsListener != nil {
-		if e := c.dnsListener.StopFast(); e != nil {
-			errs = append(errs, e)
-		}
-	}
-	if c.dnsController != nil {
-		if e := c.dnsController.CloseFast(); e != nil {
-			errs = append(errs, e)
-		}
-	}
-
-	c.realDomainNegSet.Range(func(key, value any) bool {
-		c.realDomainNegSet.Delete(key)
-		return true
-	})
-	c.dnsDialerSnapshot.Range(func(key, value any) bool {
-		c.dnsDialerSnapshot.Delete(key)
-		return true
-	})
-	c.clearAllTcpSniffNegative()
-
-	if coreErr := c.core.CloseFast(); coreErr != nil {
 		errs = append(errs, coreErr)
 	}
 	return stderrors.Join(errs...)
@@ -1691,20 +1577,6 @@ func (c *ControlPlane) CloseFast() (err error) {
 func (c *ControlPlane) StopDNSListener() error {
 	if c.dnsListener != nil {
 		return c.dnsListener.Stop()
-	}
-	return nil
-}
-
-func (c *ControlPlane) StopDNSListenerFast() error {
-	if c.dnsListener != nil {
-		return c.dnsListener.StopFast()
-	}
-	return nil
-}
-
-func (c *ControlPlane) StartDNSListener() error {
-	if c.dnsListener != nil {
-		return c.dnsListener.Start()
 	}
 	return nil
 }

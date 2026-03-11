@@ -112,22 +112,15 @@ type DnsController struct {
 	evictorDone chan struct{}
 	evictorQ    chan *DnsCache
 	closeOnce   sync.Once
-	closing     atomic.Bool
 
 	// Async BPF update: uses a single goroutine with bounded channel
 	// to process BPF map updates off the hot path.
 	bpfUpdateCh     chan *bpfUpdateTask
 	bpfUpdateStop   chan struct{}
-	bpfUpdateDone   chan struct{}
 	bpfUpdateStopMu sync.Mutex // Protects bpfUpdateStop initialization and closing
 	bpfUpdateWg     sync.WaitGroup
 	bpfUpdateOnce   sync.Once
 	bpfUpdateClosed atomic.Bool
-}
-
-type shutdownWaiter struct {
-	name string
-	done <-chan struct{}
 }
 
 // bpfUpdateTask represents a BPF map update request.
@@ -238,7 +231,6 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		// Async BPF update: lazy initialization in startBpfUpdateWorker
 		bpfUpdateCh:   nil,
 		bpfUpdateStop: nil,
-		bpfUpdateDone: nil,
 	}
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
@@ -249,31 +241,34 @@ func (c *DnsController) Close() error {
 	// Acquire lock before closeOnce to synchronize with startBpfUpdateWorker.
 	// This prevents the race where Close and startBpfUpdateWorker access
 	// bpfUpdateStop concurrently.
-	var waiters []shutdownWaiter
-
 	c.bpfUpdateStopMu.Lock()
-	c.closeOnce.Do(func() {
-		c.closing.Store(true)
-		c.bpfUpdateClosed.Store(true)
+	defer c.bpfUpdateStopMu.Unlock()
 
+	c.closeOnce.Do(func() {
+		// Stop BPF update worker (if it was started).
 		if c.bpfUpdateStop != nil {
+			// Signal shutdown first - this prevents new sends
+			c.bpfUpdateClosed.Store(true)
+			// Signal worker to stop and drain remaining tasks
 			close(c.bpfUpdateStop)
-			waiters = append(waiters, shutdownWaiter{name: "bpf update worker", done: c.bpfUpdateDone})
+			// Wait for worker to finish draining
+			c.bpfUpdateWg.Wait()
+			// Note: We intentionally do NOT close bpfUpdateCh here.
+			// Closing the channel while concurrent sends might be in progress
+			// would cause panics. Instead, the channel will be garbage collected
+			// when the DnsController is no longer referenced.
 		}
 
 		if c.janitorStop != nil {
 			close(c.janitorStop)
 		}
 		if c.janitorDone != nil {
-			waiters = append(waiters, shutdownWaiter{name: "dns cache janitor", done: c.janitorDone})
+			<-c.janitorDone
 		}
 		if c.evictorDone != nil {
-			waiters = append(waiters, shutdownWaiter{name: "dns cache evictor", done: c.evictorDone})
+			<-c.evictorDone
 		}
 	})
-	c.bpfUpdateStopMu.Unlock()
-
-	closeErrs := waitForShutdownWaiters(waiters, 5*time.Second, "DnsController.Close")
 
 	var errs []error
 	c.dnsForwarderCache.Range(func(key, value any) bool {
@@ -296,71 +291,7 @@ func (c *DnsController) Close() error {
 		return true
 	})
 
-	errs = append(errs, closeErrs...)
 	return errors.Join(errs...)
-}
-
-// CloseFast is used on process exit. It only signals background workers to stop
-// and drops Go-side state; it does not wait for goroutines or forwarders.
-func (c *DnsController) CloseFast() error {
-	c.bpfUpdateStopMu.Lock()
-	c.closeOnce.Do(func() {
-		c.closing.Store(true)
-		c.bpfUpdateClosed.Store(true)
-		if c.bpfUpdateStop != nil {
-			close(c.bpfUpdateStop)
-		}
-		if c.janitorStop != nil {
-			close(c.janitorStop)
-		}
-	})
-	c.bpfUpdateStopMu.Unlock()
-
-	c.dnsForwarderCache.Range(func(key, value any) bool {
-		c.dnsForwarderCache.Delete(key)
-		return true
-	})
-	c.dnsCache.Range(func(key, value any) bool {
-		c.dnsCache.Delete(key)
-		return true
-	})
-	return nil
-}
-
-func waitForShutdownWaiters(waiters []shutdownWaiter, timeout time.Duration, owner string) []error {
-	if len(waiters) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	errCh := make(chan error, len(waiters))
-	var wg sync.WaitGroup
-
-	for _, waiter := range waiters {
-		if waiter.done == nil {
-			continue
-		}
-		wg.Add(1)
-		go func(waiter shutdownWaiter) {
-			defer wg.Done()
-			select {
-			case <-waiter.done:
-			case <-ctx.Done():
-				errCh <- fmt.Errorf("%s: timeout waiting for %s", owner, waiter.name)
-			}
-		}(waiter)
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
-	}
-	return errs
 }
 
 var (
@@ -402,15 +333,11 @@ func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 func (c *DnsController) startBpfUpdateWorker() {
 	c.bpfUpdateOnce.Do(func() {
 		c.bpfUpdateStopMu.Lock()
-		defer c.bpfUpdateStopMu.Unlock()
-		if c.bpfUpdateClosed.Load() {
-			return
-		}
 		const bpfUpdateQueueSize = 1024
 		c.bpfUpdateCh = make(chan *bpfUpdateTask, bpfUpdateQueueSize)
 		c.bpfUpdateStop = make(chan struct{})
-		c.bpfUpdateDone = make(chan struct{})
 		c.bpfUpdateWg.Add(1)
+		c.bpfUpdateStopMu.Unlock()
 		go c.bpfUpdateWorker()
 	})
 }
@@ -418,7 +345,7 @@ func (c *DnsController) startBpfUpdateWorker() {
 // processBpfUpdateTask executes a single BPF map update task.
 // Returns true if the task was processed, false if it was nil/empty.
 func (c *DnsController) processBpfUpdateTask(task *bpfUpdateTask, draining bool) bool {
-	if task == nil || task.cache == nil || c.closing.Load() {
+	if task == nil || task.cache == nil {
 		return false
 	}
 	if c.cacheAccessCallback != nil {
@@ -438,11 +365,10 @@ func (c *DnsController) processBpfUpdateTask(task *bpfUpdateTask, draining bool)
 }
 
 // bpfUpdateWorker processes BPF map updates asynchronously.
-// It exits immediately on shutdown because queued updates are no longer
-// meaningful once the controller is closing.
+// It runs until bpfUpdateStop is closed, then drains remaining tasks and exits.
+// Note: bpfUpdateCh is never closed; the worker exits when bpfUpdateStop is signaled.
 func (c *DnsController) bpfUpdateWorker() {
 	defer c.bpfUpdateWg.Done()
-	defer close(c.bpfUpdateDone)
 
 	for {
 		select {
@@ -450,7 +376,17 @@ func (c *DnsController) bpfUpdateWorker() {
 			c.processBpfUpdateTask(task, false)
 
 		case <-c.bpfUpdateStop:
-			return
+			// Stop signal received - drain queue first before exiting
+			// This ensures all pending updates are processed
+			for {
+				select {
+				case task := <-c.bpfUpdateCh:
+					c.processBpfUpdateTask(task, true)
+				default:
+					// Queue is empty, safe to exit
+					return
+				}
+			}
 		}
 	}
 }
@@ -502,7 +438,7 @@ func (c *DnsController) sendBpfUpdateTask(task *bpfUpdateTask) (sent bool) {
 }
 
 func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
-	if cache == nil || c.cacheRemoveCallback == nil || c.closing.Load() {
+	if cache == nil || c.cacheRemoveCallback == nil {
 		return
 	}
 
@@ -529,7 +465,7 @@ func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
 }
 
 func (c *DnsController) invokeCacheRemoveCallback(cache *DnsCache) {
-	if cache == nil || c.cacheRemoveCallback == nil || c.closing.Load() {
+	if cache == nil || c.cacheRemoveCallback == nil {
 		return
 	}
 	if err := c.cacheRemoveCallback(cache); err != nil {
@@ -701,7 +637,14 @@ func (c *DnsController) startCacheEvictor() {
 			case cache := <-c.evictorQ:
 				c.invokeCacheRemoveCallback(cache)
 			case <-c.janitorStop:
-				return
+				for {
+					select {
+					case cache := <-c.evictorQ:
+						c.invokeCacheRemoveCallback(cache)
+					default:
+						return
+					}
+				}
 			}
 		}
 	}()
@@ -890,10 +833,6 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 
 	// Store atomically - concurrent writes don't block each other
 	c.dnsCache.Store(cacheKey, newCache)
-
-	if c.closing.Load() {
-		return nil
-	}
 
 	if err = c.cacheAccessCallback(newCache); err != nil {
 		return err

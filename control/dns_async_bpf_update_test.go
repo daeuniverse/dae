@@ -52,7 +52,7 @@ func TestBpfUpdateWorker_Lifecycle(t *testing.T) {
 		controller.triggerBpfUpdateIfNeeded(cache, now)
 	}
 
-	// Close should stop the worker promptly without hanging.
+	// Close should wait for all tasks to complete
 	done := make(chan struct{})
 	go func() {
 		controller.Close()
@@ -119,7 +119,8 @@ func TestBpfUpdateWorker_NonBlockingSend(t *testing.T) {
 		t.Fatal("Close did not complete in time")
 	}
 
-	t.Log("Processed tasks before shutdown:", updateCallCount.Load())
+	// Verify all tasks were processed
+	t.Log("Processed tasks:", updateCallCount.Load())
 }
 
 // TestBpfUpdateWorker_ErrorHandling verifies that errors in BPF updates
