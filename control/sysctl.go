@@ -27,6 +27,12 @@ type SysctlManager struct {
 }
 
 func InitSysctlManager(log *logrus.Logger) (err error) {
+	if sysctl != nil {
+		sysctl.mux.Lock()
+		sysctl.log = log
+		sysctl.mux.Unlock()
+		return nil
+	}
 	sysctl, err = NewSysctlManager(log)
 	return err
 }

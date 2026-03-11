@@ -95,6 +95,13 @@ func (c *DnsCache) GetPackedResponse() []byte {
 	return *ptr
 }
 
+func (c *DnsCache) GetFqdn() string {
+	if len(c.Answer) > 0 {
+		return c.Answer[0].Header().Name
+	}
+	return ""
+}
+
 func (c *DnsCache) MarkRouteBindingRefreshed(now time.Time) {
 	c.lastRouteSyncNano.Store(now.UnixNano())
 }

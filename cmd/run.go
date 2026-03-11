@@ -117,14 +117,18 @@ var (
 			logger.SetLogger(logrus.StandardLogger(), conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			if err := Run(log, conf, []string{filepath.Dir(cfgFile)}); err != nil {
+			// Use the new lifecycle manager implementation
+			externGeoDataDirs := []string{filepath.Dir(cfgFile)}
+			if err := RunV2(log, cfgFile, externGeoDataDirs); err != nil {
 				log.Fatalln(err)
 			}
 		},
 	}
 )
 
-func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+// RunLegacy is the original implementation using manual state management.
+// Kept for reference and rollback purposes.
+func RunLegacy(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
@@ -503,6 +507,7 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 		&conf.Global,
 		&conf.Dns,
 		externGeoDataDirs,
+		nil,
 	)
 	if err != nil {
 		return nil, err
@@ -531,7 +536,7 @@ func preprocessWanInterfaceAuto(params *config.Config) error {
 	return nil
 }
 
-func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
+func ReadConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
 	merger := config.NewMerger(cfgFile)
 	sections, includes, err := merger.Merge()
 	if err != nil {
@@ -541,6 +546,10 @@ func readConfig(cfgFile string) (conf *config.Config, includes []string, err err
 		return nil, nil, err
 	}
 	return conf, includes, nil
+}
+
+func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
+	return ReadConfig(cfgFile)
 }
 
 func emptyConfig() (conf *config.Config, err error) {
