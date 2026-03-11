@@ -245,6 +245,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			domain = ue.SniffedDomain
 			dialTarget := realDst.String()
 
+			// Update NAT timeout for QUIC connections to ensure proper timeout
+			// based on the actual forwarding state (QUIC needs longer timeout)
+			ue.UpdateNatTimeout(QuicNatTimeout)
+
 			if c.log.IsLevelEnabled(logrus.TraceLevel) {
 				fields := logrus.Fields{
 					"network":  "udp(fp)",
@@ -287,48 +291,72 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	natTimeout := DefaultNatTimeout
 	if domain == "" && !skipSniffing && !ueExists {
-		key := flowDecision.PacketSnifferKey()
-
-		// Fast reject for obvious non-QUIC UDP packets when no existing sniff session.
-		if !flowDecision.ShouldAttemptSniff() {
+		// Fast path: only QUIC Initial packets should enter sniffing.
+		// Normal UDP traffic should be forwarded immediately without blocking.
+		if !isQuicInitial {
+			// Not a QUIC Initial packet - skip sniffing entirely.
+			// Even if there's an existing sniffer session, non-QUIC packets
+			// should not be delayed by the sniffing process.
 			goto afterSniffing
 		}
 
-		// Sniff Quic, ...
+		// Create sniffer key with DCID for QUIC connections.
+		// Each DCID is like a different bus - passengers (packets) wait
+		// for their specific bus to depart (complete sniffing).
+		key := NewPacketSnifferKey(realSrc, realDst, data)
+
+		// Check if this DCID has failed sniffing before.
+		// Failed DCIDs bypass sniffing entirely and use IP routing directly.
+		// This prevents blocking when a previous sniffing attempt timed out.
+		if IsQuicDcidFailed(key) {
+			goto afterSniffing
+		}
+
+		// Get or create sniffer for this DCID.
 		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
-	retrySniffer:
 		_sniffer.Mu.Lock()
-		// Re-get sniffer from pool to confirm the transaction is not done.
 		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
 			now := time.Now()
-			if isQuicInitial && sniffer.ObserveQuicInitial(data) {
-				sniffer.Mu.Unlock()
-				if c.log.IsLevelEnabled(logrus.DebugLevel) {
-					c.log.WithFields(logrus.Fields{
-						"src": realSrc.String(),
-						"dst": realDst.String(),
-					}).Debug("Reset PacketSniffer for new QUIC Initial connection on reused UDP flow")
-				}
-				_ = DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
-				_sniffer, _ = DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
-				goto retrySniffer
-			}
-			// Only bypass sniffing for non-QUIC flows. QUIC Initial packets must
-			// always be sniffed to extract SNI for proper routing, regardless of
-			// past failures on this flow key.
-			if !isQuicInitial && sniffer.ShouldBypassSniff(now) {
+
+			// Check if we've hit the bypass threshold for this DCID.
+			// After consecutive failures, fall back to IP routing to avoid
+			// indefinitely blocking QUIC connections waiting for sniffing completion.
+			if sniffer.ShouldBypassSniff(now) {
+				// Mark this DCID as failed - subsequent packets will bypass sniffing.
+				MarkQuicDcidFailed(key)
 				sniffer.Mu.Unlock()
 				goto afterSniffing
 			}
+
 			sniffer.AppendData(data)
 			domain, err = sniffer.SniffUdp()
 			if err != nil {
-				// Sniffing failure should not drop the packet.
-				// Whether it's a sniffing error or unexpected error,
-				// we continue to process the packet with IP-based routing.
+				// Check for decrypt failures (malformed packets).
+				// If decryption repeatedly fails, the packets are not valid QUIC
+				// and retrying is pointless. Give up quickly.
+				if stderrors.Is(err, sniffing.ErrNotApplicable) {
+					sniffer.consecutiveDecryptFailures++
+					if sniffer.consecutiveDecryptFailures >= consecutiveDecryptFailuresThreshold {
+						// Too many decrypt failures - mark DCID as failed.
+						if c.log.IsLevelEnabled(logrus.DebugLevel) {
+							c.log.WithFields(logrus.Fields{
+								"src":      realSrc.String(),
+								"dst":      realDst.String(),
+								"failures": sniffer.consecutiveDecryptFailures,
+							}).Debug("QUIC decrypt failed repeatedly, marking DCID as failed")
+						}
+						MarkQuicDcidFailed(key)
+						sniffer.Mu.Unlock()
+						goto afterSniffing
+					}
+				} else {
+					// Reset decrypt failure counter on non-decrypt errors.
+					sniffer.consecutiveDecryptFailures = 0
+				}
+
+				// Log unexpected errors for debugging but don't drop packet.
 				if !sniffing.IsSniffingError(err) {
-					// Log unexpected errors for debugging but don't drop packet.
 					if logrus.IsLevelEnabled(logrus.DebugLevel) {
 						logrus.WithError(err).
 							WithField("from", realSrc).
@@ -337,16 +365,30 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 					}
 				}
 			}
+
 			if sniffer.NeedMore() {
+				// Need more QUIC Initial packets to complete SNI extraction.
+				// Reset decrypt failure counter - we got valid QUIC data, just need more.
+				sniffer.consecutiveDecryptFailures = 0
+				// Record failure and check bypass threshold.
 				sniffer.RecordSniffNoSni(now)
+				if sniffer.ShouldBypassSniff(time.Now()) {
+					// Threshold reached - mark DCID as failed and fall back to IP routing.
+					MarkQuicDcidFailed(key)
+					sniffer.Mu.Unlock()
+					goto afterSniffing
+				}
+				// Wait for more packets with same DCID.
 				sniffer.Mu.Unlock()
 				return nil
 			}
+
 			if err != nil || domain == "" {
 				sniffer.RecordSniffNoSni(now)
 			} else {
 				sniffer.RecordSniffSuccess()
 			}
+
 			if err != nil {
 				if logrus.IsLevelEnabled(logrus.TraceLevel) {
 					logrus.WithError(err).
@@ -355,6 +397,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 						Trace("sniffUdp")
 				}
 			}
+
 			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 			// Flush previously buffered packets on the same endpoint path before the
 			// current packet so QUIC sniff completion preserves original ingress order.
@@ -416,8 +459,13 @@ getNew:
 		return fmt.Errorf("touch max retry limit")
 	}
 
+	// Determine NAT timeout based on connection type
 	if domain != "" {
+		// QUIC connections get 2 minutes
 		natTimeout = QuicNatTimeout
+	} else {
+		// Non-QUIC UDP uses default timeout
+		natTimeout = DefaultNatTimeout
 	}
 
 	// QUIC (domain != "") or likely QUIC Initial packets use Symmetric NAT.
@@ -427,7 +475,9 @@ getNew:
 	// target key is unchanged (non-QUIC existing flow, no domain upgrade).
 	// On any retry the endpoint was removed, so we always call GetOrCreate.
 	if retry == 0 && ueExists && ueKey == foundUeKey {
-		ue.RefreshTtl()
+		// Update NAT timeout based on current forwarding state
+		// This allows the timeout to adapt to changes (e.g., domain sniffed, policy change)
+		ue.UpdateNatTimeout(natTimeout)
 		isNew = false
 	} else {
 		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
