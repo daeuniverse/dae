@@ -148,12 +148,15 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	go func() {
 		readyChan := make(chan bool, 1)
 		go func() {
-			<-readyChan
-			sdnotify.Ready()
-			if !disablePidFile {
-				_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
+			if <-readyChan {
+				sdnotify.Ready()
+				if !disablePidFile {
+					_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
+				}
+				_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadDone}, 0644)
+			} else {
+				log.Warn("Initialization failed; not signaling readiness to supervisor")
 			}
-			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadDone}, 0644)
 		}()
 		if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
@@ -163,7 +166,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		}); runErr != nil {
 			log.Errorln("GetDaeNetns.With:", runErr)
 		}
-		sigs <- nil
+		sendSigExit(sigs)
 	}()
 	reloading := false
 	reloadingErr := error(nil)
@@ -187,7 +190,7 @@ loop:
 						}); runErr != nil {
 							log.Errorln("GetDaeNetns.With:", runErr)
 						}
-						sigs <- nil
+						sendSigExit(sigs)
 					}()
 					<-readyChan
 					sdnotify.Ready()
@@ -208,7 +211,7 @@ loop:
 					if err := c.Serve(readyChan, listener); err != nil {
 						log.Errorln("ListenAndServe:", err)
 					}
-					sigs <- nil
+					sendSigExit(sigs)
 				}()
 				<-readyChan
 				sdnotify.Ready()
@@ -346,7 +349,9 @@ loop:
 			oldC.Close()
 
 			if pprofServer != nil {
-				pprofServer.Shutdown(context.Background())
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = pprofServer.Shutdown(ctx)
+				cancel()
 				pprofServer = nil
 			}
 			if newConf.Global.PprofPort != 0 {
@@ -362,12 +367,32 @@ loop:
 			break loop
 		}
 	}
-	defer os.Remove(PidFilePath)
-	defer control.GetDaeNetns().Close()
+	defer func() {
+		sdnotify.Stopping()
+		if pprofServer != nil {
+			log.Infoln("Shutting down pprof server")
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = pprofServer.Shutdown(ctx)
+			cancel()
+		}
+		os.Remove(PidFilePath)
+		control.GetDaeNetns().Close()
+	}()
+
+	if e := c.AbortConnections(); e != nil {
+		log.Warnf("abort connections: %v", e)
+	}
 	if e := c.Close(); e != nil {
 		return fmt.Errorf("close control plane: %w", e)
 	}
 	return nil
+}
+
+func sendSigExit(sigs chan<- os.Signal) {
+	select {
+	case sigs <- nil:
+	default:
+	}
 }
 
 func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {

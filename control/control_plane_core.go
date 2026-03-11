@@ -208,6 +208,8 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 	}
 	if err := netlink.QdiscDel(qdisc); err != nil && !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("cannot delete clsact qdisc: %w", err)
+	} else if errors.Is(err, unix.ENOENT) {
+		c.log.Debugf("delQdisc: clsact qdisc not found for %v (already gone)", ifname)
 	}
 	return nil
 }
@@ -769,6 +771,11 @@ func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 		c.deferFuncs = c.deferFuncs[1:]
 	}
 	c.bpfEjected = true
+
+	// Stop link watcher immediately during交接 period to avoid race condition
+	// between old and new control planes reacting to link events (e.g. PPPoE flapping).
+	_ = c.ifmgr.Close()
+
 	return c.bpf
 }
 

@@ -120,13 +120,15 @@ func NewDialerGroup(
 		}
 	}
 
-	return &DialerGroup{
+	group := &DialerGroup{
 		log:             log,
 		Name:            name,
 		Dialers:         dialers,
 		aliveDialerSets: aliveDialerSets,
 		selectionPolicy: &p,
 	}
+
+	return group
 
 }
 

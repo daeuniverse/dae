@@ -89,15 +89,34 @@ func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 	if ue.log == nil {
 		return
 	}
-	entry := ue.log.WithError(err).WithField("lAddr", ue.lAddr.String())
+	fields := logrus.Fields{
+		"lAddr":       ue.lAddr.String(),
+		"dialer":      ue.Dialer.Property().Name,
+		"proxy_addr":  ue.DialTarget,
+		"sniffed":     ue.SniffedDomain,
+		"nat_timeout": ue.NatTimeout.String(),
+	}
+	entry := ue.log.WithFields(fields).WithError(err)
 	if daerrors.IsUDPEndpointNormalClose(err) {
 		entry.Debugln("UdpEndpoint " + msg + " closed normally")
 	} else {
-		entry.Warnln("UdpEndpoint " + msg + " exited with error")
+		// Add error details for connection refused
+		if opErr, ok := err.(*net.OpError); ok {
+			fields["op"] = opErr.Op
+			fields["err_type"] = fmt.Sprintf("%T", err)
+		}
+		entry.WithFields(fields).Warnln("UdpEndpoint " + msg + " exited with error")
 	}
 }
 
 func (ue *UdpEndpoint) start() {
+	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
+		ue.log.WithFields(logrus.Fields{
+			"lAddr":      ue.lAddr.String(),
+			"dialer":     ue.Dialer.Property().Name,
+			"proxy_addr": ue.DialTarget,
+		}).Debug("[UdpEndpoint] Read loop started")
+	}
 	buf := pool.GetFullCap(consts.EthernetMtu)
 	defer pool.Put(buf)
 	for {
@@ -106,6 +125,13 @@ func (ue *UdpEndpoint) start() {
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
 			ue.selfRemoveFromPool()
+
+			// Check if this is a connection refused error from proxy server
+			// If so, invalidate the cached proxy IP so we can try a different one
+			if ue.isConnectionRefused(err) {
+				ue.handleProxyServerFailure()
+			}
+
 			ue.logEndpointExit(err, "read loop")
 			break
 		}
@@ -118,6 +144,72 @@ func (ue *UdpEndpoint) start() {
 			break
 		}
 	}
+}
+
+// isConnectionRefused checks if the error indicates connection was refused.
+func (ue *UdpEndpoint) isConnectionRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return contains(errStr, "connection refused") ||
+		contains(errStr, "port unreachable") ||
+		contains(errStr, "host unreachable")
+}
+
+// handleProxyServerFailure is called when the proxy server refuses the connection.
+// It invalidates the cached proxy IP so that subsequent connections can try a different IP.
+func (ue *UdpEndpoint) handleProxyServerFailure() {
+	if ue.Dialer == nil {
+		return
+	}
+
+	// Get the proxy address from the dialer property
+	proxyAddr := ue.Dialer.Property().Address
+	if proxyAddr == "" {
+		return
+	}
+
+	// Notify the dialer about the proxy server failure
+	// This will invalidate the UDP cache for this proxy address
+	ue.Dialer.NotifyProxyFailure(proxyAddr, "udp")
+
+	if ue.log != nil && ue.log.IsLevelEnabled(logrus.InfoLevel) {
+		ue.log.WithFields(logrus.Fields{
+			"proxy_addr": proxyAddr,
+			"dialer":     ue.Dialer.Property().Name,
+		}).Info("[UdpEndpoint] Proxy server UDP connection refused - invalidated cached IP")
+	}
+}
+
+// contains checks if a string contains a substring (case-insensitive).
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || (len(s) > len(substr) && containsIgnoreCase(s, substr)))
+}
+
+// containsIgnoreCase is a helper for case-insensitive substring search.
+func containsIgnoreCase(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		match := true
+		for j := 0; j < len(substr); j++ {
+			c1 := s[i+j]
+			c2 := substr[j]
+			if c1 >= 'A' && c1 <= 'Z' {
+				c1 += 32
+			}
+			if c2 >= 'A' && c2 <= 'Z' {
+				c2 += 32
+			}
+			if c1 != c2 {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 // selfRemoveFromPool performs a best-effort CAS delete of this endpoint from
@@ -179,6 +271,16 @@ func (ue *UdpEndpoint) RefreshTtl() {
 		return
 	}
 	ue.expiresAtNano.Store(time.Now().Add(ue.NatTimeout).UnixNano())
+}
+
+// UpdateNatTimeout updates the NAT timeout and refreshes TTL with the new timeout.
+// This allows the timeout to adapt to changing forwarding state (e.g., QUIC upgrade, fixed policy).
+func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	ue.NatTimeout = timeout
+	ue.expiresAtNano.Store(time.Now().Add(timeout).UnixNano())
 }
 
 func (ue *UdpEndpoint) IsExpired(nowNano int64) bool {
@@ -362,7 +464,12 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 				// Use CompareAndDelete for atomic CAS (best practice)
 				p.pool.CompareAndDelete(key, ue)
 			} else {
-				ue.RefreshTtl()
+				// Update NAT timeout based on current forwarding state
+				if createOption != nil && createOption.NatTimeout > 0 {
+					ue.UpdateNatTimeout(createOption.NatTimeout)
+				} else {
+					ue.RefreshTtl()
+				}
 				return ue, false, nil
 			}
 		}
@@ -388,7 +495,12 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 		if v, loaded := p.pool.Load(key); loaded {
 			fresh := v.(*UdpEndpoint)
 			if !fresh.IsDead() {
-				fresh.RefreshTtl()
+				// Update NAT timeout based on current forwarding state
+				if createOption != nil && createOption.NatTimeout > 0 {
+					fresh.UpdateNatTimeout(createOption.NatTimeout)
+				} else {
+					fresh.RefreshTtl()
+				}
 				return fresh, false, nil
 			}
 			// Still dead — remove it too and fall through to create.
@@ -401,7 +513,12 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 		}
 		return newUe, true, nil
 	}
-	ue.RefreshTtl()
+	// Update NAT timeout based on current forwarding state
+	if createOption != nil && createOption.NatTimeout > 0 {
+		ue.UpdateNatTimeout(createOption.NatTimeout)
+	} else {
+		ue.RefreshTtl()
+	}
 	return _ue.(*UdpEndpoint), isNew, nil
 }
 

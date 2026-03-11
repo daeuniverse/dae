@@ -95,6 +95,13 @@ func (c *DnsCache) GetPackedResponse() []byte {
 	return *ptr
 }
 
+func (c *DnsCache) GetFqdn() string {
+	if len(c.Answer) > 0 {
+		return c.Answer[0].Header().Name
+	}
+	return ""
+}
+
 func (c *DnsCache) MarkRouteBindingRefreshed(now time.Time) {
 	c.lastRouteSyncNano.Store(now.UnixNano())
 }
@@ -362,7 +369,10 @@ func (c *DnsCache) GetPackedResponseWithApproximateTTL(qname string, qtype uint1
 	}
 
 	// Calculate current TTL in seconds (avoid float operations)
-	currentTTL := max(uint32((deadlineNano-nowNano)/1e9), 1)
+	currentTTL := uint32((deadlineNano - nowNano) / 1e9)
+	if currentTTL == 0 {
+		currentTTL = 1
+	}
 
 	// Lock-free read: atomic pointer load (no mutex, no blocking)
 	packedPtr := c.packedResponse.Load()
@@ -463,9 +473,10 @@ func (c *DnsCache) FillIntoWithTTL(req *dnsmessage.Msg, now time.Time) []byte {
 	// Calculate remaining TTL based on the provided time
 	var remainingTTL uint32
 	if c.Deadline.After(now) {
-		remainingTTL = max(uint32(c.Deadline.Sub(now).Seconds()),
-			// Minimum TTL of 1 second
-			1)
+		remainingTTL = uint32(c.Deadline.Sub(now).Seconds())
+		if remainingTTL == 0 {
+			remainingTTL = 1 // Minimum TTL of 1 second
+		}
 	} else {
 		remainingTTL = 0 // Expired
 	}

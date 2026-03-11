@@ -18,23 +18,38 @@ import (
 
 const (
 	// PacketSnifferTtl is the TTL for packet sniffer sessions.
-	// Increased to 10 seconds to ensure QUIC handshake has enough time to complete
-	// under poor network conditions. QUIC Initial packets may require multiple RTTs
-	// to gather enough Crypto frames for SNI extraction.
-	PacketSnifferTtl = 10 * time.Second
+	// Reduced to 5 seconds to balance between completing QUIC handshakes and
+	// cleaning up stale sniffing state faster. Most QUIC handshakes complete
+	// within 1-2 RTTs, so 5 seconds is sufficient even under poor network conditions.
+	PacketSnifferTtl = 5 * time.Second
 
 	packetSnifferJanitorInterval = 250 * time.Millisecond
 
 	// udpSniffNoSniThreshold is the number of consecutive no-SNI sniff attempts before
-	// temporarily disabling sniffing for this flow. Increased to 12 to reduce false positives
-	// under bursty traffic patterns while still protecting against pathological cases.
-	udpSniffNoSniThreshold = 12
+	// marking the DCID as failed and falling back to IP routing. Reduced to 4 to
+	// minimize blocking time for non-QUIC traffic (like STUN) while still allowing
+	// some retransmissions for real QUIC connections.
+	udpSniffNoSniThreshold = 4
 
 	// udpSniffNoSniBypassTtl is how long sniffing is disabled after reaching the threshold.
-	// Reduced to 3 seconds to limit the impact of temporary failures on subsequent
-	// connection attempts (e.g., browser refreshes using the same source port).
-	udpSniffNoSniBypassTtl = 3 * time.Second
+	// Reduced to 1 second to quickly resume sniffing after temporary failures.
+	udpSniffNoSniBypassTtl = 1 * time.Second
+
+	// consecutiveDecryptFailuresThreshold is the number of consecutive decrypt failures
+	// (ErrNotApplicable) before immediately giving up on this DCID. Reduced to 2 to
+	// quickly identify non-QUIC traffic that shouldn't be sniffed.
+	consecutiveDecryptFailuresThreshold = 2
+
+	// failedQuicDcidTtl is how long a DCID is marked as failed after sniffing timeout.
+	// Set to 5 minutes to balance between avoiding repeated failures and allowing
+	// recovery after transient network issues.
+	failedQuicDcidTtl = 5 * time.Minute
 )
+
+// failedQuicDcidCache tracks DCIDs that have failed sniffing.
+// Once a DCID fails (timeout, threshold reached), subsequent packets with
+// the same DCID bypass sniffing entirely and use IP routing.
+var failedQuicDcidCache sync.Map // map[PacketSnifferKey]time.Time
 
 // PacketSniffer holds sniffing state for a UDP flow.
 // Field order optimized for memory alignment (Go best practice).
@@ -55,6 +70,12 @@ type PacketSniffer struct {
 	// (timeouts / need-more / not-applicable), bypass sniffing temporarily.
 	noSniStreak      int
 	bypassSniffUntil time.Time
+
+	// consecutiveDecryptFailures counts consecutive ErrNotApplicable errors.
+	// If decryption fails repeatedly, it indicates malformed packets and we
+	// should give up quickly rather than waiting for more packets.
+	consecutiveDecryptFailures int
+
 	quicInitialSig   quicInitialFingerprint
 	hasQuicInitialSig bool
 }
@@ -158,9 +179,39 @@ type PacketSnifferPool struct {
 type PacketSnifferOptions struct {
 	Ttl time.Duration
 }
+
+// PacketSnifferKey identifies a QUIC sniffing session by 5-tuple + DCID.
+// Each QUIC connection has a unique Destination Connection ID, so we group
+// by DCID to separate different QUIC connections on the same UDP flow.
+// This is like grouping passengers by the bus they're waiting for.
 type PacketSnifferKey struct {
-	LAddr netip.AddrPort
-	RAddr netip.AddrPort
+	LAddr   netip.AddrPort
+	RAddr   netip.AddrPort
+	DCID    [20]byte // Destination Connection ID (max 20 bytes)
+	DCIDLen uint8    // Actual DCID length (0-20)
+}
+
+// NewPacketSnifferKey creates a sniffer key with DCID for QUIC connections.
+// For non-QUIC packets, DCID is zero and the key falls back to {Src, Dst}.
+func NewPacketSnifferKey(src, dst netip.AddrPort, data []byte) PacketSnifferKey {
+	key := PacketSnifferKey{
+		LAddr: src,
+		RAddr: dst,
+	}
+
+	// Try to extract DCID from QUIC Initial packet
+	if sniffing.IsLikelyQuicInitialPacket(data) && len(data) >= 7 {
+		dstLen := int(data[5])
+		if dstLen > 0 && dstLen <= 20 {
+			pos := 6
+			if len(data) >= pos+dstLen {
+				key.DCIDLen = uint8(dstLen)
+				copy(key.DCID[:], data[pos:pos+dstLen])
+			}
+		}
+	}
+
+	return key
 }
 
 var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
@@ -236,7 +287,54 @@ func (p *PacketSnifferPool) startJanitor() {
 					}
 					return true
 				})
+				// Clean up expired failed DCID entries
+				failedQuicDcidCache.Range(func(key, value any) bool {
+					expireTime := value.(time.Time)
+					if now.After(expireTime) {
+						failedQuicDcidCache.Delete(key)
+					}
+					return true
+				})
 			}
 		}()
 	})
+}
+
+// IsQuicDcidFailed checks if a DCID has been marked as failed due to sniffing timeout.
+// Failed DCIDs bypass sniffing entirely and use IP routing directly.
+func IsQuicDcidFailed(key PacketSnifferKey) bool {
+	if expireTime, ok := failedQuicDcidCache.Load(key); ok {
+		return time.Now().Before(expireTime.(time.Time))
+	}
+	return false
+}
+
+// MarkQuicDcidFailed marks a DCID as failed, causing subsequent packets with
+// the same DCID to bypass sniffing and use IP routing directly.
+func MarkQuicDcidFailed(key PacketSnifferKey) {
+	failedQuicDcidCache.Store(key, time.Now().Add(failedQuicDcidTtl))
+}
+
+// ClearFailedQuicDcids clears all failed DCID entries.
+// This should be called on reload or when network conditions improve
+// (e.g., after successful health check) to allow retrying sniffing.
+func ClearFailedQuicDcids() {
+	failedQuicDcidCache.Range(func(key, value any) bool {
+		failedQuicDcidCache.Delete(key)
+		return true
+	})
+}
+
+// HealthCheckSuccessCallback is a callback function that can be set to
+// be notified when health check succeeds. This allows clearing the failed
+// DCID cache when network conditions improve.
+var HealthCheckSuccessCallback func()
+
+// NotifyHealthCheckSuccess should be called when a health check succeeds.
+// This clears the failed QUIC DCID cache to allow retrying sniffing.
+func NotifyHealthCheckSuccess() {
+	ClearFailedQuicDcids()
+	if HealthCheckSuccessCallback != nil {
+		HealthCheckSuccessCallback()
+	}
 }

@@ -20,6 +20,8 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
+
+	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
 )
 
 const (
@@ -55,6 +57,10 @@ type Dialer struct {
 
 	httpClients  map[string]*http.Client
 	httpClientMu sync.Mutex
+
+	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
+	// This is used for health check cycle management and failover tracking
+	stickyIpDialer *stickyip.StickyIpDialer
 }
 
 type GlobalOption struct {
@@ -110,7 +116,6 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	d := &Dialer{
 		GlobalOption:     option,
 		InstanceOption:   iOption,
-		Dialer:           dialer,
 		property:         property,
 		collectionFineMu: sync.RWMutex{},
 		collections:      collections,
@@ -121,6 +126,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		cancel:           cancel,
 		httpClients:      make(map[string]*http.Client),
 	}
+	d.Dialer = dialer
 	option.Log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
@@ -149,15 +155,66 @@ func (d *Dialer) Close() error {
 		}
 	}
 	d.httpClientMu.Unlock()
-	// Note: We intentionally do NOT close checkCh here because:
-	// 1. The ticker goroutine may still be sending to it (race condition -> panic)
-	// 2. The channel will be garbage collected along with the Dialer
-	// 3. All goroutines should exit via d.ctx.Done() signal
 	return nil
 }
 
 func (d *Dialer) Property() *Property {
 	return d.property
+}
+
+// IncrementCheckCycle advances the health check cycle for sticky IP caching.
+// This is called by the health checker to advance the cycle and invalidate
+// old cache entries, allowing IP failover to different resolved IPs.
+func (d *Dialer) IncrementCheckCycle() {
+	if d.stickyIpDialer != nil {
+		d.stickyIpDialer.IncrementCheckCycle()
+	}
+}
+
+// NotifyHealthCheckResult notifies about health check results.
+// On success: clears failed QUIC DCID cache and resets proxy IP failure counter.
+// On failure: tracks consecutive failures and may invalidate cached IP.
+func (d *Dialer) NotifyHealthCheckResult(success bool) {
+	if success {
+		// Reset proxy IP failure counter on success
+		if d.property.Address != "" {
+			recordProxySuccess(d.property.Address)
+		}
+		// Clear failed QUIC DCID cache
+		notifyQuicDcidCacheClearImpl()
+	} else {
+		// Track failures - may trigger IP cache invalidation
+		if d.property.Address != "" {
+			if recordProxyFailure(d.property.Address) {
+				// Threshold reached - sticky IP cache will be invalidated
+				// and fresh IPs will be tried on next cycle
+			}
+		}
+	}
+}
+
+// NotifyProxyFailure is called when a proxy server connection fails (e.g., connection refused).
+// It immediately invalidates the cached IP for the specified protocol so that
+// the next connection can try a different IP.
+func (d *Dialer) NotifyProxyFailure(proxyAddr, protocol string) {
+	if d.stickyIpDialer == nil {
+		return
+	}
+	// Invalidate the cache for this specific protocol
+	d.stickyIpDialer.InvalidateProtocolCache(proxyAddr, protocol)
+}
+
+// notifyQuicDcidCacheClearImpl is the actual implementation.
+// It's defined as a var that gets initialized at runtime to avoid circular dependency.
+var notifyQuicDcidCacheClearImpl func() = func() {
+	// Default implementation does nothing
+	// Will be overridden by control package during initialization
+}
+
+// SetQuicDcidCacheClearFunc sets the function to clear failed QUIC DCID cache.
+// This should be called by control package during initialization.
+func SetQuicDcidCacheClearFunc(fn func()) {
+	notifyQuicDcidCacheClearImpl = fn
 }
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {

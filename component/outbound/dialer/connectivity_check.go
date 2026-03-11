@@ -609,6 +609,10 @@ func (d *Dialer) aliveBackground() {
 		case <-d.checkCh:
 		}
 
+		// Increment the health check cycle at the start of each cycle.
+		// This advances the sticky IP cache cycle, allowing IP failover.
+		d.IncrementCheckCycle()
+
 		// Process initial check immediately
 		d.submitCheckTasks(workerPool, &wg, CheckOpts)
 
@@ -738,6 +742,10 @@ func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
 		aliveDialerGroups: d.snapshotAliveDialerGroupsLocked(collection),
 	}
 	d.collectionFineMu.Unlock()
+
+	// Notify sticky IP dialer about the health check failure
+	d.NotifyHealthCheckResult(false)
+
 	return update
 }
 
@@ -754,6 +762,10 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 		aliveDialerGroups: d.snapshotAliveDialerGroupsLocked(collection),
 	}
 	d.collectionFineMu.Unlock()
+
+	// Notify sticky IP dialer about the health check success
+	d.NotifyHealthCheckResult(true)
+
 	return update, avg
 }
 

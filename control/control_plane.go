@@ -144,13 +144,21 @@ func NewControlPlane(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
-) (*ControlPlane, error) {
+) (plane *ControlPlane, err error) {
+	// Clear failed QUIC DCID cache on reload/startup.
+	// Network conditions may have changed, so we should allow retrying sniffing
+	// for DCIDs that previously failed.
+	ClearFailedQuicDcids()
+
+	// Register the cache clear function with dialer package so health checks
+	// can clear the failed DCID cache when network conditions improve.
+	dialer.SetQuicDcidCacheClearFunc(ClearFailedQuicDcids)
+
 	// TODO: Some users reported that enabling GSO on the client would affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
 
-	var err error
 
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -264,9 +272,15 @@ func NewControlPlane(
 	)
 	defer func() {
 		if err != nil {
-			// Flip back.
-			core.Flip()
-			_ = core.Close()
+			if plane != nil {
+				_ = plane.Close()
+			} else {
+				// Fallback cleanup if plane was not yet fully constructed.
+				for i := len(deferFuncs) - 1; i >= 0; i-- {
+					_ = deferFuncs[i]()
+				}
+				_ = core.Close()
+			}
 		}
 	}()
 
@@ -447,7 +461,7 @@ func NewControlPlane(
 
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
-	plane := &ControlPlane{
+	plane = &ControlPlane{
 		log:               log,
 		core:              core,
 		deferFuncs:        deferFuncs,
@@ -474,11 +488,6 @@ func NewControlPlane(
 		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
 	}
 	plane.startRealDomainNegJanitor()
-	defer func() {
-		if err != nil {
-			cancel()
-		}
-	}()
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
@@ -495,7 +504,7 @@ func NewControlPlane(
 	if err != nil {
 		return nil, err
 	}
-	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
+	plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
 		Log: log,
 		// ConcurrencyLimit: use default (16384)
 		// Suitable for proxy scenarios with higher latency
@@ -538,10 +547,43 @@ func NewControlPlane(
 		},
 		IpVersionPrefer: dnsConfig.IpVersionPrefer,
 		FixedDomainTtl:  fixedDomainTtl,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
+
+	// On reload, clear the BPF domain routing map to ensure DNS configuration
+	// changes take effect immediately. The dnsCache parameter is preserved for
+	// dae-wing compatibility but not used for cache refresh.
+	// TODO: Implement selective cache refresh based on what changed in DNS config.
+	if _bpf != nil {
+		// Keep reload behavior aligned with main: clear domain_routing_map only.
+		// Connection-state maps are intentionally preserved to avoid affecting
+		// established flows during reload.
+		if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
+			return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
+		}
+	}
+
+	// Restore DNS cache from last control plane if available.
+	if dnsCache != nil {
+		count := 0
+		now := time.Now()
+		for k, v := range dnsCache {
+			if v != nil {
+				// Re-patch domain bitmap for new routing rules.
+				v.DomainBitmap = plane.routingMatcher.domainMatcher.MatchDomainBitmap(v.GetFqdn())
+				plane.dnsController.dnsCache.Store(k, v)
+				// Trigger async BPF update to populate the cleared domain_routing_map.
+				plane.dnsController.triggerBpfUpdateIfNeeded(v, now)
+				count++
+			}
+		}
+		if count > 0 {
+			log.Infof("Restored %d DNS cache entries from previous control plane", count)
+		}
+	}
 
 	// Create and start DNS listener if configured
 	if dnsConfig.Bind != "" {
@@ -555,18 +597,6 @@ func NewControlPlane(
 			log.Infof("DNS listener started on %s", dnsConfig.Bind)
 			// Add DNS listener stop to defer functions
 			plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
-		}
-	}
-	// On reload, clear the BPF domain routing map to ensure DNS configuration
-	// changes take effect immediately. The dnsCache parameter is preserved for
-	// dae-wing compatibility but not used for cache refresh.
-	// TODO: Implement selective cache refresh based on what changed in DNS config.
-	if _bpf != nil {
-		// Keep reload behavior aligned with main: clear domain_routing_map only.
-		// Connection-state maps are intentionally preserved to avoid affecting
-		// established flows during reload.
-		if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
-			return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 		}
 	}
 
@@ -760,6 +790,12 @@ func (c *ControlPlane) ActivateCheck() {
 			d.ActivateCheck()
 		}
 	}
+}
+
+// OnHealthCheckSuccess is called when a dialer passes health check.
+// This clears the failed QUIC DCID cache since network conditions may have improved.
+func (c *ControlPlane) OnHealthCheckSuccess() {
+	ClearFailedQuicDcids()
 }
 
 func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
@@ -1043,7 +1079,13 @@ func (c *ControlPlane) stopRealDomainNegJanitor() {
 			close(c.negJanitorStop)
 		}
 		if c.negJanitorDone != nil {
-			<-c.negJanitorDone
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-c.negJanitorDone:
+			case <-timer.C:
+				c.log.Warn("stopRealDomainNegJanitor: timeout waiting for janitor to exit")
+			}
 		}
 	})
 }
