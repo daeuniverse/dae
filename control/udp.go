@@ -214,6 +214,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 
 	var ue *UdpEndpoint
 	var ueExists bool
+	var replayPackets []pool.PB
+	defer func() {
+		for _, pkt := range replayPackets {
+			pkt.Put()
+		}
+	}()
 
 	// Priority:
 	// 1. Symmetric NAT (Src+Dst) for session isolation (QUIC/BT).
@@ -236,7 +242,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		} else if ue.SniffedDomain != "" {
 			// It is quic ...
 			// Fast path.
-			domain := ue.SniffedDomain
+			domain = ue.SniffedDomain
 			dialTarget := realDst.String()
 
 			if c.log.IsLevelEnabled(logrus.TraceLevel) {
@@ -256,16 +262,31 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			}
 
 			_, err = ue.WriteTo(data, dialTarget)
-			if err != nil {
-				return err
+			if err == nil {
+				return nil
 			}
-			return nil
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"to":      realDst.String(),
+					"domain":  domain,
+					"pid":     routingResult.Pid,
+					"dscp":    routingResult.Dscp,
+					"pname":   ProcessName2String(routingResult.Pname[:]),
+					"mac":     Mac2String(routingResult.Mac[:]),
+					"from":    realSrc.String(),
+					"network": "udp(fp)",
+					"err":     err.Error(),
+				}).Debugln("Failed to write UDP fast-path packet. Remove stale endpoint and rebuild.")
+			}
+			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+			ue = nil
+			ueExists = false
 		}
 	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	natTimeout := DefaultNatTimeout
-	if !skipSniffing && !ueExists {
+	if domain == "" && !skipSniffing && !ueExists {
 		key := flowDecision.PacketSnifferKey()
 
 		// Fast reject for obvious non-QUIC UDP packets when no existing sniff session.
@@ -335,24 +356,18 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				}
 			}
 			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
-			// Re-handlePkt after self func.
-			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
-			sniffer.Mu.Unlock()
-			if len(toRehandle) > 0 {
-				defer func() {
-					if err == nil {
-						for _, d := range toRehandle {
-							dCopy := pool.Get(len(d))
-							copy(dCopy, d)
-							go func(data pool.PB) {
-								defer data.Put()
-								rehandleDecision := ClassifyUdpFlow(src, realDst, data)
-								c.handlePkt(lConn, data, src, pktDst, realDst, routingResult, rehandleDecision, true)
-							}(dCopy)
-						}
-					}
-				}()
+			// Flush previously buffered packets on the same endpoint path before the
+			// current packet so QUIC sniff completion preserves original ingress order.
+			toReplay := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
+			if len(toReplay) > 0 {
+				replayPackets = make([]pool.PB, 0, len(toReplay))
+				for _, d := range toReplay {
+					dCopy := pool.Get(len(d))
+					copy(dCopy, d)
+					replayPackets = append(replayPackets, dCopy)
+				}
 			}
+			sniffer.Mu.Unlock()
 		} else {
 			_sniffer.Mu.Unlock()
 			// sniffer may be nil.
@@ -375,6 +390,12 @@ afterSniffing:
 	// and skip the redundant GetOrCreate sync.Map lookup (common path: non-QUIC
 	// existing endpoint, zero domain upgrade).
 	foundUeKey := ueKey
+	payloads := make([][]byte, 0, len(replayPackets)+1)
+	for _, pkt := range replayPackets {
+		payloads = append(payloads, pkt)
+	}
+	payloads = append(payloads, data)
+	packetIndex := 0
 	retry := 0
 	var isNew bool
 	networkType := &dialer.NetworkType{
@@ -487,25 +508,29 @@ getNew:
 		domain = ue.SniffedDomain
 	}
 
-	_, err = ue.WriteTo(data, dialTarget)
-	if err != nil {
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
-				"to":      realDst.String(),
-				"domain":  domain,
-				"pid":     routingResult.Pid,
-				"dscp":    routingResult.Dscp,
-				"pname":   ProcessName2String(routingResult.Pname[:]),
-				"mac":     Mac2String(routingResult.Mac[:]),
-				"from":    realSrc.String(),
-				"network": networkType.StringWithoutDns(),
-				"err":     err.Error(),
-				"retry":   retry,
-			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+	for packetIndex < len(payloads) {
+		_, err = ue.WriteTo(payloads[packetIndex], dialTarget)
+		if err != nil {
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"to":      realDst.String(),
+					"domain":  domain,
+					"pid":     routingResult.Pid,
+					"dscp":    routingResult.Dscp,
+					"pname":   ProcessName2String(routingResult.Pname[:]),
+					"mac":     Mac2String(routingResult.Mac[:]),
+					"from":    realSrc.String(),
+					"network": networkType.StringWithoutDns(),
+					"err":     err.Error(),
+					"retry":   retry,
+					"packet":  packetIndex,
+				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+			}
+			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+			retry++
+			goto getNew
 		}
-		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
-		retry++
-		goto getNew
+		packetIndex++
 	}
 
 	// Print log.

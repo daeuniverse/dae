@@ -111,9 +111,6 @@ func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func
 		for _, link := range links {
 			ifName := link.Attrs().Name
 			if matched, err := path.Match(pattern, ifName); err == nil && matched {
-				if m.upLinks[ifName] {
-					continue
-				}
 				m.upLinks[ifName] = true
 
 				if initCallback != nil {
@@ -138,12 +135,10 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 
 	link, err := netlink.LinkByName(ifname)
 	if err == nil {
-		if !m.upLinks[ifname] {
-			m.upLinks[ifname] = true
+		m.upLinks[ifname] = true
 
-			if initCallback != nil {
-				initCallback(link)
-			}
+		if initCallback != nil {
+			initCallback(link)
 		}
 	}
 

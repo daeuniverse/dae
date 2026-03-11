@@ -9,11 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-)
 
-type relayUnderlyingConn interface {
-	UnderlyingConn() net.Conn
-}
+	"github.com/daeuniverse/outbound/netproxy"
+)
 
 type relaySegmentSource interface {
 	TakeRelaySegments() [][]byte
@@ -27,11 +25,13 @@ type relayPrefixSource interface {
 	TakeRelayPrefix() []byte
 }
 
-const relayUnderlyingConnMaxDepth = 8
+const relayConnChainMaxDepth = 8
 
 // unwrapRelayTCPConn resolves transparent wrappers down to a concrete TCP
-// socket. This is intentionally capability-based so outbound wrappers can opt
-// in by exposing UnderlyingConn without hard-coding protocol types here.
+// socket. Generic wrapper traversal is delegated to outbound/netproxy's
+// UnwrapTCPConn so dae stays aligned with wrapper capabilities added there,
+// while prefixedConn remains a dae-local relay wrapper that must be peeled
+// explicitly.
 func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
 	return unwrapRelayTCPConnDepth(conn, 0)
 }
@@ -41,19 +41,20 @@ func relayConnChain(conn any) string {
 }
 
 func unwrapRelayTCPConnDepth(conn any, depth int) (*net.TCPConn, bool) {
-	if conn == nil || depth >= relayUnderlyingConnMaxDepth {
+	if conn == nil || depth >= relayConnChainMaxDepth {
 		return nil, false
 	}
 
 	switch c := conn.(type) {
-	case *net.TCPConn:
-		return c, true
 	case *prefixedConn:
 		return unwrapRelayTCPConnDepth(c.Conn, depth+1)
-	case relayUnderlyingConn:
+	case netproxy.UnderlyingConnProvider:
+		if tcpConn, ok := netproxy.UnwrapTCPConn(c); ok {
+			return tcpConn, true
+		}
 		return unwrapRelayTCPConnDepth(c.UnderlyingConn(), depth+1)
 	default:
-		return nil, false
+		return netproxy.UnwrapTCPConn(conn)
 	}
 }
 
@@ -61,7 +62,7 @@ func relayConnChainDepth(conn any, depth int) string {
 	if conn == nil {
 		return "<nil>"
 	}
-	if depth >= relayUnderlyingConnMaxDepth {
+	if depth >= relayConnChainMaxDepth {
 		return fmt.Sprintf("%T -> <max-depth>", conn)
 	}
 
@@ -70,7 +71,7 @@ func relayConnChainDepth(conn any, depth int) string {
 		return fmt.Sprintf("%T", c)
 	case *prefixedConn:
 		return fmt.Sprintf("%T -> %s", c, relayConnChainDepth(c.Conn, depth+1))
-	case relayUnderlyingConn:
+	case netproxy.UnderlyingConnProvider:
 		return fmt.Sprintf("%T -> %s", c, relayConnChainDepth(c.UnderlyingConn(), depth+1))
 	default:
 		return fmt.Sprintf("%T", c)

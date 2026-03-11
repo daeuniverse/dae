@@ -310,11 +310,13 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := udpConn.(netproxy.PacketConn); !ok {
+	packetConn, ok := udpConn.(netproxy.PacketConn)
+	if !ok {
+		_ = udpConn.Close()
 		return nil, fmt.Errorf("protocol does not support udp")
 	}
 	ue := &UdpEndpoint{
-		conn:          udpConn.(netproxy.PacketConn),
+		conn:          packetConn,
 		handler:       createOption.Handler,
 		NatTimeout:    createOption.NatTimeout,
 		Dialer:        dialOption.Dialer,

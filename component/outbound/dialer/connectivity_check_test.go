@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -266,4 +267,64 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 	if selected != d2 {
 		t.Fatalf("expected alive dialer to be d2, got %s", selected.Property().Name)
 	}
+}
+
+func TestDialerCheck_ConcurrentStateAccess(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	aliveSet := NewAliveDialerSet(
+		d.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		[]*Dialer{d},
+		[]*Annotation{{}},
+		func(bool) {},
+		true,
+	)
+	d.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	successOpt := &CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return true, nil
+		},
+	}
+	failureOpt := &CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated concurrent health check failure")
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := range 4 {
+		opt := successOpt
+		if i%2 == 1 {
+			opt = failureOpt
+		}
+		wg.Go(func() {
+			for ctx.Err() == nil {
+				_, _ = d.Check(opt)
+			}
+		})
+	}
+	for range 4 {
+		wg.Go(func() {
+			for ctx.Err() == nil {
+				alive := d.MustGetAlive(networkType)
+				aliveSet.NotifyLatencyChange(d, alive)
+				_, _ = d.snapshotLatencyForPolicy(networkType, consts.DialerSelectionPolicy_MinMovingAverageLatencies)
+			}
+		})
+	}
+	wg.Wait()
 }

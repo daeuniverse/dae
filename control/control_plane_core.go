@@ -664,7 +664,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		tryDeleteFlippedFilter(filterDae0Ingress)
 	}
 	if err := netlink.FilterAdd(filterDae0Ingress); err != nil && !errors.Is(err, unix.EEXIST) {
-		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {

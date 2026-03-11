@@ -8,12 +8,16 @@ package control
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	obdialer "github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -216,3 +220,58 @@ func TestUdpEndpoint_DeadFlagConsistency(t *testing.T) {
 	require.Equal(t, int32(10000), readCount.Load())
 	require.Equal(t, int32(1), writeCount.Load())
 }
+
+func TestUdpEndpointPool_GetOrCreate_ClosesNonPacketConn(t *testing.T) {
+	p := NewUdpEndpointPool()
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("10.0.0.1:12348")).FullConeNatEndpointKey()
+
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+
+	conn := &closeTrackingConn{}
+	d := obdialer.NewDialer(
+		&connOnlyDialer{conn: conn},
+		&obdialer.GlobalOption{
+			Log:           log,
+			CheckInterval: time.Minute,
+		},
+		obdialer.InstanceOption{},
+		&obdialer.Property{},
+	)
+	t.Cleanup(func() {
+		_ = d.Close()
+	})
+
+	_, _, err := p.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Target:  "198.51.100.1:443",
+				Dialer:  d,
+				Network: "udp",
+			}, nil
+		},
+	})
+	require.ErrorContains(t, err, "protocol does not support udp")
+	require.True(t, conn.closed.Load(), "non-packet conn must be closed on endpoint creation failure")
+}
+
+type connOnlyDialer struct {
+	conn netproxy.Conn
+}
+
+func (d *connOnlyDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
+	return d.conn, nil
+}
+
+type closeTrackingConn struct {
+	closed atomic.Bool
+}
+
+func (c *closeTrackingConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *closeTrackingConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (c *closeTrackingConn) Close() error                     { c.closed.Store(true); return nil }
+func (c *closeTrackingConn) SetDeadline(time.Time) error      { return nil }
+func (c *closeTrackingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *closeTrackingConn) SetWriteDeadline(time.Time) error { return nil }

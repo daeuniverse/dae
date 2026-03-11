@@ -7,7 +7,6 @@ package control
 
 import (
 	"errors"
-	"net"
 	"net/netip"
 	"strings"
 	"structs"
@@ -16,15 +15,20 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-// canOffloadToEBPF checks if both connections are plain *net.TCPConn.
-// This is primarily used in tests to verify that unknown wrapper types
-// are correctly rejected. Production code in newTCPRelayOffloadSession uses
-// unwrapRelayTCPConn for both sides (after flushing any userspace prefix from
-// left via tcpOffloadFlushLeftPrefix in tryOffloadTCPRelay).
+// canOffloadToEBPF reports whether both connections resolve to concrete TCP
+// sockets that dae can hand to the eBPF relay path. This is a capability
+// predicate only: callers still need to flush any dae-local prefetched bytes
+// (for example prefixedConn / ConnSniffer data) before attempting offload.
 func canOffloadToEBPF(left, right netproxy.Conn) bool {
-	_, leftOK := left.(*net.TCPConn)
-	_, rightOK := right.(*net.TCPConn)
-	return leftOK && rightOK
+	return canResolveTCPRelayOffloadConn(left) && canResolveTCPRelayOffloadConn(right)
+}
+
+func canResolveTCPRelayOffloadConn(conn netproxy.Conn) bool {
+	if conn == nil {
+		return false
+	}
+	_, ok := unwrapRelayTCPConn(conn)
+	return ok
 }
 
 func tcpRelayOffloadReason(err error) string {
@@ -52,11 +56,7 @@ func tcpRelayPrefetchOffloadSkipReason(sniffAttempted bool, clientPayloadReady b
 }
 
 func canAnnotateTCPRelayOffload(conn netproxy.Conn) bool {
-	if conn == nil {
-		return false
-	}
-	_, ok := unwrapRelayTCPConn(conn)
-	return ok
+	return canResolveTCPRelayOffloadConn(conn)
 }
 
 func makeTuplesKey(src, dst netip.AddrPort, l4proto uint8) bpfTuplesKey {

@@ -233,6 +233,8 @@ github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260307042823-5854cd74ef05 h1:t
 github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260307042823-5854cd74ef05/go.mod h1:92KINM1N0g5V6cm7bZv1ma/ZcxjhfpEPE70gugVz050=
 github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260310164854-6720c9c5f689 h1://J7XnFdAbbc0vliR3Y7HOkdHawr8zZEUmR/coeOzTQ=
 github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260310164854-6720c9c5f689/go.mod h1:92KINM1N0g5V6cm7bZv1ma/ZcxjhfpEPE70gugVz050=
+github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260311030919-1a922160dfee h1:iZvruiJ5Je8QzkcNGXZoHgxn3qDAY3WAQQ0SDZ2M6As=
+github.com/olicesx/outbound v0.0.0-ss2022-fix.0.20260311030919-1a922160dfee/go.mod h1:92KINM1N0g5V6cm7bZv1ma/ZcxjhfpEPE70gugVz050=
 github.com/olicesx/quic-go v0.0.0-20260226044315-bb65418d151a h1:Y+ONsSTQsqr2PpiXQnOU+pIcTILGn7qhHMzim1GYqoM=
 github.com/olicesx/quic-go v0.0.0-20260226044315-bb65418d151a/go.mod h1:4i75wxoxXaebP2bt5TFzSx9zf3+M7g8NQJ8PZIaIuIQ=
 github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=

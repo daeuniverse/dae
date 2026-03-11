@@ -42,7 +42,7 @@ type Dialer struct {
 	netproxy.Dialer
 	property *Property
 
-	collectionFineMu sync.Mutex
+	collectionFineMu sync.RWMutex
 	collections      [6]*collection
 
 	tickerMu sync.Mutex
@@ -112,7 +112,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		InstanceOption:   iOption,
 		Dialer:           dialer,
 		property:         property,
-		collectionFineMu: sync.Mutex{},
+		collectionFineMu: sync.RWMutex{},
 		collections:      collections,
 		tickerMu:         sync.Mutex{},
 		ticker:           nil,

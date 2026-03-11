@@ -115,7 +115,53 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 }
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
-	return d.mustGetCollection(typ).Alive
+	d.collectionFineMu.RLock()
+	alive := d.mustGetCollection(typ).Alive
+	d.collectionFineMu.RUnlock()
+	return alive
+}
+
+type collectionUpdate struct {
+	alive             bool
+	movingAverage     time.Duration
+	aliveDialerGroups []*AliveDialerSet
+}
+
+func (d *Dialer) hasAliveDialerSets(typ *NetworkType) bool {
+	d.collectionFineMu.RLock()
+	has := len(d.mustGetCollection(typ).AliveDialerSetSet) > 0
+	d.collectionFineMu.RUnlock()
+	return has
+}
+
+func (d *Dialer) snapshotLatencyForPolicy(
+	typ *NetworkType,
+	policy consts.DialerSelectionPolicy,
+) (rawLatency time.Duration, hasLatency bool) {
+	d.collectionFineMu.RLock()
+	collection := d.mustGetCollection(typ)
+	switch policy {
+	case consts.DialerSelectionPolicy_MinLastLatency:
+		rawLatency, hasLatency = collection.Latencies10.LastLatency()
+	case consts.DialerSelectionPolicy_MinAverage10Latencies:
+		rawLatency, hasLatency = collection.Latencies10.AvgLatency()
+	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		rawLatency = collection.MovingAverage
+		hasLatency = rawLatency > 0
+	}
+	d.collectionFineMu.RUnlock()
+	return rawLatency, hasLatency
+}
+
+func (d *Dialer) snapshotAliveDialerGroupsLocked(collection *collection) []*AliveDialerSet {
+	if len(collection.AliveDialerSetSet) == 0 {
+		return nil
+	}
+	groups := make([]*AliveDialerSet, 0, len(collection.AliveDialerSetSet))
+	for a := range collection.AliveDialerSetSet {
+		groups = append(groups, a)
+	}
+	return groups
 }
 
 func parseIp46FromList(ip []string) *netutils.Ip46 {
@@ -288,8 +334,8 @@ func (d *Dialer) ActivateCheck() {
 // Global connectivity check worker pool
 var (
 	connectivityCheckPool *ants.Pool
-	poolMu               sync.Mutex
-	poolActiveCount      int
+	poolMu                sync.Mutex
+	poolActiveCount       int
 )
 
 // calcPoolSize scales the pool sub-linearly with the number of active dialers
@@ -482,7 +528,7 @@ func (d *Dialer) aliveBackground() {
 	checkUnused := func() bool {
 		var unused int
 		for _, opt := range CheckOpts {
-			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			if !d.hasAliveDialerSets(opt.networkType) {
 				unused++
 			}
 		}
@@ -597,7 +643,7 @@ func (d *Dialer) aliveBackground() {
 func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption) {
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
-		if len(d.collections[opt.networkType.Index()].AliveDialerSetSet) == 0 {
+		if !d.hasAliveDialerSets(opt.networkType) {
 			continue
 		}
 
@@ -661,11 +707,9 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 }
 
 func (d *Dialer) logUnavailable(
-	collection *collection,
 	network *NetworkType,
 	err error,
 ) {
-	// Append timeout if there is any error or unexpected status code.
 	if err != nil {
 		// Use common/errors package for type-safe error checking
 		// instead of string matching for better reliability.
@@ -680,25 +724,48 @@ func (d *Dialer) logUnavailable(
 			"err":     err.Error(),
 		}).Debugln("Connectivity Check Failed")
 	}
+}
+
+func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
+	d.collectionFineMu.Lock()
+	collection := d.mustGetCollection(typ)
 	collection.Latencies10.AppendLatency(Timeout)
 	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
 	collection.Alive = false
-}
-
-func (d *Dialer) informDialerGroupUpdate(collection *collection) {
-	// Inform DialerGroups to update state.
-	// We use lock because AliveDialerSetSet is a reference of that in collection.
-	d.collectionFineMu.Lock()
-	for a := range collection.AliveDialerSetSet {
-		a.NotifyLatencyChange(d, collection.Alive)
+	update := collectionUpdate{
+		alive:             false,
+		movingAverage:     collection.MovingAverage,
+		aliveDialerGroups: d.snapshotAliveDialerGroupsLocked(collection),
 	}
 	d.collectionFineMu.Unlock()
+	return update
+}
+
+func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collectionUpdate, time.Duration) {
+	d.collectionFineMu.Lock()
+	collection := d.mustGetCollection(typ)
+	collection.Latencies10.AppendLatency(latency)
+	avg, _ := collection.Latencies10.AvgLatency()
+	collection.MovingAverage = (collection.MovingAverage + latency) / 2
+	collection.Alive = true
+	update := collectionUpdate{
+		alive:             true,
+		movingAverage:     collection.MovingAverage,
+		aliveDialerGroups: d.snapshotAliveDialerGroupsLocked(collection),
+	}
+	d.collectionFineMu.Unlock()
+	return update, avg
+}
+
+func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
+	for _, a := range update.aliveDialerGroups {
+		a.NotifyLatencyChange(d, update.alive)
+	}
 }
 
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
-	collection := d.mustGetCollection(typ)
-	d.logUnavailable(collection, typ, err)
-	d.informDialerGroupUpdate(collection)
+	d.logUnavailable(typ, err)
+	d.informDialerGroupUpdate(d.markUnavailable(typ))
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
@@ -706,32 +773,24 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	defer cancel()
 	start := time.Now()
 	// Calc latency.
-	collection := d.mustGetCollection(opts.networkType)
 	ok, err = opts.CheckFunc(ctx, opts.networkType)
 	if ok && err == nil {
 		// Success: update latency and mark alive.
 		latency := time.Since(start)
-
-		// Use lock to protect all collection updates
-		d.collectionFineMu.Lock()
-		collection.Latencies10.AppendLatency(latency)
-		avg, _ := collection.Latencies10.AvgLatency()
-		collection.MovingAverage = (collection.MovingAverage + latency) / 2
-		collection.Alive = true
-		d.collectionFineMu.Unlock()
+		update, avg := d.markAvailable(opts.networkType, latency)
 
 		d.Log.WithFields(logrus.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.property.Name,
 			"last":    latency.Truncate(time.Millisecond).String(),
 			"avg_10":  avg.Truncate(time.Millisecond),
-			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
+			"mov_avg": update.movingAverage.Truncate(time.Millisecond),
 		}).Debugln("Connectivity Check")
-		d.informDialerGroupUpdate(collection)
+		d.informDialerGroupUpdate(update)
 	} else if err != nil {
 		// Failure: mark unavailable only if there's an actual error.
-		d.logUnavailable(collection, opts.networkType, err)
-		d.informDialerGroupUpdate(collection)
+		d.logUnavailable(opts.networkType, err)
+		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))
 	}
 	// Skip update when (ok=false, err=nil): preserve existing alive state.
 	return ok, err

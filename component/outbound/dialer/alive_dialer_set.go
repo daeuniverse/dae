@@ -155,14 +155,13 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 
 	switch a.selectionPolicy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
-		rawLatency, hasLatency = dialer.mustGetCollection(a.CheckTyp).Latencies10.LastLatency()
+		rawLatency, hasLatency = dialer.snapshotLatencyForPolicy(a.CheckTyp, a.selectionPolicy)
 		minPolicy = true
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		rawLatency, hasLatency = dialer.mustGetCollection(a.CheckTyp).Latencies10.AvgLatency()
+		rawLatency, hasLatency = dialer.snapshotLatencyForPolicy(a.CheckTyp, a.selectionPolicy)
 		minPolicy = true
 	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		rawLatency = dialer.mustGetCollection(a.CheckTyp).MovingAverage
-		hasLatency = rawLatency > 0
+		rawLatency, hasLatency = dialer.snapshotLatencyForPolicy(a.CheckTyp, a.selectionPolicy)
 		minPolicy = true
 	}
 
@@ -242,6 +241,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		// If best dialer changed.
 		if a.minLatency.dialer != bakOldBestDialer {
 			if currentAlive {
+				newBestDialer := a.minLatency.dialer
+				newBestLatency := a.dialerToLatency[newBestDialer]
+				newBestOffset := a.dialerToLatencyOffset[newBestDialer]
 				re := "re-"
 				var oldDialerName string
 				if bakOldBestDialer == nil {
@@ -256,8 +258,8 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				}
 				if a.log.IsLevelEnabled(logrus.InfoLevel) {
 					a.log.WithFields(logrus.Fields{
-						string(a.selectionPolicy): latencyString(a.dialerToLatency[a.minLatency.dialer], a.dialerToLatencyOffset[a.minLatency.dialer]),
-						"_new_dialer":             a.minLatency.dialer.property.Name,
+						string(a.selectionPolicy): latencyString(newBestLatency, newBestOffset),
+						"_new_dialer":             newBestDialer.property.Name,
 						"_old_dialer":             oldDialerName,
 						"group":                   a.dialerGroupName,
 						"network":                 a.CheckTyp.String(),

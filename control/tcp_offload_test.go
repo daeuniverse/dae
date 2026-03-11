@@ -15,7 +15,7 @@ import (
 	"github.com/daeuniverse/outbound/pkg/bufferred_conn"
 )
 
-func TestCanOffloadToEBPF_DirectTCPOnly(t *testing.T) {
+func TestCanOffloadToEBPF_DirectTCPAccepted(t *testing.T) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestCanOffloadToEBPF_DirectTCPOnly(t *testing.T) {
 	}
 }
 
-func TestCanOffloadToEBPF_ConnSnifferRejected(t *testing.T) {
+func TestCanOffloadToEBPF_ConnSnifferAccepted(t *testing.T) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -92,8 +92,8 @@ func TestCanOffloadToEBPF_ConnSnifferRejected(t *testing.T) {
 	}
 	snifferConn := sniffing.NewConnSniffer(client, time.Second)
 	defer snifferConn.Close()
-	if canOffloadToEBPF(snifferConn, netproxy.Conn(server)) {
-		t.Fatal("ConnSniffer should be rejected because it may buffer prefetched bytes")
+	if !canOffloadToEBPF(snifferConn, netproxy.Conn(server)) {
+		t.Fatal("ConnSniffer over TCP should be recognized as eBPF-offload-capable after prefix flush")
 	}
 }
 
@@ -215,11 +215,8 @@ func TestCanOffloadToEBPF_WrappedConnWithUnderlyingConn(t *testing.T) {
 	wrappedClient := underlyingTCPWrapper{Conn: client, inner: client}
 	wrappedServer := underlyingTCPWrapper{Conn: server, inner: server}
 
-	// unwrapRelayTCPConn should be able to unwrap and allow offload
-	_, clientOK := unwrapRelayTCPConn(wrappedClient)
-	_, serverOK := unwrapRelayTCPConn(wrappedServer)
-	if !clientOK || !serverOK {
-		t.Fatal("wrapped TCP sockets with UnderlyingConn should be unwrappable for eBPF offload")
+	if !canOffloadToEBPF(wrappedClient, wrappedServer) {
+		t.Fatal("wrapped TCP sockets with UnderlyingConn should be eBPF-offload-capable")
 	}
 }
 
@@ -276,6 +273,62 @@ func TestRelayConnChain_UsesOutboundDependencyWrappers(t *testing.T) {
 	}
 
 	_ = server
+}
+
+func TestUnwrapRelayTCPConn_FakeNetConnOverPrefixedConn(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	prefixed := &prefixedConn{Conn: client, prefix: []byte("prefetched")}
+	wrapped := &netproxy.FakeNetConn{
+		Conn:  prefixed,
+		LAddr: client.LocalAddr(),
+		RAddr: client.RemoteAddr(),
+	}
+
+	got, ok := unwrapRelayTCPConn(wrapped)
+	if !ok {
+		t.Fatal("FakeNetConn over prefixedConn should unwrap to the underlying TCP socket")
+	}
+	if got != client {
+		t.Fatalf("unexpected tcp conn: got %p want %p", got, client)
+	}
+	if !canOffloadToEBPF(wrapped, netproxy.Conn(server)) {
+		t.Fatal("FakeNetConn over prefixedConn should be eBPF-offload-capable once prefix is flushed")
+	}
+
+	chain := relayConnChain(wrapped)
+	if !strings.Contains(chain, "*netproxy.FakeNetConn") || !strings.Contains(chain, "*control.prefixedConn") || !strings.Contains(chain, "*net.TCPConn") {
+		t.Fatalf("unexpected wrapper chain: %s", chain)
+	}
 }
 
 func TestMakeTuplesKey_UsesRemoteToLocalSocketOrientation(t *testing.T) {
