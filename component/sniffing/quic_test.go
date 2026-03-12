@@ -83,8 +83,8 @@ func TestIsLikelyQuicInitialPacket(t *testing.T) {
 
 	mutated := append([]byte(nil), QuicStream2_1...)
 	mutated[0] &^= 1 << QuicFlag_FixedBit
-	if IsLikelyQuicInitialPacket(mutated) {
-		t.Fatal("packet with fixed bit cleared should not be recognized")
+	if !IsLikelyQuicInitialPacket(mutated) {
+		t.Fatal("packet with fixed bit cleared should be recognized (relaxed check)")
 	}
 }
 
@@ -160,11 +160,11 @@ func TestIsLikelyQuicInitialPacket_HeaderValidation(t *testing.T) {
 			shouldPass: false,
 		},
 		{
-			name: "Fixed bit cleared should fail",
+			name: "Fixed bit cleared should pass (relaxed)",
 			setupBuf: func(buf []byte) {
 				buf[0] = 0x80 // Long Header + Initial but no Fixed bit
 			},
-			shouldPass: false,
+			shouldPass: true,
 		},
 		{
 			name: "Non-Initial packet type should fail",

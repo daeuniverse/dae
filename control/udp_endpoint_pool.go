@@ -41,6 +41,10 @@ type UdpEndpoint struct {
 	NatTimeout    time.Duration
 	writeMu       sync.Mutex
 
+	// lastRefreshNano tracks the last TTL refresh time for throttling.
+	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
+	lastRefreshNano atomic.Int64
+
 	Dialer   *dialer.Dialer
 	Outbound *outbound.DialerGroup
 
@@ -63,6 +67,8 @@ type UdpEndpoint struct {
 	log *logrus.Logger
 
 	dead atomic.Bool
+
+	softErrorCount int
 
 	// poolRef and poolKey allow the read loop to self-remove from the pool the
 	// instant it detects death. This minimises the window during which a stale
@@ -122,6 +128,11 @@ func (ue *UdpEndpoint) start() {
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
+			if (daerrors.IsReplayAttackError(err) || daerrors.IsAuthError(err)) && ue.softErrorCount < 10 {
+				ue.softErrorCount++
+				ue.logEndpointExit(fmt.Errorf("%w (hit %d/10)", err, ue.softErrorCount), "read loop (ignored)")
+				continue
+			}
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
 			ue.selfRemoveFromPool()
@@ -135,6 +146,7 @@ func (ue *UdpEndpoint) start() {
 			ue.logEndpointExit(err, "read loop")
 			break
 		}
+		ue.softErrorCount = 0
 		ue.RefreshTtl()
 		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.dead.Store(true)
@@ -266,11 +278,27 @@ func (ue *UdpEndpoint) Close() error {
 	return ue.conn.Close()
 }
 
+// ttlRefreshMinInterval is the minimum time between TTL refreshes.
+// This throttles atomic stores on hot paths to reduce overhead under high QPS.
 func (ue *UdpEndpoint) RefreshTtl() {
 	if ue.NatTimeout <= 0 {
 		return
 	}
-	ue.expiresAtNano.Store(time.Now().Add(ue.NatTimeout).UnixNano())
+	now := time.Now().UnixNano()
+	last := ue.lastRefreshNano.Load()
+	// Throttle: skip if refreshed recently.
+	// For long TTLs, use TTL/50 as interval; for short TTLs, use minimum.
+	minInterval := ttlRefreshMinInterval
+	if ttlNano := int64(ue.NatTimeout); ttlNano > 10*ttlRefreshMinInterval {
+		minInterval = ttlNano / 50
+	}
+	if now-last < minInterval {
+		return
+	}
+	// CAS to avoid thundering herd on the same connection.
+	if ue.lastRefreshNano.CompareAndSwap(last, now) {
+		ue.expiresAtNano.Store(now + int64(ue.NatTimeout))
+	}
 }
 
 // UpdateNatTimeout updates the NAT timeout and refreshes TTL with the new timeout.
@@ -280,7 +308,10 @@ func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
 		return
 	}
 	ue.NatTimeout = timeout
-	ue.expiresAtNano.Store(time.Now().Add(timeout).UnixNano())
+	// Force immediate refresh on timeout change (bypass throttling).
+	now := time.Now().UnixNano()
+	ue.lastRefreshNano.Store(now)
+	ue.expiresAtNano.Store(now + int64(timeout))
 }
 
 func (ue *UdpEndpoint) IsExpired(nowNano int64) bool {

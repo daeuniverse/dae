@@ -67,8 +67,8 @@ func (s *ConnSniffer) TakeRelayPrefix() []byte {
 	}
 	<-s.Sniffer.dataReady
 
-	s.Sniffer.readMu.Lock()
-	defer s.Sniffer.readMu.Unlock()
+	s.Sniffer.readMu.RLock()
+	defer s.Sniffer.readMu.RUnlock()
 
 	if s.Sniffer.buf == nil || s.Sniffer.buf.Len() == 0 {
 		return nil
@@ -112,11 +112,35 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 		}
 	}
 
-	// Reuse relay buffer to reduce per-connection heap churn.
+	// Fast path: if w is a plain TCP connection, use io.Copy to enable splice.
+	// This bypasses io.CopyBuffer and uses the kernel's splice(2) for zero-copy forwarding.
+	if tcpConn, ok := s.getUnderlyingTCPConn(w); ok {
+		copied, err := io.Copy(tcpConn, s.Conn)
+		return n + copied, err
+	}
+
+	// Fallback: use buffered copy for non-TCP or wrapped connections.
 	buf := relayBufPool.Get().([]byte)
 	defer relayBufPool.Put(buf)
 	copied, err := io.CopyBuffer(w, s.Conn, buf)
 	return n + copied, err
+}
+
+// getUnderlyingTCPConn returns the underlying *net.TCPConn if available.
+// This enables splice(2) zero-copy forwarding after sniffing is complete.
+func (s *ConnSniffer) getUnderlyingTCPConn(w io.Writer) (*net.TCPConn, bool) {
+	// Fast path: check if w is already a *net.TCPConn
+	if tcpConn, ok := w.(*net.TCPConn); ok {
+		return tcpConn, true
+	}
+	// Indirect path: check if w implements UnderlyingConnProvider
+	type underlyingConnProvider interface {
+		UnwrapTCPConn() (*net.TCPConn, bool)
+	}
+	if ucp, ok := w.(underlyingConnProvider); ok {
+		return ucp.UnwrapTCPConn()
+	}
+	return nil, false
 }
 
 // ReadFrom implements io.ReaderFrom.
@@ -161,4 +185,24 @@ func copyDirect(dst io.Writer, src io.Reader, buf []byte) (written int64, err er
 			return
 		}
 	}
+}
+
+// UnwrapTCPConn returns the underlying *net.TCPConn if available.
+// This allows the relay code to use splice(2) after sniffing is complete.
+func (s *ConnSniffer) UnwrapTCPConn() (*net.TCPConn, bool) {
+	if s == nil || s.Conn == nil {
+		return nil, false
+	}
+	// Directly check if the underlying connection is a TCP conn
+	if tcpConn, ok := s.Conn.(*net.TCPConn); ok {
+		return tcpConn, true
+	}
+	// Check for nested wrappers
+	type underlyingConnProvider interface {
+		UnwrapTCPConn() (*net.TCPConn, bool)
+	}
+	if ucp, ok := s.Conn.(underlyingConnProvider); ok {
+		return ucp.UnwrapTCPConn()
+	}
+	return nil, false
 }

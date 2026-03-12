@@ -58,6 +58,8 @@ type Dialer struct {
 	httpClients  map[string]*http.Client
 	httpClientMu sync.Mutex
 
+	failCount [6]int
+
 	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
 	// This is used for health check cycle management and failover tracking
 	stickyIpDialer *stickyip.StickyIpDialer

@@ -12,7 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/outbound"
+	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 )
@@ -30,7 +30,7 @@ type proxyDialParam struct {
 }
 
 type proxyDialResult struct {
-	Outbound             *outbound.DialerGroup
+	Outbound             *ob.DialerGroup
 	Dialer               *dialer.Dialer
 	DialTarget           string
 	Network              string
@@ -112,6 +112,24 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 
 	strictIpVersion := dialIp
 	d, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
+	if err != nil && p.Network == "udp" && err == ob.ErrNoAliveDialer {
+		// Fallback for UDP: if selection failed (probably due to health check fail),
+		// try the other IP version if strictIpVersion is not absolutely required by domain routing.
+		altVersion := consts.IpVersionStr_4
+		if selectionNetworkType.IpVersion == consts.IpVersionStr_4 {
+			altVersion = consts.IpVersionStr_6
+		}
+		altType := &dialer.NetworkType{
+			L4Proto:   selectionNetworkType.L4Proto,
+			IpVersion: altVersion,
+			IsDns:     false,
+		}
+		d, _, err = outbound.Select(altType, false)
+		if err == nil {
+			selectionNetworkType = altType
+		}
+	}
+
 	if err != nil {
 		return &proxyDialResult{
 				Outbound:             outbound,

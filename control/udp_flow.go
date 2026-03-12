@@ -45,14 +45,25 @@ type UdpFlowDecision struct {
 	Key               UdpFlowKey
 	HasSnifferSession bool
 	IsQuicInitial     bool
+	IsLikelyQuicData  bool
 }
 
 func ClassifyUdpFlow(src, dst netip.AddrPort, data []byte) UdpFlowDecision {
 	key := NewUdpFlowKey(src, dst)
+	isQuicInitial := sniffing.IsLikelyQuicInitialPacket(data)
+
+	// Heuristic: If it's on a port that usually runs QUIC, treat it as part of a potential QUIC flow.
+	// This ensures Symmetric NAT and Ordered Ingress for the entire session from the first packet.
+	isLikelyQuicData := false
+	if dst.Port() == 443 || dst.Port() == 8443 || src.Port() == 443 || src.Port() == 8443 {
+		isLikelyQuicData = true
+	}
+
 	return UdpFlowDecision{
 		Key:               key,
 		HasSnifferSession: DefaultPacketSnifferSessionMgr.Get(key.PacketSnifferKey()) != nil,
-		IsQuicInitial:     sniffing.IsLikelyQuicInitialPacket(data),
+		IsQuicInitial:     isQuicInitial,
+		IsLikelyQuicData:  isLikelyQuicData,
 	}
 }
 
@@ -89,7 +100,7 @@ func (d UdpFlowDecision) EnsureSnifferSession() UdpFlowDecision {
 }
 
 func (d UdpFlowDecision) PreferSymmetricNat() bool {
-	return d.IsQuicInitial
+	return d.IsQuicInitial || d.HasSnifferSession || d.IsLikelyQuicData
 }
 
 func (d UdpFlowDecision) ShouldAttemptSniff() bool {
@@ -97,5 +108,5 @@ func (d UdpFlowDecision) ShouldAttemptSniff() bool {
 }
 
 func (d UdpFlowDecision) ShouldUseOrderedIngress() bool {
-	return d.HasSnifferSession || d.IsQuicInitial
+	return d.HasSnifferSession || d.IsQuicInitial || d.IsLikelyQuicData
 }

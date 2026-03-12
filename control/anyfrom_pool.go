@@ -231,48 +231,69 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 	shard := p.shardFor(lAddr)
 	shard.mu.RLock()
 	af, ok := shard.pool[lAddr]
-	if !ok {
-		shard.mu.RUnlock()
-		shard.mu.Lock()
-		defer shard.mu.Unlock()
-		if af, ok = shard.pool[lAddr]; ok {
-			af.RefreshTtl()
-			return af, false, nil
-		}
-		// Create an Anyfrom.
-		isNew = true
-		d := net.ListenConfig{
-			Control: func(network string, address string, c syscall.RawConn) error {
-				return dialer.TransparentControl(c)
-			},
-			KeepAlive: 0,
-		}
-		var pc net.PacketConn
-		if err = GetDaeNetns().WithRequired("listen anyfrom udp socket", func() error {
-			var listenErr error
-			pc, listenErr = d.ListenPacket(context.Background(), "udp", lAddr.String())
-			return listenErr
-		}); err != nil {
-			return nil, true, err
-		}
-		uConn := pc.(*net.UDPConn)
-		af = &Anyfrom{
-			UDPConn: uConn,
-			ttl:     ttl,
-			gso:     isGSOSupported(uConn),
-			// gotGSOError zero-value (false) is correct; set atomically on first error.
-		}
-
-		if ttl > 0 {
-			af.RefreshTtl()
-			shard.pool[lAddr] = af
-		}
-		return af, true, nil
-	} else {
+	if ok {
 		af.RefreshTtl()
 		shard.mu.RUnlock()
 		return af, false, nil
 	}
+	shard.mu.RUnlock()
+
+	// Not found in cache. Create socket outside the lock to avoid blocking
+	// other goroutines that are accessing different addresses in the same shard.
+	// Socket creation can block on network operations, so this significantly
+	// reduces lock contention under high concurrent creation load.
+	newAf, createErr := p.createAnyfromSocket(lAddr, ttl)
+	if createErr != nil {
+		return nil, true, createErr
+	}
+
+	// Acquire write lock to check if another goroutine already created it.
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if af, ok = shard.pool[lAddr]; ok {
+		// Another goroutine created it while we were creating the socket.
+		// Close our duplicate and return the existing one.
+		newAf.Close()
+		af.RefreshTtl()
+		return af, false, nil
+	}
+
+	// Store the newly created socket.
+	shard.pool[lAddr] = newAf
+	return newAf, true, nil
+}
+
+// createAnyfromSocket creates a new Anyfrom socket without holding any pool locks.
+// This is called by GetOrCreate after a cache miss, allowing concurrent socket
+// creation for different addresses without blocking on the shard lock.
+func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, ttl time.Duration) (*Anyfrom, error) {
+	d := net.ListenConfig{
+		Control: func(network string, address string, c syscall.RawConn) error {
+			return dialer.TransparentControl(c)
+		},
+		KeepAlive: 0,
+	}
+	var pc net.PacketConn
+	if err := GetDaeNetns().WithRequired("listen anyfrom udp socket", func() error {
+		var listenErr error
+		pc, listenErr = d.ListenPacket(context.Background(), "udp", lAddr.String())
+		return listenErr
+	}); err != nil {
+		return nil, err
+	}
+	uConn := pc.(*net.UDPConn)
+	af := &Anyfrom{
+		UDPConn: uConn,
+		ttl:     ttl,
+		gso:     isGSOSupported(uConn),
+		// gotGSOError zero-value (false) is correct; set atomically on first error.
+	}
+
+	if ttl > 0 {
+		af.RefreshTtl()
+	}
+	return af, nil
 }
 
 func (p *AnyfromPool) shardFor(lAddr netip.AddrPort) *anyfromPoolShard {

@@ -30,12 +30,10 @@ const (
 )
 
 // IsLikelyQuicInitialPacket checks if the buffer appears to be a QUIC Initial packet.
-// It validates the Long Header format, Initial packet type, and Fixed bit.
-// Version is NOT strictly checked to maintain compatibility with:
-//   - QUIC v1 (0x00000001)
-//   - QUIC v2 (0x709a50c4)
-//   - Draft versions (e.g., 0xff00001d)
+// It validates the Long Header format and Initial packet type.
 //
+// Version and FixedBit are NOT strictly checked to maintain compatibility with
+// various QUIC implementations (e.g., Nginx, Cloudflare) and versions (v1, v2, drafts).
 // This follows the principle of being liberal in what we accept for sniffing purposes.
 func IsLikelyQuicInitialPacket(buf []byte) bool {
 	const minQuicInitialHeaderLen = 7
@@ -44,19 +42,16 @@ func IsLikelyQuicInitialPacket(buf []byte) bool {
 	}
 	protectedFlag := buf[0]
 
-	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b11) != QuicFlag_HeaderForm_LongHeader {
+	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b1) != QuicFlag_HeaderForm_LongHeader {
 		return false
 	}
 	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != QuicFlag_LongPacketType_Initial {
 		return false
 	}
-	if ((protectedFlag >> QuicFlag_FixedBit) & 0b1) == 0 {
-		return false
-	}
 
-	// Note: Version check intentionally omitted to support all QUIC versions.
-	// The header form, packet type, and fixed bit checks are sufficient for
-	// identifying likely QUIC Initial packets for sniffing purposes.
+	// Note: Version and FixedBit checks intentionally omitted to support all QUIC versions.
+	// The header form and packet type checks are sufficient for identifying likely
+	// QUIC Initial packets for sniffing purposes.
 
 	return true
 }
@@ -169,7 +164,7 @@ func sniffQuicBlock(s *Sniffer, cryptos []*quicutils.CryptoFrameOffset, buf []by
 		copy(header[boundary-quicutils.MaxPacketNumberLength:], rawPacketNumber)
 		pool.Put(rawPacketNumber)
 	}()
-	plaintext, err := quicutils.DecryptQuic_(header, blockEnd, destConnId)
+	plaintext, err := quicutils.DecryptQuic_(buf, boundary-quicutils.MaxPacketNumberLength, blockEnd, destConnId)
 	if err != nil {
 		return cryptos, nil, ErrNotApplicable
 	}

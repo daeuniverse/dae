@@ -30,7 +30,7 @@ type Sniffer struct {
 	// Common
 	sniffed  string
 	buf      *bytes.Buffer
-	readMu   sync.Mutex
+	readMu   sync.RWMutex
 	ctxOnce  sync.Once
 	closeMu  sync.Once
 	ctx      context.Context
@@ -38,11 +38,12 @@ type Sniffer struct {
 	deadline time.Time
 
 	// Packet
-	data           [][]byte
-	needMore       bool
-	quicNextRead   int
-	quicCryptos    []*quicutils.CryptoFrameOffset
-	quicPlaintexts []pool.PB
+	data             [][]byte
+	needMore         bool
+	quicNextRead     int
+	quicCryptos      []*quicutils.CryptoFrameOffset
+	quicPlaintexts   []pool.PB
+	quicOriginalDcid []byte
 }
 
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
@@ -256,8 +257,8 @@ func (s *Sniffer) NeedMore() bool {
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
 
-	s.readMu.Lock()
-	defer s.readMu.Unlock()
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 
 	if s.dataError != nil {
 		n, _ = s.buf.Read(p)

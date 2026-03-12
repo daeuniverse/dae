@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -32,48 +34,66 @@ const relayConnChainMaxDepth = 8
 // UnwrapTCPConn so dae stays aligned with wrapper capabilities added there,
 // while prefixedConn remains a dae-local relay wrapper that must be peeled
 // explicitly.
+//
+// Iterative implementation reduces function call overhead and improves CPU
+// branch prediction compared to the previous recursive approach.
 func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
-	return unwrapRelayTCPConnDepth(conn, 0)
+	for depth := 0; depth < relayConnChainMaxDepth; depth++ {
+		if conn == nil {
+			return nil, false
+		}
+
+		switch c := conn.(type) {
+		case *net.TCPConn:
+			return c, true
+		case *prefixedConn:
+			conn = c.Conn
+		case *sniffing.ConnSniffer:
+			// ConnSniffer now supports UnwrapTCPConn for splice after sniffing.
+			if tcpConn, ok := c.UnwrapTCPConn(); ok {
+				return tcpConn, true
+			}
+			conn = c.Conn
+		case netproxy.UnderlyingConnProvider:
+			if tcpConn, ok := netproxy.UnwrapTCPConn(c); ok {
+				return tcpConn, true
+			}
+			conn = c.UnderlyingConn()
+		default:
+			return netproxy.UnwrapTCPConn(conn)
+		}
+	}
+	return nil, false
 }
 
 func relayConnChain(conn any) string {
-	return relayConnChainDepth(conn, 0)
-}
-
-func unwrapRelayTCPConnDepth(conn any, depth int) (*net.TCPConn, bool) {
-	if conn == nil || depth >= relayConnChainMaxDepth {
-		return nil, false
-	}
-
-	switch c := conn.(type) {
-	case *prefixedConn:
-		return unwrapRelayTCPConnDepth(c.Conn, depth+1)
-	case netproxy.UnderlyingConnProvider:
-		if tcpConn, ok := netproxy.UnwrapTCPConn(c); ok {
-			return tcpConn, true
+	// Build the chain string by unwrapping and collecting types.
+	// Iterative approach avoids function call overhead while building the full chain.
+	var chain []string
+	for depth := 0; depth < relayConnChainMaxDepth; depth++ {
+		if conn == nil {
+			return "<nil>"
 		}
-		return unwrapRelayTCPConnDepth(c.UnderlyingConn(), depth+1)
-	default:
-		return netproxy.UnwrapTCPConn(conn)
-	}
-}
 
-func relayConnChainDepth(conn any, depth int) string {
-	if conn == nil {
-		return "<nil>"
+		switch c := conn.(type) {
+		case *net.TCPConn:
+			chain = append(chain, fmt.Sprintf("%T", c))
+			return strings.Join(chain, " -> ")
+		case *prefixedConn:
+			chain = append(chain, fmt.Sprintf("%T", c))
+			conn = c.Conn
+		case *sniffing.ConnSniffer:
+			chain = append(chain, fmt.Sprintf("%T", c))
+			conn = c.Conn
+		case netproxy.UnderlyingConnProvider:
+			chain = append(chain, fmt.Sprintf("%T", c))
+			conn = c.UnderlyingConn()
+		default:
+			// Unknown type - add it and stop
+			chain = append(chain, fmt.Sprintf("%T", c))
+			return strings.Join(chain, " -> ")
+		}
 	}
-	if depth >= relayConnChainMaxDepth {
-		return fmt.Sprintf("%T -> <max-depth>", conn)
-	}
-
-	switch c := conn.(type) {
-	case *net.TCPConn:
-		return fmt.Sprintf("%T", c)
-	case *prefixedConn:
-		return fmt.Sprintf("%T -> %s", c, relayConnChainDepth(c.Conn, depth+1))
-	case netproxy.UnderlyingConnProvider:
-		return fmt.Sprintf("%T -> %s", c, relayConnChainDepth(c.UnderlyingConn(), depth+1))
-	default:
-		return fmt.Sprintf("%T", c)
-	}
+	// Max depth reached
+	return fmt.Sprintf("%T -> <max-depth>", conn)
 }

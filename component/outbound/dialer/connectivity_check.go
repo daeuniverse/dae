@@ -732,12 +732,24 @@ func (d *Dialer) logUnavailable(
 
 func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
 	d.collectionFineMu.Lock()
-	collection := d.mustGetCollection(typ)
+	idx := typ.Index()
+	collection := d.collections[idx]
 	collection.Latencies10.AppendLatency(Timeout)
 	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
-	collection.Alive = false
+
+	// UDP robustness: only mark unavailable after 3 consecutive failures.
+	// This protects against transient Port 53 interference.
+	alive := false
+	if typ.L4Proto == consts.L4ProtoStr_UDP {
+		d.failCount[idx]++
+		if d.failCount[idx] < 3 {
+			alive = collection.Alive
+		}
+	}
+	collection.Alive = alive
+
 	update := collectionUpdate{
-		alive:             false,
+		alive:             alive,
 		movingAverage:     collection.MovingAverage,
 		aliveDialerGroups: d.snapshotAliveDialerGroupsLocked(collection),
 	}
@@ -751,7 +763,10 @@ func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
 
 func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collectionUpdate, time.Duration) {
 	d.collectionFineMu.Lock()
-	collection := d.mustGetCollection(typ)
+	idx := typ.Index()
+	collection := d.collections[idx]
+	d.failCount[idx] = 0
+
 	collection.Latencies10.AppendLatency(latency)
 	avg, _ := collection.Latencies10.AvgLatency()
 	collection.MovingAverage = (collection.MovingAverage + latency) / 2

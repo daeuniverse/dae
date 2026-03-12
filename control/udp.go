@@ -98,15 +98,13 @@ func (c *ControlPlane) logNoAliveDialerLimited(
 
 	c.log.WithFields(logrus.Fields{
 		"outbound":               outbound,
-		"policy":                 policy,
 		"orig_network_type":      origNetworkType,
 		"selection_network_type": selectionNetworkType,
-		"strict_ip_version":      strictIpVersion,
-		"from":                   src.String(),
+		"src":                    src.String(),
 		"to":                     dst.String(),
 		"sniffed":                domain,
 		"interval":               noAliveDialerLogInterval.String(),
-	}).Warn("no alive dialer for UDP selection (rate-limited)")
+	}).Warn("no alive dialer for selection (rate-limited)")
 }
 
 type DialOption struct {
@@ -367,25 +365,14 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			}
 
 			if sniffer.NeedMore() {
-				// Need more QUIC Initial packets to complete SNI extraction.
-				// Reset decrypt failure counter - we got valid QUIC data, just need more.
-				sniffer.consecutiveDecryptFailures = 0
-				// Record failure and check bypass threshold.
-				sniffer.RecordSniffNoSni(now)
-				if sniffer.ShouldBypassSniff(time.Now()) {
-					// Threshold reached - mark DCID as failed and fall back to IP routing.
-					MarkQuicDcidFailed(key)
-					sniffer.Mu.Unlock()
-					goto afterSniffing
-				}
-				// Wait for more packets with same DCID.
+				// We don't record No SNI streak for NeedMore because handshakes naturally span multiple packets.
 				sniffer.Mu.Unlock()
 				return nil
 			}
 
-			if err != nil || domain == "" {
+			if (err != nil && !stderrors.Is(err, sniffing.ErrNeedMore)) || domain == "" {
 				sniffer.RecordSniffNoSni(now)
-			} else {
+			} else if domain != "" {
 				sniffer.RecordSniffSuccess()
 			}
 
@@ -460,7 +447,7 @@ getNew:
 	}
 
 	// Determine NAT timeout based on connection type
-	if domain != "" {
+	if domain != "" || flowDecision.IsLikelyQuicData {
 		// QUIC connections get 2 minutes
 		natTimeout = QuicNatTimeout
 	} else {
@@ -541,17 +528,23 @@ getNew:
 	// If the udp endpoint has been not alive, remove it from pool and get a new one.
 	if !isNew && ue.Outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
 
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
-				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
-				"network": networkType.String(),
-				"dialer":  ue.Dialer.Property().Name,
-				"retry":   retry,
-			}).Debugln("Old udp endpoint was not alive and removed.")
+		// Optimization: For QUIC/WebRTC, do not aggressively remove endpoint on hot path
+		// just because one health check failed. Let the idle timeout or explicit write error
+		// handle it to prevent flapping. Only remove if this was a DNS-type endpoint which
+		// is more sensitive to staleness.
+		if domain == "" {
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src":     RefineSourceToShow(realSrc, realDst.Addr()),
+					"network": networkType.String(),
+					"dialer":  ue.Dialer.Property().Name,
+					"retry":   retry,
+				}).Debugln("Old udp endpoint was not alive and removed.")
+			}
+			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+			retry++
+			goto getNew
 		}
-		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
-		retry++
-		goto getNew
 	}
 	if domain == "" {
 		// It is used for showing.

@@ -31,11 +31,9 @@ type CryptoFrameOffset struct {
 }
 
 func ReassembleCryptos(offsets []*CryptoFrameOffset, newPayload []byte) (newOffsets []*CryptoFrameOffset, err error) {
-	oldLen := len(offsets)
 	var frameSize int
 	var offset *CryptoFrameOffset
-	var boundary int
-	// Extract crypto frames.
+	// Extract crypto frames from the new packet.
 	for iNextFrame := 0; iNextFrame < len(newPayload); iNextFrame += frameSize {
 		offset, frameSize, err = ExtractCryptoFrameOffset(newPayload[iNextFrame:], iNextFrame)
 		if err != nil {
@@ -45,35 +43,43 @@ func ReassembleCryptos(offsets []*CryptoFrameOffset, newPayload []byte) (newOffs
 			continue
 		}
 		offsets = append(offsets, offset)
-		if offset.UpperAppOffset+len(offset.Data) > boundary {
-			boundary = offset.UpperAppOffset + len(offset.Data)
-		}
 	}
-	// Sort the new part.
-	newPart := offsets[oldLen:]
-	sort.Slice(newPart, func(i, j int) bool {
-		return newPart[i].UpperAppOffset < newPart[j].UpperAppOffset
+
+	if len(offsets) == 0 {
+		return offsets, nil
+	}
+
+	// Sort by offset to prepare for merge.
+	sort.Slice(offsets, func(i, j int) bool {
+		return offsets[i].UpperAppOffset < offsets[j].UpperAppOffset
 	})
 
-	// Insertion sort.
-	for i := oldLen; i < len(offsets); i++ {
-		item := offsets[i]
-		j := i - 1
-		for ; j >= 0; j-- {
-			if item.UpperAppOffset < offsets[j].UpperAppOffset {
-				offsets[j+1] = offsets[j]
-			} else {
-				if offsets[j+1] != item {
-					offsets[j+1] = item
+	// Merge overlapping crypto frames.
+	merged := make([]*CryptoFrameOffset, 0, len(offsets))
+	current := offsets[0]
+	for i := 1; i < len(offsets); i++ {
+		next := offsets[i]
+		currentEnd := current.UpperAppOffset + len(current.Data)
+		if next.UpperAppOffset <= currentEnd {
+			// Overlapping or adjacent: merge.
+			if next.UpperAppOffset+len(next.Data) > currentEnd {
+				// Extend current data.
+				newData := make([]byte, next.UpperAppOffset+len(next.Data)-current.UpperAppOffset)
+				copy(newData, current.Data)
+				copy(newData[len(current.Data):], next.Data[currentEnd-next.UpperAppOffset:])
+				current = &CryptoFrameOffset{
+					UpperAppOffset: current.UpperAppOffset,
+					Data:           newData,
 				}
-				break
 			}
-		}
-		if j < 0 {
-			offsets[0] = item
+		} else {
+			// Non-overlapping: save current and start new.
+			merged = append(merged, current)
+			current = next
 		}
 	}
-	return offsets, nil
+	merged = append(merged, current)
+	return merged, nil
 }
 
 func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *CryptoFrameOffset, frameSize int, err error) {

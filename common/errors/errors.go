@@ -223,12 +223,34 @@ func IsUDPEndpointNormalClose(err error) bool {
 		return true
 	}
 
+	// Replay attack is a security error from proxy protocol, but can be ignored
+	// in some cases to improve stability.
+	if IsReplayAttackError(err) {
+		return true
+	}
+
 	// Check if connection was closed
 	if IsClosedConnection(err) {
 		return true
 	}
 
 	return false
+}
+
+// IsReplayAttackError reports whether err is a replay attack error.
+func IsReplayAttackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return Contains(err.Error(), "replay attack")
+}
+
+// IsAuthError reports whether err is an authentication error (e.g. AEAD check failed).
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return Contains(err.Error(), "cipher: message authentication failed")
 }
 
 // ContainsIgnorableErrorPattern provides fallback pattern matching

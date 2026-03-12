@@ -64,10 +64,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	}
 
 	// Three bytes length.
-	length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
-	if search.Len() > length2+4 {
-		return "", ErrNotApplicable
-	}
+	// length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
 
 	if !bytes.Equal(b[4:], Version_Tls1_2) {
 		return "", ErrNotApplicable

@@ -53,7 +53,7 @@ func TestKeys_HeaderProtection_(t *testing.T) {
 	sample, _ := hex.DecodeString("d1b1c98dd7689fb8ec11d242b123dc9b")
 	flag := byte(0xc3)
 	packetNumber, _ := hex.DecodeString("00000002")
-	if packetNumber, err = keys.HeaderProtection_(sample, true, &flag, packetNumber); err != nil {
+	if packetNumber, _, err = keys.HeaderProtection_(sample, true, &flag, packetNumber); err != nil {
 		t.Fatal("HeaderProtection_", err)
 	}
 	if flag != 0xc0 {
@@ -78,7 +78,7 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	sample := data[50 : 50+16]
 	flag := &header[0]
 	var packetNumber []byte
-	if packetNumber, err = keys.HeaderProtection_(sample, true, flag, potentialPacketNumber); err != nil {
+	if packetNumber, _, err = keys.HeaderProtection_(sample, true, flag, potentialPacketNumber); err != nil {
 		t.Fatal("HeaderProtection_", err)
 	}
 	if *flag != 0b11000000 {
@@ -87,9 +87,14 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	if !bytes.Equal(packetNumber, []byte{1}) {
 		t.Fatal("packetNumber:", packetNumber)
 	}
+	// Parse packet number as uint64 for PayloadDecrypt
+	var pn uint64
+	for _, b := range packetNumber {
+		pn = (pn << 8) | uint64(b)
+	}
 	header = data[:len(header)-4+len(packetNumber)]
 	payload := data[len(header):]
-	plaintext, err := keys.PayloadDecrypt(payload, packetNumber, header)
+	plaintext, err := keys.PayloadDecrypt(payload, pn, header)
 	if err != nil {
 		t.Fatal("PayloadDecryptFromPool:", err)
 	}

@@ -274,20 +274,48 @@ func (p *PacketSnifferPool) startJanitor() {
 		go func() {
 			ticker := time.NewTicker(packetSnifferJanitorInterval)
 			defer ticker.Stop()
+			// janitorMinScanItems is the minimum number of items to check per cycle.
+			// This ensures we make progress on cleanup even when most items are unexpired.
+			// With 250ms interval and 5s TTL, items get checked within ~20 cycles = 5s.
+			const janitorMinScanItems = 128
+			// janitorMaxConsecutiveFresh is the max consecutive fresh (unexpired) items
+			// we'll scan before giving up on this cycle. This prevents wasting CPU when
+			// the pool is mostly active.
+			const janitorMaxConsecutiveFresh = 512
 			for now := range ticker.C {
 				nowNano := now.UnixNano()
+				consecutiveFresh := 0
+				totalScanned := 0
+				expiredFound := 0
+
 				p.pool.Range(func(key, value any) bool {
+					totalScanned++
 					ps := value.(*PacketSniffer)
-					if !ps.IsExpired(nowNano) {
+					if ps.IsExpired(nowNano) {
+						consecutiveFresh = 0
+						expiredFound++
+						// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
+						if p.pool.CompareAndDelete(key, ps) {
+							ps.Close()
+						}
+						// Continue scanning - there might be more expired items
 						return true
 					}
-					// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
-					if p.pool.CompareAndDelete(key, ps) {
-						ps.Close()
+					consecutiveFresh++
+					// Early exit if we've seen many fresh items without finding expired ones.
+					// This bounds the cleanup cost per cycle for large, active pools.
+					if consecutiveFresh >= janitorMaxConsecutiveFresh {
+						return false
+					}
+					// Always scan at least a minimum number of items
+					if totalScanned >= janitorMinScanItems && expiredFound == 0 {
+						// We've scanned enough and found nothing expired - likely a mostly active pool
+						return false
 					}
 					return true
 				})
-				// Clean up expired failed DCID entries
+
+				// Clean up expired failed DCID entries (this is typically small)
 				failedQuicDcidCache.Range(func(key, value any) bool {
 					expireTime := value.(time.Time)
 					if now.After(expireTime) {

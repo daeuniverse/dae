@@ -285,7 +285,19 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 			ch <- err
 			return
 		}
-		ans = msg.Answer
+
+		if msg.Id != builder.Id {
+			ch <- fmt.Errorf("id mismatch: expect %v, got %v", builder.Id, msg.Id)
+			return
+		}
+
+		// Use miekg/dns.Msg.Answer directly but ensure we don't return until
+		// we are sure the caller doesn't need the buffer anymore.
+		// Actually, to be absolutely safe against UAF, we should copy the RRs.
+		ans = make([]dnsmessage.RR, len(msg.Answer))
+		for i, rr := range msg.Answer {
+			ans[i] = dnsmessage.Copy(rr)
+		}
 		ch <- nil
 	}()
 	select {
