@@ -42,9 +42,16 @@ var hostLocalAddrCache struct {
 
 const hostLocalAddrCacheTTL = time.Minute
 
-// isLocalConnection checks whether both relay peers live on the current host.
+// isLocalConnection checks whether this is a local-to-local forwarding scenario.
 // This is used to skip eBPF offload for host-local relays, which can otherwise
 // spin in the epoll loop when dae bridges two local TCP peers.
+//
+// We detect local forwarding in two cases:
+// 1. Both peers are local (e.g., local client -> dae -> local service)
+// 2. Right socket connects to a local service (e.g., remote client -> dae -> local service on 127.0.0.1 or LAN IP)
+//
+// This is distinct from direct forwarding (remote client -> dae -> remote server),
+// where eBPF offload should be used for optimal performance.
 func isLocalConnection(left, right *net.TCPConn) bool {
 	leftPeer, ok := tcpConnPeerIP(left)
 	if !ok {
@@ -54,8 +61,48 @@ func isLocalConnection(left, right *net.TCPConn) bool {
 	if !ok {
 		return false
 	}
+
+	leftLocal, ok := tcpConnLocalIP(left)
+	if !ok {
+		return false
+	}
+	rightLocal, ok := tcpConnLocalIP(right)
+	if !ok {
+		return false
+	}
+
 	isHostLocal := hostLocalAddrChecker()
-	return isHostLocal(leftPeer) && isHostLocal(rightPeer)
+
+	// Case 1: Both peers are local (e.g., local client -> dae -> local service on 127.0.0.1)
+	bothPeersLocal := isHostLocal(leftPeer) && isHostLocal(rightPeer)
+	if bothPeersLocal {
+		return true
+	}
+
+	// Case 2: Right socket connects to a local service on this host
+	// (e.g., remote client -> dae -> local service on 127.0.0.1 or LAN IP)
+	// Key distinction: right.RemoteAddr is local, meaning dae is forwarding to a local service
+	rightPeerIsLocal := isHostLocal(rightPeer)
+
+	// Also verify both sockets are on the same host (defensive check)
+	bothLocalOnHost := isHostLocal(leftLocal) && isHostLocal(rightLocal)
+
+	// Local forwarding: right connects to local service
+	// Direct forwarding: right connects to remote service (rightPeer is not local)
+	return rightPeerIsLocal && bothLocalOnHost
+}
+
+// tcpConnLocalIP extracts the local IP address from a TCP connection.
+func tcpConnLocalIP(conn *net.TCPConn) (netip.Addr, bool) {
+	local, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	ip, ok := netip.AddrFromSlice(local.IP)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return common.ConvergeAddr(ip), true
 }
 
 func tcpConnPeerIP(conn *net.TCPConn) (netip.Addr, bool) {
