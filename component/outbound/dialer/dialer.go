@@ -86,6 +86,44 @@ type Dialer struct {
 	}
 }
 
+// recoveryBackoffLevelStore provides persistent backoff level storage
+// This allows recovery state to survive Clone() operations and reloads
+// Key: Dialer name, Value: backoff level (0, 1, 2, ...)
+type recoveryBackoffLevelStore struct {
+	sync.RWMutex
+	levels map[string]int
+}
+
+var globalRecoveryBackoffLevelStore = &recoveryBackoffLevelStore{
+	levels: make(map[string]int),
+}
+
+// Get returns the backoff level for the given dialer name.
+// Returns 0 if the dialer name is not found (first time or after restart).
+func (s *recoveryBackoffLevelStore) Get(dialerName string) int {
+	s.RLock()
+	defer s.RUnlock()
+	if level, ok := s.levels[dialerName]; ok {
+		return level
+	}
+	return 0
+}
+
+// Set updates the backoff level for the given dialer name.
+func (s *recoveryBackoffLevelStore) Set(dialerName string, level int) {
+	s.Lock()
+	defer s.Unlock()
+	s.levels[dialerName] = level
+}
+
+// Delete removes the backoff level for the given dialer name.
+// This can be used when a dialer is permanently removed.
+func (s *recoveryBackoffLevelStore) Delete(dialerName string) {
+	s.Lock()
+	defer s.Unlock()
+	delete(s.levels, dialerName)
+}
+
 type GlobalOption struct {
 	D.ExtraOption
 	Log               *logrus.Logger
@@ -161,10 +199,18 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		httpClients:      make(map[string]*http.Client),
 	}
 	d.Dialer = dialer
-	
+
 	// Initialize recovery detection with adjusted max backoff
 	d.initRecoveryDetection(option.CheckInterval)
-	
+
+	// Restore backoff level from persistent store (for Clone() and reload scenarios)
+	// This maintains recovery progression across dialer recreations
+	if d.property != nil {
+		if dialerName := d.Property().Name; dialerName != "" {
+			d.recoveryState.backoffLevel = globalRecoveryBackoffLevelStore.Get(dialerName)
+		}
+	}
+
 	option.Log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
@@ -177,10 +223,10 @@ func (d *Dialer) Clone() *Dialer {
 
 func (d *Dialer) Close() error {
 	d.cancel()
-	
+
 	// Cancel any pending recovery confirmation to prevent timer leaks
 	d.cancelPendingRecoveryConfirmation()
-	
+
 	d.tickerMu.Lock()
 	if d.ticker != nil {
 		d.ticker.Stop()
@@ -224,10 +270,10 @@ func (d *Dialer) NotifyHealthCheckResult(success bool) {
 		}
 		// Clear failed QUIC DCID cache
 		notifyQuicDcidCacheClearImpl()
-		
+
 		// Trigger recovery detection with exponential backoff
 		d.triggerRecoveryDetection()
-		
+
 	} else {
 		// Track failures - may trigger immediate unavailability
 		if d.property.Address != "" {
@@ -283,7 +329,7 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 	d.recoveryState.maxBackoff = maxBackoff
 
 	d.Log.WithFields(logrus.Fields{
-		"dialer":        d.Property().Name,
+		"dialer":         d.Property().Name,
 		"check_interval": checkInterval.String(),
 		"max_backoff":    maxBackoff.String(),
 	}).Debugln("Recovery detection initialized")
@@ -292,6 +338,16 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 // triggerRecoveryDetection triggers recovery detection with exponential backoff.
 // This is called when health check succeeds, to verify the dialer is truly stable before marking it healthy.
 func (d *Dialer) triggerRecoveryDetection() {
+	// Check context first to avoid scheduling recovery on a closed dialer
+	select {
+	case <-d.ctx.Done():
+		d.Log.WithFields(logrus.Fields{
+			"dialer": d.Property().Name,
+		}).Traceln("Recovery detection skipped: dialer is shutting down")
+		return
+	default:
+	}
+
 	d.recoveryState.Lock()
 	defer d.recoveryState.Unlock()
 
@@ -340,33 +396,74 @@ func (d *Dialer) triggerRecoveryDetection() {
 // confirmRecovery confirms recovery after backoff period.
 // It checks if the dialer is still healthy before confirming.
 func (d *Dialer) confirmRecovery(networkType *NetworkType) {
+	// CRITICAL: Check context first to avoid accessing closed resources
+	// after SIGTERM/SIGINT. This prevents goroutines from running after
+	// the dialer has been partially closed.
+	select {
+	case <-d.ctx.Done():
+		d.Log.WithFields(logrus.Fields{
+			"dialer":  d.Property().Name,
+			"network": networkType.String(),
+		}).Debugln("Recovery confirmation aborted: dialer is shutting down")
+		return
+	default:
+	}
+
 	d.recoveryState.Lock()
-	
 	// Clear timer
 	if d.recoveryState.confirmTimer != nil {
 		d.recoveryState.confirmTimer = nil
 	}
+	// Snapshot backoff level while holding lock to detect concurrent resets
+	currentBackoffLevel := d.recoveryState.backoffLevel
 	d.recoveryState.Unlock()
-	
+
+	// CRITICAL: Check context again after releasing lock
+	select {
+	case <-d.ctx.Done():
+		d.Log.WithFields(logrus.Fields{
+			"dialer":  d.Property().Name,
+			"network": networkType.String(),
+		}).Debugln("Recovery confirmation aborted: dialer is shutting down")
+		return
+	default:
+	}
+
 	// Double-check if still healthy (might have failed during backoff period)
 	if !d.MustGetAlive(networkType) {
 		d.Log.WithFields(logrus.Fields{
-			"dialer": d.Property().Name,
+			"dialer":  d.Property().Name,
 			"network": networkType.String(),
 		}).Debugln("Recovery confirmation failed: still unhealthy, will retry on next health check")
 		return
 	}
-	
+
 	// Confirm recovery - increase backoff level for next time
+	// Only increment if level hasn't been reset by a concurrent failure
 	d.recoveryState.Lock()
-	d.recoveryState.backoffLevel++
-	d.Log.WithFields(logrus.Fields{
-		"dialer":       d.Property().Name,
-		"network":      networkType.String(),
-		"backoff_level": d.recoveryState.backoffLevel,
-	}).Infoln("Recovery confirmed after exponential backoff")
+	if d.recoveryState.backoffLevel == currentBackoffLevel {
+		d.recoveryState.backoffLevel++
+		// Persist the incremented backoff level to survive Clone() and reloads
+		if d.property != nil {
+			if dialerName := d.Property().Name; dialerName != "" {
+				globalRecoveryBackoffLevelStore.Set(dialerName, d.recoveryState.backoffLevel)
+			}
+		}
+		d.Log.WithFields(logrus.Fields{
+			"dialer":        d.Property().Name,
+			"network":       networkType.String(),
+			"backoff_level": d.recoveryState.backoffLevel,
+		}).Infoln("Recovery confirmed after exponential backoff")
+	} else {
+		// Level was reset by concurrent failure, don't increment
+		d.Log.WithFields(logrus.Fields{
+			"dialer":        d.Property().Name,
+			"network":       networkType.String(),
+			"backoff_level": d.recoveryState.backoffLevel,
+		}).Debugln("Recovery confirmation skipped: backoff level was reset by concurrent failure")
+	}
 	d.recoveryState.Unlock()
-	
+
 	// Note: We don't call markAvailable() here because periodic health check
 	// will naturally update the dialer state. This just confirms the recovery is genuine.
 }
@@ -376,11 +473,11 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 func (d *Dialer) cancelPendingRecoveryConfirmation() {
 	d.recoveryState.Lock()
 	defer d.recoveryState.Unlock()
-	
+
 	if d.recoveryState.confirmTimer != nil {
 		d.recoveryState.confirmTimer.Stop()
 		d.recoveryState.confirmTimer = nil
-		
+
 		d.Log.WithFields(logrus.Fields{
 			"dialer": d.Property().Name,
 		}).Debugln("Pending recovery confirmation cancelled due to new failure")
@@ -418,8 +515,14 @@ func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Durat
 func (d *Dialer) resetBackoffLevel() {
 	d.recoveryState.Lock()
 	defer d.recoveryState.Unlock()
-	
+
 	d.recoveryState.backoffLevel = 0
+	// Also update persistent store so Clone() starts from level 0
+	if d.property != nil {
+		if dialerName := d.Property().Name; dialerName != "" {
+			globalRecoveryBackoffLevelStore.Set(dialerName, 0)
+		}
+	}
 }
 
 // markUnavailableFromProxyFailure immediately marks the dialer as unavailable.
@@ -431,22 +534,22 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 		IpVersion: consts.IpVersionStr_4,
 		IsDns:     false,
 	}
-	
+
 	d.Log.WithFields(logrus.Fields{
-		"dialer": d.Property().Name,
+		"dialer":  d.Property().Name,
 		"network": networkType.String(),
 	}).Warnln("Marking dialer as unavailable due to persistent proxy IP failures")
-	
+
 	// Use existing markUnavailable logic from connectivity_check.go
 	// This will update collection.Alive and notify AliveDialerSet
 	update := d.markUnavailable(networkType)
-	
+
 	// Reset backoff level (start fresh for next recovery)
 	d.resetBackoffLevel()
-	
+
 	// Cancel any pending recovery confirmation
 	d.cancelPendingRecoveryConfirmation()
-	
+
 	// Notify dialer group about state change
 	d.informDialerGroupUpdate(update)
 }

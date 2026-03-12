@@ -35,17 +35,22 @@ var coreFlip int32
 type controlPlaneCore struct {
 	mu sync.Mutex
 
-	log             *logrus.Logger
-	deferFuncs      []func() error
-	bpf             *bpfObjects
-	outboundId2Name map[uint8]string
-	tcpRelayOffload bool
+	log        *logrus.Logger
+	deferFuncs []func() error
+	// bpfHookDetachFuncs contains only BPF hook detachment functions (FilterDel, tc detach)
+	// These are tracked separately so they can be detached immediately on SIGTERM
+	// before other cleanup that might take longer (like dialer shutdown).
+	bpfHookDetachFuncs []func() error
+	bpf                *bpfObjects
+	outboundId2Name    map[uint8]string
+	tcpRelayOffload    bool
 
 	kernelVersion *internal.Version
 
-	flip       int
-	isReload   bool
-	bpfEjected bool
+	flip             int
+	isReload         bool
+	bpfEjected       bool
+	bpfHooksDetached bool // Track if BPF hooks were already detached
 
 	closed context.Context
 	close  context.CancelFunc
@@ -73,17 +78,19 @@ func newControlPlaneCore(log *logrus.Logger,
 	ifmgr := component.NewInterfaceManager(log)
 	deferFuncs = append(deferFuncs, ifmgr.Close)
 	return &controlPlaneCore{
-		log:             log,
-		deferFuncs:      deferFuncs,
-		bpf:             bpf,
-		outboundId2Name: outboundId2Name,
-		kernelVersion:   kernelVersion,
-		flip:            flip,
-		isReload:        isReload,
-		bpfEjected:      false,
-		ifmgr:           ifmgr,
-		closed:          closed,
-		close:           toClose,
+		log:                log,
+		deferFuncs:         deferFuncs,
+		bpfHookDetachFuncs: make([]func() error, 0),
+		bpf:                bpf,
+		outboundId2Name:    outboundId2Name,
+		kernelVersion:      kernelVersion,
+		flip:               flip,
+		isReload:           isReload,
+		bpfEjected:         false,
+		bpfHooksDetached:   false,
+		ifmgr:              ifmgr,
+		closed:             closed,
+		close:              toClose,
 	}
 }
 
@@ -97,6 +104,49 @@ func (c *controlPlaneCore) Flip() {
 		}
 	}
 }
+
+// addBpfHookDetach adds a BPF hook detachment function to the dedicated list.
+// These functions will be executed immediately on SIGTERM before other cleanup.
+func (c *controlPlaneCore) addBpfHookDetach(detachFunc func() error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bpfHookDetachFuncs = append(c.bpfHookDetachFuncs, detachFunc)
+}
+
+// DetachBpfHooks immediately detaches all BPF hooks from the system.
+// This should be called first when receiving SIGTERM to ensure network is restored
+// even if the rest of the shutdown process takes too long and gets SIGKILL'd.
+// This is safe to call multiple times - subsequent calls will be no-ops.
+func (c *controlPlaneCore) DetachBpfHooks() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Already detached, skip
+	if c.bpfHooksDetached {
+		return nil
+	}
+
+	c.log.Infoln("[Shutdown] Detaching BPF hooks immediately to restore network")
+
+	var errs []error
+	// Execute in reverse order (last attached, first detached)
+	for i := len(c.bpfHookDetachFuncs) - 1; i >= 0; i-- {
+		if e := c.bpfHookDetachFuncs[i](); e != nil {
+			// Log but continue detaching other hooks
+			c.log.WithError(e).Warnln("[Shutdown] Failed to detach BPF hook")
+			errs = append(errs, e)
+		}
+	}
+
+	c.bpfHooksDetached = true
+	c.log.Infoln("[Shutdown] BPF hooks detached, network should be restored")
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 func (c *controlPlaneCore) Close() (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -313,12 +363,14 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	detachFunc := func() error {
 		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	c.addBpfHookDetach(detachFunc)
 
 	filterEgress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -348,12 +400,14 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	egressDetachFunc := func() error {
 		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
 		}
 		return nil
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, egressDetachFunc)
+	c.addBpfHookDetach(egressDetachFunc)
 
 	return nil
 }
@@ -389,12 +443,14 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		if err != nil {
 			return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
 		}
-		c.deferFuncs = append(c.deferFuncs, func() error {
+		detachFunc := func() error {
 			if err := attached.Close(); err != nil {
 				return fmt.Errorf("inet6Bind.Close(): %w", err)
 			}
 			return nil
-		})
+		}
+		c.deferFuncs = append(c.deferFuncs, detachFunc)
+		c.addBpfHookDetach(detachFunc)
 	}
 	return nil
 }
@@ -441,7 +497,7 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 	}
 
 	c.tcpRelayOffload = true
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	detachFunc := func() error {
 		var errs []error
 		for i := len(attached) - 1; i >= 0; i-- {
 			if err := ciliumLink.RawDetachProgram(ciliumLink.RawDetachProgramOptions{
@@ -453,7 +509,9 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 			}
 		}
 		return errors.Join(errs...)
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	c.addBpfHookDetach(detachFunc)
 	return nil
 }
 
@@ -547,12 +605,14 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	egressDetachFunc := func() error {
 		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
 		}
 		return nil
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, egressDetachFunc)
+	c.addBpfHookDetach(egressDetachFunc)
 
 	filterIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -580,12 +640,14 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	detachFunc := func() error {
 		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	c.addBpfHookDetach(detachFunc)
 
 	return nil
 }
@@ -635,14 +697,16 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	}); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	detachFunc := func() error {
 		return daens.WithRequired("delete dae0peer ingress filter", func() error {
 			if err := netlink.FilterDel(filterDae0peerIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 				return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
 			}
 			return nil
 		})
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	c.addBpfHookDetach(detachFunc)
 
 	// tproxy_dae0_ingress@dae0 at host netns
 	// Best effort to add qdisc; it may already exist.
@@ -668,12 +732,14 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	if err := netlink.FilterAdd(filterDae0Ingress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
+	dae0DetachFunc := func() error {
 		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
 		}
 		return nil
-	})
+	}
+	c.deferFuncs = append(c.deferFuncs, dae0DetachFunc)
+	c.addBpfHookDetach(dae0DetachFunc)
 	return
 }
 

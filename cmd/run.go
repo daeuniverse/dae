@@ -379,6 +379,15 @@ loop:
 		control.GetDaeNetns().Close()
 	}()
 
+	// CRITICAL: Detach BPF hooks FIRST before any other cleanup.
+	// This ensures network is restored immediately even if the rest of
+	// shutdown takes too long and process gets SIGKILL'd by procd.
+	// This is safe to call multiple times - subsequent calls are no-ops.
+	if e := c.DetachBpfHooks(); e != nil {
+		log.Warnf("detach BPF hooks: %v", e)
+		// Continue with shutdown even if BPF detach fails
+	}
+
 	if e := c.AbortConnections(); e != nil {
 		log.Warnf("abort connections: %v", e)
 	}

@@ -87,10 +87,10 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout   time.Duration
-	tproxyPortProtect bool
-	soMarkFromDae     uint32
-	mptcp             bool
+	sniffingTimeout    time.Duration
+	tproxyPortProtect  bool
+	soMarkFromDae      uint32
+	mptcp              bool
 	udpUnorderedRunner *udpUnorderedTaskRunner
 }
 
@@ -158,7 +158,6 @@ func NewControlPlane(
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
-
 
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -462,29 +461,29 @@ func NewControlPlane(
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane = &ControlPlane{
-		log:               log,
-		core:              core,
-		deferFuncs:        deferFuncs,
-		listenIp:          "0.0.0.0",
-		outbounds:         outbounds,
-		dnsController:     nil,
-		onceNetworkReady:  sync.Once{},
-		dialMode:          dialMode,
-		routingMatcher:    routingMatcher,
-		ctx:               ctx,
-		cancel:            cancel,
-		ready:             make(chan struct{}),
-		muRealDomainSet:   sync.RWMutex{},
-		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
-		tcpSniffNegSet:    make(map[tcpSniffNegKey]tcpSniffNegEntry),
-		negJanitorStop:    make(chan struct{}),
-		negJanitorDone:    make(chan struct{}),
-		lanInterface:      global.LanInterface,
-		wanInterface:      global.WanInterface,
-		sniffingTimeout:   sniffingTimeout,
-		tproxyPortProtect: global.TproxyPortProtect,
-		soMarkFromDae:     global.SoMarkFromDae,
-		mptcp:             global.Mptcp,
+		log:                log,
+		core:               core,
+		deferFuncs:         deferFuncs,
+		listenIp:           "0.0.0.0",
+		outbounds:          outbounds,
+		dnsController:      nil,
+		onceNetworkReady:   sync.Once{},
+		dialMode:           dialMode,
+		routingMatcher:     routingMatcher,
+		ctx:                ctx,
+		cancel:             cancel,
+		ready:              make(chan struct{}),
+		muRealDomainSet:    sync.RWMutex{},
+		realDomainSet:      bloom.NewWithEstimates(2048, 0.001),
+		tcpSniffNegSet:     make(map[tcpSniffNegKey]tcpSniffNegEntry),
+		negJanitorStop:     make(chan struct{}),
+		negJanitorDone:     make(chan struct{}),
+		lanInterface:       global.LanInterface,
+		wanInterface:       global.WanInterface,
+		sniffingTimeout:    sniffingTimeout,
+		tproxyPortProtect:  global.TproxyPortProtect,
+		soMarkFromDae:      global.SoMarkFromDae,
+		mptcp:              global.Mptcp,
 		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
 	}
 	plane.startRealDomainNegJanitor()
@@ -1581,6 +1580,14 @@ func (c *ControlPlane) AbortConnections() (err error) {
 		return true
 	})
 	return stderrors.Join(errs...)
+}
+
+// DetachBpfHooks immediately detaches all BPF hooks from the system.
+// This should be called first when receiving SIGTERM to ensure network is restored
+// even if the rest of the shutdown process takes too long and gets SIGKILL'd.
+// This is safe to call multiple times - subsequent calls will be no-ops.
+func (c *ControlPlane) DetachBpfHooks() error {
+	return c.core.DetachBpfHooks()
 }
 
 func (c *ControlPlane) Close() (err error) {

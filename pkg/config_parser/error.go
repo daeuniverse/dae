@@ -21,12 +21,71 @@ const (
 	ErrorType_NotSet      ErrorType = "is not set"
 )
 
+// Error hint messages for common configuration mistakes.
+const (
+	hintDigitPrefixDomain = `Hint: Domains or keys starting with a digit must be enclosed in quotes.
+  Change: %s
+  To:    '%s'
+`
+)
+
 type ConsoleErrorListener struct {
 	ErrorBuilder strings.Builder
 }
 
 func NewConsoleErrorListener() *ConsoleErrorListener {
 	return &ConsoleErrorListener{}
+}
+
+// detectDigitPrefixDomainError checks if the error is caused by a domain/key starting
+// with a digit without quotes. Returns a hint message if detected, empty string otherwise.
+func (d *ConsoleErrorListener) detectDigitPrefixDomainError(msg, strLine string) string {
+	// Fast path: only check for specific error patterns
+	if !strings.Contains(msg, "mismatched input") &&
+		!strings.Contains(msg, "expecting '}'") &&
+		!strings.Contains(msg, "expecting") {
+		return ""
+	}
+
+	// Skip if line already contains quotes (user knows to quote)
+	if strings.Contains(strLine, "'") || strings.Contains(strLine, "\"") {
+		return ""
+	}
+
+	// Skip if line doesn't contain colon (not a key:value pattern)
+	if !strings.Contains(strLine, ":") {
+		return ""
+	}
+
+	// Look for pattern: digit(s) followed by dot and colon (like "123.com:60")
+	words := strings.Fields(strLine)
+	for _, w := range words {
+		if d.isDigitPrefixDomainPattern(w) {
+			return fmt.Sprintf("\n\n"+hintDigitPrefixDomain, w, w)
+		}
+	}
+
+	return ""
+}
+
+// isDigitPrefixDomainPattern checks if a string matches the pattern of a domain
+// starting with a digit, like "123.com:60" or "123dns.com:53".
+func (d *ConsoleErrorListener) isDigitPrefixDomainPattern(s string) bool {
+	// Must contain both dot and colon
+	if !strings.Contains(s, ".") || !strings.Contains(s, ":") {
+		return false
+	}
+
+	// Check if first character is a digit
+	if len(s) == 0 {
+		return false
+	}
+	firstChar := s[0]
+	if firstChar < '0' || firstChar > '9' {
+		return false
+	}
+
+	return true
 }
 
 func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendingSymbol any, line, column int, msg string, e antlr.RecognitionException) {
@@ -61,7 +120,13 @@ func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendin
 		wrap += beginOfLine - 1
 	}
 	strLine := token.GetInputStream().GetText(beginOfLine, wrap)
-	d.ErrorBuilder.WriteString(fmt.Sprintf("%v%v\n%v%v: %v\n", starting, strLine, strings.Repeat(" ", offset), strings.Repeat("^", token.GetStop()-token.GetStart()+1), msg))
+
+	// Check for common error: domain starting with digit without quotes
+	// This happens in fixed_domain_ttl, upstream, etc.
+	// Example: "123.com:60" is parsed as number "123" then unexpected ":"
+	hint := d.detectDigitPrefixDomainError(msg, strLine)
+
+	d.ErrorBuilder.WriteString(fmt.Sprintf("%v%v\n%v%v: %v%v\n", starting, strLine, strings.Repeat(" ", offset), strings.Repeat("^", token.GetStop()-token.GetStart()+1), msg, hint))
 }
 func (d *ConsoleErrorListener) ReportAmbiguity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex int, exact bool, ambigAlts *antlr.BitSet, configs antlr.ATNConfigSet) {
 }
