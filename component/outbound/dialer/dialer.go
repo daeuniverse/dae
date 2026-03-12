@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -63,6 +64,26 @@ type Dialer struct {
 	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
 	// This is used for health check cycle management and failover tracking
 	stickyIpDialer *stickyip.StickyIpDialer
+
+	// recoveryState manages exponential backoff for recovery detection
+	// This prevents flapping when a dialer recovers but might fail again soon
+	recoveryState struct {
+		sync.Mutex
+
+		// backoffLevel indicates current backoff level (0, 1, 2, 3...)
+		// Backoff duration = minBackoff * (2 ^ level), capped at maxBackoff
+		backoffLevel int
+
+		// maxBackoff is the maximum backoff duration, calculated based on check interval
+		// This is set during initialization and prevents overlap with health checks
+		maxBackoff time.Duration
+
+		// confirmTimer is the scheduled timer to confirm recovery after backoff period
+		confirmTimer *time.Timer
+
+		// pendingNetworkType is the network type being verified for recovery
+		pendingNetworkType *NetworkType
+	}
 }
 
 type GlobalOption struct {
@@ -83,6 +104,17 @@ type Property struct {
 	D.Property
 	SubscriptionTag string
 }
+
+const (
+	// Recovery detection exponential backoff constants
+	// minRecoveryBackoff is the initial backoff duration for recovery confirmation
+	minRecoveryBackoff = 10 * time.Second
+	// maxRecoveryBackoff is the maximum backoff duration (should be < health check interval)
+	// This prevents infinite amplification with periodic health checks
+	maxRecoveryBackoff = 20 * time.Second
+	// backoffMultiplier is the factor to increase backoff duration after each level
+	backoffMultiplier = 2
+)
 
 type AliveDialerSetSet map[*AliveDialerSet]int
 
@@ -129,6 +161,10 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		httpClients:      make(map[string]*http.Client),
 	}
 	d.Dialer = dialer
+	
+	// Initialize recovery detection with adjusted max backoff
+	d.initRecoveryDetection(option.CheckInterval)
+	
 	option.Log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
@@ -141,6 +177,10 @@ func (d *Dialer) Clone() *Dialer {
 
 func (d *Dialer) Close() error {
 	d.cancel()
+	
+	// Cancel any pending recovery confirmation to prevent timer leaks
+	d.cancelPendingRecoveryConfirmation()
+	
 	d.tickerMu.Lock()
 	if d.ticker != nil {
 		d.ticker.Stop()
@@ -174,8 +214,8 @@ func (d *Dialer) IncrementCheckCycle() {
 }
 
 // NotifyHealthCheckResult notifies about health check results.
-// On success: clears failed QUIC DCID cache and resets proxy IP failure counter.
-// On failure: tracks consecutive failures and may invalidate cached IP.
+// On success: clears failed QUIC DCID cache, resets proxy IP failure counter, and triggers recovery detection.
+// On failure: tracks consecutive failures and immediately marks dialer as unavailable if threshold reached.
 func (d *Dialer) NotifyHealthCheckResult(success bool) {
 	if success {
 		// Reset proxy IP failure counter on success
@@ -184,12 +224,17 @@ func (d *Dialer) NotifyHealthCheckResult(success bool) {
 		}
 		// Clear failed QUIC DCID cache
 		notifyQuicDcidCacheClearImpl()
+		
+		// Trigger recovery detection with exponential backoff
+		d.triggerRecoveryDetection()
+		
 	} else {
-		// Track failures - may trigger IP cache invalidation
+		// Track failures - may trigger immediate unavailability
 		if d.property.Address != "" {
 			if recordProxyFailure(d.property.Address) {
-				// Threshold reached - sticky IP cache will be invalidated
-				// and fresh IPs will be tried on next cycle
+				// Threshold reached - immediately mark dialer as unavailable
+				// This bypasses the 30-second health check cycle for faster failover
+				d.markUnavailableFromProxyFailure()
 			}
 		}
 	}
@@ -217,6 +262,193 @@ var notifyQuicDcidCacheClearImpl func() = func() {
 // This should be called by control package during initialization.
 func SetQuicDcidCacheClearFunc(fn func()) {
 	notifyQuicDcidCacheClearImpl = fn
+}
+
+// Recovery detection methods
+
+// initRecoveryDetection initializes recovery detection with adjusted max backoff based on health check interval.
+// This prevents infinite amplification between periodic health checks and recovery confirmation timers.
+func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+
+	// Max backoff should be < health check interval to prevent overlap
+	// Use 2/3 of check interval to leave room for confirmation
+	maxBackoff := time.Duration(float64(checkInterval) * 2.0 / 3.0)
+	if maxBackoff < minRecoveryBackoff {
+		maxBackoff = minRecoveryBackoff
+	}
+
+	// Store the calculated max backoff for use in getRecoveryBackoffDuration
+	d.recoveryState.maxBackoff = maxBackoff
+
+	d.Log.WithFields(logrus.Fields{
+		"dialer":        d.Property().Name,
+		"check_interval": checkInterval.String(),
+		"max_backoff":    maxBackoff.String(),
+	}).Debugln("Recovery detection initialized")
+}
+
+// triggerRecoveryDetection triggers recovery detection with exponential backoff.
+// This is called when health check succeeds, to verify the dialer is truly stable before marking it healthy.
+func (d *Dialer) triggerRecoveryDetection() {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+
+	// Skip if confirmation timer already running (prevent duplicate triggers)
+	if d.recoveryState.confirmTimer != nil {
+		d.Log.WithFields(logrus.Fields{
+			"dialer": d.Property().Name,
+		}).Traceln("Recovery detection already in progress, skip")
+		return
+	}
+
+	// Determine which network type to check (start with UDP as it's most common)
+	networkType := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     false,
+	}
+
+	// Skip if already healthy (no need to confirm recovery)
+	if d.MustGetAlive(networkType) {
+		d.Log.WithFields(logrus.Fields{
+			"dialer":  d.Property().Name,
+			"network": networkType.String(),
+		}).Traceln("Dialer is already healthy, skip recovery detection")
+		return
+	}
+
+	// Calculate backoff duration based on current level
+	// We read backoffLevel and maxBackoff while holding the lock to avoid race conditions
+	backoff := d.calculateBackoffDurationLocked(d.recoveryState.backoffLevel, d.recoveryState.maxBackoff)
+
+	d.Log.WithFields(logrus.Fields{
+		"dialer":        d.Property().Name,
+		"network":       networkType.String(),
+		"backoff":       backoff.String(),
+		"backoff_level": d.recoveryState.backoffLevel,
+	}).Debugln("Recovery detection scheduled with exponential backoff")
+
+	// Schedule confirmation timer
+	d.recoveryState.pendingNetworkType = networkType
+	d.recoveryState.confirmTimer = time.AfterFunc(backoff, func() {
+		d.confirmRecovery(networkType)
+	})
+}
+
+// confirmRecovery confirms recovery after backoff period.
+// It checks if the dialer is still healthy before confirming.
+func (d *Dialer) confirmRecovery(networkType *NetworkType) {
+	d.recoveryState.Lock()
+	
+	// Clear timer
+	if d.recoveryState.confirmTimer != nil {
+		d.recoveryState.confirmTimer = nil
+	}
+	d.recoveryState.Unlock()
+	
+	// Double-check if still healthy (might have failed during backoff period)
+	if !d.MustGetAlive(networkType) {
+		d.Log.WithFields(logrus.Fields{
+			"dialer": d.Property().Name,
+			"network": networkType.String(),
+		}).Debugln("Recovery confirmation failed: still unhealthy, will retry on next health check")
+		return
+	}
+	
+	// Confirm recovery - increase backoff level for next time
+	d.recoveryState.Lock()
+	d.recoveryState.backoffLevel++
+	d.Log.WithFields(logrus.Fields{
+		"dialer":       d.Property().Name,
+		"network":      networkType.String(),
+		"backoff_level": d.recoveryState.backoffLevel,
+	}).Infoln("Recovery confirmed after exponential backoff")
+	d.recoveryState.Unlock()
+	
+	// Note: We don't call markAvailable() here because periodic health check
+	// will naturally update the dialer state. This just confirms the recovery is genuine.
+}
+
+// cancelPendingRecoveryConfirmation cancels any pending recovery confirmation timer.
+// This is called when the dialer fails again during recovery observation period.
+func (d *Dialer) cancelPendingRecoveryConfirmation() {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+	
+	if d.recoveryState.confirmTimer != nil {
+		d.recoveryState.confirmTimer.Stop()
+		d.recoveryState.confirmTimer = nil
+		
+		d.Log.WithFields(logrus.Fields{
+			"dialer": d.Property().Name,
+		}).Debugln("Pending recovery confirmation cancelled due to new failure")
+	}
+}
+
+// getRecoveryBackoffDuration returns the backoff duration based on current level.
+// Thread-safe: acquires lock to read backoffLevel and maxBackoff.
+func (d *Dialer) getRecoveryBackoffDuration() time.Duration {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+
+	return d.calculateBackoffDurationLocked(d.recoveryState.backoffLevel, d.recoveryState.maxBackoff)
+}
+
+// calculateBackoffDurationLocked calculates the backoff duration without acquiring a lock.
+// The caller must hold recoveryState.Lock() when calling this method.
+func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Duration) time.Duration {
+	// Calculate backoff: minBackoff * (2 ^ level)
+	duration := minRecoveryBackoff
+	for i := 0; i < level; i++ {
+		duration *= time.Duration(backoffMultiplier)
+	}
+
+	// Cap at max backoff
+	if duration > maxBackoff {
+		duration = maxBackoff
+	}
+
+	return duration
+}
+
+// resetBackoffLevel resets the backoff level to 0.
+// This is called when the dialer fails, restarting the backoff progression.
+func (d *Dialer) resetBackoffLevel() {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+	
+	d.recoveryState.backoffLevel = 0
+}
+
+// markUnavailableFromProxyFailure immediately marks the dialer as unavailable.
+// This is called when all proxy IPs have failed after retries, bypassing the health check cycle.
+func (d *Dialer) markUnavailableFromProxyFailure() {
+	// Determine network type (assume UDP for most cases)
+	networkType := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     false,
+	}
+	
+	d.Log.WithFields(logrus.Fields{
+		"dialer": d.Property().Name,
+		"network": networkType.String(),
+	}).Warnln("Marking dialer as unavailable due to persistent proxy IP failures")
+	
+	// Use existing markUnavailable logic from connectivity_check.go
+	// This will update collection.Alive and notify AliveDialerSet
+	update := d.markUnavailable(networkType)
+	
+	// Reset backoff level (start fresh for next recovery)
+	d.resetBackoffLevel()
+	
+	// Cancel any pending recovery confirmation
+	d.cancelPendingRecoveryConfirmation()
+	
+	// Notify dialer group about state change
+	d.informDialerGroupUpdate(update)
 }
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
