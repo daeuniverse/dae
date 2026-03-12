@@ -186,11 +186,11 @@ func (ue *UdpEndpoint) handleProxyServerFailure() {
 	// This will invalidate the UDP cache for this proxy address
 	ue.Dialer.NotifyProxyFailure(proxyAddr, "udp")
 
-	if ue.log != nil && ue.log.IsLevelEnabled(logrus.InfoLevel) {
+	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
 			"proxy_addr": proxyAddr,
 			"dialer":     ue.Dialer.Property().Name,
-		}).Info("[UdpEndpoint] Proxy server UDP connection refused - invalidated cached IP")
+		}).Debug("[UdpEndpoint] Proxy server UDP connection refused - invalidated cached IP")
 	}
 }
 

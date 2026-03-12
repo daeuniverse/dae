@@ -18,8 +18,10 @@ func TestUdpFlowDecision_EndpointKeys(t *testing.T) {
 	dst := netip.MustParseAddrPort("93.184.216.34:443")
 	decision := ClassifyUdpFlow(src, dst, []byte{0x00, 0x01, 0x02, 0x03})
 
-	require.Equal(t, UdpEndpointKey{Src: src}, decision.CachedRoutingEndpointKey())
-	// Port 443 is treated as QUIC-like, so EndpointKeyForDial("") returns SymmetricNatEndpointKey
+	// Port 443 triggers PreferSymmetricNat via IsLikelyQuicData
+	// So CachedRoutingEndpointKey returns SymmetricNatEndpointKey {Src, Dst}
+	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.CachedRoutingEndpointKey())
+	// EndpointKeyForDial also returns SymmetricNatEndpointKey for port 443
 	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.EndpointKeyForDial(""))
 	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.EndpointKeyForDial("example.com"))
 	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.SymmetricNatEndpointKey())
@@ -36,7 +38,8 @@ func TestUdpFlowDecision_ExistingSnifferSessionUsesOrderedIngress(t *testing.T) 
 	decision := ClassifyUdpFlow(src, dst, data)
 	require.False(t, decision.IsQuicInitial)
 	require.False(t, decision.HasSnifferSession)
-	require.True(t, decision.ShouldUseOrderedIngress()) // Port 443 → IsLikelyQuicData
+	// Optimized: Port 443 no longer forces ordered ingress for non-QUIC traffic
+	require.False(t, decision.ShouldUseOrderedIngress())
 	require.False(t, decision.ShouldAttemptSniff())    // ShouldAttemptSniff only checks IsQuicInitial or HasSnifferSession
 
 	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(decision.PacketSnifferKey(), nil)
@@ -44,6 +47,7 @@ func TestUdpFlowDecision_ExistingSnifferSessionUsesOrderedIngress(t *testing.T) 
 
 	decision = ClassifyUdpFlow(src, dst, data)
 	require.True(t, decision.HasSnifferSession)
+	// With sniffer session, ordered ingress IS used
 	require.True(t, decision.ShouldUseOrderedIngress())
 	require.True(t, decision.ShouldAttemptSniff())
 }

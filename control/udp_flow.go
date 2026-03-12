@@ -80,6 +80,9 @@ func (d UdpFlowDecision) FullConeNatEndpointKey() UdpEndpointKey {
 }
 
 func (d UdpFlowDecision) CachedRoutingEndpointKey() UdpEndpointKey {
+	if d.PreferSymmetricNat() {
+		return d.SymmetricNatEndpointKey()
+	}
 	return d.FullConeNatEndpointKey()
 }
 
@@ -108,5 +111,10 @@ func (d UdpFlowDecision) ShouldAttemptSniff() bool {
 }
 
 func (d UdpFlowDecision) ShouldUseOrderedIngress() bool {
-	return d.HasSnifferSession || d.IsQuicInitial || d.IsLikelyQuicData
+	// Ordered ingress is only needed for:
+	// 1. Flows with active sniffer session (multi-packet ClientHello reassembly)
+	// 2. QUIC Initial packets (to establish the sniff session)
+	// Port heuristic (IsLikelyQuicData) is NOT used here to avoid forcing
+	// Hysteria2/TUIC (which also use UDP/443) onto the slower ordered path.
+	return d.HasSnifferSession || d.IsQuicInitial
 }
