@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"net"
-	"runtime"
 	"testing"
 	"time"
 
@@ -120,10 +119,12 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 	}
 	defer server.Close()
 
+	// Local connections (127.0.0.1) should not use splice due to performance issues
+	// on loopback. Splice on loopback can cause high CPU usage due to frequent
+	// system calls with small data chunks.
 	got := shouldUseRelayFastPath(client, server)
-	want := runtime.GOOS == "linux"
-	if got != want {
-		t.Fatalf("unexpected whitelist decision for tcp pair: got %v want %v", got, want)
+	if got {
+		t.Fatal("local loopback connections should not use splice fast path")
 	}
 
 	if shouldUseRelayFastPath(wrappedConn{client}, server) {
@@ -167,9 +168,9 @@ func TestShouldUseRelayFastPath_AcceptsUnderlyingConnProvider(t *testing.T) {
 		underlyingTCPWrapper{Conn: client, inner: client},
 		underlyingTCPWrapper{Conn: server, inner: server},
 	)
-	want := runtime.GOOS == "linux"
-	if got != want {
-		t.Fatalf("unexpected whitelist decision for UnderlyingConn wrapper: got %v want %v", got, want)
+	// Local loopback connections should not use splice
+	if got {
+		t.Fatal("local loopback connections with UnderlyingConn wrapper should not use splice fast path")
 	}
 }
 
@@ -209,9 +210,9 @@ func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 	defer snifferConn.Close()
 
 	got := shouldUseRelayFastPath(snifferConn, server)
-	want := runtime.GOOS == "linux"
-	if got != want {
-		t.Fatalf("unexpected whitelist decision for ConnSniffer over TCP: got %v want %v", got, want)
+	// Local loopback connections should not use splice
+	if got {
+		t.Fatal("local loopback connections with ConnSniffer should not use splice fast path")
 	}
 }
 
@@ -251,9 +252,9 @@ func TestShouldUseRelayFastPath_AcceptsFakeNetConnOverTCP(t *testing.T) {
 	fakeServer := &netproxy.FakeNetConn{Conn: server, LAddr: server.LocalAddr(), RAddr: server.RemoteAddr()}
 
 	got := shouldUseRelayFastPath(fakeClient, fakeServer)
-	want := runtime.GOOS == "linux"
-	if got != want {
-		t.Fatalf("unexpected whitelist decision for FakeNetConn over TCP: got %v want %v", got, want)
+	// Local loopback connections should not use splice
+	if got {
+		t.Fatal("local loopback connections with FakeNetConn should not use splice fast path")
 	}
 }
 

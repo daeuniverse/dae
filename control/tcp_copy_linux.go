@@ -82,7 +82,31 @@ func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (i
 }
 
 func shouldUseRelayFastPath(dst netproxy.Conn, src netproxy.Conn) bool {
+	// Local-to-local forwarding should not use splice.
+	// Splice on loopback can cause high CPU usage due to frequent system calls
+	// with small data chunks, since loopback has extremely low latency.
+	// For local forwarding, userspace copy (io.CopyBuffer) is more efficient.
+	if isLocalConnAny(dst, src) {
+		return false
+	}
 	return isRelayFastPathWhitelistedConn(dst) && isRelayFastPathWhitelistedConn(src)
+}
+
+// isLocalConnAny checks if two connections form a local-to-local forwarding path.
+// This works with any netproxy.Conn by first unwrapping to *net.TCPConn.
+// It detects the same cases as isLocalConnection in tcp_offload_linux.go:
+// 1. Both peers are local (e.g., local client -> dae -> local service)
+// 2. Right socket connects to a local service (e.g., remote client -> dae -> local service)
+func isLocalConnAny(a, b netproxy.Conn) bool {
+	aTCP, aOk := unwrapRelayTCPConn(a)
+	if !aOk {
+		return false
+	}
+	bTCP, bOk := unwrapRelayTCPConn(b)
+	if !bOk {
+		return false
+	}
+	return isLocalConnection(aTCP, bTCP)
 }
 
 func isRelayFastPathWhitelistedConn(c netproxy.Conn) bool {
