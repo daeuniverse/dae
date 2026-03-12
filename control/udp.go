@@ -130,20 +130,48 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 	bindAddr = from
 	writeAddr = realTo
 
-	// Step 1: Unmap any IPv4-mapped addresses first, before other conversions.
-	// This ensures we work with canonical addresses.
-	if bindAddr.Addr().Is4In6() {
-		bindAddr = netip.AddrPortFrom(bindAddr.Addr().Unmap(), bindAddr.Port())
-	}
-	if writeAddr.Addr().Is4In6() {
-		writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
+	// Step 1: Handle address family mismatches by alignment.
+	// Transparent sockets require the socket family, bind address family, and destination address
+	// family to match (all AF_INET or all AF_INET6).
+	// On dual-stack systems, we MUST align to AF_INET6 using IPv4-mapped addresses when families
+	// differ, because AF_INET sockets physically cannot handle AF_INET6 addresses.
+
+	// 1. If both are IPv4-compatible, unmap both to pure IPv4 for maximum compatibility
+	// and to allow using AF_INET sockets.
+	if (bindAddr.Addr().Is4() || bindAddr.Addr().Is4In6()) && (writeAddr.Addr().Is4() || writeAddr.Addr().Is4In6()) {
+		if bindAddr.Addr().Is4In6() {
+			bindAddr = netip.AddrPortFrom(bindAddr.Addr().Unmap(), bindAddr.Port())
+		}
+		if writeAddr.Addr().Is4In6() {
+			writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
+		}
+	} else {
+		// 2. If one is pure IPv6, both MUST be represented as AF_INET6 (possibly mapped).
+		// CRITICAL: We must also convert ANY IPv4 bind address (including concrete ones)
+		// to an IPv6 wildcard or mapped address to ensure the listener (AnyfromPool)
+		// creates an AF_INET6 socket. Pure AF_INET sockets will return "non-IPv4 address"
+		// error if we try to write to a v6 target.
+		if bindAddr.Addr().Is4() && writeAddr.Addr().Is6() {
+			// Promote bind to v6 wildcard to ENSURE AnyfromPool creates a dual-stack socket.
+			// Use the same port.
+			bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), bindAddr.Port())
+		} else if bindAddr.Addr().Is6() && writeAddr.Addr().Is4() {
+			// Align target to v6
+			writeAddr = netip.AddrPortFrom(netip.AddrFrom16(writeAddr.Addr().As16()), writeAddr.Port())
+		}
 	}
 
-	// Step 2: Handle address family mismatches.
-	// IPv4 wildcard with IPv6 target must become IPv6 wildcard.
-	// This guarantees net.ListenPacket("udp") creates an AF_INET6 socket.
+	// Step 2: Handle remaining wildcard adjustments.
+	// (Redundant but safe) ensure IPv4 wildcard with IPv6 target is IPv6 wildcard.
 	if bindAddr.Addr().Is4() && bindAddr.Addr().IsUnspecified() && writeAddr.Addr().Is6() {
 		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), bindAddr.Port())
+	}
+	// IPv6 wildcard (including mapped) with pure IPv4 target should become pure IPv4 wildcard
+	// ONLY if both are IPv4-compatible (handled in Step 1).
+	// If the socket is already IPv6, we should keep it IPv6.
+	if bindAddr.Addr().Is6() && bindAddr.Addr().IsUnspecified() && writeAddr.Addr().Is4() && bindAddr.Addr().Is4In6() {
+		bindAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), bindAddr.Port())
+		writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
 	}
 
 	return bindAddr, writeAddr

@@ -46,7 +46,9 @@ func TestNormalizeSendPktAddrFamily_Equivalence(t *testing.T) {
 			name:           "IPv4 SS server to pure IPv6 client",
 			from:           "10.0.0.1:12345",
 			realTo:         "[2001:db8::1]:54321",
-			expectError:    true, // isUnsupportedTransparentUDPPair
+			expectBindAddr: "[::]:12345",
+			expectWriteAddr: "[2001:db8::1]:54321",
+			expectError:    false,
 		},
 		{
 			name:           "STUN server (public IP) to client",
@@ -59,7 +61,9 @@ func TestNormalizeSendPktAddrFamily_Equivalence(t *testing.T) {
 			name:           "IPv6 STUN server to IPv4 client",
 			from:           "[2001:db8::1]:3478",
 			realTo:         "192.168.1.100:12345",
-			expectError:    true, // isUnsupportedTransparentUDPPair
+			expectBindAddr: "[2001:db8::1]:3478",
+			expectWriteAddr: "[::ffff:192.168.1.100]:12345",
+			expectError:    false,
 		},
 	}
 
@@ -196,15 +200,15 @@ func TestSTUNResponseRouting(t *testing.T) {
 			name:        "SS IPv4 to Client pure IPv6",
 			ssServer:    "10.0.0.1:8388",
 			clientAddr:  "[2001:db8::100]:12345",
-			shouldFail:  true,
-			description: "IPv4 bind with IPv6 write - unsupported pair",
+			shouldFail:  false,
+			description: "IPv4 promoted to v6 wildcard, both v6",
 		},
 		{
 			name:        "SS IPv6 to Client IPv4",
 			ssServer:    "[2001:db8::1]:8388",
 			clientAddr:  "192.168.1.100:12345",
-			shouldFail:  true,
-			description: "IPv6 bind with IPv4 write - unsupported pair",
+			shouldFail:  false,
+			description: "Client aligned to v6, both v6",
 		},
 		{
 			name:        "SS IPv6 to Client IPv6",

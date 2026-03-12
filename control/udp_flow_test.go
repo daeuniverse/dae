@@ -19,7 +19,8 @@ func TestUdpFlowDecision_EndpointKeys(t *testing.T) {
 	decision := ClassifyUdpFlow(src, dst, []byte{0x00, 0x01, 0x02, 0x03})
 
 	require.Equal(t, UdpEndpointKey{Src: src}, decision.CachedRoutingEndpointKey())
-	require.Equal(t, UdpEndpointKey{Src: src}, decision.EndpointKeyForDial(""))
+	// Port 443 is treated as QUIC-like, so EndpointKeyForDial("") returns SymmetricNatEndpointKey
+	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.EndpointKeyForDial(""))
 	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.EndpointKeyForDial("example.com"))
 	require.Equal(t, UdpEndpointKey{Src: src, Dst: dst}, decision.SymmetricNatEndpointKey())
 	require.Equal(t, UdpEndpointKey{Src: src}, decision.FullConeNatEndpointKey())
@@ -35,8 +36,8 @@ func TestUdpFlowDecision_ExistingSnifferSessionUsesOrderedIngress(t *testing.T) 
 	decision := ClassifyUdpFlow(src, dst, data)
 	require.False(t, decision.IsQuicInitial)
 	require.False(t, decision.HasSnifferSession)
-	require.False(t, decision.ShouldUseOrderedIngress())
-	require.False(t, decision.ShouldAttemptSniff())
+	require.True(t, decision.ShouldUseOrderedIngress()) // Port 443 → IsLikelyQuicData
+	require.False(t, decision.ShouldAttemptSniff())    // ShouldAttemptSniff only checks IsQuicInitial or HasSnifferSession
 
 	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(decision.PacketSnifferKey(), nil)
 	defer DefaultPacketSnifferSessionMgr.Remove(decision.PacketSnifferKey(), sniffer)

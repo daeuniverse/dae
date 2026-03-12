@@ -109,6 +109,9 @@ func ExtractCryptoFrameOffset(remainder []byte, transportOffset int) (offset *Cr
 			return nil, 0, err
 		}
 		nextField += n
+		if nextField+int(length) > len(remainder) {
+			return nil, 0, fmt.Errorf("crypto frame data out of range: %w", ErrOutOfRange)
+		}
 
 		return &CryptoFrameOffset{
 			UpperAppOffset: int(offset),

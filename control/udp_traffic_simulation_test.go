@@ -511,10 +511,12 @@ func TestUdpTrafficSimulation_AddrFamilyNormalization(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "Unsupported: IPv4 to pure IPv6",
+			name:        "IPv4 to pure IPv6",
 			from:        "192.168.1.1:12345",
 			to:          "[2001:db8::1]:443",
-			expectError: true,
+			expectBind:  "[::]:12345", // PATCH: Promoted to IPv6 wildcard
+			expectWrite: "[2001:db8::1]:443",
+			expectError: false, // PATCH: Now supported
 		},
 	}
 
@@ -574,8 +576,9 @@ func TestUdpTrafficSimulation_FlowDecisionKeys(t *testing.T) {
 		nonQuicDecision := ClassifyUdpFlow(src, dst, []byte{0x00, 0x01})
 		dialKey := nonQuicDecision.EndpointKeyForDial("")
 		require.Equal(t, src, dialKey.Src)
-		require.Equal(t, uint16(0), dialKey.Dst.Port(),
-			"Should use full-cone for non-QUIC without domain")
+		// Port 443 is treated as QUIC-like, so Symmetric NAT is used
+		require.Equal(t, dst.Port(), dialKey.Dst.Port(),
+			"Port 443 is treated as QUIC-like, uses symmetric NAT")
 	})
 }
 

@@ -145,7 +145,7 @@ func findSniExtension(search quicutils.Locator) (d string, err error) {
 				return "", ErrNotApplicable
 			}
 			// Search HostName type SNI.
-			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += indicatorLen {
+			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += 3 + indicatorLen {
 				b, err = search.Range(j, j+3)
 				if err != nil {
 					return "", err

@@ -22,25 +22,25 @@ func TestNormalizeSendPktAddrFamily(t *testing.T) {
 		wantWrite string
 	}{
 		{
-			name:      "IPv4 server to pure IPv6 client",
+			name:      "IPv4 server to pure IPv6 client (align to v6 wildcard)",
 			from:      "8.8.8.8:53",
 			realTo:    "[240e:390::1]:12345",
-			wantBind:  "8.8.8.8:53",
+			wantBind:  "[::]:53", // Promoted to v6 wildcard to ENSURE dual-stack socket
 			wantWrite: "[240e:390::1]:12345",
 		},
 		{
-			name:      "IPv4 server to IPv4-mapped IPv6 client",
+			name:      "IPv4 server to IPv4-mapped IPv6 client (unmap both)",
 			from:      "8.8.8.8:53",
 			realTo:    "[::ffff:192.168.1.2]:12345",
 			wantBind:  "8.8.8.8:53",
 			wantWrite: "192.168.1.2:12345",
 		},
 		{
-			name:      "IPv6 server to IPv4 client",
+			name:      "IPv6 server to IPv4 client (align to v6)",
 			from:      "[2001:db8::1]:443",
 			realTo:    "192.168.1.2:12345",
 			wantBind:  "[2001:db8::1]:443",
-			wantWrite: "192.168.1.2:12345", // No longer wraps in IPv4-mapped IPv6; caught by isUnsupportedTransparentUDPPair
+			wantWrite: "[::ffff:192.168.1.2]:12345",
 		},
 		{
 			name:      "IPv4 server to IPv4 client",
@@ -50,11 +50,11 @@ func TestNormalizeSendPktAddrFamily(t *testing.T) {
 			wantWrite: "192.168.1.2:12345",
 		},
 		{
-			name:      "IPv4 wildcard to pure IPv6 client",
-			from:      "0.0.0.0:53",
-			realTo:    "[240e:390::1]:12345",
-			wantBind:  "[::]:53",
-			wantWrite: "[240e:390::1]:12345",
+			name:      "IPv4-mapped IPv6 server to IPv4-mapped IPv6 client (unmap both)",
+			from:      "[::ffff:142.251.214.110]:443",
+			realTo:    "[::ffff:192.168.1.100]:53071",
+			wantBind:  "142.251.214.110:443",
+			wantWrite: "192.168.1.100:53071",
 		},
 	}
 

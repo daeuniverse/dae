@@ -139,6 +139,9 @@ func GenerateTestPackets() []TestPacket {
 	}
 
 	// 6. DTLS packets (port 443 but not QUIC)
+	// Note: DTLS uses port 443, so it's treated as QUIC-like (IsLikelyQuicData = true)
+	// This triggers ShouldUseOrderedIngress for session consistency
+	// However, ShouldAttemptSniff only checks IsQuicInitial, not IsLikelyQuicData
 	for i := 0; i < 3; i++ {
 		pkt := TestPacket{
 			Type:        PacketTypeDTLS,
@@ -148,8 +151,8 @@ func GenerateTestPackets() []TestPacket {
 			Description: fmt.Sprintf("DTLS %d", i),
 		}
 		pkt.Expected.IsQuicInitial = false
-		pkt.Expected.ShouldUseOrderedIngress = false
-		pkt.Expected.ShouldAttemptSniff = false
+		pkt.Expected.ShouldUseOrderedIngress = true  // Port 443 → IsLikelyQuicData
+		pkt.Expected.ShouldAttemptSniff = false    // ShouldAttemptSniff only checks IsQuicInitial or HasSnifferSession
 		packets = append(packets, pkt)
 	}
 

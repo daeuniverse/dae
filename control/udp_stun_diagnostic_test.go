@@ -158,15 +158,15 @@ func TestStunLikeResponseFlow(t *testing.T) {
 			name:           "IPv4 SS to pure IPv6 client",
 			ssServerAddr:   "10.0.0.1:8388",
 			clientAddr:     "[2001:db8::100]:54321",
-			expectSuccess:  false,
-			reason:         "IPv4 bind with IPv6 write - not supported",
+			expectSuccess:  true, // PATCH: Now supported via IPv6 wildcard bind
+			reason:         "IPv4 bind promoted to [::]:port for IPv6 write",
 		},
 		{
 			name:           "IPv6 SS to IPv4 client",
 			ssServerAddr:   "[2001:db8::1]:8388",
 			clientAddr:     "192.168.1.100:54321",
-			expectSuccess:  false, // Currently fails due to missing IPv4-mapped unmap for bindAddr
-			reason:         "IPv6 bind with IPv4 write - should fail but doesn't",
+			expectSuccess:  true, // PATCH: Now supported via IPv4-mapped write
+			reason:         "IPv4 write converted to IPv4-mapped IPv6",
 		},
 		{
 			name:           "IPv6 SS to IPv6 client",
