@@ -40,8 +40,8 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 	// within a health check cycle, while allowing failover between cycles.
 	var stickyWrapper *stickyip.StickyIpDialer
 	if p.Address != "" && needsStickyIpCaching(p.Address) {
-		if gOption.Log != nil {
-			gOption.Log.WithField("proxy_address", p.Address).Info("[DialerRegister] Creating sticky IP dialer wrapper for proxy domain")
+		if gOption.Log != nil && gOption.Log.IsLevelEnabled(logrus.DebugLevel) {
+			gOption.Log.WithField("proxy_address", p.Address).Debug("[DialerRegister] Creating sticky IP dialer wrapper for proxy domain")
 		}
 		stickyWrapper = stickyip.NewStickyIpDialer(direct.SymmetricDirect, p.Address, globalProxyIpCache)
 

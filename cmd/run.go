@@ -424,6 +424,10 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 	direct.InitDirectDialers(conf.Global.FallbackResolver)
 	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
 
+	// Start timing the startup process
+	startTime := time.Now()
+	stageStart := startTime
+
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
 	if !conf.Global.DisableWaitingNetwork {
@@ -485,15 +489,53 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 		},
 		Timeout: 30 * time.Second,
 	}
-	for _, sub := range conf.Subscription {
-		tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(sub))
-		if err != nil {
-			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
-			resolvingfailed = true
+	// Parallelize subscription resolution to improve startup performance.
+	// Use a semaphore to limit concurrency and avoid overwhelming the network.
+	type subscriptionResult struct {
+		tag   string
+		nodes []string
+		err   error
+		sub   config.KeyableString
+	}
+	numSubscriptions := len(conf.Subscription)
+	if numSubscriptions > 0 {
+		// Limit concurrency to 4 subscriptions at a time to avoid overwhelming network
+		maxConcurrency := 4
+		if numSubscriptions < maxConcurrency {
+			maxConcurrency = numSubscriptions
 		}
-		if len(nodes) > 0 {
-			tagToNodeList[tag] = append(tagToNodeList[tag], nodes...)
+		sem := make(chan struct{}, maxConcurrency)
+		results := make(chan subscriptionResult, numSubscriptions)
+
+		for _, sub := range conf.Subscription {
+			go func(s config.KeyableString) {
+				sem <- struct{}{}        // Acquire semaphore
+				defer func() { <-sem }() // Release semaphore
+
+				tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(s))
+				results <- subscriptionResult{
+					tag:   tag,
+					nodes: nodes,
+					err:   err,
+					sub:   s,
+				}
+			}(sub)
 		}
+
+		// Collect results
+		for i := 0; i < numSubscriptions; i++ {
+			result := <-results
+			if result.err != nil {
+				log.Warnf(`failed to resolve subscription "%v": %v`, result.sub, result.err)
+				resolvingfailed = true
+			}
+			if len(result.nodes) > 0 {
+				tagToNodeList[result.tag] = append(tagToNodeList[result.tag], result.nodes...)
+			}
+		}
+		close(results)
+		log.Infof("Subscriptions fetched in %v", time.Since(stageStart))
+		stageStart = time.Now()
 	}
 
 	// Delete all files in persist.d that are not in tagToNodeList
@@ -527,6 +569,9 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 		return nil, err
 	}
 
+	// Start timing the control plane creation
+	log.Infoln("Building control plane and routing rules...")
+	stageStart = time.Now()
 	c, err = control.NewControlPlane(
 		log,
 		bpf,
@@ -541,7 +586,10 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 	if err != nil {
 		return nil, err
 	}
+	log.Infof("Control plane built in %v", time.Since(stageStart))
+	log.Infof("Total startup time: %v", time.Since(startTime))
 	// Call GC to release memory.
+	log.Infoln("Control plane built successfully, running GC...")
 	runtime.GC()
 
 	return c, nil

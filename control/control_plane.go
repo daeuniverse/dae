@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -386,12 +387,14 @@ func NewControlPlane(
 			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}
 		// Convert node links to dialers.
-		log.Infof(`Group "%v" node list:`, group.Name)
-		for _, d := range dialers {
-			log.Infoln("\t" + d.Property().Name)
-		}
-		if len(dialers) == 0 {
-			log.Infoln("\t<Empty>")
+		if log.IsLevelEnabled(logrus.DebugLevel) {
+			log.Debugf(`Group "%v" node list:`, group.Name)
+			for _, d := range dialers {
+				log.Debugln("\t" + d.Property().Name)
+			}
+			if len(dialers) == 0 {
+				log.Debugln("\t<Empty>")
+			}
 		}
 		groupOption, err := ParseGroupOverrideOption(group, *global, log)
 		finalOption := option
@@ -427,6 +430,7 @@ func NewControlPlane(
 		outboundId2Name[uint8(i)] = o.Name
 	}
 	// Apply rules optimizers.
+	log.Infoln("Optimizing and loading routing rules (this may take a while for large rule sets)...")
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
@@ -446,17 +450,28 @@ func NewControlPlane(
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
 	// Parse rules and build.
+	log.Infoln("Building routing matcher...")
 	builder, err := NewRoutingMatcherBuilder(log, rules, outboundName2Id, core.bpf, routingA.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
+	log.Infoln("Loading routing rules into kernel space (BPF)...")
 	if err = builder.BuildKernspace(log); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
+	log.Infoln("Building userspace routing matcher...")
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
+
+	// Memory optimization: Force GC after building routing matcher
+	// to release temporary allocations from rule processing.
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	log.Infof("Memory usage after routing build: Alloc=%vMiB, Sys=%vMiB, HeapObjects=%v",
+		m.Alloc/1024/1024, m.Sys/1024/1024, m.HeapObjects)
 
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())

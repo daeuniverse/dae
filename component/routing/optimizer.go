@@ -310,39 +310,82 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 }
 
 func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
-	var err error
-	for _, rule := range rules {
-		for _, f := range rule.AndFunctions {
-			var newParams []*config_parser.Param
-			for _, param := range f.Params {
-				// Parse this param and replace it with more.
-				var params []*config_parser.Param
-				switch param.Key {
-				case "geosite":
-					params, err = o.loadGeoSite("geosite", param.Val)
-				case "geoip":
-					params, err = o.loadGeoIp("geoip", param.Val)
-				case "ext":
-					fields := strings.SplitN(param.Val, ":", 2)
-					switch f.Name {
-					case consts.Function_Domain, consts.Function_QName:
-						params, err = o.loadGeoSite(fields[0], fields[1])
-					case consts.Function_Ip:
-						params, err = o.loadGeoIp(fields[0], fields[1])
+	// Process rules in parallel for better performance.
+	// Limit concurrency to avoid overwhelming the system.
+	type ruleResult struct {
+		index int
+		rule  *config_parser.RoutingRule
+		err   error
+	}
+
+	numWorkers := 4
+	if len(rules) < numWorkers {
+		numWorkers = len(rules)
+	}
+
+	sem := make(chan struct{}, numWorkers)
+	results := make(chan ruleResult, len(rules))
+	var wg sync.WaitGroup
+
+	for i, rule := range rules {
+		wg.Add(1)
+		go func(idx int, r *config_parser.RoutingRule) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Process this rule's functions
+			for _, f := range r.AndFunctions {
+				var newParams []*config_parser.Param
+				var loadErr error
+				for _, param := range f.Params {
+					// Parse this param and replace it with more.
+					var params []*config_parser.Param
+					switch param.Key {
+					case "geosite":
+						params, loadErr = o.loadGeoSite("geosite", param.Val)
+					case "geoip":
+						params, loadErr = o.loadGeoIp("geoip", param.Val)
+					case "ext":
+						fields := strings.SplitN(param.Val, ":", 2)
+						switch f.Name {
+						case consts.Function_Domain, consts.Function_QName:
+							params, loadErr = o.loadGeoSite(fields[0], fields[1])
+						case consts.Function_Ip:
+							params, loadErr = o.loadGeoIp(fields[0], fields[1])
+						default:
+							loadErr = fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
+						}
 					default:
-						return nil, fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
+						// Keep this param.
+						params = []*config_parser.Param{param}
 					}
-				default:
-					// Keep this param.
-					params = []*config_parser.Param{param}
+					if loadErr != nil {
+						results <- ruleResult{idx, nil, loadErr}
+						return
+					}
+					newParams = append(newParams, params...)
 				}
-				if err != nil {
-					return nil, err
-				}
-				newParams = append(newParams, params...)
 				f.Params = newParams
 			}
-		}
+			results <- ruleResult{idx, r, nil}
+		}(i, rule)
 	}
-	return rules, nil
+
+	// Wait for all goroutines to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	newRules := make([]*config_parser.RoutingRule, len(rules))
+	for result := range results {
+		if result.err != nil {
+			return nil, result.err
+		}
+		newRules[result.index] = result.rule
+	}
+
+	return newRules, nil
 }

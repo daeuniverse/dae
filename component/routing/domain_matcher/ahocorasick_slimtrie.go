@@ -8,7 +8,9 @@ package domain_matcher
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -168,32 +170,92 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 	n.validAcIndexes = make([]int, 0, len(n.toBuildAc)/8)
 	n.validTrieIndexes = make([]int, 0, len(n.toBuildAc)/8)
 	n.validRegexpIndexes = make([]int, 0, len(n.toBuildAc)/8)
-	// Build AC automaton.
-	for i, toBuild := range n.toBuildAc {
-		if len(toBuild) == 0 {
-			continue
-		}
-		n.ac[i], err = ahocorasick.NewMatcher(toBuild)
-		if err != nil {
-			return err
-		}
-		n.validAcIndexes = append(n.validAcIndexes, i)
+
+	// Build AC automaton and trie in parallel for better performance.
+	// Use limited concurrency to avoid overwhelming the system.
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers > 4 {
+		numWorkers = 4 // Limit to 4 workers to balance performance and memory
 	}
 
-	// Build succinct trie.
-	for i, toBuild := range n.toBuildTrie {
-		if len(toBuild) == 0 {
-			continue
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var buildErr error
+
+	// Build AC automaton in parallel.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sem := make(chan struct{}, numWorkers)
+		var innerWg sync.WaitGroup
+		for i, toBuild := range n.toBuildAc {
+			if len(toBuild) == 0 {
+				continue
+			}
+			innerWg.Add(1)
+			sem <- struct{}{}
+			go func(idx int, patterns [][]byte) {
+				defer func() { <-sem }()
+				defer innerWg.Done()
+				matcher, err := ahocorasick.NewMatcher(patterns)
+				if err != nil {
+					mu.Lock()
+					if buildErr == nil {
+						buildErr = err
+					}
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				n.ac[idx] = matcher
+				n.validAcIndexes = append(n.validAcIndexes, idx)
+				mu.Unlock()
+			}(i, toBuild)
 		}
-		toBuild = ToSuffixTrieStrings(toBuild)
-		n.trie[i], err = trie.NewTrie(toBuild, ValidDomainChars)
-		if err != nil {
-			return err
+		innerWg.Wait()
+	}()
+
+	// Build succinct trie in parallel.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sem := make(chan struct{}, numWorkers)
+		var innerWg sync.WaitGroup
+		for i, toBuild := range n.toBuildTrie {
+			if len(toBuild) == 0 {
+				continue
+			}
+			innerWg.Add(1)
+			sem <- struct{}{}
+			go func(idx int, patterns []string) {
+				defer func() { <-sem }()
+				defer innerWg.Done()
+				transformed := ToSuffixTrieStrings(patterns)
+				t, err := trie.NewTrie(transformed, ValidDomainChars)
+				if err != nil {
+					mu.Lock()
+					if buildErr == nil {
+						buildErr = err
+					}
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				n.trie[idx] = t
+				n.validTrieIndexes = append(n.validTrieIndexes, idx)
+				mu.Unlock()
+			}(i, toBuild)
 		}
-		n.validTrieIndexes = append(n.validTrieIndexes, i)
+		innerWg.Wait()
+	}()
+
+	wg.Wait()
+
+	if buildErr != nil {
+		return buildErr
 	}
 
-	// Regexp.
+	// Regexp - already compiled during AddSet, just collect indexes.
 	for i := range n.regexp {
 		if len(n.regexp[i]) == 0 {
 			continue

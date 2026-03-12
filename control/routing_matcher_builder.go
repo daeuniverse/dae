@@ -510,9 +510,18 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		}
 	}
 
-	return &RoutingMatcher{
+	matcher = &RoutingMatcher{
 		lpmMatcher:      lpmMatcher,
 		domainMatcher:   domainMatcher,
 		compiledMatches: compiledMatches,
-	}, nil
+	}
+
+	// Memory optimization: Release large temporary data structures
+	// after building the matcher to reduce memory footprint.
+	b.simulatedDomainSet = nil
+	b.simulatedLpmTries = nil
+	b.rules = nil
+	b.compiledRules = nil
+
+	return matcher, nil
 }
