@@ -40,7 +40,9 @@ type controlPlaneCore struct {
 	// bpfHookDetachFuncs contains only BPF hook detachment functions (FilterDel, tc detach)
 	// These are tracked separately so they can be detached immediately on SIGTERM
 	// before other cleanup that might take longer (like dialer shutdown).
+	// Protected by bpfHookMu to avoid deadlock with c.mu in _bindLan/_bindWan.
 	bpfHookDetachFuncs []func() error
+	bpfHookMu          sync.Mutex
 	bpf                *bpfObjects
 	outboundId2Name    map[uint8]string
 	tcpRelayOffload    bool
@@ -107,9 +109,10 @@ func (c *controlPlaneCore) Flip() {
 
 // addBpfHookDetach adds a BPF hook detachment function to the dedicated list.
 // These functions will be executed immediately on SIGTERM before other cleanup.
+// Uses bpfHookMu to avoid deadlock with c.mu held by callers like _bindLan/_bindWan.
 func (c *controlPlaneCore) addBpfHookDetach(detachFunc func() error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.bpfHookMu.Lock()
+	defer c.bpfHookMu.Unlock()
 	c.bpfHookDetachFuncs = append(c.bpfHookDetachFuncs, detachFunc)
 }
 
@@ -118,8 +121,8 @@ func (c *controlPlaneCore) addBpfHookDetach(detachFunc func() error) {
 // even if the rest of the shutdown process takes too long and gets SIGKILL'd.
 // This is safe to call multiple times - subsequent calls will be no-ops.
 func (c *controlPlaneCore) DetachBpfHooks() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.bpfHookMu.Lock()
+	defer c.bpfHookMu.Unlock()
 
 	// Already detached, skip
 	if c.bpfHooksDetached {
