@@ -187,6 +187,9 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			)
 			return nil
 		}
+		if daerrors.IsIgnorableConnectionError(err) {
+			return nil
+		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()

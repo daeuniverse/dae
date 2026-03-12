@@ -34,6 +34,7 @@ var (
 	QuicNatTimeout = 2 * time.Minute
 
 	udpNoAliveDialerLogLimiter sync.Map // map[udpNoAliveDialerLogKey]int64(unix nano)
+	connectionErrorLogLimiter  sync.Map // map[connectionErrorLogKey]int64(unix nano)
 )
 
 const (
@@ -42,6 +43,7 @@ const (
 	MaxRetry       = 2
 
 	noAliveDialerLogInterval = 10 * time.Second
+	connectionErrorLogInterval = 5 * time.Second
 )
 
 type udpNoAliveDialerLogKey struct {
@@ -49,6 +51,12 @@ type udpNoAliveDialerLogKey struct {
 	origNetworkType      string
 	selectionNetworkType string
 	strictIpVersion      bool
+}
+
+type connectionErrorLogKey struct {
+	outbound    string
+	networkType string
+	dst         string
 }
 
 func allowNoAliveDialerLog(key udpNoAliveDialerLogKey, now time.Time) bool {
@@ -71,6 +79,31 @@ func allowNoAliveDialerLog(key udpNoAliveDialerLogKey, now time.Time) bool {
 			return false
 		}
 		if udpNoAliveDialerLogLimiter.CompareAndSwap(key, last, nowNano) {
+			return true
+		}
+	}
+}
+
+func allowConnectionErrorLog(key connectionErrorLogKey, now time.Time) bool {
+	nowNano := now.UnixNano()
+	for {
+		prev, ok := connectionErrorLogLimiter.Load(key)
+		if !ok {
+			if _, loaded := connectionErrorLogLimiter.LoadOrStore(key, nowNano); !loaded {
+				return true
+			}
+			continue
+		}
+
+		last, ok := prev.(int64)
+		if !ok {
+			connectionErrorLogLimiter.Store(key, nowNano)
+			return true
+		}
+		if nowNano-last < int64(connectionErrorLogInterval) {
+			return false
+		}
+		if connectionErrorLogLimiter.CompareAndSwap(key, last, nowNano) {
 			return true
 		}
 	}
@@ -105,6 +138,30 @@ func (c *ControlPlane) logNoAliveDialerLimited(
 		"sniffed":                domain,
 		"interval":               noAliveDialerLogInterval.String(),
 	}).Warn("no alive dialer for selection (rate-limited)")
+}
+
+func (c *ControlPlane) logConnectionErrorLimited(
+	outbound string,
+	networkType string,
+	dst netip.AddrPort,
+	err error,
+) {
+	key := connectionErrorLogKey{
+		outbound:    outbound,
+		networkType: networkType,
+		dst:         dst.String(),
+	}
+	if !allowConnectionErrorLog(key, time.Now()) {
+		return
+	}
+
+	c.log.WithFields(logrus.Fields{
+		"outbound":  outbound,
+		"network":   networkType,
+		"to":        dst.String(),
+		"err":       err.Error(),
+		"interval":  connectionErrorLogInterval.String(),
+	}).Warn("connection error (rate-limited)")
 }
 
 type DialOption struct {
@@ -549,6 +606,14 @@ getNew:
 				// Already emitted a rate-limited diagnostic log above.
 				return nil
 			}
+			// Log connection errors with rate limiting to prevent log spam,
+			// but still propagate the error to maintain error semantics.
+			c.logConnectionErrorLimited(
+				fmt.Sprintf("%d", routingResult.Outbound),
+				networkType.String(),
+				realDst,
+				err,
+			)
 			return fmt.Errorf("failed to GetOrCreate: %w", err)
 		}
 	}

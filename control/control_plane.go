@@ -1191,7 +1191,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			lconn, err := listener.tcpListener.Accept()
 			if err != nil {
-				if !commonerrors.IsClosedConnection(err) {
+				if !commonerrors.IsClosedConnection(err) && !stderrors.Is(err, context.Canceled) {
 					c.log.Errorf("Error when accept: %v", err)
 				}
 				break
