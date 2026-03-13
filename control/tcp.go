@@ -241,7 +241,11 @@ type RouteDialParam struct {
 	Mark        uint32
 }
 
-func (c *ControlPlane) RouteDialTcp(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
+func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
+	return c.RouteDialTcpContext(context.Background(), p)
+}
+
+func (c *ControlPlane) RouteDialTcpContext(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
 	dialParam := &proxyDialParam{
 		Outbound:    p.Outbound,
 		Domain:      p.Domain,

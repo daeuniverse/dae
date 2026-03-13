@@ -55,6 +55,11 @@ func TproxyControl(c syscall.RawConn) error {
 			return
 		}
 
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting SO_REUSEPORT socket option: %w", err)
+			return
+		}
+
 		e4 := unix.SetsockoptInt(int(fd), syscall.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
 		e6 := unix.SetsockoptInt(int(fd), syscall.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
 		if e4 != nil && e6 != nil {

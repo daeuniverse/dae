@@ -224,15 +224,8 @@ func (c *controlPlaneCore) linkHdrLen(ifname string) (uint32, error) {
 	return linkHdrLen, nil
 }
 
-// buildClsactQdisc constructs the clsact GenericQdisc descriptor for ifname.
-// Shared by addQdisc and delQdisc to avoid duplicating the netlink.LinkByName
-// + GenericQdisc construction.
-func buildClsactQdisc(ifname string) (netlink.Link, *netlink.GenericQdisc, error) {
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return nil, nil, err
-	}
-	qdisc := &netlink.GenericQdisc{
+func buildClsactQdisc(link netlink.Link) *netlink.GenericQdisc {
+	return &netlink.GenericQdisc{
 		QdiscAttrs: netlink.QdiscAttrs{
 			LinkIndex: link.Attrs().Index,
 			Handle:    netlink.MakeHandle(0xffff, 0),
@@ -240,29 +233,22 @@ func buildClsactQdisc(ifname string) (netlink.Link, *netlink.GenericQdisc, error
 		},
 		QdiscType: "clsact",
 	}
-	return link, qdisc, nil
 }
 
-func (c *controlPlaneCore) addQdisc(ifname string) error {
-	_, qdisc, err := buildClsactQdisc(ifname)
-	if err != nil {
-		return err
-	}
+func (c *controlPlaneCore) addQdisc(link netlink.Link) error {
+	qdisc := buildClsactQdisc(link)
 	if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot add clsact qdisc: %w", err)
 	}
 	return nil
 }
 
-func (c *controlPlaneCore) delQdisc(ifname string) error {
-	_, qdisc, err := buildClsactQdisc(ifname)
-	if err != nil {
-		return err
-	}
-	if err := netlink.QdiscDel(qdisc); err != nil && !errors.Is(err, unix.ENOENT) {
+func (c *controlPlaneCore) delQdisc(link netlink.Link) error {
+	qdisc := buildClsactQdisc(link)
+	if err := netlink.QdiscDel(qdisc); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ENODEV) {
 		return fmt.Errorf("cannot delete clsact qdisc: %w", err)
-	} else if errors.Is(err, unix.ENOENT) {
-		c.log.Debugf("delQdisc: clsact qdisc not found for %v (already gone)", ifname)
+	} else if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV) {
+		c.log.Debugf("delQdisc: clsact qdisc or link not found for %v (already gone)", link.Attrs().Name)
 	}
 	return nil
 }
@@ -295,7 +281,7 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		c.log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
-		if err := c.delQdisc(link.Attrs().Name); err != nil {
+		if err := c.delQdisc(link); err != nil {
 			c.log.Errorf("delQdisc: %v", err)
 		}
 	}
@@ -323,7 +309,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return err
 	}
 	// Best effort to add qdisc; it may already exist.
-	_ = c.addQdisc(ifname)
+	_ = c.addQdisc(link)
 	linkHdrLen, err := c.linkHdrLen(ifname)
 	if err != nil {
 		return err
@@ -494,7 +480,8 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 					Attach:  attached[i].attach,
 				})
 			}
-			return fmt.Errorf("attach %s: %w", item.prog.String(), err)
+			c.log.WithError(err).Debug("TCP relay eBPF offload is not supported by the current kernel/environment; falling back to userspace relay")
+			return nil
 		}
 		attached = append(attached, item)
 	}
@@ -541,7 +528,7 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 			return
 		}
 		c.log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
-		if err := c.delQdisc(link.Attrs().Name); err != nil {
+		if err := c.delQdisc(link); err != nil {
 			c.log.Errorf("delQdisc: %v", err)
 		}
 	}
@@ -565,7 +552,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return fmt.Errorf("cannot bind to loopback interface")
 	}
 	// Best effort to add qdisc; it may already exist.
-	_ = c.addQdisc(ifname)
+	_ = c.addQdisc(link)
 	linkHdrLen, err := c.linkHdrLen(ifname)
 	if err != nil {
 		return err
@@ -663,7 +650,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	daens.WithBestEffort("set dae0peer tx queue and add clsact qdisc", func() error {
 		err := netlink.LinkSetTxQLen(daens.Dae0Peer(), DaeVethTxQLen)
 		if err == nil {
-			err = c.addQdisc(daens.Dae0Peer().Attrs().Name)
+			err = c.addQdisc(daens.Dae0Peer())
 		}
 		return err
 	})
@@ -681,7 +668,11 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	}
 	// Best effort to remove old filter; it may not exist.
 	daens.WithBestEffort("delete old dae0peer ingress filter", func() error {
-		return netlink.FilterDel(filterDae0peerIngress)
+		err := netlink.FilterDel(filterDae0peerIngress)
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+			return nil
+		}
+		return err
 	})
 	// Remove and add.
 	if !c.isReload {
@@ -689,7 +680,11 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
 		filterIngressFlipped.FilterAttrs.Handle ^= 1
 		daens.WithBestEffort("delete flipped dae0peer ingress filter", func() error {
-			return netlink.FilterDel(filterIngressFlipped) // R-07 fixed: was filterDae0peerIngress
+			err := netlink.FilterDel(filterIngressFlipped)
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+				return nil
+			}
+			return err
 		})
 	}
 	if err = daens.WithRequired("add dae0peer ingress filter", func() error {
@@ -713,7 +708,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 
 	// tproxy_dae0_ingress@dae0 at host netns
 	// Best effort to add qdisc; it may already exist.
-	_ = c.addQdisc(daens.Dae0().Attrs().Name)
+	_ = c.addQdisc(daens.Dae0())
 	filterDae0Ingress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: daens.Dae0().Attrs().Index,
@@ -836,12 +831,15 @@ func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
-	if !c.bpfEjected && !c.isReload {
+	if c.bpfEjected {
+		return c.bpf
+	}
+	if !c.isReload {
 		c.deferFuncs = c.deferFuncs[1:]
 	}
 	c.bpfEjected = true
 
-	// Stop link watcher immediately during交接 period to avoid race condition
+	// Stop link watcher immediately during handover period to avoid race condition
 	// between old and new control planes reacting to link events (e.g. PPPoE flapping).
 	_ = c.ifmgr.Close()
 

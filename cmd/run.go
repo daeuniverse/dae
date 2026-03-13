@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -129,7 +130,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
-	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
+	c, err := newControlPlane(context.Background(), log, nil, nil, conf, externGeoDataDirs)
 	if err != nil {
 		return err
 	}
@@ -145,6 +146,10 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
 	go func() {
 		readyChan := make(chan bool, 1)
 		go func() {
@@ -158,6 +163,12 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				log.Warn("Initialization failed; not signaling readiness to supervisor")
 			}
 		}()
+		defer func() {
+			select {
+			case readyChan <- false:
+			default:
+			}
+		}()
 		if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
 				log.Errorln("ListenAndServe:", err)
@@ -168,69 +179,19 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		}
 		sendSigExit(sigs)
 	}()
-	reloading := false
+
+	type reloadRequest struct {
+		isSuspend bool
+	}
+	reloadReqs := make(chan reloadRequest, 1)
+
+	var reloading atomic.Bool
 	reloadingErr := error(nil)
-	isSuspend := false
 	abortConnections := false
-loop:
-	for sig := range sigs {
-		switch sig {
-		case nil:
-			if reloading {
-				if listener == nil {
-					// Re-listen if port changed.
-					log.Warnln("[Reload] Port changed; re-listening")
-					readyChan := make(chan bool, 1)
-					go func() {
-						if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
-							if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
-								log.Errorln("ListenAndServe:", err)
-							}
-							return err
-						}); runErr != nil {
-							log.Errorln("GetDaeNetns.With:", runErr)
-						}
-						sendSigExit(sigs)
-					}()
-					<-readyChan
-					sdnotify.Ready()
-					if reloadingErr == nil {
-						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
-					} else {
-						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
-					}
-					log.Warnln("[Reload] Finished (with port change)")
-					reloading = false
-					continue
-				}
-				// Serve.
-				reloading = false
-				log.Warnln("[Reload] Serve")
-				readyChan := make(chan bool, 1)
-				go func() {
-					if err := c.Serve(readyChan, listener); err != nil {
-						log.Errorln("ListenAndServe:", err)
-					}
-					sendSigExit(sigs)
-				}()
-				<-readyChan
-				sdnotify.Ready()
-				if reloadingErr == nil {
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
-				} else {
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
-				}
-				log.Warnln("[Reload] Finished")
-			} else {
-				// Listening error.
-				break loop
-			}
-		case syscall.SIGUSR2:
-			isSuspend = true
-			fallthrough
-		case syscall.SIGUSR1:
-			// Reload signal.
-			if isSuspend {
+
+	go func() {
+		for req := range reloadReqs {
+			if req.isSuspend {
 				log.Warnln("[Reload] Received suspend signal; prepare to suspend")
 			} else {
 				log.Warnln("[Reload] Received reload signal; prepare to reload")
@@ -243,8 +204,7 @@ loop:
 			abortConnections = os.Remove(AbortFile) == nil
 			log.Warnln("[Reload] Load new config")
 			var newConf *config.Config
-			if isSuspend {
-				isSuspend = false
+			if req.isSuspend {
 				newConf, err = emptyConfig()
 				if err != nil {
 					log.WithFields(logrus.Fields{
@@ -303,7 +263,7 @@ loop:
 			}
 
 			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
+			newC, err := newControlPlane(ctx, log, obj, dnsCache, newConf, externGeoDataDirs)
 			if err != nil {
 				reloadingErr = err
 				log.WithFields(logrus.Fields{
@@ -316,7 +276,7 @@ loop:
 					log.Warnln("[Reload] Port already changed; attempting rollback with fresh eBPF objects")
 					obj = nil
 				}
-				newC, err = newControlPlane(log, obj, dnsCache, conf, externGeoDataDirs)
+				newC, err = newControlPlane(ctx, log, obj, dnsCache, conf, externGeoDataDirs)
 				if err != nil {
 					sdnotify.Stopping()
 					if obj != nil {
@@ -340,7 +300,7 @@ loop:
 			oldC := c
 			c = newC
 			conf = newConf
-			reloading = true
+			reloading.Store(true)
 
 			// Ready to close.
 			if abortConnections {
@@ -349,9 +309,9 @@ loop:
 			oldC.Close()
 
 			if pprofServer != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_ = pprofServer.Shutdown(ctx)
-				cancel()
+				pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = pprofServer.Shutdown(pprofCtx)
+				pprofCancel()
 				pprofServer = nil
 			}
 			if newConf.Global.PprofPort != 0 {
@@ -359,12 +319,100 @@ loop:
 				pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
 				go pprofServer.ListenAndServe()
 			}
+
+			sendSigExit(sigs)
+		}
+	}()
+
+	reloading.Store(false)
+	reloadingErr = error(nil)
+	abortConnections = false
+loop:
+	for sig := range sigs {
+		switch sig {
+		case nil:
+			if reloading.Load() {
+				if listener == nil {
+					// Re-listen if port changed.
+					log.Warnln("[Reload] Port changed; re-listening")
+					readyChan := make(chan bool, 1)
+					go func() {
+						defer func() {
+							select {
+							case readyChan <- false:
+							default:
+							}
+						}()
+						if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
+							if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
+								log.Errorln("ListenAndServe:", err)
+							}
+							return err
+						}); runErr != nil {
+							log.Errorln("GetDaeNetns.With:", runErr)
+						}
+						sendSigExit(sigs)
+					}()
+					<-readyChan
+					sdnotify.Ready()
+					if reloadingErr == nil {
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+					} else {
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+					}
+					log.Warnln("[Reload] Finished (with port change)")
+					reloading.Store(false)
+					continue
+				}
+				// Serve.
+				reloading.Store(false)
+				log.Warnln("[Reload] Serve")
+				readyChan := make(chan bool, 1)
+				go func() {
+					defer func() {
+						select {
+						case readyChan <- false:
+						default:
+						}
+					}()
+					if err := c.Serve(readyChan, listener); err != nil {
+						log.Errorln("ListenAndServe:", err)
+					}
+					sendSigExit(sigs)
+				}()
+				<-readyChan
+				sdnotify.Ready()
+				if reloadingErr == nil {
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+				} else {
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+				}
+				log.Warnln("[Reload] Finished")
+			} else if listener == nil {
+				// Listening error.
+				log.Errorln("[Critical] Listener failed; exiting")
+				break loop
+			}
+		case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL:
+			log.Infof("Received termination signal: %v", sig.String())
+			break loop
+		case syscall.SIGUSR2:
+			select {
+			case reloadReqs <- reloadRequest{isSuspend: true}:
+			default:
+				log.Warnln("[Reload] Last reload request still processing, ignore this one")
+			}
+		case syscall.SIGUSR1:
+			select {
+			case reloadReqs <- reloadRequest{isSuspend: false}:
+			default:
+				log.Warnln("[Reload] Last reload request still processing, ignore this one")
+			}
 		case syscall.SIGHUP:
 			// Ignore.
 			continue
 		default:
 			log.Infof("Received signal: %v", sig.String())
-			break loop
 		}
 	}
 	defer func() {
@@ -404,7 +452,7 @@ func sendSigExit(sigs chan<- os.Signal) {
 	}
 }
 
-func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -450,6 +498,12 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 		}
 		log.Infoln("Waiting for network...")
 		for i := 0; ; i++ {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+
 			resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
 			if err != nil {
 				log.Debugln("CheckNetwork:", err)
@@ -458,7 +512,11 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 					// Do not sleep.
 					continue
 				}
-				time.Sleep(epo)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(epo):
+				}
 				continue
 			}
 			resp.Body.Close()
@@ -466,7 +524,11 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 				break
 			}
 			log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
-			time.Sleep(epo)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(epo):
+			}
 		}
 		log.Infoln("Network online.")
 	}
@@ -572,7 +634,8 @@ func newControlPlane(log *logrus.Logger, bpf any, dnsCache map[string]*control.D
 	// Start timing the control plane creation
 	log.Infoln("Building control plane and routing rules...")
 	stageStart = time.Now()
-	c, err = control.NewControlPlane(
+	c, err = control.NewControlPlaneWithContext(
+		ctx,
 		log,
 		bpf,
 		dnsCache,

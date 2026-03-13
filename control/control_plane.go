@@ -146,6 +146,32 @@ func NewControlPlane(
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
 ) (plane *ControlPlane, err error) {
+	return NewControlPlaneWithContext(
+		context.Background(),
+		log,
+		_bpf,
+		dnsCache,
+		tagToNodeList,
+		groups,
+		routingA,
+		global,
+		dnsConfig,
+		externGeoDataDirs,
+	)
+}
+
+func NewControlPlaneWithContext(
+	ctx context.Context,
+	log *logrus.Logger,
+	_bpf any,
+	dnsCache map[string]*DnsCache,
+	tagToNodeList map[string][]string,
+	groups []config.Group,
+	routingA *config.Routing,
+	global *config.Global,
+	dnsConfig *config.Dns,
+	externGeoDataDirs []string,
+) (plane *ControlPlane, err error) {
 	// Clear failed QUIC DCID cache on reload/startup.
 	// Network conditions may have changed, so we should allow retrying sniffing
 	// for DCIDs that previously failed.
@@ -704,8 +730,10 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 	return nil
 }
 
-// EjectBpf will resect bpf from destroying life-cycle of control plane.
 func (c *ControlPlane) EjectBpf() *bpfObjects {
+	if c.core == nil {
+		return nil
+	}
 	return c.core.EjectBpf()
 }
 

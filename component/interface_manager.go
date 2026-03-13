@@ -9,6 +9,7 @@ import (
 	"context"
 	"path"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -44,7 +45,12 @@ func NewInterfaceManager(log *logrus.Logger) *InterfaceManager {
 	done := make(chan struct{})
 	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
-			log.Debug("LinkSubscribe:", err)
+			select {
+			case <-closed.Done():
+				return
+			default:
+				log.Debug("LinkSubscribe:", err)
+			}
 		},
 		ListExisting: true,
 	}); e != nil {
@@ -55,11 +61,56 @@ func NewInterfaceManager(log *logrus.Logger) *InterfaceManager {
 	return mgr
 }
 
+type job struct {
+	ifName string
+	fn     func()
+}
+
 func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struct{}) {
+	jobChan := make(chan job, 128)
+	go func() {
+		// Per-interface queues to preserve order
+		queues := make(map[string]chan func())
+		timers := make(map[string]*time.Timer)
+		for j := range jobChan {
+			ifQ, ok := queues[j.ifName]
+			if !ok {
+				ifQ = make(chan func(), 32)
+				queues[j.ifName] = ifQ
+				go func(ifName string, q chan func()) {
+					for f := range q {
+						f()
+					}
+				}(j.ifName, ifQ)
+			}
+
+			// Debounce logic: if a new event for the same interface arrives,
+			// reset the timer to delay execution.
+			fn := j.fn
+			if t, ok := timers[j.ifName]; ok {
+				t.Stop()
+			}
+			timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
+				select {
+				case ifQ <- fn:
+				default:
+					m.log.Warnf("Interface callback queue full for %s, skipping", j.ifName)
+				}
+			})
+		}
+		for _, q := range queues {
+			close(q)
+		}
+		for _, t := range timers {
+			t.Stop()
+		}
+	}()
+
 	for {
 		select {
 		case <-m.closed.Done():
 			close(done)
+			close(jobChan)
 			return
 		case update := <-ch:
 			ifName := update.Link.Attrs().Name
@@ -79,7 +130,9 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 						continue
 					}
 					if callback.newCallback != nil {
-						callback.newCallback(update.Link)
+						cb := callback.newCallback
+						link := update.Link
+						jobChan <- job{ifName: ifName, fn: func() { cb(link) }}
 					}
 				}
 				m.mu.Unlock()
@@ -93,7 +146,9 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 						continue
 					}
 					if callback.delCallback != nil {
-						callback.delCallback(update.Link)
+						cb := callback.delCallback
+						link := update.Link
+						jobChan <- job{ifName: ifName, fn: func() { cb(link) }}
 					}
 				}
 				m.mu.Unlock()
@@ -114,7 +169,8 @@ func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func
 				m.upLinks[ifName] = true
 
 				if initCallback != nil {
-					initCallback(link)
+					link := link
+					go initCallback(link)
 				}
 			}
 		}
@@ -138,7 +194,7 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 		m.upLinks[ifname] = true
 
 		if initCallback != nil {
-			initCallback(link)
+			go initCallback(link)
 		}
 	}
 

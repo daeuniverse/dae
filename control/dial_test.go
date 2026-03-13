@@ -114,7 +114,7 @@ func TestRouteDialTcp_NilContextDoesNotPanic(t *testing.T) {
 	)
 	func() {
 		defer func() { panicVal = recover() }()
-		_, err = cp.RouteDialTcp(nil, p)
+		_, err = cp.RouteDialTcpContext(nil, p)
 	}()
 
 	if panicVal != nil {
@@ -173,7 +173,7 @@ func TestRouteDialTcp_ConcurrentCallsAreSafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
-				_, err := cp.RouteDialTcp(context.Background(), p)
+				_, err := cp.RouteDialTcpContext(context.Background(), p)
 				if err != nil && !errors.Is(err, errTestDialFailure) {
 					t.Errorf("unexpected error: %v", err)
 				}
