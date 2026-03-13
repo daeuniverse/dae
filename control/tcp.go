@@ -176,10 +176,10 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	if err != nil {
 		if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 			c.logNoAliveDialerLimited(
-				res.Outbound.Name,
+				res.Outbound,
 				res.Outbound.GetSelectionPolicy(),
 				res.OrigNetworkType,
-				res.SelectionNetworkType,
+				res.SelectionNetworkTypeObj,
 				src,
 				dst,
 				domain,

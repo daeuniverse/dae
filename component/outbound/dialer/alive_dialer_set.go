@@ -98,8 +98,13 @@ func (a *AliveDialerSet) GetRand() *Dialer {
 	if len(a.inorderedAliveDialerSet) == 0 {
 		return nil
 	}
-	ind := fastrand.Intn(len(a.inorderedAliveDialerSet))
-	return a.inorderedAliveDialerSet[ind]
+	return a.inorderedAliveDialerSet[fastrand.Intn(len(a.inorderedAliveDialerSet))]
+}
+
+func (a *AliveDialerSet) Len() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.inorderedAliveDialerSet)
 }
 
 func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {

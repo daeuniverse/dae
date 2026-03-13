@@ -528,30 +528,29 @@ func (d *Dialer) resetBackoffLevel() {
 // markUnavailableFromProxyFailure immediately marks the dialer as unavailable.
 // This is called when all proxy IPs have failed after retries, bypassing the health check cycle.
 func (d *Dialer) markUnavailableFromProxyFailure() {
-	// Determine network type (assume UDP for most cases)
-	networkType := &NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     false,
-	}
-
 	d.Log.WithFields(logrus.Fields{
-		"dialer":  d.Property().Name,
-		"network": networkType.String(),
+		"dialer": d.Property().Name,
 	}).Warnln("Marking dialer as unavailable due to persistent proxy IP failures")
 
 	// Use existing markUnavailable logic from connectivity_check.go
 	// This will update collection.Alive and notify AliveDialerSet
-	update := d.markUnavailable(networkType)
+	// Mark both IPv4 and IPv6 as dead since they likely share the same proxy IP/health.
+	for _, ipVersion := range []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6} {
+		networkType := &NetworkType{
+			L4Proto:   consts.L4ProtoStr_UDP,
+			IpVersion: ipVersion,
+			IsDns:     false,
+		}
+		update := d.markUnavailable(networkType)
+		// Notify dialer group about state change
+		d.informDialerGroupUpdate(update)
+	}
 
 	// Reset backoff level (start fresh for next recovery)
 	d.resetBackoffLevel()
 
 	// Cancel any pending recovery confirmation
 	d.cancelPendingRecoveryConfirmation()
-
-	// Notify dialer group about state change
-	d.informDialerGroupUpdate(update)
 }
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {

@@ -104,33 +104,41 @@ func allowConnectionErrorLog(key string, now time.Time) bool {
 }
 
 func (c *ControlPlane) logNoAliveDialerLimited(
-	outbound string,
+	outbound *ob.DialerGroup,
 	policy consts.DialerSelectionPolicy,
 	origNetworkType string,
-	selectionNetworkType string,
+	selectionNetworkType *dialer.NetworkType,
 	src netip.AddrPort,
 	dst netip.AddrPort,
 	domain string,
 	strictIpVersion bool,
 ) {
 	key := udpNoAliveDialerLogKey{
-		outbound:             outbound,
+		outbound:             outbound.Name,
 		origNetworkType:      origNetworkType,
-		selectionNetworkType: selectionNetworkType,
+		selectionNetworkType: selectionNetworkType.String(),
 		strictIpVersion:      strictIpVersion,
 	}
 	if !allowNoAliveDialerLog(key, time.Now()) {
 		return
 	}
 
+	total := len(outbound.Dialers)
+	alive := 0
+	if a := outbound.MustGetAliveDialerSet(selectionNetworkType); a != nil {
+		alive = a.Len()
+	}
+
 	c.log.WithFields(logrus.Fields{
-		"outbound":               outbound,
+		"outbound":               outbound.Name,
 		"orig_network_type":      origNetworkType,
-		"selection_network_type": selectionNetworkType,
+		"selection_network_type": selectionNetworkType.String(),
 		"src":                    src.String(),
 		"to":                     dst.String(),
 		"sniffed":                domain,
 		"interval":               noAliveDialerLogInterval.String(),
+		"total":                  total,
+		"alive":                  alive,
 	}).Warn("no alive dialer for selection (rate-limited)")
 }
 
@@ -547,10 +555,10 @@ getNew:
 				if err != nil {
 					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 						c.logNoAliveDialerLimited(
-							res.Outbound.Name,
+							res.Outbound,
 							res.Outbound.GetSelectionPolicy(),
 							res.OrigNetworkType,
-							res.SelectionNetworkType,
+							res.SelectionNetworkTypeObj,
 							realSrc,
 							realDst,
 							domain,

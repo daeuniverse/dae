@@ -159,7 +159,7 @@ func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host
 	return records, nil
 }
 
-func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
+func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) ([]dnsmessage.RR, error) {
 	if d == nil {
 		return nil, fmt.Errorf("nil dialer")
 	}
@@ -238,7 +238,11 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	if err != nil {
 		return nil, err
 	}
-	ch := make(chan error, 2)
+	type result struct {
+		ans []dnsmessage.RR
+		err error
+	}
+	ch := make(chan result, 2)
 	if magicNetwork.Network == "udp" {
 		go func() {
 			// Resend every 3 seconds for UDP.
@@ -251,7 +255,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 				}
 				_, err := c.Write(b)
 				if err != nil {
-					ch <- err
+					ch <- result{err: err}
 					return
 				}
 			}
@@ -264,51 +268,52 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 			// Read DNS response length
 			_, err := io.ReadFull(c, buf[:2])
 			if err != nil {
-				ch <- err
+				ch <- result{err: err}
 				return
 			}
 			n := binary.BigEndian.Uint16(buf)
 			if int(n) > cap(buf) {
-				ch <- fmt.Errorf("too big dns resp")
+				ch <- result{err: fmt.Errorf("too big dns resp")}
 				return
 			}
 			buf = buf[:n]
 		}
 		n, err := c.Read(buf)
 		if err != nil {
-			ch <- err
+			ch <- result{err: err}
 			return
 		}
 		// Resolve DNS response and extract A/AAAA record.
 		var msg dnsmessage.Msg
 		if err = msg.Unpack(buf[:n]); err != nil {
-			ch <- err
+			ch <- result{err: err}
 			return
 		}
 
 		if msg.Id != builder.Id {
-			ch <- fmt.Errorf("id mismatch: expect %v, got %v", builder.Id, msg.Id)
+			ch <- result{err: fmt.Errorf("id mismatch: expect %v, got %v", builder.Id, msg.Id)}
 			return
 		}
 
 		// Use miekg/dns.Msg.Answer directly but ensure we don't return until
 		// we are sure the caller doesn't need the buffer anymore.
 		// Actually, to be absolutely safe against UAF, we should copy the RRs.
+		var ans []dnsmessage.RR
 		if len(msg.Answer) > 0 {
 			ans = make([]dnsmessage.RR, len(msg.Answer))
 			for i, rr := range msg.Answer {
 				ans[i] = dnsmessage.Copy(rr)
 			}
 		}
-		ch <- nil
+		ch <- result{ans: ans}
 	}()
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("timeout")
-	case err = <-ch:
-		if err != nil {
-			return nil, err
+	case res := <-ch:
+		if res.err != nil {
+			return nil, res.err
 		}
-		return ans, nil
+		return res.ans, nil
 	}
 }

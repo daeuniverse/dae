@@ -39,6 +39,8 @@ type proxyDialResult struct {
 	IsDialIp             bool
 	OrigNetworkType      string
 	SelectionNetworkType string
+	OrigNetworkTypeObj      *dialer.NetworkType
+	SelectionNetworkTypeObj *dialer.NetworkType
 }
 
 func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam) (*proxyDialResult, error) {
@@ -136,6 +138,8 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 				IsDialIp:             strictIpVersion,
 				OrigNetworkType:      networkType.StringWithoutDns(),
 				SelectionNetworkType: selectionNetworkType.StringWithoutDns(),
+				OrigNetworkTypeObj:      networkType,
+				SelectionNetworkTypeObj: selectionNetworkType,
 			}, fmt.Errorf("select dialer from group %v (orig:%v sel:%v src:%v): %w",
 				outbound.Name,
 				networkType.StringWithoutDns(),
@@ -155,6 +159,8 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 		IsDialIp:             strictIpVersion,
 		OrigNetworkType:      networkType.StringWithoutDns(),
 		SelectionNetworkType: selectionNetworkType.StringWithoutDns(),
+		OrigNetworkTypeObj:      networkType,
+		SelectionNetworkTypeObj: selectionNetworkType,
 	}, nil
 }
 
