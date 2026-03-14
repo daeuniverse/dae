@@ -145,6 +145,15 @@ func (q *UdpTaskQueue) executeTask(task UdpTask, timer *time.Timer) {
 }
 
 func (q *UdpTaskQueue) convoy() {
+	defer func() {
+		if r := recover(); r != nil {
+			if q.p != nil {
+				// Log or handle panic as needed. For now, ensure queue is removed from pool
+				// so a new one can be created if traffic continues.
+				q.p.queues.Delete(q.key)
+			}
+		}
+	}()
 	timer := time.NewTimer(q.agingTime)
 	defer timer.Stop()
 

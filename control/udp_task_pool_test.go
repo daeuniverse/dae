@@ -172,7 +172,36 @@ func TestUdpTaskPool_SameSourceDifferentDestinationRunConcurrently(t *testing.T)
 
 	pool.EmitTask(keyA, runTask)
 	pool.EmitTask(keyB, runTask)
-
+ 
 	require.Eventually(t, func() bool { return done.Load() == 2 }, time.Second, 5*time.Millisecond)
 	require.GreaterOrEqual(t, peak.Load(), int32(2), "same source but different destinations should not serialize")
+}
+
+func TestUdpTaskPool_PanicRecovery(t *testing.T) {
+	pool := NewUdpTaskPool()
+	key := NewUdpSrcOnlyFlowKey(netip.MustParseAddrPort("127.0.0.1:10003"))
+
+	var done atomic.Int32
+	var panicked atomic.Bool
+
+	// Emit a panicking task
+	pool.EmitTask(key, func() {
+		panicked.Store(true)
+		panic("test panic")
+	})
+
+	// Emit a follow-up task that should still be executed if recovery works
+	// But note: our current recovery deletes the queue from the pool.
+	// So we need to wait a bit and emit to the same key - it will create a new queue.
+	require.Eventually(t, func() bool { return panicked.Load() }, time.Second, 5*time.Millisecond)
+
+	// Wait for the convoy to exit due to panic
+	time.Sleep(100 * time.Millisecond)
+
+	pool.EmitTask(key, func() {
+		done.Add(1)
+	})
+
+	require.Eventually(t, func() bool { return done.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
+	require.True(t, panicked.Load(), "Task should have panicked")
 }

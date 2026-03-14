@@ -390,77 +390,98 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				goto afterSniffing
 			}
 
-			sniffer.AppendData(data)
-			domain, err = sniffer.SniffUdp()
-			if err != nil {
-				// Check for decrypt failures (malformed packets).
-				// If decryption repeatedly fails, the packets are not valid QUIC
-				// and retrying is pointless. Give up quickly.
-				if stderrors.Is(err, sniffing.ErrNotApplicable) {
-					sniffer.consecutiveDecryptFailures++
-					if sniffer.consecutiveDecryptFailures >= consecutiveDecryptFailuresThreshold {
-						// Too many decrypt failures - mark DCID as failed.
-						if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			// Safe sniffing: wrap in a function to allow recover() from potential
+			// sniffer panics (e.g., malformed packets or internal logic errors).
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						if c.log.IsLevelEnabled(logrus.ErrorLevel) {
 							c.log.WithFields(logrus.Fields{
-								"src":      realSrc.String(),
-								"dst":      realDst.String(),
-								"failures": sniffer.consecutiveDecryptFailures,
-							}).Debug("QUIC decrypt failed repeatedly, marking DCID as failed")
+								"src": realSrc,
+								"dst": realDst,
+								"panic": r,
+							}).Error("UDP sniffing panicked; bypassing sniffing for this DCID")
 						}
 						MarkQuicDcidFailed(key)
 						sniffer.Mu.Unlock()
-						goto afterSniffing
 					}
-				} else {
-					// Reset decrypt failure counter on non-decrypt errors.
-					sniffer.consecutiveDecryptFailures = 0
+				}()
+
+				sniffer.AppendData(data)
+				domain, err = sniffer.SniffUdp()
+				if err != nil {
+					// Check for decrypt failures (malformed packets).
+					// If decryption repeatedly fails, the packets are not valid QUIC
+					// and retrying is pointless. Give up quickly.
+					if stderrors.Is(err, sniffing.ErrNotApplicable) {
+						sniffer.consecutiveDecryptFailures++
+						if sniffer.consecutiveDecryptFailures >= consecutiveDecryptFailuresThreshold {
+							// Too many decrypt failures - mark DCID as failed.
+							if c.log.IsLevelEnabled(logrus.DebugLevel) {
+								c.log.WithFields(logrus.Fields{
+									"src":      realSrc.String(),
+									"dst":      realDst.String(),
+									"failures": sniffer.consecutiveDecryptFailures,
+								}).Debug("QUIC decrypt failed repeatedly, marking DCID as failed")
+							}
+							MarkQuicDcidFailed(key)
+							sniffer.Mu.Unlock()
+							return
+						}
+					} else {
+						// Reset decrypt failure counter on non-decrypt errors.
+						sniffer.consecutiveDecryptFailures = 0
+					}
+
+					// Log unexpected errors for debugging but don't drop packet.
+					if !sniffing.IsSniffingError(err) {
+						if logrus.IsLevelEnabled(logrus.DebugLevel) {
+							logrus.WithError(err).
+								WithField("from", realSrc).
+								WithField("to", realDst).
+								Debug("UDP sniffing encountered unexpected error but continue processing")
+						}
+					}
 				}
 
-				// Log unexpected errors for debugging but don't drop packet.
-				if !sniffing.IsSniffingError(err) {
-					if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				if sniffer.NeedMore() {
+					// We don't record No SNI streak for NeedMore because handshakes naturally span multiple packets.
+					sniffer.Mu.Unlock()
+					return
+				}
+
+				if (err != nil && !stderrors.Is(err, sniffing.ErrNeedMore)) || domain == "" {
+					sniffer.RecordSniffNoSni(now)
+				} else if domain != "" {
+					sniffer.RecordSniffSuccess()
+				}
+
+				if err != nil {
+					if logrus.IsLevelEnabled(logrus.TraceLevel) {
 						logrus.WithError(err).
 							WithField("from", realSrc).
 							WithField("to", realDst).
-							Debug("UDP sniffing encountered unexpected error but continue processing")
+							Trace("sniffUdp")
 					}
 				}
-			}
 
-			if sniffer.NeedMore() {
-				// We don't record No SNI streak for NeedMore because handshakes naturally span multiple packets.
+				// Flush previously buffered packets on the same endpoint path before the
+				// current packet so QUIC sniff completion preserves original ingress order.
+				toReplay := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
+				if len(toReplay) > 0 {
+					replayPackets = make([]pool.PB, 0, len(toReplay))
+					for _, d := range toReplay {
+						dCopy := pool.Get(len(d))
+						copy(dCopy, d)
+						replayPackets = append(replayPackets, dCopy)
+					}
+				}
 				sniffer.Mu.Unlock()
+			}()
+			if sniffer.NeedMore() {
 				return nil
 			}
 
-			if (err != nil && !stderrors.Is(err, sniffing.ErrNeedMore)) || domain == "" {
-				sniffer.RecordSniffNoSni(now)
-			} else if domain != "" {
-				sniffer.RecordSniffSuccess()
-			}
-
-			if err != nil {
-				if logrus.IsLevelEnabled(logrus.TraceLevel) {
-					logrus.WithError(err).
-						WithField("from", realSrc).
-						WithField("to", realDst).
-						Trace("sniffUdp")
-				}
-			}
-
-			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
-			// Flush previously buffered packets on the same endpoint path before the
-			// current packet so QUIC sniff completion preserves original ingress order.
-			toReplay := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
-			if len(toReplay) > 0 {
-				replayPackets = make([]pool.PB, 0, len(toReplay))
-				for _, d := range toReplay {
-					dCopy := pool.Get(len(d))
-					copy(dCopy, d)
-					replayPackets = append(replayPackets, dCopy)
-				}
-			}
-			sniffer.Mu.Unlock()
 		} else {
 			_sniffer.Mu.Unlock()
 			// sniffer may be nil.
