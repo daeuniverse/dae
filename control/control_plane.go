@@ -181,7 +181,6 @@ func NewControlPlaneWithContext(
 	// can clear the failed DCID cache when network conditions improve.
 	dialer.SetQuicDcidCacheClearFunc(ClearFailedQuicDcids)
 
-	// TODO: Some users reported that enabling GSO on the client would affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
@@ -310,7 +309,7 @@ func NewControlPlaneWithContext(
 		}
 	}()
 
-	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
+	// Bind to links.
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
 		if global.AutoConfigKernelParameter {
@@ -396,7 +395,6 @@ func NewControlPlaneWithContext(
 	}
 
 	// Filter out groups.
-	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
@@ -1194,7 +1192,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	sentReady := false
 	defer func() {
 		if !sentReady {
-			readyChan <- false
+			select {
+			case readyChan <- false:
+			default:
+			}
 		}
 	}()
 	udpConn := listener.packetConn.(*net.UDPConn)
@@ -1223,7 +1224,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	}
 
 	sentReady = true
-	readyChan <- true
+	select {
+	case readyChan <- true:
+	default:
+	}
 	go func() {
 		for {
 			select {
