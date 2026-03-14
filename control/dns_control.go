@@ -1218,9 +1218,15 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		// Cache miss - use singleflight to coalesce concurrent requests
 		// This prevents thundering herd on upstream DNS servers
 		res, err, _ := c.sf.Do(cacheKey, func() (any, error) {
+			// CRITICAL: Use a detached context for the shared resolution.
+			// This prevents cancellation of the first request from terminating
+			// the resolution for all other concurrent waiters.
+			resCtx, resCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer resCancel()
+
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
-			return c.resolveForSingleflight(ctx, dnsMessage, req, upstreamIndex, upstream)
+			return c.resolveForSingleflight(resCtx, dnsMessage, req, upstreamIndex, upstream)
 		})
 
 		if err != nil {

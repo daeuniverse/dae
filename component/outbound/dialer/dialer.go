@@ -338,6 +338,10 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 // triggerRecoveryDetection triggers recovery detection with exponential backoff.
 // This is called when health check succeeds, to verify the dialer is truly stable before marking it healthy.
 func (d *Dialer) triggerRecoveryDetection() {
+	d.triggerRecoveryDetectionInternal(nil)
+}
+
+func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
 	// Check context first to avoid scheduling recovery on a closed dialer
 	select {
 	case <-d.ctx.Done():
@@ -359,20 +363,48 @@ func (d *Dialer) triggerRecoveryDetection() {
 		return
 	}
 
-	// Determine which network type to check (start with UDP as it's most common)
-	networkType := &NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     false,
+	// Determine which network type to check.
+	// If no specific target provided, default to UDPv4 (legacy behavior)
+	// or try to find a dead protocol to recover.
+	networkType := target
+	if networkType == nil {
+		networkType = &NetworkType{
+			L4Proto:   consts.L4ProtoStr_UDP,
+			IpVersion: consts.IpVersionStr_4,
+			IsDns:     false,
+		}
 	}
 
 	// Skip if already healthy (no need to confirm recovery)
 	if d.MustGetAlive(networkType) {
-		d.Log.WithFields(logrus.Fields{
-			"dialer":  d.Property().Name,
-			"network": networkType.String(),
-		}).Traceln("Dialer is already healthy, skip recovery detection")
-		return
+		// If the specific target is healthy, try to find any other dead protocol.
+		found := false
+		if target == nil {
+			protocols := []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
+			ipVersions := []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
+			isDnsChoices := []bool{false, true}
+
+			for _, p := range protocols {
+				for _, v := range ipVersions {
+					for _, dns := range isDnsChoices {
+						nt := &NetworkType{L4Proto: p, IpVersion: v, IsDns: dns}
+						if !d.MustGetAlive(nt) {
+							networkType = nt
+							found = true
+							goto afterSearch
+						}
+					}
+				}
+			}
+		}
+	afterSearch:
+		if !found {
+			d.Log.WithFields(logrus.Fields{
+				"dialer":  d.Property().Name,
+				"network": networkType.String(),
+			}).Traceln("Dialer is already healthy across measured protocols, skip recovery detection")
+			return
+		}
 	}
 
 	// Calculate backoff duration based on current level
