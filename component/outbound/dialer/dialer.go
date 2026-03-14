@@ -536,17 +536,22 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 
 	// Use existing markUnavailable logic from connectivity_check.go
 	// This will update collection.Alive and notify AliveDialerSet
-	// Mark both IPv4 and IPv6 as dead since they likely share the same proxy IP/health.
-	for _, ipVersion := range []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6} {
-		networkType := &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: ipVersion,
-			IsDns:     false,
+	// Mark both TCP and UDP across all supported IP versions as dead since they
+	// share the same proxy IP/health. Bypass threshold to ensure immediate failover.
+	protocols := []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP}
+	ipVersions := []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
+
+	for _, proto := range protocols {
+		for _, ipVersion := range ipVersions {
+			networkType := &NetworkType{
+				L4Proto:   proto,
+				IpVersion: ipVersion,
+				IsDns:     false,
+			}
+			d.ReportUnavailableForced(networkType, nil)
 		}
-		update := d.markUnavailable(networkType)
-		// Notify dialer group about state change
-		d.informDialerGroupUpdate(update)
 	}
+
 
 	// Reset backoff level (start fresh for next recovery)
 	d.resetBackoffLevel()
@@ -554,6 +559,7 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 	// Cancel any pending recovery confirmation
 	d.cancelPendingRecoveryConfirmation()
 }
+
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
 	key := fmt.Sprintf("%d-%s", idx, ip.String())

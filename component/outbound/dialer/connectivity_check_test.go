@@ -128,18 +128,27 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 		d.UnregisterAliveDialerSet(aliveSet)
 	})
 
+	// First failure: should stay alive due to threshold=2.
 	ok, err := d.Check(&CheckOption{
 		networkType: networkType,
 		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
-			return false, errors.New("simulated health check failure")
+			return false, errors.New("simulated health check failure (1/2)")
 		},
 	})
-	if err == nil {
-		t.Fatal("expected check error")
-	}
-	if ok {
-		t.Fatal("unexpected ok=true")
-	}
+	if err == nil { t.Fatal("expected check error") }
+	if ok { t.Fatal("unexpected ok=true") }
+	if !d.MustGetAlive(networkType) { t.Fatal("TCP should stay alive after 1 failure") }
+
+	// Second failure: should now mark unavailable.
+	ok, err = d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated health check failure (2/2)")
+		},
+	})
+	if err == nil { t.Fatal("expected check error") }
+	if ok { t.Fatal("unexpected ok=true") }
+
 
 	if d.MustGetAlive(networkType) {
 		t.Fatal("real check failures must still mark dialer unavailable")
@@ -176,15 +185,19 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 		d.UnregisterAliveDialerSet(aliveSet)
 	})
 
-	_, err := d.Check(&CheckOption{
-		networkType: networkType,
-		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
-			return false, errors.New("simulated health check failure")
-		},
-	})
-	if err == nil {
-		t.Fatal("expected initial failure")
+	// Fail twice to mark unavailable.
+	for i := 1; i <= 2; i++ {
+		_, err := d.Check(&CheckOption{
+			networkType: networkType,
+			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+				return false, errors.New("simulated health check failure")
+			},
+		})
+		if err == nil {
+			t.Fatalf("expected initial failure %d", i)
+		}
 	}
+
 
 	for i := range 64 {
 		ok, skipErr := d.Check(&CheckOption{
@@ -204,9 +217,10 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 	if aliveSet.GetRand() != nil {
 		t.Fatal("dialer should remain unavailable after skip checks")
 	}
-	if got := d.MustGetLatencies10(networkType).Len(); got != 1 {
+	if got := d.MustGetLatencies10(networkType).Len(); got != 2 {
 		t.Fatalf("skip checks should not append extra samples after failure, got %d", got)
 	}
+
 }
 
 func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
@@ -232,15 +246,19 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 		d2.UnregisterAliveDialerSet(aliveSet)
 	})
 
-	_, err := d1.Check(&CheckOption{
-		networkType: networkType,
-		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
-			return false, errors.New("simulated health check failure")
-		},
-	})
-	if err == nil {
-		t.Fatal("expected failure from d1")
+	// Fail d1 twice to mark unavailable.
+	for i := 1; i <= 2; i++ {
+		_, err := d1.Check(&CheckOption{
+			networkType: networkType,
+			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+				return false, errors.New("simulated health check failure")
+			},
+		})
+		if err == nil {
+			t.Fatalf("expected failure from d1 (%d)", i)
+		}
 	}
+
 
 	for i := range 128 {
 		ok, skipErr := d2.Check(&CheckOption{

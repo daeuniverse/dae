@@ -731,21 +731,38 @@ func (d *Dialer) logUnavailable(
 }
 
 func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
+	return d.markUnavailableInternal(typ, false)
+}
+
+func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool) collectionUpdate {
 	d.collectionFineMu.Lock()
 	idx := typ.Index()
 	collection := d.collections[idx]
 	collection.Latencies10.AppendLatency(Timeout)
 	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
 
-	// UDP robustness: only mark unavailable after 3 consecutive failures.
-	// This protects against transient Port 53 interference.
+	// UDP/TCP robustness: only mark unavailable after consecutive failures.
+	// This protects against transient network interference.
 	alive := false
-	if typ.L4Proto == consts.L4ProtoStr_UDP {
+	if !force {
+		threshold := 1
+		if typ.L4Proto == consts.L4ProtoStr_UDP {
+			threshold = 3
+		} else if typ.L4Proto == consts.L4ProtoStr_TCP {
+			// Aggregation for TCP is too aggressive in multi-dialer environments.
+			// Add a minor threshold to balance "fast discovery" with "noise".
+			threshold = 2
+		}
+
 		d.failCount[idx]++
-		if d.failCount[idx] < 3 {
+		if d.failCount[idx] < threshold {
 			alive = collection.Alive
 		}
+	} else {
+		// Forced death: reset counter to match state.
+		d.failCount[idx] = 3
 	}
+	wasAlive := collection.Alive
 	collection.Alive = alive
 
 	update := collectionUpdate{
@@ -756,12 +773,17 @@ func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
 	d.collectionFineMu.Unlock()
 
 	// Notify sticky IP dialer and recovery detection ONLY when truly transitioning to dead.
-	if !alive {
+	// This prevents a single failed dialer from repeatedly invalidating the global cache (Sticky Killer).
+	// Bypassed for forced death to avoid recursion loop with NotifyHealthCheckResult.
+	if wasAlive && !alive && !force {
 		d.NotifyHealthCheckResult(false)
 	}
 
+
+
 	return update
 }
+
 
 func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collectionUpdate, time.Duration) {
 	d.collectionFineMu.Lock()
@@ -796,6 +818,12 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailable(typ))
 }
+
+func (d *Dialer) ReportUnavailableForced(typ *NetworkType, err error) {
+	d.logUnavailable(typ, err)
+	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true))
+}
+
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
