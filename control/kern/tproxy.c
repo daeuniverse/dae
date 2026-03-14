@@ -1343,6 +1343,27 @@ load_non_syn_tcp_wan_egress(struct tuples_key *five_tuple, __u8 *outbound,
 	return load_cached_routing_result(five_tuple, outbound, mark, must);
 }
 
+static __always_inline void
+assign_route_params_pname(struct route_params *params,
+			  const struct pid_pname *pid_pname)
+{
+	if (pid_pname) {
+		__builtin_memcpy(&params->flag[2], pid_pname->pname,
+				 TASK_COMM_LEN);
+	}
+}
+
+static __always_inline void
+assign_routing_pname(struct routing_result *routing_result,
+		     const struct pid_pname *pid_pname)
+{
+	if (pid_pname) {
+		__builtin_memcpy(routing_result->pname, pid_pname->pname,
+				 TASK_COMM_LEN);
+		routing_result->pid = pid_pname->pid;
+	}
+}
+
 static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
@@ -1557,17 +1578,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	routing_result.dscp = pkt->tuples.dscp;
 	__builtin_memcpy(routing_result.mac, pkt->ethh.h_source,
 			 sizeof(routing_result.mac));
-	/// NOTICE: No pid pname info for LAN packet.
-	// // Maybe this packet is also in the host (such as docker) ?
-	// // I tried and it is false.
-	//__u64 cookie = bpf_get_socket_cookie(skb);
-	//struct pid_pname *pid_pname =
-	//	bpf_map_lookup_elem(&cookie_pid_map, &cookie);
-	//if (pid_pname) {
-	//	__builtin_memcpy(routing_result.pname, pid_pname->pname,
-	//			 TASK_COMM_LEN);
-	//	routing_result.pid = pid_pname->pid;
-	//}
+	/// NOTICE: No pid pname info for LAN packet (traffic is forwarded, not locally originated).
 
 	// Save routing result.
 	if (pkt->l4proto == IPPROTO_UDP &&
@@ -1762,11 +1773,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			// From control plane. Direct.
 			return TC_ACT_OK;
 		}
-		if (pid_pname) {
-			// 2, 3, 4, 5
-			__builtin_memcpy(&params.flag[2], pid_pname->pname,
-					 TASK_COMM_LEN);
-		}
+		assign_route_params_pname(&params, pid_pname);
 		params.mac[2] =
 			bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
 		params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
@@ -1839,12 +1846,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			routing_result.dscp = tuples->dscp;
 			__builtin_memcpy(routing_result.mac, ethh->h_source,
 					 sizeof(ethh->h_source));
-			if (pid_pname) {
-				__builtin_memcpy(routing_result.pname,
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-				routing_result.pid = pid_pname->pid;
-			}
+			assign_routing_pname(&routing_result, pid_pname);
 			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
 					    &routing_result, BPF_ANY);
 		}
@@ -1893,11 +1895,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		}
 	}
 
-	if (pid_pname) {
-		// 2, 3, 4, 5
-		__builtin_memcpy(&params.flag[2], pid_pname->pname,
-				 TASK_COMM_LEN);
-	}
+	assign_route_params_pname(&params, pid_pname);
 	params.mac[2] =
 		bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
 	params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
@@ -1934,12 +1932,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			routing_result.dscp = tuples->dscp;
 			__builtin_memcpy(routing_result.mac, ethh->h_source,
 					 sizeof(ethh->h_source));
-			if (pid_pname) {
-				__builtin_memcpy(routing_result.pname,
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-				routing_result.pid = pid_pname->pid;
-			}
+			assign_routing_pname(&routing_result, pid_pname);
 			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
 					    &routing_result, BPF_ANY);
 		}

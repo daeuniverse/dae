@@ -330,7 +330,7 @@ func NewControlPlaneWithContext(
 	// Bind to WAN
 	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
-			log.WithError(err).Debugln("cgroup2 is not enabled; pname routing cannot be used")
+			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
 		}
 		if err = core.setupTCPRelayOffload(); err != nil {
 			log.WithError(err).Debugln("TCP relay eBPF offload disabled")
@@ -851,10 +851,12 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
+				shouldReroute = true
 			} else {
 				if known, real := c.lookupRealDomainCache(domain); known {
 					if real {
 						dialMode = consts.DialMode_Domain
+						shouldReroute = true
 					}
 				} else {
 					// Unknown domain on first hit: warm it asynchronously to avoid

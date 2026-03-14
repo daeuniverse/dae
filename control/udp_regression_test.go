@@ -102,7 +102,7 @@ func TestQuicConnection_Port8443(t *testing.T) {
 
 // TestPortHeuristics_Port443NonQuic verifies port 443 non-QUIC traffic
 func TestPortHeuristics_Port443NonQuic(t *testing.T) {
-	src := netip.MustParseAddrPort("192.168.1.100:50000")
+	src := netip.MustParseAddrPort("192.168.1.100:50003")
 	dst := netip.MustParseAddrPort("93.184.216.34:443")
 
 	// Non-QUIC data on port 443 (e.g., DTLS, Hysteria2)

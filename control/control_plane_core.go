@@ -404,6 +404,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 func (c *controlPlaneCore) setupSkPidMonitor() error {
 	/// Set-up SrcPidMapper.
 	/// Attach programs to support pname routing.
+	reqVer, _ := internal.NewVersion("5.17.0")
+	if c.kernelVersion.Less(reqVer) {
+		return fmt.Errorf("kernel version %s is less than 5.17, which is required for pname routing", c.kernelVersion.String())
+	}
 	// Get the first-mounted cgroupv2 path.
 	cgroupPath, err := detectCgroupPath()
 	if err != nil {
