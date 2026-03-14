@@ -128,9 +128,9 @@ func (ue *UdpEndpoint) start() {
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
-			if (daerrors.IsReplayAttackError(err) || daerrors.IsAuthError(err)) && ue.softErrorCount < 10 {
+			if (daerrors.IsReplayAttackError(err) || daerrors.IsAuthError(err)) && ue.softErrorCount < 3 {
 				ue.softErrorCount++
-				ue.logEndpointExit(fmt.Errorf("%w (hit %d/10)", err, ue.softErrorCount), "read loop (ignored)")
+				ue.logEndpointExit(fmt.Errorf("%w (hit %d/3)", err, ue.softErrorCount), "read loop (ignored)")
 				continue
 			}
 			ue.dead.Store(true)
