@@ -380,12 +380,12 @@ func (c *DnsController) processBpfUpdateTask(task *bpfUpdateTask, draining bool)
 	}
 	if c.cacheAccessCallback != nil {
 		if err := c.cacheAccessCallback(task.cache); err != nil {
-			if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+			if c.log != nil {
 				suffix := ""
 				if draining {
 					suffix = " (during shutdown)"
 				}
-				c.log.WithError(err).Debugf("async BPF update failed%s", suffix)
+				c.log.WithError(err).Warnf("async BPF map update failed%s", suffix)
 			}
 		} else {
 			task.cache.MarkBpfUpdated(task.now)

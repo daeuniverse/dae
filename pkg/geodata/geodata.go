@@ -68,7 +68,7 @@ func UnmarshalGeoSite(log *logrus.Logger, filepath, code string) (*GeoSite, erro
 
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
 		errInvalidGeodataFile, errInvalidGeodataVarintLength:
-		log.Warnln("failed to decode geoip file: ", filepath, ", fallback to the original ReadFile method")
+		log.Warnln("failed to decode geosite file: ", filepath, ", fallback to the original ReadFile method")
 		geositeBytes, err = os.ReadFile(filepath)
 		if err != nil {
 			return nil, err
