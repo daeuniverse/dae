@@ -27,8 +27,8 @@ func sniffHTTPHostHeaderLegacy(data []byte) (string, error) {
 		if !found {
 			continue
 		}
-		if strings.EqualFold(string(key), "host") {
-			return string(value), nil
+		if strings.EqualFold(string(bytes.TrimSpace(key)), "host") {
+			return string(bytes.TrimSpace(value)), nil
 		}
 	}
 	return "", ErrNotFound

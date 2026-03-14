@@ -140,21 +140,28 @@ func (s *Sniffer) readStreamOnceWithReadDeadline() error {
 
 func (s *Sniffer) readStreamOnceAsync() error {
 	ctx := s.ensureAsyncContext()
+	ready := s.dataReady
 	go func() {
+		defer close(ready)
 		// Read once.
 		_, err := s.buf.ReadFromOnce(s.r)
 		if err != nil {
 			s.dataError = err
 		}
-		close(s.dataReady)
 	}()
 
 	select {
-	case <-s.dataReady:
+	case <-ready:
 		if s.dataError != nil {
 			return s.dataError
 		}
 	case <-ctx.Done():
+		// If read is still pending, we must unblock it.
+		if s.conn != nil {
+			_ = s.conn.SetReadDeadline(time.Unix(1, 0))
+			<-ready
+			_ = s.conn.SetReadDeadline(time.Time{})
+		}
 		return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
 	}
 	return nil

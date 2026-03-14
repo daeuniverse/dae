@@ -135,7 +135,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 				domain, err = sniffer.SniffTcp()
 				if err != nil {
 					// Best practice:
-					// 1) Sniffing-domain errors (not applicable/need more/not found) are expected.
+					// 1) Sniffing-domain errors (not applicable/need more/not found) should not break relay.
 					// 2) Ignorable connection errors (EOF/reset/timeout) should not break relay.
 					// 3) Other unexpected errors should fail fast instead of being silently hidden.
 					if !sniffing.IsSniffingError(err) && !daerrors.IsIgnorableConnectionError(err) {

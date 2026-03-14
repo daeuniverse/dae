@@ -851,13 +851,10 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
-				shouldReroute = true
 			} else {
 				if known, real := c.lookupRealDomainCache(domain); known {
 					if real {
 						dialMode = consts.DialMode_Domain
-						// Should use this domain to reroute
-						shouldReroute = true
 					}
 				} else {
 					// Unknown domain on first hit: warm it asynchronously to avoid
