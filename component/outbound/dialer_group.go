@@ -158,8 +158,10 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bo
 	policy := g.selectionPolicy
 	d, latency, err = g._select(networkType, policy)
 	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
-		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
-		return g._select(networkType, policy)
+		// Fallback to another ipversion. Use local copy to avoid modifying the original networkType if it's passed by reference.
+		nt := *networkType
+		nt.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
+		return g._select(&nt, policy)
 	}
 	if err == nil {
 		return d, latency, nil

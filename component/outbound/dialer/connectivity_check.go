@@ -755,6 +755,11 @@ func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
 	}
 	d.collectionFineMu.Unlock()
 
+	// Notify sticky IP dialer and recovery detection ONLY when truly transitioning to dead.
+	if !alive {
+		d.NotifyHealthCheckResult(false)
+	}
+
 	return update
 }
 
@@ -789,8 +794,6 @@ func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
 
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
-	// Notify sticky IP dialer about the explicit report failure
-	d.NotifyHealthCheckResult(false)
 	d.informDialerGroupUpdate(d.markUnavailable(typ))
 }
 
@@ -816,8 +819,6 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	} else if err != nil {
 		// Failure: mark unavailable only if there's an actual error.
 		d.logUnavailable(opts.networkType, err)
-		// Notify sticky IP dialer about the health check failure
-		d.NotifyHealthCheckResult(false)
 		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))
 	}
 	// Skip update when (ok=false, err=nil): preserve existing alive state.

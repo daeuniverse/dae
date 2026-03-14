@@ -430,7 +430,10 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 	}
 
 	// Double-check if still healthy (might have failed during backoff period)
-	if !d.MustGetAlive(networkType) {
+	d.recoveryState.Lock()
+	alive := d.MustGetAlive(networkType)
+	if !alive {
+		d.recoveryState.Unlock()
 		d.Log.WithFields(logrus.Fields{
 			"dialer":  d.Property().Name,
 			"network": networkType.String(),
@@ -440,7 +443,6 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 
 	// Confirm recovery - increase backoff level for next time
 	// Only increment if level hasn't been reset by a concurrent failure
-	d.recoveryState.Lock()
 	if d.recoveryState.backoffLevel == currentBackoffLevel {
 		d.recoveryState.backoffLevel++
 		// Persist the incremented backoff level to survive Clone() and reloads

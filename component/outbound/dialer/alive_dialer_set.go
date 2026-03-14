@@ -227,8 +227,8 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		a.dialerToLatency[dialer] = rawLatency
 		sortingLatency = a.SortingLatency(dialer)
 		if alive &&
-			sortingLatency <= a.minLatency.sortingLatency && // To avoid arithmetic overflow.
-			sortingLatency <= a.minLatency.sortingLatency-a.tolerance {
+			sortingLatency <= a.minLatency.sortingLatency &&
+			(a.minLatency.sortingLatency < a.tolerance || sortingLatency <= a.minLatency.sortingLatency-a.tolerance) {
 			a.minLatency.sortingLatency = sortingLatency
 			a.minLatency.dialer = dialer
 		} else if a.minLatency.dialer == dialer {
@@ -318,8 +318,8 @@ func (a *AliveDialerSet) calcMinLatency() {
 		a.minLatency.sortingLatency = minLatency
 		a.minLatency.dialer = minDialer
 	} else if minDialer != nil &&
-		minLatency <= a.minLatency.sortingLatency && // To avoid arithmetic overflow.
-		minLatency <= a.minLatency.sortingLatency-a.tolerance {
+		minLatency <= a.minLatency.sortingLatency &&
+		(a.minLatency.sortingLatency < a.tolerance || minLatency <= a.minLatency.sortingLatency-a.tolerance) {
 		a.minLatency.sortingLatency = minLatency
 		a.minLatency.dialer = minDialer
 	}
