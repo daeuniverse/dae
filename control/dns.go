@@ -891,6 +891,9 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 			badConn = true
 			return nil, err
 		}
+		if msg.Truncated {
+			return &msg, ErrDNSTruncated
+		}
 		return &msg, nil
 	}
 }
@@ -934,6 +937,17 @@ func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, dat
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http status code: %v", resp.StatusCode)
+	}
+
+	// Verify Content-Type
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "application/dns-message" {
+		return nil, fmt.Errorf("unexpected content-type: %v", contentType)
+	}
+
 	buf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

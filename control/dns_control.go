@@ -57,6 +57,7 @@ const (
 var (
 	ErrUnsupportedQuestionType          = fmt.Errorf("unsupported question type")
 	ErrDNSQueryConcurrencyLimitExceeded = errors.New("dns query concurrency limit exceeded")
+	ErrDNSTruncated                     = errors.New("dns response truncated")
 )
 
 var (
@@ -1139,7 +1140,9 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 }
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
-	// Try to acquire semaphore (skip if unlimited)
+	var upstreamIndex consts.DnsRequestOutboundIndex
+	var upstream *dns.Upstream
+
 	if cap(c.concurrencyLimiter) > 0 {
 		select {
 		case c.concurrencyLimiter <- struct{}{}:
@@ -1173,7 +1176,8 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if c.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
-		upstreamIndex, _, err := c.routing.RequestSelect(qname, qtype)
+		var err error
+		upstreamIndex, upstream, err = c.routing.RequestSelect(qname, qtype)
 		if err != nil {
 			return err
 		}
@@ -1189,7 +1193,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			// OPTIMISTIC CACHE: resp may be stale, trigger background refresh if needed
 			if needRefresh {
 				// Background refresh - don't block the current request
-				go c.backgroundRefresh(cacheKey, dnsMessage, req)
+				go c.backgroundRefresh(cacheKey, dnsMessage, req, upstreamIndex, upstream)
 			}
 
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
@@ -1216,7 +1220,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		res, err, _ := c.sf.Do(cacheKey, func() (any, error) {
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
-			return c.resolveForSingleflight(ctx, dnsMessage, req)
+			return c.resolveForSingleflight(ctx, dnsMessage, req, upstreamIndex, upstream)
 		})
 
 		if err != nil {
@@ -1262,17 +1266,17 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		return nil
 	}
 
-	return c.handleWithResponseWriterInternal(ctx, dnsMessage, req, responseWriter)
+	return c.handleWithResponseWriterInternal(ctx, dnsMessage, req, responseWriter, upstreamIndex, upstream)
 }
 
-func (c *DnsController) resolveForSingleflight(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest) (*dnsmessage.Msg, error) {
+func (c *DnsController) resolveForSingleflight(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) (*dnsmessage.Msg, error) {
 	// We need a way to capture the response message from the resolution process.
 	// Currently `handleWithResponseWriterInternal` writes to a writer or sends a packet.
 	// We need to refactor or spy on it.
 
 	// Since refactoring everything is risky, let's use a Fake ResponseWriter to capture the message.
 	capturer := &msgCapturer{}
-	err := c.handleWithResponseWriterInternal(ctx, dnsMessage, req, capturer)
+	err := c.handleWithResponseWriterInternal(ctx, dnsMessage, req, capturer, upstreamIndex, upstream)
 	if err != nil {
 		return nil, err
 	}
@@ -1299,7 +1303,7 @@ func (m *msgCapturer) TsigTimersOnly(bool)         {}
 func (m *msgCapturer) Hijack()                     {}
 
 // Renamed from HandleWithResponseWriter_ to internal to avoid recursion loop with SF
-func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
@@ -1323,10 +1327,10 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 	switch qtype {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
 		if c.qtypePrefer == 0 {
-			return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter)
+			return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
 		}
 	default:
-		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter)
+		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
 	}
 
 	preferredQtype := c.qtypePrefer
@@ -1342,12 +1346,12 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 
 	resolveQtype := func(lookupQtype uint16) error {
 		if lookupQtype == qtype {
-			return c.handleWithResponseWriter_(ctx, dnsMessage, req, false, nil)
+			return c.handleWithResponseWriter_(ctx, dnsMessage, req, false, nil, upstreamIndex, upstream)
 		}
 		msg := dnsMessage.Copy()
 		msg.Id = uint16(fastrand.Intn(math.MaxUint16))
 		msg.Question[0].Qtype = lookupQtype
-		return c.handleWithResponseWriter_(ctx, msg, req, false, nil)
+		return c.handleWithResponseWriter_(ctx, msg, req, false, nil, 0, nil)
 	}
 
 	runLookup := func(lookupQtype uint16, cleanupOnReturn *atomic.Bool) <-chan ipVersionLookupResult {
@@ -1492,6 +1496,8 @@ func (c *DnsController) handleWithResponseWriter_(
 	req *udpRequest,
 	needResp bool,
 	responseWriter dnsmessage.ResponseWriter,
+	upstreamIndex consts.DnsRequestOutboundIndex,
+	upstream *dns.Upstream,
 ) (err error) {
 	// Prepare qname, qtype.
 	var qname string
@@ -1502,13 +1508,15 @@ func (c *DnsController) handleWithResponseWriter_(
 		qtype = q.Qtype
 	}
 
-	// Route request.
-	if c.routing == nil {
-		return fmt.Errorf("dns routing is not configured")
-	}
-	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
-	if err != nil {
-		return err
+	// Route request if not already routed.
+	if upstream == nil && upstreamIndex == 0 {
+		if c.routing == nil {
+			return fmt.Errorf("dns routing is not configured")
+		}
+		upstreamIndex, upstream, err = c.routing.RequestSelect(qname, qtype)
+		if err != nil {
+			return err
+		}
 	}
 
 	cacheKey := c.cacheKey(qname, qtype)
@@ -1526,7 +1534,7 @@ func (c *DnsController) handleWithResponseWriter_(
 		// Send cache to client directly.
 		// OPTIMISTIC CACHE: Trigger background refresh if stale
 		if needRefresh {
-			go c.backgroundRefresh(cacheKey, dnsMessage, req)
+			go c.backgroundRefresh(cacheKey, dnsMessage, req, upstreamIndex, upstream)
 		}
 
 		if needResp {
@@ -1817,13 +1825,10 @@ func (c *DnsController) dialSend(
 		}
 	}
 
-	// OPTIMIZATION: Send response first, then cache asynchronously.
-	// This reduces client-perceived latency, especially important for:
-	// 1. High QPS scenarios where cache operations accumulate
-	// 2. Proxy chains with already high latency
+	// Optimization: Send response first, then cache asynchronously.
+	// This reduces client-perceived latency.
 	//
-	// Cache operations (~260ns + BPF update) are negligible compared to
-	// network latency (1-2s), but doing them async is still beneficial:
+	// Cache operations and BPF updates are fast, but doing them async is still beneficial:
 	// - Reduces tail latency under load
 	// - Follows "respond first, process later" best practice
 	//
