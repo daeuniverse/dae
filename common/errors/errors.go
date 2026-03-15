@@ -129,6 +129,7 @@ func IsAddressNotSuitable(err error) bool {
 //   - Broken pipe (EPIPE)
 //   - Connection reset by peer (ECONNRESET)
 //   - Network timeout
+//
 // This function is on the hot path and optimized for minimal overhead.
 func IsIgnorableConnectionError(err error) bool {
 	if err == nil {

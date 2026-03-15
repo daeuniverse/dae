@@ -378,7 +378,7 @@ func TestEndpointKeySelection_PortHeuristics(t *testing.T) {
 	src := netip.MustParseAddrPort("192.168.1.100:50000")
 
 	testPorts := []struct {
-		port           uint16
+		port            uint16
 		expectSymmetric bool
 		reason          string
 	}{
@@ -410,11 +410,11 @@ func TestOrderedIngress_DecisionLogic(t *testing.T) {
 	// Use different source ports for each test case to avoid session leakage
 
 	testCases := []struct {
-		name            string
-		dstPort         uint16
-		data            []byte
-		hasSniffer      bool
-		expectOrdered   bool
+		name          string
+		dstPort       uint16
+		data          []byte
+		hasSniffer    bool
+		expectOrdered bool
 	}{
 		{
 			name:          "QUIC_Initial",

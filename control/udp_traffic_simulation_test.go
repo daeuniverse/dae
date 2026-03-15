@@ -38,7 +38,7 @@ func TestUdpTrafficSimulation_NonQuicNoBlocking(t *testing.T) {
 	nonQuicPackets := [][]byte{
 		{0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // DNS query
 		{0x00, 0x02, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Another DNS
-		make([]byte, 128),                                                           // Generic UDP
+		make([]byte, 128), // Generic UDP
 	}
 
 	// Track processing results
@@ -331,18 +331,18 @@ func TestUdpTrafficSimulation_EndpointPoolLifecycle(t *testing.T) {
 // updates for different connection types.
 func TestUdpTrafficSimulation_NatTimeoutUpdate(t *testing.T) {
 	tests := []struct {
-		name          string
-		domain        string
+		name            string
+		domain          string
 		expectedTimeout time.Duration
 	}{
 		{
-			name:          "QUIC connection",
-			domain:        "example.com",
+			name:            "QUIC connection",
+			domain:          "example.com",
 			expectedTimeout: QuicNatTimeout,
 		},
 		{
-			name:          "Non-QUIC UDP",
-			domain:        "",
+			name:            "Non-QUIC UDP",
+			domain:          "",
 			expectedTimeout: DefaultNatTimeout,
 		},
 	}
@@ -719,10 +719,10 @@ func TestUdpTrafficSimulation_MalformedPackets(t *testing.T) {
 	dst := netip.MustParseAddrPort("8.8.8.8:53")
 
 	malformedPackets := [][]byte{
-		{},                      // Empty
-		{0x00},                  // Too short
-		make([]byte, 1),         // Single byte
-		make([]byte, 3),         // Too short for DNS
+		{},              // Empty
+		{0x00},          // Too short
+		make([]byte, 1), // Single byte
+		make([]byte, 3), // Too short for DNS
 	}
 
 	for i, pkt := range malformedPackets {

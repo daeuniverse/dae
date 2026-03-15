@@ -9,8 +9,8 @@ import (
 	"net"
 
 	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/dialer/stickyip"
+	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,9 +29,9 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 	if gOption.Log != nil && gOption.Log.IsLevelEnabled(logrus.DebugLevel) {
 		needsCache := p.Address != "" && needsStickyIpCaching(p.Address)
 		gOption.Log.WithFields(logrus.Fields{
-			"proxy_address":   p.Address,
-			"needs_cache":     needsCache,
-			"subscription":    subscriptionTag,
+			"proxy_address": p.Address,
+			"needs_cache":   needsCache,
+			"subscription":  subscriptionTag,
 		}).Debug("[DialerRegister] Checking if sticky IP caching is needed")
 	}
 

@@ -24,13 +24,13 @@ import (
 type PacketType string
 
 const (
-	PacketTypeDNS        PacketType = "dns"
-	PacketTypeQUIC       PacketType = "quic"
-	PacketTypeSTUN       PacketType = "stun"
-	PacketTypeWireGuard  PacketType = "wireguard"
-	PacketTypeGeneric    PacketType = "generic"
-	PacketTypeMalformed  PacketType = "malformed"
-	PacketTypeDTLS       PacketType = "dtls"
+	PacketTypeDNS       PacketType = "dns"
+	PacketTypeQUIC      PacketType = "quic"
+	PacketTypeSTUN      PacketType = "stun"
+	PacketTypeWireGuard PacketType = "wireguard"
+	PacketTypeGeneric   PacketType = "generic"
+	PacketTypeMalformed PacketType = "malformed"
+	PacketTypeDTLS      PacketType = "dtls"
 )
 
 // TestPacket represents a test UDP packet with metadata
@@ -40,9 +40,9 @@ type TestPacket struct {
 	Src      netip.AddrPort
 	Dst      netip.AddrPort
 	Expected struct {
-		IsQuicInitial     bool
-		ShouldUseOrderedIngress  bool
-		ShouldAttemptSniff bool
+		IsQuicInitial           bool
+		ShouldUseOrderedIngress bool
+		ShouldAttemptSniff      bool
 	}
 	Description string
 }
@@ -191,7 +191,7 @@ func generateDNSQuery(id uint16) []byte {
 		0x03, 'w', 'w', 'w',
 		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
 		0x03, 'c', 'o', 'm',
-		0x00, // End of name
+		0x00,       // End of name
 		0x00, 0x01, // Type: A
 		0x00, 0x01, // Class: IN
 	}
@@ -207,12 +207,12 @@ func generateQuicInitialPacket(dcid []byte) []byte {
 
 	// QUIC Initial header
 	pkt := []byte{
-		0xC0, // Long Header + Initial + Fixed Bit
+		0xC0,                   // Long Header + Initial + Fixed Bit
 		0x00, 0x00, 0x00, 0x01, // Version 1
 		byte(dcidLen), // DCID Length
 	}
 	pkt = append(pkt, dcid...)
-	pkt = append(pkt, 0x00) // SCID Length = 0
+	pkt = append(pkt, 0x00)             // SCID Length = 0
 	pkt = append(pkt, 0x00, 0x00, 0x00) // Token Length = 0
 	pkt = append(pkt, 0x00, 0x00, 0x00) // Length = 0
 
@@ -236,10 +236,10 @@ func generateSTUNPacket() []byte {
 func generateWireGuardPacket() []byte {
 	// WireGuard Type 1: Handshake Initiation
 	pkt := make([]byte, 148) // Minimum size
-	pkt[0] = 0x01 // Message Type = 1
-	pkt[1] = 0x00 // Reserved
-	pkt[2] = 0x00 // Reserved
-	pkt[3] = 0x00 // Reserved
+	pkt[0] = 0x01            // Message Type = 1
+	pkt[1] = 0x00            // Reserved
+	pkt[2] = 0x00            // Reserved
+	pkt[3] = 0x00            // Reserved
 	// Rest is sender key, ephemeral, etc.
 	return pkt
 }
@@ -259,7 +259,7 @@ func generateGenericUDPPacket(size int) []byte {
 func generateDTLSPacket() []byte {
 	// DTLS 1.2 ClientHello
 	return []byte{
-		0x16, // Content Type: Handshake
+		0x16,       // Content Type: Handshake
 		0xfe, 0xfd, // DTLS 1.2
 		0x00, 0x00, // Epoch
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Sequence Number
@@ -646,7 +646,7 @@ func TestUdpMixedPacket_MemoryUsage(t *testing.T) {
 	defer resetPacketSnifferPoolForTestForTraffic()
 
 	// Force GC before starting
-runtime.GC()
+	runtime.GC()
 	var m1 runtime.MemStats
 	runtime.ReadMemStats(&m1)
 
@@ -664,7 +664,7 @@ runtime.GC()
 	}
 
 	// Force GC and check memory
-runtime.GC()
+	runtime.GC()
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
 
@@ -673,7 +673,7 @@ runtime.GC()
 	if m2.HeapAlloc >= m1.HeapAlloc {
 		heapDiff = int64(m2.HeapAlloc - m1.HeapAlloc)
 	} else {
-		heapDiff = -int64(m1.HeapAlloc-m2.HeapAlloc) // Memory was freed
+		heapDiff = -int64(m1.HeapAlloc - m2.HeapAlloc) // Memory was freed
 	}
 
 	t.Logf("Memory usage:")

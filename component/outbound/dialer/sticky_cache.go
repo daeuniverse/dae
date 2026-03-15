@@ -14,6 +14,7 @@ import (
 // Re-export from stickyip package
 type StickyIpDialer = stickyip.StickyIpDialer
 type ProxyIpCache = stickyip.ProxyIpCache
+
 var NewProxyIpCache = stickyip.NewProxyIpCache
 
 // globalProxyIpCache is the global cache for proxy server sticky IP entries.

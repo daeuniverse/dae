@@ -76,7 +76,7 @@ type PacketSniffer struct {
 	// should give up quickly rather than waiting for more packets.
 	consecutiveDecryptFailures int
 
-	quicInitialSig   quicInitialFingerprint
+	quicInitialSig    quicInitialFingerprint
 	hasQuicInitialSig bool
 }
 

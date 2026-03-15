@@ -135,9 +135,15 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 			return false, errors.New("simulated health check failure (1/2)")
 		},
 	})
-	if err == nil { t.Fatal("expected check error") }
-	if ok { t.Fatal("unexpected ok=true") }
-	if !d.MustGetAlive(networkType) { t.Fatal("TCP should stay alive after 1 failure") }
+	if err == nil {
+		t.Fatal("expected check error")
+	}
+	if ok {
+		t.Fatal("unexpected ok=true")
+	}
+	if !d.MustGetAlive(networkType) {
+		t.Fatal("TCP should stay alive after 1 failure")
+	}
 
 	// Second failure: should now mark unavailable.
 	ok, err = d.Check(&CheckOption{
@@ -146,9 +152,12 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 			return false, errors.New("simulated health check failure (2/2)")
 		},
 	})
-	if err == nil { t.Fatal("expected check error") }
-	if ok { t.Fatal("unexpected ok=true") }
-
+	if err == nil {
+		t.Fatal("expected check error")
+	}
+	if ok {
+		t.Fatal("unexpected ok=true")
+	}
 
 	if d.MustGetAlive(networkType) {
 		t.Fatal("real check failures must still mark dialer unavailable")
@@ -197,7 +206,6 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 			t.Fatalf("expected initial failure %d", i)
 		}
 	}
-
 
 	for i := range 64 {
 		ok, skipErr := d.Check(&CheckOption{
@@ -258,7 +266,6 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 			t.Fatalf("expected failure from d1 (%d)", i)
 		}
 	}
-
 
 	for i := range 128 {
 		ok, skipErr := d2.Check(&CheckOption{

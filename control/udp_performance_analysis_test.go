@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/daeuniverse/outbound/pool"
 )
 
 // =============================================================================
@@ -37,7 +37,7 @@ func BenchmarkUdpRoutingCache_SymmetricNatHit(b *testing.B) {
 
 	// Pre-create mock endpoints for benchmarking (without starting goroutines)
 	type mockEndpoint struct {
-		ue *UdpEndpoint
+		ue  *UdpEndpoint
 		dst netip.AddrPort
 	}
 	dstPorts := []uint16{443, 8443, 443, 8443}
@@ -306,10 +306,10 @@ func BenchmarkUdpIngress_DirectCall(b *testing.B) {
 // BenchmarkUdpIngress_OrderedVsUnordered compares performance
 func BenchmarkUdpIngress_OrderedVsUnordered(b *testing.B) {
 	packetTypes := []struct {
-		name     string
-		data     []byte
-		dstPort  uint16
-		ordered  bool
+		name    string
+		data    []byte
+		dstPort uint16
+		ordered bool
 	}{
 		{name: "DNS", data: make([]byte, 512), dstPort: 53, ordered: false},
 		{name: "QUIC_443", data: make([]byte, 1200), dstPort: 443, ordered: true},
@@ -474,17 +474,17 @@ func BenchmarkUdpFlowClassification_PortHeuristics(b *testing.B) {
 func BenchmarkUdpIngress_HighPPS_Simulated(b *testing.B) {
 	workers := runtime.GOMAXPROCS(0)
 	packetRates := []int{
-		10_000,   // 10K PPS
-		50_000,   // 50K PPS
-		100_000,  // 100K PPS
-		500_000,  // 500K PPS
+		10_000,    // 10K PPS
+		50_000,    // 50K PPS
+		100_000,   // 100K PPS
+		500_000,   // 500K PPS
 		1_000_000, // 1M PPS
 	}
 
 	trafficMixes := []struct {
-		name         string
-		quicPercent  int
-		dnsPercent  int
+		name           string
+		quicPercent    int
+		dnsPercent     int
 		genericPercent int
 	}{
 		{name: "All_QUIC", quicPercent: 100, dnsPercent: 0, genericPercent: 0},

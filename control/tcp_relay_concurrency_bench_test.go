@@ -23,9 +23,9 @@ type relayBenchOpaqueConn struct {
 }
 
 type relayBenchScenario struct {
-	name     string
-	prefix   []byte
-	wrapLeft func(*net.TCPConn, []byte) netproxy.Conn
+	name      string
+	prefix    []byte
+	wrapLeft  func(*net.TCPConn, []byte) netproxy.Conn
 	wrapRight func(*net.TCPConn) netproxy.Conn
 }
 

@@ -14,56 +14,56 @@ import (
 // produces equivalent results to the main branch's direct string conversion.
 func TestNormalizeSendPktAddrFamily_Equivalence(t *testing.T) {
 	tests := []struct {
-		name           string
-		from           string // Response source (e.g., SS server address)
-		realTo         string // Client address
-		expectBindAddr string
+		name            string
+		from            string // Response source (e.g., SS server address)
+		realTo          string // Client address
+		expectBindAddr  string
 		expectWriteAddr string
-		expectError    bool
+		expectError     bool
 	}{
 		{
-			name:           "IPv4 SS server to IPv4 client",
-			from:           "10.0.0.1:12345",
-			realTo:         "192.168.1.100:54321",
-			expectBindAddr: "10.0.0.1:12345",
+			name:            "IPv4 SS server to IPv4 client",
+			from:            "10.0.0.1:12345",
+			realTo:          "192.168.1.100:54321",
+			expectBindAddr:  "10.0.0.1:12345",
 			expectWriteAddr: "192.168.1.100:54321",
 		},
 		{
-			name:           "IPv4 SS server to IPv4-mapped IPv6 client",
-			from:           "10.0.0.1:12345",
-			realTo:         "[::ffff:192.168.1.100]:54321",
-			expectBindAddr: "10.0.0.1:12345",
+			name:            "IPv4 SS server to IPv4-mapped IPv6 client",
+			from:            "10.0.0.1:12345",
+			realTo:          "[::ffff:192.168.1.100]:54321",
+			expectBindAddr:  "10.0.0.1:12345",
 			expectWriteAddr: "192.168.1.100:54321", // Should unmap
 		},
 		{
-			name:           "IPv4-mapped IPv6 SS server to IPv4 client",
-			from:           "[::ffff:10.0.0.1]:12345",
-			realTo:         "192.168.1.100:54321",
-			expectBindAddr: "10.0.0.1:12345", // Should unmap
+			name:            "IPv4-mapped IPv6 SS server to IPv4 client",
+			from:            "[::ffff:10.0.0.1]:12345",
+			realTo:          "192.168.1.100:54321",
+			expectBindAddr:  "10.0.0.1:12345", // Should unmap
 			expectWriteAddr: "192.168.1.100:54321",
 		},
 		{
-			name:           "IPv4 SS server to pure IPv6 client",
-			from:           "10.0.0.1:12345",
-			realTo:         "[2001:db8::1]:54321",
-			expectBindAddr: "[::]:12345",
+			name:            "IPv4 SS server to pure IPv6 client",
+			from:            "10.0.0.1:12345",
+			realTo:          "[2001:db8::1]:54321",
+			expectBindAddr:  "[::]:12345",
 			expectWriteAddr: "[2001:db8::1]:54321",
-			expectError:    false,
+			expectError:     false,
 		},
 		{
-			name:           "STUN server (public IP) to client",
-			from:           "1.2.3.4:3478", // STUN server
-			realTo:         "192.168.1.100:12345",
-			expectBindAddr: "1.2.3.4:3478",
+			name:            "STUN server (public IP) to client",
+			from:            "1.2.3.4:3478", // STUN server
+			realTo:          "192.168.1.100:12345",
+			expectBindAddr:  "1.2.3.4:3478",
 			expectWriteAddr: "192.168.1.100:12345",
 		},
 		{
-			name:           "IPv6 STUN server to IPv4 client",
-			from:           "[2001:db8::1]:3478",
-			realTo:         "192.168.1.100:12345",
-			expectBindAddr: "[2001:db8::1]:3478",
+			name:            "IPv6 STUN server to IPv4 client",
+			from:            "[2001:db8::1]:3478",
+			realTo:          "192.168.1.100:12345",
+			expectBindAddr:  "[2001:db8::1]:3478",
 			expectWriteAddr: "[::ffff:192.168.1.100]:12345",
-			expectError:    false,
+			expectError:     false,
 		},
 	}
 

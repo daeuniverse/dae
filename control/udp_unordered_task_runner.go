@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	DefaultUdpUnorderedWorkers          = 0
+	DefaultUdpUnorderedWorkers = 0
 	// Benchmarked via BenchmarkUdpUnorderedTaskRunner_QueueSizeSweep_HighPPS.
 	// 1024 materially reduces drop rate for multi-flow high-PPS bursts compared
 	// with 256/512, while hot-key overload remains worker-bound and does not
 	// benefit from even deeper queues.
-	DefaultUdpUnorderedQueueSizePerWorker = 1024
+	DefaultUdpUnorderedQueueSizePerWorker    = 1024
 	defaultUdpUnorderedOverflowWorkerDivisor = 4
 	defaultUdpUnorderedOverflowWorkerCap     = 4
 )

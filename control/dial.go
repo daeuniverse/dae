@@ -30,15 +30,15 @@ type proxyDialParam struct {
 }
 
 type proxyDialResult struct {
-	Outbound             *ob.DialerGroup
-	Dialer               *dialer.Dialer
-	DialTarget           string
-	Network              string
-	Mark                 uint32
-	SniffedDomain        string
-	IsDialIp             bool
-	OrigNetworkType      string
-	SelectionNetworkType string
+	Outbound                *ob.DialerGroup
+	Dialer                  *dialer.Dialer
+	DialTarget              string
+	Network                 string
+	Mark                    uint32
+	SniffedDomain           string
+	IsDialIp                bool
+	OrigNetworkType         string
+	SelectionNetworkType    string
 	OrigNetworkTypeObj      *dialer.NetworkType
 	SelectionNetworkTypeObj *dialer.NetworkType
 }
@@ -134,10 +134,10 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 
 	if err != nil {
 		return &proxyDialResult{
-				Outbound:             outbound,
-				IsDialIp:             strictIpVersion,
-				OrigNetworkType:      networkType.StringWithoutDns(),
-				SelectionNetworkType: selectionNetworkType.StringWithoutDns(),
+				Outbound:                outbound,
+				IsDialIp:                strictIpVersion,
+				OrigNetworkType:         networkType.StringWithoutDns(),
+				SelectionNetworkType:    selectionNetworkType.StringWithoutDns(),
 				OrigNetworkTypeObj:      networkType,
 				SelectionNetworkTypeObj: selectionNetworkType,
 			}, fmt.Errorf("select dialer from group %v (orig:%v sel:%v src:%v): %w",
@@ -150,15 +150,15 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	}
 
 	return &proxyDialResult{
-		Outbound:             outbound,
-		Dialer:               d,
-		DialTarget:           dialTarget,
-		Network:              common.MagicNetwork(p.Network, mark, c.mptcp),
-		SniffedDomain:        domain,
-		Mark:                 mark,
-		IsDialIp:             strictIpVersion,
-		OrigNetworkType:      networkType.StringWithoutDns(),
-		SelectionNetworkType: selectionNetworkType.StringWithoutDns(),
+		Outbound:                outbound,
+		Dialer:                  d,
+		DialTarget:              dialTarget,
+		Network:                 common.MagicNetwork(p.Network, mark, c.mptcp),
+		SniffedDomain:           domain,
+		Mark:                    mark,
+		IsDialIp:                strictIpVersion,
+		OrigNetworkType:         networkType.StringWithoutDns(),
+		SelectionNetworkType:    selectionNetworkType.StringWithoutDns(),
 		OrigNetworkTypeObj:      networkType,
 		SelectionNetworkTypeObj: selectionNetworkType,
 	}, nil

@@ -14,12 +14,12 @@ import (
 func TestProxyFailureThreshold(t *testing.T) {
 	// Setup
 	proxyAddr := "test-proxy.com:8080"
-	
+
 	// Reset tracker
 	globalProxyIpHealthTracker.Lock()
 	globalProxyIpHealthTracker.failures = make(map[string]int32)
 	globalProxyIpHealthTracker.Unlock()
-	
+
 	// Test: 2 failures should not trigger threshold
 	if recordProxyFailure(proxyAddr) {
 		t.Error("Expected false after 1st failure")
@@ -27,12 +27,12 @@ func TestProxyFailureThreshold(t *testing.T) {
 	if recordProxyFailure(proxyAddr) {
 		t.Error("Expected false after 2nd failure")
 	}
-	
+
 	// Test: 3rd failure should trigger threshold
 	if !recordProxyFailure(proxyAddr) {
 		t.Error("Expected true after 3rd failure (threshold reached)")
 	}
-	
+
 	// Test: counter should be reset after threshold
 	globalProxyIpHealthTracker.Lock()
 	if _, exists := globalProxyIpHealthTracker.failures[proxyAddr]; exists {
@@ -55,23 +55,23 @@ func TestRecoveryBackoffLevel(t *testing.T) {
 			maxBackoff: 20 * time.Second, // Initialize with expected max backoff
 		},
 	}
-	
+
 	// Test different backoff levels
 	testCases := []struct {
-		level        int
-		minExpected  time.Duration
-		maxExpected  time.Duration
+		level       int
+		minExpected time.Duration
+		maxExpected time.Duration
 	}{
 		{0, 10 * time.Second, 10 * time.Second},
 		{1, 20 * time.Second, 20 * time.Second},
-		{2, 20 * time.Second, 20 * time.Second}, // Capped at max
+		{2, 20 * time.Second, 20 * time.Second},  // Capped at max
 		{10, 20 * time.Second, 20 * time.Second}, // Capped at max
 	}
-	
+
 	for _, tc := range testCases {
 		d.recoveryState.backoffLevel = tc.level
 		duration := d.getRecoveryBackoffDuration()
-		
+
 		if duration < tc.minExpected || duration > tc.maxExpected {
 			t.Errorf("Level %d: expected duration between %v and %v, got %v",
 				tc.level, tc.minExpected, tc.maxExpected, duration)
@@ -92,15 +92,15 @@ func TestBackoffLevelReset(t *testing.T) {
 			backoffLevel: 3,
 		},
 	}
-	
+
 	// Verify initial level
 	if d.recoveryState.backoffLevel != 3 {
 		t.Errorf("Expected initial level 3, got %d", d.recoveryState.backoffLevel)
 	}
-	
+
 	// Reset
 	d.resetBackoffLevel()
-	
+
 	// Verify reset
 	if d.recoveryState.backoffLevel != 0 {
 		t.Errorf("Expected level 0 after reset, got %d", d.recoveryState.backoffLevel)
@@ -114,14 +114,14 @@ func TestMaxBackoffLessThanCheckInterval(t *testing.T) {
 		60 * time.Second,
 		90 * time.Second,
 	}
-	
+
 	for _, interval := range checkIntervals {
 		maxBackoff := time.Duration(float64(interval) * 2.0 / 3.0)
-		
+
 		if maxBackoff >= interval {
 			t.Errorf("Check interval %v: max backoff %v should be < interval", interval, maxBackoff)
 		}
-		
+
 		// Also verify minimum
 		if maxBackoff < minRecoveryBackoff {
 			t.Errorf("Check interval %v: max backoff %v should be >= min (%v)",
@@ -144,7 +144,7 @@ func TestRecoveryStateConcurrency(t *testing.T) {
 			maxBackoff:   20 * time.Second,
 		},
 	}
-	
+
 	// Launch concurrent goroutines to modify backoff level
 	done := make(chan bool)
 	go func() {
@@ -155,23 +155,23 @@ func TestRecoveryStateConcurrency(t *testing.T) {
 		}
 		done <- true
 	}()
-	
+
 	go func() {
 		for i := 0; i < 100; i++ {
 			d.resetBackoffLevel()
 		}
 		done <- true
 	}()
-	
+
 	// Wait for both to complete
 	<-done
 	<-done
-	
+
 	// Verify final state is consistent (should be 0 or >0)
 	d.recoveryState.Lock()
 	level := d.recoveryState.backoffLevel
 	d.recoveryState.Unlock()
-	
+
 	if level < 0 {
 		t.Errorf("Expected non-negative level, got %d", level)
 	}
@@ -181,13 +181,13 @@ func TestRecoveryStateConcurrency(t *testing.T) {
 func TestTimerLeakOnClose(t *testing.T) {
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
-	
+
 	property := &Property{
 		Property: D.Property{
 			Name: "test-dialer",
 		},
 	}
-	
+
 	d := &Dialer{
 		GlobalOption: &GlobalOption{
 			Log: logger,
@@ -203,12 +203,12 @@ func TestTimerLeakOnClose(t *testing.T) {
 			backoffLevel: 0,
 		},
 	}
-	
+
 	// Simulate triggering recovery detection
 	d.recoveryState.Lock()
 	d.recoveryState.confirmTimer = time.NewTimer(10 * time.Second)
 	d.recoveryState.Unlock()
-	
+
 	// Verify timer exists
 	d.recoveryState.Lock()
 	if d.recoveryState.confirmTimer == nil {
@@ -216,19 +216,19 @@ func TestTimerLeakOnClose(t *testing.T) {
 	}
 	timerExists := d.recoveryState.confirmTimer != nil
 	d.recoveryState.Unlock()
-	
+
 	if !timerExists {
 		return
 	}
-	
+
 	// Close should cancel timer
 	d.cancelPendingRecoveryConfirmation()
-	
+
 	// Verify timer was stopped
 	d.recoveryState.Lock()
 	timerStopped := d.recoveryState.confirmTimer == nil
 	d.recoveryState.Unlock()
-	
+
 	if !timerStopped {
 		t.Error("Expected timer to be stopped after cancellation")
 	}
@@ -247,16 +247,16 @@ func TestMultipleRecoveryTriggers(t *testing.T) {
 			backoffLevel: 0,
 		},
 	}
-	
+
 	// Simulate MustGetAlive returning false
 	// This test verifies that triggerRecoveryDetection checks for existing timer
-	
+
 	// We can't easily test this without mocking MustGetAlive,
 	// but we can verify the locking behavior
 	d.recoveryState.Lock()
 	d.recoveryState.confirmTimer = nil
 	d.recoveryState.Unlock()
-	
+
 	// Trigger multiple times (should not create duplicate timers)
 	for i := 0; i < 10; i++ {
 		// In real scenario, triggerRecoveryDetection would check timer first
@@ -327,13 +327,13 @@ func TestFailureDuringRecoveryBackoff(t *testing.T) {
 func TestConcurrentFailureAndRecovery(t *testing.T) {
 	// This test simulates rapid failure/recovery cycles
 	// to ensure no race conditions or deadlocks
-	
+
 	iterations := 100
 	var wg sync.WaitGroup
-	
+
 	for i := 0; i < iterations; i++ {
 		wg.Add(2)
-		
+
 		// Simulate failure path
 		go func() {
 			defer wg.Done()
@@ -342,7 +342,7 @@ func TestConcurrentFailureAndRecovery(t *testing.T) {
 			d := &Dialer{}
 			d.resetBackoffLevel()
 		}()
-		
+
 		// Simulate recovery path
 		go func() {
 			defer wg.Done()
@@ -352,7 +352,7 @@ func TestConcurrentFailureAndRecovery(t *testing.T) {
 			_ = d.getRecoveryBackoffDuration()
 		}()
 	}
-	
+
 	wg.Wait()
 	// If we get here without deadlock, test passes
 }
@@ -371,7 +371,7 @@ func BenchmarkGetRecoveryBackoffDuration(b *testing.B) {
 			maxBackoff:   20 * time.Second,
 		},
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		d.getRecoveryBackoffDuration()
@@ -381,14 +381,14 @@ func BenchmarkGetRecoveryBackoffDuration(b *testing.B) {
 // BenchmarkRecordProxyFailure benchmarks the failure recording
 func BenchmarkRecordProxyFailure(b *testing.B) {
 	proxyAddr := "test-proxy.com:8080"
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Reset before each iteration
 		globalProxyIpHealthTracker.Lock()
 		globalProxyIpHealthTracker.failures[proxyAddr] = 0
 		globalProxyIpHealthTracker.Unlock()
-		
+
 		// Record 3 failures
 		recordProxyFailure(proxyAddr)
 		recordProxyFailure(proxyAddr)
@@ -409,7 +409,7 @@ func BenchmarkResetBackoffLevel(b *testing.B) {
 			backoffLevel: 5,
 		},
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		d.resetBackoffLevel()

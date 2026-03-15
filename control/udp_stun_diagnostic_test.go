@@ -54,52 +54,52 @@ func TestIPv6ServerToIPv4ClientIssue(t *testing.T) {
 // TestFullConeNATKeyDifference tests pool key differences between main and current branch.
 func TestFullConeNATKeyDifference(t *testing.T) {
 	tests := []struct {
-		name            string
-		from            string
-		realTo          string
-		mainBranchKey   string
+		name             string
+		from             string
+		realTo           string
+		mainBranchKey    string
 		currentBranchKey string
-		different       bool
+		different        bool
 	}{
 		{
-			name:            "Pure IPv4",
-			from:            "10.0.0.1:8388",
-			realTo:          "192.168.1.100:12345",
-			mainBranchKey:   "10.0.0.1:8388",
+			name:             "Pure IPv4",
+			from:             "10.0.0.1:8388",
+			realTo:           "192.168.1.100:12345",
+			mainBranchKey:    "10.0.0.1:8388",
 			currentBranchKey: "10.0.0.1:8388",
-			different:       false,
+			different:        false,
 		},
 		{
-			name:            "IPv4-mapped from",
-			from:            "[::ffff:10.0.0.1]:8388",
-			realTo:          "192.168.1.100:12345",
-			mainBranchKey:   "[::ffff:10.0.0.1]:8388",
+			name:             "IPv4-mapped from",
+			from:             "[::ffff:10.0.0.1]:8388",
+			realTo:           "192.168.1.100:12345",
+			mainBranchKey:    "[::ffff:10.0.0.1]:8388",
 			currentBranchKey: "10.0.0.1:8388",
-			different:       true,
+			different:        true,
 		},
 		{
-			name:            "IPv4-mapped to",
-			from:            "10.0.0.1:8388",
-			realTo:          "[::ffff:192.168.1.100]:12345",
-			mainBranchKey:   "10.0.0.1:8388",
+			name:             "IPv4-mapped to",
+			from:             "10.0.0.1:8388",
+			realTo:           "[::ffff:192.168.1.100]:12345",
+			mainBranchKey:    "10.0.0.1:8388",
 			currentBranchKey: "10.0.0.1:8388",
-			different:       false,
+			different:        false,
 		},
 		{
-			name:            "Both IPv4-mapped",
-			from:            "[::ffff:10.0.0.1]:8388",
-			realTo:          "[::ffff:192.168.1.100]:12345",
-			mainBranchKey:   "[::ffff:10.0.0.1]:8388",
+			name:             "Both IPv4-mapped",
+			from:             "[::ffff:10.0.0.1]:8388",
+			realTo:           "[::ffff:192.168.1.100]:12345",
+			mainBranchKey:    "[::ffff:10.0.0.1]:8388",
 			currentBranchKey: "10.0.0.1:8388",
-			different:       true,
+			different:        true,
 		},
 		{
-			name:            "Pure IPv6",
-			from:            "[2001:db8::1]:8388",
-			realTo:          "[2001:db8::100]:12345",
-			mainBranchKey:   "[2001:db8::1]:8388",
+			name:             "Pure IPv6",
+			from:             "[2001:db8::1]:8388",
+			realTo:           "[2001:db8::100]:12345",
+			mainBranchKey:    "[2001:db8::1]:8388",
 			currentBranchKey: "[2001:db8::1]:8388",
-			different:       false,
+			different:        false,
 		},
 	}
 
@@ -134,46 +134,46 @@ func TestFullConeNATKeyDifference(t *testing.T) {
 // TestStunLikeResponseFlow simulates STUN response flow in SS proxy mode.
 func TestStunLikeResponseFlow(t *testing.T) {
 	scenarios := []struct {
-		name            string
-		ssServerAddr   string // Address as seen by dae after SS decryption
-		clientAddr     string // Original client address
-		expectSuccess  bool
-		reason          string
+		name          string
+		ssServerAddr  string // Address as seen by dae after SS decryption
+		clientAddr    string // Original client address
+		expectSuccess bool
+		reason        string
 	}{
 		{
-			name:           "IPv4 SS to IPv4 client",
-			ssServerAddr:   "10.0.0.1:8388",
-			clientAddr:     "192.168.1.100:54321",
-			expectSuccess:  true,
-			reason:         "Both IPv4 - straightforward case",
+			name:          "IPv4 SS to IPv4 client",
+			ssServerAddr:  "10.0.0.1:8388",
+			clientAddr:    "192.168.1.100:54321",
+			expectSuccess: true,
+			reason:        "Both IPv4 - straightforward case",
 		},
 		{
-			name:           "IPv4 SS to IPv4-mapped IPv6 client",
-			ssServerAddr:   "10.0.0.1:8388",
-			clientAddr:     "[::ffff:192.168.1.100]:54321",
-			expectSuccess:  true,
-			reason:         "Client addr gets unmapped to IPv4",
+			name:          "IPv4 SS to IPv4-mapped IPv6 client",
+			ssServerAddr:  "10.0.0.1:8388",
+			clientAddr:    "[::ffff:192.168.1.100]:54321",
+			expectSuccess: true,
+			reason:        "Client addr gets unmapped to IPv4",
 		},
 		{
-			name:           "IPv4 SS to pure IPv6 client",
-			ssServerAddr:   "10.0.0.1:8388",
-			clientAddr:     "[2001:db8::100]:54321",
-			expectSuccess:  true, // PATCH: Now supported via IPv6 wildcard bind
-			reason:         "IPv4 bind promoted to [::]:port for IPv6 write",
+			name:          "IPv4 SS to pure IPv6 client",
+			ssServerAddr:  "10.0.0.1:8388",
+			clientAddr:    "[2001:db8::100]:54321",
+			expectSuccess: true, // PATCH: Now supported via IPv6 wildcard bind
+			reason:        "IPv4 bind promoted to [::]:port for IPv6 write",
 		},
 		{
-			name:           "IPv6 SS to IPv4 client",
-			ssServerAddr:   "[2001:db8::1]:8388",
-			clientAddr:     "192.168.1.100:54321",
-			expectSuccess:  true, // PATCH: Now supported via IPv4-mapped write
-			reason:         "IPv4 write converted to IPv4-mapped IPv6",
+			name:          "IPv6 SS to IPv4 client",
+			ssServerAddr:  "[2001:db8::1]:8388",
+			clientAddr:    "192.168.1.100:54321",
+			expectSuccess: true, // PATCH: Now supported via IPv4-mapped write
+			reason:        "IPv4 write converted to IPv4-mapped IPv6",
 		},
 		{
-			name:           "IPv6 SS to IPv6 client",
-			ssServerAddr:   "[2001:db8::1]:8388",
-			clientAddr:     "[2001:db8::100]:54321",
-			expectSuccess:  true,
-			reason:         "Both IPv6 - should work",
+			name:          "IPv6 SS to IPv6 client",
+			ssServerAddr:  "[2001:db8::1]:8388",
+			clientAddr:    "[2001:db8::100]:54321",
+			expectSuccess: true,
+			reason:        "Both IPv6 - should work",
 		},
 	}
 
@@ -203,7 +203,7 @@ func TestStunLikeResponseFlow(t *testing.T) {
 				if writeAddr.Addr().Is4() {
 					t.Log("  Note: writeAddr was unmaped to IPv4")
 				} else if writeAddr.Addr().Is4In6() {
-					t.Log  ("  WARNING: writeAddr is still IPv4-mapped IPv6 - this may cause issues")
+					t.Log("  WARNING: writeAddr is still IPv4-mapped IPv6 - this may cause issues")
 				}
 			}
 		})

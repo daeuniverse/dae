@@ -42,7 +42,7 @@ const (
 	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
 	MaxRetry       = 2
 
-	noAliveDialerLogInterval = 10 * time.Second
+	noAliveDialerLogInterval   = 10 * time.Second
 	connectionErrorLogInterval = 5 * time.Second
 )
 
@@ -397,8 +397,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 					if r := recover(); r != nil {
 						if c.log.IsLevelEnabled(logrus.ErrorLevel) {
 							c.log.WithFields(logrus.Fields{
-								"src": realSrc,
-								"dst": realDst,
+								"src":   realSrc,
+								"dst":   realDst,
 								"panic": r,
 							}).Error("UDP sniffing panicked; bypassing sniffing for this DCID")
 						}

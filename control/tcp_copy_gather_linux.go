@@ -178,7 +178,6 @@ func relayGatherWriteTo(dst netproxy.Conn, segs [][]byte) (written int, err erro
 	return int(n), err
 }
 
-
 func relayWritevAll(rawConn syscall.RawConn, segs [][]byte) (written int, err error) {
 	segments := relayNonEmptySegments(segs)
 	if len(segments) == 0 {

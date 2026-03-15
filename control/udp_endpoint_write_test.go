@@ -122,8 +122,8 @@ func TestUdpEndpointWriteTo_MarksDead_OnWriteError(t *testing.T) {
 // failingPacketConn always returns a write error.
 type failingPacketConn struct{ calls int }
 
-func (c *failingPacketConn) Read([]byte) (int, error)                    { return 0, io.EOF }
-func (c *failingPacketConn) Write(b []byte) (int, error)                 { return 0, io.ErrClosedPipe }
+func (c *failingPacketConn) Read([]byte) (int, error)    { return 0, io.EOF }
+func (c *failingPacketConn) Write(b []byte) (int, error) { return 0, io.ErrClosedPipe }
 func (c *failingPacketConn) ReadFrom([]byte) (int, netip.AddrPort, error) {
 	return 0, netip.AddrPort{}, io.EOF
 }
@@ -169,8 +169,8 @@ func TestUdpEndpoint_SelfRemovesFromPool_OnReadLoopExit(t *testing.T) {
 
 func TestUdpEndpointResponseConnCacheSlot_FullConeReturnsNil(t *testing.T) {
 	ue := &UdpEndpoint{
-		poolKey:   UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:12345")},
-		respConn:  &Anyfrom{},
+		poolKey:    UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:12345")},
+		respConn:   &Anyfrom{},
 		NatTimeout: time.Minute,
 	}
 

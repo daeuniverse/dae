@@ -172,7 +172,7 @@ func TestUdpTaskPool_SameSourceDifferentDestinationRunConcurrently(t *testing.T)
 
 	pool.EmitTask(keyA, runTask)
 	pool.EmitTask(keyB, runTask)
- 
+
 	require.Eventually(t, func() bool { return done.Load() == 2 }, time.Second, 5*time.Millisecond)
 	require.GreaterOrEqual(t, peak.Load(), int32(2), "same source but different destinations should not serialize")
 }

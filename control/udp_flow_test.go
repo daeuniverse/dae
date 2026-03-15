@@ -40,7 +40,7 @@ func TestUdpFlowDecision_ExistingSnifferSessionUsesOrderedIngress(t *testing.T) 
 	require.False(t, decision.HasSnifferSession)
 	// Optimized: Port 443 no longer forces ordered ingress for non-QUIC traffic
 	require.False(t, decision.ShouldUseOrderedIngress())
-	require.False(t, decision.ShouldAttemptSniff())    // ShouldAttemptSniff only checks IsQuicInitial or HasSnifferSession
+	require.False(t, decision.ShouldAttemptSniff()) // ShouldAttemptSniff only checks IsQuicInitial or HasSnifferSession
 
 	sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(decision.PacketSnifferKey(), nil)
 	defer DefaultPacketSnifferSessionMgr.Remove(decision.PacketSnifferKey(), sniffer)

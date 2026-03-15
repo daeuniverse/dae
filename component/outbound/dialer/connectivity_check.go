@@ -779,11 +779,8 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool) collectio
 		d.NotifyHealthCheckResult(false)
 	}
 
-
-
 	return update
 }
-
 
 func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collectionUpdate, time.Duration) {
 	d.collectionFineMu.Lock()
@@ -823,7 +820,6 @@ func (d *Dialer) ReportUnavailableForced(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true))
 }
-
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)

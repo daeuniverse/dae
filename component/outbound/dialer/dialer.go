@@ -584,14 +584,12 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 		}
 	}
 
-
 	// Reset backoff level (start fresh for next recovery)
 	d.resetBackoffLevel()
 
 	// Cancel any pending recovery confirmation
 	d.cancelPendingRecoveryConfirmation()
 }
-
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
 	key := fmt.Sprintf("%d-%s", idx, ip.String())
