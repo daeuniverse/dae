@@ -1435,7 +1435,7 @@ struct {
 	__uint(max_entries, 1);
 } lan_ingress_scratch_map SEC(".maps");
 
-static __noinline int
+static PARSE_LAN_INGRESS_FUNC_ATTR int
 parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 			 struct lan_ingress_parsed *out)
 {
@@ -1747,7 +1747,7 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 	return true;
 }
 
-static __noinline int
+static WAN_EGRESS_TCP_FUNC_ATTR int
 do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct tcphdr *tcph)
@@ -1858,7 +1858,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
-static __noinline int
+static WAN_EGRESS_UDP_FUNC_ATTR int
 do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct udphdr *udph)
@@ -1979,7 +1979,7 @@ struct {
 	__uint(max_entries, 1);
 } wan_egress_scratch_map SEC(".maps");
 
-static __noinline int
+static PARSE_WAN_EGRESS_FUNC_ATTR int
 parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 			struct wan_egress_parsed *out)
 {
