@@ -14,6 +14,7 @@
 #include "headers/bpf_helpers.h"
 #include "headers/bpf_timer.h"
 #include "ebpf_sync_defs.h"
+#include "tproxy_version.h" // Kernel version compatibility layer
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -1074,7 +1075,7 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	return route_finalize_match(ctx, match_set);
 }
 
-static __noinline __s64 route(const struct route_params *params)
+static ROUTE_FUNC_ATTR __s64 route(const struct route_params *params)
 {
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
@@ -2010,8 +2011,12 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 /*
  * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
  * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
+ * 
+ * Phase 2 Optimization: Use conditional compilation to optimize for different kernels
+ * - Linux < 6.2: Inline to reduce call stack depth (5 layers, limit is 8)
+ * - Linux >= 6.2: Keep as subprogram to avoid state explosion
  */
-static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
+static TPROXY_WAN_EGRESS_FUNC_ATTR int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
