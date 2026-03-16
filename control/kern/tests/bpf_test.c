@@ -51,10 +51,10 @@ setup_cached_routing_result(__u32 saddr, __u32 daddr,
 		return TC_ACT_SHOT;
 
 	__builtin_memset(ctx, 0, sizeof(*ctx));
-	ctx->key.sip.u6_addr32[2] = bpf_htonl(0xffff);
-	ctx->key.sip.u6_addr32[3] = bpf_htonl(saddr);
-	ctx->key.dip.u6_addr32[2] = bpf_htonl(0xffff);
-	ctx->key.dip.u6_addr32[3] = bpf_htonl(daddr);
+	ctx->key.sip.u6_addr32[2] = bpf_ntohl(0xffff);
+	ctx->key.sip.u6_addr32[3] = bpf_ntohl(saddr);
+	ctx->key.dip.u6_addr32[2] = bpf_ntohl(0xffff);
+	ctx->key.dip.u6_addr32[3] = bpf_ntohl(daddr);
 	ctx->key.sport = bpf_htons(sport);
 	ctx->key.dport = bpf_htons(dport);
 	ctx->key.l4proto = IPPROTO_TCP;
@@ -158,9 +158,9 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0x64400000); // 100.64.0.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -200,9 +200,9 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0x64400000); // 100.64.0.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -242,9 +242,9 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 120;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0xc0a83200); // 192.168.50.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -284,9 +284,9 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 120;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0xc0a83200); // 192.168.50.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -601,7 +601,7 @@ int testsetup_mac_match(struct __sk_buff *skb)
 	data[13] = 0x9;
 	data[14] = 0xa;
 	data[15] = 0xb;
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: must_direct */
@@ -660,7 +660,7 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 	data[13] = 0x3;
 	data[14] = 0x4;
 	data[15] = 0x5;
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: must_direct */
@@ -770,9 +770,9 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0x01010000); // 1.1.0.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	__builtin_memset(&ms, 0, sizeof(ms));
@@ -847,9 +847,9 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0x01010000); // 1.1.0.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	__builtin_memset(&ms, 0, sizeof(ms));
@@ -924,9 +924,9 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	struct lpm_key lpm_key;
 	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
 	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_htonl(0x0000ffff);
-	lpm_key.data[3] = bpf_htonl(0x01010000); // 1.1.0.0
-	__u32 lpm_value = bpf_htonl(0x01000000);
+	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
+	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	__builtin_memset(&ms, 0, sizeof(ms));
