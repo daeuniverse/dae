@@ -143,17 +143,13 @@ struct tuples {
 };
 
 struct dae_param {
+	__u32 tproxy_port;
 	__u32 control_plane_pid;
 	__u32 dae0_ifindex;
+	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
 	__u8 padding[2];
 };
-
-#define DAE_TC_PASS 0
-#define DAE_TC_DROP 2
-// TCX uses -1 for next, TC uses 3 (TC_ACT_PIPE). We use PIPE here
-// which works for both TCX and TC (TCX treats 3 as continue to next).
-#define DAE_TC_NEXT 3
 
 /* Use const volatile for cilium/ebpf v0.20.0 compatibility.
  * This ensures the variable is placed in .rodata section and
@@ -180,11 +176,7 @@ struct {
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
 
-/* LPM key structure matching kernel's bpf_lpm_trie_key format.
- * The trie_key contains the prefixlen field, and data[4] provides
- * the flexible array storage for IPv6 addresses in network byte order.
- * This matches the structure layout used successfully in commit 2cd6118.
- */
+// Array of LPM tries:
 struct lpm_key {
 	struct bpf_lpm_trie_key trie_key;
 	__be32 data[4];
@@ -745,15 +737,6 @@ static __always_inline bool check_bitmask(__u8 value, __u8 mask)
 	return (value & mask) != 0;
 }
 
-// Pack MAC address (6 bytes) into u32 array for route_params.mac
-// Reduces code duplication and improves instruction cache utilization
-static __always_inline void pack_mac_to_u32_array(__u32 *mac_array, const __u8 *mac)
-{
-	mac_array[2] = bpf_htonl((mac[0] << 8) | mac[1]);
-	mac_array[3] = bpf_htonl((mac[2] << 24) | (mac[3] << 16) |
-				 (mac[4] << 8) | mac[5]);
-}
-
 static __always_inline bool route_state_has(const struct route_ctx *ctx,
 					    __u8 flags)
 {
@@ -784,7 +767,6 @@ route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 
 #ifndef __BPF_TEST_DISABLE_LPM_CACHE
 	// Build cache key.
-	// lpm_key->data is __be32[4], directly copy to cache_key.ip
 	struct lpm_cache_key cache_key = {
 		.match_set_index = match_set->index,
 		.ip = { lpm_key->data[0], lpm_key->data[1], lpm_key->data[2],
@@ -1126,10 +1108,18 @@ static __noinline __s64 route(const struct route_params *params)
 		? ROUTE_STATE_DNS_QUERY
 		: 0;
 
-	// Initialize LPM keys directly (eliminates temporary stack variables)
-	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	struct lpm_key lpm_key_saddr = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
+	ctx.lpm_key_saddr = lpm_key_saddr;
+	struct lpm_key lpm_key_daddr = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
+	ctx.lpm_key_daddr = lpm_key_daddr;
+	struct lpm_key lpm_key_mac = {
+		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
+	};
+	ctx.lpm_key_mac = lpm_key_mac;
 	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
@@ -1236,14 +1226,12 @@ static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
 static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 						 struct tuples_key *dst)
 {
-	// memset is required: struct has 3 bytes of padding that must be zero
-	// for consistent map key comparisons (memcmp checks entire struct)
 	__builtin_memset(dst, 0, sizeof(*dst));
-	dst->l4proto = key->l4proto;
-	dst->sip = key->dip;
 	dst->dip = key->sip;
+	dst->sip = key->dip;
 	dst->sport = key->dport;
 	dst->dport = key->sport;
+	dst->l4proto = key->l4proto;
 }
 
 static __always_inline bool
@@ -1370,13 +1358,13 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
-		return DAE_TC_NEXT;
+		return TC_ACT_OK;
 	}
 
-	if (skb->ingress_ifindex == NOWHERE_IFINDEX && // Only drop NDP_REDIRECT packets from localhost
-	    l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
+	if (skb->ingress_ifindex == NOWHERE_IFINDEX &&  // Only drop NDP_REDIRECT packets from localhost
+		l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
 		// REDIRECT (NDP)
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 	}
 
 	// Update UDP Conntrack
@@ -1384,7 +1372,7 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 		// DNS traffic is short-lived and stateless in our fast path.
 		// Skip tuple build + conntrack update to reduce state churn.
 		if (udph.source == bpf_htons(53) || udph.dest == bpf_htons(53))
-			return DAE_TC_NEXT;
+			return TC_ACT_PIPE;
 
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
@@ -1392,10 +1380,10 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 	}
 
-	return DAE_TC_NEXT;
+	return TC_ACT_PIPE;
 }
 
 SEC("tc/lan_egress_l2")
@@ -1465,7 +1453,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 		bpf_map_lookup_elem(&lan_ingress_scratch_map, &scratch_key);
 
 	if (unlikely(!pkt))
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 
 	/* Ensure scratch bytes are initialized even if verifier can't precisely
 	 * track writes done through callee pointer arguments. */
@@ -1475,7 +1463,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	if (ret) {
 		if (ret < 0)
 			bpf_printk("parse_transport: %d", ret);
-		return DAE_TC_PASS;
+		return TC_ACT_OK;
 	}
 
 	/*
@@ -1505,17 +1493,17 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 			/* No cache: keep historical direct-pass semantics (e.g.
 			 * single-arm / reply-path traffic).
 			 */
-			return DAE_TC_PASS;
+			return TC_ACT_OK;
 		}
 
 		skb->mark = mark;
 		if (outbound == OUTBOUND_DIRECT)
-			return DAE_TC_PASS;
+			return TC_ACT_OK;
 		if (unlikely(outbound == OUTBOUND_BLOCK))
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 		if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
 					   pkt->tuples.five.dport))
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 		goto control_plane;
 	}
 
@@ -1531,11 +1519,11 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 			struct udp_conn_state *conn_state =
 				refresh_udp_conn_state_timer(&pkt->tuples.five, false);
 			if (!conn_state)
-				return DAE_TC_DROP;
+				return TC_ACT_SHOT;
 			if (conn_state->is_wan_ingress_direction) {
 				// Replay (outbound) of an inbound flow
 				// => direct.
-				return DAE_TC_PASS;
+				return TC_ACT_OK;
 			}
 		}
 		params.l4hdr = &pkt->udph;
@@ -1546,7 +1534,12 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	else
 		params.flag[1] = IpVersionType_6;
 	params.flag[6] = pkt->tuples.dscp;
-	pack_mac_to_u32_array(params.mac, pkt->ethh.h_source);
+	params.mac[2] =
+		bpf_htonl((pkt->ethh.h_source[0] << 8) | (pkt->ethh.h_source[1]));
+	params.mac[3] =
+		bpf_htonl((pkt->ethh.h_source[2] << 24) |
+			  (pkt->ethh.h_source[3] << 16) |
+			  (pkt->ethh.h_source[4] << 8) | (pkt->ethh.h_source[5]));
 	params.saddr = pkt->tuples.five.sip.u6_addr32;
 	params.daddr = pkt->tuples.five.dip.u6_addr32;
 	__s64 s64_ret;
@@ -1554,7 +1547,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	s64_ret = route(&params);
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 	}
 	struct routing_result routing_result = { 0 };
 
@@ -1564,7 +1557,17 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	routing_result.dscp = pkt->tuples.dscp;
 	__builtin_memcpy(routing_result.mac, pkt->ethh.h_source,
 			 sizeof(routing_result.mac));
-	/// NOTICE: No pid pname info for LAN packet (traffic is forwarded, not locally originated).
+	/// NOTICE: No pid pname info for LAN packet.
+	// // Maybe this packet is also in the host (such as docker) ?
+	// // I tried and it is false.
+	//__u64 cookie = bpf_get_socket_cookie(skb);
+	//struct pid_pname *pid_pname =
+	//	bpf_map_lookup_elem(&cookie_pid_map, &cookie);
+	//if (pid_pname) {
+	//	__builtin_memcpy(routing_result.pname, pid_pname->pname,
+	//			 TASK_COMM_LEN);
+	//	routing_result.pid = pid_pname->pid;
+	//}
 
 	// Save routing result.
 	if (pkt->l4proto == IPPROTO_UDP &&
@@ -1575,7 +1578,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 					  &routing_result, BPF_ANY);
 		if (ret) {
 			bpf_printk("shot save routing result: %d", ret);
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 		}
 	}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -1613,10 +1616,10 @@ control_plane:
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
-	return DAE_TC_PASS;
+	return TC_ACT_OK;
 
 block:
-	return DAE_TC_DROP;
+	return TC_ACT_SHOT;
 }
 
 SEC("tc/lan_ingress_l2")
@@ -1677,7 +1680,7 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
-		return DAE_TC_NEXT;
+		return TC_ACT_OK;
 	}
 
 	// Update UDP Conntrack
@@ -1685,7 +1688,7 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		// DNS traffic is short-lived and stateless in our fast path.
 		// Skip tuple build + conntrack update to reduce state churn.
 		if (udph.source == bpf_htons(53) || udph.dest == bpf_htons(53))
-			return DAE_TC_NEXT;
+			return TC_ACT_PIPE;
 
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
@@ -1693,10 +1696,10 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 	}
 
-	return DAE_TC_NEXT;
+	return TC_ACT_PIPE;
 }
 
 SEC("tc/wan_ingress_l2")
@@ -1757,14 +1760,19 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		params.flag[6] = tuples->dscp;
 		if (pid_is_control_plane(skb, &pid_pname)) {
 			// From control plane. Direct.
-			return DAE_TC_NEXT;
+			return TC_ACT_OK;
 		}
 		if (pid_pname) {
-			// Store pname in params.flag[2-5] (TASK_COMM_LEN=16 bytes = 4*u32)
+			// 2, 3, 4, 5
 			__builtin_memcpy(&params.flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
 		}
-		pack_mac_to_u32_array(params.mac, ethh->h_source);
+		params.mac[2] =
+			bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
+		params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
+					  (ethh->h_source[3] << 16) |
+					  (ethh->h_source[4] << 8) |
+					  (ethh->h_source[5]));
 		params.saddr = tuples->five.sip.u6_addr32;
 		params.daddr = tuples->five.dip.u6_addr32;
 
@@ -1772,7 +1780,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 		if (s64_ret < 0) {
 			bpf_printk("shot routing: %d", s64_ret);
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 		}
 
 		outbound = s64_ret & 0xff;
@@ -1796,24 +1804,28 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 						 &must)) {
 			// No cached routing. This is a pre-existing connection
 			// or server connection. Let it pass.
-			return DAE_TC_NEXT;
+			return TC_ACT_OK;
 		}
 	}
 
 	if (outbound == OUTBOUND_DIRECT &&
 	    mark == 0 // If mark is not zero, we should re-route it.
 	) {
-		return DAE_TC_NEXT;
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("GO OUTBOUND_DIRECT");
+#endif
+		skb->mark = mark;
+		return TC_ACT_OK;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK");
 #endif
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 	}
 
 	if (!wan_outbound_is_alive(skb, outbound, IPPROTO_TCP,
 				   tuples->five.dport))
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 
 	if (unlikely(tcp_state_syn)) {
 		// Only save non-direct routing to avoid conflicts with LAN ingress.
@@ -1850,7 +1862,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 {
 	// Routing. It decides if we redirect traffic to control plane.
 	struct route_params params;
-	struct pid_pname *pid_pname = NULL;
+	struct pid_pname *pid_pname;
 	__u8 outbound;
 	__u32 mark;
 	bool must;
@@ -1867,26 +1879,31 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 
 	if (pid_is_control_plane(skb, &pid_pname)) {
 		// From control plane => direct.
-		return DAE_TC_NEXT;
+		return TC_ACT_OK;
 	}
 
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
 		struct udp_conn_state *conn_state =
 			refresh_udp_conn_state_timer(&tuples->five, false);
 		if (!conn_state)
-			return DAE_TC_DROP;
+			return TC_ACT_SHOT;
 		if (conn_state->is_wan_ingress_direction) {
 			// Replay (outbound) of an inbound flow => direct.
-			return DAE_TC_NEXT;
+			return TC_ACT_OK;
 		}
 	}
 
 	if (pid_pname) {
-		// Store pname in params.flag[2-5] (TASK_COMM_LEN=16 bytes = 4*u32)
+		// 2, 3, 4, 5
 		__builtin_memcpy(&params.flag[2], pid_pname->pname,
 				 TASK_COMM_LEN);
 	}
-	pack_mac_to_u32_array(params.mac, ethh->h_source);
+	params.mac[2] =
+		bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
+	params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
+				  (ethh->h_source[3] << 16) |
+				  (ethh->h_source[4] << 8) |
+				  (ethh->h_source[5]));
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;
 
@@ -1894,7 +1911,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 	}
 
 	// Extract routing values.
@@ -1939,14 +1956,14 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	if (outbound == OUTBOUND_DIRECT &&
 	    mark == 0 // If mark is not zero, we should re-route it.
 	) {
-		return DAE_TC_NEXT;
+		return TC_ACT_OK;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 	}
 
 	if (!wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,
 				   tuples->five.dport))
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 
 	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
 				       1, &dummy_tcph);
@@ -2005,13 +2022,13 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
-		return DAE_TC_NEXT;
+		return TC_ACT_OK;
 
 	__u32 scratch_key = 0;
 	struct wan_egress_parsed *pkt =
 		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
 	if (unlikely(!pkt))
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 
 	/* Initialize stack bytes for verifier friendliness across subprogram
 	 * pointer writes. */
@@ -2019,7 +2036,7 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
 
 	if (ret)
-		return DAE_TC_NEXT;
+		return TC_ACT_OK;
 
 	if (pkt->l4proto == IPPROTO_TCP)
 		return do_tproxy_wan_egress_tcp(skb, link_h_len, &pkt->tuples,
@@ -2027,7 +2044,7 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	if (pkt->l4proto == IPPROTO_UDP)
 		return do_tproxy_wan_egress_udp(skb, link_h_len, &pkt->tuples,
 						&pkt->ethh, &pkt->udph);
-	return DAE_TC_NEXT;
+	return TC_ACT_OK;
 }
 
 SEC("tc/wan_egress_l2")
@@ -2048,7 +2065,7 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 	/* Only packets redirected from wan_egress or lan_ingress have this cb mark.
    */
 	if (skb->cb[0] != TPROXY_MARK)
-		return DAE_TC_DROP;
+		return TC_ACT_SHOT;
 
 	/* ip rule add fwmark 0x8000000/0x8000000 table 2023
    * ip route add local default dev lo table 2023
@@ -2064,7 +2081,7 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 
 	if (l4proto != 0)
 		assign_listener(skb, l4proto);
-	return DAE_TC_PASS;
+	return TC_ACT_OK;
 }
 
 // load_redirect_tuple_fast returns this code when it cannot safely parse via
@@ -2163,12 +2180,12 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 
 	ret = load_redirect_tuple(skb, &redirect_tuple);
 	if (ret)
-		return DAE_TC_PASS;
+		return TC_ACT_OK;
 	struct redirect_entry *redirect_entry =
 		bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
 
 	if (!redirect_entry)
-		return DAE_TC_PASS;
+		return TC_ACT_OK;
 
 	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
 			    redirect_entry->dmac, sizeof(redirect_entry->dmac),
