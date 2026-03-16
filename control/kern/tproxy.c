@@ -185,14 +185,14 @@ struct {
  * uses a flexible array member (__u8 data[0]) which may cause CO-RE relocation
  * failures when compiled on one kernel version and run on another.
  * 
- * Using __u8[16] for data field ensures:
- * 1. Compatible with __builtin_memcpy for direct byte copying
- * 2. No endianness issues when used with LPM trie
- * 3. Matches the memory layout expected by kernel's bpf_lpm_trie_key
+ * Using __be32 for data field ensures correct byte order for network operations:
+ * - Network byte order is big-endian
+ * - LPM trie operates on byte patterns from packet headers
+ * - __builtin_memcpy copies bytes in network order directly
  */
 struct lpm_key {
 	__u32 prefixlen;
-	__u8 data[16];  // Use __u8[16] to match kernel's expected format and avoid endianness issues
+	__be32 data[4];  // Use __be32 for network byte order compatibility
 };
 
 struct map_lpm_type {
@@ -789,10 +789,12 @@ route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 
 #ifndef __BPF_TEST_DISABLE_LPM_CACHE
 	// Build cache key.
-	// lpm_key->data is __u8[16], copy to cache_key.ip (__u32[4])
-	struct lpm_cache_key cache_key;
-	__builtin_memcpy(cache_key.ip, lpm_key->data, 16);
-	cache_key.match_set_index = match_set->index;
+	// lpm_key->data is __be32[4], directly copy to cache_key.ip
+	struct lpm_cache_key cache_key = {
+		.match_set_index = match_set->index,
+		.ip = { lpm_key->data[0], lpm_key->data[1], lpm_key->data[2],
+			lpm_key->data[3] }
+	};
 
 	// Try LPM cache first for better performance (10x faster)
 	__u8 *cached = bpf_map_lookup_elem(&lpm_cache_map, &cache_key);
