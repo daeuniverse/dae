@@ -185,11 +185,14 @@ struct {
  * uses a flexible array member (__u8 data[0]) which may cause CO-RE relocation
  * failures when compiled on one kernel version and run on another.
  * 
- * This matches the kernel's bpf_lpm_trie_key_u8 format with a fixed-size array.
+ * Using __u8[16] for data field ensures:
+ * 1. Compatible with __builtin_memcpy for direct byte copying
+ * 2. No endianness issues when used with LPM trie
+ * 3. Matches the memory layout expected by kernel's bpf_lpm_trie_key
  */
 struct lpm_key {
 	__u32 prefixlen;
-	__u32 data[4];  // Use __u32 instead of __be32 for better compatibility
+	__u8 data[16];  // Use __u8[16] to match kernel's expected format and avoid endianness issues
 };
 
 struct map_lpm_type {
