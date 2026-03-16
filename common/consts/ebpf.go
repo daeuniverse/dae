@@ -107,6 +107,7 @@ var (
 	BpfTimerFeatureVersion                    = internal.Version{5, 15, 0}
 	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
 	BpfLoopFeatureVersion                     = internal.Version{5, 17, 0}
+	TcxFeatureVersion                         = internal.Version{6, 6, 0}
 )
 
 const (
