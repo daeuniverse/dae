@@ -180,19 +180,14 @@ struct {
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
 
-/* Define our own lpm_key structure without relying on CO-RE for bpf_lpm_trie_key
- * to avoid cross-kernel compatibility issues. The kernel's bpf_lpm_trie_key
- * uses a flexible array member (__u8 data[0]) which may cause CO-RE relocation
- * failures when compiled on one kernel version and run on another.
- * 
- * Using __be32 for data field ensures correct byte order for network operations:
- * - Network byte order is big-endian
- * - LPM trie operates on byte patterns from packet headers
- * - __builtin_memcpy copies bytes in network order directly
+/* LPM key structure matching kernel's bpf_lpm_trie_key format.
+ * The trie_key contains the prefixlen field, and data[4] provides
+ * the flexible array storage for IPv6 addresses in network byte order.
+ * This matches the structure layout used successfully in commit 2cd6118.
  */
 struct lpm_key {
-	__u32 prefixlen;
-	__be32 data[4];  // Use __be32 for network byte order compatibility
+	struct bpf_lpm_trie_key trie_key;
+	__be32 data[4];
 };
 
 struct map_lpm_type {
@@ -1132,9 +1127,9 @@ static __noinline __s64 route(const struct route_params *params)
 		: 0;
 
 	// Initialize LPM keys directly (eliminates temporary stack variables)
-	ctx.lpm_key_saddr.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_daddr.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_mac.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
 	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
