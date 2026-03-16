@@ -184,10 +184,12 @@ struct {
  * to avoid cross-kernel compatibility issues. The kernel's bpf_lpm_trie_key
  * uses a flexible array member (__u8 data[0]) which may cause CO-RE relocation
  * failures when compiled on one kernel version and run on another.
+ * 
+ * This matches the kernel's bpf_lpm_trie_key_u8 format with a fixed-size array.
  */
 struct lpm_key {
 	__u32 prefixlen;
-	__be32 data[4];
+	__u32 data[4];  // Use __u32 instead of __be32 for better compatibility
 };
 
 struct map_lpm_type {
