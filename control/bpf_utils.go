@@ -38,11 +38,11 @@ import (
 // - bpfMatchSet, bpfPidPname, bpfRedirectEntry, etc.
 //
 // However, one complex type with nested kernel struct cannot be auto-generated:
-// - _bpfLpmKey (struct lpm_key) - contains bpf_lpm_trie_key (kernel BPF type)
+// - _bpfLpmKey (struct lpm_key) - now flattened to avoid CO-RE issues
 //
 // Note: _bpfTuples was removed as it was unused in the codebase.
-// Note: BPF LPM Trie requires the exact bpf_lpm_trie_key structure for
-// kernel type recognition. Flattening breaks BPF map operations.
+// Note: struct lpm_key is now defined directly in C code without nested bpf_lpm_trie_key
+// to avoid CO-RE relocation issues across different kernel versions.
 //
 // To verify synchronization:
 // 1. Check struct size matches (use unsafe.Sizeof in Go, sizeof in C)

@@ -180,9 +180,13 @@ struct {
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
 
-// Array of LPM tries:
+/* Define our own lpm_key structure without relying on CO-RE for bpf_lpm_trie_key
+ * to avoid cross-kernel compatibility issues. The kernel's bpf_lpm_trie_key
+ * uses a flexible array member (__u8 data[0]) which may cause CO-RE relocation
+ * failures when compiled on one kernel version and run on another.
+ */
 struct lpm_key {
-	struct bpf_lpm_trie_key trie_key;
+	__u32 prefixlen;
 	__be32 data[4];
 };
 
@@ -1122,9 +1126,9 @@ static __noinline __s64 route(const struct route_params *params)
 		: 0;
 
 	// Initialize LPM keys directly (eliminates temporary stack variables)
-	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_saddr.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_daddr.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_mac.prefixlen = IPV6_BYTE_LENGTH * 8;
 	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
