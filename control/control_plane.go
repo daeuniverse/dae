@@ -261,12 +261,6 @@ func NewControlPlaneWithContext(
 		Programs: ProgramOptions,
 	}
 
-	tcNextAct := int32(3) // TC_ACT_PIPE
-	if !kernelVersion.Less(consts.TcxFeatureVersion) {
-		tcNextAct = -1 // TCX_NEXT
-		log.Infof("TCX is supported by the current kernel (%s); use TCX for BPF attachment", kernelVersion.String())
-	}
-
 	var bpf *bpfObjects
 	if _bpf != nil {
 		if _bpf, ok := _bpf.(*bpfObjects); ok {
@@ -277,10 +271,8 @@ func NewControlPlaneWithContext(
 	} else {
 		bpf = new(bpfObjects)
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
-			PinPath:             pinPath,
-			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
-			TcNextAct:           tcNextAct,
-			CollectionOptions:   collectionOpts,
+			PinPath:           pinPath,
+			CollectionOptions: collectionOpts,
 		}); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)

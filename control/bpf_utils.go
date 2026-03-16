@@ -236,10 +236,8 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 }
 
 type loadBpfOptions struct {
-	PinPath             string
-	BigEndianTproxyPort uint32
-	TcNextAct           int32
-	CollectionOptions   *ebpf.CollectionOptions
+	PinPath           string
+	CollectionOptions *ebpf.CollectionOptions
 }
 
 func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
@@ -259,29 +257,17 @@ func fullLoadBpfObjects(
 	opts *loadBpfOptions,
 ) (err error) {
 retryLoadBpf:
-	netnsID, err := GetDaeNetns().NetnsID()
-	if err != nil {
-		return fmt.Errorf("failed to get netns id: %w", err)
-	}
 	constants := map[string]interface{}{
 		"PARAM": struct {
 			_               structs.HostLayout
-			TproxyPort      uint32
 			ControlPlanePid uint32
 			Dae0Ifindex     uint32
-			Dae0NetnsId     uint32
 			Dae0peerMac     [6]byte
-			ReservedPadding [2]byte // Reserved for alignment
-			TcNextAct       int32
 			Padding         [2]byte
-			TailPadding     [2]byte // Tail padding
 		}{
-			TproxyPort:      uint32(opts.BigEndianTproxyPort),
 			ControlPlanePid: uint32(os.Getpid()),
 			Dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
-			Dae0NetnsId:     uint32(netnsID),
 			Dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
-			TcNextAct:       opts.TcNextAct,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {

@@ -143,18 +143,17 @@ struct tuples {
 };
 
 struct dae_param {
-	__u32 tproxy_port;
 	__u32 control_plane_pid;
 	__u32 dae0_ifindex;
-	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
-	__s32 tc_next_act; // Mapping to TC_ACT_PIPE (3) or TCX_NEXT (-1)
 	__u8 padding[2];
 };
 
 #define DAE_TC_PASS 0
 #define DAE_TC_DROP 2
-#define DAE_TC_NEXT PARAM.tc_next_act
+// TCX uses -1 for next, TC uses 3 (TC_ACT_PIPE). We use PIPE here
+// which works for both TCX and TC (TCX treats 3 as continue to next).
+#define DAE_TC_NEXT 3
 
 /* Use const volatile for cilium/ebpf v0.20.0 compatibility.
  * This ensures the variable is placed in .rodata section and

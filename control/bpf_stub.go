@@ -19,10 +19,8 @@ var errBpfObjectsUnavailable = errors.New("eBPF objects are unavailable in this 
 
 type bpfDaeParam struct {
 	_               structs.HostLayout
-	TproxyPort      uint32
 	ControlPlanePid uint32
 	Dae0Ifindex     uint32
-	DaeNetnsId      uint32
 	Dae0peerMac     [6]uint8
 	Padding         [2]uint8
 }
