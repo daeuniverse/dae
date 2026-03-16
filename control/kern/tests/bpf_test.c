@@ -51,10 +51,10 @@ setup_cached_routing_result(__u32 saddr, __u32 daddr,
 		return TC_ACT_SHOT;
 
 	__builtin_memset(ctx, 0, sizeof(*ctx));
-	ctx->key.sip.u6_addr32[2] = bpf_ntohl(0xffff);
-	ctx->key.sip.u6_addr32[3] = bpf_ntohl(saddr);
-	ctx->key.dip.u6_addr32[2] = bpf_ntohl(0xffff);
-	ctx->key.dip.u6_addr32[3] = bpf_ntohl(daddr);
+	ctx->key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	ctx->key.sip.u6_addr32[3] = bpf_htonl(saddr);
+	ctx->key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	ctx->key.dip.u6_addr32[3] = bpf_htonl(daddr);
 	ctx->key.sport = bpf_htons(sport);
 	ctx->key.dport = bpf_htons(dport);
 	ctx->key.l4proto = IPPROTO_TCP;
@@ -155,10 +155,10 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 112 , {} }, // */16
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
@@ -197,10 +197,10 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 112, {} }, // */16
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
@@ -239,10 +239,10 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 120;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 120, {} },
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
@@ -281,10 +281,10 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 120;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 120, {} },
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
@@ -591,9 +591,9 @@ int testsetup_mac_match(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 128;
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 128, {} },
+	};
 	__u8 *data = (__u8 *)&lpm_key.data;
 	data[10] = 0x6;
 	data[11] = 0x7;
@@ -614,9 +614,9 @@ int testsetup_mac_match(struct __sk_buff *skb)
 SEC("tc/check/mac_match")
 int testcheck_mac_match(struct __sk_buff *skb)
 {
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 128;
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 128 , {} },
+	};
 	__u8 *data = (__u8 *)&lpm_key.data;
 	data[10] = 0x6;
 	data[11] = 0x7;
@@ -650,9 +650,9 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 128;
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 128, {} },
+	};
 	__u8 *data = (__u8 *)&lpm_key.data;
 	data[10] = 0x0;
 	data[11] = 0x1;
@@ -767,10 +767,10 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 112 , {} }, // */16
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
@@ -844,10 +844,10 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 112 , {} }, // */16
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
@@ -921,10 +921,10 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	struct lpm_key lpm_key;
-	__builtin_memset(&lpm_key, 0, sizeof(lpm_key));
-	lpm_key.prefixlen = 112;
-	lpm_key.data[2] = bpf_ntohl(0x0000ffff);
+	struct lpm_key lpm_key = {
+		.trie_key = { .prefixlen = 112 , {} }, // */16
+	};
+	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
