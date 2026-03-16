@@ -14,7 +14,6 @@
 #include "headers/bpf_helpers.h"
 #include "headers/bpf_timer.h"
 #include "ebpf_sync_defs.h"
-#include "tproxy_version.h" // Kernel version compatibility layer
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -738,6 +737,15 @@ static __always_inline bool check_bitmask(__u8 value, __u8 mask)
 	return (value & mask) != 0;
 }
 
+// Pack MAC address (6 bytes) into u32 array for route_params.mac
+// Reduces code duplication and improves instruction cache utilization
+static __always_inline void pack_mac_to_u32_array(__u32 *mac_array, const __u8 *mac)
+{
+	mac_array[2] = bpf_htonl((mac[0] << 8) | mac[1]);
+	mac_array[3] = bpf_htonl((mac[2] << 24) | (mac[3] << 16) |
+				 (mac[4] << 8) | mac[5]);
+}
+
 static __always_inline bool route_state_has(const struct route_ctx *ctx,
 					    __u8 flags)
 {
@@ -1075,7 +1083,7 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	return route_finalize_match(ctx, match_set);
 }
 
-static ROUTE_FUNC_ATTR __s64 route(const struct route_params *params)
+static __noinline __s64 route(const struct route_params *params)
 {
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
@@ -1109,18 +1117,10 @@ static ROUTE_FUNC_ATTR __s64 route(const struct route_params *params)
 		? ROUTE_STATE_DNS_QUERY
 		: 0;
 
-	struct lpm_key lpm_key_saddr = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_saddr = lpm_key_saddr;
-	struct lpm_key lpm_key_daddr = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_daddr = lpm_key_daddr;
-	struct lpm_key lpm_key_mac = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_mac = lpm_key_mac;
+	// Initialize LPM keys directly (eliminates temporary stack variables)
+	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
 	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
@@ -1227,12 +1227,14 @@ static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
 static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 						 struct tuples_key *dst)
 {
+	// memset is required: struct has 3 bytes of padding that must be zero
+	// for consistent map key comparisons (memcmp checks entire struct)
 	__builtin_memset(dst, 0, sizeof(*dst));
-	dst->dip = key->sip;
+	dst->l4proto = key->l4proto;
 	dst->sip = key->dip;
+	dst->dip = key->sip;
 	dst->sport = key->dport;
 	dst->dport = key->sport;
-	dst->l4proto = key->l4proto;
 }
 
 static __always_inline bool
@@ -1344,27 +1346,6 @@ load_non_syn_tcp_wan_egress(struct tuples_key *five_tuple, __u8 *outbound,
 	return load_cached_routing_result(five_tuple, outbound, mark, must);
 }
 
-static __always_inline void
-assign_route_params_pname(struct route_params *params,
-			  const struct pid_pname *pid_pname)
-{
-	if (pid_pname) {
-		__builtin_memcpy(&params->flag[2], pid_pname->pname,
-				 TASK_COMM_LEN);
-	}
-}
-
-static __always_inline void
-assign_routing_pname(struct routing_result *routing_result,
-		     const struct pid_pname *pid_pname)
-{
-	if (pid_pname) {
-		__builtin_memcpy(routing_result->pname, pid_pname->pname,
-				 TASK_COMM_LEN);
-		routing_result->pid = pid_pname->pid;
-	}
-}
-
 static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
@@ -1435,7 +1416,7 @@ struct {
 	__uint(max_entries, 1);
 } lan_ingress_scratch_map SEC(".maps");
 
-static PARSE_LAN_INGRESS_FUNC_ATTR int
+static __noinline int
 parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 			 struct lan_ingress_parsed *out)
 {
@@ -1556,12 +1537,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	else
 		params.flag[1] = IpVersionType_6;
 	params.flag[6] = pkt->tuples.dscp;
-	params.mac[2] =
-		bpf_htonl((pkt->ethh.h_source[0] << 8) | (pkt->ethh.h_source[1]));
-	params.mac[3] =
-		bpf_htonl((pkt->ethh.h_source[2] << 24) |
-			  (pkt->ethh.h_source[3] << 16) |
-			  (pkt->ethh.h_source[4] << 8) | (pkt->ethh.h_source[5]));
+	pack_mac_to_u32_array(params.mac, pkt->ethh.h_source);
 	params.saddr = pkt->tuples.five.sip.u6_addr32;
 	params.daddr = pkt->tuples.five.dip.u6_addr32;
 	__s64 s64_ret;
@@ -1747,7 +1723,7 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 	return true;
 }
 
-static WAN_EGRESS_TCP_FUNC_ATTR int
+static __noinline int
 do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct tcphdr *tcph)
@@ -1774,13 +1750,12 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			// From control plane. Direct.
 			return TC_ACT_OK;
 		}
-		assign_route_params_pname(&params, pid_pname);
-		params.mac[2] =
-			bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
-		params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
-					  (ethh->h_source[3] << 16) |
-					  (ethh->h_source[4] << 8) |
-					  (ethh->h_source[5]));
+		if (pid_pname) {
+			// Store pname in params.flag[2-5] (TASK_COMM_LEN=16 bytes = 4*u32)
+			__builtin_memcpy(&params.flag[2], pid_pname->pname,
+					 TASK_COMM_LEN);
+		}
+		pack_mac_to_u32_array(params.mac, ethh->h_source);
 		params.saddr = tuples->five.sip.u6_addr32;
 		params.daddr = tuples->five.dip.u6_addr32;
 
@@ -1847,7 +1822,12 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			routing_result.dscp = tuples->dscp;
 			__builtin_memcpy(routing_result.mac, ethh->h_source,
 					 sizeof(ethh->h_source));
-			assign_routing_pname(&routing_result, pid_pname);
+			if (pid_pname) {
+				__builtin_memcpy(routing_result.pname,
+						 pid_pname->pname,
+						 TASK_COMM_LEN);
+				routing_result.pid = pid_pname->pid;
+			}
 			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
 					    &routing_result, BPF_ANY);
 		}
@@ -1858,7 +1838,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
-static WAN_EGRESS_UDP_FUNC_ATTR int
+static __noinline int
 do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct udphdr *udph)
@@ -1896,13 +1876,12 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		}
 	}
 
-	assign_route_params_pname(&params, pid_pname);
-	params.mac[2] =
-		bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
-	params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
-				  (ethh->h_source[3] << 16) |
-				  (ethh->h_source[4] << 8) |
-				  (ethh->h_source[5]));
+	if (pid_pname) {
+		// Store pname in params.flag[2-5] (TASK_COMM_LEN=16 bytes = 4*u32)
+		__builtin_memcpy(&params.flag[2], pid_pname->pname,
+				 TASK_COMM_LEN);
+	}
+	pack_mac_to_u32_array(params.mac, ethh->h_source);
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;
 
@@ -1933,7 +1912,12 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			routing_result.dscp = tuples->dscp;
 			__builtin_memcpy(routing_result.mac, ethh->h_source,
 					 sizeof(ethh->h_source));
-			assign_routing_pname(&routing_result, pid_pname);
+			if (pid_pname) {
+				__builtin_memcpy(routing_result.pname,
+						 pid_pname->pname,
+						 TASK_COMM_LEN);
+				routing_result.pid = pid_pname->pid;
+			}
 			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
 					    &routing_result, BPF_ANY);
 		}
@@ -1979,7 +1963,7 @@ struct {
 	__uint(max_entries, 1);
 } wan_egress_scratch_map SEC(".maps");
 
-static PARSE_WAN_EGRESS_FUNC_ATTR int
+static __noinline int
 parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 			struct wan_egress_parsed *out)
 {
@@ -2011,12 +1995,8 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 /*
  * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
  * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
- *
- * Phase 2 Optimization: Use conditional compilation to optimize for different kernels
- * - Linux < 6.2: Inline to reduce call stack depth (5 layers, limit is 8)
- * - Linux >= 6.2: Keep as subprogram to avoid state explosion
  */
-static TPROXY_WAN_EGRESS_FUNC_ATTR int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
+static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
