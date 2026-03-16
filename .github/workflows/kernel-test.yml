@@ -64,7 +64,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: [ '6.1-20250527.055456', '6.6-20250527.055456', '6.12-20250527.055456' ]
+        # Only support 6.6 and 6.12 kernels
+        # 6.1 support has been dropped due to BPF verifier limitations
+        kernel: [ '6.6-20250527.055456', '6.12-20250527.055456' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
