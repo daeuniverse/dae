@@ -789,11 +789,10 @@ route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 
 #ifndef __BPF_TEST_DISABLE_LPM_CACHE
 	// Build cache key.
-	struct lpm_cache_key cache_key = {
-		.match_set_index = match_set->index,
-		.ip = { lpm_key->data[0], lpm_key->data[1], lpm_key->data[2],
-			lpm_key->data[3] }
-	};
+	// lpm_key->data is __u8[16], copy to cache_key.ip (__u32[4])
+	struct lpm_cache_key cache_key;
+	__builtin_memcpy(cache_key.ip, lpm_key->data, 16);
+	cache_key.match_set_index = match_set->index;
 
 	// Try LPM cache first for better performance (10x faster)
 	__u8 *cached = bpf_map_lookup_elem(&lpm_cache_map, &cache_key);
