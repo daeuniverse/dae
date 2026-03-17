@@ -154,6 +154,11 @@ func (c *controlPlaneCore) DetachBpfHooks() error {
 // It uses unified priority (1) for all interfaces and Anchor Head() for LIFO execution order in TCX.
 func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attachType ebpf.AttachType, priority uint32, handle uint32, handleBits uint16, name string) (func() error, error) {
 	// Try TCX attachment first if kernel supports it
+	var attachedTcX bool
+	var tcxLink ciliumLink.Link
+	var tcFilter *netlink.BpfFilter
+	var tcErr error
+
 	if !c.kernelVersion.Less(consts.TcxFeatureVersion) {
 		l, err := ciliumLink.AttachTCX(ciliumLink.TCXOptions{
 			Interface: link.Attrs().Index,
@@ -162,16 +167,16 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 			Anchor:    ciliumLink.Head(), // LIFO: last attached program executes first
 		})
 		if err == nil {
-			detachFunc := func() error {
-				return l.Close()
-			}
+			attachedTcX = true
+			tcxLink = l
 			c.log.Infof("Attached %v using TCX (kernel %v)", name, c.kernelVersion.String())
-			return detachFunc, nil
+		} else {
+			tcErr = err
+			c.log.WithError(err).Warnf("failed to attach TCX for %s, falling back to TC", name)
 		}
-		c.log.WithError(err).Warnf("failed to attach TCX for %s, falling back to TC", name)
 	}
 
-	// TC fallback
+	// Build TC filter info (for fallback, or for cleanup if we attached via TCX)
 	var parent uint32
 	if attachType == ebpf.AttachTCXIngress {
 		parent = netlink.HANDLE_MIN_INGRESS
@@ -179,7 +184,7 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		parent = netlink.HANDLE_MIN_EGRESS
 	}
 
-	filter := &netlink.BpfFilter{
+	tcFilter = &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
 			Parent:    parent,
@@ -192,23 +197,41 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		DirectAction: true,
 	}
 
-	// Remove and add.
-	// Best effort to remove old filter; it may not exist.
-	_ = netlink.FilterDel(filter)
-	if !c.isReload {
-		tryDeleteFlippedFilter(filter)
-	}
-	if err := netlink.FilterAdd(filter); err != nil && !errors.Is(err, unix.EEXIST) {
-		return nil, fmt.Errorf("cannot attach ebpf object to filter %s: %w", name, err)
+	if attachedTcX {
+		// Successfully attached via TCX
+		// Clean up any old TC filter that might exist from before
+		_ = netlink.FilterDel(tcFilter)
+	} else {
+		// TC fallback: Remove and add
+		_ = netlink.FilterDel(tcFilter)
+		if !c.isReload {
+			tryDeleteFlippedFilter(tcFilter)
+		}
+		if err := netlink.FilterAdd(tcFilter); err != nil && !errors.Is(err, unix.EEXIST) {
+			return nil, fmt.Errorf("cannot attach ebpf object to filter %s: %w", name, err)
+		}
+		c.log.Infof("Attached %v using TC (fallback, TCX error: %v)", name, tcErr)
 	}
 
+	// Unified detachFunc that handles both TCX and TC cleanup
 	detachFunc := func() error {
-		if err := netlink.FilterDel(filter); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
-			return fmt.Errorf("FilterDel(%v:%v): %w", link.Attrs().Name, filter.Name, err)
+		var firstErr error
+		if attachedTcX {
+			// Close TCX link
+			if err := tcxLink.Close(); err != nil {
+				firstErr = fmt.Errorf("TCX.Close(%v): %w", name, err)
+			}
 		}
-		return nil
+		// Always try to clean up TC filter as well (in case there's a leftover)
+		if err := netlink.FilterDel(tcFilter); err != nil {
+			if !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) && !errors.Is(err, unix.EINVAL) {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("FilterDel(%v): %w", name, err)
+				}
+			}
+		}
+		return firstErr
 	}
-	c.log.Infof("Attached %v using TC (fallback)", name)
 	return detachFunc, nil
 }
 
