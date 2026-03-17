@@ -154,7 +154,8 @@ struct dae_param {
 
 /* Use const volatile for cilium/ebpf v0.20.0 compatibility.
  * This ensures the variable is placed in .rodata section and
- * can be rewritten from userspace via RewriteConstants. */
+ * can be rewritten from userspace via RewriteConstants.
+ */
 const volatile struct dae_param PARAM = {};
 
 #define DAE_TC_PASS 0
@@ -1247,7 +1248,8 @@ get_fast_redirect_key(const struct __sk_buff *skb, struct tuples_key *key)
 
 	/* IPv4-only fast path for sk_skb/stream_verdict compatibility.
 	 * IPv6 requires direct ctx access which verifier may reject.
-	 * IPv6 connections will use userspace relay instead. */
+	 * IPv6 connections will use userspace relay instead.
+	 */
 	if (skb->family != AF_INET)
 		return false;
 
@@ -1381,6 +1383,7 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
+
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
@@ -1460,7 +1463,8 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 		return DAE_TC_DROP;
 
 	/* Ensure scratch bytes are initialized even if verifier can't precisely
-	 * track writes done through callee pointer arguments. */
+	 * track writes done through callee pointer arguments.
+	 */
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
 
@@ -1471,16 +1475,16 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	}
 
 	/*
-   * ip rule add fwmark 0x8000000/0x8000000 table 2023
-   * ip route add local default dev lo table 2023
-   * ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
-   * ip -6 route add local default dev lo table 2023
-
-   * ip rule del fwmark 0x8000000/0x8000000 table 2023
-   * ip route del local default dev lo table 2023
-   * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
-   * ip -6 route del local default dev lo table 2023
-   */
+	 * ip rule add fwmark 0x8000000/0x8000000 table 2023
+	 * ip route add local default dev lo table 2023
+	 * ip -6 rule add fwmark 0x8000000/0x8000000 table 2023
+	 * ip -6 route add local default dev lo table 2023
+	 *
+	 * ip rule del fwmark 0x8000000/0x8000000 table 2023
+	 * ip route del local default dev lo table 2023
+	 * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
+	 * ip -6 route del local default dev lo table 2023
+	 */
 	if (pkt->l4proto == IPPROTO_TCP &&
 	    !is_new_tcp_connection(&pkt->tcph)) {
 		__u8 outbound;
@@ -1696,6 +1700,7 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
+
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
@@ -2029,7 +2034,8 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 		return DAE_TC_DROP;
 
 	/* Initialize stack bytes for verifier friendliness across subprogram
-	 * pointer writes. */
+	 * pointer writes.
+	 */
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
 
@@ -2061,20 +2067,20 @@ SEC("tc/dae0peer_ingress")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
 	/* Only packets redirected from wan_egress or lan_ingress have this cb mark.
-   */
+	 */
 	if (skb->cb[0] != TPROXY_MARK)
 		return DAE_TC_DROP;
 
 	/* ip rule add fwmark 0x8000000/0x8000000 table 2023
-   * ip route add local default dev lo table 2023
-   */
+	 * ip route add local default dev lo table 2023
+	 */
 	skb->mark = TPROXY_MARK;
 	bpf_skb_change_type(skb, PACKET_HOST);
 
 	/* l4proto is stored in skb->cb[1] only for UDP and new TCP. As for
-   * established TCP, kernel can take care of socket lookup, so just
-   * return them to stack without calling bpf_sk_assign.
-   */
+	 * established TCP, kernel can take care of socket lookup, so just
+	 * return them to stack without calling bpf_sk_assign.
+	 */
 	__u8 l4proto = skb->cb[1];
 
 	if (l4proto != 0)
