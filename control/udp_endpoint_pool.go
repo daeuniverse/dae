@@ -44,6 +44,8 @@ type UdpEndpoint struct {
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
 	lastRefreshNano atomic.Int64
+	lastWriteNano   atomic.Int64
+	lastReadNano    atomic.Int64
 
 	Dialer   *dialer.Dialer
 	Outbound *outbound.DialerGroup
@@ -147,6 +149,7 @@ func (ue *UdpEndpoint) start() {
 			break
 		}
 		ue.softErrorCount = 0
+		ue.lastReadNano.Store(time.Now().UnixNano())
 		ue.RefreshTtl()
 		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.dead.Store(true)
@@ -240,9 +243,26 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	if ue.dead.Load() {
 		return 0, net.ErrClosed
 	}
+	now := time.Now().UnixNano()
+	lastRead := ue.lastReadNano.Load()
+	if lastRead > 0 && now-lastRead > int64(30*time.Second) {
+		// Detect zombie session: we are still writing but haven't seen a response for a long time.
+		// This happens when the proxy is blackholing your specific UDP traffic.
+		if ue.Dialer != nil {
+			networkType := &dialer.NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
+				IsDns:     false,
+			}
+			ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("zombie session detected (no response for 30s)"))
+		}
+		// Mark dead to force recreation on next packet, giving a chance to switch node.
+		ue.dead.Store(true)
+		return 0, net.ErrClosed
+	}
+
 	// Refresh TTL on write to keep endpoint alive for active connections
-	// This is especially important for QUIC connections where the server
-	// might respond slowly during handshake
+	ue.lastWriteNano.Store(now)
 	ue.RefreshTtl()
 	ue.writeMu.Lock()
 	defer ue.writeMu.Unlock()
@@ -448,6 +468,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		_ = udpConn.Close()
 		return nil, fmt.Errorf("protocol does not support udp")
 	}
+	now := time.Now().UnixNano()
 	ue := &UdpEndpoint{
 		conn:          packetConn,
 		handler:       createOption.Handler,
@@ -461,6 +482,8 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		poolRef:       p,
 		poolKey:       key,
 	}
+	ue.lastReadNano.Store(now)
+	ue.lastWriteNano.Store(now)
 
 	// Pre-cache the Anyfrom socket for responses. Caching is only safe for
 	// fixed-destination sessions (Symmetric NAT) where the response bind address

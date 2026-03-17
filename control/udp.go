@@ -619,19 +619,17 @@ getNew:
 		// just because one health check failed. Let the idle timeout or explicit write error
 		// handle it to prevent flapping. Only remove if this was a DNS-type endpoint which
 		// is more sensitive to staleness.
-		if domain == "" {
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"src":     RefineSourceToShow(realSrc, realDst.Addr()),
-					"network": networkType.String(),
-					"dialer":  ue.Dialer.Property().Name,
-					"retry":   retry,
-				}).Debugln("Old udp endpoint was not alive and removed.")
-			}
-			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
-			retry++
-			goto getNew
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
+				"network": networkType.String(),
+				"dialer":  ue.Dialer.Property().Name,
+				"retry":   retry,
+			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
+		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+		retry++
+		goto getNew
 	}
 	if domain == "" {
 		// It is used for showing.
