@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sync"
 	"sync/atomic"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -152,6 +153,8 @@ func (c *controlPlaneCore) DetachBpfHooks() error {
 
 // attachTc attaches a TC program with TCX (kernel 6.6+) or falls back to traditional TC.
 // It uses unified priority (1) for all interfaces and Anchor Head() for LIFO execution order in TCX.
+// NOTE: UDP-related programs use TC instead of TCX to fix DNS timeout issues on kernel 6.6+.
+// See: https://github.com/daeuniverse/dae/issues/XXX for details.
 func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attachType ebpf.AttachType, priority uint32, handle uint32, handleBits uint16, name string) (func() error, error) {
 	// Build TC filter info first (needed for both TCX cleanup and TC fallback)
 	var parent uint32
@@ -174,8 +177,16 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		DirectAction: true,
 	}
 
+	// === UDP TCX Fix: Skip TCX for UDP-related programs ===
+	// TCX executes too early in the network stack for UDP packets, causing them
+	// to lack routing metadata needed for transparent proxy. This leads to UDP
+	// DNS queries timing out. Solution: Use traditional TC for UDP programs.
+	// 
+	// See analysis: TCX_UDP_DEEP_ANALYSIS_2025.md
+	shouldSkipTCX := c.isUDPProgram(name, attachType)
+	
 	// Try TCX attachment first if kernel supports it
-	if !c.kernelVersion.Less(consts.TcxFeatureVersion) {
+	if !c.kernelVersion.Less(consts.TcxFeatureVersion) && !shouldSkipTCX {
 		l, err := ciliumLink.AttachTCX(ciliumLink.TCXOptions{
 			Interface: link.Attrs().Index,
 			Program:   prog,
@@ -198,12 +209,18 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		c.log.WithError(err).Warnf("failed to attach TCX for %s, falling back to TC", name)
 	}
 
-	// TCX failed or not supported - cleanup then use TC fallback
+	// TCX failed, skipped, or not supported - cleanup then use TC fallback
 	c.cleanupTcFilters(tcFilter)
 	if err := netlink.FilterAdd(tcFilter); err != nil && !errors.Is(err, unix.EEXIST) {
 		return nil, fmt.Errorf("cannot attach ebpf object to filter %s: %w", name, err)
 	}
-	c.log.Infof("Attached %v using TC (fallback)", name)
+	
+	// Log with context about why TC is being used
+	mode := "TC (fallback)"
+	if shouldSkipTCX {
+		mode = "TC (UDP: TCX skipped for compatibility, see TCX_UDP_DEEP_ANALYSIS_2025.md)"
+	}
+	c.log.Infof("Attached %v using %s", name, mode)
 
 	// Return TC-specific detachFunc
 	return func() error {
@@ -214,6 +231,40 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		}
 		return nil
 	}, nil
+}
+
+// isUDPProgram detects if a BPF program handles UDP traffic and should skip TCX.
+// TCX executes too early in the network stack for UDP packets, which may lack
+// routing metadata needed for transparent proxy. This causes UDP DNS queries to
+// timeout on kernel 6.6+.
+//
+// Detection strategy:
+// 1. Check program name for UDP-related keywords (wan_egress, lan_egress, etc.)
+// 2. All TCX Egress programs potentially handle UDP and should use TC
+//
+// See analysis: TCX_UDP_DEEP_ANALYSIS_2025.md
+func (c *controlPlaneCore) isUDPProgram(name string, attachType ebpf.AttachType) bool {
+	// UDP-related keywords in program names
+	udpKeywords := []string{
+		"wan_egress",
+		"lan_egress",
+		"dae0_egress",
+		"egress", // All egress programs may handle UDP
+	}
+	
+	for _, keyword := range udpKeywords {
+		if strings.Contains(name, keyword) {
+			return true
+		}
+	}
+	
+	// Additional check: TCX Egress programs handle packet transmission
+	// which includes UDP sends. To be safe, skip TCX for all egress programs.
+	if attachType == ebpf.AttachTCXEgress {
+		return true
+	}
+	
+	return false
 }
 
 func (c *controlPlaneCore) Close() (err error) {
