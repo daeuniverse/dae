@@ -533,7 +533,13 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 				Program: attached[i].prog,
 				Attach:  attached[i].attach,
 			}); err != nil {
-				errs = append(errs, fmt.Errorf("detach %s: %w", attached[i].prog.String(), err))
+				// Ignore ENOENT (program already detached) and EINVAL (invalid target)
+				// as these are benign conditions during cleanup
+				if os.IsNotExist(err) || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.EINVAL) {
+					c.log.Debugf("SkSKB program %s already detached or target closed: %v", attached[i].prog.String(), err)
+				} else {
+					errs = append(errs, fmt.Errorf("detach %s: %w", attached[i].prog.String(), err))
+				}
 			}
 		}
 		return errors.Join(errs...)
