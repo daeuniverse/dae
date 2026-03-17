@@ -47,7 +47,7 @@ func createNetkitDeviceViaNetlink(log *logrus.Logger, name, peerName string, txQ
 		PeerPolicy: netlink.NETKIT_POLICY_FORWARD,
 	}
 
-	// Set peer attributes if needed
+	// Set peer attributes
 	peerAttrs := netlink.NewLinkAttrs()
 	peerAttrs.Name = peerName
 	netkit.SetPeerAttrs(&peerAttrs)

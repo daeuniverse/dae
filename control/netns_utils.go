@@ -212,13 +212,13 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	ns.log.Debugf("Deleting existing link %s if present", HostVethName)
 	DeleteLink(HostVethName)
 
-	// Try to create Netkit device using ip command
+	// Try to create Netkit device
 	ns.log.Debugf("Creating Netkit device pair: %s <-> %s", HostVethName, NsVethName)
 	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen); err != nil {
 		ns.log.Infof("createNetkitDevice failed: %v", err)
 		return fmt.Errorf("failed to create Netkit device: %w", err)
 	}
-	ns.log.Debug("Netkit device created successfully by ip command")
+	ns.log.Debug("Netkit device created successfully")
 
 	// Get link references
 	ns.log.Debugf("Getting link reference for %s", HostVethName)
