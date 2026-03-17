@@ -108,6 +108,7 @@ var (
 	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
 	BpfLoopFeatureVersion                     = internal.Version{5, 17, 0}
 	TcxFeatureVersion                         = internal.Version{6, 6, 0}
+	NetkitFeatureVersion                      = internal.Version{6, 7, 0}
 )
 
 const (
