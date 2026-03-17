@@ -90,28 +90,30 @@ func NewDialerGroup(
 			IsDns:     spec.isDns,
 		}
 		if needAliveState {
-			aliveDialerSets[setIdx[i]] = dialer.NewAliveDialerSet(
+			set := dialer.NewAliveDialerSet(
 				log, name, nt, option.CheckTolerance, p.Policy, dialers, dialersAnnotations,
 				func(networkType *dialer.NetworkType) func(alive bool) {
 					// Use the trick to copy a pointer of *dialer.NetworkType.
 					return func(alive bool) { aliveChangeCallback(alive, networkType, false) }
 				}(nt), true)
+			aliveDialerSets[setIdx[i]] = set
+
+			// TCP DNS shares the same AliveDialerSet as plain TCP because they are
+			// identical at the transport layer. A dialer that can establish TCP
+			// connections for HTTP checks can also establish TCP connections for
+			// DNS queries. This eliminates redundant probes and reduces resource
+			// consumption while maintaining accurate connectivity information.
+			// Note: IdxDnsTcp4/6 constants are kept for backward compatibility
+			// but now point to the same set as IdxTcp4/6.
+			if spec.l4proto == consts.L4ProtoStr_TCP {
+				if spec.ipVersion == consts.IpVersionStr_4 {
+					aliveDialerSets[dialer.IdxDnsTcp4] = set
+				} else {
+					aliveDialerSets[dialer.IdxDnsTcp6] = set
+				}
+			}
 		}
 		aliveChangeCallback(true, nt, true)
-	}
-
-	if option.CheckDnsTcp && needAliveState {
-		aliveDialerSets[dialer.IdxDnsTcp4] = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     true,
-		}, option.CheckTolerance, p.Policy, dialers, dialersAnnotations, func(alive bool) {}, true)
-
-		aliveDialerSets[dialer.IdxDnsTcp6] = dialer.NewAliveDialerSet(log, name, &dialer.NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     true,
-		}, option.CheckTolerance, p.Policy, dialers, dialersAnnotations, func(alive bool) {}, true)
 	}
 
 	for _, d := range dialers {

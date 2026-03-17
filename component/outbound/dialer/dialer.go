@@ -25,6 +25,26 @@ import (
 	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
 )
 
+// Connectivity check indices.
+//
+// DESIGN NOTE: TCP DNS and plain TCP share the same health check result because they
+// are identical at the transport layer (both use TCP). The Index() method returns
+// IdxTcp4/IdxTcp6 for both TCP DNS and plain TCP network types.
+//
+// IdxDnsTcp4 and IdxDnsTcp6 constants are kept for backward compatibility and are used
+// as aliases to access the shared AliveDialerSet/collection. When a dialer needs to
+// check TCP DNS connectivity, it uses the same result as plain TCP (IdxTcp4/IdxTcp6).
+//
+// In contrast, UDP DNS uses separate indices (IdxDnsUdp4/IdxDnsUdp6) because UDP has
+// different transport characteristics and may have different connectivity results.
+//
+// Memory layout:
+//   - [0] IdxDnsTcp4 -> aliases to [4] IdxTcp4
+//   - [1] IdxDnsTcp6 -> aliases to [5] IdxTcp6
+//   - [2] IdxDnsUdp4 -> independent UDP DNS IPv4 check
+//   - [3] IdxDnsUdp6 -> independent UDP DNS IPv6 check
+//   - [4] IdxTcp4    -> TCP IPv4 check (shared with TCP DNS)
+//   - [5] IdxTcp6    -> TCP IPv6 check (shared with TCP DNS)
 const (
 	IdxDnsTcp4 = 0
 	IdxDnsTcp6 = 1
@@ -181,9 +201,12 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
 	var collections [6]*collection
-	for i := range collections {
+	for _, i := range []int{IdxDnsUdp4, IdxDnsUdp6, IdxTcp4, IdxTcp6} {
 		collections[i] = newCollection()
 	}
+	collections[IdxDnsTcp4] = collections[IdxTcp4]
+	collections[IdxDnsTcp6] = collections[IdxTcp6]
+
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption:     option,

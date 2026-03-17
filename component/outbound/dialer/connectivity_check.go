@@ -54,41 +54,33 @@ func (t *NetworkType) StringWithoutDns() string {
 	return string(t.L4Proto) + string(t.IpVersion)
 }
 
+// Index returns the collection index for this network type.
+//
+// Design Note: TCP DNS (IsDns=true, L4Proto=TCP) and plain TCP (IsDns=false, L4Proto=TCP)
+// share the same collection index (IdxTcp4 or IdxTcp6). This is intentional because:
+//   1. TCP DNS and plain TCP are identical at the transport layer - both are TCP connections.
+//   2. A successful HTTP/TCP health check indicates the dialer can establish TCP connections
+//      for both DNS-over-TCP and plain TCP traffic.
+//   3. This consolidation eliminates redundant probes, reducing network overhead and memory usage.
+//
+// In contrast, UDP DNS uses separate indices (IdxDnsUdp4/IdxDnsUdp6) because UDP health checks
+// perform actual DNS queries, which test a different code path than plain UDP (which is rarely
+// used directly and typically shares DNS check results anyway).
 func (t *NetworkType) Index() int {
-	if t.IsDns {
-		switch t.L4Proto {
-		case consts.L4ProtoStr_TCP:
-			switch t.IpVersion {
-			case consts.IpVersionStr_4:
-				return IdxDnsTcp4
-			case consts.IpVersionStr_6:
-				return IdxDnsTcp6
-			}
-		case consts.L4ProtoStr_UDP:
-			switch t.IpVersion {
-			case consts.IpVersionStr_4:
-				return IdxDnsUdp4
-			case consts.IpVersionStr_6:
-				return IdxDnsUdp6
-			}
+	switch t.L4Proto {
+	case consts.L4ProtoStr_TCP:
+		switch t.IpVersion {
+		case consts.IpVersionStr_4:
+			return IdxTcp4
+		case consts.IpVersionStr_6:
+			return IdxTcp6
 		}
-	} else {
-		switch t.L4Proto {
-		case consts.L4ProtoStr_TCP:
-			switch t.IpVersion {
-			case consts.IpVersionStr_4:
-				return IdxTcp4
-			case consts.IpVersionStr_6:
-				return IdxTcp6
-			}
-		case consts.L4ProtoStr_UDP:
-			// UDP share the DNS check result.
-			switch t.IpVersion {
-			case consts.IpVersionStr_4:
-				return IdxDnsUdp4
-			case consts.IpVersionStr_6:
-				return IdxDnsUdp6
-			}
+	case consts.L4ProtoStr_UDP:
+		switch t.IpVersion {
+		case consts.IpVersionStr_4:
+			return IdxDnsUdp4
+		case consts.IpVersionStr_6:
+			return IdxDnsUdp6
 		}
 	}
 	panic("invalid network type")
@@ -451,10 +443,6 @@ func (d *Dialer) aliveBackground() {
 			return d.HttpCheck(ctx, IdxTcp6, opt.Url, opt.Ip6, opt.Method, tcpSomark, mptcp)
 		},
 	}
-	tcpNetwork := netproxy.MagicNetwork{
-		Network: "tcp",
-		Mark:    d.CheckDnsOptionRaw.Somark,
-	}.Encode()
 	udpNetwork := netproxy.MagicNetwork{
 		Network: "udp",
 		Mark:    d.CheckDnsOptionRaw.Somark,
@@ -484,22 +472,6 @@ func (d *Dialer) aliveBackground() {
 		}
 	}
 
-	tcp4CheckDnsOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     true,
-		},
-		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip4 }, &tcpNetwork),
-	}
-	tcp6CheckDnsOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     true,
-		},
-		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &tcpNetwork),
-	}
 	udp4CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
 			L4Proto:   consts.L4ProtoStr_UDP,
@@ -516,13 +488,7 @@ func (d *Dialer) aliveBackground() {
 		},
 		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &udpNetwork),
 	}
-	var CheckOpts = make([]*CheckOption, 6)
-	CheckOpts[IdxTcp4] = tcp4CheckOpt
-	CheckOpts[IdxTcp6] = tcp6CheckOpt
-	CheckOpts[IdxDnsUdp4] = udp4CheckDnsOpt
-	CheckOpts[IdxDnsUdp6] = udp6CheckDnsOpt
-	CheckOpts[IdxDnsTcp4] = tcp4CheckDnsOpt
-	CheckOpts[IdxDnsTcp6] = tcp6CheckDnsOpt
+	var CheckOpts = []*CheckOption{tcp4CheckOpt, tcp6CheckOpt, udp4CheckDnsOpt, udp6CheckDnsOpt}
 
 	var unusedOnce bool
 	checkUnused := func() bool {
