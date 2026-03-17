@@ -352,7 +352,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 			return
 		}
 		if isDNSTimeoutError(err) {
-			h.log.WithError(err).Warn("DNS request handling timed out")
+			h.log.WithError(err).Debug("DNS request handling timed out")
 		} else {
 			h.log.WithError(err).Error("Failed to handle DNS request")
 		}
