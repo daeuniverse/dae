@@ -215,7 +215,7 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	// Try to create Netkit device using ip command
 	ns.log.Debugf("Creating Netkit device pair: %s <-> %s", HostVethName, NsVethName)
 	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen); err != nil {
-		ns.log.Errorf("createNetkitDevice failed: %v", err)
+		ns.log.Infof("createNetkitDevice failed: %v", err)
 		return fmt.Errorf("failed to create Netkit device: %w", err)
 	}
 	ns.log.Debug("Netkit device created successfully by ip command")

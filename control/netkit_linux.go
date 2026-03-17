@@ -115,10 +115,23 @@ func checkIpNetkitSupport() bool {
 }
 
 // createNetkitDevice tries multiple methods to create a Netkit device.
+// It prefers the netlink API method (doesn't require iproute2 6.7.0+),
+// and falls back to the ip command method if needed.
 func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int) error {
-	log.Debug("Attempting to create Netkit device using ip command")
+	log.Debug("Attempting to create Netkit device")
 
-	// Check if ip command supports Netkit
+	// Method 1: Try using netlink API (preferred)
+	// This works even with older iproute2 versions
+	log.Debug("Trying netlink API method (doesn't require iproute2 6.7.0+)")
+	if err := createNetkitDeviceViaNetlink(log, name, peerName, txQLen); err == nil {
+		log.Infof("Successfully created Netkit device pair %s <-> %s using netlink API", name, peerName)
+		return nil
+	} else {
+		log.Debugf("Netlink API method failed: %v (this is expected if kernel < 6.7 or CONFIG_NETKIT not enabled)", err)
+	}
+
+	// Method 2: Fall back to ip command (requires iproute2 6.7.0+)
+	log.Debug("Trying ip command method (requires iproute2 6.7.0+)")
 	if !checkIpNetkitSupport() {
 		// Get iproute2 version for better error message
 		cmd := exec.Command("ip", "-V")
@@ -127,14 +140,14 @@ func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int) e
 		if err == nil {
 			versionMsg = fmt.Sprintf("%s (current: %s)", versionMsg, strings.TrimSpace(string(output)))
 		}
-		log.Warnf("ip command does not support Netkit; %s", versionMsg)
-		return fmt.Errorf("ip command does not support Netkit; %s", versionMsg)
+		log.Infof("ip command does not support Netkit; %s", versionMsg)
+		return fmt.Errorf("neither netlink API nor ip command support Netkit (kernel may be < 6.7 or CONFIG_NETKIT not enabled); %s", versionMsg)
 	}
 	log.Debug("ip command supports Netkit, proceeding with device creation")
 
 	// Create Netkit device using ip command
 	if err := createNetkitDeviceViaIpCmd(name, peerName, txQLen); err != nil {
-		log.Errorf("Failed to create Netkit device via ip command: %v", err)
+		log.Infof("Failed to create Netkit device via ip command: %v", err)
 		return fmt.Errorf("failed to create Netkit device via ip command: %w", err)
 	}
 
