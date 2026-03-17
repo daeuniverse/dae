@@ -261,13 +261,6 @@ func NewControlPlaneWithContext(
 		Programs: ProgramOptions,
 	}
 
-	// Determine TCX vs TC return code based on kernel version
-	tcNextAct := int32(3) // TC_ACT_PIPE for traditional TC (pre-6.6)
-	if !kernelVersion.Less(consts.TcxFeatureVersion) {
-		tcNextAct = -1 // TCX_NEXT for TCX (6.6+)
-		log.Infof("TCX is supported by the current kernel (%s); using TCX for BPF attachment", kernelVersion.String())
-	}
-
 	var bpf *bpfObjects
 	if _bpf != nil {
 		if _bpf, ok := _bpf.(*bpfObjects); ok {
@@ -279,7 +272,6 @@ func NewControlPlaneWithContext(
 		bpf = new(bpfObjects)
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
 			PinPath:           pinPath,
-			TcNextAct:         tcNextAct,
 			CollectionOptions: collectionOpts,
 		}); err != nil {
 			if log.Level == logrus.PanicLevel {

@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"sync"
 	"sync/atomic"
-	"strings"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -149,124 +148,6 @@ func (c *controlPlaneCore) DetachBpfHooks() error {
 		return errors.Join(errs...)
 	}
 	return nil
-}
-
-// attachTc attaches a TC program with TCX (kernel 6.6+) or falls back to traditional TC.
-// It uses unified priority (1) for all interfaces and Anchor Head() for LIFO execution order in TCX.
-// NOTE: UDP-related programs use TC instead of TCX to fix DNS timeout issues on kernel 6.6+.
-// See: https://github.com/daeuniverse/dae/issues/XXX for details.
-func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attachType ebpf.AttachType, priority uint32, handle uint32, handleBits uint16, name string) (func() error, error) {
-	// Build TC filter info first (needed for both TCX cleanup and TC fallback)
-	var parent uint32
-	if attachType == ebpf.AttachTCXIngress {
-		parent = netlink.HANDLE_MIN_INGRESS
-	} else {
-		parent = netlink.HANDLE_MIN_EGRESS
-	}
-
-	tcFilter := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    parent,
-			Handle:    netlink.MakeHandle(uint16(handle), handleBits+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  uint16(priority),
-		},
-		Fd:           prog.FD(),
-		Name:         name,
-		DirectAction: true,
-	}
-
-	// === UDP TCX Fix: Skip TCX for UDP-related programs ===
-	// TCX executes too early in the network stack for UDP packets, causing them
-	// to lack routing metadata needed for transparent proxy. This leads to UDP
-	// DNS queries timing out. Solution: Use traditional TC for UDP programs.
-	// 
-	// See analysis: TCX_UDP_DEEP_ANALYSIS_2025.md
-	shouldSkipTCX := c.isUDPProgram(name, attachType)
-	
-	// Try TCX attachment first if kernel supports it
-	if !c.kernelVersion.Less(consts.TcxFeatureVersion) && !shouldSkipTCX {
-		l, err := ciliumLink.AttachTCX(ciliumLink.TCXOptions{
-			Interface: link.Attrs().Index,
-			Program:   prog,
-			Attach:    attachType,
-			Anchor:    ciliumLink.Head(), // LIFO: last attached program executes first
-		})
-		if err == nil {
-			// TCX succeeded - cleanup old TC filters and return TCX-specific detachFunc
-			c.cleanupTcFilters(tcFilter)
-			tcxLink := l
-			c.log.Infof("Attached %v using TCX (kernel %v)", name, c.kernelVersion.String())
-
-			return func() error {
-				if err := tcxLink.Close(); err != nil {
-					return fmt.Errorf("TCX.Close(%v): %w", name, err)
-				}
-				return nil
-			}, nil
-		}
-		c.log.WithError(err).Warnf("failed to attach TCX for %s, falling back to TC", name)
-	}
-
-	// TCX failed, skipped, or not supported - cleanup then use TC fallback
-	c.cleanupTcFilters(tcFilter)
-	if err := netlink.FilterAdd(tcFilter); err != nil && !errors.Is(err, unix.EEXIST) {
-		return nil, fmt.Errorf("cannot attach ebpf object to filter %s: %w", name, err)
-	}
-	
-	// Log with context about why TC is being used
-	mode := "TC (fallback)"
-	if shouldSkipTCX {
-		mode = "TC (UDP: TCX skipped for compatibility, see TCX_UDP_DEEP_ANALYSIS_2025.md)"
-	}
-	c.log.Infof("Attached %v using %s", name, mode)
-
-	// Return TC-specific detachFunc
-	return func() error {
-		if err := netlink.FilterDel(tcFilter); err != nil {
-			if !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) && !errors.Is(err, unix.EINVAL) {
-				return fmt.Errorf("FilterDel(%v): %w", name, err)
-			}
-		}
-		return nil
-	}, nil
-}
-
-// isUDPProgram detects if a BPF program handles UDP traffic and should skip TCX.
-// TCX executes too early in the network stack for UDP packets, which may lack
-// routing metadata needed for transparent proxy. This causes UDP DNS queries to
-// timeout on kernel 6.6+.
-//
-// Detection strategy:
-// Check program name for UDP-related keywords (wan_egress, lan_egress, etc.)
-// Note: We only skip TCX for programs that are KNOWN to handle UDP traffic,
-// not all egress programs, to avoid impacting TCP performance.
-//
-// See analysis: TCX_UDP_DEEP_ANALYSIS_2025.md
-func (c *controlPlaneCore) isUDPProgram(name string, attachType ebpf.AttachType) bool {
-	// UDP-related keywords in program names
-	// Only programs with these specific keywords will skip TCX
-	udpKeywords := []string{
-		"wan_egress",
-		"lan_egress",
-		// "dae0_egress", // dae0 is internal, may not need TCX skip
-		// Do NOT include generic "egress" to avoid skipping TCX for all egress programs
-	}
-	
-	for _, keyword := range udpKeywords {
-		if strings.Contains(name, keyword) {
-			return true
-		}
-	}
-	
-	// REMOVED: The blanket check for all TCX Egress programs
-	// This was too broad and might affect TCP performance
-	// if attachType == ebpf.AttachTCXEgress {
-	//     return true
-	// }
-	
-	return false
 }
 
 func (c *controlPlaneCore) Close() (err error) {
@@ -442,30 +323,77 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return err
 	}
 
-	// Attach ingress program using unified attachTc function
-	progIngress := c.bpf.bpfPrograms.TproxyLanIngressL3
-	nameIngress := consts.AppName + "_lan_ingress_l3"
-	if linkHdrLen > 0 {
-		progIngress = c.bpf.bpfPrograms.TproxyLanIngressL2
-		nameIngress = consts.AppName + "_lan_ingress_l2"
+	// Insert filters.
+	filterIngress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			// Priority should be behind of WAN's
+			Priority: 2,
+		},
+		Name:         consts.AppName + "_lan_ingress",
+		DirectAction: true,
 	}
-	detachFunc, err := c.attachTc(link, progIngress, ebpf.AttachTCXIngress, 1, 0x2023, 0b100, nameIngress)
-	if err != nil {
-		return err
+	if linkHdrLen > 0 {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL2.FD()
+		filterIngress.Name = filterIngress.Name + "_l2"
+	} else {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL3.FD()
+		filterIngress.Name = filterIngress.Name + "_l3"
+	}
+	// Remove and add.
+	// Best effort to remove old filter; it may not exist.
+	_ = netlink.FilterDel(filterIngress)
+	if !c.isReload {
+		tryDeleteFlippedFilter(filterIngress)
+	}
+	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	detachFunc := func() error {
+		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
+			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
+		}
+		return nil
 	}
 	c.deferFuncs = append(c.deferFuncs, detachFunc)
 	c.addBpfHookDetach(detachFunc)
 
-	// Attach egress program using unified attachTc function
-	progEgress := c.bpf.bpfPrograms.TproxyLanEgressL3
-	nameEgress := consts.AppName + "_lan_egress_l3"
-	if linkHdrLen > 0 {
-		progEgress = c.bpf.bpfPrograms.TproxyLanEgressL2
-		nameEgress = consts.AppName + "_lan_egress_l2"
+	filterEgress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			// Priority should be front of WAN's
+			Priority: 1,
+		},
+		Name:         consts.AppName + "_lan_egress",
+		DirectAction: true,
 	}
-	egressDetachFunc, err := c.attachTc(link, progEgress, ebpf.AttachTCXEgress, 1, 0x2023, 0b010, nameEgress)
-	if err != nil {
-		return err
+	if linkHdrLen > 0 {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL2.FD()
+		filterEgress.Name = filterEgress.Name + "_l2"
+	} else {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL3.FD()
+		filterEgress.Name = filterEgress.Name + "_l3"
+	}
+	// Remove and add.
+	// Best effort to remove old filter; it may not exist.
+	_ = netlink.FilterDel(filterEgress)
+	if !c.isReload {
+		tryDeleteFlippedFilter(filterEgress)
+	}
+	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+	}
+	egressDetachFunc := func() error {
+		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
+			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
+		}
+		return nil
 	}
 	c.deferFuncs = append(c.deferFuncs, egressDetachFunc)
 	c.addBpfHookDetach(egressDetachFunc)
@@ -567,13 +495,7 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 				Program: attached[i].prog,
 				Attach:  attached[i].attach,
 			}); err != nil {
-				// Ignore ENOENT (program already detached) and EINVAL (invalid target)
-				// as these are benign conditions during cleanup
-				if os.IsNotExist(err) || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.EINVAL) {
-					c.log.Debugf("SkSKB program %s already detached or target closed: %v", attached[i].prog.String(), err)
-				} else {
-					errs = append(errs, fmt.Errorf("detach %s: %w", attached[i].prog.String(), err))
-				}
+				errs = append(errs, fmt.Errorf("detach %s: %w", attached[i].prog.String(), err))
 			}
 		}
 		return errors.Join(errs...)
@@ -645,33 +567,77 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return err
 	}
 
-	// Attach egress program using unified attachTc function
-	progEgress := c.bpf.bpfPrograms.TproxyWanEgressL3
-	nameEgress := consts.AppName + "_wan_egress_l3"
-	if linkHdrLen > 0 {
-		progEgress = c.bpf.bpfPrograms.TproxyWanEgressL2
-		nameEgress = consts.AppName + "_wan_egress_l2"
+	/// Set-up WAN ingress/egress TC programs.
+	// Insert TC filters
+	filterEgress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  2,
+		},
+		Name:         consts.AppName + "_wan_egress",
+		DirectAction: true,
 	}
-	egressDetachFunc, err := c.attachTc(link, progEgress, ebpf.AttachTCXEgress, 1, 0x2023, 0b100, nameEgress)
-	if err != nil {
-		return err
+	if linkHdrLen > 0 {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL2.FD()
+		filterEgress.Name = filterEgress.Name + "_l2"
+	} else {
+		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL3.FD()
+		filterEgress.Name = filterEgress.Name + "_l3"
+	}
+	// Best effort to remove old filter; it may not exist.
+	_ = netlink.FilterDel(filterEgress)
+	if !c.isReload {
+		tryDeleteFlippedFilter(filterEgress)
+	}
+	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+	}
+	egressDetachFunc := func() error {
+		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
+			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
+		}
+		return nil
 	}
 	c.deferFuncs = append(c.deferFuncs, egressDetachFunc)
 	c.addBpfHookDetach(egressDetachFunc)
 
-	// Attach ingress program using unified attachTc function
-	progIngress := c.bpf.bpfPrograms.TproxyWanIngressL3
-	nameIngress := consts.AppName + "_wan_ingress_l3"
+	filterIngress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  1,
+		},
+		Name:         consts.AppName + "_wan_ingress",
+		DirectAction: true,
+	}
 	if linkHdrLen > 0 {
-		progIngress = c.bpf.bpfPrograms.TproxyWanIngressL2
-		nameIngress = consts.AppName + "_wan_ingress_l2"
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL2.FD()
+		filterIngress.Name = filterIngress.Name + "_l2"
+	} else {
+		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL3.FD()
+		filterIngress.Name = filterIngress.Name + "_l3"
 	}
-	ingressDetachFunc, err := c.attachTc(link, progIngress, ebpf.AttachTCXIngress, 1, 0x2023, 0b010, nameIngress)
-	if err != nil {
-		return err
+	// Best effort to remove old filter; it may not exist.
+	_ = netlink.FilterDel(filterIngress)
+	if !c.isReload {
+		tryDeleteFlippedFilter(filterIngress)
 	}
-	c.deferFuncs = append(c.deferFuncs, ingressDetachFunc)
-	c.addBpfHookDetach(ingressDetachFunc)
+	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	detachFunc := func() error {
+		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
+			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
+		}
+		return nil
+	}
+	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	c.addBpfHookDetach(detachFunc)
 
 	return nil
 }
@@ -688,23 +654,54 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		}
 		return err
 	})
-
-	// Attach dae0peer ingress using unified attachTc function
-	var detachFunc func() error
-	if err = daens.WithRequired("attach dae0peer ingress", func() error {
-		var err error
-		innerDetachFunc, err := c.attachTc(daens.Dae0Peer(), c.bpf.bpfPrograms.TproxyDae0peerIngress, ebpf.AttachTCXIngress, 1, 0x2022, 0b010, consts.AppName+"_dae0peer_ingress")
-		if err != nil {
-			return err
+	filterDae0peerIngress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: daens.Dae0Peer().Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  0,
+		},
+		Fd:           c.bpf.bpfPrograms.TproxyDae0peerIngress.FD(),
+		Name:         consts.AppName + "_dae0peer_ingress",
+		DirectAction: true,
+	}
+	// Best effort to remove old filter; it may not exist.
+	daens.WithBestEffort("delete old dae0peer ingress filter", func() error {
+		err := netlink.FilterDel(filterDae0peerIngress)
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+			return nil
 		}
-		detachFunc = func() error {
-			return daens.WithRequired("detach dae0peer ingress", func() error {
-				return innerDetachFunc()
-			})
+		return err
+	})
+	// Remove and add.
+	if !c.isReload {
+		// Clean up thoroughly: delete the filter with the flipped handle.
+		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
+		filterIngressFlipped.FilterAttrs.Handle ^= 1
+		daens.WithBestEffort("delete flipped dae0peer ingress filter", func() error {
+			err := netlink.FilterDel(filterIngressFlipped)
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+				return nil
+			}
+			return err
+		})
+	}
+	if err = daens.WithRequired("add dae0peer ingress filter", func() error {
+		if err := netlink.FilterAdd(filterDae0peerIngress); err != nil && !errors.Is(err, unix.EEXIST) {
+			return err
 		}
 		return nil
 	}); err != nil {
-		return err
+		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	detachFunc := func() error {
+		return daens.WithRequired("delete dae0peer ingress filter", func() error {
+			if err := netlink.FilterDel(filterDae0peerIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
+				return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
+			}
+			return nil
+		})
 	}
 	c.deferFuncs = append(c.deferFuncs, detachFunc)
 	c.addBpfHookDetach(detachFunc)
@@ -712,40 +709,36 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	// tproxy_dae0_ingress@dae0 at host netns
 	// Best effort to add qdisc; it may already exist.
 	_ = c.addQdisc(daens.Dae0())
-	dae0DetachFunc, err := c.attachTc(daens.Dae0(), c.bpf.bpfPrograms.TproxyDae0Ingress, ebpf.AttachTCXIngress, 1, 0x2022, 0b010, consts.AppName+"_dae0_ingress")
-	if err != nil {
-		return err
+	filterDae0Ingress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: daens.Dae0().Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)),
+			Protocol:  unix.ETH_P_ALL,
+			Priority:  0,
+		},
+		Fd:           c.bpf.bpfPrograms.TproxyDae0Ingress.FD(),
+		Name:         consts.AppName + "_dae0_ingress",
+		DirectAction: true,
+	}
+	// Best effort to remove old filter; it may not exist.
+	_ = netlink.FilterDel(filterDae0Ingress)
+	// Remove and add.
+	if !c.isReload {
+		tryDeleteFlippedFilter(filterDae0Ingress)
+	}
+	if err := netlink.FilterAdd(filterDae0Ingress); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	dae0DetachFunc := func() error {
+		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
+			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
+		}
+		return nil
 	}
 	c.deferFuncs = append(c.deferFuncs, dae0DetachFunc)
 	c.addBpfHookDetach(dae0DetachFunc)
 	return
-}
-
-// cleanupTcFilters removes TC filters based on the reload scenario.
-//
-// Scenarios:
-// 1. Fresh start (!c.isReload):
-//    - Removes current flip filter (may exist from crashed process)
-//    - Removes opposite flip filter (stale from previous run)
-//    - Goal: Ensure clean state, remove all stale resources
-//
-// 2. Reload (c.isReload):
-//    - Removes only current flip filter
-//    - Preserves opposite flip filter (belongs to old process)
-//    - Goal: Allow old process to clean up its own resources
-//
-// This is critical when transitioning between TC and TCX:
-// - Old TC filters may interfere with new TCX programs
-// - Complete cleanup prevents traffic processing conflicts
-func (c *controlPlaneCore) cleanupTcFilters(tcFilter *netlink.BpfFilter) {
-	// Always clean up current flip filter (may exist from previous attempt)
-	_ = netlink.FilterDel(tcFilter)
-
-	// Clean up opposite flip filter ONLY on non-reload
-	// In reload scenario, opposite flip resources belong to old process
-	if !c.isReload {
-		tryDeleteFlippedFilter(tcFilter)
-	}
 }
 
 // tryDeleteFlippedFilter deletes the TC filter obtained by flipping the

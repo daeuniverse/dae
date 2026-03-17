@@ -237,7 +237,6 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 type loadBpfOptions struct {
 	PinPath             string
 	BigEndianTproxyPort uint32
-	TcNextAct           int32
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
@@ -264,22 +263,18 @@ retryLoadBpf:
 	}
 	constants := map[string]interface{}{
 		"PARAM": struct {
-			TproxyPort      uint32
-			ControlPlanePid uint32
-			Dae0Ifindex     uint32
-			Dae0NetnsId     uint32
-			Dae0peerMac     [6]byte
-			Pad1            [2]byte // Alignment padding for tc_next_act
-			TcNextAct       int32
-			Pad2            [2]byte // Tail padding
-			Pad3            [2]byte // Extra padding to match C struct size of 32 bytes
+			tproxyPort      uint32
+			controlPlanePid uint32
+			dae0Ifindex     uint32
+			dae0NetnsId     uint32
+			dae0peerMac     [6]byte
+			padding         [2]byte
 		}{
-			TproxyPort:      uint32(opts.BigEndianTproxyPort),
-			ControlPlanePid: uint32(os.Getpid()),
-			Dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
-			Dae0NetnsId:     uint32(netnsID),
-			Dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
-			TcNextAct:       opts.TcNextAct,
+			tproxyPort:      uint32(opts.BigEndianTproxyPort),
+			controlPlanePid: uint32(os.Getpid()),
+			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
+			dae0NetnsId:     uint32(netnsID),
+			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
