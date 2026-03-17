@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -336,11 +337,15 @@ func TestUdpEndpointPoolConcurrentAccess(t *testing.T) {
 						NatTimeout: 30 * time.Second,
 						Handler:    func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error { return nil },
 						Log:        log,
+						GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
+							// Return error to simulate dial failure
+							return nil, fmt.Errorf("simulated dial error for test")
+						},
 					},
 				)
-				
+
 				if err != nil {
-					// 预期会失败，因为 dialer 为 nil
+					// 预期会失败，因为 GetDialOption 返回错误
 					t.Logf("Expected error for goroutine %d op %d: %v", id, j, err)
 				}
 			}
