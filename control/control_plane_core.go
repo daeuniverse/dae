@@ -239,17 +239,19 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 // timeout on kernel 6.6+.
 //
 // Detection strategy:
-// 1. Check program name for UDP-related keywords (wan_egress, lan_egress, etc.)
-// 2. All TCX Egress programs potentially handle UDP and should use TC
+// Check program name for UDP-related keywords (wan_egress, lan_egress, etc.)
+// Note: We only skip TCX for programs that are KNOWN to handle UDP traffic,
+// not all egress programs, to avoid impacting TCP performance.
 //
 // See analysis: TCX_UDP_DEEP_ANALYSIS_2025.md
 func (c *controlPlaneCore) isUDPProgram(name string, attachType ebpf.AttachType) bool {
 	// UDP-related keywords in program names
+	// Only programs with these specific keywords will skip TCX
 	udpKeywords := []string{
 		"wan_egress",
 		"lan_egress",
-		"dae0_egress",
-		"egress", // All egress programs may handle UDP
+		// "dae0_egress", // dae0 is internal, may not need TCX skip
+		// Do NOT include generic "egress" to avoid skipping TCX for all egress programs
 	}
 	
 	for _, keyword := range udpKeywords {
@@ -258,11 +260,11 @@ func (c *controlPlaneCore) isUDPProgram(name string, attachType ebpf.AttachType)
 		}
 	}
 	
-	// Additional check: TCX Egress programs handle packet transmission
-	// which includes UDP sends. To be safe, skip TCX for all egress programs.
-	if attachType == ebpf.AttachTCXEgress {
-		return true
-	}
+	// REMOVED: The blanket check for all TCX Egress programs
+	// This was too broad and might affect TCP performance
+	// if attachType == ebpf.AttachTCXEgress {
+	//     return true
+	// }
 	
 	return false
 }
