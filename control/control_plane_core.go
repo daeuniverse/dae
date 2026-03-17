@@ -197,19 +197,19 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		DirectAction: true,
 	}
 
+	// Clean up TC filters based on scenario:
+	// 1. Fresh start (!isReload): Clean up both current and opposite flip filters
+	//    to remove any stale resources from crashed processes
+	// 2. Reload (isReload): Clean up only current flip filter, preserving
+	//    opposite flip resources that belong to the old process still running
+	c.cleanupTcFilters(tcFilter)
+
 	if attachedTcX {
 		// Successfully attached via TCX
-		// Clean up any old TC filter that might exist from before
-		_ = netlink.FilterDel(tcFilter)
-		if !c.isReload {
-			tryDeleteFlippedFilter(tcFilter)
-		}
+		// TC filters are now cleaned up, TCX link will be managed by detachFunc
+		c.log.Debugf("TCX attachment succeeded, TC filters cleaned for %v", name)
 	} else {
-		// TC fallback: Remove and add
-		_ = netlink.FilterDel(tcFilter)
-		if !c.isReload {
-			tryDeleteFlippedFilter(tcFilter)
-		}
+		// TC fallback: Add TC filter after cleanup
 		if err := netlink.FilterAdd(tcFilter); err != nil && !errors.Is(err, unix.EEXIST) {
 			return nil, fmt.Errorf("cannot attach ebpf object to filter %s: %w", name, err)
 		}
@@ -688,6 +688,33 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	c.deferFuncs = append(c.deferFuncs, dae0DetachFunc)
 	c.addBpfHookDetach(dae0DetachFunc)
 	return
+}
+
+// cleanupTcFilters removes TC filters based on the reload scenario.
+//
+// Scenarios:
+// 1. Fresh start (!c.isReload):
+//    - Removes current flip filter (may exist from crashed process)
+//    - Removes opposite flip filter (stale from previous run)
+//    - Goal: Ensure clean state, remove all stale resources
+//
+// 2. Reload (c.isReload):
+//    - Removes only current flip filter
+//    - Preserves opposite flip filter (belongs to old process)
+//    - Goal: Allow old process to clean up its own resources
+//
+// This is critical when transitioning between TC and TCX:
+// - Old TC filters may interfere with new TCX programs
+// - Complete cleanup prevents traffic processing conflicts
+func (c *controlPlaneCore) cleanupTcFilters(tcFilter *netlink.BpfFilter) {
+	// Always clean up current flip filter (may exist from previous attempt)
+	_ = netlink.FilterDel(tcFilter)
+
+	// Clean up opposite flip filter ONLY on non-reload
+	// In reload scenario, opposite flip resources belong to old process
+	if !c.isReload {
+		tryDeleteFlippedFilter(tcFilter)
+	}
 }
 
 // tryDeleteFlippedFilter deletes the TC filter obtained by flipping the
