@@ -1938,8 +1938,9 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			routing_result.mark = mark;
 			routing_result.must = must;
 			routing_result.dscp = tuples->dscp;
-			__builtin_memcpy(routing_result.mac, ethh->h_source,
-				sizeof(ethh->h_source));
+			__builtin_memcpy(
+				 routing_result.mac, ethh->h_source,
+				 sizeof(ethh->h_source));
 			if (pid_pname) {
 				__builtin_memcpy(routing_result.pname,
 						 pid_pname->pname,
