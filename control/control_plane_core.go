@@ -201,6 +201,9 @@ func (c *controlPlaneCore) attachTc(link netlink.Link, prog *ebpf.Program, attac
 		// Successfully attached via TCX
 		// Clean up any old TC filter that might exist from before
 		_ = netlink.FilterDel(tcFilter)
+		if !c.isReload {
+			tryDeleteFlippedFilter(tcFilter)
+		}
 	} else {
 		// TC fallback: Remove and add
 		_ = netlink.FilterDel(tcFilter)
