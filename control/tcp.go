@@ -205,8 +205,10 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	}
 	annotateOffload := canAnnotateTCPRelayOffload(rConn)
 
-	if c.log.IsLevelEnabled(logrus.DebugLevel) {
-		c.log.WithFields(buildTCPLinkLogFields(res, dialParam, dst, domain, annotateOffload, offloaded, offloadReason)).Debugf("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
+	// Log new TCP connections at Info level for visibility (consistent with UDP behavior)
+	// Note: TCP connections are inherently "new" at this point, unlike UDP endpoints which may be reused
+	if c.log.IsLevelEnabled(logrus.InfoLevel) {
+		c.log.WithFields(buildTCPLinkLogFields(res, dialParam, dst, domain, annotateOffload, offloaded, offloadReason)).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
 	}
 
 	if offloaded {
