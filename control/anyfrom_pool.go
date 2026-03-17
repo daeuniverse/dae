@@ -41,20 +41,42 @@ type Anyfrom struct {
 	// multiple goroutines may call Write methods concurrently, each triggering
 	// afterWrite.  A plain bool would be a data race under go test -race.
 	gotGSOError atomic.Bool
+	// writeMu serializes concurrent Write* calls.
+	// Protects afterWrite and RefreshTtl from concurrent access.
+	writeMu sync.Mutex
 }
 
 func (a *Anyfrom) afterWrite(err error) {
+	// Deprecated: Use afterWriteUnlocked when called from within a locked context.
+	// This method is kept for backward compatibility.
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	a.afterWriteUnlocked(err)
+}
+
+// afterWriteUnlocked handles post-write logic without locking.
+// Must be called from within a writeMu-locked context.
+func (a *Anyfrom) afterWriteUnlocked(err error) {
 	// CAS-style: only pay the atomic-store cost when transitioning false→true.
 	if !a.gotGSOError.Load() && isGSOError(err) {
 		a.gotGSOError.Store(true)
 	}
-	a.RefreshTtl()
+	a.refreshTtlUnlocked()
 }
 
 // RefreshTtl updates the expiration time. Uses throttling to reduce atomic
 // store overhead: only refreshes if at least ttlRefreshMinInterval has passed
 // since the last refresh, or if TTL > 10s (refresh interval = TTL/50).
 func (a *Anyfrom) RefreshTtl() {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	a.refreshTtlUnlocked()
+}
+
+// refreshTtlUnlocked updates the expiration time without locking.
+// Must be called from within a writeMu-locked context.
+// This is the actual implementation shared by both RefreshTtl and afterWriteUnlocked.
+func (a *Anyfrom) refreshTtlUnlocked() {
 	if a.ttl <= 0 {
 		return
 	}
@@ -116,6 +138,9 @@ func (a *Anyfrom) SyscallConn() (rc syscall.RawConn, err error) {
 	return rc, err
 }
 func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	
 	// UDP GSO (UDP_SEGMENT) is NOT used here.
 	// UDP GSO is designed for "super-buffer" sends: the caller concatenates multiple
 	// equal-sized datagrams into one large buffer and the kernel splits them into
@@ -126,27 +151,43 @@ func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, o
 	// exceeding the standard MTU.  The correct value for UDP_SEGMENT is MTU-28 (IPv4)
 	// or MTU-48 (IPv6).  GSO support is retained for future batch-send redesign.
 	n, oobn, err = a.UDPConn.WriteMsgUDP(b, oob, addr)
-	a.afterWrite(err)
+	a.afterWriteUnlocked(err)
 	return n, oobn, err
 }
+
 func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	
 	n, oobn, err = a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
-	a.afterWrite(err)
+	a.afterWriteUnlocked(err)
 	return n, oobn, err
 }
+
 func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	
 	n, err = a.UDPConn.WriteTo(b, addr)
-	a.afterWrite(err)
+	a.afterWriteUnlocked(err)
 	return n, err
 }
+
 func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	
 	n, err = a.UDPConn.WriteToUDP(b, addr)
-	a.afterWrite(err)
+	a.afterWriteUnlocked(err)
 	return n, err
 }
+
 func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	
 	n, err = a.UDPConn.WriteToUDPAddrPort(b, addr)
-	a.afterWrite(err)
+	a.afterWriteUnlocked(err)
 	return n, err
 }
 
