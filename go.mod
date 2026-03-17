@@ -117,4 +117,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use optimized outbound from remote fork repository (perf/complete-optimizations branch)
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260312183933-402f15988cf1
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260317014650-e895fd297c8e
