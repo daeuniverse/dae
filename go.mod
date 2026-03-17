@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cilium/ebpf v0.20.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20260312183933-402f15988cf1
+	github.com/daeuniverse/outbound v0.0.0-20250722064253-00c4fbb38759
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mholt/archives v0.1.5
@@ -117,4 +117,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use optimized outbound from remote fork repository (perf/complete-optimizations branch)
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260317014650-e895fd297c8e
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260317085837-fcce9f9ab71e
