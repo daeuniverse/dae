@@ -22,9 +22,9 @@ const (
 	IFLA_NETKIT_PRIMARY     = 2
 	IFLA_NETKIT_POLICY      = 3
 	IFLA_NETKIT_PEER_POLICY = 4
-	IFLA_NETKIT_MODE         = 5
-	IFLA_NETKIT_SCRUB        = 6
-	IFLA_NETKIT_PEER_SCRUB   = 7
+	IFLA_NETKIT_MODE        = 5
+	IFLA_NETKIT_SCRUB       = 6
+	IFLA_NETKIT_PEER_SCRUB  = 7
 )
 
 // Netkit modes
@@ -37,7 +37,7 @@ const (
 // This is the most reliable method as it uses iproute2 which has Netkit support.
 func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int) error {
 	// Try multiple syntax variations for Netkit device creation
-	
+
 	// Syntax 1: ip link add <name> type netkit peer <peer-name> mode L2
 	// This is the most common syntax
 	cmd := exec.Command("ip", "link", "add", name, "type", "netkit", "peer", peerName, "mode", "L2")
@@ -52,7 +52,7 @@ func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int) error {
 		}
 		return nil
 	}
-	
+
 	// Syntax 2: ip link add name <name> type netkit peer <peer-name> mode L2
 	// Alternative syntax
 	cmd = exec.Command("ip", "link", "add", "name", name, "type", "netkit", "peer", peerName, "mode", "L2")
@@ -67,7 +67,7 @@ func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int) error {
 		}
 		return nil
 	}
-	
+
 	// Both syntaxes failed, return error
 	return fmt.Errorf("failed to create Netkit device (tried multiple syntaxes): %w: %s", err, string(output))
 }
@@ -81,7 +81,7 @@ func checkIpNetkitSupport() bool {
 	if err != nil {
 		return false
 	}
-	
+
 	// Parse version to check if it's >= 6.7.0
 	versionStr := string(output)
 	// Simple version check for iproute2-6.7.0 and later
@@ -94,7 +94,7 @@ func checkIpNetkitSupport() bool {
 			minor := 0
 			fmt.Sscanf(majorStr, "%d", &major)
 			fmt.Sscanf(parts[1], "%d", &minor)
-			
+
 			// Check if version is < 6.7
 			if major < 6 || (major == 6 && minor < 7) {
 				// iproute2 is too old, don't even try to check help text
@@ -102,14 +102,14 @@ func checkIpNetkitSupport() bool {
 			}
 		}
 	}
-	
+
 	// If version is OK, also check help text for netkit keyword
 	cmd = exec.Command("ip", "link", "help")
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return false
 	}
-	
+
 	// Check if "netkit" is mentioned in the help text
 	return strings.Contains(string(output), "netkit")
 }
@@ -117,7 +117,7 @@ func checkIpNetkitSupport() bool {
 // createNetkitDevice tries multiple methods to create a Netkit device.
 func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int) error {
 	log.Debug("Attempting to create Netkit device using ip command")
-	
+
 	// Check if ip command supports Netkit
 	if !checkIpNetkitSupport() {
 		// Get iproute2 version for better error message
@@ -131,13 +131,13 @@ func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int) e
 		return fmt.Errorf("ip command does not support Netkit; %s", versionMsg)
 	}
 	log.Debug("ip command supports Netkit, proceeding with device creation")
-	
+
 	// Create Netkit device using ip command
 	if err := createNetkitDeviceViaIpCmd(name, peerName, txQLen); err != nil {
 		log.Errorf("Failed to create Netkit device via ip command: %v", err)
 		return fmt.Errorf("failed to create Netkit device via ip command: %w", err)
 	}
-	
+
 	log.Infof("Successfully created Netkit device pair %s <-> %s using ip command", name, peerName)
 	return nil
 }

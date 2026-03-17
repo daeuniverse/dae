@@ -58,10 +58,10 @@ func (t *NetworkType) StringWithoutDns() string {
 //
 // Design Note: TCP DNS (IsDns=true, L4Proto=TCP) and plain TCP (IsDns=false, L4Proto=TCP)
 // share the same collection index (IdxTcp4 or IdxTcp6). This is intentional because:
-//   1. TCP DNS and plain TCP are identical at the transport layer - both are TCP connections.
-//   2. A successful HTTP/TCP health check indicates the dialer can establish TCP connections
-//      for both DNS-over-TCP and plain TCP traffic.
-//   3. This consolidation eliminates redundant probes, reducing network overhead and memory usage.
+//  1. TCP DNS and plain TCP are identical at the transport layer - both are TCP connections.
+//  2. A successful HTTP/TCP health check indicates the dialer can establish TCP connections
+//     for both DNS-over-TCP and plain TCP traffic.
+//  3. This consolidation eliminates redundant probes, reducing network overhead and memory usage.
 //
 // In contrast, UDP DNS uses separate indices (IdxDnsUdp4/IdxDnsUdp6) because UDP health checks
 // perform actual DNS queries, which test a different code path than plain UDP (which is rarely

@@ -45,8 +45,8 @@ type DaeNetns struct {
 	kernelVersion *internal.Version
 	useNetkit     bool // Whether Netkit device is being used
 
-	setupDone      atomic.Bool
-	mu             sync.Mutex
+	setupDone atomic.Bool
+	mu        sync.Mutex
 
 	dae0, dae0peer netlink.Link
 	hostNs, daeNs  netns.NsHandle
@@ -172,7 +172,7 @@ func (ns *DaeNetns) supportsNetkit() bool {
 func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 	// Try Netkit first if kernel supports it
 	if ns.supportsNetkit() {
-		ns.log.Infof("Kernel %s supports Netkit, attempting to create Netkit device pair", 
+		ns.log.Infof("Kernel %s supports Netkit, attempting to create Netkit device pair",
 			ns.kernelVersion.String())
 		err := ns.tryCreateNetkit()
 		if err == nil {
@@ -182,7 +182,7 @@ func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 		}
 		// Netkit failed, fall back to veth
 		ns.log.WithFields(logrus.Fields{
-			"error": err.Error(),
+			"error":  err.Error(),
 			"kernel": ns.kernelVersion.String(),
 		}).Warn("Failed to create Netkit device, falling back to veth")
 	}
@@ -193,11 +193,11 @@ func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 	if err := ns.setupVeth(); err != nil {
 		return fmt.Errorf("failed to create veth device: %w", err)
 	}
-	
+
 	if ns.supportsNetkit() {
 		ns.log.Infof("Created veth device pair (compatibility mode; Netkit was attempted but failed)")
 	} else {
-		ns.log.Infof("Created veth device pair (kernel %s does not support Netkit)", 
+		ns.log.Infof("Created veth device pair (kernel %s does not support Netkit)",
 			ns.kernelVersion.String())
 	}
 	return nil
@@ -207,11 +207,11 @@ func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 // It uses the ip command which has Netkit support in iproute2 6.7.0+.
 func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	ns.log.Debug("Starting Netkit device creation")
-	
+
 	// Delete existing link if present
 	ns.log.Debugf("Deleting existing link %s if present", HostVethName)
 	DeleteLink(HostVethName)
-	
+
 	// Try to create Netkit device using ip command
 	ns.log.Debugf("Creating Netkit device pair: %s <-> %s", HostVethName, NsVethName)
 	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen); err != nil {
@@ -219,7 +219,7 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 		return fmt.Errorf("failed to create Netkit device: %w", err)
 	}
 	ns.log.Debug("Netkit device created successfully by ip command")
-	
+
 	// Get link references
 	ns.log.Debugf("Getting link reference for %s", HostVethName)
 	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
@@ -227,14 +227,14 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 		return fmt.Errorf("failed to get link dae0: %v", err)
 	}
 	ns.log.Debug("Got link reference for dae0")
-	
+
 	ns.log.Debugf("Getting link reference for %s", NsVethName)
 	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
 		ns.log.Errorf("Failed to get link %s: %v", NsVethName, err)
 		return fmt.Errorf("failed to get link dae0peer: %v", err)
 	}
 	ns.log.Debug("Got link reference for dae0peer")
-	
+
 	// Set link up
 	ns.log.Debug("Setting link dae0 up")
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
@@ -242,7 +242,7 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 		return fmt.Errorf("failed to set link dae0 up: %v", err)
 	}
 	ns.log.Debug("Netkit device setup completed successfully")
-	
+
 	return nil
 }
 
