@@ -10,10 +10,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/netip"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,7 +23,6 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -122,6 +119,11 @@ type DnsController struct {
 	bpfUpdateWg     sync.WaitGroup
 	bpfUpdateOnce   sync.Once
 	bpfUpdateClosed atomic.Bool
+
+	// prefWaitRegistry manages waits for preferred DNS response types.
+	// When ip_version_prefer is set, non-preferred responses wait briefly
+	// for preferred responses to arrive (RFC 8305 Happy Eyeballs).
+	prefWaitRegistry *preferenceWaitRegistry
 }
 
 // bpfUpdateTask represents a BPF map update request.
@@ -232,6 +234,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		// Async BPF update: lazy initialization in startBpfUpdateWorker
 		bpfUpdateCh:   nil,
 		bpfUpdateStop: nil,
+
+		prefWaitRegistry: newPreferenceWaitRegistry(),
 	}
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
@@ -1308,7 +1312,11 @@ func (m *msgCapturer) TsigStatus() error           { return nil }
 func (m *msgCapturer) TsigTimersOnly(bool)         {}
 func (m *msgCapturer) Hijack()                     {}
 
-// Renamed from HandleWithResponseWriter_ to internal to avoid recursion loop with SF
+// handleWithResponseWriterInternal handles DNS requests with response writer.
+// When ip_version_prefer is set, it implements RFC 8305 Happy Eyeballs
+// Resolution Delay: wait briefly for preferred response type before responding.
+//
+// Renamed from HandleWithResponseWriter_ to internal to avoid recursion loop with SF.
 func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
@@ -1321,179 +1329,24 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 		return fmt.Errorf("DNS request expected but DNS response received")
 	}
 
-	// Prepare qname, qtype.
-	var qname string
+	// Get qtype for preference check.
 	var qtype uint16
 	if len(dnsMessage.Question) != 0 {
-		qname = dnsMessage.Question[0].Name
 		qtype = dnsMessage.Question[0].Qtype
 	}
 
-	// Check ip version preference and qtype.
-	switch qtype {
-	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-		if c.qtypePrefer == 0 {
-			return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
-		}
-	default:
+	// Fast path: no ip_version_prefer set, bypass all preference logic
+	if c.qtypePrefer == 0 {
 		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
 	}
 
-	preferredQtype := c.qtypePrefer
-	var secondaryQtype uint16
-	switch preferredQtype {
-	case dnsmessage.TypeA:
-		secondaryQtype = dnsmessage.TypeAAAA
-	case dnsmessage.TypeAAAA:
-		secondaryQtype = dnsmessage.TypeA
-	default:
-		return fmt.Errorf("unexpected qtype path")
+	// Only A and AAAA queries are subject to preference handling
+	if qtype != dnsmessage.TypeA && qtype != dnsmessage.TypeAAAA {
+		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
 	}
 
-	resolveQtype := func(lookupQtype uint16) error {
-		if lookupQtype == qtype {
-			return c.handleWithResponseWriter_(ctx, dnsMessage, req, false, nil, upstreamIndex, upstream)
-		}
-		msg := dnsMessage.Copy()
-		msg.Id = uint16(fastrand.Intn(math.MaxUint16))
-		msg.Question[0].Qtype = lookupQtype
-		return c.handleWithResponseWriter_(ctx, msg, req, false, nil, 0, nil)
-	}
-
-	runLookup := func(lookupQtype uint16, cleanupOnReturn *atomic.Bool) <-chan ipVersionLookupResult {
-		ch := make(chan ipVersionLookupResult, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					c.log.Errorf("Goroutine panic recovered in HandleWithResponseWriter_: %v\n%v", r, string(debug.Stack()))
-					ch <- ipVersionLookupResult{err: fmt.Errorf("lookup panic for qtype=%v", lookupQtype)}
-				}
-			}()
-			err := resolveQtype(lookupQtype)
-			cacheKey := c.cacheKey(qname, lookupQtype)
-			if cleanupOnReturn != nil && cleanupOnReturn.Load() {
-				c.RemoveDnsRespCache(cacheKey)
-			}
-			cache := c.LookupDnsRespCache(cacheKey, true)
-			hasIP := cache != nil && cache.IncludeAnyIp()
-			ch <- ipVersionLookupResult{err: err, hasIP: hasIP}
-		}()
-		return ch
-	}
-
-	writeResponseByQtype := func(respQtype uint16) error {
-		lookupMsg := dnsMessage
-		if respQtype != qtype {
-			lookupMsg = dnsMessage.Copy()
-			lookupMsg.Question[0].Qtype = respQtype
-		}
-		resp, _ := c.LookupDnsRespCache_(lookupMsg, c.cacheKey(qname, respQtype), true)
-		if resp == nil {
-			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
-		}
-		return c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter)
-	}
-
-	secondaryKey := c.cacheKey(qname, secondaryQtype)
-
-	if qtype == preferredQtype {
-		var cleanupSecondary atomic.Bool
-		_ = runLookup(secondaryQtype, &cleanupSecondary)
-
-		preferRes := ipVersionLookupResult{err: resolveQtype(preferredQtype)}
-		resp, _ := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
-		decision := decideIPVersionResponse(qtype, preferredQtype, resp != nil, preferRes, ipVersionLookupResult{})
-		cleanupSecondary.Store(decision.cleanupSecondary)
-		if decision.cleanupSecondary {
-			c.RemoveDnsRespCache(secondaryKey)
-		}
-
-		switch {
-		case decision.err != nil:
-			return decision.err
-		case decision.reject:
-			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
-		default:
-			return writeResponseByQtype(qtype)
-		}
-	}
-
-	preferCh := runLookup(preferredQtype, nil)
-	secondaryCh := runLookup(secondaryQtype, nil)
-	preferRes := <-preferCh
-	secondaryRes := <-secondaryCh
-
-	resp, _ := c.LookupDnsRespCache_(dnsMessage, c.cacheKey(qname, qtype), true)
-	decision := decideIPVersionResponse(qtype, preferredQtype, resp != nil, preferRes, secondaryRes)
-	if decision.cleanupSecondary {
-		c.RemoveDnsRespCache(secondaryKey)
-	}
-
-	switch {
-	case decision.err != nil:
-		return decision.err
-	case decision.reject:
-		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
-	default:
-		return writeResponseByQtype(qtype)
-	}
-}
-
-type ipVersionLookupResult struct {
-	err   error
-	hasIP bool
-}
-
-type ipVersionDecision struct {
-	responseQtype    uint16
-	reject           bool
-	cleanupSecondary bool
-	err              error
-}
-
-func decideIPVersionResponse(
-	requestedQtype uint16,
-	preferredQtype uint16,
-	requestedRespAvailable bool,
-	preferRes ipVersionLookupResult,
-	secondaryRes ipVersionLookupResult,
-) ipVersionDecision {
-	decision := ipVersionDecision{
-		responseQtype: requestedQtype,
-	}
-
-	if requestedQtype == preferredQtype {
-		decision.cleanupSecondary = true
-		if preferRes.err != nil {
-			decision.err = preferRes.err
-			return decision
-		}
-		decision.reject = !requestedRespAvailable
-		return decision
-	}
-
-	if preferRes.hasIP {
-		decision.cleanupSecondary = true
-		decision.reject = true
-		return decision
-	}
-
-	if secondaryRes.hasIP {
-		decision.reject = !requestedRespAvailable
-		return decision
-	}
-
-	if preferRes.err != nil {
-		decision.err = preferRes.err
-		return decision
-	}
-	if secondaryRes.err != nil {
-		decision.err = secondaryRes.err
-		return decision
-	}
-
-	decision.reject = true
-	return decision
+	// Handle with preference waiting logic in response phase
+	return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
 }
 
 func (c *DnsController) handleWithResponseWriter_(
@@ -1709,6 +1562,78 @@ func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg
 	return c.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeSuccess, "Reject", req, responseWriter)
 }
 
+// applyPreferenceWait implements RFC 8305 Happy Eyeballs Resolution Delay.
+// When ip_version_prefer is set and a non-preferred A/AAAA response is received,
+// wait briefly (50ms) for the preferred response to arrive before using this one.
+//
+// This function handles two scenarios:
+// 1. Non-preferred response arrives (e.g., A when prefer=6): Register wait and wait for preferred
+// 2. Preferred response arrives (e.g., AAAA when prefer=6): Notify any waiting requests
+//
+// The function returns the response to use (preferred if arrived during wait, otherwise original).
+func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg, req *udpRequest) *dnsmessage.Msg {
+	// Fast path: preference not enabled
+	if c.qtypePrefer == 0 {
+		return respMsg
+	}
+
+	// Only handle A/AAAA responses
+	if len(respMsg.Question) == 0 {
+		return respMsg
+	}
+	q := respMsg.Question[0]
+	if q.Qtype != dnsmessage.TypeA && q.Qtype != dnsmessage.TypeAAAA {
+		return respMsg
+	}
+
+	// Get canonical qname for matching
+	qname := dnsmessage.CanonicalName(q.Name)
+
+	// Case 1: This is the preferred response type - notify waiting requests
+	if isPreferredType(q.Qtype, c.qtypePrefer) {
+		// Notify any waiting requests for this domain
+		if c.prefWaitRegistry.notifyPreferred(qname, q.Qtype, c.qtypePrefer, respMsg) {
+			if c.log.IsLevelEnabled(logrus.TraceLevel) {
+				c.log.Tracef("Preferred %v response for %v notified waiting request", QtypeToString(q.Qtype), qname)
+			}
+		}
+		return respMsg
+	}
+
+	// Case 2: This is a non-preferred response - register wait and wait for preferred
+	if wait := c.prefWaitRegistry.registerWait(qname, q.Qtype, c.qtypePrefer, respMsg); wait != nil {
+		// Non-preferred response arrived before preferred - wait briefly for preferred
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.Tracef("Non-preferred %v response for %v, waiting %v for preferred %v",
+				QtypeToString(q.Qtype), qname, PreferenceResolutionDelay, QtypeToString(c.qtypePrefer))
+		}
+
+		// Wait for preferred response or timeout
+		finalResp, preferred := wait.waitFor()
+
+		// Clean up wait registry
+		c.prefWaitRegistry.remove(qname)
+
+		if preferred {
+			if c.log.IsLevelEnabled(logrus.TraceLevel) {
+				c.log.Tracef("Preferred %v response arrived for %v, using it instead of %v",
+					QtypeToString(c.qtypePrefer), qname, QtypeToString(q.Qtype))
+			}
+			// Use preferred response, but keep original request ID
+			finalResp.Id = respMsg.Id
+			return finalResp
+		}
+
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.Tracef("Preferred %v response not arrived for %v within %v, using %v response",
+				QtypeToString(c.qtypePrefer), qname, PreferenceResolutionDelay, QtypeToString(q.Qtype))
+		}
+		return respMsg
+	}
+
+	return respMsg
+}
+
 func (c *DnsController) dialSend(
 	ctx context.Context,
 	invokingDepth int,
@@ -1799,6 +1724,11 @@ func (c *DnsController) dialSend(
 		}
 		return c.dialSend(ctx, invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter)
 	}
+
+	// Apply preference wait logic for A/AAAA responses.
+	// This must happen before logging and sending the response.
+	respMsg = c.applyPreferenceWait(respMsg, req)
+
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.DebugLevel) {
 		var (
 			qname string
