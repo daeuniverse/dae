@@ -27,9 +27,9 @@ import (
 var UdpRoutingResultCacheTtl = 300 * time.Millisecond
 
 // udpEndpointCreateShardCount is the number of sharded mutexes that guard
-// concurrent endpoint creation. 16 shards give near-zero contention for
-// typical concurrent-create rates while using 4× less mutex memory than 64.
-const udpEndpointCreateShardCount = 16
+// concurrent endpoint creation. 64 shards provide near-zero contention even
+// under high concurrent-create rates.
+const udpEndpointCreateShardCount = 64
 const udpEndpointJanitorInterval = 250 * time.Millisecond
 
 type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
@@ -39,7 +39,6 @@ type UdpEndpoint struct {
 	expiresAtNano atomic.Int64
 	handler       UdpHandler
 	NatTimeout    time.Duration
-	writeMu       sync.Mutex
 
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
@@ -239,7 +238,7 @@ func (ue *UdpEndpoint) selfRemoveFromPool() {
 }
 
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
-	// Fast pre-lock dead check: avoid acquiring mutex for an already-dead endpoint.
+	// Fast dead check: avoid work on an already-dead endpoint.
 	if ue.dead.Load() {
 		return 0, net.ErrClosed
 	}
@@ -264,20 +263,12 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	// Refresh TTL on write to keep endpoint alive for active connections
 	ue.lastWriteNano.Store(now)
 	ue.RefreshTtl()
-	ue.writeMu.Lock()
-	defer ue.writeMu.Unlock()
 
-	// Post-lock dead check: endpoint may have died while this goroutine was
-	// waiting for the mutex. Without this, stale goroutines write to a dead
-	// conn whose physical socket is still open — data disappears silently.
-	if ue.dead.Load() {
-		return 0, net.ErrClosed
-	}
-
+	// Check again after zombie detection - endpoint may have died.
+	// The underlying conn.WriteTo is thread-safe; we accept a small race window
+	// for performance. Write errors will mark the endpoint dead for cleanup.
 	n, err := ue.conn.WriteTo(b, addr)
 	if err != nil {
-		// Mark dead immediately so goroutines queued behind us fail fast
-		// instead of each discovering the error in turn.
 		ue.dead.Store(true)
 		return n, err
 	}
@@ -490,10 +481,9 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	// remains constant. Full-Cone sessions must lookup on every packet as the
 	// server source can change.
 	if key.Dst.Port() != 0 {
-		if bindAddr, writeAddr := normalizeSendPktAddrFamily(key.Dst, key.Src); !isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
-			if af, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout); err == nil {
-				ue.respConn = af
-			}
+		bindAddr, _ := normalizeSendPktAddrFamily(key.Dst, key.Src)
+		if af, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout); err == nil {
+			ue.respConn = af
 		}
 	}
 

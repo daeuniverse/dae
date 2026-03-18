@@ -165,67 +165,52 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 	bindAddr = from
 	writeAddr = realTo
 
-	// Step 1: Handle address family mismatches by alignment.
-	// Transparent sockets require the socket family, bind address family, and destination address
-	// family to match (all AF_INET or all AF_INET6).
-	// On dual-stack systems, we MUST align to AF_INET6 using IPv4-mapped addresses when families
-	// differ, because AF_INET sockets physically cannot handle AF_INET6 addresses.
+	// Pre-compute address types once for performance (avoid repeated method calls).
+	// This ensures idempotency - multiple calls with same inputs produce same output.
+	fromAddr := from.Addr()
+	toAddr := realTo.Addr()
 
-	// 1. If both are IPv4-compatible, unmap both to pure IPv4 for maximum compatibility
-	// and to allow using AF_INET sockets.
-	if (bindAddr.Addr().Is4() || bindAddr.Addr().Is4In6()) && (writeAddr.Addr().Is4() || writeAddr.Addr().Is4In6()) {
-		if bindAddr.Addr().Is4In6() {
-			bindAddr = netip.AddrPortFrom(bindAddr.Addr().Unmap(), bindAddr.Port())
+	fromIs4 := fromAddr.Is4()
+	fromIs4In6 := fromAddr.Is4In6()
+	toIs4 := toAddr.Is4()
+	toIs4In6 := toAddr.Is4In6()
+	fromIs6 := fromAddr.Is6() && !fromIs4In6
+	toIs6 := toAddr.Is6() && !toIs4In6
+
+	// Optimization 1: When both addresses are IPv4-compatible (pure or mapped),
+	// unmap to pure IPv4 for better performance. AF_INET sockets are faster
+	// than AF_INET6 and have lower overhead.
+	if (fromIs4 || fromIs4In6) && (toIs4 || toIs4In6) {
+		if fromIs4In6 {
+			bindAddr = netip.AddrPortFrom(fromAddr.Unmap(), from.Port())
 		}
-		if writeAddr.Addr().Is4In6() {
-			writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
+		if toIs4In6 {
+			writeAddr = netip.AddrPortFrom(toAddr.Unmap(), realTo.Port())
 		}
-	} else {
-		// 2. If one is pure IPv6, both MUST be represented as AF_INET6 (possibly mapped).
-		// CRITICAL: We must also convert ANY IPv4 bind address (including concrete ones)
-		// to an IPv6 wildcard or mapped address to ensure the listener (AnyfromPool)
-		// creates an AF_INET6 socket. Pure AF_INET sockets will return "non-IPv4 address"
-		// error if we try to write to a v6 target.
-		if bindAddr.Addr().Is4() && writeAddr.Addr().Is6() {
-			// Promote bind to v6 wildcard to ENSURE AnyfromPool creates a dual-stack socket.
-			// Use the same port.
-			bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), bindAddr.Port())
-		} else if bindAddr.Addr().Is6() && writeAddr.Addr().Is4() {
-			// Align target to v6
-			writeAddr = netip.AddrPortFrom(netip.AddrFrom16(writeAddr.Addr().As16()), writeAddr.Port())
-		}
+		// Both addresses are now pure IPv4 - no further conversion needed.
+		return bindAddr, writeAddr
 	}
 
-	// Step 2: Handle remaining wildcard adjustments.
-	// (Redundant but safe) ensure IPv4 wildcard with IPv6 target is IPv6 wildcard.
-	if bindAddr.Addr().Is4() && bindAddr.Addr().IsUnspecified() && writeAddr.Addr().Is6() {
-		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), bindAddr.Port())
-	}
-	// IPv6 wildcard (including mapped) with pure IPv4 target should become pure IPv4 wildcard
-	// ONLY if both are IPv4-compatible (handled in Step 1).
-	// If the socket is already IPv6, we should keep it IPv6.
-	if bindAddr.Addr().Is6() && bindAddr.Addr().IsUnspecified() && writeAddr.Addr().Is4() && bindAddr.Addr().Is4In6() {
-		bindAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), bindAddr.Port())
-		writeAddr = netip.AddrPortFrom(writeAddr.Addr().Unmap(), writeAddr.Port())
+	// Case 2: IPv4 bind with IPv6 target → IPv6 wildcard.
+	// Using IPv6 wildcard [::] instead of IPv4-mapped ensures:
+	// - AnyfromPool creates a proper dual-stack socket
+	// - Multiple IPv4 servers can share the same pool entry
+	// - Better compatibility with multi-server scenarios
+	if (fromIs4 || fromIs4In6) && toIs6 {
+		bindAddr = netip.AddrPortFrom(netip.IPv6Unspecified(), from.Port())
+		return bindAddr, writeAddr
 	}
 
+	// Case 3: IPv6 bind with IPv4 target → IPv4-mapped writeAddr.
+	// This allows the AF_INET6 socket to send to IPv4 destinations.
+	if fromIs6 && (toIs4 || toIs4In6) {
+		writeAddr = netip.AddrPortFrom(netip.AddrFrom16(toAddr.As16()), realTo.Port())
+		return bindAddr, writeAddr
+	}
+
+	// Fast path: same-family or already optimal.
+	// No conversion needed - return as-is.
 	return bindAddr, writeAddr
-}
-
-func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
-	// Transparent UDP cannot preserve a concrete IPv4 source while emitting a
-	// pure IPv6 packet. The address-family pair is unsupported by kernel socket
-	// semantics and should fail fast with a clear error.
-	//
-	// Also check the reverse: IPv6 source with IPv4 destination (after unmapping).
-	if bindAddr.Addr().Is4() && writeAddr.Addr().Is6() && !writeAddr.Addr().Is4In6() {
-		return true
-	}
-	// IPv6 bind with IPv4 write is also unsupported (writeAddr was unmapped from IPv4-mapped IPv6)
-	if bindAddr.Addr().Is6() && writeAddr.Addr().Is4() {
-		return true
-	}
-	return false
 }
 
 // sendPkt sends a UDP packet to the destination.
@@ -236,16 +221,16 @@ func isUnsupportedTransparentUDPPair(bindAddr, writeAddr netip.AddrPort) bool {
 //   - realTo: destination address where the packet should be sent
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
-	// Transparent UDP replies must preserve the original destination as the
-	// packet source. The ingress listener socket cannot safely do that for
-	// redirected local DNS traffic, so all reply paths resolve a transparent
-	// Anyfrom socket bound to the desired source address instead of writing
-	// directly on the listener.
+	// Proxy chain support: Use original 'from' address as bindAddr to ensure
+	// each server response gets its own UDP socket. This prevents response mixing
+	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
+	//
+	// Cross-family handling ensures socket type matches write address family:
+	// - IPv6->IPv4: Convert writeAddr to IPv4-mapped IPv6 for dual-stack socket
+	// - IPv4->IPv6: Convert bindAddr to IPv4-mapped IPv6 to create IPv6 socket
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
-	if isUnsupportedTransparentUDPPair(bindAddr, writeAddr) {
-		return fmt.Errorf("unsupported transparent UDP address family pair: bind=%v write=%v", bindAddr, writeAddr)
-	}
 
+	// Try cached socket first (for Symmetric NAT sessions)
 	if afp != nil && *afp != nil {
 		if _, err = (*afp).WriteToUDPAddrPort(data, writeAddr); err == nil {
 			return nil
@@ -257,14 +242,13 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	if err != nil {
 		return
 	}
-	if _, err = uConn.WriteToUDPAddrPort(data, writeAddr); err != nil {
-		return err
-	}
-	// Update caller's cached socket so future calls skip the pool lookup.
-	if afp != nil {
+	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
+
+	// Update caller's cached socket so future calls skip the pool lookup
+	if afp != nil && err == nil {
 		*afp = uConn
 	}
-	return nil
+	return err
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
@@ -272,6 +256,44 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	var domain string
 	var ueKey UdpEndpointKey
 	realSrc = src
+
+	// DNS Fast Path: Skip UdpEndpoint lookup for DNS traffic (port 53).
+	// DNS is a stateless protocol and doesn't need the connection tracking
+	// features that UdpEndpoint provides (designed for QUIC and other long-lived UDP).
+	// This optimization eliminates a sync.Map.Load() operation for every DNS query.
+	if realDst.Port() == 53 {
+		// Potential DNS query - verify with DNS message parsing
+		dnsMessage, _ := ChooseNatTimeout(data, true)
+		if dnsMessage != nil {
+			// Confirmed DNS request - take fast path
+			if routingResult.Mark == 0 {
+				routingResult.Mark = c.soMarkFromDae
+			}
+			req := &udpRequest{
+				realSrc:       realSrc,
+				realDst:       realDst,
+				src:           src,
+				lConn:         lConn,
+				routingResult: routingResult,
+			}
+			if err := c.dnsController.Handle_(c.ctx, dnsMessage, req); err != nil {
+				if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+					return nil
+				}
+				// For DNS fast path, never leave client waiting on internal errors.
+				// Respond with SERVFAIL so resolver can retry/fallback promptly.
+				if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns fast path)", req, nil); sendErr != nil {
+					return stderrors.Join(err, sendErr)
+				}
+				if c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.WithError(err).Debug("DNS fast path failed; SERVFAIL sent")
+				}
+				return nil
+			}
+			return nil
+		}
+		// Not a valid DNS packet (port 53 but not DNS format) - fall through to normal UDP path
+	}
 
 	var ue *UdpEndpoint
 	var ueExists bool

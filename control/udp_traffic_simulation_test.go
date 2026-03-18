@@ -498,7 +498,7 @@ func TestUdpTrafficSimulation_AddrFamilyNormalization(t *testing.T) {
 			name:        "IPv4-mapped to IPv4",
 			from:        "[::ffff:192.168.1.1]:12345",
 			to:          "192.168.1.100:54321",
-			expectBind:  "192.168.1.1:12345",
+			expectBind:  "192.168.1.1:12345",  // Optimized: both IPv4-compatible, unmap to pure IPv4
 			expectWrite: "192.168.1.100:54321",
 			expectError: false,
 		},
@@ -506,7 +506,7 @@ func TestUdpTrafficSimulation_AddrFamilyNormalization(t *testing.T) {
 			name:        "IPv4 wildcard to IPv6",
 			from:        "0.0.0.0:12345",
 			to:          "[2001:db8::1]:443",
-			expectBind:  "[::]:12345",
+			expectBind:  "[::]:12345", // IPv6 wildcard for dual-stack socket (multi-server support)
 			expectWrite: "[2001:db8::1]:443",
 			expectError: false,
 		},
@@ -514,9 +514,9 @@ func TestUdpTrafficSimulation_AddrFamilyNormalization(t *testing.T) {
 			name:        "IPv4 to pure IPv6",
 			from:        "192.168.1.1:12345",
 			to:          "[2001:db8::1]:443",
-			expectBind:  "[::]:12345", // PATCH: Promoted to IPv6 wildcard
+			expectBind:  "[::]:12345", // IPv6 wildcard for dual-stack socket (multi-server support)
 			expectWrite: "[2001:db8::1]:443",
-			expectError: false, // PATCH: Now supported
+			expectError: false,
 		},
 	}
 
@@ -529,10 +529,6 @@ func TestUdpTrafficSimulation_AddrFamilyNormalization(t *testing.T) {
 			require.NoError(t, err)
 
 			bindAddr, writeAddr := normalizeSendPktAddrFamily(from, to)
-			isUnsupported := isUnsupportedTransparentUDPPair(bindAddr, writeAddr)
-
-			require.Equal(t, tt.expectError, isUnsupported,
-				"Unsupported pair detection should match")
 
 			if !tt.expectError {
 				require.Equal(t, tt.expectBind, bindAddr.String(),

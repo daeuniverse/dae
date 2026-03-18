@@ -22,21 +22,21 @@ func TestNormalizeSendPktAddrFamily(t *testing.T) {
 		wantWrite string
 	}{
 		{
-			name:      "IPv4 server to pure IPv6 client (align to v6 wildcard)",
+			name:      "IPv4 server to pure IPv6 client",
 			from:      "8.8.8.8:53",
 			realTo:    "[240e:390::1]:12345",
-			wantBind:  "[::]:53", // Promoted to v6 wildcard to ENSURE dual-stack socket
+			wantBind:  "[::]:53", // IPv6 wildcard for dual-stack socket (multi-server support)
 			wantWrite: "[240e:390::1]:12345",
 		},
 		{
-			name:      "IPv4 server to IPv4-mapped IPv6 client (unmap both)",
+			name:      "IPv4 server to IPv4-mapped IPv6 client",
 			from:      "8.8.8.8:53",
 			realTo:    "[::ffff:192.168.1.2]:12345",
-			wantBind:  "8.8.8.8:53",
+			wantBind:  "8.8.8.8:53", // Optimized: both IPv4-compatible, unmap to pure IPv4
 			wantWrite: "192.168.1.2:12345",
 		},
 		{
-			name:      "IPv6 server to IPv4 client (align to v6)",
+			name:      "IPv6 server to IPv4 client",
 			from:      "[2001:db8::1]:443",
 			realTo:    "192.168.1.2:12345",
 			wantBind:  "[2001:db8::1]:443",
@@ -50,10 +50,10 @@ func TestNormalizeSendPktAddrFamily(t *testing.T) {
 			wantWrite: "192.168.1.2:12345",
 		},
 		{
-			name:      "IPv4-mapped IPv6 server to IPv4-mapped IPv6 client (unmap both)",
+			name:      "IPv4-mapped IPv6 server to IPv4-mapped IPv6 client",
 			from:      "[::ffff:142.251.214.110]:443",
 			realTo:    "[::ffff:192.168.1.100]:53071",
-			wantBind:  "142.251.214.110:443",
+			wantBind:  "142.251.214.110:443", // Optimized: both IPv4-compatible, unmap to pure IPv4
 			wantWrite: "192.168.1.100:53071",
 		},
 	}
@@ -83,60 +83,19 @@ func TestNormalizeSendPktAddrFamily_IPv4ToIPv4MappedIPv6(t *testing.T) {
 
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 
+	// Optimized version: both IPv4-compatible, unmap to pure IPv4 for performance
 	if !bindAddr.Addr().Is4() {
-		t.Fatalf("bindAddr should remain IPv4 for IPv4-mapped IPv6 target, got %v", bindAddr)
+		t.Fatalf("bindAddr should be pure IPv4 (unmapped), got %v", bindAddr)
 	}
 	if bindAddr.Port() != from.Port() {
 		t.Fatalf("bindAddr port should be preserved, want %d got %d", from.Port(), bindAddr.Port())
 	}
 
 	if !writeAddr.Addr().Is4() {
-		t.Fatalf("writeAddr should be unmapped to IPv4, got %v", writeAddr)
+		t.Fatalf("writeAddr should be pure IPv4 (unmapped), got %v", writeAddr)
 	}
-}
-
-func TestIsUnsupportedTransparentUDPPair(t *testing.T) {
-	testCases := []struct {
-		name        string
-		bind        string
-		write       string
-		unsupported bool
-	}{
-		{
-			name:        "IPv4 bind to pure IPv6 write is unsupported",
-			bind:        "8.8.8.8:443",
-			write:       "[240e:390::1]:12345",
-			unsupported: true,
-		},
-		{
-			name:        "IPv6 bind to pure IPv4 write is unsupported",
-			bind:        "[2001:db8::1]:443",
-			write:       "192.168.1.2:12345",
-			unsupported: true,
-		},
-		{
-			name:        "IPv6 bind to IPv4-mapped write is supported",
-			bind:        "[2001:db8::1]:443",
-			write:       "[::ffff:192.168.1.2]:12345",
-			unsupported: false,
-		},
-		{
-			name:        "IPv4 bind to IPv4 write is supported",
-			bind:        "8.8.8.8:443",
-			write:       "192.168.1.2:12345",
-			unsupported: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			bind := netip.MustParseAddrPort(tc.bind)
-			write := netip.MustParseAddrPort(tc.write)
-			got := isUnsupportedTransparentUDPPair(bind, write)
-			if got != tc.unsupported {
-				t.Fatalf("unsupported mismatch: want %v got %v (bind=%v write=%v)", tc.unsupported, got, bind, write)
-			}
-		})
+	if writeAddr.Port() != realTo.Port() {
+		t.Fatalf("writeAddr port should be preserved, want %d got %d", realTo.Port(), writeAddr.Port())
 	}
 }
 
