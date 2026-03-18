@@ -739,9 +739,10 @@ struct route_ctx {
 	__u32 domain_word_bits;
 	bool domain_word_cached;
 	volatile __u8 route_state;
-	// Port rule index for optimization. Set by route() before calling bpf_loop.
-	// If non-NULL, route_loop_cb will skip rules not in this index.
-	const struct port_rule_index *port_idx;
+	// Port rule bitmap for optimization. Set by route() before calling bpf_loop.
+	// If non-zero, route_loop_cb will skip rules not in this bitmap.
+	// Stores 256 bits (4 x __u64) for rules 0-255.
+	__u64 port_bitmap[4];
 };
 
 enum route_state_flags {
@@ -766,6 +767,30 @@ static __always_inline bool check_port_range(__u16 port, __u16 port_start, __u16
 static __always_inline bool check_bitmask(__u8 value, __u8 mask)
 {
 	return (value & mask) != 0;
+}
+
+// Retrieve bitmap word for given rule index.
+// Uses explicit bounds to avoid variable-offset stack access that eBPF verifier rejects.
+// Returns 0 if index >= 256 (out of bitmap range).
+static __always_inline __u64 get_port_bitmap_word(const __u64 *bitmap, __u32 index)
+{
+	__u64 word = 0;
+
+	// Each if branch has constant offset that verifier can validate.
+	// Branch 0: indices 0-63 -> bitmap[0]
+	if (index < 64) {
+		word = bitmap[0];
+	} else if (index < 128) {
+		// Branch 1: indices 64-127 -> bitmap[1]
+		word = bitmap[1];
+	} else if (index < 192) {
+		// Branch 2: indices 128-191 -> bitmap[2]
+		word = bitmap[2];
+	} else if (index < 256) {
+		// Branch 3: indices 192-255 -> bitmap[3]
+		word = bitmap[3];
+	}
+	return word;
 }
 
 static __always_inline bool route_state_has(const struct route_ctx *ctx,
@@ -1084,8 +1109,14 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	// Uses bitmap lookup: each bit represents whether a rule is in the index.
 	// O(1) bit operation instead of O(n) loop to minimize eBPF instructions.
 	// Only applies to rules 0-255 (bitmap size limitation).
-	if (ctx->port_idx && index < 256) {
-		__u64 word = ctx->port_idx->bitmap[index / 64];
+	//
+	// IMPORTANT: If bitmap is all zeros (no entry in eBPF map), we DO NOT skip
+	// any rules. All-zero bitmap means "no optimization info available", not
+	// "no rules match". This ensures wildcard rules are still evaluated when
+	// the port doesn't have a specific entry in the port_rule_index_map.
+	if (index < 256 && (ctx->port_bitmap[0] || ctx->port_bitmap[1] ||
+			    ctx->port_bitmap[2] || ctx->port_bitmap[3])) {
+		__u64 word = get_port_bitmap_word(ctx->port_bitmap, index);
 		__u64 mask = 1ULL << (index % 64);
 
 		if (!(word & mask)) {
@@ -1172,12 +1203,18 @@ static __noinline __s64 route(const struct route_params *params)
 	__builtin_memcpy(ctx.lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
 
 	// Semantic-preserving optimization: Use port index to limit rule iteration.
-	// We store the port rule index pointer in ctx for use by route_loop_cb.
+	// We copy the port rule bitmap into ctx for use by route_loop_cb.
 	// This preserves original rule evaluation order (0, 1, 2, ...) while allowing
 	// route_loop_cb to skip rules that definitely won't match based on port.
+	// Storing bitmap values directly avoids eBPF verifier issues with tracking
+	// map value pointers across bpf_loop callback boundaries.
 	struct port_rule_index *port_idx =
 		bpf_map_lookup_elem(&port_rule_index_map, &ctx.h_dport);
-	ctx.port_idx = port_idx;  // May be NULL
+	__builtin_memset(ctx.port_bitmap, 0, sizeof(ctx.port_bitmap));
+	if (port_idx) {
+		__builtin_memcpy(ctx.port_bitmap, port_idx->bitmap,
+				 sizeof(ctx.port_bitmap));
+	}
 
 	__u32 active_rules_len = MAX_MATCH_SET_LEN;
 	__u32 *active_rules_len_ptr =

@@ -76,6 +76,7 @@ func (b *portIndexBuilder) build() map[uint16]*PortRuleIndex {
 	result := make(map[uint16]*PortRuleIndex)
 
 	// Wildcard rules apply to all ports (SourcePort, domain, IP, etc.)
+	// Use nil-safe access - if no wildcard rules exist, wildcardRules will be nil
 	wildcardRules := b.portToRules[0]
 
 	for port, indices := range b.portToRules {
@@ -88,9 +89,11 @@ func (b *portIndexBuilder) build() map[uint16]*PortRuleIndex {
 		// Since wildcard rules (added first) have lower indices than port-specific
 		// rules (added later), combined list is naturally sorted.
 		seen := make(map[uint16]bool)
+		// Add wildcard rules if any exist (nil-safe)
 		for _, idx := range wildcardRules {
 			seen[idx] = true
 		}
+		// Add port-specific rules
 		for _, idx := range indices {
 			seen[idx] = true
 		}
