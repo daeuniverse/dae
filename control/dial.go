@@ -115,8 +115,8 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 
 	strictIpVersion := dialIp
 	d, _, err := outbound.SelectWithExclusion(selectionNetworkType, strictIpVersion, p.Excluded)
-	if err != nil && p.Network == "udp" && err == ob.ErrNoAliveDialer {
-		// Fallback for UDP: if selection failed (probably due to health check fail),
+	if err != nil && err == ob.ErrNoAliveDialer {
+		// Fallback for UDP/TCP: if selection failed (probably due to health check fail),
 		// try the other IP version if strictIpVersion is not absolutely required by domain routing.
 		altVersion := consts.IpVersionStr_4
 		if selectionNetworkType.IpVersion == consts.IpVersionStr_4 {
