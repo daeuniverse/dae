@@ -1256,19 +1256,29 @@ get_fast_redirect_key(const struct __sk_buff *skb, struct tuples_key *key)
 	__builtin_memset(key, 0, sizeof(*key));
 	key->l4proto = IPPROTO_TCP;
 
-	/* IPv4-only fast path for sk_skb/stream_verdict compatibility.
-	 * IPv6 requires direct ctx access which verifier may reject.
-	 * IPv6 connections will use userspace relay instead. */
-	if (skb->family != AF_INET)
-		return false;
+	/* Support both IPv4 and IPv6 for eBPF fast path.
+	 * IPv6 addresses are stored in remote_ip6/local_ip6 arrays. */
+	if (skb->family == AF_INET) {
+		/* IPv4: map to IPv4-mapped IPv6 address format for consistency
+		 * with tuples_key structure which uses u6_addr32[4] for all addresses. */
+		key->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		key->sip.u6_addr32[3] = skb->remote_ip4;
+		key->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		key->dip.u6_addr32[3] = skb->local_ip4;
+		key->sport = skb->remote_port >> 16;
+		key->dport = bpf_htons((__u16)skb->local_port);
+		return true;
+	} else if (skb->family == AF_INET6) {
+		/* IPv6: copy full 128-bit addresses */
+		__builtin_memcpy(key->sip.u6_addr8, skb->remote_ip6, sizeof(key->sip.u6_addr8));
+		__builtin_memcpy(key->dip.u6_addr8, skb->local_ip6, sizeof(key->dip.u6_addr8));
+		key->sport = skb->remote_port >> 16;
+		key->dport = bpf_htons((__u16)skb->local_port);
+		return true;
+	}
 
-	key->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-	key->sip.u6_addr32[3] = skb->remote_ip4;
-	key->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-	key->dip.u6_addr32[3] = skb->local_ip4;
-	key->sport = skb->remote_port >> 16;
-	key->dport = bpf_htons((__u16)skb->local_port);
-	return true;
+	/* Unsupported address family */
+	return false;
 }
 
 // DNS queries/replies are short-lived; skipping conntrack/cache for them

@@ -2,13 +2,12 @@ package control
 
 import "testing"
 
-func TestTCPRelayPrefetchOffloadSkipReason_SkipsServerFirstFlow(t *testing.T) {
-	if got := tcpRelayPrefetchOffloadSkipReason(true, false); got != "server-first/no-early-client-payload flow" {
-		t.Fatalf("unexpected skip reason: %q", got)
+func TestTCPRelayPrefetchOffloadSkipReason_AllowsAllFlows(t *testing.T) {
+	// Server-first flow restriction removed: eBPF offload is now allowed
+	// regardless of client payload state.
+	if got := tcpRelayPrefetchOffloadSkipReason(true, false); got != "" {
+		t.Fatalf("expected no skip reason for server-first flow, got %q", got)
 	}
-}
-
-func TestTCPRelayPrefetchOffloadSkipReason_AllowsClientPayloadFlow(t *testing.T) {
 	if got := tcpRelayPrefetchOffloadSkipReason(true, true); got != "" {
 		t.Fatalf("expected no skip reason when client payload is ready, got %q", got)
 	}

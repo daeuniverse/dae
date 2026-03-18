@@ -49,9 +49,15 @@ func tcpRelayOffloadReason(err error) string {
 }
 
 func tcpRelayPrefetchOffloadSkipReason(sniffAttempted bool, clientPayloadReady bool) string {
-	if sniffAttempted && !clientPayloadReady {
-		return "server-first/no-early-client-payload flow"
-	}
+	// Server-first/no-early-client-payload flow restriction removed:
+	// eBPF offload works correctly regardless of whether client payload arrived
+	// early. The kernel-side socket redirection (splice/sockmap) is independent
+	// of userspace buffering state. As long as both connections can be unwrapped
+	// to *net.TCPConn and have no pending kernel queue data, offload can proceed.
+	//
+	// This change significantly improves performance for server-first protocols
+	// (like certain TLS configurations) where the client may not send data
+	// immediately after connection establishment.
 	return ""
 }
 

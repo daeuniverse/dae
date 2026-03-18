@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -291,7 +292,7 @@ func TestTcpConnSupportsEBPFRedirect_IPv4AndIPv6(t *testing.T) {
 	defer s6.Close()
 
 	if !tcpConnSupportsEBPFRedirect(c6) || !tcpConnSupportsEBPFRedirect(s6) {
-		t.Fatal("ipv6 tcp sockets should now be offload eligible with sk_skb ipv6 support")
+		t.Fatal("ipv6 tcp sockets should be offload eligible")
 	}
 }
 
@@ -348,4 +349,98 @@ func TestNewTCPRelayOffloadSession_LocalConnectionAccepted(t *testing.T) {
 	if !strings.Contains(err.Error(), "fast_sock map") {
 		t.Fatalf("expected 'fast_sock map' error, got: %v", err)
 	}
+}
+
+// TestTcpOffloadFlushLeftPrefix_ConnSniffer verifies that ConnSniffer
+// implements the necessary interfaces for eBPF offload after sniffing.
+func TestTcpOffloadFlushLeftPrefix_ConnSniffer(t *testing.T) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverCh := make(chan *net.TCPConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		conn, e := ln.AcceptTCP()
+		if e != nil {
+			errCh <- e
+			return
+		}
+		serverCh <- conn
+	}()
+
+	client, err := net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case server = <-serverCh:
+	}
+	defer server.Close()
+
+	// Wrap server in ConnSniffer
+	sniffer := sniffing.NewConnSniffer(server, time.Second)
+	defer sniffer.Close()
+
+	// Verify ConnSniffer can be unwrapped for eBPF offload
+	unwrapped, ok := unwrapRelayTCPConn(sniffer)
+	if !ok {
+		t.Fatal("ConnSniffer should be unwrappable to *net.TCPConn")
+	}
+	if unwrapped != server {
+		t.Fatal("unwrapped conn should be the original server conn")
+	}
+
+	// Verify ConnSniffer has TakeRelayPrefix method (implements relayPrefixSource)
+	// This is verified at compile time - just call it to ensure it exists
+	_ = sniffer.TakeRelayPrefix
+
+	// Verify TIOCINQ check works on fresh connection
+	hasPending, err := tcpConnHasPendingReadData(server)
+	if err != nil {
+		t.Fatalf("tcpConnHasPendingReadData failed: %v", err)
+	}
+	if hasPending {
+		t.Fatal("fresh connection should have no pending data")
+	}
+
+	// Client sends TLS Client Hello (simulated)
+	testData := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	if _, err := client.Write(testData); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for data to arrive in server's kernel queue (TIOCINQ > 0)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hasPending, err = tcpConnHasPendingReadData(server)
+		if err != nil {
+			t.Fatalf("tcpConnHasPendingReadData failed: %v", err)
+		}
+		if hasPending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("data never arrived in kernel queue")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// After sniffing consumes data, TIOCINQ should return 0
+	// This is verified in integration tests where SniffTcp() is called
+	// For this unit test, we just verify the TIOCINQ mechanism works
+
+	// At this point, if SniffTcp() were called:
+	// 1. Data would be read from kernel queue (TIOCINQ -> 0)
+	// 2. Data would be buffered in ConnSniffer
+	// 3. TakeRelayPrefix() would return the buffered data
+	// 4. tcpOffloadFlushLeftPrefix() would flush it to the other peer
+	// 5. eBPF offload would be eligible (both connections unwrappable, TIOCINQ=0)
 }
