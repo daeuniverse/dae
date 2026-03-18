@@ -128,6 +128,14 @@ struct routing_result {
 	__u8 dscp;
 };
 
+// Helper function to safely copy IPv6 addresses in SK_MSG programs.
+// This uses bpf_probe_read_kernel() to avoid eBPF verifier "dereference
+// of modified ctx ptr" errors when accessing IPv6 arrays in context structs.
+static __always_inline int copy_ipv6(union ip6 *dst, const void *src)
+{
+	return bpf_probe_read_kernel(dst, sizeof(__u32) * 4, src);
+}
+
 struct tuples_key {
 	union ip6 sip;
 	union ip6 dip;
@@ -166,8 +174,19 @@ struct {
 } routing_tuples_map SEC(".maps");
 
 /* Sockets in fast_sock map are used for fast-redirecting via
- * sk_skb/stream_verdict. Sockets are automactically deleted from map once
+ * sockops + sk_msg programs. Sockets are automatically deleted from map once
  * closed, so we don't need to worry about stale entries.
+ *
+ * Architecture:
+ * - sockops program (BPF_PROG_TYPE_SOCK_OPS) tracks TCP connection establishment
+ *   and adds sockets to this SOCKHASH map with tuples_key as the key
+ * - sk_msg program (BPF_PROG_TYPE_SK_MSG) intercepts sendmsg() and redirects
+ *   data to the peer socket using bpf_msg_redirect_hash()
+ *
+ * IPv6 Support:
+ * - Both IPv4 and IPv6 connections are supported
+ * - IPv6 addresses are copied using a helper function to avoid eBPF verifier
+ *   "dereference of modified ctx ptr" errors when accessing IPv6 arrays
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_SOCKHASH);
@@ -1250,29 +1269,6 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
-static __always_inline bool
-get_fast_redirect_key(const struct __sk_buff *skb, struct tuples_key *key)
-{
-	__builtin_memset(key, 0, sizeof(*key));
-	key->l4proto = IPPROTO_TCP;
-
-	/* IPv4-only fast path: sk_skb/stream_verdict programs cannot safely
-	 * access skb->remote_ip6 and skb->local_ip6 due to eBPF verifier
-	 * restrictions. The verifier rejects direct access to these fields with
-	 * "dereference of modified ctx ptr" errors. IPv6 connections will use
-	 * userspace relay instead, which still provides good performance. */
-	if (skb->family != AF_INET)
-		return false;
-
-	key->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-	key->sip.u6_addr32[3] = skb->remote_ip4;
-	key->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-	key->dip.u6_addr32[3] = skb->local_ip4;
-	key->sport = skb->remote_port >> 16;
-	key->dport = bpf_htons((__u16)skb->local_port);
-	return true;
-}
-
 // DNS queries/replies are short-lived; skipping conntrack/cache for them
 // reduces unnecessary UDP state churn.
 static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
@@ -2266,25 +2262,104 @@ int tproxy_wan_cg_sock_create(struct bpf_sock *sk)
 	return 1;
 }
 
-SEC("sk_skb/stream_parser")
-int tproxy_fast_redirect_parser(struct __sk_buff *skb)
+// tproxy_sockops tracks TCP connection establishment and adds sockets to
+// the SOCKHASH map for later redirection by the sk_msg program.
+//
+// This program is attached to the root cgroup and is triggered when:
+// - BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: active connect() succeeds
+// - BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: passive accept() succeeds
+//
+// For both IPv4 and IPv6 connections, we extract the five-tuple and add
+// the socket to the fast_sock map. This allows the sk_msg program to find
+// and redirect to the peer socket.
+SEC("sockops")
+int tproxy_sockops(struct bpf_sock_ops *skops)
 {
-	return skb->len;
+	// Only handle TCP connection establishment events
+	switch (skops->op) {
+	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
+	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
+		break;
+	default:
+		return BPF_OK;
+	}
+
+	struct tuples_key key = {};
+
+	__builtin_memset(&key, 0, sizeof(key));
+
+	key.l4proto = IPPROTO_TCP;
+
+	// Handle both IPv4 and IPv6 connections
+	if (skops->family == AF_INET) {
+		// IPv4: store in IPv6-mapped format for consistency
+		key.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		key.sip.u6_addr32[3] = skops->local_ip4;
+		key.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		key.dip.u6_addr32[3] = skops->remote_ip4;
+	} else if (skops->family == AF_INET6) {
+		// IPv6: use bpf_probe_read_kernel() for consistent access
+		if (copy_ipv6(&key.sip, skops->local_ip6) ||
+		    copy_ipv6(&key.dip, skops->remote_ip6))
+			return BPF_OK;
+	} else {
+		return BPF_OK;
+	}
+
+	key.sport = bpf_htons(skops->local_port);
+	key.dport = skops->remote_port >> 16;
+
+	// Add socket to SOCKHASH map for later redirection
+	// BPF_NOEXIST: don't update if already exists (avoid races)
+	long err = bpf_sock_hash_update(skops, &fast_sock, &key, BPF_NOEXIST);
+
+	if (err) {
+		// Socket may already be in map (retransmit of established event)
+		// or map is full - this is not fatal
+	}
+
+	return BPF_OK;
 }
 
-SEC("sk_skb/stream_verdict")
-int tproxy_fast_redirect_verdict(struct __sk_buff *skb)
+// tproxy_sk_msg_redir intercepts sendmsg() and redirects data to the peer
+// socket stored in the SOCKHASH map.
+//
+// This program is attached to the SOCKHASH map and runs whenever data is
+// sent on a socket in the map. It looks up the peer socket using the
+// reversed five-tuple and redirects the data directly, bypassing the
+// kernel TCP/IP stack.
+//
+// Returns:
+// - SK_PASS: let data pass through normal path (no peer found or error)
+// - bpf_msg_redirect_hash result: redirect to peer socket
+SEC("sk_msg")
+int tproxy_sk_msg_redir(struct sk_msg_md *msg)
 {
-	struct tuples_key key;
-	int verdict;
+	struct tuples_key peer_key = {};
 
-	if (!get_fast_redirect_key(skb, &key))
-		return SK_PASS;
+	peer_key.l4proto = IPPROTO_TCP;
 
-	verdict = bpf_sk_redirect_hash(skb, &fast_sock, &key, 0);
-	if (verdict == SK_DROP)
+	if (msg->family == AF_INET) {
+		// IPv4: reverse src/dst to find peer
+		peer_key.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		peer_key.sip.u6_addr32[3] = msg->remote_ip4;
+		peer_key.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		peer_key.dip.u6_addr32[3] = msg->local_ip4;
+	} else if (msg->family == AF_INET6) {
+		// IPv6: use bpf_probe_read_kernel() to safely copy addresses
+		if (copy_ipv6(&peer_key.sip, msg->remote_ip6) ||
+		    copy_ipv6(&peer_key.dip, msg->local_ip6))
+			return SK_PASS;
+	} else {
 		return SK_PASS;
-	return verdict;
+	}
+
+	peer_key.sport = msg->remote_port >> 16;
+	peer_key.dport = bpf_htons(msg->local_port);
+
+	// Redirect to peer socket's ingress queue
+	// BPF_F_INGRESS: deliver to peer's receive buffer
+	return bpf_msg_redirect_hash(msg, &fast_sock, &peer_key, BPF_F_INGRESS);
 }
 
 // Remove cookie to pid, pname mapping.
