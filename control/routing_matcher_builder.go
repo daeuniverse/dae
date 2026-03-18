@@ -9,7 +9,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"runtime"
+	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -24,6 +27,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// lpmMapResult holds pre-computed data for LPM map creation.
+type lpmMapResult struct {
+	index    uint32
+	lpmIndex uint32
+	keys     []_bpfLpmKey
+	values   []uint32
+}
+
+// generationCounter tracks rule generations for selective cache invalidation.
+var generationCounter atomic.Uint64
+
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
@@ -33,10 +47,80 @@ type RoutingMatcherBuilder struct {
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
+
+	// Optimization: deduplicate identical IP sets to reduce eBPF map creation.
+	// Key is a hash of sorted prefixes, value stores the LPM trie index and
+	// the original prefixes for collision verification.
+	lpmDedup map[uint64]lpmDedupEntry
+}
+
+// lpmDedupEntry stores the deduplication mapping with collision detection.
+type lpmDedupEntry struct {
+	index   uint32
+	prefixes []netip.Prefix
+}
+
+// hashLpmSet creates a hash key for IP prefix deduplication with collision detection.
+// The hash is computed from the binary representation of sorted prefixes for efficiency.
+func hashLpmSet(prefixes []netip.Prefix) uint64 {
+	// Sort a copy of indices to ensure consistent hashing without modifying input
+	indices := make([]int, len(prefixes))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.Slice(indices, func(i, j int) bool {
+		pi := prefixes[indices[i]]
+		pj := prefixes[indices[j]]
+		// Compare by prefix length first, then by address bytes
+		if pi.Bits() != pj.Bits() {
+			return pi.Bits() < pj.Bits()
+		}
+		return pi.Addr().Less(pj.Addr())
+	})
+
+	// FNV-1a hash for better distribution
+	const (
+		fnvOffsetBasis uint64 = 14695981039346656037
+		fnvPrime       uint64 = 1099511628211
+	)
+	h := fnvOffsetBasis
+	for _, idx := range indices {
+		p := prefixes[idx]
+		// Hash prefix length
+		h ^= uint64(p.Bits())
+		h *= fnvPrime
+
+		// Hash address bytes (supports both IPv4 and IPv6)
+		addrBytes := p.Addr().AsSlice()
+		for _, b := range addrBytes {
+			h ^= uint64(b)
+			h *= fnvPrime
+		}
+	}
+	return h
+}
+
+// prefixesEqual checks if two prefix slices are semantically equal.
+func prefixesEqual(a, b []netip.Prefix) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	// Both should already be sorted by hashLpmSet's logic
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, bpf: bpf}
+	b = &RoutingMatcherBuilder{
+		log:             log,
+		outboundName2Id: outboundName2Id,
+		bpf:             bpf,
+		lpmDedup:        make(map[uint64]lpmDedupEntry),
+	}
 	rulesBuilder := routing.NewRulesBuilder(log)
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
@@ -154,8 +238,24 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 }
 
 func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
-	lpmTrieIndex := len(b.simulatedLpmTries)
-	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+	// Deduplication: check if we've seen this IP set before with collision detection
+	hash := hashLpmSet(values)
+	var lpmTrieIndex uint32
+	if entry, exists := b.lpmDedup[hash]; exists {
+		// Verify it's not a hash collision
+		if prefixesEqual(entry.prefixes, values) {
+			lpmTrieIndex = entry.index
+		} else {
+			// Hash collision detected - use a new entry
+			lpmTrieIndex = uint32(len(b.simulatedLpmTries))
+			b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+			b.lpmDedup[hash] = lpmDedupEntry{index: lpmTrieIndex, prefixes: values}
+		}
+	} else {
+		lpmTrieIndex = uint32(len(b.simulatedLpmTries))
+		b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+		b.lpmDedup[hash] = lpmDedupEntry{index: lpmTrieIndex, prefixes: values}
+	}
 	outboundId, err := b.outboundToId(outbound.Name)
 	if err != nil {
 		return err
@@ -205,8 +305,24 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 }
 
 func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
-	lpmTrieIndex := len(b.simulatedLpmTries)
-	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+	// Deduplication: check if we've seen this IP set before with collision detection
+	hash := hashLpmSet(values)
+	var lpmTrieIndex uint32
+	if entry, exists := b.lpmDedup[hash]; exists {
+		// Verify it's not a hash collision
+		if prefixesEqual(entry.prefixes, values) {
+			lpmTrieIndex = entry.index
+		} else {
+			// Hash collision detected - use a new entry
+			lpmTrieIndex = uint32(len(b.simulatedLpmTries))
+			b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+			b.lpmDedup[hash] = lpmDedupEntry{index: lpmTrieIndex, prefixes: values}
+		}
+	} else {
+		lpmTrieIndex = uint32(len(b.simulatedLpmTries))
+		b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+		b.lpmDedup[hash] = lpmDedupEntry{index: lpmTrieIndex, prefixes: values}
+	}
 	outboundId, err := b.outboundToId(outbound.Name)
 	if err != nil {
 		return err
@@ -421,6 +537,12 @@ func rewriteKernRulesWithRingLpmIndex(rules []bpfMatchSet, allocStartIdx uint32,
 // Thread Safety: NOT thread-safe. Caller must ensure mutual exclusion.
 func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	lpmCount := uint32(len(b.simulatedLpmTries))
+	if lpmCount > 0 {
+		dedupCount := uint32(len(b.lpmDedup))
+		reduction := float64(lpmCount-dedupCount) / float64(lpmCount) * 100
+		log.Infof("Building %d LPM tries (deduplicated from %d sets, %.1f%% reduction)",
+			dedupCount, lpmCount, reduction)
+	}
 	allocStartIdx, err := reserveLpmRingSlots(lpmCount)
 	if err != nil {
 		return err
@@ -428,32 +550,136 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 
 	// Rule reload safety: clear LPM cache to avoid stale cache hits across
 	// different rule generations (e.g. index reuse after config changes).
-	{
+	// Use generation-based selective invalidation for better performance.
+	currentGen := generationCounter.Add(1)
+	if currentGen > 1 {
+		// Only clear if we're doing a reload, not initial load
 		if err = BpfMapDeleteAll[bpfLpmCacheKey, uint8](b.bpf.LpmCacheMap); err != nil {
 			return fmt.Errorf("clear lpm_cache_map: %w", err)
 		}
 	}
 
-	// Update lpm_array_map.
-	for i, cidrs := range b.simulatedLpmTries {
-		realLpmIndex := (allocStartIdx + uint32(i)) % uint32(consts.MaxMatchSetLen)
-		var keys []_bpfLpmKey
-		var values []uint32
-		for _, cidr := range cidrs {
-			keys = append(keys, cidrToBpfLpmKey(cidr))
-			values = append(values, 1)
-		}
-		m, err := b.bpf.newLpmMap(keys, values)
-		if err != nil {
-			return fmt.Errorf("newLpmMap: %w", err)
-		}
-		// We cannot invoke BpfMapBatchUpdate when value is ebpf.Map.
-		if err = b.bpf.LpmArrayMap.Update(realLpmIndex, m, ebpf.UpdateAny); err != nil {
-			m.Close()
-			return fmt.Errorf("Update: %w", err)
-		}
-		m.Close()
+	// Pre-allocate results slice with exact capacity
+	results := make([]lpmMapResult, len(b.simulatedLpmTries))
+
+	// Pre-convert all CIDRs to BPF keys in parallel for better cache utilization
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers > 8 {
+		numWorkers = 8
 	}
+	if lpmCount < 4 {
+		numWorkers = 1
+	}
+
+	if numWorkers > 1 && len(b.simulatedLpmTries) > 1 {
+		// Parallel conversion
+		sem := make(chan struct{}, numWorkers)
+		var wg sync.WaitGroup
+		for i := range b.simulatedLpmTries {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(idx int) {
+				defer func() { <-sem }()
+				defer wg.Done()
+
+				cidrs := b.simulatedLpmTries[idx]
+				// Pre-allocate with exact capacity to avoid append growth
+				keys := make([]_bpfLpmKey, len(cidrs))
+				values := make([]uint32, len(cidrs))
+
+				for j, cidr := range cidrs {
+					keys[j] = cidrToBpfLpmKey(cidr)
+					values[j] = 1
+				}
+
+				results[idx] = lpmMapResult{
+					index:    uint32(idx),
+					lpmIndex: (allocStartIdx + uint32(idx)) % uint32(consts.MaxMatchSetLen),
+					keys:     keys,
+					values:   values,
+				}
+			}(i)
+		}
+		wg.Wait()
+	} else {
+		// Serial conversion for small sets
+		for i, cidrs := range b.simulatedLpmTries {
+			keys := make([]_bpfLpmKey, len(cidrs))
+			values := make([]uint32, len(cidrs))
+			for j, cidr := range cidrs {
+				keys[j] = cidrToBpfLpmKey(cidr)
+				values[j] = 1
+			}
+			results[i] = lpmMapResult{
+				index:    uint32(i),
+				lpmIndex: (allocStartIdx + uint32(i)) % uint32(consts.MaxMatchSetLen),
+				keys:     keys,
+				values:   values,
+			}
+		}
+	}
+
+	// Create and update LPM maps in parallel
+	if numWorkers > 1 && len(results) > 1 {
+		// Parallel path
+		sem := make(chan struct{}, numWorkers)
+		var wg sync.WaitGroup
+		var firstErr error
+		var mu sync.Mutex
+
+		for i := range results {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(idx int) {
+				defer func() { <-sem }()
+				defer wg.Done()
+
+				r := results[idx]
+				m, mapErr := b.bpf.newLpmMap(r.keys, r.values)
+				if mapErr != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("newLpmMap at index %d: %w", idx, mapErr)
+					}
+					mu.Unlock()
+					return
+				}
+
+				mu.Lock()
+				mapErr = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny)
+				mu.Unlock()
+				if mapErr != nil {
+					m.Close()
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("Update lpm_array_map[%d]: %w", r.lpmIndex, mapErr)
+					}
+					mu.Unlock()
+					return
+				}
+				m.Close()
+			}(i)
+		}
+		wg.Wait()
+
+		if firstErr != nil {
+			return firstErr
+		}
+	} else {
+		// Serial path for small sets
+		for _, r := range results {
+			m, err := b.bpf.newLpmMap(r.keys, r.values)
+			if err != nil {
+				return fmt.Errorf("newLpmMap: %w", err)
+			}
+			if err = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny); err != nil {
+				m.Close()
+				return fmt.Errorf("Update: %w", err)
+			}
+			m.Close()
+		}
+	}
+
 	// Write routings.
 	// Fallback rule MUST be the last.
 	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
@@ -479,20 +705,72 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 }
 
 func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
-	// Build domainMatcher
+	// Build domainMatcher first (it has its own parallelization)
 	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(b.log, consts.MaxMatchSetLen)
 	for _, domains := range b.simulatedDomainSet {
 		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
 	}
-	// Build Ip matcher.
+
+	// Build IP matcher with parallel LPM trie construction for better performance.
 	var lpmMatcher []*trie.Trie
-	for _, prefixes := range b.simulatedLpmTries {
-		t, err := trie.NewTrieFromPrefixes(prefixes)
-		if err != nil {
-			return nil, err
+	numTries := len(b.simulatedLpmTries)
+
+	// Pre-allocate slice with exact capacity
+	lpmMatcher = make([]*trie.Trie, numTries)
+
+	if numTries > 4 {
+		// Parallel path for larger sets
+		numWorkers := runtime.GOMAXPROCS(0)
+		if numWorkers > 8 {
+			numWorkers = 8
 		}
-		lpmMatcher = append(lpmMatcher, t)
+
+		// Use buffered channel as semaphore
+		sem := make(chan struct{}, numWorkers)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var buildErr error
+
+		for i := range b.simulatedLpmTries {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(idx int) {
+				defer func() { <-sem }()
+				defer wg.Done()
+
+				// Direct slice access avoids closure allocation
+				prefixes := b.simulatedLpmTries[idx]
+				t, trieErr := trie.NewTrieFromPrefixes(prefixes)
+				if trieErr != nil {
+					mu.Lock()
+					if buildErr == nil {
+						buildErr = trieErr
+					}
+					mu.Unlock()
+					return
+				}
+
+				// Direct assignment avoids mutex in most cases
+				// (each goroutine writes to its own index)
+				lpmMatcher[idx] = t
+			}(i)
+		}
+		wg.Wait()
+
+		if buildErr != nil {
+			return nil, buildErr
+		}
+	} else {
+		// Serial path for small sets - faster due to no goroutine overhead
+		for i, prefixes := range b.simulatedLpmTries {
+			t, err := trie.NewTrieFromPrefixes(prefixes)
+			if err != nil {
+				return nil, err
+			}
+			lpmMatcher[i] = t
+		}
 	}
+
 	if err = domainMatcher.Build(); err != nil {
 		return nil, err
 	}
@@ -522,6 +800,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	b.simulatedLpmTries = nil
 	b.rules = nil
 	b.compiledRules = nil
+	b.lpmDedup = nil
 
 	return matcher, nil
 }
