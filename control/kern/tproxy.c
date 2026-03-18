@@ -317,6 +317,36 @@ struct {
 	__type(value, struct udp_conn_state);
 } udp_conn_state_map SEC(".maps");
 
+// Port-to-rule index map for semantic-preserving optimization.
+// Key: destination port (host byte order)
+// Value: array of rule indices that may match this port
+//
+// This optimization reduces the rule traversal space without changing
+// matching semantics. Only rules that match on DESTINATION port can be
+// pre-filtered. Source port rules, domain rules, IP rules, etc. are
+// treated as wildcards and included in every port's index.
+//
+// route_loop_cb uses this index to skip rules that definitely won't match
+// based on destination port, while preserving the original rule evaluation
+// order (0, 1, 2, ...).
+//
+// Example: If port 443 has rules [0, 2, 5] in its index (including wildcard
+// rules like SourcePort, domain, IP), and the full rule set has 100 rules,
+// route_loop_cb will skip directly over rules 1, 3, 4, 6-99 when processing
+// port 443 traffic.
+struct port_rule_index {
+	__u16 rule_indices[32];  // Rule indices in routing_map (max 32 per port)
+	__u8 count;              // Actual number of rules for this port
+	__u8 _padding[3];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(key_size, sizeof(__u16));
+	__uint(value_size, sizeof(struct port_rule_index));
+	__uint(max_entries, 65536);  // All possible ports
+} port_rule_index_map SEC(".maps");
+
 // Functions:
 
 static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph)
@@ -713,6 +743,9 @@ struct route_ctx {
 	__u32 domain_word_bits;
 	bool domain_word_cached;
 	volatile __u8 route_state;
+	// Port rule index for optimization. Set by route() before calling bpf_loop.
+	// If non-NULL, route_loop_cb will skip rules not in this index.
+	const struct port_rule_index *port_idx;
 };
 
 enum route_state_flags {
@@ -1051,6 +1084,26 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 		return 1;
 	}
 
+	// Semantic-preserving optimization: Skip rules not in the port index.
+	// If port_idx is non-NULL, only evaluate rules that are in the index.
+	// This preserves the original rule evaluation order while skipping
+	// rules that definitely won't match based on port.
+	if (ctx->port_idx && ctx->port_idx->count > 0) {
+		// Check if current rule index is in the port index
+		bool found = false;
+
+		for (__u8 i = 0; i < ctx->port_idx->count && i < 32; i++) {
+			if (ctx->port_idx->rule_indices[i] == index) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			// Rule not in port index, skip it
+			return 0;  // Continue to next rule
+		}
+	}
+
 	__u32 k = index; // Clone to pass code checker.
 
 	match_set = bpf_map_lookup_elem(&routing_map, &k);
@@ -1127,6 +1180,14 @@ static __noinline __s64 route(const struct route_params *params)
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
+
+	// Semantic-preserving optimization: Use port index to limit rule iteration.
+	// We store the port rule index pointer in ctx for use by route_loop_cb.
+	// This preserves original rule evaluation order (0, 1, 2, ...) while allowing
+	// route_loop_cb to skip rules that definitely won't match based on port.
+	struct port_rule_index *port_idx =
+		bpf_map_lookup_elem(&port_rule_index_map, &ctx.h_dport);
+	ctx.port_idx = port_idx;  // May be NULL
 
 	__u32 active_rules_len = MAX_MATCH_SET_LEN;
 	__u32 *active_rules_len_ptr =

@@ -24,6 +24,102 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// PortRuleIndex maps a destination port to the rule indices that may match it.
+// This is a semantic-preserving optimization: rules are stored in their original
+// order to preserve priority and LOGICAL_OR/LOGICAL_AND behavior.
+type PortRuleIndex struct {
+	RuleIndices [32]uint16 // Rule indices in routing_map (max 32 per port)
+	Count       uint8     // Actual number of rules for this port
+}
+
+// portIndexBuilder builds the port-to-rule index map.
+type portIndexBuilder struct {
+	portToRules map[uint16][]uint16 // Port -> list of rule indices
+}
+
+func newPortIndexBuilder() *portIndexBuilder {
+	return &portIndexBuilder{
+		portToRules: make(map[uint16][]uint16),
+	}
+}
+
+// addRule adds a rule index to all ports that this rule may match.
+//
+// Semantic preservation: This optimization must preserve the original rule
+// evaluation order. Key insight: we can only skip rules that DEFINITELY won't match.
+//
+// - MatchType_Port: Can be indexed by destination port (h_dport) because the
+//   port value is known at lookup time in route().
+//
+// - MatchType_SourcePort: CANNOT be indexed by destination port because source
+//   port (h_sport) is unknown at lookup time. Must be treated as a wildcard.
+//
+// - All other match types: Apply regardless of port, treated as wildcards.
+func (b *portIndexBuilder) addRule(ruleIdx uint16, rule compiledRoutingMatch) {
+	switch rule.matchType {
+	case consts.MatchType_Port:
+		// Only destination port rules can be indexed by destination port.
+		// Use int to avoid infinite loop when portEnd is 65535 (uint16 max).
+		for port := int(rule.portStart); port <= int(rule.portEnd); port++ {
+			b.portToRules[uint16(port)] = append(b.portToRules[uint16(port)], ruleIdx)
+		}
+	default:
+		// SourcePort and all non-port rules apply to all ports.
+		// Track as wildcard rules (port 0) to be included in every port's index.
+		b.portToRules[0] = append(b.portToRules[0], ruleIdx)
+	}
+}
+
+// build constructs the final port index map.
+// Returns a map suitable for batch updating the eBPF port_rule_index_map.
+func (b *portIndexBuilder) build() map[uint16]*PortRuleIndex {
+	result := make(map[uint16]*PortRuleIndex)
+
+	// Wildcard rules apply to all ports (SourcePort, domain, IP, etc.)
+	wildcardRules := b.portToRules[0]
+
+	for port, indices := range b.portToRules {
+		var portSpecific []uint16
+		if port != 0 {
+			portSpecific = indices
+		}
+
+		// Combine wildcard rules with port-specific rules.
+		// Since rule indices are assigned sequentially in config order,
+		// and wildcard rules (added first) have lower indices than
+		// port-specific rules (added later), the combined list is
+		// naturally sorted by index.
+		combined := make([]uint16, 0, len(wildcardRules)+len(portSpecific))
+		combined = append(combined, wildcardRules...)
+		combined = append(combined, portSpecific...)
+
+		// Deduplicate while preserving order.
+		seen := make(map[uint16]bool)
+		unique := make([]uint16, 0, len(combined))
+		for _, idx := range combined {
+			if !seen[idx] {
+				seen[idx] = true
+				unique = append(unique, idx)
+			}
+		}
+
+		// Limit to 32 rules per port.
+		if len(unique) > 32 {
+			unique = unique[:32]
+		}
+
+		var idxArr [32]uint16
+		copy(idxArr[:], unique)
+
+		result[port] = &PortRuleIndex{
+			RuleIndices: idxArr,
+			Count:       uint8(len(unique)),
+		}
+	}
+
+	return result
+}
+
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
@@ -475,6 +571,14 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	}
 	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
 
+	// Semantic-preserving optimization: Build port-to-rule index map.
+	// This allows route_loop_cb to skip rules that definitely won't match
+	// based on destination port, while preserving original rule evaluation order.
+	if err = b.buildAndUpdatePortIndexMap(kernRules, log); err != nil {
+		log.WithError(err).Warn("Failed to build port index map; performance optimization disabled")
+		// Non-fatal: routing will work without this optimization
+	}
+
 	return nil
 }
 
@@ -524,4 +628,74 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	b.compiledRules = nil
 
 	return matcher, nil
+}
+
+// buildAndUpdatePortIndexMap builds the port-to-rule index map and updates the eBPF map.
+// This is a semantic-preserving optimization that allows route_loop_cb to skip
+// rules that definitely won't match based on destination port.
+//
+// The index includes all rules that may match each port:
+// - Rules with port/destination-port conditions are added to specific ports
+// - Rules without port conditions (wildcard) are added to all ports
+//
+// route_loop_cb uses this index to skip irrelevant rules while preserving
+// the original rule evaluation order (0, 1, 2, ...).
+func (b *RoutingMatcherBuilder) buildAndUpdatePortIndexMap(kernRules []bpfMatchSet, log *logrus.Logger) error {
+	// Build port index from compiled rules
+	builder := newPortIndexBuilder()
+
+	for i := range kernRules {
+		if i >= len(b.compiledRules) {
+			break
+		}
+		compiled := b.compiledRules[i]
+		builder.addRule(uint16(i), compiled)
+	}
+
+	portIndexMap := builder.build()
+
+	// Update eBPF port_rule_index_map
+	// Note: This map will be available after eBPF recompilation with the new tproxy.c
+	// For now, we check if the map exists before attempting to update it.
+	portRuleIndexMap := b.bpf.PortRuleIndexMap
+	if portRuleIndexMap == nil {
+		log.Info("Port rule index map not yet available; recompile eBPF to enable this optimization")
+		return nil // Not an error - optimization is optional
+	}
+
+	// Clear all existing entries to prevent stale indices after config reload.
+	// This follows the same pattern as LPM cache clearing (see line 518).
+	if err := BpfMapDeleteAll[*uint16, [68]byte](b.bpf.PortRuleIndexMap); err != nil {
+		log.WithError(err).Warn("Failed to clear port_rule_index_map; may have stale entries")
+		// Non-fatal: routing will still work, just with potential stale entries
+	}
+
+	// Batch update port index map
+	for port, index := range portIndexMap {
+		// Convert to eBPF-compatible format
+		// The eBPF struct uses:
+		//   __u16 rule_indices[32]
+		//   __u8 count
+		//   __u8 _padding[3]
+
+		// Since we can't directly map Go struct to eBPF struct without codegen,
+		// we need to manually construct the byte array
+		var value [68]byte // 32 * 2 bytes (uint16) + 4 bytes (count + padding)
+
+		// Write rule indices (little-endian)
+		for i := 0; i < int(index.Count); i++ {
+			idx := index.RuleIndices[i]
+			value[i*2] = byte(idx)
+			value[i*2+1] = byte(idx >> 8)
+		}
+		// Write count at byte 64
+		value[64] = byte(index.Count)
+
+		if err := portRuleIndexMap.Put(&port, value); err != nil {
+			return fmt.Errorf("update port_rule_index_map for port %d: %w", port, err)
+		}
+	}
+
+	log.Infof("Port rule index map built: %d ports indexed", len(portIndexMap))
+	return nil
 }

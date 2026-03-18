@@ -175,6 +175,9 @@ type bpfObjects struct {
 	bpfPrograms
 	bpfMaps
 	bpfVariables
+	// PortRuleIndexMap is added manually for port-index optimization.
+	// Will be populated from eBPF maps after loading.
+	PortRuleIndexMap *ebpf.Map
 }
 
 func (o *bpfObjects) Close() error {
@@ -192,6 +195,7 @@ type bpfMaps struct {
 	LpmArrayMap             *ebpf.Map `ebpf:"lpm_array_map"`
 	LpmCacheMap             *ebpf.Map `ebpf:"lpm_cache_map"`
 	OutboundConnectivityMap *ebpf.Map `ebpf:"outbound_connectivity_map"`
+	PortRuleIndexMap        *ebpf.Map `ebpf:"port_rule_index_map"` // Semantic-preserving optimization
 	RedirectTrack           *ebpf.Map `ebpf:"redirect_track"`
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.Map `ebpf:"routing_meta_map"`
@@ -209,6 +213,7 @@ func (m *bpfMaps) Close() error {
 		m.LpmArrayMap,
 		m.LpmCacheMap,
 		m.OutboundConnectivityMap,
+		m.PortRuleIndexMap, // May be nil in older builds
 		m.RedirectTrack,
 		m.RoutingMap,
 		m.RoutingMetaMap,
