@@ -88,11 +88,12 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout    time.Duration
-	tproxyPortProtect  bool
-	soMarkFromDae      uint32
-	mptcp              bool
-	udpUnorderedRunner *udpUnorderedTaskRunner
+	sniffingTimeout     time.Duration
+	tproxyPortProtect   bool
+	soMarkFromDae       uint32
+	mptcp               bool
+	udpUnorderedRunner  *udpUnorderedTaskRunner
+	udpBoundedPool      *udpBoundedPoolManager
 }
 
 var (
@@ -524,6 +525,7 @@ func NewControlPlaneWithContext(
 		soMarkFromDae:      global.SoMarkFromDae,
 		mptcp:              global.Mptcp,
 		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
+		udpBoundedPool:     newUdpBoundedPoolManager(ctx),
 	}
 	plane.startRealDomainNegJanitor()
 
@@ -590,6 +592,10 @@ func NewControlPlaneWithContext(
 		return nil, err
 	}
 	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
+	plane.deferFuncs = append(plane.deferFuncs, func() error {
+		plane.udpBoundedPool.Close()
+		return nil
+	})
 
 	// On reload, clear the BPF domain routing map to ensure DNS configuration
 	// changes take effect immediately. The dnsCache parameter is preserved for
@@ -1377,9 +1383,28 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// Keep ordered ingress scoped to QUIC Initial flows and flows with an
 			// active sniff session so multi-packet ClientHello reassembly stays
 			// deterministic; other UDP traffic stays on the direct path.
-			if flowDecision.ShouldUseOrderedIngress() {
+			//
+			// Layered dispatch strategy for optimal throughput, latency, and reliability:
+			// 1. Ordered Ingress: For QUIC Initial and sniffing sessions (preserves order)
+			// 2. Direct Goroutine: For DNS/VoIP (lowest latency, zero drops)
+			// 3. Bounded Pool: For WireGuard/VPN (backpressure without drops)
+			// 4. Task Runner: Fallback for other traffic (may drop under load)
+			switch flowDecision.DispatchStrategy() {
+			case StrategyOrderedIngress:
 				DefaultUdpTaskPool.EmitTask(flowDecision.Key, task)
-			} else {
+			case StrategyDirectGoroutine:
+				// DNS, VoIP, and other drop-sensitive traffic use direct goroutine spawn.
+				// This provides the lowest latency and guarantees no drops.
+				go task()
+			case StrategyBoundedPool:
+				// WireGuard, VPN, and long-lived UDP connections use bounded pool.
+				// This provides concurrency control with backpressure (no drops).
+				if !c.udpBoundedPool.Submit(task) {
+					// Pool closed (shutdown), fall back to direct goroutine
+					go task()
+				}
+			default:
+				// For any other traffic, use task runner (may drop under load)
 				if !c.udpUnorderedRunner.Submit(flowDecision.Key, task) {
 					pktBuf.Put()
 				}

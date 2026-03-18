@@ -118,3 +118,103 @@ func (d UdpFlowDecision) ShouldUseOrderedIngress() bool {
 	// Hysteria2/TUIC (which also use UDP/443) onto the slower ordered path.
 	return d.HasSnifferSession || d.IsQuicInitial
 }
+
+// ShouldUseGoroutineDirectly returns true if the traffic should use direct
+// goroutine spawn instead of any queue. This is used for:
+// 1. DNS traffic (port 53) - drops are unacceptable
+// 2. VoIP traffic (SIP/RTP) - extremely latency sensitive
+// 3. Other latency/drop-sensitive traffic
+func (d UdpFlowDecision) ShouldUseGoroutineDirectly() bool {
+	dstPort := d.Key.Dst.Port()
+	srcPort := d.Key.Src.Port()
+
+	// DNS (both queries and responses) - never drop
+	if dstPort == 53 || srcPort == 53 {
+		return true
+	}
+
+	// VoIP signaling (SIP) - latency sensitive
+	if dstPort == 5060 || srcPort == 5060 {
+		return true
+	}
+
+	// VoIP media (RTP) - extremely latency sensitive
+	if (dstPort >= 5004 && dstPort <= 5060) || (srcPort >= 5004 && srcPort <= 5060) {
+		return true
+	}
+
+	// STUN - used for NAT traversal, latency sensitive
+	if dstPort == 3478 || srcPort == 3478 {
+		return true
+	}
+
+	return false
+}
+
+// ShouldUseBoundedPool returns true if traffic should use the bounded goroutine pool.
+// This provides backpressure without dropping packets, suitable for:
+// 1. Long-lived UDP connections (WireGuard, VPN)
+// 2. High-throughput UDP traffic
+// 3. General UDP traffic that needs concurrency control
+func (d UdpFlowDecision) ShouldUseBoundedPool() bool {
+	dstPort := d.Key.Dst.Port()
+	srcPort := d.Key.Src.Port()
+
+	// WireGuard - long-lived, high throughput
+	if dstPort == 51820 || srcPort == 51820 {
+		return true
+	}
+
+	// OpenVPN
+	if dstPort == 1194 || srcPort == 1194 {
+		return true
+	}
+
+	// IPsec IKE
+	if dstPort == 500 || srcPort == 500 {
+		return true
+	}
+
+	// QUIC data packets (after initial) - long-lived
+	if d.IsLikelyQuicData && !d.IsQuicInitial {
+		return true
+	}
+
+	return false
+}
+
+// DispatchStrategy returns the recommended dispatch strategy for this flow.
+func (d UdpFlowDecision) DispatchStrategy() UdpDispatchStrategy {
+	if d.ShouldUseOrderedIngress() {
+		return StrategyOrderedIngress
+	}
+	if d.ShouldUseGoroutineDirectly() {
+		return StrategyDirectGoroutine
+	}
+	if d.ShouldUseBoundedPool() {
+		return StrategyBoundedPool
+	}
+	// Default to direct goroutine for safety (no drops)
+	return StrategyDirectGoroutine
+}
+
+// UdpDispatchStrategy represents how a UDP packet should be dispatched.
+type UdpDispatchStrategy int
+
+const (
+	// StrategyDirectGoroutine uses direct goroutine spawn.
+	// Lowest latency, no drops, but no concurrency control.
+	StrategyDirectGoroutine UdpDispatchStrategy = iota
+
+	// StrategyBoundedPool uses a bounded goroutine pool.
+	// Low latency, no drops, provides backpressure via blocking.
+	StrategyBoundedPool
+
+	// StrategyOrderedIngress uses ordered task pool.
+	// Higher latency, preserves packet ordering for sniffing.
+	StrategyOrderedIngress
+
+	// StrategyTaskRunner uses the unordered task runner.
+	// May drop packets under load, use only for drop-tolerant traffic.
+	StrategyTaskRunner
+)

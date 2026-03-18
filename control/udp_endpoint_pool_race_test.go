@@ -13,7 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// mockPacketConn 模拟 netproxy.PacketConn
+// mockPacketConn implements a mock netproxy.PacketConn for testing.
 type mockPacketConn struct {
 	writes       int64
 	writeToCalls int64
@@ -61,8 +61,8 @@ func (m *mockPacketConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-// TestUdpEndpointWriteToRace 测试 UdpEndpoint 的并发写入
-// 注意：这个测试验证 UdpEndpoint 确实有写锁保护
+// TestUdpEndpointWriteToRace tests concurrent writes to UdpEndpoint.
+// Verifies that UdpEndpoint has proper write lock protection.
 func TestUdpEndpointWriteToRace(t *testing.T) {
 	mockConn := &mockPacketConn{}
 	
@@ -107,7 +107,7 @@ func TestUdpEndpointWriteToRace(t *testing.T) {
 	t.Logf("✅ UdpEndpoint.WriteTo is thread-safe: %d concurrent writes completed", writes)
 }
 
-// TestUdpEndpointWriteToAfterClose 测试关闭后的写入行为
+// TestUdpEndpointWriteToAfterClose tests write behavior after close.
 func TestUdpEndpointWriteAfterClose(t *testing.T) {
 	mockConn := &mockPacketConn{}
 	
@@ -121,10 +121,10 @@ func TestUdpEndpointWriteAfterClose(t *testing.T) {
 		log:        log,
 	}
 	
-	// 关闭 endpoint
+	// Mark endpoint as closed
 	endpoint.dead.Store(true)
-	
-	// 尝试写入应该失败
+
+	// Write should fail with net.ErrClosed
 	_, err := endpoint.WriteTo([]byte("test"), "127.0.0.1:8080")
 	if err != net.ErrClosed {
 		t.Errorf("Expected net.ErrClosed after close, got: %v", err)
@@ -133,7 +133,7 @@ func TestUdpEndpointWriteAfterClose(t *testing.T) {
 	t.Logf("✅ UdpEndpoint correctly rejects writes after close")
 }
 
-// TestUdpEndpointTtlRefreshRace 测试 TTL 刷新的并发安全
+// TestUdpEndpointTtlRefreshRace tests concurrent TTL refresh safety.
 func TestUdpEndpointTtlRefreshRace(t *testing.T) {
 	mockConn := &mockPacketConn{}
 	
@@ -172,23 +172,22 @@ func TestUdpEndpointTtlRefreshRace(t *testing.T) {
 	t.Logf("✅ TTL refresh is thread-safe: expiresAt=%d", expiresAt)
 }
 
-// TestAnyfromConcurrentWrite 测试 Anyfrom 的并发写入
-// 问题：Anyfrom 的 Write 方法没有写锁保护
+// TestAnyfromConcurrentWrite tests concurrent writes to Anyfrom.
 func TestAnyfromConcurrentWrite(t *testing.T) {
-	// 创建真实的 UDP 连接
+	// Create real UDP connection
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("Failed to create UDP connection: %v", err)
 	}
 	defer conn.Close()
 	
-	// 创建目标地址
+	// Create destination address
 	dstAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:12345")
 	if err != nil {
 		t.Fatalf("Failed to resolve destination: %v", err)
 	}
 	
-	// 创建 Anyfrom
+	// Create Anyfrom
 	af := &Anyfrom{
 		UDPConn: conn,
 		ttl:     30 * time.Second,
@@ -222,7 +221,7 @@ func TestAnyfromConcurrentWrite(t *testing.T) {
 	t.Logf("✅ Anyfrom concurrent write test completed (may show races with -race flag)")
 }
 
-// TestAnyfromGsoErrorRace 测试 GSO 错误状态的竞争
+// TestAnyfromGsoErrorRace tests GSO error state concurrent access.
 func TestAnyfromGsoErrorRace(t *testing.T) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -246,10 +245,10 @@ func TestAnyfromGsoErrorRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			
-			// 模拟并发设置 GSO 错误
+			// Simulate concurrent GSO error state modification
 			af.gotGSOError.Store(true)
-			
-			// 检查状态
+
+			// Check state
 			_ = af.gotGSOError.Load()
 		}()
 	}
@@ -259,7 +258,7 @@ func TestAnyfromGsoErrorRace(t *testing.T) {
 	t.Logf("✅ GSO error state race test completed")
 }
 
-// BenchmarkUdpEndpointWriteTo 基准测试 UdpEndpoint 写入性能
+// BenchmarkUdpEndpointWriteTo benchmarks UdpEndpoint write performance.
 func BenchmarkUdpEndpointWriteTo(b *testing.B) {
 	mockConn := &mockPacketConn{}
 	
@@ -282,7 +281,7 @@ func BenchmarkUdpEndpointWriteTo(b *testing.B) {
 	}
 }
 
-// BenchmarkUdpEndpointWriteToParallel 并发基准测试
+// BenchmarkUdpEndpointWriteToParallel benchmarks concurrent UdpEndpoint writes.
 func BenchmarkUdpEndpointWriteToParallel(b *testing.B) {
 	mockConn := &mockPacketConn{}
 	
@@ -307,7 +306,7 @@ func BenchmarkUdpEndpointWriteToParallel(b *testing.B) {
 	})
 }
 
-// TestUdpEndpointPoolConcurrentAccess 测试 UdpEndpointPool 的并发访问
+// TestUdpEndpointPoolConcurrentAccess tests UdpEndpointPool concurrent access.
 func TestUdpEndpointPoolConcurrentAccess(t *testing.T) {
 	pool := NewUdpEndpointPool()
 	
@@ -330,7 +329,7 @@ func TestUdpEndpointPoolConcurrentAccess(t *testing.T) {
 					Dst: netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", 8000+id)),
 				}
 				
-				// 尝试获取或创建（这里简化测试，不实际创建）
+				// Try to get or create endpoint (will fail due to dial error)
 				_, _, err := pool.GetOrCreate(
 					key,
 					&UdpEndpointOptions{
@@ -345,7 +344,7 @@ func TestUdpEndpointPoolConcurrentAccess(t *testing.T) {
 				)
 
 				if err != nil {
-					// 预期会失败，因为 GetDialOption 返回错误
+					// Expected to fail since GetDialOption returns error
 					t.Logf("Expected error for goroutine %d op %d: %v", id, j, err)
 				}
 			}
