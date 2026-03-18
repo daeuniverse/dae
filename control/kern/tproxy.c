@@ -2262,82 +2262,22 @@ int tproxy_wan_cg_sock_create(struct bpf_sock *sk)
 	return 1;
 }
 
-// tproxy_sockops tracks TCP connection establishment and adds sockets to
-// the SOCKHASH map for later redirection by the sk_msg program.
+// tproxy_sockops is a placeholder for future sockops-based socket tracking.
 //
-// This program is attached to the root cgroup and is triggered when:
-// - BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: active connect() succeeds
-// - BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: passive accept() succeeds
+// The current implementation uses userspace-driven socket pairing via the
+// tcpRelayOffloadSession in tcp_offload_linux.go, which directly updates the
+// SOCKHASH map with precise bidirectional mappings.
 //
-// For both IPv4 and IPv6 connections, we extract the five-tuple and add
-// the socket to the fast_sock map. This allows the sk_msg program to find
-// and redirect to the peer socket.
+// sockops programs run with insufficient context to correctly pair the two
+// independent sockets (client->dae and dae->server) that form a relay.
+// Attempting to add sockets here would interfere with the userspace-managed
+// mappings, causing incorrect lookups in the sk_msg program.
+//
+// This stub exists for compatibility with the Go bpfPrograms struct.
 SEC("sockops")
 int tproxy_sockops(struct bpf_sock_ops *skops)
 {
-	// Only handle TCP connection establishment events
-	switch (skops->op) {
-	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
-	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
-		break;
-	default:
-		return BPF_OK;
-	}
-
-	struct tuples_key key = {};
-
-	__builtin_memset(&key, 0, sizeof(key));
-
-	key.l4proto = IPPROTO_TCP;
-
-	// Handle both IPv4 and IPv6 connections
-	if (skops->family == AF_INET) {
-		// IPv4: store in IPv6-mapped format for consistency
-		key.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-		key.sip.u6_addr32[3] = skops->local_ip4;
-		key.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-		key.dip.u6_addr32[3] = skops->remote_ip4;
-	} else if (skops->family == AF_INET6) {
-		// IPv6: use bpf_probe_read_kernel() for consistent access
-		if (copy_ipv6(&key.sip, skops->local_ip6) ||
-		    copy_ipv6(&key.dip, skops->remote_ip6))
-			return BPF_OK;
-	} else {
-		return BPF_OK;
-	}
-
-	key.sport = bpf_htons(skops->local_port);
-	key.dport = skops->remote_port >> 16;
-
-	// Add socket to SOCKHASH map with bidirectional mapping.
-	// This allows the sk_msg program to find the peer socket regardless
-	// of which direction the data is flowing.
-	//
-	// We add the same socket with two different keys:
-	// 1. Forward key: (local_ip, local_port) -> (remote_ip, remote_port)
-	// 2. Reverse key: (remote_ip, remote_port) -> (local_ip, local_port)
-	//
-	// When data flows in either direction, the sk_msg program can look up
-	// the peer socket by using the reverse of the current tuple.
-
-	// Add with forward key (original direction)
-	bpf_sock_hash_update(skops, &fast_sock, &key, BPF_ANY);
-
-	// Create reverse key for bidirectional lookup
-	struct tuples_key reverse_key = {};
-
-	__builtin_memset(&reverse_key, 0, sizeof(reverse_key));
-	reverse_key.l4proto = IPPROTO_TCP;
-
-	// Swap source and destination
-	reverse_key.sip = key.dip;
-	reverse_key.dip = key.sip;
-	reverse_key.sport = key.dport;
-	reverse_key.dport = key.sport;
-
-	// Add with reverse key (opposite direction)
-	bpf_sock_hash_update(skops, &fast_sock, &reverse_key, BPF_ANY);
-
+	// Userspace handles socket pairing; do nothing here.
 	return BPF_OK;
 }
 
