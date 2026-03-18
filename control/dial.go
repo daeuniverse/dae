@@ -27,6 +27,7 @@ type proxyDialParam struct {
 	Dest        netip.AddrPort
 	Mark        uint32
 	Network     string // e.g. "tcp", "udp"
+	Excluded    *dialer.Dialer // Dialer to exclude in selection
 }
 
 type proxyDialResult struct {
@@ -113,7 +114,7 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	}
 
 	strictIpVersion := dialIp
-	d, _, err := outbound.Select(selectionNetworkType, strictIpVersion)
+	d, _, err := outbound.SelectWithExclusion(selectionNetworkType, strictIpVersion, p.Excluded)
 	if err != nil && p.Network == "udp" && err == ob.ErrNoAliveDialer {
 		// Fallback for UDP: if selection failed (probably due to health check fail),
 		// try the other IP version if strictIpVersion is not absolutely required by domain routing.
@@ -126,7 +127,7 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 			IpVersion: altVersion,
 			IsDns:     false,
 		}
-		d, _, err = outbound.Select(altType, false)
+		d, _, err = outbound.SelectWithExclusion(altType, false, p.Excluded)
 		if err == nil {
 			selectionNetworkType = altType
 		}

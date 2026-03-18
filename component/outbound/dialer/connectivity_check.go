@@ -780,11 +780,17 @@ func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailable(typ))
+	if typ.L4Proto == consts.L4ProtoStr_UDP {
+		d.NotifyZombie()
+	}
 }
 
 func (d *Dialer) ReportUnavailableForced(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true))
+	if typ.L4Proto == consts.L4ProtoStr_UDP {
+		d.NotifyZombie()
+	}
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {

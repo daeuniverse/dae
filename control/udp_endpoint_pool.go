@@ -46,6 +46,10 @@ type UdpEndpoint struct {
 	lastWriteNano   atomic.Int64
 	lastReadNano    atomic.Int64
 
+	// unansweredStartNano tracks the start time of the current period of unreturned writes.
+	// If 0, it means the connection is idle or all previous writes have been acknowledged.
+	unansweredStartNano atomic.Int64
+
 	Dialer   *dialer.Dialer
 	Outbound *outbound.DialerGroup
 
@@ -149,6 +153,7 @@ func (ue *UdpEndpoint) start() {
 		}
 		ue.softErrorCount = 0
 		ue.lastReadNano.Store(time.Now().UnixNano())
+		ue.unansweredStartNano.Store(0)
 		ue.RefreshTtl()
 		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.dead.Store(true)
@@ -243,17 +248,24 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 		return 0, net.ErrClosed
 	}
 	now := time.Now().UnixNano()
-	lastRead := ue.lastReadNano.Load()
-	if lastRead > 0 && now-lastRead > int64(30*time.Second) {
-		// Detect zombie session: we are still writing but haven't seen a response for a long time.
-		// This happens when the proxy is blackholing your specific UDP traffic.
+
+	// Detect zombie: actively writing but receiving no response for prolonged period.
+	// We track the start of the current period of unreturned writes in unansweredStartNano.
+	unanswered := ue.unansweredStartNano.Load()
+	if unanswered == 0 {
+		// New session or idle connection waking up. Record the start of this write sequence.
+		ue.unansweredStartNano.Store(now)
+		unanswered = now
+	}
+
+	if now-unanswered > int64(ZombieDetectionTimeout) {
 		if ue.Dialer != nil {
 			networkType := &dialer.NetworkType{
 				L4Proto:   consts.L4ProtoStr_UDP,
 				IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
 				IsDns:     false,
 			}
-			ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("zombie session detected (no response for 30s)"))
+			ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("zombie session detected (no response for %v)", ZombieDetectionTimeout))
 		}
 		// Mark dead to force recreation on next packet, giving a chance to switch node.
 		ue.dead.Store(true)
@@ -376,6 +388,15 @@ func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uin
 }
 
 // UdpEndpointKey is the pool key. Dst=0 for Full-Cone NAT, non-zero for QUIC.
+const (
+	// ZombieDetectionTimeout is the duration of continuous "write but no read"
+	// activity that triggers zombie detection. If we keep writing but receive
+	// no response for this long, the connection is marked as a zombie session.
+	// This value matches ZombieExclusionDuration in dialer.go for consistency:
+	// once detected, the dialer is excluded for the same duration.
+	ZombieDetectionTimeout = 30 * time.Second
+)
+
 type UdpEndpointKey struct {
 	Src netip.AddrPort
 	Dst netip.AddrPort
@@ -459,7 +480,6 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		_ = udpConn.Close()
 		return nil, fmt.Errorf("protocol does not support udp")
 	}
-	now := time.Now().UnixNano()
 	ue := &UdpEndpoint{
 		conn:          packetConn,
 		handler:       createOption.Handler,
@@ -473,8 +493,10 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		poolRef:       p,
 		poolKey:       key,
 	}
+	now := time.Now().UnixNano()
 	ue.lastReadNano.Store(now)
 	ue.lastWriteNano.Store(now)
+	// unansweredStartNano is intentionally left at 0, indicating a fresh session.
 
 	// Pre-cache the Anyfrom socket for responses. Caching is only safe for
 	// fixed-destination sessions (Symmetric NAT) where the response bind address

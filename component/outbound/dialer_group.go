@@ -155,15 +155,24 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 	return d.aliveDialerSets[typ.Index()]
 }
 
-// Select selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
+// Select is a backward-compatible wrapper for SelectWithExclusion.
 func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bool) (d *dialer.Dialer, latency time.Duration, err error) {
+	return g.SelectWithExclusion(networkType, strictIpVersion, nil)
+}
+
+// SelectWithExclusion selects a dialer from group according to selectionPolicy.
+// The 'excluded' parameter specifies a dialer to avoid during selection (for
+// failover scenarios). Note that Fixed policy ignores 'excluded' because user
+// configuration takes precedence over automatic exclusion.
+// If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
+func (g *DialerGroup) SelectWithExclusion(networkType *dialer.NetworkType, strictIpVersion bool, excluded *dialer.Dialer) (d *dialer.Dialer, latency time.Duration, err error) {
 	policy := g.selectionPolicy
-	d, latency, err = g._select(networkType, policy)
+	d, latency, err = g._select(networkType, policy, excluded)
 	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
 		// Fallback to another ipversion. Use local copy to avoid modifying the original networkType if it's passed by reference.
 		nt := *networkType
 		nt.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
-		return g._select(&nt, policy)
+		return g._select(&nt, policy, excluded)
 	}
 	if err == nil {
 		return d, latency, nil
@@ -173,7 +182,7 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bo
 		if d, _, err = g._select(networkType, &DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy_Fixed,
 			FixedIndex: 0,
-		}); err != nil {
+		}, excluded); err != nil {
 			return nil, 0, err
 		}
 		return d, dialer.Timeout, nil
@@ -181,7 +190,7 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bo
 	return nil, latency, err
 }
 
-func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSelectionPolicy) (d *dialer.Dialer, latency time.Duration, err error) {
+func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSelectionPolicy, excluded *dialer.Dialer) (d *dialer.Dialer, latency time.Duration, err error) {
 	if len(g.Dialers) == 0 {
 		return nil, 0, fmt.Errorf("no dialer in this group")
 	}
@@ -196,15 +205,19 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 		return d, 0, nil
 
 	case consts.DialerSelectionPolicy_Fixed:
-		if g.selectionPolicy.FixedIndex < 0 || g.selectionPolicy.FixedIndex >= len(g.Dialers) {
+		// Fixed policy represents explicit user intent to use a specific dialer.
+		// It ignores the 'excluded' parameter because user configuration takes
+		// precedence over automatic exclusion. Even if the dialer is marked as
+		// zombie or excluded, Fixed policy returns it as configured.
+		if policy.FixedIndex < 0 || policy.FixedIndex >= len(g.Dialers) {
 			return nil, 0, fmt.Errorf("selected dialer index is out of range")
 		}
-		return g.Dialers[g.selectionPolicy.FixedIndex], 0, nil
+		return g.Dialers[policy.FixedIndex], 0, nil
 
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		d, latency := a.GetMinLatency()
+		d, latency := a.GetMinLatency(excluded)
 		if d == nil {
 			// No alive dialer.
 			return nil, time.Hour, ErrNoAliveDialer
@@ -212,6 +225,6 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 		return d, latency, nil
 
 	default:
-		return nil, 0, fmt.Errorf("unsupported DialerSelectionPolicy: %v", g.selectionPolicy)
+		return nil, 0, fmt.Errorf("unsupported DialerSelectionPolicy: %v", policy)
 	}
 }

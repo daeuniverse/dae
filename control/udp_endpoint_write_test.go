@@ -62,15 +62,25 @@ func TestUdpEndpointWriteTo_AllowsConcurrentWrites(t *testing.T) {
 		conn:       conn,
 		NatTimeout: time.Minute,
 	}
+	initEndpointTimestamps(ue)
 
 	var wg sync.WaitGroup
+	var writeErr error
+	var mu sync.Mutex
 	for range 32 {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			_, err := ue.WriteTo([]byte("payload"), "198.51.100.10:3478")
-			require.NoError(t, err)
-		})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil && writeErr == nil {
+				writeErr = err
+			}
+		}()
 	}
 	wg.Wait()
+	require.NoError(t, writeErr)
 
 	require.Equal(t, int32(32), conn.writeCalls.Load(), "all writes should complete")
 	// With the write lock removed, concurrent writes are allowed for better performance.
@@ -86,6 +96,7 @@ func TestUdpEndpointWriteTo_TreatsShortWriteAsError(t *testing.T) {
 		conn:       &writeTrackingPacketConn{shortWrite: true},
 		NatTimeout: time.Minute,
 	}
+	initEndpointTimestamps(ue)
 
 	n, err := ue.WriteTo([]byte("payload"), "198.51.100.10:3478")
 	require.ErrorIs(t, err, io.ErrShortWrite)
@@ -113,6 +124,7 @@ func TestUdpEndpointWriteTo_MarksDead_OnWriteError(t *testing.T) {
 		conn:       failConn,
 		NatTimeout: time.Minute,
 	}
+	initEndpointTimestamps(ue)
 
 	_, err := ue.WriteTo([]byte("payload"), "198.51.100.10:3478")
 	require.Error(t, err)

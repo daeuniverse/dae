@@ -148,6 +148,7 @@ type DialOption struct {
 	Outbound      *ob.DialerGroup
 	Network       string
 	SniffedDomain string
+	Excluded      *dialer.Dialer
 }
 
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
@@ -533,6 +534,7 @@ afterSniffing:
 	payloads = append(payloads, data)
 	packetIndex := 0
 	retry := 0
+	var excludedDialer *dialer.Dialer
 	var isNew bool
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
@@ -619,6 +621,7 @@ getNew:
 					Outbound:      res.Outbound,
 					Network:       res.Network,
 					SniffedDomain: res.SniffedDomain,
+					Excluded:      excludedDialer,
 				}, nil
 			},
 		})
@@ -649,6 +652,8 @@ getNew:
 				"retry":   retry,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
+		// Exclude the dead dialer to force selection of a different one on retry.
+		excludedDialer = ue.Dialer
 		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 		retry++
 		goto getNew
@@ -676,6 +681,21 @@ getNew:
 					"packet":  packetIndex,
 				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 			}
+			if ue.Dialer != nil {
+				networkType := &dialer.NetworkType{
+					L4Proto:   consts.L4ProtoStr_UDP,
+					IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
+					IsDns:     false,
+				}
+				// ReportUnavailable marks the dialer as zombie (30s exclusion window).
+				// Combined with excludedDialer below, this provides double protection:
+				// (1) temporary exclusion for future selections, and (2) guaranteed
+				// exclusion for the immediate retry, preventing a "just recovered but
+				// still unstable" dialer from being selected.
+				ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("udp endpoint write failed: %w", err))
+			}
+			// Ensure the failed dialer is excluded in the immediate retry.
+			excludedDialer = ue.Dialer
 			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 			retry++
 			goto getNew
