@@ -769,6 +769,22 @@ static __always_inline bool check_bitmask(__u8 value, __u8 mask)
 	return (value & mask) != 0;
 }
 
+// Check if port bitmap has any bits set.
+// Returns true if at least one bit in the 256-bit bitmap is set.
+// Uses early-exit pattern to reduce verifier state exploration on newer kernels.
+static __always_inline bool port_bitmap_is_nonzero(const __u64 *bitmap)
+{
+	// Check each 64-bit word with early exit.
+	// Avoids combining results with OR which creates exponential verifier states.
+	if (bitmap[0])
+		return true;
+	if (bitmap[1])
+		return true;
+	if (bitmap[2])
+		return true;
+	return bitmap[3] != 0;
+}
+
 // Retrieve bitmap word for given rule index.
 // Uses explicit bounds to avoid variable-offset stack access that eBPF verifier rejects.
 // Returns 0 if index >= 256 (out of bitmap range).
@@ -1114,8 +1130,10 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	// any rules. All-zero bitmap means "no optimization info available", not
 	// "no rules match". This ensures wildcard rules are still evaluated when
 	// the port doesn't have a specific entry in the port_rule_index_map.
-	if (index < 256 && (ctx->port_bitmap[0] || ctx->port_bitmap[1] ||
-			    ctx->port_bitmap[2] || ctx->port_bitmap[3])) {
+	//
+	// Use helper function to check bitmap: this reduces verifier state explosion
+	// on kernel 6.12+ by avoiding OR chains in the condition.
+	if (index < 256 && port_bitmap_is_nonzero(ctx->port_bitmap)) {
 		__u64 word = get_port_bitmap_word(ctx->port_bitmap, index);
 		__u64 mask = 1ULL << (index % 64);
 
