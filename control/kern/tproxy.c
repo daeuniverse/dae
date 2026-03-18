@@ -317,27 +317,23 @@ struct {
 	__type(value, struct udp_conn_state);
 } udp_conn_state_map SEC(".maps");
 
-// Port-to-rule index map for semantic-preserving optimization.
+// Port-to-rule bitmap for semantic-preserving optimization.
 // Key: destination port (host byte order)
-// Value: array of rule indices that may match this port
+// Value: bitmap indicating which rules may match this port
 //
-// This optimization reduces the rule traversal space without changing
-// matching semantics. Only rules that match on DESTINATION port can be
-// pre-filtered. Source port rules, domain rules, IP rules, etc. are
-// treated as wildcards and included in every port's index.
+// This optimization reduces rule traversal without changing semantics.
+// Each bit represents a rule index: bit N set means rule N is in the index.
+// Rules matching on DESTINATION port are pre-filtered. Source port rules,
+// domain rules, IP rules, etc. are treated as wildcards and included in
+// every port's bitmap.
 //
-// route_loop_cb uses this index to skip rules that definitely won't match
-// based on destination port, while preserving the original rule evaluation
-// order (0, 1, 2, ...).
+// route_loop_cb uses this bitmap to skip rules that definitely won't match
+// based on destination port, while preserving original rule evaluation order.
 //
-// Example: If port 443 has rules [0, 2, 5] in its index (including wildcard
-// rules like SourcePort, domain, IP), and the full rule set has 100 rules,
-// route_loop_cb will skip directly over rules 1, 3, 4, 6-99 when processing
-// port 443 traffic.
+// Example: If port 443 has bitmap with bits 0, 2, 5 set (including wildcard
+// rules), route_loop_cb will only evaluate rules 0, 2, 5 for port 443 traffic.
 struct port_rule_index {
-	__u16 rule_indices[32];  // Rule indices in routing_map (max 32 per port)
-	__u8 count;              // Actual number of rules for this port
-	__u8 _padding[3];
+	__u64 bitmap[4];  // 256 bits = 4 * 64, covers MAX_MATCH_SET_LEN
 };
 
 struct {
@@ -1084,22 +1080,15 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 		return 1;
 	}
 
-	// Semantic-preserving optimization: Skip rules not in the port index.
-	// If port_idx is non-NULL, only evaluate rules that are in the index.
-	// This preserves the original rule evaluation order while skipping
-	// rules that definitely won't match based on port.
-	if (ctx->port_idx && ctx->port_idx->count > 0) {
-		// Check if current rule index is in the port index
-		bool found = false;
+	// Semantic-preserving optimization: Skip rules not in the port bitmap.
+	// Uses bitmap lookup: each bit represents whether a rule is in the index.
+	// O(1) bit operation instead of O(n) loop to minimize eBPF instructions.
+	if (ctx->port_idx) {
+		__u64 word = ctx->port_idx->bitmap[index / 64];
+		__u64 mask = 1ULL << (index % 64);
 
-		for (__u8 i = 0; i < ctx->port_idx->count && i < 32; i++) {
-			if (ctx->port_idx->rule_indices[i] == index) {
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			// Rule not in port index, skip it
+		if (!(word & mask)) {
+			// Rule not in port bitmap, skip it
 			return 0;  // Continue to next rule
 		}
 	}
