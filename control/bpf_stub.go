@@ -24,8 +24,7 @@ type bpfDaeParam struct {
 	Dae0Ifindex     uint32
 	Dae0NetnsId     uint32
 	Dae0peerMac     [6]uint8
-	UseNetkit       uint8
-	Padding         uint8
+	Padding         [2]uint8
 }
 
 type bpfDomainRouting struct {

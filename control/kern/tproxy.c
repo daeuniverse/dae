@@ -147,8 +147,7 @@ struct dae_param {
 	__u32 dae0_ifindex;
 	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
-	__u8 use_netkit;  // Use bpf_redirect_peer() for Netkit devices
-	__u8 padding;
+	__u8 padding[2];
 };
 
 /* Use const volatile for cilium/ebpf v0.20.0 compatibility.
@@ -1172,17 +1171,6 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 	return ret;
 }
 
-// Optimized redirect function using bpf_redirect_peer() for Netkit devices
-// When using Netkit, bpf_redirect_peer() avoids the backlog queue for lower latency
-static __always_inline int redirect_to_control_plane(void)
-{
-	if (PARAM.use_netkit) {
-		// bpf_redirect_peer() goes ingress->ingress, skipping backlog queue
-		return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
-	}
-	return bpf_redirect(PARAM.dae0_ifindex, 0);
-}
-
 static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
 	__u8 l4proto, struct ethhdr *ethh, __u8 from_wan, struct tcphdr *tcph)
@@ -1601,7 +1589,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 control_plane:
 	prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
 				       &pkt->ethh, 0, &pkt->tcph);
-	return redirect_to_control_plane();
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
 	return TC_ACT_OK;
@@ -1840,7 +1828,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
 				       1, tcph);
-	return redirect_to_control_plane();
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
 static __noinline int
@@ -1955,7 +1943,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 
 	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
 				       1, &dummy_tcph);
-	return redirect_to_control_plane();
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
 struct wan_egress_parsed {
