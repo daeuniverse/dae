@@ -38,55 +38,6 @@ type lpmMapResult struct {
 // generationCounter tracks rule generations for selective cache invalidation.
 var generationCounter atomic.Uint64
 
-// Object pools for reducing memory allocations during LPM map creation.
-// These pools reuse slices across multiple LPM trie builds, significantly
-// reducing GC pressure for configurations with many IP rules.
-var (
-	lpmKeyPool = sync.Pool{
-		New: func() any {
-			// Pre-allocate for typical geoip sizes (most entries are /24 or larger)
-			return make([]_bpfLpmKey, 0, 256)
-		},
-	}
-	lpmValuePool = sync.Pool{
-		New: func() any {
-			return make([]uint32, 0, 256)
-		},
-	}
-)
-
-// acquireLpmBuffers gets buffers from pool or creates new ones if needed.
-func acquireLpmBuffers(size int) ([]_bpfLpmKey, []uint32) {
-	keys := lpmKeyPool.Get().([]_bpfLpmKey)
-	values := lpmValuePool.Get().([]uint32)
-
-	// Resize if needed (rare case for very large prefix sets)
-	if cap(keys) < size {
-		keys = make([]_bpfLpmKey, size)
-	} else {
-		keys = keys[:0]
-	}
-	if cap(values) < size {
-		values = make([]uint32, size)
-	} else {
-		values = values[:0]
-	}
-
-	return keys, values
-}
-
-// releaseLpmBuffers returns buffers to pool for reuse.
-func releaseLpmBuffers(keys []_bpfLpmKey, values []uint32) {
-	// Reset slices to zero length but keep capacity for reuse
-	// This is important: we reset len to 0 but keep the underlying array
-	if cap(keys) <= 4096 { // Only pool reasonable-sized slices
-		lpmKeyPool.Put(keys[:0])
-	}
-	if cap(values) <= 4096 {
-		lpmValuePool.Put(values[:0])
-	}
-}
-
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
@@ -621,7 +572,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	}
 
 	if numWorkers > 1 && len(b.simulatedLpmTries) > 1 {
-		// Parallel conversion using object pools to reduce allocations
+		// Parallel conversion
 		sem := make(chan struct{}, numWorkers)
 		var wg sync.WaitGroup
 		for i := range b.simulatedLpmTries {
@@ -632,32 +583,32 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 				defer wg.Done()
 
 				cidrs := b.simulatedLpmTries[idx]
-				// Use object pool to reduce allocations
-				keys, values := acquireLpmBuffers(len(cidrs))
+				// Pre-allocate with exact capacity to avoid append growth
+				keys := make([]_bpfLpmKey, len(cidrs))
+				values := make([]uint32, len(cidrs))
 
-				for _, cidr := range cidrs {
-					keys = append(keys, cidrToBpfLpmKey(cidr))
-					values = append(values, 1)
+				for j, cidr := range cidrs {
+					keys[j] = cidrToBpfLpmKey(cidr)
+					values[j] = 1
 				}
 
-				// Store results - slices are now owned by lpmMapResult
 				results[idx] = lpmMapResult{
 					index:    uint32(idx),
 					lpmIndex: (allocStartIdx + uint32(idx)) % uint32(consts.MaxMatchSetLen),
 					keys:     keys,
 					values:   values,
 				}
-				// Note: don't release to pool - slices are now stored in results
 			}(i)
 		}
 		wg.Wait()
 	} else {
-		// Serial conversion for small sets - still benefits from pooling
+		// Serial conversion for small sets
 		for i, cidrs := range b.simulatedLpmTries {
-			keys, values := acquireLpmBuffers(len(cidrs))
-			for _, cidr := range cidrs {
-				keys = append(keys, cidrToBpfLpmKey(cidr))
-				values = append(values, 1)
+			keys := make([]_bpfLpmKey, len(cidrs))
+			values := make([]uint32, len(cidrs))
+			for j, cidr := range cidrs {
+				keys[j] = cidrToBpfLpmKey(cidr)
+				values[j] = 1
 			}
 			results[i] = lpmMapResult{
 				index:    uint32(i),
@@ -668,14 +619,13 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 		}
 	}
 
-	// Create and update LPM maps in parallel.
-	// LpmArrayMap.Update is thread-safe in the kernel, so we don't need to serialize it.
-	// Only error tracking needs synchronization.
+	// Create and update LPM maps in parallel
 	if numWorkers > 1 && len(results) > 1 {
-		// Parallel path - optimized for concurrent map updates
+		// Parallel path
 		sem := make(chan struct{}, numWorkers)
 		var wg sync.WaitGroup
-		var firstErr atomic.Value // Stores *error for lock-free error tracking
+		var firstErr error
+		var mu sync.Mutex
 
 		for i := range results {
 			wg.Add(1)
@@ -687,31 +637,36 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 				r := results[idx]
 				m, mapErr := b.bpf.newLpmMap(r.keys, r.values)
 				if mapErr != nil {
-					if firstErr.Load() == nil {
-						firstErr.Store(fmt.Errorf("newLpmMap at index %d: %w", idx, mapErr))
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("newLpmMap at index %d: %w", idx, mapErr)
 					}
+					mu.Unlock()
 					return
 				}
 
-				// LpmArrayMap.Update is thread-safe - no mutex needed
-				// The kernel handles concurrent updates to different array indices
+				mu.Lock()
 				mapErr = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny)
-				m.Close() // Close map immediately after update
-
+				mu.Unlock()
 				if mapErr != nil {
-					if firstErr.Load() == nil {
-						firstErr.Store(fmt.Errorf("Update lpm_array_map[%d]: %w", r.lpmIndex, mapErr))
+					m.Close()
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("Update lpm_array_map[%d]: %w", r.lpmIndex, mapErr)
 					}
+					mu.Unlock()
+					return
 				}
+				m.Close()
 			}(i)
 		}
 		wg.Wait()
 
-		if err := firstErr.Load(); err != nil {
-			return err.(error)
+		if firstErr != nil {
+			return firstErr
 		}
 	} else {
-		// Serial path for small sets - avoids goroutine overhead
+		// Serial path for small sets
 		for _, r := range results {
 			m, err := b.bpf.newLpmMap(r.keys, r.values)
 			if err != nil {
@@ -723,11 +678,6 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 			}
 			m.Close()
 		}
-	}
-
-	// Release buffers back to pool for reuse - they are no longer needed after maps are created
-	for _, r := range results {
-		releaseLpmBuffers(r.keys, r.values)
 	}
 
 	// Write routings.
