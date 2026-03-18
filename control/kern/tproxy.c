@@ -2309,14 +2309,34 @@ int tproxy_sockops(struct bpf_sock_ops *skops)
 	key.sport = bpf_htons(skops->local_port);
 	key.dport = skops->remote_port >> 16;
 
-	// Add socket to SOCKHASH map for later redirection
-	// BPF_NOEXIST: don't update if already exists (avoid races)
-	long err = bpf_sock_hash_update(skops, &fast_sock, &key, BPF_NOEXIST);
+	// Add socket to SOCKHASH map with bidirectional mapping.
+	// This allows the sk_msg program to find the peer socket regardless
+	// of which direction the data is flowing.
+	//
+	// We add the same socket with two different keys:
+	// 1. Forward key: (local_ip, local_port) -> (remote_ip, remote_port)
+	// 2. Reverse key: (remote_ip, remote_port) -> (local_ip, local_port)
+	//
+	// When data flows in either direction, the sk_msg program can look up
+	// the peer socket by using the reverse of the current tuple.
 
-	if (err) {
-		// Socket may already be in map (retransmit of established event)
-		// or map is full - this is not fatal
-	}
+	// Add with forward key (original direction)
+	bpf_sock_hash_update(skops, &fast_sock, &key, BPF_ANY);
+
+	// Create reverse key for bidirectional lookup
+	struct tuples_key reverse_key = {};
+
+	__builtin_memset(&reverse_key, 0, sizeof(reverse_key));
+	reverse_key.l4proto = IPPROTO_TCP;
+
+	// Swap source and destination
+	reverse_key.sip = key.dip;
+	reverse_key.dip = key.sip;
+	reverse_key.sport = key.dport;
+	reverse_key.dport = key.sport;
+
+	// Add with reverse key (opposite direction)
+	bpf_sock_hash_update(skops, &fast_sock, &reverse_key, BPF_ANY);
 
 	return BPF_OK;
 }
