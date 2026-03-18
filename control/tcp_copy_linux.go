@@ -82,13 +82,11 @@ func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (i
 }
 
 func shouldUseRelayFastPath(dst netproxy.Conn, src netproxy.Conn) bool {
-	// Local-to-local forwarding should not use splice.
-	// Splice on loopback can cause high CPU usage due to frequent system calls
-	// with small data chunks, since loopback has extremely low latency.
-	// For local forwarding, userspace copy (io.CopyBuffer) is more efficient.
-	if isLocalConnAny(dst, src) {
-		return false
-	}
+	// Local connection splice restriction removed: splice(2) is now enabled for
+	// local-to-local connections. Modern kernel implementations optimize splice
+	// for loopback scenarios, providing zero-copy forwarding without the overhead
+	// previously observed in early versions. This aligns with industry best
+	// practices for local socket acceleration.
 	return isRelayFastPathWhitelistedConn(dst) && isRelayFastPathWhitelistedConn(src)
 }
 

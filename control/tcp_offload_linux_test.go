@@ -295,7 +295,7 @@ func TestTcpConnSupportsEBPFRedirect_IPv4AndIPv6(t *testing.T) {
 	}
 }
 
-func TestNewTCPRelayOffloadSession_LocalConnectionRejected(t *testing.T) {
+func TestNewTCPRelayOffloadSession_LocalConnectionAccepted(t *testing.T) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -327,15 +327,25 @@ func TestNewTCPRelayOffloadSession_LocalConnectionRejected(t *testing.T) {
 	}
 	defer server.Close()
 
-	// newTCPRelayOffloadSession should reject local-to-local connections
+	// newTCPRelayOffloadSession should no longer reject local-to-local connections.
+	// The eBPF sockmap/sockops is specifically designed to optimize local-to-local
+	// traffic by bypassing the kernel TCP/IP stack.
+	//
+	// The session creation will still fail here because we pass nil for the eBPF map,
+	// but the error should be about the missing map, not about local connection.
 	_, err = newTCPRelayOffloadSession(nil, netproxy.Conn(client), netproxy.Conn(server))
 	if err == nil {
-		t.Fatal("newTCPRelayOffloadSession should reject local-to-local connections")
+		t.Fatal("newTCPRelayOffloadSession should fail when fast_sock map is nil")
 	}
 	if !errors.Is(err, errTCPRelayOffloadUnavailable) {
 		t.Fatalf("expected errTCPRelayOffloadUnavailable, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "local to local connection") {
-		t.Fatalf("expected 'local to local connection' in error, got: %v", err)
+	// Verify the error is NOT about local connection being rejected
+	if strings.Contains(err.Error(), "local to local connection") {
+		t.Fatalf("local connections should not be rejected, got error: %v", err)
+	}
+	// The error should be about the missing map
+	if !strings.Contains(err.Error(), "fast_sock map") {
+		t.Fatalf("expected 'fast_sock map' error, got: %v", err)
 	}
 }

@@ -119,14 +119,15 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 	}
 	defer server.Close()
 
-	// Local connections (127.0.0.1) should not use splice due to performance issues
-	// on loopback. Splice on loopback can cause high CPU usage due to frequent
-	// system calls with small data chunks.
+	// Local loopback connections now use splice fast path.
+	// Modern kernel implementations optimize splice for loopback scenarios,
+	// providing zero-copy forwarding without the overhead previously observed.
 	got := shouldUseRelayFastPath(client, server)
-	if got {
-		t.Fatal("local loopback connections should not use splice fast path")
+	if !got {
+		t.Fatal("local loopback connections should use splice fast path")
 	}
 
+	// Non-whitelisted wrapped connections should still not use fast path
 	if shouldUseRelayFastPath(wrappedConn{client}, server) {
 		t.Fatal("wrapped connections should not pass fast-path concrete-type whitelist")
 	}
@@ -168,9 +169,9 @@ func TestShouldUseRelayFastPath_AcceptsUnderlyingConnProvider(t *testing.T) {
 		underlyingTCPWrapper{Conn: client, inner: client},
 		underlyingTCPWrapper{Conn: server, inner: server},
 	)
-	// Local loopback connections should not use splice
-	if got {
-		t.Fatal("local loopback connections with UnderlyingConn wrapper should not use splice fast path")
+	// Local loopback connections with UnderlyingConn wrapper should use splice
+	if !got {
+		t.Fatal("local loopback connections with UnderlyingConn wrapper should use splice fast path")
 	}
 }
 
@@ -210,9 +211,9 @@ func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 	defer snifferConn.Close()
 
 	got := shouldUseRelayFastPath(snifferConn, server)
-	// Local loopback connections should not use splice
-	if got {
-		t.Fatal("local loopback connections with ConnSniffer should not use splice fast path")
+	// ConnSniffer supports UnwrapTCPConn for splice after sniffing completes
+	if !got {
+		t.Fatal("local loopback connections with ConnSniffer should use splice fast path")
 	}
 }
 
@@ -252,9 +253,9 @@ func TestShouldUseRelayFastPath_AcceptsFakeNetConnOverTCP(t *testing.T) {
 	fakeServer := &netproxy.FakeNetConn{Conn: server, LAddr: server.LocalAddr(), RAddr: server.RemoteAddr()}
 
 	got := shouldUseRelayFastPath(fakeClient, fakeServer)
-	// Local loopback connections should not use splice
-	if got {
-		t.Fatal("local loopback connections with FakeNetConn should not use splice fast path")
+	// FakeNetConn can be unwrapped to TCPConn, so it should use splice
+	if !got {
+		t.Fatal("local loopback connections with FakeNetConn should use splice fast path")
 	}
 }
 

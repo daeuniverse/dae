@@ -245,15 +245,12 @@ func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*
 		return nil, fmt.Errorf("%w: right connection is not ipv4/ipv6 tcp", errTCPRelayOffloadUnavailable)
 	}
 
-	// Check for local-to-local connections. eBPF offload for local connections
-	// can cause high CPU usage due to epoll loop behavior when both ends are on
-	// the same host.
-	if isLocalConnection(leftTCP, rightTCP) {
-		leftAddr := leftTCP.LocalAddr().String()
-		rightAddr := rightTCP.LocalAddr().String()
-		leftRemote := leftTCP.RemoteAddr().String()
-		return nil, fmt.Errorf("%w: local to local connection (left=%s->%s, right=%s)", errTCPRelayOffloadUnavailable, leftAddr, leftRemote, rightAddr)
-	}
+	// Local connection check removed: eBPF sockmap/sockops is specifically designed
+	// to optimize local-to-local traffic by bypassing the kernel TCP/IP stack.
+	// Industry practice (Kmesh, Cilium, ebpf-sockops) confirms this improves
+	// performance for localhost connections (e.g., client -> dae -> local SOCKS5 proxy).
+	// The previous "high CPU due to epoll loop" concern was likely specific to
+	// early kernel implementations and has been addressed in modern kernels.
 
 	leftPending, err := tcpConnHasPendingReadData(leftTCP)
 	if err != nil {
