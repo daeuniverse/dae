@@ -1108,7 +1108,9 @@ static __noinline __s64 route(const struct route_params *params)
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
 	ctx.route_state =
-		(ctx.h_dport == 53 && _l4proto_type == L4ProtoType_UDP)
+		(ctx.h_dport == 53 &&
+		 (_l4proto_type == L4ProtoType_UDP ||
+		  _l4proto_type == L4ProtoType_TCP))
 		? ROUTE_STATE_DNS_QUERY
 		: 0;
 
@@ -1723,7 +1725,7 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 	q.l4proto = l4proto;
 	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 	if (alive && *alive == 0 &&
-	    !(l4proto == IPPROTO_UDP && dport == bpf_htons(53))) {
+	    !((l4proto == IPPROTO_UDP || l4proto == IPPROTO_TCP) && dport == bpf_htons(53))) {
 		// Outbound is not alive. Dns is an exception.
 		return false;
 	}
