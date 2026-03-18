@@ -147,7 +147,8 @@ struct dae_param {
 	__u32 dae0_ifindex;
 	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
-	__u8 padding[2];
+	__u8 use_netkit;  // Use bpf_redirect_peer() for ingress hooks
+	__u8 padding;
 };
 
 /* Use const volatile for cilium/ebpf v0.20.0 compatibility.
@@ -1171,6 +1172,24 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 	return ret;
 }
 
+// Optimized redirect for TC ingress hooks using bpf_redirect_peer()
+// bpf_redirect_peer() only works in TC ingress direction, not egress
+static __always_inline int redirect_to_control_plane_ingress(void)
+{
+	if (PARAM.use_netkit) {
+		// bpf_redirect_peer() goes directly to peer's ingress, skipping backlog
+		return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
+	}
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
+// Standard redirect for TC egress hooks (bpf_redirect_peer() doesn't work here)
+static __always_inline int redirect_to_control_plane_egress(void)
+{
+	// bpf_redirect_peer() is NOT supported in egress direction
+	return bpf_redirect(PARAM.dae0_ifindex, 0);
+}
+
 static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
 	__u8 l4proto, struct ethhdr *ethh, __u8 from_wan, struct tcphdr *tcph)
@@ -1589,7 +1608,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 control_plane:
 	prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
 				       &pkt->ethh, 0, &pkt->tcph);
-	return bpf_redirect(PARAM.dae0_ifindex, 0);
+	return redirect_to_control_plane_ingress();
 
 direct:
 	return TC_ACT_OK;
@@ -1828,7 +1847,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
 				       1, tcph);
-	return bpf_redirect(PARAM.dae0_ifindex, 0);
+	return redirect_to_control_plane_egress();
 }
 
 static __noinline int
@@ -1943,7 +1962,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 
 	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
 				       1, &dummy_tcph);
-	return bpf_redirect(PARAM.dae0_ifindex, 0);
+	return redirect_to_control_plane_egress();
 }
 
 struct wan_egress_parsed {
