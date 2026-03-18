@@ -261,6 +261,14 @@ retryLoadBpf:
 	if err != nil {
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
+
+	// Check if Netkit device is being used for bpf_redirect_peer() optimization
+	useNetkit := uint8(0)
+	if GetDaeNetns().IsUsingNetkit() {
+		useNetkit = 1
+		log.Info("Netkit device detected, enabling bpf_redirect_peer() optimization")
+	}
+
 	constants := map[string]interface{}{
 		"PARAM": struct {
 			tproxyPort      uint32
@@ -268,13 +276,15 @@ retryLoadBpf:
 			dae0Ifindex     uint32
 			dae0NetnsId     uint32
 			dae0peerMac     [6]byte
-			padding         [2]byte
+			useNetkit       uint8
+			padding         byte
 		}{
 			tproxyPort:      uint32(opts.BigEndianTproxyPort),
 			controlPlanePid: uint32(os.Getpid()),
 			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
 			dae0NetnsId:     uint32(netnsID),
 			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
+			useNetkit:       useNetkit,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
