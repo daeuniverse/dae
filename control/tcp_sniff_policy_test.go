@@ -32,6 +32,8 @@ func TestTcpSniffingExcludedPorts(t *testing.T) {
 		expected bool
 	}{
 		// Known non-HTTP/TLS ports - should skip sniffing
+		{"FTP Data", 20, false},
+		{"FTP Control", 21, false},
 		{"SSH", 22, false},
 		{"SMTP", 25, false},
 		{"DNS", 53, false},

@@ -36,6 +36,8 @@ const (
 // Connections to these ports skip sniffing entirely to avoid unnecessary delays.
 // This includes common services like SSH, databases, and other application protocols.
 var tcpSniffingExcludedPorts = map[uint16]bool{
+	20:    true, // FTP Data
+	21:    true, // FTP Control
 	22:    true, // SSH
 	25:    true, // SMTP
 	53:    true, // DNS (TCP)
