@@ -19,7 +19,8 @@ import (
 const (
 	// tcpSniffFailureThreshold is the number of consecutive sniff failures
 	// before we temporarily skip sniffing on the same flow signature.
-	tcpSniffFailureThreshold = uint8(3)
+	// Set to 1 for faster suppression of non-sniffable protocols (SSH, etc.).
+	tcpSniffFailureThreshold = uint8(1)
 	// tcpSniffNegativeCacheTTL is the suppression duration for sniffing after
 	// repeated NotApplicable/timeout failures.
 	tcpSniffNegativeCacheTTL = 10 * time.Minute
@@ -30,6 +31,24 @@ const (
 	// If no payload arrives quickly, we treat it as non-sniffable flow.
 	tcpSniffFirstPayloadWait = 15 * time.Millisecond
 )
+
+// tcpSniffingExcludedPorts contains ports that are known to carry non-HTTP/TLS traffic.
+// Connections to these ports skip sniffing entirely to avoid unnecessary delays.
+// This includes common services like SSH, databases, and other application protocols.
+var tcpSniffingExcludedPorts = map[uint16]bool{
+	22:    true, // SSH
+	25:    true, // SMTP
+	53:    true, // DNS (TCP)
+	119:   true, // NNTP
+	123:   true, // NTP
+	161:   true, // SNMP
+	3306:  true, // MySQL
+	5432:  true, // PostgreSQL
+	6379:  true, // Redis
+	9200:  true, // Elasticsearch
+	27017: true, // MongoDB
+	11211: true, // Memcached
+}
 
 type tcpSniffNegKey struct {
 	dst   netip.AddrPort
@@ -109,6 +128,11 @@ func (c *ControlPlane) shouldTryTcpSniff(dst netip.AddrPort, routingResult *bpfR
 	outbound := consts.OutboundIndex(routingResult.Outbound)
 	// Reserved outbounds that don't benefit from sniffed domains.
 	if outbound == consts.OutboundDirect || outbound == consts.OutboundBlock {
+		return false
+	}
+	// Skip sniffing for ports known to carry non-HTTP/TLS traffic.
+	// This avoids the 15ms timeout delay for protocols like SSH, databases, etc.
+	if tcpSniffingExcludedPorts[dst.Port()] {
 		return false
 	}
 	return true
