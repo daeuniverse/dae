@@ -24,97 +24,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// PortRuleIndex maps a destination port to a bitmap of rule indices.
-// This is a semantic-preserving optimization: the bitmap preserves rule priority
-// by having each bit represent whether a rule index is in the port's index.
-// Note: Only covers rules 0-255; optimization degrades for higher indices.
-type PortRuleIndex struct {
-	Bitmap [4]uint64 // 256 bits for rules 0-255
-}
-
-// portIndexBuilder builds the port-to-rule index map.
-type portIndexBuilder struct {
-	portToRules map[uint16][]uint16 // Port -> list of rule indices
-}
-
-func newPortIndexBuilder() *portIndexBuilder {
-	return &portIndexBuilder{
-		portToRules: make(map[uint16][]uint16),
-	}
-}
-
-// addRule adds a rule index to all ports that this rule may match.
-//
-// Semantic preservation: This optimization must preserve the original rule
-// evaluation order. Key insight: we can only skip rules that DEFINITELY won't match.
-//
-// - MatchType_Port: Can be indexed by destination port (h_dport) because the
-//   port value is known at lookup time in route().
-//
-// - MatchType_SourcePort: CANNOT be indexed by destination port because source
-//   port (h_sport) is unknown at lookup time. Must be treated as a wildcard.
-//
-// - All other match types: Apply regardless of port, treated as wildcards.
-func (b *portIndexBuilder) addRule(ruleIdx uint16, rule compiledRoutingMatch) {
-	switch rule.matchType {
-	case consts.MatchType_Port:
-		// Only destination port rules can be indexed by destination port.
-		// Use int to avoid infinite loop when portEnd is 65535 (uint16 max).
-		for port := int(rule.portStart); port <= int(rule.portEnd); port++ {
-			b.portToRules[uint16(port)] = append(b.portToRules[uint16(port)], ruleIdx)
-		}
-	default:
-		// SourcePort and all non-port rules apply to all ports.
-		// Track as wildcard rules (port 0) to be included in every port's index.
-		b.portToRules[0] = append(b.portToRules[0], ruleIdx)
-	}
-}
-
-// build constructs the final port index bitmap map.
-// Returns a map suitable for batch updating the eBPF port_rule_index_map.
-func (b *portIndexBuilder) build() map[uint16]*PortRuleIndex {
-	result := make(map[uint16]*PortRuleIndex)
-
-	// Wildcard rules apply to all ports (SourcePort, domain, IP, etc.)
-	// Use nil-safe access - if no wildcard rules exist, wildcardRules will be nil
-	wildcardRules := b.portToRules[0]
-
-	for port, indices := range b.portToRules {
-		// Skip port 0 - it's an internal marker for wildcard rules, not a real port
-		if port == 0 {
-			continue
-		}
-
-		// Combine wildcard rules with port-specific rules, then deduplicate.
-		// Since wildcard rules (added first) have lower indices than port-specific
-		// rules (added later), combined list is naturally sorted.
-		seen := make(map[uint16]bool)
-		// Add wildcard rules if any exist (nil-safe)
-		for _, idx := range wildcardRules {
-			seen[idx] = true
-		}
-		// Add port-specific rules
-		for _, idx := range indices {
-			seen[idx] = true
-		}
-
-		// Build bitmap: 256 bits = 4 x uint64
-		// Each bit represents whether a rule index is in this port's index.
-		var bitmap [4]uint64
-		for idx := range seen {
-			word := idx / 64
-			bit := idx % 64
-			bitmap[word] |= 1 << bit
-		}
-
-		result[port] = &PortRuleIndex{
-			Bitmap: bitmap,
-		}
-	}
-
-	return result
-}
-
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
@@ -566,14 +475,6 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 	}
 	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
 
-	// Semantic-preserving optimization: Build port-to-rule index map.
-	// This allows route_loop_cb to skip rules that definitely won't match
-	// based on destination port, while preserving original rule evaluation order.
-	if err = b.buildAndUpdatePortIndexMap(kernRules, log); err != nil {
-		log.WithError(err).Warn("Failed to build port index map; performance optimization disabled")
-		// Non-fatal: routing will work without this optimization
-	}
-
 	return nil
 }
 
@@ -623,76 +524,4 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	b.compiledRules = nil
 
 	return matcher, nil
-}
-
-// buildAndUpdatePortIndexMap builds the port-to-rule bitmap map and updates the eBPF map.
-// This is a semantic-preserving optimization that allows route_loop_cb to skip
-// rules that definitely won't match based on destination port using O(1) bit operations.
-//
-// The bitmap includes all rules that may match each port:
-// - Rules with port/destination-port conditions set their corresponding bits
-// - Rules without port conditions (wildcard) have all bits set
-//
-// route_loop_cb uses this bitmap to skip irrelevant rules while preserving
-// the original rule evaluation order (0, 1, 2, ...).
-func (b *RoutingMatcherBuilder) buildAndUpdatePortIndexMap(kernRules []bpfMatchSet, log *logrus.Logger) error {
-	// Build port index from compiled rules
-	builder := newPortIndexBuilder()
-
-	for i := range kernRules {
-		if i >= len(b.compiledRules) {
-			break
-		}
-		compiled := b.compiledRules[i]
-		builder.addRule(uint16(i), compiled)
-	}
-
-	portIndexMap := builder.build()
-
-	// Update eBPF port_rule_index_map
-	// Note: This map will be available after eBPF recompilation with the new tproxy.c
-	// For now, we check if the map exists before attempting to update it.
-	portRuleIndexMap := b.bpf.PortRuleIndexMap
-	if portRuleIndexMap == nil {
-		log.Info("Port rule index map not yet available; recompile eBPF to enable this optimization")
-		return nil // Not an error - optimization is optional
-	}
-
-	// Clear all existing entries to prevent stale bitmap after config reload.
-	// This follows the same pattern as LPM cache clearing (see line 518).
-	// New eBPF struct size is 32 bytes (4 x uint64) instead of 68 bytes.
-	if err := BpfMapDeleteAll[*uint16, [32]byte](b.bpf.PortRuleIndexMap); err != nil {
-		log.WithError(err).Warn("Failed to clear port_rule_index_map; may have stale entries")
-		// Non-fatal: routing will still work, just with potential stale entries
-	}
-
-	// Batch update port index map
-	for port, index := range portIndexMap {
-		// Convert to eBPF-compatible format
-		// The eBPF struct uses: __u64 bitmap[4] = 32 bytes total
-
-		// Since we can't directly map Go struct to eBPF struct without codegen,
-		// we need to manually construct the byte array
-		var value [32]byte // 4 * 8 bytes (uint64)
-
-		// Write bitmap (little-endian)
-		for i := 0; i < 4; i++ {
-			bits := index.Bitmap[i]
-			value[i*8] = byte(bits)
-			value[i*8+1] = byte(bits >> 8)
-			value[i*8+2] = byte(bits >> 16)
-			value[i*8+3] = byte(bits >> 24)
-			value[i*8+4] = byte(bits >> 32)
-			value[i*8+5] = byte(bits >> 40)
-			value[i*8+6] = byte(bits >> 48)
-			value[i*8+7] = byte(bits >> 56)
-		}
-
-		if err := portRuleIndexMap.Put(&port, value); err != nil {
-			return fmt.Errorf("update port_rule_index_map for port %d: %w", port, err)
-		}
-	}
-
-	log.Infof("Port rule index bitmap built: %d ports indexed", len(portIndexMap))
-	return nil
 }
