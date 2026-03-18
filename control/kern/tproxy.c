@@ -1410,7 +1410,7 @@ load_non_syn_tcp_wan_egress(struct tuples_key *five_tuple, __u8 *outbound,
 	return load_cached_routing_result(five_tuple, outbound, mark, must);
 }
 
-static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
+static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1513,7 +1513,7 @@ static __noinline bool
 wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 		      __be16 dport);
 
-static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
+static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	__u32 scratch_key = 0;
 	struct lan_ingress_parsed *pkt =
@@ -1732,7 +1732,7 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return false;
 }
 
-static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
+static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
 	struct iphdr iph;
