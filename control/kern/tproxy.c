@@ -12,7 +12,7 @@
 #include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
-#include "headers/bpf_timer.h"
+// bpf_timer removed: using timestamp-based lazy deletion instead
 #include "ebpf_sync_defs.h"
 
 // #define __DEBUG_ROUTING
@@ -55,9 +55,8 @@
 
 #define TPROXY_MARK 0x8000000
 
-// UDP timeout constants
-#define TIMEOUT_UDP_DNS    17e9 /* 17s */
-#define TIMEOUT_UDP_NORMAL 6e10 /* 60s */
+// UDP timeout constants (now enforced by userspace janitor)
+// DNS connections: 17s, Normal UDP: 60s
 
 #define NDP_REDIRECT 137
 
@@ -305,7 +304,10 @@ struct udp_conn_state {
 	// For traffic from lan that go through wan ingress, dae parse them in lan egress
 	bool is_wan_ingress_direction;
 
-	struct bpf_timer timer;
+	// Last seen timestamp in nanoseconds (bpf_ktime_get_ns()).
+	// Userspace janitor periodically cleans up expired entries.
+	// This replaces bpf_timer to avoid CVE-2024-41045 and improve hot path performance.
+	__u64 last_seen_ns;
 };
 
 struct {
@@ -1213,15 +1215,7 @@ static __always_inline void prep_redirect_to_control_plane(
 		skb->cb[1] = l4proto;
 }
 
-static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
-					   struct tuples_key *key,
-					   struct udp_conn_state *val)
-{
-	(void)_udp_conn_state_map;  // Unused parameter (map is implicit)
-	(void)val;                   // Unused parameter (we only need the key)
-	bpf_map_delete_elem(&udp_conn_state_map, key);
-	return 0;
-}
+// copy_reversed_tuples moved below, timer callback removed (using userspace janitor)
 
 static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 						 struct tuples_key *dst)
@@ -1263,53 +1257,34 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 	       (key->dport == bpf_htons(53) || key->sport == bpf_htons(53));
 }
 
+// mark_udp_seen updates the last_seen_ns timestamp for UDP connection tracking.
+// Uses timestamp-based lazy deletion instead of bpf_timer to:
+// 1. Avoid CVE-2024-41045 (bpf_timer UAF vulnerability)
+// 2. Improve hot path performance (single write vs timer rearm)
+// 3. Reduce memory overhead (8 bytes vs timer struct)
+// Expired entries are cleaned by userspace janitor periodically.
 static __always_inline struct udp_conn_state *
-refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_direction)
+mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 {
 	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
-	__u64 timeout;
+	__u64 now = bpf_ktime_get_ns();
 
-	if (state)
-		goto rearm;
-
-	struct udp_conn_state new_state = {};
-
-	new_state.is_wan_ingress_direction = is_wan_ingress_direction;
-	if (unlikely(bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_NOEXIST)))
-		return NULL;
-
-	state = bpf_map_lookup_elem(&udp_conn_state_map, key);
-	if (unlikely(!state))
-		return NULL;
-
-	// Initialize timer with error handling
-	int ret = bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
-
-	if (ret != 0) {
-		// Timer init failed, delete entry to prevent leak
-		bpf_map_delete_elem(&udp_conn_state_map, key);
-		return NULL;
+	if (state) {
+		// Fast path: update timestamp and return
+		state->last_seen_ns = now;
+		return state;
 	}
 
-	ret = bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
-	if (ret != 0) {
-		bpf_map_delete_elem(&udp_conn_state_map, key);
-		return NULL;
-	}
+	// Slow path: create new entry
+	struct udp_conn_state new_state = {
+		.is_wan_ingress_direction = is_wan_ingress_direction,
+		.last_seen_ns = now,
+	};
 
-rearm:
-	if (is_short_lived_udp_traffic(key))
-		timeout = TIMEOUT_UDP_DNS;
-	else
-		timeout = TIMEOUT_UDP_NORMAL;
-	ret = bpf_timer_start(&state->timer, timeout, 0);
-	if (ret != 0) {
-		// Timer start failed, delete entry
-		bpf_map_delete_elem(&udp_conn_state_map, key);
+	if (unlikely(bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_ANY)))
 		return NULL;
-	}
 
-	return state;
+	return bpf_map_lookup_elem(&udp_conn_state_map, key);
 }
 
 static __always_inline bool
@@ -1379,7 +1354,7 @@ static __always_inline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_
 
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+		if (!mark_udp_seen(&reversed_tuples_key, true))
 			return TC_ACT_SHOT;
 	}
 
@@ -1517,7 +1492,7 @@ static __always_inline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link
 	} else {
 		if (!is_short_lived_udp_traffic(&pkt->tuples.five)) {
 			struct udp_conn_state *conn_state =
-				refresh_udp_conn_state_timer(&pkt->tuples.five, false);
+				mark_udp_seen(&pkt->tuples.five, false);
 			if (!conn_state)
 				return TC_ACT_SHOT;
 			if (conn_state->is_wan_ingress_direction) {
@@ -1695,7 +1670,7 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+		if (!mark_udp_seen(&reversed_tuples_key, true))
 			return TC_ACT_SHOT;
 	}
 
@@ -1884,7 +1859,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
 		struct udp_conn_state *conn_state =
-			refresh_udp_conn_state_timer(&tuples->five, false);
+			mark_udp_seen(&tuples->five, false);
 		if (!conn_state)
 			return TC_ACT_SHOT;
 		if (conn_state->is_wan_ingress_direction) {

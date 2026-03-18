@@ -85,6 +85,10 @@ type ControlPlane struct {
 	negJanitorDone    chan struct{}
 	negJanitorOnce    sync.Once
 
+	udpConnStateJanitorStop chan struct{}
+	udpConnStateJanitorDone chan struct{}
+	udpConnStateJanitorOnce sync.Once
+
 	wanInterface []string
 	lanInterface []string
 
@@ -109,6 +113,15 @@ var (
 	// This provides good cache hit rate without missing dialer state changes.
 	dnsDialerSnapshotTTL         = 2 * time.Second
 	realDomainNegJanitorInterval = 30 * time.Second
+
+	// UDP connection state timeout constants (matching former bpf_timer values).
+	// DNS connections are shorter-lived since they're typically query/response.
+	udpConnStateTimeoutDNS    = 17 * time.Second
+	udpConnStateTimeoutNormal = 60 * time.Second
+	// udpConnStateJanitorInterval controls how often we scan for expired entries.
+	// A shorter interval means faster cleanup but more CPU overhead.
+	// 1s provides good balance between prompt cleanup and low overhead.
+	udpConnStateJanitorInterval = 1 * time.Second
 
 	// Test seam: injected in tests to avoid external DNS dependency.
 	systemDnsForRealDomainProbe   = netutils.SystemDns
@@ -518,6 +531,8 @@ func NewControlPlaneWithContext(
 		tcpSniffNegSet:     make(map[tcpSniffNegKey]tcpSniffNegEntry),
 		negJanitorStop:     make(chan struct{}),
 		negJanitorDone:     make(chan struct{}),
+		udpConnStateJanitorStop:  make(chan struct{}),
+		udpConnStateJanitorDone:  make(chan struct{}),
 		lanInterface:       global.LanInterface,
 		wanInterface:       global.WanInterface,
 		sniffingTimeout:    sniffingTimeout,
@@ -528,6 +543,7 @@ func NewControlPlaneWithContext(
 		udpBoundedPool:     newUdpBoundedPoolManager(ctx),
 	}
 	plane.startRealDomainNegJanitor()
+	plane.startUdpConnStateJanitor()
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
@@ -1135,6 +1151,110 @@ func (c *ControlPlane) stopRealDomainNegJanitor() {
 	})
 }
 
+// startUdpConnStateJanitor runs a periodic goroutine that cleans up expired
+// UDP connection state entries from the eBPF map. This replaces the former
+// bpf_timer-based automatic cleanup, providing better hot path performance
+// and avoiding CVE-2024-41045.
+func (c *ControlPlane) startUdpConnStateJanitor() {
+	go func() {
+		ticker := time.NewTicker(udpConnStateJanitorInterval)
+		defer ticker.Stop()
+		defer close(c.udpConnStateJanitorDone)
+		for {
+			select {
+			case <-c.udpConnStateJanitorStop:
+				return
+			case <-ticker.C:
+				c.cleanupUdpConnStateMap()
+			}
+		}
+	}()
+}
+
+// stopUdpConnStateJanitor signals the UDP conn state janitor to stop and waits
+// for it to exit gracefully.
+func (c *ControlPlane) stopUdpConnStateJanitor() {
+	c.udpConnStateJanitorOnce.Do(func() {
+		if c.udpConnStateJanitorStop != nil {
+			close(c.udpConnStateJanitorStop)
+		}
+		if c.udpConnStateJanitorDone != nil {
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-c.udpConnStateJanitorDone:
+			case <-timer.C:
+				c.log.Warn("stopUdpConnStateJanitor: timeout waiting for janitor to exit")
+			}
+		}
+	})
+}
+
+// cleanupUdpConnStateMap iterates through the UDP conn state map and removes
+// entries that haven't been seen within their timeout period.
+// DNS entries use a shorter timeout (17s) while normal UDP uses 60s.
+func (c *ControlPlane) cleanupUdpConnStateMap() {
+	bpf := c.core.EjectBpf()
+	if bpf == nil || bpf.UdpConnStateMap == nil {
+		return
+	}
+
+	// Use CLOCK_MONOTONIC to match bpf_ktime_get_ns() time base.
+	// bpf_ktime_get_ns() returns monotonic time since boot, not wall clock time.
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		c.log.Errorf("cleanupUdpConnStateMap: failed to get monotonic time: %v", err)
+		return
+	}
+	nowNano := ts.Nano()
+
+	dnsTimeoutNano := udpConnStateTimeoutDNS.Nanoseconds()
+	normalTimeoutNano := udpConnStateTimeoutNormal.Nanoseconds()
+	dnsPortNetworkOrder := common.Htons(53)
+
+	// We'll collect keys to delete and batch delete them to avoid holding the lock.
+	// Since we can't directly iterate over eBPF maps in Go without special handling,
+	// we use the Iterate method from cilium/ebpf.
+	var keysToDelete []bpfTuplesKey
+
+	iter := bpf.UdpConnStateMap.Iterate()
+	var key bpfTuplesKey
+	var value bpfUdpConnState
+	for iter.Next(&key, &value) {
+		// Check if this entry is a DNS connection (port 53).
+		// Ports in eBPF map are stored in network byte order, so we compare
+		// with Htons(53) instead of raw 53.
+		isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
+		timeout := normalTimeoutNano
+		if isDNS {
+			timeout = dnsTimeoutNano
+		}
+
+		// Check if entry has expired
+		age := nowNano - int64(value.LastSeenNs)
+		if age > timeout {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		c.log.Errorf("cleanupUdpConnStateMap: iteration error: %v", err)
+	}
+
+	// Batch delete expired entries
+	for _, k := range keysToDelete {
+		if err := bpf.UdpConnStateMap.Delete(&k); err != nil {
+			// Entry might have been deleted concurrently, log and continue
+			c.log.Debugf("cleanupUdpConnStateMap: failed to delete entry: %v", err)
+		}
+	}
+
+	// Log cleanup stats if significant
+	if len(keysToDelete) > 0 {
+		c.log.Debugf("cleanupUdpConnStateMap: removed %d expired entries", len(keysToDelete))
+	}
+}
+
 type Listener struct {
 	tcpListener net.Listener
 	packetConn  net.PacketConn
@@ -1663,6 +1783,7 @@ func (c *ControlPlane) DetachBpfHooks() error {
 
 func (c *ControlPlane) Close() (err error) {
 	c.stopRealDomainNegJanitor()
+	c.stopUdpConnStateJanitor()
 
 	// Collect errors from defer funcs using errors.Join (Go 1.26 best practice)
 	var errs []error

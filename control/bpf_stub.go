@@ -113,10 +113,7 @@ type bpfTuplesKey struct {
 type bpfUdpConnState struct {
 	_                     structs.HostLayout
 	IsWanIngressDirection bool
-	Timer                 struct {
-		_      structs.HostLayout
-		Opaque [2]uint64
-	}
+	LastSeenNs            uint64
 }
 
 func loadBpf() (*ebpf.CollectionSpec, error) {
