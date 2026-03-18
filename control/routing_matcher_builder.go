@@ -27,8 +27,9 @@ import (
 // PortRuleIndex maps a destination port to a bitmap of rule indices.
 // This is a semantic-preserving optimization: the bitmap preserves rule priority
 // by having each bit represent whether a rule index is in the port's index.
+// Note: Only covers rules 0-255; optimization degrades for higher indices.
 type PortRuleIndex struct {
-	Bitmap [4]uint64 // 256 bits = 4 * 64, covers MAX_MATCH_SET_LEN
+	Bitmap [4]uint64 // 256 bits for rules 0-255
 }
 
 // portIndexBuilder builds the port-to-rule index map.

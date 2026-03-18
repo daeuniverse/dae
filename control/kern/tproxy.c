@@ -333,7 +333,7 @@ struct {
 // Example: If port 443 has bitmap with bits 0, 2, 5 set (including wildcard
 // rules), route_loop_cb will only evaluate rules 0, 2, 5 for port 443 traffic.
 struct port_rule_index {
-	__u64 bitmap[4];  // 256 bits = 4 * 64, covers MAX_MATCH_SET_LEN
+	__u64 bitmap[4];  // 256 bits for rules 0-255; optimization degrades for higher indices
 };
 
 struct {
@@ -1083,7 +1083,8 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	// Semantic-preserving optimization: Skip rules not in the port bitmap.
 	// Uses bitmap lookup: each bit represents whether a rule is in the index.
 	// O(1) bit operation instead of O(n) loop to minimize eBPF instructions.
-	if (ctx->port_idx) {
+	// Only applies to rules 0-255 (bitmap size limitation).
+	if (ctx->port_idx && index < 256) {
 		__u64 word = ctx->port_idx->bitmap[index / 64];
 		__u64 mask = 1ULL << (index % 64);
 
