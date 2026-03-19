@@ -30,8 +30,9 @@ func TestLayeredDispatchIntegration(t *testing.T) {
 			var completed, dropped atomic.Int64
 
 			// Create a fresh pool for each test
-			testCtx, _ := context.WithCancel(context.Background())
+			testCtx, cancel := context.WithCancel(context.Background())
 			testPool := NewBoundedGoroutinePool(testCtx, 100) // Small pool for testing
+			defer cancel()
 
 			start := time.Now()
 			for i := 0; i < tt.tasks; i++ {

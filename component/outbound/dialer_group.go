@@ -197,7 +197,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 	a := g.MustGetAliveDialerSet(networkType)
 	switch policy.Policy {
 	case consts.DialerSelectionPolicy_Random:
-		d := a.GetRand()
+		d := a.GetRandExcluded(excluded)
 		if d == nil {
 			// No alive dialer.
 			return nil, time.Hour, ErrNoAliveDialer

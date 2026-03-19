@@ -353,3 +353,25 @@ func TestDialerCheck_ConcurrentStateAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDialerReportAvailableTraffic_ResetsFailureCounter(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     false,
+	}
+
+	for i := 0; i < 2; i++ {
+		d.ReportUnavailable(networkType, errors.New("simulated udp traffic failure"))
+	}
+	if !d.MustGetAlive(networkType) {
+		t.Fatal("dialer should remain alive before reaching UDP failure threshold")
+	}
+
+	d.ReportAvailableTraffic(networkType)
+	d.ReportUnavailable(networkType, errors.New("simulated udp traffic failure after success"))
+	if !d.MustGetAlive(networkType) {
+		t.Fatal("traffic success should reset failure streak; first failure must not mark unavailable")
+	}
+}

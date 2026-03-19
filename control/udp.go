@@ -59,6 +59,43 @@ func ResetUdpLogLimiters() {
 	})
 }
 
+func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
+	return dialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
+		IsDns:     false,
+	}
+}
+
+func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpointKey, isFastPath bool) bool {
+	if ue == nil || ue.Dialer == nil {
+		return false
+	}
+	if ue.Outbound != nil && ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
+		return true
+	}
+	networkType := udpEndpointNetworkType(ue)
+
+	// Short-circuit: lightweight check MustGetAlive first.
+	// Don't proactively drop existing healthy connections in fast-path just because the dialer is marked as Zombie.
+	if !ue.Dialer.MustGetAlive(&networkType) || (!isFastPath && ue.Dialer.IsZombie(0)) {
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			path := "UDP"
+			if isFastPath {
+				path = "fast-path UDP"
+			}
+			c.log.WithFields(logrus.Fields{
+				"dialer": ue.Dialer.Property().Name,
+				"zombie": !isFastPath && ue.Dialer.IsZombie(0),
+				"alive":  ue.Dialer.MustGetAlive(&networkType),
+			}).Debugf("Re-selecting outbound for existing %s endpoint due to dialer health.", path)
+		}
+		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+		return false
+	}
+	return true
+}
+
 type udpNoAliveDialerLogKey struct {
 	outbound             string
 	origNetworkType      string
@@ -342,46 +379,59 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			domain = ue.SniffedDomain
 			dialTarget := realDst.String()
 
-			// Update NAT timeout for QUIC connections to ensure proper timeout
-			// based on the actual forwarding state (QUIC needs longer timeout)
-			ue.UpdateNatTimeout(QuicNatTimeout)
+			if !c.checkUdpEndpointHealth(ue, ueKey, true) {
+				ue = nil
+				ueExists = false
+			} else {
+				// Update NAT timeout for QUIC connections to ensure proper timeout
+				// based on the actual forwarding state (QUIC needs longer timeout)
+				ue.UpdateNatTimeout(QuicNatTimeout)
 
-			if c.log.IsLevelEnabled(logrus.TraceLevel) {
-				fields := logrus.Fields{
-					"network":  "udp(fp)",
-					"outbound": ue.Outbound.Name,
-					"policy":   ue.Outbound.GetSelectionPolicy(),
-					"dialer":   ue.Dialer.Property().Name,
-					"sniffed":  domain,
-					"ip":       RefineAddrPortToShow(realDst),
-					"pid":      routingResult.Pid,
-					"dscp":     routingResult.Dscp,
-					"pname":    ProcessName2String(routingResult.Pname[:]),
-					"mac":      Mac2String(routingResult.Mac[:]),
+				if c.log.IsLevelEnabled(logrus.TraceLevel) {
+					fields := logrus.Fields{
+						"network":  "udp(fp)",
+						"outbound": ue.Outbound.Name,
+						"policy":   ue.Outbound.GetSelectionPolicy(),
+						"dialer":   ue.Dialer.Property().Name,
+						"sniffed":  domain,
+						"ip":       RefineAddrPortToShow(realDst),
+						"pid":      routingResult.Pid,
+						"dscp":     routingResult.Dscp,
+						"pname":    ProcessName2String(routingResult.Pname[:]),
+						"mac":      Mac2String(routingResult.Mac[:]),
+					}
+					c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 				}
-				c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
-			}
 
-			_, err = ue.WriteTo(data, dialTarget)
-			if err == nil {
-				return nil
+				_, err = ue.WriteTo(data, dialTarget)
+				if err == nil {
+					nt := udpEndpointNetworkType(ue)
+					ue.Dialer.ReportAvailableTraffic(&nt)
+					return nil
+				}
+				if c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.WithFields(logrus.Fields{
+						"to":      realDst.String(),
+						"domain":  domain,
+						"pid":     routingResult.Pid,
+						"dscp":    routingResult.Dscp,
+						"pname":   ProcessName2String(routingResult.Pname[:]),
+						"mac":     Mac2String(routingResult.Mac[:]),
+						"from":    realSrc.String(),
+						"network": "udp(fp)",
+						"err":     err.Error(),
+					}).Debugln("Failed to write UDP fast-path packet. Remove stale endpoint and rebuild.")
+				}
+				_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+				ue = nil
+				ueExists = false
 			}
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"to":      realDst.String(),
-					"domain":  domain,
-					"pid":     routingResult.Pid,
-					"dscp":    routingResult.Dscp,
-					"pname":   ProcessName2String(routingResult.Pname[:]),
-					"mac":     Mac2String(routingResult.Mac[:]),
-					"from":    realSrc.String(),
-					"network": "udp(fp)",
-					"err":     err.Error(),
-				}).Debugln("Failed to write UDP fast-path packet. Remove stale endpoint and rebuild.")
+		} else {
+			// Non-fast-path existing endpoint. Check health.
+			if !c.checkUdpEndpointHealth(ue, ueKey, false) {
+				ue = nil
+				ueExists = false
 			}
-			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
-			ue = nil
-			ueExists = false
 		}
 	}
 
@@ -607,6 +657,7 @@ getNew:
 					Dest:        realDst,
 					Mark:        routingResult.Mark,
 					Network:     "udp",
+					Excluded:    excludedDialer,
 				}
 
 				res, err := c.chooseProxyDialer(ctx, dialParam)
@@ -694,19 +745,13 @@ getNew:
 					"packet":  packetIndex,
 				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 			}
-			if ue.Dialer != nil {
-				networkType := &dialer.NetworkType{
-					L4Proto:   consts.L4ProtoStr_UDP,
-					IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
-					IsDns:     false,
-				}
-				// ReportUnavailable marks the dialer as zombie (30s exclusion window).
-				// Combined with excludedDialer below, this provides double protection:
-				// (1) temporary exclusion for future selections, and (2) guaranteed
-				// exclusion for the immediate retry, preventing a "just recovered but
-				// still unstable" dialer from being selected.
-				ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("udp endpoint write failed: %w", err))
-			}
+			nt := udpEndpointNetworkType(ue)
+			// ReportUnavailable marks the dialer as zombie (30s exclusion window).
+			// Combined with excludedDialer below, this provides double protection:
+			// (1) temporary exclusion for future selections, and (2) guaranteed
+			// exclusion for the immediate retry, preventing a "just recovered but
+			// still unstable" dialer from being selected.
+			ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
 			// Ensure the failed dialer is excluded in the immediate retry.
 			excludedDialer = ue.Dialer
 			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
@@ -715,6 +760,8 @@ getNew:
 		}
 		packetIndex++
 	}
+	nt := udpEndpointNetworkType(ue)
+	ue.Dialer.ReportAvailableTraffic(&nt)
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).

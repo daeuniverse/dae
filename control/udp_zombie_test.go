@@ -89,11 +89,89 @@ func TestUdpEndpoint_ZombieDetection(t *testing.T) {
 		// Simulated by setting unansweredStartNano to a past time.
 		past := time.Now().Add(-35 * time.Second).UnixNano()
 		ue.unansweredStartNano.Store(past)
+		ue.unansweredWriteCount.Store(1)
 
 		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:53")
 		require.Error(t, err, "Total blackhole should trigger zombie detection after ZombieDetectionTimeout")
 		require.Equal(t, net.ErrClosed, err)
 		require.True(t, ue.IsDead())
+	})
+
+	t.Run("FastZombieDetection_KnownBidirectionalPort", func(t *testing.T) {
+		d, ue := setup()
+		defer d.Close()
+
+		// Case: Multiple packets sent over 3+ seconds with no reply, on STUN port (3478)
+		past := time.Now().Add(-4 * time.Second).UnixNano()
+		ue.unansweredStartNano.Store(past)
+		ue.unansweredWriteCount.Store(5) // 5 packets already sent
+		ue.hasReceived.Store(false)      // Never received any packet
+
+		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:3478")
+		require.Error(t, err, "Fast zombie detection should trigger for known bidirectional port")
+		require.Equal(t, net.ErrClosed, err)
+		require.True(t, ue.IsDead())
+	})
+
+	t.Run("FastZombieDetection_MidStreamDrop", func(t *testing.T) {
+		d, ue := setup()
+		defer d.Close()
+
+		// Case: Multiple packets sent over 3+ seconds with no reply, on UNKNOWN port
+		// BUT the connection has previously received packets (hasReceived = true)
+		past := time.Now().Add(-4 * time.Second).UnixNano()
+		ue.unansweredStartNano.Store(past)
+		ue.unansweredWriteCount.Store(5) // 5 packets already sent
+		ue.hasReceived.Store(true)       // Proved to be bidirectional
+
+		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:54321") // 54321 is not in whitelist
+		require.Error(t, err, "Fast zombie detection should trigger if hasReceived is true")
+		require.Equal(t, net.ErrClosed, err)
+		require.True(t, ue.IsDead())
+	})
+
+	t.Run("OneWayUDP_Protection", func(t *testing.T) {
+		d, ue := setup()
+		defer d.Close()
+
+		// Case: Multiple packets sent over 3+ seconds with no reply, on UNKNOWN port
+		// AND connection has never received packets (hasReceived = false)
+		past := time.Now().Add(-4 * time.Second).UnixNano()
+		ue.unansweredStartNano.Store(past)
+		ue.unansweredWriteCount.Store(5)
+		ue.hasReceived.Store(false)
+
+		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:54321") // 54321 is not in whitelist
+		require.NoError(t, err, "One-way UDP should be protected from Fast Zombie Detection")
+		require.False(t, ue.IsDead())
+	})
+
+	t.Run("FastZombieDetection_NotEnoughTime", func(t *testing.T) {
+		d, ue := setup()
+		defer d.Close()
+
+		// Case: Many packets but not enough time elapsed
+		past := time.Now().Add(-2 * time.Second).UnixNano()
+		ue.unansweredStartNano.Store(past)
+		ue.unansweredWriteCount.Store(10)
+
+		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:3478")
+		require.NoError(t, err)
+		require.False(t, ue.IsDead())
+	})
+
+	t.Run("FastZombieDetection_NotEnoughPackets", func(t *testing.T) {
+		d, ue := setup()
+		defer d.Close()
+
+		// Case: Enough time but not enough packets
+		past := time.Now().Add(-5 * time.Second).UnixNano()
+		ue.unansweredStartNano.Store(past)
+		ue.unansweredWriteCount.Store(3)
+
+		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:3478")
+		require.NoError(t, err)
+		require.False(t, ue.IsDead())
 	})
 
 	t.Run("IdleHealthyWakeup", func(t *testing.T) {
@@ -105,9 +183,7 @@ func TestUdpEndpoint_ZombieDetection(t *testing.T) {
 		ue.unansweredStartNano.Store(0)
 
 		// Idle for 2 minutes
-		past := time.Now().Add(-120 * time.Second).UnixNano()
-		ue.lastReadNano.Store(past)
-		ue.lastWriteNano.Store(past)
+		_ = time.Now().Add(-120 * time.Second).UnixNano() // Just to show it's idle in the test logically
 
 		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:53")
 		require.NoError(t, err, "Idle healthy connection should NOT be marked zombie on wakeup")
@@ -124,7 +200,6 @@ func TestUdpEndpoint_ZombieDetection(t *testing.T) {
 
 		// Read happens! (This is usually called from start() loop)
 		ue.unansweredStartNano.Store(0)
-		ue.lastReadNano.Store(time.Now().UnixNano())
 
 		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:53")
 		require.NoError(t, err)
@@ -136,7 +211,6 @@ func TestUdpEndpoint_ZombieDetection(t *testing.T) {
 		defer d.Close()
 
 		// Case: We had successful traffic, but now it's blackholed.
-		ue.lastReadNano.Store(time.Now().Add(-60 * time.Second).UnixNano())
 		ue.unansweredStartNano.Store(time.Now().Add(-35 * time.Second).UnixNano())
 
 		_, err := ue.WriteTo([]byte("hello"), "1.1.1.1:53")

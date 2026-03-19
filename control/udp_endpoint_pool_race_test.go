@@ -63,10 +63,8 @@ func (m *mockPacketConn) SetWriteDeadline(t time.Time) error {
 
 // initEndpointTimestamps initializes the read/write timestamps for a UdpEndpoint.
 func initEndpointTimestamps(ue *UdpEndpoint) {
-	now := time.Now().UnixNano()
-	ue.lastReadNano.Store(now)
-	ue.lastWriteNano.Store(now)
 	ue.unansweredStartNano.Store(0)
+	ue.unansweredWriteCount.Store(0)
 }
 
 // TestUdpEndpointWriteToRace tests concurrent writes to UdpEndpoint.

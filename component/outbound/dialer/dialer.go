@@ -60,6 +60,22 @@ var (
 	InvalidParameterErr = fmt.Errorf("invalid parameters")
 )
 
+var cachedTimeNano atomic.Int64
+
+func init() {
+	cachedTimeNano.Store(time.Now().UnixNano())
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		for range ticker.C {
+			cachedTimeNano.Store(time.Now().UnixNano())
+		}
+	}()
+}
+
+func CachedTimeNano() int64 {
+	return cachedTimeNano.Load()
+}
+
 type Dialer struct {
 	*GlobalOption
 	InstanceOption
@@ -80,7 +96,8 @@ type Dialer struct {
 	httpClients  map[string]*http.Client
 	httpClientMu sync.Mutex
 
-	failCount [6]int
+	failCount        [6]int
+	trafficFailCount [6]atomic.Int32
 
 	lastZombieAt atomic.Int64
 
@@ -691,6 +708,9 @@ func (d *Dialer) IsZombie(now int64) bool {
 	lastZombie := d.LastZombieAt()
 	if lastZombie == 0 {
 		return false // Never marked as zombie
+	}
+	if now == 0 {
+		now = CachedTimeNano()
 	}
 	return now-lastZombie < int64(ZombieExclusionDuration)
 }

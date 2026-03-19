@@ -93,12 +93,41 @@ func NewAliveDialerSet(
 }
 
 func (a *AliveDialerSet) GetRand() *Dialer {
+	return a.GetRandExcluded(nil)
+}
+
+func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+
 	if len(a.inorderedAliveDialerSet) == 0 {
 		return nil
 	}
-	return a.inorderedAliveDialerSet[fastrand.Intn(len(a.inorderedAliveDialerSet))]
+
+	now := CachedTimeNano()
+	var candidates []*Dialer
+	var zombies []*Dialer
+
+	for _, d := range a.inorderedAliveDialerSet {
+		if d == excluded {
+			continue
+		}
+		if !d.IsZombie(now) {
+			candidates = append(candidates, d)
+		} else {
+			zombies = append(zombies, d)
+		}
+	}
+
+	if len(candidates) > 0 {
+		return candidates[fastrand.Intn(len(candidates))]
+	}
+	if len(zombies) > 0 {
+		return zombies[fastrand.Intn(len(zombies))]
+	}
+
+	// No dialer available
+	return nil
 }
 
 func (a *AliveDialerSet) Len() int {
@@ -116,7 +145,7 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	now := time.Now().UnixNano()
+	now := CachedTimeNano()
 
 	// Find the best non-zombie, non-excluded dialer.
 	var nextBest *Dialer

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -91,15 +92,16 @@ type collection struct {
 	AliveDialerSetSet AliveDialerSetSet
 	Latencies10       *LatenciesN
 	MovingAverage     time.Duration
-	Alive             bool
+	Alive             atomic.Bool
 }
 
 func newCollection() *collection {
-	return &collection{
+	c := &collection{
 		AliveDialerSetSet: make(AliveDialerSetSet),
 		Latencies10:       NewLatenciesN(10),
-		Alive:             true,
 	}
+	c.Alive.Store(true)
+	return c
 }
 
 func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
@@ -107,10 +109,7 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 }
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
-	d.collectionFineMu.RLock()
-	alive := d.mustGetCollection(typ).Alive
-	d.collectionFineMu.RUnlock()
-	return alive
+	return d.mustGetCollection(typ).Alive.Load()
 }
 
 type collectionUpdate struct {
@@ -697,10 +696,10 @@ func (d *Dialer) logUnavailable(
 }
 
 func (d *Dialer) markUnavailable(typ *NetworkType) collectionUpdate {
-	return d.markUnavailableInternal(typ, false)
+	return d.markUnavailableInternal(typ, false, false)
 }
 
-func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool) collectionUpdate {
+func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic bool) collectionUpdate {
 	d.collectionFineMu.Lock()
 	idx := typ.Index()
 	collection := d.collections[idx]
@@ -709,27 +708,35 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool) collectio
 
 	// UDP/TCP robustness: only mark unavailable after consecutive failures.
 	// This protects against transient network interference.
+	threshold := 1
+	if typ.L4Proto == consts.L4ProtoStr_UDP {
+		threshold = 3
+	} else if typ.L4Proto == consts.L4ProtoStr_TCP {
+		// Aggregation for TCP is too aggressive in multi-dialer environments.
+		// Add a minor threshold to balance "fast discovery" with "noise".
+		threshold = 2
+	}
+
 	alive := false
 	if !force {
-		threshold := 1
-		if typ.L4Proto == consts.L4ProtoStr_UDP {
-			threshold = 3
-		} else if typ.L4Proto == consts.L4ProtoStr_TCP {
-			// Aggregation for TCP is too aggressive in multi-dialer environments.
-			// Add a minor threshold to balance "fast discovery" with "noise".
-			threshold = 2
-		}
-
-		d.failCount[idx]++
-		if d.failCount[idx] < threshold {
-			alive = collection.Alive
+		if isTraffic {
+			d.trafficFailCount[idx].Add(1)
+			if int(d.trafficFailCount[idx].Load()) < threshold {
+				alive = collection.Alive.Load()
+			}
+		} else {
+			d.failCount[idx]++
+			if d.failCount[idx] < threshold {
+				alive = collection.Alive.Load()
+			}
 		}
 	} else {
 		// Forced death: reset counter to match state.
-		d.failCount[idx] = 3
+		d.trafficFailCount[idx].Store(int32(threshold))
+		d.failCount[idx] = threshold
 	}
-	wasAlive := collection.Alive
-	collection.Alive = alive
+	wasAlive := collection.Alive.Load()
+	collection.Alive.Store(alive)
 
 	update := collectionUpdate{
 		alive:             alive,
@@ -752,12 +759,15 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	d.collectionFineMu.Lock()
 	idx := typ.Index()
 	collection := d.collections[idx]
+
+	// Synthetic success resets both failure counts.
 	d.failCount[idx] = 0
+	d.trafficFailCount[idx].Store(0)
 
 	collection.Latencies10.AppendLatency(latency)
 	avg, _ := collection.Latencies10.AvgLatency()
 	collection.MovingAverage = (collection.MovingAverage + latency) / 2
-	collection.Alive = true
+	collection.Alive.Store(true)
 	update := collectionUpdate{
 		alive:             true,
 		movingAverage:     collection.MovingAverage,
@@ -779,7 +789,7 @@ func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
 
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
-	d.informDialerGroupUpdate(d.markUnavailable(typ))
+	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, false, true))
 	if typ.L4Proto == consts.L4ProtoStr_UDP {
 		d.NotifyZombie()
 	}
@@ -787,9 +797,16 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 
 func (d *Dialer) ReportUnavailableForced(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
-	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true))
+	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true, true))
 	if typ.L4Proto == consts.L4ProtoStr_UDP {
 		d.NotifyZombie()
+	}
+}
+
+func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
+	idx := typ.Index()
+	if d.trafficFailCount[idx].Load() != 0 {
+		d.trafficFailCount[idx].Store(0)
 	}
 }
 
