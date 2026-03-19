@@ -1220,9 +1220,8 @@ static __always_inline int redirect_to_control_plane_ingress(void)
 
 static __always_inline int redirect_to_control_plane_egress(void)
 {
-	// Use bpf_redirect_peer() when enabled for faster netkit-to-netkit redirects.
-	if (PARAM.use_redirect_peer)
-		return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
+	// bpf_redirect_peer() is NOT supported in egress direction.
+	// Only use it for ingress hooks.
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
