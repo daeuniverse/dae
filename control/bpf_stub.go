@@ -17,6 +17,9 @@ import (
 
 var errBpfObjectsUnavailable = errors.New("eBPF objects are unavailable in this build; this is a stub build (tag dae_stub_ebpf); run make ebpf before building")
 
+// bpfDaeParam corresponds to C struct dae_param in tproxy.c
+// IMPORTANT: use_redirect_peer is DISABLED in C code due to kernel panic issues.
+// The field is preserved here for ABI compatibility only—value is always 0.
 type bpfDaeParam struct {
 	_               structs.HostLayout
 	TproxyPort      uint32
@@ -24,7 +27,7 @@ type bpfDaeParam struct {
 	Dae0Ifindex     uint32
 	Dae0NetnsId     uint32
 	Dae0peerMac     [6]uint8
-	UseRedirectPeer uint8
+	UseRedirectPeer uint8 // Always 0 - bpf_redirect_peer() disabled in C
 	Padding         uint8
 }
 
@@ -128,13 +131,13 @@ type bpfSpecs struct {
 }
 
 type bpfProgramSpecs struct {
-	TproxyDae0Ingress      *ebpf.ProgramSpec `ebpf:"tproxy_dae0_ingress"`
-	TproxyDae0peerIngress  *ebpf.ProgramSpec `ebpf:"tproxy_dae0peer_ingress"`
-	TproxyLanEgressL2      *ebpf.ProgramSpec `ebpf:"tproxy_lan_egress_l2"`
-	TproxyLanEgressL3      *ebpf.ProgramSpec `ebpf:"tproxy_lan_egress_l3"`
-	TproxyLanIngressL2     *ebpf.ProgramSpec `ebpf:"tproxy_lan_ingress_l2"`
-	TproxyLanIngressL3     *ebpf.ProgramSpec `ebpf:"tproxy_lan_ingress_l3"`
-	// SOCK_OPS + SK_MSG programs for TCP relay offload with IPv4 and IPv6 support
+	TproxyDae0Ingress     *ebpf.ProgramSpec `ebpf:"tproxy_dae0_ingress"`
+	TproxyDae0peerIngress *ebpf.ProgramSpec `ebpf:"tproxy_dae0peer_ingress"`
+	TproxyLanEgressL2     *ebpf.ProgramSpec `ebpf:"tproxy_lan_egress_l2"`
+	TproxyLanEgressL3     *ebpf.ProgramSpec `ebpf:"tproxy_lan_egress_l3"`
+	TproxyLanIngressL2    *ebpf.ProgramSpec `ebpf:"tproxy_lan_ingress_l2"`
+	TproxyLanIngressL3    *ebpf.ProgramSpec `ebpf:"tproxy_lan_ingress_l3"`
+	// SOCK_OPS + SK_MSG stubs preserved for ABI compatibility (DISABLED due to kernel panic)
 	TproxySockops          *ebpf.ProgramSpec `ebpf:"tproxy_sockops"`
 	TproxySkMsgRedir       *ebpf.ProgramSpec `ebpf:"tproxy_sk_msg_redir"`
 	TproxyWanCgConnect4    *ebpf.ProgramSpec `ebpf:"tproxy_wan_cg_connect4"`
@@ -218,25 +221,25 @@ type bpfVariables struct {
 }
 
 type bpfPrograms struct {
-	TproxyDae0Ingress      *ebpf.Program `ebpf:"tproxy_dae0_ingress"`
-	TproxyDae0peerIngress  *ebpf.Program `ebpf:"tproxy_dae0peer_ingress"`
-	TproxyLanEgressL2      *ebpf.Program `ebpf:"tproxy_lan_egress_l2"`
-	TproxyLanEgressL3      *ebpf.Program `ebpf:"tproxy_lan_egress_l3"`
-	TproxyLanIngressL2     *ebpf.Program `ebpf:"tproxy_lan_ingress_l2"`
-	TproxyLanIngressL3     *ebpf.Program `ebpf:"tproxy_lan_ingress_l3"`
-	// SOCK_OPS + SK_MSG programs for TCP relay offload with IPv4 and IPv6 support
-	TproxySockops         *ebpf.Program `ebpf:"tproxy_sockops"`
-	TproxySkMsgRedir      *ebpf.Program `ebpf:"tproxy_sk_msg_redir"`
-	TproxyWanCgConnect4   *ebpf.Program `ebpf:"tproxy_wan_cg_connect4"`
-	TproxyWanCgConnect6   *ebpf.Program `ebpf:"tproxy_wan_cg_connect6"`
-	TproxyWanCgSendmsg4   *ebpf.Program `ebpf:"tproxy_wan_cg_sendmsg4"`
-	TproxyWanCgSendmsg6   *ebpf.Program `ebpf:"tproxy_wan_cg_sendmsg6"`
-	TproxyWanCgSockCreate *ebpf.Program `ebpf:"tproxy_wan_cg_sock_create"`
+	TproxyDae0Ingress     *ebpf.Program `ebpf:"tproxy_dae0_ingress"`
+	TproxyDae0peerIngress *ebpf.Program `ebpf:"tproxy_dae0peer_ingress"`
+	TproxyLanEgressL2     *ebpf.Program `ebpf:"tproxy_lan_egress_l2"`
+	TproxyLanEgressL3     *ebpf.Program `ebpf:"tproxy_lan_egress_l3"`
+	TproxyLanIngressL2    *ebpf.Program `ebpf:"tproxy_lan_ingress_l2"`
+	TproxyLanIngressL3    *ebpf.Program `ebpf:"tproxy_lan_ingress_l3"`
+	// SOCK_OPS + SK_MSG stubs preserved for ABI compatibility (DISABLED due to kernel panic)
+	TproxySockops          *ebpf.Program `ebpf:"tproxy_sockops"`
+	TproxySkMsgRedir       *ebpf.Program `ebpf:"tproxy_sk_msg_redir"`
+	TproxyWanCgConnect4    *ebpf.Program `ebpf:"tproxy_wan_cg_connect4"`
+	TproxyWanCgConnect6    *ebpf.Program `ebpf:"tproxy_wan_cg_connect6"`
+	TproxyWanCgSendmsg4    *ebpf.Program `ebpf:"tproxy_wan_cg_sendmsg4"`
+	TproxyWanCgSendmsg6    *ebpf.Program `ebpf:"tproxy_wan_cg_sendmsg6"`
+	TproxyWanCgSockCreate  *ebpf.Program `ebpf:"tproxy_wan_cg_sock_create"`
 	TproxyWanCgSockRelease *ebpf.Program `ebpf:"tproxy_wan_cg_sock_release"`
-	TproxyWanEgressL2     *ebpf.Program `ebpf:"tproxy_wan_egress_l2"`
-	TproxyWanEgressL3     *ebpf.Program `ebpf:"tproxy_wan_egress_l3"`
-	TproxyWanIngressL2    *ebpf.Program `ebpf:"tproxy_wan_ingress_l2"`
-	TproxyWanIngressL3    *ebpf.Program `ebpf:"tproxy_wan_ingress_l3"`
+	TproxyWanEgressL2      *ebpf.Program `ebpf:"tproxy_wan_egress_l2"`
+	TproxyWanEgressL3      *ebpf.Program `ebpf:"tproxy_wan_egress_l3"`
+	TproxyWanIngressL2     *ebpf.Program `ebpf:"tproxy_wan_ingress_l2"`
+	TproxyWanIngressL3     *ebpf.Program `ebpf:"tproxy_wan_ingress_l3"`
 }
 
 func (p *bpfPrograms) Close() error {

@@ -85,11 +85,12 @@ type Dialer struct {
 	collectionFineMu sync.RWMutex
 	collections      [6]*collection
 
-	tickerMu sync.Mutex
-	ticker   *time.Timer
-	checkCh  chan time.Time
-	ctx      context.Context
-	cancel   context.CancelFunc
+	tickerMu        sync.Mutex
+	ticker          *time.Timer
+	checkCh         chan time.Time
+	checkSpecificCh chan *NetworkType // targeted check for a specific proto+version
+	ctx             context.Context
+	cancel          context.CancelFunc
 
 	checkActivated bool
 
@@ -237,6 +238,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		tickerMu:         sync.Mutex{},
 		ticker:           nil,
 		checkCh:          make(chan time.Time, 1),
+		checkSpecificCh:  make(chan *NetworkType, 1),
 		ctx:              ctx,
 		cancel:           cancel,
 		httpClients:      make(map[string]*http.Client),

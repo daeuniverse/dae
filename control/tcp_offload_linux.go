@@ -1,6 +1,24 @@
 //go:build linux
 // +build linux
 
+// Package control provides TCP relay eBPF offload functionality.
+//
+// *** DISABLED DUE TO KERNEL BUG ***
+// ===================================
+// TCP relay eBPF offload is PERMANENTLY DISABLED due to kernel panic issues
+// with the bpf_msg_redirect_hash() helper.
+//
+// Issue: https://github.com/daeuniverse/dae/pull/912
+// Cause: bpf_msg_redirect_hash() causes kernel panics in certain scenarios
+// Impact: System instability and crashes
+//
+// The code below is preserved for potential future re-enabling after:
+// 1. Upstream kernel bug is fixed
+// 2. Fix is backported to stable kernels
+// 3. Thorough testing confirms stability
+//
+// Current behavior: All TCP traffic uses userspace relay (stable but slower)
+//
 package control
 
 import (
@@ -17,12 +35,15 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
 var errTCPRelayOffloadUnavailable = errors.New("tcp relay eBPF offload unavailable")
 
+// tcpRelayOffloadSession manages an eBPF-based TCP relay offload session.
+//
+// *** DISABLED *** This type is not currently used due to kernel panic issues.
+// The implementation is preserved for potential future re-enabling.
 type tcpRelayOffloadSession struct {
 	fastSock *ebpf.Map
 
@@ -182,49 +203,24 @@ func makeHostLocalAddrChecker(localAddrs []netip.Addr) func(netip.Addr) bool {
 	}
 }
 
+// tryOffloadTCPRelay attempts to use eBPF sockmap for TCP relay offload.
+//
+// DISABLED: TCP relay eBPF offload is permanently disabled due to kernel panic issues.
+// The bpf_msg_redirect_hash() helper causes kernel panics in certain scenarios.
+// See: https://github.com/daeuniverse/dae/pull/912
+//
+// The function below is preserved for potential future re-enabling when the kernel bug is fixed.
+// Currently, it always returns (false, "disabled", nil) to fall back to userspace relay.
 func (c *ControlPlane) tryOffloadTCPRelay(ctx context.Context, left, right netproxy.Conn) (bool, string, error) {
-	if c == nil || c.core == nil {
-		return false, "", nil
-	}
-	if !c.core.tcpRelayOffload {
-		if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.Debugf("Skip TCP relay eBPF offload: feature disabled (left=%s, right=%s)", relayConnChain(left), relayConnChain(right))
-		}
-		return false, "feature disabled", nil
-	}
-
-	// Flush any userspace-buffered prefix (sniff/prefetch bytes) from left to
-	// right before attempting offload registration. After the flush the inner
-	// *net.TCPConn's kernel receive queue is the sole source of "pending data",
-	// which the TIOCINQ check inside newTCPRelayOffloadSession can evaluate
-	// cleanly. Prefix bytes flushed here are already delivered to rConn; if
-	// offload is subsequently skipped (e.g. TIOCINQ > 0), RelayTCP continues
-	// transparently from the next byte — no data loss or duplication.
-	if err := tcpOffloadFlushLeftPrefix(left, right); err != nil {
-		if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.Debugf("Skip TCP relay eBPF offload: left prefix flush failed: %v", err)
-		}
-		return false, "left prefix flush failed", err
-	}
-
-	session, err := newTCPRelayOffloadSession(c.core.bpf.FastSock, left, right)
-	if err != nil {
-		if errors.Is(err, errTCPRelayOffloadUnavailable) {
-			if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.Debugf("Skip TCP relay eBPF offload: %v", err)
-			}
-			return false, tcpRelayOffloadReason(err), nil
-		}
-		return false, "", err
-	}
-	defer session.Close()
-
-	if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
-		c.log.Debug("Use TCP relay eBPF offload")
-	}
-	return true, "", session.Run(ctx)
+	// Permanently disabled due to kernel panic issues with bpf_msg_redirect_hash()
+	// Re-enable only after upstream kernel bug is fixed and thoroughly tested
+	return false, "eBPF offload disabled due to kernel bug", nil
 }
 
+// newTCPRelayOffloadSession creates a new TCP relay offload session.
+//
+// *** DISABLED *** This function is not currently called due to kernel panic issues.
+// The implementation is preserved for potential future re-enabling after the kernel bug is fixed.
 func newTCPRelayOffloadSession(fastSock *ebpf.Map, left, right netproxy.Conn) (*tcpRelayOffloadSession, error) {
 	// unwrapRelayTCPConn traverses transparent wrapper chains (ConnSniffer,
 	// prefixedConn, FakeNetConn, etc.) to reach the underlying socket.

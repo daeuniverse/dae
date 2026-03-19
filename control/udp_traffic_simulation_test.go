@@ -498,7 +498,7 @@ func TestUdpTrafficSimulation_AddrFamilyNormalization(t *testing.T) {
 			name:        "IPv4-mapped to IPv4",
 			from:        "[::ffff:192.168.1.1]:12345",
 			to:          "192.168.1.100:54321",
-			expectBind:  "192.168.1.1:12345",  // Optimized: both IPv4-compatible, unmap to pure IPv4
+			expectBind:  "192.168.1.1:12345", // Optimized: both IPv4-compatible, unmap to pure IPv4
 			expectWrite: "192.168.1.100:54321",
 			expectError: false,
 		},

@@ -45,6 +45,9 @@ type controlPlaneCore struct {
 	bpfHookMu          sync.Mutex
 	bpf                *bpfObjects
 	outboundId2Name    map[uint8]string
+	// tcpRelayOffload is permanently disabled due to kernel panic issues.
+	// See: https://github.com/daeuniverse/dae/pull/912
+	// Field preserved for ABI compatibility; always remains false.
 	tcpRelayOffload    bool
 
 	kernelVersion *internal.Version
@@ -452,69 +455,8 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 	// TCP relay eBPF offload is disabled due to kernel panic issues with bpf_msg_redirect_hash().
 	// See: https://github.com/daeuniverse/dae/pull/912
 	// The sk_msg program now returns SK_PASS, so we must not enable offload or connections will hang.
+	// The function body below is preserved for potential future re-enabling.
 	c.log.Info("TCP relay eBPF offload is disabled due to kernel panic issues; falling back to userspace relay")
-	return nil
-	if c.bpf.FastSock == nil ||
-		c.bpf.TproxySockops == nil ||
-		c.bpf.TproxySkMsgRedir == nil {
-		return nil
-	}
-
-	// Get the cgroup v2 root for attaching sockops program
-	cgroupPath, err := detectCgroupPath()
-	if err != nil {
-		c.log.WithError(err).Debug("Failed to detect cgroup path for TCP relay offload")
-		return nil
-	}
-
-	// Step 1: Attach sockops program to cgroup
-	// The sockops program tracks TCP connection establishment and adds
-	// sockets to the SOCKHASH map
-	sockopsLink, err := ciliumLink.AttachCgroup(ciliumLink.CgroupOptions{
-		Path:    cgroupPath,
-		Attach:  ebpf.AttachCGroupSockOps,
-		Program: c.bpf.TproxySockops,
-	})
-	if err != nil {
-		c.log.WithError(err).Debug("TCP relay eBPF offload (sockops) is not supported by the current kernel/environment; falling back to userspace relay")
-		return nil
-	}
-
-	// Step 2: Attach sk_msg program to the SOCKHASH map
-	// The sk_msg program redirects data between sockets in the map
-	err = ciliumLink.RawAttachProgram(ciliumLink.RawAttachProgramOptions{
-		Target:  c.bpf.FastSock.FD(),
-		Program: c.bpf.TproxySkMsgRedir,
-		Attach:  ebpf.AttachSkMsgVerdict,
-	})
-	if err != nil {
-		// Clean up sockops link since sk_msg attach failed
-		_ = sockopsLink.Close()
-		c.log.WithError(err).Debug("TCP relay eBPF offload (sk_msg) is not supported by the current kernel/environment; falling back to userspace relay")
-		return nil
-	}
-
-	c.tcpRelayOffload = true
-	detachFunc := func() error {
-		var errs []error
-		// Detach sk_msg from map
-		if err := ciliumLink.RawDetachProgram(ciliumLink.RawDetachProgramOptions{
-			Target:  c.bpf.FastSock.FD(),
-			Program: c.bpf.TproxySkMsgRedir,
-			Attach:  ebpf.AttachSkMsgVerdict,
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("detach sk_msg: %w", err))
-		}
-		// Close sockops cgroup link
-		if err := sockopsLink.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("detach sockops: %w", err))
-		}
-		return errors.Join(errs...)
-	}
-	c.deferFuncs = append(c.deferFuncs, detachFunc)
-	c.addBpfHookDetach(detachFunc)
-
-	c.log.Info("TCP relay eBPF offload enabled (sockops+sk_msg) with IPv4 and IPv6 support")
 	return nil
 }
 

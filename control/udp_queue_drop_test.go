@@ -15,13 +15,13 @@ import (
 // TestUdpUnorderedTaskRunner_DropRate tests packet drop rate under high load.
 func TestUdpUnorderedTaskRunner_DropRate(t *testing.T) {
 	tests := []struct {
-		name              string
-		workers           int
-		queueSize         int
-		flows             int
-		tasksPerFlow      int
-		taskDuration      time.Duration
-		expectedDropRate  float64 // 0-1, where 1 is 100% drop
+		name             string
+		workers          int
+		queueSize        int
+		flows            int
+		tasksPerFlow     int
+		taskDuration     time.Duration
+		expectedDropRate float64 // 0-1, where 1 is 100% drop
 	}{
 		{
 			name:             "Low load - plenty of capacity",

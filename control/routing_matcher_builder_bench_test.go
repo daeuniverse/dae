@@ -304,10 +304,10 @@ func TestRoutingMatcherBuilderMemoryUsage(t *testing.T) {
 	var m2 runtime.MemStats
 
 	tests := []struct {
-		name         string
-		numRules     int
-		uniqueSets   int
-		ipsPerSet    int
+		name       string
+		numRules   int
+		uniqueSets int
+		ipsPerSet  int
 	}{
 		{"Small", 10, 5, 100},
 		{"Medium", 50, 10, 500},
@@ -375,7 +375,7 @@ func BenchmarkBuildUserspace(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			builder := &RoutingMatcherBuilder{
-				log:             log,
+				log:               log,
 				simulatedLpmTries: prefixesSets,
 			}
 			// Simulate parallel build

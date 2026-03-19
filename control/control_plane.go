@@ -92,12 +92,12 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout     time.Duration
-	tproxyPortProtect   bool
-	soMarkFromDae       uint32
-	mptcp               bool
-	udpUnorderedRunner  *udpUnorderedTaskRunner
-	udpBoundedPool      *udpBoundedPoolManager
+	sniffingTimeout    time.Duration
+	tproxyPortProtect  bool
+	soMarkFromDae      uint32
+	mptcp              bool
+	udpUnorderedRunner *udpUnorderedTaskRunner
+	udpBoundedPool     *udpBoundedPoolManager
 }
 
 var (
@@ -514,33 +514,33 @@ func NewControlPlaneWithContext(
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane = &ControlPlane{
-		log:                log,
-		core:               core,
-		deferFuncs:         deferFuncs,
-		listenIp:           "0.0.0.0",
-		outbounds:          outbounds,
-		dnsController:      nil,
-		onceNetworkReady:   sync.Once{},
-		dialMode:           dialMode,
-		routingMatcher:     routingMatcher,
-		ctx:                ctx,
-		cancel:             cancel,
-		ready:              make(chan struct{}),
-		muRealDomainSet:    sync.RWMutex{},
-		realDomainSet:      bloom.NewWithEstimates(2048, 0.001),
-		tcpSniffNegSet:     make(map[tcpSniffNegKey]tcpSniffNegEntry),
-		negJanitorStop:     make(chan struct{}),
-		negJanitorDone:     make(chan struct{}),
-		udpConnStateJanitorStop:  make(chan struct{}),
-		udpConnStateJanitorDone:  make(chan struct{}),
-		lanInterface:       global.LanInterface,
-		wanInterface:       global.WanInterface,
-		sniffingTimeout:    sniffingTimeout,
-		tproxyPortProtect:  global.TproxyPortProtect,
-		soMarkFromDae:      global.SoMarkFromDae,
-		mptcp:              global.Mptcp,
-		udpUnorderedRunner: newDefaultUdpUnorderedTaskRunner(ctx),
-		udpBoundedPool:     newUdpBoundedPoolManager(ctx),
+		log:                     log,
+		core:                    core,
+		deferFuncs:              deferFuncs,
+		listenIp:                "0.0.0.0",
+		outbounds:               outbounds,
+		dnsController:           nil,
+		onceNetworkReady:        sync.Once{},
+		dialMode:                dialMode,
+		routingMatcher:          routingMatcher,
+		ctx:                     ctx,
+		cancel:                  cancel,
+		ready:                   make(chan struct{}),
+		muRealDomainSet:         sync.RWMutex{},
+		realDomainSet:           bloom.NewWithEstimates(2048, 0.001),
+		tcpSniffNegSet:          make(map[tcpSniffNegKey]tcpSniffNegEntry),
+		negJanitorStop:          make(chan struct{}),
+		negJanitorDone:          make(chan struct{}),
+		udpConnStateJanitorStop: make(chan struct{}),
+		udpConnStateJanitorDone: make(chan struct{}),
+		lanInterface:            global.LanInterface,
+		wanInterface:            global.WanInterface,
+		sniffingTimeout:         sniffingTimeout,
+		tproxyPortProtect:       global.TproxyPortProtect,
+		soMarkFromDae:           global.SoMarkFromDae,
+		mptcp:                   global.Mptcp,
+		udpUnorderedRunner:      newDefaultUdpUnorderedTaskRunner(ctx),
+		udpBoundedPool:          newUdpBoundedPoolManager(ctx),
 	}
 	plane.startRealDomainNegJanitor()
 	plane.startUdpConnStateJanitor()

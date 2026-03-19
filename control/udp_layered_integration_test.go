@@ -15,9 +15,9 @@ import (
 // TestLayeredDispatchIntegration tests the complete layered dispatch system.
 func TestLayeredDispatchIntegration(t *testing.T) {
 	tests := []struct {
-		name           string
-		tasks          int
-		taskDuration   time.Duration
+		name             string
+		tasks            int
+		taskDuration     time.Duration
 		expectedStrategy UdpDispatchStrategy
 	}{
 		{"DNS burst", 100, 1 * time.Millisecond, StrategyDirectGoroutine},

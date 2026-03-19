@@ -262,17 +262,13 @@ retryLoadBpf:
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
 
-	// Check if Netkit device with scrub=NONE is being used for bpf_redirect_peer() optimization
-	// Note: bpf_redirect_peer() only works in TC ingress direction, not egress
-	// scrub=NONE preserves skb->mark across netkit boundaries, enabling bpf_redirect_peer()
-	useRedirectPeer := uint8(0)
-	if GetDaeNetns().IsUsingNetkit() {
-		if checkNetkitDeviceCanUseRedirectPeer(log, GetDaeNetns().Dae0().Attrs().Name) {
-			useRedirectPeer = 1
-			log.Info("Netkit with scrub=NONE detected, enabling bpf_redirect_peer() optimization for ingress hooks")
-		} else {
-			log.Debug("Netkit detected but scrub=NONE not configured; using bpf_redirect() for compatibility")
-		}
+	// NOTE: bpf_redirect_peer() optimization has been DISABLED in C code due to kernel panic issues.
+	// The useRedirectPeer field is kept for ABI compatibility but is always 0.
+	// We always use bpf_redirect() for stable L2/L3 forwarding now.
+	// Detection logic is preserved for future potential re-enabling.
+	useRedirectPeer := uint8(0) // Always 0 - disabled in C code
+	if GetDaeNetns().IsUsingNetkit() && checkNetkitDeviceCanUseRedirectPeer(log, GetDaeNetns().Dae0().Attrs().Name) {
+		log.Debug("Netkit with scrub=NONE detected but bpf_redirect_peer() is disabled in C code; using bpf_redirect()")
 	}
 
 	// Get peer MAC address. For L3 netkit devices, HardwareAddr may be empty.

@@ -120,23 +120,24 @@ func checkIpNetkitSupport() bool {
 // It prefers the netlink API method (doesn't require iproute2 6.7.0+),
 // and falls back to the ip command method if needed.
 //
-// When enableRedirectPeer is true, it attempts to configure scrub=NONE
-// to enable bpf_redirect_peer() with preserved skb->mark.
+// NOTE: bpf_redirect_peer() optimization is currently DISABLED in C code.
+// The enableRedirectPeer parameter is preserved for potential future re-enabling.
 func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int, enableRedirectPeer bool) error {
 	log.Debug("Attempting to create Netkit device")
 
 	// Determine if we should try to use scrub=NONE
+	// NOTE: Scrub configuration is preserved for potential future re-enabling
 	scrubNone := enableRedirectPeer && checkNetkitScrubSupport(log)
 	if scrubNone {
-		log.Info("Enabling netkit scrub=NONE for bpf_redirect_peer support")
+		log.Debug("Configuring netkit scrub=NONE (bpf_redirect_peer() is disabled in C code)")
 	} else if enableRedirectPeer {
-		log.Debug("bpf_redirect_peer requested but kernel doesn't support scrub; will use bpf_redirect instead")
+		log.Debug("bpf_redirect_peer requested but kernel doesn't support scrub; using default scrub")
 	}
 
 	cfg := &NetkitConfig{
-		Name:     name,
-		PeerName: peerName,
-		TxQLen:   txQLen,
+		Name:      name,
+		PeerName:  peerName,
+		TxQLen:    txQLen,
 		ScrubNone: scrubNone,
 	}
 
@@ -176,7 +177,9 @@ func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int, e
 }
 
 // checkNetkitDeviceCanUseRedirectPeer checks if an existing netkit device
-// is configured with scrub=NONE, which is required for bpf_redirect_peer.
+// is configured with scrub=NONE.
+// NOTE: bpf_redirect_peer() is currently DISABLED in C code due to kernel panic issues.
+// This function is preserved for potential future re-enabling.
 func checkNetkitDeviceCanUseRedirectPeer(log *logrus.Logger, ifname string) bool {
 	scrubNone, err := checkExistingNetkitScrubConfig(log, ifname)
 	if err != nil {

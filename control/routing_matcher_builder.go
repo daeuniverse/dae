@@ -56,7 +56,7 @@ type RoutingMatcherBuilder struct {
 
 // lpmDedupEntry stores the deduplication mapping with collision detection.
 type lpmDedupEntry struct {
-	index   uint32
+	index    uint32
 	prefixes []netip.Prefix
 }
 

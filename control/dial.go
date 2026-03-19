@@ -26,7 +26,7 @@ type proxyDialParam struct {
 	Src         netip.AddrPort
 	Dest        netip.AddrPort
 	Mark        uint32
-	Network     string // e.g. "tcp", "udp"
+	Network     string         // e.g. "tcp", "udp"
 	Excluded    *dialer.Dialer // Dialer to exclude in selection
 }
 

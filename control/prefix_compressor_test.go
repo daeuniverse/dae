@@ -30,7 +30,7 @@ func TestPrefixCompressor_RemoveDuplicates(t *testing.T) {
 		mustParsePrefix("192.168.1.0/24"),
 		mustParsePrefix("192.168.1.0/24"), // Duplicate
 		mustParsePrefix("10.0.0.0/8"),
-		mustParsePrefix("10.0.0.0/8"),     // Duplicate
+		mustParsePrefix("10.0.0.0/8"), // Duplicate
 		mustParsePrefix("172.16.0.0/12"),
 	}
 

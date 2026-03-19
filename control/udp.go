@@ -190,7 +190,19 @@ func (c *ControlPlane) logNoAliveDialerLimited(
 		"total":                  total,
 		"alive":                  alive,
 	}).Warn("no alive dialer for selection (rate-limited)")
+
+	// Aggressively re-probe all dialers when ErrNoAliveDialer is detected.
+	// Without this, recovery depends solely on the periodic check_interval timer.
+	// Since ErrNoAliveDialer drops every packet, traffic never succeeds and
+	// ReportAvailableTraffic is never called — the system is stuck until the next
+	// scheduled health check cycle. By triggering NotifyCheck here (rate-limited
+	// to once per noAliveDialerLogInterval), dead dialers are re-examined promptly
+	// after the underlying issue clears, eliminating the need for a manual restart.
+	for _, d := range outbound.Dialers {
+		d.NotifyCheckForNetworkType(selectionNetworkType)
+	}
 }
+
 
 type DialOption struct {
 	Target        string

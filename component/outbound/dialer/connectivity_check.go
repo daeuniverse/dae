@@ -567,22 +567,37 @@ func (d *Dialer) aliveBackground() {
 			return
 		}
 
+		// specificType is non-nil when triggered by NotifyCheckForNetworkType:
+		// only the matching check opts are run, and the periodic ticker is
+		// left untouched so the regular schedule is not disrupted.
+		var specificType *NetworkType
 		select {
 		case <-d.ctx.Done():
 			return
 		case <-d.ticker.C:
 		case <-d.checkCh:
+		case specificType = <-d.checkSpecificCh:
 		}
 
-		// Increment the health check cycle at the start of each cycle.
-		// This advances the sticky IP cache cycle, allowing IP failover.
-		d.IncrementCheckCycle()
+		opts := CheckOpts
+		if specificType != nil {
+			// Targeted check: only run checks whose proto+version match.
+			// IsDns is intentionally ignored — UDP traffic (IsDns=false) is
+			// health-checked via the DNS probe (IsDns=true) because both share
+			// the same collection index.
+			opts = filterCheckOpts(CheckOpts, specificType)
+		} else {
+			// Full check: advance the sticky IP cache cycle to allow IP failover.
+			d.IncrementCheckCycle()
+		}
 
-		// Process initial check immediately
-		d.submitCheckTasks(workerPool, &wg, CheckOpts)
-
-		// Wait for all checks to complete before next cycle
+		d.submitCheckTasks(workerPool, &wg, opts)
 		wg.Wait()
+
+		// Targeted checks don't disturb the periodic timer — only full checks do.
+		if specificType != nil {
+			continue
+		}
 
 		// After the cold-start check completes, re-spread once within the
 		// cycle window so dialers don't all enter steady-state at the same
@@ -606,6 +621,20 @@ func (d *Dialer) aliveBackground() {
 		}
 		d.tickerMu.Unlock()
 	}
+}
+
+// filterCheckOpts returns the subset of opts whose networkType matches
+// the given typ by L4Proto and IpVersion. IsDns is intentionally ignored
+// because UDP traffic (IsDns=false) and UDP DNS probes (IsDns=true) share
+// the same collection index and thus the same liveness state.
+func filterCheckOpts(opts []*CheckOption, typ *NetworkType) []*CheckOption {
+	var result []*CheckOption
+	for _, opt := range opts {
+		if opt.networkType.L4Proto == typ.L4Proto && opt.networkType.IpVersion == typ.IpVersion {
+			result = append(result, opt)
+		}
+	}
+	return result
 }
 
 // submitCheckTasks submits check tasks to worker pool
@@ -643,6 +672,22 @@ func (d *Dialer) NotifyCheck() {
 	select {
 	// If fail to push elem to chan, the check is in process.
 	case d.checkCh <- time.Now():
+	default:
+	}
+}
+
+// NotifyCheckForNetworkType triggers a targeted health check for the specified
+// network type (L4Proto and IpVersion). IsDns is ignored as data and DNS probes
+// share the same liveness state.
+func (d *Dialer) NotifyCheckForNetworkType(typ *NetworkType) {
+	select {
+	case <-d.ctx.Done():
+		return
+	default:
+	}
+
+	select {
+	case d.checkSpecificCh <- typ:
 	default:
 	}
 }
@@ -807,6 +852,11 @@ func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
 	idx := typ.Index()
 	if d.trafficFailCount[idx].Load() != 0 {
 		d.trafficFailCount[idx].Store(0)
+	}
+	// If the dialer is currently marked dead but traffic is actually succeeding,
+	// trigger an immediate targeted health check to quickly restore the alive state.
+	if !d.MustGetAlive(typ) {
+		d.NotifyCheckForNetworkType(typ)
 	}
 }
 
