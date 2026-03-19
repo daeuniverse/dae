@@ -49,7 +49,7 @@
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
-#define IPV6_MAX_EXTENSIONS 8
+#define IPV6_MAX_EXTENSIONS 4
 
 #define ipv6_optlen(p) (((p)+1) << 3)
 
@@ -392,62 +392,11 @@ static __always_inline bool is_extension_header(__u8 nexthdr)
 	}
 }
 
-struct ipv6_ext_ctx {
-	const struct __sk_buff *skb;
-	__u32 *offset;
-	__u8 *nexthdr;
-	int result;
-};
-
-static __noinline int ipv6_ext_skip_loop_cb(__u32 index, void *ctx_data)
-{
-	(void)index;  // Unused parameter required by bpf_loop callback
-	struct ipv6_ext_ctx *ctx = ctx_data;
-
-	if (*ctx->nexthdr == IPPROTO_NONE)
-		return 1;
-
-	if (!is_extension_header(*ctx->nexthdr))
-		return 1;
-
-	int ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset, ctx->nexthdr,
-					 sizeof(*ctx->nexthdr));
-	if (ret) {
-		bpf_printk("not a valid IPv6 packet");
-		ctx->result = -EFAULT;
-		return 1;
-	}
-
-	__u8 hdr_ext_len = 0;
-
-	ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset + 1, &hdr_ext_len,
-				 sizeof(hdr_ext_len));
-	if (ret) {
-		bpf_printk("not a valid IPv6 packet");
-		ctx->result = -EFAULT;
-		return 1;
-	}
-
-	// Bounds check: ensure extension header won't overflow packet boundary.
-	// ipv6_optlen returns (hdr_ext_len + 1) << 3, which can add up to 2048 bytes.
-	__u32 ext_len = ipv6_optlen(hdr_ext_len);
-	void *data = (void *)(long)ctx->skb->data;
-	void *data_end = (void *)(long)ctx->skb->data_end;
-
-	if (data + *ctx->offset + ext_len > data_end) {
-		ctx->result = -EFAULT;
-		return 1;
-	}
-
-	*ctx->offset += ext_len;
-	return 0;
-}
-
 // parse_transport_fast implements direct packet access using bpf_skb_pull_data
 // to linearize non-linear data regions, then accesses headers via pointer arithmetic.
 //
 // Key principles for BPF direct access:
-// 1. Use bpf_skb_pull_data to ensure data is in linear region
+// 1. Use bpf_skb_pull_data to ensure header data is in linear region
 // 2. Use pointer arithmetic on skb->data to get header pointers
 // 3. Always check (ptr + 1) <= data_end before dereferencing
 // 4. Boundary check failures are bad packets, return error (not fallback)
@@ -472,11 +421,14 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	__builtin_memset(tcph, 0, sizeof(struct tcphdr));
 	__builtin_memset(udph, 0, sizeof(struct udphdr));
 
-	// Pull data to linear region - this is key for direct access.
-	// bpf_skb_pull_data ensures the specified amount of data is contiguous
-	// in skb->data, allowing direct pointer-based access.
-	// If this fails, fall back to slow path.
-	if (bpf_skb_pull_data(skb, skb->len))
+	// Pull only the header data we need (not the entire packet).
+	// This is more efficient than pulling the whole packet and works
+	// even for large packets (e.g., jumbo frames).
+	// 512 bytes is enough for: ethhdr(14) + iphdr(60 max with options) +
+	// IPv6 ext headers(200) + L4 headers(60) + some extra.
+	// If this fails, fall back to slow path which uses bpf_skb_load_bytes.
+#define HEADER_PULL_SIZE 512
+	if (bpf_skb_pull_data(skb, HEADER_PULL_SIZE))
 		return -1;
 
 	data = (void *)(long)skb->data;
@@ -680,7 +632,10 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	return 1;
 }
 
-// Slow path using bpf_skb_load_bytes (handles non-linear data)
+// Slow path using bpf_skb_load_bytes for extreme cases:
+// - Packets with large IPv6 extension headers (> 512 bytes)
+// - Memory allocation failure in fast path
+// - Non-linear data that couldn't be pulled
 static __always_inline int
 parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		     struct ethhdr *ethh, struct iphdr *iph,
@@ -694,10 +649,8 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 	if (link_h_len == ETH_HLEN) {
 		ret = bpf_skb_load_bytes(skb, offset, ethh,
 					 sizeof(struct ethhdr));
-		if (ret) {
-			bpf_printk("not ethernet packet");
+		if (ret)
 			return 1;
-		}
 		offset += sizeof(struct ethhdr);
 	} else {
 		__builtin_memset(ethh, 0, sizeof(struct ethhdr));
@@ -740,36 +693,54 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		*ihl = iph->ihl;
 		return 0;
-	} else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
+	}
+
+	if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
 		ret = bpf_skb_load_bytes(skb, offset, ipv6h,
 					 sizeof(struct ipv6hdr));
-		if (ret) {
-			bpf_printk("not a valid IPv6 packet");
+		if (ret)
 			return -EFAULT;
-		}
 
 		offset += sizeof(struct ipv6hdr);
 		*ihl = sizeof(struct ipv6hdr) / 4;
 		__u8 nexthdr = ipv6h->nexthdr;
 
-		// Skip all extension headers.
-		struct ipv6_ext_ctx ext_ctx = {
-			.skb = skb,
-			.offset = &offset,
-			.nexthdr = &nexthdr,
-			.result = 0
-		};
+		// Skip extension headers using bpf_skb_load_bytes
+		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
+			if (nexthdr == IPPROTO_NONE)
+				return -EFAULT;
 
-		ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb, &ext_ctx, 0);
-		if (ret < 0)
-			return ret;
-		if (ext_ctx.result)
-			return ext_ctx.result;
+			if (!is_extension_header(nexthdr))
+				break;
 
-		if (is_extension_header(nexthdr)) {
-			bpf_printk("Unexpected hdr or exceeds IPV6_MAX_EXTENSIONS limit");
-			return 1;
+			// Read next header and extension header length
+			ret = bpf_skb_load_bytes(skb, offset, &nexthdr, 1);
+			if (ret)
+				return -EFAULT;
+
+			__u8 hdr_ext_len = 0;
+
+			ret = bpf_skb_load_bytes(skb, offset + 1, &hdr_ext_len,
+						 sizeof(hdr_ext_len));
+			if (ret)
+				return -EFAULT;
+
+			__u32 ext_len = ipv6_optlen(hdr_ext_len);
+
+			// Bounds check: ensure extension header won't overflow packet.
+			// ipv6_optlen returns (hdr_ext_len + 1) << 3, max 2048 bytes.
+			// This early check prevents attempting to read beyond packet bounds.
+			void *data = (void *)(long)skb->data;
+			void *data_end = (void *)(long)skb->data_end;
+
+			if (data + offset + ext_len > data_end)
+				return -EFAULT;
+
+			offset += ext_len;
 		}
+
+		if (is_extension_header(nexthdr))
+			return 1;
 
 		*l4proto = nexthdr;
 		switch (nexthdr) {
@@ -796,11 +767,12 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		return 0;
 	}
-	__builtin_memset(ethh, 0, sizeof(struct ethhdr));
+
 	return 1;
 }
 
-// Main entry point - tries fast path first, falls back to slow path
+// Main entry point - tries fast path first, falls back to slow path.
+// Returns: 0 on success, positive on error.
 static __always_inline int
 parse_transport(struct __sk_buff *skb, __u32 link_h_len,
 		struct ethhdr *ethh, struct iphdr *iph, struct ipv6hdr *ipv6h,
@@ -810,7 +782,8 @@ parse_transport(struct __sk_buff *skb, __u32 link_h_len,
 	int ret = parse_transport_fast(skb, link_h_len, ethh, iph, ipv6h,
 				       icmp6h, tcph, udph, ihl, l4proto);
 	if (ret == -1) {
-		// Fast path failed, fall back to slow path
+		// Fast path failed (pull failed or headers too large),
+		// fall back to slow path using bpf_skb_load_bytes.
 		return parse_transport_slow(skb, link_h_len, ethh, iph, ipv6h,
 					    icmp6h, tcph, udph, ihl, l4proto);
 	}
