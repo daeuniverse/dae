@@ -548,17 +548,6 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 		return err
 	}
 
-	// Rule reload safety: clear LPM cache to avoid stale cache hits across
-	// different rule generations (e.g. index reuse after config changes).
-	// Use generation-based selective invalidation for better performance.
-	currentGen := generationCounter.Add(1)
-	if currentGen > 1 {
-		// Only clear if we're doing a reload, not initial load
-		if err = BpfMapDeleteAll[bpfLpmCacheKey, uint8](b.bpf.LpmCacheMap); err != nil {
-			return fmt.Errorf("clear lpm_cache_map: %w", err)
-		}
-	}
-
 	// Pre-allocate results slice with exact capacity
 	results := make([]lpmMapResult, len(b.simulatedLpmTries))
 

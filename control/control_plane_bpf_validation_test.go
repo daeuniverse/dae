@@ -33,7 +33,6 @@ func TestValidateRequiredBpfMapsLoaded(t *testing.T) {
 				UdpConnStateMap:  &ebpf.Map{},
 				RoutingMap:       &ebpf.Map{},
 				RoutingMetaMap:   &ebpf.Map{},
-				LpmCacheMap:      &ebpf.Map{},
 			},
 		}
 		if err := validateRequiredBpfMapsLoaded(b); err != nil {

@@ -35,12 +35,24 @@ const (
 
 // createNetkitDeviceViaIpCmd creates a Netkit device pair using the ip command.
 // This is the most reliable method as it uses iproute2 which has Netkit support.
-func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int) error {
+// When scrubNone is true, it attempts to set scrub=0 to preserve skb->mark.
+func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int, scrubNone bool) error {
 	// Try multiple syntax variations for Netkit device creation
 
-	// Syntax 1: ip link add <name> type netkit peer <peer-name> mode L2
-	// This is the most common syntax
-	cmd := exec.Command("ip", "link", "add", name, "type", "netkit", "peer", peerName, "mode", "L2")
+	// Build base command arguments
+	args := []string{"link", "add", name, "type", "netkit", "peer", peerName}
+
+	// Add mode
+	args = append(args, "mode", "L3")
+
+	// Add scrub configuration if requested
+	// scrub=0 means NETKIT_SCRUB_NONE (don't clear skb->mark)
+	// This requires iproute2 that supports the scrub parameter (kernel 6.6+)
+	if scrubNone {
+		args = append(args, "scrub", "0", "peer_scrub", "0")
+	}
+
+	cmd := exec.Command("ip", args...)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		// Success, set TX queue length
@@ -53,23 +65,13 @@ func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int) error {
 		return nil
 	}
 
-	// Syntax 2: ip link add name <name> type netkit peer <peer-name> mode L2
-	// Alternative syntax
-	cmd = exec.Command("ip", "link", "add", "name", name, "type", "netkit", "peer", peerName, "mode", "L2")
-	output, err = cmd.CombinedOutput()
-	if err == nil {
-		// Success, set TX queue length
-		if txQLen > 0 {
-			cmd = exec.Command("ip", "link", "set", name, "txqlen", fmt.Sprintf("%d", txQLen))
-			if output, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("failed to set txqlen: %w: %s", err, string(output))
-			}
-		}
-		return nil
+	// If scrub configuration was requested and failed, try without it
+	if scrubNone && strings.Contains(string(output), "Unknown parameter") {
+		// ip command doesn't support scrub parameter, retry without it
+		return createNetkitDeviceViaIpCmd(name, peerName, txQLen, false)
 	}
 
-	// Both syntaxes failed, return error
-	return fmt.Errorf("failed to create Netkit device (tried multiple syntaxes): %w: %s", err, string(output))
+	return fmt.Errorf("failed to create Netkit device: %w: %s", err, string(output))
 }
 
 // checkIpNetkitSupport checks if the ip command supports Netkit devices.
@@ -117,21 +119,39 @@ func checkIpNetkitSupport() bool {
 // createNetkitDevice tries multiple methods to create a Netkit device.
 // It prefers the netlink API method (doesn't require iproute2 6.7.0+),
 // and falls back to the ip command method if needed.
-func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int) error {
+//
+// When enableRedirectPeer is true, it attempts to configure scrub=NONE
+// to enable bpf_redirect_peer() with preserved skb->mark.
+func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int, enableRedirectPeer bool) error {
 	log.Debug("Attempting to create Netkit device")
+
+	// Determine if we should try to use scrub=NONE
+	scrubNone := enableRedirectPeer && checkNetkitScrubSupport(log)
+	if scrubNone {
+		log.Info("Enabling netkit scrub=NONE for bpf_redirect_peer support")
+	} else if enableRedirectPeer {
+		log.Debug("bpf_redirect_peer requested but kernel doesn't support scrub; will use bpf_redirect instead")
+	}
+
+	cfg := &NetkitConfig{
+		Name:     name,
+		PeerName: peerName,
+		TxQLen:   txQLen,
+		ScrubNone: scrubNone,
+	}
 
 	// Method 1: Try using netlink API (preferred)
 	// This works even with older iproute2 versions
-	log.Debug("Trying netlink API method (doesn't require iproute2 6.7.0+)")
-	if err := createNetkitDeviceViaNetlink(log, name, peerName, txQLen); err == nil {
+	log.Debug("Trying netlink API method")
+	if err := createNetkitDeviceViaNetlink(log, cfg); err == nil {
 		log.Infof("Successfully created Netkit device pair %s <-> %s using netlink API", name, peerName)
 		return nil
 	} else {
-		log.Debugf("Netlink API method failed: %v (this is expected if kernel < 6.7 or CONFIG_NETKIT not enabled)", err)
+		log.Debugf("Netlink API method failed: %v", err)
 	}
 
 	// Method 2: Fall back to ip command (requires iproute2 6.7.0+)
-	log.Debug("Trying ip command method (requires iproute2 6.7.0+)")
+	log.Debug("Trying ip command method")
 	if !checkIpNetkitSupport() {
 		// Get iproute2 version for better error message
 		cmd := exec.Command("ip", "-V")
@@ -146,11 +166,22 @@ func createNetkitDevice(log *logrus.Logger, name, peerName string, txQLen int) e
 	log.Debug("ip command supports Netkit, proceeding with device creation")
 
 	// Create Netkit device using ip command
-	if err := createNetkitDeviceViaIpCmd(name, peerName, txQLen); err != nil {
+	if err := createNetkitDeviceViaIpCmd(name, peerName, txQLen, scrubNone); err != nil {
 		log.Infof("Failed to create Netkit device via ip command: %v", err)
 		return fmt.Errorf("failed to create Netkit device via ip command: %w", err)
 	}
 
 	log.Infof("Successfully created Netkit device pair %s <-> %s using ip command", name, peerName)
 	return nil
+}
+
+// checkNetkitDeviceCanUseRedirectPeer checks if an existing netkit device
+// is configured with scrub=NONE, which is required for bpf_redirect_peer.
+func checkNetkitDeviceCanUseRedirectPeer(log *logrus.Logger, ifname string) bool {
+	scrubNone, err := checkExistingNetkitScrubConfig(log, ifname)
+	if err != nil {
+		log.Debugf("Failed to check netkit scrub config for %s: %v", ifname, err)
+		return false
+	}
+	return scrubNone
 }

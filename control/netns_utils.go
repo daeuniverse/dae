@@ -213,8 +213,9 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	DeleteLink(HostVethName)
 
 	// Try to create Netkit device
+	// Enable bpf_redirect_peer() optimization by configuring scrub=NONE on supported kernels (6.6+)
 	ns.log.Debugf("Creating Netkit device pair: %s <-> %s", HostVethName, NsVethName)
-	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen); err != nil {
+	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen, true); err != nil {
 		ns.log.Infof("createNetkitDevice failed: %v", err)
 		return fmt.Errorf("failed to create Netkit device: %w", err)
 	}

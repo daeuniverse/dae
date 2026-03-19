@@ -24,19 +24,13 @@ type bpfDaeParam struct {
 	Dae0Ifindex     uint32
 	Dae0NetnsId     uint32
 	Dae0peerMac     [6]uint8
-	UseNetkit       uint8
+	UseRedirectPeer uint8
 	Padding         uint8
 }
 
 type bpfDomainRouting struct {
 	_      structs.HostLayout
 	Bitmap [32]uint32
-}
-
-type bpfLpmCacheKey struct {
-	_             structs.HostLayout
-	MatchSetIndex uint32
-	Ip            [4]uint32
 }
 
 type bpfMatchSet struct {
@@ -161,7 +155,6 @@ type bpfMapSpecs struct {
 	FastSock                *ebpf.MapSpec `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.MapSpec `ebpf:"listen_socket_map"`
 	LpmArrayMap             *ebpf.MapSpec `ebpf:"lpm_array_map"`
-	LpmCacheMap             *ebpf.MapSpec `ebpf:"lpm_cache_map"`
 	OutboundConnectivityMap *ebpf.MapSpec `ebpf:"outbound_connectivity_map"`
 	RedirectTrack           *ebpf.MapSpec `ebpf:"redirect_track"`
 	RoutingMap              *ebpf.MapSpec `ebpf:"routing_map"`
@@ -194,7 +187,6 @@ type bpfMaps struct {
 	FastSock                *ebpf.Map `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.Map `ebpf:"listen_socket_map"`
 	LpmArrayMap             *ebpf.Map `ebpf:"lpm_array_map"`
-	LpmCacheMap             *ebpf.Map `ebpf:"lpm_cache_map"`
 	OutboundConnectivityMap *ebpf.Map `ebpf:"outbound_connectivity_map"`
 	RedirectTrack           *ebpf.Map `ebpf:"redirect_track"`
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
@@ -211,7 +203,6 @@ func (m *bpfMaps) Close() error {
 		m.FastSock,
 		m.ListenSocketMap,
 		m.LpmArrayMap,
-		m.LpmCacheMap,
 		m.OutboundConnectivityMap,
 		m.RedirectTrack,
 		m.RoutingMap,

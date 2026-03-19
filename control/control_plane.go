@@ -740,7 +740,6 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
-		{name: "lpm_cache_map", m: bpf.LpmCacheMap},
 	}
 	for _, r := range required {
 		if r.m == nil {

@@ -262,12 +262,17 @@ retryLoadBpf:
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
 
-	// Check if Netkit device is being used for bpf_redirect_peer() optimization
+	// Check if Netkit device with scrub=NONE is being used for bpf_redirect_peer() optimization
 	// Note: bpf_redirect_peer() only works in TC ingress direction, not egress
-	useNetkit := uint8(0)
+	// scrub=NONE preserves skb->mark across netkit boundaries, enabling bpf_redirect_peer()
+	useRedirectPeer := uint8(0)
 	if GetDaeNetns().IsUsingNetkit() {
-		useNetkit = 1
-		log.Info("Netkit device detected, enabling bpf_redirect_peer() optimization for ingress hooks")
+		if checkNetkitDeviceCanUseRedirectPeer(log, GetDaeNetns().Dae0().Attrs().Name) {
+			useRedirectPeer = 1
+			log.Info("Netkit with scrub=NONE detected, enabling bpf_redirect_peer() optimization for ingress hooks")
+		} else {
+			log.Debug("Netkit detected but scrub=NONE not configured; using bpf_redirect() for compatibility")
+		}
 	}
 
 	constants := map[string]interface{}{
@@ -277,7 +282,7 @@ retryLoadBpf:
 			dae0Ifindex     uint32
 			dae0NetnsId     uint32
 			dae0peerMac     [6]byte
-			useNetkit       uint8
+			useRedirectPeer uint8
 			padding         uint8
 		}{
 			tproxyPort:      uint32(opts.BigEndianTproxyPort),
@@ -285,7 +290,7 @@ retryLoadBpf:
 			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
 			dae0NetnsId:     uint32(netnsID),
 			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
-			useNetkit:       useNetkit,
+			useRedirectPeer: useRedirectPeer,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {

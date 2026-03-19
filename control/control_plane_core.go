@@ -449,6 +449,11 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 		c.log.Debug("TCP relay eBPF offload disabled by DAE_DISABLE_TCP_RELAY_OFFLOAD=1")
 		return nil
 	}
+	// TCP relay eBPF offload is disabled due to kernel panic issues with bpf_msg_redirect_hash().
+	// See: https://github.com/daeuniverse/dae/pull/912
+	// The sk_msg program now returns SK_PASS, so we must not enable offload or connections will hang.
+	c.log.Info("TCP relay eBPF offload is disabled due to kernel panic issues; falling back to userspace relay")
+	return nil
 	if c.bpf.FastSock == nil ||
 		c.bpf.TproxySockops == nil ||
 		c.bpf.TproxySkMsgRedir == nil {
