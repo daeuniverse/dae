@@ -1230,6 +1230,9 @@ static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
 	__u8 l4proto, struct ethhdr *ethh, __u8 from_wan, struct tcphdr *tcph)
 {
+	struct redirect_tuple redirect_tuple = {};
+	struct redirect_entry redirect_entry = {};
+
 	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> veth
 	 *
 	 * When use_redirect_peer is set (L3 netkit with scrub=NONE), we're
@@ -1253,8 +1256,6 @@ static __always_inline void prep_redirect_to_control_plane(
 
 skip_eth_prep:
 
-	struct redirect_tuple redirect_tuple = {};
-
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
 		redirect_tuple.sip.u6_addr32[3] = tuples->five.sip.u6_addr32[3];
 		redirect_tuple.dip.u6_addr32[3] = tuples->five.dip.u6_addr32[3];
@@ -1264,7 +1265,6 @@ skip_eth_prep:
 		__builtin_memcpy(&redirect_tuple.dip, &tuples->five.dip,
 				 IPV6_BYTE_LENGTH);
 	}
-	struct redirect_entry redirect_entry = {};
 
 	redirect_entry.ifindex = skb->ifindex;
 	redirect_entry.from_wan = from_wan;
