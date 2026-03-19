@@ -477,6 +477,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 
 		// Zero-copy: directly access h_proto field
 		__u16 h_proto = eth_ptr->h_proto;
+
 		ethh->h_proto = h_proto;
 		__builtin_memcpy(ethh->h_dest, eth_ptr->h_dest, 6);
 		__builtin_memcpy(ethh->h_source, eth_ptr->h_source, 6);
@@ -520,6 +521,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		switch (iph->protocol) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + l4_offset;
+
 			if ((void *)(tcph_ptr + 1) > data_end)
 				goto parse_slow;
 			// Direct access to TCP header fields
@@ -536,6 +538,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udph_ptr = data + l4_offset;
+
 			if ((void *)(udph_ptr + 1) > data_end)
 				goto parse_slow;
 			// Direct access to UDP header fields
@@ -576,6 +579,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		switch (*l4proto) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + offset;
+
 			if ((void *)(tcph_ptr + 1) > data_end)
 				goto parse_slow;
 			tcph->source = tcph_ptr->source;
@@ -591,6 +595,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udph_ptr = data + offset;
+
 			if ((void *)(udph_ptr + 1) > data_end)
 				goto parse_slow;
 			udph->source = udph_ptr->source;
@@ -603,6 +608,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 			if (data + offset + sizeof(struct icmp6hdr) > data_end)
 				goto parse_slow;
 			struct icmp6hdr *icmp6h_ptr = data + offset;
+
 			icmp6h->icmp6_type = icmp6h_ptr->icmp6_type;
 			icmp6h->icmp6_code = icmp6h_ptr->icmp6_code;
 			return 0;
