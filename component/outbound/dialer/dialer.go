@@ -100,8 +100,6 @@ type Dialer struct {
 	failCount        [6]int
 	trafficFailCount [6]atomic.Int32
 
-	lastZombieAt atomic.Int64
-
 	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
 	// This is used for health check cycle management and failover tracking
 	stickyIpDialer *stickyip.StickyIpDialer
@@ -684,35 +682,4 @@ func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool
 	}
 	d.httpClients[key] = cli
 	return cli
-}
-
-// NotifyZombie marks this dialer as recently failed a health check.
-// Subsequent selections will avoid this dialer for CheckInterval duration.
-func (d *Dialer) NotifyZombie() {
-	d.lastZombieAt.Store(time.Now().UnixNano())
-}
-
-// LastZombieAt returns the timestamp (nanoseconds) when this dialer was last marked as zombie.
-func (d *Dialer) LastZombieAt() int64 {
-	return d.lastZombieAt.Load()
-}
-
-const (
-	// ZombieExclusionDuration is the time to temporarily avoid a dialer after it
-	// reports a zombie session. This matches ZombieDetectionTimeout in udp_endpoint_pool.go:
-	// when a UDP session is detected as zombie, the associated dialer is excluded for
-	// the same duration to prevent immediate reselection.
-	ZombieExclusionDuration = 30 * time.Second
-)
-
-// IsZombie returns true if this dialer was marked as zombie within ZombieExclusionDuration.
-func (d *Dialer) IsZombie(now int64) bool {
-	lastZombie := d.LastZombieAt()
-	if lastZombie == 0 {
-		return false // Never marked as zombie
-	}
-	if now == 0 {
-		now = CachedTimeNano()
-	}
-	return now-lastZombie < int64(ZombieExclusionDuration)
 }

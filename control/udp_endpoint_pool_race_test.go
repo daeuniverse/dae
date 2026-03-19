@@ -61,12 +61,6 @@ func (m *mockPacketConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-// initEndpointTimestamps initializes the read/write timestamps for a UdpEndpoint.
-func initEndpointTimestamps(ue *UdpEndpoint) {
-	ue.unansweredStartNano.Store(0)
-	ue.unansweredWriteCount.Store(0)
-}
-
 // TestUdpEndpointWriteToRace tests concurrent writes to UdpEndpoint.
 // Verifies that UdpEndpoint has proper write lock protection.
 func TestUdpEndpointWriteToRace(t *testing.T) {
@@ -81,7 +75,6 @@ func TestUdpEndpointWriteToRace(t *testing.T) {
 		NatTimeout: 30 * time.Second,
 		log:        log,
 	}
-	initEndpointTimestamps(endpoint)
 
 	const goroutines = 10
 	const writesPerGoroutine = 100
@@ -127,7 +120,6 @@ func TestUdpEndpointWriteAfterClose(t *testing.T) {
 		NatTimeout: 30 * time.Second,
 		log:        log,
 	}
-	initEndpointTimestamps(endpoint)
 
 	// Mark endpoint as closed
 	endpoint.dead.Store(true)
@@ -154,7 +146,6 @@ func TestUdpEndpointTtlRefreshRace(t *testing.T) {
 		NatTimeout: 30 * time.Second,
 		log:        log,
 	}
-	initEndpointTimestamps(endpoint)
 
 	const goroutines = 20
 	const refreshesPerGoroutine = 1000
@@ -280,7 +271,6 @@ func BenchmarkUdpEndpointWriteTo(b *testing.B) {
 		NatTimeout: 30 * time.Second,
 		log:        log,
 	}
-	initEndpointTimestamps(endpoint)
 
 	data := []byte("benchmark test data")
 
@@ -304,7 +294,6 @@ func BenchmarkUdpEndpointWriteToParallel(b *testing.B) {
 		NatTimeout: 30 * time.Second,
 		log:        log,
 	}
-	initEndpointTimestamps(endpoint)
 
 	data := []byte("benchmark test data")
 

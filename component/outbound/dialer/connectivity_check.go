@@ -755,7 +755,12 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	// This protects against transient network interference.
 	threshold := 1
 	if typ.L4Proto == consts.L4ProtoStr_UDP {
-		threshold = 3
+		if isTraffic {
+			// Higher threshold for data traffic to avoid flipping during WebRTC/STUN exploration.
+			threshold = 10
+		} else {
+			threshold = 3
+		}
 	} else if typ.L4Proto == consts.L4ProtoStr_TCP {
 		// Aggregation for TCP is too aggressive in multi-dialer environments.
 		// Add a minor threshold to balance "fast discovery" with "noise".
@@ -805,7 +810,7 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	idx := typ.Index()
 	collection := d.collections[idx]
 
-	// Synthetic success resets both failure counts.
+	// Synthetic success resets failure counts.
 	d.failCount[idx] = 0
 	d.trafficFailCount[idx].Store(0)
 
@@ -835,17 +840,11 @@ func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, false, true))
-	if typ.L4Proto == consts.L4ProtoStr_UDP {
-		d.NotifyZombie()
-	}
 }
 
 func (d *Dialer) ReportUnavailableForced(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true, true))
-	if typ.L4Proto == consts.L4ProtoStr_UDP {
-		d.NotifyZombie()
-	}
 }
 
 func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {

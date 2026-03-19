@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/errors"
 	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
@@ -77,8 +78,8 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 	networkType := udpEndpointNetworkType(ue)
 
 	// Short-circuit: lightweight check MustGetAlive first.
-	// Don't proactively drop existing healthy connections in fast-path just because the dialer is marked as Zombie.
-	if !ue.Dialer.MustGetAlive(&networkType) || (!isFastPath && ue.Dialer.IsZombie(0)) {
+	// Don't proactively drop existing healthy connections in fast-path.
+	if !ue.Dialer.MustGetAlive(&networkType) {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			path := "UDP"
 			if isFastPath {
@@ -86,7 +87,6 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 			}
 			c.log.WithFields(logrus.Fields{
 				"dialer": ue.Dialer.Property().Name,
-				"zombie": !isFastPath && ue.Dialer.IsZombie(0),
 				"alive":  ue.Dialer.MustGetAlive(&networkType),
 			}).Debugf("Re-selecting outbound for existing %s endpoint due to dialer health.", path)
 		}
@@ -202,7 +202,6 @@ func (c *ControlPlane) logNoAliveDialerLimited(
 		d.NotifyCheckForNetworkType(selectionNetworkType)
 	}
 }
-
 
 type DialOption struct {
 	Target        string
@@ -758,14 +757,14 @@ getNew:
 				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 			}
 			nt := udpEndpointNetworkType(ue)
-			// ReportUnavailable marks the dialer as zombie (30s exclusion window).
-			// Combined with excludedDialer below, this provides double protection:
-			// (1) temporary exclusion for future selections, and (2) guaranteed
-			// exclusion for the immediate retry, preventing a "just recovered but
-			// still unstable" dialer from being selected.
-			ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
-			// Ensure the failed dialer is excluded in the immediate retry.
-			excludedDialer = ue.Dialer
+			if !errors.IsUDPEndpointNormalClose(err) {
+				ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
+			}
+			// Ensure the failed dialer is excluded in the immediate retry if it was a real failure.
+			// For normal closures, we still remove the endpoint but don't penalize the dialer.
+			if !errors.IsUDPEndpointNormalClose(err) {
+				excludedDialer = ue.Dialer
+			}
 			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 			retry++
 			goto getNew

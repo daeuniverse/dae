@@ -155,7 +155,9 @@ func IsIgnorableConnectionError(err error) bool {
 	if errors.As(err, &sysErr) {
 		if errors.Is(sysErr.Err, syscall.EPIPE) ||
 			errors.Is(sysErr.Err, syscall.ECONNRESET) ||
-			errors.Is(sysErr.Err, syscall.ETIMEDOUT) {
+			errors.Is(sysErr.Err, syscall.ETIMEDOUT) ||
+			errors.Is(sysErr.Err, syscall.ECONNREFUSED) ||
+			errors.Is(sysErr.Err, syscall.EADDRNOTAVAIL) {
 			return true
 		}
 	}

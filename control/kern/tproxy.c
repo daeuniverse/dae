@@ -55,9 +55,6 @@
 
 #define TPROXY_MARK 0x8000000
 
-// UDP timeout constants (now enforced by userspace janitor)
-// DNS connections: 17s, Normal UDP: 60s
-
 #define NDP_REDIRECT 137
 
 // Param keys:
@@ -109,12 +106,15 @@ struct redirect_entry {
 // redirect_track: Track redirect entries for reply traffic routing.
 //
 // Design rationale:
-// - Changed from LRU_HASH to HASH.
-// - Redirect entries should be managed explicitly (create/delete), not by access-time eviction.
-// - This map stores MAC addresses and direction for proper reply routing.
-// - Userspace is responsible for cleanup when connections end.
+// - Uses LRU_HASH for automatic eviction when map is full.
+// - LRU is appropriate because redirect entries are accessed on each reply packet.
+// - Key is {sip, dip} only (no ports), shared by all connections between same IP pair.
+// - This avoids complex reference counting and userspace cleanup.
+//
+// Note: Previously used HASH with manual cleanup, but that was never implemented.
+// LRU provides automatic cleanup with minimal overhead.
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, struct redirect_tuple);
 	__type(value, struct redirect_entry);
 	__uint(max_entries, 65536);
@@ -324,6 +324,58 @@ struct {
 	__type(key, struct tuples_key);
 	__type(value, struct udp_conn_state);
 } udp_conn_state_map SEC(".maps");
+
+// tcp_conn_state: Track TCP connection state for lifecycle-based cleanup.
+// This enables cascade cleanup of routing_tuples_map when TCP connections close.
+// Design consistent with udp_conn_state_map.
+struct tcp_conn_state {
+	// For each flow (echo symmetric path), note the original flow direction.
+	// Mark as true if traffic go through wan ingress.
+	bool is_wan_ingress_direction;
+
+	// Connection state: 0 = active, 1 = closing (FIN/RST seen)
+	// When in closing state, userspace janitor will clean up both this map
+	// and the associated routing_tuples_map entries.
+	__u8 state;
+
+	// Last seen timestamp in nanoseconds (bpf_ktime_get_ns()).
+	__u64 last_seen_ns;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_DST_MAPPING_NUM);
+	__type(key, struct tuples_key);
+	__type(value, struct tcp_conn_state);
+} tcp_conn_state_map SEC(".maps");
+
+// bpf_stats: Map statistics for monitoring and robustness.
+// key=0: udp_conn_state_map overflow count (when bpf_map_update_elem fails with -E2BIG)
+// key=1: routing_tuples_map overflow count
+// key=2: udp_conn_state_map successful updates (for hit rate calculation)
+// Userspace reads these counters to detect map pressure and trigger alerts.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, 8);
+} bpf_stats_map SEC(".maps");
+
+enum bpf_stats_key {
+	BPF_STATS_UDP_CONN_OVERFLOW = 0,
+	BPF_STATS_ROUTING_OVERFLOW = 1,
+	BPF_STATS_UDP_CONN_UPDATES = 2,
+	BPF_STATS_UDP_CONN_LOOKUP_HITS = 3,
+	BPF_STATS_TCP_CONN_OVERFLOW = 4,
+	BPF_STATS_TCP_CONN_UPDATES = 5,
+	BPF_STATS_TCP_CONN_LOOKUP_HITS = 6,
+};
+
+// TCP connection state constants.
+enum tcp_state {
+	TCP_STATE_ACTIVE = 0,
+	TCP_STATE_CLOSING = 1,  // FIN or RST seen
+};
 
 // Functions:
 
@@ -1403,11 +1455,17 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 }
 
 // mark_udp_seen updates the last_seen_ns timestamp for UDP connection tracking.
-// Uses timestamp-based lazy deletion instead of bpf_timer to:
-// 1. Avoid CVE-2024-41045 (bpf_timer UAF vulnerability)
-// 2. Improve hot path performance (single write vs timer rearm)
-// 3. Reduce memory overhead (8 bytes vs timer struct)
-// Expired entries are cleaned by userspace janitor periodically.
+// Uses timestamp-based lazy deletion with userspace janitor cleanup.
+//
+// Design choice: Kernel path only updates timestamps, userspace handles expiry.
+// This avoids:
+// - Hot path overhead of expiry checks on every packet
+// - Complex cascade deletion of routing_tuples_map in kernel
+// - Clock synchronization issues between kernel/userspace
+//
+// Robustness: If map is full (E2BIG), we increment overflow counter and return NULL.
+// Callers should gracefully degrade: continue processing without conntrack state
+// rather than dropping packets.
 static __always_inline struct udp_conn_state *
 mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 {
@@ -1417,19 +1475,115 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 	if (state) {
 		// Fast path: update timestamp and return
 		state->last_seen_ns = now;
+
+		// Update hit counter for monitoring
+		__u32 stats_key = BPF_STATS_UDP_CONN_LOOKUP_HITS;
+		__u64 *hit_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+		if (hit_count)
+			__sync_fetch_and_add(hit_count, 1);
 		return state;
 	}
 
-	// Slow path: create new entry
+	// Slow path: create new entry (either no entry or expired one was deleted)
 	struct udp_conn_state new_state = {
 		.is_wan_ingress_direction = is_wan_ingress_direction,
 		.last_seen_ns = now,
 	};
 
-	if (unlikely(bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_ANY)))
+	int ret = bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_ANY);
+
+	if (unlikely(ret)) {
+		// Map full or other error: increment overflow counter for monitoring
+		// Return NULL to signal caller to degrade gracefully
+		__u32 stats_key = BPF_STATS_UDP_CONN_OVERFLOW;
+		__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+		if (overflow_count)
+			__sync_fetch_and_add(overflow_count, 1);
 		return NULL;
+	}
+
+	// Update success counter
+	__u32 stats_key = BPF_STATS_UDP_CONN_UPDATES;
+	__u64 *update_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+	if (update_count)
+		__sync_fetch_and_add(update_count, 1);
 
 	return bpf_map_lookup_elem(&udp_conn_state_map, key);
+}
+
+// mark_tcp_seen updates TCP connection state for lifecycle tracking.
+// Uses timestamp-based lazy deletion with userspace janitor cleanup.
+//
+// Design choice: Kernel path only updates timestamps and tracks TCP state,
+// userspace handles expiry. This avoids hot path overhead and complex
+// cascade deletion of routing_tuples_map in kernel.
+//
+// State transitions:
+// - SYN -> TCP_STATE_ACTIVE
+// - FIN/RST -> TCP_STATE_CLOSING
+//
+// Returns state pointer, or NULL if map full (caller should degrade gracefully)
+static __always_inline struct tcp_conn_state *
+mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
+	      bool is_wan_ingress_direction)
+{
+	struct tcp_conn_state *state = bpf_map_lookup_elem(&tcp_conn_state_map, key);
+	__u64 now = bpf_ktime_get_ns();
+
+	if (state) {
+		// Fast path: update timestamp and track TCP state
+		state->last_seen_ns = now;
+
+		// Check for connection close signals (FIN or RST)
+		if (tcph->fin || tcph->rst)
+			state->state = TCP_STATE_CLOSING;
+
+		// Update hit counter for monitoring
+		__u32 stats_key = BPF_STATS_TCP_CONN_LOOKUP_HITS;
+		__u64 *hit_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+		if (hit_count)
+			__sync_fetch_and_add(hit_count, 1);
+
+		return state;
+	}
+
+	// Only create new entry on SYN (new connection)
+	if (tcph->syn && !tcph->ack) {
+		// Slow path: create new entry
+		struct tcp_conn_state new_state = {
+			.is_wan_ingress_direction = is_wan_ingress_direction,
+			.state = TCP_STATE_ACTIVE,
+			.last_seen_ns = now,
+		};
+
+		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &new_state, BPF_ANY);
+
+		if (unlikely(ret)) {
+			// Map full or other error: increment overflow counter
+			__u32 stats_key = BPF_STATS_TCP_CONN_OVERFLOW;
+			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+			if (overflow_count)
+				__sync_fetch_and_add(overflow_count, 1);
+			return NULL;
+		}
+
+		// Update success counter
+		__u32 stats_key = BPF_STATS_TCP_CONN_UPDATES;
+		__u64 *update_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+		if (update_count)
+			__sync_fetch_and_add(update_count, 1);
+
+		return bpf_map_lookup_elem(&tcp_conn_state_map, key);
+	}
+
+	// Non-SYN packet without existing (or expired) state: ignore
+	return NULL;
 }
 
 static __always_inline bool
@@ -1499,8 +1653,10 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-		if (!mark_udp_seen(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
+		// Robustness: If conntrack map is full, gracefully degrade by continuing
+		// without state tracking. This is acceptable as the packet will be processed
+		// normally; we just lose connection tracking optimization.
+		mark_udp_seen(&reversed_tuples_key, true);
 	}
 
 	return TC_ACT_PIPE;
@@ -1559,6 +1715,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		__u32 mark;
 		bool must;
 
+		// Track TCP connection state (update timestamp, detect FIN/RST)
+		mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false);
+
 		/*
 		 * Compatibility restore for 030902f behavior and align with WAN
 		 * non-SYN session handling: reuse cached routing result for
@@ -1595,13 +1754,14 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		if (!is_short_lived_udp_traffic(&pkt->tuples.five)) {
 			struct udp_conn_state *conn_state =
 				mark_udp_seen(&pkt->tuples.five, false);
-			if (!conn_state)
-				return TC_ACT_SHOT;
-
-			// Replay (outbound) of an inbound flow
-			// => direct.
-			if (conn_state->is_wan_ingress_direction)
+			// Robustness: If conntrack map is full (conn_state == NULL),
+			// gracefully degrade by continuing with normal routing instead of
+			// dropping the packet. We lose the "direct return path" optimization
+			// for reply packets, but service continues.
+			if (conn_state && conn_state->is_wan_ingress_direction) {
+				// Replay (outbound) of an inbound flow => direct.
 				return TC_ACT_OK;
+			}
 		}
 		params.l4hdr = &pkt->udph;
 		params.flag[0] = L4ProtoType_UDP;
@@ -1651,8 +1811,16 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		ret = bpf_map_update_elem(&routing_tuples_map, &pkt->tuples.five,
 					  &routing_result, BPF_ANY);
 		if (ret) {
-			bpf_printk("shot save routing result: %d", ret);
-			return TC_ACT_SHOT;
+			// Robustness: If routing cache map is full, increment overflow counter
+			// and continue without caching. The packet is still processed correctly,
+			// we just lose the routing optimization for this flow.
+			__u32 stats_key = BPF_STATS_ROUTING_OVERFLOW;
+			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+			if (overflow_count)
+				__sync_fetch_and_add(overflow_count, 1);
+			bpf_printk("routing cache full, continuing without cache: %d", ret);
+			// Don't return TC_ACT_SHOT - continue processing the packet
 		}
 	}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -1770,8 +1938,10 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-		if (!mark_udp_seen(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
+		// Robustness: If conntrack map is full, gracefully degrade by continuing
+		// without state tracking. This is acceptable as the packet will be processed
+		// normally; we just lose connection tracking optimization.
+		mark_udp_seen(&reversed_tuples_key, true);
 	}
 
 	return TC_ACT_PIPE;
@@ -1876,6 +2046,9 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 #endif
 	} else {
 		// Existing TCP connection.
+		// Track TCP connection state (update timestamp, detect FIN/RST)
+		mark_tcp_seen(&tuples->five, tcph, false);
+
 		if (!load_non_syn_tcp_wan_egress(&tuples->five, &outbound, &mark,
 						 &must)) {
 			// No cached routing. This is a pre-existing connection
@@ -1962,9 +2135,10 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
 		struct udp_conn_state *conn_state =
 			mark_udp_seen(&tuples->five, false);
-		if (!conn_state)
-			return TC_ACT_SHOT;
-		if (conn_state->is_wan_ingress_direction) {
+		// Robustness: If conntrack map is full, gracefully degrade by continuing
+		// with normal routing. We lose the direct return path optimization but
+		// service continues.
+		if (conn_state && conn_state->is_wan_ingress_direction) {
 			// Replay (outbound) of an inbound flow => direct.
 			return TC_ACT_OK;
 		}

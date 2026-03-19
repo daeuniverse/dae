@@ -18,7 +18,6 @@
 // 3. Thorough testing confirms stability
 //
 // Current behavior: All TCP traffic uses userspace relay (stable but slower)
-//
 package control
 
 import (

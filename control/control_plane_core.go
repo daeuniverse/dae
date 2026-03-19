@@ -48,7 +48,7 @@ type controlPlaneCore struct {
 	// tcpRelayOffload is permanently disabled due to kernel panic issues.
 	// See: https://github.com/daeuniverse/dae/pull/912
 	// Field preserved for ABI compatibility; always remains false.
-	tcpRelayOffload    bool
+	tcpRelayOffload bool
 
 	kernelVersion *internal.Version
 

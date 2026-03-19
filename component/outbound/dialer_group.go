@@ -208,7 +208,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 		// Fixed policy represents explicit user intent to use a specific dialer.
 		// It ignores the 'excluded' parameter because user configuration takes
 		// precedence over automatic exclusion. Even if the dialer is marked as
-		// zombie or excluded, Fixed policy returns it as configured.
+		// excluded, Fixed policy returns it as configured.
 		if policy.FixedIndex < 0 || policy.FixedIndex >= len(g.Dialers) {
 			return nil, 0, fmt.Errorf("selected dialer index is out of range")
 		}

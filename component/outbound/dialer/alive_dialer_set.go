@@ -104,26 +104,17 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 		return nil
 	}
 
-	now := CachedTimeNano()
 	var candidates []*Dialer
-	var zombies []*Dialer
 
 	for _, d := range a.inorderedAliveDialerSet {
 		if d == excluded {
 			continue
 		}
-		if !d.IsZombie(now) {
-			candidates = append(candidates, d)
-		} else {
-			zombies = append(zombies, d)
-		}
+		candidates = append(candidates, d)
 	}
 
 	if len(candidates) > 0 {
 		return candidates[fastrand.Intn(len(candidates))]
-	}
-	if len(zombies) > 0 {
-		return zombies[fastrand.Intn(len(zombies))]
 	}
 
 	// No dialer available
@@ -145,13 +136,11 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	now := CachedTimeNano()
-
-	// Find the best non-zombie, non-excluded dialer.
+	// Find the best non-excluded dialer.
 	var nextBest *Dialer
 	var nextBestSortingLatency = time.Hour
 	for _, candidate := range a.inorderedAliveDialerSet {
-		if candidate == excluded || candidate.IsZombie(now) {
+		if candidate == excluded {
 			continue
 		}
 		if sortingLatency := a.SortingLatency(candidate); sortingLatency < nextBestSortingLatency {
@@ -162,22 +151,6 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 
 	if nextBest != nil {
 		return nextBest, nextBestSortingLatency
-	}
-
-	// Fallback: If all available dialers are zombies or no alive dialers, pick the best one among them (but still respect `excluded`).
-	var bestZombie *Dialer
-	var bestZombieLatency = time.Hour
-	for _, candidate := range a.inorderedAliveDialerSet {
-		if candidate == excluded {
-			continue
-		}
-		if sortingLatency := a.SortingLatency(candidate); sortingLatency < bestZombieLatency {
-			bestZombieLatency = sortingLatency
-			bestZombie = candidate
-		}
-	}
-	if bestZombie != nil {
-		return bestZombie, bestZombieLatency
 	}
 
 	// No dialer available

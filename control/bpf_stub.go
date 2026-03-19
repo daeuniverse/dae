@@ -153,6 +153,7 @@ type bpfProgramSpecs struct {
 }
 
 type bpfMapSpecs struct {
+	BpfStatsMap             *ebpf.MapSpec `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.MapSpec `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.MapSpec `ebpf:"domain_routing_map"`
 	FastSock                *ebpf.MapSpec `ebpf:"fast_sock"`
@@ -185,6 +186,7 @@ func (o *bpfObjects) Close() error {
 }
 
 type bpfMaps struct {
+	BpfStatsMap             *ebpf.Map `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.Map `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.Map `ebpf:"domain_routing_map"`
 	FastSock                *ebpf.Map `ebpf:"fast_sock"`
@@ -201,6 +203,7 @@ type bpfMaps struct {
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.BpfStatsMap,
 		m.CookiePidMap,
 		m.DomainRoutingMap,
 		m.FastSock,

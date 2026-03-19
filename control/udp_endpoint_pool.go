@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	daerrors "github.com/daeuniverse/dae/common/errors"
+	"github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -46,14 +46,7 @@ type UdpEndpoint struct {
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
 	lastRefreshNano atomic.Int64
 
-	// unansweredStartNano tracks the start time of the current period of unreturned writes.
-	// If 0, it means the connection is idle or all previous writes have been acknowledged.
-	unansweredStartNano atomic.Int64
-	// unansweredWriteCount tracks the number of consecutive writes without any read.
-	unansweredWriteCount atomic.Int32
-
 	// hasReceived indicates if this endpoint has EVER received a packet.
-	// Used to safely apply Fast Zombie Detection without breaking one-way UDP streams.
 	hasReceived atomic.Bool
 
 	Dialer   *dialer.Dialer
@@ -114,7 +107,7 @@ func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 		"nat_timeout": ue.NatTimeout.String(),
 	}
 	entry := ue.log.WithFields(fields).WithError(err)
-	if daerrors.IsUDPEndpointNormalClose(err) {
+	if errors.IsUDPEndpointNormalClose(err) {
 		entry.Debugln("UdpEndpoint " + msg + " closed normally")
 	} else {
 		// Add error details for connection refused
@@ -140,7 +133,7 @@ func (ue *UdpEndpoint) start() {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
 			// Fast path for soft errors (authentication failures/replay attacks from network noise)
-			if daerrors.IsReplayAttackError(err) || daerrors.IsAuthError(err) {
+			if errors.IsReplayAttackError(err) || errors.IsAuthError(err) {
 				// Dynamic threshold:
 				// If we haven't received any valid packet yet, keep threshold low (3) to fail fast on wrong passwords/nodes.
 				// If we have successfully received packets, the proxy works. Subsequent errors are likely network noise, so use high threshold (100).
@@ -180,12 +173,6 @@ func (ue *UdpEndpoint) start() {
 		ue.softErrorCount = 0
 		if !ue.hasReceived.Load() {
 			ue.hasReceived.Store(true)
-		}
-		if ue.unansweredStartNano.Load() != 0 {
-			ue.unansweredStartNano.Store(0)
-		}
-		if ue.unansweredWriteCount.Load() != 0 {
-			ue.unansweredWriteCount.Store(0)
 		}
 		ue.RefreshTtl()
 		if err = ue.handler(ue, buf[:n], from); err != nil {
@@ -311,74 +298,24 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	if ue.dead.Load() {
 		return 0, net.ErrClosed
 	}
-	now := time.Now().UnixNano()
-
-	// Detect zombie: actively writing but receiving no response for prolonged period.
-	// We track the start of the current period of unreturned writes in unansweredStartNano.
-	unanswered := ue.unansweredStartNano.Load()
-	if unanswered == 0 {
-		// New session or idle connection waking up. Record the start of this write sequence.
-		ue.unansweredStartNano.Store(now)
-		unanswered = now
-		ue.unansweredWriteCount.Store(1)
-	} else {
-		ue.unansweredWriteCount.Add(1)
-	}
-
-	elapsed := time.Duration(now - unanswered)
-	count := ue.unansweredWriteCount.Load()
-
-	// Dynamic Zombie Detection:
-	// 1. Absolute timeout (e.g. 30s)
-	// 2. Fast timeout (e.g. 3s) IF we have sent multiple packets (>= 5)
-	isZombie := false
-	var reason string
-
-	if elapsed > ZombieDetectionTimeout {
-		isZombie = true
-		reason = fmt.Sprintf("no response for %v", ZombieDetectionTimeout)
-	} else if elapsed > FastZombieDetectionTimeout && count >= FastZombiePacketThreshold {
-		// Heuristic to protect pure one-way UDP streams from being falsely
-		// penalized as a zombie node.
-		// Fast Zombie is only triggered if:
-		// 1. The connection has proven itself bidirectional (has received packets before).
-		// 2. OR the destination port is known to strictly require responses (STUN, DNS, QUIC, games).
-		if ue.hasReceived.Load() {
-			isZombie = true
-			reason = fmt.Sprintf("no response for %v after %d packets (mid-stream drop)", elapsed.Round(time.Millisecond), count)
-		} else {
-			port := extractPortFromAddr(addr)
-			if isKnownBidirectionalPort(port) {
-				isZombie = true
-				reason = fmt.Sprintf("no response for %v after %d packets on known bidirectional port %d", elapsed.Round(time.Millisecond), count, port)
-			}
-		}
-	}
-
-	if isZombie {
-		if ue.Dialer != nil {
-			networkType := &dialer.NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
-				IsDns:     false,
-			}
-			ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("zombie session detected: %s", reason))
-		}
-		// Mark dead to force recreation on next packet, giving a chance to switch node.
-		ue.dead.Store(true)
-		ue.expiresAtNano.Store(1)
-		return 0, net.ErrClosed
-	}
 
 	// Refresh TTL on write to keep endpoint alive for active connections
 	ue.RefreshTtl()
 
-	// Check again after zombie detection - endpoint may have died.
+	// Check again - endpoint may have died.
 	// The underlying conn.WriteTo is thread-safe; we accept a small race window
 	// for performance. Write errors will mark the endpoint dead for cleanup.
 	n, err := ue.conn.WriteTo(b, addr)
 	if err != nil {
 		ue.dead.Store(true)
+		if !errors.IsUDPEndpointNormalClose(err) && ue.Dialer != nil {
+			networkType := &dialer.NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
+				IsDns:     false,
+			}
+			ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("udp endpoint write failed: %w", err))
+		}
 		return n, err
 	}
 	if n != len(b) {
@@ -485,24 +422,6 @@ func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uin
 }
 
 // UdpEndpointKey is the pool key. Dst=0 for Full-Cone NAT, non-zero for QUIC.
-const (
-	// ZombieDetectionTimeout is the duration of continuous "write but no read"
-	// activity that triggers zombie detection. If we keep writing but receive
-	// no response for this long, the connection is marked as a zombie session.
-	// This value matches ZombieExclusionDuration in dialer.go for consistency:
-	// once detected, the dialer is excluded for the same duration.
-	ZombieDetectionTimeout = 30 * time.Second
-
-	// FastZombieDetectionTimeout is the minimum time required to declare a zombie
-	// if sufficient packets have been sent without reply. This dynamic window
-	// greatly improves gaming and WebRTC experience by quickly failing over
-	// blackholed connections (e.g. airport drops STUN but fakes DNS).
-	FastZombieDetectionTimeout = 3 * time.Second
-
-	// FastZombiePacketThreshold is the number of consecutive unanswered packets
-	// required to trigger the fast zombie detection timeout.
-	FastZombiePacketThreshold = 5
-)
 
 type UdpEndpointKey struct {
 	Src netip.AddrPort
@@ -618,7 +537,6 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		poolRef:       p,
 		poolKey:       key,
 	}
-	// unansweredStartNano is intentionally left at 0, indicating a fresh session.
 
 	// Pre-cache the Anyfrom socket for responses. Caching is only safe for
 	// fixed-destination sessions (Symmetric NAT) where the response bind address
