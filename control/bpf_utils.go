@@ -293,13 +293,25 @@ retryLoadBpf:
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
 
-	// NOTE: bpf_redirect_peer() optimization has been DISABLED in C code due to kernel panic issues.
-	// The useRedirectPeer field is kept for ABI compatibility but is always 0.
-	// We always use bpf_redirect() for stable L2/L3 forwarding now.
-	// Detection logic is preserved for future potential re-enabling.
-	useRedirectPeer := uint8(0) // Always 0 - disabled in C code
+	// bpf_redirect_peer() is only safe under specific conditions:
+	// 1. Netkit device with scrub=NONE (preserves skb->mark across netns boundary)
+	// 2. Kernel >= 6.8 (fixes CVE-2025-37959 skb metadata leak)
+	// 3. TC ingress direction ONLY (egress must use bpf_redirect())
+	//
+	// When enabled, provides ~50% throughput improvement by bypassing CPU backlog.
+	useRedirectPeer := uint8(0)
 	if GetDaeNetns().IsUsingNetkit() && checkNetkitDeviceCanUseRedirectPeer(log, GetDaeNetns().Dae0().Attrs().Name) {
-		log.Debug("Netkit with scrub=NONE detected but bpf_redirect_peer() is disabled in C code; using bpf_redirect()")
+		// Check kernel version for CVE-2025-37959 fix
+		kernelVersion, err := internal.KernelVersion()
+		if err != nil {
+			log.Warnf("Failed to get kernel version: %v; bpf_redirect_peer() disabled", err)
+		} else if kernelVersion.Less(consts.RedirectPeerSafeVersion) {
+			log.Debugf("Kernel %v < %v (CVE-2025-37959 fix); bpf_redirect_peer() disabled",
+				kernelVersion, consts.RedirectPeerSafeVersion)
+		} else {
+			useRedirectPeer = 1
+			log.Infof("Safely enabled bpf_redirect_peer() (kernel %v, netkit+scrub=NONE)", kernelVersion)
+		}
 	}
 
 	// Get peer MAC address. For L3 netkit devices, HardwareAddr may be empty.

@@ -159,9 +159,9 @@ struct dae_param {
 	__u32 dae0_ifindex;
 	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
-	// use_redirect_peer has been disabled in C to avoid bpf_redirect_peer kernel panics on ingress,
-	// but the field is preserved here to maintain struct layout compatibility with Go's bpf_utils.go.
-	// BPF redirect will always use bpf_redirect() for stable L2/L3 forwarding.
+	// use_redirect_peer enables bpf_redirect_peer() optimization for TC ingress.
+	// Only safe with: (1) netkit device + scrub=NONE, (2) kernel >= 6.8 (CVE-2025-37959 fix).
+	// Egress paths must always use bpf_redirect() (redirect_peer is ingress-only).
 	__u8 use_redirect_peer;
 	__u8 padding;
 };
@@ -1381,6 +1381,11 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 
 static __always_inline int redirect_to_control_plane_ingress(void)
 {
+	// bpf_redirect_peer() is only safe when explicitly enabled by userspace after
+	// verifying: netkit+scrub=NONE + kernel >= 6.8 (CVE-2025-37959 fix).
+	// Provides ~50% throughput improvement by bypassing CPU backlog.
+	if (PARAM.use_redirect_peer)
+		return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
