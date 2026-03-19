@@ -1188,6 +1188,7 @@ func (c *ControlPlane) startConnStateJanitor() {
 			case <-c.connStateJanitorStop:
 				return
 			case <-ticker.C:
+				c.cleanupRedirectTrackMap()
 				c.cleanupUdpConnStateMap()
 				c.cleanupTcpConnStateMap()
 			case <-healthCheckTicker.C:
@@ -1214,6 +1215,81 @@ func (c *ControlPlane) stopConnStateJanitor() {
 			}
 		}
 	})
+}
+
+// redirectTrackTimeout is the TTL for redirect entries.
+// Redirect entries track which interface and MAC addresses to use for reply traffic.
+// A longer timeout is acceptable because these entries are small and the consequence
+// of stale entries is minimal (wrong MAC address causes one packet to be misdirected).
+const redirectTrackTimeout = 5 * time.Minute
+
+// cleanupRedirectTrackMap iterates through the redirect track map and removes
+// entries that haven't been accessed within redirectTrackTimeout.
+// This is necessary because redirect_track uses HASH (not LRU) to avoid
+// the problem where long-lived connections prevent cleanup of other entries.
+func (c *ControlPlane) cleanupRedirectTrackMap() {
+	bpf := c.core.EjectBpf()
+	if bpf == nil || bpf.RedirectTrack == nil {
+		return
+	}
+
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		c.log.Errorf("cleanupRedirectTrackMap: failed to get monotonic time: %v", err)
+		return
+	}
+	nowNano := ts.Nano()
+
+	timeoutNano := redirectTrackTimeout.Nanoseconds()
+
+	var keysToDelete []bpfRedirectTuple
+	totalEntries := 0
+	maxAge := int64(0)
+	totalAge := int64(0)
+
+	iter := bpf.RedirectTrack.Iterate()
+	var key bpfRedirectTuple
+	var value bpfRedirectEntry
+	for iter.Next(&key, &value) {
+		totalEntries++
+		age := nowNano - int64(value.LastSeenNs)
+		totalAge += age
+		if age > maxAge {
+			maxAge = age
+		}
+		if age > timeoutNano {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		c.log.Errorf("cleanupRedirectTrackMap: iteration error: %v", err)
+		return
+	}
+
+	for _, k := range keysToDelete {
+		if err := bpf.RedirectTrack.Delete(&k); err != nil {
+			c.log.Debugf("cleanupRedirectTrackMap: failed to delete entry: %v", err)
+		}
+	}
+
+	// Log cleanup statistics
+	if len(keysToDelete) > 0 || totalEntries > 100 {
+		avgAge := time.Duration(0)
+		if totalEntries > 0 {
+			avgAge = time.Duration(totalAge / int64(totalEntries))
+		}
+		c.log.Debugf("cleanupRedirectTrackMap: total=%d, expired=%d, avg_age=%v, max_age=%v",
+			totalEntries, len(keysToDelete), avgAge, time.Duration(maxAge))
+	}
+
+	// Alert if map usage is high
+	const redirectTrackCapacity = 65536
+	usagePercent := float64(totalEntries) / float64(redirectTrackCapacity) * 100
+	if usagePercent > 90 {
+		c.log.Warnf("cleanupRedirectTrackMap: map at %.1f%% capacity (%d/%d entries)",
+			usagePercent, totalEntries, redirectTrackCapacity)
+	}
 }
 
 // cleanupUdpConnStateMap iterates through the UDP conn state map and removes

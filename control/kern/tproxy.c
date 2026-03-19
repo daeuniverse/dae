@@ -101,20 +101,25 @@ struct redirect_entry {
 	__u8 smac[6];
 	__u8 dmac[6];
 	__u8 from_wan;
+	__u8 padding[3];
+	__u64 last_seen_ns;  // Timestamp for userspace janitor cleanup
 };
 
 // redirect_track: Track redirect entries for reply traffic routing.
 //
 // Design rationale:
-// - Uses LRU_HASH for automatic eviction when map is full.
-// - LRU is appropriate because redirect entries are accessed on each reply packet.
+// - Uses HASH with timestamp-based cleanup by userspace janitor.
 // - Key is {sip, dip} only (no ports), shared by all connections between same IP pair.
-// - This avoids complex reference counting and userspace cleanup.
+// - last_seen_ns is updated on each access (lookup and update) for accurate TTL.
+// - Userspace janitor removes entries older than REDIRECT_TRACK_TTL.
 //
-// Note: Previously used HASH with manual cleanup, but that was never implemented.
-// LRU provides automatic cleanup with minimal overhead.
+// Note: Previously used LRU_HASH, but LRU is unsuitable because:
+// - LRU tracks "last access time" not "entry age"
+// - Long-lived connections (e.g., SSH) cause their entries to never be evicted
+// - This prevents cleanup of other IP pairs' entries
+// - HASH + TTL provides predictable expiration behavior.
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct redirect_tuple);
 	__type(value, struct redirect_entry);
 	__uint(max_entries, 65536);
@@ -1418,6 +1423,7 @@ static __always_inline void prep_redirect_to_control_plane(
 
 	redirect_entry.ifindex = skb->ifindex;
 	redirect_entry.from_wan = from_wan;
+	redirect_entry.last_seen_ns = bpf_ktime_get_ns();  // Set timestamp for janitor
 	if (link_h_len == ETH_HLEN) {
 		__builtin_memcpy(redirect_entry.smac, ethh->h_source, 6);
 		__builtin_memcpy(redirect_entry.dmac, ethh->h_dest, 6);
@@ -2403,6 +2409,9 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 
 	if (!redirect_entry)
 		return TC_ACT_OK;
+
+	// Update last_seen_ns on each access for accurate TTL tracking
+	redirect_entry->last_seen_ns = bpf_ktime_get_ns();
 
 	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
 			    redirect_entry->dmac, sizeof(redirect_entry->dmac),
