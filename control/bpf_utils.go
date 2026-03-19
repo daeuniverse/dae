@@ -275,6 +275,14 @@ retryLoadBpf:
 		}
 	}
 
+	// Get peer MAC address. For L3 netkit devices, HardwareAddr may be empty.
+	// Use zero MAC in that case since L3 mode doesn't use MAC addresses.
+	peerMac := [6]byte{}
+	hwAddr := GetDaeNetns().Dae0Peer().Attrs().HardwareAddr
+	if len(hwAddr) == 6 {
+		peerMac = [6]byte(hwAddr)
+	} // else: keep zero MAC for L3 netkit
+
 	constants := map[string]interface{}{
 		"PARAM": struct {
 			tproxyPort      uint32
@@ -289,7 +297,7 @@ retryLoadBpf:
 			controlPlanePid: uint32(os.Getpid()),
 			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
 			dae0NetnsId:     uint32(netnsID),
-			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
+			dae0peerMac:     peerMac,
 			useRedirectPeer: useRedirectPeer,
 		},
 	}
