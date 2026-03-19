@@ -433,6 +433,7 @@ static __noinline int ipv6_ext_skip_loop_cb(__u32 index, void *ctx_data)
 	__u32 ext_len = ipv6_optlen(hdr_ext_len);
 	void *data = (void *)(long)ctx->skb->data;
 	void *data_end = (void *)(long)ctx->skb->data_end;
+
 	if (data + *ctx->offset + ext_len > data_end) {
 		ctx->result = -EFAULT;
 		return 1;
@@ -442,52 +443,70 @@ static __noinline int ipv6_ext_skip_loop_cb(__u32 index, void *ctx_data)
 	return 0;
 }
 
-// parse_transport_fast implements true zero-copy packet parsing using direct
-// packet access. This avoids the overhead of bpf_skb_load_bytes when possible.
+// parse_transport_fast implements direct packet access using bpf_skb_pull_data
+// to linearize non-linear data regions, then accesses headers via pointer arithmetic.
 //
 // Key principles for BPF direct access:
-// 1. Use pointer arithmetic on skb->data to get header pointers (zero-copy)
-// 2. Always check (ptr + 1) <= data_end before dereferencing
-// 3. Only copy needed fields to output structs, not entire headers
-// 4. Fall back to slow path for non-linear data regions
+// 1. Use bpf_skb_pull_data to ensure data is in linear region
+// 2. Use pointer arithmetic on skb->data to get header pointers
+// 3. Always check (ptr + 1) <= data_end before dereferencing
+// 4. Boundary check failures are bad packets, return error (not fallback)
 //
 // Returns: 0 on success, -1 to fall back to slow path, positive on error
 static __always_inline int
-parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
+parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		     struct ethhdr *ethh, struct iphdr *iph,
 		     struct ipv6hdr *ipv6h, struct icmp6hdr *icmp6h,
 		     struct tcphdr *tcph, struct udphdr *udph, __u8 *ihl,
 		     __u8 *l4proto)
 {
-	void *data = (void *)(long)skb->data;
-	void *data_end = (void *)(long)skb->data_end;
+	void *data, *data_end;
 	__u32 offset = 0;
 
 	*ihl = 0;
 	*l4proto = 0;
+	__builtin_memset(ethh, 0, sizeof(struct ethhdr));
 	__builtin_memset(iph, 0, sizeof(struct iphdr));
 	__builtin_memset(ipv6h, 0, sizeof(struct ipv6hdr));
 	__builtin_memset(icmp6h, 0, sizeof(struct icmp6hdr));
 	__builtin_memset(tcph, 0, sizeof(struct tcphdr));
 	__builtin_memset(udph, 0, sizeof(struct udphdr));
 
+	// Pull data to linear region - this is key for direct access.
+	// bpf_skb_pull_data ensures the specified amount of data is contiguous
+	// in skb->data, allowing direct pointer-based access.
+	// If this fails, fall back to slow path.
+	if (bpf_skb_pull_data(skb, skb->len))
+		return -1;
+
+	data = (void *)(long)skb->data;
+	data_end = (void *)(long)skb->data_end;
+
 	// Parse Ethernet header (or L3-only)
 	if (link_h_len == ETH_HLEN) {
 		struct ethhdr *eth_ptr = data;
 
-		// Boundary check: ensure complete ethhdr is in linear region
+		// Boundary check: if this fails, it's a malformed packet, not a
+		// non-linear data issue. Return error directly.
 		if ((void *)(eth_ptr + 1) > data_end)
-			goto parse_slow;
+			return -EFAULT;
 
-		// Zero-copy: directly access h_proto field
-		__u16 h_proto = eth_ptr->h_proto;
-
-		ethh->h_proto = h_proto;
-		__builtin_memcpy(ethh->h_dest, eth_ptr->h_dest, 6);
-		__builtin_memcpy(ethh->h_source, eth_ptr->h_source, 6);
+		ethh->h_proto = eth_ptr->h_proto;
+		// Direct assignment is more efficient than memcpy for small arrays
+		ethh->h_dest[0] = eth_ptr->h_dest[0];
+		ethh->h_dest[1] = eth_ptr->h_dest[1];
+		ethh->h_dest[2] = eth_ptr->h_dest[2];
+		ethh->h_dest[3] = eth_ptr->h_dest[3];
+		ethh->h_dest[4] = eth_ptr->h_dest[4];
+		ethh->h_dest[5] = eth_ptr->h_dest[5];
+		ethh->h_source[0] = eth_ptr->h_source[0];
+		ethh->h_source[1] = eth_ptr->h_source[1];
+		ethh->h_source[2] = eth_ptr->h_source[2];
+		ethh->h_source[3] = eth_ptr->h_source[3];
+		ethh->h_source[4] = eth_ptr->h_source[4];
+		ethh->h_source[5] = eth_ptr->h_source[5];
 		offset += sizeof(struct ethhdr);
 	} else {
-		__builtin_memset(ethh, 0, sizeof(struct ethhdr));
 		ethh->h_proto = skb->protocol;
 	}
 
@@ -495,22 +514,21 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
 		struct iphdr *iph_ptr = data + offset;
 
-		// Boundary check for minimal IPv4 header (5 * 4 = 20 bytes)
+		// Boundary check: malformed packet if this fails
 		if ((void *)(iph_ptr + 1) > data_end)
-			goto parse_slow;
+			return -EFAULT;
 
-		// Direct access to IP header fields (zero-copy)
 		if (iph_ptr->ihl < 5)
-			goto parse_slow;
+			return -EFAULT;
 
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
 
 		// Check if we can access L4 header
 		if (data + l4_offset + sizeof(struct tcphdr) > data_end)
-			goto parse_slow;
+			return -EFAULT;
 
-		// Copy only needed fields to output (partial copy, not full memcpy)
+		// Direct field access - more efficient than memcpy
 		iph->version = iph_ptr->version;
 		iph->ihl = iph_ptr->ihl;
 		iph->protocol = iph_ptr->protocol;
@@ -527,8 +545,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 			struct tcphdr *tcph_ptr = data + l4_offset;
 
 			if ((void *)(tcph_ptr + 1) > data_end)
-				goto parse_slow;
-			// Direct access to TCP header fields
+				return -EFAULT;
 			tcph->source = tcph_ptr->source;
 			tcph->dest = tcph_ptr->dest;
 			tcph->seq = tcph_ptr->seq;
@@ -544,8 +561,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 			struct udphdr *udph_ptr = data + l4_offset;
 
 			if ((void *)(udph_ptr + 1) > data_end)
-				goto parse_slow;
-			// Direct access to UDP header fields
+				return -EFAULT;
 			udph->source = udph_ptr->source;
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
@@ -555,37 +571,76 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		default:
 			return 1;
 		}
-	} else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
+	}
+
+	if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
 		struct ipv6hdr *ipv6h_ptr = data + offset;
 
 		// Boundary check for IPv6 header
 		if ((void *)(ipv6h_ptr + 1) > data_end)
-			goto parse_slow;
+			return -EFAULT;
 
-		// Direct access to IPv6 header fields
-		*l4proto = ipv6h_ptr->nexthdr;
-		*ihl = sizeof(struct ipv6hdr) / 4;
-
-		// Copy only needed fields (using correct field names)
 		ipv6h->version = ipv6h_ptr->version;
 		ipv6h->nexthdr = ipv6h_ptr->nexthdr;
 		ipv6h->payload_len = ipv6h_ptr->payload_len;
-		__builtin_memcpy(&ipv6h->saddr, &ipv6h_ptr->saddr, 16);
-		__builtin_memcpy(&ipv6h->daddr, &ipv6h_ptr->daddr, 16);
+		// Copy IPv6 addresses - use loop for 128-bit addresses
+		__u32 *saddr_dst = (__u32 *)ipv6h->saddr.in6_u.u6_addr32;
+		const __u32 *saddr_src = (const __u32 *)ipv6h_ptr->saddr.in6_u.u6_addr32;
 
-		// Extension headers need slow path (parsing loop)
-		if (is_extension_header(*l4proto))
-			goto parse_slow;
+		saddr_dst[0] = saddr_src[0];
+		saddr_dst[1] = saddr_src[1];
+		saddr_dst[2] = saddr_src[2];
+		saddr_dst[3] = saddr_src[3];
+		__u32 *daddr_dst = (__u32 *)ipv6h->daddr.in6_u.u6_addr32;
+		const __u32 *daddr_src = (const __u32 *)ipv6h_ptr->daddr.in6_u.u6_addr32;
 
+		daddr_dst[0] = daddr_src[0];
+		daddr_dst[1] = daddr_src[1];
+		daddr_dst[2] = daddr_src[2];
+		daddr_dst[3] = daddr_src[3];
+
+		*l4proto = ipv6h_ptr->nexthdr;
+		*ihl = sizeof(struct ipv6hdr) / 4;
 		offset += sizeof(struct ipv6hdr);
 
+		// Skip extension headers using direct access (already pulled data)
+		__u8 nexthdr = ipv6h_ptr->nexthdr;
+
+		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
+			if (nexthdr == IPPROTO_NONE)
+				return -EFAULT;
+
+			if (!is_extension_header(nexthdr))
+				break;
+
+			// Check we can access the extension header
+			if (data + offset + 2 > data_end)
+				return -EFAULT;
+
+			// Get next header and extension header length
+			const __u8 *ext_hdr = data + offset;
+
+			nexthdr = ext_hdr[0];
+			__u8 hdr_ext_len = ext_hdr[1];
+			__u32 ext_len = ipv6_optlen(hdr_ext_len);
+
+			if (data + offset + ext_len > data_end)
+				return -EFAULT;
+
+			offset += ext_len;
+			*l4proto = nexthdr;
+		}
+
+		if (is_extension_header(nexthdr))
+			return -EFAULT;
+
 		// Parse L4 header with direct access
-		switch (*l4proto) {
+		switch (nexthdr) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + offset;
 
 			if ((void *)(tcph_ptr + 1) > data_end)
-				goto parse_slow;
+				return -EFAULT;
 			tcph->source = tcph_ptr->source;
 			tcph->dest = tcph_ptr->dest;
 			tcph->seq = tcph_ptr->seq;
@@ -601,7 +656,7 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 			struct udphdr *udph_ptr = data + offset;
 
 			if ((void *)(udph_ptr + 1) > data_end)
-				goto parse_slow;
+				return -EFAULT;
 			udph->source = udph_ptr->source;
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
@@ -610,8 +665,8 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_ICMPV6: {
 			if (data + offset + sizeof(struct icmp6hdr) > data_end)
-				goto parse_slow;
-			struct icmp6hdr *icmp6h_ptr = data + offset;
+				return -EFAULT;
+			const struct icmp6hdr *icmp6h_ptr = data + offset;
 
 			icmp6h->icmp6_type = icmp6h_ptr->icmp6_type;
 			icmp6h->icmp6_code = icmp6h_ptr->icmp6_code;
@@ -622,17 +677,12 @@ parse_transport_fast(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 	}
 
-parse_slow:
-	// Fall back to bpf_skb_load_bytes for:
-	// - Non-linear data regions
-	// - IPv6 extension headers
-	// - Complex packet formats
-	return -1;
+	return 1;
 }
 
 // Slow path using bpf_skb_load_bytes (handles non-linear data)
 static __always_inline int
-parse_transport_slow(const struct __sk_buff *skb, __u32 link_h_len,
+parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		     struct ethhdr *ethh, struct iphdr *iph,
 		     struct ipv6hdr *ipv6h, struct icmp6hdr *icmp6h,
 		     struct tcphdr *tcph, struct udphdr *udph, __u8 *ihl,
@@ -752,7 +802,7 @@ parse_transport_slow(const struct __sk_buff *skb, __u32 link_h_len,
 
 // Main entry point - tries fast path first, falls back to slow path
 static __always_inline int
-parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
+parse_transport(struct __sk_buff *skb, __u32 link_h_len,
 		struct ethhdr *ethh, struct iphdr *iph, struct ipv6hdr *ipv6h,
 		struct icmp6hdr *icmp6h, struct tcphdr *tcph,
 		struct udphdr *udph, __u8 *ihl, __u8 *l4proto)
