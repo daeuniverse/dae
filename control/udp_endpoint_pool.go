@@ -427,6 +427,24 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 	return p
 }
 
+// Reset clears all cached UDP endpoints.
+// Called on reload to prevent stale endpoints from using pre-reload routing state.
+// Uses LoadAndDelete for atomic removal that races safely with concurrent GetOrCreate.
+func (p *UdpEndpointPool) Reset() {
+	// Two-phase deletion: collect keys first, then delete
+	var keys []any
+	p.pool.Range(func(key, value any) bool {
+		keys = append(keys, key)
+		return true
+	})
+	for _, key := range keys {
+		if value, ok := p.pool.LoadAndDelete(key); ok {
+			ue := value.(*UdpEndpoint)
+			ue.Close()
+		}
+	}
+}
+
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
 	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
 	if !p.pool.CompareAndDelete(key, udpEndpoint) {

@@ -222,6 +222,24 @@ func NewPacketSnifferPool() *PacketSnifferPool {
 	return p
 }
 
+// Reset clears all packet sniffer sessions.
+// Called on reload to prevent stale sniffers from using pre-reload state.
+// Uses LoadAndDelete for atomic removal that races safely with concurrent GetOrCreate.
+func (p *PacketSnifferPool) Reset() {
+	// Two-phase deletion: collect keys first, then delete
+	var keys []any
+	p.pool.Range(func(key, value any) bool {
+		keys = append(keys, key)
+		return true
+	})
+	for _, key := range keys {
+		if value, ok := p.pool.LoadAndDelete(key); ok {
+			ps := value.(*PacketSniffer)
+			ps.Close()
+		}
+	}
+}
+
 func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
 	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
 	if !p.pool.CompareAndDelete(key, sniffer) {

@@ -61,12 +61,17 @@ func TestDnsCache_ShouldRefreshRouteBinding(t *testing.T) {
 	require.True(t, cache.ShouldRefreshRouteBinding(now.Add(1100*time.Millisecond), time.Second))
 }
 
-func TestDnsCache_ClonePreservesRefreshTimestamp(t *testing.T) {
+func TestDnsCache_CloneResetsSyncState(t *testing.T) {
 	now := time.Now()
 	cache := &DnsCache{}
 	cache.MarkRouteBindingRefreshed(now)
 
 	clone := cache.Clone()
-	require.False(t, clone.ShouldRefreshRouteBinding(now.Add(100*time.Millisecond), time.Second))
-	require.True(t, clone.ShouldRefreshRouteBinding(now.Add(1100*time.Millisecond), time.Second))
+	// Clone should reset sync state to 0, forcing immediate BPF update on reload
+	require.Equal(t, int64(0), clone.lastRouteSyncNano.Load(), "lastRouteSyncNano should be reset to 0 in clone")
+	require.Equal(t, uint64(0), clone.lastBpfDataHash.Load(), "lastBpfDataHash should be reset to 0 in clone")
+	// This means the cloned cache should immediately need BPF update
+	require.True(t, clone.NeedsBpfUpdate(now), "Cloned cache should immediately need BPF update")
+	// After NeedsBpfUpdate, the timestamp should be updated to now
+	require.Equal(t, now.UnixNano(), clone.lastRouteSyncNano.Load(), "lastRouteSyncNano should be updated after NeedsBpfUpdate")
 }

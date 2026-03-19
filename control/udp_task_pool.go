@@ -276,6 +276,15 @@ createNew:
 	return q
 }
 
+// Reset clears all UDP task queues.
+// Called on reload to clear queued tasks from pre-reload state.
+func (p *UdpTaskPool) Reset() {
+	p.queues.Range(func(key, value any) bool {
+		p.queues.Delete(key)
+		return true
+	})
+}
+
 // tryDeleteQueue attempts to delete the queue if it's still the same instance.
 // Returns true if deletion was successful, false otherwise.
 // Uses CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice).

@@ -237,6 +237,31 @@ func NewAnyfromPool() *AnyfromPool {
 	return p
 }
 
+// Reset clears all cached anyfrom connections.
+// Called on reload to prevent stale connections from using pre-reload routing state.
+// Uses two-phase deletion to avoid race with concurrent GetOrCreate:
+// 1. Collect all keys under lock
+// 2. Delete and close each entry
+func (p *AnyfromPool) Reset() {
+	for i := range anyfromPoolShardCount {
+		shard := &p.shards[i]
+		shard.mu.Lock()
+		// Phase 1: Collect keys to avoid modifying map during iteration
+		keys := make([]netip.AddrPort, 0, len(shard.pool))
+		for key := range shard.pool {
+			keys = append(keys, key)
+		}
+		// Phase 2: Delete and close each entry
+		for _, key := range keys {
+			if af, ok := shard.pool[key]; ok {
+				delete(shard.pool, key)
+				af.Close() // Close errors are logged internally, safe to ignore here
+			}
+		}
+		shard.mu.Unlock()
+	}
+}
+
 func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
 	shard := p.shardFor(lAddr)
 	shard.mu.RLock()

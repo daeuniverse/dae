@@ -273,7 +273,11 @@ func (c *DnsCache) Clone() *DnsCache {
 	}
 
 	newCache.deadlineNano.Store(c.deadlineNano.Load())
-	newCache.lastRouteSyncNano.Store(c.lastRouteSyncNano.Load())
+	// Reset sync state to force BPF update on reload.
+	// This ensures new routing configuration takes effect immediately,
+	// preventing UDP routing failures after config reload.
+	newCache.lastRouteSyncNano.Store(0)
+	newCache.lastBpfDataHash.Store(0)
 
 	return newCache
 }

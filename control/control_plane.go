@@ -628,6 +628,15 @@ func NewControlPlaneWithContext(
 
 	// Restore DNS cache from last control plane if available.
 	if dnsCache != nil {
+		// Clear all global pools and reset log limiters on reload.
+		// This prevents stale connections/endpoints from using pre-reload routing state,
+		// which could cause UDP routing failures after configuration changes.
+		DefaultUdpEndpointPool.Reset()
+		DefaultAnyfromPool.Reset()
+		DefaultUdpTaskPool.Reset()
+		DefaultPacketSnifferSessionMgr.Reset()
+		ResetUdpLogLimiters()
+
 		count := 0
 		now := time.Now()
 		for k, v := range dnsCache {

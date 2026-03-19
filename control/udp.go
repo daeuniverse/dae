@@ -46,6 +46,19 @@ const (
 	connectionErrorLogInterval = 5 * time.Second
 )
 
+// ResetUdpLogLimiters clears all rate limiters for UDP logging.
+// Called on reload to allow fresh logging after configuration changes.
+func ResetUdpLogLimiters() {
+	udpNoAliveDialerLogLimiter.Range(func(key, value any) bool {
+		udpNoAliveDialerLogLimiter.Delete(key)
+		return true
+	})
+	connectionErrorLogLimiter.Range(func(key, value any) bool {
+		connectionErrorLogLimiter.Delete(key)
+		return true
+	})
+}
+
 type udpNoAliveDialerLogKey struct {
 	outbound             string
 	origNetworkType      string
