@@ -363,17 +363,13 @@ struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, __u32);
 	__type(value, __u64);
-	__uint(max_entries, 8);
+	__uint(max_entries, 3);
 } bpf_stats_map SEC(".maps");
 
 enum bpf_stats_key {
 	BPF_STATS_UDP_CONN_OVERFLOW = 0,
 	BPF_STATS_ROUTING_OVERFLOW = 1,
-	BPF_STATS_UDP_CONN_UPDATES = 2,
-	BPF_STATS_UDP_CONN_LOOKUP_HITS = 3,
-	BPF_STATS_TCP_CONN_OVERFLOW = 4,
-	BPF_STATS_TCP_CONN_UPDATES = 5,
-	BPF_STATS_TCP_CONN_LOOKUP_HITS = 6,
+	BPF_STATS_TCP_CONN_OVERFLOW = 2,
 };
 
 // TCP connection state constants.
@@ -1481,13 +1477,6 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 	if (state) {
 		// Fast path: update timestamp and return
 		state->last_seen_ns = now;
-
-		// Update hit counter for monitoring
-		__u32 stats_key = BPF_STATS_UDP_CONN_LOOKUP_HITS;
-		__u64 *hit_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
-
-		if (hit_count)
-			__sync_fetch_and_add(hit_count, 1);
 		return state;
 	}
 
@@ -1509,13 +1498,6 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 			__sync_fetch_and_add(overflow_count, 1);
 		return NULL;
 	}
-
-	// Update success counter
-	__u32 stats_key = BPF_STATS_UDP_CONN_UPDATES;
-	__u64 *update_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
-
-	if (update_count)
-		__sync_fetch_and_add(update_count, 1);
 
 	return bpf_map_lookup_elem(&udp_conn_state_map, key);
 }
@@ -1547,13 +1529,6 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		if (tcph->fin || tcph->rst)
 			state->state = TCP_STATE_CLOSING;
 
-		// Update hit counter for monitoring
-		__u32 stats_key = BPF_STATS_TCP_CONN_LOOKUP_HITS;
-		__u64 *hit_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
-
-		if (hit_count)
-			__sync_fetch_and_add(hit_count, 1);
-
 		return state;
 	}
 
@@ -1577,13 +1552,6 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 				__sync_fetch_and_add(overflow_count, 1);
 			return NULL;
 		}
-
-		// Update success counter
-		__u32 stats_key = BPF_STATS_TCP_CONN_UPDATES;
-		__u64 *update_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
-
-		if (update_count)
-			__sync_fetch_and_add(update_count, 1);
 
 		return bpf_map_lookup_elem(&tcp_conn_state_map, key);
 	}

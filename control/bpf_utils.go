@@ -103,6 +103,9 @@ var (
 	CheckBatchUpdateFeatureOnce sync.Once
 	SimulateBatchUpdate         bool
 	SimulateBatchUpdateLpmTrie  bool
+
+	CheckBatchDeleteFeatureOnce sync.Once
+	SimulateBatchDelete         bool
 )
 
 func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
@@ -156,8 +159,36 @@ func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *
 }
 
 // BpfMapBatchDelete deletes keys and ignores ErrKeyNotExist.
+// Uses kernel batch delete API when available (5.6+), otherwise falls back to loop.
 func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
-	// Simulate
+	CheckBatchDeleteFeatureOnce.Do(func() {
+		version, e := internal.KernelVersion()
+		if e != nil {
+			SimulateBatchDelete = true
+			return
+		}
+		// BatchDelete requires kernel 5.6+ for BPF_MAP_TYPE_BATCH operations
+		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
+			SimulateBatchDelete = true
+		}
+	})
+
+	if !SimulateBatchDelete {
+		// Use kernel BatchDelete API - much faster for large batches
+		n, err = m.BatchDelete(keys, &ebpf.BatchOptions{})
+		// BatchDelete may return ErrKeyNotExist for some keys - that's ok
+		if err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return n, fmt.Errorf("batch delete map %s: %w", m.String(), err)
+		}
+		// Count successful deletions even with ErrKeyNotExist
+		vKeys := reflect.ValueOf(keys)
+		if vKeys.Kind() == reflect.Slice {
+			return vKeys.Len(), nil
+		}
+		return n, nil
+	}
+
+	// Fallback: simulate batch delete with individual Delete calls
 	vKeys := reflect.ValueOf(keys)
 	if vKeys.Kind() != reflect.Slice {
 		return 0, fmt.Errorf("keys must be slice")
