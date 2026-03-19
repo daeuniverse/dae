@@ -25,7 +25,7 @@ type bpfDaeParam struct {
 	TproxyPort      uint32
 	ControlPlanePid uint32
 	Dae0Ifindex     uint32
-	Dae0NetnsId     uint32
+	DaeNetnsId      uint32
 	Dae0peerMac     [6]uint8
 	UseRedirectPeer uint8 // Always 0 - bpf_redirect_peer() disabled in C
 	Padding         uint8

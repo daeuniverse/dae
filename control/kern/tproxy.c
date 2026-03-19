@@ -345,9 +345,10 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 	__builtin_memset(tuples, 0, sizeof(*tuples));
 	tuples->five.l4proto = l4proto;
 
-	// Use iph or ipv6h based on which pointer is non-NULL, not skb->protocol.
-	// This helps the eBPF verifier track pointer validity across function calls.
-	if (iph) {
+	// Check IP version by examining the protocol headers.
+	// Since both iph and ipv6h are stack-allocated (non-NULL pointers),
+	// we must check the version field rather than pointer validity.
+	if (iph->version == 4) {
 		tuples->five.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		tuples->five.sip.u6_addr32[3] = iph->saddr;
 
@@ -356,7 +357,8 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 
 		tuples->dscp = ipv4_get_dscp(iph);
 
-	} else if (ipv6h) {
+	} else {
+		// IPv6
 		__builtin_memcpy(&tuples->five.dip, &ipv6h->daddr,
 				 IPV6_BYTE_LENGTH);
 		__builtin_memcpy(&tuples->five.sip, &ipv6h->saddr,
@@ -2122,11 +2124,19 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 #define LOAD_REDIRECT_TUPLE_FALLBACK 2
 
 static __always_inline int
-load_redirect_tuple_fast(const struct __sk_buff *skb,
+load_redirect_tuple_fast(struct __sk_buff *skb,
 			 struct redirect_tuple *redirect_tuple)
 {
-	void *data = (void *)(long)skb->data;
-	void *data_end = (void *)(long)skb->data_end;
+	void *data, *data_end;
+
+	// Pull header data to linear region for direct access.
+	// 128 bytes is enough for: ethhdr(14) + iphdr(40) + addresses.
+#define REDIRECT_PULL_SIZE 128
+	if (bpf_skb_pull_data(skb, REDIRECT_PULL_SIZE))
+		return LOAD_REDIRECT_TUPLE_FALLBACK;
+
+	data = (void *)(long)skb->data;
+	data_end = (void *)(long)skb->data_end;
 	struct ethhdr *eth = data;
 
 	if ((void *)(eth + 1) > data_end)
@@ -2155,7 +2165,7 @@ load_redirect_tuple_fast(const struct __sk_buff *skb,
 }
 
 static __always_inline int
-load_redirect_tuple_slow(const struct __sk_buff *skb,
+load_redirect_tuple_slow(struct __sk_buff *skb,
 			 struct redirect_tuple *redirect_tuple)
 {
 	int ret;
@@ -2194,7 +2204,7 @@ load_redirect_tuple_slow(const struct __sk_buff *skb,
 }
 
 static __always_inline int
-load_redirect_tuple(const struct __sk_buff *skb,
+load_redirect_tuple(struct __sk_buff *skb,
 		    struct redirect_tuple *redirect_tuple)
 {
 	int ret = load_redirect_tuple_fast(skb, redirect_tuple);
