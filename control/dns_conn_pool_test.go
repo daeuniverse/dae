@@ -69,7 +69,7 @@ func newTestPipeConn() netproxy.Conn {
 		_, _ = io.Copy(io.Discard, server)
 		_ = server.Close()
 	}()
-	return &mockPipeConn{Conn: client}
+	return client
 }
 
 func TestConnPool_GetNotBlockedBySlowDial(t *testing.T) {

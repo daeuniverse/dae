@@ -66,11 +66,13 @@ type bpfPortRange struct {
 }
 
 type bpfRedirectEntry struct {
-	_       structs.HostLayout
-	Ifindex uint32
-	Smac    [6]uint8
-	Dmac    [6]uint8
-	FromWan uint8
+	_          structs.HostLayout
+	Ifindex    uint32
+	Smac       [6]uint8
+	Dmac       [6]uint8
+	FromWan    uint8
+	Padding    [3]uint8
+	LastSeenNs uint64
 }
 
 type bpfRedirectTuple struct {
@@ -113,6 +115,13 @@ type bpfTuplesKey struct {
 type bpfUdpConnState struct {
 	_                     structs.HostLayout
 	IsWanIngressDirection bool
+	LastSeenNs            uint64
+}
+
+type bpfTcpConnState struct {
+	_                     structs.HostLayout
+	IsWanIngressDirection bool
+	State                 uint8
 	LastSeenNs            uint64
 }
 
@@ -164,8 +173,10 @@ type bpfMapSpecs struct {
 	RoutingMap              *ebpf.MapSpec `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.MapSpec `ebpf:"routing_meta_map"`
 	RoutingTuplesMap        *ebpf.MapSpec `ebpf:"routing_tuples_map"`
+	TcpConnStateMap         *ebpf.MapSpec `ebpf:"tcp_conn_state_map"`
 	UdpConnStateMap         *ebpf.MapSpec `ebpf:"udp_conn_state_map"`
 	UnusedLpmType           *ebpf.MapSpec `ebpf:"unused_lpm_type"`
+	WanEgressScratchMap     *ebpf.MapSpec `ebpf:"wan_egress_scratch_map"`
 }
 
 type bpfVariableSpecs struct {
@@ -197,8 +208,10 @@ type bpfMaps struct {
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.Map `ebpf:"routing_meta_map"`
 	RoutingTuplesMap        *ebpf.Map `ebpf:"routing_tuples_map"`
+	TcpConnStateMap         *ebpf.Map `ebpf:"tcp_conn_state_map"`
 	UdpConnStateMap         *ebpf.Map `ebpf:"udp_conn_state_map"`
 	UnusedLpmType           *ebpf.Map `ebpf:"unused_lpm_type"`
+	WanEgressScratchMap     *ebpf.Map `ebpf:"wan_egress_scratch_map"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -214,8 +227,10 @@ func (m *bpfMaps) Close() error {
 		m.RoutingMap,
 		m.RoutingMetaMap,
 		m.RoutingTuplesMap,
+		m.TcpConnStateMap,
 		m.UdpConnStateMap,
 		m.UnusedLpmType,
+		m.WanEgressScratchMap,
 	)
 }
 

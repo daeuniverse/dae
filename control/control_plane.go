@@ -121,6 +121,10 @@ var (
 	// DNS connections are shorter-lived since they're typically query/response.
 	udpConnStateTimeoutDNS    = 17 * time.Second
 	udpConnStateTimeoutNormal = 60 * time.Second
+
+	// DNS port in network byte order for connection state cleanup.
+	// Precomputed to avoid repeated Htons() calls during janitor iterations.
+	dnsPortNetworkOrder = common.Htons(53)
 	// connStateJanitorInterval controls how often we scan for expired entries.
 	// A shorter interval means faster cleanup but more CPU overhead.
 	// 1s provides good balance between prompt cleanup and low overhead.
@@ -1273,22 +1277,19 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 		}
 	}
 
-	// Log cleanup statistics
-	if len(keysToDelete) > 0 || totalEntries > 100 {
-		avgAge := time.Duration(0)
-		if totalEntries > 0 {
-			avgAge = time.Duration(totalAge / int64(totalEntries))
-		}
-		c.log.Debugf("cleanupRedirectTrackMap: total=%d, expired=%d, avg_age=%v, max_age=%v",
-			totalEntries, len(keysToDelete), avgAge, time.Duration(maxAge))
+	// Only log when there are actual changes
+	if len(keysToDelete) > 0 {
+		c.log.Debugf("cleanupRedirectTrackMap: removed %d entries", len(keysToDelete))
 	}
 
 	// Alert if map usage is high
 	const redirectTrackCapacity = 65536
-	usagePercent := float64(totalEntries) / float64(redirectTrackCapacity) * 100
-	if usagePercent > 90 {
-		c.log.Warnf("cleanupRedirectTrackMap: map at %.1f%% capacity (%d/%d entries)",
-			usagePercent, totalEntries, redirectTrackCapacity)
+	if totalEntries > 0 {
+		usagePercent := float64(totalEntries) / float64(redirectTrackCapacity) * 100
+		if usagePercent > 90 {
+			c.log.Warnf("cleanupRedirectTrackMap: map at %.1f%% capacity (%d entries)",
+				usagePercent, totalEntries)
+		}
 	}
 }
 
@@ -1315,12 +1316,9 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 	// Default timeouts
 	dnsTimeoutNano := udpConnStateTimeoutDNS.Nanoseconds()
 	normalTimeoutNano := udpConnStateTimeoutNormal.Nanoseconds()
-	dnsPortNetworkOrder := common.Htons(53)
 
-	// We'll collect keys to delete and batch delete them to avoid holding the lock.
-	// Since we can't directly iterate over eBPF maps in Go without special handling,
-	// we use the Iterate method from cilium/ebpf.
-	var keysToDelete []bpfTuplesKey
+	// Pre-allocate slice for better performance
+	keysToDelete := make([]bpfTuplesKey, 0, 256)
 	estimatedCount := 0
 
 	iter := bpf.UdpConnStateMap.Iterate()
@@ -1328,10 +1326,8 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 	var value bpfUdpConnState
 	for iter.Next(&key, &value) {
 		estimatedCount++
-
 		// Check if this entry is a DNS connection (port 53).
-		// Ports in eBPF map are stored in network byte order, so we compare
-		// with Htons(53) instead of raw 53.
+		// Use precomputed network byte order constant for efficiency.
 		isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
 		timeout := normalTimeoutNano
 		if isDNS {
@@ -1339,8 +1335,7 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 		}
 
 		// Check if entry has expired
-		age := nowNano - int64(value.LastSeenNs)
-		if age > timeout {
+		if nowNano-int64(value.LastSeenNs) > timeout {
 			keysToDelete = append(keysToDelete, key)
 		}
 	}
