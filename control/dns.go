@@ -501,39 +501,36 @@ func (p *connPool) close() error {
 }
 
 // lazyConnPool provides a thread-safe lazy-initialization wrapper around *connPool.
-// It uses a RLock fast-path (pool already created) and a Lock slow-path (first creation),
-// replacing the duplicated double-check pattern in DoTLS and DoTCP.
+// It uses sync.Once for one-time initialization and atomic.Value for lock-free reads.
 type lazyConnPool struct {
-	pool *connPool
-	mu   sync.RWMutex
+	init   sync.Once
+	pool   atomic.Value // stores *connPool
+	closed atomic.Bool
 }
 
-// getOrInit returns the existing pool if already initialised, or calls init() under
-// a write-lock (with double-check) to create it exactly once.
 func (l *lazyConnPool) getOrInit(init func() *connPool) *connPool {
-	l.mu.RLock()
-	if l.pool != nil {
-		defer l.mu.RUnlock()
-		return l.pool
+	// If already closed, return nil (closed forwarders are discarded in practice)
+	if l.closed.Load() {
+		return nil
 	}
-	l.mu.RUnlock()
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.pool == nil {
-		l.pool = init()
+	l.init.Do(func() {
+		p := init()
+		l.pool.Store(p)
+	})
+	if v := l.pool.Load(); v != nil {
+		return v.(*connPool)
 	}
-	return l.pool
+	return nil
 }
 
-// closePool closes and nils the underlying pool under the write-lock.
 func (l *lazyConnPool) closePool() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.pool != nil {
-		err := l.pool.close()
-		l.pool = nil
-		return err
+	if !l.closed.Swap(true) {
+		// Mark as closed
+	}
+	if v := l.pool.Load(); v != nil {
+		p := v.(*connPool)
+		// Don't Store(nil) - atomic.Value can't hold nil
+		return p.close()
 	}
 	return nil
 }
@@ -572,6 +569,9 @@ func (d *DoTLS) getPool() *connPool {
 
 func (d *DoTLS) getPConn(ctx context.Context) (*pipelinedConn, error) {
 	pool := d.getPool()
+	if pool == nil {
+		return nil, errors.New("connection pool is not available")
+	}
 	return pool.get(ctx)
 }
 
@@ -623,6 +623,9 @@ func (d *DoTCP) getPool() *connPool {
 
 func (d *DoTCP) getPConn(ctx context.Context) (*pipelinedConn, error) {
 	pool := d.getPool()
+	if pool == nil {
+		return nil, errors.New("connection pool is not available")
+	}
 	return pool.get(ctx)
 }
 

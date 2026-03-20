@@ -8,8 +8,6 @@ package common
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +20,7 @@ import (
 	"time"
 	"unsafe"
 
+	obcommon "github.com/daeuniverse/outbound/common"
 	"github.com/daeuniverse/outbound/netproxy"
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
@@ -73,54 +72,17 @@ func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
 	return ip
 }
 
-func Deduplicate(list []string) []string {
-	if list == nil {
-		return nil
-	}
-	res := make([]string, 0, len(list))
-	m := make(map[string]struct{})
-	for _, v := range list {
-		if _, ok := m[v]; ok {
-			continue
-		}
-		m[v] = struct{}{}
-		res = append(res, v)
-	}
-	return res
-}
+// Deduplicate re-exports from outbound/common to eliminate duplication.
+var Deduplicate = obcommon.Deduplicate
 
-func Base64UrlDecode(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	saver := s
-	if len(s)%4 > 0 {
-		s += strings.Repeat("=", 4-len(s)%4)
-	}
-	raw, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return saver, err
-	}
-	return string(raw), nil
-}
+// Base64UrlDecode re-exports from outbound/common to eliminate duplication.
+var Base64UrlDecode = obcommon.Base64UrlDecode
 
-func Base64StdDecode(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	saver := s
-	if len(s)%4 > 0 {
-		s += strings.Repeat("=", 4-len(s)%4)
-	}
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return saver, err
-	}
-	return string(raw), nil
-}
+// Base64StdDecode re-exports from outbound/common to eliminate duplication.
+var Base64StdDecode = obcommon.Base64StdDecode
 
-func SetValue(values *url.Values, key string, value string) {
-	if value == "" {
-		return
-	}
-	values.Set(key, value)
-}
+// SetValue re-exports from outbound/common to eliminate duplication.
+var SetValue = obcommon.SetValue
 
 func ParseMac(mac string) (addr [6]byte, err error) {
 	fields := strings.SplitN(mac, ":", 6)
@@ -376,26 +338,11 @@ func MapKeys(m any) (keys []string, err error) {
 	return keys, nil
 }
 
-func GetTagFromLinkLikePlaintext(link string) (tag string, afterTag string) {
-	iColon := strings.Index(link, ":")
-	if iColon == -1 {
-		return "", link
-	}
-	// If first colon is like "://" in "scheme://linkbody", no tag is present.
-	if strings.HasPrefix(link[iColon:], "://") {
-		return "", link
-	}
-	// Else tag is the part before colon.
-	return link[:iColon], link[iColon+1:]
-}
+// GetTagFromLinkLikePlaintext re-exports from outbound/common to eliminate duplication.
+var GetTagFromLinkLikePlaintext = obcommon.GetTagFromLinkLikePlaintext
 
-func BoolToString(b bool) string {
-	if b {
-		return "1"
-	} else {
-		return "0"
-	}
-}
+// BoolToString re-exports from outbound/common to eliminate duplication.
+var BoolToString = obcommon.BoolToString
 
 func ConvergeAddr(addr netip.Addr) netip.Addr {
 	if addr.Is4In6() {
@@ -515,15 +462,5 @@ func StringSet(list []string) map[string]struct{} {
 	return m
 }
 
-func GenerateCertChainHash(rawCerts [][]byte) (chainHash []byte) {
-	for _, cert := range rawCerts {
-		certHash := sha256.Sum256(cert)
-		if chainHash == nil {
-			chainHash = certHash[:]
-		} else {
-			newHash := sha256.Sum256(append(chainHash, certHash[:]...))
-			chainHash = newHash[:]
-		}
-	}
-	return chainHash
-}
+// GenerateCertChainHash re-exports from outbound/common to eliminate duplication.
+var GenerateCertChainHash = obcommon.GenerateCertChainHash

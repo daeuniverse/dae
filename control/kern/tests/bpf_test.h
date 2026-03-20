@@ -256,3 +256,163 @@ set_routing_fallback(__u8 outbound, bool must)
 	ms.mark = 0;
 	bpf_map_update_elem(&routing_map, &one_key, &ms, BPF_ANY);
 }
+
+// BUG-002 test helper: Create a minimal IPv4 UDP packet (42 bytes total)
+// This is the smallest valid UDP packet, used to test the bug where
+// parse_transport_fast incorrectly uses sizeof(struct tcphdr) for boundary check.
+static __always_inline int
+set_minimal_ipv4_udp(struct __sk_buff *skb,
+		     __u32 saddr, __u32 daddr,
+		     __u16 sport, __u16 dport)
+{
+#define MIN_UDP_PACKET_SIZE 42  // 14 (ETH) + 20 (IP) + 8 (UDP)
+
+	if (bpf_skb_change_tail(skb, MIN_UDP_PACKET_SIZE, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	// Verify full packet size is available
+	if (data + MIN_UDP_PACKET_SIZE > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IP);
+
+	struct iphdr *ip = data + ETH_HLEN;
+	ip->ihl = 5;
+	ip->version = 4;
+	ip->protocol = IPPROTO_UDP;
+	ip->saddr = bpf_htonl(saddr);
+	ip->daddr = bpf_htonl(daddr);
+	ip->tos = 0;
+	ip->tot_len = bpf_htons(20 + 8);
+	ip->id = 0;
+	ip->frag_off = 0;
+	ip->ttl = 64;
+	ip->check = 0;
+
+	struct udphdr *udp = data + ETH_HLEN + IP4_HLEN;
+	udp->source = bpf_htons(sport);
+	udp->dest = bpf_htons(dport);
+	udp->len = bpf_htons(8);
+	udp->check = 0;
+
+	return TC_ACT_OK;
+}
+
+// BUG-001 test helper: Create IPv6 packet with large extension headers
+// The extension headers are sized to exceed 512 bytes total after IPv6 base header,
+// triggering the bug where parse_transport_fast returns -EFAULT instead of -1.
+//
+// NOTE: This test uses a fixed 512-byte packet which forces parse_transport_fast
+// to hit the boundary check limit. The test verifies that packets at the exact
+// boundary are handled correctly (fallback to slow path) rather than rejected.
+static __always_inline int
+set_ipv6_with_large_extensions(struct __sk_buff *skb,
+				__u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+				__u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+				__u16 sport, __u16 dport, __u8 l4proto)
+{
+	// Use exactly 512 bytes which is the HEADER_PULL_SIZE limit in parse_transport_fast
+	// This forces the fast path to handle extension headers at the boundary
+#define PACKET_SIZE 512
+
+	if (bpf_skb_change_tail(skb, PACKET_SIZE, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	// Verify we have the full packet size
+	if (data + PACKET_SIZE > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IPV6);
+
+	struct ipv6hdr *ip6 = data + ETH_HLEN;
+	ip6->version = 6;
+	ip6->nexthdr = IPPROTO_DSTOPTS;
+	ip6->payload_len = bpf_htons(PACKET_SIZE - ETH_HLEN - sizeof(struct ipv6hdr));
+	ip6->saddr.in6_u.u6_addr32[0] = bpf_htonl(saddr0);
+	ip6->saddr.in6_u.u6_addr32[1] = bpf_htonl(saddr1);
+	ip6->saddr.in6_u.u6_addr32[2] = bpf_htonl(saddr2);
+	ip6->saddr.in6_u.u6_addr32[3] = bpf_htonl(saddr3);
+	ip6->daddr.in6_u.u6_addr32[0] = bpf_htonl(daddr0);
+	ip6->daddr.in6_u.u6_addr32[1] = bpf_htonl(daddr1);
+	ip6->daddr.in6_u.u6_addr32[2] = bpf_htonl(daddr2);
+	ip6->daddr.in6_u.u6_addr32[3] = bpf_htonl(daddr3);
+
+	// Create a large extension header chain that approaches but doesn't exceed 512 bytes
+	// This will exercise the fast path boundary checking
+	__u32 offset = ETH_HLEN + sizeof(struct ipv6hdr);
+	__u8 *ext_hdr;
+
+	// First extension: Destination Options (200 bytes)
+	ext_hdr = data + offset;
+	ext_hdr[0] = IPPROTO_DSTOPTS;
+	ext_hdr[1] = (200 / 8) - 1;  // 24 = 200 bytes
+	offset += 200;
+
+	// Second extension: Hop-by-Hop Options (200 bytes)
+	ext_hdr = data + offset;
+	ext_hdr[0] = IPPROTO_HOPOPTS;
+	ext_hdr[1] = (200 / 8) - 1;
+	offset += 200;
+
+	// Third extension: Routing header (30 bytes)
+	ext_hdr = data + offset;
+	ext_hdr[0] = IPPROTO_ROUTING;
+	ext_hdr[1] = (30 / 8) - 1;
+	offset += 30;
+
+	// Last extension points to L4
+	ext_hdr = data + offset;
+	ext_hdr[0] = l4proto;
+	ext_hdr[1] = 0;  // 8 bytes
+	offset += 8;
+
+	// Add L4 header at the calculated position
+	if (l4proto == IPPROTO_UDP) {
+		struct udphdr *udp = data + offset;
+		udp->source = bpf_htons(sport);
+		udp->dest = bpf_htons(dport);
+		udp->len = bpf_htons(8);
+		udp->check = 0;
+	} else {
+		struct tcphdr *tcp = data + offset;
+		tcp->source = bpf_htons(sport);
+		tcp->dest = bpf_htons(dport);
+		tcp->syn = 1;
+		tcp->ack = 0;
+		tcp->doff = 5;
+	}
+
+	return TC_ACT_OK;
+}

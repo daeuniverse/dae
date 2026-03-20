@@ -531,10 +531,6 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
 
-		// Check if we can access L4 header
-		if (data + l4_offset + sizeof(struct tcphdr) > data_end)
-			return -EFAULT;
-
 		// Direct field access - more efficient than memcpy
 		iph->version = iph_ptr->version;
 		iph->ihl = iph_ptr->ihl;
@@ -547,8 +543,13 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		*l4proto = iph_ptr->protocol;
 
 		// Parse L4 header with direct access
+		// Note: Boundary checks are per-protocol to avoid rejecting valid packets
+		// of protocols with smaller headers (e.g., UDP with 8 bytes vs TCP with 20 bytes)
 		switch (iph->protocol) {
 		case IPPROTO_TCP: {
+			// Check if we can access TCP header (20 bytes minimum)
+			if (data + l4_offset + sizeof(struct tcphdr) > data_end)
+				return -1;  // Fall back to slow path for non-linear or short data
 			struct tcphdr *tcph_ptr = data + l4_offset;
 
 			if ((void *)(tcph_ptr + 1) > data_end)
@@ -565,6 +566,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			return 0;
 		}
 		case IPPROTO_UDP: {
+			// Check if we can access UDP header (8 bytes)
+			if (data + l4_offset + sizeof(struct udphdr) > data_end)
+				return -1;  // Fall back to slow path for non-linear or short data
 			struct udphdr *udph_ptr = data + l4_offset;
 
 			if ((void *)(udph_ptr + 1) > data_end)
@@ -621,8 +625,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 				break;
 
 			// Check we can access the extension header
+			// If we can't, fall back to slow path (data might be non-linear)
 			if (data + offset + 2 > data_end)
-				return -EFAULT;
+				return -1;
 
 			// Get next header and extension header length
 			const __u8 *ext_hdr = data + offset;
@@ -631,8 +636,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			__u8 hdr_ext_len = ext_hdr[1];
 			__u32 ext_len = ipv6_optlen(hdr_ext_len);
 
+			// If extension header doesn't fit in pulled data, fall back to slow path
 			if (data + offset + ext_len > data_end)
-				return -EFAULT;
+				return -1;
 
 			offset += ext_len;
 			*l4proto = nexthdr;
@@ -782,14 +788,11 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 
 			__u32 ext_len = ipv6_optlen(hdr_ext_len);
 
-			// Bounds check: ensure extension header won't overflow packet.
-			// ipv6_optlen returns (hdr_ext_len + 1) << 3, max 2048 bytes.
-			// This early check prevents attempting to read beyond packet bounds.
-			void *data = (void *)(long)skb->data;
-			void *data_end = (void *)(long)skb->data_end;
-
-			if (data + offset + ext_len > data_end)
-				return -EFAULT;
+			// Skip the direct access boundary check for extension headers.
+			// bpf_skb_load_bytes (used below) can handle non-linear data and
+			// will return an error if the data truly doesn't exist.
+			// The check using data_end (linear region only) would incorrectly
+			// reject valid packets with extension headers in non-linear regions.
 
 			offset += ext_len;
 		}
@@ -935,6 +938,7 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 
 struct route_params {
 	__u32 flag[8];
+	__u8  is_wan;         // Independent field to indicate WAN direction
 	const void *l4hdr;
 	const __be32 *saddr;
 	const __be32 *daddr;
@@ -1247,7 +1251,7 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	__u8 l4proto_type = ctx->params->flag[0];
 	__u8 ipversion_type = ctx->params->flag[1];
 	const __u32 *pname = &ctx->params->flag[2];
-	__u8 is_wan = ctx->params->flag[2];
+	__u8 is_wan = ctx->params->is_wan;
 	__u8 dscp = ctx->params->flag[6];
 
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
@@ -1288,7 +1292,7 @@ static __noinline __s64 route(const struct route_params *params)
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
 #define _pname (&params->flag[2])
-#define _is_wan params->flag[2]
+#define _is_wan params->is_wan
 #define _dscp params->flag[6]
 
 	int ret;
@@ -1396,7 +1400,7 @@ static __always_inline int redirect_to_control_plane_egress(void)
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
-static __always_inline void prep_redirect_to_control_plane(
+static __always_inline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
 	__u8 l4proto, struct ethhdr *ethh, __u8 from_wan, struct tcphdr *tcph)
 {
@@ -1405,8 +1409,16 @@ static __always_inline void prep_redirect_to_control_plane(
 
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
+		int ret;
 
-		bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
+		// Expand packet head to add Ethernet header
+		ret = bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
+		if (ret) {
+			// Failed to expand packet - this can happen under memory pressure
+			// Log and return error so caller can handle gracefully
+			bpf_printk("prep_redirect: bpf_skb_change_head failed: %d", ret);
+			return ret;
+		}
 		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
 				    &l3proto, sizeof(l3proto), 0);
 	}
@@ -1415,7 +1427,11 @@ static __always_inline void prep_redirect_to_control_plane(
 			    (void *)&PARAM.dae0peer_mac, 6, 0);
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		// Use IPv4-mapped IPv6 format with ffff marker to avoid collision
+		// with IPv6 addresses like ::a.b.c.d
+		redirect_tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		redirect_tuple.sip.u6_addr32[3] = tuples->five.sip.u6_addr32[3];
+		redirect_tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		redirect_tuple.dip.u6_addr32[3] = tuples->five.dip.u6_addr32[3];
 	} else {
 		__builtin_memcpy(&redirect_tuple.sip, &tuples->five.sip, IPV6_BYTE_LENGTH);
@@ -1438,6 +1454,8 @@ static __always_inline void prep_redirect_to_control_plane(
 	skb->cb[1] = 0;
 	if ((l4proto == IPPROTO_TCP && tcph->syn) || l4proto == IPPROTO_UDP)
 		skb->cb[1] = l4proto;
+
+	return 0;  // Success
 }
 
 // copy_reversed_tuples moved below, timer callback removed (using userspace janitor)
@@ -1561,7 +1579,26 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		return bpf_map_lookup_elem(&tcp_conn_state_map, key);
 	}
 
-	// Non-SYN packet without existing (or expired) state: ignore
+	// Hot reload mitigation: For non-SYN packets without existing state,
+	// create a temporary entry to capture FIN/RST signals.
+	// This handles connections that existed before BPF program reload.
+	if (tcph->ack || tcph->fin || tcph->rst || tcph->psh) {
+		struct tcp_conn_state temp_state = {
+			.is_wan_ingress_direction = is_wan_ingress_direction,
+			.state = tcph->fin || tcph->rst ? TCP_STATE_CLOSING : TCP_STATE_ACTIVE,
+			.last_seen_ns = now,
+		};
+
+		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &temp_state,
+					     BPF_NOEXIST);  // Only create if not exists
+
+		if (ret == 0) {  // Successfully created
+			return bpf_map_lookup_elem(&tcp_conn_state_map, key);
+		}
+		// If creation failed (map full or race), continue without state tracking
+	}
+
+	// Non-SYN packet without existing state: ignore
 	return NULL;
 }
 
@@ -1833,8 +1870,12 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 	// Assign to control plane.
 control_plane:
-	prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
-				       &pkt->ethh, 0, &pkt->tcph);
+	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
+					   &pkt->ethh, 0, &pkt->tcph)) {
+		// Failed to prepare packet (e.g., bpf_skb_change_head failed under memory pressure)
+		// Fall back to direct pass to avoid packet corruption
+		return TC_ACT_OK;
+	}
 	return redirect_to_control_plane_ingress();
 
 direct:
@@ -1991,6 +2032,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			__builtin_memcpy(&params.flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
 		}
+		params.is_wan = 1;  // WAN egress direction
 		if (link_h_len == ETH_HLEN) {
 			params.mac[2] = bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
 			params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
@@ -2074,13 +2116,31 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 						 TASK_COMM_LEN);
 				routing_result.pid = pid_pname->pid;
 			}
-			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
-					    &routing_result, BPF_ANY);
+			// Write to routing cache and track overflow for monitoring
+			int ret = bpf_map_update_elem(&routing_tuples_map, &tuples->five,
+						    &routing_result, BPF_ANY);
+			if (ret) {
+				// Robustness: If routing cache map is full, increment overflow counter
+				// and continue without caching. The packet is still processed correctly,
+				// we just lose the routing optimization for this flow.
+				__u32 stats_key = BPF_STATS_ROUTING_OVERFLOW;
+				__u64 *overflow_count = bpf_map_lookup_elem(
+						&bpf_stats_map, &stats_key);
+
+				if (overflow_count)
+					__sync_fetch_and_add(overflow_count, 1);
+				bpf_printk("WAN routing cache full: %d", ret);
+				// Don't return TC_ACT_SHOT - continue processing the packet
+			}
 		}
 	}
 
-	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
-				       1, tcph);
+	if (prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
+					   1, tcph)) {
+		// Failed to prepare packet (e.g., bpf_skb_change_head failed)
+		// Fall back to direct pass to avoid packet corruption
+		return TC_ACT_OK;
+	}
 	return redirect_to_control_plane_egress();
 }
 
@@ -2128,6 +2188,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		__builtin_memcpy(&params.flag[2], pid_pname->pname,
 				 TASK_COMM_LEN);
 	}
+	params.is_wan = 1;  // WAN egress direction
 	if (ethh) {
 		params.mac[2] = bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
 		params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
@@ -2172,8 +2233,22 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 						 TASK_COMM_LEN);
 				routing_result.pid = pid_pname->pid;
 			}
-			bpf_map_update_elem(&routing_tuples_map, &tuples->five,
-					    &routing_result, BPF_ANY);
+			// Write to routing cache and track overflow for monitoring
+			int ret = bpf_map_update_elem(&routing_tuples_map, &tuples->five,
+						    &routing_result, BPF_ANY);
+			if (ret) {
+				// Robustness: If routing cache map is full, increment overflow counter
+				// and continue without caching. The packet is still processed correctly,
+				// we just lose the routing optimization for this flow.
+				__u32 stats_key = BPF_STATS_ROUTING_OVERFLOW;
+				__u64 *overflow_count = bpf_map_lookup_elem(
+						&bpf_stats_map, &stats_key);
+
+				if (overflow_count)
+					__sync_fetch_and_add(overflow_count, 1);
+				bpf_printk("WAN routing cache full: %d", ret);
+				// Don't return TC_ACT_SHOT - continue processing the packet
+			}
 		}
 	}
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -2197,8 +2272,12 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 				   tuples->five.dport))
 		return TC_ACT_SHOT;
 
-	prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
-				       1, &dummy_tcph);
+	if (prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
+					   1, &dummy_tcph)) {
+		// Failed to prepare packet (e.g., bpf_skb_change_head failed)
+		// Fall back to direct pass to avoid packet corruption
+		return TC_ACT_OK;
+	}
 	return redirect_to_control_plane_egress();
 }
 
@@ -2299,7 +2378,10 @@ load_redirect_tuple_fast(struct __sk_buff *skb,
 
 		if ((void *)(iph + 1) > data_end)
 			return LOAD_REDIRECT_TUPLE_FALLBACK;
+		// Use IPv4-mapped IPv6 format with ffff marker to match insert side
+		redirect_tuple->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		redirect_tuple->sip.u6_addr32[3] = iph->daddr;
+		redirect_tuple->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		redirect_tuple->dip.u6_addr32[3] = iph->saddr;
 		return 0;
 	}
@@ -2324,6 +2406,12 @@ load_redirect_tuple_slow(struct __sk_buff *skb,
 	int ret;
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		// Set ffff marker first for IPv4-mapped IPv6 format
+		__u32 ffff_marker = bpf_htonl(0x0000ffff);
+
+		redirect_tuple->sip.u6_addr32[2] = ffff_marker;
+		redirect_tuple->dip.u6_addr32[2] = ffff_marker;
+
 		ret = bpf_skb_load_bytes(skb,
 					 ETH_HLEN + offsetof(struct iphdr, daddr),
 					 &redirect_tuple->sip.u6_addr32[3],

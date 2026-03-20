@@ -145,6 +145,117 @@ func readBpfDebugLog(t *testing.T) string {
 	return logs.String()
 }
 
+// TestBpfBugsVerification runs bug verification tests and reports which bugs exist.
+// Unlike the main Test() function, this function continues running all tests
+// even if some bugs are detected, providing a complete report.
+func TestBpfBugsVerification(t *testing.T) {
+	obj, progsets, err := collectPrograms(t)
+	if err != nil {
+		t.Fatalf("error while collecting programs: %s", err)
+	}
+	defer obj.Close()
+
+	key := uint32(0)
+	activeRulesLen := uint32(testMaxMatchSetLen)
+	var zeroEntry []byte
+
+	// Track bug detection results
+	bugResults := make(map[string]bool)
+
+	for _, progset := range progsets {
+		// Only run bug verification tests
+		if !strings.HasPrefix(strings.ToLower(progset.id), "bug_") &&
+		   !strings.HasPrefix(strings.ToLower(progset.id), "bugcombined") {
+			continue
+		}
+
+		if err = obj.RoutingMetaMap.Update(key, activeRulesLen, ebpf.UpdateAny); err != nil {
+			t.Fatalf("failed to initialize routing_meta_map: %v", err)
+		}
+
+		if zeroEntry == nil {
+			zeroEntry = make([]byte, obj.RoutingMap.ValueSize())
+		}
+		for i := uint32(0); i < testMaxMatchSetLen; i++ {
+			if err = obj.RoutingMap.Update(i, zeroEntry, ebpf.UpdateAny); err != nil {
+				t.Fatalf("failed to clear routing_map[%d]: %v", i, err)
+			}
+		}
+
+		t.Logf("Running bug verification: %s\n", progset.id)
+
+		data := make([]byte, 4096-256-320)
+		ctx := make([]byte, 256)
+
+		statusCode, data, ctx, err := runBpfProgram(progset.pktgen, data, ctx)
+		if err != nil {
+			t.Logf("  [%s] pktgen error: %s", progset.id, err)
+			bugResults[progset.id] = true // Assume bug exists on error
+			continue
+		}
+		if statusCode != 0 {
+			t.Logf("  [%s] pktgen unexpected status: %d", progset.id, statusCode)
+			bugResults[progset.id] = true
+			continue
+		}
+
+		statusCode, data, ctx, err = runBpfProgram(progset.setup, data, ctx)
+		if err != nil {
+			t.Logf("  [%s] setup error: %s", progset.id, err)
+			bugResults[progset.id] = true
+			continue
+		}
+
+		status := make([]byte, 4)
+		nl.NativeEndian().PutUint32(status, statusCode)
+		data = append(status, data...)
+
+		statusCode, data, ctx, err = runBpfProgram(progset.check, data, ctx)
+		if err != nil {
+			t.Logf("  [%s] check error: %s", progset.id, err)
+			bugResults[progset.id] = true
+			continue
+		}
+
+		// statusCode == 1 (TC_ACT_SHOT) means bug EXISTS
+		// statusCode == 0 (TC_ACT_OK) means bug is FIXED
+		bugExists := (statusCode != 0)
+		bugResults[progset.id] = bugExists
+
+		// Log the actual status code for debugging
+		t.Logf("  [%s] statusCode=%d, data_len=%d", progset.id, statusCode, len(data))
+
+		// Print BPF debug logs if any
+		debugLog := readBpfDebugLog(t)
+		if debugLog != "" {
+			t.Logf("  [%s] BPF debug:\n%s", progset.id, debugLog)
+		}
+
+		if bugExists {
+			t.Logf("  [%s] BUG DETECTED (packet bypassed tproxy)", progset.id)
+		} else {
+			t.Logf("  [%s] OK (bug is fixed)", progset.id)
+		}
+
+		consumeBpfDebugLog(t)
+	}
+
+	// Print summary
+	t.Log("\n=== BUG VERIFICATION SUMMARY ===")
+	bugCount := 0
+	for id, exists := range bugResults {
+		if exists {
+			bugCount++
+			t.Logf("  [X] %s: BUG EXISTS", id)
+		} else {
+			t.Logf("  [✓] %s: FIXED", id)
+		}
+	}
+	t.Logf("Total bugs detected: %d/%d", bugCount, len(bugResults))
+
+	// Don't fail the test - this is informational
+}
+
 func Test(t *testing.T) {
 	obj, progsets, err := collectPrograms(t)
 	if err != nil {
