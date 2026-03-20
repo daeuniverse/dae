@@ -1595,8 +1595,8 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		if (ret == 0) {  // Successfully created
 			return bpf_map_lookup_elem(&tcp_conn_state_map, key);
 		}
-		// Map full or other error: increment overflow counter for monitoring
-		if (unlikely(ret)) {
+		// Only count map full (-E2BIG), not -EEXIST which is normal concurrent race
+		if (unlikely(ret == -E2BIG)) {
 			__u32 stats_key = BPF_STATS_TCP_CONN_OVERFLOW;
 			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
 
