@@ -49,7 +49,7 @@
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
-#define IPV6_MAX_EXTENSIONS 4
+#define IPV6_MAX_EXTENSIONS 8  // Increased from 4 to allow legitimate extension header chains while preventing abuse
 
 #define ipv6_optlen(p) (((p)+1) << 3)
 
@@ -528,6 +528,16 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		if (iph_ptr->ihl < 5)
 			return -EFAULT;
 
+		// Security: Drop non-initial IP fragments to prevent rule bypass.
+		// Only the first fragment (frag_off == 0) contains L4 headers.
+		// Subsequent fragments are handled by kernel reassembly.
+		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
+
+		if ((frag_off & 0x1FFF) != 0) {  // Check fragment offset bits
+			// Non-first fragment: don't parse L4, let kernel reassemble
+			return 1;
+		}
+
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
 
@@ -645,7 +655,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		}
 
 		if (is_extension_header(nexthdr))
-			return -EFAULT;
+			return -EFAULT;  // Too many extension headers - drop as suspicious
 
 		// Parse L4 header with direct access
 		switch (nexthdr) {
@@ -733,6 +743,14 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			return -EFAULT;
 		if (iph->ihl < 5)
 			return -EFAULT;
+
+		// Security: Drop non-initial IP fragments to prevent rule bypass.
+		__u16 frag_off = bpf_ntohs(iph->frag_off);
+
+		if ((frag_off & 0x1FFF) != 0) {  // Check fragment offset bits
+			return 1;  // Let kernel reassemble
+		}
+
 		offset += iph->ihl * 4;
 
 		*l4proto = iph->protocol;
@@ -798,7 +816,7 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		}
 
 		if (is_extension_header(nexthdr))
-			return 1;
+			return -EFAULT;  // Too many extension headers - drop as suspicious
 
 		*l4proto = nexthdr;
 		switch (nexthdr) {
@@ -1654,7 +1672,11 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
-		bpf_printk("parse_transport: %d", ret);
+		// Negative: error - drop; Positive: unsupported protocol - pass through
+		if (ret < 0) {
+			bpf_printk("parse_transport error: %d, dropping", ret);
+			return TC_ACT_SHOT;
+		}
 		return TC_ACT_OK;
 	}
 
@@ -1716,9 +1738,13 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
 
 	if (ret) {
-		if (ret < 0)
-			bpf_printk("parse_transport error");
-		return TC_ACT_OK;
+		// Negative return: parsing error (malformed packet, too many extension headers, etc.)
+		// Positive return: unsupported protocol (ICMPv6, etc.) - pass through
+		if (ret < 0) {
+			bpf_printk("parse_transport error: %d, dropping", ret);
+			return TC_ACT_SHOT;  // Drop malformed/suspicious packets
+		}
+		return TC_ACT_OK;  // Pass through unsupported protocols
 	}
 
 	/*
@@ -1949,7 +1975,11 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
 				  &tcph, &udph, &ihl, &l4proto);
 	if (ret) {
-		bpf_printk("parse_transport: %d", ret);
+		// Negative: error - drop; Positive: unsupported protocol - pass through
+		if (ret < 0) {
+			bpf_printk("parse_transport error: %d, dropping", ret);
+			return TC_ACT_SHOT;
+		}
 		return TC_ACT_OK;
 	}
 
@@ -2311,8 +2341,15 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
 
-	if (ret)
+	if (ret) {
+		// Negative return: parsing error - drop
+		// Positive return: unsupported protocol - pass through
+		if (ret < 0) {
+			bpf_printk("wan_egress parse error: %d, dropping", ret);
+			return TC_ACT_SHOT;
+		}
 		return TC_ACT_OK;
+	}
 
 	if (pkt->l4proto == IPPROTO_TCP)
 		return do_tproxy_wan_egress_tcp(skb, link_h_len, &pkt->tuples,
