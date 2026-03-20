@@ -88,7 +88,8 @@ type Dialer struct {
 	tickerMu        sync.Mutex
 	ticker          *time.Timer
 	checkCh         chan time.Time
-	checkSpecificCh chan *NetworkType // targeted check for a specific proto+version
+	checkUdpCh       chan struct{}     // trigger resuscitation for all UDP collections (IPv4+v6)
+	checkTcpCh       chan struct{}     // trigger resuscitation for all TCP collections (IPv4+v6)
 	ctx             context.Context
 	cancel          context.CancelFunc
 
@@ -236,7 +237,8 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		tickerMu:         sync.Mutex{},
 		ticker:           nil,
 		checkCh:          make(chan time.Time, 1),
-		checkSpecificCh:  make(chan *NetworkType, 1),
+		checkUdpCh:       make(chan struct{}, 1),
+		checkTcpCh:       make(chan struct{}, 1),
 		ctx:              ctx,
 		cancel:           cancel,
 		httpClients:      make(map[string]*http.Client),

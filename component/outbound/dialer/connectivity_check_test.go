@@ -85,7 +85,7 @@ func TestDialerCheck_SkipDoesNotCascadeToUnavailable(t *testing.T) {
 	}
 
 	for i := range 128 {
-		ok, err := d.Check(checkOpt)
+		ok, err := d.Check(checkOpt, false)
 		if err != nil {
 			t.Fatalf("unexpected error at round %d: %v", i, err)
 		}
@@ -134,7 +134,7 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 			return false, errors.New("simulated health check failure (1/2)")
 		},
-	})
+	}, false)
 	if err == nil {
 		t.Fatal("expected check error")
 	}
@@ -151,7 +151,7 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 			return false, errors.New("simulated health check failure (2/2)")
 		},
-	})
+	}, false)
 	if err == nil {
 		t.Fatal("expected check error")
 	}
@@ -201,7 +201,7 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 				return false, errors.New("simulated health check failure")
 			},
-		})
+		}, false)
 		if err == nil {
 			t.Fatalf("expected initial failure %d", i)
 		}
@@ -213,7 +213,7 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 				return false, nil
 			},
-		})
+		}, false)
 		if skipErr != nil || ok {
 			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
 		}
@@ -261,7 +261,7 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 				return false, errors.New("simulated health check failure")
 			},
-		})
+		}, false)
 		if err == nil {
 			t.Fatalf("expected failure from d1 (%d)", i)
 		}
@@ -273,7 +273,7 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 				return false, nil
 			},
-		})
+		}, false)
 		if skipErr != nil || ok {
 			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
 		}
@@ -338,7 +338,7 @@ func TestDialerCheck_ConcurrentStateAccess(t *testing.T) {
 		}
 		wg.Go(func() {
 			for ctx.Err() == nil {
-				_, _ = d.Check(opt)
+				_, _ = d.Check(opt, false)
 			}
 		})
 	}

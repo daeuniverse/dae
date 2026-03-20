@@ -567,35 +567,35 @@ func (d *Dialer) aliveBackground() {
 			return
 		}
 
-		// specificType is non-nil when triggered by NotifyCheckForNetworkType:
-		// only the matching check opts are run, and the periodic ticker is
-		// left untouched so the regular schedule is not disrupted.
-		var specificType *NetworkType
+		// checkFamily is non-empty when triggered by NotifyCheckUdp/NotifyCheckTcp:
+		// only the matching check opts are run (both IPv4 and IPv6), and the
+		// periodic ticker is left untouched so the regular schedule is not disrupted.
+		var checkFamily consts.L4ProtoStr
 		select {
 		case <-d.ctx.Done():
 			return
 		case <-d.ticker.C:
 		case <-d.checkCh:
-		case specificType = <-d.checkSpecificCh:
+		case <-d.checkUdpCh:
+			checkFamily = consts.L4ProtoStr_UDP
+		case <-d.checkTcpCh:
+			checkFamily = consts.L4ProtoStr_TCP
 		}
 
 		opts := CheckOpts
-		if specificType != nil {
-			// Targeted check: only run checks whose proto+version match.
-			// IsDns is intentionally ignored — UDP traffic (IsDns=false) is
-			// health-checked via the DNS probe (IsDns=true) because both share
-			// the same collection index.
-			opts = filterCheckOpts(CheckOpts, specificType)
+		if checkFamily != "" {
+			// Targeted check: run all checks matching the triggered protocol family (v4 + v6).
+			opts = filterCheckOptsByFamily(CheckOpts, checkFamily)
 		} else {
 			// Full check: advance the sticky IP cache cycle to allow IP failover.
 			d.IncrementCheckCycle()
 		}
 
-		d.submitCheckTasks(workerPool, &wg, opts)
+		d.submitCheckTasks(workerPool, &wg, opts, checkFamily != "")
 		wg.Wait()
 
 		// Targeted checks don't disturb the periodic timer — only full checks do.
-		if specificType != nil {
+		if checkFamily != "" {
 			continue
 		}
 
@@ -623,14 +623,12 @@ func (d *Dialer) aliveBackground() {
 	}
 }
 
-// filterCheckOpts returns the subset of opts whose networkType matches
-// the given typ by L4Proto and IpVersion. IsDns is intentionally ignored
-// because UDP traffic (IsDns=false) and UDP DNS probes (IsDns=true) share
-// the same collection index and thus the same liveness state.
-func filterCheckOpts(opts []*CheckOption, typ *NetworkType) []*CheckOption {
+// filterCheckOptsByFamily returns the subset of opts whose networkType matches
+// the given proto family. Both data and DNS probes are included for the family.
+func filterCheckOptsByFamily(opts []*CheckOption, family consts.L4ProtoStr) []*CheckOption {
 	var result []*CheckOption
 	for _, opt := range opts {
-		if opt.networkType.L4Proto == typ.L4Proto && opt.networkType.IpVersion == typ.IpVersion {
+		if opt.networkType.L4Proto == family {
 			result = append(result, opt)
 		}
 	}
@@ -638,7 +636,7 @@ func filterCheckOpts(opts []*CheckOption, typ *NetworkType) []*CheckOption {
 }
 
 // submitCheckTasks submits check tasks to worker pool
-func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption) {
+func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption, isResuscitation bool) {
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
 		if !d.hasAliveDialerSets(opt.networkType) {
@@ -649,13 +647,13 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 		checkOpt := opt
 		err := workerPool.Submit(func() {
 			defer wg.Done()
-			_, _ = d.Check(checkOpt)
+			_, _ = d.Check(checkOpt, isResuscitation)
 		})
 		if err != nil {
 			// If pool is closed or errors out, fallback to goroutine to ensure check proceeds
 			go func() {
 				defer wg.Done()
-				_, _ = d.Check(checkOpt)
+				_, _ = d.Check(checkOpt, isResuscitation)
 			}()
 		}
 	}
@@ -676,10 +674,8 @@ func (d *Dialer) NotifyCheck() {
 	}
 }
 
-// NotifyCheckForNetworkType triggers a targeted health check for the specified
-// network type (L4Proto and IpVersion). IsDns is ignored as data and DNS probes
-// share the same liveness state.
-func (d *Dialer) NotifyCheckForNetworkType(typ *NetworkType) {
+// NotifyCheckUdp triggers a targeted health check for all UDP collections (IPv4 and IPv6).
+func (d *Dialer) NotifyCheckUdp() {
 	select {
 	case <-d.ctx.Done():
 		return
@@ -687,7 +683,21 @@ func (d *Dialer) NotifyCheckForNetworkType(typ *NetworkType) {
 	}
 
 	select {
-	case d.checkSpecificCh <- typ:
+	case d.checkUdpCh <- struct{}{}:
+	default:
+	}
+}
+
+// NotifyCheckTcp triggers a targeted health check for all TCP collections (IPv4 and IPv6).
+func (d *Dialer) NotifyCheckTcp() {
+	select {
+	case <-d.ctx.Done():
+		return
+	default:
+	}
+
+	select {
+	case d.checkTcpCh <- struct{}{}:
 	default:
 	}
 }
@@ -852,14 +862,9 @@ func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
 	if d.trafficFailCount[idx].Load() != 0 {
 		d.trafficFailCount[idx].Store(0)
 	}
-	// If the dialer is currently marked dead but traffic is actually succeeding,
-	// trigger an immediate targeted health check to quickly restore the alive state.
-	if !d.MustGetAlive(typ) {
-		d.NotifyCheckForNetworkType(typ)
-	}
 }
 
-func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
+func (d *Dialer) Check(opts *CheckOption, isResuscitation bool) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 	start := time.Now()
@@ -870,13 +875,18 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 		latency := time.Since(start)
 		update, avg := d.markAvailable(opts.networkType, latency)
 
-		d.Log.WithFields(logrus.Fields{
+		fields := logrus.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.property.Name,
 			"last":    latency.Truncate(time.Millisecond).String(),
 			"avg_10":  avg.Truncate(time.Millisecond),
 			"mov_avg": update.movingAverage.Truncate(time.Millisecond),
-		}).Debugln("Connectivity Check")
+		}
+		if isResuscitation {
+			d.Log.WithFields(fields).Infof("%s resuscitated by emergency probe", strings.ToUpper(string(opts.networkType.L4Proto)))
+		} else {
+			d.Log.WithFields(fields).Debugln("Connectivity Check")
+		}
 		d.informDialerGroupUpdate(update)
 	} else if err != nil {
 		// Failure: mark unavailable only if there's an actual error.

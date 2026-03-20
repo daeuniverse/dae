@@ -199,7 +199,11 @@ func (c *ControlPlane) logNoAliveDialerLimited(
 	// to once per noAliveDialerLogInterval), dead dialers are re-examined promptly
 	// after the underlying issue clears, eliminating the need for a manual restart.
 	for _, d := range outbound.Dialers {
-		d.NotifyCheckForNetworkType(selectionNetworkType)
+		if selectionNetworkType.L4Proto == consts.L4ProtoStr_UDP {
+			d.NotifyCheckUdp()
+		} else {
+			d.NotifyCheckTcp()
+		}
 	}
 }
 
