@@ -766,15 +766,14 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	threshold := 1
 	if typ.L4Proto == consts.L4ProtoStr_UDP {
 		if isTraffic {
-			// Higher threshold for data traffic to avoid flipping during WebRTC/STUN exploration.
-			threshold = 10
-		} else {
-			threshold = 3
+			// Higher threshold for data traffic to avoid flipping during transient jitter.
+			threshold = 50
 		}
 	} else if typ.L4Proto == consts.L4ProtoStr_TCP {
-		// Aggregation for TCP is too aggressive in multi-dialer environments.
-		// Add a minor threshold to balance "fast discovery" with "noise".
-		threshold = 2
+		if isTraffic {
+			// Balance "fast discovery" of failures with resilience to noise.
+			threshold = 10
+		}
 	}
 
 	alive := false
@@ -865,20 +864,34 @@ func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
 }
 
 func (d *Dialer) Check(opts *CheckOption, isResuscitation bool) (ok bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
-	defer cancel()
-	start := time.Now()
-	// Calc latency.
-	ok, err = opts.CheckFunc(ctx, opts.networkType)
+	const maxAttempts = 2
+	var bestLatency time.Duration
+
+	for i := 0; i < maxAttempts; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+		start := time.Now()
+		ok, err = opts.CheckFunc(ctx, opts.networkType)
+		latency := time.Since(start)
+		cancel()
+
+		if ok && err == nil {
+			bestLatency = latency
+			break
+		}
+		if err == nil {
+			// No applicable IP; skip.
+			break
+		}
+		// Retry on actual error.
+	}
 	if ok && err == nil {
 		// Success: update latency and mark alive.
-		latency := time.Since(start)
-		update, avg := d.markAvailable(opts.networkType, latency)
+		update, avg := d.markAvailable(opts.networkType, bestLatency)
 
 		fields := logrus.Fields{
 			"network": opts.networkType.String(),
 			"node":    d.property.Name,
-			"last":    latency.Truncate(time.Millisecond).String(),
+			"last":    bestLatency.Truncate(time.Millisecond).String(),
 			"avg_10":  avg.Truncate(time.Millisecond),
 			"mov_avg": update.movingAverage.Truncate(time.Millisecond),
 		}
