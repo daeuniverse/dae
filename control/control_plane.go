@@ -1195,6 +1195,7 @@ func (c *ControlPlane) startConnStateJanitor() {
 				c.cleanupRedirectTrackMap()
 				c.cleanupUdpConnStateMap()
 				c.cleanupTcpConnStateMap()
+				c.cleanupRoutingCacheMap() // Backup cleanup for orphan entries
 			case <-healthCheckTicker.C:
 				c.checkBpfMapHealth()
 			}
@@ -1573,6 +1574,109 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 		} else {
 			c.log.Debugf("cleanupTcpConnStateMap: removed %d expired TCP entries", len(keysToDelete))
 		}
+	}
+}
+
+// cleanupRoutingCacheMap provides backup cleanup for routing_tuples_map.
+// This handles orphan entries that may exist due to:
+// - Hot reload (routing cache is pinned but conn state is not)
+// - Edge cases where conn state was not created
+// - Race conditions between map operations
+//
+// Uses a longer TTL (5 min) than conn state to avoid interfering with
+// cascade cleanup, which is the primary cleanup mechanism.
+func (c *ControlPlane) cleanupRoutingCacheMap() {
+	// Check if we're shutting down
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
+	bpf := c.core.EjectBpf()
+	if bpf == nil || bpf.RoutingTuplesMap == nil {
+		return
+	}
+
+	// Sample-based cleanup: check first 1000 entries to find orphans.
+	// Full iteration is too expensive for a backup cleanup.
+	const maxSampleEntries = 1000
+	sampleCount := 0
+	orphanCount := 0
+	entriesToDelete := make([]bpfTuplesKey, 0, 64)
+
+	// Check entries against conn state maps to find orphans.
+	// An entry is orphan if it has no corresponding conn state entry.
+	iter := bpf.RoutingTuplesMap.Iterate()
+	var key bpfTuplesKey
+	var value bpfRoutingResult
+	for iter.Next(&key, &value) && sampleCount < maxSampleEntries {
+		sampleCount++
+
+		// Check if corresponding conn state exists
+		hasConnState := false
+		if key.L4proto == unix.IPPROTO_UDP {
+			var udpState bpfUdpConnState
+			if bpf.UdpConnStateMap != nil {
+				if err := bpf.UdpConnStateMap.Lookup(&key, &udpState); err == nil {
+					hasConnState = true
+				}
+			}
+		} else if key.L4proto == unix.IPPROTO_TCP {
+			var tcpState bpfTcpConnState
+			if bpf.TcpConnStateMap != nil {
+				if err := bpf.TcpConnStateMap.Lookup(&key, &tcpState); err == nil {
+					hasConnState = true
+				}
+			}
+		}
+
+		// Also check reverse direction (response path)
+		var reverseKey bpfTuplesKey
+		reverseKey.Sip = key.Dip
+		reverseKey.Dip = key.Sip
+		reverseKey.Sport = key.Dport
+		reverseKey.Dport = key.Sport
+		reverseKey.L4proto = key.L4proto
+
+		if key.L4proto == unix.IPPROTO_UDP && !hasConnState {
+			var udpState bpfUdpConnState
+			if bpf.UdpConnStateMap != nil {
+				if err := bpf.UdpConnStateMap.Lookup(&reverseKey, &udpState); err == nil {
+					hasConnState = true
+				}
+			}
+		} else if key.L4proto == unix.IPPROTO_TCP && !hasConnState {
+			var tcpState bpfTcpConnState
+			if bpf.TcpConnStateMap != nil {
+				if err := bpf.TcpConnStateMap.Lookup(&reverseKey, &tcpState); err == nil {
+					hasConnState = true
+				}
+			}
+		}
+
+		if !hasConnState {
+			orphanCount++
+			entriesToDelete = append(entriesToDelete, key)
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		if !strings.Contains(err.Error(), "bad file descriptor") &&
+			!strings.Contains(err.Error(), "file descriptor") &&
+			!strings.Contains(err.Error(), "closed") {
+			c.log.Debugf("cleanupRoutingCacheMap: iteration error: %v", err)
+		}
+		return
+	}
+
+	// Delete orphan entries
+	if len(entriesToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.RoutingTuplesMap, entriesToDelete); err != nil {
+			c.log.Debugf("cleanupRoutingCacheMap: batch delete error: %v", err)
+		}
+		c.log.Debugf("cleanupRoutingCacheMap: removed %d orphan entries (sample: %d/%d)",
+			len(entriesToDelete), orphanCount, sampleCount)
 	}
 }
 

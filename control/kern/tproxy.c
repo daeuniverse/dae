@@ -1797,6 +1797,10 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	__builtin_memset(&params, 0, sizeof(params));
 
 	if (pkt->l4proto == IPPROTO_TCP) {
+		// Track TCP connection state for new connections from LAN.
+		// This ensures routing cache entries can be cleaned up via
+		// cascade deletion when the connection expires.
+		mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false);
 		params.l4hdr = &pkt->tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
@@ -2091,6 +2095,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		outbound = s64_ret & 0xff;
 		mark = s64_ret >> 8;
 		must = (s64_ret >> 40) & 1;
+
+		// Track TCP connection state for new connections from WAN egress.
+		// This ensures routing cache entries can be cleaned up via
+		// cascade deletion when the connection expires.
+		mark_tcp_seen(&tuples->five, tcph, false);
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		// Print only new connection.
