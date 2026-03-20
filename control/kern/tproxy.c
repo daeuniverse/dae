@@ -357,7 +357,7 @@ struct {
 // bpf_stats: Map statistics for monitoring and robustness.
 // key=0: udp_conn_state_map overflow count (when bpf_map_update_elem fails with -E2BIG)
 // key=1: routing_tuples_map overflow count
-// key=2: udp_conn_state_map successful updates (for hit rate calculation)
+// key=2: tcp_conn_state_map overflow count
 // Userspace reads these counters to detect map pressure and trigger alerts.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -653,7 +653,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct tcphdr *tcph_ptr = data + offset;
 
 			if ((void *)(tcph_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			tcph->source = tcph_ptr->source;
 			tcph->dest = tcph_ptr->dest;
 			tcph->seq = tcph_ptr->seq;
@@ -669,7 +669,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct udphdr *udph_ptr = data + offset;
 
 			if ((void *)(udph_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			udph->source = udph_ptr->source;
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
@@ -678,7 +678,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_ICMPV6: {
 			if (data + offset + sizeof(struct icmp6hdr) > data_end)
-				return -EFAULT;
+				return -1;
 			const struct icmp6hdr *icmp6h_ptr = data + offset;
 
 			icmp6h->icmp6_type = icmp6h_ptr->icmp6_type;
@@ -1595,7 +1595,14 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		if (ret == 0) {  // Successfully created
 			return bpf_map_lookup_elem(&tcp_conn_state_map, key);
 		}
-		// If creation failed (map full or race), continue without state tracking
+		// Map full or other error: increment overflow counter for monitoring
+		if (unlikely(ret)) {
+			__u32 stats_key = BPF_STATS_TCP_CONN_OVERFLOW;
+			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+
+			if (overflow_count)
+				__sync_fetch_and_add(overflow_count, 1);
+		}
 	}
 
 	// Non-SYN packet without existing state: ignore
@@ -1784,11 +1791,11 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 	params.flag[1] = (skb->protocol == bpf_htons(ETH_P_IP)) ? IpVersionType_4 : IpVersionType_6;
 	params.flag[6] = pkt->tuples.dscp;
-	params.mac[2] =
-		bpf_htonl((pkt->ethh.h_source[0] << 8) | (pkt->ethh.h_source[1]));
-	params.mac[3] = bpf_htonl((pkt->ethh.h_source[2] << 24) |
-			  (pkt->ethh.h_source[3] << 16) |
-			  (pkt->ethh.h_source[4] << 8) | (pkt->ethh.h_source[5]));
+	params.mac[2] = bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
+				  (__u32)pkt->ethh.h_source[1]);
+	params.mac[3] = bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
+			  ((__u32)pkt->ethh.h_source[3] << 16) |
+			  ((__u32)pkt->ethh.h_source[4] << 8) | (__u32)pkt->ethh.h_source[5]);
 	params.saddr = pkt->tuples.five.sip.u6_addr32;
 	params.daddr = pkt->tuples.five.dip.u6_addr32;
 	__s64 s64_ret;
@@ -2034,11 +2041,12 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		}
 		params.is_wan = 1;  // WAN egress direction
 		if (link_h_len == ETH_HLEN) {
-			params.mac[2] = bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
-			params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
-						  (ethh->h_source[3] << 16) |
-						  (ethh->h_source[4] << 8) |
-						  (ethh->h_source[5]));
+			params.mac[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
+						  (__u32)ethh->h_source[1]);
+			params.mac[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
+						  ((__u32)ethh->h_source[3] << 16) |
+						  ((__u32)ethh->h_source[4] << 8) |
+						  (__u32)ethh->h_source[5]);
 		}
 		params.saddr = tuples->five.sip.u6_addr32;
 		params.daddr = tuples->five.dip.u6_addr32;
@@ -2190,11 +2198,12 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	}
 	params.is_wan = 1;  // WAN egress direction
 	if (ethh) {
-		params.mac[2] = bpf_htonl((ethh->h_source[0] << 8) | (ethh->h_source[1]));
-		params.mac[3] = bpf_htonl((ethh->h_source[2] << 24) |
-					  (ethh->h_source[3] << 16) |
-					  (ethh->h_source[4] << 8) |
-					  (ethh->h_source[5]));
+		params.mac[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
+					  (__u32)ethh->h_source[1]);
+		params.mac[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
+					  ((__u32)ethh->h_source[3] << 16) |
+					  ((__u32)ethh->h_source[4] << 8) |
+					  (__u32)ethh->h_source[5]);
 	}
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;

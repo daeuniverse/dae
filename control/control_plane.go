@@ -1232,6 +1232,13 @@ const redirectTrackTimeout = 5 * time.Minute
 // This is necessary because redirect_track uses HASH (not LRU) to avoid
 // the problem where long-lived connections prevent cleanup of other entries.
 func (c *ControlPlane) cleanupRedirectTrackMap() {
+	// Check if we're shutting down - if stop signal is sent, skip cleanup
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
 	bpf := c.core.EjectBpf()
 	if bpf == nil || bpf.RedirectTrack == nil {
 		return
@@ -1267,7 +1274,13 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 	}
 
 	if err := iter.Err(); err != nil {
-		c.log.Errorf("cleanupRedirectTrackMap: iteration error: %v", err)
+		// Only log non-"bad file descriptor" errors. EBADF during reload is expected
+		// when maps are closed while iteration is in progress.
+		if !strings.Contains(err.Error(), "bad file descriptor") &&
+			!strings.Contains(err.Error(), "file descriptor") &&
+			!strings.Contains(err.Error(), "closed") {
+			c.log.Errorf("cleanupRedirectTrackMap: iteration error: %v", err)
+		}
 		return
 	}
 
@@ -1299,6 +1312,13 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 // When map is under pressure (high usage), timeouts are dynamically reduced
 // to free up space more aggressively in a single pass.
 func (c *ControlPlane) cleanupUdpConnStateMap() {
+	// Check if we're shutting down - if stop signal is sent, skip cleanup
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
 	bpf := c.core.EjectBpf()
 	if bpf == nil || bpf.UdpConnStateMap == nil {
 		return
@@ -1330,7 +1350,11 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 		estimatedCount++
 	}
 	if err := iter.Err(); err != nil {
-		c.log.Errorf("cleanupUdpConnStateMap: count iteration error: %v", err)
+		if !strings.Contains(err.Error(), "bad file descriptor") &&
+			!strings.Contains(err.Error(), "file descriptor") &&
+			!strings.Contains(err.Error(), "closed") {
+			c.log.Errorf("cleanupUdpConnStateMap: count iteration error: %v", err)
+		}
 		return
 	}
 
@@ -1382,7 +1406,11 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 	}
 
 	if err := iter.Err(); err != nil {
-		c.log.Errorf("cleanupUdpConnStateMap: iteration error: %v", err)
+		if !strings.Contains(err.Error(), "bad file descriptor") &&
+			!strings.Contains(err.Error(), "file descriptor") &&
+			!strings.Contains(err.Error(), "closed") {
+			c.log.Errorf("cleanupUdpConnStateMap: iteration error: %v", err)
+		}
 		return
 	}
 
@@ -1417,6 +1445,13 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 // This implements cascade cleanup: when a TCP connection expires or closes,
 // we also remove its routing cache entries from routing_tuples_map.
 func (c *ControlPlane) cleanupTcpConnStateMap() {
+	// Check if we're shutting down - if stop signal is sent, skip cleanup
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
 	bpf := c.core.EjectBpf()
 	if bpf == nil || bpf.TcpConnStateMap == nil {
 		return
@@ -1446,7 +1481,11 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 		estimatedCount++
 	}
 	if err := iter.Err(); err != nil {
-		c.log.Errorf("cleanupTcpConnStateMap: count iteration error: %v", err)
+		if !strings.Contains(err.Error(), "bad file descriptor") &&
+			!strings.Contains(err.Error(), "file descriptor") &&
+			!strings.Contains(err.Error(), "closed") {
+			c.log.Errorf("cleanupTcpConnStateMap: count iteration error: %v", err)
+		}
 		return
 	}
 
@@ -1504,7 +1543,11 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 	}
 
 	if err := iter.Err(); err != nil {
-		c.log.Errorf("cleanupTcpConnStateMap: iteration error: %v", err)
+		if !strings.Contains(err.Error(), "bad file descriptor") &&
+			!strings.Contains(err.Error(), "file descriptor") &&
+			!strings.Contains(err.Error(), "closed") {
+			c.log.Errorf("cleanupTcpConnStateMap: iteration error: %v", err)
+		}
 		return
 	}
 
