@@ -171,15 +171,18 @@ struct dae_param {
  * can be rewritten from userspace via RewriteConstants. */
 const volatile struct dae_param PARAM = {};
 
-// routing_tuples_map: Cache routing results for established flows.
+// routing_tuples_map: DEPRECATED - Kept only for ABI compatibility.
 //
-// Design rationale:
-// - Changed from LRU_HASH to HASH for better performance and semantic correctness.
-// - LRU eviction is unsuitable for connection state (should be TTL-based, not access-time-based).
-// - Hash map is simpler and faster; userspace janitor handles cleanup via timestamp.
+// This map is NO LONGER USED for active routing. Routing results are now
+// embedded directly in tcp_conn_state_map and udp_conn_state_map (Scheme3: Embedded Design).
 //
-// The routing_result struct includes implicit timing via userspace janitor tracking
-// last activity. This provides proper connection lifecycle management.
+// The map definition is preserved to maintain ABI compatibility with generated
+// Go bindings (bpf_stub.go). It is no longer written to or read from during
+// normal packet processing. The embedded routing in conn state maps provides
+// better consistency and eliminates orphaned entries during reload.
+//
+// Migration note: Old routing entries will be cleaned up by userspace janitor
+// since they have no corresponding conn_state entries (cascade cleanup).
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct tuples_key);
@@ -311,6 +314,13 @@ struct {
 	__uint(max_entries, MAX_COOKIE_PID_PNAME_MAPPING_NUM);
 } cookie_pid_map SEC(".maps");
 
+// udp_conn_state: Track UDP connection state and cached routing decision.
+//
+// Design rationale (Scheme3 - Embedded Design):
+// - Routing result is embedded directly in conn state to ensure consistency.
+// - Single source of truth: no separate routing_tuples_map to sync.
+// - This eliminates orphaned entries and simplifies cascade cleanup.
+// - Pinned to support smooth reload with connection migration.
 struct udp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
@@ -319,8 +329,15 @@ struct udp_conn_state {
 
 	// Last seen timestamp in nanoseconds (bpf_ktime_get_ns()).
 	// Userspace janitor periodically cleans up expired entries.
-	// This replaces bpf_timer to avoid CVE-2024-41045 and improve hot path performance.
 	__u64 last_seen_ns;
+
+	// Embedded routing decision result for this flow.
+	// This avoids a separate routing_tuples_map lookup and ensures consistency.
+	__u8 has_routing;      // Whether routing info is valid (0=no, 1=yes)
+	__u8 outbound;         // 0=DIRECT, 1-254=proxy group ID
+	__u32 mark;             // SO_MARK to set
+	__u8 must;              // Whether this is a must-rule match
+	__u8 mac[6];            // Next hop MAC for redirected packets
 };
 
 struct {
@@ -328,23 +345,35 @@ struct {
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
 	__type(key, struct tuples_key);
 	__type(value, struct udp_conn_state);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Pinned for smooth reload
 } udp_conn_state_map SEC(".maps");
 
-// tcp_conn_state: Track TCP connection state for lifecycle-based cleanup.
-// This enables cascade cleanup of routing_tuples_map when TCP connections close.
-// Design consistent with udp_conn_state_map.
+// tcp_conn_state: Track TCP connection state and cached routing decision.
+//
+// Design rationale (Scheme3 - Embedded Design):
+// - Routing result is embedded directly in conn state to ensure consistency.
+// - Single source of truth: no separate routing_tuples_map to sync.
+// - This eliminates orphaned entries and simplifies cascade cleanup.
+// - Pinned to support smooth reload with connection migration.
 struct tcp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
 	bool is_wan_ingress_direction;
 
 	// Connection state: 0 = active, 1 = closing (FIN/RST seen)
-	// When in closing state, userspace janitor will clean up both this map
-	// and the associated routing_tuples_map entries.
+	// When in closing state, userspace janitor will clean up this entry.
 	__u8 state;
 
 	// Last seen timestamp in nanoseconds (bpf_ktime_get_ns()).
 	__u64 last_seen_ns;
+
+	// Embedded routing decision result for this flow.
+	// This avoids a separate routing_tuples_map lookup and ensures consistency.
+	__u8 has_routing;      // Whether routing info is valid (0=no, 1=yes)
+	__u8 outbound;         // 0=DIRECT, 1-254=proxy group ID
+	__u32 mark;             // SO_MARK to set
+	__u8 must;              // Whether this is a must-rule match
+	__u8 mac[6];            // Next hop MAC for redirected packets
 };
 
 struct {
@@ -352,11 +381,12 @@ struct {
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
 	__type(key, struct tuples_key);
 	__type(value, struct tcp_conn_state);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Pinned for smooth reload
 } tcp_conn_state_map SEC(".maps");
 
 // bpf_stats: Map statistics for monitoring and robustness.
 // key=0: udp_conn_state_map overflow count (when bpf_map_update_elem fails with -E2BIG)
-// key=1: routing_tuples_map overflow count
+// key=1: [UNUSED] - Previously routing_tuples_map overflow, now embedded in conn state
 // key=2: tcp_conn_state_map overflow count
 // Userspace reads these counters to detect map pressure and trigger alerts.
 struct {
@@ -368,7 +398,7 @@ struct {
 
 enum bpf_stats_key {
 	BPF_STATS_UDP_CONN_OVERFLOW = 0,
-	BPF_STATS_ROUTING_OVERFLOW = 1,
+	// BPF_STATS_ROUTING_OVERFLOW = 1,  // No longer used, kept for compatibility
 	BPF_STATS_TCP_CONN_OVERFLOW = 2,
 };
 
@@ -1506,18 +1536,32 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 // - Complex cascade deletion of routing_tuples_map in kernel
 // - Clock synchronization issues between kernel/userspace
 //
+// Scheme3: Routing is embedded in conn state for single source of truth.
+// When routing params are provided (outbound != NULL), they're stored in conn state.
+//
 // Robustness: If map is full (E2BIG), we increment overflow counter and return NULL.
 // Callers should gracefully degrade: continue processing without conntrack state
 // rather than dropping packets.
 static __always_inline struct udp_conn_state *
-mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
+mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
+	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac)
 {
 	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
 	__u64 now = bpf_ktime_get_ns();
 
 	if (state) {
-		// Fast path: update timestamp and return
+		// Fast path: update timestamp
 		state->last_seen_ns = now;
+
+		// Update routing if provided (e.g., routing decision changed)
+		if (outbound) {
+			state->has_routing = 1;
+			state->outbound = *outbound;
+			state->mark = *mark;
+			state->must = *must;
+			if (mac)
+				__builtin_memcpy(state->mac, mac, 6);
+		}
 		return state;
 	}
 
@@ -1525,7 +1569,16 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 	struct udp_conn_state new_state = {
 		.is_wan_ingress_direction = is_wan_ingress_direction,
 		.last_seen_ns = now,
+		.has_routing = outbound ? 1 : 0,
 	};
+
+	if (outbound) {
+		new_state.outbound = *outbound;
+		new_state.mark = *mark;
+		new_state.must = *must;
+		if (mac)
+			__builtin_memcpy(new_state.mac, mac, 6);
+	}
 
 	int ret = bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_ANY);
 
@@ -1554,10 +1607,15 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 // - SYN -> TCP_STATE_ACTIVE
 // - FIN/RST -> TCP_STATE_CLOSING
 //
+// Scheme3: Routing is embedded in conn state for single source of truth.
+// When routing params are provided (outbound != NULL), they're stored in
+// conn state. Only SYN path should provide routing params.
+//
 // Returns state pointer, or NULL if map full (caller should degrade gracefully)
 static __always_inline struct tcp_conn_state *
 mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
-	      bool is_wan_ingress_direction)
+	      bool is_wan_ingress_direction,
+	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac)
 {
 	struct tcp_conn_state *state = bpf_map_lookup_elem(&tcp_conn_state_map, key);
 	__u64 now = bpf_ktime_get_ns();
@@ -1570,6 +1628,16 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		if (tcph->fin || tcph->rst)
 			state->state = TCP_STATE_CLOSING;
 
+		// Update routing if provided (rare: routing decision changed mid-connection)
+		if (outbound) {
+			state->has_routing = 1;
+			state->outbound = *outbound;
+			state->mark = *mark;
+			state->must = *must;
+			if (mac)
+				__builtin_memcpy(state->mac, mac, 6);
+		}
+
 		return state;
 	}
 
@@ -1580,7 +1648,16 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			.is_wan_ingress_direction = is_wan_ingress_direction,
 			.state = TCP_STATE_ACTIVE,
 			.last_seen_ns = now,
+			.has_routing = outbound ? 1 : 0,
 		};
+
+		if (outbound) {
+			new_state.outbound = *outbound;
+			new_state.mark = *mark;
+			new_state.must = *must;
+			if (mac)
+				__builtin_memcpy(new_state.mac, mac, 6);
+		}
 
 		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &new_state, BPF_ANY);
 
@@ -1605,6 +1682,7 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			.is_wan_ingress_direction = is_wan_ingress_direction,
 			.state = tcph->fin || tcph->rst ? TCP_STATE_CLOSING : TCP_STATE_ACTIVE,
 			.last_seen_ns = now,
+			.has_routing = 0,  // No routing info for hot reload mitigation
 		};
 
 		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &temp_state,
@@ -1627,18 +1705,22 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	return NULL;
 }
 
-static __always_inline bool
-load_cached_routing_result(struct tuples_key *five_tuple, __u8 *outbound,
-			   __u32 *mark, bool *must)
+// load_cached_routing_udp: Load routing decision from embedded conn state.
+// Currently unused but kept for future optimization of UDP flows.
+static __always_inline bool __attribute__((unused))
+load_cached_routing_udp(struct tuples_key *five_tuple, __u8 *outbound,
+			__u32 *mark, __u8 *must, __u8 *mac)
 {
-	struct routing_result *routing_result =
-		bpf_map_lookup_elem(&routing_tuples_map, five_tuple);
+	struct udp_conn_state *conn = bpf_map_lookup_elem(&udp_conn_state_map, five_tuple);
 
-	if (!routing_result)
+	if (!conn || !conn->has_routing)
 		return false;
-	*outbound = routing_result->outbound;
-	*mark = routing_result->mark;
-	*must = routing_result->must;
+
+	*outbound = conn->outbound;
+	*mark = conn->mark;
+	*must = conn->must;
+	// Copy MAC address
+	__builtin_memcpy(mac, conn->mac, 6);
 	return true;
 }
 
@@ -1648,16 +1730,10 @@ static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 }
 
 // Unified non-syn TCP handling entry for WAN egress.
+// Scheme3: Load routing from embedded conn state.
 // Keep main-equivalent behavior:
 // - Reuse cached routing result for established connections.
 // - If no cache, do not affect pre-existing/server-side flows.
-static __always_inline bool
-load_non_syn_tcp_wan_egress(struct tuples_key *five_tuple, __u8 *outbound,
-			    __u32 *mark, bool *must)
-{
-	return load_cached_routing_result(five_tuple, outbound, mark, must);
-}
-
 static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
@@ -1701,7 +1777,8 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 		// Robustness: If conntrack map is full, gracefully degrade by continuing
 		// without state tracking. This is acceptable as the packet will be processed
 		// normally; we just lose connection tracking optimization.
-		mark_udp_seen(&reversed_tuples_key, true);
+		mark_udp_seen(&reversed_tuples_key, true,
+			      NULL, NULL, NULL, NULL);
 	}
 
 	return TC_ACT_PIPE;
@@ -1762,12 +1839,12 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	    !is_new_tcp_connection(&pkt->tcph)) {
 		__u8 outbound;
 		__u32 mark;
-		bool must;
 		struct tcp_conn_state *tcp_state;
 
 		// Track TCP connection state (update timestamp, detect FIN/RST).
-		// Only use cached routing if conn state exists to ensure consistency.
-		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false);
+		// PERFORMANCE: Use the returned conn_state pointer to avoid a second map lookup.
+		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false,
+					  NULL, NULL, NULL, NULL);
 		if (!tcp_state) {
 			// Conn state map full - degrade gracefully without using cache.
 			// This prevents using stale cache entries without conn state for cleanup.
@@ -1778,18 +1855,23 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		 * Compatibility restore for 030902f behavior and align with WAN
 		 * non-SYN session handling: reuse cached routing result for
 		 * established TCP packets.
+		 * Scheme3: Load routing directly from the conn_state we already looked up.
 		 */
-		if (!load_cached_routing_result(&pkt->tuples.five, &outbound, &mark,
-						&must)) {
+		if (!tcp_state->has_routing) {
 			/* No cache: keep historical direct-pass semantics (e.g.
 			 * single-arm / reply-path traffic).
 			 */
 			return TC_ACT_OK;
 		}
 
-		skb->mark = mark;
-		if (outbound == OUTBOUND_DIRECT)
+		// Load routing from the conn_state we already looked up
+		outbound = tcp_state->outbound;
+		mark = tcp_state->mark;
+
+		if (outbound == OUTBOUND_DIRECT && mark == 0) {
+			skb->mark = mark;
 			return TC_ACT_OK;
+		}
 		if (unlikely(outbound == OUTBOUND_BLOCK))
 			return TC_ACT_SHOT;
 		if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
@@ -1809,12 +1891,15 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		// Track TCP connection state for new connections from LAN.
 		// This ensures routing cache entries can be cleaned up via
 		// cascade deletion when the connection expires.
-		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false);
+		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false,
+					  NULL, NULL, NULL, NULL);
 		params.l4hdr = &pkt->tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
 		if (!is_short_lived_udp_traffic(&pkt->tuples.five)) {
-			udp_state = mark_udp_seen(&pkt->tuples.five, false);
+			// Fast path: Check conn state for established UDP flows
+			udp_state = mark_udp_seen(&pkt->tuples.five, false,
+						  NULL, NULL, NULL, NULL);
 			// Robustness: If conntrack map is full (conn_state == NULL),
 			// gracefully degrade by continuing with normal routing instead of
 			// dropping the packet. We lose the "direct return path" optimization
@@ -1822,6 +1907,28 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			if (udp_state && udp_state->is_wan_ingress_direction) {
 				// Replay (outbound) of an inbound flow => direct.
 				return TC_ACT_OK;
+			}
+
+			// Fast path: Use cached routing if available
+			if (udp_state && udp_state->has_routing) {
+				// Load routing from conn state - skip expensive route() call!
+				__u8 outbound = udp_state->outbound;
+				__u32 mark = udp_state->mark;
+
+				if (outbound == OUTBOUND_DIRECT && mark == 0) {
+					skb->mark = mark;
+					goto direct;
+				} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+					goto block;
+				}
+
+				if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
+							   pkt->tuples.five.dport))
+					goto block;
+
+				// Update conn state timestamp for this fast path packet
+				udp_state->last_seen_ns = bpf_ktime_get_ns();
+				goto control_plane;
 			}
 		}
 		params.l4hdr = &pkt->udph;
@@ -1844,74 +1951,60 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		return TC_ACT_SHOT;
 	}
 
-	struct routing_result routing_result = { 0 };
+	__u8 outbound = s64_ret & 0xff;
+	__u32 mark = s64_ret >> 8;
+	__u8 must = (s64_ret >> 40) & 1;
 
-	routing_result.outbound = s64_ret & 0xff;
-	routing_result.mark = s64_ret >> 8;
-	routing_result.must = (s64_ret >> 40) & 1;
-	routing_result.dscp = pkt->tuples.dscp;
-	__builtin_memcpy(routing_result.mac, pkt->ethh.h_source,
-			 sizeof(routing_result.mac));
-	// NOTICE: No pid pname info for LAN packet.
-	// // Maybe this packet is also in the host (such as docker) ?
-	// // I tried and it is false.
-	//__u64 cookie = bpf_get_socket_cookie(skb);
-	//struct pid_pname *pid_pname =
-	//	bpf_map_lookup_elem(&cookie_pid_map, &cookie);
-	//if (pid_pname) {
-	//	__builtin_memcpy(routing_result.pname, pid_pname->pname,
-	//			 TASK_COMM_LEN);
-	//	routing_result.pid = pid_pname->pid;
-	//}
-
-	// Save routing result.
-	// Only cache if conn state was successfully created to ensure cascade cleanup works.
+	// Scheme3: Embed routing in conn state for single source of truth.
+	// Update conn state with routing decision (skip DNS for optimization).
+	// PERFORMANCE: Use the conn_state pointer from first call to avoid
+	// a second map lookup. This is critical for high-throughput traffic.
 	if (pkt->l4proto == IPPROTO_UDP &&
 	    is_short_lived_udp_traffic(&pkt->tuples.five)) {
 		// Skip cache for short-lived DNS to avoid map churn.
-	} else if ((pkt->l4proto == IPPROTO_TCP && tcp_state) ||
-		   (pkt->l4proto == IPPROTO_UDP && udp_state)) {
-		ret = bpf_map_update_elem(&routing_tuples_map, &pkt->tuples.five,
-					  &routing_result, BPF_ANY);
-		if (ret) {
-			// Robustness: If routing cache map is full, increment overflow counter
-			// and continue without caching. The packet is still processed correctly,
-			// we just lose the routing optimization for this flow.
-			__u32 stats_key = BPF_STATS_ROUTING_OVERFLOW;
-			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
-
-			if (overflow_count)
-				__sync_fetch_and_add(overflow_count, 1);
-			bpf_printk("routing cache full, continuing without cache: %d", ret);
-			// Don't return TC_ACT_SHOT - continue processing the packet
-		}
+	} else if (pkt->l4proto == IPPROTO_TCP && tcp_state) {
+		// Directly update the TCP conn state we already looked up
+		tcp_state->has_routing = 1;
+		tcp_state->outbound = outbound;
+		tcp_state->mark = mark;
+		tcp_state->must = must;
+		__builtin_memcpy(tcp_state->mac, pkt->ethh.h_source, 6);
+	} else if (pkt->l4proto == IPPROTO_UDP && udp_state) {
+		// Directly update the UDP conn state we already looked up
+		udp_state->has_routing = 1;
+		udp_state->outbound = outbound;
+		udp_state->mark = mark;
+		udp_state->must = must;
+		__builtin_memcpy(udp_state->mac, pkt->ethh.h_source, 6);
 	}
+	// No separate routing_tuples_map write needed - routing is embedded.
+
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 	if (pkt->l4proto == IPPROTO_TCP) {
-		bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", ret,
+		bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", outbound,
 			   pkt->tuples.five.dip.u6_addr32,
 			   bpf_ntohs(pkt->tuples.five.dport));
 	} else {
-		bpf_printk("udp(lan): outbound: %u, target: %pI6:%u",
-			   routing_result.outbound, pkt->tuples.five.dip.u6_addr32,
+		bpf_printk("udp(lan): outbound: %u, target: %pI6:%u", outbound,
+			   pkt->tuples.five.dip.u6_addr32,
 			   bpf_ntohs(pkt->tuples.five.dport));
 	}
 #endif
 
-	if (routing_result.outbound == OUTBOUND_DIRECT) {
-		skb->mark = routing_result.mark;
+	if (outbound == OUTBOUND_DIRECT && mark == 0) {
+		skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("GO OUTBOUND_DIRECT");
+		bpf_printk("GO OUTBOUND DIRECT");
 #endif
 		goto direct;
-	} else if (unlikely(routing_result.outbound == OUTBOUND_BLOCK)) {
+	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK");
 #endif
 		goto block;
 	}
 
-	if (!wan_outbound_is_alive(skb, routing_result.outbound, pkt->l4proto,
+	if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
 				   pkt->tuples.five.dport))
 		goto block;
 
@@ -2012,7 +2105,8 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 		// Robustness: If conntrack map is full, gracefully degrade by continuing
 		// without state tracking. This is acceptable as the packet will be processed
 		// normally; we just lose connection tracking optimization.
-		mark_udp_seen(&reversed_tuples_key, true);
+		mark_udp_seen(&reversed_tuples_key, true,
+			      NULL, NULL, NULL, NULL);
 	}
 
 	return TC_ACT_PIPE;
@@ -2065,6 +2159,8 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	if (unlikely(tcp_state_syn)) {
 		// New TCP connection.
 		struct route_params params;
+		__u8 mac[6] = {};
+		__u8 must_val;
 
 		__builtin_memset(&params, 0, sizeof(params));
 		params.l4hdr = tcph;
@@ -2091,6 +2187,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 						  ((__u32)ethh->h_source[3] << 16) |
 						  ((__u32)ethh->h_source[4] << 8) |
 						  (__u32)ethh->h_source[5]);
+			__builtin_memcpy(mac, ethh->h_source, 6);
 		}
 		params.saddr = tuples->five.sip.u6_addr32;
 		params.daddr = tuples->five.dip.u6_addr32;
@@ -2105,15 +2202,18 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		outbound = s64_ret & 0xff;
 		mark = s64_ret >> 8;
 		must = (s64_ret >> 40) & 1;
+		must_val = must;
 
-		// Track TCP connection state for new connections from WAN egress.
-		// Only cache routing if conn state was successfully created to ensure
-		// cascade cleanup works and no orphaned entries accumulate.
-		if (!mark_tcp_seen(&tuples->five, tcph, false)) {
-			// Conn state map full - degrade gracefully without caching.
-			// Packet is still processed correctly, just loses routing optimization.
-			return TC_ACT_OK;
-		}
+		// Scheme3: Embed routing in conn state for single source of truth.
+		// Track TCP connection state AND routing decision together.
+		// Robustness: If conn state map is full, gracefully degrade by continuing
+		// with normal proxy forwarding. Routing is embedded, so no separate
+		// routing_tuples_map write needed.
+		mark_tcp_seen(&tuples->five, tcph, false,
+			      &outbound, &mark, &must_val, mac);
+		// Return value ignored: packet still gets proxied correctly, just without
+		// routing cache. The connection will work, but FIN/RST won't trigger
+		// cascade cleanup and subsequent packets may hit routing again.
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		// Print only new connection.
@@ -2129,15 +2229,17 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	} else {
 		// Existing TCP connection.
 		// Track TCP connection state (update timestamp, detect FIN/RST).
-		// Only use cached routing if conn state exists to ensure consistency.
-		if (!mark_tcp_seen(&tuples->five, tcph, false)) {
-			// Conn state map full - degrade gracefully without using cache.
-			// Let the packet pass through.
-			return TC_ACT_OK;
-		}
+		// Scheme3: Routing is embedded in conn state, load from there.
+		// PERFORMANCE: Use the returned conn_state pointer to avoid a second map lookup.
+		struct tcp_conn_state *tcp_conn = mark_tcp_seen(&tuples->five, tcph, false,
+								NULL, NULL, NULL, NULL);
 
-		if (!load_non_syn_tcp_wan_egress(&tuples->five, &outbound, &mark,
-						 &must)) {
+		// Load routing from the conn_state we already looked up
+		if (tcp_conn && tcp_conn->has_routing) {
+			outbound = tcp_conn->outbound;
+			mark = tcp_conn->mark;
+			must = tcp_conn->must;
+		} else {
 			// No cached routing. This is a pre-existing connection
 			// or server connection. Let it pass.
 			return TC_ACT_OK;
@@ -2163,44 +2265,8 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 				   tuples->five.dport))
 		return TC_ACT_SHOT;
 
-	if (unlikely(tcp_state_syn)) {
-		// Only save non-direct routing to avoid conflicts with LAN ingress.
-		// Direct traffic doesn't need control plane processing.
-		// Conn state was already created above, so cascade cleanup will work.
-		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			struct routing_result routing_result = {};
-
-			routing_result.outbound = outbound;
-			routing_result.mark = mark;
-			routing_result.must = must;
-			routing_result.dscp = tuples->dscp;
-			if (link_h_len == ETH_HLEN)
-				__builtin_memcpy(routing_result.mac, ethh->h_source,
-						 sizeof(ethh->h_source));
-			if (pid_pname) {
-				__builtin_memcpy(routing_result.pname,
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-				routing_result.pid = pid_pname->pid;
-			}
-			// Write to routing cache and track overflow for monitoring
-			int ret = bpf_map_update_elem(&routing_tuples_map, &tuples->five,
-						    &routing_result, BPF_ANY);
-			if (ret) {
-				// Robustness: If routing cache map is full, increment overflow counter
-				// and continue without caching. The packet is still processed correctly,
-				// we just lose the routing optimization for this flow.
-				__u32 stats_key = BPF_STATS_ROUTING_OVERFLOW;
-				__u64 *overflow_count = bpf_map_lookup_elem(
-						&bpf_stats_map, &stats_key);
-
-				if (overflow_count)
-					__sync_fetch_and_add(overflow_count, 1);
-				bpf_printk("WAN routing cache full: %d", ret);
-				// Don't return TC_ACT_SHOT - continue processing the packet
-			}
-		}
-	}
+	// Scheme3: Routing is now embedded in conn state.
+	// No separate routing_tuples_map write needed - single source of truth.
 
 	if (prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
 					   1, tcph)) {
@@ -2224,6 +2290,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	bool must;
 	struct tcphdr dummy_tcph = {};
 	struct udp_conn_state *udp_conn_state = NULL;
+	__u8 mac[6] = {};
 
 	__builtin_memset(&params, 0, sizeof(params));
 	params.l4hdr = udph;
@@ -2239,8 +2306,13 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		return TC_ACT_OK;
 	}
 
+	// Fast path: Try to use cached routing from conn state for established UDP flows.
+	// This is similar to netfilter's conntrack fast path - avoiding expensive
+	// route() lookup (LPM, rule matching, etc.) for packets of existing flows.
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
-		udp_conn_state = mark_udp_seen(&tuples->five, false);
+		// First check if this is replay of inbound flow
+		udp_conn_state = mark_udp_seen(&tuples->five, false,
+					       NULL, NULL, NULL, NULL);
 		// Robustness: If conntrack map is full, gracefully degrade by continuing
 		// with normal routing. We lose the direct return path optimization but
 		// service continues.
@@ -2248,8 +2320,19 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			// Replay (outbound) of an inbound flow => direct.
 			return TC_ACT_OK;
 		}
+
+		// Fast path: Use cached routing if available
+		if (udp_conn_state && udp_conn_state->has_routing) {
+			// Load routing from conn state - skip expensive route() call!
+			outbound = udp_conn_state->outbound;
+			mark = udp_conn_state->mark;
+			must = udp_conn_state->must;
+			__builtin_memcpy(mac, udp_conn_state->mac, 6);
+			goto fast_path_skip_routing;
+		}
 	}
 
+	// Slow path: No cached routing, need to perform full route lookup
 	if (pid_pname) {
 		// 2, 3, 4, 5
 		__builtin_memcpy(&params.flag[2], pid_pname->pname,
@@ -2263,6 +2346,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 					  ((__u32)ethh->h_source[3] << 16) |
 					  ((__u32)ethh->h_source[4] << 8) |
 					  (__u32)ethh->h_source[5]);
+		__builtin_memcpy(mac, ethh->h_source, 6);
 	}
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;
@@ -2279,48 +2363,22 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	mark = s64_ret >> 8;
 	must = (s64_ret >> 40) & 1;
 
-	// Only save non-direct routing to avoid conflicts with LAN ingress.
-	// Direct traffic doesn't need control plane processing.
-	if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-		if (tuples->five.dport == bpf_htons(53)) {
-			// Skip cache for DNS queries.
-		} else if (udp_conn_state) {
-			// Only cache routing if conn state was successfully created.
-			// This ensures cascade cleanup works and prevents orphaned entries.
-			// Construct new hdr to encap.
-			struct routing_result routing_result = {};
-
-			routing_result.outbound = outbound;
-			routing_result.mark = mark;
-			routing_result.must = must;
-			routing_result.dscp = tuples->dscp;
-			if (link_h_len == ETH_HLEN)
-				__builtin_memcpy(routing_result.mac, ethh->h_source,
-						 sizeof(ethh->h_source));
-			if (pid_pname) {
-				__builtin_memcpy(routing_result.pname,
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-				routing_result.pid = pid_pname->pid;
-			}
-			// Write to routing cache and track overflow for monitoring
-			int ret = bpf_map_update_elem(&routing_tuples_map, &tuples->five,
-						    &routing_result, BPF_ANY);
-			if (ret) {
-				// Robustness: If routing cache map is full, increment overflow counter
-				// and continue without caching. The packet is still processed correctly,
-				// we just lose the routing optimization for this flow.
-				__u32 stats_key = BPF_STATS_ROUTING_OVERFLOW;
-				__u64 *overflow_count = bpf_map_lookup_elem(
-						&bpf_stats_map, &stats_key);
-
-				if (overflow_count)
-					__sync_fetch_and_add(overflow_count, 1);
-				bpf_printk("WAN routing cache full: %d", ret);
-				// Don't return TC_ACT_SHOT - continue processing the packet
-			}
-		}
+fast_path_skip_routing:
+	// Scheme3: Embed routing in conn state for single source of truth.
+	// Update conn state with routing decision (skip DNS for optimization).
+	// PERFORMANCE: Use the udp_conn_state pointer from first call to avoid
+	// a second map lookup. This is critical for high-throughput UDP traffic.
+	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
+		// Directly update the conn state we already looked up
+		udp_conn_state->has_routing = 1;
+		udp_conn_state->outbound = outbound;
+		udp_conn_state->mark = mark;
+		udp_conn_state->must = must;
+		__builtin_memcpy(udp_conn_state->mac, mac, 6);
+		// Update timestamp to prevent premature connection expiration
+		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
 	}
+
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 	__u32 pid = pid_pname ? pid_pname->pid : 0;
 

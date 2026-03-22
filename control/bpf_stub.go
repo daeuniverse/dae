@@ -116,6 +116,11 @@ type bpfUdpConnState struct {
 	_                     structs.HostLayout
 	IsWanIngressDirection bool
 	LastSeenNs            uint64
+	HasRouting            uint8 // Scheme3: embedded routing decision
+	Outbound              uint8
+	Mark                  uint32
+	Must                  uint8
+	Mac                   [6]uint8
 }
 
 type bpfTcpConnState struct {
@@ -123,6 +128,11 @@ type bpfTcpConnState struct {
 	IsWanIngressDirection bool
 	State                 uint8
 	LastSeenNs            uint64
+	HasRouting            uint8 // Scheme3: embedded routing decision
+	Outbound              uint8
+	Mark                  uint32
+	Must                  uint8
+	Mac                   [6]uint8
 }
 
 func loadBpf() (*ebpf.CollectionSpec, error) {

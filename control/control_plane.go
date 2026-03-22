@@ -744,8 +744,10 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 // only clear domain_routing_map on reload.
 //
 // IMPORTANT:
-// Do NOT clear connection-state maps (routing_tuples_map/udp_conn_state_map)
-// here, otherwise established flows may lose cached state and get rerouted.
+// Scheme3 (Embedded Design): Connection-state maps (tcp_conn_state_map, udp_conn_state_map)
+// are now pinned and preserve routing decisions across reloads. Do NOT clear them here,
+// otherwise established flows may lose cached state and get rerouted.
+// The legacy routing_tuples_map is deprecated but kept pinned for ABI compatibility.
 func clearReloadDomainRoutingMap(bpf *bpfObjects) error {
 	return BpfMapDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
 }
@@ -1578,12 +1580,13 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 }
 
 // cleanupRoutingCacheMap provides cleanup for orphaned routing_tuples_map entries.
-// This is a safety net for edge cases like hot reload where routing cache is pinned
-// but conn state is not.
 //
-// Primary cleanup mechanism is cascade deletion via conn state expiry.
-// With the new eBPF logic that only caches routing when conn state exists,
-// orphans should be rare, but we still clean them up for robustness.
+// Scheme3 (Embedded Design): Routing is now embedded in conn state maps.
+// This function is kept ONLY for backwards compatibility to clean up legacy
+// routing_tuples_map entries from previous versions during hot reload.
+//
+// The primary cleanup mechanism is cascade deletion via conn state expiry.
+// New code writes routing directly to conn state, so new orphans should not occur.
 func (c *ControlPlane) cleanupRoutingCacheMap() {
 	// Check if we're shutting down
 	select {
@@ -1701,24 +1704,21 @@ func (c *ControlPlane) checkBpfMapHealth() {
 
 	// Read and log overflow counters from BPF stats map
 	var (
-		udpOverflow     uint64
-		routingOverflow uint64
-		tcpOverflow     uint64
+		udpOverflow uint64
+		tcpOverflow uint64
 	)
 
-	// Read stats (key 0 = UDP overflow, key 1 = routing overflow, key 2 = TCP overflow)
+	// Read stats (key 0 = UDP overflow, key 2 = TCP overflow)
+	// Scheme3: key 1 (routing overflow) is deprecated - routing is now embedded in conn state
 	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 0); err == nil {
 		udpOverflow = v
-	}
-	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 1); err == nil {
-		routingOverflow = v
 	}
 	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 2); err == nil {
 		tcpOverflow = v
 	}
 
 	// Alert on significant overflow counts
-	if udpOverflow > 0 || routingOverflow > 0 || tcpOverflow > 0 {
+	if udpOverflow > 0 || tcpOverflow > 0 {
 		// Use a fixed key to avoid unbounded growth in lastMapOverflowAlertTime.
 		// The cooldown period prevents alert spam.
 		const alertKeyBpfOverflow = "bpf_overflow"
@@ -1727,9 +1727,9 @@ func (c *ControlPlane) checkBpfMapHealth() {
 		// Type assertion is safe here since we only ever store time.Time values.
 		lastTime, ok := lastAlertTime.(time.Time)
 		if !ok || lastTime.Add(alertCooldown).Before(now) {
-			c.log.Warnf("BPF map overflow detected: UDP conn state=%d, TCP conn state=%d, routing cache=%d. "+
+			c.log.Warnf("BPF map overflow detected: UDP conn state=%d, TCP conn state=%d. "+
 				"Some packets are falling back to slower paths. Check if map capacity is adequate.",
-				udpOverflow, tcpOverflow, routingOverflow)
+				udpOverflow, tcpOverflow)
 			c.lastMapOverflowAlertTime.Store(alertKeyBpfOverflow, now)
 		}
 	}
