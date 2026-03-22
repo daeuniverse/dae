@@ -44,10 +44,17 @@ func buildTCPLinkLogFields(res *proxyDialResult, dialParam *proxyDialParam, dst 
 		return fields
 	}
 	fields["ebpf_offload"] = offloaded
-	if !offloaded && offloadReason != "" {
+	// Only output reason field if not globally disabled
+	if !offloaded && offloadReason != "" && !isOffloadGloballyDisabledReason(offloadReason) {
 		fields["ebpf_offload_reason"] = offloadReason
 	}
 	return fields
+}
+
+// isOffloadGloballyDisabledReason checks if the offload reason is a globally
+// disabled reason (e.g., "eBPF offload disabled due to kernel bug").
+func isOffloadGloballyDisabledReason(reason string) bool {
+	return reason == "eBPF offload disabled due to kernel bug" || reason == "platform unsupported"
 }
 
 func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {

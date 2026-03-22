@@ -25,7 +25,7 @@ import (
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TARGET" bpftest ./kern/tests/bpf_test.c -- -I./kern/headers -I./kern/tests
 
 const (
-	maxMatchSetLen = 5  // Same as bpf_test.go
+	maxMatchSetLen = 5 // Same as bpf_test.go
 )
 
 func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dataOut, ctxOut []byte, err error) {
@@ -134,7 +134,7 @@ func TestBpfBugs(t *testing.T) {
 			if strings.Contains(progset.id, "combined") {
 				// Test both types: 0 for small UDP, 1 for large IPv6
 				for testType := 0; testType <= 1; testType++ {
-					ctx[8] = byte(testType)  // cb[2]
+					ctx[8] = byte(testType) // cb[2]
 
 					statusCode, data, ctx, err := runBpfProgram(progset.pktgen, data, ctx)
 					if err != nil {
@@ -259,7 +259,7 @@ func TestBpfBug001_VerifyLargeIPv6ExtensionBypass(t *testing.T) {
 			t.Fatalf("check failed: %v", err)
 		}
 
-		if statusCode == 1 {  // TC_ACT_SHOT
+		if statusCode == 1 { // TC_ACT_SHOT
 			t.Error("BUG-001 EXISTS: IPv6 packets with large extension headers bypass tproxy")
 		} else {
 			t.Log("BUG-001 FIXED: IPv6 packets with large extension headers are correctly processed")
@@ -321,7 +321,7 @@ func TestBpfBug002_VerifySmallUDPPacketBypass(t *testing.T) {
 			t.Fatalf("check failed: %v", err)
 		}
 
-		if statusCode == 1 {  // TC_ACT_SHOT
+		if statusCode == 1 { // TC_ACT_SHOT
 			t.Error("BUG-002 EXISTS: Small UDP packets (42 bytes) bypass tproxy")
 		} else {
 			t.Log("BUG-002 FIXED: Small UDP packets are correctly processed")
