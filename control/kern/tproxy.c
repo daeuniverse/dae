@@ -2016,6 +2016,44 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 #endif
 
 	if (outbound == OUTBOUND_DIRECT && mark == 0) {
+		// NAT loopback detection for dynamic WAN IP:
+		// Route decision says direct, but we need to verify if this is
+		// NAT loopback traffic (WAN IP forwarding back to LAN server).
+		// Use socket lookup to detect local services automatically.
+		struct bpf_sock_tuple tuple = { 0 };
+		__u32 tuple_size;
+		struct bpf_sock *sk;
+
+		if (skb->protocol == bpf_htons(ETH_P_IP)) {
+			tuple.ipv4.daddr = pkt->tuples.five.dip.u6_addr32[3];
+			tuple.ipv4.saddr = pkt->tuples.five.sip.u6_addr32[3];
+			tuple.ipv4.dport = pkt->tuples.five.dport;
+			tuple.ipv4.sport = pkt->tuples.five.sport;
+			tuple_size = sizeof(tuple.ipv4);
+		} else {
+			__builtin_memcpy(tuple.ipv6.daddr, &pkt->tuples.five.dip,
+					 IPV6_BYTE_LENGTH);
+			__builtin_memcpy(tuple.ipv6.saddr, &pkt->tuples.five.sip,
+					 IPV6_BYTE_LENGTH);
+			tuple.ipv6.dport = pkt->tuples.five.dport;
+			tuple.ipv6.sport = pkt->tuples.five.sport;
+			tuple_size = sizeof(tuple.ipv6);
+		}
+
+		sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
+					PARAM.dae_netns_id, 0);
+		if (sk) {
+			// Found a local socket - this is NAT loopback traffic
+			// or local service. Pass through directly.
+			bpf_sk_release(sk);
+			skb->mark = mark;
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+			bpf_printk("tcp(lan): NAT loopback detected, pass through");
+#endif
+			return TC_ACT_OK;
+		}
+
+		// No local socket found - normal direct traffic
 		skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
@@ -2239,11 +2277,25 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			pid_val = pid_pname->pid;
 		}
 
+		// Only save non-direct routing to avoid conflicts with LAN ingress.
+		// Direct traffic doesn't need control plane processing.
+		// For pure direct (outbound==DIRECT && mark==0 && !must), pass NULL
+		// params to mark_tcp_seen so no routing info is cached.
+		__u8 *outbound_ptr = &outbound;
+		__u32 *mark_ptr = &mark;
+		__u8 *must_ptr = &must_val;
+
+		if (outbound == OUTBOUND_DIRECT && mark == 0 && !must) {
+			outbound_ptr = NULL;
+			mark_ptr = NULL;
+			must_ptr = NULL;
+		}
+
 		// Scheme3: Embed routing in conn state for single source of truth.
 		// Track TCP connection state AND routing decision together.
-		struct tcp_conn_state *tcp_conn = mark_tcp_seen(&tuples->five, tcph, false,
-								&outbound, &mark, &must_val, mac,
-								dscp, pname_str, pid_val);
+		struct tcp_conn_state *tcp_conn = mark_tcp_seen(
+			&tuples->five, tcph, false, outbound_ptr, mark_ptr,
+			must_ptr, mac, dscp, pname_str, pid_val);
 
 		// SECURITY: Fail-Closed for connections requiring proxy.
 		// If conn state map is full, we MUST check if this connection needs proxying.
@@ -2418,17 +2470,25 @@ fast_path_skip_routing:
 	// Update conn state with routing decision (skip DNS for optimization).
 	// PERFORMANCE: Use the udp_conn_state pointer from first call to avoid
 	// a second map lookup. This is critical for high-throughput UDP traffic.
+	//
+	// Only save non-direct routing to avoid conflicts with LAN ingress.
+	// Direct traffic doesn't need control plane processing.
 	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
-		// Directly update the conn state we already looked up
-		udp_conn_state->has_routing = 1;
-		udp_conn_state->outbound = outbound;
-		udp_conn_state->mark = mark;
-		udp_conn_state->must = must;
-		__builtin_memcpy(udp_conn_state->mac, mac, 6);
-		udp_conn_state->dscp = tuples->dscp;
-		if (pid_pname) {
-			__builtin_memcpy(udp_conn_state->pname, pid_pname->pname, TASK_COMM_LEN);
-			udp_conn_state->pid = pid_pname->pid;
+		// Only cache routing if it's not pure direct (mark==0 && !must)
+		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
+			// Directly update the conn state we already looked up
+			udp_conn_state->has_routing = 1;
+			udp_conn_state->outbound = outbound;
+			udp_conn_state->mark = mark;
+			udp_conn_state->must = must;
+			__builtin_memcpy(udp_conn_state->mac, mac, 6);
+			udp_conn_state->dscp = tuples->dscp;
+			if (pid_pname) {
+				__builtin_memcpy(udp_conn_state->pname,
+						 pid_pname->pname,
+						 TASK_COMM_LEN);
+				udp_conn_state->pid = pid_pname->pid;
+			}
 		}
 		// Update timestamp to prevent premature connection expiration
 		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
