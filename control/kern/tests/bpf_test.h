@@ -229,15 +229,21 @@ check_routing_ipv4_tcp(struct __sk_buff *skb,
 		tuples.five.dport = tcp->dest;
 		tuples.five.l4proto = ip->protocol;
 
-		struct routing_result *routing_result;
-		routing_result = bpf_map_lookup_elem(&routing_tuples_map, &tuples.five);
-		if (!routing_result) {
-			bpf_printk("routing_result == NULL\n");
+		// Scheme3: Read routing result from tcp_conn_state_map instead of routing_tuples_map
+		struct tcp_conn_state *conn_state;
+		conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+		if (!conn_state) {
+			bpf_printk("conn_state == NULL\n");
 			return TC_ACT_SHOT;
 		}
 
-		if (routing_result->outbound != OUTBOUND_USER_DEFINED_MIN) {
-			bpf_printk("routing_result->outbound != OUTBOUND_USER_DEFINED_MIN\n");
+		if (conn_state->has_routing == 0) {
+			bpf_printk("conn_state->has_routing == 0\n");
+			return TC_ACT_SHOT;
+		}
+
+		if (conn_state->outbound != OUTBOUND_USER_DEFINED_MIN) {
+			bpf_printk("conn_state->outbound != OUTBOUND_USER_DEFINED_MIN\n");
 			return TC_ACT_SHOT;
 		}
 	}

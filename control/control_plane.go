@@ -747,7 +747,6 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 // Scheme3 (Embedded Design): Connection-state maps (tcp_conn_state_map, udp_conn_state_map)
 // are now pinned and preserve routing decisions across reloads. Do NOT clear them here,
 // otherwise established flows may lose cached state and get rerouted.
-// The legacy routing_tuples_map is deprecated but kept pinned for ABI compatibility.
 func clearReloadDomainRoutingMap(bpf *bpfObjects) error {
 	return BpfMapDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
 }
@@ -764,7 +763,6 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		m    *ebpf.Map
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
-		{name: "routing_tuples_map", m: bpf.RoutingTuplesMap},
 		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
@@ -1197,7 +1195,6 @@ func (c *ControlPlane) startConnStateJanitor() {
 				c.cleanupRedirectTrackMap()
 				c.cleanupUdpConnStateMap()
 				c.cleanupTcpConnStateMap()
-				c.cleanupRoutingCacheMap() // Backup cleanup for orphan entries
 			case <-healthCheckTicker.C:
 				c.checkBpfMapHealth()
 			}
@@ -1341,7 +1338,6 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 
 	// Pre-allocate slice for better performance
 	keysToDelete := make([]bpfTuplesKey, 0, 256)
-	routingKeysToDelete := make([]bpfTuplesKey, 0, 256)
 	estimatedCount := 0
 	aggressiveCleanup := false
 
@@ -1395,16 +1391,6 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 		age := nowNano - int64(value.LastSeenNs)
 		if age > timeout {
 			keysToDelete = append(keysToDelete, key)
-			// Collect routing keys for cascade deletion
-			routingKeysToDelete = append(routingKeysToDelete, key)
-			// Also add reverse direction for routing cleanup
-			var reverseKey bpfTuplesKey
-			reverseKey.Sip = key.Dip
-			reverseKey.Dip = key.Sip
-			reverseKey.Sport = key.Dport
-			reverseKey.Dport = key.Sport
-			reverseKey.L4proto = key.L4proto
-			routingKeysToDelete = append(routingKeysToDelete, reverseKey)
 		}
 	}
 
@@ -1424,13 +1410,6 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 		}
 	}
 
-	// Batch delete routing cache entries (cascade cleanup)
-	if len(routingKeysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.RoutingTuplesMap, routingKeysToDelete); err != nil {
-			// Ignore errors for routing cache - entries may not exist
-		}
-	}
-
 	// Log cleanup stats
 	if len(keysToDelete) > 0 {
 		if aggressiveCleanup {
@@ -1445,8 +1424,6 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 // cleanupTcpConnStateMap iterates through the TCP conn state map and removes
 // entries that haven't been seen within their timeout period or are in CLOSING state.
 // When map is under pressure, aggressive cleanup applies with shorter timeouts.
-// This implements cascade cleanup: when a TCP connection expires or closes,
-// we also remove its routing cache entries from routing_tuples_map.
 func (c *ControlPlane) cleanupTcpConnStateMap() {
 	// Check if we're shutting down - if stop signal is sent, skip cleanup
 	select {
@@ -1472,7 +1449,6 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 	closingTimeoutNano := tcpConnStateTimeoutClosing.Nanoseconds()
 
 	var keysToDelete []bpfTuplesKey
-	var routingKeysToDelete []bpfTuplesKey
 	estimatedCount := 0
 	aggressiveCleanup := false
 
@@ -1533,15 +1509,6 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 
 		if shouldDelete {
 			keysToDelete = append(keysToDelete, key)
-			// Collect routing keys for cascade deletion (both directions)
-			routingKeysToDelete = append(routingKeysToDelete, key)
-			var reverseKey bpfTuplesKey
-			reverseKey.Sip = key.Dip
-			reverseKey.Dip = key.Sip
-			reverseKey.Sport = key.Dport
-			reverseKey.Dport = key.Sport
-			reverseKey.L4proto = key.L4proto
-			routingKeysToDelete = append(routingKeysToDelete, reverseKey)
 		}
 	}
 
@@ -1561,13 +1528,6 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 		}
 	}
 
-	// Batch delete routing cache entries (cascade cleanup)
-	if len(routingKeysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.RoutingTuplesMap, routingKeysToDelete); err != nil {
-			// Ignore errors for routing cache - entries may not exist
-		}
-	}
-
 	// Log cleanup stats
 	if len(keysToDelete) > 0 {
 		if aggressiveCleanup {
@@ -1575,112 +1535,6 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 				len(keysToDelete), int(estimatedCount*100/int(maxEntries)))
 		} else {
 			c.log.Debugf("cleanupTcpConnStateMap: removed %d expired TCP entries", len(keysToDelete))
-		}
-	}
-}
-
-// cleanupRoutingCacheMap provides cleanup for orphaned routing_tuples_map entries.
-//
-// Scheme3 (Embedded Design): Routing is now embedded in conn state maps.
-// This function is kept ONLY for backwards compatibility to clean up legacy
-// routing_tuples_map entries from previous versions during hot reload.
-//
-// The primary cleanup mechanism is cascade deletion via conn state expiry.
-// New code writes routing directly to conn state, so new orphans should not occur.
-func (c *ControlPlane) cleanupRoutingCacheMap() {
-	// Check if we're shutting down
-	select {
-	case <-c.connStateJanitorStop:
-		return
-	default:
-	}
-
-	bpf := c.core.EjectBpf()
-	if bpf == nil || bpf.RoutingTuplesMap == nil {
-		return
-	}
-
-	entriesToDelete := make([]bpfTuplesKey, 0, 256)
-
-	// Iterate through all routing cache entries and find orphans.
-	iter := bpf.RoutingTuplesMap.Iterate()
-	var key bpfTuplesKey
-	var value bpfRoutingResult
-	_ = value // Not used but needed for Iterate
-	for iter.Next(&key, &value) {
-		// Check if corresponding conn state exists (cascade cleanup candidate).
-		// If conn state exists, skip - cascade cleanup will handle it.
-		hasConnState := false
-		if key.L4proto == unix.IPPROTO_UDP {
-			var udpState bpfUdpConnState
-			if bpf.UdpConnStateMap != nil {
-				if err := bpf.UdpConnStateMap.Lookup(&key, &udpState); err == nil {
-					hasConnState = true
-				}
-			}
-		} else if key.L4proto == unix.IPPROTO_TCP {
-			var tcpState bpfTcpConnState
-			if bpf.TcpConnStateMap != nil {
-				if err := bpf.TcpConnStateMap.Lookup(&key, &tcpState); err == nil {
-					hasConnState = true
-				}
-			}
-		}
-
-		// Check reverse direction (response path) for conn state.
-		if !hasConnState {
-			var reverseKey bpfTuplesKey
-			reverseKey.Sip = key.Dip
-			reverseKey.Dip = key.Sip
-			reverseKey.Sport = key.Dport
-			reverseKey.Dport = key.Sport
-			reverseKey.L4proto = key.L4proto
-
-			if key.L4proto == unix.IPPROTO_UDP {
-				var udpState bpfUdpConnState
-				if bpf.UdpConnStateMap != nil {
-					if err := bpf.UdpConnStateMap.Lookup(&reverseKey, &udpState); err == nil {
-						hasConnState = true
-					}
-				}
-			} else if key.L4proto == unix.IPPROTO_TCP {
-				var tcpState bpfTcpConnState
-				if bpf.TcpConnStateMap != nil {
-					if err := bpf.TcpConnStateMap.Lookup(&reverseKey, &tcpState); err == nil {
-						hasConnState = true
-					}
-				}
-			}
-		}
-
-		// If no conn state exists, this is an orphan - delete it.
-		if !hasConnState {
-			entriesToDelete = append(entriesToDelete, key)
-			// Limit batch size to avoid blocking too long
-			if len(entriesToDelete) >= 1000 {
-				if _, err := BpfMapBatchDelete(bpf.RoutingTuplesMap, entriesToDelete); err != nil {
-					c.log.Debugf("cleanupRoutingCacheMap: batch delete error: %v", err)
-				}
-				entriesToDelete = entriesToDelete[:0]
-			}
-		}
-	}
-
-	if err := iter.Err(); err != nil {
-		if !strings.Contains(err.Error(), "bad file descriptor") &&
-			!strings.Contains(err.Error(), "file descriptor") &&
-			!strings.Contains(err.Error(), "closed") {
-			c.log.Debugf("cleanupRoutingCacheMap: iteration error: %v", err)
-		}
-		return
-	}
-
-	// Delete remaining orphan entries
-	if len(entriesToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.RoutingTuplesMap, entriesToDelete); err != nil {
-			c.log.Debugf("cleanupRoutingCacheMap: batch delete error: %v", err)
-		} else {
-			c.log.Debugf("cleanupRoutingCacheMap: removed %d orphan entries", len(entriesToDelete))
 		}
 	}
 }

@@ -115,24 +115,36 @@ type bpfTuplesKey struct {
 type bpfUdpConnState struct {
 	_                     structs.HostLayout
 	IsWanIngressDirection bool
+	_                     [7]byte
 	LastSeenNs            uint64
 	HasRouting            uint8 // Scheme3: embedded routing decision
 	Outbound              uint8
+	_                     [2]byte
 	Mark                  uint32
 	Must                  uint8
 	Mac                   [6]uint8
+	Dscp                  uint8
+	Pname                 [16]uint8
+	Pid                   uint32
+	_                     [4]byte
 }
 
 type bpfTcpConnState struct {
 	_                     structs.HostLayout
 	IsWanIngressDirection bool
 	State                 uint8
+	_                     [6]byte
 	LastSeenNs            uint64
 	HasRouting            uint8 // Scheme3: embedded routing decision
 	Outbound              uint8
+	_                     [2]byte
 	Mark                  uint32
 	Must                  uint8
 	Mac                   [6]uint8
+	Dscp                  uint8
+	Pname                 [16]uint8
+	Pid                   uint32
+	_                     [4]byte
 }
 
 func loadBpf() (*ebpf.CollectionSpec, error) {
@@ -182,7 +194,6 @@ type bpfMapSpecs struct {
 	RedirectTrack           *ebpf.MapSpec `ebpf:"redirect_track"`
 	RoutingMap              *ebpf.MapSpec `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.MapSpec `ebpf:"routing_meta_map"`
-	RoutingTuplesMap        *ebpf.MapSpec `ebpf:"routing_tuples_map"`
 	TcpConnStateMap         *ebpf.MapSpec `ebpf:"tcp_conn_state_map"`
 	UdpConnStateMap         *ebpf.MapSpec `ebpf:"udp_conn_state_map"`
 	UnusedLpmType           *ebpf.MapSpec `ebpf:"unused_lpm_type"`
@@ -217,7 +228,6 @@ type bpfMaps struct {
 	RedirectTrack           *ebpf.Map `ebpf:"redirect_track"`
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.Map `ebpf:"routing_meta_map"`
-	RoutingTuplesMap        *ebpf.Map `ebpf:"routing_tuples_map"`
 	TcpConnStateMap         *ebpf.Map `ebpf:"tcp_conn_state_map"`
 	UdpConnStateMap         *ebpf.Map `ebpf:"udp_conn_state_map"`
 	UnusedLpmType           *ebpf.Map `ebpf:"unused_lpm_type"`
@@ -236,7 +246,6 @@ func (m *bpfMaps) Close() error {
 		m.RedirectTrack,
 		m.RoutingMap,
 		m.RoutingMetaMap,
-		m.RoutingTuplesMap,
 		m.TcpConnStateMap,
 		m.UdpConnStateMap,
 		m.UnusedLpmType,

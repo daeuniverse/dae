@@ -29,7 +29,6 @@ func TestValidateRequiredBpfMapsLoaded(t *testing.T) {
 		b := &bpfObjects{
 			bpfMaps: bpfMaps{
 				DomainRoutingMap: &ebpf.Map{},
-				RoutingTuplesMap: &ebpf.Map{},
 				UdpConnStateMap:  &ebpf.Map{},
 				RoutingMap:       &ebpf.Map{},
 				RoutingMetaMap:   &ebpf.Map{},

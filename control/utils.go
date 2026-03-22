@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	stderrors "errors"
 	"structs"
 	"syscall"
 	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"golang.org/x/sys/unix"
@@ -65,10 +67,48 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		L4proto: l4proto,
 	}
 
+	// Scheme3: Routing is embedded in conn_state maps. Try to retrieve from the appropriate map.
 	var routingResult bpfRoutingResult
-	if err := c.bpf.RoutingTuplesMap.Lookup(tuples, &routingResult); err != nil {
-		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
+	if l4proto == unix.IPPROTO_TCP {
+		var connState bpfTcpConnState
+		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
+			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
+				return nil, ebpf.ErrKeyNotExist
+			}
+			return nil, fmt.Errorf("reading tcp_conn_state_map: %w", err)
+		}
+		if connState.HasRouting == 0 {
+			return nil, ebpf.ErrKeyNotExist
+		}
+		routingResult.Mark = connState.Mark
+		routingResult.Must = connState.Must
+		routingResult.Outbound = connState.Outbound
+		copy(routingResult.Mac[:], connState.Mac[:])
+		routingResult.Dscp = connState.Dscp
+		copy(routingResult.Pname[:], connState.Pname[:])
+		routingResult.Pid = connState.Pid
+	} else if l4proto == unix.IPPROTO_UDP {
+		var connState bpfUdpConnState
+		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
+			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
+				return nil, ebpf.ErrKeyNotExist
+			}
+			return nil, fmt.Errorf("reading udp_conn_state_map: %w", err)
+		}
+		if connState.HasRouting == 0 {
+			return nil, ebpf.ErrKeyNotExist
+		}
+		routingResult.Mark = connState.Mark
+		routingResult.Must = connState.Must
+		routingResult.Outbound = connState.Outbound
+		copy(routingResult.Mac[:], connState.Mac[:])
+		routingResult.Dscp = connState.Dscp
+		copy(routingResult.Pname[:], connState.Pname[:])
+		routingResult.Pid = connState.Pid
+	} else {
+		return nil, ebpf.ErrKeyNotExist
 	}
+
 	return &routingResult, nil
 }
 
