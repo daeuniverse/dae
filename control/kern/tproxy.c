@@ -2226,15 +2226,28 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 		// Scheme3: Embed routing in conn state for single source of truth.
 		// Track TCP connection state AND routing decision together.
-		// Robustness: If conn state map is full, gracefully degrade by continuing
-		// with normal proxy forwarding. Routing is embedded, so no separate
-		// routing_tuples_map write needed.
-		mark_tcp_seen(&tuples->five, tcph, false,
-			      &outbound, &mark, &must_val, mac,
-			      dscp, pname_str, pid_val);
-		// Return value ignored: packet still gets proxied correctly, just without
-		// routing cache. The connection will work, but FIN/RST won't trigger
-		// cascade cleanup and subsequent packets may hit routing again.
+		struct tcp_conn_state *tcp_conn = mark_tcp_seen(&tuples->five, tcph, false,
+								&outbound, &mark, &must_val, mac,
+								dscp, pname_str, pid_val);
+
+		// SECURITY: Fail-Closed for connections requiring proxy.
+		// If conn state map is full, we MUST check if this connection needs proxying.
+		// - Direct connections (OUTBOUND_DIRECT with mark==0): No state needed, let pass.
+		// - Proxied connections: State is REQUIRED. Without it, subsequent packets
+		//   (non-SYN) will hit the else branch below, find no cached routing, and
+		//   return TC_ACT_OK directly, causing traffic leakage.
+		// Unlike UDP which can call route() again on every packet, TCP non-SYN
+		// packets never re-evaluate routing - they only use cached state.
+		if (!tcp_conn) {
+			if (outbound == OUTBOUND_DIRECT) {
+				// Direct connection - no state tracking needed, let pass through
+				// The mark (including non-zero policy routing marks) will be applied
+				// by the normal flow below at line 2288.
+				return TC_ACT_OK;
+			}
+			// Proxy connection but map full - MUST drop to prevent leakage
+			return TC_ACT_SHOT;
+		}
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		// Print only new connection.
