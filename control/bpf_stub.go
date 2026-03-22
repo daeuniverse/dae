@@ -13,6 +13,7 @@ import (
 	"structs"
 
 	"github.com/cilium/ebpf"
+	"github.com/sirupsen/logrus"
 )
 
 var errBpfObjectsUnavailable = errors.New("eBPF objects are unavailable in this build; this is a stub build (tag dae_stub_ebpf); run make ebpf before building")
@@ -312,4 +313,68 @@ func _BpfClose(closers ...io.Closer) error {
 		}
 	}
 	return nil
+}
+
+// Additional type and function stubs for stub build
+
+type _bpfLpmKey struct {
+	PrefixLen uint32
+	Data      [4]uint32
+}
+
+type bpfIfParams struct {
+	RxCksmOffload                  bool
+	TxL4CksmIp4Offload             bool
+	TxL4CksmIp6Offload             bool
+	UseNonstandardOffloadAlgorithm bool
+}
+
+type loadBpfOptions struct {
+	PinPath             string
+	BigEndianTproxyPort uint32
+	CollectionOptions   *ebpf.CollectionOptions
+}
+
+func fullLoadBpfObjects(
+	log *logrus.Logger,
+	bpf *bpfObjects,
+	opts *loadBpfOptions,
+) error {
+	return errBpfObjectsUnavailable
+}
+
+func BpfMapDeleteAll[K any, V any](m *ebpf.Map) error {
+	return errBpfObjectsUnavailable
+}
+
+func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
+	return 0, errBpfObjectsUnavailable
+}
+
+func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
+	return 0, errBpfObjectsUnavailable
+}
+
+func (r bpfPortRange) Encode() (b [16]byte) {
+	return
+}
+
+func ParsePortRange(b []byte) (portStart, portEnd uint16) {
+	return 0, 0
+}
+
+func cidrToBpfLpmKey(prefix any) _bpfLpmKey {
+	return _bpfLpmKey{}
+}
+
+func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
+	return nil, errBpfObjectsUnavailable
+}
+
+func (p bpfIfParams) CheckVersionRequirement(version any) error {
+	return errBpfObjectsUnavailable
+}
+
+func detectCgroupPath() (string, error) {
+	return "", errBpfObjectsUnavailable
 }

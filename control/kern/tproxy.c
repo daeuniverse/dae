@@ -1992,22 +1992,23 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	// If we couldn't store conn state for a TCP packet that needs proxying,
 	// we MUST drop it to prevent traffic leakage on subsequent packets.
 	if (pkt->l4proto == IPPROTO_TCP && !tcp_state) {
-		if (outbound == OUTBOUND_DIRECT) {
-			// Direct connection - no state tracking needed, let pass through
-			// The mark (including non-zero policy routing marks) will be applied
-			// by the normal flow below.
+		if (outbound == OUTBOUND_DIRECT && mark == 0) {
+			// Direct connection with default routing - no state needed
 			skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 			bpf_printk("tcp(lan): GO OUTBOUND_DIRECT (MAP FULL)");
 #endif
 			goto direct;
 		}
-		// Proxy connection but map full - MUST drop to prevent leakage.
-		// Subsequent non-SYN packets will hit the existing connection path,
-		// find no cached routing (tcp_state == NULL), and return TC_ACT_OK,
-		// causing them to bypass the proxy and leak directly to WAN.
+		// Either proxied connection, or direct connection with policy routing mark.
+		// State is REQUIRED. Without state, subsequent packets won't have the
+		// mark applied (direct) or will bypass proxy (proxied), causing either
+		// asymmetric routing failure or traffic leakage.
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("tcp(lan): SHOT - MAP FULL, PROXY CONNECTION DROPPED");
+		if (outbound == OUTBOUND_DIRECT)
+			bpf_printk("tcp(lan): SHOT - MAP FULL, DIRECT WITH NON-ZERO MARK DROPPED");
+		else
+			bpf_printk("tcp(lan): SHOT - MAP FULL, PROXY CONNECTION DROPPED");
 #endif
 		goto block;
 	}
@@ -2256,20 +2257,20 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 		// SECURITY: Fail-Closed for connections requiring proxy.
 		// If conn state map is full, we MUST check if this connection needs proxying.
-		// - Direct connections (OUTBOUND_DIRECT with mark==0): No state needed, let pass.
-		// - Proxied connections: State is REQUIRED. Without it, subsequent packets
-		//   (non-SYN) will hit the else branch below, find no cached routing, and
-		//   return TC_ACT_OK directly, causing traffic leakage.
+		// - Direct connections with mark==0: No state tracking needed, let pass.
+		// - Direct connections with mark!=0: State REQUIRED to ensure consistent routing.
+		//   Without state, subsequent packets won't have the mark applied, causing
+		//   asymmetric routing and connection failure. Drop the connection cleanly.
+		// - Proxied connections: State REQUIRED to prevent traffic leakage.
 		// Unlike UDP which can call route() again on every packet, TCP non-SYN
 		// packets never re-evaluate routing - they only use cached state.
 		if (!tcp_conn) {
-			if (outbound == OUTBOUND_DIRECT) {
-				// Direct connection - no state tracking needed, let pass through
-				// The mark (including non-zero policy routing marks) will be applied
-				// by the normal flow below at line 2288.
+			if (outbound == OUTBOUND_DIRECT && mark == 0) {
+				// Direct connection with default routing - no state needed
 				return TC_ACT_OK;
 			}
-			// Proxy connection but map full - MUST drop to prevent leakage
+			// Either proxied connection, or direct connection with policy routing mark.
+			// State is REQUIRED. Map full -> drop to prevent routing breakage.
 			return TC_ACT_SHOT;
 		}
 
