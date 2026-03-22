@@ -2046,36 +2046,36 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		}
 
 		// Protocol-specific socket lookup for NAT loopback detection.
+		// Only LISTEN sockets indicate local services (potential NAT loopback).
+		// Non-LISTEN sockets are established connections that should use
+		// normal routing path, not bypass here.
 		if (pkt->l4proto == IPPROTO_TCP) {
 			sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
 						PARAM.dae_netns_id, 0);
 			if (sk) {
-				bpf_sk_release(sk);
+				if (sk->state != BPF_TCP_LISTEN) {
+					// Not a listening socket - established connection
+					// or dae's own outbound socket. Use normal routing.
+					bpf_sk_release(sk);
+				} else {
+					// Found LISTEN socket - local service (NAT loopback).
+					// Pass through to kernel stack directly.
+					bpf_sk_release(sk);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-				bpf_printk("tcp(lan): NAT loopback detected, pass through");
+					bpf_printk("tcp(lan): NAT loopback (LISTEN), pass through");
 #endif
-				return TC_ACT_OK;
-			}
-		} else if (pkt->l4proto == IPPROTO_UDP) {
-			// bpf_sk_lookup_udp is available since kernel 5.2.
-			// Note: bpf_sk_lookup_udp takes void* ctx (not skb).
-			sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
-					       PARAM.dae_netns_id, 0);
-			if (sk) {
-				bpf_sk_release(sk);
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-				bpf_printk("udp(lan): NAT loopback detected, pass through");
-#endif
-				return TC_ACT_OK;
+					return TC_ACT_OK;
+				}
 			}
 		}
+		// Note: UDP doesn't have LISTEN state in the same way.
+		// Main branch uses conn_state (is_wan_ingress_direction) for UDP.
+		// Skipping UDP socket lookup to avoid false positives with dae's
+		// outbound UDP sockets.
 
-		// No local socket found - normal direct traffic
+		// No local LISTEN socket found - normal direct traffic
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		if (pkt->l4proto == IPPROTO_TCP)
-			bpf_printk("GO OUTBOUND DIRECT");
-		else
-			bpf_printk("udp: GO OUTBOUND DIRECT");
+		bpf_printk("GO OUTBOUND DIRECT");
 #endif
 		goto direct;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
