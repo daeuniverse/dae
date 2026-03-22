@@ -2024,6 +2024,11 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		__u32 tuple_size;
 		struct bpf_sock *sk;
 
+		// Set skb->mark before bpf_skc_lookup_tcp() because the helper
+		// clobbers registers, causing verifier to reject subsequent skb
+		// access. mark is 0 here (checked in condition above).
+		skb->mark = mark;
+
 		if (skb->protocol == bpf_htons(ETH_P_IP)) {
 			tuple.ipv4.daddr = pkt->tuples.five.dip.u6_addr32[3];
 			tuple.ipv4.saddr = pkt->tuples.five.sip.u6_addr32[3];
@@ -2046,7 +2051,6 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			// Found a local socket - this is NAT loopback traffic
 			// or local service. Pass through directly.
 			bpf_sk_release(sk);
-			skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 			bpf_printk("tcp(lan): NAT loopback detected, pass through");
 #endif
@@ -2054,7 +2058,6 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		}
 
 		// No local socket found - normal direct traffic
-		skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
 #endif
