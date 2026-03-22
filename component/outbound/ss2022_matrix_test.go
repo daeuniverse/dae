@@ -121,9 +121,21 @@ func TestSS2022_NewFromLink_Matrix(t *testing.T) {
 			wantErrMatch: "PSK cannot be empty",
 		},
 		{
+			name: "chacha20_single_psk_valid_userinfo",
+			buildLink: func() string {
+				return buildSSLinkUserInfo("2022-blake3-chacha20-poly1305", psk32A, "n6")
+			},
+		},
+		{
+			name: "chacha20_multi_psk_valid_userinfo",
+			buildLink: func() string {
+				return buildSSLinkUserInfo("2022-blake3-chacha20-poly1305", strings.Join([]string{psk32A, psk32B}, ":"), "n7")
+			},
+		},
+		{
 			name: "unsupported_ss2022_cipher",
 			buildLink: func() string {
-				return buildSSLinkUserInfo("2022-blake3-chacha20-poly1305", psk32A, "bad5")
+				return buildSSLinkUserInfo("2022-blake3-chacha20-poly1305-unknown", psk32A, "bad6")
 			},
 			wantErrMatch: "unsupported shadowsocks encryption method",
 		},
