@@ -117,4 +117,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use optimized outbound with chacha20-poly1305 SS2022 EIH support
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260322052709-d8ce08b0ffb4
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260322062403-7fe2b78a3be7
