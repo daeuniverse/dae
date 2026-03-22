@@ -1988,6 +1988,30 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 	// No separate routing_tuples_map write needed - routing is embedded.
 
+	// SECURITY: Fail-Closed for TCP connections requiring proxy when conn state map is full.
+	// If we couldn't store conn state for a TCP packet that needs proxying,
+	// we MUST drop it to prevent traffic leakage on subsequent packets.
+	if (pkt->l4proto == IPPROTO_TCP && !tcp_state) {
+		if (outbound == OUTBOUND_DIRECT) {
+			// Direct connection - no state tracking needed, let pass through
+			// The mark (including non-zero policy routing marks) will be applied
+			// by the normal flow below.
+			skb->mark = mark;
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+			bpf_printk("tcp(lan): GO OUTBOUND_DIRECT (MAP FULL)");
+#endif
+			goto direct;
+		}
+		// Proxy connection but map full - MUST drop to prevent leakage.
+		// Subsequent non-SYN packets will hit the existing connection path,
+		// find no cached routing (tcp_state == NULL), and return TC_ACT_OK,
+		// causing them to bypass the proxy and leak directly to WAN.
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("tcp(lan): SHOT - MAP FULL, PROXY CONNECTION DROPPED");
+#endif
+		goto block;
+	}
+
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 	if (pkt->l4proto == IPPROTO_TCP) {
 		bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u", outbound,
