@@ -1719,25 +1719,6 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	return NULL;
 }
 
-// load_cached_routing_udp: Load routing decision from embedded conn state.
-// Currently unused but kept for future optimization of UDP flows.
-static __always_inline bool __attribute__((unused))
-load_cached_routing_udp(struct tuples_key *five_tuple, __u8 *outbound,
-			__u32 *mark, __u8 *must, __u8 *mac)
-{
-	struct udp_conn_state *conn = bpf_map_lookup_elem(&udp_conn_state_map, five_tuple);
-
-	if (!conn || !conn->has_routing)
-		return false;
-
-	*outbound = conn->outbound;
-	*mark = conn->mark;
-	*must = conn->must;
-	// Copy MAC address
-	__builtin_memcpy(mac, conn->mac, 6);
-	return true;
-}
-
 static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 {
 	return tcph->syn && !tcph->ack;
@@ -2307,7 +2288,6 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		if (tcp_conn && tcp_conn->has_routing) {
 			outbound = tcp_conn->outbound;
 			mark = tcp_conn->mark;
-			must = tcp_conn->must;
 		} else {
 			// No cached routing. This is a pre-existing connection
 			// or server connection. Let it pass.

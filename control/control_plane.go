@@ -1562,12 +1562,11 @@ func (c *ControlPlane) checkBpfMapHealth() {
 		tcpOverflow uint64
 	)
 
-	// Read stats (key 0 = UDP overflow, key 2 = TCP overflow)
-	// Scheme3: key 1 (routing overflow) is deprecated - routing is now embedded in conn state
+	// Read stats (key 0 = UDP overflow, key 1 = TCP overflow)
 	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 0); err == nil {
 		udpOverflow = v
 	}
-	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 2); err == nil {
+	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 1); err == nil {
 		tcpOverflow = v
 	}
 
