@@ -27,6 +27,13 @@ type minLatency struct {
 	dialer         *Dialer
 }
 
+// aliveEntry combines a dialer pointer with its cached sorting latency.
+// This struct enables slice-based storage that eliminates map lookups in hot paths.
+type aliveEntry struct {
+	dialer         *Dialer
+	sortingLatency time.Duration
+}
+
 // AliveDialerSet assumes mapping between index and dialer MUST remain unchanged.
 //
 // It is thread-safe.
@@ -38,11 +45,19 @@ type AliveDialerSet struct {
 
 	aliveChangeCallback func(alive bool)
 
-	mu                      sync.RWMutex
-	dialerToIndex           map[*Dialer]int // *Dialer -> index of inorderedAliveDialerSet
-	dialerToLatency         map[*Dialer]time.Duration
-	dialerToLatencyOffset   map[*Dialer]time.Duration
-	inorderedAliveDialerSet []*Dialer
+	mu                    sync.RWMutex
+	dialerToIndex         map[*Dialer]int // *Dialer -> index in aliveEntries, -Init, or -NotAlive
+	dialerToLatency       map[*Dialer]time.Duration
+	dialerToLatencyOffset map[*Dialer]time.Duration
+
+	// aliveEntries stores all alive dialers with their precomputed sorting latency.
+	// This is the primary data structure for hot path operations (GetMinLatency, GetRandExcluded).
+	// Using a slice of structs provides better cache locality and eliminates map lookups.
+	aliveEntries []aliveEntry
+
+	// randCandidatesBuf is a pre-allocated buffer for GetRandExcluded to reuse
+	// and avoid heap allocations on each call.
+	randCandidatesBuf []*Dialer
 
 	selectionPolicy consts.DialerSelectionPolicy
 	minLatency      minLatency
@@ -68,16 +83,17 @@ func NewAliveDialerSet(
 		dialerToLatencyOffset[d] = a.AddLatency
 	}
 	a := &AliveDialerSet{
-		log:                     log,
-		dialerGroupName:         dialerGroupName,
-		CheckTyp:                networkType,
-		tolerance:               tolerance,
-		aliveChangeCallback:     aliveChangeCallback,
-		dialerToIndex:           make(map[*Dialer]int),
-		dialerToLatency:         make(map[*Dialer]time.Duration),
-		dialerToLatencyOffset:   dialerToLatencyOffset,
-		inorderedAliveDialerSet: make([]*Dialer, 0, len(dialers)),
-		selectionPolicy:         selectionPolicy,
+		log:                   log,
+		dialerGroupName:       dialerGroupName,
+		CheckTyp:              networkType,
+		tolerance:             tolerance,
+		aliveChangeCallback:   aliveChangeCallback,
+		dialerToIndex:         make(map[*Dialer]int),
+		dialerToLatency:       make(map[*Dialer]time.Duration),
+		dialerToLatencyOffset: dialerToLatencyOffset,
+		aliveEntries:          make([]aliveEntry, 0, len(dialers)),
+		randCandidatesBuf:     make([]*Dialer, 0, len(dialers)),
+		selectionPolicy:       selectionPolicy,
 		minLatency: minLatency{
 			// Initiate the latency with a very big value.
 			sortingLatency: time.Hour,
@@ -100,13 +116,16 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if len(a.inorderedAliveDialerSet) == 0 {
+	if len(a.aliveEntries) == 0 {
 		return nil
 	}
 
-	var candidates []*Dialer
+	// Reuse pre-allocated buffer to avoid heap allocations.
+	// Slice to zero length but keep the underlying capacity.
+	candidates := a.randCandidatesBuf[:0]
 
-	for _, d := range a.inorderedAliveDialerSet {
+	for i := range a.aliveEntries {
+		d := a.aliveEntries[i].dialer
 		if d == excluded {
 			continue
 		}
@@ -124,10 +143,20 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 func (a *AliveDialerSet) Len() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return len(a.inorderedAliveDialerSet)
+	return len(a.aliveEntries)
 }
 
 func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	// Find dialer in aliveEntries and return its cached sorting latency.
+	for i := range a.aliveEntries {
+		if a.aliveEntries[i].dialer == d {
+			return a.aliveEntries[i].sortingLatency
+		}
+	}
+	// Fallback to direct calculation (should not happen in normal operation).
 	return a.dialerToLatency[d] + a.dialerToLatencyOffset[d]
 }
 
@@ -137,15 +166,17 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 	defer a.mu.RUnlock()
 
 	// Find the best non-excluded dialer.
+	// Using aliveEntries with direct field access avoids map lookups.
 	var nextBest *Dialer
 	var nextBestSortingLatency = time.Hour
-	for _, candidate := range a.inorderedAliveDialerSet {
-		if candidate == excluded {
+	for i := range a.aliveEntries {
+		entry := &a.aliveEntries[i]
+		if entry.dialer == excluded {
 			continue
 		}
-		if sortingLatency := a.SortingLatency(candidate); sortingLatency < nextBestSortingLatency {
-			nextBestSortingLatency = sortingLatency
-			nextBest = candidate
+		if entry.sortingLatency < nextBestSortingLatency {
+			nextBestSortingLatency = entry.sortingLatency
+			nextBest = entry.dialer
 		}
 	}
 
@@ -165,7 +196,8 @@ func (a *AliveDialerSet) printLatencies() {
 		l time.Duration
 		o time.Duration
 	}
-	for _, d := range a.inorderedAliveDialerSet {
+	for i := range a.aliveEntries {
+		d := a.aliveEntries[i].dialer
 		latency, ok := a.dialerToLatency[d]
 		if !ok {
 			continue
@@ -223,8 +255,11 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					}).Infof("[NOT ALIVE --%v-> ALIVE]", a.CheckTyp.String())
 				}
 			}
-			a.dialerToIndex[dialer] = len(a.inorderedAliveDialerSet)
-			a.inorderedAliveDialerSet = append(a.inorderedAliveDialerSet, dialer)
+			a.dialerToIndex[dialer] = len(a.aliveEntries)
+			a.aliveEntries = append(a.aliveEntries, aliveEntry{
+				dialer:         dialer,
+				sortingLatency: 0, // Will be updated below if hasLatency
+			})
 		}
 	} else {
 		index := a.dialerToIndex[dialer]
@@ -236,24 +271,25 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					"group":  a.dialerGroupName,
 				}).Infof("[ALIVE --%v-> NOT ALIVE]", a.CheckTyp.String())
 			}
-			// Remove the dialer from inorderedAliveDialerSet.
-			if index >= len(a.inorderedAliveDialerSet) {
-				a.log.Panicf("index:%v >= len(a.inorderedAliveDialerSet):%v", index, len(a.inorderedAliveDialerSet))
+			// Remove the dialer from aliveEntries.
+			if index >= len(a.aliveEntries) {
+				a.log.Panicf("index:%v >= len(a.aliveEntries):%v", index, len(a.aliveEntries))
 			}
 			a.dialerToIndex[dialer] = -NotAlive
-			if index < len(a.inorderedAliveDialerSet)-1 {
+			if index < len(a.aliveEntries)-1 {
 				// Swap this element with the last element.
-				dialerToSwap := a.inorderedAliveDialerSet[len(a.inorderedAliveDialerSet)-1]
-				if dialer == dialerToSwap {
-					a.log.Panicf("dialer[%p] == dialerToSwap[%p]", dialer, dialerToSwap)
+				// CRITICAL: Must update dialerToIndex for the swapped dialer.
+				lastIdx := len(a.aliveEntries) - 1
+				swappedEntry := a.aliveEntries[lastIdx]
+				if dialer == swappedEntry.dialer {
+					a.log.Panicf("dialer[%p] == swappedEntry.dialer[%p]", dialer, swappedEntry.dialer)
 				}
 
-				a.dialerToIndex[dialerToSwap] = index
-				a.inorderedAliveDialerSet[index], a.inorderedAliveDialerSet[len(a.inorderedAliveDialerSet)-1] =
-					a.inorderedAliveDialerSet[len(a.inorderedAliveDialerSet)-1], a.inorderedAliveDialerSet[index]
+				a.dialerToIndex[swappedEntry.dialer] = index
+				a.aliveEntries[index] = swappedEntry
 			}
 			// Pop the last element.
-			a.inorderedAliveDialerSet = a.inorderedAliveDialerSet[:len(a.inorderedAliveDialerSet)-1]
+			a.aliveEntries = a.aliveEntries[:len(a.aliveEntries)-1]
 		} else {
 			// This dialer is already not alive.
 		}
@@ -264,7 +300,12 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 		bakOldMinSortingLatency := a.minLatency.sortingLatency
 		// Calc minLatency.
 		a.dialerToLatency[dialer] = rawLatency
-		sortingLatency = a.SortingLatency(dialer)
+		// Update sorting latency in aliveEntries for GetMinLatency hot path optimization.
+		sortingLatency = rawLatency + a.dialerToLatencyOffset[dialer]
+		// If dialer is alive, update its sortingLatency in aliveEntries.
+		if index := a.dialerToIndex[dialer]; index >= 0 {
+			a.aliveEntries[index].sortingLatency = sortingLatency
+		}
 		if alive &&
 			sortingLatency <= a.minLatency.sortingLatency &&
 			(a.minLatency.sortingLatency < a.tolerance || sortingLatency <= a.minLatency.sortingLatency-a.tolerance) {
@@ -342,15 +383,10 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 func (a *AliveDialerSet) calcMinLatency() {
 	var minLatency = time.Hour
 	var minDialer *Dialer
-	for _, d := range a.inorderedAliveDialerSet {
-		_, ok := a.dialerToLatency[d]
-		if !ok {
-			continue
-		}
-		sortingLatency := a.SortingLatency(d)
-		if sortingLatency < minLatency {
-			minLatency = sortingLatency
-			minDialer = d
+	for i := range a.aliveEntries {
+		if a.aliveEntries[i].sortingLatency < minLatency {
+			minLatency = a.aliveEntries[i].sortingLatency
+			minDialer = a.aliveEntries[i].dialer
 		}
 	}
 	if a.minLatency.dialer == nil {
