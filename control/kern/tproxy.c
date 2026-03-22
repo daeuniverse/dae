@@ -1442,6 +1442,13 @@ static __always_inline int prep_redirect_to_control_plane(
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
 
+	/* When use_redirect_peer is set (L3 netkit with scrub=NONE), we're
+	 * redirecting between two L3 devices. The packet stays at L3 (IP layer)
+	 * across the netkit boundary, so we don't need Ethernet header manipulation.
+	 */
+	if (PARAM.use_redirect_peer)
+		goto skip_eth_prep;  // L3 netkit: no Ethernet manipulation needed
+
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
 		int ret;
@@ -1460,6 +1467,8 @@ static __always_inline int prep_redirect_to_control_plane(
 
 	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
 			    (void *)&PARAM.dae0peer_mac, 6, 0);
+
+skip_eth_prep:
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
 		// Use IPv4-mapped IPv6 format with ffff marker to avoid collision

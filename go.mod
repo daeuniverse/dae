@@ -116,5 +116,5 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use optimized outbound with chacha20-poly1305 SS2022 EIH support
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260322062403-7fe2b78a3be7
+// Use optimized outbound with chacha20-poly1305 SS2022 EIH support and UDP context fix
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260322072620-0b417dd932fc
