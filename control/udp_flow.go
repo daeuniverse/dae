@@ -93,6 +93,22 @@ func (d UdpFlowDecision) EndpointKeyForDial(domain string) UdpEndpointKey {
 	return d.FullConeNatEndpointKey()
 }
 
+// EndpointKeyForInitialLookup returns the appropriate endpoint pool key for the initial lookup.
+// This determines the correct key based on flow classification at ingress time, avoiding
+// redundant sync.Map lookups. The decision is final because:
+// - IsQuicInitial is determined from packet inspection
+// - HasSnifferSession is set before entering handlePkt (in EnsureSnifferSession)
+// - IsLikelyQuicData is based on static port heuristics
+func (d UdpFlowDecision) EndpointKeyForInitialLookup() UdpEndpointKey {
+	// QUIC, active sniffing sessions, and QUIC-like traffic (port 443/8443)
+	// require Symmetric NAT for proper session isolation.
+	if d.PreferSymmetricNat() {
+		return d.SymmetricNatEndpointKey() // {Src, Dst}
+	}
+	// Other traffic can use Full-Cone NAT (Src-only key) for compatibility.
+	return d.FullConeNatEndpointKey() // {Src, 0}
+}
+
 func (d UdpFlowDecision) EnsureSnifferSession() UdpFlowDecision {
 	if d.HasSnifferSession || !d.IsQuicInitial {
 		return d

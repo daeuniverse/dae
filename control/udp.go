@@ -370,16 +370,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		}
 	}()
 
-	// Priority:
-	// 1. Symmetric NAT (Src+Dst) for session isolation (QUIC/BT).
-	// 2. Full-Cone NAT (Src) only for non-QUIC-initial compatibility.
+	// Determine the correct endpoint key for initial lookup based on flow classification.
+	// This avoids double sync.Map lookups by pre-selecting the appropriate key:
+	// - Symmetric NAT (Src+Dst) for QUIC/sniffing sessions/443 traffic
+	// - Full-Cone NAT (Src-only) for other UDP traffic
 	isQuicInitial := flowDecision.IsQuicInitial
-	ueKey = flowDecision.SymmetricNatEndpointKey()
+	ueKey = flowDecision.EndpointKeyForInitialLookup()
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
-	if !ueExists && !flowDecision.PreferSymmetricNat() {
-		ueKey = flowDecision.FullConeNatEndpointKey()
-		ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
-	}
 	if ueExists {
 		if ue.SniffedDomain == "" && isQuicInitial {
 			// Chrome reuses UDP sockets; remove domain-less endpoint for new QUIC Initial.

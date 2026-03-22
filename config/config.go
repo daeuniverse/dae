@@ -39,7 +39,7 @@ type Global struct {
 	AutoConfigKernelParameter  bool `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/458
 	AutoConfigFirewallRule bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
-	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
+	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"30ms"`
 	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
 	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
 	TlsFragment            bool          `mapstructure:"tls_fragment" default:"false"`
