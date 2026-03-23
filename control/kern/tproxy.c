@@ -2087,8 +2087,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 #endif
 
 	// Handle routing result: DIRECT, BLOCK, or proxy
-	if (outbound == OUTBOUND_DIRECT) {
-		// Direct connection - pass through to kernel stack
+	if (outbound == OUTBOUND_DIRECT && mark == 0) {
+		// Direct connection with default routing - pass through to kernel stack
 		skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
