@@ -59,8 +59,9 @@ type ControlPlane struct {
 	// 1. The slice is never modified after initialization
 	// 2. The ready channel is closed only after outbounds is fully populated
 	// 3. All reads happen-after the ready channel is closed
-	outbounds     []*outbound.DialerGroup
-	inConnections sync.Map
+	outbounds             []*outbound.DialerGroup
+	referencedOutbounds   map[string]struct{} // outbounds referenced by routing rules
+	inConnections         sync.Map
 
 	dnsController    *DnsController
 	dnsListener      *DNSListener
@@ -517,6 +518,24 @@ func NewControlPlaneWithContext(
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
 
+	// Get referenced outbounds to limit health checks.
+	referencedOutbounds := builder.GetReferencedOutbounds()
+	if len(referencedOutbounds) > 0 {
+		var names []string
+		for name := range referencedOutbounds {
+			names = append(names, name)
+		}
+		log.Infof("Health check will only verify %d outbounds referenced by routing rules: %v",
+			len(names), names)
+	} else {
+		log.Warnln("No outbounds referenced by routing rules; all outbounds will be health-checked")
+		// If no outbounds are referenced (e.g., all rules use logical operators),
+		// fall back to checking all outbounds to avoid breaking existing behavior.
+		for _, o := range outbounds {
+			referencedOutbounds[o.Name] = struct{}{}
+		}
+	}
+
 	// Memory optimization: Force GC after building routing matcher
 	// to release temporary allocations from rule processing.
 	runtime.GC()
@@ -533,6 +552,7 @@ func NewControlPlaneWithContext(
 		deferFuncs:           deferFuncs,
 		listenIp:             "0.0.0.0",
 		outbounds:            outbounds,
+		referencedOutbounds:   referencedOutbounds,
 		dnsController:        nil,
 		onceNetworkReady:     sync.Once{},
 		dialMode:             dialMode,
@@ -872,6 +892,13 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 
 func (c *ControlPlane) ActivateCheck() {
 	for _, g := range c.outbounds {
+		// Only activate health checks for outbounds referenced by routing rules.
+		// This significantly reduces startup time when subscription has many nodes
+		// but only a few groups are actually used in routing.
+		if _, referenced := c.referencedOutbounds[g.Name]; !referenced {
+			c.log.Debugf("Skip health check for unreferenced outbound: %v", g.Name)
+			continue
+		}
 		for _, d := range g.Dialers {
 			// We only activate check of nodes that have a group.
 			d.ActivateCheck()

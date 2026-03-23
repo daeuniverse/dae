@@ -47,6 +47,9 @@ type RoutingMatcherBuilder struct {
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
+	// referencedOutbounds tracks outbound names referenced by routing rules.
+	// This is used to limit health checks to only nodes in used groups.
+	referencedOutbounds map[string]struct{}
 
 	// Optimization: deduplicate identical IP sets to reduce eBPF map creation.
 	// Key is a hash of sorted prefixes, value stores the LPM trie index and
@@ -116,10 +119,11 @@ func prefixesEqual(a, b []netip.Prefix) bool {
 
 func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
 	b = &RoutingMatcherBuilder{
-		log:             log,
-		outboundName2Id: outboundName2Id,
-		bpf:             bpf,
-		lpmDedup:        make(map[uint64]lpmDedupEntry),
+		log:                 log,
+		outboundName2Id:     outboundName2Id,
+		bpf:                 bpf,
+		lpmDedup:            make(map[uint64]lpmDedupEntry),
+		referencedOutbounds: make(map[string]struct{}),
 	}
 	rulesBuilder := routing.NewRulesBuilder(log)
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
@@ -158,8 +162,17 @@ func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 		if !ok {
 			return 0, fmt.Errorf("outbound (group) %v not found; please define it in section \"group\"", strconv.Quote(outbound))
 		}
+		// Track that this outbound group is referenced by routing rules.
+		// This is used to limit health checks to only used nodes.
+		b.referencedOutbounds[outbound] = struct{}{}
 	}
 	return outboundId, nil
+}
+
+// GetReferencedOutbounds returns the set of outbound group names referenced by routing rules.
+// This is used to limit health checks to only nodes in used groups.
+func (b *RoutingMatcherBuilder) GetReferencedOutbounds() map[string]struct{} {
+	return b.referencedOutbounds
 }
 
 func newCompiledRoutingBase(matchType consts.MatchType, not bool, outboundID uint8, mark uint32, must bool) compiledRoutingMatch {
