@@ -2346,17 +2346,23 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			&tuples->five, tcph, false, outbound_ptr, mark_ptr,
 			must_ptr, mac, dscp, pname_str, pid_val);
 
-		// Connection state tracking best-effort policy:
-		// - For DIRECT with mark==0: No state needed, always pass
-		// - For other cases: Try to save state, but continue even if map is full
-		//   This matches main branch behavior which doesn't fail on map full.
-		//   Risk: Subsequent packets might not find cached state, but they'll
-		//   re-evaluate routing or pass through, better than hard failure.
-		if (!tcp_conn && (outbound != OUTBOUND_DIRECT || mark != 0)) {
-			// State save failed (map full or other error), but continue processing.
-			// Log for debugging but don't drop - this matches main branch tolerance.
-			bpf_printk("wan_egress: TCP state save failed for outbound=%u mark=%u, continuing anyway",
-				   outbound, mark);
+		// SECURITY: Fail-Closed for connections requiring proxy.
+		// If conn state map is full, we MUST check if this connection needs proxying.
+		// - Direct connections with mark==0: No state tracking needed, let pass.
+		// - Direct connections with mark!=0: State REQUIRED to ensure consistent routing.
+		//   Without state, subsequent packets won't have the mark applied, causing
+		//   asymmetric routing and connection failure. Drop the connection cleanly.
+		// - Proxied connections: State REQUIRED to prevent traffic leakage.
+		// Unlike UDP which can call route() again on every packet, TCP non-SYN
+		// packets never re-evaluate routing - they only use cached state.
+		if (!tcp_conn) {
+			if (outbound == OUTBOUND_DIRECT && mark == 0) {
+				// Direct connection with default routing - no state needed
+				return TC_ACT_OK;
+			}
+			// Either proxied connection, or direct connection with policy routing mark.
+			// State is REQUIRED. Map full -> drop to prevent routing breakage.
+			return TC_ACT_SHOT;
 		}
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
