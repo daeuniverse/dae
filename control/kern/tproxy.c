@@ -1942,6 +1942,77 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			  ((__u32)pkt->ethh.h_source[4] << 8) | (__u32)pkt->ethh.h_source[5]);
 	params.saddr = pkt->tuples.five.sip.u6_addr32;
 	params.daddr = pkt->tuples.five.dip.u6_addr32;
+
+	// Socket lookup BEFORE routing to detect local services (NAT loopback).
+	// This must happen before route() because routing rules might incorrectly
+	// send local-service traffic to a proxy.
+	//
+	// For TCP: Only LISTEN sockets indicate local services.
+	// For UDP: Any matching socket indicates a local service (UDP has no LISTEN state).
+	// Note: UDP socket lookup is safe here because dae's own outbound UDP sockets
+	// have completely different tuples (different source/dest IP:port combinations),
+	// so they won't match the NAT loopback packet tuple.
+	if (pkt->l4proto == IPPROTO_TCP || pkt->l4proto == IPPROTO_UDP) {
+		struct bpf_sock_tuple tuple = { 0 };
+		__u32 tuple_size;
+		struct bpf_sock *sk;
+
+		// Use ethh->h_proto instead of skb->protocol for consistency
+		// with parse_transport and to handle L3-only packets correctly
+		if (pkt->ethh.h_proto == bpf_htons(ETH_P_IP)) {
+			tuple.ipv4.daddr = pkt->tuples.five.dip.u6_addr32[3];
+			tuple.ipv4.saddr = pkt->tuples.five.sip.u6_addr32[3];
+			tuple.ipv4.dport = pkt->tuples.five.dport;
+			tuple.ipv4.sport = pkt->tuples.five.sport;
+			tuple_size = sizeof(tuple.ipv4);
+		} else {
+			__builtin_memcpy(tuple.ipv6.daddr, &pkt->tuples.five.dip,
+					 IPV6_BYTE_LENGTH);
+			__builtin_memcpy(tuple.ipv6.saddr, &pkt->tuples.five.sip,
+					 IPV6_BYTE_LENGTH);
+			tuple.ipv6.dport = pkt->tuples.five.dport;
+			tuple.ipv6.sport = pkt->tuples.five.sport;
+			tuple_size = sizeof(tuple.ipv6);
+		}
+
+		if (pkt->l4proto == IPPROTO_TCP) {
+			sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
+						PARAM.dae_netns_id, 0);
+			if (sk) {
+				if (sk->state == BPF_TCP_LISTEN) {
+					// Found LISTEN socket - local service (NAT loopback).
+					// Pass through to kernel stack directly, bypassing dae.
+					bpf_sk_release(sk);
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+					bpf_printk("tcp(lan): local LISTEN socket found, pass through");
+#endif
+					return TC_ACT_OK;
+				}
+				// Not a LISTEN socket - established connection or dae's own socket.
+				// Continue with routing to determine how to handle this packet.
+				bpf_sk_release(sk);
+			}
+		} else {
+			// UDP: Any socket found indicates a local service.
+			// Unlike TCP, UDP doesn't have LISTEN state - all sockets are "listening".
+			// This is safe because dae's own outbound UDP sockets have different tuples.
+			sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
+					       PARAM.dae_netns_id, 0);
+			if (sk) {
+				// Found UDP socket - local service (NAT loopback).
+				// Pass through to kernel stack directly, bypassing dae.
+				bpf_sk_release(sk);
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+				bpf_printk("udp(lan): local UDP socket found, pass through");
+#endif
+				return TC_ACT_OK;
+			}
+		}
+		// No socket found - continue to routing
+	}
+	// For UDP replies to WAN ingress traffic, we also use is_wan_ingress_direction
+	// flag in conn_state (set in wan_ingress path) as a secondary detection method.
+
 	__s64 s64_ret;
 
 	s64_ret = route(&params);
@@ -2015,65 +2086,10 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 #endif
 
-	if (outbound == OUTBOUND_DIRECT && mark == 0) {
-		// NAT loopback detection for dynamic WAN IP:
-		// Route decision says direct, but we need to verify if this is
-		// NAT loopback traffic (WAN IP forwarding back to LAN server).
-		// Use socket lookup to detect local services automatically.
-		struct bpf_sock_tuple tuple = { 0 };
-		__u32 tuple_size;
-		struct bpf_sock *sk;
-
-		// Set skb->mark before socket lookup because the helpers
-		// clobber registers, causing verifier to reject subsequent skb
-		// access. mark is 0 here (checked in condition above).
+	// Handle routing result: DIRECT, BLOCK, or proxy
+	if (outbound == OUTBOUND_DIRECT) {
+		// Direct connection - pass through to kernel stack
 		skb->mark = mark;
-
-		if (skb->protocol == bpf_htons(ETH_P_IP)) {
-			tuple.ipv4.daddr = pkt->tuples.five.dip.u6_addr32[3];
-			tuple.ipv4.saddr = pkt->tuples.five.sip.u6_addr32[3];
-			tuple.ipv4.dport = pkt->tuples.five.dport;
-			tuple.ipv4.sport = pkt->tuples.five.sport;
-			tuple_size = sizeof(tuple.ipv4);
-		} else {
-			__builtin_memcpy(tuple.ipv6.daddr, &pkt->tuples.five.dip,
-					 IPV6_BYTE_LENGTH);
-			__builtin_memcpy(tuple.ipv6.saddr, &pkt->tuples.five.sip,
-					 IPV6_BYTE_LENGTH);
-			tuple.ipv6.dport = pkt->tuples.five.dport;
-			tuple.ipv6.sport = pkt->tuples.five.sport;
-			tuple_size = sizeof(tuple.ipv6);
-		}
-
-		// Protocol-specific socket lookup for NAT loopback detection.
-		// Only LISTEN sockets indicate local services (potential NAT loopback).
-		// Non-LISTEN sockets are established connections that should use
-		// normal routing path, not bypass here.
-		if (pkt->l4proto == IPPROTO_TCP) {
-			sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
-						PARAM.dae_netns_id, 0);
-			if (sk) {
-				if (sk->state != BPF_TCP_LISTEN) {
-					// Not a listening socket - established connection
-					// or dae's own outbound socket. Use normal routing.
-					bpf_sk_release(sk);
-				} else {
-					// Found LISTEN socket - local service (NAT loopback).
-					// Pass through to kernel stack directly.
-					bpf_sk_release(sk);
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-					bpf_printk("tcp(lan): NAT loopback (LISTEN), pass through");
-#endif
-					return TC_ACT_OK;
-				}
-			}
-		}
-		// Note: UDP doesn't have LISTEN state in the same way.
-		// Main branch uses conn_state (is_wan_ingress_direction) for UDP.
-		// Skipping UDP socket lookup to avoid false positives with dae's
-		// outbound UDP sockets.
-
-		// No local LISTEN socket found - normal direct traffic
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
 #endif
