@@ -1497,6 +1497,14 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
+		// PREFER using original lConn for responses to maintain source address consistency.
+		// This is critical for NAT loopback and port mapping scenarios, especially IPv6.
+		// Fallback to sendPkt with Anyfrom pool if lConn write fails.
+		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
+			return nil
+		}
+
+		// lConn write failed, fallback to sendPkt
 		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
 			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
@@ -1509,6 +1517,13 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	if len(resp) >= 2 {
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
+
+	// PREFER using original lConn for responses (same reasoning as above)
+	if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
+		return nil
+	}
+
+	// lConn write failed, fallback to sendPkt
 	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
 		return fmt.Errorf("failed to write cached DNS resp: %w", err)
 	}
