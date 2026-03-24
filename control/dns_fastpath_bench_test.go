@@ -33,7 +33,9 @@ import (
 // Section 1: BPF Map Lookup Performance (simulated)
 // =============================================================================
 
-// mockRoutingTuplesMap simulates the BPF routing_tuples_map
+// mockRoutingTuplesMap simulates the BPF conn_state map for benchmark purposes.
+// Note: The actual implementation now uses Scheme3 (embedded routing in conn_state maps).
+// This mock is kept for performance benchmarking comparison.
 type mockRoutingTuplesMap struct {
 	mu        sync.RWMutex
 	entries   map[string]*mockRoutingResult

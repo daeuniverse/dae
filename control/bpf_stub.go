@@ -23,17 +23,17 @@ var errBpfObjectsUnavailable = errors.New("eBPF objects are unavailable in this 
 // Only safe with: (1) netkit device + scrub=NONE, (2) kernel >= 6.8 (CVE-2025-37959 fix).
 // When enabled, provides ~50% throughput improvement by bypassing CPU backlog.
 type bpfDaeParam struct {
-	_                 structs.HostLayout
-	TproxyPort        uint32
-	ControlPlanePid   uint32
-	Dae0Ifindex       uint32
-	DaeNetnsId        uint32
-	Dae0peerMac       [6]uint8
-	PaddingAfterMac   [2]uint8
-	UseRedirectPeer   uint8 // 0=use bpf_redirect(), 1=use bpf_redirect_peer() when safe
-	Padding1          uint8
-	Padding2          uint16
-	DaeSocketMark     uint32 // mark set on dae's own sockets to identify them in eBPF
+	_               structs.HostLayout
+	TproxyPort      uint32
+	ControlPlanePid uint32
+	Dae0Ifindex     uint32
+	DaeNetnsId      uint32
+	Dae0peerMac     [6]uint8
+	PaddingAfterMac [2]uint8
+	UseRedirectPeer uint8 // 0=use bpf_redirect(), 1=use bpf_redirect_peer() when safe
+	Padding1        uint8
+	Padding2        uint16
+	DaeSocketMark   uint32 // mark set on dae's own sockets to identify them in eBPF
 }
 
 type bpfDomainRouting struct {
@@ -49,13 +49,6 @@ type bpfMatchSet struct {
 	Outbound uint8
 	Must     bool
 	Mark     uint32
-}
-
-type bpfOutboundConnectivityQuery struct {
-	_         structs.HostLayout
-	Outbound  uint8
-	L4proto   uint8
-	Ipversion uint8
 }
 
 type bpfPidPname struct {
@@ -152,6 +145,21 @@ type bpfTcpConnState struct {
 	_                     [4]byte
 }
 
+type bpfDaeEvent struct {
+	_         structs.HostLayout
+	Timestamp uint64
+	Type      uint32
+	Pid       uint32
+	Pname     [16]uint8
+	Outbound  uint8
+	L4proto   uint8
+	Pad       [2]uint8
+	Sip       [4]uint32
+	Dip       [4]uint32
+	Sport     uint16
+	Dport     uint16
+}
+
 func loadBpf() (*ebpf.CollectionSpec, error) {
 	return nil, errBpfObjectsUnavailable
 }
@@ -192,6 +200,7 @@ type bpfMapSpecs struct {
 	BpfStatsMap             *ebpf.MapSpec `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.MapSpec `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.MapSpec `ebpf:"domain_routing_map"`
+	EventRingbuf            *ebpf.MapSpec `ebpf:"event_ringbuf"`
 	FastSock                *ebpf.MapSpec `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.MapSpec `ebpf:"listen_socket_map"`
 	LpmArrayMap             *ebpf.MapSpec `ebpf:"lpm_array_map"`
@@ -226,6 +235,7 @@ type bpfMaps struct {
 	BpfStatsMap             *ebpf.Map `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.Map `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.Map `ebpf:"domain_routing_map"`
+	EventRingbuf            *ebpf.Map `ebpf:"event_ringbuf"`
 	FastSock                *ebpf.Map `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.Map `ebpf:"listen_socket_map"`
 	LpmArrayMap             *ebpf.Map `ebpf:"lpm_array_map"`
@@ -244,6 +254,7 @@ func (m *bpfMaps) Close() error {
 		m.BpfStatsMap,
 		m.CookiePidMap,
 		m.DomainRoutingMap,
+		m.EventRingbuf,
 		m.FastSock,
 		m.ListenSocketMap,
 		m.LpmArrayMap,

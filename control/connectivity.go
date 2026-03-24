@@ -48,11 +48,10 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		if alive {
 			value = 1
 		}
-		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
-			Outbound:  outbound,
-			L4proto:   networkType.L4Proto.ToL4Proto(),
-			Ipversion: networkType.IpVersion.ToIpVersion(),
-		}, value, ebpf.UpdateAny); err != nil {
+		// ARRAY map key: outbound_id * 4 + l4proto * 2 + ipversion
+		// l4proto: 0=TCP, 1=UDP; ipversion: 0=IPv4, 1=IPv6
+		key := uint32(outbound)*4 + uint32(networkType.L4Proto.ToL4Proto())*2 + uint32(networkType.IpVersion.ToIpVersion())
+		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
 			c.log.WithFields(logrus.Fields{
 				"alive":    alive,
 				"network":  networkType.StringWithoutDns(),

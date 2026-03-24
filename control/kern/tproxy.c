@@ -63,17 +63,16 @@ static const __u32 one_key = 1;
 
 // Outbound Connectivity Map:
 
-struct outbound_connectivity_query {
-	__u8 outbound;
-	__u8 l4proto;
-	__u8 ipversion;
-};
+// outbound_connectivity_query is deprecated. Using direct index calculation for
+// ARRAY map to achieve O(1) lookup performance.
+// Key format: outbound_id * 4 + l4proto * 2 + ipversion
+// where: l4proto (0=TCP, 1=UDP), ipversion (0=IPv4, 1=IPv6)
 
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct outbound_connectivity_query);
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
 	__type(value, __u32); // true, false
-	__uint(max_entries, 256 * 2 * 2); // outbound * l4proto * ipversion
+	__uint(max_entries, 1024); // 256 outbounds * 2 l4protos * 2 ipversions
 } outbound_connectivity_map SEC(".maps");
 
 // Sockmap:
@@ -392,6 +391,33 @@ enum bpf_stats_key {
 	BPF_STATS_TCP_CONN_OVERFLOW = 1,
 };
 
+// DAE event system: Structured events for monitoring and observability.
+// Events are delivered to userspace via ring buffer for efficient processing.
+enum dae_event_type {
+	DAE_EVENT_BLOCKED = 0,       // Connection blocked (OUTBOUND_BLOCK)
+	DAE_EVENT_UDP_CONN_OVERFLOW = 1, // UDP conn state map overflow
+	DAE_EVENT_TCP_CONN_OVERFLOW = 2, // TCP conn state map overflow
+};
+
+struct dae_event {
+	__u64 timestamp;    // Event timestamp (nanoseconds since boot)
+	__u32 type;         // Event type (enum dae_event_type)
+	__u32 pid;          // Process ID (0 if not available)
+	__u8 pname[16];     // Process name (empty if not available)
+	__u8 outbound;       // Outbound ID (for routing/block events)
+	__u8 l4proto;       // Layer 4 protocol
+	__u8 pad[2];
+	__u32 sip[4];       // Source IP (IPv4-mapped IPv6 format)
+	__u32 dip[4];       // Destination IP (IPv4-mapped IPv6 format)
+	__u16 sport;        // Source port
+	__u16 dport;        // Destination port
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 256 * 1024);  // 256KB ring buffer
+} event_ringbuf SEC(".maps");
+
 // TCP connection state constants.
 enum tcp_state {
 	TCP_STATE_ACTIVE = 0,
@@ -420,6 +446,34 @@ struct {
 } parse_ctx_scratch_map SEC(".maps");
 
 // Functions:
+
+// send_dae_event sends a structured event to the userspace via ring buffer.
+// Returns: 0 on success, negative error code on failure.
+static __always_inline int
+send_dae_event(__u32 type, __u32 pid, const char *pname, __u8 outbound, __u8 l4proto,
+		const __u32 *sip, const __u32 *dip, __u16 sport, __u16 dport)
+{
+	struct dae_event e = {};
+
+	e.timestamp = bpf_ktime_get_ns();
+	e.type = type;
+	e.pid = pid;
+	e.outbound = outbound;
+	e.l4proto = l4proto;
+	e.sport = sport;
+	e.dport = dport;
+
+	if (pname)
+		__builtin_memcpy(e.pname, pname, 16);
+
+	if (sip)
+		__builtin_memcpy(e.sip, sip, 16);
+
+	if (dip)
+		__builtin_memcpy(e.dip, dip, 16);
+
+	return bpf_ringbuf_output(&event_ringbuf, &e, sizeof(e), 0);
+}
 
 static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph)
 {
@@ -525,13 +579,11 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	__builtin_memset(tcph, 0, sizeof(struct tcphdr));
 	__builtin_memset(udph, 0, sizeof(struct udphdr));
 
-	// Pull only the header data we need (not the entire packet).
-	// This is more efficient than pulling the whole packet and works
-	// even for large packets (e.g., jumbo frames).
-	// 512 bytes is enough for: ethhdr(14) + iphdr(60 max with options) +
-	// IPv6 ext headers(200) + L4 headers(60) + some extra.
-	// If this fails, fall back to slow path which uses bpf_skb_load_bytes.
-#define HEADER_PULL_SIZE 512
+	// Optimized pull strategy: pull minimal headers upfront.
+	// 128 bytes covers: ethhdr(14) + IPv4 hdr(20) + TCP hdr(20) + options.
+	// This is a compromise between performance and verifier complexity.
+	// Larger pull sizes cause verifier instruction explosion on 6.12+.
+#define HEADER_PULL_SIZE 128
 	if (bpf_skb_pull_data(skb, HEADER_PULL_SIZE))
 		return -1;
 
@@ -542,8 +594,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	if (link_h_len == ETH_HLEN) {
 		struct ethhdr *eth_ptr = data;
 
-		// Boundary check: if this fails, it's a malformed packet, not a
-		// non-linear data issue. Return error directly.
+		// Simple boundary check - no fallback, just error
 		if ((void *)(eth_ptr + 1) > data_end)
 			return -EFAULT;
 
@@ -570,47 +621,33 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
 		struct iphdr *iph_ptr = data + offset;
 
-		// Boundary check: malformed packet if this fails
+		// Simple boundary checks - errors are dropped, no fallback
 		if ((void *)(iph_ptr + 1) > data_end)
 			return -EFAULT;
-
 		if (iph_ptr->ihl < 5)
 			return -EFAULT;
 
-		// Security: Drop non-initial IP fragments to prevent rule bypass.
-		// Only the first fragment (frag_off == 0) contains L4 headers.
-		// Subsequent fragments are handled by kernel reassembly.
+		// Drop non-initial IP fragments (security)
 		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
-
-		if ((frag_off & 0x1FFF) != 0) {  // Check fragment offset bits
-			// Non-first fragment: don't parse L4, let kernel reassemble
+		if ((frag_off & 0x1FFF) != 0)
 			return 1;
-		}
 
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
 
-		// Direct field access - more efficient than memcpy
+		// Copy IP fields efficiently
 		iph->version = iph_ptr->version;
 		iph->ihl = iph_ptr->ihl;
 		iph->protocol = iph_ptr->protocol;
 		iph->saddr = iph_ptr->saddr;
 		iph->daddr = iph_ptr->daddr;
-		iph->tos = iph_ptr->tos;
-		iph->tot_len = iph_ptr->tot_len;
 		*ihl = iph_ptr->ihl;
 		*l4proto = iph_ptr->protocol;
 
-		// Parse L4 header with direct access
-		// Note: Boundary checks are per-protocol to avoid rejecting valid packets
-		// of protocols with smaller headers (e.g., UDP with 8 bytes vs TCP with 20 bytes)
+		// L4 parsing: simplified with single boundary check
 		switch (iph->protocol) {
 		case IPPROTO_TCP: {
-			// Check if we can access TCP header (20 bytes minimum)
-			if (data + l4_offset + sizeof(struct tcphdr) > data_end)
-				return -1;  // Fall back to slow path for non-linear or short data
 			struct tcphdr *tcph_ptr = data + l4_offset;
-
 			if ((void *)(tcph_ptr + 1) > data_end)
 				return -EFAULT;
 			tcph->source = tcph_ptr->source;
@@ -625,11 +662,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			return 0;
 		}
 		case IPPROTO_UDP: {
-			// Check if we can access UDP header (8 bytes)
-			if (data + l4_offset + sizeof(struct udphdr) > data_end)
-				return -1;  // Fall back to slow path for non-linear or short data
 			struct udphdr *udph_ptr = data + l4_offset;
-
 			if ((void *)(udph_ptr + 1) > data_end)
 				return -EFAULT;
 			udph->source = udph_ptr->source;
@@ -673,46 +706,36 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		*ihl = sizeof(struct ipv6hdr) / 4;
 		offset += sizeof(struct ipv6hdr);
 
-		// Skip extension headers using direct access (already pulled data)
+		// Simplified IPv6 extension header handling
+		// Unroll loop to reduce verifier complexity
 		__u8 nexthdr = ipv6h_ptr->nexthdr;
+		const __u8 *ext_hdr;
 
+		// Extension header iteration (unrolled for verifier)
 		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
-
 			if (!is_extension_header(nexthdr))
 				break;
 
-			// Check we can access the extension header
-			// If we can't, fall back to slow path (data might be non-linear)
-			if (data + offset + 2 > data_end)
-				return -1;
-
-			// Get next header and extension header length
-			const __u8 *ext_hdr = data + offset;
+			ext_hdr = data + offset;
+			if ((void *)(ext_hdr + 2) > data_end)
+				return -EFAULT;
 
 			nexthdr = ext_hdr[0];
-			__u8 hdr_ext_len = ext_hdr[1];
-			__u32 ext_len = ipv6_optlen(hdr_ext_len);
-
-			// If extension header doesn't fit in pulled data, fall back to slow path
-			if (data + offset + ext_len > data_end)
-				return -1;
-
-			offset += ext_len;
+			offset += ipv6_optlen(ext_hdr[1]);
 			*l4proto = nexthdr;
 		}
 
 		if (is_extension_header(nexthdr))
-			return -EFAULT;  // Too many extension headers - drop as suspicious
+			return -EFAULT;
 
-		// Parse L4 header with direct access
+		// L4 parsing for IPv6
 		switch (nexthdr) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + offset;
-
 			if ((void *)(tcph_ptr + 1) > data_end)
-				return -1;
+				return -EFAULT;
 			tcph->source = tcph_ptr->source;
 			tcph->dest = tcph_ptr->dest;
 			tcph->seq = tcph_ptr->seq;
@@ -726,9 +749,8 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udph_ptr = data + offset;
-
 			if ((void *)(udph_ptr + 1) > data_end)
-				return -1;
+				return -EFAULT;
 			udph->source = udph_ptr->source;
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
@@ -736,10 +758,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			return 0;
 		}
 		case IPPROTO_ICMPV6: {
-			if (data + offset + sizeof(struct icmp6hdr) > data_end)
-				return -1;
-			const struct icmp6hdr *icmp6h_ptr = data + offset;
-
+			struct icmp6hdr *icmp6h_ptr = data + offset;
+			if ((void *)(icmp6h_ptr + 1) > data_end)
+				return -EFAULT;
 			icmp6h->icmp6_type = icmp6h_ptr->icmp6_type;
 			icmp6h->icmp6_code = icmp6h_ptr->icmp6_code;
 			return 0;
@@ -1574,6 +1595,9 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 // Robustness: If map is full (E2BIG), we increment overflow counter and return NULL.
 // Callers should gracefully degrade: continue processing without conntrack state
 // rather than dropping packets.
+//
+// Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
+#define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 static __always_inline struct udp_conn_state *
 mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
@@ -1583,8 +1607,11 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	__u64 now = bpf_ktime_get_ns();
 
 	if (state) {
-		// Fast path: update timestamp
-		state->last_seen_ns = now;
+		// Fast path: lazy timestamp update (only if interval > 1 second)
+		if (now - state->last_seen_ns > UDP_CONN_STATE_UPDATE_INTERVAL_NS) {
+			state->last_seen_ns = now;
+			bpf_map_update_elem(&udp_conn_state_map, key, state, BPF_ANY);
+		}
 
 		// Update routing if provided (e.g., routing decision changed)
 		if (outbound) {
@@ -1631,6 +1658,9 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 		if (overflow_count)
 			__sync_fetch_and_add(overflow_count, 1);
+		// Send DAE_EVENT_UDP_CONN_OVERFLOW event
+		send_dae_event(DAE_EVENT_UDP_CONN_OVERFLOW, pid, pname, 0, key->l4proto,
+				key->sip.u6_addr32, key->dip.u6_addr32, key->sport, key->dport);
 		return NULL;
 	}
 
@@ -1653,6 +1683,8 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 // conn state. Only SYN path should provide routing params.
 //
 // Returns state pointer, or NULL if map full (caller should degrade gracefully)
+// Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
+#define TCP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 static __always_inline struct tcp_conn_state *
 mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	      bool is_wan_ingress_direction,
@@ -1663,8 +1695,11 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	__u64 now = bpf_ktime_get_ns();
 
 	if (state) {
-		// Fast path: update timestamp and track TCP state
-		state->last_seen_ns = now;
+		// Fast path: lazy timestamp update (only if interval > 1 second)
+		if (now - state->last_seen_ns > TCP_CONN_STATE_UPDATE_INTERVAL_NS) {
+			state->last_seen_ns = now;
+			bpf_map_update_elem(&tcp_conn_state_map, key, state, BPF_ANY);
+		}
 
 		// Check for connection close signals (FIN or RST)
 		if (tcph->fin || tcph->rst)
@@ -1718,6 +1753,9 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 			if (overflow_count)
 				__sync_fetch_and_add(overflow_count, 1);
+			// Send DAE_EVENT_TCP_CONN_OVERFLOW event
+			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, pid, pname, 0, key->l4proto,
+					key->sip.u6_addr32, key->dip.u6_addr32, key->sport, key->dport);
 			return NULL;
 		}
 
@@ -1748,6 +1786,9 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 			if (overflow_count)
 				__sync_fetch_and_add(overflow_count, 1);
+			// Send DAE_EVENT_TCP_CONN_OVERFLOW event
+			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, 0, NULL, 0, key->l4proto,
+					key->sip.u6_addr32, key->dip.u6_addr32, key->sport, key->dport);
 		}
 	}
 
@@ -1833,12 +1874,15 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 
 static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
-	// Try to use per-cpu scratch map first, fall back to stack if unavailable.
+	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
+	// The call chain lan_ingress -> parse_lan_ingress_packet -> parse_transport
+	// would otherwise exceed the stack limit.
 	__u32 scratch_key = 0;
-	struct lan_ingress_parsed *map_pkt =
+	struct lan_ingress_parsed *pkt =
 		bpf_map_lookup_elem(&lan_ingress_scratch_map, &scratch_key);
-	struct lan_ingress_parsed stack_pkt;
-	struct lan_ingress_parsed *pkt = map_pkt ? map_pkt : &stack_pkt;
+
+	if (!pkt)
+		return TC_ACT_SHOT;
 
 	/* Ensure scratch bytes are initialized even if verifier can't precisely
 	 * track writes done through callee pointer arguments. */
@@ -2139,6 +2183,10 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK");
 #endif
+		// Send DAE_EVENT_BLOCKED event
+		send_dae_event(DAE_EVENT_BLOCKED, 0, NULL, outbound, pkt->l4proto,
+				pkt->tuples.five.sip.u6_addr32, pkt->tuples.five.dip.u6_addr32,
+				pkt->tuples.five.sport, pkt->tuples.five.dport);
 		goto block;
 	}
 
@@ -2268,13 +2316,14 @@ static __noinline bool
 wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 		      __be16 dport)
 {
-	struct outbound_connectivity_query q = { 0 };
+	// ARRAY map key: outbound_id * 4 + l4proto * 2 + ipversion
+	// l4proto: 0=TCP, 1=UDP; ipversion: 0=IPv4, 1=IPv6
+	__u32 key = ((__u32)outbound * 4) +
+		    ((__u32)l4proto * 2) +
+		    ((skb->protocol == bpf_htons(ETH_P_IP)) ? 0 : 1);
 	__u32 *alive;
 
-	q.outbound = outbound;
-	q.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6;
-	q.l4proto = l4proto;
-	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &key);
 	if (alive && *alive == 0 &&
 	    !((l4proto == IPPROTO_UDP || l4proto == IPPROTO_TCP) && dport == bpf_htons(53))) {
 		// Outbound is not alive. Dns is an exception.
@@ -2617,6 +2666,11 @@ fast_path_skip_routing:
 /*
  * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
  * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
+ *
+ * Note: We use per-CPU scratch map instead of stack allocation to avoid
+ * exceeding the 512-byte stack limit. The call chain is:
+ *   tproxy_wan_egress_* -> do_tproxy_wan_egress -> parse_wan_egress_packet -> parse_transport
+ * which would otherwise use >512 bytes of combined stack.
  */
 static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
@@ -2624,14 +2678,15 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
 		return TC_ACT_OK;
 
-	// Try to use per-cpu scratch map first, fall back to stack if unavailable.
+	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
 	__u32 scratch_key = 0;
-	struct wan_egress_parsed *map_pkt =
+	struct wan_egress_parsed *pkt =
 		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
-	struct wan_egress_parsed stack_pkt;
-	struct wan_egress_parsed *pkt = map_pkt ? map_pkt : &stack_pkt;
 
-	/* Initialize stack bytes for verifier friendliness across subprogram
+	if (!pkt)
+		return TC_ACT_SHOT;
+
+	/* Initialize scratch bytes for verifier friendliness across subprogram
 	 * pointer writes. */
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
