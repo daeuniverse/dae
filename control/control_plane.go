@@ -1794,6 +1794,44 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				// reduce hot-path overhead, but best-effort preserve tuple metadata
 				// for rules matching (pname/mac/dscp).
 				if realDst.Port() == 53 {
+					// IMPORTANT: Check if this is destined for our own DNS listener.
+					// If so, skip fast path processing to avoid double-handling.
+					// Traffic to 127.0.0.1:53 (or our configured listen address) should be
+					// handled only by the DNS listener, not by UDP ingress fast path.
+					if c.dnsListener != nil {
+						listenAddr := c.dnsListener.Addr()
+						// Match both exact address and wildcard port 53 to our listener
+						if listenAddr != "" && listenAddr == realDst.String() {
+							// This is destined for our own DNS listener - let it handle normally
+							if c.log.IsLevelEnabled(logrus.TraceLevel) {
+								c.log.WithFields(logrus.Fields{
+									"src":        convergeSrc.String(),
+									"dst":        realDst.String(),
+									"listenAddr": listenAddr,
+								}).Trace("Skipping DNS fast path for traffic to our own DNS listener")
+							}
+							// Fall through to normal UDP processing (will be dropped/ignored)
+							return
+						}
+						// Also check for common local addresses
+						if realDst.Addr().IsLoopback() || realDst.Addr().IsUnspecified() {
+							// For local addresses, verify we have a DNS listener on port 53
+							if _, portStr, err := net.SplitHostPort(listenAddr); err == nil {
+								if port, err := strconv.Atoi(portStr); err == nil && port == 53 {
+									// We have a DNS listener on port 53, skip fast path
+									if c.log.IsLevelEnabled(logrus.TraceLevel) {
+										c.log.WithFields(logrus.Fields{
+											"src":        convergeSrc.String(),
+											"dst":        realDst.String(),
+											"listenAddr": listenAddr,
+										}).Trace("Skipping DNS fast path for local loopback DNS listener traffic")
+									}
+									return
+								}
+							}
+						}
+					}
+
 					if dnsMessage, _ := ChooseNatTimeout(data, true); dnsMessage != nil {
 						dnsRoutingResult := &bpfRoutingResult{
 							Outbound: uint8(consts.OutboundControlPlaneRouting),
@@ -1820,14 +1858,38 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 						if e := c.dnsController.Handle_(c.ctx, dnsMessage, req); e != nil {
 							if stderrors.Is(e, ErrDNSQueryConcurrencyLimitExceeded) {
+								if c.log.IsLevelEnabled(logrus.DebugLevel) {
+									c.log.WithFields(logrus.Fields{
+										"src": convergeSrc.String(),
+										"dst": realDst.String(),
+									}).Debug("DNS query concurrency limit exceeded in fast path")
+								}
 								return
+							}
+							// Enhanced error logging for DNS fast path failures
+							if c.log.IsLevelEnabled(logrus.WarnLevel) {
+								c.log.WithFields(logrus.Fields{
+									"src":       convergeSrc.String(),
+									"dst":       realDst.String(),
+									"question":  dnsMessage.Question,
+									"error":     e.Error(),
+								}).Warn("DNS ingress fast path failed; sending SERVFAIL response")
 							}
 							if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns ingress fast path)", req, nil); sendErr != nil {
-								c.log.WithError(stderrors.Join(e, sendErr)).Warnln("handlePkt(dns ingress):")
+								c.log.WithError(stderrors.Join(e, sendErr)).WithFields(logrus.Fields{
+									"src": convergeSrc.String(),
+									"dst": realDst.String(),
+								}).Warn("Failed to send SERVFAIL response in DNS fast path")
 								return
 							}
-							if c.log.IsLevelEnabled(logrus.DebugLevel) {
-								c.log.WithError(e).Debug("DNS ingress fast path failed; SERVFAIL sent")
+						} else {
+							// Success logging for DNS fast path (trace level only)
+							if c.log.IsLevelEnabled(logrus.TraceLevel) {
+								c.log.WithFields(logrus.Fields{
+									"src":      convergeSrc.String(),
+									"dst":      realDst.String(),
+									"question": dnsMessage.Question,
+								}).Trace("DNS ingress fast path handled successfully")
 							}
 						}
 						return

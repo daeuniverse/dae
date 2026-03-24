@@ -296,19 +296,72 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	// - IPv4->IPv6: Convert bindAddr to IPv4-mapped IPv6 to create IPv6 socket
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
 
+	if log.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"from":      from.String(),
+			"to":        realTo.String(),
+			"bind_addr": bindAddr.String(),
+			"write_addr": writeAddr.String(),
+			"data_size": len(data),
+		}).Trace("sendPkt: preparing to send UDP packet")
+	}
+
 	// Try cached socket first (for Symmetric NAT sessions)
 	if afp != nil && *afp != nil {
 		if _, err = (*afp).WriteToUDPAddrPort(data, writeAddr); err == nil {
+			if log.IsLevelEnabled(logrus.TraceLevel) {
+				log.WithFields(logrus.Fields{
+					"to":         realTo.String(),
+					"write_addr": writeAddr.String(),
+					"cached":     true,
+				}).Trace("sendPkt: sent via cached socket")
+			}
 			return nil
 		}
 		// cached socket is stale; fall through to fresh pool lookup
+		if log.IsLevelEnabled(logrus.DebugLevel) {
+			log.WithFields(logrus.Fields{
+				"error": err.Error(),
+			}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+		}
 	}
 
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
+	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
-		return
+		if log.IsLevelEnabled(logrus.ErrorLevel) {
+			log.WithFields(logrus.Fields{
+				"bind_addr": bindAddr.String(),
+				"error":     err.Error(),
+			}).Error("sendPkt: failed to get or create socket from pool")
+		}
+		return err
 	}
+	if log.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"bind_addr": bindAddr.String(),
+			"new_socket": isNew,
+		}).Trace("sendPkt: got socket from pool")
+	}
+
 	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
+	if err != nil {
+		if log.IsLevelEnabled(logrus.ErrorLevel) {
+			log.WithFields(logrus.Fields{
+				"write_addr": writeAddr.String(),
+				"data_size":  len(data),
+				"error":      err.Error(),
+			}).Error("sendPkt: WriteToUDPAddrPort failed")
+		}
+		return err
+	}
+
+	if log.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"to":         realTo.String(),
+			"write_addr": writeAddr.String(),
+			"data_size":  len(data),
+		}).Trace("sendPkt: successfully sent packet")
+	}
 
 	// Update caller's cached socket so future calls skip the pool lookup
 	if afp != nil && err == nil {

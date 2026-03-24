@@ -1497,35 +1497,157 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
-		// PREFER using original lConn for responses to maintain source address consistency.
-		// This is critical for NAT loopback and port mapping scenarios, especially IPv6.
-		// Fallback to sendPkt with Anyfrom pool if lConn write fails.
-		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
+		// OPTIMIZATION: Different strategies for local vs remote DNS servers
+		//
+		// For LOCAL DNS servers (0.0.0.0:53, 127.0.0.1:53, private IPs):
+		// - Use lConn directly (fast, no cross-network bind needed)
+		// - Source address may be local IP, but acceptable for local DNS
+		//
+		// For REMOTE DNS servers (8.8.8.8:53, etc.):
+		// - Use sendPkt with IP_TRANSPARENT socket
+		// - Ensures correct source address (DNS server IP)
+		// - Slower due to cross-network socket bind, but AnyfromPool caches sockets
+		dstAddr := req.realDst.Addr()
+
+		// Refined local DNS detection:
+		// Only use lConn for queries to 0.0.0.0:53 (wildcard DNS listener).
+		// For specific IPs (including local IPs like 10.62.62.5), use sendPkt to ensure
+		// the response source address matches the query destination address.
+		//
+		// Why: If a client queries 10.62.62.5:53, they expect a response from 10.62.62.5:53.
+		// Using lConn would send from a different IP (e.g., 192.168.4.87), causing the client
+		// to drop the response as source address mismatch.
+		isLocalDNS := dstAddr.IsUnspecified() // Only 0.0.0.0 or ::
+
+		if isLocalDNS {
+			// Fast path for wildcard DNS (0.0.0.0:53): use lConn directly
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src":       req.realSrc.String(),
+					"dst":       req.realDst.String(),
+					"resp_size": len(patchedResp),
+					"method":    "lConn (local DNS)",
+				}).Debug("Sending DNS response via lConn for local DNS server")
+			}
+			if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
+				if c.log.IsLevelEnabled(logrus.WarnLevel) {
+					c.log.WithFields(logrus.Fields{
+						"src":   req.realSrc.String(),
+						"dst":   req.realDst.String(),
+						"error": err.Error(),
+					}).Warn("lConn failed for local DNS response")
+				}
+				// Don't fallback to sendPkt for local DNS
+				return fmt.Errorf("failed to write local DNS resp: %w", err)
+			}
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src":    req.realSrc.String(),
+					"dst":    req.realDst.String(),
+					"method": "lConn (local DNS)",
+				}).Debug("Successfully sent DNS response via lConn for local DNS")
+			}
 			return nil
 		}
 
-		// lConn write failed, fallback to sendPkt
-		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
-			return fmt.Errorf("failed to write cached DNS resp: %w", err)
+		// Remote DNS: use sendPkt with IP_TRANSPARENT socket
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src":       req.realSrc.String(),
+				"dst":       req.realDst.String(),
+				"resp_size": len(patchedResp),
+				"method":    "sendPkt (remote DNS)",
+			}).Debug("Sending DNS response via sendPkt for remote DNS server")
+		}
+
+		if sendErr := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); sendErr != nil {
+			if c.log.IsLevelEnabled(logrus.ErrorLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src":       req.realSrc.String(),
+					"dst":       req.realDst.String(),
+					"error":     sendErr.Error(),
+					"method":    "sendPkt (remote DNS)",
+				}).Error("sendPkt failed for remote DNS response")
+			}
+			return fmt.Errorf("failed to write remote DNS resp: %w", sendErr)
+		}
+
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src":    req.realSrc.String(),
+				"dst":    req.realDst.String(),
+				"method": "sendPkt (remote DNS)",
+			}).Debug("Successfully sent DNS response via sendPkt for remote DNS")
 		}
 		return nil
 	}
 
 	// Fallback for oversized responses (rare)
+	// Use the same local vs remote DNS logic as above
 	patchedResp := make([]byte, len(resp))
 	copy(patchedResp, resp)
 	if len(resp) >= 2 {
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
 
-	// PREFER using original lConn for responses (same reasoning as above)
-	if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
+	// Apply same local vs remote logic
+	dstAddr := req.realDst.Addr()
+
+	// Use the same refined logic: only 0.0.0.0 uses lConn
+	isLocalDNS := dstAddr.IsUnspecified() // Only 0.0.0.0 or ::
+
+	if isLocalDNS {
+		// Local DNS (wildcard): use lConn
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src":       req.realSrc.String(),
+				"dst":       req.realDst.String(),
+				"resp_size": len(patchedResp),
+				"method":    "lConn (oversized, local DNS)",
+			}).Debug("Sending oversized DNS response via lConn for local DNS")
+		}
+		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
+			if c.log.IsLevelEnabled(logrus.ErrorLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src":       req.realSrc.String(),
+					"dst":       req.realDst.String(),
+					"error":     err.Error(),
+					"method":    "lConn (oversized, local DNS)",
+				}).Error("lConn failed for oversized local DNS response")
+			}
+			return fmt.Errorf("failed to write oversized local DNS resp: %w", err)
+		}
 		return nil
 	}
 
-	// lConn write failed, fallback to sendPkt
+	// Remote DNS: use sendPkt
+	if c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(logrus.Fields{
+			"src":       req.realSrc.String(),
+			"dst":       req.realDst.String(),
+			"resp_size": len(patchedResp),
+			"method":    "sendPkt (oversized, remote DNS)",
+		}).Debug("Sending oversized DNS response via sendPkt for remote DNS")
+	}
+
 	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
-		return fmt.Errorf("failed to write cached DNS resp: %w", err)
+		if c.log.IsLevelEnabled(logrus.ErrorLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src":       req.realSrc.String(),
+				"dst":       req.realDst.String(),
+				"error":     err.Error(),
+				"method":    "sendPkt (oversized, remote DNS)",
+			}).Error("sendPkt failed for oversized remote DNS response")
+		}
+		return fmt.Errorf("failed to write oversized remote DNS resp: %w", err)
+	}
+
+	if c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(logrus.Fields{
+			"src":    req.realSrc.String(),
+			"dst":    req.realDst.String(),
+			"method": "sendPkt (oversized, remote DNS)",
+		}).Debug("Successfully sent oversized DNS response via sendPkt for remote DNS")
 	}
 	return nil
 }
