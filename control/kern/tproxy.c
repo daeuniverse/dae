@@ -398,21 +398,26 @@ enum tcp_state {
 	TCP_STATE_CLOSING = 1,  // FIN or RST seen
 };
 
-// parse_transport_ctx bundles arguments for parse_transport to work around
-// BPF calling convention limitations (max 5 arguments for non-inline functions).
-// This struct is small enough (~80 bytes with padding) to be passed by value.
+// parse_transport_ctx stores header pointers for parsing.
+// This struct is designed to be used with scratch maps to avoid stack pressure.
 struct parse_transport_ctx {
-	struct __sk_buff *skb;
-	__u32 link_h_len;
-	struct ethhdr *ethh;
-	struct iphdr *iph;
-	struct ipv6hdr *ipv6h;
-	struct icmp6hdr *icmp6h;
-	struct tcphdr *tcph;
-	struct udphdr *udph;
-	__u8 *ihl;
-	__u8 *l4proto;
+	struct ethhdr ethh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	struct icmp6hdr icmp6h;
+	struct tcphdr tcph;
+	struct udphdr udph;
+	__u8 ihl;
+	__u8 l4proto;
+	__u8 pad[2];
 };
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct parse_transport_ctx);
+	__uint(max_entries, 1);
+} parse_ctx_scratch_map SEC(".maps");
 
 // Functions:
 
@@ -493,13 +498,21 @@ static __always_inline bool is_extension_header(__u8 nexthdr)
 // 4. Boundary check failures are bad packets, return error (not fallback)
 //
 // Returns: 0 on success, -1 to fall back to slow path, positive on error
-static __always_inline int
+//
+// Use __noinline so this function has its own 512-byte stack budget.
+static __noinline int
 parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
-		     struct ethhdr *ethh, struct iphdr *iph,
-		     struct ipv6hdr *ipv6h, struct icmp6hdr *icmp6h,
-		     struct tcphdr *tcph, struct udphdr *udph, __u8 *ihl,
-		     __u8 *l4proto)
+		     struct parse_transport_ctx *ctx)
 {
+	struct ethhdr *ethh = &ctx->ethh;
+	struct iphdr *iph = &ctx->iph;
+	struct ipv6hdr *ipv6h = &ctx->ipv6h;
+	struct icmp6hdr *icmp6h = &ctx->icmp6h;
+	struct tcphdr *tcph = &ctx->tcph;
+	struct udphdr *udph = &ctx->udph;
+	__u8 *ihl = &ctx->ihl;
+	__u8 *l4proto = &ctx->l4proto;
+
 	void *data, *data_end;
 	__u32 offset = 0;
 
@@ -743,13 +756,21 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 // - Packets with large IPv6 extension headers (> 512 bytes)
 // - Memory allocation failure in fast path
 // - Non-linear data that couldn't be pulled
-static __always_inline int
+//
+// Use __noinline so this function has its own 512-byte stack budget.
+static __noinline int
 parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
-		     struct ethhdr *ethh, struct iphdr *iph,
-		     struct ipv6hdr *ipv6h, struct icmp6hdr *icmp6h,
-		     struct tcphdr *tcph, struct udphdr *udph, __u8 *ihl,
-		     __u8 *l4proto)
+		     struct parse_transport_ctx *ctx)
 {
+	struct ethhdr *ethh = &ctx->ethh;
+	struct iphdr *iph = &ctx->iph;
+	struct ipv6hdr *ipv6h = &ctx->ipv6h;
+	struct icmp6hdr *icmp6h = &ctx->icmp6h;
+	struct tcphdr *tcph = &ctx->tcph;
+	struct udphdr *udph = &ctx->udph;
+	__u8 *ihl = &ctx->ihl;
+	__u8 *l4proto = &ctx->l4proto;
+
 	__u32 offset = 0;
 	int ret;
 
@@ -886,24 +907,18 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 // Main entry point - tries fast path first, falls back to slow path.
 // Returns: 0 on success, positive on error.
 //
-// Use __noinline with struct-based arguments to ensure this function has its own
-// 512-byte stack budget. BPF calling convention limits non-inline functions to 5
-// arguments, so we bundle arguments into a struct. When parse_transport_fast/slow
-// are inlined into this __noinline function, their stack usage is accounted for
-// within this function's stack, not the caller's. This prevents stack overflow in
-// paths where callers already use significant stack space.
+// Use __noinline to ensure this function has its own 512-byte stack budget.
+// The parse_transport_ctx struct is allocated in a scratch map to avoid stack pressure.
 static __noinline int
-parse_transport(struct parse_transport_ctx *ctx)
+parse_transport(struct __sk_buff *skb, __u32 link_h_len,
+		struct parse_transport_ctx *ctx)
 {
-	int ret = parse_transport_fast(ctx->skb, ctx->link_h_len, ctx->ethh, ctx->iph,
-				       ctx->ipv6h, ctx->icmp6h, ctx->tcph, ctx->udph,
-				       ctx->ihl, ctx->l4proto);
+	int ret = parse_transport_fast(skb, link_h_len, ctx);
+
 	if (ret == -1) {
 		// Fast path failed (pull failed or headers too large),
 		// fall back to slow path using bpf_skb_load_bytes.
-		return parse_transport_slow(ctx->skb, ctx->link_h_len, ctx->ethh, ctx->iph,
-					   ctx->ipv6h, ctx->icmp6h, ctx->tcph, ctx->udph,
-					   ctx->ihl, ctx->l4proto);
+		return parse_transport_slow(skb, link_h_len, ctx);
 	}
 	return ret;
 }
@@ -927,39 +942,26 @@ static __noinline int
 parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 			 struct lan_ingress_parsed *out)
 {
-	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 ihl;
-	__u8 l4proto;
-	struct parse_transport_ctx ctx = {
-		.skb = skb,
-		.link_h_len = link_h_len,
-		.ethh = &ethh,
-		.iph = &iph,
-		.ipv6h = &ipv6h,
-		.icmp6h = &icmp6h,
-		.tcph = &tcph,
-		.udph = &udph,
-		.ihl = &ihl,
-		.l4proto = &l4proto,
-	};
-	int ret = parse_transport(&ctx);
+	__u32 scratch_key = 0;
+	struct parse_transport_ctx *ctx =
+		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
+
+	if (!ctx)
+		return -EFAULT;
+
+	int ret = parse_transport(skb, link_h_len, ctx);
 
 	if (ret)
 		return ret;
-	if (l4proto == IPPROTO_ICMPV6)
+	if (ctx->l4proto == IPPROTO_ICMPV6)
 		return 1;
 
 	__builtin_memset(out, 0, sizeof(*out));
-	out->ethh = ethh;
-	out->tcph = tcph;
-	out->udph = udph;
-	out->l4proto = l4proto;
-	get_tuples(skb, &out->tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+	out->ethh = ctx->ethh;
+	out->tcph = ctx->tcph;
+	out->udph = ctx->udph;
+	out->l4proto = ctx->l4proto;
+	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
 	return 0;
 }
 
@@ -982,39 +984,26 @@ static __noinline int
 parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 			struct wan_egress_parsed *out)
 {
-	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 ihl;
-	__u8 l4proto;
-	struct parse_transport_ctx ctx = {
-		.skb = skb,
-		.link_h_len = link_h_len,
-		.ethh = &ethh,
-		.iph = &iph,
-		.ipv6h = &ipv6h,
-		.icmp6h = &icmp6h,
-		.tcph = &tcph,
-		.udph = &udph,
-		.ihl = &ihl,
-		.l4proto = &l4proto,
-	};
-	int ret = parse_transport(&ctx);
+	__u32 scratch_key = 0;
+	struct parse_transport_ctx *ctx =
+		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
+
+	if (!ctx)
+		return -EFAULT;
+
+	int ret = parse_transport(skb, link_h_len, ctx);
 
 	if (ret)
 		return ret;
-	if (l4proto == IPPROTO_ICMPV6)
+	if (ctx->l4proto == IPPROTO_ICMPV6)
 		return 1;
 
 	__builtin_memset(out, 0, sizeof(*out));
-	out->ethh = ethh;
-	out->tcph = tcph;
-	out->udph = udph;
-	out->l4proto = l4proto;
-	get_tuples(skb, &out->tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+	out->ethh = ctx->ethh;
+	out->tcph = ctx->tcph;
+	out->udph = ctx->udph;
+	out->l4proto = ctx->l4proto;
+	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
 	return 0;
 }
 
@@ -1778,28 +1767,14 @@ static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 // - If no cache, do not affect pre-existing/server-side flows.
 static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
-	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 ihl;
-	__u8 l4proto;
-	struct parse_transport_ctx ctx = {
-		.skb = skb,
-		.link_h_len = link_h_len,
-		.ethh = &ethh,
-		.iph = &iph,
-		.ipv6h = &ipv6h,
-		.icmp6h = &icmp6h,
-		.tcph = &tcph,
-		.udph = &udph,
-		.ihl = &ihl,
-		.l4proto = &l4proto,
-	};
+	__u32 scratch_key = 0;
+	struct parse_transport_ctx *ctx =
+		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
 
-	int ret = parse_transport(&ctx);
+	if (!ctx)
+		return TC_ACT_SHOT;
+
+	int ret = parse_transport(skb, link_h_len, ctx);
 
 	if (ret) {
 		// Negative: error - drop; Positive: unsupported protocol - pass through
@@ -1811,22 +1786,23 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 	}
 
 	if (skb->ingress_ifindex == NOWHERE_IFINDEX &&  // Only drop NDP_REDIRECT packets from localhost
-		l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
+		ctx->l4proto == IPPROTO_ICMPV6 && ctx->icmp6h.icmp6_type == NDP_REDIRECT) {
 		// REDIRECT (NDP)
 		return TC_ACT_SHOT;
 	}
 
 	// Update UDP Conntrack
-	if (l4proto == IPPROTO_UDP) {
+	if (ctx->l4proto == IPPROTO_UDP) {
 		// DNS traffic is short-lived and stateless in our fast path.
 		// Skip tuple build + conntrack update to reduce state churn.
-		if (udph.source == bpf_htons(53) || udph.dest == bpf_htons(53))
+		if (ctx->udph.source == bpf_htons(53) || ctx->udph.dest == bpf_htons(53))
 			return TC_ACT_PIPE;
 
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
 
-		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+		get_tuples(skb, &tuples, &ctx->iph, &ctx->ipv6h,
+			   &ctx->tcph, &ctx->udph, ctx->l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 		// Robustness: If conntrack map is full, gracefully degrade by continuing
 		// without state tracking. This is acceptable as the packet will be processed
@@ -2232,28 +2208,14 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 
 static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
-	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 ihl;
-	__u8 l4proto;
-	struct parse_transport_ctx ctx = {
-		.skb = skb,
-		.link_h_len = link_h_len,
-		.ethh = &ethh,
-		.iph = &iph,
-		.ipv6h = &ipv6h,
-		.icmp6h = &icmp6h,
-		.tcph = &tcph,
-		.udph = &udph,
-		.ihl = &ihl,
-		.l4proto = &l4proto,
-	};
+	__u32 scratch_key = 0;
+	struct parse_transport_ctx *ctx =
+		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
 
-	int ret = parse_transport(&ctx);
+	if (!ctx)
+		return TC_ACT_SHOT;
+
+	int ret = parse_transport(skb, link_h_len, ctx);
 
 	if (ret) {
 		// Negative: error - drop; Positive: unsupported protocol - pass through
@@ -2265,16 +2227,17 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 
 	// Update UDP Conntrack
-	if (l4proto == IPPROTO_UDP) {
+	if (ctx->l4proto == IPPROTO_UDP) {
 		// DNS traffic is short-lived and stateless in our fast path.
 		// Skip tuple build + conntrack update to reduce state churn.
-		if (udph.source == bpf_htons(53) || udph.dest == bpf_htons(53))
+		if (ctx->udph.source == bpf_htons(53) || ctx->udph.dest == bpf_htons(53))
 			return TC_ACT_PIPE;
 
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
 
-		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+		get_tuples(skb, &tuples, &ctx->iph, &ctx->ipv6h,
+			   &ctx->tcph, &ctx->udph, ctx->l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 		// Robustness: If conntrack map is full, gracefully degrade by continuing
 		// without state tracking. This is acceptable as the packet will be processed
