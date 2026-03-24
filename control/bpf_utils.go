@@ -303,6 +303,7 @@ func fullLoadBpfObjects(
 	log *logrus.Logger,
 	bpf *bpfObjects,
 	opts *loadBpfOptions,
+	soMarkFromDae uint32,
 ) (err error) {
 retryLoadBpf:
 	netnsID, err := GetDaeNetns().NetnsID()
@@ -339,22 +340,29 @@ retryLoadBpf:
 		peerMac = [6]byte(hwAddr)
 	} // else: keep zero MAC for L3 netkit
 
-	constants := map[string]interface{}{
+		constants := map[string]interface{}{
 		"PARAM": struct {
 			tproxyPort      uint32
 			controlPlanePid uint32
-			dae0Ifindex     uint32
-			daeNetnsId      uint32
-			dae0peerMac     [6]byte
+			dae0Ifindex    uint32
+			daeNetnsId     uint32
+			dae0peerMac    [6]byte
+			paddingAfterMac [2]uint8
 			useRedirectPeer uint8
-			padding         uint8
+			padding1       uint8
+			padding2       uint16
+			daeSocketMark  uint32
 		}{
 			tproxyPort:      uint32(opts.BigEndianTproxyPort),
 			controlPlanePid: uint32(os.Getpid()),
 			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
 			daeNetnsId:      uint32(netnsID),
 			dae0peerMac:     peerMac,
+			paddingAfterMac: [2]uint8{0, 0},
 			useRedirectPeer: useRedirectPeer,
+			padding1:        0,
+			padding2:        0,
+			daeSocketMark:   soMarkFromDae,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {

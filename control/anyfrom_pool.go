@@ -213,6 +213,12 @@ type AnyfromPool struct {
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
+var soMarkFromDae uint32
+
+func SetAnyfromSoMark(mark uint32) {
+	soMarkFromDae = mark
+}
+
 func NewAnyfromPool() *AnyfromPool {
 	p := &AnyfromPool{}
 	for i := range anyfromPoolShardCount {
@@ -290,7 +296,15 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, ttl time.Duration) (*Anyfrom, error) {
 	d := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
-			return dialer.TransparentControl(c)
+			if err := dialer.TransparentControl(c); err != nil {
+				return err
+			}
+			if soMarkFromDae != 0 {
+				if err := dialer.SoMarkControl(c, int(soMarkFromDae)); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 		KeepAlive: 0,
 	}

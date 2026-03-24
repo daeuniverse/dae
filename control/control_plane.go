@@ -302,7 +302,7 @@ func NewControlPlaneWithContext(
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
 			PinPath:           pinPath,
 			CollectionOptions: collectionOpts,
-		}); err != nil {
+		}, global.SoMarkFromDae); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)
 			}
@@ -576,6 +576,7 @@ func NewControlPlaneWithContext(
 		udpUnorderedRunner:   newDefaultUdpUnorderedTaskRunner(cctx),
 		udpBoundedPool:       newUdpBoundedPoolManager(cctx),
 	}
+	SetAnyfromSoMark(global.SoMarkFromDae)
 	plane.startRealDomainNegJanitor()
 	plane.startConnStateJanitor()
 

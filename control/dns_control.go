@@ -1488,25 +1488,26 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	// OPTIMIZATION: Use buffer pool to avoid memory allocation on every cache hit.
 	// DNS Message ID is in the first 2 bytes (big-endian).
 	if len(resp) >= 2 && len(resp) <= 1024 {
-		// Get buffer from pool
 		bufPtr := dnsResponseBufPool.Get().(*[]byte)
 		defer dnsResponseBufPool.Put(bufPtr)
 
-		// Copy response and patch ID
 		patchedResp := (*bufPtr)[:len(resp)]
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
-		// PREFER using original lConn for responses to maintain source address consistency.
-		// This is critical for NAT loopback and port mapping scenarios, especially IPv6.
-		// Fallback to sendPkt with Anyfrom pool if lConn write fails.
-		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
+		// For remote DNS, use sendPkt with transparent socket to ensure
+		// the response source address matches the DNS server IP.
+		// This is important for clients that validate source address.
+		dstAddr := req.realDst.Addr()
+		if dstAddr.IsUnspecified() {
+			// Local DNS (0.0.0.0) - use lConn directly
+			if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
+				return fmt.Errorf("failed to write local DNS resp: %w", err)
+			}
 			return nil
 		}
-
-		// lConn write failed, fallback to sendPkt
 		if err := sendPkt(patchedResp, req.realDst, req.realSrc, nil); err != nil {
-			return fmt.Errorf("failed to write cached DNS resp: %w", err)
+			return fmt.Errorf("failed to write remote DNS resp: %w", err)
 		}
 		return nil
 	}
@@ -1518,14 +1519,19 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
 
-	// PREFER using original lConn for responses (same reasoning as above)
-	if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
+	dstAddr := req.realDst.Addr()
+	isLocalDNS := dstAddr.IsUnspecified()
+
+	if isLocalDNS {
+		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
+			return fmt.Errorf("failed to write oversized local DNS resp: %w", err)
+		}
 		return nil
 	}
 
-	// lConn write failed, fallback to sendPkt
+	// For remote DNS with oversized response, use sendPkt
 	if err := sendPkt(patchedResp, req.realDst, req.realSrc, nil); err != nil {
-		return fmt.Errorf("failed to write cached DNS resp: %w", err)
+		return fmt.Errorf("failed to write oversized DNS resp: %w", err)
 	}
 	return nil
 }

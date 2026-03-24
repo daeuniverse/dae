@@ -162,11 +162,14 @@ struct dae_param {
 	__u32 dae0_ifindex;
 	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
-	// use_redirect_peer enables bpf_redirect_peer() optimization for TC ingress.
-	// Only safe with: (1) netkit device + scrub=NONE, (2) kernel >= 6.8 (CVE-2025-37959 fix).
-	// Egress paths must always use bpf_redirect() (redirect_peer is ingress-only).
+	__u8 padding_after_mac[2]; // pad to align use_redirect_peer
 	__u8 use_redirect_peer;
-	__u8 padding;
+	__u8 padding1;
+	__u16 padding2;
+	// dae_socket_mark is set on dae's own sockets (Anyfrom pool) to identify them.
+	// When bpf_sk_lookup_* finds a socket, we check this mark to skip dae's own sockets.
+	// This prevents false positives in NAT loopback detection for transparent proxying.
+	__u32 dae_socket_mark;
 };
 
 /* Use const volatile for cilium/ebpf v0.20.0 compatibility.
@@ -2007,20 +2010,12 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			}
 			// For SYN packets (new connections), skip socket lookup and continue to routing
 		} else {
-			// UDP: Any socket found indicates a local service.
-			// Unlike TCP, UDP doesn't have LISTEN state - all sockets are "listening".
-			// This is safe because dae's own outbound UDP sockets have different tuples.
-			sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
-					       PARAM.dae_netns_id, 0);
-			if (sk) {
-				// Found UDP socket - local service (NAT loopback).
-				// Pass through to kernel stack directly, bypassing dae.
-				bpf_sk_release(sk);
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-				bpf_printk("udp(lan): local UDP socket found, pass through");
-#endif
-				return TC_ACT_OK;
-			}
+			// UDP: Skip socket lookup.
+			// dae's Anyfrom sockets bind to DNS server IPs, not client IPs.
+			// bpf_sk_lookup_udp() looks for sockets bound to (dip, dport) of the packet,
+			// which is (clientIP, clientPort) for DNS responses - this won't match
+			// Anyfrom sockets bound to (dnsServerIP, 0).
+			// So we skip the socket lookup entirely to avoid overhead.
 		}
 		// No socket found - continue to routing
 	}
