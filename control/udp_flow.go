@@ -32,7 +32,7 @@ func (k UdpFlowKey) PacketSnifferKey() PacketSnifferKey {
 }
 
 func (k UdpFlowKey) SymmetricNatEndpointKey() UdpEndpointKey {
-	return UdpEndpointKey{Src: k.Src, Dst: k.Dst}
+	return UdpEndpointKey(k)
 }
 
 func (k UdpFlowKey) FullConeNatEndpointKey() UdpEndpointKey {
@@ -54,10 +54,7 @@ func ClassifyUdpFlow(src, dst netip.AddrPort, data []byte) UdpFlowDecision {
 
 	// Heuristic: If it's on a port that usually runs QUIC, treat it as part of a potential QUIC flow.
 	// This ensures Symmetric NAT and Ordered Ingress for the entire session from the first packet.
-	isLikelyQuicData := false
-	if dst.Port() == 443 || dst.Port() == 8443 || src.Port() == 443 || src.Port() == 8443 {
-		isLikelyQuicData = true
-	}
+	isLikelyQuicData := dst.Port() == 443 || dst.Port() == 8443 || src.Port() == 443 || src.Port() == 8443
 
 	return UdpFlowDecision{
 		Key:               key,

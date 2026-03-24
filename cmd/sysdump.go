@@ -38,7 +38,7 @@ func dumpNetworkInfo() {
 		fmt.Printf("Failed to create temp directory: %v\n", err)
 		return
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	dumpRouting(tempDir)
 	dumpNetInterfaces(tempDir)
@@ -219,14 +219,14 @@ func dumpNetInterfaces(outputDir string) {
 	var buffer bytes.Buffer
 	buffer.WriteString("Network Interfaces:\n")
 	for _, iface := range interfaces {
-		buffer.WriteString(fmt.Sprintf("Name: %s, MTU: %d, HardwareAddr: %s, Flags: %v\n",
-			iface.Name, iface.MTU, iface.HardwareAddr, iface.Flags))
+		fmt.Fprintf(&buffer, "Name: %s, MTU: %d, HardwareAddr: %s, Flags: %v\n",
+			iface.Name, iface.MTU, iface.HardwareAddr, iface.Flags)
 		for _, addr := range iface.Addrs {
-			buffer.WriteString(fmt.Sprintf("  Address: %s\n", addr.Addr))
+			fmt.Fprintf(&buffer, "  Address: %s\n", addr.Addr)
 		}
 	}
 
-	os.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
 }
 
 func dumpSysctl(outputDir string) {
@@ -245,7 +245,7 @@ func dumpSysctl(outputDir string) {
 			}
 
 			relativePath := strings.TrimPrefix(path, sysctlPath+"/")
-			buffer.WriteString(fmt.Sprintf("%-60s = %s\n", relativePath, string(value)))
+			fmt.Fprintf(&buffer, "%-60s = %s\n", relativePath, string(value))
 		}
 		return nil
 	})
@@ -254,7 +254,7 @@ func dumpSysctl(outputDir string) {
 		fmt.Printf("Failed to get sysctl settings: %v\n", err)
 	}
 
-	os.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
 }
 
 func dumpNetfilter(outputDir string) {
@@ -265,7 +265,7 @@ func dumpNetfilter(outputDir string) {
 		return
 	}
 
-	os.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
+	_ = os.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
 }
 
 func dumpIPTables(outputDir string) {
@@ -274,7 +274,7 @@ func dumpIPTables(outputDir string) {
 	if err != nil {
 		fmt.Printf("Failed to get iptables: %v\n", err)
 	} else {
-		os.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
+		_ = os.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
 	}
 
 	ip6tables := exec.Command("ip6tables-save", "-c")
@@ -282,7 +282,7 @@ func dumpIPTables(outputDir string) {
 	if err != nil {
 		fmt.Printf("Failed to get ip6tables: %v\n", err)
 	} else {
-		os.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
+		_ = os.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
 	}
 }
 
@@ -303,7 +303,7 @@ func createTarGz(srcDir, outputFile string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	// Create a gzipped tarball
 	format := archives.CompressedArchive{

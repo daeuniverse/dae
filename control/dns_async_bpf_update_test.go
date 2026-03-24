@@ -55,7 +55,7 @@ func TestBpfUpdateWorker_Lifecycle(t *testing.T) {
 	// Close should wait for all tasks to complete
 	done := make(chan struct{})
 	go func() {
-		controller.Close()
+		_ = controller.Close()
 		close(done)
 	}()
 
@@ -109,7 +109,7 @@ func TestBpfUpdateWorker_NonBlockingSend(t *testing.T) {
 	// Close with timeout to prevent test hang
 	done := make(chan struct{})
 	go func() {
-		controller.Close()
+		_ = controller.Close()
 		close(done)
 	}()
 	select {
@@ -155,7 +155,7 @@ func TestBpfUpdateWorker_ErrorHandling(t *testing.T) {
 	// All calls should have been processed despite errors
 	assert.Equal(t, int32(10), callCount.Load())
 
-	controller.Close()
+	_ = controller.Close()
 }
 
 // TestBpfUpdateWorker_SemanticsPreserved verifies that the semantics
@@ -197,7 +197,7 @@ func TestBpfUpdateWorker_SemanticsPreserved(t *testing.T) {
 	// Only one update should have been executed
 	assert.Equal(t, 1, count, "Should have exactly one update despite two trigger calls")
 
-	controller.Close()
+	_ = controller.Close()
 }
 
 // TestBpfUpdateWorker_ConcurrentAccess tests concurrent access to the
@@ -242,7 +242,7 @@ func TestBpfUpdateWorker_ConcurrentAccess(t *testing.T) {
 	assert.Greater(t, updateCount.Load(), int32(0),
 		"At least some updates should be processed")
 
-	controller.Close()
+	_ = controller.Close()
 }
 
 // TestBpfUpdateWorker_LazyStart verifies that the worker is only started
@@ -313,5 +313,5 @@ func TestBpfUpdateWorker_QueueFull(t *testing.T) {
 
 	// Cleanup
 	close(busy)
-	controller.Close()
+	_ = controller.Close()
 }

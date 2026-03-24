@@ -48,8 +48,8 @@ func splicePipeN(dst, src interface {
 	if err := unix.Pipe2(pipeFD, unix.O_CLOEXEC); err != nil {
 		return 0, err
 	}
-	defer unix.Close(pipeFD[0])
-	defer unix.Close(pipeFD[1])
+	defer func() { _ = unix.Close(pipeFD[0]) }()
+	defer func() { _ = unix.Close(pipeFD[1]) }()
 
 	const chunk = 1 << 20
 	var copied int64
@@ -132,8 +132,8 @@ func splicePipeToEOF(dst, src interface {
 	if err := unix.Pipe2(pipeFD, unix.O_CLOEXEC); err != nil {
 		return 0, err
 	}
-	defer unix.Close(pipeFD[0])
-	defer unix.Close(pipeFD[1])
+	defer func() { _ = unix.Close(pipeFD[0]) }()
+	defer func() { _ = unix.Close(pipeFD[1]) }()
 
 	const chunk = 1 << 20
 	var copied int64
@@ -190,8 +190,8 @@ func makeUnixPair(tb testing.TB) (*net.UnixConn, *net.UnixConn) {
 
 	f0 := os.NewFile(uintptr(fds[0]), "unixpair-0")
 	f1 := os.NewFile(uintptr(fds[1]), "unixpair-1")
-	defer f0.Close()
-	defer f1.Close()
+	defer func() { _ = f0.Close() }()
+	defer func() { _ = f1.Close() }()
 
 	c0raw, err := net.FileConn(f0)
 	if err != nil {
@@ -279,7 +279,7 @@ func runRelayBenchmark(b *testing.B, payloadSize int, relay func(dst *net.UnixCo
 		writerErr := make(chan error, 1)
 		go func() {
 			defer wg.Done()
-			defer srcClient.Close()
+			defer func() { _ = srcClient.Close() }()
 			_, err := srcClient.Write(payload)
 			if err == nil {
 				err = srcClient.CloseWrite()
@@ -290,7 +290,7 @@ func runRelayBenchmark(b *testing.B, payloadSize int, relay func(dst *net.UnixCo
 		sinkErr := make(chan error, 1)
 		go func() {
 			defer wg.Done()
-			defer dstClient.Close()
+			defer func() { _ = dstClient.Close() }()
 			_, err := io.Copy(io.Discard, dstClient)
 			sinkErr <- err
 		}()

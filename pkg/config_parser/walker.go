@@ -76,9 +76,6 @@ func (w *Walker) parseNonEmptyParamList(list *dae_config.NonEmptyParameterListCo
 	return paramParser.list
 }
 
-func (w *Walker) reportKeyUnsupportedError(ctx any, keyName, funcName string) {
-	w.ReportError(ctx, ErrorType_Unsupported, fmt.Sprintf("key %v in %v()", strconv.Quote(keyName), funcName))
-}
 
 type functionVerifier func(function *Function, ctx any) bool
 

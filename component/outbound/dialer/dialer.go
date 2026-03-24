@@ -56,8 +56,8 @@ const (
 )
 
 var (
-	UnexpectedFieldErr  = fmt.Errorf("unexpected field")
-	InvalidParameterErr = fmt.Errorf("invalid parameters")
+	ErrUnexpectedField  = fmt.Errorf("unexpected field")
+	ErrInvalidParameter = fmt.Errorf("invalid parameters")
 )
 
 var cachedTimeNano atomic.Int64
@@ -85,13 +85,13 @@ type Dialer struct {
 	collectionFineMu sync.RWMutex
 	collections      [6]*collection
 
-	tickerMu        sync.Mutex
-	ticker          *time.Timer
-	checkCh         chan time.Time
-	checkUdpCh       chan struct{}     // trigger resuscitation for all UDP collections (IPv4+v6)
-	checkTcpCh       chan struct{}     // trigger resuscitation for all TCP collections (IPv4+v6)
-	ctx             context.Context
-	cancel          context.CancelFunc
+	tickerMu   sync.Mutex
+	ticker     *time.Timer
+	checkCh    chan time.Time
+	checkUdpCh chan struct{} // trigger resuscitation for all UDP collections (IPv4+v6)
+	checkTcpCh chan struct{} // trigger resuscitation for all TCP collections (IPv4+v6)
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	checkActivated bool
 
@@ -189,7 +189,6 @@ const (
 	minRecoveryBackoff = 10 * time.Second
 	// maxRecoveryBackoff is the maximum backoff duration (should be < health check interval)
 	// This prevents infinite amplification with periodic health checks
-	maxRecoveryBackoff = 20 * time.Second
 	// backoffMultiplier is the factor to increase backoff duration after each level
 	backoffMultiplier = 2
 )
@@ -654,7 +653,7 @@ func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool
 				_, port, _ := net.SplitHostPort(addr)
 				addr = net.JoinHostPort(ip.String(), port)
 
-				conn, err := d.Dialer.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), addr)
+				conn, err := d.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), addr)
 				if err != nil {
 					return nil, err
 				}

@@ -69,7 +69,7 @@ func TestPostDatReaderOptimizersDoNotMutateCachedParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeAndSortRulesOptimizer failed: %v", err)
 	}
-	rules, err = (&DeduplicateParamsOptimizer{}).Optimize(rules)
+	_, err = (&DeduplicateParamsOptimizer{}).Optimize(rules)
 	if err != nil {
 		t.Fatalf("DeduplicateParamsOptimizer failed: %v", err)
 	}

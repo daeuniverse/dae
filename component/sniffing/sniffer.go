@@ -43,7 +43,6 @@ type Sniffer struct {
 	quicNextRead     int
 	quicCryptos      []*quicutils.CryptoFrameOffset
 	quicPlaintexts   []pool.PB
-	quicOriginalDcid []byte
 }
 
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
@@ -64,7 +63,7 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 
 func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 	buffer := pool.GetBuffer()
-	buffer.Write(data)
+	_, _ = buffer.Write(data)
 	s := &Sniffer{
 		stream:    false,
 		r:         nil,
@@ -249,7 +248,7 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 func (s *Sniffer) AppendData(data []byte) {
 	s.needMore = false
 	ori := s.buf.Len()
-	s.buf.Write(data)
+	_, _ = s.buf.Write(data)
 	s.data = append(s.data, s.buf.Bytes()[ori:])
 }
 

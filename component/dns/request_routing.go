@@ -21,7 +21,6 @@ type RequestMatcherBuilder struct {
 	log                *logrus.Logger
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
-	fallback           *routing.Outbound
 	rules              []requestMatchSet
 }
 

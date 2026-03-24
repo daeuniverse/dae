@@ -36,6 +36,10 @@ var (
 
 	udpNoAliveDialerLogLimiter sync.Map // map[udpNoAliveDialerLogKey]int64(unix nano)
 	connectionErrorLogLimiter  sync.Map // map[string]int64(unix nano)
+	// package-level logger used by utility functions that don't have access to
+	// a ControlPlane instance. It is initialized to the standard logger and
+	// configured by the application entrypoint via pkg/logger.SetLogger.
+	log = logrus.StandardLogger()
 )
 
 const (
@@ -155,7 +159,6 @@ func allowConnectionErrorLog(key string, now time.Time) bool {
 
 func (c *ControlPlane) logNoAliveDialerLimited(
 	outbound *ob.DialerGroup,
-	policy consts.DialerSelectionPolicy,
 	origNetworkType string,
 	selectionNetworkType *dialer.NetworkType,
 	src netip.AddrPort,
@@ -286,7 +289,7 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 //   - from: source address of the packet (for logging/metadata only)
 //   - realTo: destination address where the packet should be sent
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
+func sendPkt(data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
 	// Proxy chain support: Use original 'from' address as bindAddr to ensure
 	// each server response gets its own UDP socket. This prevents response mixing
 	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
@@ -298,11 +301,11 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{
-			"from":      from.String(),
-			"to":        realTo.String(),
-			"bind_addr": bindAddr.String(),
+			"from":       from.String(),
+			"to":         realTo.String(),
+			"bind_addr":  bindAddr.String(),
 			"write_addr": writeAddr.String(),
-			"data_size": len(data),
+			"data_size":  len(data),
 		}).Trace("sendPkt: preparing to send UDP packet")
 	}
 
@@ -338,7 +341,7 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	}
 	if log.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{
-			"bind_addr": bindAddr.String(),
+			"bind_addr":  bindAddr.String(),
 			"new_socket": isNew,
 		}).Trace("sendPkt: got socket from pool")
 	}
@@ -370,7 +373,7 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	return err
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
+func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
 	var realSrc netip.AddrPort
 	var domain string
 	var ueKey UdpEndpointKey
@@ -501,7 +504,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 	}
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
-	natTimeout := DefaultNatTimeout
+	var natTimeout time.Duration
 	if domain == "" && !skipSniffing && !ueExists {
 		// Fast path: only QUIC Initial packets should enter sniffing.
 		// Normal UDP traffic should be forwarded immediately without blocking.
@@ -707,7 +710,7 @@ getNew:
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				// Do not return conn-unrelated err in this func.
-				return sendPkt(c.log, data, from, realSrc, ue.responseConnCacheSlot())
+				return sendPkt(data, from, realSrc, ue.responseConnCacheSlot())
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,
@@ -725,12 +728,11 @@ getNew:
 					Excluded:    excludedDialer,
 				}
 
-				res, err := c.chooseProxyDialer(ctx, dialParam)
+				res, err := c.chooseProxyDialer(dialParam)
 				if err != nil {
 					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 						c.logNoAliveDialerLimited(
 							res.Outbound,
-							res.Outbound.GetSelectionPolicy(),
 							res.OrigNetworkType,
 							res.SelectionNetworkTypeObj,
 							realSrc,

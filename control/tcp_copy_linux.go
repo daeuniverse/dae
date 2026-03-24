@@ -76,8 +76,9 @@ func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (i
 	}
 
 	// Slow path: buffered copy (e.g., when wrapper doesn't support fast path)
-	buf := relayCopyBufferPool.Get().([]byte)
-	defer relayCopyBufferPool.Put(buf)
+	bufPtr := relayCopyBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer relayCopyBufferPool.Put(bufPtr)
 	return io.CopyBuffer(dst, src, buf)
 }
 
@@ -88,23 +89,6 @@ func shouldUseRelayFastPath(dst netproxy.Conn, src netproxy.Conn) bool {
 	// previously observed in early versions. This aligns with industry best
 	// practices for local socket acceleration.
 	return isRelayFastPathWhitelistedConn(dst) && isRelayFastPathWhitelistedConn(src)
-}
-
-// isLocalConnAny checks if two connections form a local-to-local forwarding path.
-// This works with any netproxy.Conn by first unwrapping to *net.TCPConn.
-// It detects the same cases as isLocalConnection in tcp_offload_linux.go:
-// 1. Both peers are local (e.g., local client -> dae -> local service)
-// 2. Right socket connects to a local service (e.g., remote client -> dae -> local service)
-func isLocalConnAny(a, b netproxy.Conn) bool {
-	aTCP, aOk := unwrapRelayTCPConn(a)
-	if !aOk {
-		return false
-	}
-	bTCP, bOk := unwrapRelayTCPConn(b)
-	if !bOk {
-		return false
-	}
-	return isLocalConnection(aTCP, bTCP)
 }
 
 func isRelayFastPathWhitelistedConn(c netproxy.Conn) bool {

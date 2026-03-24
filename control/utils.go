@@ -9,10 +9,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"net/netip"
 	"os"
-	stderrors "errors"
 	"structs"
 	"syscall"
 	"unsafe"
@@ -69,7 +69,8 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 
 	// Scheme3: Routing is embedded in conn_state maps. Try to retrieve from the appropriate map.
 	var routingResult bpfRoutingResult
-	if l4proto == unix.IPPROTO_TCP {
+	switch l4proto {
+	case unix.IPPROTO_TCP:
 		var connState bpfTcpConnState
 		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
@@ -87,7 +88,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		routingResult.Dscp = connState.Dscp
 		copy(routingResult.Pname[:], connState.Pname[:])
 		routingResult.Pid = connState.Pid
-	} else if l4proto == unix.IPPROTO_UDP {
+	case unix.IPPROTO_UDP:
 		var connState bpfUdpConnState
 		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
@@ -105,7 +106,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		routingResult.Dscp = connState.Dscp
 		copy(routingResult.Pname[:], connState.Pname[:])
 		routingResult.Pid = connState.Pid
-	} else {
+	default:
 		return nil, ebpf.ErrKeyNotExist
 	}
 

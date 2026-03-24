@@ -223,9 +223,7 @@ type mockRoutingMatcher struct {
 
 func (m *mockRoutingMatcher) Match(src, dst [16]byte, sport, dport uint16, ipVersion consts.IpVersionType, l4proto consts.L4ProtoType, domain string) (uint8, uint32, bool, error) {
 	// Simplified routing logic
-	if dport == 53 {
-		return 1, 0, false, nil // DNS -> direct
-	}
+	_ = dport
 	return 0, 0, false, nil
 }
 
@@ -459,9 +457,7 @@ func BenchmarkPortCheck(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			dport := packets[i%len(packets)]
-			if dport == 53 {
-				// Skip
-			}
+			_ = dport
 		}
 	})
 

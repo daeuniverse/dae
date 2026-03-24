@@ -24,24 +24,24 @@ func TestConnSnifferWriteToBufferFlush(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	conn2, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 
 	conn1, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	// Simulate pre-buffered sniff data (e.g. TLS ClientHello).
 	sniffer := NewConnSniffer(conn1, 0)
-	sniffer.Sniffer.buf.Reset()
-	sniffer.Sniffer.buf.Write([]byte("BUFFERED_DATA"))
+	sniffer.buf.Reset()
+	_, _ = sniffer.buf.Write([]byte("BUFFERED_DATA"))
 
 	var _ io.WriterTo = sniffer // interface must be satisfied
 
@@ -50,8 +50,8 @@ func TestConnSnifferWriteToBufferFlush(t *testing.T) {
 		testData[i] = byte(i % 256)
 	}
 	go func() {
-		conn2.Write(testData)
-		conn2.Close()
+		_, _ = conn2.Write(testData)
+		_ = conn2.Close()
 	}()
 
 	var buf bytes.Buffer
@@ -79,7 +79,7 @@ func TestConnSnifferReadFromForwardsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	done := make(chan []byte, 1)
 	go func() {
@@ -88,7 +88,7 @@ func TestConnSnifferReadFromForwardsData(t *testing.T) {
 			done <- nil
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		data, _ := io.ReadAll(conn)
 		done <- data
 	}()
@@ -97,7 +97,7 @@ func TestConnSnifferReadFromForwardsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	sniffer := NewConnSniffer(conn1, 0)
 
@@ -114,7 +114,7 @@ func TestConnSnifferReadFromForwardsData(t *testing.T) {
 	if n != int64(len(testData)) {
 		t.Errorf("expected %d bytes, got %d", len(testData), n)
 	}
-	conn1.Close()
+	_ = conn1.Close()
 
 	received := <-done
 	if !bytes.Equal(received, testData) {
@@ -130,13 +130,13 @@ func TestConnSnifferSyscallConnNotExposed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	conn, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sniffer := NewConnSniffer(conn, 0)
 
@@ -162,20 +162,20 @@ func BenchmarkWriteToBufferFlush(b *testing.B) {
 		c1, _ := l.Accept()
 
 		sniffer := NewConnSniffer(c1, 0)
-		sniffer.Sniffer.buf.Write([]byte("BUFFERED"))
+		_, _ = sniffer.buf.Write([]byte("BUFFERED"))
 
 		data := make([]byte, 1024*1024)
 		go func() {
-			c2.Write(data)
-			c2.Close()
+			_, _ = c2.Write(data)
+			_ = c2.Close()
 		}()
 
 		var buf bytes.Buffer
-		sniffer.WriteTo(&buf)
+		_, _ = sniffer.WriteTo(&buf)
 
-		c1.Close()
-		c2.Close()
-		l.Close()
+		_ = c1.Close()
+		_ = c2.Close()
+		_ = l.Close()
 	}
 }
 
@@ -186,31 +186,31 @@ func TestConnSnifferWriteToViaCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	conn2, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 
 	conn1, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	sniffer := NewConnSniffer(conn1, 0)
-	sniffer.Sniffer.buf.Reset()
-	sniffer.Sniffer.buf.Write([]byte("HELLO"))
+	sniffer.buf.Reset()
+	_, _ = sniffer.buf.Write([]byte("HELLO"))
 
 	testData := make([]byte, 10*1024)
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
 	go func() {
-		conn2.Write(testData)
-		conn2.Close()
+		_, _ = conn2.Write(testData)
+		_ = conn2.Close()
 	}()
 
 	var buf bytes.Buffer

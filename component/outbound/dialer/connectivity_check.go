@@ -274,7 +274,8 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
-		ctx = context.WithValue(ctx, "logger", c.Log)
+		type contextKey string
+		ctx = context.WithValue(ctx, contextKey("logger"), c.Log)
 		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
@@ -315,7 +316,7 @@ type CheckOption struct {
 func (d *Dialer) ActivateCheck() {
 	d.tickerMu.Lock()
 	defer d.tickerMu.Unlock()
-	if d.InstanceOption.DisableCheck || d.checkActivated {
+	if d.DisableCheck || d.checkActivated {
 		return
 	}
 	d.checkActivated = true
@@ -510,10 +511,7 @@ func (d *Dialer) aliveBackground() {
 		return false
 	}
 
-	if checkUnused() {
-		// Just for early exit if initial state is unused.
-		// But we wait for first check below.
-	}
+	_ = checkUnused()
 
 	registerConnectivityCheckDialer()
 
@@ -764,12 +762,13 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	// UDP/TCP robustness: only mark unavailable after consecutive failures.
 	// This protects against transient network interference.
 	threshold := 1
-	if typ.L4Proto == consts.L4ProtoStr_UDP {
+	switch typ.L4Proto {
+	case consts.L4ProtoStr_UDP:
 		if isTraffic {
 			// Higher threshold for data traffic to avoid flipping during transient jitter.
 			threshold = 50
 		}
-	} else if typ.L4Proto == consts.L4ProtoStr_TCP {
+	case consts.L4ProtoStr_TCP:
 		if isTraffic {
 			// Balance "fast discovery" of failures with resilience to noise.
 			threshold = 10
@@ -928,7 +927,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, networkIdx int, u *netutils.URL,
 		}
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Judge the status code.
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {

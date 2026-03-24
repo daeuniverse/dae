@@ -139,13 +139,13 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	if conf.Global.PprofPort != 0 {
 		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
 		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go pprofServer.ListenAndServe()
+		go func() { _ = pprofServer.ListenAndServe() }()
 	}
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
 
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -154,7 +154,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		readyChan := make(chan bool, 1)
 		go func() {
 			if <-readyChan {
-				sdnotify.Ready()
+				_ = sdnotify.Ready()
 				if !disablePidFile {
 					_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 				}
@@ -196,7 +196,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			} else {
 				log.Warnln("[Reload] Received reload signal; prepare to reload")
 			}
-			sdnotify.Reloading()
+			_ = sdnotify.Reloading()
 			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
 			reloadingErr = nil
 
@@ -210,7 +210,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					log.WithFields(logrus.Fields{
 						"err": err,
 					}).Errorln("[Reload] Failed to reload")
-					sdnotify.Ready()
+					_ = sdnotify.Ready()
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
 					continue
 				}
@@ -225,7 +225,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					log.WithFields(logrus.Fields{
 						"err": err,
 					}).Errorln("[Reload] Failed to reload")
-					sdnotify.Ready()
+					_ = sdnotify.Ready()
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
 					continue
 				}
@@ -244,10 +244,10 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			portChanged := conf.Global.TproxyPort != newConf.Global.TproxyPort
 			if portChanged {
 				log.Warnf("[Reload] Tproxy port changed from %d to %d; will perform a full reload of eBPF programs", conf.Global.TproxyPort, newConf.Global.TproxyPort)
-				obj.Close()
+				_ = obj.Close()
 				obj = nil
 				if listener != nil {
-					listener.Close()
+					_ = listener.Close()
 					listener = nil
 				}
 			}
@@ -278,11 +278,11 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				}
 				newC, err = newControlPlane(ctx, log, obj, dnsCache, conf, externGeoDataDirs)
 				if err != nil {
-					sdnotify.Stopping()
+					_ = sdnotify.Stopping()
 					if obj != nil {
-						obj.Close()
+						_ = obj.Close()
 					}
-					c.Close()
+					_ = c.Close()
 					log.WithFields(logrus.Fields{
 						"err": err,
 					}).Fatalln("[Reload] Failed to roll back configuration")
@@ -304,9 +304,9 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 
 			// Ready to close.
 			if abortConnections {
-				oldC.AbortConnections()
+				_ = oldC.AbortConnections()
 			}
-			oldC.Close()
+			_ = oldC.Close()
 
 			if pprofServer != nil {
 				pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -317,7 +317,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			if newConf.Global.PprofPort != 0 {
 				pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
 				pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-				go pprofServer.ListenAndServe()
+				go func() { _ = pprofServer.ListenAndServe() }()
 			}
 
 			sendSigExit(sigs)
@@ -354,7 +354,7 @@ loop:
 						sendSigExit(sigs)
 					}()
 					<-readyChan
-					sdnotify.Ready()
+					_ = sdnotify.Ready()
 					if reloadingErr == nil {
 						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
 					} else {
@@ -381,7 +381,7 @@ loop:
 					sendSigExit(sigs)
 				}()
 				<-readyChan
-				sdnotify.Ready()
+				_ = sdnotify.Ready()
 				if reloadingErr == nil {
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
 				} else {
@@ -416,14 +416,14 @@ loop:
 		}
 	}
 	defer func() {
-		sdnotify.Stopping()
+		_ = sdnotify.Stopping()
 		if pprofServer != nil {
 			log.Infoln("Shutting down pprof server")
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = pprofServer.Shutdown(ctx)
 			cancel()
 		}
-		os.Remove(PidFilePath)
+		_ = os.Remove(PidFilePath)
 	}()
 
 	// Restore network state immediately.
@@ -517,7 +517,7 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 				}
 				continue
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 				break
 			}
@@ -595,7 +595,6 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 		}
 		close(results)
 		log.Infof("Subscriptions fetched in %v", time.Since(stageStart))
-		stageStart = time.Now()
 	}
 
 	// Delete all files in persist.d that are not in tagToNodeList

@@ -64,7 +64,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			Network: opt.UpstreamResolverNetwork,
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
 				return func(raw *url.URL, upstream *Upstream) (err error) {
-					if opt != nil && opt.UpstreamReadyCallback != nil {
+					if opt.UpstreamReadyCallback != nil { // Redundant comparison 'opt != nil' removed
 						if err = opt.UpstreamReadyCallback(upstream); err != nil {
 							return err
 						}
@@ -116,7 +116,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	}
 	if len(dns.Upstream) == 0 {
 		// Immediately ready.
-		go opt.UpstreamReadyCallback(nil)
+		go func() { _ = opt.UpstreamReadyCallback(nil) }()
 	}
 	return s, nil
 }

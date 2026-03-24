@@ -42,9 +42,6 @@ func TestUpstreamResolver_ErrorSentinelRetry(t *testing.T) {
 // TestUpstreamResolver_ErrorSentinelIdentity tests that errorSentinel is a singleton.
 func TestUpstreamResolver_ErrorSentinelIdentity(t *testing.T) {
 	// All comparisons to errorSentinel should use pointer equality
-	if &errorSentinel != &errorSentinel {
-		t.Error("errorSentinel should be a singleton")
-	}
 }
 
 // TestUpstreamResolver_StateTransitions tests the state machine transitions.

@@ -106,9 +106,9 @@ func writeGo(path string, spec syncSpec) error {
 	b.WriteString("const (\n")
 	for i, name := range spec.MatchTypes {
 		if i == 0 {
-			b.WriteString(fmt.Sprintf("\tMatchType_%s MatchType = iota\n", name))
+			fmt.Fprintf(&b, "\tMatchType_%s MatchType = iota\n", name)
 		} else {
-			b.WriteString(fmt.Sprintf("\tMatchType_%s\n", name))
+			fmt.Fprintf(&b, "\tMatchType_%s\n", name)
 		}
 	}
 	b.WriteString(")\n\n")
@@ -116,7 +116,7 @@ func writeGo(path string, spec syncSpec) error {
 	b.WriteString("type OutboundIndex uint8\n\n")
 	b.WriteString("const (\n")
 	for _, nv := range spec.Outbound {
-		b.WriteString(fmt.Sprintf("\t%s OutboundIndex = 0x%X\n", goOutboundName(nv.Name), nv.Value))
+		fmt.Fprintf(&b, "\t%s OutboundIndex = 0x%X\n", goOutboundName(nv.Name), nv.Value)
 	}
 	b.WriteString("\tOutboundUserDefinedMin OutboundIndex = OutboundBlock + 1\n")
 	b.WriteString("\tOutboundUserDefinedMax               = OutboundMustRules - 1\n")
@@ -125,7 +125,7 @@ func writeGo(path string, spec syncSpec) error {
 	b.WriteString("type L4ProtoType uint8\n\n")
 	b.WriteString("const (\n")
 	for _, nv := range spec.L4Proto {
-		b.WriteString(fmt.Sprintf("\t%s L4ProtoType = %d\n", goL4Name(nv.Name), nv.Value))
+		fmt.Fprintf(&b, "\t%s L4ProtoType = %d\n", goL4Name(nv.Name), nv.Value)
 	}
 	b.WriteString("\tL4ProtoType_TCP_UDP L4ProtoType = L4ProtoType_X\n")
 	b.WriteString(")\n\n")
@@ -133,7 +133,7 @@ func writeGo(path string, spec syncSpec) error {
 	b.WriteString("type IpVersionType uint8\n\n")
 	b.WriteString("const (\n")
 	for _, nv := range spec.IpVersion {
-		b.WriteString(fmt.Sprintf("\t%s IpVersionType = %d\n", goIPVersionName(nv.Name), nv.Value))
+		fmt.Fprintf(&b, "\t%s IpVersionType = %d\n", goIPVersionName(nv.Name), nv.Value)
 	}
 	b.WriteString(")\n")
 
@@ -152,25 +152,25 @@ func writeHeader(path string, spec syncSpec) error {
 	b.WriteString("#define DAE_EBPF_SYNC_DEFS_H\n\n")
 
 	for _, nv := range spec.Outbound {
-		b.WriteString(fmt.Sprintf("#define OUTBOUND_%s 0x%X\n", nv.Name, nv.Value))
+		fmt.Fprintf(&b, "#define OUTBOUND_%s 0x%X\n", nv.Name, nv.Value)
 	}
 	b.WriteString("\n")
 
 	b.WriteString("enum __attribute__((packed)) MatchType {\n")
 	for i, name := range spec.MatchTypes {
-		b.WriteString(fmt.Sprintf("\tMatchType_%s = %d,\n", name, i))
+		fmt.Fprintf(&b, "\tMatchType_%s = %d,\n", name, i)
 	}
 	b.WriteString("};\n\n")
 
 	b.WriteString("enum L4ProtoType {\n")
 	for _, nv := range spec.L4Proto {
-		b.WriteString(fmt.Sprintf("\tL4ProtoType_%s = %d,\n", nv.Name, nv.Value))
+		fmt.Fprintf(&b, "\tL4ProtoType_%s = %d,\n", nv.Name, nv.Value)
 	}
 	b.WriteString("};\n\n")
 
 	b.WriteString("enum IpVersionType {\n")
 	for _, nv := range spec.IpVersion {
-		b.WriteString(fmt.Sprintf("\tIpVersionType_%s = %d,\n", nv.Name, nv.Value))
+		fmt.Fprintf(&b, "\tIpVersionType_%s = %d,\n", nv.Name, nv.Value)
 	}
 	b.WriteString("};\n\n")
 

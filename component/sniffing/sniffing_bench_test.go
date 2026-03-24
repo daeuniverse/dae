@@ -29,7 +29,7 @@ func init() {
 func BenchmarkStringSet(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var test [5]byte
-		fastrand.Read(test[:])
+		_, _ = fastrand.Read(test[:])
 		method := string(test[:])
 		_, ok := httpMethodSet[method]
 		if !ok {
@@ -41,7 +41,7 @@ func BenchmarkStringSet(b *testing.B) {
 func BenchmarkStringSwitch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var test [5]byte
-		fastrand.Read(test[:])
+		_, _ = fastrand.Read(test[:])
 		method := string(test[:])
 		if !common.IsValidHttpMethod(method) {
 			benchmarkSink = method

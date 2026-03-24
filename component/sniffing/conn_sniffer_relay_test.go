@@ -79,7 +79,7 @@ func TestWriteToFlushesPrebufferedData(t *testing.T) {
 
 	// Simulate bytes already consumed into the sniff buffer (e.g. TLS ClientHello).
 	prebuf := []byte("PRE_BUFFERED")
-	sniffer.Sniffer.buf.Write(prebuf)
+	_, _ = sniffer.buf.Write(prebuf)
 
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, sniffer)

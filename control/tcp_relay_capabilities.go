@@ -6,10 +6,8 @@
 package control
 
 import (
-	"fmt"
 	"io"
 	"net"
-	"strings"
 
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -64,36 +62,4 @@ func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
 		}
 	}
 	return nil, false
-}
-
-func relayConnChain(conn any) string {
-	// Build the chain string by unwrapping and collecting types.
-	// Iterative approach avoids function call overhead while building the full chain.
-	var chain []string
-	for depth := 0; depth < relayConnChainMaxDepth; depth++ {
-		if conn == nil {
-			return "<nil>"
-		}
-
-		switch c := conn.(type) {
-		case *net.TCPConn:
-			chain = append(chain, fmt.Sprintf("%T", c))
-			return strings.Join(chain, " -> ")
-		case *prefixedConn:
-			chain = append(chain, fmt.Sprintf("%T", c))
-			conn = c.Conn
-		case *sniffing.ConnSniffer:
-			chain = append(chain, fmt.Sprintf("%T", c))
-			conn = c.Conn
-		case netproxy.UnderlyingConnProvider:
-			chain = append(chain, fmt.Sprintf("%T", c))
-			conn = c.UnderlyingConn()
-		default:
-			// Unknown type - add it and stop
-			chain = append(chain, fmt.Sprintf("%T", c))
-			return strings.Join(chain, " -> ")
-		}
-	}
-	// Max depth reached
-	return fmt.Sprintf("%T -> <max-depth>", conn)
 }

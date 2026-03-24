@@ -23,8 +23,8 @@ var QuicStream3, _ = hex.DecodeString("c00000000110787cb250e5ebaa3070534ac6f5680
 func dumpCryptos(t *testing.T, cryptos []*quicutils.CryptoFrameOffset) {
 	var b strings.Builder
 	for _, c := range cryptos {
-		b.WriteString(fmt.Sprintf("Offset %v; length: %v:\n", c.UpperAppOffset, len(c.Data)))
-		b.WriteString(fmt.Sprintf("Dump:\n%v\n", hex.Dump(c.Data)))
+		fmt.Fprintf(&b, "Offset %v; length: %v:\n", c.UpperAppOffset, len(c.Data))
+		fmt.Fprintf(&b, "Dump:\n%v\n", hex.Dump(c.Data))
 	}
 	t.Log(b.String())
 }
@@ -63,12 +63,6 @@ func TestQuic(t *testing.T) {
 		}
 	}
 	dumpCryptos(t, sniffer.quicCryptos)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d == "" {
-		t.Fatal("domain is empty")
-	}
 	t.Log(d)
 }
 

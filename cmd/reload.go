@@ -49,12 +49,12 @@ var (
 			}
 			pid, err := strconv.Atoi(args[0])
 			if err != nil {
-				cmd.Help()
+				_ = cmd.Help()
 				os.Exit(1)
 			}
 			if abort {
 				if f, err := os.Create(AbortFile); err == nil {
-					f.Close()
+					_ = f.Close()
 				}
 			}
 			// Read the first line of SignalProgressFilePath.
@@ -65,7 +65,7 @@ var (
 				return
 			}
 			// Set the progress as ReloadSend.
-			os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadSend}, 0644)
+			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadSend}, 0644)
 			// Send signal.
 			if err = syscall.Kill(pid, syscall.SIGUSR1); err != nil {
 				fmt.Println(err)

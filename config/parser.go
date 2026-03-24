@@ -20,7 +20,7 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 	}
 	to = to.Elem()
 	if to.Type() != reflect.TypeFor[[]string]() &&
-		!(to.Kind() == reflect.Slice && to.Type().Elem().Kind() == reflect.String) {
+		(to.Kind() != reflect.Slice || to.Type().Elem().Kind() != reflect.String) {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
 	for _, item := range section.Items {

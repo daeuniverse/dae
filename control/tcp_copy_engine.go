@@ -17,7 +17,8 @@ const relayCopyBufferSize = 32 << 10
 
 var relayCopyBufferPool = sync.Pool{
 	New: func() any {
-		return make([]byte, relayCopyBufferSize)
+		b := make([]byte, relayCopyBufferSize)
+		return &b
 	},
 }
 
@@ -42,8 +43,9 @@ func (defaultRelayCopyEngine) Copy(ctx context.Context, dst netproxy.Conn, src n
 		return relayFastCopy(ctx, dst, src)
 	}
 	// Slow path: will call Read() on wrapped connections
-	buf := relayCopyBufferPool.Get().([]byte)
-	defer relayCopyBufferPool.Put(buf)
+	bufPtr := relayCopyBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer relayCopyBufferPool.Put(bufPtr)
 	return relayCopyLoop(ctx, dst, src, buf)
 }
 

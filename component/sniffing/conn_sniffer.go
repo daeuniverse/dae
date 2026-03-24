@@ -18,7 +18,8 @@ const relayBufSize = 32 << 10 // 32 KB, matches control.relayCopyBufferSize
 
 var relayBufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, relayBufSize)
+		b := make([]byte, relayBufSize)
+		return &b
 	},
 }
 
@@ -65,15 +66,15 @@ func (s *ConnSniffer) TakeRelayPrefix() []byte {
 	if s.Sniffer == nil {
 		return nil
 	}
-	<-s.Sniffer.dataReady
+	<-s.dataReady
 
-	s.Sniffer.readMu.RLock()
-	defer s.Sniffer.readMu.RUnlock()
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 
-	if s.Sniffer.buf == nil || s.Sniffer.buf.Len() == 0 {
+	if s.buf == nil || s.buf.Len() == 0 {
 		return nil
 	}
-	return s.Sniffer.buf.Next(s.Sniffer.buf.Len())
+	return s.buf.Next(s.buf.Len())
 }
 
 func (s *ConnSniffer) Close() (err error) {
@@ -100,15 +101,15 @@ func (s *ConnSniffer) Close() (err error) {
 func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 	// Flush buffered sniff data (e.g. TLS ClientHello already read).
 	if s.Sniffer != nil {
-		s.Sniffer.readMu.Lock()
-		if s.Sniffer.buf.Len() > 0 {
-			n, err = s.Sniffer.buf.WriteTo(w)
-			s.Sniffer.readMu.Unlock()
+		s.readMu.Lock()
+		if s.buf.Len() > 0 {
+			n, err = s.buf.WriteTo(w)
+			s.readMu.Unlock()
 			if err != nil {
 				return n, err
 			}
 		} else {
-			s.Sniffer.readMu.Unlock()
+			s.readMu.Unlock()
 		}
 	}
 
@@ -120,8 +121,9 @@ func (s *ConnSniffer) WriteTo(w io.Writer) (n int64, err error) {
 	}
 
 	// Fallback: use buffered copy for non-TCP or wrapped connections.
-	buf := relayBufPool.Get().([]byte)
-	defer relayBufPool.Put(buf)
+	bufPtr := relayBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer relayBufPool.Put(bufPtr)
 	copied, err := io.CopyBuffer(w, s.Conn, buf)
 	return n + copied, err
 }
@@ -157,8 +159,9 @@ func (s *ConnSniffer) getUnderlyingTCPConn(w io.Writer) (*net.TCPConn, bool) {
 //
 // Data flow: remote proxy/server → ConnSniffer (client)
 func (s *ConnSniffer) ReadFrom(r io.Reader) (int64, error) {
-	buf := relayBufPool.Get().([]byte)
-	defer relayBufPool.Put(buf)
+	bufPtr := relayBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer relayBufPool.Put(bufPtr)
 	return copyDirect(s.Conn, r, buf)
 }
 

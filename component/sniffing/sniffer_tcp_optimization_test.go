@@ -216,7 +216,7 @@ func TestSniffTcp_NetConnReadDeadlineLifecycle(t *testing.T) {
 			"Host: lifecycle.example.com\r\n\r\n",
 	))
 	s := NewStreamSniffer(conn, 100*time.Millisecond)
-	defer s.Close()
+	defer func() { _ = s.Close() }() 
 
 	domain, err := s.SniffTcp()
 	if err != nil {
@@ -241,7 +241,7 @@ func TestSniffTcp_NetConnReadDeadlineLifecycle(t *testing.T) {
 func TestSniffTcp_NetConnTimeoutBehavior(t *testing.T) {
 	conn := &deadlineBlockConn{}
 	s := NewStreamSniffer(conn, 20*time.Millisecond)
-	defer s.Close()
+	defer func() { _ = s.Close() }() 
 
 	done := make(chan error, 1)
 	go func() {
@@ -282,7 +282,7 @@ func TestSniffTcp_NetConnAvoidsAsyncContextOnDeadlinePath(t *testing.T) {
 			"Host: noasync.example.com\r\n\r\n",
 	))
 	s := NewStreamSniffer(conn, 100*time.Millisecond)
-	defer s.Close()
+	defer func() { _ = s.Close() }() 
 
 	if s.ctx != nil {
 		t.Fatal("expected async context to be nil before sniffing")
@@ -306,7 +306,7 @@ func TestSniffTcp_AsyncFallbackCreatesContextLazily(t *testing.T) {
 			"Host: async.example.com\r\n\r\n",
 	))
 	s := NewStreamSniffer(conn, 100*time.Millisecond)
-	defer s.Close()
+	defer func() { _ = s.Close() }() 
 
 	if s.ctx != nil {
 		t.Fatal("expected async context to be nil before fallback")

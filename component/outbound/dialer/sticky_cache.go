@@ -27,11 +27,6 @@ func invalidateProxyCache(proxyAddr string) {
 	globalProxyIpCache.Invalidate(proxyAddr)
 }
 
-// invalidateProxyProtocolCache removes the cached IP for a specific protocol (tcp/udp).
-// This allows TCP and UDP to maintain separate caches when one fails.
-func invalidateProxyProtocolCache(proxyAddr, network string) {
-	globalProxyIpCache.InvalidateProtocol(proxyAddr, network)
-}
 
 // proxyIpHealthTracker tracks consecutive failures for proxy IPs.
 type proxyIpHealthTracker struct {

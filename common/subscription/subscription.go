@@ -106,7 +106,7 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// Check file access.
 	fi, err := f.Stat()
 	if err != nil {
@@ -170,7 +170,6 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		}
 		persistToFile = true
 		subscription = strings.Replace(subscription, "-file", "", 1)
-		break
 	default:
 	}
 	req, err = http.NewRequest("GET", subscription, nil)
@@ -194,7 +193,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 
 		return "", nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return "", nil, err
@@ -214,7 +213,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		if err != nil {
 			return "", nil, err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		_, err = file.Write(b)
 		if err != nil {

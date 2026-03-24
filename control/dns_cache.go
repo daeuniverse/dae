@@ -21,12 +21,6 @@ import (
 // while maintaining acceptable TTL accuracy (15s variance is negligible for DNS caching).
 const ttlRefreshThresholdSeconds = 15
 
-// Stale-while-revalidate configuration (RFC 8767: DNS Server Optimistic Cache)
-// When cache expires, we still return stale response if within this window.
-// Meanwhile, background refresh is triggered to update the cache.
-// This significantly improves cache hit rate and reduces latency for end users.
-const staleWhileRevalidateSeconds = 60
-
 // BPF update configuration
 const (
 	// MinBpfUpdateInterval is the minimum time between BPF map updates for the same cache.

@@ -15,21 +15,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// mockBpfObjects is a minimal mock for testing
-type mockBpfObjects struct{}
-
-func (m *mockBpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (*mockLpmMap, error) {
-	return &mockLpmMap{count: len(keys)}, nil
-}
-
-type mockLpmMap struct {
-	count int
-}
-
-func (m *mockLpmMap) Close() error {
-	return nil
-}
-
 // generateMockGeoIpRules generates rules simulating multiple geoip references
 // Returns the number of rules and unique countries for testing
 func generateMockGeoIpRules(numCountries int) (rules int, uniqueCountries []string) {

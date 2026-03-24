@@ -54,8 +54,8 @@ func TestDNSFastPath_ExcludeLocalListener(t *testing.T) {
 // are correctly handled by the fast path.
 func TestDNSFastPath_RemoteDNSHandling(t *testing.T) {
 	testCases := []struct {
-		name          string
-		dst           string
+		name           string
+		dst            string
 		shouldFastPath bool
 	}{
 		{"Google DNS", "8.8.8.8:53", true},
@@ -82,9 +82,9 @@ func TestDNSFastPath_RemoteDNSHandling(t *testing.T) {
 // TestDNSMessage_ValidDNSDetection tests DNS message validation.
 func TestDNSMessage_ValidDNSDetection(t *testing.T) {
 	testCases := []struct {
-		name      string
-		data      []byte
-		isValid   bool
+		name    string
+		data    []byte
+		isValid bool
 	}{
 		{
 			name:    "Valid DNS query",

@@ -48,7 +48,6 @@ type controlPlaneCore struct {
 	// tcpRelayOffload is permanently disabled due to kernel panic issues.
 	// See: https://github.com/daeuniverse/dae/pull/912
 	// Field preserved for ABI compatibility; always remains false.
-	tcpRelayOffload bool
 
 	kernelVersion *internal.Version
 
@@ -340,10 +339,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL2.FD()
+		filterIngress.Fd = c.bpf.TproxyLanIngressL2.FD()
 		filterIngress.Name = filterIngress.Name + "_l2"
 	} else {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL3.FD()
+		filterIngress.Fd = c.bpf.TproxyLanIngressL3.FD()
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	// Remove and add.
@@ -377,10 +376,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL2.FD()
+		filterEgress.Fd = c.bpf.TproxyLanEgressL2.FD()
 		filterEgress.Name = filterEgress.Name + "_l2"
 	} else {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL3.FD()
+		filterEgress.Fd = c.bpf.TproxyLanEgressL3.FD()
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	// Remove and add.
@@ -462,7 +461,7 @@ func (c *controlPlaneCore) setupTCPRelayOffload() error {
 
 // bindWan supports lazy-bind if interface `ifname` is not found.
 // bindWan supports rebinding when the interface `ifname` is detected in the future.
-func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) {
+func (c *controlPlaneCore) bindWan(ifname string) {
 	initlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == HostVethName {
 			return
@@ -536,10 +535,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL2.FD()
+		filterEgress.Fd = c.bpf.TproxyWanEgressL2.FD()
 		filterEgress.Name = filterEgress.Name + "_l2"
 	} else {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL3.FD()
+		filterEgress.Fd = c.bpf.TproxyWanEgressL3.FD()
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	// Best effort to remove old filter; it may not exist.
@@ -571,10 +570,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL2.FD()
+		filterIngress.Fd = c.bpf.TproxyWanIngressL2.FD()
 		filterIngress.Name = filterIngress.Name + "_l2"
 	} else {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL3.FD()
+		filterIngress.Fd = c.bpf.TproxyWanIngressL3.FD()
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	// Best effort to remove old filter; it may not exist.
@@ -617,7 +616,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  0,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyDae0peerIngress.FD(),
+		Fd:           c.bpf.TproxyDae0peerIngress.FD(),
 		Name:         consts.AppName + "_dae0peer_ingress",
 		DirectAction: true,
 	}
@@ -633,7 +632,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	if !c.isReload {
 		// Clean up thoroughly: delete the filter with the flipped handle.
 		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
-		filterIngressFlipped.FilterAttrs.Handle ^= 1
+		filterIngressFlipped.Handle ^= 1
 		daens.WithBestEffort("delete flipped dae0peer ingress filter", func() error {
 			err := netlink.FilterDel(filterIngressFlipped)
 			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
@@ -672,7 +671,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  0,
 		},
-		Fd:           c.bpf.bpfPrograms.TproxyDae0Ingress.FD(),
+		Fd:           c.bpf.TproxyDae0Ingress.FD(),
 		Name:         consts.AppName + "_dae0_ingress",
 		DirectAction: true,
 	}
@@ -701,7 +700,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 // stale filter from a previous run that used the opposite flip value.
 func tryDeleteFlippedFilter(f *netlink.BpfFilter) {
 	flipped := deepcopy.Copy(f).(*netlink.BpfFilter)
-	flipped.FilterAttrs.Handle ^= 1
+	flipped.Handle ^= 1
 	_ = netlink.FilterDel(flipped)
 }
 
@@ -807,5 +806,4 @@ func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 		c.bpfEjected = false
 		c.deferFuncs = append([]func() error{bpf.Close}, c.deferFuncs...)
 	}
-	return
 }

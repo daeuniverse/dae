@@ -165,7 +165,7 @@ func TestBpfBugsVerification(t *testing.T) {
 	for _, progset := range progsets {
 		// Only run bug verification tests
 		if !strings.HasPrefix(strings.ToLower(progset.id), "bug_") &&
-		   !strings.HasPrefix(strings.ToLower(progset.id), "bugcombined") {
+			!strings.HasPrefix(strings.ToLower(progset.id), "bugcombined") {
 			continue
 		}
 

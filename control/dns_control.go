@@ -559,7 +559,7 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 	// Step 2: LRU eviction if cache size exceeds limit
 	// This is important when optimistic_cache_ttl=0 (never expire)
 	if c.maxCacheSize > 0 {
-		c.evictLRUIfFull(now)
+		c.evictLRUIfFull()
 	}
 }
 
@@ -568,7 +568,7 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 // full sort (O(n log n)) or insertion sort (O(n²)) for better performance
 // with large caches. For typical cache sizes (<1000), the overhead is negligible.
 // For large caches (>5000), this is 10-100x faster than insertion sort.
-func (c *DnsController) evictLRUIfFull(now time.Time) {
+func (c *DnsController) evictLRUIfFull() {
 	// Count current cache size
 	var count int
 	c.dnsCache.Range(func(_, _ any) bool {
@@ -1270,7 +1270,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+		if err = sendPkt(data, req.realDst, req.realSrc, nil); err != nil {
 			return err
 		}
 		return nil
@@ -1497,157 +1497,35 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
-		// OPTIMIZATION: Different strategies for local vs remote DNS servers
-		//
-		// For LOCAL DNS servers (0.0.0.0:53, 127.0.0.1:53, private IPs):
-		// - Use lConn directly (fast, no cross-network bind needed)
-		// - Source address may be local IP, but acceptable for local DNS
-		//
-		// For REMOTE DNS servers (8.8.8.8:53, etc.):
-		// - Use sendPkt with IP_TRANSPARENT socket
-		// - Ensures correct source address (DNS server IP)
-		// - Slower due to cross-network socket bind, but AnyfromPool caches sockets
-		dstAddr := req.realDst.Addr()
-
-		// Refined local DNS detection:
-		// Only use lConn for queries to 0.0.0.0:53 (wildcard DNS listener).
-		// For specific IPs (including local IPs like 10.62.62.5), use sendPkt to ensure
-		// the response source address matches the query destination address.
-		//
-		// Why: If a client queries 10.62.62.5:53, they expect a response from 10.62.62.5:53.
-		// Using lConn would send from a different IP (e.g., 192.168.4.87), causing the client
-		// to drop the response as source address mismatch.
-		isLocalDNS := dstAddr.IsUnspecified() // Only 0.0.0.0 or ::
-
-		if isLocalDNS {
-			// Fast path for wildcard DNS (0.0.0.0:53): use lConn directly
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"src":       req.realSrc.String(),
-					"dst":       req.realDst.String(),
-					"resp_size": len(patchedResp),
-					"method":    "lConn (local DNS)",
-				}).Debug("Sending DNS response via lConn for local DNS server")
-			}
-			if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
-				if c.log.IsLevelEnabled(logrus.WarnLevel) {
-					c.log.WithFields(logrus.Fields{
-						"src":   req.realSrc.String(),
-						"dst":   req.realDst.String(),
-						"error": err.Error(),
-					}).Warn("lConn failed for local DNS response")
-				}
-				// Don't fallback to sendPkt for local DNS
-				return fmt.Errorf("failed to write local DNS resp: %w", err)
-			}
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithFields(logrus.Fields{
-					"src":    req.realSrc.String(),
-					"dst":    req.realDst.String(),
-					"method": "lConn (local DNS)",
-				}).Debug("Successfully sent DNS response via lConn for local DNS")
-			}
+		// PREFER using original lConn for responses to maintain source address consistency.
+		// This is critical for NAT loopback and port mapping scenarios, especially IPv6.
+		// Fallback to sendPkt with Anyfrom pool if lConn write fails.
+		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
 			return nil
 		}
 
-		// Remote DNS: use sendPkt with IP_TRANSPARENT socket
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
-				"src":       req.realSrc.String(),
-				"dst":       req.realDst.String(),
-				"resp_size": len(patchedResp),
-				"method":    "sendPkt (remote DNS)",
-			}).Debug("Sending DNS response via sendPkt for remote DNS server")
-		}
-
-		if sendErr := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); sendErr != nil {
-			if c.log.IsLevelEnabled(logrus.ErrorLevel) {
-				c.log.WithFields(logrus.Fields{
-					"src":       req.realSrc.String(),
-					"dst":       req.realDst.String(),
-					"error":     sendErr.Error(),
-					"method":    "sendPkt (remote DNS)",
-				}).Error("sendPkt failed for remote DNS response")
-			}
-			return fmt.Errorf("failed to write remote DNS resp: %w", sendErr)
-		}
-
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
-				"src":    req.realSrc.String(),
-				"dst":    req.realDst.String(),
-				"method": "sendPkt (remote DNS)",
-			}).Debug("Successfully sent DNS response via sendPkt for remote DNS")
+		// lConn write failed, fallback to sendPkt
+		if err := sendPkt(patchedResp, req.realDst, req.realSrc, nil); err != nil {
+			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
 		return nil
 	}
 
 	// Fallback for oversized responses (rare)
-	// Use the same local vs remote DNS logic as above
 	patchedResp := make([]byte, len(resp))
 	copy(patchedResp, resp)
 	if len(resp) >= 2 {
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
 
-	// Apply same local vs remote logic
-	dstAddr := req.realDst.Addr()
-
-	// Use the same refined logic: only 0.0.0.0 uses lConn
-	isLocalDNS := dstAddr.IsUnspecified() // Only 0.0.0.0 or ::
-
-	if isLocalDNS {
-		// Local DNS (wildcard): use lConn
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
-				"src":       req.realSrc.String(),
-				"dst":       req.realDst.String(),
-				"resp_size": len(patchedResp),
-				"method":    "lConn (oversized, local DNS)",
-			}).Debug("Sending oversized DNS response via lConn for local DNS")
-		}
-		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
-			if c.log.IsLevelEnabled(logrus.ErrorLevel) {
-				c.log.WithFields(logrus.Fields{
-					"src":       req.realSrc.String(),
-					"dst":       req.realDst.String(),
-					"error":     err.Error(),
-					"method":    "lConn (oversized, local DNS)",
-				}).Error("lConn failed for oversized local DNS response")
-			}
-			return fmt.Errorf("failed to write oversized local DNS resp: %w", err)
-		}
+	// PREFER using original lConn for responses (same reasoning as above)
+	if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err == nil {
 		return nil
 	}
 
-	// Remote DNS: use sendPkt
-	if c.log.IsLevelEnabled(logrus.DebugLevel) {
-		c.log.WithFields(logrus.Fields{
-			"src":       req.realSrc.String(),
-			"dst":       req.realDst.String(),
-			"resp_size": len(patchedResp),
-			"method":    "sendPkt (oversized, remote DNS)",
-		}).Debug("Sending oversized DNS response via sendPkt for remote DNS")
-	}
-
-	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
-		if c.log.IsLevelEnabled(logrus.ErrorLevel) {
-			c.log.WithFields(logrus.Fields{
-				"src":       req.realSrc.String(),
-				"dst":       req.realDst.String(),
-				"error":     err.Error(),
-				"method":    "sendPkt (oversized, remote DNS)",
-			}).Error("sendPkt failed for oversized remote DNS response")
-		}
-		return fmt.Errorf("failed to write oversized remote DNS resp: %w", err)
-	}
-
-	if c.log.IsLevelEnabled(logrus.DebugLevel) {
-		c.log.WithFields(logrus.Fields{
-			"src":    req.realSrc.String(),
-			"dst":    req.realDst.String(),
-			"method": "sendPkt (oversized, remote DNS)",
-		}).Debug("Successfully sent oversized DNS response via sendPkt for remote DNS")
+	// lConn write failed, fallback to sendPkt
+	if err := sendPkt(patchedResp, req.realDst, req.realSrc, nil); err != nil {
+		return fmt.Errorf("failed to write cached DNS resp: %w", err)
 	}
 	return nil
 }
@@ -1683,7 +1561,7 @@ func (c *DnsController) sendDnsErrorResponse_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+	if err = sendPkt(data, req.realDst, req.realSrc, nil); err != nil {
 		return err
 	}
 	return nil
@@ -1708,7 +1586,7 @@ func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg
 // 2. Preferred response arrives (e.g., AAAA when prefer=6): Notify any waiting requests
 //
 // The function returns the response to use (preferred if arrived during wait, otherwise original).
-func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg, req *udpRequest) *dnsmessage.Msg {
+func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage.Msg {
 	// Fast path: preference not enabled
 	if c.qtypePrefer == 0 {
 		return respMsg
@@ -1807,23 +1685,22 @@ func (c *DnsController) dialSend(
 	}
 
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
-	dialArgument, err := c.bestDialerChooser(req, upstream)
+	dialArg, err := c.bestDialerChooser(req, upstream)
 	if err != nil {
 		return err
 	}
 
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
-	usedDialArgument := dialArgument
-
-	respMsg, usedDialArgument, err = c.forwardWithFallback(ctx, req, upstream, dialArgument, data)
+	var usedDialArg *dialArgument
+	respMsg, usedDialArg, err = c.forwardWithFallback(ctx, req, upstream, dialArg, data)
 	if err != nil {
 		return err
 	}
 
 	networkType := &dialer.NetworkType{
-		L4Proto:   usedDialArgument.l4proto,
-		IpVersion: usedDialArgument.ipversion,
+		L4Proto:   usedDialArg.l4proto,
+		IpVersion: usedDialArg.ipversion,
 		IsDns:     true,
 	}
 
@@ -1864,7 +1741,7 @@ func (c *DnsController) dialSend(
 
 	// Apply preference wait logic for A/AAAA responses.
 	// This must happen before logging and sending the response.
-	respMsg = c.applyPreferenceWait(respMsg, req)
+	respMsg = c.applyPreferenceWait(respMsg)
 
 	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.DebugLevel) {
 		var (
@@ -1878,9 +1755,9 @@ func (c *DnsController) dialSend(
 		}
 		fields := logrus.Fields{
 			"network":  networkType.String(),
-			"outbound": usedDialArgument.bestOutbound.Name,
-			"policy":   usedDialArgument.bestOutbound.GetSelectionPolicy(),
-			"dialer":   usedDialArgument.bestDialer.Property().Name,
+			"outbound": usedDialArg.bestOutbound.Name,
+			"policy":   usedDialArg.bestOutbound.GetSelectionPolicy(),
+			"dialer":   usedDialArg.bestDialer.Property().Name,
 			"_qname":   qname,
 			"qtype":    qtype,
 			"pid":      req.routingResult.Pid,
@@ -1890,7 +1767,7 @@ func (c *DnsController) dialSend(
 		}
 		switch upstreamIndex {
 		case consts.DnsResponseOutboundIndex_Accept:
-			c.log.WithFields(fields).Debugf("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(usedDialArgument.bestTarget))
+			c.log.WithFields(fields).Debugf("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(usedDialArg.bestTarget))
 		case consts.DnsResponseOutboundIndex_Reject:
 			c.log.WithFields(fields).Debugf("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
 		default:
@@ -1927,7 +1804,7 @@ func (c *DnsController) dialSend(
 		if err != nil {
 			return err
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+		if err = sendPkt(data, req.realDst, req.realSrc, nil); err != nil {
 			return err
 		}
 

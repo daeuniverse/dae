@@ -94,8 +94,8 @@ func checkIpNetkitSupport() bool {
 			majorStr := strings.TrimPrefix(parts[0], "iproute2-")
 			major := 0
 			minor := 0
-			fmt.Sscanf(majorStr, "%d", &major)
-			fmt.Sscanf(parts[1], "%d", &minor)
+			_, _ = fmt.Sscanf(majorStr, "%d", &major)
+			_, _ = fmt.Sscanf(parts[1], "%d", &minor)
 
 			// Check if version is < 6.7
 			if major < 6 || (major == 6 && minor < 7) {

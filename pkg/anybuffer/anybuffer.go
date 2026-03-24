@@ -36,8 +36,6 @@ const maxInt = int(^uint(0) >> 1)
 // so immediate changes to the slice will affect the result of future reads.
 func (b *Buffer[T]) Slice() []T { return b.buf }
 
-// empty reports whether the unread portion of the buffer is empty.
-func (b *Buffer[T]) empty() bool { return len(b.buf) <= 0 }
 
 // Len returns the number of bytes of the unread portion of the buffer;
 // b.Len() == len(b.Slice()).

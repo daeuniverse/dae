@@ -11,8 +11,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -262,37 +260,6 @@ func (ue *UdpEndpoint) selfRemoveFromPool() {
 	ue.poolRef.pool.CompareAndDelete(ue.poolKey, ue)
 }
 
-// isKnownBidirectionalPort returns true if the destination port is known to be
-// used by interactive, latency-sensitive protocols that strictly require responses.
-func isKnownBidirectionalPort(port uint16) bool {
-	switch port {
-	case 53, 123: // DNS, NTP
-		return true
-	case 443, 8443: // QUIC / WebRTC
-		return true
-	case 3478, 5349: // Standard STUN/TURN
-		return true
-	}
-	// Google STUN ports
-	if port >= 19302 && port <= 19309 {
-		return true
-	}
-	// Common Game Ports (Steam, PUBG, CS2, etc.)
-	if (port >= 27015 && port <= 27030) || (port >= 7000 && port <= 8999) {
-		return true
-	}
-	return false
-}
-
-func extractPortFromAddr(addr string) uint16 {
-	idx := strings.LastIndexByte(addr, ':')
-	if idx == -1 {
-		return 0
-	}
-	p, _ := strconv.ParseUint(addr[idx+1:], 10, 16)
-	return uint16(p)
-}
-
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	// Fast dead check: avoid work on an already-dead endpoint.
 	if ue.dead.Load() {
@@ -466,7 +433,7 @@ func (p *UdpEndpointPool) Reset() {
 	for _, key := range keys {
 		if value, ok := p.pool.LoadAndDelete(key); ok {
 			ue := value.(*UdpEndpoint)
-			ue.Close()
+			_ = ue.Close()
 		}
 	}
 }
@@ -474,10 +441,10 @@ func (p *UdpEndpointPool) Reset() {
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
 	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
 	if !p.pool.CompareAndDelete(key, udpEndpoint) {
-		udpEndpoint.Close()
+		_ = udpEndpoint.Close()
 		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
-	udpEndpoint.Close()
+	_ = udpEndpoint.Close()
 	return nil
 }
 

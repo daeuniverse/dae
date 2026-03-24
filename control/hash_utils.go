@@ -76,10 +76,3 @@ func hashAddrPort(ap netip.AddrPort) uint64 {
 
 	return seed
 }
-
-func hashPacketSnifferKey(k PacketSnifferKey) uint64 {
-	// Combine two AddrPort hashes with WyHash mixing.
-	h1 := hashAddrPort(k.LAddr)
-	h2 := hashAddrPort(k.RAddr)
-	return wyMix(h1^wyHashP0, h2^wyHashP1)
-}

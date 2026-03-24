@@ -140,27 +140,6 @@ func (b *idBitmap) Release(id uint16) {
 	}
 }
 
-// channelPool is a pool of channels for DNS response routing.
-// This reduces allocations in the hot path.
-var channelPool = sync.Pool{
-	New: func() any {
-		return make(chan *dnsmessage.Msg, 1)
-	},
-}
-
-func getResponseChannel() chan *dnsmessage.Msg {
-	return channelPool.Get().(chan *dnsmessage.Msg)
-}
-
-func putResponseChannel(ch chan *dnsmessage.Msg) {
-	// Drain the channel before returning to pool
-	select {
-	case <-ch:
-	default:
-	}
-	channelPool.Put(ch)
-}
-
 type DnsForwarder interface {
 	ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error)
 	Close() error
@@ -247,7 +226,7 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig: &tls.Config{
-			ServerName:         d.Upstream.Hostname,
+			ServerName:         d.Hostname,
 			InsecureSkipVerify: false,
 		},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -266,10 +245,10 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 	return &httpTransport
 }
 
-func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
-	roundTripper := &http3.RoundTripper{
+func (d *DoH) getHttp3RoundTripper() *http3.Transport {
+	roundTripper := &http3.Transport{
 		TLSClientConfig: &tls.Config{
-			ServerName:         d.Upstream.Hostname,
+			ServerName:         d.Hostname,
 			NextProtos:         []string{"h3"},
 			InsecureSkipVerify: false,
 		},
@@ -359,12 +338,12 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 	tlsCfg := &tls.Config{
 		NextProtos:         []string{"doq"},
 		InsecureSkipVerify: false,
-		ServerName:         d.Upstream.Hostname,
+		ServerName:         d.Hostname,
 	}
 	addr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
 	qc, err := quic.DialEarly(ctx, fakePkt, addr, tlsCfg, nil)
 	if err != nil {
-		conn.Close() // Ensure underlying connection is closed
+		_ = conn.Close() // Ensure underlying connection is closed
 		return nil, err
 	}
 	return qc, nil
@@ -524,9 +503,7 @@ func (l *lazyConnPool) getOrInit(init func() *connPool) *connPool {
 }
 
 func (l *lazyConnPool) closePool() error {
-	if !l.closed.Swap(true) {
-		// Mark as closed
-	}
+	l.closed.Swap(true)
 	if v := l.pool.Load(); v != nil {
 		p := v.(*connPool)
 		// Don't Store(nil) - atomic.Value can't hold nil
@@ -556,10 +533,10 @@ func (d *DoTLS) getPool() *connPool {
 			}
 			tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
 				InsecureSkipVerify: false,
-				ServerName:         d.Upstream.Hostname,
+				ServerName:         d.Hostname,
 			})
 			if err = tlsConn.Handshake(); err != nil {
-				conn.Close()
+				_ = conn.Close()
 				return nil, err
 			}
 			return tlsConn, nil
@@ -700,7 +677,7 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 
 			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
 				// Connection expired, close it and try next one
-				connWithTime.conn.Close()
+				_ = connWithTime.conn.Close()
 				continue
 			}
 
@@ -837,7 +814,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 
 	// Send DNS request directly without creating goroutine
 	if _, err = conn.Write(data); err != nil {
-		conn.Close() // Mark as bad
+		_ = conn.Close() // Mark as bad
 		badConn = true
 		return nil, err
 	}
@@ -857,7 +834,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				return nil, err
 			}
-			conn.Close() // Mark as bad
+			_ = conn.Close() // Mark as bad
 			badConn = true
 			return nil, err
 		}
@@ -865,7 +842,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 		if n < 2 {
 			staleResponses++
 			if staleResponses > maxStaleResponses {
-				conn.Close()
+				_ = conn.Close()
 				badConn = true
 				return nil, fmt.Errorf("too many malformed UDP DNS responses")
 			}
@@ -881,7 +858,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 				d.log.Debugf("discard stale UDP DNS response: expected %d, got %d", originalID, responseID)
 			}
 			if staleResponses > maxStaleResponses {
-				conn.Close()
+				_ = conn.Close()
 				badConn = true
 				return nil, fmt.Errorf("too many stale UDP DNS responses")
 			}
@@ -890,7 +867,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 
 		var msg dnsmessage.Msg
 		if err = msg.Unpack(respBuf[:n]); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			badConn = true
 			return nil, err
 		}
@@ -939,7 +916,7 @@ func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, dat
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http status code: %v", resp.StatusCode)

@@ -25,8 +25,8 @@ func unixConnPair(tb testing.TB) (*net.UnixConn, *net.UnixConn) {
 	}
 	f0 := os.NewFile(uintptr(fds[0]), "pair-0")
 	f1 := os.NewFile(uintptr(fds[1]), "pair-1")
-	defer f0.Close()
-	defer f1.Close()
+	defer func() { _ = f0.Close() }()
+	defer func() { _ = f1.Close() }()
 
 	c0raw, err := net.FileConn(f0)
 	if err != nil {
@@ -64,10 +64,10 @@ func TestRelayAdaptiveCopy_LargePayload(t *testing.T) {
 func testRelayAdaptiveCopy(t *testing.T, size int) {
 	srcWriter, srcRelay := unixConnPair(t)
 	dstRelay, dstReader := unixConnPair(t)
-	defer srcWriter.Close()
-	defer srcRelay.Close()
-	defer dstRelay.Close()
-	defer dstReader.Close()
+	defer func() { _ = srcWriter.Close() }()
+	defer func() { _ = srcRelay.Close() }()
+	defer func() { _ = dstRelay.Close() }()
+	defer func() { _ = dstReader.Close() }()
 
 	payload := bytes.Repeat([]byte{0x7f}, size)
 	var received bytes.Buffer

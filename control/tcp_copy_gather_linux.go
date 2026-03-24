@@ -94,8 +94,9 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 	}
 	prefixLen := relaySegmentsLen(segments)
 
-	buf := relayCopyBufferPool.Get().([]byte)
-	defer relayCopyBufferPool.Put(buf)
+	bufPtr := relayCopyBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer relayCopyBufferPool.Put(bufPtr)
 
 	var (
 		body    []byte
@@ -240,4 +241,24 @@ func relayAdvanceSegments(segs [][]byte, n int) [][]byte {
 		return segs
 	}
 	return segs
+}
+func tcpConnHasPendingReadData(conn *net.TCPConn) (bool, error) {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return false, err
+	}
+
+	var (
+		pending int
+		ctrlErr error
+	)
+	if err := rawConn.Control(func(fd uintptr) {
+		pending, ctrlErr = unix.IoctlGetInt(int(fd), unix.TIOCINQ)
+	}); err != nil {
+		return false, err
+	}
+	if ctrlErr != nil {
+		return false, ctrlErr
+	}
+	return pending > 0, nil
 }

@@ -59,9 +59,9 @@ type ControlPlane struct {
 	// 1. The slice is never modified after initialization
 	// 2. The ready channel is closed only after outbounds is fully populated
 	// 3. All reads happen-after the ready channel is closed
-	outbounds             []*outbound.DialerGroup
-	referencedOutbounds   map[string]struct{} // outbounds referenced by routing rules
-	inConnections         sync.Map
+	outbounds           []*outbound.DialerGroup
+	referencedOutbounds map[string]struct{} // outbounds referenced by routing rules
+	inConnections       sync.Map
 
 	dnsController    *DnsController
 	dnsListener      *DNSListener
@@ -211,7 +211,7 @@ func NewControlPlaneWithContext(
 	dialer.SetQuicDcidCacheClearFunc(ClearFailedQuicDcids)
 
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
-		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
+		_ = os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
 
 	kernelVersion, e := internal.KernelVersion()
@@ -292,8 +292,8 @@ func NewControlPlaneWithContext(
 
 	var bpf *bpfObjects
 	if _bpf != nil {
-		if _bpf, ok := _bpf.(*bpfObjects); ok {
-			bpf = _bpf
+		if obj, ok := _bpf.(*bpfObjects); ok {
+			bpf = obj
 		} else {
 			return nil, fmt.Errorf("unexpected bpf type: %T", _bpf)
 		}
@@ -380,7 +380,7 @@ func NewControlPlaneWithContext(
 					}
 				}
 			}
-			core.bindWan(ifname, global.AutoConfigKernelParameter)
+			core.bindWan(ifname)
 		}
 	}
 	// Bind to dae0 and dae0peer
@@ -545,19 +545,19 @@ func NewControlPlaneWithContext(
 		m.Alloc/1024/1024, m.Sys/1024/1024, m.HeapObjects)
 
 	// New control plane.
-	ctx, cancel := context.WithCancel(context.Background())
+	cctx, cancel := context.WithCancel(ctx)
 	plane = &ControlPlane{
 		log:                  log,
 		core:                 core,
 		deferFuncs:           deferFuncs,
 		listenIp:             "0.0.0.0",
 		outbounds:            outbounds,
-		referencedOutbounds:   referencedOutbounds,
+		referencedOutbounds:  referencedOutbounds,
 		dnsController:        nil,
 		onceNetworkReady:     sync.Once{},
 		dialMode:             dialMode,
 		routingMatcher:       routingMatcher,
-		ctx:                  ctx,
+		ctx:                  cctx,
 		cancel:               cancel,
 		ready:                make(chan struct{}),
 		muRealDomainSet:      sync.RWMutex{},
@@ -573,8 +573,8 @@ func NewControlPlaneWithContext(
 		tproxyPortProtect:    global.TproxyPortProtect,
 		soMarkFromDae:        global.SoMarkFromDae,
 		mptcp:                global.Mptcp,
-		udpUnorderedRunner:   newDefaultUdpUnorderedTaskRunner(ctx),
-		udpBoundedPool:       newUdpBoundedPoolManager(ctx),
+		udpUnorderedRunner:   newDefaultUdpUnorderedTaskRunner(cctx),
+		udpBoundedPool:       newUdpBoundedPoolManager(cctx),
 	}
 	plane.startRealDomainNegJanitor()
 	plane.startConnStateJanitor()
@@ -859,7 +859,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		ttl := int(deadline.Sub(time.Now()).Seconds())
+		ttl := int(time.Until(deadline).Seconds())
 		if ttl < 0 {
 			ttl = 0
 		}
@@ -879,7 +879,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		ttl := int(deadline.Sub(time.Now()).Seconds())
+		ttl := int(time.Until(deadline).Seconds())
 		if ttl < 0 {
 			ttl = 0
 		}
@@ -1869,10 +1869,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 							// Enhanced error logging for DNS fast path failures
 							if c.log.IsLevelEnabled(logrus.WarnLevel) {
 								c.log.WithFields(logrus.Fields{
-									"src":       convergeSrc.String(),
-									"dst":       realDst.String(),
-									"question":  dnsMessage.Question,
-									"error":     e.Error(),
+									"src":      convergeSrc.String(),
+									"dst":      realDst.String(),
+									"question": dnsMessage.Question,
+									"error":    e.Error(),
 								}).Warn("DNS ingress fast path failed; sending SERVFAIL response")
 							}
 							if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns ingress fast path)", req, nil); sendErr != nil {
@@ -1939,7 +1939,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 				}
 
-				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, realDst, routingResult, flowDecision, false); e != nil {
+				if e := c.handlePkt(udpConn, data, convergeSrc, realDst, routingResult, flowDecision, false); e != nil {
 					c.log.Warnln("handlePkt:", e)
 					return
 				}

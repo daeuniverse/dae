@@ -92,7 +92,7 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	serverCh := make(chan *net.TCPConn, 1)
 	errCh := make(chan error, 1)
@@ -109,7 +109,7 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var server *net.TCPConn
 	select {
@@ -117,7 +117,7 @@ func TestShouldUseRelayFastPath_UsesConcreteTypeWhitelist(t *testing.T) {
 		t.Fatal(e)
 	case server = <-serverCh:
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	// Local loopback connections now use splice fast path.
 	// Modern kernel implementations optimize splice for loopback scenarios,
@@ -138,7 +138,7 @@ func TestShouldUseRelayFastPath_AcceptsUnderlyingConnProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	serverCh := make(chan *net.TCPConn, 1)
 	errCh := make(chan error, 1)
@@ -155,7 +155,7 @@ func TestShouldUseRelayFastPath_AcceptsUnderlyingConnProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var server *net.TCPConn
 	select {
@@ -163,7 +163,7 @@ func TestShouldUseRelayFastPath_AcceptsUnderlyingConnProvider(t *testing.T) {
 		t.Fatal(e)
 	case server = <-serverCh:
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	got := shouldUseRelayFastPath(
 		underlyingTCPWrapper{Conn: client, inner: client},
@@ -180,7 +180,7 @@ func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	serverCh := make(chan *net.TCPConn, 1)
 	errCh := make(chan error, 1)
@@ -197,7 +197,7 @@ func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var server *net.TCPConn
 	select {
@@ -205,10 +205,10 @@ func TestShouldUseRelayFastPath_AcceptsConnSnifferOverTCP(t *testing.T) {
 		t.Fatal(e)
 	case server = <-serverCh:
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	snifferConn := sniffing.NewConnSniffer(client, time.Second)
-	defer snifferConn.Close()
+	defer func() { _ = snifferConn.Close() }()
 
 	got := shouldUseRelayFastPath(snifferConn, server)
 	// ConnSniffer supports UnwrapTCPConn for splice after sniffing completes
@@ -222,7 +222,7 @@ func TestShouldUseRelayFastPath_AcceptsFakeNetConnOverTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	serverCh := make(chan *net.TCPConn, 1)
 	errCh := make(chan error, 1)
@@ -239,7 +239,7 @@ func TestShouldUseRelayFastPath_AcceptsFakeNetConnOverTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var server *net.TCPConn
 	select {
@@ -247,7 +247,7 @@ func TestShouldUseRelayFastPath_AcceptsFakeNetConnOverTCP(t *testing.T) {
 		t.Fatal(e)
 	case server = <-serverCh:
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	fakeClient := &netproxy.FakeNetConn{Conn: client, LAddr: client.LocalAddr(), RAddr: client.RemoteAddr()}
 	fakeServer := &netproxy.FakeNetConn{Conn: server, LAddr: server.LocalAddr(), RAddr: server.RemoteAddr()}

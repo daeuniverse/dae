@@ -90,7 +90,7 @@ func TestConnPool_GetNotBlockedBySlowDial(t *testing.T) {
 		}
 		return newTestPipeConn(), nil
 	})
-	defer pool.close()
+	defer func() { _ = pool.close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

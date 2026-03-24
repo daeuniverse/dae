@@ -63,6 +63,7 @@ setup_cached_routing_result(__u32 saddr, __u32 daddr,
 
 	// Scheme3: Store routing result in tcp_conn_state_map instead of routing_tuples_map
 	struct tcp_conn_state conn_state = {};
+
 	conn_state.is_wan_ingress_direction = false;
 	conn_state.state = 0; // TCP_STATE_ACTIVE
 	conn_state.last_seen_ns = bpf_ktime_get_ns();
@@ -86,6 +87,7 @@ int testsetup_dport_match(struct __sk_buff *skb)
 	/* dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_Port;
@@ -122,6 +124,7 @@ int testsetup_dport_mismatch(struct __sk_buff *skb)
 	/* dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_Port;
@@ -157,6 +160,7 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 {
 	/* dip(100.64.0.0/16) -> direct */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_IpSet;
 	ms.outbound = 0;
@@ -170,6 +174,7 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -199,6 +204,7 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 {
 	// dip(100.64.0.0/16) -> direct
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_IpSet;
 	ms.outbound = 0;
@@ -212,6 +218,7 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x64400000); // 100.64.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -241,6 +248,7 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 {
 	/* sip(192.168.50.0/24) -> direct */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_SourceIpSet;
 	ms.outbound = 0;
@@ -254,6 +262,7 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -283,6 +292,7 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 {
 	/* sip(192.168.50.0/24) -> direct */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_SourceIpSet;
 	ms.outbound = 0;
@@ -296,6 +306,7 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
@@ -326,6 +337,7 @@ int testsetup_sport_match(struct __sk_buff *skb)
 	/* sport(19000-20000) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {19000, 20000};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_SourcePort;
@@ -362,6 +374,7 @@ int testsetup_sport_mismatch(struct __sk_buff *skb)
 	/* sport(19230-19232) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {19230, 19232};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_SourcePort;
@@ -453,6 +466,7 @@ int testsetup_l4proto_match(struct __sk_buff *skb)
 {
 	/* l4proto(tcp) -> proxy */
 	struct match_set ms = {};
+
 	ms.l4proto_type = L4ProtoType_TCP;
 	ms.not = false;
 	ms.type = MatchType_L4Proto;
@@ -488,6 +502,7 @@ int testsetup_l4proto_mismatch(struct __sk_buff *skb)
 {
 	/* l4proto(udp) -> proxy */
 	struct match_set ms = {};
+
 	ms.l4proto_type = L4ProtoType_UDP;
 	ms.not = false;
 	ms.type = MatchType_L4Proto;
@@ -523,6 +538,7 @@ int testsetup_ipversion_match(struct __sk_buff *skb)
 {
 	/* ipversion(4) -> proxy */
 	struct match_set ms = {};
+
 	ms.ip_version = IpVersionType_4;
 	ms.not = false;
 	ms.type = MatchType_IpVersion;
@@ -558,6 +574,7 @@ int testsetup_ipversion_mismatch(struct __sk_buff *skb)
 {
 	/* ipversion(6) -> proxy */
 	struct match_set ms = {};
+
 	ms.ip_version = IpVersionType_6;
 	ms.not = false;
 	ms.type = MatchType_IpVersion;
@@ -593,6 +610,7 @@ int testsetup_mac_match(struct __sk_buff *skb)
 {
 	/* mac('06:07:08:09:0a:0b') -> proxy */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_Mac;
 	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
@@ -604,6 +622,7 @@ int testsetup_mac_match(struct __sk_buff *skb)
 		.trie_key = { .prefixlen = 128, {} },
 	};
 	__u8 *data = (__u8 *)&lpm_key.data;
+
 	data[10] = 0x6;
 	data[11] = 0x7;
 	data[12] = 0x8;
@@ -611,6 +630,7 @@ int testsetup_mac_match(struct __sk_buff *skb)
 	data[14] = 0xa;
 	data[15] = 0xb;
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: must_direct */
@@ -627,6 +647,7 @@ int testcheck_mac_match(struct __sk_buff *skb)
 		.trie_key = { .prefixlen = 128 , {} },
 	};
 	__u8 *data = (__u8 *)&lpm_key.data;
+
 	data[10] = 0x6;
 	data[11] = 0x7;
 	data[12] = 0x8;
@@ -652,6 +673,7 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 {
 	/* mac('00:01:02:03:04:05') -> proxy */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_Mac;
 	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
@@ -663,6 +685,7 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 		.trie_key = { .prefixlen = 128, {} },
 	};
 	__u8 *data = (__u8 *)&lpm_key.data;
+
 	data[10] = 0x0;
 	data[11] = 0x1;
 	data[12] = 0x2;
@@ -670,6 +693,7 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 	data[14] = 0x4;
 	data[15] = 0x5;
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: must_direct */
@@ -699,6 +723,7 @@ int testsetup_dscp_match(struct __sk_buff *skb)
 {
 	/* dscp(4) -> proxy */
 	struct match_set ms = {};
+
 	ms.dscp = 4;
 	ms.not = false;
 	ms.type = MatchType_Dscp;
@@ -734,6 +759,7 @@ int testsetup_dscp_mismatch(struct __sk_buff *skb)
 {
 	/* dscp(5) -> proxy */
 	struct match_set ms = {};
+
 	ms.dscp = 5;
 	ms.not = false;
 	ms.type = MatchType_Dscp;
@@ -769,6 +795,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 {
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_IpSet;
 	ms.outbound = OUTBOUND_LOGICAL_AND;
@@ -782,6 +809,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	__builtin_memset(&ms, 0, sizeof(ms));
@@ -795,6 +823,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 
 	__builtin_memset(&ms, 0, sizeof(ms));
 	struct port_range pr = {1, 1023};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_Port;
@@ -846,6 +875,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 {
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_IpSet;
 	ms.outbound = OUTBOUND_LOGICAL_AND;
@@ -859,6 +889,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	__builtin_memset(&ms, 0, sizeof(ms));
@@ -872,6 +903,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 
 	__builtin_memset(&ms, 0, sizeof(ms));
 	struct port_range pr = {1, 1023};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_Port;
@@ -923,6 +955,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 {
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms = {};
+
 	ms.not = false;
 	ms.type = MatchType_IpSet;
 	ms.outbound = OUTBOUND_LOGICAL_AND;
@@ -936,6 +969,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
+
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	__builtin_memset(&ms, 0, sizeof(ms));
@@ -949,6 +983,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 
 	__builtin_memset(&ms, 0, sizeof(ms));
 	struct port_range pr = {1, 1023};
+
 	ms.port_range = pr;
 	ms.not = false;
 	ms.type = MatchType_Port;
@@ -1001,6 +1036,7 @@ int testsetup_not_match(struct __sk_buff *skb)
 	/* !dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
+
 	ms.port_range = pr;
 	ms.not = true;
 	ms.type = MatchType_Port;
@@ -1037,6 +1073,7 @@ int testsetup_not_mismtach(struct __sk_buff *skb)
 	/* !dport(80) -> proxy */
 	struct match_set ms = {};
 	struct port_range pr = {80, 80};
+
 	ms.port_range = pr;
 	ms.not = true;
 	ms.type = MatchType_Port;

@@ -62,7 +62,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	if err != nil {
 		return
 	}
-	defer objs.Close()
+	defer func() { _ = objs.Close() }()
 
 	targets, kfreeSkbReasons, err := searchAvailableTargets()
 	if err != nil {
@@ -82,7 +82,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 			// v0.20.0 best practice: Detach() before Close() for cleaner cleanup
 			// Detach explicitly breaks the link from the attachment point
 			_ = l.Detach()
-			l.Close()
+			_ = l.Close()
 		}
 		fmt.Printf("\n")
 	}()
@@ -97,22 +97,20 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects, err error) {
 	spec, err := loadBpf()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load BPF: %+v\n", err)
+		return nil, fmt.Errorf("failed to load BPF: %+v", err)
 	}
-	if err := spec.RewriteConstants(map[string]any{
-		"tracing_cfg": struct {
-			port      uint16
-			l4Proto   uint16
-			ipVersion uint8
-			pad       uint8
-		}{
-			port:      Htons(uint16(port)),
-			l4Proto:   uint16(l4ProtoNo),
-			ipVersion: uint8(ipVersion),
-			pad:       0,
-		},
+	if err := spec.Variables["tracing_cfg"].Set(struct {
+		port      uint16
+		l4Proto   uint16
+		ipVersion uint8
+		pad       uint8
+	}{
+		port:      Htons(uint16(port)),
+		l4Proto:   uint16(l4ProtoNo),
+		ipVersion: uint8(ipVersion),
+		pad:       0,
 	}); err != nil {
-		return nil, fmt.Errorf("failed to rewrite constants: %+v\n", err)
+		return nil, fmt.Errorf("failed to rewrite constants: %+v", err)
 	}
 	var opts ebpf.CollectionOptions
 	opts.Programs.LogLevel = ebpf.LogLevelInstruction
@@ -136,7 +134,7 @@ func searchAvailableTargets() (targets map[string]int, kfreeSkbReasons map[uint6
 
 	btfSpec, err := btf.LoadKernelSpec()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load kernel BTF: %+v\n", err)
+		return nil, nil, fmt.Errorf("failed to load kernel BTF: %+v", err)
 	}
 
 	if kfreeSkbReasons, err = getKFreeSKBReasons(btfSpec); err != nil {
@@ -222,7 +220,7 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 		links = append(links, kp)
 	}
 	if len(links) == 0 {
-		err = fmt.Errorf("failed to attach kprobes to any target")
+		return nil, fmt.Errorf("failed to attach kprobes to any target")
 	}
 	links = append(links, kp)
 	return links, nil
@@ -236,9 +234,9 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 
 	eventsReader, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
-		return fmt.Errorf("failed to create ringbuf reader: %+v\n", err)
+		return fmt.Errorf("failed to create ringbuf reader: %+v", err)
 	}
-	defer eventsReader.Close()
+	defer func() { _ = eventsReader.Close() }()
 
 	// v0.20.0 best practice: use SetDeadline for responsive context cancellation
 	// This allows Read() to return within 100ms when context is cancelled,
@@ -304,22 +302,22 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 			if !dropOnly || slices.Contains(skb2symNames[event.Skb], "kfree_skb_reason") {
 				// trace dropOnly with drop reason or all skb
 				for _, skb_ev := range skb2events[event.Skb] {
-					fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
+					_, _ = fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
 					if event.L3Proto == syscall.ETH_P_IP {
-						fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
+						_, _ = fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
 					} else {
-						fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
+						_, _ = fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
 					}
 					if event.L4Proto == syscall.IPPROTO_TCP {
-						fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
+						_, _ = fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
 					}
-					fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
+					_, _ = fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
 					sym := NearestSymbol(skb_ev.Pc)
-					fmt.Fprintf(writer, "%s", sym.Name)
+					_, _ = fmt.Fprintf(writer, "%s", sym.Name)
 					if sym.Name == "kfree_skb_reason" {
-						fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
+						_, _ = fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
 					}
-					fmt.Fprintf(writer, "\n")
+					_, _ = fmt.Fprintf(writer, "\n")
 				}
 				delete(skb2events, event.Skb)
 				delete(skb2symNames, event.Skb)

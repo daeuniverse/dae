@@ -25,7 +25,6 @@ type ResponseMatcherBuilder struct {
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
 	ipSet              []*trie.Trie
-	fallback           *routing.Outbound
 	rules              []responseMatchSet
 }
 

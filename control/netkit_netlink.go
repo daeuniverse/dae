@@ -108,33 +108,6 @@ func checkNetkitScrubSupport(log *logrus.Logger) bool {
 	return supportsScrub
 }
 
-// checkNetkitSupportViaNetlink checks if the kernel supports Netkit devices
-// by attempting to query the netlink interface types.
-func checkNetkitSupportViaNetlink(log *logrus.Logger) bool {
-	log.Debug("Checking Netkit support via netlink API")
-
-	// Try to get list of supported device types
-	// If the kernel supports netkit, we should be able to query it
-	links, err := netlink.LinkList()
-	if err != nil {
-		log.Debugf("Failed to list links: %v", err)
-		return false
-	}
-
-	// Check if any netkit devices exist (indicates kernel support)
-	for _, link := range links {
-		if link.Type() == "netkit" {
-			log.Debugf("Found existing netkit device: %s", link.Attrs().Name)
-			return true
-		}
-	}
-
-	// No netkit devices found, but that doesn't mean it's not supported
-	// The only way to know for sure is to try creating one
-	log.Debug("No existing netkit devices found, will attempt creation")
-	return true // Optimistic - try creation and handle failure
-}
-
 // checkExistingNetkitScrubConfig checks if an existing netkit device
 // has scrub=NONE configured by reading the link attributes.
 func checkExistingNetkitScrubConfig(log *logrus.Logger, ifname string) (bool, error) {

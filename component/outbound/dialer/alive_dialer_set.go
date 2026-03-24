@@ -190,7 +190,7 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 
 func (a *AliveDialerSet) printLatencies() {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", a.dialerGroupName, a.CheckTyp.String()))
+	fmt.Fprintf(&builder, "Group '%v' [%v]:\n", a.dialerGroupName, a.CheckTyp.String())
 	var alive []*struct {
 		d *Dialer
 		l time.Duration
@@ -213,7 +213,7 @@ func (a *AliveDialerSet) printLatencies() {
 		return alive[i].l+alive[i].o < alive[j].l+alive[j].o
 	})
 	for i, dl := range alive {
-		builder.WriteString(fmt.Sprintf("%4d. [%v] %v: %v\n", i+1, dl.d.property.SubscriptionTag, dl.d.property.Name, latencyString(dl.l, dl.o)))
+		fmt.Fprintf(&builder, "%4d. [%v] %v: %v\n", i+1, dl.d.property.SubscriptionTag, dl.d.property.Name, latencyString(dl.l, dl.o))
 	}
 	a.log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
 }
@@ -290,8 +290,6 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			}
 			// Pop the last element.
 			a.aliveEntries = a.aliveEntries[:len(a.aliveEntries)-1]
-		} else {
-			// This dialer is already not alive.
 		}
 	}
 

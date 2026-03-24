@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"golang.org/x/sys/unix"
@@ -195,20 +194,6 @@ func isGSOError(err error) bool {
 	}
 	return false
 }
-func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
-	startLen := len(b)
-	const dataLen = 2 // payload is a uint16
-	b = append(b, make([]byte, unix.CmsgSpace(dataLen))...)
-	h := (*unix.Cmsghdr)(unsafe.Pointer(&b[startLen]))
-	h.Level = syscall.IPPROTO_UDP
-	h.Type = unix.UDP_SEGMENT
-	h.SetLen(unix.CmsgLen(dataLen))
-
-	// UnixRights uses the private `data` method, but I *think* this achieves the same goal.
-	offset := startLen + unix.CmsgSpace(0)
-	*(*uint16)(unsafe.Pointer(&b[offset])) = size
-	return b
-}
 
 // AnyfromPool is a full-cone udp listener pool
 const (
@@ -255,7 +240,7 @@ func (p *AnyfromPool) Reset() {
 		for _, key := range keys {
 			if af, ok := shard.pool[key]; ok {
 				delete(shard.pool, key)
-				af.Close() // Close errors are logged internally, safe to ignore here
+				_ = af.Close() // Close errors are logged internally, safe to ignore here
 			}
 		}
 		shard.mu.Unlock()
@@ -289,7 +274,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 	if af, ok = shard.pool[lAddr]; ok {
 		// Another goroutine created it while we were creating the socket.
 		// Close our duplicate and return the existing one.
-		newAf.Close()
+		_ = newAf.Close()
 		af.RefreshTtl()
 		return af, false, nil
 	}

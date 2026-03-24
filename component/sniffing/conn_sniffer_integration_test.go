@@ -23,15 +23,15 @@ func TestConnSnifferRelayPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer echoServer.Close()
+	defer func() { _ = echoServer.Close() }()
 
 	go func() {
 		conn, err := echoServer.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		io.Copy(conn, conn) // Echo back
+		defer func() { _ = conn.Close() }()
+		_, _ = io.Copy(conn, conn) // Echo back
 	}()
 
 	// Create client connection
@@ -39,13 +39,13 @@ func TestConnSnifferRelayPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// Wrap client connection with ConnSniffer
 	sniffer := NewConnSniffer(clientConn, 0)
 	// Simulate buffered data
-	sniffer.Sniffer.buf.Reset()
-	sniffer.Sniffer.buf.Write([]byte("BUFFERED"))
+	sniffer.buf.Reset()
+	_, _ = sniffer.buf.Write([]byte("BUFFERED"))
 
 	// Send test data
 	testData := make([]byte, 10*1024) // 10KB
@@ -55,7 +55,7 @@ func TestConnSnifferRelayPath(t *testing.T) {
 
 	// Write data through sniffer
 	go func() {
-		sniffer.Write(testData)
+		_, _ = sniffer.Write(testData)
 		// Read echoed data
 		recvBuf := make([]byte, len(testData))
 		n, _ := sniffer.Read(recvBuf)
@@ -71,30 +71,30 @@ func TestWriterToCalledByIoCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	conn2, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 
 	conn1, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	// Create ConnSniffer with buffered data
 	sniffer := NewConnSniffer(conn1, 0)
-	sniffer.Sniffer.buf.Reset()
-	sniffer.Sniffer.buf.Write([]byte("HEAD"))
+	sniffer.buf.Reset()
+	_, _ = sniffer.buf.Write([]byte("HEAD"))
 
 	// Write extra data to conn2
 	extraData := []byte("DATA")
 	go func() {
-		conn2.Write(extraData)
-		conn2.Close()
+		_, _ = conn2.Write(extraData)
+		_ = conn2.Close()
 	}()
 
 	// Use io.Copy - should call WriteTo
@@ -139,8 +139,8 @@ func BenchmarkConnSnifferRelay(b *testing.B) {
 				if err != nil {
 					return
 				}
-				conn.Write(data)
-				conn.Close()
+				_, _ = conn.Write(data)
+				_ = conn.Close()
 			}()
 
 			conn, err := l.Accept()
@@ -150,10 +150,10 @@ func BenchmarkConnSnifferRelay(b *testing.B) {
 
 			sniffer := NewConnSniffer(conn, 0)
 			var buf bytes.Buffer
-			io.Copy(&buf, sniffer)
+			_, _ = io.Copy(&buf, sniffer)
 
-			conn.Close()
-			l.Close()
+			_ = conn.Close()
+			_ = l.Close()
 		}
 	})
 
@@ -170,8 +170,8 @@ func BenchmarkConnSnifferRelay(b *testing.B) {
 				if err != nil {
 					return
 				}
-				conn.Write(data)
-				conn.Close()
+				_, _ = conn.Write(data)
+				_ = conn.Close()
 			}()
 
 			conn, err := l.Accept()
@@ -180,10 +180,10 @@ func BenchmarkConnSnifferRelay(b *testing.B) {
 			}
 
 			var buf bytes.Buffer
-			io.Copy(&buf, conn)
+			_, _ = io.Copy(&buf, conn)
 
-			conn.Close()
-			l.Close()
+			_ = conn.Close()
+			_ = l.Close()
 		}
 	})
 }
@@ -195,31 +195,31 @@ func TestNetproxyReadFromBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	// Create connection pair
 	conn2, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 
 	conn1, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	// Wrap conn1 with ConnSniffer (with buffered data)
 	sniffer := NewConnSniffer(conn1, 0)
-	sniffer.Sniffer.buf.Reset()
-	sniffer.Sniffer.buf.Write([]byte("BUFFERED_"))
+	sniffer.buf.Reset()
+	_, _ = sniffer.buf.Write([]byte("BUFFERED_"))
 
 	// Write test data to conn2 (will be received by conn1/sniffer)
 	testData := []byte("TEST_DATA")
 	go func() {
-		conn2.Write(testData)
-		conn2.Close() // Close write side to signal EOF
+		_, _ = conn2.Write(testData)
+		_ = conn2.Close() // Close write side to signal EOF
 	}()
 
 	// Use io.Copy to read from sniffer (which calls WriteTo)
@@ -252,7 +252,7 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	// Receiver
 	done := make(chan struct{})
@@ -262,8 +262,8 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		io.Copy(&received, conn)
+		defer func() { _ = conn.Close() }()
+		_, _ = io.Copy(&received, conn)
 		close(done)
 	}()
 
@@ -272,11 +272,11 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sniffer := NewConnSniffer(conn, 0)
-	sniffer.Sniffer.buf.Reset()
-	sniffer.Sniffer.buf.Write([]byte("HEADER"))
+	sniffer.buf.Reset()
+	_, _ = sniffer.buf.Write([]byte("HEADER"))
 
 	// Write extra data to connection (data stays in socket receive buffer)
 	testData := make([]byte, 100*1024)
@@ -298,13 +298,6 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 	// Simplified test: only verify WriteTo is called correctly
 	t.Skip("Test needs redesign - WriteTo is for reading FROM sniffer, not writing TO it")
 
-	_ = testData
-	_ = done
+	_ = 1
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

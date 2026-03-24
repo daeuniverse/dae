@@ -247,7 +247,7 @@ func detectCgroupPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -291,8 +291,10 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 	if err != nil {
 		return err
 	}
-	if err := spec.RewriteConstants(constants); err != nil {
-		return err
+	for name, value := range constants {
+		if err := spec.Variables[name].Set(value); err != nil {
+			return err
+		}
 	}
 	return spec.LoadAndAssign(obj, opts)
 }

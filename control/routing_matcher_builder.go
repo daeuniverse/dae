@@ -35,9 +35,6 @@ type lpmMapResult struct {
 	values   []uint32
 }
 
-// generationCounter tracks rule generations for selective cache invalidation.
-var generationCounter atomic.Uint64
-
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
@@ -46,7 +43,6 @@ type RoutingMatcherBuilder struct {
 	compiledRules      []compiledRoutingMatch
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
-	fallback           *routing.Outbound
 	// referencedOutbounds tracks outbound names referenced by routing rules.
 	// This is used to limit health checks to only nodes in used groups.
 	referencedOutbounds map[string]struct{}
@@ -651,7 +647,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 				mapErr = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny)
 				mu.Unlock()
 				if mapErr != nil {
-					m.Close()
+					_ = m.Close()
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = fmt.Errorf("Update lpm_array_map[%d]: %w", r.lpmIndex, mapErr)
@@ -659,7 +655,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 					mu.Unlock()
 					return
 				}
-				m.Close()
+				_ = m.Close()
 			}(i)
 		}
 		wg.Wait()
@@ -675,10 +671,10 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (err error) {
 				return fmt.Errorf("newLpmMap: %w", err)
 			}
 			if err = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny); err != nil {
-				m.Close()
+				_ = m.Close()
 				return fmt.Errorf("Update: %w", err)
 			}
-			m.Close()
+			_ = m.Close()
 		}
 	}
 

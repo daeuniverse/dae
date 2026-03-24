@@ -21,7 +21,7 @@ func TestDeriveKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer keys.Close()
+	defer func() { _ = keys.Close() }()
 
 	t.Logf("%#v", keys)
 	clientInitialSecret, _ := hex.DecodeString("c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea")
@@ -48,7 +48,7 @@ func TestKeys_HeaderProtection_(t *testing.T) {
 	if err != nil {
 		t.Fatal("NewKeys", err)
 	}
-	defer keys.Close()
+	defer func() { _ = keys.Close() }()
 
 	sample, _ := hex.DecodeString("d1b1c98dd7689fb8ec11d242b123dc9b")
 	flag := byte(0xc3)
@@ -70,7 +70,7 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	if err != nil {
 		t.Fatal("NewKeys", err)
 	}
-	defer keys.Close()
+	defer func() { _ = keys.Close() }()
 
 	data, _ := hex.DecodeString("cfff00001d107f9863b69d513af6a050f0272dfe4dd114cb9b88815f5c3e385f2a8756c2a76c61fe0a6ddf0041222cce1ec1f09bb7d134541f214437ebaac82ad3044e24abffb166407f6e8e41584fe9717fbec115d345c934408aa9314bb9e8a3487ea2c17a7ff02f65d3ed8f76a462034260bb41d6ef8f0fa78d6920074a10091f85d322c10f1f4eb7e207c2283c4df5857edea1279248ba03ba83c4727b759f564dcd4db3e6e11d40abce3d4362caf5ef592a3cde2d66acadc7428b5cccf28eb1461b0c3ca595ff7425f5898b95bf4917786a5f9ce7226dd0be61cff453bd74decfa057d3afaef136226e9ba23ad3e28da820a367b4788786efa97bf59033b87bc8a4555b86148cfde85ea16772eb1d81e14c9056f3f36a4f789bc608145712fa7cd28f93e76d3f90e80815e267aeefff2bc44299f8b65e3cf99816c96f33723d20565162cc843024bdbd83a90d2f")
 	header := data[:50]

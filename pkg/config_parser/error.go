@@ -107,7 +107,7 @@ func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendin
 		simplyWrite = token.GetTokenType() == -1
 	}
 	if simplyWrite {
-		d.ErrorBuilder.WriteString(fmt.Sprintf("%v%v", starting, msg))
+		fmt.Fprintf(&d.ErrorBuilder, "%v%v", starting, msg)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendin
 	// Example: "123.com:60" is parsed as number "123" then unexpected ":"
 	hint := d.detectDigitPrefixDomainError(msg, strLine)
 
-	d.ErrorBuilder.WriteString(fmt.Sprintf("%v%v\n%v%v: %v%v\n", starting, strLine, strings.Repeat(" ", offset), strings.Repeat("^", token.GetStop()-token.GetStart()+1), msg, hint))
+	fmt.Fprintf(&d.ErrorBuilder, "%v%v\n%v%v: %v%v\n", starting, strLine, strings.Repeat(" ", offset), strings.Repeat("^", token.GetStop()-token.GetStart()+1), msg, hint)
 }
 func (d *ConsoleErrorListener) ReportAmbiguity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex int, exact bool, ambigAlts *antlr.BitSet, configs antlr.ATNConfigSet) {
 }

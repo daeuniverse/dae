@@ -156,17 +156,6 @@ func (w *preferenceWait) waitFor() (resp *dnsmessage.Msg, preferred bool) {
 	return w.resp, false
 }
 
-// isNonPreferredType returns true if qtype is a non-preferred A/AAAA type.
-func isNonPreferredType(qtype uint16, qtypePrefer uint16) bool {
-	if qtypePrefer == 0 {
-		return false
-	}
-	if qtype != dnsmessage.TypeA && qtype != dnsmessage.TypeAAAA {
-		return false
-	}
-	return qtype != qtypePrefer
-}
-
 // isPreferredType returns true if qtype is the preferred A/AAAA type.
 func isPreferredType(qtype uint16, qtypePrefer uint16) bool {
 	if qtypePrefer == 0 {

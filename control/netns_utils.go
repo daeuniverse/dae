@@ -113,8 +113,8 @@ func (ns *DaeNetns) Setup() (err error) {
 }
 
 func (ns *DaeNetns) Close() (err error) {
-	DeleteNamedNetns(NsName)
-	DeleteLink(HostVethName)
+	_ = DeleteNamedNetns(NsName)
+	_ = DeleteLink(HostVethName)
 	return
 }
 
@@ -129,7 +129,7 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	if err = f(); err != nil {
 		return fmt.Errorf("failed to run func in dae netns: %v", err)
@@ -210,7 +210,7 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 
 	// Delete existing link if present
 	ns.log.Debugf("Deleting existing link %s if present", HostVethName)
-	DeleteLink(HostVethName)
+	_ = DeleteLink(HostVethName)
 
 	// Try to create Netkit device
 	// Configure scrub=NONE to preserve skb->mark across netkit boundary (safe optimization).
@@ -257,7 +257,7 @@ func (ns *DaeNetns) setup() (err error) {
 	if ns.hostNs, err = netns.Get(); err != nil {
 		return fmt.Errorf("failed to get host netns: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	if err = ns.setupVethOrNetkit(); err != nil {
 		return
@@ -284,7 +284,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	/// Insert ip rule / ip route.
 	var table = 2023
@@ -363,7 +363,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 }
 func (ns *DaeNetns) setupVeth() (err error) {
 	// ip l a dae0 type veth peer name dae0peer
-	DeleteLink(HostVethName)
+	_ = DeleteLink(HostVethName)
 	if err = netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:   HostVethName,
@@ -389,7 +389,7 @@ func (ns *DaeNetns) setupVeth() (err error) {
 
 func (ns *DaeNetns) setupNetns() (err error) {
 	// ip netns a daens
-	DeleteNamedNetns(NsName)
+	_ = DeleteNamedNetns(NsName)
 	ns.daeNs, err = netns.NewNamed(NsName)
 	if err != nil {
 		return fmt.Errorf("failed to create netns: %v", err)
@@ -406,7 +406,7 @@ func (ns *DaeNetns) setupNetns() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 	// (ip net e daens) ip l s dae0peer up
 	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
 		return fmt.Errorf("failed to set link dae0peer up: %v", err)
@@ -439,11 +439,11 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
-	sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
-	sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
+	_ = sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
+	_ = sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
 
 	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
 	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
@@ -457,7 +457,7 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	// (ip net e daens) ip a a 169.254.0.11 dev dae0peer
 	// Although transparent UDP socket doesn't use this IP, it's still needed to make proper L3 header
@@ -514,7 +514,7 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	// (ip net e daens) ip -6 r a default via fe80::ecee:eeff:feee:eeee dev dae0peer
 	if err = netlink.RouteAdd(&netlink.Route{
@@ -538,7 +538,7 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 
 func DeleteNamedNetns(name string) error {
 	namedPath := path.Join("/run/netns", name)
-	unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
+	_ = unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
 	return os.Remove(namedPath)
 }
 

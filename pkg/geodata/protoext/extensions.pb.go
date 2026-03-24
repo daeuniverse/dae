@@ -309,7 +309,7 @@ func file_common_protoext_extensions_proto_init() {
 		return
 	}
 	if !protoimpl.UnsafeEnabled {
-		file_common_protoext_extensions_proto_msgTypes[0].Exporter = func(v any, i int) any {
+		file_common_protoext_extensions_proto_msgTypes[0].Exporter = func(v any, i int) any { //nolint:staticcheck
 			switch v := v.(*MessageOpt); i {
 			case 0:
 				return &v.state
@@ -321,7 +321,7 @@ func file_common_protoext_extensions_proto_init() {
 				return nil
 			}
 		}
-		file_common_protoext_extensions_proto_msgTypes[1].Exporter = func(v any, i int) any {
+		file_common_protoext_extensions_proto_msgTypes[1].Exporter = func(v any, i int) any { //nolint:staticcheck
 			switch v := v.(*FieldOpt); i {
 			case 0:
 				return &v.state

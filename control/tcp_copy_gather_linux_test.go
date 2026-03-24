@@ -50,17 +50,17 @@ func (c *trackedPrefixedWriterToConn) UnderlyingConn() net.Conn {
 	if c == nil || c.prefixedConn == nil {
 		return nil
 	}
-	return c.prefixedConn.Conn
+	return c.Conn
 }
 
 func (c *trackedPrefixedWriterToConn) WriteTo(w io.Writer) (int64, error) {
 	c.writeToCalled = true
-	return io.Copy(w, c.prefixedConn.Conn)
+	return io.Copy(w, c.Conn)
 }
 
 func (c *trackedPrefixedWriterToConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
 	c.writeToCalled = true
-	return io.CopyBuffer(dst, c.prefixedConn.Conn, buf)
+	return io.CopyBuffer(dst, c.Conn, buf)
 }
 
 func (c *multiSegmentRelaySource) UnderlyingConn() net.Conn {
@@ -130,7 +130,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -147,7 +147,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -155,13 +155,13 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -178,7 +178,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -186,7 +186,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	payload := []byte("payload-body")
 	prefix := []byte("prefetched-")
@@ -312,7 +312,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -329,7 +329,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -337,13 +337,13 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -360,7 +360,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -368,7 +368,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	payload := []byte("payload-body")
 	prefix := []byte("prefetched-")
@@ -416,7 +416,7 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -433,7 +433,7 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -441,13 +441,13 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -464,7 +464,7 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -472,7 +472,7 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	prefix := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	payload := []byte("payload-body")
@@ -486,7 +486,7 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 	if _, err := snifferConn.SniffTcp(); err != nil && !sniffing.IsSniffingError(err) {
 		t.Fatalf("sniff failed: %v", err)
 	}
-	defer snifferConn.Close()
+	defer func() { _ = snifferConn.Close() }()
 
 	var hookCalled bool
 	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
@@ -523,7 +523,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -540,7 +540,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -548,13 +548,13 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -571,7 +571,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -579,7 +579,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	prefix := []byte("prefetched-")
 	payload := []byte("payload-body")
@@ -590,7 +590,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 	}()
 
 	buffered := bufferredconn.NewBufferedConnSize(srcServer, len(prefix)+len(payload))
-	defer buffered.Close()
+	defer func() { _ = buffered.Close() }()
 	if _, err := buffered.Peek(len(prefix)); err != nil {
 		t.Fatalf("peek failed: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -647,7 +647,7 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -655,13 +655,13 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -678,7 +678,7 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -686,7 +686,7 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	prefix := []byte("prefetched-")
 	payload := bytes.Repeat([]byte("x"), relayCopyBufferSize*2)
@@ -738,7 +738,7 @@ func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -755,7 +755,7 @@ func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -763,13 +763,13 @@ func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -786,7 +786,7 @@ func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -794,7 +794,7 @@ func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	prefix := []byte("prefetched-")
 	payload := bytes.Repeat([]byte("x"), relayCopyBufferSize*2)
@@ -847,7 +847,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForWrappedWriterDestination(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -864,7 +864,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForWrappedWriterDestination(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -872,13 +872,13 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForWrappedWriterDestination(t *te
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -895,7 +895,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForWrappedWriterDestination(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -903,7 +903,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForWrappedWriterDestination(t *te
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	prefix := []byte("prefetched-")
 	payload := []byte("payload-body")
@@ -956,7 +956,7 @@ func TestDefaultRelayCopyEngine_GatherWriteUsesContinuationForWrappedDestination
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -973,7 +973,7 @@ func TestDefaultRelayCopyEngine_GatherWriteUsesContinuationForWrappedDestination
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -981,13 +981,13 @@ func TestDefaultRelayCopyEngine_GatherWriteUsesContinuationForWrappedDestination
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -1004,7 +1004,7 @@ func TestDefaultRelayCopyEngine_GatherWriteUsesContinuationForWrappedDestination
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -1012,7 +1012,7 @@ func TestDefaultRelayCopyEngine_GatherWriteUsesContinuationForWrappedDestination
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	prefix := []byte("prefetched-")
 	payload := bytes.Repeat([]byte("x"), relayCopyBufferSize*2)
@@ -1066,7 +1066,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForMultiSegmentSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcLn.Close()
+	defer func() { _ = srcLn.Close() }()
 
 	srcAccepted := make(chan *net.TCPConn, 1)
 	srcErr := make(chan error, 1)
@@ -1083,7 +1083,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForMultiSegmentSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcClient.Close()
+	defer func() { _ = srcClient.Close() }()
 
 	var srcServer *net.TCPConn
 	select {
@@ -1091,13 +1091,13 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForMultiSegmentSource(t *testing.
 		t.Fatal(err)
 	case srcServer = <-srcAccepted:
 	}
-	defer srcServer.Close()
+	defer func() { _ = srcServer.Close() }()
 
 	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstLn.Close()
+	defer func() { _ = dstLn.Close() }()
 
 	dstAccepted := make(chan *net.TCPConn, 1)
 	dstErr := make(chan error, 1)
@@ -1114,7 +1114,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForMultiSegmentSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstClient.Close()
+	defer func() { _ = dstClient.Close() }()
 
 	var dstServer *net.TCPConn
 	select {
@@ -1122,7 +1122,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForMultiSegmentSource(t *testing.
 		t.Fatal(err)
 	case dstServer = <-dstAccepted:
 	}
-	defer dstServer.Close()
+	defer func() { _ = dstServer.Close() }()
 
 	seg1 := []byte("prefetched-")
 	seg2 := []byte("headers-")

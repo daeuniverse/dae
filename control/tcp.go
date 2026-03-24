@@ -58,7 +58,7 @@ func isOffloadGloballyDisabledReason(reason string) bool {
 }
 
 func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {
-	defer lConn.Close()
+	defer func() { _ = lConn.Close() }()
 
 	// Get tuples and outbound first so we can decide whether sniffing is needed.
 	// Converge IPv4-mapped IPv6 addresses before looking up eBPF routing tuples.
@@ -103,13 +103,10 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	}
 
 	var (
-		domain             string
-		lRelayConn         netproxy.Conn = lConn
-		tcpSniffAttempted  bool
-		clientPayloadReady = true
+		domain     string
+		lRelayConn netproxy.Conn = lConn
 	)
 	if c.shouldTryTcpSniff(dst, routingResult) {
-		tcpSniffAttempted = true
 		cacheKey := newTcpSniffNegKey(dst, routingResult)
 		now := time.Now()
 		if c.shouldSkipTcpSniffByNegativeCache(cacheKey, now) {
@@ -124,7 +121,6 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			if probeErr != nil {
 				return probeErr
 			}
-			clientPayloadReady = ready
 			if !ready {
 				// No early payload; treat as non-sniffable to avoid stalling server-first/established flows.
 				c.noteTcpSniffFailure(cacheKey, now)
@@ -136,7 +132,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			} else {
 				// ConnSniffer should be used later, so we cannot close it now.
 				sniffer := sniffing.NewConnSniffer(probeConn, c.sniffingTimeout)
-				defer sniffer.Close()
+				defer func() { _ = sniffer.Close() }()
 				lRelayConn = sniffer
 
 				domain, err = sniffer.SniffTcp()
@@ -184,7 +180,6 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 			c.logNoAliveDialerLimited(
 				res.Outbound,
-				res.Outbound.GetSelectionPolicy(),
 				res.OrigNetworkType,
 				res.SelectionNetworkTypeObj,
 				src,
@@ -199,18 +194,11 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
-	defer rConn.Close()
+	defer func() { _ = rConn.Close() }()
 
 	offloaded := false
-	offloadReason := tcpRelayPrefetchOffloadSkipReason(tcpSniffAttempted, clientPayloadReady)
-	var offloadErr error
-	if offloadReason == "" {
-		offloaded, offloadReason, offloadErr = c.tryOffloadTCPRelay(ctx, lRelayConn, rConn)
-	}
-	if offloadErr != nil {
-		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
-	}
-	annotateOffload := canAnnotateTCPRelayOffload(rConn)
+	offloadReason := ""
+	annotateOffload := false
 
 	// Log new TCP connections at Info level for visibility (consistent with UDP behavior)
 	// Note: TCP connections are inherently "new" at this point, unlike UDP endpoints which may be reused

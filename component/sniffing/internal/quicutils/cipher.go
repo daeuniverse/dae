@@ -56,7 +56,7 @@ func NewKeys(clientDstConnectionId []byte, version Version, newAead func(key []b
 	}
 	// We differentiated a deriveKeys func is just for example test.
 	if err = keys.deriveKeys(); err != nil {
-		keys.Close()
+		_ = keys.Close()
 		return nil, err
 	}
 
@@ -146,7 +146,7 @@ func DecryptQuic_(buf []byte, pnOffset int, blockEnd int, destConnId []byte) (pl
 	if err != nil {
 		return nil, err
 	}
-	defer keys.Close()
+	defer func() { _ = keys.Close() }()
 
 	// RFC 9001: The sample is taken from the ciphertext, starting 4 bytes after the beginning of the PN.
 	// Since Initial packets use 1-4 byte PN, we must ensure we have enough data.
