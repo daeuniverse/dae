@@ -398,6 +398,22 @@ enum tcp_state {
 	TCP_STATE_CLOSING = 1,  // FIN or RST seen
 };
 
+// parse_transport_ctx bundles arguments for parse_transport to work around
+// BPF calling convention limitations (max 5 arguments for non-inline functions).
+// This struct is small enough (~80 bytes with padding) to be passed by value.
+struct parse_transport_ctx {
+	struct __sk_buff *skb;
+	__u32 link_h_len;
+	struct ethhdr *ethh;
+	struct iphdr *iph;
+	struct ipv6hdr *ipv6h;
+	struct icmp6hdr *icmp6h;
+	struct tcphdr *tcph;
+	struct udphdr *udph;
+	__u8 *ihl;
+	__u8 *l4proto;
+};
+
 // Functions:
 
 static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph)
@@ -869,19 +885,25 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 
 // Main entry point - tries fast path first, falls back to slow path.
 // Returns: 0 on success, positive on error.
-static __always_inline int
-parse_transport(struct __sk_buff *skb, __u32 link_h_len,
-		struct ethhdr *ethh, struct iphdr *iph, struct ipv6hdr *ipv6h,
-		struct icmp6hdr *icmp6h, struct tcphdr *tcph,
-		struct udphdr *udph, __u8 *ihl, __u8 *l4proto)
+//
+// Use __noinline with struct-based arguments to ensure this function has its own
+// 512-byte stack budget. BPF calling convention limits non-inline functions to 5
+// arguments, so we bundle arguments into a struct. When parse_transport_fast/slow
+// are inlined into this __noinline function, their stack usage is accounted for
+// within this function's stack, not the caller's. This prevents stack overflow in
+// paths where callers already use significant stack space.
+static __noinline int
+parse_transport(struct parse_transport_ctx *ctx)
 {
-	int ret = parse_transport_fast(skb, link_h_len, ethh, iph, ipv6h,
-				       icmp6h, tcph, udph, ihl, l4proto);
+	int ret = parse_transport_fast(ctx->skb, ctx->link_h_len, ctx->ethh, ctx->iph,
+				       ctx->ipv6h, ctx->icmp6h, ctx->tcph, ctx->udph,
+				       ctx->ihl, ctx->l4proto);
 	if (ret == -1) {
 		// Fast path failed (pull failed or headers too large),
 		// fall back to slow path using bpf_skb_load_bytes.
-		return parse_transport_slow(skb, link_h_len, ethh, iph, ipv6h,
-					    icmp6h, tcph, udph, ihl, l4proto);
+		return parse_transport_slow(ctx->skb, ctx->link_h_len, ctx->ethh, ctx->iph,
+					   ctx->ipv6h, ctx->icmp6h, ctx->tcph, ctx->udph,
+					   ctx->ihl, ctx->l4proto);
 	}
 	return ret;
 }
@@ -913,8 +935,19 @@ parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-				  &tcph, &udph, &ihl, &l4proto);
+	struct parse_transport_ctx ctx = {
+		.skb = skb,
+		.link_h_len = link_h_len,
+		.ethh = &ethh,
+		.iph = &iph,
+		.ipv6h = &ipv6h,
+		.icmp6h = &icmp6h,
+		.tcph = &tcph,
+		.udph = &udph,
+		.ihl = &ihl,
+		.l4proto = &l4proto,
+	};
+	int ret = parse_transport(&ctx);
 
 	if (ret)
 		return ret;
@@ -957,8 +990,19 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-				  &tcph, &udph, &ihl, &l4proto);
+	struct parse_transport_ctx ctx = {
+		.skb = skb,
+		.link_h_len = link_h_len,
+		.ethh = &ethh,
+		.iph = &iph,
+		.ipv6h = &ipv6h,
+		.icmp6h = &icmp6h,
+		.tcph = &tcph,
+		.udph = &udph,
+		.ihl = &ihl,
+		.l4proto = &l4proto,
+	};
+	int ret = parse_transport(&ctx);
 
 	if (ret)
 		return ret;
@@ -1742,9 +1786,21 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
+	struct parse_transport_ctx ctx = {
+		.skb = skb,
+		.link_h_len = link_h_len,
+		.ethh = &ethh,
+		.iph = &iph,
+		.ipv6h = &ipv6h,
+		.icmp6h = &icmp6h,
+		.tcph = &tcph,
+		.udph = &udph,
+		.ihl = &ihl,
+		.l4proto = &l4proto,
+	};
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-				  &tcph, &udph, &ihl, &l4proto);
+	int ret = parse_transport(&ctx);
+
 	if (ret) {
 		// Negative: error - drop; Positive: unsupported protocol - pass through
 		if (ret < 0) {
@@ -2184,9 +2240,21 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
+	struct parse_transport_ctx ctx = {
+		.skb = skb,
+		.link_h_len = link_h_len,
+		.ethh = &ethh,
+		.iph = &iph,
+		.ipv6h = &ipv6h,
+		.icmp6h = &icmp6h,
+		.tcph = &tcph,
+		.udph = &udph,
+		.ihl = &ihl,
+		.l4proto = &l4proto,
+	};
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-				  &tcph, &udph, &ihl, &l4proto);
+	int ret = parse_transport(&ctx);
+
 	if (ret) {
 		// Negative: error - drop; Positive: unsupported protocol - pass through
 		if (ret < 0) {
