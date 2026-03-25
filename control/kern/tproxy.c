@@ -1030,7 +1030,7 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 
 struct route_params {
 	__u32 flag[8];
-	__u8  is_wan;         // Independent field to indicate WAN direction
+	__u8  is_wan;
 	const void *l4hdr;
 	const __be32 *saddr;
 	const __be32 *daddr;
@@ -1041,7 +1041,7 @@ struct route_ctx {
 	const struct route_params *params;
 	__u16 h_dport;
 	__u16 h_sport;
-	__s64 result; // high -> low: sign(1b) unused(23b) mark(32b) outbound(8b)
+	__s64 result;
 	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
 	__u32 domain_word_idx;
 	__u32 domain_word_bits;
@@ -1055,6 +1055,21 @@ enum route_state_flags {
 	ROUTE_STATE_MUST = 1U << 2,
 	ROUTE_STATE_DNS_QUERY = 1U << 3,
 };
+
+struct wan_egress_route_scratch {
+	__u32 flag[8];
+	__be32 mac_be[4];
+	__u8 is_wan;
+	__u8 must_val;
+	__u8 mac[6];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct wan_egress_route_scratch);
+	__uint(max_entries, 1);
+} wan_egress_route_scratch_map SEC(".maps");
 
 /*
  * Helper functions to simplify route_loop_cb switch-case.
@@ -1499,22 +1514,15 @@ static __always_inline int prep_redirect_to_control_plane(
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
 
-	/* When use_redirect_peer is set (L3 netkit with scrub=NONE), we're
-	 * redirecting between two L3 devices. The packet stays at L3 (IP layer)
-	 * across the netkit boundary, so we don't need Ethernet header manipulation.
-	 */
 	if (PARAM.use_redirect_peer)
-		goto skip_eth_prep;  // L3 netkit: no Ethernet manipulation needed
+		goto skip_eth_prep;
 
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
 		int ret;
 
-		// Expand packet head to add Ethernet header
 		ret = bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
 		if (ret) {
-			// Failed to expand packet - this can happen under memory pressure
-			// Log and return error so caller can handle gracefully
 			bpf_printk("prep_redirect: bpf_skb_change_head failed: %d", ret);
 			return ret;
 		}
@@ -1528,8 +1536,6 @@ static __always_inline int prep_redirect_to_control_plane(
 skip_eth_prep:
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
-		// Use IPv4-mapped IPv6 format with ffff marker to avoid collision
-		// with IPv6 addresses like ::a.b.c.d
 		redirect_tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		redirect_tuple.sip.u6_addr32[3] = tuples->five.sip.u6_addr32[3];
 		redirect_tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
@@ -1541,7 +1547,7 @@ skip_eth_prep:
 
 	redirect_entry.ifindex = skb->ifindex;
 	redirect_entry.from_wan = from_wan;
-	redirect_entry.last_seen_ns = bpf_ktime_get_ns();  // Set timestamp for janitor
+	redirect_entry.last_seen_ns = bpf_ktime_get_ns();
 	if (link_h_len == ETH_HLEN) {
 		__builtin_memcpy(redirect_entry.smac, ethh->h_source, 6);
 		__builtin_memcpy(redirect_entry.dmac, ethh->h_dest, 6);
@@ -1553,10 +1559,10 @@ skip_eth_prep:
 
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = 0;
-	if ((l4proto == IPPROTO_TCP && tcph->syn) || l4proto == IPPROTO_UDP)
+	if (l4proto == IPPROTO_UDP || (tcph && tcph->syn))
 		skb->cb[1] = l4proto;
 
-	return 0;  // Success
+	return 0;
 }
 
 // copy_reversed_tuples moved below, timer callback removed (using userspace janitor)
@@ -2344,40 +2350,46 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	struct pid_pname *pid_pname = NULL;
 
 	if (unlikely(tcp_state_syn)) {
-		// New TCP connection.
-		struct route_params params;
-		__u8 mac[6] = {};
-		__u8 must_val;
+		__u32 scratch_key = 0;
+		struct wan_egress_route_scratch *scratch =
+			bpf_map_lookup_elem(&wan_egress_route_scratch_map, &scratch_key);
+		if (!scratch)
+			return TC_ACT_SHOT;
 
-		__builtin_memset(&params, 0, sizeof(params));
-		params.l4hdr = tcph;
-		params.flag[0] = L4ProtoType_TCP;
+		__builtin_memset(scratch, 0, sizeof(*scratch));
+		scratch->flag[0] = L4ProtoType_TCP;
 		if (skb->protocol == bpf_htons(ETH_P_IP))
-			params.flag[1] = IpVersionType_4;
+			scratch->flag[1] = IpVersionType_4;
 		else
-			params.flag[1] = IpVersionType_6;
-		params.flag[6] = tuples->dscp;
+			scratch->flag[1] = IpVersionType_6;
+		scratch->flag[6] = tuples->dscp;
 		if (pid_is_control_plane(skb, &pid_pname)) {
-			// From control plane. Direct.
 			return TC_ACT_OK;
 		}
 		if (pid_pname) {
-			// 2, 3, 4, 5
-			__builtin_memcpy(&params.flag[2], pid_pname->pname,
+			__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
 		}
-		params.is_wan = 1;  // WAN egress direction
+		scratch->is_wan = 1;
 		if (link_h_len == ETH_HLEN) {
-			params.mac[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
+			scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
 						  (__u32)ethh->h_source[1]);
-			params.mac[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
+			scratch->mac_be[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
 						  ((__u32)ethh->h_source[3] << 16) |
 						  ((__u32)ethh->h_source[4] << 8) |
 						  (__u32)ethh->h_source[5]);
-			__builtin_memcpy(mac, ethh->h_source, 6);
+			__builtin_memcpy(scratch->mac, ethh->h_source, 6);
 		}
-		params.saddr = tuples->five.sip.u6_addr32;
-		params.daddr = tuples->five.dip.u6_addr32;
+
+		struct route_params params = {
+			.l4hdr = tcph,
+			.saddr = tuples->five.sip.u6_addr32,
+			.daddr = tuples->five.dip.u6_addr32,
+			.is_wan = scratch->is_wan,
+			.mac = { scratch->mac_be[0], scratch->mac_be[1],
+				 scratch->mac_be[2], scratch->mac_be[3] },
+		};
+		__builtin_memcpy(params.flag, scratch->flag, sizeof(params.flag));
 
 		__s64 s64_ret = route(&params);
 
@@ -2389,9 +2401,8 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		outbound = s64_ret & 0xff;
 		mark = s64_ret >> 8;
 		must = (s64_ret >> 40) & 1;
-		must_val = must;
+		scratch->must_val = must;
 
-		// Prepare extended routing info
 		__u8 dscp = tuples->dscp;
 		const char *pname_str = NULL;
 		__u32 pid_val = 0;
@@ -2401,13 +2412,9 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			pid_val = pid_pname->pid;
 		}
 
-		// Only save non-direct routing to avoid conflicts with LAN ingress.
-		// Direct traffic doesn't need control plane processing.
-		// For pure direct (outbound==DIRECT && mark==0 && !must), pass NULL
-		// params to mark_tcp_seen so no routing info is cached.
 		__u8 *outbound_ptr = &outbound;
 		__u32 *mark_ptr = &mark;
-		__u8 *must_ptr = &must_val;
+		__u8 *must_ptr = &scratch->must_val;
 
 		if (outbound == OUTBOUND_DIRECT && mark == 0 && !must) {
 			outbound_ptr = NULL;
@@ -2415,33 +2422,18 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			must_ptr = NULL;
 		}
 
-		// Scheme3: Embed routing in conn state for single source of truth.
-		// Track TCP connection state AND routing decision together.
 		struct tcp_conn_state *tcp_conn = mark_tcp_seen(
 			&tuples->five, tcph, false, outbound_ptr, mark_ptr,
-			must_ptr, mac, dscp, pname_str, pid_val);
+			must_ptr, scratch->mac, dscp, pname_str, pid_val);
 
-		// SECURITY: Fail-Closed for connections requiring proxy.
-		// If conn state map is full, we MUST check if this connection needs proxying.
-		// - Direct connections with mark==0: No state tracking needed, let pass.
-		// - Direct connections with mark!=0: State REQUIRED to ensure consistent routing.
-		//   Without state, subsequent packets won't have the mark applied, causing
-		//   asymmetric routing and connection failure. Drop the connection cleanly.
-		// - Proxied connections: State REQUIRED to prevent traffic leakage.
-		// Unlike UDP which can call route() again on every packet, TCP non-SYN
-		// packets never re-evaluate routing - they only use cached state.
 		if (!tcp_conn) {
 			if (outbound == OUTBOUND_DIRECT && mark == 0) {
-				// Direct connection with default routing - no state needed
 				return TC_ACT_OK;
 			}
-			// Either proxied connection, or direct connection with policy routing mark.
-			// State is REQUIRED. Map full -> drop to prevent routing breakage.
 			return TC_ACT_SHOT;
 		}
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		// Print only new connection.
 		__u32 pid = pid_pname ? pid_pname->pid : 0;
 
 		bpf_printk("tcp(wan): from %pI6:%u [PID %u]",
@@ -2522,49 +2514,40 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct udphdr *udph)
 {
-	// Routing. It decides if we redirect traffic to control plane.
-	struct route_params params;
 	struct pid_pname *pid_pname;
 	__u8 outbound;
 	__u32 mark;
 	bool must;
-	struct tcphdr dummy_tcph = {};
 	struct udp_conn_state *udp_conn_state = NULL;
 	__u8 mac[6] = {};
 
-	__builtin_memset(&params, 0, sizeof(params));
-	params.l4hdr = udph;
-	params.flag[0] = L4ProtoType_UDP;
+	__u32 scratch_key = 0;
+	struct wan_egress_route_scratch *scratch =
+		bpf_map_lookup_elem(&wan_egress_route_scratch_map, &scratch_key);
+	if (!scratch)
+		return TC_ACT_SHOT;
+
+	__builtin_memset(scratch, 0, sizeof(*scratch));
+	scratch->flag[0] = L4ProtoType_UDP;
 	if (skb->protocol == bpf_htons(ETH_P_IP))
-		params.flag[1] = IpVersionType_4;
+		scratch->flag[1] = IpVersionType_4;
 	else
-		params.flag[1] = IpVersionType_6;
-	params.flag[6] = tuples->dscp;
+		scratch->flag[1] = IpVersionType_6;
+	scratch->flag[6] = tuples->dscp;
 
 	if (pid_is_control_plane(skb, &pid_pname)) {
-		// From control plane => direct.
 		return TC_ACT_OK;
 	}
 
-	// Fast path: Try to use cached routing from conn state for established UDP flows.
-	// This is similar to netfilter's conntrack fast path - avoiding expensive
-	// route() lookup (LPM, rule matching, etc.) for packets of existing flows.
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
-		// First check if this is replay of inbound flow
 		udp_conn_state = mark_udp_seen(&tuples->five, false,
 					       NULL, NULL, NULL, NULL,
 					       0, NULL, 0);
-		// Robustness: If conntrack map is full, gracefully degrade by continuing
-		// with normal routing. We lose the direct return path optimization but
-		// service continues.
 		if (udp_conn_state && udp_conn_state->is_wan_ingress_direction) {
-			// Replay (outbound) of an inbound flow => direct.
 			return TC_ACT_OK;
 		}
 
-		// Fast path: Use cached routing if available
 		if (udp_conn_state && udp_conn_state->has_routing) {
-			// Load routing from conn state - skip expensive route() call!
 			outbound = udp_conn_state->outbound;
 			mark = udp_conn_state->mark;
 			must = udp_conn_state->must;
@@ -2573,24 +2556,31 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		}
 	}
 
-	// Slow path: No cached routing, need to perform full route lookup
 	if (pid_pname) {
-		// 2, 3, 4, 5
-		__builtin_memcpy(&params.flag[2], pid_pname->pname,
+		__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 				 TASK_COMM_LEN);
 	}
-	params.is_wan = 1;  // WAN egress direction
+	scratch->is_wan = 1;
 	if (ethh) {
-		params.mac[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
+		scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
 					  (__u32)ethh->h_source[1]);
-		params.mac[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
+		scratch->mac_be[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
 					  ((__u32)ethh->h_source[3] << 16) |
 					  ((__u32)ethh->h_source[4] << 8) |
 					  (__u32)ethh->h_source[5]);
 		__builtin_memcpy(mac, ethh->h_source, 6);
+		__builtin_memcpy(scratch->mac, ethh->h_source, 6);
 	}
-	params.saddr = tuples->five.sip.u6_addr32;
-	params.daddr = tuples->five.dip.u6_addr32;
+
+	struct route_params params = {
+		.l4hdr = udph,
+		.saddr = tuples->five.sip.u6_addr32,
+		.daddr = tuples->five.dip.u6_addr32,
+		.is_wan = scratch->is_wan,
+		.mac = { scratch->mac_be[0], scratch->mac_be[1],
+			 scratch->mac_be[2], scratch->mac_be[3] },
+	};
+	__builtin_memcpy(params.flag, scratch->flag, sizeof(params.flag));
 
 	__s64 s64_ret = route(&params);
 
@@ -2599,23 +2589,13 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		return TC_ACT_SHOT;
 	}
 
-	// Extract routing values.
 	outbound = s64_ret & 0xff;
 	mark = s64_ret >> 8;
 	must = (s64_ret >> 40) & 1;
 
 fast_path_skip_routing:
-	// Scheme3: Embed routing in conn state for single source of truth.
-	// Update conn state with routing decision (skip DNS for optimization).
-	// PERFORMANCE: Use the udp_conn_state pointer from first call to avoid
-	// a second map lookup. This is critical for high-throughput UDP traffic.
-	//
-	// Only save non-direct routing to avoid conflicts with LAN ingress.
-	// Direct traffic doesn't need control plane processing.
 	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
-		// Only cache routing if it's not pure direct (mark==0 && !must)
 		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			// Directly update the conn state we already looked up
 			udp_conn_state->has_routing = 1;
 			udp_conn_state->outbound = outbound;
 			udp_conn_state->mark = mark;
@@ -2629,7 +2609,6 @@ fast_path_skip_routing:
 				udp_conn_state->pid = pid_pname->pid;
 			}
 		}
-		// Update timestamp to prevent premature connection expiration
 		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
 	}
 
@@ -2642,9 +2621,7 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (outbound == OUTBOUND_DIRECT &&
-	    mark == 0 // If mark is not zero, we should re-route it.
-	) {
+	if (outbound == OUTBOUND_DIRECT && mark == 0) {
 		return TC_ACT_OK;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 		return TC_ACT_SHOT;
@@ -2655,9 +2632,7 @@ fast_path_skip_routing:
 		return TC_ACT_SHOT;
 
 	if (prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
-					   1, &dummy_tcph)) {
-		// Failed to prepare packet (e.g., bpf_skb_change_head failed)
-		// Fall back to direct pass to avoid packet corruption
+					   1, NULL)) {
 		return TC_ACT_OK;
 	}
 	return redirect_to_control_plane_egress();
