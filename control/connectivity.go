@@ -24,6 +24,18 @@ func FormatL4Proto(l4proto uint8) string {
 	return strconv.Itoa(int(l4proto))
 }
 
+func outboundConnectivityMapKey(outbound uint8, networkType *dialer.NetworkType) uint32 {
+	protoIdx := uint32(0)
+	if networkType.L4Proto == consts.L4ProtoStr_UDP {
+		protoIdx = 1
+	}
+	ipVersionIdx := uint32(0)
+	if networkType.IpVersion == consts.IpVersionStr_6 {
+		ipVersionIdx = 1
+	}
+	return uint32(outbound)*4 + protoIdx*2 + ipVersionIdx
+}
+
 func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bool) func(alive bool, networkType *dialer.NetworkType, isInit bool) {
 	return func(alive bool, networkType *dialer.NetworkType, isInit bool) {
 		select {
@@ -50,7 +62,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		}
 		// ARRAY map key: outbound_id * 4 + l4proto * 2 + ipversion
 		// l4proto: 0=TCP, 1=UDP; ipversion: 0=IPv4, 1=IPv6
-		key := uint32(outbound)*4 + uint32(networkType.L4Proto.ToL4Proto())*2 + uint32(networkType.IpVersion.ToIpVersion())
+		key := outboundConnectivityMapKey(outbound, networkType)
 		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
 			c.log.WithFields(logrus.Fields{
 				"alive":    alive,

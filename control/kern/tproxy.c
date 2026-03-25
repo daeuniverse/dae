@@ -2358,9 +2358,9 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 {
 	// ARRAY map key: outbound_id * 4 + l4proto * 2 + ipversion
 	// l4proto: 0=TCP, 1=UDP; ipversion: 0=IPv4, 1=IPv6
-	__u32 key = ((__u32)outbound * 4) +
-		    ((__u32)l4proto * 2) +
-		    ((skb->protocol == bpf_htons(ETH_P_IP)) ? 0 : 1);
+	__u32 proto_idx = l4proto == IPPROTO_UDP ? 1 : 0;
+	__u32 ip_idx = skb->protocol == bpf_htons(ETH_P_IP) ? 0 : 1;
+	__u32 key = ((__u32)outbound * 4) + (proto_idx * 2) + ip_idx;
 	__u32 *alive;
 
 	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &key);
