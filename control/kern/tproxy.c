@@ -450,8 +450,9 @@ struct {
 // send_dae_event sends a structured event to the userspace via ring buffer.
 // Returns: 0 on success, negative error code on failure.
 static __always_inline int
-send_dae_event(__u32 type, __u32 pid, const char *pname, __u8 outbound, __u8 l4proto,
-		const __u32 *sip, const __u32 *dip, __u16 sport, __u16 dport)
+send_dae_event(__u32 type, __u32 pid, const char *pname, __u8 outbound,
+	       __u8 l4proto, const __u32 *sip, const __u32 *dip,
+	       __u16 sport, __u16 dport)
 {
 	struct dae_event e = {};
 
@@ -629,6 +630,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 
 		// Drop non-initial IP fragments (security)
 		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
+
 		if ((frag_off & 0x1FFF) != 0)
 			return 1;
 
@@ -648,6 +650,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		switch (iph->protocol) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + l4_offset;
+
 			if ((void *)(tcph_ptr + 1) > data_end)
 				return -EFAULT;
 			tcph->source = tcph_ptr->source;
@@ -663,6 +666,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udph_ptr = data + l4_offset;
+
 			if ((void *)(udph_ptr + 1) > data_end)
 				return -EFAULT;
 			udph->source = udph_ptr->source;
@@ -734,6 +738,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		switch (nexthdr) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + offset;
+
 			if ((void *)(tcph_ptr + 1) > data_end)
 				return -EFAULT;
 			tcph->source = tcph_ptr->source;
@@ -749,6 +754,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_UDP: {
 			struct udphdr *udph_ptr = data + offset;
+
 			if ((void *)(udph_ptr + 1) > data_end)
 				return -EFAULT;
 			udph->source = udph_ptr->source;
@@ -759,6 +765,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		}
 		case IPPROTO_ICMPV6: {
 			struct icmp6hdr *icmp6h_ptr = data + offset;
+
 			if ((void *)(icmp6h_ptr + 1) > data_end)
 				return -EFAULT;
 			icmp6h->icmp6_type = icmp6h_ptr->icmp6_type;
@@ -1038,7 +1045,9 @@ struct route_params {
 };
 
 struct route_ctx {
-	const struct route_params *params;
+	__u32 flag[8];
+	__u8 is_wan;
+	__be32 mac[4];
 	__u16 h_dport;
 	__u16 h_sport;
 	__s64 result;
@@ -1152,8 +1161,11 @@ static __always_inline int route_match_domain_set(struct route_ctx *ctx,
 
 	if (!ctx->domain_word_cached || ctx->domain_word_idx != bitmap_word_idx) {
 		// Refresh one 32-rule bitmap word at a time.
+		__be32 daddr[4];
+
+		__builtin_memcpy(daddr, ctx->lpm_key_daddr.data, sizeof(daddr));
 		domain_routing = bpf_map_lookup_elem(&domain_routing_map,
-						     ctx->params->daddr);
+						     daddr);
 		ctx->domain_word_idx = bitmap_word_idx;
 		if (domain_routing)
 			ctx->domain_word_bits =
@@ -1355,11 +1367,11 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 {
 	struct route_ctx *ctx = data;
 	struct match_set *match_set;
-	__u8 l4proto_type = ctx->params->flag[0];
-	__u8 ipversion_type = ctx->params->flag[1];
-	const __u32 *pname = &ctx->params->flag[2];
-	__u8 is_wan = ctx->params->is_wan;
-	__u8 dscp = ctx->params->flag[6];
+	__u8 l4proto_type = ctx->flag[0];
+	__u8 ipversion_type = ctx->flag[1];
+	const __u32 *pname = &ctx->flag[2];
+	__u8 is_wan = ctx->is_wan;
+	__u8 dscp = ctx->flag[6];
 
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
@@ -1406,7 +1418,9 @@ static __noinline __s64 route(const struct route_params *params)
 	struct route_ctx ctx;
 
 	__builtin_memset(&ctx, 0, sizeof(ctx));
-	ctx.params = params;
+	__builtin_memcpy(ctx.flag, params->flag, sizeof(ctx.flag));
+	ctx.is_wan = params->is_wan;
+	__builtin_memcpy(ctx.mac, params->mac, sizeof(ctx.mac));
 	ctx.result = -ENOEXEC;
 
 	// Variables for further use.
@@ -1665,8 +1679,9 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		if (overflow_count)
 			__sync_fetch_and_add(overflow_count, 1);
 		// Send DAE_EVENT_UDP_CONN_OVERFLOW event
-		send_dae_event(DAE_EVENT_UDP_CONN_OVERFLOW, pid, pname, 0, key->l4proto,
-				key->sip.u6_addr32, key->dip.u6_addr32, key->sport, key->dport);
+		send_dae_event(DAE_EVENT_UDP_CONN_OVERFLOW, pid, pname, 0,
+			       key->l4proto, key->sip.u6_addr32,
+			       key->dip.u6_addr32, key->sport, key->dport);
 		return NULL;
 	}
 
@@ -1760,8 +1775,9 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			if (overflow_count)
 				__sync_fetch_and_add(overflow_count, 1);
 			// Send DAE_EVENT_TCP_CONN_OVERFLOW event
-			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, pid, pname, 0, key->l4proto,
-					key->sip.u6_addr32, key->dip.u6_addr32, key->sport, key->dport);
+			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, pid, pname, 0,
+				       key->l4proto, key->sip.u6_addr32,
+				       key->dip.u6_addr32, key->sport, key->dport);
 			return NULL;
 		}
 
@@ -1793,8 +1809,9 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			if (overflow_count)
 				__sync_fetch_and_add(overflow_count, 1);
 			// Send DAE_EVENT_TCP_CONN_OVERFLOW event
-			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, 0, NULL, 0, key->l4proto,
-					key->sip.u6_addr32, key->dip.u6_addr32, key->sport, key->dport);
+			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, 0, NULL, 0,
+				       key->l4proto, key->sip.u6_addr32,
+				       key->dip.u6_addr32, key->sport, key->dport);
 		}
 	}
 
@@ -2190,9 +2207,10 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		bpf_printk("SHOT OUTBOUND_BLOCK");
 #endif
 		// Send DAE_EVENT_BLOCKED event
-		send_dae_event(DAE_EVENT_BLOCKED, 0, NULL, outbound, pkt->l4proto,
-				pkt->tuples.five.sip.u6_addr32, pkt->tuples.five.dip.u6_addr32,
-				pkt->tuples.five.sport, pkt->tuples.five.dport);
+		send_dae_event(DAE_EVENT_BLOCKED, 0, NULL, outbound,
+			       pkt->l4proto, pkt->tuples.five.sip.u6_addr32,
+			       pkt->tuples.five.dip.u6_addr32,
+			       pkt->tuples.five.sport, pkt->tuples.five.dport);
 		goto block;
 	}
 
@@ -2363,13 +2381,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		else
 			scratch->flag[1] = IpVersionType_6;
 		scratch->flag[6] = tuples->dscp;
-		if (pid_is_control_plane(skb, &pid_pname)) {
+		if (pid_is_control_plane(skb, &pid_pname))
 			return TC_ACT_OK;
-		}
-		if (pid_pname) {
+		if (pid_pname)
 			__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
-		}
 		scratch->is_wan = 1;
 		if (link_h_len == ETH_HLEN) {
 			scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
@@ -2427,9 +2443,8 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			must_ptr, scratch->mac, dscp, pname_str, pid_val);
 
 		if (!tcp_conn) {
-			if (outbound == OUTBOUND_DIRECT && mark == 0) {
+			if (outbound == OUTBOUND_DIRECT && mark == 0)
 				return TC_ACT_OK;
-			}
 			return TC_ACT_SHOT;
 		}
 
@@ -2535,17 +2550,15 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		scratch->flag[1] = IpVersionType_6;
 	scratch->flag[6] = tuples->dscp;
 
-	if (pid_is_control_plane(skb, &pid_pname)) {
+	if (pid_is_control_plane(skb, &pid_pname))
 		return TC_ACT_OK;
-	}
 
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
 		udp_conn_state = mark_udp_seen(&tuples->five, false,
 					       NULL, NULL, NULL, NULL,
 					       0, NULL, 0);
-		if (udp_conn_state && udp_conn_state->is_wan_ingress_direction) {
+		if (udp_conn_state && udp_conn_state->is_wan_ingress_direction)
 			return TC_ACT_OK;
-		}
 
 		if (udp_conn_state && udp_conn_state->has_routing) {
 			outbound = udp_conn_state->outbound;
@@ -2621,11 +2634,10 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (outbound == OUTBOUND_DIRECT && mark == 0) {
+	if (outbound == OUTBOUND_DIRECT && mark == 0)
 		return TC_ACT_OK;
-	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+	else if (unlikely(outbound == OUTBOUND_BLOCK))
 		return TC_ACT_SHOT;
-	}
 
 	if (!wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,
 				   tuples->five.dport))
