@@ -1646,40 +1646,16 @@ func readBpfStatsCounter(m *ebpf.Map, key uint32) (uint64, error) {
 }
 
 type Listener struct {
-	tcpListener net.Listener
-	packetConn  net.PacketConn
-	port        uint16
+	tcp4Listener net.Listener
+	tcp6Listener net.Listener
+	packetConn   net.PacketConn
+	port         uint16
 }
 
-const tcpDualStackListenIP = "::"
 const udpDualStackListenIP = "::"
-
-func tcpDualStackListenAddr(port uint16) string {
-	return net.JoinHostPort(tcpDualStackListenIP, strconv.Itoa(int(port)))
-}
 
 func udpDualStackListenAddr(port uint16) string {
 	return net.JoinHostPort(udpDualStackListenIP, strconv.Itoa(int(port)))
-}
-
-func enableTCPDualStackSocket(c syscall.RawConn) error {
-	var sockOptErr error
-	controlErr := c.Control(func(fd uintptr) {
-		if err := unix.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, unix.IPV6_V6ONLY, 0); err != nil {
-			sockOptErr = fmt.Errorf("error setting IPV6_V6ONLY socket option: %w", err)
-		}
-	})
-	if controlErr != nil {
-		return fmt.Errorf("error invoking socket control function: %w", controlErr)
-	}
-	return sockOptErr
-}
-
-func tcpDualStackListenControl(c syscall.RawConn) error {
-	if err := dialer.TproxyControl(c); err != nil {
-		return err
-	}
-	return enableTCPDualStackSocket(c)
 }
 
 func enableUDPDualStackSocket(c syscall.RawConn) error {
@@ -1714,15 +1690,27 @@ func udpIngressSupportsBatch(conn *net.UDPConn) bool {
 }
 
 func (l *Listener) Close() error {
-	var (
-		err  error
-		err2 error
-	)
-	if err, err2 = l.tcpListener.Close(), l.packetConn.Close(); err2 != nil {
-		if err == nil {
-			err = err2
-		} else {
-			err = fmt.Errorf("%w: %v", err, err2)
+	var err error
+
+	if l.tcp4Listener != nil {
+		err = l.tcp4Listener.Close()
+	}
+	if l.tcp6Listener != nil {
+		if err2 := l.tcp6Listener.Close(); err2 != nil {
+			if err == nil {
+				err = err2
+			} else {
+				err = fmt.Errorf("%w: %v", err, err2)
+			}
+		}
+	}
+	if l.packetConn != nil {
+		if err2 := l.packetConn.Close(); err2 != nil {
+			if err == nil {
+				err = err2
+			} else {
+				err = fmt.Errorf("%w: %v", err, err2)
+			}
 		}
 	}
 	return err
@@ -1740,15 +1728,26 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	}()
 	udpConn := listener.packetConn.(*net.UDPConn)
 	/// Serve.
-	// TCP socket.
-	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
+	// TCP IPv4 socket.
+	tcp4File, err := listener.tcp4Listener.(*net.TCPListener).File()
 	if err != nil {
-		return fmt.Errorf("failed to retrieve copy of the underlying TCP connection file")
+		return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv4 listener file")
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
-		return tcpFile.Close()
+		return tcp4File.Close()
 	})
-	if err := c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
+	if err := c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcp4File.Fd()), ebpf.UpdateAny); err != nil {
+		return err
+	}
+	// TCP IPv6 socket.
+	tcp6File, err := listener.tcp6Listener.(*net.TCPListener).File()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv6 listener file")
+	}
+	c.deferFuncs = append(c.deferFuncs, func() error {
+		return tcp6File.Close()
+	})
+	if err := c.core.bpf.ListenSocketMap.Update(consts.TwoKey, uint64(tcp6File.Fd()), ebpf.UpdateAny); err != nil {
 		return err
 	}
 	// UDP socket.
@@ -1768,19 +1767,19 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	case readyChan <- true:
 	default:
 	}
-	go func() {
+	serveTCP := func(tcpListener net.Listener) {
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
 			}
-			lconn, err := listener.tcpListener.Accept()
+			lconn, err := tcpListener.Accept()
 			if err != nil {
 				if !commonerrors.IsClosedConnection(err) && !stderrors.Is(err, context.Canceled) {
 					c.log.Errorf("Error when accept: %v", err)
 				}
-				break
+				return
 			}
 			go func(lconn net.Conn) {
 				c.inConnections.Store(lconn, struct{}{})
@@ -1793,7 +1792,9 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}(lconn)
 		}
-	}()
+	}
+	go serveTCP(listener.tcp4Listener)
+	go serveTCP(listener.tcp6Listener)
 	go func() {
 		processPacket := func(pktBuf pool.PB, src netip.AddrPort, oob []byte) {
 			pktDst := RetrieveOriginalDest(oob)
@@ -2075,7 +2076,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 	// Listen.
 	tcpListenConfig := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
-			return tcpDualStackListenControl(c)
+			return dialer.TproxyControl(c)
 		},
 	}
 	udpListenConfig := net.ListenConfig{
@@ -2083,37 +2084,33 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 			return udpDualStackListenControl(c)
 		},
 	}
-	tcpListenAddr := tcpDualStackListenAddr(port)
-	tcpListener, err := tcpListenConfig.Listen(context.Background(), "tcp6", tcpListenAddr)
+	tcp4ListenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
+	tcp4Listener, err := tcpListenConfig.Listen(context.Background(), "tcp4", tcp4ListenAddr)
 	if err != nil {
-		if c.log != nil {
-			c.log.WithError(err).Warn("Failed to open dual-stack TCP listener; fallback to IPv4-only TCP listener")
-		}
-		tcpListenAddr = net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
-		tcpListener, err = (&net.ListenConfig{
-			Control: func(network, address string, c syscall.RawConn) error {
-				return dialer.TproxyControl(c)
-			},
-		}).Listen(context.Background(), "tcp4", tcpListenAddr)
-		if err != nil {
-			return nil, fmt.Errorf("listenTCP: %w", err)
-		}
+		return nil, fmt.Errorf("listenTCP4: %w", err)
+	}
+	tcp6Listener, err := tcpListenConfig.Listen(context.Background(), "tcp6", net.JoinHostPort("::", strconv.Itoa(int(port))))
+	if err != nil {
+		_ = tcp4Listener.Close()
+		return nil, fmt.Errorf("listenTCP6: %w", err)
 	}
 	packetConn, err := udpListenConfig.ListenPacket(context.Background(), "udp6", udpDualStackListenAddr(port))
 	if err != nil {
 		if c.log != nil {
 			c.log.WithError(err).Warn("Failed to open dual-stack UDP listener; fallback to IPv4-only UDP listener")
 		}
-		packetConn, err = tcpListenConfig.ListenPacket(context.Background(), "udp", tcpListenAddr)
+		packetConn, err = tcpListenConfig.ListenPacket(context.Background(), "udp", tcp4ListenAddr)
 		if err != nil {
-			_ = tcpListener.Close()
+			_ = tcp4Listener.Close()
+			_ = tcp6Listener.Close()
 			return nil, fmt.Errorf("listenUDP: %w", err)
 		}
 	}
 	listener = &Listener{
-		tcpListener: tcpListener,
-		packetConn:  packetConn,
-		port:        port,
+		tcp4Listener: tcp4Listener,
+		tcp6Listener: tcp6Listener,
+		packetConn:   packetConn,
+		port:         port,
 	}
 	defer func() {
 		if err != nil {

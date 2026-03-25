@@ -60,6 +60,7 @@
 // Param keys:
 static const __u32 zero_key;
 static const __u32 one_key = 1;
+static const __u32 two_key = 2;
 
 // Outbound Connectivity Map:
 
@@ -78,9 +79,9 @@ struct {
 // Sockmap:
 struct {
 	__uint(type, BPF_MAP_TYPE_SOCKMAP);
-	__type(key, __u32); // 0 is tcp, 1 is udp.
+	__type(key, __u32); // 0 is tcp4, 1 is udp, 2 is tcp6.
 	__type(value, __u64); // fd of socket.
-	__uint(max_entries, 2);
+	__uint(max_entries, 3);
 } listen_socket_map SEC(".maps");
 
 union ip6 {
@@ -1497,11 +1498,13 @@ static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
 static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 {
 	struct bpf_sock *sk;
+	const __u32 *key = &one_key;
 
-	if (l4proto == IPPROTO_TCP)
-		sk = bpf_map_lookup_elem(&listen_socket_map, &zero_key);
-	else
-		sk = bpf_map_lookup_elem(&listen_socket_map, &one_key);
+	if (l4proto == IPPROTO_TCP) {
+		key = skb->protocol == bpf_htons(ETH_P_IPV6) ? &two_key : &zero_key;
+	}
+
+	sk = bpf_map_lookup_elem(&listen_socket_map, key);
 
 	if (!sk)
 		return -1;

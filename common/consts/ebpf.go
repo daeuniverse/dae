@@ -32,6 +32,7 @@ const (
 	ControlPlaneDnsRoutingKey
 
 	OneKey ParamKey = 1
+	TwoKey ParamKey = 2
 )
 
 type DisableL4ChecksumPolicy uint32
