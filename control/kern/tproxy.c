@@ -1041,15 +1041,6 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 	return 0;
 }
 
-struct route_params {
-	__u32 flag[8];
-	__u8  is_wan;
-	const void *l4hdr;
-	const __be32 *saddr;
-	const __be32 *daddr;
-	__be32 mac[4];
-};
-
 struct route_ctx {
 	__u32 flag[8];
 	__u8 is_wan;
@@ -1423,13 +1414,15 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	return route_finalize_match(ctx, match_set);
 }
 
-static __noinline __s64 route(const struct route_params *params)
+static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
+			      const __be32 *saddr, const __be32 *daddr,
+			      const __be32 *mac)
 {
-#define _l4proto_type params->flag[0]
-#define _ipversion_type params->flag[1]
-#define _pname (&params->flag[2])
-#define _is_wan params->is_wan
-#define _dscp params->flag[6]
+#define _l4proto_type flag[0]
+#define _ipversion_type flag[1]
+#define _pname (&flag[2])
+#define _is_wan flag[7]
+#define _dscp flag[6]
 
 	__u32 scratch_key = 0;
 	struct route_ctx *ctx =
@@ -1439,20 +1432,20 @@ static __noinline __s64 route(const struct route_params *params)
 		return -EFAULT;
 
 	__builtin_memset(ctx, 0, sizeof(*ctx));
-	__builtin_memcpy(ctx->flag, params->flag, sizeof(ctx->flag));
-	ctx->is_wan = params->is_wan;
-	__builtin_memcpy(ctx->mac, params->mac, sizeof(ctx->mac));
+	__builtin_memcpy(ctx->flag, flag, sizeof(ctx->flag));
+	ctx->is_wan = _is_wan;
+	__builtin_memcpy(ctx->mac, mac, sizeof(ctx->mac));
 	ctx->result = -ENOEXEC;
 
 	// Variables for further use.
 	if (_l4proto_type == L4ProtoType_TCP) {
-		ctx->h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
+		ctx->h_dport = bpf_ntohs(((struct tcphdr *)l4hdr)->dest);
 		ctx->h_sport =
-			bpf_ntohs(((struct tcphdr *)params->l4hdr)->source);
+			bpf_ntohs(((struct tcphdr *)l4hdr)->source);
 	} else {
-		ctx->h_dport = bpf_ntohs(((struct udphdr *)params->l4hdr)->dest);
+		ctx->h_dport = bpf_ntohs(((struct udphdr *)l4hdr)->dest);
 		ctx->h_sport =
-			bpf_ntohs(((struct udphdr *)params->l4hdr)->source);
+			bpf_ntohs(((struct udphdr *)l4hdr)->source);
 	}
 
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
@@ -1468,11 +1461,11 @@ static __noinline __s64 route(const struct route_params *params)
 	ctx->lpm_key_saddr.prefixlen = IPV6_BYTE_LENGTH * 8;
 	ctx->lpm_key_daddr.prefixlen = IPV6_BYTE_LENGTH * 8;
 	ctx->lpm_key_mac.prefixlen = IPV6_BYTE_LENGTH * 8;
-	__builtin_memcpy(ctx->lpm_key_saddr.data, params->saddr,
+	__builtin_memcpy(ctx->lpm_key_saddr.data, saddr,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx->lpm_key_daddr.data, params->daddr,
+	__builtin_memcpy(ctx->lpm_key_daddr.data, daddr,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx->lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
+	__builtin_memcpy(ctx->lpm_key_mac.data, mac, IPV6_BYTE_LENGTH);
 
 	__u32 active_rules_len = MAX_MATCH_SET_LEN;
 	__u32 *active_rules_len_ptr =
@@ -1995,11 +1988,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 
 	// Routing for new connection.
-	struct route_params params;
+	__u32 route_flag[8] = {};
 	struct tcp_conn_state *tcp_state = NULL;
 	struct udp_conn_state *udp_state = NULL;
-
-	__builtin_memset(&params, 0, sizeof(params));
 
 	if (pkt->l4proto == IPPROTO_TCP) {
 		// Track TCP connection state for new connections from LAN.
@@ -2008,8 +1999,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false,
 					  NULL, NULL, NULL, NULL,
 					  0, NULL, 0);
-		params.l4hdr = &pkt->tcph;
-		params.flag[0] = L4ProtoType_TCP;
+		route_flag[0] = L4ProtoType_TCP;
 	} else {
 		if (!is_short_lived_udp_traffic(&pkt->tuples.five)) {
 			// Fast path: Check conn state for established UDP flows
@@ -2047,18 +2037,21 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 				goto control_plane;
 			}
 		}
-		params.l4hdr = &pkt->udph;
-		params.flag[0] = L4ProtoType_UDP;
+		route_flag[0] = L4ProtoType_UDP;
 	}
-	params.flag[1] = (skb->protocol == bpf_htons(ETH_P_IP)) ? IpVersionType_4 : IpVersionType_6;
-	params.flag[6] = pkt->tuples.dscp;
-	params.mac[2] = bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
-				  (__u32)pkt->ethh.h_source[1]);
-	params.mac[3] = bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
+	route_flag[1] = (skb->protocol == bpf_htons(ETH_P_IP)) ? IpVersionType_4 :
+							      IpVersionType_6;
+	route_flag[6] = pkt->tuples.dscp;
+	__be32 mac_be[4] = {
+		0,
+		0,
+		bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
+			  (__u32)pkt->ethh.h_source[1]),
+		bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
 			  ((__u32)pkt->ethh.h_source[3] << 16) |
-			  ((__u32)pkt->ethh.h_source[4] << 8) | (__u32)pkt->ethh.h_source[5]);
-	params.saddr = pkt->tuples.five.sip.u6_addr32;
-	params.daddr = pkt->tuples.five.dip.u6_addr32;
+			  ((__u32)pkt->ethh.h_source[4] << 8) |
+			  (__u32)pkt->ethh.h_source[5]),
+	};
 
 	// Socket lookup BEFORE routing to detect local services (NAT loopback).
 	// This must happen before route() because routing rules might incorrectly
@@ -2138,7 +2131,12 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 	__s64 s64_ret;
 
-	s64_ret = route(&params);
+	s64_ret = route(route_flag,
+			pkt->l4proto == IPPROTO_TCP ? (const void *)&pkt->tcph :
+						      (const void *)&pkt->udph,
+			pkt->tuples.five.sip.u6_addr32,
+			pkt->tuples.five.dip.u6_addr32,
+			mac_be);
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
 		return TC_ACT_SHOT;
@@ -2401,7 +2399,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		if (pid_pname)
 			__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
-		scratch->is_wan = 1;
+		scratch->flag[7] = 1;
 		if (link_h_len == ETH_HLEN) {
 			scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
 						  (__u32)ethh->h_source[1]);
@@ -2412,17 +2410,10 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			__builtin_memcpy(scratch->mac, ethh->h_source, 6);
 		}
 
-		struct route_params params = {
-			.l4hdr = tcph,
-			.saddr = tuples->five.sip.u6_addr32,
-			.daddr = tuples->five.dip.u6_addr32,
-			.is_wan = scratch->is_wan,
-			.mac = { scratch->mac_be[0], scratch->mac_be[1],
-				 scratch->mac_be[2], scratch->mac_be[3] },
-		};
-		__builtin_memcpy(params.flag, scratch->flag, sizeof(params.flag));
-
-		__s64 s64_ret = route(&params);
+		__s64 s64_ret = route(scratch->flag, tcph,
+				      tuples->five.sip.u6_addr32,
+				      tuples->five.dip.u6_addr32,
+				      scratch->mac_be);
 
 		if (s64_ret < 0) {
 			bpf_printk("shot routing: %d", s64_ret);
@@ -2588,7 +2579,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 				 TASK_COMM_LEN);
 	}
-	scratch->is_wan = 1;
+	scratch->flag[7] = 1;
 	if (ethh) {
 		scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
 					  (__u32)ethh->h_source[1]);
@@ -2600,17 +2591,10 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		__builtin_memcpy(scratch->mac, ethh->h_source, 6);
 	}
 
-	struct route_params params = {
-		.l4hdr = udph,
-		.saddr = tuples->five.sip.u6_addr32,
-		.daddr = tuples->five.dip.u6_addr32,
-		.is_wan = scratch->is_wan,
-		.mac = { scratch->mac_be[0], scratch->mac_be[1],
-			 scratch->mac_be[2], scratch->mac_be[3] },
-	};
-	__builtin_memcpy(params.flag, scratch->flag, sizeof(params.flag));
-
-	__s64 s64_ret = route(&params);
+	__s64 s64_ret = route(scratch->flag, udph,
+			      tuples->five.sip.u6_addr32,
+			      tuples->five.dip.u6_addr32,
+			      scratch->mac_be);
 
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
