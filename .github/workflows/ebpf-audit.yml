@@ -1,0 +1,53 @@
+name: eBPF Audit
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - "scripts/ebpf-audit.sh"
+      - ".github/workflows/ebpf-audit.yml"
+
+permissions: read-all
+
+jobs:
+  ebpf_audit:
+    name: Load, Verifier, and Dump Audit
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Go 1.26
+        run: |
+          wget -q https://go.dev/dl/go1.26.0.linux-amd64.tar.gz
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf go1.26.0.linux-amd64.tar.gz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang-15 llvm-15 bpftool
+
+      - name: Run eBPF audit
+        run: |
+          export CLANG=clang-15
+          export LLVM_OBJDUMP=llvm-objdump-15
+          ./scripts/ebpf-audit.sh build/ebpf-audit
+
+      - name: Upload eBPF audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebpf-audit
+          path: build/ebpf-audit

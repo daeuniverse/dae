@@ -191,7 +191,10 @@ struct {
 
 // Array of LPM tries:
 struct lpm_key {
-	struct bpf_lpm_trie_key trie_key;
+	/* Keep the LPM trie header layout local to avoid unnecessary CO-RE
+	 * relocations against struct bpf_lpm_trie_key. The map ABI only
+	 * requires prefixlen to be the first u32 in the key. */
+	__u32 prefixlen;
 	__be32 data[4];
 };
 
@@ -554,8 +557,9 @@ static __always_inline bool is_extension_header(__u8 nexthdr)
 //
 // Returns: 0 on success, -1 to fall back to slow path, positive on error
 //
-// Use __noinline so this function has its own 512-byte stack budget.
-static __noinline int
+// Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
+// boundaries on older verifiers.
+static __always_inline int
 parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		     struct parse_transport_ctx *ctx)
 {
@@ -785,8 +789,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 // - Memory allocation failure in fast path
 // - Non-linear data that couldn't be pulled
 //
-// Use __noinline so this function has its own 512-byte stack budget.
-static __noinline int
+// Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
+// boundaries on older verifiers.
+static __always_inline int
 parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		     struct parse_transport_ctx *ctx)
 {
@@ -935,9 +940,10 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 // Main entry point - tries fast path first, falls back to slow path.
 // Returns: 0 on success, positive on error.
 //
-// Use __noinline to ensure this function has its own 512-byte stack budget.
-// The parse_transport_ctx struct is allocated in a scratch map to avoid stack pressure.
-static __noinline int
+// Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
+// boundaries on older verifiers. parse_transport_ctx itself already lives in a
+// scratch map, so inlining does not reintroduce the old large stack object.
+static __always_inline int
 parse_transport(struct __sk_buff *skb, __u32 link_h_len,
 		struct parse_transport_ctx *ctx)
 {
@@ -966,7 +972,7 @@ struct {
 	__uint(max_entries, 1);
 } lan_ingress_scratch_map SEC(".maps");
 
-static __noinline int
+static __always_inline int
 parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 			 struct lan_ingress_parsed *out)
 {
@@ -1008,7 +1014,7 @@ struct {
 	__uint(max_entries, 1);
 } wan_egress_scratch_map SEC(".maps");
 
-static __noinline int
+static __always_inline int
 parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 			struct wan_egress_parsed *out)
 {
@@ -1057,6 +1063,17 @@ struct route_ctx {
 	bool domain_word_cached;
 	volatile __u8 route_state;
 };
+
+struct route_loop_ctx {
+	struct route_ctx *work;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct route_ctx);
+	__uint(max_entries, 1);
+} route_ctx_scratch_map SEC(".maps");
 
 enum route_state_flags {
 	ROUTE_STATE_BAD_RULE = 1U << 0,
@@ -1164,8 +1181,7 @@ static __always_inline int route_match_domain_set(struct route_ctx *ctx,
 		__be32 daddr[4];
 
 		__builtin_memcpy(daddr, ctx->lpm_key_daddr.data, sizeof(daddr));
-		domain_routing = bpf_map_lookup_elem(&domain_routing_map,
-						     daddr);
+		domain_routing = bpf_map_lookup_elem(&domain_routing_map, daddr);
 		ctx->domain_word_idx = bitmap_word_idx;
 		if (domain_routing)
 			ctx->domain_word_bits =
@@ -1365,7 +1381,8 @@ route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
 
 static __noinline int route_loop_cb(__u32 index, void *data)
 {
-	struct route_ctx *ctx = data;
+	struct route_loop_ctx *loop = data;
+	struct route_ctx *ctx = loop->work;
 	struct match_set *match_set;
 	__u8 l4proto_type = ctx->flag[0];
 	__u8 ipversion_type = ctx->flag[1];
@@ -1414,53 +1431,48 @@ static __noinline __s64 route(const struct route_params *params)
 #define _is_wan params->is_wan
 #define _dscp params->flag[6]
 
-	int ret;
-	struct route_ctx ctx;
+	__u32 scratch_key = 0;
+	struct route_ctx *ctx =
+		bpf_map_lookup_elem(&route_ctx_scratch_map, &scratch_key);
 
-	__builtin_memset(&ctx, 0, sizeof(ctx));
-	__builtin_memcpy(ctx.flag, params->flag, sizeof(ctx.flag));
-	ctx.is_wan = params->is_wan;
-	__builtin_memcpy(ctx.mac, params->mac, sizeof(ctx.mac));
-	ctx.result = -ENOEXEC;
+	if (!ctx)
+		return -EFAULT;
+
+	__builtin_memset(ctx, 0, sizeof(*ctx));
+	__builtin_memcpy(ctx->flag, params->flag, sizeof(ctx->flag));
+	ctx->is_wan = params->is_wan;
+	__builtin_memcpy(ctx->mac, params->mac, sizeof(ctx->mac));
+	ctx->result = -ENOEXEC;
 
 	// Variables for further use.
 	if (_l4proto_type == L4ProtoType_TCP) {
-		ctx.h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
-		ctx.h_sport =
+		ctx->h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
+		ctx->h_sport =
 			bpf_ntohs(((struct tcphdr *)params->l4hdr)->source);
 	} else {
-		ctx.h_dport = bpf_ntohs(((struct udphdr *)params->l4hdr)->dest);
-		ctx.h_sport =
+		ctx->h_dport = bpf_ntohs(((struct udphdr *)params->l4hdr)->dest);
+		ctx->h_sport =
 			bpf_ntohs(((struct udphdr *)params->l4hdr)->source);
 	}
 
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
-	ctx.route_state =
-		(ctx.h_dport == 53 &&
+	ctx->route_state =
+		(ctx->h_dport == 53 &&
 		 (_l4proto_type == L4ProtoType_UDP ||
 		  _l4proto_type == L4ProtoType_TCP))
 		? ROUTE_STATE_DNS_QUERY
 		: 0;
 
-	struct lpm_key lpm_key_saddr = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_saddr = lpm_key_saddr;
-	struct lpm_key lpm_key_daddr = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_daddr = lpm_key_daddr;
-	struct lpm_key lpm_key_mac = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_mac = lpm_key_mac;
-	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
+	ctx->lpm_key_saddr.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx->lpm_key_daddr.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx->lpm_key_mac.prefixlen = IPV6_BYTE_LENGTH * 8;
+	__builtin_memcpy(ctx->lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
+	__builtin_memcpy(ctx->lpm_key_daddr.data, params->daddr,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx.lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
+	__builtin_memcpy(ctx->lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
 
 	__u32 active_rules_len = MAX_MATCH_SET_LEN;
 	__u32 *active_rules_len_ptr =
@@ -1469,11 +1481,14 @@ static __noinline __s64 route(const struct route_params *params)
 	    *active_rules_len_ptr <= MAX_MATCH_SET_LEN)
 		active_rules_len = *active_rules_len_ptr;
 
-	ret = bpf_loop(active_rules_len, route_loop_cb, &ctx, 0);
+	struct route_loop_ctx loop_ctx = {
+		.work = ctx,
+	};
+	int ret = bpf_loop(active_rules_len, route_loop_cb, &loop_ctx, 0);
 	if (unlikely(ret < 0))
 		return ret;
-	if (ctx.result >= 0)
-		return ctx.result;
+	if (ctx->result >= 0)
+		return ctx->result;
 #ifdef __DEBUG_ROUTING
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf_sync_spec.json with enum MatchType?");

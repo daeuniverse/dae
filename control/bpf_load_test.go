@@ -35,8 +35,11 @@ func TestLoadMainBPFObjects(t *testing.T) {
 			dae0Ifindex     uint32
 			daeNetnsId      uint32
 			dae0peerMac     [6]byte
+			paddingAfterMac [2]uint8
 			useRedirectPeer uint8
-			padding         uint8
+			padding1        uint8
+			padding2        uint16
+			daeSocketMark   uint32
 		}{},
 	}
 
