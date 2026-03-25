@@ -1471,6 +1471,8 @@ static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
 	__u32 active_rules_len = MAX_MATCH_SET_LEN;
 	__u32 *active_rules_len_ptr =
 		bpf_map_lookup_elem(&routing_meta_map, &zero_key);
+	int ret;
+
 	if (active_rules_len_ptr && *active_rules_len_ptr > 0 &&
 	    *active_rules_len_ptr <= MAX_MATCH_SET_LEN)
 		active_rules_len = *active_rules_len_ptr;
@@ -1478,7 +1480,7 @@ static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
 	struct route_loop_ctx loop_ctx = {
 		.work = ctx,
 	};
-	int ret = bpf_loop(active_rules_len, route_loop_cb, &loop_ctx, 0);
+	ret = bpf_loop(active_rules_len, route_loop_cb, &loop_ctx, 0);
 	if (unlikely(ret < 0))
 		return ret;
 	if (ctx->result >= 0)
@@ -1500,9 +1502,8 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 	struct bpf_sock *sk;
 	const __u32 *key = &one_key;
 
-	if (l4proto == IPPROTO_TCP) {
+	if (l4proto == IPPROTO_TCP)
 		key = skb->protocol == bpf_htons(ETH_P_IPV6) ? &two_key : &zero_key;
-	}
 
 	sk = bpf_map_lookup_elem(&listen_socket_map, key);
 

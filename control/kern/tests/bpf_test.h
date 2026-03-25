@@ -11,7 +11,6 @@
 
 #define IPV4(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 
-static const __u32 two_key = 2;
 static const __u32 three_key = 3;
 static const __u32 four_key = 4;
 
