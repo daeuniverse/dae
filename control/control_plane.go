@@ -1651,10 +1651,35 @@ type Listener struct {
 	port        uint16
 }
 
+const tcpDualStackListenIP = "::"
 const udpDualStackListenIP = "::"
+
+func tcpDualStackListenAddr(port uint16) string {
+	return net.JoinHostPort(tcpDualStackListenIP, strconv.Itoa(int(port)))
+}
 
 func udpDualStackListenAddr(port uint16) string {
 	return net.JoinHostPort(udpDualStackListenIP, strconv.Itoa(int(port)))
+}
+
+func enableTCPDualStackSocket(c syscall.RawConn) error {
+	var sockOptErr error
+	controlErr := c.Control(func(fd uintptr) {
+		if err := unix.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, unix.IPV6_V6ONLY, 0); err != nil {
+			sockOptErr = fmt.Errorf("error setting IPV6_V6ONLY socket option: %w", err)
+		}
+	})
+	if controlErr != nil {
+		return fmt.Errorf("error invoking socket control function: %w", controlErr)
+	}
+	return sockOptErr
+}
+
+func tcpDualStackListenControl(c syscall.RawConn) error {
+	if err := dialer.TproxyControl(c); err != nil {
+		return err
+	}
+	return enableTCPDualStackSocket(c)
 }
 
 func enableUDPDualStackSocket(c syscall.RawConn) error {
@@ -2050,7 +2075,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 	// Listen.
 	tcpListenConfig := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
-			return dialer.TproxyControl(c)
+			return tcpDualStackListenControl(c)
 		},
 	}
 	udpListenConfig := net.ListenConfig{
@@ -2058,10 +2083,21 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 			return udpDualStackListenControl(c)
 		},
 	}
-	tcpListenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
-	tcpListener, err := tcpListenConfig.Listen(context.Background(), "tcp", tcpListenAddr)
+	tcpListenAddr := tcpDualStackListenAddr(port)
+	tcpListener, err := tcpListenConfig.Listen(context.Background(), "tcp6", tcpListenAddr)
 	if err != nil {
-		return nil, fmt.Errorf("listenTCP: %w", err)
+		if c.log != nil {
+			c.log.WithError(err).Warn("Failed to open dual-stack TCP listener; fallback to IPv4-only TCP listener")
+		}
+		tcpListenAddr = net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
+		tcpListener, err = (&net.ListenConfig{
+			Control: func(network, address string, c syscall.RawConn) error {
+				return dialer.TproxyControl(c)
+			},
+		}).Listen(context.Background(), "tcp4", tcpListenAddr)
+		if err != nil {
+			return nil, fmt.Errorf("listenTCP: %w", err)
+		}
 	}
 	packetConn, err := udpListenConfig.ListenPacket(context.Background(), "udp6", udpDualStackListenAddr(port))
 	if err != nil {

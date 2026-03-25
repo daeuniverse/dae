@@ -37,12 +37,12 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15 bpftool
+          sudo apt-get install -y clang llvm linux-tools-common linux-tools-generic
 
       - name: Run eBPF audit
         run: |
-          export CLANG=clang-15
-          export LLVM_OBJDUMP=llvm-objdump-15
+          export CLANG=clang
+          export LLVM_OBJDUMP=llvm-objdump
           ./scripts/ebpf-audit.sh build/ebpf-audit
 
       - name: Upload eBPF audit artifacts
