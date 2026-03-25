@@ -1131,7 +1131,7 @@ func (c *DnsController) forwardWithFallback(
 	fallbackCtx, fallbackCancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer fallbackCancel()
 
-	respMsg, err = c.forwardWithDialArg(fallbackCtx, upstream, fallbackDialArg, data)
+	respMsg, err = c.forwardWithDialArg(fallbackCtx, &fallbackUpstream, fallbackDialArg, data)
 	if err != nil {
 		return nil, fallbackDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback failed: %v", primaryErr, err)
 	}
