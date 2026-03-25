@@ -437,9 +437,23 @@ struct parse_transport_ctx {
 	struct icmp6hdr icmp6h;
 	struct tcphdr tcph;
 	struct udphdr udph;
+	struct tuples tuples;
 	__u8 ihl;
 	__u8 l4proto;
 	__u8 pad[2];
+	__u32 flag[8];
+	__be32 mac_be[4];
+	__u16 h_dport;
+	__u16 h_sport;
+	__u8 is_wan;
+	__u8 must_val;
+	__u8 mac[6];
+	__s64 result;
+	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
+	__u32 domain_word_idx;
+	__u32 domain_word_bits;
+	bool domain_word_cached;
+	volatile __u8 route_state;
 };
 
 struct {
@@ -958,114 +972,9 @@ parse_transport(struct __sk_buff *skb, __u32 link_h_len,
 	return ret;
 }
 
-struct lan_ingress_parsed {
-	struct ethhdr ethh;
-	struct tuples tuples;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 l4proto;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct lan_ingress_parsed);
-	__uint(max_entries, 1);
-} lan_ingress_scratch_map SEC(".maps");
-
-static __always_inline int
-parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
-			 struct lan_ingress_parsed *out)
-{
-	__u32 scratch_key = 0;
-	struct parse_transport_ctx *ctx =
-		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
-
-	if (!ctx)
-		return -EFAULT;
-
-	int ret = parse_transport(skb, link_h_len, ctx);
-
-	if (ret)
-		return ret;
-	if (ctx->l4proto == IPPROTO_ICMPV6)
-		return 1;
-
-	__builtin_memset(out, 0, sizeof(*out));
-	out->ethh = ctx->ethh;
-	out->tcph = ctx->tcph;
-	out->udph = ctx->udph;
-	out->l4proto = ctx->l4proto;
-	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
-	return 0;
-}
-
-struct wan_egress_parsed {
-	struct ethhdr ethh;
-	struct tuples tuples;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 l4proto;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct wan_egress_parsed);
-	__uint(max_entries, 1);
-} wan_egress_scratch_map SEC(".maps");
-
-static __always_inline int
-parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
-			struct wan_egress_parsed *out)
-{
-	__u32 scratch_key = 0;
-	struct parse_transport_ctx *ctx =
-		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
-
-	if (!ctx)
-		return -EFAULT;
-
-	int ret = parse_transport(skb, link_h_len, ctx);
-
-	if (ret)
-		return ret;
-	if (ctx->l4proto == IPPROTO_ICMPV6)
-		return 1;
-
-	__builtin_memset(out, 0, sizeof(*out));
-	out->ethh = ctx->ethh;
-	out->tcph = ctx->tcph;
-	out->udph = ctx->udph;
-	out->l4proto = ctx->l4proto;
-	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
-	return 0;
-}
-
-struct route_ctx {
-	__u32 flag[8];
-	__u8 is_wan;
-	__be32 mac[4];
-	__u16 h_dport;
-	__u16 h_sport;
-	__s64 result;
-	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
-	__u32 domain_word_idx;
-	__u32 domain_word_bits;
-	bool domain_word_cached;
-	volatile __u8 route_state;
-};
-
 struct route_loop_ctx {
-	struct route_ctx *work;
+	struct parse_transport_ctx *work;
 };
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct route_ctx);
-	__uint(max_entries, 1);
-} route_ctx_scratch_map SEC(".maps");
 
 enum route_state_flags {
 	ROUTE_STATE_BAD_RULE = 1U << 0,
@@ -1073,21 +982,6 @@ enum route_state_flags {
 	ROUTE_STATE_MUST = 1U << 2,
 	ROUTE_STATE_DNS_QUERY = 1U << 3,
 };
-
-struct wan_egress_route_scratch {
-	__u32 flag[8];
-	__be32 mac_be[4];
-	__u8 is_wan;
-	__u8 must_val;
-	__u8 mac[6];
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct wan_egress_route_scratch);
-	__uint(max_entries, 1);
-} wan_egress_route_scratch_map SEC(".maps");
 
 /*
  * Helper functions to simplify route_loop_cb switch-case.
@@ -1106,30 +1000,30 @@ static __always_inline bool check_bitmask(__u8 value, __u8 mask)
 	return (value & mask) != 0;
 }
 
-static __always_inline bool route_state_has(const struct route_ctx *ctx,
+static __always_inline bool route_state_has(const struct parse_transport_ctx *ctx,
 					    __u8 flags)
 {
 	return (ctx->route_state & flags) != 0;
 }
 
-static __always_inline void route_state_set(struct route_ctx *ctx, __u8 flags)
+static __always_inline void route_state_set(struct parse_transport_ctx *ctx, __u8 flags)
 {
 	ctx->route_state |= flags;
 }
 
-static __always_inline void route_state_clear(struct route_ctx *ctx, __u8 flags)
+static __always_inline void route_state_clear(struct parse_transport_ctx *ctx, __u8 flags)
 {
 	ctx->route_state &= ~flags;
 }
 
 // Mark the current match_set as matched
-static __always_inline void mark_matched(struct route_ctx *ctx)
+static __always_inline void mark_matched(struct parse_transport_ctx *ctx)
 {
 	route_state_set(ctx, ROUTE_STATE_GOOD_SUBRULE);
 }
 
 static __always_inline int
-route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
+route_match_lpm(struct parse_transport_ctx *ctx, const struct match_set *match_set,
 		struct lpm_key *lpm_key)
 {
 	struct map_lpm_type *lpm;
@@ -1148,7 +1042,7 @@ route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 }
 
 static __always_inline struct lpm_key *
-route_select_lpm_key(struct route_ctx *ctx, __u8 match_type)
+route_select_lpm_key(struct parse_transport_ctx *ctx, __u8 match_type)
 {
 	if (match_type == MatchType_Mac)
 		return &ctx->lpm_key_mac;
@@ -1157,7 +1051,7 @@ route_select_lpm_key(struct route_ctx *ctx, __u8 match_type)
 	return &ctx->lpm_key_saddr;
 }
 
-static __always_inline int route_match_domain_set(struct route_ctx *ctx,
+static __always_inline int route_match_domain_set(struct parse_transport_ctx *ctx,
 						  __u32 index)
 {
 	__u32 bitmap_word_idx = index / 32;
@@ -1188,8 +1082,8 @@ static __always_inline int route_match_domain_set(struct route_ctx *ctx,
 	return 0;
 }
 
-static __always_inline int
-route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
+static __always_inline bool
+route_eval_match(struct parse_transport_ctx *ctx, const struct match_set *match_set,
 		 __u32 index, __u8 l4proto_type, __u8 ipversion_type,
 		 const __u32 *pname, __u8 is_wan, __u8 dscp)
 {
@@ -1302,7 +1196,7 @@ route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
 }
 
 static __always_inline int
-route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
+route_finalize_match(struct parse_transport_ctx *ctx, const struct match_set *match_set)
 {
 	__u8 match_outbound = match_set->outbound;
 	bool match_not = match_set->not;
@@ -1374,7 +1268,7 @@ route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
 static __noinline int route_loop_cb(__u32 index, void *data)
 {
 	struct route_loop_ctx *loop = data;
-	struct route_ctx *ctx = loop->work;
+	struct parse_transport_ctx *ctx = loop->work;
 	struct match_set *match_set;
 	__u8 l4proto_type = ctx->flag[0];
 	__u8 ipversion_type = ctx->flag[1];
@@ -1415,58 +1309,45 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 	return route_finalize_match(ctx, match_set);
 }
 
-static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
-			      const __be32 *saddr, const __be32 *daddr,
-			      const __be32 *mac)
+static __noinline __s64 route(struct parse_transport_ctx *pkt)
 {
+	__u32 *flag = pkt->flag;
 #define _l4proto_type flag[0]
 #define _ipversion_type flag[1]
 #define _pname (&flag[2])
 #define _is_wan flag[7]
 #define _dscp flag[6]
 
-	__u32 scratch_key = 0;
-	struct route_ctx *ctx =
-		bpf_map_lookup_elem(&route_ctx_scratch_map, &scratch_key);
-
-	if (!ctx)
-		return -EFAULT;
-
-	__builtin_memset(ctx, 0, sizeof(*ctx));
-	__builtin_memcpy(ctx->flag, flag, sizeof(ctx->flag));
-	ctx->is_wan = _is_wan;
-	__builtin_memcpy(ctx->mac, mac, sizeof(ctx->mac));
-	ctx->result = -ENOEXEC;
+	pkt->is_wan = _is_wan;
+	pkt->result = -ENOEXEC;
 
 	// Variables for further use.
 	if (_l4proto_type == L4ProtoType_TCP) {
-		ctx->h_dport = bpf_ntohs(((struct tcphdr *)l4hdr)->dest);
-		ctx->h_sport =
-			bpf_ntohs(((struct tcphdr *)l4hdr)->source);
+		pkt->h_dport = bpf_ntohs(pkt->tcph.dest);
+		pkt->h_sport = bpf_ntohs(pkt->tcph.source);
 	} else {
-		ctx->h_dport = bpf_ntohs(((struct udphdr *)l4hdr)->dest);
-		ctx->h_sport =
-			bpf_ntohs(((struct udphdr *)l4hdr)->source);
+		pkt->h_dport = bpf_ntohs(pkt->udph.dest);
+		pkt->h_sport = bpf_ntohs(pkt->udph.source);
 	}
 
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
-	ctx->route_state =
-		(ctx->h_dport == 53 &&
+	pkt->route_state =
+		(pkt->h_dport == 53 &&
 		 (_l4proto_type == L4ProtoType_UDP ||
 		  _l4proto_type == L4ProtoType_TCP))
 		? ROUTE_STATE_DNS_QUERY
 		: 0;
 
-	ctx->lpm_key_saddr.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx->lpm_key_daddr.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx->lpm_key_mac.prefixlen = IPV6_BYTE_LENGTH * 8;
-	__builtin_memcpy(ctx->lpm_key_saddr.data, saddr,
+	pkt->lpm_key_saddr.prefixlen = IPV6_BYTE_LENGTH * 8;
+	pkt->lpm_key_daddr.prefixlen = IPV6_BYTE_LENGTH * 8;
+	pkt->lpm_key_mac.prefixlen = IPV6_BYTE_LENGTH * 8;
+	__builtin_memcpy(pkt->lpm_key_saddr.data, pkt->tuples.five.sip.u6_addr32,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx->lpm_key_daddr.data, daddr,
+	__builtin_memcpy(pkt->lpm_key_daddr.data, pkt->tuples.five.dip.u6_addr32,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx->lpm_key_mac.data, mac, IPV6_BYTE_LENGTH);
+	__builtin_memcpy(pkt->lpm_key_mac.data, pkt->mac_be, IPV6_BYTE_LENGTH);
 
 	__u32 active_rules_len = MAX_MATCH_SET_LEN;
 	__u32 *active_rules_len_ptr =
@@ -1478,13 +1359,13 @@ static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
 		active_rules_len = *active_rules_len_ptr;
 
 	struct route_loop_ctx loop_ctx = {
-		.work = ctx,
+		.work = pkt,
 	};
 	ret = bpf_loop(active_rules_len, route_loop_cb, &loop_ctx, 0);
 	if (unlikely(ret < 0))
 		return ret;
-	if (ctx->result >= 0)
-		return ctx->result;
+	if (pkt->result >= 0)
+		return pkt->result;
 #ifdef __DEBUG_ROUTING
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf_sync_spec.json with enum MatchType?");
@@ -1540,7 +1421,7 @@ static __always_inline int prep_redirect_to_control_plane(
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
 
-	if (PARAM.use_redirect_peer)
+	if (PARAM.use_redirect_peer && link_h_len)
 		goto skip_eth_prep;
 
 	if (!link_h_len) {
@@ -1640,10 +1521,8 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
-		if (now - state->last_seen_ns > UDP_CONN_STATE_UPDATE_INTERVAL_NS) {
+		if (now - state->last_seen_ns > UDP_CONN_STATE_UPDATE_INTERVAL_NS)
 			state->last_seen_ns = now;
-			bpf_map_update_elem(&udp_conn_state_map, key, state, BPF_ANY);
-		}
 
 		// Update routing if provided (e.g., routing decision changed)
 		if (outbound) {
@@ -1731,10 +1610,8 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
-		if (now - state->last_seen_ns > TCP_CONN_STATE_UPDATE_INTERVAL_NS) {
+		if (now - state->last_seen_ns > TCP_CONN_STATE_UPDATE_INTERVAL_NS)
 			state->last_seen_ns = now;
-			bpf_map_update_elem(&tcp_conn_state_map, key, state, BPF_ANY);
-		}
 
 		// Check for connection close signals (FIN or RST)
 		if (tcph->fin || tcph->rst)
@@ -1913,20 +1790,15 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 
 static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
-	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
-	// The call chain lan_ingress -> parse_lan_ingress_packet -> parse_transport
-	// would otherwise exceed the stack limit.
 	__u32 scratch_key = 0;
-	struct lan_ingress_parsed *pkt =
-		bpf_map_lookup_elem(&lan_ingress_scratch_map, &scratch_key);
+	struct parse_transport_ctx *ctx =
+		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
 
-	if (!pkt)
+	if (!ctx)
 		return TC_ACT_SHOT;
 
-	/* Ensure scratch bytes are initialized even if verifier can't precisely
-	 * track writes done through callee pointer arguments. */
-	__builtin_memset(pkt, 0, sizeof(*pkt));
-	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
+	__builtin_memset(ctx, 0, sizeof(*ctx));
+	int ret = parse_transport(skb, link_h_len, ctx);
 
 	if (ret) {
 		// Negative return: parsing error (malformed packet, too many extension headers, etc.)
@@ -1937,6 +1809,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		}
 		return TC_ACT_OK;  // Pass through unsupported protocols
 	}
+	get_tuples(skb, &ctx->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
+	struct parse_transport_ctx *pkt = ctx;
 
 	/*
    * ip rule add fwmark 0x8000000/0x8000000 table 2023
@@ -1996,7 +1870,13 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 
 	// Routing for new connection.
-	__u32 route_flag[8] = {};
+	// PERFORMANCE: Use the ctx (already in parse_ctx_scratch_map) directly.
+	// This avoids stack allocation and redundant memory copying.
+	__u32 *route_flag = pkt->flag;
+	__be32 *mac_be = pkt->mac_be;
+
+	__builtin_memset(route_flag, 0, sizeof(pkt->flag));
+	__builtin_memset(mac_be, 0, sizeof(pkt->mac_be));
 	struct tcp_conn_state *tcp_state = NULL;
 	struct udp_conn_state *udp_state = NULL;
 
@@ -2039,9 +1919,6 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 				if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
 							   pkt->tuples.five.dport))
 					goto block;
-
-				// Update conn state timestamp for this fast path packet
-				udp_state->last_seen_ns = bpf_ktime_get_ns();
 				goto control_plane;
 			}
 		}
@@ -2050,16 +1927,14 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	route_flag[1] = (skb->protocol == bpf_htons(ETH_P_IP)) ? IpVersionType_4 :
 							      IpVersionType_6;
 	route_flag[6] = pkt->tuples.dscp;
-	__be32 mac_be[4] = {
-		0,
-		0,
-		bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
-			  (__u32)pkt->ethh.h_source[1]),
-		bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
+	mac_be[0] = 0;
+	mac_be[1] = 0;
+	mac_be[2] = bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
+			  (__u32)pkt->ethh.h_source[1]);
+	mac_be[3] = bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
 			  ((__u32)pkt->ethh.h_source[3] << 16) |
 			  ((__u32)pkt->ethh.h_source[4] << 8) |
-			  (__u32)pkt->ethh.h_source[5]),
-	};
+			  (__u32)pkt->ethh.h_source[5]);
 
 	// Socket lookup BEFORE routing to detect local services (NAT loopback).
 	// This must happen before route() because routing rules might incorrectly
@@ -2109,17 +1984,20 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 				sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
 							PARAM.dae_netns_id, 0);
 				if (sk) {
-					if (sk->state == BPF_TCP_LISTEN) {
-						// Found LISTEN socket - local service (NAT loopback).
+					struct bpf_sock *full_sk = bpf_sk_fullsock(sk);
+
+					if (full_sk && full_sk->mark != PARAM.dae_socket_mark) {
+						// Found a local service socket (LISTEN or ESTABLISHED).
 						// Pass through to kernel stack directly, bypassing dae.
 						bpf_sk_release(sk);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-						bpf_printk("tcp(lan): local LISTEN socket found, pass through");
+						bpf_printk("tcp(lan): local service socket found (mark: %x), pass through",
+							   full_sk->mark);
 #endif
 						return TC_ACT_OK;
 					}
-					// Not a LISTEN socket - established connection or dae's own socket.
-					// Continue with routing to determine how to handle this packet.
+					// Not a local service or it's dae's own socket.
+					// Continue with routing.
 					bpf_sk_release(sk);
 				}
 			}
@@ -2139,12 +2017,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 	__s64 s64_ret;
 
-	s64_ret = route(route_flag,
-			pkt->l4proto == IPPROTO_TCP ? (const void *)&pkt->tcph :
-						      (const void *)&pkt->udph,
-			pkt->tuples.five.sip.u6_addr32,
-			pkt->tuples.five.dip.u6_addr32,
-			mac_be);
+	s64_ret = route(pkt);
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
 		return TC_ACT_SHOT;
@@ -2381,9 +2254,11 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 
 static __noinline int
 do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
-			 struct tuples *tuples, struct ethhdr *ethh,
-			 struct tcphdr *tcph)
+			 struct parse_transport_ctx *pkt)
 {
+	struct tuples *tuples = &pkt->tuples;
+	struct ethhdr *ethh = &pkt->ethh;
+	struct tcphdr *tcph = &pkt->tcph;
 	bool tcp_state_syn = is_new_tcp_connection(tcph);
 	__u8 outbound;
 	bool must;
@@ -2391,39 +2266,31 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	struct pid_pname *pid_pname = NULL;
 
 	if (unlikely(tcp_state_syn)) {
-		__u32 scratch_key = 0;
-		struct wan_egress_route_scratch *scratch =
-			bpf_map_lookup_elem(&wan_egress_route_scratch_map, &scratch_key);
-		if (!scratch)
-			return TC_ACT_SHOT;
-
-		__builtin_memset(scratch, 0, sizeof(*scratch));
-		scratch->flag[0] = L4ProtoType_TCP;
+		pkt->flag[0] = L4ProtoType_TCP;
 		if (skb->protocol == bpf_htons(ETH_P_IP))
-			scratch->flag[1] = IpVersionType_4;
+			pkt->flag[1] = IpVersionType_4;
 		else
-			scratch->flag[1] = IpVersionType_6;
-		scratch->flag[6] = tuples->dscp;
+			pkt->flag[1] = IpVersionType_6;
+		pkt->flag[6] = tuples->dscp;
+
 		if (pid_is_control_plane(skb, &pid_pname))
 			return TC_ACT_OK;
+
 		if (pid_pname)
-			__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
+			__builtin_memcpy(&pkt->flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
-		scratch->flag[7] = 1;
+		pkt->flag[7] = 1;
 		if (link_h_len == ETH_HLEN) {
-			scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
+			pkt->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
 						  (__u32)ethh->h_source[1]);
-			scratch->mac_be[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
+			pkt->mac_be[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
 						  ((__u32)ethh->h_source[3] << 16) |
 						  ((__u32)ethh->h_source[4] << 8) |
 						  (__u32)ethh->h_source[5]);
-			__builtin_memcpy(scratch->mac, ethh->h_source, 6);
+			__builtin_memcpy(pkt->mac, ethh->h_source, 6);
 		}
 
-		__s64 s64_ret = route(scratch->flag, tcph,
-				      tuples->five.sip.u6_addr32,
-				      tuples->five.dip.u6_addr32,
-				      scratch->mac_be);
+		__s64 s64_ret = route(pkt);
 
 		if (s64_ret < 0) {
 			bpf_printk("shot routing: %d", s64_ret);
@@ -2433,7 +2300,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		outbound = s64_ret & 0xff;
 		mark = s64_ret >> 8;
 		must = (s64_ret >> 40) & 1;
-		scratch->must_val = must;
+		pkt->must_val = must;
 
 		__u8 dscp = tuples->dscp;
 		const char *pname_str = NULL;
@@ -2446,7 +2313,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 		__u8 *outbound_ptr = &outbound;
 		__u32 *mark_ptr = &mark;
-		__u8 *must_ptr = &scratch->must_val;
+		__u8 *must_ptr = &pkt->must_val;
 
 		if (outbound == OUTBOUND_DIRECT && mark == 0 && !must) {
 			outbound_ptr = NULL;
@@ -2456,7 +2323,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 		struct tcp_conn_state *tcp_conn = mark_tcp_seen(
 			&tuples->five, tcph, false, outbound_ptr, mark_ptr,
-			must_ptr, scratch->mac, dscp, pname_str, pid_val);
+			must_ptr, pkt->mac, dscp, pname_str, pid_val);
 
 		if (!tcp_conn) {
 			if (outbound == OUTBOUND_DIRECT && mark == 0)
@@ -2509,9 +2376,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		}
 	}
 
-	if (outbound == OUTBOUND_DIRECT &&
-	    mark == 0 // If mark is not zero, we should re-route it.
-	) {
+	if (outbound == OUTBOUND_DIRECT) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND_DIRECT");
 #endif
@@ -2542,9 +2407,10 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 
 static __noinline int
 do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
-			 struct tuples *tuples, struct ethhdr *ethh,
-			 struct udphdr *udph)
+			 struct parse_transport_ctx *pkt)
 {
+	struct tuples *tuples = &pkt->tuples;
+	struct ethhdr *ethh = &pkt->ethh;
 	struct pid_pname *pid_pname;
 	__u8 outbound;
 	__u32 mark;
@@ -2552,19 +2418,12 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	struct udp_conn_state *udp_conn_state = NULL;
 	__u8 mac[6] = {};
 
-	__u32 scratch_key = 0;
-	struct wan_egress_route_scratch *scratch =
-		bpf_map_lookup_elem(&wan_egress_route_scratch_map, &scratch_key);
-	if (!scratch)
-		return TC_ACT_SHOT;
-
-	__builtin_memset(scratch, 0, sizeof(*scratch));
-	scratch->flag[0] = L4ProtoType_UDP;
+	pkt->flag[0] = L4ProtoType_UDP;
 	if (skb->protocol == bpf_htons(ETH_P_IP))
-		scratch->flag[1] = IpVersionType_4;
+		pkt->flag[1] = IpVersionType_4;
 	else
-		scratch->flag[1] = IpVersionType_6;
-	scratch->flag[6] = tuples->dscp;
+		pkt->flag[1] = IpVersionType_6;
+	pkt->flag[6] = tuples->dscp;
 
 	if (pid_is_control_plane(skb, &pid_pname))
 		return TC_ACT_OK;
@@ -2581,30 +2440,27 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			mark = udp_conn_state->mark;
 			must = udp_conn_state->must;
 			__builtin_memcpy(mac, udp_conn_state->mac, 6);
-			goto fast_path_skip_routing;
+			goto execute_decision;
 		}
 	}
 
 	if (pid_pname) {
-		__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
+		__builtin_memcpy(&pkt->flag[2], pid_pname->pname,
 				 TASK_COMM_LEN);
 	}
-	scratch->flag[7] = 1;
+	pkt->flag[7] = 1;
 	if (ethh) {
-		scratch->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
+		pkt->mac_be[2] = bpf_htonl(((__u32)ethh->h_source[0] << 8) |
 					  (__u32)ethh->h_source[1]);
-		scratch->mac_be[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
+		pkt->mac_be[3] = bpf_htonl(((__u32)ethh->h_source[2] << 24) |
 					  ((__u32)ethh->h_source[3] << 16) |
 					  ((__u32)ethh->h_source[4] << 8) |
 					  (__u32)ethh->h_source[5]);
 		__builtin_memcpy(mac, ethh->h_source, 6);
-		__builtin_memcpy(scratch->mac, ethh->h_source, 6);
+		__builtin_memcpy(pkt->mac, ethh->h_source, 6);
 	}
 
-	__s64 s64_ret = route(scratch->flag, udph,
-			      tuples->five.sip.u6_addr32,
-			      tuples->five.dip.u6_addr32,
-			      scratch->mac_be);
+	__s64 s64_ret = route(pkt);
 
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
@@ -2615,7 +2471,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	mark = s64_ret >> 8;
 	must = (s64_ret >> 40) & 1;
 
-fast_path_skip_routing:
+execute_decision:
 	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
 		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
 			udp_conn_state->outbound = outbound;
@@ -2632,7 +2488,6 @@ fast_path_skip_routing:
 			barrier();
 			udp_conn_state->has_routing = 1;
 		}
-		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
 	}
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -2644,10 +2499,12 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (outbound == OUTBOUND_DIRECT && mark == 0)
+	if (outbound == OUTBOUND_DIRECT) {
+		skb->mark = mark;
 		return TC_ACT_OK;
-	else if (unlikely(outbound == OUTBOUND_BLOCK))
+	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 		return TC_ACT_SHOT;
+	}
 
 	if (!wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,
 				   tuples->five.dport))
@@ -2666,7 +2523,7 @@ fast_path_skip_routing:
  *
  * Note: We use per-CPU scratch map instead of stack allocation to avoid
  * exceeding the 512-byte stack limit. The call chain is:
- *   tproxy_wan_egress_* -> do_tproxy_wan_egress -> parse_wan_egress_packet -> parse_transport
+ *   tproxy_wan_egress_* -> do_tproxy_wan_egress -> parse_transport
  * which would otherwise use >512 bytes of combined stack.
  */
 static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
@@ -2677,16 +2534,16 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 
 	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
 	__u32 scratch_key = 0;
-	struct wan_egress_parsed *pkt =
-		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
+	struct parse_transport_ctx *ctx =
+		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
 
-	if (!pkt)
+	if (!ctx)
 		return TC_ACT_SHOT;
 
 	/* Initialize scratch bytes for verifier friendliness across subprogram
 	 * pointer writes. */
-	__builtin_memset(pkt, 0, sizeof(*pkt));
-	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
+	__builtin_memset(ctx, 0, sizeof(*ctx));
+	int ret = parse_transport(skb, link_h_len, ctx);
 
 	if (ret) {
 		// Negative return: parsing error - drop
@@ -2697,13 +2554,13 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 		}
 		return TC_ACT_OK;
 	}
+	get_tuples(skb, &ctx->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
+	struct parse_transport_ctx *pkt = ctx;
 
 	if (pkt->l4proto == IPPROTO_TCP)
-		return do_tproxy_wan_egress_tcp(skb, link_h_len, &pkt->tuples,
-						&pkt->ethh, &pkt->tcph);
+		return do_tproxy_wan_egress_tcp(skb, link_h_len, pkt);
 	if (pkt->l4proto == IPPROTO_UDP)
-		return do_tproxy_wan_egress_udp(skb, link_h_len, &pkt->tuples,
-						&pkt->ethh, &pkt->udph);
+		return do_tproxy_wan_egress_udp(skb, link_h_len, pkt);
 	return TC_ACT_OK;
 }
 
