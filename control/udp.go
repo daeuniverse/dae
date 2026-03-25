@@ -280,11 +280,12 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 
 // sendPkt sends a UDP packet to the destination.
 // Parameters:
+//   - log: logger to use
 //   - data: packet data to send
 //   - from: source address of the packet (for logging/metadata only)
 //   - realTo: destination address where the packet should be sent
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
-func sendPkt(data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
+func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
 	// Proxy chain support: Use original 'from' address as bindAddr to ensure
 	// each server response gets its own UDP socket. This prevents response mixing
 	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
@@ -293,20 +294,76 @@ func sendPkt(data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyf
 	// - IPv6->IPv4: Convert writeAddr to IPv4-mapped IPv6 for dual-stack socket
 	// - IPv4->IPv6: Convert bindAddr to IPv4-mapped IPv6 to create IPv6 socket
 	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
+	traceEnabled := log != nil && log.IsLevelEnabled(logrus.TraceLevel)
+	debugEnabled := log != nil && log.IsLevelEnabled(logrus.DebugLevel)
+	errorEnabled := log != nil && log.IsLevelEnabled(logrus.ErrorLevel)
+
+	if traceEnabled {
+		log.WithFields(logrus.Fields{
+			"from":       from.String(),
+			"to":         realTo.String(),
+			"bind_addr":  bindAddr.String(),
+			"write_addr": writeAddr.String(),
+			"data_size":  len(data),
+		}).Trace("sendPkt: preparing to send UDP packet")
+	}
 
 	// Try cached socket first (for Symmetric NAT sessions)
 	if afp != nil && *afp != nil {
 		if _, err = (*afp).WriteToUDPAddrPort(data, writeAddr); err == nil {
+			if traceEnabled {
+				log.WithFields(logrus.Fields{
+					"to":         realTo.String(),
+					"write_addr": writeAddr.String(),
+					"cached":     true,
+				}).Trace("sendPkt: sent via cached socket")
+			}
 			return nil
 		}
 		// cached socket is stale; fall through to fresh pool lookup
+		if debugEnabled {
+			log.WithFields(logrus.Fields{
+				"error": err.Error(),
+			}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+		}
 	}
 
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
+	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
+		if errorEnabled {
+			log.WithFields(logrus.Fields{
+				"bind_addr": bindAddr.String(),
+				"error":     err.Error(),
+			}).Error("sendPkt: failed to get or create socket from pool")
+		}
 		return err
 	}
+	if traceEnabled {
+		log.WithFields(logrus.Fields{
+			"bind_addr":  bindAddr.String(),
+			"new_socket": isNew,
+		}).Trace("sendPkt: got socket from pool")
+	}
+
 	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
+	if err != nil {
+		if errorEnabled {
+			log.WithFields(logrus.Fields{
+				"write_addr": writeAddr.String(),
+				"data_size":  len(data),
+				"error":      err.Error(),
+			}).Error("sendPkt: WriteToUDPAddrPort failed")
+		}
+		return err
+	}
+
+	if traceEnabled {
+		log.WithFields(logrus.Fields{
+			"to":         realTo.String(),
+			"write_addr": writeAddr.String(),
+			"data_size":  len(data),
+		}).Trace("sendPkt: successfully sent packet")
+	}
 
 	// Update caller's cached socket so future calls skip the pool lookup
 	if afp != nil && err == nil {
@@ -652,7 +709,7 @@ getNew:
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				// Do not return conn-unrelated err in this func.
-				return sendPkt(data, from, realSrc, ue.responseConnCacheSlot())
+				return sendPkt(c.log, data, from, realSrc, ue.responseConnCacheSlot())
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,
@@ -670,7 +727,7 @@ getNew:
 					Excluded:    excludedDialer,
 				}
 
-				res, err := c.chooseProxyDialer(dialParam)
+				res, err := c.chooseProxyDialer(ctx, dialParam)
 				if err != nil {
 					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 						c.logNoAliveDialerLimited(

@@ -1,14 +1,15 @@
-// Copied from https://github.com/v2fly/v2ray-core/blob/42b166760b2ba8d984e514b830fcd44e23728e43/app/router/routercommon
+// Copied and updated from https://github.com/v2fly/v2ray-core/blob/master/app/router/routercommon/common.pb.go
+// Updated to use latest protobuf version without deprecated Exporter field.
 
 package geodata
 
 import (
-	"reflect"
-	"sync"
-
 	_ "github.com/daeuniverse/dae/pkg/geodata/protoext"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/runtime/protoimpl"
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
 )
 
 const (
@@ -77,25 +78,22 @@ func (Domain_Type) EnumDescriptor() ([]byte, []int) {
 
 // Domain for routing decision.
 type Domain struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// Domain matching type.
 	Type Domain_Type `protobuf:"varint,1,opt,name=type,proto3,enum=v2ray.core.app.router.routercommon.Domain_Type" json:"type,omitempty"`
 	// Domain value.
 	Value string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	// Attributes of this domain. May be used for filtering.
-	Attribute []*Domain_Attribute `protobuf:"bytes,3,rep,name=attribute,proto3" json:"attribute,omitempty"`
+	Attribute     []*Domain_Attribute `protobuf:"bytes,3,rep,name=attribute,proto3" json:"attribute,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Domain) Reset() {
 	*x = Domain{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[0]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *Domain) String() string {
@@ -106,7 +104,7 @@ func (*Domain) ProtoMessage() {}
 
 func (x *Domain) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[0]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -144,24 +142,21 @@ func (x *Domain) GetAttribute() []*Domain_Attribute {
 
 // IP for routing decision, in CIDR form.
 type CIDR struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// IP address, should be either 4 or 16 bytes.
 	Ip []byte `protobuf:"bytes,1,opt,name=ip,proto3" json:"ip,omitempty"`
 	// Number of leading ones in the network mask.
-	Prefix uint32 `protobuf:"varint,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
-	IpAddr string `protobuf:"bytes,68000,opt,name=ip_addr,json=ipAddr,proto3" json:"ip_addr,omitempty"`
+	Prefix        uint32 `protobuf:"varint,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	IpAddr        string `protobuf:"bytes,68000,opt,name=ip_addr,json=ipAddr,proto3" json:"ip_addr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CIDR) Reset() {
 	*x = CIDR{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[1]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *CIDR) String() string {
@@ -172,7 +167,7 @@ func (*CIDR) ProtoMessage() {}
 
 func (x *CIDR) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[1]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -209,26 +204,23 @@ func (x *CIDR) GetIpAddr() string {
 }
 
 type GeoIP struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	CountryCode  string  `protobuf:"bytes,1,opt,name=country_code,json=countryCode,proto3" json:"country_code,omitempty"`
-	Cidr         []*CIDR `protobuf:"bytes,2,rep,name=cidr,proto3" json:"cidr,omitempty"`
-	InverseMatch bool    `protobuf:"varint,3,opt,name=inverse_match,json=inverseMatch,proto3" json:"inverse_match,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	CountryCode  string                 `protobuf:"bytes,1,opt,name=country_code,json=countryCode,proto3" json:"country_code,omitempty"`
+	Cidr         []*CIDR                `protobuf:"bytes,2,rep,name=cidr,proto3" json:"cidr,omitempty"`
+	InverseMatch bool                   `protobuf:"varint,3,opt,name=inverse_match,json=inverseMatch,proto3" json:"inverse_match,omitempty"`
 	// resource_hash instruct simplified config converter to load domain from geo file.
-	ResourceHash []byte `protobuf:"bytes,4,opt,name=resource_hash,json=resourceHash,proto3" json:"resource_hash,omitempty"`
-	Code         string `protobuf:"bytes,5,opt,name=code,proto3" json:"code,omitempty"`
-	FilePath     string `protobuf:"bytes,68000,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	ResourceHash  []byte `protobuf:"bytes,4,opt,name=resource_hash,json=resourceHash,proto3" json:"resource_hash,omitempty"`
+	Code          string `protobuf:"bytes,5,opt,name=code,proto3" json:"code,omitempty"`
+	FilePath      string `protobuf:"bytes,68000,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GeoIP) Reset() {
 	*x = GeoIP{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[2]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *GeoIP) String() string {
@@ -239,7 +231,7 @@ func (*GeoIP) ProtoMessage() {}
 
 func (x *GeoIP) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[2]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -297,20 +289,17 @@ func (x *GeoIP) GetFilePath() string {
 }
 
 type GeoIPList struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entry         []*GeoIP               `protobuf:"bytes,1,rep,name=entry,proto3" json:"entry,omitempty"`
 	unknownFields protoimpl.UnknownFields
-
-	Entry []*GeoIP `protobuf:"bytes,1,rep,name=entry,proto3" json:"entry,omitempty"`
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GeoIPList) Reset() {
 	*x = GeoIPList{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[3]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *GeoIPList) String() string {
@@ -321,7 +310,7 @@ func (*GeoIPList) ProtoMessage() {}
 
 func (x *GeoIPList) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[3]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -344,25 +333,22 @@ func (x *GeoIPList) GetEntry() []*GeoIP {
 }
 
 type GeoSite struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	CountryCode string    `protobuf:"bytes,1,opt,name=country_code,json=countryCode,proto3" json:"country_code,omitempty"`
-	Domain      []*Domain `protobuf:"bytes,2,rep,name=domain,proto3" json:"domain,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	CountryCode string                 `protobuf:"bytes,1,opt,name=country_code,json=countryCode,proto3" json:"country_code,omitempty"`
+	Domain      []*Domain              `protobuf:"bytes,2,rep,name=domain,proto3" json:"domain,omitempty"`
 	// resource_hash instruct simplified config converter to load domain from geo file.
-	ResourceHash []byte `protobuf:"bytes,3,opt,name=resource_hash,json=resourceHash,proto3" json:"resource_hash,omitempty"`
-	Code         string `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
-	FilePath     string `protobuf:"bytes,68000,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	ResourceHash  []byte `protobuf:"bytes,3,opt,name=resource_hash,json=resourceHash,proto3" json:"resource_hash,omitempty"`
+	Code          string `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
+	FilePath      string `protobuf:"bytes,68000,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GeoSite) Reset() {
 	*x = GeoSite{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[4]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *GeoSite) String() string {
@@ -373,7 +359,7 @@ func (*GeoSite) ProtoMessage() {}
 
 func (x *GeoSite) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[4]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -424,20 +410,17 @@ func (x *GeoSite) GetFilePath() string {
 }
 
 type GeoSiteList struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entry         []*GeoSite             `protobuf:"bytes,1,rep,name=entry,proto3" json:"entry,omitempty"`
 	unknownFields protoimpl.UnknownFields
-
-	Entry []*GeoSite `protobuf:"bytes,1,rep,name=entry,proto3" json:"entry,omitempty"`
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GeoSiteList) Reset() {
 	*x = GeoSiteList{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[5]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *GeoSiteList) String() string {
@@ -448,7 +431,7 @@ func (*GeoSiteList) ProtoMessage() {}
 
 func (x *GeoSiteList) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[5]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -471,25 +454,22 @@ func (x *GeoSiteList) GetEntry() []*GeoSite {
 }
 
 type Domain_Attribute struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Key string `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	// Types that are assignable to TypedValue:
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Types that are valid to be assigned to TypedValue:
 	//
 	//	*Domain_Attribute_BoolValue
 	//	*Domain_Attribute_IntValue
-	TypedValue isDomain_Attribute_TypedValue `protobuf_oneof:"typed_value"`
+	TypedValue    isDomain_Attribute_TypedValue `protobuf_oneof:"typed_value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Domain_Attribute) Reset() {
 	*x = Domain_Attribute{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_app_router_routercommon_common_proto_msgTypes[6]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
+	mi := &file_app_router_routercommon_common_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
 func (x *Domain_Attribute) String() string {
@@ -500,7 +480,7 @@ func (*Domain_Attribute) ProtoMessage() {}
 
 func (x *Domain_Attribute) ProtoReflect() protoreflect.Message {
 	mi := &file_app_router_routercommon_common_proto_msgTypes[6]
-	if protoimpl.UnsafeEnabled && x != nil {
+	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
 			ms.StoreMessageInfo(mi)
@@ -522,23 +502,27 @@ func (x *Domain_Attribute) GetKey() string {
 	return ""
 }
 
-func (m *Domain_Attribute) GetTypedValue() isDomain_Attribute_TypedValue {
-	if m != nil {
-		return m.TypedValue
+func (x *Domain_Attribute) GetTypedValue() isDomain_Attribute_TypedValue {
+	if x != nil {
+		return x.TypedValue
 	}
 	return nil
 }
 
 func (x *Domain_Attribute) GetBoolValue() bool {
-	if x, ok := x.GetTypedValue().(*Domain_Attribute_BoolValue); ok {
-		return x.BoolValue
+	if x != nil {
+		if x, ok := x.TypedValue.(*Domain_Attribute_BoolValue); ok {
+			return x.BoolValue
+		}
 	}
 	return false
 }
 
 func (x *Domain_Attribute) GetIntValue() int64 {
-	if x, ok := x.GetTypedValue().(*Domain_Attribute_IntValue); ok {
-		return x.IntValue
+	if x != nil {
+		if x, ok := x.TypedValue.(*Domain_Attribute_IntValue); ok {
+			return x.IntValue
+		}
 	}
 	return 0
 }
@@ -561,100 +545,56 @@ func (*Domain_Attribute_IntValue) isDomain_Attribute_TypedValue() {}
 
 var File_app_router_routercommon_common_proto protoreflect.FileDescriptor
 
-var file_app_router_routercommon_common_proto_rawDesc = []byte{
-	0x0a, 0x24, 0x61, 0x70, 0x70, 0x2f, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2f, 0x72, 0x6f, 0x75,
-	0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e,
-	0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x12, 0x22, 0x76, 0x32, 0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f,
-	0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x72, 0x6f,
-	0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x1a, 0x20, 0x63, 0x6f, 0x6d, 0x6d,
-	0x6f, 0x6e, 0x2f, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x65, 0x78, 0x74, 0x2f, 0x65, 0x78, 0x74, 0x65,
-	0x6e, 0x73, 0x69, 0x6f, 0x6e, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0xdd, 0x02, 0x0a,
-	0x06, 0x44, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x12, 0x43, 0x0a, 0x04, 0x74, 0x79, 0x70, 0x65, 0x18,
-	0x01, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x2f, 0x2e, 0x76, 0x32, 0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f,
-	0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x72, 0x6f,
-	0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e, 0x44, 0x6f, 0x6d, 0x61, 0x69,
-	0x6e, 0x2e, 0x54, 0x79, 0x70, 0x65, 0x52, 0x04, 0x74, 0x79, 0x70, 0x65, 0x12, 0x14, 0x0a, 0x05,
-	0x76, 0x61, 0x6c, 0x75, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x76, 0x61, 0x6c,
-	0x75, 0x65, 0x12, 0x52, 0x0a, 0x09, 0x61, 0x74, 0x74, 0x72, 0x69, 0x62, 0x75, 0x74, 0x65, 0x18,
-	0x03, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x34, 0x2e, 0x76, 0x32, 0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f,
-	0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x72, 0x6f,
-	0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e, 0x44, 0x6f, 0x6d, 0x61, 0x69,
-	0x6e, 0x2e, 0x41, 0x74, 0x74, 0x72, 0x69, 0x62, 0x75, 0x74, 0x65, 0x52, 0x09, 0x61, 0x74, 0x74,
-	0x72, 0x69, 0x62, 0x75, 0x74, 0x65, 0x1a, 0x6c, 0x0a, 0x09, 0x41, 0x74, 0x74, 0x72, 0x69, 0x62,
-	0x75, 0x74, 0x65, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09,
-	0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x1f, 0x0a, 0x0a, 0x62, 0x6f, 0x6f, 0x6c, 0x5f, 0x76, 0x61,
-	0x6c, 0x75, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x48, 0x00, 0x52, 0x09, 0x62, 0x6f, 0x6f,
-	0x6c, 0x56, 0x61, 0x6c, 0x75, 0x65, 0x12, 0x1d, 0x0a, 0x09, 0x69, 0x6e, 0x74, 0x5f, 0x76, 0x61,
-	0x6c, 0x75, 0x65, 0x18, 0x03, 0x20, 0x01, 0x28, 0x03, 0x48, 0x00, 0x52, 0x08, 0x69, 0x6e, 0x74,
-	0x56, 0x61, 0x6c, 0x75, 0x65, 0x42, 0x0d, 0x0a, 0x0b, 0x74, 0x79, 0x70, 0x65, 0x64, 0x5f, 0x76,
-	0x61, 0x6c, 0x75, 0x65, 0x22, 0x36, 0x0a, 0x04, 0x54, 0x79, 0x70, 0x65, 0x12, 0x09, 0x0a, 0x05,
-	0x50, 0x6c, 0x61, 0x69, 0x6e, 0x10, 0x00, 0x12, 0x09, 0x0a, 0x05, 0x52, 0x65, 0x67, 0x65, 0x78,
-	0x10, 0x01, 0x12, 0x0e, 0x0a, 0x0a, 0x52, 0x6f, 0x6f, 0x74, 0x44, 0x6f, 0x6d, 0x61, 0x69, 0x6e,
-	0x10, 0x02, 0x12, 0x08, 0x0a, 0x04, 0x46, 0x75, 0x6c, 0x6c, 0x10, 0x03, 0x22, 0x53, 0x0a, 0x04,
-	0x43, 0x49, 0x44, 0x52, 0x12, 0x0e, 0x0a, 0x02, 0x69, 0x70, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0c,
-	0x52, 0x02, 0x69, 0x70, 0x12, 0x16, 0x0a, 0x06, 0x70, 0x72, 0x65, 0x66, 0x69, 0x78, 0x18, 0x02,
-	0x20, 0x01, 0x28, 0x0d, 0x52, 0x06, 0x70, 0x72, 0x65, 0x66, 0x69, 0x78, 0x12, 0x23, 0x0a, 0x07,
-	0x69, 0x70, 0x5f, 0x61, 0x64, 0x64, 0x72, 0x18, 0xa0, 0x93, 0x04, 0x20, 0x01, 0x28, 0x09, 0x42,
-	0x08, 0x82, 0xb5, 0x18, 0x04, 0x3a, 0x02, 0x69, 0x70, 0x52, 0x06, 0x69, 0x70, 0x41, 0x64, 0x64,
-	0x72, 0x22, 0xfa, 0x01, 0x0a, 0x05, 0x47, 0x65, 0x6f, 0x49, 0x50, 0x12, 0x21, 0x0a, 0x0c, 0x63,
-	0x6f, 0x75, 0x6e, 0x74, 0x72, 0x79, 0x5f, 0x63, 0x6f, 0x64, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28,
-	0x09, 0x52, 0x0b, 0x63, 0x6f, 0x75, 0x6e, 0x74, 0x72, 0x79, 0x43, 0x6f, 0x64, 0x65, 0x12, 0x3c,
-	0x0a, 0x04, 0x63, 0x69, 0x64, 0x72, 0x18, 0x02, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x28, 0x2e, 0x76,
-	0x32, 0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f, 0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f,
-	0x75, 0x74, 0x65, 0x72, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f,
-	0x6e, 0x2e, 0x43, 0x49, 0x44, 0x52, 0x52, 0x04, 0x63, 0x69, 0x64, 0x72, 0x12, 0x23, 0x0a, 0x0d,
-	0x69, 0x6e, 0x76, 0x65, 0x72, 0x73, 0x65, 0x5f, 0x6d, 0x61, 0x74, 0x63, 0x68, 0x18, 0x03, 0x20,
-	0x01, 0x28, 0x08, 0x52, 0x0c, 0x69, 0x6e, 0x76, 0x65, 0x72, 0x73, 0x65, 0x4d, 0x61, 0x74, 0x63,
-	0x68, 0x12, 0x23, 0x0a, 0x0d, 0x72, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x5f, 0x68, 0x61,
-	0x73, 0x68, 0x18, 0x04, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x0c, 0x72, 0x65, 0x73, 0x6f, 0x75, 0x72,
-	0x63, 0x65, 0x48, 0x61, 0x73, 0x68, 0x12, 0x12, 0x0a, 0x04, 0x63, 0x6f, 0x64, 0x65, 0x18, 0x05,
-	0x20, 0x01, 0x28, 0x09, 0x52, 0x04, 0x63, 0x6f, 0x64, 0x65, 0x12, 0x32, 0x0a, 0x09, 0x66, 0x69,
-	0x6c, 0x65, 0x5f, 0x70, 0x61, 0x74, 0x68, 0x18, 0xa0, 0x93, 0x04, 0x20, 0x01, 0x28, 0x09, 0x42,
-	0x13, 0x82, 0xb5, 0x18, 0x0f, 0x32, 0x0d, 0x72, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x5f,
-	0x68, 0x61, 0x73, 0x68, 0x52, 0x08, 0x66, 0x69, 0x6c, 0x65, 0x50, 0x61, 0x74, 0x68, 0x22, 0x4c,
-	0x0a, 0x09, 0x47, 0x65, 0x6f, 0x49, 0x50, 0x4c, 0x69, 0x73, 0x74, 0x12, 0x3f, 0x0a, 0x05, 0x65,
-	0x6e, 0x74, 0x72, 0x79, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x29, 0x2e, 0x76, 0x32, 0x72,
-	0x61, 0x79, 0x2e, 0x63, 0x6f, 0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
-	0x65, 0x72, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e,
-	0x47, 0x65, 0x6f, 0x49, 0x50, 0x52, 0x05, 0x65, 0x6e, 0x74, 0x72, 0x79, 0x22, 0xdd, 0x01, 0x0a,
-	0x07, 0x47, 0x65, 0x6f, 0x53, 0x69, 0x74, 0x65, 0x12, 0x21, 0x0a, 0x0c, 0x63, 0x6f, 0x75, 0x6e,
-	0x74, 0x72, 0x79, 0x5f, 0x63, 0x6f, 0x64, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0b,
-	0x63, 0x6f, 0x75, 0x6e, 0x74, 0x72, 0x79, 0x43, 0x6f, 0x64, 0x65, 0x12, 0x42, 0x0a, 0x06, 0x64,
-	0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x18, 0x02, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x2a, 0x2e, 0x76, 0x32,
-	0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f, 0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
-	0x74, 0x65, 0x72, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e,
-	0x2e, 0x44, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x52, 0x06, 0x64, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x12,
-	0x23, 0x0a, 0x0d, 0x72, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x5f, 0x68, 0x61, 0x73, 0x68,
-	0x18, 0x03, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x0c, 0x72, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65,
-	0x48, 0x61, 0x73, 0x68, 0x12, 0x12, 0x0a, 0x04, 0x63, 0x6f, 0x64, 0x65, 0x18, 0x04, 0x20, 0x01,
-	0x28, 0x09, 0x52, 0x04, 0x63, 0x6f, 0x64, 0x65, 0x12, 0x32, 0x0a, 0x09, 0x66, 0x69, 0x6c, 0x65,
-	0x5f, 0x70, 0x61, 0x74, 0x68, 0x18, 0xa0, 0x93, 0x04, 0x20, 0x01, 0x28, 0x09, 0x42, 0x13, 0x82,
-	0xb5, 0x18, 0x0f, 0x32, 0x0d, 0x72, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x5f, 0x68, 0x61,
-	0x73, 0x68, 0x52, 0x08, 0x66, 0x69, 0x6c, 0x65, 0x50, 0x61, 0x74, 0x68, 0x22, 0x50, 0x0a, 0x0b,
-	0x47, 0x65, 0x6f, 0x53, 0x69, 0x74, 0x65, 0x4c, 0x69, 0x73, 0x74, 0x12, 0x41, 0x0a, 0x05, 0x65,
-	0x6e, 0x74, 0x72, 0x79, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x2b, 0x2e, 0x76, 0x32, 0x72,
-	0x61, 0x79, 0x2e, 0x63, 0x6f, 0x72, 0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
-	0x65, 0x72, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e,
-	0x47, 0x65, 0x6f, 0x53, 0x69, 0x74, 0x65, 0x52, 0x05, 0x65, 0x6e, 0x74, 0x72, 0x79, 0x42, 0x87,
-	0x01, 0x0a, 0x26, 0x63, 0x6f, 0x6d, 0x2e, 0x76, 0x32, 0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f, 0x72,
-	0x65, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x72, 0x6f, 0x75,
-	0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x50, 0x01, 0x5a, 0x36, 0x67, 0x69, 0x74,
-	0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x76, 0x32, 0x66, 0x6c, 0x79, 0x2f, 0x76, 0x32,
-	0x72, 0x61, 0x79, 0x2d, 0x63, 0x6f, 0x72, 0x65, 0x2f, 0x76, 0x35, 0x2f, 0x61, 0x70, 0x70, 0x2f,
-	0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2f, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x63, 0x6f, 0x6d,
-	0x6d, 0x6f, 0x6e, 0xaa, 0x02, 0x22, 0x56, 0x32, 0x52, 0x61, 0x79, 0x2e, 0x43, 0x6f, 0x72, 0x65,
-	0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x52, 0x6f, 0x75, 0x74,
-	0x65, 0x72, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
-}
+const file_app_router_routercommon_common_proto_rawDesc = "" +
+	"\n" +
+	"$app/router/routercommon/common.proto\x12\"v2ray.core.app.router.routercommon\x1a common/protoext/extensions.proto\"\xdd\x02\n" +
+	"\x06Domain\x12C\n" +
+	"\x04type\x18\x01 \x01(\x0e2/.v2ray.core.app.router.routercommon.Domain.TypeR\x04type\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12R\n" +
+	"\tattribute\x18\x03 \x03(\v24.v2ray.core.app.router.routercommon.Domain.AttributeR\tattribute\x1al\n" +
+	"\tAttribute\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1f\n" +
+	"\n" +
+	"bool_value\x18\x02 \x01(\bH\x00R\tboolValue\x12\x1d\n" +
+	"\tint_value\x18\x03 \x01(\x03H\x00R\bintValueB\r\n" +
+	"\vtyped_value\"6\n" +
+	"\x04Type\x12\t\n" +
+	"\x05Plain\x10\x00\x12\t\n" +
+	"\x05Regex\x10\x01\x12\x0e\n" +
+	"\n" +
+	"RootDomain\x10\x02\x12\b\n" +
+	"\x04Full\x10\x03\"S\n" +
+	"\x04CIDR\x12\x0e\n" +
+	"\x02ip\x18\x01 \x01(\fR\x02ip\x12\x16\n" +
+	"\x06prefix\x18\x02 \x01(\rR\x06prefix\x12#\n" +
+	"\aip_addr\x18\xa0\x93\x04 \x01(\tB\b\x82\xb5\x18\x04:\x02ipR\x06ipAddr\"\xfa\x01\n" +
+	"\x05GeoIP\x12!\n" +
+	"\fcountry_code\x18\x01 \x01(\tR\vcountryCode\x12<\n" +
+	"\x04cidr\x18\x02 \x03(\v2(.v2ray.core.app.router.routercommon.CIDRR\x04cidr\x12#\n" +
+	"\rinverse_match\x18\x03 \x01(\bR\finverseMatch\x12#\n" +
+	"\rresource_hash\x18\x04 \x01(\fR\fresourceHash\x12\x12\n" +
+	"\x04code\x18\x05 \x01(\tR\x04code\x122\n" +
+	"\tfile_path\x18\xa0\x93\x04 \x01(\tB\x13\x82\xb5\x18\x0f2\rresource_hashR\bfilePath\"L\n" +
+	"\tGeoIPList\x12?\n" +
+	"\x05entry\x18\x01 \x03(\v2).v2ray.core.app.router.routercommon.GeoIPR\x05entry\"\xdd\x01\n" +
+	"\aGeoSite\x12!\n" +
+	"\fcountry_code\x18\x01 \x01(\tR\vcountryCode\x12B\n" +
+	"\x06domain\x18\x02 \x03(\v2*.v2ray.core.app.router.routercommon.DomainR\x06domain\x12#\n" +
+	"\rresource_hash\x18\x03 \x01(\fR\fresourceHash\x12\x12\n" +
+	"\x04code\x18\x04 \x01(\tR\x04code\x122\n" +
+	"\tfile_path\x18\xa0\x93\x04 \x01(\tB\x13\x82\xb5\x18\x0f2\rresource_hashR\bfilePath\"P\n" +
+	"\vGeoSiteList\x12A\n" +
+	"\x05entry\x18\x01 \x03(\v2+.v2ray.core.app.router.routercommon.GeoSiteR\x05entryB\x87\x01\n" +
+	"&com.v2ray.core.app.router.routercommonP\x01Z6github.com/v2fly/v2ray-core/v5/app/router/routercommon\xaa\x02\"V2Ray.Core.App.Router.Routercommonb\x06proto3"
 
 var (
 	file_app_router_routercommon_common_proto_rawDescOnce sync.Once
-	file_app_router_routercommon_common_proto_rawDescData = file_app_router_routercommon_common_proto_rawDesc
+	file_app_router_routercommon_common_proto_rawDescData []byte
 )
 
 func file_app_router_routercommon_common_proto_rawDescGZIP() []byte {
 	file_app_router_routercommon_common_proto_rawDescOnce.Do(func() {
-		file_app_router_routercommon_common_proto_rawDescData = protoimpl.X.CompressGZIP(file_app_router_routercommon_common_proto_rawDescData)
+		file_app_router_routercommon_common_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_app_router_routercommon_common_proto_rawDesc), len(file_app_router_routercommon_common_proto_rawDesc)))
 	})
 	return file_app_router_routercommon_common_proto_rawDescData
 }
@@ -690,92 +630,6 @@ func file_app_router_routercommon_common_proto_init() {
 	if File_app_router_routercommon_common_proto != nil {
 		return
 	}
-	if !protoimpl.UnsafeEnabled {
-		file_app_router_routercommon_common_proto_msgTypes[0].Exporter = func(v any, i int) any {
-			switch v := v.(*Domain); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_app_router_routercommon_common_proto_msgTypes[1].Exporter = func(v any, i int) any {
-			switch v := v.(*CIDR); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_app_router_routercommon_common_proto_msgTypes[2].Exporter = func(v any, i int) any {
-			switch v := v.(*GeoIP); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_app_router_routercommon_common_proto_msgTypes[3].Exporter = func(v any, i int) any {
-			switch v := v.(*GeoIPList); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_app_router_routercommon_common_proto_msgTypes[4].Exporter = func(v any, i int) any {
-			switch v := v.(*GeoSite); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_app_router_routercommon_common_proto_msgTypes[5].Exporter = func(v any, i int) any {
-			switch v := v.(*GeoSiteList); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_app_router_routercommon_common_proto_msgTypes[6].Exporter = func(v any, i int) any {
-			switch v := v.(*Domain_Attribute); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-	}
 	file_app_router_routercommon_common_proto_msgTypes[6].OneofWrappers = []any{
 		(*Domain_Attribute_BoolValue)(nil),
 		(*Domain_Attribute_IntValue)(nil),
@@ -783,8 +637,8 @@ func file_app_router_routercommon_common_proto_init() {
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
-			GoPackagePath: reflect.TypeFor[x]().PkgPath(),
-			RawDescriptor: file_app_router_routercommon_common_proto_rawDesc,
+			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_router_routercommon_common_proto_rawDesc), len(file_app_router_routercommon_common_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   7,
 			NumExtensions: 0,
@@ -796,7 +650,6 @@ func file_app_router_routercommon_common_proto_init() {
 		MessageInfos:      file_app_router_routercommon_common_proto_msgTypes,
 	}.Build()
 	File_app_router_routercommon_common_proto = out.File
-	file_app_router_routercommon_common_proto_rawDesc = nil
 	file_app_router_routercommon_common_proto_goTypes = nil
 	file_app_router_routercommon_common_proto_depIdxs = nil
 }

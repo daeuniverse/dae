@@ -70,7 +70,7 @@ type DnsControllerOption struct {
 	CacheAccessCallback   func(cache *DnsCache) (err error)
 	CacheRemoveCallback   func(cache *DnsCache) (err error)
 	NewCache              func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
-	BestDialerChooser     func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	BestDialerChooser     func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	TimeoutExceedCallback func(dialArgument *dialArgument, err error)
 	IpVersionPrefer       int
 	FixedDomainTtl        map[string]int
@@ -94,7 +94,7 @@ type DnsController struct {
 	cacheAccessCallback func(cache *DnsCache) (err error)
 	cacheRemoveCallback func(cache *DnsCache) (err error)
 	newCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
-	bestDialerChooser   func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	bestDialerChooser   func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
@@ -1112,7 +1112,7 @@ func (c *DnsController) forwardWithFallback(
 	fallbackUpstream := *upstream
 	fallbackUpstream.Scheme = dns.UpstreamScheme_TCP
 
-	fallbackDialArg, chooseErr := c.bestDialerChooser(req, &fallbackUpstream)
+	fallbackDialArg, chooseErr := c.bestDialerChooser(ctx, req, &fallbackUpstream)
 	if chooseErr != nil {
 		return nil, primaryDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback select failed: %v", primaryErr, chooseErr)
 	}
@@ -1225,7 +1225,11 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			// CRITICAL: Use a detached context for the shared resolution.
 			// This prevents cancellation of the first request from terminating
 			// the resolution for all other concurrent waiters.
-			resCtx, resCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			baseCtx := context.Background()
+			if ctx != nil {
+				baseCtx = context.WithoutCancel(ctx)
+			}
+			resCtx, resCancel := context.WithTimeout(baseCtx, 5*time.Second)
 			defer resCancel()
 
 			// This goroutine performs the actual resolution.
@@ -1270,7 +1274,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendPkt(data, req.realDst, req.realSrc, nil); err != nil {
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
 			return err
 		}
 		return nil
@@ -1506,7 +1510,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 			}
 			return nil
 		}
-		if err := sendPkt(patchedResp, req.realDst, req.realSrc, nil); err != nil {
+		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
 			return fmt.Errorf("failed to write remote DNS resp: %w", err)
 		}
 		return nil
@@ -1530,7 +1534,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	}
 
 	// For remote DNS with oversized response, use sendPkt
-	if err := sendPkt(patchedResp, req.realDst, req.realSrc, nil); err != nil {
+	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
 		return fmt.Errorf("failed to write oversized DNS resp: %w", err)
 	}
 	return nil
@@ -1567,7 +1571,7 @@ func (c *DnsController) sendDnsErrorResponse_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(data, req.realDst, req.realSrc, nil); err != nil {
+	if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
 		return err
 	}
 	return nil
@@ -1691,7 +1695,7 @@ func (c *DnsController) dialSend(
 	}
 
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
-	dialArg, err := c.bestDialerChooser(req, upstream)
+	dialArg, err := c.bestDialerChooser(ctx, req, upstream)
 	if err != nil {
 		return err
 	}
@@ -1810,7 +1814,7 @@ func (c *DnsController) dialSend(
 		if err != nil {
 			return err
 		}
-		if err = sendPkt(data, req.realDst, req.realSrc, nil); err != nil {
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
 			return err
 		}
 

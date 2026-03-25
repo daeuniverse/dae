@@ -44,7 +44,7 @@ type proxyDialResult struct {
 	SelectionNetworkTypeObj *dialer.NetworkType
 }
 
-func (c *ControlPlane) chooseProxyDialer(p *proxyDialParam) (*proxyDialResult, error) {
+func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam) (*proxyDialResult, error) {
 	outboundIndex := p.Outbound
 	domain := p.Domain
 	src := p.Src
@@ -170,7 +170,7 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 		ctx = context.Background()
 	}
 
-	res, err := c.chooseProxyDialer(p)
+	res, err := c.chooseProxyDialer(ctx, p)
 	if err != nil {
 		return nil, res, err
 	}

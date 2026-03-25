@@ -63,7 +63,7 @@ func TestDnsForwarder_TcpUdpFallback_UdpFailThenTcp(t *testing.T) {
 
 	ctrl := &DnsController{
 		log: logrus.New(),
-		bestDialerChooser: func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error) {
+		bestDialerChooser: func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error) {
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_TCP_UDP:
 				return &dialArgument{l4proto: consts.L4ProtoStr_UDP}, nil

@@ -2127,8 +2127,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 }
 
 func (c *ControlPlane) chooseBestDnsDialer(
-	req *udpRequest,
-	dnsUpstream *dns.Upstream,
+	ctx context.Context, req *udpRequest, dnsUpstream *dns.Upstream,
 ) (*dialArgument, error) {
 	now := time.Now()
 	snapshotKey, snapshotEnabled := buildDnsDialerSnapshotKey(req, dnsUpstream)
