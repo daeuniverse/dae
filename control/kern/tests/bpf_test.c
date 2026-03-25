@@ -455,6 +455,53 @@ int testcheck_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
 	return check_redirect_non_syn_tcp(skb);
 }
 
+SEC("tc/pktgen/wan_egress_direct_mark_reroute")
+int testpktgen_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb,
+			    IPV4(192,168,0,1), IPV4(9,9,9,9),
+			    24567, 80);
+}
+
+SEC("tc/setup/wan_egress_direct_mark_reroute")
+int testsetup_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
+{
+	struct tuples_key key = {};
+	struct tcphdr tcph = {};
+	__u8 outbound = OUTBOUND_DIRECT;
+	__u32 mark = TPROXY_MARK;
+	__u8 must = 0;
+	__u8 mac[6] = { 0, 1, 2, 3, 4, 5 };
+
+	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
+	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.dip.u6_addr32[3] = bpf_htonl(IPV4(9,9,9,9));
+	key.sport = bpf_htons(24567);
+	key.dport = bpf_htons(80);
+	key.l4proto = IPPROTO_TCP;
+	tcph.syn = true;
+
+	if (!mark_tcp_seen(&key, &tcph, false,
+			   &outbound, &mark, &must, mac,
+			   0, NULL, 0))
+		return TC_ACT_SHOT;
+
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/wan_egress_direct_mark_reroute")
+int testcheck_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
+{
+	return check_tcp_conn_state_ipv4_tcp(skb,
+					     TC_ACT_OK,
+					     IPV4(192,168,0,1), IPV4(9,9,9,9),
+					     24567, 80,
+					     OUTBOUND_DIRECT,
+					     TPROXY_MARK,
+					     true);
+}
+
 SEC("tc/pktgen/l4proto_match")
 int testpktgen_l4proto_match(struct __sk_buff *skb)
 {

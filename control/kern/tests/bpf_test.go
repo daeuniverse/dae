@@ -110,6 +110,71 @@ func collectPrograms(t *testing.T) (obj *bpftestObjects, progset []programSet, e
 	return
 }
 
+func runProgramSetByID(t *testing.T, id string) {
+	obj, progsets, err := collectPrograms(t)
+	if err != nil {
+		t.Fatalf("error while collecting programs: %s", err)
+	}
+	defer obj.Close()
+
+	var target *programSet
+	for i := range progsets {
+		if progsets[i].id == id {
+			target = &progsets[i]
+			break
+		}
+	}
+	if target == nil {
+		t.Fatalf("program set %s not found", id)
+	}
+
+	key := uint32(0)
+	activeRulesLen := uint32(testMaxMatchSetLen)
+	if err = obj.RoutingMetaMap.Update(key, activeRulesLen, ebpf.UpdateAny); err != nil {
+		t.Fatalf("failed to initialize routing_meta_map: %v", err)
+	}
+
+	zeroEntry := make([]byte, obj.RoutingMap.ValueSize())
+	for i := uint32(0); i < testMaxMatchSetLen; i++ {
+		if err = obj.RoutingMap.Update(i, zeroEntry, ebpf.UpdateAny); err != nil {
+			t.Fatalf("failed to clear routing_map[%d]: %v", i, err)
+		}
+	}
+
+	data := make([]byte, 4096-256-320)
+	ctx := make([]byte, 256)
+
+	statusCode, data, ctx, err := runBpfProgram(target.pktgen, data, ctx)
+	if err != nil {
+		t.Fatalf("error while running pktgen prog: %s", err)
+	}
+	if statusCode != 0 {
+		printBpfDebugLog(t)
+		t.Fatalf("error while running pktgen program: unexpected status code: %d", statusCode)
+	}
+
+	statusCode, data, ctx, err = runBpfProgram(target.setup, data, ctx)
+	if err != nil {
+		printBpfDebugLog(t)
+		t.Fatalf("error while running setup prog: %s", err)
+	}
+
+	status := make([]byte, 4)
+	nl.NativeEndian().PutUint32(status, statusCode)
+	data = append(status, data...)
+
+	statusCode, _, _, err = runBpfProgram(target.check, data, ctx)
+	if err != nil {
+		t.Fatalf("error while running check program: %+v", err)
+	}
+	if statusCode != 0 {
+		printBpfDebugLog(t)
+		t.Fatalf("error while running check program: unexpected status code: %d", statusCode)
+	}
+
+	consumeBpfDebugLog(t)
+}
+
 func consumeBpfDebugLog(t *testing.T) {
 	readBpfDebugLog(t)
 }
@@ -325,4 +390,8 @@ func Test(t *testing.T) {
 
 		consumeBpfDebugLog(t)
 	}
+}
+
+func TestWanEgressDirectMarkReroute(t *testing.T) {
+	runProgramSetByID(t, "WanEgressDirectMarkReroute")
 }

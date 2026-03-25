@@ -1647,7 +1647,6 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 		// Update routing if provided (e.g., routing decision changed)
 		if (outbound) {
-			state->has_routing = 1;
 			state->outbound = *outbound;
 			state->mark = *mark;
 			state->must = *must;
@@ -1657,6 +1656,9 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 			if (pname)
 				__builtin_memcpy(state->pname, pname, TASK_COMM_LEN);
 			state->pid = pid;
+			/* Publish has_routing after the payload fields are ready. */
+			barrier();
+			state->has_routing = 1;
 		}
 		return state;
 	}
@@ -1740,7 +1742,6 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 		// Update routing if provided (rare: routing decision changed mid-connection)
 		if (outbound) {
-			state->has_routing = 1;
 			state->outbound = *outbound;
 			state->mark = *mark;
 			state->must = *must;
@@ -1750,6 +1751,9 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			if (pname)
 				__builtin_memcpy(state->pname, pname, TASK_COMM_LEN);
 			state->pid = pid;
+			/* Publish has_routing after the payload fields are ready. */
+			barrier();
+			state->has_routing = 1;
 		}
 
 		return state;
@@ -2159,18 +2163,20 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		// Skip cache for short-lived DNS to avoid map churn.
 	} else if (pkt->l4proto == IPPROTO_TCP && tcp_state) {
 		// Directly update the TCP conn state we already looked up
-		tcp_state->has_routing = 1;
 		tcp_state->outbound = outbound;
 		tcp_state->mark = mark;
 		tcp_state->must = must;
 		__builtin_memcpy(tcp_state->mac, pkt->ethh.h_source, 6);
+		barrier();
+		tcp_state->has_routing = 1;
 	} else if (pkt->l4proto == IPPROTO_UDP && udp_state) {
 		// Directly update the UDP conn state we already looked up
-		udp_state->has_routing = 1;
 		udp_state->outbound = outbound;
 		udp_state->mark = mark;
 		udp_state->must = must;
 		__builtin_memcpy(udp_state->mac, pkt->ethh.h_source, 6);
+		barrier();
+		udp_state->has_routing = 1;
 	}
 	// No separate routing_tuples_map write needed - routing is embedded.
 
@@ -2612,7 +2618,6 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 fast_path_skip_routing:
 	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
 		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			udp_conn_state->has_routing = 1;
 			udp_conn_state->outbound = outbound;
 			udp_conn_state->mark = mark;
 			udp_conn_state->must = must;
@@ -2624,6 +2629,8 @@ fast_path_skip_routing:
 						 TASK_COMM_LEN);
 				udp_conn_state->pid = pid_pname->pid;
 			}
+			barrier();
+			udp_conn_state->has_routing = 1;
 		}
 		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
 	}
