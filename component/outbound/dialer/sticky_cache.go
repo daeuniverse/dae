@@ -27,7 +27,6 @@ func invalidateProxyCache(proxyAddr string) {
 	globalProxyIpCache.Invalidate(proxyAddr)
 }
 
-
 // proxyIpHealthTracker tracks consecutive failures for proxy IPs.
 type proxyIpHealthTracker struct {
 	sync.Mutex

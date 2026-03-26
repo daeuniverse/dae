@@ -25,7 +25,7 @@ func TestSendUDPv6RawDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen client UDP6 socket: %v", err)
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	clientAddr, ok := clientConn.LocalAddr().(*net.UDPAddr)
 	if !ok {
@@ -37,7 +37,7 @@ func TestSendUDPv6RawDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen wildcard UDP6 conflict socket: %v", err)
 	}
-	defer conflictConn.Close()
+	defer func() { _ = conflictConn.Close() }()
 
 	done := make(chan struct{})
 	go func() {

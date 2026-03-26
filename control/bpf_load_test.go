@@ -50,5 +50,5 @@ func TestLoadMainBPFObjects(t *testing.T) {
 		}
 		t.Fatalf("load main bpf objects: %+v", err)
 	}
-	defer obj.Close()
+	defer func() { _ = obj.Close() }()
 }

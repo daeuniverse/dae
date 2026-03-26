@@ -81,13 +81,13 @@ Loop:
 			if strings.EqualFold(string(container), code) {
 				count++
 				offset := -(1 + int64(varintLenByteLen) + int64(codeVarintLength))
-				_, _ = f.Seek(offset, 1)               // back to the start of GeoIP or GeoSite varint
+				_, _ = f.Seek(offset, 1)        // back to the start of GeoIP or GeoSite varint
 				advancedN = geoDataVarintLength // the number of bytes to be read in next round
 			} else {
 				count = 1
 				offset := int64(geoDataVarintLength) - int64(codeVarintLength) - int64(varintLenByteLen) - 1
 				_, _ = f.Seek(offset, 1) // skip the unmatched GeoIP or GeoSite varint
-				advancedN = 1     // the next round will be the start of another GeoIPList or GeoSiteList
+				advancedN = 1            // the next round will be the start of another GeoIPList or GeoSiteList
 			}
 		case 6: // matched GeoIP or GeoSite varint
 			result = container

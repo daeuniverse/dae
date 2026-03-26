@@ -76,7 +76,6 @@ func (w *Walker) parseNonEmptyParamList(list *dae_config.NonEmptyParameterListCo
 	return paramParser.list
 }
 
-
 type functionVerifier func(function *Function, ctx any) bool
 
 func (w *Walker) parseFunctionPrototype(ctx *dae_config.FunctionPrototypeContext, verifier functionVerifier) *Function {

@@ -38,11 +38,11 @@ type Sniffer struct {
 	deadline time.Time
 
 	// Packet
-	data             [][]byte
-	needMore         bool
-	quicNextRead     int
-	quicCryptos      []*quicutils.CryptoFrameOffset
-	quicPlaintexts   []pool.PB
+	data           [][]byte
+	needMore       bool
+	quicNextRead   int
+	quicCryptos    []*quicutils.CryptoFrameOffset
+	quicPlaintexts []pool.PB
 }
 
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {

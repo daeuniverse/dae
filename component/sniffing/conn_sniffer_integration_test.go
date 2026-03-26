@@ -300,4 +300,3 @@ func TestConnSnifferWriteToWithRealConnection(t *testing.T) {
 
 	_ = 1
 }
-

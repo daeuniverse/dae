@@ -27,7 +27,7 @@ func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("create raw IPv6 UDP socket: %w", err)
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 
 	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1); err != nil {
 		return fmt.Errorf("enable IPV6_TRANSPARENT on raw socket: %w", err)
