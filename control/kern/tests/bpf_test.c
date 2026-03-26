@@ -67,10 +67,10 @@ setup_cached_routing_result(__u32 saddr, __u32 daddr,
 	conn_state.is_wan_ingress_direction = false;
 	conn_state.state = 0; // TCP_STATE_ACTIVE
 	conn_state.last_seen_ns = bpf_ktime_get_ns();
-	conn_state.has_routing = 1;
-	conn_state.outbound = outbound;
-	conn_state.mark = mark;
-	conn_state.must = 0;
+	conn_state.meta.data.has_routing = 1;
+	conn_state.meta.data.outbound = outbound;
+	conn_state.meta.data.mark = mark;
+	conn_state.meta.data.must = 0;
 
 	return bpf_map_update_elem(&tcp_conn_state_map, &ctx->key, &conn_state, BPF_ANY);
 }

@@ -213,20 +213,20 @@ check_tcp_conn_state_ipv4_tcp(struct __sk_buff *skb,
 		return TC_ACT_SHOT;
 	}
 
-	if (conn_state->has_routing == 0) {
-		bpf_printk("conn_state->has_routing == 0\n");
+	if (conn_state->meta.data.has_routing == 0) {
+		bpf_printk("conn_state->meta.data.has_routing == 0\n");
 		return TC_ACT_SHOT;
 	}
 
-	if (conn_state->outbound != expected_outbound) {
-		bpf_printk("conn_state->outbound(%d) != %d\n",
-			   conn_state->outbound, expected_outbound);
+	if (conn_state->meta.data.outbound != expected_outbound) {
+		bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+			   conn_state->meta.data.outbound, expected_outbound);
 		return TC_ACT_SHOT;
 	}
 
-	if (conn_state->mark != expected_mark) {
-		bpf_printk("conn_state->mark(%d) != %d\n",
-			   conn_state->mark, expected_mark);
+	if (conn_state->meta.data.mark != expected_mark) {
+		bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+			   conn_state->meta.data.mark, expected_mark);
 		return TC_ACT_SHOT;
 	}
 
@@ -337,20 +337,20 @@ check_routing_ipv4_tcp_state(struct __sk_buff *skb,
 			return TC_ACT_SHOT;
 		}
 
-		if (conn_state->has_routing == 0) {
-			bpf_printk("conn_state->has_routing == 0\n");
+		if (conn_state->meta.data.has_routing == 0) {
+			bpf_printk("conn_state->meta.data.has_routing == 0\n");
 			return TC_ACT_SHOT;
 		}
 
-		if (conn_state->outbound != expected_outbound) {
-			bpf_printk("conn_state->outbound(%d) != %d\n",
-				   conn_state->outbound, expected_outbound);
+		if (conn_state->meta.data.outbound != expected_outbound) {
+			bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+				   conn_state->meta.data.outbound, expected_outbound);
 			return TC_ACT_SHOT;
 		}
 
-		if (conn_state->mark != expected_mark) {
-			bpf_printk("conn_state->mark(%d) != %d\n",
-				   conn_state->mark, expected_mark);
+		if (conn_state->meta.data.mark != expected_mark) {
+			bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+				   conn_state->meta.data.mark, expected_mark);
 			return TC_ACT_SHOT;
 		}
 	}
