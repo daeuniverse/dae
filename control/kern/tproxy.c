@@ -1540,11 +1540,12 @@ static __always_inline int prep_redirect_to_control_plane(
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
 
-	if (PARAM.use_redirect_peer)
+	if (PARAM.use_redirect_peer && !from_wan)
 		goto skip_eth_prep;
 
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
+		__u8 zero_mac[6] = {0};
 		int ret;
 
 		ret = bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
@@ -1554,6 +1555,8 @@ static __always_inline int prep_redirect_to_control_plane(
 		}
 		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
 				    &l3proto, sizeof(l3proto), 0);
+		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+				    zero_mac, sizeof(zero_mac), 0);
 	}
 
 	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
