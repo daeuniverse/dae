@@ -62,9 +62,11 @@ func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
 }
 
 func sendUDPv6RawInDaeNetns(data []byte, from, realTo netip.AddrPort) error {
-	return GetDaeNetns().WithRequired("send raw IPv6 UDP packet", func() error {
-		return sendUDPv6RawDirect(data, from, realTo)
-	})
+	// This path is called from the dataplane hot path where caller is already
+	// in dae netns (see run loop in cmd/run.go). Avoid nested netns switching:
+	// re-entering WithRequired here can temporarily flip thread netns and break
+	// packet handling continuity under concurrent traffic.
+	return sendUDPv6RawDirect(data, from, realTo)
 }
 
 func udp6Checksum(src, dst netip.Addr, udp []byte) uint16 {
