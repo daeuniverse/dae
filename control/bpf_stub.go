@@ -9,7 +9,10 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"structs"
 
 	"github.com/cilium/ebpf"
@@ -403,4 +406,40 @@ func (p bpfIfParams) CheckVersionRequirement(version any) error {
 
 func detectCgroupPath() (string, error) {
 	return "", errBpfObjectsUnavailable
+}
+
+func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+		m, ok := spec.Maps[mapName]
+		if !ok || m == nil {
+			return fmt.Errorf("missing map spec %q", mapName)
+		}
+		m.Pinning = ebpf.PinNone
+	}
+	return nil
+}
+
+func cleanupPinnedConnStateMapFiles(log *logrus.Logger, pinPath string) int {
+	if pinPath == "" {
+		return 0
+	}
+
+	removed := 0
+	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+		path := filepath.Join(pinPath, mapName)
+		if err := os.Remove(path); err != nil {
+			if !os.IsNotExist(err) && log != nil {
+				log.Warnf("Failed to remove stale pinned conn-state map %s: %v", mapName, err)
+			}
+			continue
+		}
+		removed++
+		if log != nil {
+			log.Infof("Removed stale pinned conn-state map %s", mapName)
+		}
+	}
+	return removed
 }
