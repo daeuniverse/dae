@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/netip"
 	"sync"
-
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -23,6 +22,7 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -330,6 +330,25 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 
 	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
+		if stderrors.Is(err, unix.EADDRINUSE) &&
+			from.Addr().Is6() && !from.Addr().Is4In6() &&
+			realTo.Addr().Is6() && !realTo.Addr().Is4In6() {
+			if fallbackErr := sendUDPv6RawInDaeNetns(data, from, realTo); fallbackErr == nil {
+				if debugEnabled {
+					log.WithFields(logrus.Fields{
+						"from": from.String(),
+						"to":   realTo.String(),
+					}).Debug("sendPkt: used raw IPv6 UDP fallback after transparent bind conflict")
+				}
+				return nil
+			} else if errorEnabled {
+				log.WithFields(logrus.Fields{
+					"from":     from.String(),
+					"to":       realTo.String(),
+					"fallback": fallbackErr.Error(),
+				}).Error("sendPkt: raw IPv6 UDP fallback failed after transparent bind conflict")
+			}
+		}
 		if errorEnabled {
 			log.WithFields(logrus.Fields{
 				"bind_addr": bindAddr.String(),
