@@ -2499,8 +2499,7 @@ execute_decision:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (outbound == OUTBOUND_DIRECT) {
-		skb->mark = mark;
+	if (outbound == OUTBOUND_DIRECT && mark == 0) {
 		return TC_ACT_OK;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 		return TC_ACT_SHOT;
