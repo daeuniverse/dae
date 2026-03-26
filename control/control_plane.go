@@ -126,10 +126,27 @@ var (
 	// DNS port in network byte order for connection state cleanup.
 	// Precomputed to avoid repeated Htons() calls during janitor iterations.
 	dnsPortNetworkOrder = common.Htons(53)
-	// connStateJanitorInterval controls how often we scan for expired entries.
-	// A shorter interval means faster cleanup but more CPU overhead.
-	// 1s provides good balance between prompt cleanup and low overhead.
-	connStateJanitorInterval = 1 * time.Second
+	// connStateJanitorPressureInterval is the fast-path scan interval used
+	// when connection-state maps are under pressure.
+	connStateJanitorPressureInterval = 1 * time.Second
+	// connStateJanitorSteadyInterval is the default scan interval for steady
+	// state. This keeps cleanup prompt without paying a full-table cost every
+	// second when map pressure is low.
+	connStateJanitorSteadyInterval = 5 * time.Second
+	// redirectTrackJanitorPressureInterval is used when maps are under pressure.
+	redirectTrackJanitorPressureInterval = 5 * time.Second
+	// redirectTrackJanitorSteadyInterval is sufficient for the redirect cache
+	// because stale entries have a limited blast radius.
+	redirectTrackJanitorSteadyInterval = 30 * time.Second
+	// connStateJanitorPressureEnterUsage is the usage percentage that activates
+	// pressure mode for connection-state cleanup.
+	connStateJanitorPressureEnterUsage = 70
+	// connStateJanitorPressureExitUsage is the usage percentage below which the
+	// janitor starts counting down to leave pressure mode.
+	connStateJanitorPressureExitUsage = 50
+	// connStateJanitorPressureExitRounds is the number of consecutive low-usage
+	// cleanup rounds required before leaving pressure mode.
+	connStateJanitorPressureExitRounds = 3
 
 	// TCP connection state timeout constants.
 	// TCP connections are longer-lived but we still need to clean up closed connections.
@@ -142,6 +159,19 @@ var (
 	systemDnsForRealDomainProbe   = netutils.SystemDns
 	resolveIp46ForRealDomainProbe = netutils.ResolveIp46
 )
+
+type mapCleanupStats struct {
+	entries      int
+	deleted      int
+	usagePercent int
+}
+
+type connStateJanitorPressureState struct {
+	active               bool
+	belowThresholdRounds int
+	lastUdpOverflow      uint64
+	lastTcpOverflow      uint64
+}
 
 func isIPLikeDomain(domain string) bool {
 	if domain == "" {
@@ -272,6 +302,9 @@ func NewControlPlaneWithContext(
 
 	/// Load pre-compiled programs and maps into the kernel.
 	if _bpf == nil {
+		// Conn-state maps are preserved across in-process reload via object handoff,
+		// so fresh loads should not inherit stale bpffs pins from previous processes.
+		cleanupPinnedConnStateMapFiles(log, pinPath)
 		log.Infof("Loading eBPF programs and maps into the kernel...")
 		log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	}
@@ -765,9 +798,9 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 // only clear domain_routing_map on reload.
 //
 // IMPORTANT:
-// Scheme3 (Embedded Design): Connection-state maps (tcp_conn_state_map, udp_conn_state_map)
-// are now pinned and preserve routing decisions across reloads. Do NOT clear them here,
-// otherwise established flows may lose cached state and get rerouted.
+// Scheme3 (Embedded Design): Connection-state maps are preserved across in-process
+// reload by handing the live BPF objects to the new control plane. Do NOT clear
+// them here, otherwise established flows may lose cached state and get rerouted.
 func clearReloadDomainRoutingMap(bpf *bpfObjects) error {
 	return BpfMapDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
 }
@@ -807,6 +840,13 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
+func (c *ControlPlane) currentBpf() *bpfObjects {
+	if c == nil || c.core == nil {
+		return nil
+	}
+	return c.core.PeekBpf()
+}
+
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 	result := make(map[string]*DnsCache)
 	c.dnsController.dnsCache.Range(func(key, value any) bool {
@@ -822,6 +862,31 @@ func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 		return true
 	})
 	return result
+}
+
+func updateConnStateJanitorPressure(
+	state connStateJanitorPressureState,
+	overflowDelta bool,
+	maxUsagePercent int,
+) connStateJanitorPressureState {
+	if overflowDelta || maxUsagePercent >= connStateJanitorPressureEnterUsage {
+		state.active = true
+		state.belowThresholdRounds = 0
+		return state
+	}
+	if !state.active {
+		return state
+	}
+	if maxUsagePercent < connStateJanitorPressureExitUsage {
+		state.belowThresholdRounds++
+		if state.belowThresholdRounds >= connStateJanitorPressureExitRounds {
+			state.active = false
+			state.belowThresholdRounds = 0
+		}
+		return state
+	}
+	state.belowThresholdRounds = 0
+	return state
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
@@ -1210,21 +1275,65 @@ func (c *ControlPlane) stopRealDomainNegJanitor() {
 // and avoiding CVE-2024-41045.
 func (c *ControlPlane) startConnStateJanitor() {
 	go func() {
-		ticker := time.NewTicker(connStateJanitorInterval)
-		healthCheckTicker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(connStateJanitorPressureInterval)
 		defer ticker.Stop()
-		defer healthCheckTicker.Stop()
 		defer close(c.connStateJanitorDone)
+
+		var (
+			lastConnCleanup     time.Time
+			lastRedirectCleanup time.Time
+			lastHealthCheck     time.Time
+			pressureState       connStateJanitorPressureState
+		)
+
 		for {
 			select {
 			case <-c.connStateJanitorStop:
 				return
-			case <-ticker.C:
-				c.cleanupRedirectTrackMap()
-				c.cleanupUdpConnStateMap()
-				c.cleanupTcpConnStateMap()
-			case <-healthCheckTicker.C:
-				c.checkBpfMapHealth()
+			case now := <-ticker.C:
+				bpf := c.currentBpf()
+
+				overflowDelta := false
+				if bpf != nil && bpf.BpfStatsMap != nil {
+					udpOverflow, tcpOverflow := c.readMapOverflowCounters(bpf.BpfStatsMap)
+					overflowDelta = udpOverflow > pressureState.lastUdpOverflow ||
+						tcpOverflow > pressureState.lastTcpOverflow
+					pressureState.lastUdpOverflow = udpOverflow
+					pressureState.lastTcpOverflow = tcpOverflow
+				}
+				if overflowDelta {
+					pressureState.active = true
+					pressureState.belowThresholdRounds = 0
+				}
+
+				connCleanupInterval := connStateJanitorSteadyInterval
+				redirectCleanupInterval := redirectTrackJanitorSteadyInterval
+				if pressureState.active {
+					connCleanupInterval = connStateJanitorPressureInterval
+					redirectCleanupInterval = redirectTrackJanitorPressureInterval
+				}
+
+				if lastRedirectCleanup.IsZero() || now.Sub(lastRedirectCleanup) >= redirectCleanupInterval {
+					c.cleanupRedirectTrackMap()
+					lastRedirectCleanup = now
+				}
+
+				if lastConnCleanup.IsZero() || now.Sub(lastConnCleanup) >= connCleanupInterval {
+					udpStats := c.cleanupUdpConnStateMap(pressureState.active)
+					tcpStats := c.cleanupTcpConnStateMap(pressureState.active)
+
+					maxUsagePercent := udpStats.usagePercent
+					if tcpStats.usagePercent > maxUsagePercent {
+						maxUsagePercent = tcpStats.usagePercent
+					}
+					pressureState = updateConnStateJanitorPressure(pressureState, overflowDelta, maxUsagePercent)
+					lastConnCleanup = now
+				}
+
+				if lastHealthCheck.IsZero() || now.Sub(lastHealthCheck) >= 5*time.Second {
+					c.checkBpfMapHealth()
+					lastHealthCheck = now
+				}
 			}
 		}
 	}()
@@ -1267,7 +1376,7 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 	default:
 	}
 
-	bpf := c.core.EjectBpf()
+	bpf := c.currentBpf()
 	if bpf == nil || bpf.RedirectTrack == nil {
 		return
 	}
@@ -1318,9 +1427,9 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 		}
 	}
 
-	for _, k := range keysToDelete {
-		if err := bpf.RedirectTrack.Delete(&k); err != nil {
-			c.log.Debugf("cleanupRedirectTrackMap: failed to delete entry: %v", err)
+	if len(keysToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.RedirectTrack, keysToDelete); err != nil {
+			c.log.Debugf("cleanupRedirectTrackMap: batch delete error: %v", err)
 		}
 	}
 
@@ -1345,24 +1454,26 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 // DNS entries use a shorter timeout (17s) while normal UDP uses 60s.
 // When map is under pressure (high usage), timeouts are dynamically reduced
 // to free up space more aggressively in a single pass.
-func (c *ControlPlane) cleanupUdpConnStateMap() {
+func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
+	stats := mapCleanupStats{}
+
 	// Check if we're shutting down - if stop signal is sent, skip cleanup
 	select {
 	case <-c.connStateJanitorStop:
-		return
+		return stats
 	default:
 	}
 
-	bpf := c.core.EjectBpf()
+	bpf := c.currentBpf()
 	if bpf == nil || bpf.UdpConnStateMap == nil {
-		return
+		return stats
 	}
 
 	// Use CLOCK_MONOTONIC to match bpf_ktime_get_ns() time base.
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
 		c.log.Errorf("cleanupUdpConnStateMap: failed to get monotonic time: %v", err)
-		return
+		return stats
 	}
 	nowNano := ts.Nano()
 
@@ -1372,46 +1483,20 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 
 	// Pre-allocate slice for better performance
 	keysToDelete := make([]bpfTuplesKey, 0, 256)
-	estimatedCount := 0
-	aggressiveCleanup := false
 
 	var (
 		keysOut   = make([]bpfTuplesKey, 1024)
 		valuesOut = make([]bpfUdpConnState, 1024)
 		cursor    = new(ebpf.MapBatchCursor)
 	)
-	// First pass: count entries and determine usage
-	for {
-		count, err := bpf.UdpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
-		estimatedCount += count
-		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
-				c.log.Errorf("cleanupUdpConnStateMap: count BatchLookup error: %v", err)
-			}
-			break
-		}
-	}
-
-	// Check if aggressive cleanup is needed based on usage
-	maxEntries := bpf.UdpConnStateMap.MaxEntries()
-	if maxEntries > 0 {
-		usagePercent := int(estimatedCount * 100 / int(maxEntries))
-		if usagePercent > 70 {
-			aggressiveCleanup = true
-		}
-	}
-
-	// Single pass: collect keys to delete with dynamic timeout
 	aggressiveTimeout := normalTimeoutNano / 2
 	aggressiveDnsTimeout := dnsTimeoutNano / 2
 
-	cursor = new(ebpf.MapBatchCursor)
 	for {
 		count, err := bpf.UdpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := 0; i < count; i++ {
+				stats.entries++
 				key := keysOut[i]
 				value := valuesOut[i]
 				// Check if this entry is a DNS connection (port 53)
@@ -1446,45 +1531,55 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 		}
 	}
 
+	maxEntries := bpf.UdpConnStateMap.MaxEntries()
+	if maxEntries > 0 {
+		stats.usagePercent = int(stats.entries * 100 / int(maxEntries))
+	}
+
 	// Batch delete from UDP conn state map
 	if len(keysToDelete) > 0 {
 		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupUdpConnStateMap: batch delete error: %v", err)
 		}
 	}
+	stats.deleted = len(keysToDelete)
 
 	// Log cleanup stats
 	if len(keysToDelete) > 0 {
 		if aggressiveCleanup {
 			c.log.Debugf("cleanupUdpConnStateMap: aggressive cleanup removed %d entries (%d%% usage)",
-				len(keysToDelete), int(estimatedCount*100/int(maxEntries)))
+				len(keysToDelete), stats.usagePercent)
 		} else {
 			c.log.Debugf("cleanupUdpConnStateMap: removed %d expired entries", len(keysToDelete))
 		}
 	}
+
+	return stats
 }
 
 // cleanupTcpConnStateMap iterates through the TCP conn state map and removes
 // entries that haven't been seen within their timeout period or are in CLOSING state.
 // When map is under pressure, aggressive cleanup applies with shorter timeouts.
-func (c *ControlPlane) cleanupTcpConnStateMap() {
+func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
+	stats := mapCleanupStats{}
+
 	// Check if we're shutting down - if stop signal is sent, skip cleanup
 	select {
 	case <-c.connStateJanitorStop:
-		return
+		return stats
 	default:
 	}
 
-	bpf := c.core.EjectBpf()
+	bpf := c.currentBpf()
 	if bpf == nil || bpf.TcpConnStateMap == nil {
-		return
+		return stats
 	}
 
 	// Use CLOCK_MONOTONIC to match bpf_ktime_get_ns() time base.
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
 		c.log.Errorf("cleanupTcpConnStateMap: failed to get monotonic time: %v", err)
-		return
+		return stats
 	}
 	nowNano := ts.Nano()
 
@@ -1492,46 +1587,20 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 	closingTimeoutNano := tcpConnStateTimeoutClosing.Nanoseconds()
 
 	var keysToDelete []bpfTuplesKey
-	estimatedCount := 0
-	aggressiveCleanup := false
 
 	var (
 		keysOut   = make([]bpfTuplesKey, 1024)
 		valuesOut = make([]bpfTcpConnState, 1024)
 		cursor    = new(ebpf.MapBatchCursor)
 	)
-	// First pass: count entries
-	for {
-		count, err := bpf.TcpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
-		estimatedCount += count
-		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
-				c.log.Errorf("cleanupTcpConnStateMap: count BatchLookup error: %v", err)
-			}
-			break
-		}
-	}
-
-	// Check if aggressive cleanup is needed based on usage
-	maxEntries := bpf.TcpConnStateMap.MaxEntries()
-	if maxEntries > 0 {
-		usagePercent := int(estimatedCount * 100 / int(maxEntries))
-		if usagePercent > 70 {
-			aggressiveCleanup = true
-		}
-	}
-
-	// Single pass: collect keys to delete with dynamic timeout
 	aggressiveEstablishedTimeout := establishedTimeoutNano / 2
 	aggressiveClosingTimeout := closingTimeoutNano / 2
 
-	cursor = new(ebpf.MapBatchCursor)
 	for {
 		count, err := bpf.TcpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := 0; i < count; i++ {
+				stats.entries++
 				key := keysOut[i]
 				value := valuesOut[i]
 				// Apply dynamic timeout based on map pressure
@@ -1573,28 +1642,36 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 		}
 	}
 
+	maxEntries := bpf.TcpConnStateMap.MaxEntries()
+	if maxEntries > 0 {
+		stats.usagePercent = int(stats.entries * 100 / int(maxEntries))
+	}
+
 	// Batch delete expired TCP conn state entries
 	if len(keysToDelete) > 0 {
 		if _, err := BpfMapBatchDelete(bpf.TcpConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupTcpConnStateMap: batch delete error: %v", err)
 		}
 	}
+	stats.deleted = len(keysToDelete)
 
 	// Log cleanup stats
 	if len(keysToDelete) > 0 {
 		if aggressiveCleanup {
 			c.log.Debugf("cleanupTcpConnStateMap: aggressive cleanup removed %d TCP entries (%d%% usage)",
-				len(keysToDelete), int(estimatedCount*100/int(maxEntries)))
+				len(keysToDelete), stats.usagePercent)
 		} else {
 			c.log.Debugf("cleanupTcpConnStateMap: removed %d expired TCP entries", len(keysToDelete))
 		}
 	}
+
+	return stats
 }
 
 // checkBpfMapHealth monitors map usage and overflow counters for robustness.
 // Alerts when maps are approaching capacity or experiencing high overflow rates.
 func (c *ControlPlane) checkBpfMapHealth() {
-	bpf := c.core.EjectBpf()
+	bpf := c.currentBpf()
 	if bpf == nil || bpf.BpfStatsMap == nil {
 		return
 	}
@@ -1614,13 +1691,7 @@ func (c *ControlPlane) checkBpfMapHealth() {
 		tcpOverflow uint64
 	)
 
-	// Read stats (key 0 = UDP overflow, key 1 = TCP overflow)
-	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 0); err == nil {
-		udpOverflow = v
-	}
-	if v, err := readBpfStatsCounter(bpf.BpfStatsMap, 1); err == nil {
-		tcpOverflow = v
-	}
+	udpOverflow, tcpOverflow = c.readMapOverflowCounters(bpf.BpfStatsMap)
 
 	// Alert on significant overflow counts
 	if udpOverflow > 0 || tcpOverflow > 0 {
@@ -1658,6 +1729,19 @@ func (c *ControlPlane) checkBpfMapHealth() {
 			}
 		}
 	}
+}
+
+func (c *ControlPlane) readMapOverflowCounters(m *ebpf.Map) (udpOverflow uint64, tcpOverflow uint64) {
+	if m == nil {
+		return 0, 0
+	}
+	if v, err := readBpfStatsCounter(m, 0); err == nil {
+		udpOverflow = v
+	}
+	if v, err := readBpfStatsCounter(m, 1); err == nil {
+		tcpOverflow = v
+	}
+	return udpOverflow, tcpOverflow
 }
 
 // readBpfStatsCounter reads a counter from the BPF stats map by key index.

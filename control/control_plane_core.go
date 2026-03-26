@@ -807,3 +807,10 @@ func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 		c.deferFuncs = append([]func() error{bpf.Close}, c.deferFuncs...)
 	}
 }
+
+// PeekBpf returns the current BPF objects without transferring ownership.
+// Background maintenance paths such as janitors and health checks should use
+// this accessor instead of EjectBpf to avoid disturbing reload lifecycle.
+func (c *controlPlaneCore) PeekBpf() *bpfObjects {
+	return c.bpf
+}

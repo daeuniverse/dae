@@ -309,7 +309,9 @@ struct {
 // - Routing result is embedded directly in conn state to ensure consistency.
 // - Single source of truth: no separate routing_tuples_map to sync.
 // - This eliminates orphaned entries and simplifies cascade cleanup.
-// - Pinned to support smooth reload with connection migration.
+// - Preserved across in-process reload via userspace BPF object handoff.
+// - Userspace loaders may disable bpffs pinning on cold start to avoid inheriting
+//   stale conn-state from a previous process.
 union routing_meta {
 	struct {
 		__u32 mark;
@@ -345,7 +347,7 @@ struct {
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
 	__type(key, struct tuples_key);
 	__type(value, struct udp_conn_state);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Pinned for smooth reload
+	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Loader may override pinning on cold start.
 } udp_conn_state_map SEC(".maps");
 
 // tcp_conn_state: Track TCP connection state and cached routing decision.
@@ -354,7 +356,9 @@ struct {
 // - Routing result is embedded directly in conn state to ensure consistency.
 // - Single source of truth: no separate routing_tuples_map to sync.
 // - This eliminates orphaned entries and simplifies cascade cleanup.
-// - Pinned to support smooth reload with connection migration.
+// - Preserved across in-process reload via userspace BPF object handoff.
+// - Userspace loaders may disable bpffs pinning on cold start to avoid inheriting
+//   stale conn-state from a previous process.
 struct tcp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
@@ -381,7 +385,7 @@ struct {
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
 	__type(key, struct tuples_key);
 	__type(value, struct tcp_conn_state);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Pinned for smooth reload
+	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Loader may override pinning on cold start.
 } tcp_conn_state_map SEC(".maps");
 
 // bpf_stats: Map statistics for monitoring and robustness.
@@ -1621,13 +1625,12 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 }
 
 // mark_udp_seen updates the last_seen_ns timestamp for UDP connection tracking.
-// Uses timestamp-based lazy deletion with userspace janitor cleanup.
+// Uses datapath lazy expiry with userspace janitor as a backstop under pressure.
 //
-// Design choice: Kernel path only updates timestamps, userspace handles expiry.
-// This avoids:
-// - Hot path overhead of expiry checks on every packet
-// - Complex cascade deletion of routing_tuples_map in kernel
-// - Clock synchronization issues between kernel/userspace
+// Design choice: Kernel path deletes clearly expired entries on lookup so stale
+// state stops affecting routing without waiting for the next userspace sweep.
+// Userspace still performs periodic cleanup to recover space from cold entries
+// that are never touched again.
 //
 // Scheme3: Routing is embedded in conn state for single source of truth.
 // When routing params are provided (outbound != NULL), they're stored in conn state.
@@ -1637,14 +1640,27 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 // rather than dropping packets.
 //
 // Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
+#define UDP_CONN_STATE_TIMEOUT_NS 60000000000ULL         // 60 seconds
 #define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
+
+static __always_inline bool
+udp_conn_state_expired(const struct udp_conn_state *state, __u64 now)
+{
+	return state && now - state->last_seen_ns > UDP_CONN_STATE_TIMEOUT_NS;
+}
+
 static __always_inline struct udp_conn_state *
 mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
 	      __u8 dscp, const char *pname, __u32 pid)
 {
-	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
 	__u64 now = bpf_ktime_get_ns();
+	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
+
+	if (udp_conn_state_expired(state, now)) {
+		bpf_map_delete_elem(&udp_conn_state_map, key);
+		state = NULL;
+	}
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
@@ -1710,11 +1726,12 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 }
 
 // mark_tcp_seen updates TCP connection state for lifecycle tracking.
-// Uses timestamp-based lazy deletion with userspace janitor cleanup.
+// Uses datapath lazy expiry with userspace janitor as a backstop under pressure.
 //
-// Design choice: Kernel path only updates timestamps and tracks TCP state,
-// userspace handles expiry. This avoids hot path overhead and complex
-// cascade deletion of routing_tuples_map in kernel.
+// Design choice: Kernel path deletes clearly expired entries on lookup so stale
+// state stops affecting routing without waiting for the next userspace sweep.
+// Userspace still performs periodic cleanup to recover space from cold entries
+// that are never touched again.
 //
 // State transitions:
 // - SYN -> TCP_STATE_ACTIVE
@@ -1726,15 +1743,35 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 //
 // Returns state pointer, or NULL if map full (caller should degrade gracefully)
 // Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
+#define TCP_CONN_STATE_ESTABLISHED_TIMEOUT_NS 120000000000ULL  // 120 seconds
+#define TCP_CONN_STATE_CLOSING_TIMEOUT_NS 10000000000ULL       // 10 seconds
 #define TCP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
+
+static __always_inline bool
+tcp_conn_state_expired(const struct tcp_conn_state *state, __u64 now)
+{
+	__u64 timeout = TCP_CONN_STATE_ESTABLISHED_TIMEOUT_NS;
+
+	if (!state)
+		return false;
+	if (state->state == TCP_STATE_CLOSING)
+		timeout = TCP_CONN_STATE_CLOSING_TIMEOUT_NS;
+	return now - state->last_seen_ns > timeout;
+}
+
 static __always_inline struct tcp_conn_state *
 mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	      bool is_wan_ingress_direction,
 	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
 	      __u8 dscp, const char *pname, __u32 pid)
 {
-	struct tcp_conn_state *state = bpf_map_lookup_elem(&tcp_conn_state_map, key);
 	__u64 now = bpf_ktime_get_ns();
+	struct tcp_conn_state *state = bpf_map_lookup_elem(&tcp_conn_state_map, key);
+
+	if (tcp_conn_state_expired(state, now)) {
+		bpf_map_delete_elem(&tcp_conn_state_map, key);
+		state = NULL;
+	}
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)

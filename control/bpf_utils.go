@@ -287,6 +287,15 @@ type loadBpfOptions struct {
 }
 
 func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
+	return loadBpfObjectsWithConstantsAndCustomizer(obj, opts, constants, nil)
+}
+
+func loadBpfObjectsWithConstantsAndCustomizer(
+	obj interface{},
+	opts *ebpf.CollectionOptions,
+	constants map[string]interface{},
+	customize func(spec *ebpf.CollectionSpec) error,
+) error {
 	spec, err := loadBpf()
 	if err != nil {
 		return err
@@ -296,7 +305,48 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 			return err
 		}
 	}
+	if customize != nil {
+		if err := customize(spec); err != nil {
+			return err
+		}
+	}
 	return spec.LoadAndAssign(obj, opts)
+}
+
+func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+		m, ok := spec.Maps[mapName]
+		if !ok || m == nil {
+			return fmt.Errorf("missing map spec %q", mapName)
+		}
+		m.Pinning = ebpf.PinNone
+	}
+	return nil
+}
+
+func cleanupPinnedConnStateMapFiles(log *logrus.Logger, pinPath string) int {
+	if pinPath == "" {
+		return 0
+	}
+
+	removed := 0
+	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+		path := filepath.Join(pinPath, mapName)
+		if err := os.Remove(path); err != nil {
+			if !os.IsNotExist(err) && log != nil {
+				log.Warnf("Failed to remove stale pinned conn-state map %s: %v", mapName, err)
+			}
+			continue
+		}
+		removed++
+		if log != nil {
+			log.Infof("Removed stale pinned conn-state map %s", mapName)
+		}
+	}
+	return removed
 }
 
 func fullLoadBpfObjects(
@@ -365,7 +415,12 @@ retryLoadBpf:
 			daeSocketMark:   soMarkFromDae,
 		},
 	}
-	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
+	if err = loadBpfObjectsWithConstantsAndCustomizer(
+		bpf,
+		opts.CollectionOptions,
+		constants,
+		disablePinnedConnStateMaps,
+	); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.
 			prefix := "use pinned map "
