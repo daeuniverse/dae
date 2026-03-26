@@ -310,6 +310,17 @@ struct {
 // - Single source of truth: no separate routing_tuples_map to sync.
 // - This eliminates orphaned entries and simplifies cascade cleanup.
 // - Pinned to support smooth reload with connection migration.
+union routing_meta {
+	struct {
+		__u32 mark;
+		__u8 outbound;
+		__u8 must;
+		__u8 dscp;
+		__u8 has_routing;
+	} data;
+	__u64 raw;
+} __attribute__((aligned(8)));
+
 struct udp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
@@ -322,12 +333,9 @@ struct udp_conn_state {
 
 	// Embedded routing decision result for this flow.
 	// This avoids a separate routing_tuples_map lookup and ensures consistency.
-	__u8 has_routing;      // Whether routing info is valid (0=no, 1=yes)
-	__u8 outbound;         // 0=DIRECT, 1-254=proxy group ID
-	__u32 mark;             // SO_MARK to set
-	__u8 must;              // Whether this is a must-rule match
+	union routing_meta meta;
 	__u8 mac[6];            // Next hop MAC for redirected packets
-	__u8 dscp;              // DSCP value for routing consistency
+	__u8 padding[2];        // Alignment
 	__u8 pname[TASK_COMM_LEN]; // Process name (for WAN egress; empty for LAN)
 	__u32 pid;              // Process ID (for WAN egress; 0 for LAN)
 };
@@ -361,12 +369,9 @@ struct tcp_conn_state {
 
 	// Embedded routing decision result for this flow.
 	// This avoids a separate routing_tuples_map lookup and ensures consistency.
-	__u8 has_routing;      // Whether routing info is valid (0=no, 1=yes)
-	__u8 outbound;         // 0=DIRECT, 1-254=proxy group ID
-	__u32 mark;             // SO_MARK to set
-	__u8 must;              // Whether this is a must-rule match
+	union routing_meta meta;
 	__u8 mac[6];            // Next hop MAC for redirected packets
-	__u8 dscp;              // DSCP value for routing consistency
+	__u8 padding[2];        // Alignment
 	__u8 pname[TASK_COMM_LEN]; // Process name (for WAN egress; empty for LAN)
 	__u32 pid;              // Process ID (for WAN egress; 0 for LAN)
 };
@@ -1650,18 +1655,18 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 		// Update routing if provided (e.g., routing decision changed)
 		if (outbound) {
-			state->outbound = *outbound;
-			state->mark = *mark;
-			state->must = *must;
+			state->meta.data.outbound = *outbound;
+			state->meta.data.mark = *mark;
+			state->meta.data.must = *must;
 			if (mac)
 				__builtin_memcpy(state->mac, mac, 6);
-			state->dscp = dscp;
+			state->meta.data.dscp = dscp;
 			if (pname)
 				__builtin_memcpy(state->pname, pname, TASK_COMM_LEN);
 			state->pid = pid;
 			/* Publish has_routing after the payload fields are ready. */
 			barrier();
-			state->has_routing = 1;
+			state->meta.data.has_routing = 1;
 		}
 		return state;
 	}
@@ -1670,15 +1675,14 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	struct udp_conn_state new_state = {
 		.is_wan_ingress_direction = is_wan_ingress_direction,
 		.last_seen_ns = now,
-		.has_routing = outbound ? 1 : 0,
-		.dscp = dscp,
+		.meta = { .data = { .has_routing = outbound ? 1 : 0, .dscp = dscp } },
 		.pid = pid,
 	};
 
 	if (outbound) {
-		new_state.outbound = *outbound;
-		new_state.mark = *mark;
-		new_state.must = *must;
+		new_state.meta.data.outbound = *outbound;
+		new_state.meta.data.mark = *mark;
+		new_state.meta.data.must = *must;
 		if (mac)
 			__builtin_memcpy(new_state.mac, mac, 6);
 		if (pname)
@@ -1745,18 +1749,18 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 		// Update routing if provided (rare: routing decision changed mid-connection)
 		if (outbound) {
-			state->outbound = *outbound;
-			state->mark = *mark;
-			state->must = *must;
+			state->meta.data.outbound = *outbound;
+			state->meta.data.mark = *mark;
+			state->meta.data.must = *must;
 			if (mac)
 				__builtin_memcpy(state->mac, mac, 6);
-			state->dscp = dscp;
+			state->meta.data.dscp = dscp;
 			if (pname)
 				__builtin_memcpy(state->pname, pname, TASK_COMM_LEN);
 			state->pid = pid;
 			/* Publish has_routing after the payload fields are ready. */
 			barrier();
-			state->has_routing = 1;
+			state->meta.data.has_routing = 1;
 		}
 
 		return state;
@@ -1769,15 +1773,14 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			.is_wan_ingress_direction = is_wan_ingress_direction,
 			.state = TCP_STATE_ACTIVE,
 			.last_seen_ns = now,
-			.has_routing = outbound ? 1 : 0,
-			.dscp = dscp,
+			.meta = { .data = { .has_routing = outbound ? 1 : 0, .dscp = dscp } },
 			.pid = pid,
 		};
 
 		if (outbound) {
-			new_state.outbound = *outbound;
-			new_state.mark = *mark;
-			new_state.must = *must;
+			new_state.meta.data.outbound = *outbound;
+			new_state.meta.data.mark = *mark;
+			new_state.meta.data.must = *must;
 			if (mac)
 				__builtin_memcpy(new_state.mac, mac, 6);
 			if (pname)
@@ -1811,7 +1814,7 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 			.is_wan_ingress_direction = is_wan_ingress_direction,
 			.state = tcph->fin || tcph->rst ? TCP_STATE_CLOSING : TCP_STATE_ACTIVE,
 			.last_seen_ns = now,
-			.has_routing = 0,  // No routing info for hot reload mitigation
+			.meta = { .data = { .has_routing = 0 } },  // No routing info for hot reload mitigation
 		};
 
 		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &temp_state,
@@ -1975,7 +1978,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		 * established TCP packets.
 		 * Scheme3: Load routing directly from the conn_state we already looked up.
 		 */
-		if (!tcp_state->has_routing) {
+		if (!tcp_state->meta.data.has_routing) {
 			/* No cache: keep historical direct-pass semantics (e.g.
 			 * single-arm / reply-path traffic).
 			 */
@@ -1983,8 +1986,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		}
 
 		// Load routing from the conn_state we already looked up
-		outbound = tcp_state->outbound;
-		mark = tcp_state->mark;
+		outbound = tcp_state->meta.data.outbound;
+		mark = tcp_state->meta.data.mark;
 
 		if (outbound == OUTBOUND_DIRECT) {
 			skb->mark = mark;
@@ -2027,10 +2030,10 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			}
 
 			// Fast path: Use cached routing if available
-			if (udp_state && udp_state->has_routing) {
+			if (udp_state && udp_state->meta.data.has_routing) {
 				// Load routing from conn state - skip expensive route() call!
-				__u8 outbound = udp_state->outbound;
-				__u32 mark = udp_state->mark;
+				__u8 outbound = udp_state->meta.data.outbound;
+				__u32 mark = udp_state->meta.data.mark;
 
 				if (outbound == OUTBOUND_DIRECT) {
 					skb->mark = mark;
@@ -2166,20 +2169,24 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		// Skip cache for short-lived DNS to avoid map churn.
 	} else if (pkt->l4proto == IPPROTO_TCP && tcp_state) {
 		// Directly update the TCP conn state we already looked up
-		tcp_state->outbound = outbound;
-		tcp_state->mark = mark;
-		tcp_state->must = must;
 		__builtin_memcpy(tcp_state->mac, pkt->ethh.h_source, 6);
-		barrier();
-		tcp_state->has_routing = 1;
+		union routing_meta _m = {0};
+
+		_m.data.outbound = outbound;
+		_m.data.mark = mark;
+		_m.data.must = must;
+		_m.data.has_routing = 1;
+		*(volatile __u64 *)&tcp_state->meta.raw = _m.raw;
 	} else if (pkt->l4proto == IPPROTO_UDP && udp_state) {
 		// Directly update the UDP conn state we already looked up
-		udp_state->outbound = outbound;
-		udp_state->mark = mark;
-		udp_state->must = must;
 		__builtin_memcpy(udp_state->mac, pkt->ethh.h_source, 6);
-		barrier();
-		udp_state->has_routing = 1;
+		union routing_meta _m = {0};
+
+		_m.data.outbound = outbound;
+		_m.data.mark = mark;
+		_m.data.must = must;
+		_m.data.has_routing = 1;
+		*(volatile __u64 *)&udp_state->meta.raw = _m.raw;
 	}
 	// No separate routing_tuples_map write needed - routing is embedded.
 
@@ -2498,11 +2505,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			NULL, NULL, NULL, NULL,
 			0, NULL, 0);
 
-		if (tcp_conn && tcp_conn->has_routing) {
+		if (tcp_conn && tcp_conn->meta.data.has_routing) {
 			// Proxied connection with cached routing.
 			// Use cache to ensure all packets go through proxy.
-			outbound = tcp_conn->outbound;
-			mark = tcp_conn->mark;
+			outbound = tcp_conn->meta.data.outbound;
+			mark = tcp_conn->meta.data.mark;
 		} else {
 			// No cached routing state.
 			// This must be a direct connection (we don't save state for direct+mark==0)
@@ -2579,10 +2586,10 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 		if (udp_conn_state && udp_conn_state->is_wan_ingress_direction)
 			return TC_ACT_OK;
 
-		if (udp_conn_state && udp_conn_state->has_routing) {
-			outbound = udp_conn_state->outbound;
-			mark = udp_conn_state->mark;
-			must = udp_conn_state->must;
+		if (udp_conn_state && udp_conn_state->meta.data.has_routing) {
+			outbound = udp_conn_state->meta.data.outbound;
+			mark = udp_conn_state->meta.data.mark;
+			must = udp_conn_state->meta.data.must;
 			__builtin_memcpy(mac, udp_conn_state->mac, 6);
 			goto fast_path_skip_routing;
 		}
@@ -2621,19 +2628,21 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 fast_path_skip_routing:
 	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
 		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			udp_conn_state->outbound = outbound;
-			udp_conn_state->mark = mark;
-			udp_conn_state->must = must;
 			__builtin_memcpy(udp_conn_state->mac, mac, 6);
-			udp_conn_state->dscp = tuples->dscp;
 			if (pid_pname) {
 				__builtin_memcpy(udp_conn_state->pname,
 						 pid_pname->pname,
 						 TASK_COMM_LEN);
 				udp_conn_state->pid = pid_pname->pid;
 			}
-			barrier();
-			udp_conn_state->has_routing = 1;
+			union routing_meta _m = {0};
+
+			_m.data.outbound = outbound;
+			_m.data.mark = mark;
+			_m.data.must = must;
+			_m.data.dscp = tuples->dscp;
+			_m.data.has_routing = 1;
+			*(volatile __u64 *)&udp_conn_state->meta.raw = _m.raw;
 		}
 		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
 	}

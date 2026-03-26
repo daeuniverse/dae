@@ -1286,30 +1286,36 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 	maxAge := int64(0)
 	totalAge := int64(0)
 
-	iter := bpf.RedirectTrack.Iterate()
-	var key bpfRedirectTuple
-	var value bpfRedirectEntry
-	for iter.Next(&key, &value) {
-		totalEntries++
-		age := nowNano - int64(value.LastSeenNs)
-		totalAge += age
-		if age > maxAge {
-			maxAge = age
+	var (
+		keysOut   = make([]bpfRedirectTuple, 1024)
+		valuesOut = make([]bpfRedirectEntry, 1024)
+		cursor    = new(ebpf.MapBatchCursor)
+	)
+	for {
+		count, err := bpf.RedirectTrack.BatchLookup(cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := 0; i < count; i++ {
+				key := keysOut[i]
+				value := valuesOut[i]
+				totalEntries++
+				age := nowNano - int64(value.LastSeenNs)
+				totalAge += age
+				if age > maxAge {
+					maxAge = age
+				}
+				if age > timeoutNano {
+					keysToDelete = append(keysToDelete, key)
+				}
+			}
 		}
-		if age > timeoutNano {
-			keysToDelete = append(keysToDelete, key)
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupRedirectTrackMap: BatchLookup error: %v", err)
+			}
+			break
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		// Only log non-"bad file descriptor" errors. EBADF during reload is expected
-		// when maps are closed while iteration is in progress.
-		if !strings.Contains(err.Error(), "bad file descriptor") &&
-			!strings.Contains(err.Error(), "file descriptor") &&
-			!strings.Contains(err.Error(), "closed") {
-			c.log.Errorf("cleanupRedirectTrackMap: iteration error: %v", err)
-		}
-		return
 	}
 
 	for _, k := range keysToDelete {
@@ -1369,20 +1375,23 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 	estimatedCount := 0
 	aggressiveCleanup := false
 
+	var (
+		keysOut   = make([]bpfTuplesKey, 1024)
+		valuesOut = make([]bpfUdpConnState, 1024)
+		cursor    = new(ebpf.MapBatchCursor)
+	)
 	// First pass: count entries and determine usage
-	iter := bpf.UdpConnStateMap.Iterate()
-	var key bpfTuplesKey
-	var value bpfUdpConnState
-	for iter.Next(&key, &value) {
-		estimatedCount++
-	}
-	if err := iter.Err(); err != nil {
-		if !strings.Contains(err.Error(), "bad file descriptor") &&
-			!strings.Contains(err.Error(), "file descriptor") &&
-			!strings.Contains(err.Error(), "closed") {
-			c.log.Errorf("cleanupUdpConnStateMap: count iteration error: %v", err)
+	for {
+		count, err := bpf.UdpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
+		estimatedCount += count
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupUdpConnStateMap: count BatchLookup error: %v", err)
+			}
+			break
 		}
-		return
 	}
 
 	// Check if aggressive cleanup is needed based on usage
@@ -1398,37 +1407,43 @@ func (c *ControlPlane) cleanupUdpConnStateMap() {
 	aggressiveTimeout := normalTimeoutNano / 2
 	aggressiveDnsTimeout := dnsTimeoutNano / 2
 
-	iter = bpf.UdpConnStateMap.Iterate()
-	for iter.Next(&key, &value) {
-		// Check if this entry is a DNS connection (port 53)
-		isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
+	cursor = new(ebpf.MapBatchCursor)
+	for {
+		count, err := bpf.UdpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := 0; i < count; i++ {
+				key := keysOut[i]
+				value := valuesOut[i]
+				// Check if this entry is a DNS connection (port 53)
+				isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
 
-		// Apply dynamic timeout based on map pressure
-		timeout := normalTimeoutNano
-		if isDNS {
-			timeout = dnsTimeoutNano
-		}
-		if aggressiveCleanup {
-			if isDNS {
-				timeout = aggressiveDnsTimeout
-			} else {
-				timeout = aggressiveTimeout
+				// Apply dynamic timeout based on map pressure
+				timeout := normalTimeoutNano
+				if isDNS {
+					timeout = dnsTimeoutNano
+				}
+				if aggressiveCleanup {
+					if isDNS {
+						timeout = aggressiveDnsTimeout
+					} else {
+						timeout = aggressiveTimeout
+					}
+				}
+
+				age := nowNano - int64(value.LastSeenNs)
+				if age > timeout {
+					keysToDelete = append(keysToDelete, key)
+				}
 			}
 		}
-
-		age := nowNano - int64(value.LastSeenNs)
-		if age > timeout {
-			keysToDelete = append(keysToDelete, key)
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupUdpConnStateMap: BatchLookup error: %v", err)
+			}
+			break
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		if !strings.Contains(err.Error(), "bad file descriptor") &&
-			!strings.Contains(err.Error(), "file descriptor") &&
-			!strings.Contains(err.Error(), "closed") {
-			c.log.Errorf("cleanupUdpConnStateMap: iteration error: %v", err)
-		}
-		return
 	}
 
 	// Batch delete from UDP conn state map
@@ -1480,20 +1495,23 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 	estimatedCount := 0
 	aggressiveCleanup := false
 
+	var (
+		keysOut   = make([]bpfTuplesKey, 1024)
+		valuesOut = make([]bpfTcpConnState, 1024)
+		cursor    = new(ebpf.MapBatchCursor)
+	)
 	// First pass: count entries
-	iter := bpf.TcpConnStateMap.Iterate()
-	var key bpfTuplesKey
-	var value bpfTcpConnState
-	for iter.Next(&key, &value) {
-		estimatedCount++
-	}
-	if err := iter.Err(); err != nil {
-		if !strings.Contains(err.Error(), "bad file descriptor") &&
-			!strings.Contains(err.Error(), "file descriptor") &&
-			!strings.Contains(err.Error(), "closed") {
-			c.log.Errorf("cleanupTcpConnStateMap: count iteration error: %v", err)
+	for {
+		count, err := bpf.TcpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
+		estimatedCount += count
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupTcpConnStateMap: count BatchLookup error: %v", err)
+			}
+			break
 		}
-		return
 	}
 
 	// Check if aggressive cleanup is needed based on usage
@@ -1509,44 +1527,50 @@ func (c *ControlPlane) cleanupTcpConnStateMap() {
 	aggressiveEstablishedTimeout := establishedTimeoutNano / 2
 	aggressiveClosingTimeout := closingTimeoutNano / 2
 
-	iter = bpf.TcpConnStateMap.Iterate()
-	for iter.Next(&key, &value) {
-		// Apply dynamic timeout based on map pressure
-		establishedTimeout := establishedTimeoutNano
-		closingTimeout := closingTimeoutNano
-		if aggressiveCleanup {
-			establishedTimeout = aggressiveEstablishedTimeout
-			closingTimeout = aggressiveClosingTimeout
-		}
+	cursor = new(ebpf.MapBatchCursor)
+	for {
+		count, err := bpf.TcpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := 0; i < count; i++ {
+				key := keysOut[i]
+				value := valuesOut[i]
+				// Apply dynamic timeout based on map pressure
+				establishedTimeout := establishedTimeoutNano
+				closingTimeout := closingTimeoutNano
+				if aggressiveCleanup {
+					establishedTimeout = aggressiveEstablishedTimeout
+					closingTimeout = aggressiveClosingTimeout
+				}
 
-		// Check if entry should be cleaned up
-		shouldDelete := false
-		if value.State == 1 { // TCP_STATE_CLOSING
-			// CLOSING state: quick cleanup (FIN/RST seen)
-			age := nowNano - int64(value.LastSeenNs)
-			if age > closingTimeout {
-				shouldDelete = true
+				// Check if entry should be cleaned up
+				shouldDelete := false
+				if value.State == 1 { // TCP_STATE_CLOSING
+					// CLOSING state: quick cleanup (FIN/RST seen)
+					age := nowNano - int64(value.LastSeenNs)
+					if age > closingTimeout {
+						shouldDelete = true
+					}
+				} else {
+					// ACTIVE state: normal timeout for established connections
+					age := nowNano - int64(value.LastSeenNs)
+					if age > establishedTimeout {
+						shouldDelete = true
+					}
+				}
+
+				if shouldDelete {
+					keysToDelete = append(keysToDelete, key)
+				}
 			}
-		} else {
-			// ACTIVE state: normal timeout for established connections
-			age := nowNano - int64(value.LastSeenNs)
-			if age > establishedTimeout {
-				shouldDelete = true
+		}
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupTcpConnStateMap: BatchLookup error: %v", err)
 			}
+			break
 		}
-
-		if shouldDelete {
-			keysToDelete = append(keysToDelete, key)
-		}
-	}
-
-	if err := iter.Err(); err != nil {
-		if !strings.Contains(err.Error(), "bad file descriptor") &&
-			!strings.Contains(err.Error(), "file descriptor") &&
-			!strings.Contains(err.Error(), "closed") {
-			c.log.Errorf("cleanupTcpConnStateMap: iteration error: %v", err)
-		}
-		return
 	}
 
 	// Batch delete expired TCP conn state entries

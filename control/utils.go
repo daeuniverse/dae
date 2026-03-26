@@ -78,14 +78,14 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 			}
 			return nil, fmt.Errorf("reading tcp_conn_state_map: %w", err)
 		}
-		if connState.HasRouting == 0 {
+		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		routingResult.Mark = connState.Mark
-		routingResult.Must = connState.Must
-		routingResult.Outbound = connState.Outbound
+		routingResult.Mark = connState.Meta.Data.Mark
+		routingResult.Must = connState.Meta.Data.Must
+		routingResult.Outbound = connState.Meta.Data.Outbound
 		copy(routingResult.Mac[:], connState.Mac[:])
-		routingResult.Dscp = connState.Dscp
+		routingResult.Dscp = connState.Meta.Data.Dscp
 		copy(routingResult.Pname[:], connState.Pname[:])
 		routingResult.Pid = connState.Pid
 	case unix.IPPROTO_UDP:
@@ -96,14 +96,14 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 			}
 			return nil, fmt.Errorf("reading udp_conn_state_map: %w", err)
 		}
-		if connState.HasRouting == 0 {
+		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		routingResult.Mark = connState.Mark
-		routingResult.Must = connState.Must
-		routingResult.Outbound = connState.Outbound
+		routingResult.Mark = connState.Meta.Data.Mark
+		routingResult.Must = connState.Meta.Data.Must
+		routingResult.Outbound = connState.Meta.Data.Outbound
 		copy(routingResult.Mac[:], connState.Mac[:])
-		routingResult.Dscp = connState.Dscp
+		routingResult.Dscp = connState.Meta.Data.Dscp
 		copy(routingResult.Pname[:], connState.Pname[:])
 		routingResult.Pid = connState.Pid
 	default:
