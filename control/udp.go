@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,54 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
+
+func shouldTryRawUDPv6Fallback(err error, from, realTo netip.AddrPort) bool {
+	if err == nil {
+		return false
+	}
+	if !from.Addr().Is6() || from.Addr().Is4In6() || !realTo.Addr().Is6() || realTo.Addr().Is4In6() {
+		return false
+	}
+	// Keep fallback scope narrow: only DNS responses (source port 53).
+	if from.Port() != 53 {
+		return false
+	}
+	if stderrors.Is(err, unix.EADDRINUSE) || stderrors.Is(err, unix.EADDRNOTAVAIL) {
+		return true
+	}
+	// Some net stack paths wrap errno and lose Is(err, errno) matching.
+	// Match common bind/send failures conservatively.
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "address already in use") ||
+		strings.Contains(errStr, "cannot assign requested address")
+}
+
+func tryRawUDPv6Fallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, debugEnabled, errorEnabled bool, reason string, err error) bool {
+	if !shouldTryRawUDPv6Fallback(err, from, realTo) {
+		return false
+	}
+	fallbackErr := sendUDPv6RawInDaeNetns(data, from, realTo)
+	if fallbackErr == nil {
+		if debugEnabled {
+			log.WithFields(logrus.Fields{
+				"from":   from.String(),
+				"to":     realTo.String(),
+				"reason": reason,
+			}).Debug("sendPkt: used raw IPv6 UDP fallback")
+		}
+		return true
+	}
+	if errorEnabled {
+		log.WithFields(logrus.Fields{
+			"from":     from.String(),
+			"to":       realTo.String(),
+			"reason":   reason,
+			"trigger":  err.Error(),
+			"fallback": fallbackErr.Error(),
+		}).Error("sendPkt: raw IPv6 UDP fallback failed")
+	}
+	return false
+}
 
 var (
 	// DefaultNatTimeout is the default NAT timeout for UDP connections.
@@ -330,24 +379,8 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 
 	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
-		if stderrors.Is(err, unix.EADDRINUSE) &&
-			from.Addr().Is6() && !from.Addr().Is4In6() &&
-			realTo.Addr().Is6() && !realTo.Addr().Is4In6() {
-			if fallbackErr := sendUDPv6RawInDaeNetns(data, from, realTo); fallbackErr == nil {
-				if debugEnabled {
-					log.WithFields(logrus.Fields{
-						"from": from.String(),
-						"to":   realTo.String(),
-					}).Debug("sendPkt: used raw IPv6 UDP fallback after transparent bind conflict")
-				}
-				return nil
-			} else if errorEnabled {
-				log.WithFields(logrus.Fields{
-					"from":     from.String(),
-					"to":       realTo.String(),
-					"fallback": fallbackErr.Error(),
-				}).Error("sendPkt: raw IPv6 UDP fallback failed after transparent bind conflict")
-			}
+		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
+			return nil
 		}
 		if errorEnabled {
 			log.WithFields(logrus.Fields{
@@ -366,6 +399,9 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 
 	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
 	if err != nil {
+		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "write-to-udp", err) {
+			return nil
+		}
 		if errorEnabled {
 			log.WithFields(logrus.Fields{
 				"write_addr": writeAddr.String(),
