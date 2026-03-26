@@ -115,16 +115,21 @@ type bpfUdpConnState struct {
 	IsWanIngressDirection bool
 	_                     [7]byte
 	LastSeenNs            uint64
-	HasRouting            uint8 // Scheme3: embedded routing decision
-	Outbound              uint8
-	_                     [2]byte
-	Mark                  uint32
-	Must                  uint8
-	Mac                   [6]uint8
-	Dscp                  uint8
-	Pname                 [16]uint8
-	Pid                   uint32
-	_                     [4]byte
+	Meta                  struct {
+		_    structs.HostLayout
+		Data struct {
+			_          structs.HostLayout
+			Mark       uint32
+			Outbound   uint8
+			Must       uint8
+			Dscp       uint8
+			HasRouting uint8
+		}
+	}
+	Mac   [6]uint8
+	_     [2]byte
+	Pname [16]uint8
+	Pid   uint32
 }
 
 type bpfTcpConnState struct {
@@ -133,16 +138,21 @@ type bpfTcpConnState struct {
 	State                 uint8
 	_                     [6]byte
 	LastSeenNs            uint64
-	HasRouting            uint8 // Scheme3: embedded routing decision
-	Outbound              uint8
-	_                     [2]byte
-	Mark                  uint32
-	Must                  uint8
-	Mac                   [6]uint8
-	Dscp                  uint8
-	Pname                 [16]uint8
-	Pid                   uint32
-	_                     [4]byte
+	Meta                  struct {
+		_    structs.HostLayout
+		Data struct {
+			_          structs.HostLayout
+			Mark       uint32
+			Outbound   uint8
+			Must       uint8
+			Dscp       uint8
+			HasRouting uint8
+		}
+	}
+	Mac   [6]uint8
+	_     [2]byte
+	Pname [16]uint8
+	Pid   uint32
 }
 
 type bpfDaeEvent struct {
