@@ -330,6 +330,18 @@ func Test(t *testing.T) {
 	key := uint32(0)
 	activeRulesLen := uint32(testMaxMatchSetLen)
 
+	// Mark all user-defined outbounds as alive so wan_outbound_is_alive()
+	// never blocks test traffic.  The BPF ARRAY map defaults to 0 ("not
+	// alive"); without this, any test that routes to a non-DIRECT outbound
+	// via bpf_tail_call would get TC_ACT_SHOT.
+	aliveVal := uint32(1)
+	for i := uint32(0); i < 256; i++ {
+		for j := uint32(0); j < 4; j++ {
+			ck := i*4 + j
+			obj.OutboundConnectivityMap.Update(ck, aliveVal, ebpf.UpdateAny)
+		}
+	}
+
 	// zeroEntry is used to clear routing_map slots between tests.
 	// Stale entries from a previous test (e.g. and_match writes to slots 0–4)
 	// would corrupt later tests that only write slots 0–1 if not cleared.

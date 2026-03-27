@@ -455,6 +455,102 @@ int testcheck_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
 	return check_redirect_non_syn_tcp(skb);
 }
 
+SEC("tc/pktgen/tcp_non_syn_stateless_passthrough")
+int testpktgen_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_with_flags(skb,
+				       IPV4(192,168,0,1), IPV4(8,8,4,4),
+				       23456, 443,
+				       false, true, true);
+}
+
+SEC("tc/setup/tcp_non_syn_stateless_passthrough")
+int testsetup_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	struct match_set ms = {};
+	struct port_range pr = {443, 443};
+
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/tcp_non_syn_stateless_passthrough")
+int testcheck_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	return check_status_and_mark(skb, TC_ACT_OK, 0);
+}
+
+SEC("tc/pktgen/lan_ingress_udp_first_fragment_listener")
+int testpktgen_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_first_fragment(skb,
+					   IPV4(192,168,0,1), IPV4(8,8,8,8),
+					   5353, 1053);
+}
+
+SEC("tc/setup/lan_ingress_udp_first_fragment_listener")
+int testsetup_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/lan_ingress_udp_first_fragment_listener")
+int testcheck_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
+{
+	return check_redirect_with_listener_l4proto(skb, IPPROTO_UDP);
+}
+
+SEC("tc/pktgen/lan_ingress_tcp_syn_first_fragment_listener")
+int testpktgen_lan_ingress_tcp_syn_first_fragment_listener(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_first_fragment_with_flags(skb,
+						      IPV4(192,168,0,1), IPV4(1,1,1,1),
+						      19233, 443,
+						      true, false, false);
+}
+
+SEC("tc/setup/lan_ingress_tcp_syn_first_fragment_listener")
+int testsetup_lan_ingress_tcp_syn_first_fragment_listener(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/lan_ingress_tcp_syn_first_fragment_listener")
+int testcheck_lan_ingress_tcp_syn_first_fragment_listener(struct __sk_buff *skb)
+{
+	return check_redirect_with_listener_l4proto(skb, IPPROTO_TCP);
+}
+
+SEC("tc/pktgen/wan_egress_udp_first_fragment_listener")
+int testpktgen_wan_egress_udp_first_fragment_listener(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_first_fragment(skb,
+					   IPV4(127,0,0,1), IPV4(8,8,4,4),
+					   45678, 2053);
+}
+
+SEC("tc/setup/wan_egress_udp_first_fragment_listener")
+int testsetup_wan_egress_udp_first_fragment_listener(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/wan_egress_udp_first_fragment_listener")
+int testcheck_wan_egress_udp_first_fragment_listener(struct __sk_buff *skb)
+{
+	return check_redirect_with_listener_l4proto(skb, IPPROTO_UDP);
+}
+
 SEC("tc/pktgen/wan_egress_direct_mark_reroute")
 int testpktgen_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
 {

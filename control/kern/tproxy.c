@@ -448,7 +448,8 @@ struct parse_transport_ctx {
 	struct udphdr udph;
 	__u8 ihl;
 	__u8 l4proto;
-	__u8 pad[2];
+	__u8 listener_l4proto;
+	__u8 pad;
 };
 
 struct {
@@ -558,6 +559,12 @@ static __always_inline bool is_extension_header(__u8 nexthdr)
 
 #define PARSE_FRAGMENT 2
 
+static __always_inline __u8
+tcp_listener_l4proto(const struct tcphdr *tcph)
+{
+	return tcph && tcph->syn && !tcph->ack ? IPPROTO_TCP : 0;
+}
+
 // parse_transport_fast implements direct packet access using bpf_skb_pull_data
 // to linearize non-linear data regions, then accesses headers via pointer arithmetic.
 //
@@ -583,12 +590,14 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	struct udphdr *udph = &ctx->udph;
 	__u8 *ihl = &ctx->ihl;
 	__u8 *l4proto = &ctx->l4proto;
+	__u8 *listener_l4proto = &ctx->listener_l4proto;
 
 	void *data, *data_end;
 	__u32 offset = 0;
 
 	*ihl = 0;
 	*l4proto = 0;
+	*listener_l4proto = 0;
 	__builtin_memset(ethh, 0, sizeof(struct ethhdr));
 	__builtin_memset(iph, 0, sizeof(struct iphdr));
 	__builtin_memset(ipv6h, 0, sizeof(struct ipv6hdr));
@@ -655,14 +664,27 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		*ihl = iph_ptr->ihl;
 		*l4proto = iph_ptr->protocol;
 
-		// Punt all IP fragments to Linux kernel for defragmentation
-		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
-
-		if ((frag_off & 0x3FFF) != 0)
-			return PARSE_FRAGMENT;
-
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
+
+		// Punt all IP fragments to Linux kernel for defragmentation.
+		// Preserve listener assignment for UDP and first-fragment TCP SYN.
+		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
+
+		if ((frag_off & 0x3FFF) != 0) {
+			if ((frag_off & 0x1FFF) == 0) {
+				if (iph_ptr->protocol == IPPROTO_UDP) {
+					*listener_l4proto = IPPROTO_UDP;
+				} else if (iph_ptr->protocol == IPPROTO_TCP) {
+					struct tcphdr *frag_tcph_ptr = data + l4_offset;
+
+					if ((void *)(frag_tcph_ptr + 1) > data_end)
+						return -1;
+					*listener_l4proto = tcp_listener_l4proto(frag_tcph_ptr);
+				}
+			}
+			return PARSE_FRAGMENT;
+		}
 
 		// L4 parsing: simplified with single boundary check
 		switch (iph->protocol) {
@@ -680,6 +702,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			tcph->syn = tcph_ptr->syn;
 			tcph->fin = tcph_ptr->fin;
 			tcph->window = tcph_ptr->window;
+			*listener_l4proto = tcp_listener_l4proto(tcph_ptr);
 			return 0;
 		}
 		case IPPROTO_UDP: {
@@ -691,6 +714,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
 			udph->check = udph_ptr->check;
+			*listener_l4proto = IPPROTO_UDP;
 			return 0;
 		}
 		default:
@@ -738,12 +762,28 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
 			if (nexthdr == IPPROTO_FRAGMENT) {
-				// Keep original L4 protocol for fragment punt path.
-				// Fragment header byte 0 is "Next Header".
-				ext_hdr = data + offset;
-				if ((void *)(ext_hdr + 1) > data_end)
+				// Keep original L4 protocol for fragment punt path and
+				// preserve listener assignment for UDP and first TCP SYN.
+				struct frag_hdr *fragh = data + offset;
+
+				if ((void *)(fragh + 1) > data_end)
 					return -EFAULT;
-				*l4proto = ext_hdr[0];
+				__u16 frag_off = bpf_ntohs(fragh->frag_off);
+
+				*l4proto = fragh->nexthdr;
+				if ((frag_off & 0xFFF8) != 0)
+					return PARSE_FRAGMENT;
+				if (fragh->nexthdr == IPPROTO_UDP) {
+					*listener_l4proto = IPPROTO_UDP;
+				} else if (fragh->nexthdr == IPPROTO_TCP) {
+					struct tcphdr *frag_tcph_ptr =
+						data + offset + sizeof(*fragh);
+
+					if ((void *)(frag_tcph_ptr + 1) > data_end)
+						return -1;
+					*listener_l4proto =
+						tcp_listener_l4proto(frag_tcph_ptr);
+				}
 				return PARSE_FRAGMENT;
 			}
 			if (!is_extension_header(nexthdr))
@@ -777,6 +817,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			tcph->syn = tcph_ptr->syn;
 			tcph->fin = tcph_ptr->fin;
 			tcph->window = tcph_ptr->window;
+			*listener_l4proto = tcp_listener_l4proto(tcph_ptr);
 			return 0;
 		}
 		case IPPROTO_UDP: {
@@ -788,6 +829,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
 			udph->check = udph_ptr->check;
+			*listener_l4proto = IPPROTO_UDP;
 			return 0;
 		}
 		case IPPROTO_ICMPV6: {
@@ -826,6 +868,7 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 	struct udphdr *udph = &ctx->udph;
 	__u8 *ihl = &ctx->ihl;
 	__u8 *l4proto = &ctx->l4proto;
+	__u8 *listener_l4proto = &ctx->listener_l4proto;
 
 	__u32 offset = 0;
 	int ret;
@@ -843,6 +886,7 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 
 	*ihl = 0;
 	*l4proto = 0;
+	*listener_l4proto = 0;
 	__builtin_memset(iph, 0, sizeof(struct iphdr));
 	__builtin_memset(ipv6h, 0, sizeof(struct ipv6hdr));
 	__builtin_memset(icmp6h, 0, sizeof(struct icmp6hdr));
@@ -856,12 +900,26 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			return -EFAULT;
 		if (iph->ihl < 5)
 			return -EFAULT;
+		*ihl = iph->ihl;
 		*l4proto = iph->protocol;
 
-		// Security & Safety: Punt all fragments to kernel for reassembly
+		// Punt fragments to the kernel for reassembly while preserving
+		// listener assignment for UDP and first-fragment TCP SYN.
 		__u16 frag_off = bpf_ntohs(iph->frag_off);
 
-		if ((frag_off & 0x3FFF) != 0) {  // Check MF and fragment offset bits
+		if ((frag_off & 0x3FFF) != 0) {
+			if ((frag_off & 0x1FFF) == 0) {
+				offset += iph->ihl * 4;
+				if (iph->protocol == IPPROTO_UDP) {
+					*listener_l4proto = IPPROTO_UDP;
+				} else if (iph->protocol == IPPROTO_TCP) {
+					ret = bpf_skb_load_bytes(skb, offset, tcph,
+								 sizeof(struct tcphdr));
+					if (ret)
+						return -EFAULT;
+					*listener_l4proto = tcp_listener_l4proto(tcph);
+				}
+			}
 			return PARSE_FRAGMENT;
 		}
 
@@ -873,17 +931,18 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 						 sizeof(struct tcphdr));
 			if (ret)
 				return -EFAULT;
+			*listener_l4proto = tcp_listener_l4proto(tcph);
 			break;
 		case IPPROTO_UDP:
 			ret = bpf_skb_load_bytes(skb, offset, udph,
 						 sizeof(struct udphdr));
 			if (ret)
 				return -EFAULT;
+			*listener_l4proto = IPPROTO_UDP;
 			break;
 		default:
 			return 1;
 		}
-		*ihl = iph->ihl;
 		return 0;
 	}
 
@@ -902,14 +961,27 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
 			if (nexthdr == IPPROTO_FRAGMENT) {
-				// Keep original L4 protocol for fragment punt path.
-				__u8 frag_nexthdr = 0;
+				// Preserve listener assignment for UDP and first
+				// TCP SYN fragments before punting to the kernel.
+				struct frag_hdr fragh = {};
 
-				ret = bpf_skb_load_bytes(skb, offset, &frag_nexthdr,
-							 sizeof(frag_nexthdr));
+				ret = bpf_skb_load_bytes(skb, offset, &fragh,
+							 sizeof(fragh));
 				if (ret)
 					return -EFAULT;
-				*l4proto = frag_nexthdr;
+				*l4proto = fragh.nexthdr;
+				if ((bpf_ntohs(fragh.frag_off) & 0xFFF8) != 0)
+					return PARSE_FRAGMENT;
+				if (fragh.nexthdr == IPPROTO_UDP) {
+					*listener_l4proto = IPPROTO_UDP;
+				} else if (fragh.nexthdr == IPPROTO_TCP) {
+					ret = bpf_skb_load_bytes(
+						skb, offset + sizeof(fragh), tcph,
+						sizeof(struct tcphdr));
+					if (ret)
+						return -EFAULT;
+					*listener_l4proto = tcp_listener_l4proto(tcph);
+				}
 				return PARSE_FRAGMENT;
 			}
 
@@ -949,12 +1021,14 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 						 sizeof(struct tcphdr));
 			if (ret)
 				return -EFAULT;
+			*listener_l4proto = tcp_listener_l4proto(tcph);
 			break;
 		case IPPROTO_UDP:
 			ret = bpf_skb_load_bytes(skb, offset, udph,
 						 sizeof(struct udphdr));
 			if (ret)
 				return -EFAULT;
+			*listener_l4proto = IPPROTO_UDP;
 			break;
 		case IPPROTO_ICMPV6:
 			ret = bpf_skb_load_bytes(skb, offset, icmp6h,
@@ -997,6 +1071,7 @@ struct lan_ingress_parsed {
 	struct tcphdr tcph;
 	struct udphdr udph;
 	__u8 l4proto;
+	__u8 listener_l4proto;
 };
 
 struct {
@@ -1036,6 +1111,7 @@ parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 	out->tcph = ctx->tcph;
 	out->udph = ctx->udph;
 	out->l4proto = ctx->l4proto;
+	out->listener_l4proto = ctx->listener_l4proto;
 	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
 	return ret;
 }
@@ -1046,6 +1122,7 @@ struct wan_egress_parsed {
 	struct tcphdr tcph;
 	struct udphdr udph;
 	__u8 l4proto;
+	__u8 listener_l4proto;
 };
 
 struct {
@@ -1081,6 +1158,7 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 	out->tcph = ctx->tcph;
 	out->udph = ctx->udph;
 	out->l4proto = ctx->l4proto;
+	out->listener_l4proto = ctx->listener_l4proto;
 	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
 	return ret;
 }
@@ -1578,7 +1656,7 @@ static __always_inline int redirect_to_control_plane_egress(void)
 
 static __always_inline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
-	__u8 l4proto, struct ethhdr *ethh, __u8 from_wan, struct tcphdr *tcph)
+	__u8 listener_l4proto, struct ethhdr *ethh, __u8 from_wan)
 {
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
@@ -1630,9 +1708,7 @@ skip_eth_prep:
 	bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
 
 	skb->cb[0] = TPROXY_MARK;
-	skb->cb[1] = 0;
-	if (l4proto == IPPROTO_UDP || (tcph && tcph->syn))
-		skb->cb[1] = l4proto;
+	skb->cb[1] = listener_l4proto;
 
 	return 0;
 }
@@ -1774,7 +1850,8 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 // When routing params are provided (outbound != NULL), they're stored in
 // conn state. Only SYN path should provide routing params.
 //
-// Returns state pointer, or NULL if map full (caller should degrade gracefully)
+// Returns state pointer on success, or NULL if allocation failed or a non-SYN
+// packet has no cached state (caller should preserve passthrough behavior).
 // Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
 #define TCP_CONN_STATE_ESTABLISHED_TIMEOUT_NS 120000000000ULL  // 120 seconds
 #define TCP_CONN_STATE_CLOSING_TIMEOUT_NS 10000000000ULL       // 10 seconds
@@ -1875,13 +1952,8 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		return bpf_map_lookup_elem(&tcp_conn_state_map, key);
 	}
 
-	// Zero-Allocation Fallback mitigation for O(1) state exhaustion DDoS:
-	// Hot reload flows (non-SYN packets without existing state) must never
-	// allocate memory. Tell caller to compute slow path directly without caching.
-	if (tcph->ack || tcph->fin || tcph->rst || tcph->psh)
-		return NULL;
-
-	// Non-SYN packet without existing state: ignore
+	// Non-SYN packets without existing state must never allocate new state.
+	// Callers treat NULL as "no cached state" and preserve passthrough behavior.
 	return NULL;
 }
 
@@ -1981,8 +2053,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	if (ret == PARSE_FRAGMENT) {
 		// Punt fragments to the control plane.
 		// Linux Netfilter will reconstruct them before passing to the proxy.
-		if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
-						   &pkt->ethh, 0, &pkt->tcph)) {
+		if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
+						   pkt->listener_l4proto,
+						   &pkt->ethh, 0)) {
 			return TC_ACT_OK;
 		}
 		return redirect_to_control_plane_ingress();
@@ -2020,63 +2093,10 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false,
 					  NULL, NULL, NULL, NULL,
 					  0, NULL, 0);
-		if (!tcp_state) {
-			// Zero-Allocation Fallback mitigation for O(1) state exhaustion DDoS:
-			// Conn state map full or non-SYN packet without existing state.
-			// Use percpu scratch map for route_flag/mac_be to stay within the
-			// 512-byte BPF stack limit (stack-allocated arrays would push the
-			// 5-call chain to 544 bytes, rejected by the verifier).
-			__u32 scratch_key = 0;
-			struct wan_egress_route_scratch *fb =
-				bpf_map_lookup_elem(&wan_egress_route_scratch_map,
-						    &scratch_key);
-
-			if (!fb)
-				return TC_ACT_SHOT;
-
-			__builtin_memset(fb, 0, sizeof(*fb));
-			fb->flag[0] = L4ProtoType_TCP;
-			if (skb->protocol == bpf_htons(ETH_P_IP))
-				fb->flag[1] = IpVersionType_4;
-			else
-				fb->flag[1] = IpVersionType_6;
-			fb->flag[6] = pkt->tuples.dscp;
-			fb->flag[7] = 0;
-
-			if (link_h_len == ETH_HLEN) {
-				fb->mac_be[2] = bpf_htonl(
-					((__u32)pkt->ethh.h_source[0] << 8) |
-					(__u32)pkt->ethh.h_source[1]);
-				fb->mac_be[3] = bpf_htonl(
-					((__u32)pkt->ethh.h_source[2] << 24) |
-					((__u32)pkt->ethh.h_source[3] << 16) |
-					((__u32)pkt->ethh.h_source[4] << 8) |
-					(__u32)pkt->ethh.h_source[5]);
-			}
-
-			__s64 s64_ret = route(fb->flag, &pkt->tcph,
-					      pkt->tuples.five.sip.u6_addr32,
-					      pkt->tuples.five.dip.u6_addr32,
-					      fb->mac_be);
-
-			if (s64_ret < 0)
-				return TC_ACT_SHOT;
-
-			outbound = s64_ret & 0xff;
-			mark = s64_ret >> 8;
-
-			if (outbound == OUTBOUND_DIRECT) {
-				skb->mark = mark;
-				return TC_ACT_OK;
-			}
-			if (unlikely(outbound == OUTBOUND_BLOCK))
-				return TC_ACT_SHOT;
-			if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
-						   pkt->tuples.five.dport))
-				return TC_ACT_SHOT;
-
-			goto control_plane;
-		}
+		// No cached state for an established packet: keep the historical
+		// passthrough behavior instead of recomputing routing.
+		if (!tcp_state)
+			return TC_ACT_OK;
 
 		/*
 		 * Compatibility restore for 030902f behavior and align with WAN
@@ -2359,8 +2379,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 	// Assign to control plane.
 control_plane:
-	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
-					   &pkt->ethh, 0, &pkt->tcph)) {
+	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
+					   pkt->listener_l4proto,
+					   &pkt->ethh, 0)) {
 		// Failed to prepare packet (e.g., bpf_skb_change_head failed under memory pressure)
 		// Fall back to direct pass to avoid packet corruption
 		return TC_ACT_OK;
@@ -2647,8 +2668,8 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	// Scheme3: Routing is now embedded in conn state.
 	// No separate routing_tuples_map write needed - single source of truth.
 
-	if (prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_TCP, ethh,
-					   1, tcph)) {
+	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
+					   tcp_listener_l4proto(tcph), ethh, 1)) {
 		// Failed to prepare packet (e.g., bpf_skb_change_head failed)
 		// Fall back to direct pass to avoid packet corruption
 		return TC_ACT_OK;
@@ -2771,8 +2792,8 @@ fast_path_skip_routing:
 				   tuples->five.dport))
 		return TC_ACT_SHOT;
 
-	if (prep_redirect_to_control_plane(skb, link_h_len, tuples, IPPROTO_UDP, ethh,
-					   1, NULL)) {
+	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
+					   IPPROTO_UDP, ethh, 1)) {
 		return TC_ACT_OK;
 	}
 	return redirect_to_control_plane_egress();
@@ -2792,7 +2813,8 @@ wan_egress_punt_fragment(struct __sk_buff *skb, u32 link_h_len)
 		return TC_ACT_OK;
 
 	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
-					   pkt->l4proto, &pkt->ethh, 1, NULL))
+					   pkt->listener_l4proto,
+					   &pkt->ethh, 1))
 		return TC_ACT_OK;
 	return redirect_to_control_plane_egress();
 }
@@ -2873,10 +2895,11 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 	skb->mark = TPROXY_MARK;
 	bpf_skb_change_type(skb, PACKET_HOST);
 
-	/* l4proto is stored in skb->cb[1] only for UDP and new TCP. As for
-   * established TCP, kernel can take care of socket lookup, so just
-   * return them to stack without calling bpf_sk_assign.
-   */
+	/* listener_l4proto is stored in skb->cb[1] only when the control-plane
+	 * handoff needs an explicit listener assignment (UDP or TCP SYN, including
+	 * first fragments that still expose those headers). Established TCP can
+	 * return to the stack without bpf_sk_assign.
+	 */
 	__u8 l4proto = skb->cb[1];
 
 	if (l4proto != 0)

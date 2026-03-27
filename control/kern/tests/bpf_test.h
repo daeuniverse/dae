@@ -6,6 +6,7 @@
 #define IP4_HLEN sizeof(struct iphdr)
 #define IP6_HLEN sizeof(struct ipv6hdr)
 #define TCP_HLEN sizeof(struct tcphdr)
+#define IPV4_MF_FLAG 0x2000
 
 #define OUTBOUND_USER_DEFINED_MIN 2
 
@@ -140,6 +141,41 @@ check_redirect_non_syn_tcp(struct __sk_buff *skb)
 
 	return TC_ACT_OK;
 }
+
+static __always_inline int
+check_redirect_with_listener_l4proto(struct __sk_buff *skb,
+				     __u8 expected_listener_l4proto)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != TC_ACT_REDIRECT) {
+		bpf_printk("status_code(%d) != TC_ACT_REDIRECT\n", *status_code);
+		return TC_ACT_SHOT;
+	}
+
+	if (skb->cb[0] != TPROXY_MARK) {
+		bpf_printk("skb->cb[0] != TPROXY_MARK\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (skb->cb[1] != expected_listener_l4proto) {
+		bpf_printk("skb->cb[1](%d) != %d\n", skb->cb[1],
+			   expected_listener_l4proto);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
 static __always_inline int
 check_tcp_conn_state_ipv4_tcp(struct __sk_buff *skb,
 			      __u32 expected_status_code,
@@ -438,6 +474,111 @@ set_minimal_ipv4_udp(struct __sk_buff *skb,
 	udp->dest = bpf_htons(dport);
 	udp->len = bpf_htons(8);
 	udp->check = 0;
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+set_ipv4_udp_first_fragment(struct __sk_buff *skb,
+			    __u32 saddr, __u32 daddr,
+			    __u16 sport, __u16 dport)
+{
+	if (bpf_skb_change_tail(skb, ETH_HLEN + IP4_HLEN + sizeof(struct udphdr), 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + ETH_HLEN + IP4_HLEN + sizeof(struct udphdr) > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IP);
+
+	struct iphdr *ip = data + ETH_HLEN;
+	ip->ihl = 5;
+	ip->version = 4;
+	ip->protocol = IPPROTO_UDP;
+	ip->saddr = bpf_htonl(saddr);
+	ip->daddr = bpf_htonl(daddr);
+	ip->tos = 0;
+	ip->tot_len = bpf_htons(IP4_HLEN + sizeof(struct udphdr));
+	ip->id = bpf_htons(1);
+	ip->frag_off = bpf_htons(IPV4_MF_FLAG);
+	ip->ttl = 64;
+	ip->check = 0;
+
+	struct udphdr *udp = data + ETH_HLEN + IP4_HLEN;
+	udp->source = bpf_htons(sport);
+	udp->dest = bpf_htons(dport);
+	udp->len = bpf_htons(sizeof(struct udphdr));
+	udp->check = 0;
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+set_ipv4_tcp_first_fragment_with_flags(struct __sk_buff *skb,
+				       __u32 saddr, __u32 daddr,
+				       __u16 sport, __u16 dport,
+				       bool syn, bool ack, bool psh)
+{
+	if (bpf_skb_change_tail(skb, ETH_HLEN + IP4_HLEN + TCP_HLEN, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + ETH_HLEN + IP4_HLEN + TCP_HLEN > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IP);
+
+	struct iphdr *ip = data + ETH_HLEN;
+	ip->ihl = 5;
+	ip->version = 4;
+	ip->protocol = IPPROTO_TCP;
+	ip->saddr = bpf_htonl(saddr);
+	ip->daddr = bpf_htonl(daddr);
+	ip->tos = 4 << 2;
+	ip->tot_len = bpf_htons(IP4_HLEN + TCP_HLEN);
+	ip->id = bpf_htons(1);
+	ip->frag_off = bpf_htons(IPV4_MF_FLAG);
+	ip->ttl = 64;
+	ip->check = 0;
+
+	struct tcphdr *tcp = data + ETH_HLEN + IP4_HLEN;
+	tcp->source = bpf_htons(sport);
+	tcp->dest = bpf_htons(dport);
+	tcp->doff = 5;
+	tcp->syn = syn;
+	tcp->ack = ack;
+	tcp->psh = psh;
 
 	return TC_ACT_OK;
 }
