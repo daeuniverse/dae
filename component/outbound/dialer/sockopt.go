@@ -95,6 +95,10 @@ func TransparentControl(c syscall.RawConn) error {
 			sockOptErr = fmt.Errorf("error setting SO_REUSEADDR socket option: %w", err)
 			return
 		}
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting SO_REUSEPORT socket option: %w", err)
+			return
+		}
 	})
 	if controlErr != nil {
 		return fmt.Errorf("error invoking socket control function: %w", controlErr)

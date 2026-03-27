@@ -25,6 +25,7 @@ import (
 )
 
 var UdpRoutingResultCacheTtl = 300 * time.Millisecond
+var ErrEndpointFailed = fmt.Errorf("endpoint creation recently failed (negative cache)")
 
 // udpEndpointCreateShardCount is the number of sharded mutexes that guard
 // concurrent endpoint creation. 64 shards provide near-zero contention even
@@ -68,7 +69,8 @@ type UdpEndpoint struct {
 
 	log *logrus.Logger
 
-	dead atomic.Bool
+	dead   atomic.Bool
+	failed atomic.Bool
 
 	softErrorCount int
 
@@ -257,7 +259,13 @@ func (ue *UdpEndpoint) selfRemoveFromPool() {
 	if ue.poolRef == nil {
 		return
 	}
-	ue.poolRef.pool.CompareAndDelete(ue.poolKey, ue)
+	shard := ue.poolRef.shardFor(ue.poolKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if v, ok := shard.pool[ue.poolKey]; ok && v == ue {
+		delete(shard.pool, ue.poolKey)
+	}
 }
 
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
@@ -299,7 +307,11 @@ func (ue *UdpEndpoint) Close() error {
 	ue.hasRoutingCache = false
 	ue.routingMu.Unlock()
 
-	return ue.conn.Close()
+	// conn is nil for negatively-cached failure entries; guard against panic.
+	if ue.conn != nil {
+		return ue.conn.Close()
+	}
+	return nil
 }
 
 // ttlRefreshMinInterval is the minimum time between TTL refreshes.
@@ -395,11 +407,16 @@ type UdpEndpointKey struct {
 	Dst netip.AddrPort
 }
 
+type udpEndpointPoolShard struct {
+	mu       sync.RWMutex
+	createMu sync.Mutex
+	pool     map[UdpEndpointKey]*UdpEndpoint
+}
+
 // UdpEndpointPool is a UDP connection pool.
 type UdpEndpointPool struct {
-	pool          sync.Map
-	createMuShard [udpEndpointCreateShardCount]sync.Mutex
-	janitorOnce   sync.Once
+	shards      [udpEndpointCreateShardCount]udpEndpointPoolShard
+	janitorOnce sync.Once
 }
 
 type UdpEndpointOptions struct {
@@ -416,6 +433,9 @@ var DefaultUdpEndpointPool = NewUdpEndpointPool()
 
 func NewUdpEndpointPool() *UdpEndpointPool {
 	p := &UdpEndpointPool{}
+	for i := range udpEndpointCreateShardCount {
+		p.shards[i].pool = make(map[UdpEndpointKey]*UdpEndpoint, 16)
+	}
 	p.startJanitor()
 	return p
 }
@@ -424,37 +444,49 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 // Called on reload to prevent stale endpoints from using pre-reload routing state.
 // Uses LoadAndDelete for atomic removal that races safely with concurrent GetOrCreate.
 func (p *UdpEndpointPool) Reset() {
-	// Two-phase deletion: collect keys first, then delete
-	var keys []any
-	p.pool.Range(func(key, value any) bool {
-		keys = append(keys, key)
-		return true
-	})
-	for _, key := range keys {
-		if value, ok := p.pool.LoadAndDelete(key); ok {
-			ue := value.(*UdpEndpoint)
-			_ = ue.Close()
+	for i := range udpEndpointCreateShardCount {
+		shard := &p.shards[i]
+		shard.mu.Lock()
+		// Phase 1: Collect keys to avoid modifying map during iteration
+		var keys []UdpEndpointKey
+		for key := range shard.pool {
+			keys = append(keys, key)
 		}
+		// Phase 2: Delete and close each entry
+		for _, key := range keys {
+			if ue, ok := shard.pool[key]; ok {
+				delete(shard.pool, key)
+				_ = ue.Close()
+			}
+		}
+		shard.mu.Unlock()
 	}
 }
 
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
-	// Use CompareAndDelete for atomic CAS semantics (Go 1.20+ best practice)
-	if !p.pool.CompareAndDelete(key, udpEndpoint) {
+	shard := p.shardFor(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if ue, ok := shard.pool[key]; !ok || ue != udpEndpoint {
 		_ = udpEndpoint.Close()
 		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
+	delete(shard.pool, key)
 	_ = udpEndpoint.Close()
 	return nil
 }
 
 func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok bool) {
-	_ue, ok := p.pool.Load(key)
+	shard := p.shardFor(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	ue, ok := shard.pool[key]
 	if !ok {
 		return nil, ok
 	}
-	ue := _ue.(*UdpEndpoint)
-	if ue.IsDead() {
+	if ue.failed.Load() || ue.IsDead() {
 		return nil, false
 	}
 	return ue, ok
@@ -484,6 +516,19 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	}
 	udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
 	if err != nil {
+		// Negative cache the failure to prevent dial storms under load.
+		failedUe := &UdpEndpoint{
+			log:     createOption.Log,
+			poolRef: p,
+			poolKey: key,
+		}
+		failedUe.failed.Store(true)
+		failedUe.expiresAtNano.Store(time.Now().Add(2 * time.Second).UnixNano())
+
+		shard := p.shardFor(key)
+		shard.mu.Lock()
+		shard.pool[key] = failedUe
+		shard.mu.Unlock()
 		return nil, err
 	}
 	packetConn, ok := udpConn.(netproxy.PacketConn)
@@ -517,87 +562,82 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	}
 
 	ue.RefreshTtl()
-	p.pool.Store(key, ue)
+
+	shard := p.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = ue
+	shard.mu.Unlock()
+
 	// Receive UDP messages.
 	go ue.start()
 	return ue, nil
 }
 
 func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
-	_ue, ok := p.pool.Load(key)
-	if !ok {
-		mu := p.createMuFor(key)
-		mu.Lock()
-		defer mu.Unlock()
+	shard := p.shardFor(key)
 
-		_ue, ok = p.pool.Load(key)
-		if ok {
-			ue := _ue.(*UdpEndpoint)
-			if ue.IsDead() {
-				// Use CompareAndDelete for atomic CAS (best practice)
-				p.pool.CompareAndDelete(key, ue)
+	// Fast path: existing socket
+	shard.mu.RLock()
+	ue, ok := shard.pool[key]
+	if ok {
+		if ue.failed.Load() {
+			if !ue.IsExpired(time.Now().UnixNano()) {
+				shard.mu.RUnlock()
+				return nil, false, ErrEndpointFailed
+			}
+			// Expired failure entry — fall through to lock and replace.
+		} else if ue.IsDead() {
+			// Expired dead entry — fall through to lock and replace.
+		} else {
+			// Update NAT timeout based on current forwarding state
+			if createOption != nil && createOption.NatTimeout > 0 {
+				ue.UpdateNatTimeout(createOption.NatTimeout)
 			} else {
-				// Update NAT timeout based on current forwarding state
-				if createOption != nil && createOption.NatTimeout > 0 {
-					ue.UpdateNatTimeout(createOption.NatTimeout)
-				} else {
-					ue.RefreshTtl()
-				}
-				return ue, false, nil
+				ue.RefreshTtl()
 			}
+			shard.mu.RUnlock()
+			return ue, false, nil
 		}
-		// Create a new endpoint under the shard lock.
-		newUe, createErr := p.createEndpointLocked(key, createOption)
-		if createErr != nil {
-			return nil, true, createErr
-		}
-		return newUe, true, nil
 	}
-	ue := _ue.(*UdpEndpoint)
+	shard.mu.RUnlock()
 
-	if ue.IsDead() {
-		// Fast path returned a dead endpoint. Acquire the shard lock and handle
-		// it non-recursively — equivalent to what a recursive GetOrCreate would do,
-		// but without stack overhead or unbounded recursion risk.
-		mu := p.createMuFor(key)
-		mu.Lock()
-		defer mu.Unlock()
-		// CAS-delete the dead entry (safe: no-op if another goroutine already replaced it).
-		p.pool.CompareAndDelete(key, ue)
-		// Double-check: another goroutine may have already placed a live replacement.
-		if v, loaded := p.pool.Load(key); loaded {
-			fresh := v.(*UdpEndpoint)
-			if !fresh.IsDead() {
-				// Update NAT timeout based on current forwarding state
-				if createOption != nil && createOption.NatTimeout > 0 {
-					fresh.UpdateNatTimeout(createOption.NatTimeout)
-				} else {
-					fresh.RefreshTtl()
-				}
-				return fresh, false, nil
+	// Slow path: serialize creation for the same key using a creation shard lock.
+	shard.createMu.Lock()
+	defer shard.createMu.Unlock()
+
+	// Double-check under creation lock: another goroutine may have created it.
+	shard.mu.RLock()
+	ue, ok = shard.pool[key]
+	if ok {
+		if ue.failed.Load() {
+			if !ue.IsExpired(time.Now().UnixNano()) {
+				shard.mu.RUnlock()
+				return nil, false, ErrEndpointFailed
 			}
-			// Still dead — remove it too and fall through to create.
-			p.pool.CompareAndDelete(key, fresh)
+			// Expired failure entry — fall through to recreate.
+		} else if !ue.IsDead() {
+			if createOption != nil && createOption.NatTimeout > 0 {
+				ue.UpdateNatTimeout(createOption.NatTimeout)
+			} else {
+				ue.RefreshTtl()
+			}
+			shard.mu.RUnlock()
+			return ue, false, nil
 		}
-		// Create a fresh endpoint under the lock.
-		newUe, createErr := p.createEndpointLocked(key, createOption)
-		if createErr != nil {
-			return nil, true, createErr
-		}
-		return newUe, true, nil
 	}
-	// Update NAT timeout based on current forwarding state
-	if createOption != nil && createOption.NatTimeout > 0 {
-		ue.UpdateNatTimeout(createOption.NatTimeout)
-	} else {
-		ue.RefreshTtl()
+	shard.mu.RUnlock()
+
+	// Create a new endpoint under the creation lock.
+	newUe, createErr := p.createEndpointLocked(key, createOption)
+	if createErr != nil {
+		return nil, true, createErr
 	}
-	return _ue.(*UdpEndpoint), isNew, nil
+	return newUe, true, nil
 }
 
-func (p *UdpEndpointPool) createMuFor(key UdpEndpointKey) *sync.Mutex {
-	idx := int(hashAddrPort(key.Src) & uint64(udpEndpointCreateShardCount-1))
-	return &p.createMuShard[idx]
+func (p *UdpEndpointPool) shardFor(key UdpEndpointKey) *udpEndpointPoolShard {
+	idx := int(hashUdpEndpointKey(key) & uint64(udpEndpointCreateShardCount-1))
+	return &p.shards[idx]
 }
 
 func (p *UdpEndpointPool) startJanitor() {
@@ -605,19 +645,26 @@ func (p *UdpEndpointPool) startJanitor() {
 		go func() {
 			ticker := time.NewTicker(udpEndpointJanitorInterval)
 			defer ticker.Stop()
+
+			var toClose []*UdpEndpoint
+
 			for now := range ticker.C {
 				nowNano := now.UnixNano()
-				p.pool.Range(func(key, value any) bool {
-					ue := value.(*UdpEndpoint)
-					if !ue.IsExpired(nowNano) {
-						return true
+				for i := range udpEndpointCreateShardCount {
+					shard := &p.shards[i]
+					shard.mu.Lock()
+					toClose = toClose[:0]
+					for key, ue := range shard.pool {
+						if ue.IsExpired(nowNano) {
+							delete(shard.pool, key)
+							toClose = append(toClose, ue)
+						}
 					}
-					// Use CompareAndDelete for atomic CAS - only delete if still the same expired endpoint
-					if p.pool.CompareAndDelete(key, ue) {
+					shard.mu.Unlock()
+					for _, ue := range toClose {
 						_ = ue.Close()
 					}
-					return true
-				})
+				}
 			}
 		}()
 	})

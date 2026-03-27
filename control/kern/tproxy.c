@@ -1594,8 +1594,7 @@ static __noinline __s64 route(const __u32 *flag, const void *l4hdr,
 		bpf_map_lookup_elem(&routing_meta_map, &zero_key);
 	int ret;
 
-	if (active_rules_len_ptr && *active_rules_len_ptr > 0 &&
-	    *active_rules_len_ptr <= MAX_MATCH_SET_LEN)
+	if (active_rules_len_ptr && *active_rules_len_ptr <= MAX_MATCH_SET_LEN)
 		active_rules_len = *active_rules_len_ptr;
 
 	struct route_loop_ctx loop_ctx = {

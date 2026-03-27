@@ -22,6 +22,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var ErrAnyfromBindFailed = errors.New("anyfrom bind recently failed (negative cache)")
+
 // ttlRefreshMinInterval is the minimum time between TTL refreshes.
 // This throttles atomic stores on hot paths to reduce overhead under high QPS.
 const ttlRefreshMinInterval = int64(200 * time.Millisecond)
@@ -40,6 +42,8 @@ type Anyfrom struct {
 	// multiple goroutines may call Write methods concurrently, each triggering
 	// afterWrite.  A plain bool would be a data race under go test -race.
 	gotGSOError atomic.Bool
+
+	failed atomic.Bool
 }
 
 // afterWrite handles post-write logic (GSO error tracking and TTL refresh).
@@ -83,6 +87,15 @@ func (a *Anyfrom) refreshTtl() {
 func (a *Anyfrom) IsExpired(nowNano int64) bool {
 	expiresAt := a.expiresAtNano.Load()
 	return expiresAt > 0 && nowNano >= expiresAt
+}
+
+// Close overrides the embedded UDPConn.Close to guard against nil —
+// negatively-cached failure entries have a nil UDPConn.
+func (a *Anyfrom) Close() error {
+	if a.UDPConn != nil {
+		return a.UDPConn.Close()
+	}
+	return nil
 }
 func (a *Anyfrom) SupportGso(size int) bool {
 	if size > math.MaxUint16 {
@@ -198,12 +211,13 @@ func isGSOError(err error) bool {
 // AnyfromPool is a full-cone udp listener pool
 const (
 	anyfromPoolShardCount = 64
-	anyfromJanitorPeriod  = 500 * time.Millisecond
+	anyfromJanitorPeriod    = 500 * time.Millisecond
 )
 
 type anyfromPoolShard struct {
-	mu   sync.RWMutex
-	pool map[netip.AddrPort]*Anyfrom
+	mu       sync.RWMutex
+	createMu sync.Mutex
+	pool     map[netip.AddrPort]*Anyfrom
 }
 
 type AnyfromPool struct {
@@ -255,37 +269,65 @@ func (p *AnyfromPool) Reset() {
 
 func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
 	shard := p.shardFor(lAddr)
+
+	// Fast path: existing socket
 	shard.mu.RLock()
 	af, ok := shard.pool[lAddr]
 	if ok {
-		af.RefreshTtl()
-		shard.mu.RUnlock()
-		return af, false, nil
+		if af.failed.Load() {
+			if !af.IsExpired(time.Now().UnixNano()) {
+				shard.mu.RUnlock()
+				return nil, false, ErrAnyfromBindFailed
+			}
+		} else {
+			af.RefreshTtl()
+			shard.mu.RUnlock()
+			return af, false, nil
+		}
 	}
 	shard.mu.RUnlock()
 
-	// Not found in cache. Create socket outside the lock to avoid blocking
-	// other goroutines that are accessing different addresses in the same shard.
-	// Socket creation can block on network operations, so this significantly
-	// reduces lock contention under high concurrent creation load.
-	newAf, createErr := p.createAnyfromSocket(lAddr, ttl)
-	if createErr != nil {
-		return nil, true, createErr
-	}
+	// Slow path: serialize creation for the same lAddr using a creation shard lock.
+	// This prevents a thundering herd of concurrent bind() syscalls when many
+	// packets arrive for the same unseen address simultaneously.
+	shard.createMu.Lock()
+	defer shard.createMu.Unlock()
 
-	// Acquire write lock to check if another goroutine already created it.
+	// Double-check under creation lock: another goroutine may have created it.
+	shard.mu.RLock()
+	af, ok = shard.pool[lAddr]
+	if ok {
+		if af.failed.Load() {
+			if !af.IsExpired(time.Now().UnixNano()) {
+				shard.mu.RUnlock()
+				return nil, false, ErrAnyfromBindFailed
+			}
+			// Expired failure entry — fall through to recreate.
+		} else {
+			af.RefreshTtl()
+			shard.mu.RUnlock()
+			return af, false, nil
+		}
+	}
+	shard.mu.RUnlock()
+
+	// Only one goroutine per lAddr reaches here — safe to create.
+	newAf, err := p.createAnyfromSocket(lAddr, ttl)
+
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	if af, ok = shard.pool[lAddr]; ok {
-		// Another goroutine created it while we were creating the socket.
-		// Close our duplicate and return the existing one.
-		_ = newAf.Close()
-		af.RefreshTtl()
-		return af, false, nil
+	if err != nil {
+		// Negative cache the failure to prevent bind storms under load.
+		failedAf := &Anyfrom{
+			ttl: 2 * time.Second,
+		}
+		failedAf.failed.Store(true)
+		failedAf.expiresAtNano.Store(time.Now().Add(2 * time.Second).UnixNano())
+		shard.pool[lAddr] = failedAf
+		return nil, true, err
 	}
 
-	// Store the newly created socket.
 	shard.pool[lAddr] = newAf
 	return newAf, true, nil
 }

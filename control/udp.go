@@ -379,6 +379,9 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 
 	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
+		if stderrors.Is(err, ErrAnyfromBindFailed) {
+			return nil
+		}
 		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
 			return nil
 		}
@@ -811,8 +814,8 @@ getNew:
 			},
 		})
 		if err != nil {
-			if stderrors.Is(err, ob.ErrNoAliveDialer) {
-				// Already emitted a rate-limited diagnostic log above.
+			if stderrors.Is(err, ob.ErrNoAliveDialer) || stderrors.Is(err, ErrEndpointFailed) {
+				// Already emitted a rate-limited diagnostic log above, or hit negative cache.
 				return nil
 			}
 			if allowConnectionErrorLog("handlePktGetOrCreate", time.Now()) {

@@ -76,3 +76,15 @@ func hashAddrPort(ap netip.AddrPort) uint64 {
 
 	return seed
 }
+
+// hashUdpEndpointKey computes a 64-bit hash of a UdpEndpointKey.
+// It mainly hashes the Src address to maintain consistency with historical
+// shard selection, but incorporates Dst for better distribution across
+// different destination targets from the same source.
+func hashUdpEndpointKey(key UdpEndpointKey) uint64 {
+	h := hashAddrPort(key.Src)
+	if key.Dst.Port() != 0 {
+		h ^= hashAddrPort(key.Dst)
+	}
+	return h
+}
