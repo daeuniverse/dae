@@ -556,6 +556,8 @@ static __always_inline bool is_extension_header(__u8 nexthdr)
 	}
 }
 
+#define PARSE_FRAGMENT 2
+
 // parse_transport_fast implements direct packet access using bpf_skb_pull_data
 // to linearize non-linear data regions, then accesses headers via pointer arithmetic.
 //
@@ -642,16 +644,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		if (iph_ptr->ihl < 5)
 			return -EFAULT;
 
-		// Drop non-initial IP fragments (security)
-		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
-
-		if ((frag_off & 0x1FFF) != 0)
-			return 1;
-
-		__u32 ip_hdr_len = iph_ptr->ihl * 4;
-		__u32 l4_offset = offset + ip_hdr_len;
-
-		// Copy IP fields efficiently
+		// Copy base IP fields first: saddr/daddr must be valid in ctx->iph
+		// so that get_tuples() works correctly even when we return
+		// PARSE_FRAGMENT below (before the normal copy path).
 		iph->version = iph_ptr->version;
 		iph->ihl = iph_ptr->ihl;
 		iph->protocol = iph_ptr->protocol;
@@ -659,6 +654,15 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		iph->daddr = iph_ptr->daddr;
 		*ihl = iph_ptr->ihl;
 		*l4proto = iph_ptr->protocol;
+
+		// Punt all IP fragments to Linux kernel for defragmentation
+		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
+
+		if ((frag_off & 0x3FFF) != 0)
+			return PARSE_FRAGMENT;
+
+		__u32 ip_hdr_len = iph_ptr->ihl * 4;
+		__u32 l4_offset = offset + ip_hdr_len;
 
 		// L4 parsing: simplified with single boundary check
 		switch (iph->protocol) {
@@ -733,6 +737,8 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
+			if (nexthdr == IPPROTO_FRAGMENT)
+				return PARSE_FRAGMENT;
 			if (!is_extension_header(nexthdr))
 				break;
 
@@ -844,11 +850,11 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		if (iph->ihl < 5)
 			return -EFAULT;
 
-		// Security: Drop non-initial IP fragments to prevent rule bypass.
+		// Security & Safety: Punt all fragments to kernel for reassembly
 		__u16 frag_off = bpf_ntohs(iph->frag_off);
 
-		if ((frag_off & 0x1FFF) != 0) {  // Check fragment offset bits
-			return 1;  // Let kernel reassemble
+		if ((frag_off & 0x3FFF) != 0) {  // Check MF and fragment offset bits
+			return PARSE_FRAGMENT;
 		}
 
 		offset += iph->ihl * 4;
@@ -896,6 +902,9 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			ret = bpf_skb_load_bytes(skb, offset, &nexthdr, 1);
 			if (ret)
 				return -EFAULT;
+
+			if (nexthdr == IPPROTO_FRAGMENT)
+				return PARSE_FRAGMENT;
 
 			__u8 hdr_ext_len = 0;
 
@@ -995,18 +1004,25 @@ parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 
 	int ret = parse_transport(skb, link_h_len, ctx);
 
-	if (ret)
+	// Fatal error: drop immediately, no context to copy.
+	if (ret < 0)
 		return ret;
 	if (ctx->l4proto == IPPROTO_ICMPV6)
 		return 1;
 
+	// Always populate out with whatever IP context was parsed.
+	// This is critical for PARSE_FRAGMENT (ret==2): the IP header was fully
+	// parsed before the fragment was detected, so src/dst IPs are valid.
+	// Without this, prep_redirect_to_control_plane() would receive an all-zero
+	// tuple, writing a 0.0.0.0->0.0.0.0 entry into redirect_track and
+	// causing all fragments to share the same corrupted route entry.
 	__builtin_memset(out, 0, sizeof(*out));
 	out->ethh = ctx->ethh;
 	out->tcph = ctx->tcph;
 	out->udph = ctx->udph;
 	out->l4proto = ctx->l4proto;
 	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
-	return 0;
+	return ret;
 }
 
 struct wan_egress_parsed {
@@ -1037,18 +1053,21 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 
 	int ret = parse_transport(skb, link_h_len, ctx);
 
-	if (ret)
+	// Fatal error: drop immediately, no context to copy.
+	if (ret < 0)
 		return ret;
 	if (ctx->l4proto == IPPROTO_ICMPV6)
 		return 1;
 
+	// Always populate out with whatever IP context was parsed (same fix as
+	// parse_lan_ingress_packet: preserve valid SIP/DIP for PARSE_FRAGMENT path).
 	__builtin_memset(out, 0, sizeof(*out));
 	out->ethh = ctx->ethh;
 	out->tcph = ctx->tcph;
 	out->udph = ctx->udph;
 	out->l4proto = ctx->l4proto;
 	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
-	return 0;
+	return ret;
 }
 
 struct route_ctx {
@@ -1664,10 +1683,9 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
-		if (now - state->last_seen_ns > UDP_CONN_STATE_UPDATE_INTERVAL_NS) {
+		// No spinlock needed: directly writing to state->last_seen_ns is atomic
+		if (now - state->last_seen_ns > UDP_CONN_STATE_UPDATE_INTERVAL_NS)
 			state->last_seen_ns = now;
-			bpf_map_update_elem(&udp_conn_state_map, key, state, BPF_ANY);
-		}
 
 		// Update routing if provided (e.g., routing decision changed)
 		if (outbound) {
@@ -1775,10 +1793,9 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
-		if (now - state->last_seen_ns > TCP_CONN_STATE_UPDATE_INTERVAL_NS) {
+		// No spinlock needed: directly writing to state->last_seen_ns is atomic
+		if (now - state->last_seen_ns > TCP_CONN_STATE_UPDATE_INTERVAL_NS)
 			state->last_seen_ns = now;
-			bpf_map_update_elem(&tcp_conn_state_map, key, state, BPF_ANY);
-		}
 
 		// Check for connection close signals (FIN or RST)
 		if (tcph->fin || tcph->rst)
@@ -1843,36 +1860,11 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		return bpf_map_lookup_elem(&tcp_conn_state_map, key);
 	}
 
-	// Hot reload mitigation: For non-SYN packets without existing state,
-	// create a temporary entry to capture FIN/RST signals.
-	// This handles connections that existed before BPF program reload.
-	if (tcph->ack || tcph->fin || tcph->rst || tcph->psh) {
-		struct tcp_conn_state temp_state = {
-			.is_wan_ingress_direction = is_wan_ingress_direction,
-			.state = tcph->fin || tcph->rst ? TCP_STATE_CLOSING : TCP_STATE_ACTIVE,
-			.last_seen_ns = now,
-			.meta = { .data = { .has_routing = 0 } },  // No routing info for hot reload mitigation
-		};
-
-		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &temp_state,
-					     BPF_NOEXIST);  // Only create if not exists
-
-		if (ret == 0) {  // Successfully created
-			return bpf_map_lookup_elem(&tcp_conn_state_map, key);
-		}
-		// Only count map full (-E2BIG), not -EEXIST which is normal concurrent race
-		if (unlikely(ret == -E2BIG)) {
-			__u32 stats_key = BPF_STATS_TCP_CONN_OVERFLOW;
-			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
-
-			if (overflow_count)
-				__sync_fetch_and_add(overflow_count, 1);
-			// Send DAE_EVENT_TCP_CONN_OVERFLOW event
-			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, 0, NULL, 0,
-				       key->l4proto, key->sip.u6_addr32,
-				       key->dip.u6_addr32, key->sport, key->dport);
-		}
-	}
+	// Zero-Allocation Fallback mitigation for O(1) state exhaustion DDoS:
+	// Hot reload flows (non-SYN packets without existing state) must never
+	// allocate memory. Tell caller to compute slow path directly without caching.
+	if (tcph->ack || tcph->fin || tcph->rst || tcph->psh)
+		return NULL;
 
 	// Non-SYN packet without existing state: ignore
 	return NULL;
@@ -1971,6 +1963,16 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
 
+	if (ret == PARSE_FRAGMENT) {
+		// Punt fragments to the control plane.
+		// Linux Netfilter will reconstruct them before passing to the proxy.
+		if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
+						   &pkt->ethh, 0, &pkt->tcph)) {
+			return TC_ACT_OK;
+		}
+		return redirect_to_control_plane_ingress();
+	}
+
 	if (ret) {
 		// Negative return: parsing error (malformed packet, too many extension headers, etc.)
 		// Positive return: unsupported protocol (ICMPv6, etc.) - pass through
@@ -2004,9 +2006,52 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 					  NULL, NULL, NULL, NULL,
 					  0, NULL, 0);
 		if (!tcp_state) {
-			// Conn state map full - degrade gracefully without using cache.
-			// This prevents using stale cache entries without conn state for cleanup.
-			return TC_ACT_OK;
+			// Zero-Allocation Fallback mitigation for O(1) state exhaustion DDoS:
+			// Conn state map full or non-SYN packet without existing state.
+			// Calculate route dynamically in the slow path without caching state.
+			__u32 route_flag[8] = {};
+
+			route_flag[0] = L4ProtoType_TCP;
+			if (skb->protocol == bpf_htons(ETH_P_IP))
+				route_flag[1] = IpVersionType_4;
+			else
+				route_flag[1] = IpVersionType_6;
+			route_flag[6] = pkt->tuples.dscp;
+			route_flag[7] = 1;
+
+			__u32 mac_be[4] = {};
+
+			if (link_h_len == ETH_HLEN) {
+				mac_be[2] = bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
+						      (__u32)pkt->ethh.h_source[1]);
+				mac_be[3] = bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
+						      ((__u32)pkt->ethh.h_source[3] << 16) |
+						      ((__u32)pkt->ethh.h_source[4] << 8) |
+						      (__u32)pkt->ethh.h_source[5]);
+			}
+
+			__s64 s64_ret = route(route_flag, &pkt->tcph,
+					      pkt->tuples.five.sip.u6_addr32,
+					      pkt->tuples.five.dip.u6_addr32,
+					      mac_be);
+
+			if (s64_ret < 0)
+				return TC_ACT_SHOT;
+
+			outbound = s64_ret & 0xff;
+			mark = s64_ret >> 8;
+
+			if (outbound == OUTBOUND_DIRECT) {
+				skb->mark = mark;
+				return TC_ACT_OK;
+			}
+			if (unlikely(outbound == OUTBOUND_BLOCK))
+				return TC_ACT_SHOT;
+			if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
+						   pkt->tuples.five.dport))
+				return TC_ACT_SHOT;
+
+			goto control_plane;
 		}
 
 		/*
@@ -2736,6 +2781,18 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	 * pointer writes. */
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
+
+	if (ret == PARSE_FRAGMENT) {
+		// Punt router-local fragments to the control plane.
+		// Without this, fragmented traffic from local daemons (dnsmasq,
+		// curl, etc.) bypasses the proxy and leaks the real public IP.
+		// NULL tcph is safe: prep_redirect only needs IP src/dst from tuples.
+		if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
+						   &pkt->ethh, 1, NULL)) {
+			return TC_ACT_OK;
+		}
+		return redirect_to_control_plane_egress();
+	}
 
 	if (ret) {
 		// Negative return: parsing error - drop
