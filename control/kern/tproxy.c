@@ -737,8 +737,15 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
-			if (nexthdr == IPPROTO_FRAGMENT)
+			if (nexthdr == IPPROTO_FRAGMENT) {
+				// Keep original L4 protocol for fragment punt path.
+				// Fragment header byte 0 is "Next Header".
+				ext_hdr = data + offset;
+				if ((void *)(ext_hdr + 1) > data_end)
+					return -EFAULT;
+				*l4proto = ext_hdr[0];
 				return PARSE_FRAGMENT;
+			}
 			if (!is_extension_header(nexthdr))
 				break;
 
@@ -849,6 +856,7 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			return -EFAULT;
 		if (iph->ihl < 5)
 			return -EFAULT;
+		*l4proto = iph->protocol;
 
 		// Security & Safety: Punt all fragments to kernel for reassembly
 		__u16 frag_off = bpf_ntohs(iph->frag_off);
@@ -859,7 +867,6 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 
 		offset += iph->ihl * 4;
 
-		*l4proto = iph->protocol;
 		switch (iph->protocol) {
 		case IPPROTO_TCP:
 			ret = bpf_skb_load_bytes(skb, offset, tcph,
@@ -894,6 +901,17 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
+			if (nexthdr == IPPROTO_FRAGMENT) {
+				// Keep original L4 protocol for fragment punt path.
+				__u8 frag_nexthdr = 0;
+
+				ret = bpf_skb_load_bytes(skb, offset, &frag_nexthdr,
+							 sizeof(frag_nexthdr));
+				if (ret)
+					return -EFAULT;
+				*l4proto = frag_nexthdr;
+				return PARSE_FRAGMENT;
+			}
 
 			if (!is_extension_header(nexthdr))
 				break;
@@ -902,9 +920,6 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			ret = bpf_skb_load_bytes(skb, offset, &nexthdr, 1);
 			if (ret)
 				return -EFAULT;
-
-			if (nexthdr == IPPROTO_FRAGMENT)
-				return PARSE_FRAGMENT;
 
 			__u8 hdr_ext_len = 0;
 
@@ -2026,7 +2041,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			else
 				fb->flag[1] = IpVersionType_6;
 			fb->flag[6] = pkt->tuples.dscp;
-			fb->flag[7] = 1;
+			fb->flag[7] = 0;
 
 			if (link_h_len == ETH_HLEN) {
 				fb->mac_be[2] = bpf_htonl(
