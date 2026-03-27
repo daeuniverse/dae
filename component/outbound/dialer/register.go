@@ -74,7 +74,7 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 // needsStickyIpCaching checks if the given address needs sticky IP caching.
 // Only domain addresses benefit from caching; IP addresses are already stable.
 func needsStickyIpCaching(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
+	host, _, err := stickyip.SplitHostPort(addr)
 	if err != nil {
 		return false
 	}
