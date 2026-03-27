@@ -286,9 +286,6 @@ type loadBpfOptions struct {
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
-func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
-	return loadBpfObjectsWithConstantsAndCustomizer(obj, opts, constants, nil)
-}
 
 func loadBpfObjectsWithConstantsAndCustomizer(
 	obj interface{},

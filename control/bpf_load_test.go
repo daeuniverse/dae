@@ -11,6 +11,10 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
+	return loadBpfObjectsWithConstantsAndCustomizer(obj, opts, constants, nil)
+}
+
 func TestLoadMainBPFObjects(t *testing.T) {
 	var obj bpfObjects
 	pinPath := "/sys/fs/bpf/dae"

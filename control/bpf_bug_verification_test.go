@@ -14,11 +14,9 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/asm"
 	"github.com/vishvananda/netlink/nl"
 )
 
