@@ -2763,6 +2763,25 @@ fast_path_skip_routing:
 	return redirect_to_control_plane_egress();
 }
 
+// wan_egress_punt_fragment handles IP fragments arriving on the WAN egress hook.
+// Extracted as a separate __noinline subprogram so the BPF verifier resets its
+// combined-stack counter here, keeping the 5-call chain depth below 512 bytes.
+static __noinline int
+wan_egress_punt_fragment(struct __sk_buff *skb, u32 link_h_len)
+{
+	__u32 scratch_key = 0;
+	struct wan_egress_parsed *pkt =
+		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
+
+	if (!pkt)
+		return TC_ACT_OK;
+
+	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
+					   pkt->l4proto, &pkt->ethh, 1, NULL))
+		return TC_ACT_OK;
+	return redirect_to_control_plane_egress();
+}
+
 /*
  * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
  * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
@@ -2791,17 +2810,8 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
 
-	if (ret == PARSE_FRAGMENT) {
-		// Punt router-local fragments to the control plane.
-		// Without this, fragmented traffic from local daemons (dnsmasq,
-		// curl, etc.) bypasses the proxy and leaks the real public IP.
-		// NULL tcph is safe: prep_redirect only needs IP src/dst from tuples.
-		if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples, pkt->l4proto,
-						   &pkt->ethh, 1, NULL)) {
-			return TC_ACT_OK;
-		}
-		return redirect_to_control_plane_egress();
-	}
+	if (ret == PARSE_FRAGMENT)
+		return wan_egress_punt_fragment(skb, link_h_len);
 
 	if (ret) {
 		// Negative return: parsing error - drop
