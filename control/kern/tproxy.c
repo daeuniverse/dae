@@ -2008,32 +2008,41 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		if (!tcp_state) {
 			// Zero-Allocation Fallback mitigation for O(1) state exhaustion DDoS:
 			// Conn state map full or non-SYN packet without existing state.
-			// Calculate route dynamically in the slow path without caching state.
-			__u32 route_flag[8] = {};
+			// Use percpu scratch map for route_flag/mac_be to stay within the
+			// 512-byte BPF stack limit (stack-allocated arrays would push the
+			// 5-call chain to 544 bytes, rejected by the verifier).
+			__u32 scratch_key = 0;
+			struct wan_egress_route_scratch *fb =
+				bpf_map_lookup_elem(&wan_egress_route_scratch_map,
+						    &scratch_key);
 
-			route_flag[0] = L4ProtoType_TCP;
+			if (!fb)
+				return TC_ACT_SHOT;
+
+			__builtin_memset(fb, 0, sizeof(*fb));
+			fb->flag[0] = L4ProtoType_TCP;
 			if (skb->protocol == bpf_htons(ETH_P_IP))
-				route_flag[1] = IpVersionType_4;
+				fb->flag[1] = IpVersionType_4;
 			else
-				route_flag[1] = IpVersionType_6;
-			route_flag[6] = pkt->tuples.dscp;
-			route_flag[7] = 1;
-
-			__u32 mac_be[4] = {};
+				fb->flag[1] = IpVersionType_6;
+			fb->flag[6] = pkt->tuples.dscp;
+			fb->flag[7] = 1;
 
 			if (link_h_len == ETH_HLEN) {
-				mac_be[2] = bpf_htonl(((__u32)pkt->ethh.h_source[0] << 8) |
-						      (__u32)pkt->ethh.h_source[1]);
-				mac_be[3] = bpf_htonl(((__u32)pkt->ethh.h_source[2] << 24) |
-						      ((__u32)pkt->ethh.h_source[3] << 16) |
-						      ((__u32)pkt->ethh.h_source[4] << 8) |
-						      (__u32)pkt->ethh.h_source[5]);
+				fb->mac_be[2] = bpf_htonl(
+					((__u32)pkt->ethh.h_source[0] << 8) |
+					(__u32)pkt->ethh.h_source[1]);
+				fb->mac_be[3] = bpf_htonl(
+					((__u32)pkt->ethh.h_source[2] << 24) |
+					((__u32)pkt->ethh.h_source[3] << 16) |
+					((__u32)pkt->ethh.h_source[4] << 8) |
+					(__u32)pkt->ethh.h_source[5]);
 			}
 
-			__s64 s64_ret = route(route_flag, &pkt->tcph,
+			__s64 s64_ret = route(fb->flag, &pkt->tcph,
 					      pkt->tuples.five.sip.u6_addr32,
 					      pkt->tuples.five.dip.u6_addr32,
-					      mac_be);
+					      fb->mac_be);
 
 			if (s64_ret < 0)
 				return TC_ACT_SHOT;
