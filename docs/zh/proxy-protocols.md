@@ -37,6 +37,12 @@
   - [ ] v2ray-plugin
     - [x] Websocket (+TLS)
 
+  ShadowTLS v3 链接也可以直接使用 `shadowtls://`。
+  对于需要浏览器指纹的节点，建议设置 `global.tls_implementation: utls`，
+  并保持 `global.utls_imitate` 默认值 `chrome_auto`，或者在链接查询参数中追加
+  `tlsImplementation=utls&utlsImitate=chrome`。
+  如果服务端不希望带自定义 SNI，请省略 `sni`，或明确写成空值。
+
   [SIP002](https://shadowsocks.org/doc/sip002.html)
 
   [SIP008](https://shadowsocks.org/doc/sip008.html)
