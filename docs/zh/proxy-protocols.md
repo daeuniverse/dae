@@ -33,6 +33,7 @@
   - [x] AEAD Ciphers
   - [x] Stream Ciphers
   - [x] simple-obfs
+  - [x] shadow-tls (SIP003 plugin)
   - [ ] v2ray-plugin
     - [x] Websocket (+TLS)
 
