@@ -69,7 +69,7 @@ type DnsControllerOption struct {
 	Log                   *logrus.Logger
 	CacheAccessCallback   func(cache *DnsCache) (err error)
 	CacheRemoveCallback   func(cache *DnsCache) (err error)
-	NewCache              func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
+	NewCache              func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	BestDialerChooser     func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	TimeoutExceedCallback func(dialArgument *dialArgument, err error)
 	IpVersionPrefer       int
@@ -93,7 +93,7 @@ type DnsController struct {
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
 	cacheRemoveCallback func(cache *DnsCache) (err error)
-	newCache            func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
+	newCache            func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	bestDialerChooser   func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
@@ -825,7 +825,7 @@ func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsme
 		}).Tracef("Update DNS record cache")
 	}
 
-	if err := c.UpdateDnsCacheTtl(q.Name, q.Qtype, msg.Answer, int(ttl)); err != nil {
+	if err := c.UpdateDnsCacheTtl(q.Name, q.Qtype, msg.Answer, msg.Ns, msg.Extra, int(ttl)); err != nil {
 		return err
 	}
 	return nil
@@ -833,7 +833,7 @@ func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsme
 
 type daedlineFunc func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time)
 
-func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
+func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
 	var fqdn string
 	if strings.HasSuffix(host, ".") {
 		fqdn = strings.ToLower(host)
@@ -853,7 +853,7 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 
 	// Atomic cache update: create new cache entry and store it atomically
 	// This allows concurrent updates without blocking each other
-	newCache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
+	newCache, err := c.newCache(fqdn, answers, ns, extra, deadline, originalDeadline)
 	if err != nil {
 		return err
 	}
@@ -877,8 +877,8 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	return nil
 }
 
-func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers []dnsmessage.RR, ttl int) (err error) {
-	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
+func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
 		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
 			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
@@ -1447,41 +1447,13 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	// However, most responseWriters here are either UDP or wrappers that handle message framing.
 
 	if responseWriter != nil {
-		// msgCapturer is used by singleflight path to capture *Msg value.
-		// Keep WriteMsg semantics for this internal writer.
-		if _, ok := responseWriter.(*msgCapturer); ok {
-			var respMsg dnsmessage.Msg
-			if err := respMsg.Unpack(resp); err != nil {
-				return fmt.Errorf("failed to unpack DNS response: %w", err)
-			}
-			respMsg.Id = reqId
-			return responseWriter.WriteMsg(&respMsg)
+		var respMsg dnsmessage.Msg
+		if err := respMsg.Unpack(resp); err != nil {
+			return fmt.Errorf("failed to unpack DNS response: %w", err)
 		}
-
-		// Fast path for DNS listener response writers: patch ID in packed bytes,
-		// then write raw message directly to avoid Unpack/Pack overhead.
-		if len(resp) >= 2 && len(resp) <= 1024 {
-			bufPtr := dnsResponseBufPool.Get().(*[]byte)
-			defer dnsResponseBufPool.Put(bufPtr)
-
-			patchedResp := (*bufPtr)[:len(resp)]
-			copy(patchedResp, resp)
-			binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
-			if _, err := responseWriter.Write(patchedResp); err != nil {
-				return err
-			}
-			return nil
-		}
-
-		patchedResp := make([]byte, len(resp))
-		copy(patchedResp, resp)
-		if len(patchedResp) >= 2 {
-			binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
-		}
-		if _, err := responseWriter.Write(patchedResp); err != nil {
-			return err
-		}
-		return nil
+		// Set the correct ID from the original request
+		respMsg.Id = reqId
+		return responseWriter.WriteMsg(&respMsg)
 	}
 
 	// For UDP path, directly send pre-packed response with patched ID
@@ -1503,7 +1475,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		// the response source address matches the DNS server IP.
 		// This is important for clients that validate source address.
 		dstAddr := req.realDst.Addr()
-		if dstAddr.IsUnspecified() {
+		if dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast() {
 			// Local DNS (0.0.0.0) - use lConn directly
 			if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
 				return fmt.Errorf("failed to write local DNS resp: %w", err)
@@ -1524,7 +1496,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	}
 
 	dstAddr := req.realDst.Addr()
-	isLocalDNS := dstAddr.IsUnspecified()
+	isLocalDNS := dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast()
 
 	if isLocalDNS {
 		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {

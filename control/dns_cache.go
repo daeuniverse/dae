@@ -35,6 +35,8 @@ const (
 type DnsCache struct {
 	DomainBitmap     []uint32
 	Answer           []dnsmessage.RR
+	NS               []dnsmessage.RR
+	Extra            []dnsmessage.RR
 	Deadline         time.Time
 	OriginalDeadline time.Time // This field is not impacted by `fixed_domain_ttl`.
 
@@ -213,6 +215,21 @@ func (c *DnsCache) FillInto(req *dnsmessage.Msg) {
 			req.Answer[i] = dnsmessage.Copy(rr)
 		}
 	}
+	req.Ns = nil
+	if c.NS != nil {
+		req.Ns = make([]dnsmessage.RR, len(c.NS))
+		for i, rr := range c.NS {
+			req.Ns[i] = dnsmessage.Copy(rr)
+		}
+	}
+	req.Extra = nil
+	if c.Extra != nil {
+		req.Extra = make([]dnsmessage.RR, len(c.Extra))
+		for i, rr := range c.Extra {
+			req.Extra[i] = dnsmessage.Copy(rr)
+		}
+	}
+
 	req.Rcode = dnsmessage.RcodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true
@@ -246,7 +263,6 @@ func (c *DnsCache) Clone() *DnsCache {
 		OriginalDeadline: c.OriginalDeadline,
 	}
 
-	// Use slices.Clone for better performance (Go 1.26 best practice)
 	if c.DomainBitmap != nil {
 		newCache.DomainBitmap = slices.Clone(c.DomainBitmap)
 	}
@@ -257,9 +273,20 @@ func (c *DnsCache) Clone() *DnsCache {
 			newCache.Answer[i] = dnsmessage.Copy(rr)
 		}
 	}
+	if c.NS != nil {
+		newCache.NS = make([]dnsmessage.RR, len(c.NS))
+		for i, rr := range c.NS {
+			newCache.NS[i] = dnsmessage.Copy(rr)
+		}
+	}
+	if c.Extra != nil {
+		newCache.Extra = make([]dnsmessage.RR, len(c.Extra))
+		for i, rr := range c.Extra {
+			newCache.Extra[i] = dnsmessage.Copy(rr)
+		}
+	}
 
 	if packedPtr := c.packedResponse.Load(); packedPtr != nil && *packedPtr != nil {
-		// Use slices.Clone for better performance (Go 1.26 best practice)
 		packedCopy := slices.Clone(*packedPtr)
 		newCache.packedResponse.Store(&packedCopy)
 		newCache.packedResponseTTL.Store(c.packedResponseTTL.Load())
@@ -267,15 +294,12 @@ func (c *DnsCache) Clone() *DnsCache {
 	}
 
 	newCache.deadlineNano.Store(c.deadlineNano.Load())
-	// Reset sync state to force BPF update on reload.
-	// This ensures new routing configuration takes effect immediately,
-	// preventing UDP routing failures after config reload.
 	newCache.lastRouteSyncNano.Store(0)
 	newCache.lastBpfDataHash.Store(0)
 
 	return newCache
-}
 
+}
 // PrepackResponse generates a pre-packed DNS response message.
 // This should be called once when creating the cache entry.
 // The qname should be the full qualified domain name (with trailing dot).
@@ -310,12 +334,12 @@ func (c *DnsCache) PrepackResponse(qname string, qtype uint16) error {
 // OPTIMIZED: Uses Copy-on-Write with atomic pointer swap for thread-safe updates.
 // Creates a new []byte slice and atomically swaps the pointer - no blocking readers.
 func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32, now time.Time) error {
-	// Create a minimal DNS response message
 	msg := &dnsmessage.Msg{
 		MsgHdr: dnsmessage.MsgHdr{
 			Rcode:              dnsmessage.RcodeSuccess,
 			Response:           true,
 			RecursionAvailable: true,
+			RecursionDesired:   true,
 			Truncated:          false,
 		},
 		Question: []dnsmessage.Question{
@@ -324,9 +348,6 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 		Compress: true,
 	}
 
-	// Copy answers with calculated TTL
-	// NOTE: This is in the slow path (only when TTL differs by >15s)
-	// The overhead is acceptable because it happens rarely
 	if c.Answer != nil {
 		msg.Answer = make([]dnsmessage.RR, len(c.Answer))
 		for i, rr := range c.Answer {
@@ -335,15 +356,28 @@ func (c *DnsCache) prepackResponseWithTTL(qname string, qtype uint16, ttl uint32
 			msg.Answer[i] = copiedRR
 		}
 	}
+	if c.NS != nil {
+		msg.Ns = make([]dnsmessage.RR, len(c.NS))
+		for i, rr := range c.NS {
+			copiedRR := dnsmessage.Copy(rr)
+			copiedRR.Header().Ttl = ttl
+			msg.Ns[i] = copiedRR
+		}
+	}
+	if c.Extra != nil {
+		msg.Extra = make([]dnsmessage.RR, len(c.Extra))
+		for i, rr := range c.Extra {
+			copiedRR := dnsmessage.Copy(rr)
+			copiedRR.Header().Ttl = ttl
+			msg.Extra[i] = copiedRR
+		}
+	}
 
-	// Pack the message
 	packed, err := msg.Pack()
 	if err != nil {
 		return err
 	}
 
-	// Copy-on-Write: atomically swap the pointer
-	// Readers will immediately see the new response
 	c.packedResponse.Store(&packed)
 	c.packedResponseTTL.Store(ttl)
 	c.packedResponseCreatedAt.Store(now.UnixNano())

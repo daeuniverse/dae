@@ -653,9 +653,11 @@ func NewControlPlaneWithContext(
 			}
 			return nil
 		},
-		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error) {
+		NewCache: func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error) {
 			return &DnsCache{
 				DomainBitmap:     plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
+				NS:               ns,
+				Extra:            extra,
 				Answer:           answers,
 				Deadline:         deadline,
 				OriginalDeadline: originalDeadline,
@@ -929,7 +931,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 		if ttl < 0 {
 			ttl = 0
 		}
-		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, ttl); err != nil {
+		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, nil, nil, ttl); err != nil {
 			return err
 		}
 	}
@@ -949,7 +951,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 		if ttl < 0 {
 			ttl = 0
 		}
-		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, ttl); err != nil {
+		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, nil, nil, ttl); err != nil {
 			return err
 		}
 	}
