@@ -105,11 +105,16 @@ type DnsController struct {
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedDnsForwarder
 	sf                singleflight.Group
 
-	janitorStop chan struct{}
-	janitorDone chan struct{}
-	evictorDone chan struct{}
-	evictorQ    chan *DnsCache
-	closeOnce   sync.Once
+	janitorStop  chan struct{}
+	janitorDone  chan struct{}
+	evictorDone  chan struct{}
+	evictorQ     chan *DnsCache
+	evictorWake  chan struct{}
+	evictorMu    sync.Mutex
+	evictorBuf   []*DnsCache
+	lruScratchMu sync.Mutex
+	lruScratch   []cacheEntry
+	closeOnce    sync.Once
 
 	// Async BPF update: uses a single goroutine with bounded channel
 	// to process BPF map updates off the hot path.
@@ -230,6 +235,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		janitorDone: make(chan struct{}),
 		evictorDone: make(chan struct{}),
 		evictorQ:    make(chan *DnsCache, 512),
+		evictorWake: make(chan struct{}, 1),
 
 		// Async BPF update: lazy initialization in startBpfUpdateWorker
 		bpfUpdateCh:   nil,
@@ -493,8 +499,54 @@ func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
 	select {
 	case c.evictorQ <- cache:
 	default:
-		// Keep datapath non-blocking under eviction bursts.
-		go c.invokeCacheRemoveCallback(cache)
+		// Keep datapath non-blocking under eviction bursts without creating an
+		// unbounded number of short-lived goroutines. A single background worker
+		// drains this spill buffer with the same callback semantics.
+		c.enqueueEvictorSpill(cache)
+	}
+}
+
+func (c *DnsController) enqueueEvictorSpill(cache *DnsCache) {
+	if cache == nil {
+		return
+	}
+	// If the evictor worker was never initialized, fall back to direct removal.
+	// This preserves behavior for manually constructed test controllers.
+	if c.evictorWake == nil {
+		c.invokeCacheRemoveCallback(cache)
+		return
+	}
+
+	c.evictorMu.Lock()
+	c.evictorBuf = append(c.evictorBuf, cache)
+	c.evictorMu.Unlock()
+
+	select {
+	case c.evictorWake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *DnsController) takeEvictorSpillBatch() []*DnsCache {
+	c.evictorMu.Lock()
+	defer c.evictorMu.Unlock()
+	if len(c.evictorBuf) == 0 {
+		return nil
+	}
+	batch := c.evictorBuf
+	c.evictorBuf = nil
+	return batch
+}
+
+func (c *DnsController) drainEvictorSpill() {
+	for {
+		batch := c.takeEvictorSpillBatch()
+		if len(batch) == 0 {
+			return
+		}
+		for _, cache := range batch {
+			c.invokeCacheRemoveCallback(cache)
+		}
 	}
 }
 
@@ -563,6 +615,34 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 	}
 }
 
+func (c *DnsController) takeLRUScratch(minCap int) []cacheEntry {
+	c.lruScratchMu.Lock()
+	defer c.lruScratchMu.Unlock()
+
+	if cap(c.lruScratch) >= minCap {
+		entries := c.lruScratch[:0]
+		c.lruScratch = nil
+		return entries
+	}
+
+	c.lruScratch = nil
+	return make([]cacheEntry, 0, minCap)
+}
+
+func (c *DnsController) putLRUScratch(entries []cacheEntry) {
+	if entries == nil {
+		return
+	}
+
+	clear(entries)
+
+	c.lruScratchMu.Lock()
+	if cap(entries) > cap(c.lruScratch) {
+		c.lruScratch = entries[:0]
+	}
+	c.lruScratchMu.Unlock()
+}
+
 // evictLRUIfFull evicts least recently used entries if cache size exceeds limit.
 // OPTIMIZATION: Uses heap selection algorithm (O(n + k log n)) instead of
 // full sort (O(n log n)) or insertion sort (O(n²)) for better performance
@@ -585,8 +665,12 @@ func (c *DnsController) evictLRUIfFull() {
 	numToEvict := count - c.maxCacheSize
 
 	// Collect all cache entries with their access times
-	// Pre-allocate slice to avoid reallocation during collection
-	entries := make([]cacheEntry, 0, count)
+	// Reuse a scratch buffer to avoid allocating a new slice on every janitor run.
+	entries := c.takeLRUScratch(count)
+	scratch := entries
+	defer func() {
+		c.putLRUScratch(scratch)
+	}()
 	c.dnsCache.Range(func(key, value any) bool {
 		cacheKey, ok := key.(string)
 		if !ok {
@@ -602,6 +686,7 @@ func (c *DnsController) evictLRUIfFull() {
 		})
 		return true
 	})
+	scratch = entries
 
 	// Use heap selection to find the k oldest entries.
 	// Build a min-heap and extract k elements: O(n + k log n)
@@ -665,17 +750,24 @@ func (c *DnsController) startCacheEvictor() {
 		if c.evictorQ == nil {
 			return
 		}
+		if c.evictorWake == nil {
+			c.evictorWake = make(chan struct{}, 1)
+		}
 
 		for {
 			select {
 			case cache := <-c.evictorQ:
 				c.invokeCacheRemoveCallback(cache)
+				c.drainEvictorSpill()
+			case <-c.evictorWake:
+				c.drainEvictorSpill()
 			case <-c.janitorStop:
 				for {
 					select {
 					case cache := <-c.evictorQ:
 						c.invokeCacheRemoveCallback(cache)
 					default:
+						c.drainEvictorSpill()
 						return
 					}
 				}
@@ -831,6 +923,55 @@ func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsme
 	return nil
 }
 
+// staleDnsSideEffects builds a minimal cache entry containing only IP answers
+// that exist in prev but not in next. This lets us remove stale domain-routing
+// side effects after replacing a cache entry without deleting IPs that are
+// still present in the refreshed cache.
+func staleDnsSideEffects(prev, next *DnsCache) *DnsCache {
+	if prev == nil {
+		return nil
+	}
+	if next == nil {
+		return prev
+	}
+
+	staleCount := 0
+	firstStaleIdx := -1
+	lastStaleIdx := -1
+	contiguous := true
+
+	for i, ans := range prev.Answer {
+		ip, ok := dnsAnswerIP(ans)
+		if !ok || ip.IsUnspecified() || next.IncludeIp(ip) {
+			continue
+		}
+		if firstStaleIdx == -1 {
+			firstStaleIdx = i
+		} else if i != lastStaleIdx+1 {
+			contiguous = false
+		}
+		lastStaleIdx = i
+		staleCount++
+	}
+
+	if staleCount == 0 {
+		return nil
+	}
+	if contiguous {
+		return &DnsCache{Answer: prev.Answer[firstStaleIdx : lastStaleIdx+1 : lastStaleIdx+1]}
+	}
+
+	staleAnswers := make([]dnsmessage.RR, 0, staleCount)
+	for _, ans := range prev.Answer {
+		ip, ok := dnsAnswerIP(ans)
+		if !ok || ip.IsUnspecified() || next.IncludeIp(ip) {
+			continue
+		}
+		staleAnswers = append(staleAnswers, ans)
+	}
+	return &DnsCache{Answer: staleAnswers}
+}
+
 type daedlineFunc func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time)
 
 func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
@@ -858,11 +999,19 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 		return err
 	}
 
-	// OPTIMIZATION: Pre-pack the DNS response to avoid Pack() overhead on cache hits.
-	// This is done once during cache creation rather than on every cache hit.
-	if err = newCache.PrepackResponse(fqdn, dnsTyp); err != nil {
+	// OPTIMIZATION: Pre-pack the DNS response before publishing the cache entry.
+	// This avoids Pack() overhead on cache hits while keeping the published RR
+	// values unchanged.
+	if err = newCache.prepackResponseBeforeStore(fqdn, dnsTyp, ttlFromDeadline(deadline, now), now); err != nil {
 		c.log.Warnf("failed to prepack DNS response: %v", err)
 		// Continue without pre-packed response - will fall back to Pack() on hit
+	}
+
+	var staleSideEffects *DnsCache
+	if oldValue, ok := c.dnsCache.Load(cacheKey); ok {
+		if oldCache, ok := oldValue.(*DnsCache); ok {
+			staleSideEffects = staleDnsSideEffects(oldCache, newCache)
+		}
 	}
 
 	// Store atomically - concurrent writes don't block each other
@@ -873,6 +1022,9 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	}
 	// Mark BPF as updated with current data hash to enable differential updates
 	newCache.MarkBpfUpdated(now)
+	if staleSideEffects != nil {
+		c.onDnsCacheEvicted(staleSideEffects)
+	}
 
 	return nil
 }

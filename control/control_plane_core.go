@@ -21,7 +21,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/safchain/ethtool"
 	"github.com/sirupsen/logrus"
@@ -707,18 +706,12 @@ func tryDeleteFlippedFilter(f *netlink.BpfFilter) {
 // extractIpsFromDnsCache returns the unique, valid non-unspecified IP addresses
 // contained in the A/AAAA records of a DNS cache entry.
 func extractIpsFromDnsCache(cache *DnsCache) []netip.Addr {
-	var ips []netip.Addr
+	if cache == nil || len(cache.Answer) == 0 {
+		return nil
+	}
+	ips := make([]netip.Addr, 0, len(cache.Answer))
 	for _, ans := range cache.Answer {
-		var (
-			ip netip.Addr
-			ok bool
-		)
-		switch body := ans.(type) {
-		case *dnsmessage.A:
-			ip, ok = netip.AddrFromSlice(body.A)
-		case *dnsmessage.AAAA:
-			ip, ok = netip.AddrFromSlice(body.AAAA)
-		}
+		ip, ok := dnsAnswerIP(ans)
 		if !ok || ip.IsUnspecified() {
 			continue
 		}
@@ -772,7 +765,7 @@ func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
 
 	// Update bpf map.
 	// Construct keys and BpfMapBatchDelete.
-	var keys [][4]uint32
+	keys := make([][4]uint32, 0, len(ips))
 	for _, ip := range ips {
 		ip6 := ip.As16()
 		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))

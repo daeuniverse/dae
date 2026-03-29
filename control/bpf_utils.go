@@ -97,6 +97,7 @@ func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map,
 	if _, err = BpfMapBatchUpdate(m, keys, values, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
+		_ = m.Close()
 		return nil, err
 	}
 	return m, nil
@@ -285,7 +286,6 @@ type loadBpfOptions struct {
 	BigEndianTproxyPort uint32
 	CollectionOptions   *ebpf.CollectionOptions
 }
-
 
 func loadBpfObjectsWithConstantsAndCustomizer(
 	obj interface{},

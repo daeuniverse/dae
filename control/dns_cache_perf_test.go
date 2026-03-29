@@ -418,6 +418,76 @@ func TestDnsCache_PrepackResponse_Correctness(t *testing.T) {
 	}
 }
 
+func TestDnsCache_PrepackResponseBeforeStore_RestoresRRTTL(t *testing.T) {
+	answer := &dnsmessage.A{
+		Hdr: dnsmessage.RR_Header{
+			Name:   "test.example.com.",
+			Rrtype: dnsmessage.TypeA,
+			Class:  dnsmessage.ClassINET,
+			Ttl:    60,
+		},
+		A: []byte{93, 184, 216, 34},
+	}
+	ns := &dnsmessage.NS{
+		Hdr: dnsmessage.RR_Header{
+			Name:   "test.example.com.",
+			Rrtype: dnsmessage.TypeNS,
+			Class:  dnsmessage.ClassINET,
+			Ttl:    120,
+		},
+		Ns: "ns1.example.com.",
+	}
+	extra := &dnsmessage.A{
+		Hdr: dnsmessage.RR_Header{
+			Name:   "ns1.example.com.",
+			Rrtype: dnsmessage.TypeA,
+			Class:  dnsmessage.ClassINET,
+			Ttl:    180,
+		},
+		A: []byte{93, 184, 216, 35},
+	}
+	cache := &DnsCache{
+		Answer:           []dnsmessage.RR{answer},
+		NS:               []dnsmessage.RR{ns},
+		Extra:            []dnsmessage.RR{extra},
+		Deadline:         time.Now().Add(5 * time.Minute),
+		OriginalDeadline: time.Now().Add(5 * time.Minute),
+	}
+
+	if err := cache.prepackResponseBeforeStore("test.example.com.", dnsmessage.TypeA, 42, time.Now()); err != nil {
+		t.Fatalf("failed to prepack response before store: %v", err)
+	}
+
+	if answer.Header().Ttl != 60 {
+		t.Fatalf("answer TTL changed after prepack: got %d", answer.Header().Ttl)
+	}
+	if ns.Header().Ttl != 120 {
+		t.Fatalf("ns TTL changed after prepack: got %d", ns.Header().Ttl)
+	}
+	if extra.Header().Ttl != 180 {
+		t.Fatalf("extra TTL changed after prepack: got %d", extra.Header().Ttl)
+	}
+
+	packed := cache.GetPackedResponse()
+	if packed == nil {
+		t.Fatal("packed response should not be nil")
+	}
+
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(packed); err != nil {
+		t.Fatalf("failed to unpack prepacked response: %v", err)
+	}
+	if got := msg.Answer[0].Header().Ttl; got != 42 {
+		t.Fatalf("packed answer TTL mismatch: got %d want 42", got)
+	}
+	if got := msg.Ns[0].Header().Ttl; got != 42 {
+		t.Fatalf("packed ns TTL mismatch: got %d want 42", got)
+	}
+	if got := msg.Extra[0].Header().Ttl; got != 42 {
+		t.Fatalf("packed extra TTL mismatch: got %d want 42", got)
+	}
+}
+
 // TestDnsCache_FillIntoWithTTL_Correctness verifies TTL is calculated correctly
 func TestDnsCache_FillIntoWithTTL_Correctness(t *testing.T) {
 	// Create cache with 300 second TTL
