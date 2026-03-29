@@ -65,29 +65,65 @@ func TestStabilityCountReset(t *testing.T) {
 	}
 }
 
+func TestRevivalTrigger(t *testing.T) {
+	globalRecoveryBackoffLevelStore.Reset()
+	d := newRecoveryTestDialer()
+	d.GlobalOption.CheckInterval = 30 * time.Second
+	d.initRecoveryDetection(30 * time.Second)
+
+	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+
+	// 1. Success with isRevival=false should NOT start timer
+	d.NotifyHealthCheckResult(typ, true, false)
+	d.recoveryState[idxTcp].Lock()
+	if d.recoveryState[idxTcp].confirmTimer != nil {
+		d.recoveryState[idxTcp].Unlock()
+		t.Error("Timer started on non-revival success")
+	}
+	d.recoveryState[idxTcp].Unlock()
+
+	// 2. Success with isRevival=true SHOULD start timer
+	// Note: in new logic, we must be careful. NotifyHealthCheckResult(true, true) starts timer regardless of current state
+	// as long as isRevival=true is passed.
+	d.NotifyHealthCheckResult(typ, true, true)
+	d.recoveryState[idxTcp].Lock()
+	if d.recoveryState[idxTcp].confirmTimer == nil {
+		d.recoveryState[idxTcp].Unlock()
+		t.Error("Timer NOT started on revival success")
+	} else {
+		d.recoveryState[idxTcp].confirmTimer.Stop()
+		d.recoveryState[idxTcp].confirmTimer = nil
+	}
+	d.recoveryState[idxTcp].Unlock()
+}
+
 func TestExponentialProgression(t *testing.T) {
+	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(30 * time.Second)
 	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 
-	// 1st Recovery: level 0 -> 1
-	d.NotifyHealthCheckResult(typ, true, true)
-	d.confirmRecovery(typ)
-	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 1 {
-		t.Errorf("Expected level 1, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
-	}
-
-	// Failure doesn't reset level!
+	// 1st Failure: level 0 -> 1
 	d.NotifyHealthCheckResult(typ, false, false)
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 1 {
-		t.Errorf("Expected level 1 to persist after failure, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
+		t.Errorf("Expected level 1 after failure, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
 	}
 
-	// 2nd Recovery: level 1 -> 2
+	// Recovery: level 1 -> 0
 	d.NotifyHealthCheckResult(typ, true, true)
-	d.confirmRecovery(typ)
+	d.confirmRecovery(typ, nil)
+	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 0 {
+		t.Errorf("Expected level 0 after recovery, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
+	}
+
+	// 2nd Failure: level 0 -> 1
+	d.lastPunish[idxTcp].Store(0)
+	d.NotifyHealthCheckResult(typ, false, false)
+	// 3rd Failure: level 1 -> 2
+	d.lastPunish[idxTcp].Store(0)
+	d.NotifyHealthCheckResult(typ, false, false)
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 2 {
-		t.Errorf("Expected level 2, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
+		t.Errorf("Expected level 2 after multiple failures, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
 	}
 }
 

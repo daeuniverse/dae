@@ -599,8 +599,11 @@ func (d *Dialer) aliveBackground() {
 		d.submitCheckTasks(workerPool, &wg, opts, checkFamily != "", cycleRes)
 		wg.Wait()
 		if checkFamily == "" {
-			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure)
-			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_UDP, cycleRes.udpSuccess, cycleRes.udpFailure)
+			// Stability-based wash white: only reset stability if a protocol family had failures
+			// WITHOUT any successes in this cycle. This allows partially-working dual-stack
+			// nodes (e.g. V4 OK, V6 broken) to eventually wash white their penalty.
+			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure && !cycleRes.tcpSuccess)
+			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_UDP, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
 		}
 
 		// Targeted checks don't disturb the periodic timer — only full checks do.
@@ -871,8 +874,10 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration, isResusc
 	d.collectionFineMu.Unlock()
 
 	// Notify about health check success.
-	// isRevival is true if we were dead OR if this is an explicit resuscitation probe.
-	isRevival := !wasAlive || isResuscitation
+	// isRevival is true if we were dead.
+	// We no longer trigger recovery detection for explicit resuscitation probes on already-alive nodes
+	// to prevent "self-punishment" (unnecessary level increments).
+	isRevival := !wasAlive
 	d.NotifyHealthCheckResult(typ, true, isRevival)
 
 	return update, avg
