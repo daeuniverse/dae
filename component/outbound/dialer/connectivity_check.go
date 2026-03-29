@@ -680,6 +680,16 @@ func (d *Dialer) NotifyCheckUdp() {
 	default:
 	}
 
+	// 2s cooldown for emergency probes to protect the worker pool.
+	now := time.Now().UnixNano()
+	pre := d.lastNotifyUdp.Load()
+	if now-pre < int64(2*time.Second) {
+		return
+	}
+	if !d.lastNotifyUdp.CompareAndSwap(pre, now) {
+		return
+	}
+
 	select {
 	case d.checkUdpCh <- struct{}{}:
 	default:
@@ -692,6 +702,16 @@ func (d *Dialer) NotifyCheckTcp() {
 	case <-d.ctx.Done():
 		return
 	default:
+	}
+
+	// 2s cooldown for emergency probes to protect the worker pool.
+	now := time.Now().UnixNano()
+	pre := d.lastNotifyTcp.Load()
+	if now-pre < int64(2*time.Second) {
+		return
+	}
+	if !d.lastNotifyTcp.CompareAndSwap(pre, now) {
+		return
 	}
 
 	select {

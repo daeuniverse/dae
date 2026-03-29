@@ -512,23 +512,12 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 
 	dialOption, err := createOption.GetDialOption(ctx)
 	if err != nil {
+		p.cacheFailureLocked(key, createOption.Log)
 		return nil, err
 	}
 	udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
 	if err != nil {
-		// Negative cache the failure to prevent dial storms under load.
-		failedUe := &UdpEndpoint{
-			log:     createOption.Log,
-			poolRef: p,
-			poolKey: key,
-		}
-		failedUe.failed.Store(true)
-		failedUe.expiresAtNano.Store(time.Now().Add(2 * time.Second).UnixNano())
-
-		shard := p.shardFor(key)
-		shard.mu.Lock()
-		shard.pool[key] = failedUe
-		shard.mu.Unlock()
+		p.cacheFailureLocked(key, createOption.Log)
 		return nil, err
 	}
 	packetConn, ok := udpConn.(netproxy.PacketConn)
@@ -571,6 +560,21 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	// Receive UDP messages.
 	go ue.start()
 	return ue, nil
+}
+
+func (p *UdpEndpointPool) cacheFailureLocked(key UdpEndpointKey, log *logrus.Logger) {
+	failedUe := &UdpEndpoint{
+		log:     log,
+		poolRef: p,
+		poolKey: key,
+	}
+	failedUe.failed.Store(true)
+	failedUe.expiresAtNano.Store(time.Now().Add(2 * time.Second).UnixNano())
+
+	shard := p.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = failedUe
+	shard.mu.Unlock()
 }
 
 func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {

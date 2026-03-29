@@ -84,6 +84,7 @@ var (
 	QuicNatTimeout = 2 * time.Minute
 
 	udpNoAliveDialerLogLimiter sync.Map // map[udpNoAliveDialerLogKey]int64(unix nano)
+	resuscitationLimiter       sync.Map // map[string]int64(unix nano)
 	connectionErrorLogLimiter  sync.Map // map[string]int64(unix nano)
 )
 
@@ -101,6 +102,10 @@ const (
 func ResetUdpLogLimiters() {
 	udpNoAliveDialerLogLimiter.Range(func(key, value any) bool {
 		udpNoAliveDialerLogLimiter.Delete(key)
+		return true
+	})
+	resuscitationLimiter.Range(func(key, value any) bool {
+		resuscitationLimiter.Delete(key)
 		return true
 	})
 	connectionErrorLogLimiter.Range(func(key, value any) bool {
@@ -240,17 +245,20 @@ func (c *ControlPlane) logNoAliveDialerLimited(
 	}).Warn("no alive dialer for selection (rate-limited)")
 
 	// Aggressively re-probe all dialers when ErrNoAliveDialer is detected.
-	// Without this, recovery depends solely on the periodic check_interval timer.
-	// Since ErrNoAliveDialer drops every packet, traffic never succeeds and
-	// ReportAvailableTraffic is never called — the system is stuck until the next
-	// scheduled health check cycle. By triggering NotifyCheck here (rate-limited
-	// to once per noAliveDialerLogInterval), dead dialers are re-examined promptly
-	// after the underlying issue clears, eliminating the need for a manual restart.
-	for _, d := range outbound.Dialers {
-		if selectionNetworkType.L4Proto == consts.L4ProtoStr_UDP {
-			d.NotifyCheckUdp()
-		} else {
-			d.NotifyCheckTcp()
+	// Rate-limit to once per group every 10 seconds to avoid worker pool starvation.
+	now := time.Now().UnixNano()
+	pre, ok := resuscitationLimiter.Load(outbound.Name)
+	if !ok || (now-pre.(int64) >= int64(noAliveDialerLogInterval)) {
+		if _, loaded := resuscitationLimiter.LoadOrStore(outbound.Name, now); !loaded || (now-pre.(int64) >= int64(noAliveDialerLogInterval)) {
+			// Double-check-ish with Store to ensure one goroutine wins.
+			resuscitationLimiter.Store(outbound.Name, now)
+			for _, d := range outbound.Dialers {
+				if selectionNetworkType.L4Proto == consts.L4ProtoStr_UDP {
+					d.NotifyCheckUdp()
+				} else {
+					d.NotifyCheckTcp()
+				}
+			}
 		}
 	}
 }

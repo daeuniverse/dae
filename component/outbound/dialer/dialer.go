@@ -124,6 +124,8 @@ type Dialer struct {
 		// pendingNetworkType is the network type being verified for recovery
 		pendingNetworkType *NetworkType
 	}
+	lastNotifyUdp atomic.Int64
+	lastNotifyTcp atomic.Int64
 }
 
 // recoveryBackoffLevelStore provides persistent backoff level storage
