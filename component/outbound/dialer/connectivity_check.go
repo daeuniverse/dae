@@ -853,7 +853,7 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	return update
 }
 
-func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration, isResuscitation bool) (collectionUpdate, time.Duration) {
+func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collectionUpdate, time.Duration) {
 	d.collectionFineMu.Lock()
 	idx := typ.Index()
 	collection := d.collections[idx]
@@ -935,7 +935,7 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 	}
 	if ok && err == nil {
 		// Success: update latency and mark alive.
-		update, avg := d.markAvailable(opts.networkType, bestLatency, isResuscitation)
+		update, avg := d.markAvailable(opts.networkType, bestLatency)
 
 		if cycle != nil {
 			cycle.Lock()
