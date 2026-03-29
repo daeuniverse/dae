@@ -355,7 +355,7 @@ func TestCleanupRealDomainNegSet_RemovesExpiredEntries(t *testing.T) {
 	cp.realDomainNegSet.Store("live.example", now.Add(time.Second).UnixNano())
 	cp.realDomainNegSet.Store("bad.example", "invalid")
 
-	cp.cleanupRealDomainNegSet(now)
+	cp.cleanupNegativeCaches(now)
 
 	_, ok := cp.realDomainNegSet.Load("expired.example")
 	if ok {

@@ -8,6 +8,8 @@ package outbound
 import (
 	"errors"
 	"fmt"
+	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -30,6 +32,11 @@ type DialerGroup struct {
 	aliveDialerSets [6]*dialer.AliveDialerSet
 
 	selectionPolicy *DialerSelectionPolicy
+
+	resuscitateLastTime atomic.Int64
+	noAliveLogLastTimes [6]atomic.Int64
+
+	cachedMinCheckInterval time.Duration
 }
 
 func NewDialerGroup(
@@ -129,9 +136,9 @@ func NewDialerGroup(
 		aliveDialerSets: aliveDialerSets,
 		selectionPolicy: &p,
 	}
+	group.cachedMinCheckInterval = group.MinCheckInterval()
 
 	return group
-
 }
 
 func (g *DialerGroup) Close() error {
@@ -151,8 +158,135 @@ func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy)
 	return g.selectionPolicy.Policy
 }
 
+func (g *DialerGroup) MinCheckInterval() time.Duration {
+	if len(g.Dialers) == 0 {
+		return 30 * time.Second
+	}
+	min := g.Dialers[0].CheckInterval
+	for _, d := range g.Dialers[1:] {
+		if d.CheckInterval < min {
+			min = d.CheckInterval
+		}
+	}
+	if min < 2*time.Second {
+		return 2 * time.Second
+	}
+	return min
+}
+
+
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
 	return d.aliveDialerSets[typ.Index()]
+}
+
+// tryDoRateLimitedAction checks if an action can be performed based on a rate limit.
+// It uses atomic operations to ensure thread-safety with minimal overhead.
+func (g *DialerGroup) tryDoRateLimitedAction(last *atomic.Int64, interval time.Duration) bool {
+	now := time.Now().UnixNano()
+	l := last.Load()
+	if now-l < int64(interval) {
+		return false
+	}
+	return last.CompareAndSwap(l, now)
+}
+
+// HandleNoAliveDialer is the unified entry point for handling dialer selection failures.
+// IT MUST ONLY BE CALLED ON THE ERROR PATH to ensure zero overhead for successful requests.
+// It automatically triggers a resuscitation probe and logs the failure, both subject to
+// their respective (cached) rate limits.
+func (g *DialerGroup) HandleNoAliveDialer(
+	origNetworkType string,
+	selectionNetworkType *dialer.NetworkType,
+	src netip.AddrPort,
+	dst netip.AddrPort,
+	domain string,
+	strictIpVersion bool,
+) {
+	// 1. Attempt resuscitation (rate-limited by min check interval)
+	if g.tryDoRateLimitedAction(&g.resuscitateLastTime, g.cachedMinCheckInterval) {
+		g.resuscitate(selectionNetworkType)
+	}
+
+	// 2. Log the failure (rate-limited by 5x check interval, min 10s)
+	idx := selectionNetworkType.Index()
+	logInterval := g.cachedMinCheckInterval * 5
+	if logInterval < 10*time.Second {
+		logInterval = 10 * time.Second
+	}
+
+	if g.tryDoRateLimitedAction(&g.noAliveLogLastTimes[idx], logInterval) {
+		g.logNoAlive(origNetworkType, selectionNetworkType, src, dst, domain, strictIpVersion, logInterval)
+	}
+}
+
+// Resuscitate triggers a targeted health check for all dialers in the group.
+// It is rate-limited to once per group per MinCheckInterval to prevent worker pool starvation.
+// Returns true if a resuscitation probe was actually signaled.
+func (g *DialerGroup) Resuscitate(networkType *dialer.NetworkType) bool {
+	if g.tryDoRateLimitedAction(&g.resuscitateLastTime, g.cachedMinCheckInterval) {
+		g.resuscitate(networkType)
+		return true
+	}
+	return false
+}
+
+func (g *DialerGroup) resuscitate(networkType *dialer.NetworkType) {
+	for _, d := range g.Dialers {
+		if networkType.L4Proto == consts.L4ProtoStr_UDP {
+			d.NotifyCheckUdp()
+		} else {
+			d.NotifyCheckTcp()
+		}
+	}
+}
+
+// LogNoAliveDialer logs a warning when no alive dialer is found for selection.
+// It is rate-limited per network type to prevent log spam.
+func (g *DialerGroup) LogNoAliveDialer(
+	origNetworkType string,
+	selectionNetworkType *dialer.NetworkType,
+	src netip.AddrPort,
+	dst netip.AddrPort,
+	domain string,
+	strictIpVersion bool,
+) {
+	idx := selectionNetworkType.Index()
+	interval := g.cachedMinCheckInterval * 5
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+
+	if g.tryDoRateLimitedAction(&g.noAliveLogLastTimes[idx], interval) {
+		g.logNoAlive(origNetworkType, selectionNetworkType, src, dst, domain, strictIpVersion, interval)
+	}
+}
+
+func (g *DialerGroup) logNoAlive(
+	origNetworkType string,
+	selectionNetworkType *dialer.NetworkType,
+	src netip.AddrPort,
+	dst netip.AddrPort,
+	domain string,
+	strictIpVersion bool,
+	interval time.Duration,
+) {
+	total := len(g.Dialers)
+	alive := 0
+	if a := g.MustGetAliveDialerSet(selectionNetworkType); a != nil {
+		alive = a.Len()
+	}
+
+	g.log.WithFields(logrus.Fields{
+		"outbound":               g.Name,
+		"orig_network_type":      origNetworkType,
+		"selection_network_type": selectionNetworkType.String(),
+		"src":                    src.String(),
+		"to":                     dst.String(),
+		"sniffed":                domain,
+		"interval":               interval.String(),
+		"total":                  total,
+		"alive":                  alive,
+	}).Warn("no alive dialer for selection (rate-limited)")
 }
 
 // Select is a backward-compatible wrapper for SelectWithExclusion.

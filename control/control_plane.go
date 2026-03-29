@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -91,7 +92,8 @@ type ControlPlane struct {
 	connStateJanitorOnce sync.Once
 
 	// Track last alert time to avoid spamming logs
-	lastMapOverflowAlertTime sync.Map // map[string]time.Time
+	lastBpfOverflowAlertTime  atomic.Int64
+	lastUdpPressureAlertTime atomic.Int64
 
 	wanInterface []string
 	lanInterface []string
@@ -102,6 +104,8 @@ type ControlPlane struct {
 	mptcp              bool
 	udpUnorderedRunner *udpUnorderedTaskRunner
 	udpBoundedPool     *udpBoundedPoolManager
+	failedQuicDcidCache        sync.Map // map[PacketSnifferKey]int64 (expiresAt unix nano)
+	lastConnectionErrorLogTime atomic.Int64
 }
 
 var (
@@ -609,6 +613,7 @@ func NewControlPlaneWithContext(
 		udpUnorderedRunner:   newDefaultUdpUnorderedTaskRunner(cctx),
 		udpBoundedPool:       newUdpBoundedPoolManager(cctx),
 	}
+	SetFailedQuicDcidCache(&plane.failedQuicDcidCache)
 	SetAnyfromSoMark(global.SoMarkFromDae)
 	plane.startRealDomainNegJanitor()
 	plane.startConnStateJanitor()
@@ -1126,21 +1131,28 @@ func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
 	return true
 }
 
-func (c *ControlPlane) cleanupRealDomainNegSet(now time.Time) {
+func (c *ControlPlane) cleanupNegativeCaches(now time.Time) {
 	nowNano := now.UnixNano()
-	c.realDomainNegSet.Range(func(key, value any) bool {
-		domain, ok := key.(string)
-		if !ok {
-			c.realDomainNegSet.Delete(key)
-			return true
-		}
+
+	// 1. Cleanup real domain negative cache
+	c.realDomainNegSet.Range(func(key, value interface{}) bool {
 		expiresAt, ok := value.(int64)
-		if !ok || expiresAt <= nowNano {
-			c.realDomainNegSet.Delete(domain)
+		if !ok || nowNano >= expiresAt {
+			c.realDomainNegSet.Delete(key)
+		}
+		return true
+	})
+
+	// 2. Cleanup QUIC DCID negative cache
+	c.failedQuicDcidCache.Range(func(key, value interface{}) bool {
+		expiresAt, ok := value.(int64)
+		if !ok || nowNano >= expiresAt {
+			c.failedQuicDcidCache.Delete(key)
 		}
 		return true
 	})
 }
+
 
 type dnsDialerSnapshotKey struct {
 	realSrc      netip.AddrPort
@@ -1247,7 +1259,7 @@ func (c *ControlPlane) startRealDomainNegJanitor() {
 			case <-c.negJanitorStop:
 				return
 			case now := <-ticker.C:
-				c.cleanupRealDomainNegSet(now)
+				c.cleanupNegativeCaches(now)
 				c.cleanupDnsDialerSnapshot(now)
 			}
 		}
@@ -1697,37 +1709,32 @@ func (c *ControlPlane) checkBpfMapHealth() {
 
 	// Alert on significant overflow counts
 	if udpOverflow > 0 || tcpOverflow > 0 {
-		// Use a fixed key to avoid unbounded growth in lastMapOverflowAlertTime.
-		// The cooldown period prevents alert spam.
-		const alertKeyBpfOverflow = "bpf_overflow"
-		lastAlertTime, _ := c.lastMapOverflowAlertTime.LoadOrStore(alertKeyBpfOverflow, time.Time{})
-
-		// Type assertion is safe here since we only ever store time.Time values.
-		lastTime, ok := lastAlertTime.(time.Time)
-		if !ok || lastTime.Add(alertCooldown).Before(now) {
-			c.log.Warnf("BPF map overflow detected: UDP conn state=%d, TCP conn state=%d. "+
-				"Some packets are falling back to slower paths. Check if map capacity is adequate.",
-				udpOverflow, tcpOverflow)
-			c.lastMapOverflowAlertTime.Store(alertKeyBpfOverflow, now)
+		// Use atomic Int64 to store the last alert time in Unix nanoseconds.
+		// Cooldown prevents alert spam.
+		nowNano := now.UnixNano()
+		last := c.lastBpfOverflowAlertTime.Load()
+		if last == 0 || last+int64(alertCooldown) < nowNano {
+			if c.lastBpfOverflowAlertTime.CompareAndSwap(last, nowNano) {
+				c.log.Warnf("BPF map overflow detected: UDP conn state=%d, TCP conn state=%d. "+
+					"Some packets are falling back to slower paths. Check if map capacity is adequate.",
+					udpOverflow, tcpOverflow)
+			}
 		}
 	}
 
 	// Estimate map usage by sampling (full iteration is expensive)
-	// We use the count from the last cleanup cycle as an estimate
 	if bpf.UdpConnStateMap != nil {
 		maxEntries := bpf.UdpConnStateMap.MaxEntries()
-		// Since we don't have a cheap way to get exact count without iterating,
-		// we rely on the overflow counters as the primary health indicator.
 		// If overflow is happening, map is under pressure.
 		if udpOverflow > 100 && maxEntries > 0 {
-			alertKey := "udp_conn_state_map_pressure"
-			lastAlertTime, _ := c.lastMapOverflowAlertTime.LoadOrStore(alertKey, time.Time{})
-
-			if lastAlertTime.(time.Time).Add(alertCooldown).Before(now) {
-				c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
-					"Consider increasing MAX_DST_MAPPING_NUM or reducing connection timeout.",
-					udpOverflow)
-				c.lastMapOverflowAlertTime.Store(alertKey, now)
+			nowNano := now.UnixNano()
+			last := c.lastUdpPressureAlertTime.Load()
+			if last == 0 || last+int64(alertCooldown) < nowNano {
+				if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
+					c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
+						"Consider increasing MAX_DST_MAPPING_NUM or reducing connection timeout.",
+						udpOverflow)
+				}
 			}
 		}
 	}

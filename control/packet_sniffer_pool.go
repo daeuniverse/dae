@@ -39,17 +39,23 @@ const (
 	// (ErrNotApplicable) before immediately giving up on this DCID. Reduced to 2 to
 	// quickly identify non-QUIC traffic that shouldn't be sniffed.
 	consecutiveDecryptFailuresThreshold = 2
-
-	// failedQuicDcidTtl is how long a DCID is marked as failed after sniffing timeout.
-	// Set to 5 minutes to balance between avoiding repeated failures and allowing
-	// recovery after transient network issues.
-	failedQuicDcidTtl = 5 * time.Minute
 )
 
-// failedQuicDcidCache tracks DCIDs that have failed sniffing.
-// Once a DCID fails (timeout, threshold reached), subsequent packets with
-// the same DCID bypass sniffing entirely and use IP routing.
-var failedQuicDcidCache sync.Map // map[PacketSnifferKey]time.Time
+var (
+	failedQuicDcidTtl = 5 * time.Minute
+	failedQuicDcidCachePtr atomic.Pointer[sync.Map]
+)
+
+// SetFailedQuicDcidCache sets the active cache for failed QUIC DCIDs.
+// This allows the ControlPlane to provide its instance-local cache while
+// maintaining the package-level API for callers.
+func SetFailedQuicDcidCache(m *sync.Map) {
+	failedQuicDcidCachePtr.Store(m)
+}
+
+func getFailedQuicDcidCache() *sync.Map {
+	return failedQuicDcidCachePtr.Load()
+}
 
 // PacketSniffer holds sniffing state for a UDP flow.
 // Field order optimized for memory alignment (Go best practice).
@@ -332,15 +338,6 @@ func (p *PacketSnifferPool) startJanitor() {
 					}
 					return true
 				})
-
-				// Clean up expired failed DCID entries (this is typically small)
-				failedQuicDcidCache.Range(func(key, value any) bool {
-					expireTime := value.(time.Time)
-					if now.After(expireTime) {
-						failedQuicDcidCache.Delete(key)
-					}
-					return true
-				})
 			}
 		}()
 	})
@@ -349,8 +346,13 @@ func (p *PacketSnifferPool) startJanitor() {
 // IsQuicDcidFailed checks if a DCID has been marked as failed due to sniffing timeout.
 // Failed DCIDs bypass sniffing entirely and use IP routing directly.
 func IsQuicDcidFailed(key PacketSnifferKey) bool {
-	if expireTime, ok := failedQuicDcidCache.Load(key); ok {
-		return time.Now().Before(expireTime.(time.Time))
+	m := getFailedQuicDcidCache()
+	if m == nil {
+		return false
+	}
+	if v, ok := m.Load(key); ok {
+		expiresAt, ok := v.(int64)
+		return ok && time.Now().UnixNano() < expiresAt
 	}
 	return false
 }
@@ -358,15 +360,23 @@ func IsQuicDcidFailed(key PacketSnifferKey) bool {
 // MarkQuicDcidFailed marks a DCID as failed, causing subsequent packets with
 // the same DCID to bypass sniffing and use IP routing directly.
 func MarkQuicDcidFailed(key PacketSnifferKey) {
-	failedQuicDcidCache.Store(key, time.Now().Add(failedQuicDcidTtl))
+	m := getFailedQuicDcidCache()
+	if m == nil {
+		return
+	}
+	m.Store(key, time.Now().Add(failedQuicDcidTtl).UnixNano())
 }
 
 // ClearFailedQuicDcids clears all failed DCID entries.
 // This should be called on reload or when network conditions improve
 // (e.g., after successful health check) to allow retrying sniffing.
 func ClearFailedQuicDcids() {
-	failedQuicDcidCache.Range(func(key, value any) bool {
-		failedQuicDcidCache.Delete(key)
+	m := getFailedQuicDcidCache()
+	if m == nil {
+		return
+	}
+	m.Range(func(key, value any) bool {
+		m.Delete(key)
 		return true
 	})
 }

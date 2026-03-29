@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -83,9 +82,7 @@ var (
 	// QuicNatTimeout is 2 minutes for QUIC long-lived connections.
 	QuicNatTimeout = 2 * time.Minute
 
-	udpNoAliveDialerLogLimiter sync.Map // map[udpNoAliveDialerLogKey]int64(unix nano)
-	resuscitationLimiter       sync.Map // map[string]int64(unix nano)
-	connectionErrorLogLimiter  sync.Map // map[string]int64(unix nano)
+
 )
 
 const (
@@ -93,25 +90,13 @@ const (
 	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
 	MaxRetry       = 2
 
-	noAliveDialerLogInterval   = 10 * time.Second
+
 	connectionErrorLogInterval = 5 * time.Second
 )
 
 // ResetUdpLogLimiters clears all rate limiters for UDP logging.
 // Called on reload to allow fresh logging after configuration changes.
 func ResetUdpLogLimiters() {
-	udpNoAliveDialerLogLimiter.Range(func(key, value any) bool {
-		udpNoAliveDialerLogLimiter.Delete(key)
-		return true
-	})
-	resuscitationLimiter.Range(func(key, value any) bool {
-		resuscitationLimiter.Delete(key)
-		return true
-	})
-	connectionErrorLogLimiter.Range(func(key, value any) bool {
-		connectionErrorLogLimiter.Delete(key)
-		return true
-	})
 }
 
 func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
@@ -150,115 +135,17 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 	return true
 }
 
-type udpNoAliveDialerLogKey struct {
-	outbound             string
-	origNetworkType      string
-	selectionNetworkType string
-	strictIpVersion      bool
-}
 
-func allowNoAliveDialerLog(key udpNoAliveDialerLogKey, now time.Time) bool {
+
+func (c *ControlPlane) allowConnectionErrorLog(now time.Time) bool {
 	nowNano := now.UnixNano()
 	for {
-		prev, ok := udpNoAliveDialerLogLimiter.Load(key)
-		if !ok {
-			if _, loaded := udpNoAliveDialerLogLimiter.LoadOrStore(key, nowNano); !loaded {
-				return true
-			}
-			continue
-		}
-
-		last, ok := prev.(int64)
-		if !ok {
-			udpNoAliveDialerLogLimiter.Store(key, nowNano)
-			return true
-		}
-		if nowNano-last < int64(noAliveDialerLogInterval) {
-			return false
-		}
-		if udpNoAliveDialerLogLimiter.CompareAndSwap(key, last, nowNano) {
-			return true
-		}
-	}
-}
-
-func allowConnectionErrorLog(key string, now time.Time) bool {
-	nowNano := now.UnixNano()
-	for {
-		prev, ok := connectionErrorLogLimiter.Load(key)
-		if !ok {
-			if _, loaded := connectionErrorLogLimiter.LoadOrStore(key, nowNano); !loaded {
-				return true
-			}
-			continue
-		}
-
-		last, ok := prev.(int64)
-		if !ok {
-			connectionErrorLogLimiter.Store(key, nowNano)
-			return true
-		}
+		last := c.lastConnectionErrorLogTime.Load()
 		if nowNano-last < int64(connectionErrorLogInterval) {
 			return false
 		}
-		if connectionErrorLogLimiter.CompareAndSwap(key, last, nowNano) {
+		if c.lastConnectionErrorLogTime.CompareAndSwap(last, nowNano) {
 			return true
-		}
-	}
-}
-
-func (c *ControlPlane) logNoAliveDialerLimited(
-	outbound *ob.DialerGroup,
-	origNetworkType string,
-	selectionNetworkType *dialer.NetworkType,
-	src netip.AddrPort,
-	dst netip.AddrPort,
-	domain string,
-	strictIpVersion bool,
-) {
-	key := udpNoAliveDialerLogKey{
-		outbound:             outbound.Name,
-		origNetworkType:      origNetworkType,
-		selectionNetworkType: selectionNetworkType.String(),
-		strictIpVersion:      strictIpVersion,
-	}
-	if !allowNoAliveDialerLog(key, time.Now()) {
-		return
-	}
-
-	total := len(outbound.Dialers)
-	alive := 0
-	if a := outbound.MustGetAliveDialerSet(selectionNetworkType); a != nil {
-		alive = a.Len()
-	}
-
-	c.log.WithFields(logrus.Fields{
-		"outbound":               outbound.Name,
-		"orig_network_type":      origNetworkType,
-		"selection_network_type": selectionNetworkType.String(),
-		"src":                    src.String(),
-		"to":                     dst.String(),
-		"sniffed":                domain,
-		"interval":               noAliveDialerLogInterval.String(),
-		"total":                  total,
-		"alive":                  alive,
-	}).Warn("no alive dialer for selection (rate-limited)")
-
-	// Aggressively re-probe all dialers when ErrNoAliveDialer is detected.
-	// Rate-limit to once per group every 10 seconds to avoid worker pool starvation.
-	now := time.Now().UnixNano()
-	pre, ok := resuscitationLimiter.Load(outbound.Name)
-	if !ok || (now-pre.(int64) >= int64(noAliveDialerLogInterval)) {
-		if _, loaded := resuscitationLimiter.LoadOrStore(outbound.Name, now); !loaded || (now-pre.(int64) >= int64(noAliveDialerLogInterval)) {
-			// Double-check-ish with Store to ensure one goroutine wins.
-			resuscitationLimiter.Store(outbound.Name, now)
-			for _, d := range outbound.Dialers {
-				if selectionNetworkType.L4Proto == consts.L4ProtoStr_UDP {
-					d.NotifyCheckUdp()
-				} else {
-					d.NotifyCheckTcp()
-				}
-			}
 		}
 	}
 }
@@ -270,6 +157,9 @@ type DialOption struct {
 	Network       string
 	SniffedDomain string
 	Excluded      *dialer.Dialer
+	// NowNano is an optional pre-calculated timestamp to avoid calling time.Now()
+	// in the hot path. If 0, time.Now() will be used.
+	NowNano int64
 }
 
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
@@ -442,6 +332,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	var realSrc netip.AddrPort
 	var domain string
 	var ueKey UdpEndpointKey
+	now := time.Now()
+	nowNano := now.UnixNano()
 	realSrc = src
 
 	// DNS Fast Path: Skip UdpEndpoint lookup for DNS traffic (port 53).
@@ -597,7 +489,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		_sniffer.Mu.Lock()
 		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
-			now := time.Now()
 
 			// Check if we've hit the bypass threshold for this DCID.
 			// After consecutive failures, fall back to IP routing to avoid
@@ -779,6 +670,7 @@ getNew:
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,
+			NowNano:    nowNano,
 			GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 				dialParam := &proxyDialParam{
 					Outbound:    consts.OutboundIndex(routingResult.Outbound),
@@ -796,8 +688,7 @@ getNew:
 				res, err := c.chooseProxyDialer(ctx, dialParam)
 				if err != nil {
 					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
-						c.logNoAliveDialerLimited(
-							res.Outbound,
+						res.Outbound.HandleNoAliveDialer(
 							res.OrigNetworkType,
 							res.SelectionNetworkTypeObj,
 							realSrc,
@@ -818,6 +709,7 @@ getNew:
 					Network:       res.Network,
 					SniffedDomain: res.SniffedDomain,
 					Excluded:      excludedDialer,
+					NowNano:       nowNano,
 				}, nil
 			},
 		})
@@ -826,7 +718,7 @@ getNew:
 				// Already emitted a rate-limited diagnostic log above, or hit negative cache.
 				return nil
 			}
-			if allowConnectionErrorLog("handlePktGetOrCreate", time.Now()) {
+			if c.allowConnectionErrorLog(now) {
 				return fmt.Errorf("failed to GetOrCreate: %w", err)
 			}
 			return nil

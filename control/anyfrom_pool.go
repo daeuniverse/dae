@@ -57,13 +57,20 @@ func (a *Anyfrom) afterWrite(err error) {
 }
 
 // RefreshTtl updates the expiration time. Uses throttling to reduce atomic
-// store overhead: only refreshes if at least ttlRefreshMinInterval has passed
-// since the last refresh, or if TTL > 10s (refresh interval = TTL/50).
+// store overhead.
 func (a *Anyfrom) RefreshTtl() {
+	a.RefreshTtlWithTime(0)
+}
+
+// RefreshTtlWithTime updates the expiration time using a pre-calculated
+// timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
+func (a *Anyfrom) RefreshTtlWithTime(nowNano int64) {
 	if a.ttl <= 0 {
 		return
 	}
-	now := time.Now().UnixNano()
+	if nowNano == 0 {
+		nowNano = time.Now().UnixNano()
+	}
 	last := a.lastRefreshNano.Load()
 	// Throttle: skip if refreshed recently.
 	// For long TTLs, use TTL/50 as interval; for short TTLs, use minimum.
@@ -71,12 +78,12 @@ func (a *Anyfrom) RefreshTtl() {
 	if ttlNano := int64(a.ttl); ttlNano > 10*ttlRefreshMinInterval {
 		minInterval = ttlNano / 50
 	}
-	if now-last < minInterval {
+	if nowNano-last < minInterval {
 		return
 	}
 	// CAS to avoid thundering herd on the same connection.
-	if a.lastRefreshNano.CompareAndSwap(last, now) {
-		a.expiresAtNano.Store(now + int64(a.ttl))
+	if a.lastRefreshNano.CompareAndSwap(last, nowNano) {
+		a.expiresAtNano.Store(nowNano + int64(a.ttl))
 	}
 }
 

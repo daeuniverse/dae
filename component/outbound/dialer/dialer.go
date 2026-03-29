@@ -605,6 +605,27 @@ func (d *Dialer) resetBackoffLevel() {
 	}
 }
 
+func (d *Dialer) GetBackoffLevel() int {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+	return d.recoveryState.backoffLevel
+}
+
+// GetBackoffPenalty returns a latency penalty for nodes in recovery.
+// Penalty = current backoff duration / 20.
+// This ensures recently recovered nodes are deprioritized until stable.
+func (d *Dialer) GetBackoffPenalty() time.Duration {
+	d.recoveryState.Lock()
+	defer d.recoveryState.Unlock()
+
+	if d.recoveryState.backoffLevel == 0 {
+		return 0
+	}
+
+	return d.calculateBackoffDurationLocked(d.recoveryState.backoffLevel, d.recoveryState.maxBackoff) / 20
+}
+
+
 // markUnavailableFromProxyFailure immediately marks the dialer as unavailable.
 // This is called when all proxy IPs have failed after retries, bypassing the health check cycle.
 func (d *Dialer) markUnavailableFromProxyFailure() {

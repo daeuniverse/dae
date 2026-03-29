@@ -314,13 +314,21 @@ func (ue *UdpEndpoint) Close() error {
 	return nil
 }
 
-// ttlRefreshMinInterval is the minimum time between TTL refreshes.
-// This throttles atomic stores on hot paths to reduce overhead under high QPS.
+// RefreshTtl updates the expiration time. Uses throttling to reduce atomic
+// store overhead.
 func (ue *UdpEndpoint) RefreshTtl() {
+	ue.RefreshTtlWithTime(0)
+}
+
+// RefreshTtlWithTime updates the expiration time using a pre-calculated
+// timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
+func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 	if ue.NatTimeout <= 0 {
 		return
 	}
-	now := time.Now().UnixNano()
+	if nowNano == 0 {
+		nowNano = time.Now().UnixNano()
+	}
 	last := ue.lastRefreshNano.Load()
 	// Throttle: skip if refreshed recently.
 	// For long TTLs, use TTL/50 as interval; for short TTLs, use minimum.
@@ -328,12 +336,12 @@ func (ue *UdpEndpoint) RefreshTtl() {
 	if ttlNano := int64(ue.NatTimeout); ttlNano > 10*ttlRefreshMinInterval {
 		minInterval = ttlNano / 50
 	}
-	if now-last < minInterval {
+	if nowNano-last < minInterval {
 		return
 	}
 	// CAS to avoid thundering herd on the same connection.
-	if ue.lastRefreshNano.CompareAndSwap(last, now) {
-		ue.expiresAtNano.Store(now + int64(ue.NatTimeout))
+	if ue.lastRefreshNano.CompareAndSwap(last, nowNano) {
+		ue.expiresAtNano.Store(nowNano + int64(ue.NatTimeout))
 	}
 }
 
@@ -427,6 +435,9 @@ type UdpEndpointOptions struct {
 	// Log is the logger to use for endpoint lifecycle events.
 	// If nil, logs are discarded.
 	Log *logrus.Logger
+	// NowNano is an optional pre-calculated timestamp to avoid calling time.Now()
+	// in the hot path. If 0, time.Now() will be used.
+	NowNano int64
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -550,7 +561,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		}
 	}
 
-	ue.RefreshTtl()
+	ue.RefreshTtlWithTime(createOption.NowNano)
 
 	shard := p.shardFor(key)
 	shard.mu.Lock()
@@ -597,7 +608,11 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 			if createOption != nil && createOption.NatTimeout > 0 {
 				ue.UpdateNatTimeout(createOption.NatTimeout)
 			} else {
-				ue.RefreshTtl()
+				var nowNano int64
+				if createOption != nil {
+					nowNano = createOption.NowNano
+				}
+				ue.RefreshTtlWithTime(nowNano)
 			}
 			shard.mu.RUnlock()
 			return ue, false, nil
@@ -623,7 +638,11 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 			if createOption != nil && createOption.NatTimeout > 0 {
 				ue.UpdateNatTimeout(createOption.NatTimeout)
 			} else {
-				ue.RefreshTtl()
+				var nowNano int64
+				if createOption != nil {
+					nowNano = createOption.NowNano
+				}
+				ue.RefreshTtlWithTime(nowNano)
 			}
 			shard.mu.RUnlock()
 			return ue, false, nil

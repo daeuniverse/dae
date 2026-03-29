@@ -141,8 +141,13 @@ func (d *Dialer) snapshotLatencyForPolicy(
 		hasLatency = rawLatency > 0
 	}
 	d.collectionFineMu.RUnlock()
+
+	if hasLatency {
+		rawLatency += d.GetBackoffPenalty()
+	}
 	return rawLatency, hasLatency
 }
+
 
 func (d *Dialer) snapshotAliveDialerGroupsLocked(collection *collection) []*AliveDialerSet {
 	if len(collection.AliveDialerSetSet) == 0 {
@@ -645,13 +650,19 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 		checkOpt := opt
 		err := workerPool.Submit(func() {
 			defer wg.Done()
-			_, _ = d.Check(checkOpt, isResuscitation)
+			if isResuscitation {
+				// Stagger resuscitation probes to prevent thundering herd.
+				// Random delay between 0 and 2 seconds.
+				time.Sleep(time.Duration(fastrand.Int63n(int64(2 * time.Second))))
+			}
+			_, _ = d.check(checkOpt, isResuscitation)
 		})
+
 		if err != nil {
 			// If pool is closed or errors out, fallback to goroutine to ensure check proceeds
 			go func() {
 				defer wg.Done()
-				_, _ = d.Check(checkOpt, isResuscitation)
+				_, _ = d.check(checkOpt, isResuscitation)
 			}()
 		}
 	}
@@ -882,7 +893,13 @@ func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
 	}
 }
 
-func (d *Dialer) Check(opts *CheckOption, isResuscitation bool) (ok bool, err error) {
+// Check performs a basic connectivity check.
+// Backward compatibility wrapper for check(opts, false).
+func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
+	return d.check(opts, false)
+}
+
+func (d *Dialer) check(opts *CheckOption, isResuscitation bool) (ok bool, err error) {
 	const maxAttempts = 2
 	var bestLatency time.Duration
 

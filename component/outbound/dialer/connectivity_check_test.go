@@ -85,7 +85,7 @@ func TestDialerCheck_SkipDoesNotCascadeToUnavailable(t *testing.T) {
 	}
 
 	for i := range 128 {
-		ok, err := d.Check(checkOpt, false)
+		ok, err := d.Check(checkOpt)
 		if err != nil {
 			t.Fatalf("unexpected error at round %d: %v", i, err)
 		}
@@ -134,7 +134,7 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 			return false, errors.New("simulated health check failure")
 		},
-	}, false)
+	})
 	if err == nil {
 		t.Fatal("expected check error")
 	}
@@ -183,7 +183,7 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 			return false, errors.New("simulated health check failure")
 		},
-	}, false)
+	})
 	if err == nil {
 		t.Fatal("expected initial failure")
 	}
@@ -194,7 +194,7 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 				return false, nil
 			},
-		}, false)
+		})
 		if skipErr != nil || ok {
 			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
 		}
@@ -241,7 +241,7 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 			return false, errors.New("simulated health check failure")
 		},
-	}, false)
+	})
 	if err == nil {
 		t.Fatal("expected failure from d1")
 	}
@@ -252,7 +252,7 @@ func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
 			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
 				return false, nil
 			},
-		}, false)
+		})
 		if skipErr != nil || ok {
 			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
 		}
@@ -315,20 +315,24 @@ func TestDialerCheck_ConcurrentStateAccess(t *testing.T) {
 		if i%2 == 1 {
 			opt = failureOpt
 		}
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			for ctx.Err() == nil {
-				_, _ = d.Check(opt, false)
+				_, _ = d.Check(opt)
 			}
-		})
+		}()
 	}
 	for range 4 {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			for ctx.Err() == nil {
 				alive := d.MustGetAlive(networkType)
 				aliveSet.NotifyLatencyChange(d, alive)
 				_, _ = d.snapshotLatencyForPolicy(networkType, consts.DialerSelectionPolicy_MinMovingAverageLatencies)
 			}
-		})
+		}()
 	}
 	wg.Wait()
 }
