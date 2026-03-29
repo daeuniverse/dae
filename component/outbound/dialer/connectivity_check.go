@@ -143,7 +143,7 @@ func (d *Dialer) snapshotLatencyForPolicy(
 	d.collectionFineMu.RUnlock()
 
 	if hasLatency {
-		rawLatency += d.GetBackoffPenalty()
+		rawLatency += d.GetBackoffPenalty(typ.L4Proto)
 	}
 	return rawLatency, hasLatency
 }
@@ -574,6 +574,7 @@ func (d *Dialer) aliveBackground() {
 		// only the matching check opts are run (both IPv4 and IPv6), and the
 		// periodic ticker is left untouched so the regular schedule is not disrupted.
 		var checkFamily consts.L4ProtoStr
+		var cycleRes *cycleResult
 		select {
 		case <-d.ctx.Done():
 			return
@@ -592,10 +593,15 @@ func (d *Dialer) aliveBackground() {
 		} else {
 			// Full check: advance the sticky IP cache cycle to allow IP failover.
 			d.IncrementCheckCycle()
+			cycleRes = &cycleResult{}
 		}
 
-		d.submitCheckTasks(workerPool, &wg, opts, checkFamily != "")
+		d.submitCheckTasks(workerPool, &wg, opts, checkFamily != "", cycleRes)
 		wg.Wait()
+		if checkFamily == "" {
+			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure)
+			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_UDP, cycleRes.udpSuccess, cycleRes.udpFailure)
+		}
 
 		// Targeted checks don't disturb the periodic timer — only full checks do.
 		if checkFamily != "" {
@@ -639,7 +645,7 @@ func filterCheckOptsByFamily(opts []*CheckOption, family consts.L4ProtoStr) []*C
 }
 
 // submitCheckTasks submits check tasks to worker pool
-func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption, isResuscitation bool) {
+func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption, isResuscitation bool, cycle *cycleResult) {
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
 		if !d.hasAliveDialerSets(opt.networkType) {
@@ -655,14 +661,14 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 				// Random delay between 0 and 2 seconds.
 				time.Sleep(time.Duration(fastrand.Int63n(int64(2 * time.Second))))
 			}
-			_, _ = d.check(checkOpt, isResuscitation)
+			_, _ = d.check(checkOpt, isResuscitation, cycle)
 		})
 
 		if err != nil {
 			// If pool is closed or errors out, fallback to goroutine to ensure check proceeds
 			go func() {
 				defer wg.Done()
-				_, _ = d.check(checkOpt, isResuscitation)
+				_, _ = d.check(checkOpt, isResuscitation, cycle)
 			}()
 		}
 	}
@@ -836,15 +842,15 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 
 	// Notify sticky IP dialer and recovery detection ONLY when truly transitioning to dead.
 	// This prevents a single failed dialer from repeatedly invalidating the global cache (Sticky Killer).
-	// Bypassed for forced death to avoid recursion loop with NotifyHealthCheckResult.
+	// Bypassed for forced death to avoid recursive calls.
 	if wasAlive && !alive && !force {
-		d.NotifyHealthCheckResult(false)
+		d.NotifyHealthCheckResult(typ, false, false)
 	}
 
 	return update
 }
 
-func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collectionUpdate, time.Duration) {
+func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration, isResuscitation bool) (collectionUpdate, time.Duration) {
 	d.collectionFineMu.Lock()
 	idx := typ.Index()
 	collection := d.collections[idx]
@@ -856,7 +862,7 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	collection.Latencies10.AppendLatency(latency)
 	avg, _ := collection.Latencies10.AvgLatency()
 	collection.MovingAverage = (collection.MovingAverage + latency) / 2
-	collection.Alive.Store(true)
+	wasAlive := collection.Alive.Swap(true)
 	update := collectionUpdate{
 		alive:             true,
 		movingAverage:     collection.MovingAverage,
@@ -864,8 +870,10 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	}
 	d.collectionFineMu.Unlock()
 
-	// Notify sticky IP dialer about the health check success
-	d.NotifyHealthCheckResult(true)
+	// Notify about health check success.
+	// isRevival is true if we were dead OR if this is an explicit resuscitation probe.
+	isRevival := !wasAlive || isResuscitation
+	d.NotifyHealthCheckResult(typ, true, isRevival)
 
 	return update, avg
 }
@@ -894,12 +902,12 @@ func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
 }
 
 // Check performs a basic connectivity check.
-// Backward compatibility wrapper for check(opts, false).
+// Backward compatibility wrapper for check(opts, false, nil).
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
-	return d.check(opts, false)
+	return d.check(opts, false, nil)
 }
 
-func (d *Dialer) check(opts *CheckOption, isResuscitation bool) (ok bool, err error) {
+func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResult) (ok bool, err error) {
 	const maxAttempts = 2
 	var bestLatency time.Duration
 
@@ -922,7 +930,17 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool) (ok bool, err er
 	}
 	if ok && err == nil {
 		// Success: update latency and mark alive.
-		update, avg := d.markAvailable(opts.networkType, bestLatency)
+		update, avg := d.markAvailable(opts.networkType, bestLatency, isResuscitation)
+
+		if cycle != nil {
+			cycle.Lock()
+			if opts.networkType.L4Proto == consts.L4ProtoStr_TCP {
+				cycle.tcpSuccess = true
+			} else {
+				cycle.udpSuccess = true
+			}
+			cycle.Unlock()
+		}
 
 		fields := logrus.Fields{
 			"network": opts.networkType.String(),
@@ -941,6 +959,16 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool) (ok bool, err er
 		// Failure: mark unavailable only if there's an actual error.
 		d.logUnavailable(opts.networkType, err)
 		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))
+
+		if cycle != nil {
+			cycle.Lock()
+			if opts.networkType.L4Proto == consts.L4ProtoStr_TCP {
+				cycle.tcpFailure = true
+			} else {
+				cycle.udpFailure = true
+			}
+			cycle.Unlock()
+		}
 	}
 	// Skip update when (ok=false, err=nil): preserve existing alive state.
 	return ok, err
@@ -993,4 +1021,12 @@ func (d *Dialer) DnsCheck(ctx context.Context, dns netip.AddrPort, network strin
 		return false, fmt.Errorf("bad DNS response: no record")
 	}
 	return true, nil
+}
+
+type cycleResult struct {
+	sync.Mutex
+	tcpSuccess bool
+	tcpFailure bool
+	udpSuccess bool
+	udpFailure bool
 }

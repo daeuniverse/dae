@@ -53,6 +53,9 @@ const (
 	IdxDnsUdp6 = 3
 	IdxTcp4    = 4
 	IdxTcp6    = 5
+
+	idxTcp = 0
+	idxUdp = 1
 )
 
 var (
@@ -106,13 +109,18 @@ type Dialer struct {
 	stickyIpDialer *stickyip.StickyIpDialer
 
 	// recoveryState manages exponential backoff for recovery detection
-	// This prevents flapping when a dialer recovers but might fail again soon
-	recoveryState struct {
+	// This prevents flapping when a dialer recovers but might fail again soon.
+	// Index 0: TCP, Index 1: UDP.
+	recoveryState [2]struct {
 		sync.Mutex
 
 		// backoffLevel indicates current backoff level (0, 1, 2, 3...)
 		// Backoff duration = minBackoff * (2 ^ level), capped at maxBackoff
 		backoffLevel int
+
+		// stableSuccessCount is the number of consecutive stable periodic checks
+		// When this reaches 6, backoffLevel is decremented.
+		stableSuccessCount int
 
 		// maxBackoff is the maximum backoff duration, calculated based on check interval
 		// This is set during initialization and prevents overlap with health checks
@@ -130,32 +138,34 @@ type Dialer struct {
 
 // recoveryBackoffLevelStore provides persistent backoff level storage
 // This allows recovery state to survive Clone() operations and reloads
-// Key: Dialer name, Value: backoff level (0, 1, 2, ...)
+// Key: Dialer name, Value: [TCP level, UDP level]
 type recoveryBackoffLevelStore struct {
 	sync.RWMutex
-	levels map[string]int
+	levels map[string][2]int
 }
 
 var globalRecoveryBackoffLevelStore = &recoveryBackoffLevelStore{
-	levels: make(map[string]int),
+	levels: make(map[string][2]int),
 }
 
-// Get returns the backoff level for the given dialer name.
-// Returns 0 if the dialer name is not found (first time or after restart).
-func (s *recoveryBackoffLevelStore) Get(dialerName string) int {
+// Get returns the backoff level for the given dialer name and protocol index.
+// Returns 0 if the dialer name or protocol is not found.
+func (s *recoveryBackoffLevelStore) Get(dialerName string) [2]int {
 	s.RLock()
 	defer s.RUnlock()
 	if level, ok := s.levels[dialerName]; ok {
 		return level
 	}
-	return 0
+	return [2]int{0, 0}
 }
 
-// Set updates the backoff level for the given dialer name.
-func (s *recoveryBackoffLevelStore) Set(dialerName string, level int) {
+// Set updates the backoff level for the given dialer name and protocol index.
+func (s *recoveryBackoffLevelStore) Set(dialerName string, protoIdx int, level int) {
 	s.Lock()
 	defer s.Unlock()
-	s.levels[dialerName] = level
+	l := s.levels[dialerName]
+	l[protoIdx] = level
+	s.levels[dialerName] = l
 }
 
 // Delete removes the backoff level for the given dialer name.
@@ -253,7 +263,9 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	// This maintains recovery progression across dialer recreations
 	if d.property != nil {
 		if dialerName := d.Property().Name; dialerName != "" {
-			d.recoveryState.backoffLevel = globalRecoveryBackoffLevelStore.Get(dialerName)
+			levels := globalRecoveryBackoffLevelStore.Get(dialerName)
+			d.recoveryState[idxTcp].backoffLevel = levels[idxTcp]
+			d.recoveryState[idxUdp].backoffLevel = levels[idxUdp]
 		}
 	}
 
@@ -271,7 +283,8 @@ func (d *Dialer) Close() error {
 	d.cancel()
 
 	// Cancel any pending recovery confirmation to prevent timer leaks
-	d.cancelPendingRecoveryConfirmation()
+	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_TCP)
+	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_UDP)
 
 	d.tickerMu.Lock()
 	if d.ticker != nil {
@@ -306,9 +319,9 @@ func (d *Dialer) IncrementCheckCycle() {
 }
 
 // NotifyHealthCheckResult notifies about health check results.
-// On success: clears failed QUIC DCID cache, resets proxy IP failure counter, and triggers recovery detection.
-// On failure: tracks consecutive failures and immediately marks dialer as unavailable if threshold reached.
-func (d *Dialer) NotifyHealthCheckResult(success bool) {
+// On success: clears failed QUIC DCID cache, resets proxy IP failure counter, and triggers recovery detection if revival.
+// On failure: tracks consecutive failures and trims stability counter.
+func (d *Dialer) NotifyHealthCheckResult(typ *NetworkType, success bool, isRevival bool) {
 	if success {
 		// Reset proxy IP failure counter on success
 		if d.property.Address != "" {
@@ -317,10 +330,18 @@ func (d *Dialer) NotifyHealthCheckResult(success bool) {
 		// Clear failed QUIC DCID cache
 		notifyQuicDcidCacheClearImpl()
 
-		// Trigger recovery detection with exponential backoff
-		d.triggerRecoveryDetection()
-
+		// Trigger recovery detection with exponential backoff ONLY on revival
+		if isRevival {
+			d.triggerRecoveryDetection(typ)
+		}
 	} else {
+		// Reset stability counter on any failure (Trust Level Reset)
+		d.resetStabilityCount(typ.L4Proto)
+
+		// Cancel any pending recovery confirmation to prevent premature recovery
+		// if the node revives again before the original timer fires.
+		d.cancelPendingRecoveryConfirmation(typ.L4Proto)
+
 		// Track failures - may trigger immediate unavailability
 		if d.property.Address != "" {
 			if recordProxyFailure(d.property.Address) {
@@ -330,6 +351,13 @@ func (d *Dialer) NotifyHealthCheckResult(success bool) {
 			}
 		}
 	}
+}
+
+func (d *Dialer) protoIdx(proto consts.L4ProtoStr) int {
+	if proto == consts.L4ProtoStr_UDP {
+		return idxUdp
+	}
+	return idxTcp
 }
 
 // NotifyProxyFailure is called when a proxy server connection fails (e.g., connection refused).
@@ -361,9 +389,6 @@ func SetQuicDcidCacheClearFunc(fn func()) {
 // initRecoveryDetection initializes recovery detection with adjusted max backoff based on health check interval.
 // This prevents infinite amplification between periodic health checks and recovery confirmation timers.
 func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
-
 	// Max backoff should be < health check interval to prevent overlap
 	// Use 2/3 of check interval to leave room for confirmation
 	maxBackoff := time.Duration(float64(checkInterval) * 2.0 / 3.0)
@@ -371,8 +396,11 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 		maxBackoff = minRecoveryBackoff
 	}
 
-	// Store the calculated max backoff for use in getRecoveryBackoffDuration
-	d.recoveryState.maxBackoff = maxBackoff
+	for i := 0; i < 2; i++ {
+		d.recoveryState[i].Lock()
+		d.recoveryState[i].maxBackoff = maxBackoff
+		d.recoveryState[i].Unlock()
+	}
 
 	d.Log.WithFields(logrus.Fields{
 		"dialer":         d.Property().Name,
@@ -383,8 +411,8 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 
 // triggerRecoveryDetection triggers recovery detection with exponential backoff.
 // This is called when health check succeeds, to verify the dialer is truly stable before marking it healthy.
-func (d *Dialer) triggerRecoveryDetection() {
-	d.triggerRecoveryDetectionInternal(nil)
+func (d *Dialer) triggerRecoveryDetection(typ *NetworkType) {
+	d.triggerRecoveryDetectionInternal(typ)
 }
 
 func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
@@ -398,75 +426,37 @@ func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
 	default:
 	}
 
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
+	protoIdx := d.protoIdx(target.L4Proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
 
 	// Skip if confirmation timer already running (prevent duplicate triggers)
-	if d.recoveryState.confirmTimer != nil {
+	if d.recoveryState[protoIdx].confirmTimer != nil {
 		d.Log.WithFields(logrus.Fields{
 			"dialer": d.Property().Name,
+			"proto":  target.L4Proto,
 		}).Traceln("Recovery detection already in progress, skip")
 		return
 	}
 
-	// Determine which network type to check.
-	// If no specific target provided, default to UDPv4 (legacy behavior)
-	// or try to find a dead protocol to recover.
 	networkType := target
-	if networkType == nil {
-		networkType = &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     false,
-		}
-	}
 
-	// Skip if already healthy (no need to confirm recovery)
-	if d.MustGetAlive(networkType) {
-		// If the specific target is healthy, try to find any other dead protocol.
-		found := false
-		if target == nil {
-			protocols := []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
-			ipVersions := []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
-			isDnsChoices := []bool{false, true}
-
-			for _, p := range protocols {
-				for _, v := range ipVersions {
-					for _, dns := range isDnsChoices {
-						nt := &NetworkType{L4Proto: p, IpVersion: v, IsDns: dns}
-						if !d.MustGetAlive(nt) {
-							networkType = nt
-							found = true
-							goto afterSearch
-						}
-					}
-				}
-			}
-		}
-	afterSearch:
-		if !found {
-			d.Log.WithFields(logrus.Fields{
-				"dialer":  d.Property().Name,
-				"network": networkType.String(),
-			}).Traceln("Dialer is already healthy across measured protocols, skip recovery detection")
-			return
-		}
-	}
+	// NOTE: We no longer skip if already healthy, because the caller (markAvailable)
+	// now provides an explicit isRevival flag. If we are here, it's a confirmed revival.
 
 	// Calculate backoff duration based on current level
-	// We read backoffLevel and maxBackoff while holding the lock to avoid race conditions
-	backoff := d.calculateBackoffDurationLocked(d.recoveryState.backoffLevel, d.recoveryState.maxBackoff)
+	backoff := d.calculateBackoffDurationLocked(d.recoveryState[protoIdx].backoffLevel, d.recoveryState[protoIdx].maxBackoff)
 
 	d.Log.WithFields(logrus.Fields{
 		"dialer":        d.Property().Name,
 		"network":       networkType.String(),
 		"backoff":       backoff.String(),
-		"backoff_level": d.recoveryState.backoffLevel,
+		"backoff_level": d.recoveryState[protoIdx].backoffLevel,
 	}).Debugln("Recovery detection scheduled with exponential backoff")
 
 	// Schedule confirmation timer
-	d.recoveryState.pendingNetworkType = networkType
-	d.recoveryState.confirmTimer = time.AfterFunc(backoff, func() {
+	d.recoveryState[protoIdx].pendingNetworkType = networkType
+	d.recoveryState[protoIdx].confirmTimer = time.AfterFunc(backoff, func() {
 		d.confirmRecovery(networkType)
 	})
 }
@@ -487,14 +477,15 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 	default:
 	}
 
-	d.recoveryState.Lock()
+	protoIdx := d.protoIdx(networkType.L4Proto)
+	d.recoveryState[protoIdx].Lock()
 	// Clear timer
-	if d.recoveryState.confirmTimer != nil {
-		d.recoveryState.confirmTimer = nil
+	if d.recoveryState[protoIdx].confirmTimer != nil {
+		d.recoveryState[protoIdx].confirmTimer = nil
 	}
 	// Snapshot backoff level while holding lock to detect concurrent resets
-	currentBackoffLevel := d.recoveryState.backoffLevel
-	d.recoveryState.Unlock()
+	currentBackoffLevel := d.recoveryState[protoIdx].backoffLevel
+	d.recoveryState[protoIdx].Unlock()
 
 	// CRITICAL: Check context again after releasing lock
 	select {
@@ -508,10 +499,10 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 	}
 
 	// Double-check if still healthy (might have failed during backoff period)
-	d.recoveryState.Lock()
+	d.recoveryState[protoIdx].Lock()
 	alive := d.MustGetAlive(networkType)
 	if !alive {
-		d.recoveryState.Unlock()
+		d.recoveryState[protoIdx].Unlock()
 		d.Log.WithFields(logrus.Fields{
 			"dialer":  d.Property().Name,
 			"network": networkType.String(),
@@ -521,56 +512,60 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 
 	// Confirm recovery - increase backoff level for next time
 	// Only increment if level hasn't been reset by a concurrent failure
-	if d.recoveryState.backoffLevel == currentBackoffLevel {
-		d.recoveryState.backoffLevel++
+	if d.recoveryState[protoIdx].backoffLevel == currentBackoffLevel {
+		d.recoveryState[protoIdx].backoffLevel++
 		// Persist the incremented backoff level to survive Clone() and reloads
 		if d.property != nil {
 			if dialerName := d.Property().Name; dialerName != "" {
-				globalRecoveryBackoffLevelStore.Set(dialerName, d.recoveryState.backoffLevel)
+				globalRecoveryBackoffLevelStore.Set(dialerName, protoIdx, d.recoveryState[protoIdx].backoffLevel)
 			}
 		}
 		d.Log.WithFields(logrus.Fields{
 			"dialer":        d.Property().Name,
+			"proto":         networkType.L4Proto,
 			"network":       networkType.String(),
-			"backoff_level": d.recoveryState.backoffLevel,
+			"backoff_level": d.recoveryState[protoIdx].backoffLevel,
 		}).Infoln("Recovery confirmed after exponential backoff")
 	} else {
 		// Level was reset by concurrent failure, don't increment
 		d.Log.WithFields(logrus.Fields{
 			"dialer":        d.Property().Name,
 			"network":       networkType.String(),
-			"backoff_level": d.recoveryState.backoffLevel,
+			"backoff_level": d.recoveryState[protoIdx].backoffLevel,
 		}).Debugln("Recovery confirmation skipped: backoff level was reset by concurrent failure")
 	}
-	d.recoveryState.Unlock()
+	d.recoveryState[protoIdx].Unlock()
 
 	// Note: We don't call markAvailable() here because periodic health check
 	// will naturally update the dialer state. This just confirms the recovery is genuine.
 }
 
-// cancelPendingRecoveryConfirmation cancels any pending recovery confirmation timer.
+// cancelPendingRecoveryConfirmation cancels any pending recovery confirmation timer for a specific protocol.
 // This is called when the dialer fails again during recovery observation period.
-func (d *Dialer) cancelPendingRecoveryConfirmation() {
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
+func (d *Dialer) cancelPendingRecoveryConfirmation(proto consts.L4ProtoStr) {
+	protoIdx := d.protoIdx(proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
 
-	if d.recoveryState.confirmTimer != nil {
-		d.recoveryState.confirmTimer.Stop()
-		d.recoveryState.confirmTimer = nil
+	if d.recoveryState[protoIdx].confirmTimer != nil {
+		d.recoveryState[protoIdx].confirmTimer.Stop()
+		d.recoveryState[protoIdx].confirmTimer = nil
 
 		d.Log.WithFields(logrus.Fields{
 			"dialer": d.Property().Name,
+			"proto":  proto,
 		}).Debugln("Pending recovery confirmation cancelled due to new failure")
 	}
 }
 
-// getRecoveryBackoffDuration returns the backoff duration based on current level.
+// getRecoveryBackoffDuration returns the backoff duration based on current level for a protocol.
 // Thread-safe: acquires lock to read backoffLevel and maxBackoff.
-func (d *Dialer) getRecoveryBackoffDuration() time.Duration {
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
+func (d *Dialer) getRecoveryBackoffDuration(proto consts.L4ProtoStr) time.Duration {
+	protoIdx := d.protoIdx(proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
 
-	return d.calculateBackoffDurationLocked(d.recoveryState.backoffLevel, d.recoveryState.maxBackoff)
+	return d.calculateBackoffDurationLocked(d.recoveryState[protoIdx].backoffLevel, d.recoveryState[protoIdx].maxBackoff)
 }
 
 // calculateBackoffDurationLocked calculates the backoff duration without acquiring a lock.
@@ -580,6 +575,9 @@ func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Durat
 	duration := minRecoveryBackoff
 	for i := 0; i < level; i++ {
 		duration *= time.Duration(backoffMultiplier)
+		if duration >= maxBackoff {
+			return maxBackoff
+		}
 	}
 
 	// Cap at max backoff
@@ -590,39 +588,95 @@ func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Durat
 	return duration
 }
 
-// resetBackoffLevel resets the backoff level to 0.
-// This is called when the dialer fails, restarting the backoff progression.
-func (d *Dialer) resetBackoffLevel() {
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
+// fullResetBackoffState resets both backoff level and stability counter to 0.
+// This is used for manual resets or major configuration changes.
+func (d *Dialer) fullResetBackoffState(proto consts.L4ProtoStr) {
+	protoIdx := d.protoIdx(proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
 
-	d.recoveryState.backoffLevel = 0
-	// Also update persistent store so Clone() starts from level 0
+	d.recoveryState[protoIdx].backoffLevel = 0
+	d.recoveryState[protoIdx].stableSuccessCount = 0
+
+	// Also update persistent store
 	if d.property != nil {
 		if dialerName := d.Property().Name; dialerName != "" {
-			globalRecoveryBackoffLevelStore.Set(dialerName, 0)
+			globalRecoveryBackoffLevelStore.Set(dialerName, protoIdx, 0)
 		}
 	}
 }
 
-func (d *Dialer) GetBackoffLevel() int {
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
-	return d.recoveryState.backoffLevel
+// resetStabilityCount resets only the stability counter to 0 for a protocol.
+// This is called when the dialer fails, restarting the recovery cycle while keeping
+// the current backoff (penalty) level.
+func (d *Dialer) resetStabilityCount(proto consts.L4ProtoStr) {
+	protoIdx := d.protoIdx(proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
+
+	d.recoveryState[protoIdx].stableSuccessCount = 0
 }
 
-// GetBackoffPenalty returns a latency penalty for nodes in recovery.
+func (d *Dialer) GetBackoffLevel(proto consts.L4ProtoStr) int {
+	protoIdx := d.protoIdx(proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
+	return d.recoveryState[protoIdx].backoffLevel
+}
+
+// GetBackoffPenalty returns a latency penalty for nodes in recovery for a specific protocol.
 // Penalty = current backoff duration / 20.
 // This ensures recently recovered nodes are deprioritized until stable.
-func (d *Dialer) GetBackoffPenalty() time.Duration {
-	d.recoveryState.Lock()
-	defer d.recoveryState.Unlock()
+func (d *Dialer) GetBackoffPenalty(proto consts.L4ProtoStr) time.Duration {
+	protoIdx := d.protoIdx(proto)
+	d.recoveryState[protoIdx].Lock()
+	defer d.recoveryState[protoIdx].Unlock()
 
-	if d.recoveryState.backoffLevel == 0 {
+	if d.recoveryState[protoIdx].backoffLevel == 0 {
 		return 0
 	}
 
-	return d.calculateBackoffDurationLocked(d.recoveryState.backoffLevel, d.recoveryState.maxBackoff) / 20
+	return d.calculateBackoffDurationLocked(d.recoveryState[protoIdx].backoffLevel, d.recoveryState[protoIdx].maxBackoff) / 20
+}
+
+// NotifyPeriodicCheckResult handles stability-based "wash white" logic for a protocol.
+// Any failure resets the counter. A single success (with no failures) increments the stability counter.
+func (d *Dialer) NotifyPeriodicCheckResult(proto consts.L4ProtoStr, success bool, failure bool) {
+	if failure {
+		d.resetStabilityCount(proto)
+		return
+	}
+
+	if success {
+		protoIdx := d.protoIdx(proto)
+		d.recoveryState[protoIdx].Lock()
+		defer d.recoveryState[protoIdx].Unlock()
+
+		if d.recoveryState[protoIdx].backoffLevel == 0 {
+			// Already clean.
+			d.recoveryState[protoIdx].stableSuccessCount = 0
+			return
+		}
+
+		d.recoveryState[protoIdx].stableSuccessCount++
+		if d.recoveryState[protoIdx].stableSuccessCount >= 2 {
+			d.recoveryState[protoIdx].stableSuccessCount = 0
+			d.recoveryState[protoIdx].backoffLevel--
+
+			// Persist the decremented backoff level
+			if d.property != nil {
+				if dialerName := d.Property().Name; dialerName != "" {
+					globalRecoveryBackoffLevelStore.Set(dialerName, protoIdx, d.recoveryState[protoIdx].backoffLevel)
+				}
+			}
+
+			d.Log.WithFields(logrus.Fields{
+				"dialer":        d.Property().Name,
+				"proto":         proto,
+				"backoff_level": d.recoveryState[protoIdx].backoffLevel,
+			}).Infoln("Recovery confirmed: long-term stability detected, backoff level decreased")
+		}
+	}
 }
 
 
@@ -651,11 +705,13 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 		}
 	}
 
-	// Reset backoff level (start fresh for next recovery)
-	d.resetBackoffLevel()
+	// Reset stability count (Trust Level)
+	d.resetStabilityCount(consts.L4ProtoStr_TCP)
+	d.resetStabilityCount(consts.L4ProtoStr_UDP)
 
 	// Cancel any pending recovery confirmation
-	d.cancelPendingRecoveryConfirmation()
+	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_TCP)
+	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_UDP)
 }
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
