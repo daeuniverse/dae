@@ -33,7 +33,7 @@ func newRecoveryTestDialer() *Dialer {
 
 func TestIssue1_DeadlockFixed(t *testing.T) {
 	d := newRecoveryTestDialer()
-	d.GlobalOption.CheckInterval = 30 * time.Second
+	d.CheckInterval = 30 * time.Second
 
 	d.initRecoveryDetection(30 * time.Second)
 
@@ -64,7 +64,7 @@ func TestIssue2_MaxBackoffNowUsed(t *testing.T) {
 	expectedMaxBackoff := time.Duration(float64(checkInterval) * 2.0 / 3.0)
 
 	d := newRecoveryTestDialer()
-	d.GlobalOption.CheckInterval = checkInterval
+	d.CheckInterval = checkInterval
 
 	d.initRecoveryDetection(checkInterval)
 

@@ -16,9 +16,15 @@ func TestProxyFailureThreshold(t *testing.T) {
 	globalProxyIpHealthTracker.failures = make(map[string]int32)
 	globalProxyIpHealthTracker.Unlock()
 
-	if recordProxyFailure(proxyAddr) { t.Error("Expected false after 1st failure") }
-	if recordProxyFailure(proxyAddr) { t.Error("Expected false after 2nd failure") }
-	if !recordProxyFailure(proxyAddr) { t.Error("Expected true after 3rd failure") }
+	if recordProxyFailure(proxyAddr) {
+		t.Error("Expected false after 1st failure")
+	}
+	if recordProxyFailure(proxyAddr) {
+		t.Error("Expected false after 2nd failure")
+	}
+	if !recordProxyFailure(proxyAddr) {
+		t.Error("Expected true after 3rd failure")
+	}
 
 	globalProxyIpHealthTracker.Lock()
 	if _, exists := globalProxyIpHealthTracker.failures[proxyAddr]; exists {
@@ -68,7 +74,7 @@ func TestStabilityCountReset(t *testing.T) {
 func TestRevivalTrigger(t *testing.T) {
 	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
-	d.GlobalOption.CheckInterval = 30 * time.Second
+	d.CheckInterval = 30 * time.Second
 	d.initRecoveryDetection(30 * time.Second)
 
 	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
