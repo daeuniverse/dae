@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	ob "github.com/daeuniverse/dae/component/outbound"
 	componentdialer "github.com/daeuniverse/dae/component/outbound/dialer"
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
 )
@@ -121,6 +122,26 @@ func newTestEndpointDialer(conns ...netproxy.Conn) *componentdialer.Dialer {
 		},
 		componentdialer.InstanceOption{DisableCheck: true},
 		&componentdialer.Property{},
+	)
+}
+
+func newTestProxyEndpointDialer(protocol, address string, conns ...netproxy.Conn) *componentdialer.Dialer {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	return componentdialer.NewDialer(
+		&scriptedDialer{conns: conns},
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		componentdialer.InstanceOption{DisableCheck: true},
+		&componentdialer.Property{
+			Property: D.Property{
+				Name:     protocol,
+				Address:  address,
+				Protocol: protocol,
+			},
+		},
 	)
 }
 
@@ -700,5 +721,74 @@ func TestUdpEndpointRefreshTtlWithTime_DoesNotStretchShortTimeout(t *testing.T) 
 	got := time.Duration(ue.expiresAtNano.Load() - now.UnixNano())
 	if got != timeout {
 		t.Fatalf("expires delta = %v, want %v", got, timeout)
+	}
+}
+
+func TestUdpEndpointRefreshTtlWithTime_ProxyBackedEndpointUsesSlidingLifetime(t *testing.T) {
+	now := time.Unix(1300, 0)
+	ue := &UdpEndpoint{
+		NatTimeout: QuicNatTimeout,
+		Dialer:     newTestProxyEndpointDialer("hysteria2", "proxy.example:443"),
+	}
+
+	ue.RefreshTtlWithTime(now.UnixNano())
+	if got := time.Duration(ue.expiresAtNano.Load() - now.UnixNano()); got != QuicNatTimeout {
+		t.Fatalf("initial expires delta = %v, want %v", got, QuicNatTimeout)
+	}
+
+	next := now.Add(5 * time.Second)
+	ue.RefreshTtlWithTime(next.UnixNano())
+
+	if got := ue.expiresAtNano.Load(); got != next.UnixNano()+int64(QuicNatTimeout) {
+		t.Fatalf("expiresAt = %v, want %v", got, next.UnixNano()+int64(QuicNatTimeout))
+	}
+}
+
+func TestUdpEndpointStart_ProxyBackedEndpointAcceptsFirstReplyWithoutPeerMatch(t *testing.T) {
+	conn := &scriptedPacketConn{
+		reads: make(chan scriptedPacketRead, 2),
+	}
+	handled := make(chan netip.AddrPort, 1)
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+		Dialer:     newTestProxyEndpointDialer("hysteria2", "proxy.example:443"),
+		handler: func(_ *UdpEndpoint, _ []byte, from netip.AddrPort) error {
+			handled <- from
+			return nil
+		},
+	}
+	ue.rememberPendingReplyPeer("203.0.113.10:3478")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ue.start()
+	}()
+
+	wantFrom := netip.MustParseAddrPort("198.51.100.1:1111")
+	conn.reads <- scriptedPacketRead{
+		data: []byte("reply"),
+		from: wantFrom,
+	}
+	conn.reads <- scriptedPacketRead{err: io.EOF}
+
+	select {
+	case from := <-handled:
+		if from != wantFrom {
+			t.Fatalf("handler saw from = %v, want %v", from, wantFrom)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy-backed reply to be handled")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for read loop to exit")
+	}
+
+	if !ue.hasReply.Load() {
+		t.Fatal("expected proxy-backed endpoint to promote after first reply")
 	}
 }

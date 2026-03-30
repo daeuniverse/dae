@@ -359,6 +359,23 @@ func (ue *UdpEndpoint) RefreshTtl() {
 	ue.RefreshTtlWithTime(0)
 }
 
+// requiresInitialReplyGuard reports whether dae needs to verify the first
+// upstream reply itself before promoting the endpoint to established state.
+// Proxy-backed PacketConn implementations already demultiplex packets by
+// protocol session, so an extra address-based guard here is redundant and can
+// incorrectly strand valid flows whose first reply address is rewritten by the
+// proxy layer.
+func (ue *UdpEndpoint) requiresInitialReplyGuard() bool {
+	if ue == nil || ue.Dialer == nil {
+		return true
+	}
+	property := ue.Dialer.Property()
+	if property == nil {
+		return true
+	}
+	return property.Address == ""
+}
+
 // initialReplyTimeout returns the bounded probing lifetime before the
 // endpoint has observed its first upstream reply.
 func (ue *UdpEndpoint) initialReplyTimeout() time.Duration {
@@ -452,6 +469,9 @@ func (ue *UdpEndpoint) acceptsInitialReplyFrom(from netip.AddrPort) bool {
 	if !from.IsValid() {
 		return false
 	}
+	if !ue.requiresInitialReplyGuard() {
+		return true
+	}
 
 	ue.pendingReplyMu.Lock()
 	defer ue.pendingReplyMu.Unlock()
@@ -480,7 +500,7 @@ func (ue *UdpEndpoint) acceptsInitialReplyFrom(from netip.AddrPort) bool {
 // RefreshTtlWithTime updates the expiration time using a pre-calculated
 // timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
 func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
-	if !ue.hasReply.Load() {
+	if !ue.hasReply.Load() && ue.requiresInitialReplyGuard() {
 		ue.ensureInitialReplyDeadline(nowNano)
 		return
 	}
@@ -515,7 +535,7 @@ func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
 	}
 	ue.NatTimeout = timeout
 	now := time.Now().UnixNano()
-	if !ue.hasReply.Load() {
+	if !ue.hasReply.Load() && ue.requiresInitialReplyGuard() {
 		ue.ensureInitialReplyDeadline(now)
 		return
 	}
