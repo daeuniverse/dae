@@ -88,6 +88,9 @@ type Dialer struct {
 	collectionFineMu sync.RWMutex
 	collections      [6]*collection
 
+	aliveTransitionMu        sync.RWMutex
+	aliveTransitionCallbacks []func(networkType *NetworkType, alive bool)
+
 	tickerMu   sync.Mutex
 	ticker     *time.Timer
 	checkCh    chan time.Time
@@ -316,6 +319,30 @@ func (d *Dialer) Close() error {
 
 func (d *Dialer) Property() *Property {
 	return d.property
+}
+
+func (d *Dialer) RegisterAliveTransitionCallback(callback func(networkType *NetworkType, alive bool)) {
+	if callback == nil {
+		return
+	}
+	d.aliveTransitionMu.Lock()
+	d.aliveTransitionCallbacks = append(d.aliveTransitionCallbacks, callback)
+	d.aliveTransitionMu.Unlock()
+}
+
+func (d *Dialer) notifyAliveTransition(networkType *NetworkType, alive bool) {
+	d.aliveTransitionMu.RLock()
+	if len(d.aliveTransitionCallbacks) == 0 {
+		d.aliveTransitionMu.RUnlock()
+		return
+	}
+	callbacks := append([]func(networkType *NetworkType, alive bool){}, d.aliveTransitionCallbacks...)
+	d.aliveTransitionMu.RUnlock()
+
+	networkTypeCopy := *networkType
+	for _, callback := range callbacks {
+		callback(&networkTypeCopy, alive)
+	}
 }
 
 // IncrementCheckCycle advances the health check cycle for sticky IP caching.
@@ -608,7 +635,6 @@ func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Durat
 	return duration
 }
 
-
 // resetStabilityCount resets only the stability counter to 0 for a protocol.
 // This is called when the dialer fails, restarting the recovery cycle while keeping
 // the current backoff (penalty) level.
@@ -624,7 +650,7 @@ const maxBackoffLevel = 6
 
 func (d *Dialer) incrementBackoffLevel(proto consts.L4ProtoStr) {
 	protoIdx := d.protoIdx(proto)
-	
+
 	// Deduplicate punishment in the same cycle (e.g., dual-stack IPv4/IPv6 both failing).
 	// A 1-second cooldown using atomic swap ensures zero lock contention for hot-path failures.
 	now := CachedTimeNano()
@@ -708,7 +734,6 @@ func (d *Dialer) NotifyPeriodicCheckResult(proto consts.L4ProtoStr, success bool
 		}
 	}
 }
-
 
 // markUnavailableFromProxyFailure immediately marks the dialer as unavailable.
 // This is called when all proxy IPs have failed after retries, bypassing the health check cycle.

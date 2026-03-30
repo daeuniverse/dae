@@ -148,7 +148,6 @@ func (d *Dialer) snapshotLatencyForPolicy(
 	return rawLatency, hasLatency
 }
 
-
 func (d *Dialer) snapshotAliveDialerGroupsLocked(collection *collection) []*AliveDialerSet {
 	if len(collection.AliveDialerSetSet) == 0 {
 		return nil
@@ -843,6 +842,10 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	}
 	d.collectionFineMu.Unlock()
 
+	if wasAlive != alive {
+		d.notifyAliveTransition(typ, alive)
+	}
+
 	// Notify sticky IP dialer and recovery detection ONLY when truly transitioning to dead.
 	// This prevents a single failed dialer from repeatedly invalidating the global cache (Sticky Killer).
 	// Bypassed for forced death to avoid recursive calls.
@@ -879,6 +882,9 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	// to prevent "self-punishment" (unnecessary level increments).
 	isRevival := !wasAlive
 	d.NotifyHealthCheckResult(typ, true, isRevival)
+	if isRevival {
+		d.notifyAliveTransition(typ, true)
+	}
 
 	return update, avg
 }

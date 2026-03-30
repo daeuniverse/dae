@@ -97,6 +97,9 @@ func ResetUdpLogLimiters() {
 }
 
 func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
+	if ue != nil && ue.endpointNetworkType.L4Proto != "" {
+		return ue.endpointNetworkType
+	}
 	return dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
@@ -150,6 +153,7 @@ type DialOption struct {
 	Dialer        *dialer.Dialer
 	Outbound      *ob.DialerGroup
 	Network       string
+	NetworkType   *dialer.NetworkType
 	SniffedDomain string
 	Excluded      *dialer.Dialer
 	// NowNano is an optional pre-calculated timestamp to avoid calling time.Now()
@@ -708,6 +712,7 @@ getNew:
 					Dialer:        res.Dialer,
 					Outbound:      res.Outbound,
 					Network:       res.Network,
+					NetworkType:   res.SelectionNetworkTypeObj,
 					SniffedDomain: res.SniffedDomain,
 					Excluded:      excludedDialer,
 					NowNano:       nowNano,

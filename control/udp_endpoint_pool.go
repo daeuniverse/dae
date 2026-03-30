@@ -93,6 +93,9 @@ type UdpEndpoint struct {
 	// dead-check recovery branch in GetOrCreate.
 	poolRef *UdpEndpointPool
 	poolKey UdpEndpointKey
+
+	dialerGeneration    uint64
+	endpointNetworkType dialer.NetworkType
 }
 
 func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
@@ -106,6 +109,12 @@ func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 		return nil
 	}
 	return &ue.respConn
+}
+
+func udpEndpointIgnoresDialerHealth(ue *UdpEndpoint) bool {
+	return ue != nil &&
+		ue.Outbound != nil &&
+		ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed
 }
 
 func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
@@ -312,12 +321,8 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	if err != nil {
 		ue.retire()
 		if !errors.IsUDPEndpointNormalClose(err) && ue.Dialer != nil {
-			networkType := &dialer.NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
-				IsDns:     false,
-			}
-			ue.Dialer.ReportUnavailable(networkType, fmt.Errorf("udp endpoint write failed: %w", err))
+			networkType := udpEndpointNetworkType(ue)
+			ue.Dialer.ReportUnavailable(&networkType, fmt.Errorf("udp endpoint write failed: %w", err))
 		}
 		return n, err
 	}
@@ -331,6 +336,9 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 func (ue *UdpEndpoint) Close() error {
 	ue.closeOnce.Do(func() {
 		ue.expiresAtNano.Store(0)
+		if ue.poolRef != nil {
+			ue.poolRef.unregisterEndpoint(ue)
+		}
 
 		ue.routingMu.Lock()
 		ue.hasRoutingCache = false
@@ -578,10 +586,22 @@ type udpEndpointPoolShard struct {
 	pool     map[UdpEndpointKey]*UdpEndpoint
 }
 
+type udpEndpointDialerBucket struct {
+	mu        sync.RWMutex
+	endpoints map[*UdpEndpoint]struct{}
+}
+
+type udpEndpointDialerNetworkKey struct {
+	dialer      *dialer.Dialer
+	networkType dialer.NetworkType
+}
+
 // UdpEndpointPool is a UDP connection pool.
 type UdpEndpointPool struct {
 	shards      [udpEndpointCreateShardCount]udpEndpointPoolShard
 	janitorOnce sync.Once
+	dialerIndex sync.Map // map[udpEndpointDialerNetworkKey]*udpEndpointDialerBucket
+	dialerEpoch sync.Map // map[udpEndpointDialerNetworkKey]*atomic.Uint64
 }
 
 type UdpEndpointOptions struct {
@@ -608,6 +628,120 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 	return p
 }
 
+func normalizeUdpEndpointPoolNetworkType(networkType dialer.NetworkType) dialer.NetworkType {
+	if networkType.L4Proto == "" {
+		networkType.L4Proto = consts.L4ProtoStr_UDP
+	}
+	networkType.IsDns = false
+	return networkType
+}
+
+func (p *UdpEndpointPool) dialerNetworkKey(d *dialer.Dialer, networkType dialer.NetworkType) udpEndpointDialerNetworkKey {
+	return udpEndpointDialerNetworkKey{
+		dialer:      d,
+		networkType: normalizeUdpEndpointPoolNetworkType(networkType),
+	}
+}
+
+func (p *UdpEndpointPool) endpointDialerNetworkKey(ue *UdpEndpoint) (udpEndpointDialerNetworkKey, bool) {
+	if ue == nil || ue.Dialer == nil {
+		return udpEndpointDialerNetworkKey{}, false
+	}
+	return p.dialerNetworkKey(ue.Dialer, udpEndpointNetworkType(ue)), true
+}
+
+func (p *UdpEndpointPool) dialerEpochCounter(d *dialer.Dialer, networkType dialer.NetworkType) *atomic.Uint64 {
+	if d == nil {
+		return nil
+	}
+	key := p.dialerNetworkKey(d, networkType)
+	if counter, ok := p.dialerEpoch.Load(key); ok {
+		return counter.(*atomic.Uint64)
+	}
+	actual, _ := p.dialerEpoch.LoadOrStore(key, &atomic.Uint64{})
+	return actual.(*atomic.Uint64)
+}
+
+func (p *UdpEndpointPool) currentDialerGeneration(d *dialer.Dialer, networkType dialer.NetworkType) uint64 {
+	counter := p.dialerEpochCounter(d, networkType)
+	if counter == nil {
+		return 0
+	}
+	return counter.Load()
+}
+
+func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
+	if ue == nil || ue.Dialer == nil {
+		return true
+	}
+	if udpEndpointIgnoresDialerHealth(ue) {
+		return true
+	}
+	return ue.dialerGeneration == p.currentDialerGeneration(ue.Dialer, udpEndpointNetworkType(ue))
+}
+
+func (p *UdpEndpointPool) registerEndpoint(ue *UdpEndpoint) {
+	if udpEndpointIgnoresDialerHealth(ue) {
+		return
+	}
+	key, ok := p.endpointDialerNetworkKey(ue)
+	if !ok {
+		return
+	}
+	actual, _ := p.dialerIndex.LoadOrStore(key, &udpEndpointDialerBucket{
+		endpoints: make(map[*UdpEndpoint]struct{}),
+	})
+	bucket := actual.(*udpEndpointDialerBucket)
+	bucket.mu.Lock()
+	bucket.endpoints[ue] = struct{}{}
+	bucket.mu.Unlock()
+}
+
+func (p *UdpEndpointPool) unregisterEndpoint(ue *UdpEndpoint) {
+	key, ok := p.endpointDialerNetworkKey(ue)
+	if !ok {
+		return
+	}
+	actual, ok := p.dialerIndex.Load(key)
+	if !ok {
+		return
+	}
+	bucket := actual.(*udpEndpointDialerBucket)
+	bucket.mu.Lock()
+	delete(bucket.endpoints, ue)
+	// Keep empty buckets for the lifetime of the pool. The key space is tiny
+	// (dialer x UDP family), and never deleting avoids a register/unregister
+	// race where a newly re-added endpoint could lose its reverse index.
+	bucket.mu.Unlock()
+}
+
+func (p *UdpEndpointPool) InvalidateDialerNetworkType(d *dialer.Dialer, networkType *dialer.NetworkType) int {
+	if d == nil || networkType == nil {
+		return 0
+	}
+	key := p.dialerNetworkKey(d, *networkType)
+	if counter := p.dialerEpochCounter(d, *networkType); counter != nil {
+		counter.Add(1)
+	}
+
+	actual, ok := p.dialerIndex.Load(key)
+	if !ok {
+		return 0
+	}
+	bucket := actual.(*udpEndpointDialerBucket)
+	bucket.mu.RLock()
+	endpoints := make([]*UdpEndpoint, 0, len(bucket.endpoints))
+	for ue := range bucket.endpoints {
+		endpoints = append(endpoints, ue)
+	}
+	bucket.mu.RUnlock()
+
+	for _, ue := range endpoints {
+		ue.retire()
+	}
+	return len(endpoints)
+}
+
 // Reset clears all cached UDP endpoints.
 // Called on reload to prevent stale endpoints from using pre-reload routing state.
 // Uses LoadAndDelete for atomic removal that races safely with concurrent GetOrCreate.
@@ -629,6 +763,8 @@ func (p *UdpEndpointPool) Reset() {
 		}
 		shard.mu.Unlock()
 	}
+	p.dialerIndex = sync.Map{}
+	p.dialerEpoch = sync.Map{}
 }
 
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
@@ -654,7 +790,7 @@ func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok 
 	if !ok {
 		return nil, ok
 	}
-	if ue.failed.Load() || ue.IsDead() {
+	if ue.failed.Load() || ue.IsDead() || !p.endpointGenerationCurrent(ue) {
 		return nil, false
 	}
 	return ue, ok
@@ -705,7 +841,18 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		log:           createOption.Log,
 		poolRef:       p,
 		poolKey:       key,
+		endpointNetworkType: normalizeUdpEndpointPoolNetworkType(func() dialer.NetworkType {
+			if dialOption.NetworkType != nil {
+				return *dialOption.NetworkType
+			}
+			return dialer.NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionFromAddr(key.Src.Addr()),
+				IsDns:     false,
+			}
+		}()),
 	}
+	ue.dialerGeneration = p.currentDialerGeneration(dialOption.Dialer, ue.endpointNetworkType)
 
 	// Pre-cache the Anyfrom socket for responses. Caching is only safe for
 	// fixed-destination sessions (Symmetric NAT) where the response bind address
@@ -724,6 +871,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	shard.mu.Lock()
 	shard.pool[key] = ue
 	shard.mu.Unlock()
+	p.registerEndpoint(ue)
 
 	// Receive UDP messages.
 	go ue.start()
@@ -758,7 +906,7 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 				return nil, false, ErrEndpointFailed
 			}
 			// Expired failure entry — fall through to lock and replace.
-		} else if ue.IsDead() {
+		} else if ue.IsDead() || !p.endpointGenerationCurrent(ue) {
 			// Expired dead entry — fall through to lock and replace.
 		} else {
 			// Update NAT timeout based on current forwarding state
@@ -781,17 +929,21 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 	shard.createMu.Lock()
 	defer shard.createMu.Unlock()
 
-	// Double-check under creation lock: another goroutine may have created it.
-	shard.mu.RLock()
+	var staleToClose *UdpEndpoint
+	shard.mu.Lock()
 	ue, ok = shard.pool[key]
 	if ok {
 		if ue.failed.Load() {
 			if !ue.IsExpired(time.Now().UnixNano()) {
-				shard.mu.RUnlock()
+				shard.mu.Unlock()
 				return nil, false, ErrEndpointFailed
 			}
-			// Expired failure entry — fall through to recreate.
-		} else if !ue.IsDead() {
+			delete(shard.pool, key)
+			staleToClose = ue
+		} else if ue.IsDead() || !p.endpointGenerationCurrent(ue) {
+			delete(shard.pool, key)
+			staleToClose = ue
+		} else {
 			if createOption != nil && createOption.NatTimeout > 0 {
 				ue.UpdateNatTimeout(createOption.NatTimeout)
 			} else {
@@ -801,11 +953,14 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 				}
 				ue.RefreshTtlWithTime(nowNano)
 			}
-			shard.mu.RUnlock()
+			shard.mu.Unlock()
 			return ue, false, nil
 		}
 	}
-	shard.mu.RUnlock()
+	shard.mu.Unlock()
+	if staleToClose != nil {
+		_ = staleToClose.Close()
+	}
 
 	// Create a new endpoint under the creation lock.
 	newUe, createErr := p.createEndpointLocked(key, createOption)
@@ -835,7 +990,7 @@ func (p *UdpEndpointPool) startJanitor() {
 					shard.mu.Lock()
 					toClose = toClose[:0]
 					for key, ue := range shard.pool {
-						if ue.IsExpired(nowNano) {
+						if ue.IsExpired(nowNano) || !p.endpointGenerationCurrent(ue) {
 							delete(shard.pool, key)
 							toClose = append(toClose, ue)
 						}

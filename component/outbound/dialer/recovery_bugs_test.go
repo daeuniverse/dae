@@ -1,6 +1,7 @@
 package dialer
 
 import (
+	"io"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestRecoveryTimerCancellation(t *testing.T) {
 
 	// 2. Trigger revival -> Timer starts
 	d.NotifyHealthCheckResult(typ, true, true)
-	
+
 	d.recoveryState[idxTcp].Lock()
 	if d.recoveryState[idxTcp].confirmTimer == nil {
 		d.recoveryState[idxTcp].Unlock()
@@ -53,11 +54,11 @@ func TestEmergencyProbeNonPunishment(t *testing.T) {
 	// 1. Node is healthy (level 0)
 	// 2. Trigger emergency probe (isRevival=false in new connectivity_check.go logic)
 	d.NotifyHealthCheckResult(typ, true, false)
-	
+
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 0 {
 		t.Errorf("Expected level 0 to remain 0 after emergency probe, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
 	}
-	
+
 	d.recoveryState[idxTcp].Lock()
 	if d.recoveryState[idxTcp].confirmTimer != nil {
 		d.recoveryState[idxTcp].Unlock()
@@ -77,12 +78,12 @@ func TestBackoffOverflowProtection(t *testing.T) {
 		d.lastPunish[idxTcp].Store(0)
 		d.incrementBackoffLevel(consts.L4ProtoStr_TCP)
 	}
-	
+
 	level := d.GetBackoffLevel(consts.L4ProtoStr_TCP)
 	if level != 6 {
 		t.Errorf("Expected level capped at 6, got %d", level)
 	}
-	
+
 	duration := d.getRecoveryBackoffDuration(consts.L4ProtoStr_TCP)
 	// 10s * 2^6 = 640s -> capped at 30s
 	if duration != maxBackoff {
@@ -98,13 +99,13 @@ func TestRecoveryConfirmationDecrementsLevel(t *testing.T) {
 
 	// 1. Fail -> level 1
 	d.NotifyHealthCheckResult(typ, false, false)
-	
+
 	// 2. Revive -> starts timer
 	d.NotifyHealthCheckResult(typ, true, true)
-	
+
 	// 3. Confirm -> level becomes 0
 	d.confirmRecovery(typ, nil)
-	
+
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 0 {
 		t.Errorf("Expected level 0 after successful confirmation, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
 	}
@@ -114,7 +115,7 @@ func TestDualStackRecoveryInterference(t *testing.T) {
 	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(60 * time.Second)
-	
+
 	tcp4 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 	tcp6 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6}
 
@@ -129,7 +130,7 @@ func TestDualStackRecoveryInterference(t *testing.T) {
 	// 2. Both revive. TCP4 sets the timer.
 	d.NotifyHealthCheckResult(tcp4, true, true)
 	d.collections[IdxTcp4].Alive.Store(true)
-	
+
 	d.NotifyHealthCheckResult(tcp6, true, true)
 	d.collections[IdxTcp6].Alive.Store(true)
 
@@ -142,7 +143,7 @@ func TestDualStackRecoveryInterference(t *testing.T) {
 	d.recoveryState[idxTcp].Unlock()
 
 	// 3. TCP4 fails again. In the old logic, this would abort recovery even if TCP6 is alive.
-	// We manually simulate TCP4 failure WITHOUT calling NotifyHealthCheckResult(success=false) 
+	// We manually simulate TCP4 failure WITHOUT calling NotifyHealthCheckResult(success=false)
 	// because that would cancel the timer (correctly).
 	// We want to test the case where the timer EXPIRES and confirmRecovery is called,
 	// but the original pendingNetworkType (TCP4) is now dead, while TCP6 is still alive.
@@ -176,9 +177,36 @@ func TestDeduplicatedPunishment(t *testing.T) {
 	// 3. Reset cooldown and trigger again
 	d.lastPunish[idxTcp].Store(0)
 	d.NotifyHealthCheckResult(typ4, false, false)
-	
+
 	level = d.GetBackoffLevel(consts.L4ProtoStr_TCP)
 	if level != 2 {
 		t.Errorf("Expected incremented level 2 after cooldown reset, got %d", level)
+	}
+}
+
+func TestAliveTransitionCallbackOnlyFiresOnStateChanges(t *testing.T) {
+	d := newRecoveryTestDialer()
+	typ := &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4}
+
+	var transitions []bool
+	d.RegisterAliveTransitionCallback(func(networkType *NetworkType, alive bool) {
+		if networkType.L4Proto == typ.L4Proto && networkType.IpVersion == typ.IpVersion {
+			transitions = append(transitions, alive)
+		}
+	})
+
+	d.ReportUnavailableForced(typ, io.EOF)
+	d.ReportUnavailableForced(typ, io.EOF)
+	d.markAvailable(typ, time.Millisecond)
+	d.markAvailable(typ, time.Millisecond)
+
+	if len(transitions) != 2 {
+		t.Fatalf("transition count = %d, want 2", len(transitions))
+	}
+	if transitions[0] {
+		t.Fatal("expected first transition to be not alive")
+	}
+	if !transitions[1] {
+		t.Fatal("expected second transition to be alive")
 	}
 }

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"io"
 	"net/netip"
 	"sync/atomic"
@@ -13,6 +14,10 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	ob "github.com/daeuniverse/dae/component/outbound"
+	componentdialer "github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/sirupsen/logrus"
 )
 
 type scriptedPacketRead struct {
@@ -30,6 +35,22 @@ type scriptedPacketConn struct {
 	closeCalls  atomic.Int32
 }
 
+type scriptedDialer struct {
+	conns []netproxy.Conn
+	idx   atomic.Int32
+}
+
+func (d *scriptedDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
+	if len(d.conns) == 0 {
+		return nil, io.EOF
+	}
+	i := int(d.idx.Add(1)) - 1
+	if i >= len(d.conns) {
+		i = len(d.conns) - 1
+	}
+	return d.conns[i], nil
+}
+
 func (c *scriptedPacketConn) Read(_ []byte) (int, error) {
 	return 0, io.EOF
 }
@@ -39,12 +60,16 @@ func (c *scriptedPacketConn) Write(b []byte) (int, error) {
 }
 
 func (c *scriptedPacketConn) ReadFrom(p []byte) (int, netip.AddrPort, error) {
-	read := <-c.reads
-	if read.err != nil {
-		return 0, netip.AddrPort{}, read.err
+	select {
+	case <-c.closeCh:
+		return 0, netip.AddrPort{}, io.EOF
+	case read := <-c.reads:
+		if read.err != nil {
+			return 0, netip.AddrPort{}, read.err
+		}
+		copy(p, read.data)
+		return len(read.data), read.from, nil
 	}
-	copy(p, read.data)
-	return len(read.data), read.from, nil
 }
 
 func (c *scriptedPacketConn) WriteTo(b []byte, _ string) (int, error) {
@@ -83,6 +108,43 @@ func waitForCloseSignal(t *testing.T, ch <-chan struct{}, context string) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for close signal: %s", context)
 	}
+}
+
+func newTestEndpointDialer(conns ...netproxy.Conn) *componentdialer.Dialer {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	return componentdialer.NewDialer(
+		&scriptedDialer{conns: conns},
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		componentdialer.InstanceOption{DisableCheck: true},
+		&componentdialer.Property{},
+	)
+}
+
+func newTestFixedOutboundGroup(dialers ...*componentdialer.Dialer) *ob.DialerGroup {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	annotations := make([]*componentdialer.Annotation, 0, len(dialers))
+	for range dialers {
+		annotations = append(annotations, &componentdialer.Annotation{})
+	}
+	return ob.NewDialerGroup(
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		"fixed-test",
+		dialers,
+		annotations,
+		ob.DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		},
+		func(bool, *componentdialer.NetworkType, bool) {},
+	)
 }
 
 func TestUdpEndpointRefreshTtlWithTime_BoundsInitialLifetimeByDialTimeout(t *testing.T) {
@@ -277,6 +339,247 @@ func TestUdpEndpointWriteTo_ErrorClosesConn(t *testing.T) {
 	if got := conn.closeCalls.Load(); got != 1 {
 		t.Fatalf("close calls = %d, want 1", got)
 	}
+}
+
+func TestUdpEndpointPoolInvalidateDialerNetworkType_ClosesOnlyMatchingEndpoints(t *testing.T) {
+	pool := NewUdpEndpointPool()
+
+	conn1 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	conn2 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	conn3 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	conn4 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	conn5 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+
+	d1 := newTestEndpointDialer(conn1, conn2, conn3)
+	d2 := newTestEndpointDialer(conn4, conn5)
+
+	key1 := UdpEndpointKey{
+		Src: netip.MustParseAddrPort("127.0.0.1:10001"),
+	}
+	key2 := UdpEndpointKey{
+		Src: netip.MustParseAddrPort("127.0.0.1:10002"),
+	}
+	key3 := UdpEndpointKey{
+		Src: netip.MustParseAddrPort("127.0.0.1:10003"),
+	}
+	key4 := UdpEndpointKey{
+		Src: netip.MustParseAddrPort("127.0.0.1:10004"),
+	}
+	key5 := UdpEndpointKey{
+		Src: netip.MustParseAddrPort("[::1]:10005"),
+	}
+
+	makeEndpoint := func(target string, d *componentdialer.Dialer) *UdpEndpointOptions {
+		return &UdpEndpointOptions{
+			Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			NatTimeout: time.Second,
+			GetDialOption: func(context.Context) (*DialOption, error) {
+				ipVersion := consts.IpVersionStr_4
+				if addr, err := netip.ParseAddrPort(target); err == nil {
+					ipVersion = consts.IpVersionFromAddr(addr.Addr())
+				}
+				return &DialOption{
+					Dialer:  d,
+					Network: "udp",
+					Target:  target,
+					NetworkType: &componentdialer.NetworkType{
+						L4Proto:   consts.L4ProtoStr_UDP,
+						IpVersion: ipVersion,
+						IsDns:     false,
+					},
+				}, nil
+			},
+		}
+	}
+
+	if _, _, err := pool.GetOrCreate(key1, makeEndpoint("198.51.100.1:443", d1)); err != nil {
+		t.Fatalf("create endpoint 1: %v", err)
+	}
+	if _, _, err := pool.GetOrCreate(key2, makeEndpoint("[2001:db8::2]:443", d1)); err != nil {
+		t.Fatalf("create endpoint 2: %v", err)
+	}
+	if _, _, err := pool.GetOrCreate(key3, makeEndpoint("[2001:db8::3]:443", d1)); err != nil {
+		t.Fatalf("create endpoint 3: %v", err)
+	}
+	if _, _, err := pool.GetOrCreate(key4, makeEndpoint("198.51.100.4:443", d2)); err != nil {
+		t.Fatalf("create endpoint 4: %v", err)
+	}
+	if _, _, err := pool.GetOrCreate(key5, makeEndpoint("[2001:db8::5]:443", d2)); err != nil {
+		t.Fatalf("create endpoint 5: %v", err)
+	}
+
+	removed := pool.InvalidateDialerNetworkType(d1, &componentdialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
+		IsDns:     false,
+	})
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2", removed)
+	}
+
+	waitForCloseSignal(t, conn2.closeCh, "first matching IPv6 endpoint should close")
+	waitForCloseSignal(t, conn3.closeCh, "second matching IPv6 endpoint should close")
+
+	if _, ok := pool.Get(key1); !ok {
+		t.Fatal("expected same-dialer IPv4 endpoint to remain in pool")
+	}
+	if _, ok := pool.Get(key2); ok {
+		t.Fatal("expected first matching IPv6 endpoint to be removed from pool")
+	}
+	if _, ok := pool.Get(key3); ok {
+		t.Fatal("expected second matching IPv6 endpoint to be removed from pool")
+	}
+	if _, ok := pool.Get(key4); !ok {
+		t.Fatal("expected unrelated dialer IPv4 endpoint to remain in pool")
+	}
+	if _, ok := pool.Get(key5); !ok {
+		t.Fatal("expected unrelated dialer IPv6 endpoint to remain in pool")
+	}
+}
+
+func TestUdpEndpointPoolInvalidateDialerNetworkType_DoesNotTouchFixedEndpoints(t *testing.T) {
+	pool := NewUdpEndpointPool()
+
+	connFixed := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	connNormal := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	d := newTestEndpointDialer(connFixed, connNormal)
+	fixedOutbound := newTestFixedOutboundGroup(d)
+
+	makeEndpoint := func(target string, outbound *ob.DialerGroup) *UdpEndpointOptions {
+		return &UdpEndpointOptions{
+			Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			NatTimeout: time.Second,
+			GetDialOption: func(context.Context) (*DialOption, error) {
+				return &DialOption{
+					Dialer:   d,
+					Outbound: outbound,
+					Network:  "udp",
+					Target:   target,
+					NetworkType: &componentdialer.NetworkType{
+						L4Proto:   consts.L4ProtoStr_UDP,
+						IpVersion: consts.IpVersionStr_6,
+						IsDns:     false,
+					},
+				}, nil
+			},
+		}
+	}
+
+	keyFixed := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11001")}
+	keyNormal := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11002")}
+
+	if _, _, err := pool.GetOrCreate(keyFixed, makeEndpoint("[2001:db8::10]:443", fixedOutbound)); err != nil {
+		t.Fatalf("create fixed endpoint: %v", err)
+	}
+	if _, _, err := pool.GetOrCreate(keyNormal, makeEndpoint("[2001:db8::11]:443", nil)); err != nil {
+		t.Fatalf("create normal endpoint: %v", err)
+	}
+
+	removed := pool.InvalidateDialerNetworkType(d, &componentdialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
+		IsDns:     false,
+	})
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+
+	waitForCloseSignal(t, connNormal.closeCh, "normal endpoint should close")
+
+	if _, ok := pool.Get(keyNormal); ok {
+		t.Fatal("expected normal endpoint to be removed from pool")
+	}
+	if _, ok := pool.Get(keyFixed); !ok {
+		t.Fatal("expected fixed endpoint to remain available")
+	}
+	if got := connFixed.closeCalls.Load(); got != 0 {
+		t.Fatalf("fixed endpoint close calls = %d, want 0", got)
+	}
+}
+
+func TestUdpEndpointPoolUnregisterKeepsDialerBucketForReuse(t *testing.T) {
+	pool := NewUdpEndpointPool()
+
+	conn1 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	conn2 := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	d := newTestEndpointDialer(conn1, conn2)
+
+	makeEndpoint := func(target string) *UdpEndpointOptions {
+		return &UdpEndpointOptions{
+			Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			NatTimeout: time.Second,
+			GetDialOption: func(context.Context) (*DialOption, error) {
+				return &DialOption{
+					Dialer:  d,
+					Network: "udp",
+					Target:  target,
+					NetworkType: &componentdialer.NetworkType{
+						L4Proto:   consts.L4ProtoStr_UDP,
+						IpVersion: consts.IpVersionStr_6,
+						IsDns:     false,
+					},
+				}, nil
+			},
+		}
+	}
+
+	key1 := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:12001")}
+	ue1, _, err := pool.GetOrCreate(key1, makeEndpoint("[2001:db8::20]:443"))
+	if err != nil {
+		t.Fatalf("create first endpoint: %v", err)
+	}
+
+	indexKey, ok := pool.endpointDialerNetworkKey(ue1)
+	if !ok {
+		t.Fatal("expected endpoint to have dialer network key")
+	}
+	actual, ok := pool.dialerIndex.Load(indexKey)
+	if !ok {
+		t.Fatal("expected dialer bucket to exist after registration")
+	}
+	bucket := actual.(*udpEndpointDialerBucket)
+
+	if err := ue1.Close(); err != nil {
+		t.Fatalf("close first endpoint: %v", err)
+	}
+	waitForCloseSignal(t, conn1.closeCh, "first endpoint should close")
+
+	actual, ok = pool.dialerIndex.Load(indexKey)
+	if !ok {
+		t.Fatal("expected empty dialer bucket to remain after unregister")
+	}
+	if actual != bucket {
+		t.Fatal("expected bucket instance to be retained for reuse")
+	}
+	bucket.mu.RLock()
+	if len(bucket.endpoints) != 0 {
+		bucket.mu.RUnlock()
+		t.Fatalf("bucket endpoint count = %d, want 0", len(bucket.endpoints))
+	}
+	bucket.mu.RUnlock()
+
+	key2 := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:12002")}
+	ue2, _, err := pool.GetOrCreate(key2, makeEndpoint("[2001:db8::21]:443"))
+	if err != nil {
+		t.Fatalf("create second endpoint: %v", err)
+	}
+	if ue2 == nil {
+		t.Fatal("expected second endpoint to be created")
+	}
+
+	actual, ok = pool.dialerIndex.Load(indexKey)
+	if !ok {
+		t.Fatal("expected dialer bucket to still exist after reuse")
+	}
+	if actual != bucket {
+		t.Fatal("expected registration to reuse the retained bucket")
+	}
+	bucket.mu.RLock()
+	if len(bucket.endpoints) != 1 {
+		bucket.mu.RUnlock()
+		t.Fatalf("bucket endpoint count = %d, want 1", len(bucket.endpoints))
+	}
+	bucket.mu.RUnlock()
 }
 
 func TestUdpEndpointWriteTo_ShortWriteClosesConn(t *testing.T) {

@@ -506,6 +506,17 @@ func NewControlPlaneWithContext(
 		outbounds = append(outbounds, dialerGroup)
 	}
 
+	registeredDialerCallbacks := make(map[*dialer.Dialer]struct{})
+	for _, group := range outbounds {
+		for _, d := range group.Dialers {
+			if _, ok := registeredDialerCallbacks[d]; ok {
+				continue
+			}
+			registeredDialerCallbacks[d] = struct{}{}
+			d.RegisterAliveTransitionCallback(core.dialerAliveTransitionCallback(d))
+		}
+	}
+
 	/// Routing.
 	// Generate outboundName2Id from outbounds.
 	if len(outbounds) > int(consts.OutboundUserDefinedMax) {

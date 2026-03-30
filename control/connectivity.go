@@ -72,3 +72,20 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		}
 	}
 }
+
+func (c *controlPlaneCore) dialerAliveTransitionCallback(d *dialer.Dialer) func(networkType *dialer.NetworkType, alive bool) {
+	return func(networkType *dialer.NetworkType, alive bool) {
+		if alive || d == nil || networkType == nil || networkType.L4Proto != consts.L4ProtoStr_UDP {
+			return
+		}
+		removed := DefaultUdpEndpointPool.InvalidateDialerNetworkType(d, networkType)
+		if removed == 0 || !c.log.IsLevelEnabled(logrus.DebugLevel) {
+			return
+		}
+		c.log.WithFields(logrus.Fields{
+			"dialer":  d.Property().Name,
+			"network": networkType.String(),
+			"removed": removed,
+		}).Debug("Invalidated UDP endpoints after dialer transitioned to not alive")
+	}
+}
