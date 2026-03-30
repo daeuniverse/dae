@@ -8,20 +8,9 @@ linters:
     - ineffassign
     - misspell
     - unconvert
+  exclusions:
+    generated: strict
 
 formatters:
   enable:
     - gofmt
-
-linters-settings:
-  gocritic:
-    enabled-checks:
-      - appendAssign
-      - assignOp
-      - elseif
-      - singleCaseSwitch
-      - unlambda
-      - unslice
-
-issues:
-  exclude-generated: strict
