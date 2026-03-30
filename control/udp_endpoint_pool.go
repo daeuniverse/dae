@@ -112,6 +112,34 @@ func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 	return &ue.respConn
 }
 
+func isProxyBackedDialer(d *dialer.Dialer) bool {
+	if d == nil {
+		return false
+	}
+	property := d.Property()
+	return property != nil && property.Address != ""
+}
+
+func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
+	if requested <= 0 {
+		return requested
+	}
+	// Proxy-backed UDP sessions are multiplexed over a longer-lived transport.
+	// Recreating them too aggressively causes avoidable session churn and log
+	// spam for interactive traffic such as games, even when the flow is not QUIC.
+	if requested < QuicNatTimeout {
+		return QuicNatTimeout
+	}
+	return requested
+}
+
+func effectiveUdpEndpointNatTimeout(d *dialer.Dialer, requested time.Duration) time.Duration {
+	if !isProxyBackedDialer(d) {
+		return requested
+	}
+	return proxyBackedUdpNatTimeout(requested)
+}
+
 func udpEndpointIgnoresDialerHealth(ue *UdpEndpoint) bool {
 	return ue != nil &&
 		ue.Outbound != nil &&
@@ -366,14 +394,7 @@ func (ue *UdpEndpoint) RefreshTtl() {
 // incorrectly strand valid flows whose first reply address is rewritten by the
 // proxy layer.
 func (ue *UdpEndpoint) requiresInitialReplyGuard() bool {
-	if ue == nil || ue.Dialer == nil {
-		return true
-	}
-	property := ue.Dialer.Property()
-	if property == nil {
-		return true
-	}
-	return property.Address == ""
+	return ue == nil || !isProxyBackedDialer(ue.Dialer)
 }
 
 // initialReplyTimeout returns the bounded probing lifetime before the
@@ -855,7 +876,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	ue := &UdpEndpoint{
 		conn:          packetConn,
 		handler:       createOption.Handler,
-		NatTimeout:    createOption.NatTimeout,
+		NatTimeout:    effectiveUdpEndpointNatTimeout(dialOption.Dialer, createOption.NatTimeout),
 		Dialer:        dialOption.Dialer,
 		Outbound:      dialOption.Outbound,
 		SniffedDomain: dialOption.SniffedDomain,
@@ -945,7 +966,7 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 		default:
 			// Update NAT timeout based on current forwarding state
 			if createOption != nil && createOption.NatTimeout > 0 {
-				ue.UpdateNatTimeout(createOption.NatTimeout)
+				ue.UpdateNatTimeout(effectiveUdpEndpointNatTimeout(ue.Dialer, createOption.NatTimeout))
 			} else {
 				var nowNano int64
 				if createOption != nil {
@@ -980,7 +1001,7 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 			staleToClose = ue
 		default:
 			if createOption != nil && createOption.NatTimeout > 0 {
-				ue.UpdateNatTimeout(createOption.NatTimeout)
+				ue.UpdateNatTimeout(effectiveUdpEndpointNatTimeout(ue.Dialer, createOption.NatTimeout))
 			} else {
 				var nowNano int64
 				if createOption != nil {

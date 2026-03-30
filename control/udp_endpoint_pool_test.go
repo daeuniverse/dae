@@ -792,3 +792,68 @@ func TestUdpEndpointStart_ProxyBackedEndpointAcceptsFirstReplyWithoutPeerMatch(t
 		t.Fatal("expected proxy-backed endpoint to promote after first reply")
 	}
 }
+
+func TestProxyBackedUdpNatTimeout_FloorsShortTimeouts(t *testing.T) {
+	if got := proxyBackedUdpNatTimeout(DefaultNatTimeout); got != QuicNatTimeout {
+		t.Fatalf("proxyBackedUdpNatTimeout(DefaultNatTimeout) = %v, want %v", got, QuicNatTimeout)
+	}
+	if got := proxyBackedUdpNatTimeout(QuicNatTimeout); got != QuicNatTimeout {
+		t.Fatalf("proxyBackedUdpNatTimeout(QuicNatTimeout) = %v, want %v", got, QuicNatTimeout)
+	}
+}
+
+func TestUdpEndpointPoolGetOrCreate_ProxyBackedEndpointUsesLongerNatTimeout(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("192.0.2.10:40000")}
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	d := newTestProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+
+	createOption := &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			return &DialOption{
+				Dialer:  d,
+				Network: "udp",
+				Target:  "198.51.100.20:23002",
+			}, nil
+		},
+	}
+
+	ue, isNew, err := pool.GetOrCreate(key, createOption)
+	if err != nil {
+		t.Fatalf("first GetOrCreate error: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected first GetOrCreate to create a new endpoint")
+	}
+	if got := ue.NatTimeout; got != QuicNatTimeout {
+		t.Fatalf("NatTimeout = %v, want %v", got, QuicNatTimeout)
+	}
+
+	now := time.Now().UnixNano()
+	if got := time.Duration(ue.expiresAtNano.Load() - now); got < QuicNatTimeout-time.Second {
+		t.Fatalf("initial expires delta = %v, want close to %v", got, QuicNatTimeout)
+	}
+
+	reused, isNew, err := pool.GetOrCreate(key, createOption)
+	if err != nil {
+		t.Fatalf("second GetOrCreate error: %v", err)
+	}
+	if isNew {
+		t.Fatal("expected second GetOrCreate to reuse endpoint")
+	}
+	if reused != ue {
+		t.Fatal("expected second GetOrCreate to return the same endpoint")
+	}
+	if got := reused.NatTimeout; got != QuicNatTimeout {
+		t.Fatalf("reused NatTimeout = %v, want %v", got, QuicNatTimeout)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+}
