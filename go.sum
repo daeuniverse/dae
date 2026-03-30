@@ -237,6 +237,8 @@ github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260330062653-48bf1d651f4b h1:f1
 github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260330062653-48bf1d651f4b/go.mod h1:9tP4s+zsFE4HqSoqz0kIsvE4TeMfaLsXGsdS6jIaW10=
 github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260330102927-95a0a9f6ee8e h1:H+AtRoEeuCjaczK4PhSQeS0W7sox9AUCOA/Zcd/DQqg=
 github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260330102927-95a0a9f6ee8e/go.mod h1:9tP4s+zsFE4HqSoqz0kIsvE4TeMfaLsXGsdS6jIaW10=
+github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260330145038-00c60767a1a3 h1:NrTEC4xem5Q1ohEszb9EblhQCKTk3C8iZWyHhshc1gY=
+github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260330145038-00c60767a1a3/go.mod h1:9tP4s+zsFE4HqSoqz0kIsvE4TeMfaLsXGsdS6jIaW10=
 github.com/olicesx/quic-go v0.0.0-20260226044315-bb65418d151a h1:Y+ONsSTQsqr2PpiXQnOU+pIcTILGn7qhHMzim1GYqoM=
 github.com/olicesx/quic-go v0.0.0-20260226044315-bb65418d151a/go.mod h1:4i75wxoxXaebP2bt5TFzSx9zf3+M7g8NQJ8PZIaIuIQ=
 github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
