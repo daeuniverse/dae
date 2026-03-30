@@ -8,6 +8,7 @@ package control
 import (
 	"io"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +22,12 @@ type scriptedPacketRead struct {
 }
 
 type scriptedPacketConn struct {
-	reads chan scriptedPacketRead
+	reads       chan scriptedPacketRead
+	writeErr    error
+	writeN      int
+	forceWriteN bool
+	closeCh     chan struct{}
+	closeCalls  atomic.Int32
 }
 
 func (c *scriptedPacketConn) Read(_ []byte) (int, error) {
@@ -42,10 +48,19 @@ func (c *scriptedPacketConn) ReadFrom(p []byte) (int, netip.AddrPort, error) {
 }
 
 func (c *scriptedPacketConn) WriteTo(b []byte, _ string) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	if c.forceWriteN {
+		return c.writeN, nil
+	}
 	return len(b), nil
 }
 
 func (c *scriptedPacketConn) Close() error {
+	if c.closeCalls.Add(1) == 1 && c.closeCh != nil {
+		close(c.closeCh)
+	}
 	return nil
 }
 
@@ -59,6 +74,15 @@ func (c *scriptedPacketConn) SetReadDeadline(_ time.Time) error {
 
 func (c *scriptedPacketConn) SetWriteDeadline(_ time.Time) error {
 	return nil
+}
+
+func waitForCloseSignal(t *testing.T, ch <-chan struct{}, context string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for close signal: %s", context)
+	}
 }
 
 func TestUdpEndpointRefreshTtlWithTime_BoundsInitialLifetimeByDialTimeout(t *testing.T) {
@@ -184,6 +208,97 @@ func TestUdpEndpointStart_DropsUnexpectedInitialReplyUntilPeerMatches(t *testing
 
 	if !ue.hasReply.Load() {
 		t.Fatal("expected endpoint to be promoted after matched initial reply")
+	}
+}
+
+func TestUdpEndpointStart_HandlerErrorClosesConn(t *testing.T) {
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead, 1),
+		closeCh: make(chan struct{}),
+	}
+	wantErr := io.ErrUnexpectedEOF
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+		handler: func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error {
+			return wantErr
+		},
+	}
+	ue.hasReply.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ue.start()
+	}()
+
+	conn.reads <- scriptedPacketRead{
+		data: []byte("payload"),
+		from: netip.MustParseAddrPort("203.0.113.10:3478"),
+	}
+
+	waitForCloseSignal(t, conn.closeCh, "handler error should retire the endpoint")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for read loop to exit after handler error")
+	}
+
+	if !ue.IsDead() {
+		t.Fatal("expected endpoint to be marked dead after handler error")
+	}
+}
+
+func TestUdpEndpointWriteTo_ErrorClosesConn(t *testing.T) {
+	conn := &scriptedPacketConn{
+		writeErr: io.ErrClosedPipe,
+		closeCh:  make(chan struct{}),
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+	}
+
+	_, err := ue.WriteTo([]byte("payload"), "203.0.113.10:3478")
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+
+	waitForCloseSignal(t, conn.closeCh, "write error should close the socket")
+
+	if !ue.IsDead() {
+		t.Fatal("expected endpoint to be marked dead after write error")
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if got := conn.closeCalls.Load(); got != 1 {
+		t.Fatalf("close calls = %d, want 1", got)
+	}
+}
+
+func TestUdpEndpointWriteTo_ShortWriteClosesConn(t *testing.T) {
+	conn := &scriptedPacketConn{
+		writeN:      3,
+		forceWriteN: true,
+		closeCh:     make(chan struct{}),
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+	}
+
+	_, err := ue.WriteTo([]byte("payload"), "203.0.113.10:3478")
+	if err == nil {
+		t.Fatal("expected short write error")
+	}
+
+	waitForCloseSignal(t, conn.closeCh, "short write should close the socket")
+
+	if !ue.IsDead() {
+		t.Fatal("expected endpoint to be marked dead after short write")
 	}
 }
 

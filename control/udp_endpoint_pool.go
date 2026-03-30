@@ -41,6 +41,8 @@ type UdpEndpoint struct {
 	expiresAtNano atomic.Int64
 	handler       UdpHandler
 	NatTimeout    time.Duration
+	closeOnce     sync.Once
+	closeErr      error
 
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
@@ -168,9 +170,7 @@ func (ue *UdpEndpoint) start() {
 				}
 			}
 
-			ue.dead.Store(true)
-			ue.expiresAtNano.Store(1)
-			ue.selfRemoveFromPool()
+			ue.retire()
 
 			// Check if this is a connection refused error from proxy server
 			// If so, invalidate the cached proxy IP so we can try a different one
@@ -195,9 +195,7 @@ func (ue *UdpEndpoint) start() {
 		}
 		ue.markReplied(time.Now().UnixNano())
 		if err = ue.handler(ue, buf[:n], from); err != nil {
-			ue.dead.Store(true)
-			ue.expiresAtNano.Store(1)
-			ue.selfRemoveFromPool()
+			ue.retire()
 			ue.logEndpointExit(err, "handler")
 			break
 		}
@@ -287,6 +285,13 @@ func (ue *UdpEndpoint) selfRemoveFromPool() {
 	}
 }
 
+func (ue *UdpEndpoint) retire() {
+	ue.dead.Store(true)
+	ue.expiresAtNano.Store(1)
+	ue.selfRemoveFromPool()
+	_ = ue.Close()
+}
+
 func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	// Fast dead check: avoid work on an already-dead endpoint.
 	if ue.dead.Load() {
@@ -305,7 +310,7 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	// for performance. Write errors will mark the endpoint dead for cleanup.
 	n, err := ue.conn.WriteTo(b, addr)
 	if err != nil {
-		ue.dead.Store(true)
+		ue.retire()
 		if !errors.IsUDPEndpointNormalClose(err) && ue.Dialer != nil {
 			networkType := &dialer.NetworkType{
 				L4Proto:   consts.L4ProtoStr_UDP,
@@ -317,24 +322,26 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 		return n, err
 	}
 	if n != len(b) {
-		ue.dead.Store(true)
+		ue.retire()
 		return n, fmt.Errorf("%w: udp endpoint wrote %d/%d bytes to %s", io.ErrShortWrite, n, len(b), addr)
 	}
 	return n, nil
 }
 
 func (ue *UdpEndpoint) Close() error {
-	ue.expiresAtNano.Store(0)
+	ue.closeOnce.Do(func() {
+		ue.expiresAtNano.Store(0)
 
-	ue.routingMu.Lock()
-	ue.hasRoutingCache = false
-	ue.routingMu.Unlock()
+		ue.routingMu.Lock()
+		ue.hasRoutingCache = false
+		ue.routingMu.Unlock()
 
-	// conn is nil for negatively-cached failure entries; guard against panic.
-	if ue.conn != nil {
-		return ue.conn.Close()
-	}
-	return nil
+		// conn is nil for negatively-cached failure entries; guard against panic.
+		if ue.conn != nil {
+			ue.closeErr = ue.conn.Close()
+		}
+	})
+	return ue.closeErr
 }
 
 // RefreshTtl updates the expiration time. Uses throttling to reduce atomic
