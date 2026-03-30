@@ -32,6 +32,7 @@ var ErrEndpointFailed = fmt.Errorf("endpoint creation recently failed (negative 
 // under high concurrent-create rates.
 const udpEndpointCreateShardCount = 64
 const udpEndpointJanitorInterval = 250 * time.Millisecond
+const udpEndpointPendingReplyPeerLimit = 8
 
 type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
 
@@ -45,8 +46,18 @@ type UdpEndpoint struct {
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
 	lastRefreshNano atomic.Int64
 
-	// hasReceived indicates if this endpoint has EVER received a packet.
-	hasReceived atomic.Bool
+	// hasReply indicates the upstream side has replied at least once.
+	// Before this flips true, the endpoint is still probing and must not
+	// use the normal sliding NAT lifetime.
+	hasReply atomic.Bool
+
+	// pendingReplyPeers keeps a small ring of recently written upstream peers
+	// while the endpoint is still probing. The first reply must match one of
+	// these peers before the endpoint is promoted to established state.
+	pendingReplyMu        sync.Mutex
+	pendingReplyPeers     [udpEndpointPendingReplyPeerLimit]netip.AddrPort
+	pendingReplyPeerCount int
+	pendingReplyPeerNext  int
 
 	Dialer   *dialer.Dialer
 	Outbound *outbound.DialerGroup
@@ -138,7 +149,7 @@ func (ue *UdpEndpoint) start() {
 				// If we haven't received any valid packet yet, keep threshold low (3) to fail fast on wrong passwords/nodes.
 				// If we have successfully received packets, the proxy works. Subsequent errors are likely network noise, so use high threshold (100).
 				threshold := 3
-				if ue.hasReceived.Load() {
+				if ue.hasReply.Load() {
 					threshold = 100
 				}
 
@@ -171,10 +182,18 @@ func (ue *UdpEndpoint) start() {
 			break
 		}
 		ue.softErrorCount = 0
-		if !ue.hasReceived.Load() {
-			ue.hasReceived.Store(true)
+		if !ue.hasReply.Load() && !ue.acceptsInitialReplyFrom(from) {
+			if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
+				ue.log.WithFields(logrus.Fields{
+					"lAddr":      ue.lAddr.String(),
+					"dialer":     ue.Dialer.Property().Name,
+					"proxy_addr": ue.DialTarget,
+					"from":       from.String(),
+				}).Debug("[UdpEndpoint] Dropped unmatched initial UDP reply during probing")
+			}
+			continue
 		}
-		ue.RefreshTtl()
+		ue.markReplied(time.Now().UnixNano())
 		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.dead.Store(true)
 			ue.expiresAtNano.Store(1)
@@ -274,6 +293,10 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 		return 0, net.ErrClosed
 	}
 
+	if !ue.hasReply.Load() {
+		ue.rememberPendingReplyPeer(addr)
+	}
+
 	// Refresh TTL on write to keep endpoint alive for active connections
 	ue.RefreshTtl()
 
@@ -320,10 +343,133 @@ func (ue *UdpEndpoint) RefreshTtl() {
 	ue.RefreshTtlWithTime(0)
 }
 
+// initialReplyTimeout returns the bounded probing lifetime before the
+// endpoint has observed its first upstream reply.
+func (ue *UdpEndpoint) initialReplyTimeout() time.Duration {
+	if ue.NatTimeout <= 0 {
+		return 0
+	}
+	// Reuse the dial timeout budget instead of introducing another user-facing
+	// tuning knob. An unreplied UDP flow should not survive longer than two dial
+	// attempts before it proves bidirectional liveness.
+	maxProbe := 2 * consts.DefaultDialTimeout
+	if ue.NatTimeout > maxProbe {
+		return maxProbe
+	}
+	return ue.NatTimeout
+}
+
+// ensureInitialReplyDeadline pins a fixed deadline for probing endpoints.
+// Repeated outbound writes must not turn this into a sliding timeout.
+func (ue *UdpEndpoint) ensureInitialReplyDeadline(nowNano int64) {
+	timeout := ue.initialReplyTimeout()
+	if timeout <= 0 {
+		return
+	}
+	if nowNano == 0 {
+		nowNano = time.Now().UnixNano()
+	}
+	deadline := nowNano + int64(timeout)
+	for {
+		expiresAt := ue.expiresAtNano.Load()
+		if expiresAt > 0 && expiresAt <= deadline {
+			return
+		}
+		if ue.expiresAtNano.CompareAndSwap(expiresAt, deadline) {
+			return
+		}
+	}
+}
+
+// markReplied promotes the endpoint from probing to established state.
+// Once a reply has been observed, the normal sliding NAT timeout applies.
+func (ue *UdpEndpoint) markReplied(nowNano int64) {
+	if nowNano == 0 {
+		nowNano = time.Now().UnixNano()
+	}
+	if !ue.hasReply.Swap(true) {
+		ue.clearPendingReplyPeers()
+		ue.lastRefreshNano.Store(nowNano)
+		ue.expiresAtNano.Store(nowNano + int64(ue.NatTimeout))
+		return
+	}
+	ue.RefreshTtlWithTime(nowNano)
+}
+
+func (ue *UdpEndpoint) rememberPendingReplyPeer(addr string) {
+	addrPort, err := netip.ParseAddrPort(addr)
+	if err != nil || !addrPort.IsValid() {
+		return
+	}
+
+	ue.pendingReplyMu.Lock()
+	defer ue.pendingReplyMu.Unlock()
+
+	for i := 0; i < ue.pendingReplyPeerCount; i++ {
+		if ue.pendingReplyPeers[i] == addrPort {
+			return
+		}
+	}
+
+	if ue.pendingReplyPeerCount < len(ue.pendingReplyPeers) {
+		ue.pendingReplyPeers[ue.pendingReplyPeerCount] = addrPort
+		ue.pendingReplyPeerCount++
+		return
+	}
+
+	ue.pendingReplyPeers[ue.pendingReplyPeerNext] = addrPort
+	ue.pendingReplyPeerNext = (ue.pendingReplyPeerNext + 1) % len(ue.pendingReplyPeers)
+}
+
+func (ue *UdpEndpoint) clearPendingReplyPeers() {
+	ue.pendingReplyMu.Lock()
+	defer ue.pendingReplyMu.Unlock()
+
+	ue.pendingReplyPeerCount = 0
+	ue.pendingReplyPeerNext = 0
+	for i := range ue.pendingReplyPeers {
+		ue.pendingReplyPeers[i] = netip.AddrPort{}
+	}
+}
+
+func (ue *UdpEndpoint) acceptsInitialReplyFrom(from netip.AddrPort) bool {
+	if !from.IsValid() {
+		return false
+	}
+
+	ue.pendingReplyMu.Lock()
+	defer ue.pendingReplyMu.Unlock()
+
+	if ue.pendingReplyPeerCount == 0 {
+		return ue.poolKey.Dst.IsValid() && from == ue.poolKey.Dst
+	}
+
+	allowSameIPFallback := ue.poolKey.Dst.Port() == 0
+	for i := 0; i < ue.pendingReplyPeerCount; i++ {
+		expected := ue.pendingReplyPeers[i]
+		if from == expected {
+			return true
+		}
+		if allowSameIPFallback && from.Addr() == expected.Addr() {
+			return true
+		}
+	}
+
+	if ue.poolKey.Dst.IsValid() && from == ue.poolKey.Dst {
+		return true
+	}
+	return false
+}
+
 // RefreshTtlWithTime updates the expiration time using a pre-calculated
 // timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
 func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
-	if ue.NatTimeout <= 0 {
+	if !ue.hasReply.Load() {
+		ue.ensureInitialReplyDeadline(nowNano)
+		return
+	}
+	timeout := ue.NatTimeout
+	if timeout <= 0 {
 		return
 	}
 	if nowNano == 0 {
@@ -333,7 +479,7 @@ func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 	// Throttle: skip if refreshed recently.
 	// For long TTLs, use TTL/50 as interval; for short TTLs, use minimum.
 	minInterval := ttlRefreshMinInterval
-	if ttlNano := int64(ue.NatTimeout); ttlNano > 10*ttlRefreshMinInterval {
+	if ttlNano := int64(timeout); ttlNano > 10*ttlRefreshMinInterval {
 		minInterval = ttlNano / 50
 	}
 	if nowNano-last < minInterval {
@@ -341,7 +487,7 @@ func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 	}
 	// CAS to avoid thundering herd on the same connection.
 	if ue.lastRefreshNano.CompareAndSwap(last, nowNano) {
-		ue.expiresAtNano.Store(nowNano + int64(ue.NatTimeout))
+		ue.expiresAtNano.Store(nowNano + int64(timeout))
 	}
 }
 
@@ -352,8 +498,12 @@ func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
 		return
 	}
 	ue.NatTimeout = timeout
-	// Force immediate refresh on timeout change (bypass throttling).
 	now := time.Now().UnixNano()
+	if !ue.hasReply.Load() {
+		ue.ensureInitialReplyDeadline(now)
+		return
+	}
+	// Force immediate refresh on timeout change (bypass throttling).
 	ue.lastRefreshNano.Store(now)
 	ue.expiresAtNano.Store(now + int64(timeout))
 }

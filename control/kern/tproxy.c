@@ -2432,6 +2432,8 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	}
 	if (p)
 		*p = NULL;
+	if (PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark)
+		return true;
 	if ((skb->mark & 0x100) == 0x100)
 		return true;
 	return false;
