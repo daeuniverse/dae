@@ -340,6 +340,25 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	return err
 }
 
+type udpEndpointReplySender func(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) error
+
+func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) error {
+	if send == nil {
+		send = sendPkt
+	}
+	var cacheSlot **Anyfrom
+	if ue != nil {
+		cacheSlot = ue.responseConnCacheSlot()
+	}
+	// Local reply reinjection failures do not mean the upstream proxy session is
+	// broken. Keeping the endpoint alive avoids recreating a fresh UDP session
+	// for every subsequent client packet after a transient local send failure.
+	if err := send(log, data, from, clientAddr, cacheSlot); err != nil {
+		return nil
+	}
+	return nil
+}
+
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
 	var realSrc netip.AddrPort
 	var domain string
@@ -684,8 +703,7 @@ getNew:
 		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
-				// Do not return conn-unrelated err in this func.
-				return sendPkt(c.log, data, from, realSrc, ue.responseConnCacheSlot())
+				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil)
 			},
 			NatTimeout: natTimeout,
 			Log:        c.log,
