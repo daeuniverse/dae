@@ -1,4 +1,4 @@
-//go:build dae_stub_ebpf
+//go:build trace && dae_stub_ebpf
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only

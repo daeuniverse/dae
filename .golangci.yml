@@ -10,6 +10,16 @@ linters:
     - unconvert
   exclusions:
     generated: strict
+    rules:
+      - path: ^control/bpf_stub\.go$
+        linters:
+          - unused
+      - path: ^control/netkit_linux\.go$
+        linters:
+          - unused
+      - path: ^control/netkit_netlink\.go$
+        linters:
+          - unused
 
 formatters:
   enable:

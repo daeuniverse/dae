@@ -35,7 +35,7 @@ jobs:
       uses: golangci/golangci-lint-action@v9
       with:
         version: v2.11.0
-        args: --timeout=10m
+        args: --timeout=10m --build-tags=dae_stub_ebpf
 
   ebpf-lint:
     runs-on: ubuntu-22.04
