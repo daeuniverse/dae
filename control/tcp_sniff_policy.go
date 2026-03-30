@@ -20,17 +20,15 @@ import (
 const (
 	// tcpSniffFailureThreshold is the number of consecutive sniff failures
 	// before we temporarily skip sniffing on the same flow signature.
-	// Set to 1 for faster suppression of non-sniffable protocols (SSH, etc.).
-	tcpSniffFailureThreshold = uint8(1)
+	// Keep a small retry budget so slow-starting or fragmented flows do not get
+	// suppressed after a single transient miss.
+	tcpSniffFailureThreshold = uint8(3)
 	// tcpSniffNegativeCacheTTL is the suppression duration for sniffing after
 	// repeated NotApplicable/timeout failures.
 	tcpSniffNegativeCacheTTL = 10 * time.Minute
 	// tcpSniffPrefetchBytes is the number of leading bytes read for quick
 	// protocol gating before entering full sniffing path.
 	tcpSniffPrefetchBytes = 16
-	// tcpSniffFirstPayloadWait bounds how long we wait for initial client data.
-	// If no payload arrives quickly, we treat it as non-sniffable flow.
-	tcpSniffFirstPayloadWait = 15 * time.Millisecond
 	// Common sniff probes only need a tiny read buffer. Pool it so successful
 	// probes don't pay an extra temporary heap allocation before wrapping.
 	tcpSniffPrefetchInlineCap = 64
@@ -144,7 +142,7 @@ func (c *ControlPlane) shouldTryTcpSniff(dst netip.AddrPort, routingResult *bpfR
 		return false
 	}
 	// Skip sniffing for ports known to carry non-HTTP/TLS traffic.
-	// This avoids the 15ms timeout delay for protocols like SSH, databases, etc.
+	// This avoids unnecessary prefetch waiting for protocols like SSH and databases.
 	if tcpSniffingExcludedPorts[dst.Port()] {
 		return false
 	}

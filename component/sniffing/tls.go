@@ -6,7 +6,6 @@
 package sniffing
 
 import (
-	"bytes"
 	"encoding/binary"
 	"strings"
 
@@ -22,11 +21,6 @@ const (
 	AssumedTlsClientHelloMaxLength = 4096
 )
 
-var (
-	Version_Tls1_0 = []byte{0x03, 0x01}
-	Version_Tls1_2 = []byte{0x03, 0x03}
-)
-
 // SniffTls only supports tls1.2, tls1.3
 func (s *Sniffer) SniffTls() (d string, err error) {
 	// The Transport Layer Security (TLS) Protocol Version 1.3
@@ -36,7 +30,7 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 		return "", ErrNotApplicable
 	}
 
-	if s.buf.Bytes()[0] != ContentType_HandShake || (!bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_0) && !bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_2)) {
+	if s.buf.Bytes()[0] != ContentType_HandShake || s.buf.Bytes()[1] != 0x03 {
 		return "", ErrNotApplicable
 	}
 
@@ -66,7 +60,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	// Three bytes length.
 	// length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
 
-	if !bytes.Equal(b[4:], Version_Tls1_2) {
+	if b[4] != 0x03 || b[5] < 0x01 || b[5] > 0x03 {
 		return "", ErrNotApplicable
 	}
 

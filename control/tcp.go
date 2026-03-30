@@ -117,7 +117,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 				}).Trace("Skip TCP sniffing by negative cache")
 			}
 		} else {
-			probeConn, prefetched, ready, probeErr := prefetchForTcpSniff(lConn, tcpSniffFirstPayloadWait, tcpSniffPrefetchBytes)
+			probeConn, prefetched, ready, probeErr := prefetchForTcpSniff(lConn, c.sniffingTimeout, tcpSniffPrefetchBytes)
 			if probeErr != nil {
 				return probeErr
 			}
@@ -152,7 +152,9 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 							}).Debug("TCP sniffing encountered ignorable connection error; continue relay")
 						}
 					}
-					// Non-sniffable or ignorable cases suppress repeated sniff attempts.
+					// After repeated misses, temporarily suppress sniff attempts for the
+					// same flow signature so transient or unsupported traffic does not
+					// repeatedly pay the full sniffing cost.
 					c.noteTcpSniffFailure(cacheKey, now)
 					domain = ""
 				} else {

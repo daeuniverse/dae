@@ -26,7 +26,9 @@ func TestNoteTcpSniffFailure_AssignsExpiry(t *testing.T) {
 	}
 	key := newTcpSniffNegKey(mustParseTcpSniffAddrPort(t, "198.51.100.20:443"), nil)
 
-	cp.noteTcpSniffFailure(key, now)
+	for i := uint8(0); i < tcpSniffFailureThreshold; i++ {
+		cp.noteTcpSniffFailure(key, now)
+	}
 
 	entry, ok := cp.tcpSniffNegSet[key]
 	if !ok {
@@ -37,6 +39,26 @@ func TestNoteTcpSniffFailure_AssignsExpiry(t *testing.T) {
 	}
 	if entry.expiresAtUnixNano <= now.UnixNano() {
 		t.Fatalf("expiresAtUnixNano = %d, want > %d", entry.expiresAtUnixNano, now.UnixNano())
+	}
+}
+
+func TestTcpSniffNegativeCache_RequiresThresholdFailures(t *testing.T) {
+	now := time.Now()
+	cp := &ControlPlane{
+		tcpSniffNegSet: make(map[tcpSniffNegKey]tcpSniffNegEntry),
+	}
+	key := newTcpSniffNegKey(mustParseTcpSniffAddrPort(t, "198.51.100.22:443"), nil)
+
+	for i := uint8(1); i < tcpSniffFailureThreshold; i++ {
+		cp.noteTcpSniffFailure(key, now)
+		if cp.shouldSkipTcpSniffByNegativeCache(key, now) {
+			t.Fatalf("negative cache triggered after %d failures, want threshold %d", i, tcpSniffFailureThreshold)
+		}
+	}
+
+	cp.noteTcpSniffFailure(key, now)
+	if !cp.shouldSkipTcpSniffByNegativeCache(key, now) {
+		t.Fatalf("negative cache did not trigger after %d failures", tcpSniffFailureThreshold)
 	}
 }
 
