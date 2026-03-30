@@ -81,15 +81,12 @@ var (
 	DefaultNatTimeout = 30 * time.Second
 	// QuicNatTimeout is 2 minutes for QUIC long-lived connections.
 	QuicNatTimeout = 2 * time.Minute
-
-
 )
 
 const (
 	DnsNatTimeout  = 17 * time.Second // RFC 5452
 	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
 	MaxRetry       = 2
-
 
 	connectionErrorLogInterval = 5 * time.Second
 )
@@ -134,8 +131,6 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 	}
 	return true
 }
-
-
 
 func (c *ControlPlane) allowConnectionErrorLog(now time.Time) bool {
 	nowNano := now.UnixNano()
@@ -390,6 +385,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	isQuicInitial := flowDecision.IsQuicInitial
 	ueKey = flowDecision.EndpointKeyForInitialLookup()
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
+	if !ueExists {
+		if fallbackKey, ok := flowDecision.InitialLookupFallbackKey(); ok {
+			ueKey = fallbackKey
+			ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
+		}
+	}
 	if ueExists {
 		if ue.SniffedDomain == "" && isQuicInitial {
 			// Chrome reuses UDP sockets; remove domain-less endpoint for new QUIC Initial.
@@ -480,7 +481,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		// Check if this DCID has failed sniffing before.
 		// Failed DCIDs bypass sniffing entirely and use IP routing directly.
 		// This prevents blocking when a previous sniffing attempt timed out.
-		if IsQuicDcidFailed(key) {
+		if IsQuicDcidFailedAt(key, now) {
 			goto afterSniffing
 		}
 
@@ -495,7 +496,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			// indefinitely blocking QUIC connections waiting for sniffing completion.
 			if sniffer.ShouldBypassSniff(now) {
 				// Mark this DCID as failed - subsequent packets will bypass sniffing.
-				MarkQuicDcidFailed(key)
+				MarkQuicDcidFailed(key, quicDcidFailureReasonSoftBypass)
 				sniffer.Mu.Unlock()
 				goto afterSniffing
 			}
@@ -512,7 +513,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 								"panic": r,
 							}).Error("UDP sniffing panicked; bypassing sniffing for this DCID")
 						}
-						MarkQuicDcidFailed(key)
+						MarkQuicDcidFailed(key, quicDcidFailureReasonPanic)
 						sniffer.Mu.Unlock()
 					}
 				}()
@@ -534,7 +535,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 									"failures": sniffer.consecutiveDecryptFailures,
 								}).Debug("QUIC decrypt failed repeatedly, marking DCID as failed")
 							}
-							MarkQuicDcidFailed(key)
+							MarkQuicDcidFailed(key, quicDcidFailureReasonDecryptFailure)
 							sniffer.Mu.Unlock()
 							return
 						}
@@ -642,16 +643,16 @@ getNew:
 	}
 
 	// Determine NAT timeout based on connection type
-	if domain != "" || flowDecision.IsLikelyQuicData {
-		// QUIC connections get 2 minutes
-		natTimeout = QuicNatTimeout
-	} else {
-		// Non-QUIC UDP uses default timeout
-		natTimeout = DefaultNatTimeout
-	}
+	natTimeout = flowDecision.NatTimeoutForDial(domain)
 
-	// QUIC (domain != "") or likely QUIC Initial packets use Symmetric NAT.
+	// Allocate symmetric endpoints only for confirmed QUIC state. If the initial
+	// lookup found an existing symmetric endpoint via the UDP/443 heuristic, keep
+	// using that existing entry instead of silently forking a new src-only one.
 	ueKey = flowDecision.EndpointKeyForDial(domain)
+	if ueExists && foundUeKey.Dst.Port() != 0 && ueKey.Dst.Port() == 0 {
+		ueKey = foundUeKey
+		natTimeout = ue.NatTimeout
+	}
 
 	// Fast path: reuse the endpoint already loaded by the initial Get when the
 	// target key is unchanged (non-QUIC existing flow, no domain upgrade).

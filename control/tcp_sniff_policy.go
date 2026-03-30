@@ -155,6 +155,9 @@ func (c *ControlPlane) shouldSkipTcpSniffByNegativeCache(key tcpSniffNegKey, now
 		return false
 	}
 	if entry.expiresAtUnixNano <= 0 {
+		c.tcpSniffNegMu.Lock()
+		delete(c.tcpSniffNegSet, key)
+		c.tcpSniffNegMu.Unlock()
 		return false
 	}
 	if entry.expiresAtUnixNano <= now.UnixNano() {
@@ -164,7 +167,7 @@ func (c *ControlPlane) shouldSkipTcpSniffByNegativeCache(key tcpSniffNegKey, now
 		c.tcpSniffNegMu.Unlock()
 		return false
 	}
-	return true
+	return entry.failures >= tcpSniffFailureThreshold
 }
 
 func (c *ControlPlane) noteTcpSniffFailure(key tcpSniffNegKey, now time.Time) {
@@ -183,11 +186,24 @@ func (c *ControlPlane) noteTcpSniffFailure(key tcpSniffNegKey, now time.Time) {
 		entry = tcpSniffNegEntry{}
 	}
 	entry.failures++
+	entry.expiresAtUnixNano = now.Add(tcpSniffNegativeCacheTTL).UnixNano()
 	if entry.failures >= tcpSniffFailureThreshold {
 		entry.failures = tcpSniffFailureThreshold
-		entry.expiresAtUnixNano = now.Add(tcpSniffNegativeCacheTTL).UnixNano()
 	}
 	c.tcpSniffNegSet[key] = entry
+}
+
+func (c *ControlPlane) cleanupTcpSniffNegative(now time.Time) {
+	nowNano := now.UnixNano()
+
+	c.tcpSniffNegMu.Lock()
+	defer c.tcpSniffNegMu.Unlock()
+
+	for key, entry := range c.tcpSniffNegSet {
+		if entry.expiresAtUnixNano <= 0 || entry.expiresAtUnixNano <= nowNano {
+			delete(c.tcpSniffNegSet, key)
+		}
+	}
 }
 
 func (c *ControlPlane) clearTcpSniffNegative(key tcpSniffNegKey) {

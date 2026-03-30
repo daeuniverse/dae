@@ -7,6 +7,7 @@ package control
 
 import (
 	"net/netip"
+	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
 )
@@ -76,34 +77,65 @@ func (d UdpFlowDecision) FullConeNatEndpointKey() UdpEndpointKey {
 	return d.Key.FullConeNatEndpointKey()
 }
 
+// HasConfirmedQuicState returns true only for signals that are strong enough to
+// justify allocating per-destination state: a QUIC Initial packet or an active
+// sniffer session for the same flow.
+func (d UdpFlowDecision) HasConfirmedQuicState() bool {
+	return d.IsQuicInitial || d.HasSnifferSession
+}
+
 func (d UdpFlowDecision) CachedRoutingEndpointKey() UdpEndpointKey {
-	if d.PreferSymmetricNat() {
+	if d.HasConfirmedQuicState() {
 		return d.SymmetricNatEndpointKey()
 	}
 	return d.FullConeNatEndpointKey()
+}
+
+// CachedRoutingFallbackKey returns the alternate cache key to probe when the
+// primary key misses. This preserves hits for already-established symmetric
+// sessions while allowing heuristic-only UDP/443 traffic to store new cache
+// entries under the cheaper src-only key.
+func (d UdpFlowDecision) CachedRoutingFallbackKey() (UdpEndpointKey, bool) {
+	if d.IsLikelyQuicData && !d.HasConfirmedQuicState() {
+		return d.SymmetricNatEndpointKey(), true
+	}
+	return UdpEndpointKey{}, false
 }
 
 func (d UdpFlowDecision) EndpointKeyForDial(domain string) UdpEndpointKey {
-	if domain != "" || d.PreferSymmetricNat() {
+	if domain != "" || d.HasConfirmedQuicState() {
 		return d.SymmetricNatEndpointKey()
 	}
 	return d.FullConeNatEndpointKey()
 }
 
+func (d UdpFlowDecision) NatTimeoutForDial(domain string) time.Duration {
+	if domain != "" || d.HasConfirmedQuicState() {
+		return QuicNatTimeout
+	}
+	return DefaultNatTimeout
+}
+
 // EndpointKeyForInitialLookup returns the appropriate endpoint pool key for the initial lookup.
-// This determines the correct key based on flow classification at ingress time, avoiding
-// redundant sync.Map lookups. The decision is final because:
-// - IsQuicInitial is determined from packet inspection
-// - HasSnifferSession is set before entering handlePkt (in EnsureSnifferSession)
-// - IsLikelyQuicData is based on static port heuristics
+// Port-based QUIC heuristics are intentionally used here only for reuse of an
+// already-established symmetric session. Allocation decisions are deferred
+// until after the lookup so heuristic-only traffic can still fall back to the
+// cheaper src-only key on a miss.
 func (d UdpFlowDecision) EndpointKeyForInitialLookup() UdpEndpointKey {
-	// QUIC, active sniffing sessions, and QUIC-like traffic (port 443/8443)
-	// require Symmetric NAT for proper session isolation.
-	if d.PreferSymmetricNat() {
+	if d.HasConfirmedQuicState() || d.IsLikelyQuicData {
 		return d.SymmetricNatEndpointKey() // {Src, Dst}
 	}
-	// Other traffic can use Full-Cone NAT (Src-only key) for compatibility.
 	return d.FullConeNatEndpointKey() // {Src, 0}
+}
+
+// InitialLookupFallbackKey returns the cheaper fallback key used after a miss
+// on the heuristic symmetric lookup path. This prevents UDP/443 traffic that is
+// merely QUIC-like by port from permanently allocating per-destination state.
+func (d UdpFlowDecision) InitialLookupFallbackKey() (UdpEndpointKey, bool) {
+	if d.IsLikelyQuicData && !d.HasConfirmedQuicState() {
+		return d.FullConeNatEndpointKey(), true
+	}
+	return UdpEndpointKey{}, false
 }
 
 func (d UdpFlowDecision) EnsureSnifferSession() UdpFlowDecision {
@@ -113,10 +145,6 @@ func (d UdpFlowDecision) EnsureSnifferSession() UdpFlowDecision {
 	_, _ = DefaultPacketSnifferSessionMgr.GetOrCreate(d.PacketSnifferKey(), nil)
 	d.HasSnifferSession = true
 	return d
-}
-
-func (d UdpFlowDecision) PreferSymmetricNat() bool {
-	return d.IsQuicInitial || d.HasSnifferSession || d.IsLikelyQuicData
 }
 
 func (d UdpFlowDecision) ShouldAttemptSniff() bool {

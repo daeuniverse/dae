@@ -92,19 +92,19 @@ type ControlPlane struct {
 	connStateJanitorOnce sync.Once
 
 	// Track last alert time to avoid spamming logs
-	lastBpfOverflowAlertTime  atomic.Int64
+	lastBpfOverflowAlertTime atomic.Int64
 	lastUdpPressureAlertTime atomic.Int64
 
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout    time.Duration
-	tproxyPortProtect  bool
-	soMarkFromDae      uint32
-	mptcp              bool
-	udpUnorderedRunner *udpUnorderedTaskRunner
-	udpBoundedPool     *udpBoundedPoolManager
-	failedQuicDcidCache        sync.Map // map[PacketSnifferKey]int64 (expiresAt unix nano)
+	sniffingTimeout            time.Duration
+	tproxyPortProtect          bool
+	soMarkFromDae              uint32
+	mptcp                      bool
+	udpUnorderedRunner         *udpUnorderedTaskRunner
+	udpBoundedPool             *udpBoundedPoolManager
+	failedQuicDcidCache        *failedQuicDcidCache
 	lastConnectionErrorLogTime atomic.Int64
 }
 
@@ -612,8 +612,9 @@ func NewControlPlaneWithContext(
 		mptcp:                global.Mptcp,
 		udpUnorderedRunner:   newDefaultUdpUnorderedTaskRunner(cctx),
 		udpBoundedPool:       newUdpBoundedPoolManager(cctx),
+		failedQuicDcidCache:  newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
 	}
-	SetFailedQuicDcidCache(&plane.failedQuicDcidCache)
+	SetFailedQuicDcidCache(plane.failedQuicDcidCache)
 	SetAnyfromSoMark(global.SoMarkFromDae)
 	plane.startRealDomainNegJanitor()
 	plane.startConnStateJanitor()
@@ -1144,15 +1145,11 @@ func (c *ControlPlane) cleanupNegativeCaches(now time.Time) {
 	})
 
 	// 2. Cleanup QUIC DCID negative cache
-	c.failedQuicDcidCache.Range(func(key, value interface{}) bool {
-		expiresAt, ok := value.(int64)
-		if !ok || nowNano >= expiresAt {
-			c.failedQuicDcidCache.Delete(key)
-		}
-		return true
-	})
-}
+	c.failedQuicDcidCache.CleanupExpired(now)
 
+	// 3. Cleanup TCP sniff negative cache
+	c.cleanupTcpSniffNegative(now)
+}
 
 type dnsDialerSnapshotKey struct {
 	realSrc      netip.AddrPort
@@ -2045,6 +2042,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 						routingResult = cached
 					}
 				}
+				if routingResult == nil {
+					if fallbackKey, ok := flowDecision.CachedRoutingFallbackKey(); ok {
+						if ue, ok := DefaultUdpEndpointPool.Get(fallbackKey); ok {
+							if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
+								routingResult = cached
+							}
+						}
+					}
+				}
 
 				if routingResult == nil {
 					rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP)
@@ -2089,8 +2095,17 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 
 				if freshRoutingResult != nil {
+					updatedCache := false
 					if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
 						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
+						updatedCache = true
+					}
+					if !updatedCache {
+						if fallbackKey, ok := flowDecision.CachedRoutingFallbackKey(); ok {
+							if ue, ok := DefaultUdpEndpointPool.Get(fallbackKey); ok {
+								ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
+							}
+						}
 					}
 				}
 			}
@@ -2406,6 +2421,7 @@ func (c *ControlPlane) Close() (err error) {
 		return true
 	})
 	c.clearAllTcpSniffNegative()
+	c.failedQuicDcidCache.Clear()
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
 	// Combine defer errors with core.Close error

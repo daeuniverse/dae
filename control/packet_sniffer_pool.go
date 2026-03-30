@@ -39,22 +39,262 @@ const (
 	// (ErrNotApplicable) before immediately giving up on this DCID. Reduced to 2 to
 	// quickly identify non-QUIC traffic that shouldn't be sniffed.
 	consecutiveDecryptFailuresThreshold = 2
+
+	// failedQuicDcidCacheShardCount spreads writes across independent shards to
+	// keep contention low under bursty QUIC Initial traffic.
+	failedQuicDcidCacheShardCount = 64
+	// failedQuicDcidCacheMaxEntries hard-bounds memory use for the global QUIC
+	// sniff negative cache. Capacity is intentionally finite because the cache is
+	// a resilience hint, not correctness-critical state.
+	failedQuicDcidCacheMaxEntries = 16384
+
+	// Failure-specific base TTLs. Soft bypasses are short because they often
+	// reflect transient "no SNI yet" situations, while parser panics get a
+	// stronger cooldown to avoid repeatedly exercising the same bad path.
+	failedQuicDcidSoftBypassTtl   = 15 * time.Second
+	failedQuicDcidDecryptFailTtl  = 30 * time.Second
+	failedQuicDcidPanicTtl        = 1 * time.Minute
+	failedQuicDcidMaxTtl          = 5 * time.Minute
+	failedQuicDcidMaxBackoffShift = 4
 )
 
+type quicDcidFailureReason uint8
+
+const (
+	quicDcidFailureReasonSoftBypass quicDcidFailureReason = iota + 1
+	quicDcidFailureReasonDecryptFailure
+	quicDcidFailureReasonPanic
+)
+
+type failedQuicDcidCacheEntry struct {
+	expiresAtUnixNano int64
+	backoffShift      uint8
+}
+
+type failedQuicDcidCacheShard struct {
+	mu      sync.RWMutex
+	entries map[PacketSnifferKey]failedQuicDcidCacheEntry
+}
+
+type failedQuicDcidCache struct {
+	maxEntriesPerShard int
+	shards             [failedQuicDcidCacheShardCount]failedQuicDcidCacheShard
+}
+
 var (
-	failedQuicDcidTtl = 5 * time.Minute
-	failedQuicDcidCachePtr atomic.Pointer[sync.Map]
+	failedQuicDcidCachePtr atomic.Pointer[failedQuicDcidCache]
 )
 
 // SetFailedQuicDcidCache sets the active cache for failed QUIC DCIDs.
 // This allows the ControlPlane to provide its instance-local cache while
 // maintaining the package-level API for callers.
-func SetFailedQuicDcidCache(m *sync.Map) {
-	failedQuicDcidCachePtr.Store(m)
+func SetFailedQuicDcidCache(cache *failedQuicDcidCache) {
+	failedQuicDcidCachePtr.Store(cache)
 }
 
-func getFailedQuicDcidCache() *sync.Map {
+func getFailedQuicDcidCache() *failedQuicDcidCache {
 	return failedQuicDcidCachePtr.Load()
+}
+
+func newFailedQuicDcidCache(maxEntries int) *failedQuicDcidCache {
+	if maxEntries <= 0 {
+		maxEntries = failedQuicDcidCacheMaxEntries
+	}
+
+	perShard := maxEntries / failedQuicDcidCacheShardCount
+	if perShard == 0 {
+		perShard = 1
+	}
+	if perShard*failedQuicDcidCacheShardCount < maxEntries {
+		perShard++
+	}
+
+	cache := &failedQuicDcidCache{
+		maxEntriesPerShard: perShard,
+	}
+	for i := range failedQuicDcidCacheShardCount {
+		cache.shards[i].entries = make(map[PacketSnifferKey]failedQuicDcidCacheEntry, perShard)
+	}
+	return cache
+}
+
+func failedQuicDcidBaseTtl(reason quicDcidFailureReason) time.Duration {
+	switch reason {
+	case quicDcidFailureReasonSoftBypass:
+		return failedQuicDcidSoftBypassTtl
+	case quicDcidFailureReasonDecryptFailure:
+		return failedQuicDcidDecryptFailTtl
+	case quicDcidFailureReasonPanic:
+		return failedQuicDcidPanicTtl
+	default:
+		return failedQuicDcidSoftBypassTtl
+	}
+}
+
+func failedQuicDcidSuppressionTtl(reason quicDcidFailureReason, backoffShift uint8) time.Duration {
+	ttl := failedQuicDcidBaseTtl(reason)
+	for i := uint8(0); i < backoffShift && ttl < failedQuicDcidMaxTtl; i++ {
+		ttl *= 2
+		if ttl > failedQuicDcidMaxTtl {
+			return failedQuicDcidMaxTtl
+		}
+	}
+	if ttl > failedQuicDcidMaxTtl {
+		return failedQuicDcidMaxTtl
+	}
+	return ttl
+}
+
+func hashPacketSnifferKey(key PacketSnifferKey) uint64 {
+	h := hashAddrPort(key.LAddr)
+	h = wyMix(h^hashAddrPort(key.RAddr), wyHashP0)
+
+	if key.DCIDLen > 0 {
+		dcid := key.DCID[:key.DCIDLen]
+		for len(dcid) >= 8 {
+			h = wyMix(h^binary.LittleEndian.Uint64(dcid[:8]), wyHashP1)
+			dcid = dcid[8:]
+		}
+		if len(dcid) > 0 {
+			var tail [8]byte
+			copy(tail[:], dcid)
+			h = wyMix(h^binary.LittleEndian.Uint64(tail[:]), wyHashP2)
+		}
+	}
+	h ^= uint64(key.DCIDLen)
+	h = wyMix(h, wyHashP3)
+	h ^= h >> 32
+	return h
+}
+
+func (k PacketSnifferKey) HasCacheableDcid() bool {
+	return k.DCIDLen > 0
+}
+
+func (c *failedQuicDcidCache) shardFor(key PacketSnifferKey) *failedQuicDcidCacheShard {
+	idx := int(hashPacketSnifferKey(key) & uint64(failedQuicDcidCacheShardCount-1))
+	return &c.shards[idx]
+}
+
+func (c *failedQuicDcidCache) IsFailed(key PacketSnifferKey, now time.Time) bool {
+	if c == nil || !key.HasCacheableDcid() {
+		return false
+	}
+
+	nowNano := now.UnixNano()
+	shard := c.shardFor(key)
+	shard.mu.RLock()
+	entry, ok := shard.entries[key]
+	shard.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if entry.expiresAtUnixNano > nowNano {
+		return true
+	}
+
+	shard.mu.Lock()
+	if current, ok := shard.entries[key]; ok && current == entry && current.expiresAtUnixNano <= nowNano {
+		delete(shard.entries, key)
+	}
+	shard.mu.Unlock()
+	return false
+}
+
+func (c *failedQuicDcidCache) MarkFailed(key PacketSnifferKey, reason quicDcidFailureReason, now time.Time) {
+	if c == nil || !key.HasCacheableDcid() {
+		return
+	}
+
+	nowNano := now.UnixNano()
+	shard := c.shardFor(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if entry, ok := shard.entries[key]; ok && entry.expiresAtUnixNano > nowNano {
+		if entry.backoffShift < failedQuicDcidMaxBackoffShift {
+			entry.backoffShift++
+		}
+		newExpiry := now.Add(failedQuicDcidSuppressionTtl(reason, entry.backoffShift)).UnixNano()
+		if newExpiry < entry.expiresAtUnixNano {
+			newExpiry = entry.expiresAtUnixNano
+		}
+		entry.expiresAtUnixNano = newExpiry
+		shard.entries[key] = entry
+		return
+	}
+
+	for existingKey, entry := range shard.entries {
+		if entry.expiresAtUnixNano <= nowNano {
+			delete(shard.entries, existingKey)
+		}
+	}
+
+	if len(shard.entries) >= c.maxEntriesPerShard {
+		var victimKey PacketSnifferKey
+		var victimExpiry int64
+		haveVictim := false
+		for existingKey, entry := range shard.entries {
+			if !haveVictim || entry.expiresAtUnixNano < victimExpiry {
+				victimKey = existingKey
+				victimExpiry = entry.expiresAtUnixNano
+				haveVictim = true
+			}
+		}
+		if haveVictim {
+			delete(shard.entries, victimKey)
+		}
+	}
+
+	shard.entries[key] = failedQuicDcidCacheEntry{
+		expiresAtUnixNano: now.Add(failedQuicDcidSuppressionTtl(reason, 0)).UnixNano(),
+	}
+}
+
+func (c *failedQuicDcidCache) CleanupExpired(now time.Time) {
+	if c == nil {
+		return
+	}
+
+	nowNano := now.UnixNano()
+	for i := range failedQuicDcidCacheShardCount {
+		shard := &c.shards[i]
+		shard.mu.Lock()
+		for key, entry := range shard.entries {
+			if entry.expiresAtUnixNano <= nowNano {
+				delete(shard.entries, key)
+			}
+		}
+		shard.mu.Unlock()
+	}
+}
+
+func (c *failedQuicDcidCache) Clear() {
+	if c == nil {
+		return
+	}
+
+	for i := range failedQuicDcidCacheShardCount {
+		shard := &c.shards[i]
+		shard.mu.Lock()
+		clear(shard.entries)
+		shard.mu.Unlock()
+	}
+}
+
+func (c *failedQuicDcidCache) Len() int {
+	if c == nil {
+		return 0
+	}
+
+	total := 0
+	for i := range failedQuicDcidCacheShardCount {
+		shard := &c.shards[i]
+		shard.mu.RLock()
+		total += len(shard.entries)
+		shard.mu.RUnlock()
+	}
+	return total
 }
 
 // PacketSniffer holds sniffing state for a UDP flow.
@@ -346,39 +586,36 @@ func (p *PacketSnifferPool) startJanitor() {
 // IsQuicDcidFailed checks if a DCID has been marked as failed due to sniffing timeout.
 // Failed DCIDs bypass sniffing entirely and use IP routing directly.
 func IsQuicDcidFailed(key PacketSnifferKey) bool {
-	m := getFailedQuicDcidCache()
-	if m == nil {
+	return IsQuicDcidFailedAt(key, time.Now())
+}
+
+func IsQuicDcidFailedAt(key PacketSnifferKey, now time.Time) bool {
+	cache := getFailedQuicDcidCache()
+	if cache == nil {
 		return false
 	}
-	if v, ok := m.Load(key); ok {
-		expiresAt, ok := v.(int64)
-		return ok && time.Now().UnixNano() < expiresAt
-	}
-	return false
+	return cache.IsFailed(key, now)
 }
 
 // MarkQuicDcidFailed marks a DCID as failed, causing subsequent packets with
 // the same DCID to bypass sniffing and use IP routing directly.
-func MarkQuicDcidFailed(key PacketSnifferKey) {
-	m := getFailedQuicDcidCache()
-	if m == nil {
+func MarkQuicDcidFailed(key PacketSnifferKey, reason quicDcidFailureReason) {
+	cache := getFailedQuicDcidCache()
+	if cache == nil {
 		return
 	}
-	m.Store(key, time.Now().Add(failedQuicDcidTtl).UnixNano())
+	cache.MarkFailed(key, reason, time.Now())
 }
 
 // ClearFailedQuicDcids clears all failed DCID entries.
 // This should be called on reload or when network conditions improve
 // (e.g., after successful health check) to allow retrying sniffing.
 func ClearFailedQuicDcids() {
-	m := getFailedQuicDcidCache()
-	if m == nil {
+	cache := getFailedQuicDcidCache()
+	if cache == nil {
 		return
 	}
-	m.Range(func(key, value any) bool {
-		m.Delete(key)
-		return true
-	})
+	cache.Clear()
 }
 
 // HealthCheckSuccessCallback is a callback function that can be set to
