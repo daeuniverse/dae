@@ -19,9 +19,10 @@ import (
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
 	normalizedLink := normalizeShadowTLSPluginOptions(link)
+	baseDialer := newDefaultNetworkDialer(direct.SymmetricDirect, gOption.SoMarkFromDae, gOption.Mptcp)
 
 	// First, create the protocol dialer with direct dialer to get the property
-	d, _p, err := D.NewNetproxyDialerFromLink(direct.SymmetricDirect, &gOption.ExtraOption, normalizedLink)
+	d, _p, err := D.NewNetproxyDialerFromLink(baseDialer, &gOption.ExtraOption, normalizedLink)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +49,7 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 		if gOption.Log != nil && gOption.Log.IsLevelEnabled(logrus.DebugLevel) {
 			gOption.Log.WithField("proxy_address", p.Address).Debug("[DialerRegister] Creating sticky IP dialer wrapper for proxy domain")
 		}
-		stickyWrapper = stickyip.NewStickyIpDialer(direct.SymmetricDirect, p.Address, globalProxyIpCache)
+		stickyWrapper = stickyip.NewStickyIpDialer(baseDialer, p.Address, globalProxyIpCache)
 
 		// Re-create the protocol dialer with sticky wrapper as base
 		d, _p, err = D.NewNetproxyDialerFromLink(stickyWrapper, &gOption.ExtraOption, normalizedLink)

@@ -196,6 +196,8 @@ type GlobalOption struct {
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
 	CheckDnsTcp       bool
+	SoMarkFromDae     uint32
+	Mptcp             bool
 }
 
 type InstanceOption struct {
@@ -238,6 +240,8 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
+		SoMarkFromDae:     global.SoMarkFromDae,
+		Mptcp:             global.Mptcp,
 	}
 }
 
