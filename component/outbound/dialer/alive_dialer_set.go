@@ -363,17 +363,15 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				}
 			}
 		}
-	} else {
-		if alive && minPolicy && a.minLatency.dialer == nil {
-			// Use first dialer if no dialer has alive state (usually happen at the very beginning).
-			a.minLatency.dialer = dialer
-			if a.log.IsLevelEnabled(logrus.InfoLevel) {
-				a.log.WithFields(logrus.Fields{
-					"group":   a.dialerGroupName,
-					"network": a.CheckTyp.String(),
-					"dialer":  a.minLatency.dialer.property.Name,
-				}).Infof("Group selects dialer")
-			}
+	} else if alive && minPolicy && a.minLatency.dialer == nil {
+		// Use first dialer if no dialer has alive state (usually happen at the very beginning).
+		a.minLatency.dialer = dialer
+		if a.log.IsLevelEnabled(logrus.InfoLevel) {
+			a.log.WithFields(logrus.Fields{
+				"group":   a.dialerGroupName,
+				"network": a.CheckTyp.String(),
+				"dialer":  a.minLatency.dialer.property.Name,
+			}).Infof("Group selects dialer")
 		}
 	}
 }

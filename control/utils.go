@@ -248,7 +248,7 @@ func SetSendRedirects(ifname string, val string) {
 }
 
 func ProcessName2String(pname []uint8) string {
-	return string(bytes.TrimRight(pname[:], string([]byte{0})))
+	return string(bytes.TrimRight(pname, string([]byte{0})))
 }
 
 func Mac2String(mac []uint8) string {

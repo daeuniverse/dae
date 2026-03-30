@@ -48,7 +48,7 @@ func NewParamItem(param *Param) *Item {
 
 func NewSectionItem(section *Section) *Item {
 	return &Item{
-		Type:  ItemType_Param,
+		Type:  ItemType_Section,
 		Value: section,
 	}
 }

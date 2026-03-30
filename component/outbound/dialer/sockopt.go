@@ -149,9 +149,9 @@ func bindAddr(fd uintptr, addrPort netip.AddrPort) error {
 		}
 		zone := addrPort.Addr().Zone()
 		if zone != "" {
-			//if link, e := netlink.LinkByName(zone); e == nil {
-			//	a6.ZoneId = uint32(link.Attrs().Index)
-			//}
+			// if link, e := netlink.LinkByName(zone); e == nil {
+			// 	a6.ZoneId = uint32(link.Attrs().Index)
+			// }
 			return fmt.Errorf("unsupported ipv6 zone")
 		}
 		a6.Addr = addr.As16()

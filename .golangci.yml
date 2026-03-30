@@ -1,0 +1,27 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - gocritic
+    - ineffassign
+    - misspell
+    - unconvert
+
+formatters:
+  enable:
+    - gofmt
+
+linters-settings:
+  gocritic:
+    enabled-checks:
+      - appendAssign
+      - assignOp
+      - elseif
+      - singleCaseSwitch
+      - unlambda
+      - unslice
+
+issues:
+  exclude-generated: strict

@@ -218,7 +218,7 @@ func isGSOError(err error) bool {
 // AnyfromPool is a full-cone udp listener pool
 const (
 	anyfromPoolShardCount = 64
-	anyfromJanitorPeriod    = 500 * time.Millisecond
+	anyfromJanitorPeriod  = 500 * time.Millisecond
 )
 
 type anyfromPoolShard struct {

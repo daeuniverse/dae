@@ -368,12 +368,13 @@ retryLoadBpf:
 	if GetDaeNetns().IsUsingNetkit() && checkNetkitDeviceCanUseRedirectPeer(log, GetDaeNetns().Dae0().Attrs().Name) {
 		// Check kernel version for CVE-2025-37959 fix
 		kernelVersion, err := internal.KernelVersion()
-		if err != nil {
+		switch {
+		case err != nil:
 			log.Warnf("Failed to get kernel version: %v; bpf_redirect_peer() disabled", err)
-		} else if kernelVersion.Less(consts.RedirectPeerSafeVersion) {
+		case kernelVersion.Less(consts.RedirectPeerSafeVersion):
 			log.Debugf("Kernel %v < %v (CVE-2025-37959 fix); bpf_redirect_peer() disabled",
 				kernelVersion, consts.RedirectPeerSafeVersion)
-		} else {
+		default:
 			useRedirectPeer = 1
 			log.Infof("Safely enabled bpf_redirect_peer() (kernel %v, netkit+scrub=NONE)", kernelVersion)
 		}
@@ -400,7 +401,7 @@ retryLoadBpf:
 			padding2        uint16
 			daeSocketMark   uint32
 		}{
-			tproxyPort:      uint32(opts.BigEndianTproxyPort),
+			tproxyPort:      opts.BigEndianTproxyPort,
 			controlPlanePid: uint32(os.Getpid()),
 			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
 			daeNetnsId:      uint32(netnsID),

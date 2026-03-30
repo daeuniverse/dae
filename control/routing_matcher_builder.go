@@ -277,9 +277,9 @@ func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.
 		Mark:     outbound.Mark,
 		Must:     outbound.Must,
 	}
-	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
+	binary.LittleEndian.PutUint32(set.Value[:], lpmTrieIndex)
 	compiled := newCompiledRoutingBase(consts.MatchType_IpSet, f.Not, outboundId, outbound.Mark, outbound.Must)
-	compiled.lpmIndex = uint32(lpmTrieIndex)
+	compiled.lpmIndex = lpmTrieIndex
 	b.appendRule(set, compiled)
 	return nil
 }
@@ -344,9 +344,9 @@ func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []
 		Mark:     outbound.Mark,
 		Must:     outbound.Must,
 	}
-	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
+	binary.LittleEndian.PutUint32(set.Value[:], lpmTrieIndex)
 	compiled := newCompiledRoutingBase(consts.MatchType_SourceIpSet, f.Not, outboundId, outbound.Mark, outbound.Must)
-	compiled.lpmIndex = uint32(lpmTrieIndex)
+	compiled.lpmIndex = lpmTrieIndex
 	b.appendRule(set, compiled)
 	return nil
 }

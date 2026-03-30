@@ -380,9 +380,9 @@ func dnsCacheAnswerIPs(cache *DnsCache) []string {
 	for _, ans := range cache.Answer {
 		switch body := ans.(type) {
 		case *dnsmessage.A:
-			ips = append(ips, net.IP(body.A).String())
+			ips = append(ips, body.A.String())
 		case *dnsmessage.AAAA:
-			ips = append(ips, net.IP(body.AAAA).String())
+			ips = append(ips, body.AAAA.String())
 		}
 	}
 	return ips

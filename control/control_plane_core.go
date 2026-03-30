@@ -339,10 +339,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	}
 	if linkHdrLen > 0 {
 		filterIngress.Fd = c.bpf.TproxyLanIngressL2.FD()
-		filterIngress.Name = filterIngress.Name + "_l2"
+		filterIngress.Name += "_l2"
 	} else {
 		filterIngress.Fd = c.bpf.TproxyLanIngressL3.FD()
-		filterIngress.Name = filterIngress.Name + "_l3"
+		filterIngress.Name += "_l3"
 	}
 	// Remove and add.
 	// Best effort to remove old filter; it may not exist.
@@ -376,10 +376,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	}
 	if linkHdrLen > 0 {
 		filterEgress.Fd = c.bpf.TproxyLanEgressL2.FD()
-		filterEgress.Name = filterEgress.Name + "_l2"
+		filterEgress.Name += "_l2"
 	} else {
 		filterEgress.Fd = c.bpf.TproxyLanEgressL3.FD()
-		filterEgress.Name = filterEgress.Name + "_l3"
+		filterEgress.Name += "_l3"
 	}
 	// Remove and add.
 	// Best effort to remove old filter; it may not exist.
@@ -535,10 +535,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 	if linkHdrLen > 0 {
 		filterEgress.Fd = c.bpf.TproxyWanEgressL2.FD()
-		filterEgress.Name = filterEgress.Name + "_l2"
+		filterEgress.Name += "_l2"
 	} else {
 		filterEgress.Fd = c.bpf.TproxyWanEgressL3.FD()
-		filterEgress.Name = filterEgress.Name + "_l3"
+		filterEgress.Name += "_l3"
 	}
 	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterEgress)
@@ -570,10 +570,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 	if linkHdrLen > 0 {
 		filterIngress.Fd = c.bpf.TproxyWanIngressL2.FD()
-		filterIngress.Name = filterIngress.Name + "_l2"
+		filterIngress.Name += "_l2"
 	} else {
 		filterIngress.Fd = c.bpf.TproxyWanIngressL3.FD()
-		filterIngress.Name = filterIngress.Name + "_l3"
+		filterIngress.Name += "_l3"
 	}
 	// Best effort to remove old filter; it may not exist.
 	_ = netlink.FilterDel(filterIngress)

@@ -108,8 +108,9 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			if itemVal.AndFunctions != nil {
 				// AndFunctions.
 				// If field is interface{} or types equal, we can assign.
-				if field.Val.Kind() == reflect.Interface ||
-					field.Val.Type() == reflect.TypeFor[[]*config_parser.Function]() {
+				switch {
+				case field.Val.Kind() == reflect.Interface ||
+					field.Val.Type() == reflect.TypeFor[[]*config_parser.Function]():
 					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
 
 					if field.Annotation.IsValid() {
@@ -118,7 +119,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 						}
 						field.Annotation.Set(reflect.ValueOf(itemVal.Annotation))
 					}
-				} else if field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeFor[[]*config_parser.Function]()) {
+				case field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeFor[[]*config_parser.Function]()):
 					// If field is slice and repeatable, and slice element types match, we can append.
 					field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal.AndFunctions)))
 
@@ -129,7 +130,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 						// We also append if `itemVal.Annotation == nil` because we want the same annotation length with the field's.
 						field.Annotation.Set(reflect.Append(field.Annotation, reflect.ValueOf(itemVal.Annotation)))
 					}
-				} else {
+				default:
 					return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 				}
 			} else {

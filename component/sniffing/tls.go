@@ -80,7 +80,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	cipherSuiteLength := int(binary.BigEndian.Uint16(b))
-	boundary += int(cipherSuiteLength) + 1 // +1 because the next field has 1B length
+	boundary += cipherSuiteLength + 1 // +1 because the next field has 1B length
 	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}

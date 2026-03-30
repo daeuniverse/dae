@@ -87,7 +87,7 @@ func TestWriteToFlushesPrebufferedData(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	expected := append(prebuf, streamData...)
+	expected := append(append([]byte(nil), prebuf...), streamData...)
 	if int(n) != len(expected) {
 		t.Errorf("expected %d bytes, got %d", len(expected), n)
 	}

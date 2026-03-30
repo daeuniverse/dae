@@ -900,15 +900,16 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 	shard.mu.RLock()
 	ue, ok := shard.pool[key]
 	if ok {
-		if ue.failed.Load() {
+		switch {
+		case ue.failed.Load():
 			if !ue.IsExpired(time.Now().UnixNano()) {
 				shard.mu.RUnlock()
 				return nil, false, ErrEndpointFailed
 			}
 			// Expired failure entry — fall through to lock and replace.
-		} else if ue.IsDead() || !p.endpointGenerationCurrent(ue) {
+		case ue.IsDead() || !p.endpointGenerationCurrent(ue):
 			// Expired dead entry — fall through to lock and replace.
-		} else {
+		default:
 			// Update NAT timeout based on current forwarding state
 			if createOption != nil && createOption.NatTimeout > 0 {
 				ue.UpdateNatTimeout(createOption.NatTimeout)
@@ -933,17 +934,18 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 	shard.mu.Lock()
 	ue, ok = shard.pool[key]
 	if ok {
-		if ue.failed.Load() {
+		switch {
+		case ue.failed.Load():
 			if !ue.IsExpired(time.Now().UnixNano()) {
 				shard.mu.Unlock()
 				return nil, false, ErrEndpointFailed
 			}
 			delete(shard.pool, key)
 			staleToClose = ue
-		} else if ue.IsDead() || !p.endpointGenerationCurrent(ue) {
+		case ue.IsDead() || !p.endpointGenerationCurrent(ue):
 			delete(shard.pool, key)
 			staleToClose = ue
-		} else {
+		default:
 			if createOption != nil && createOption.NatTimeout > 0 {
 				ue.UpdateNatTimeout(createOption.NatTimeout)
 			} else {

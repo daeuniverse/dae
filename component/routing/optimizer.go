@@ -52,8 +52,7 @@ func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config
 				function.Name = consts.Function_Ip
 			}
 			for _, param := range function.Params {
-				switch function.Name {
-				case consts.Function_Domain:
+				if function.Name == consts.Function_Domain {
 					// Rewrite to authoritative key name.
 					switch param.Key {
 					case "", "domain":

@@ -121,15 +121,16 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			if probeErr != nil {
 				return probeErr
 			}
-			if !ready {
+			switch {
+			case !ready:
 				// No early payload; treat as non-sniffable to avoid stalling server-first/established flows.
 				c.noteTcpSniffFailure(cacheKey, now)
 				lRelayConn = probeConn
-			} else if !isLikelyHttpOrTLSPrefix(prefetched) {
+			case !isLikelyHttpOrTLSPrefix(prefetched):
 				// Fast reject for non HTTP/TLS prefixes.
 				c.noteTcpSniffFailure(cacheKey, now)
 				lRelayConn = probeConn
-			} else {
+			default:
 				// ConnSniffer should be used later, so we cannot close it now.
 				sniffer := sniffing.NewConnSniffer(probeConn, c.sniffingTimeout)
 				defer func() { _ = sniffer.Close() }()

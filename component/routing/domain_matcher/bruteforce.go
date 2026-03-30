@@ -74,7 +74,7 @@ func (n *Bruteforce) MatchDomainBitmap(domain string) (bitmap []uint32) {
 				}
 			}
 			if hit {
-				//logrus.Traceln(d, s.Key, "matched given", domain)
+				// logrus.Traceln(d, s.Key, "matched given", domain)
 				bitmap[s.set.RuleIndex/32] |= 1 << (s.set.RuleIndex % 32)
 				break
 			}

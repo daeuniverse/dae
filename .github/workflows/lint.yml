@@ -3,13 +3,41 @@ name: Lint
 on:
   pull_request:
     paths:
+      - "**/*.go"
       - "**/*.c"
       - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/lint.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/lint.yml"
 
 jobs:
+  go-lint:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
 
-  test:
+    - name: Set up Go 1.26
+      uses: actions/setup-go@v6
+      with:
+        go-version: "1.26.0"
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.11.0
+        args: --timeout=10m
+
+  ebpf-lint:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4

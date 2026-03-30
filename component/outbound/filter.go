@@ -81,7 +81,7 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
 					}
 					matched, _ := regex.MatchString(dialer.Property().Name)
-					//logrus.Warnln(param.Val, matched, dialer.Name())
+					// logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
 						break loop
@@ -115,7 +115,7 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 						subFilterHit = true
 						break loop2
 					}
-					//logrus.Warnln(param.Val, matched, dialer.Name())
+					// logrus.Warnln(param.Val, matched, dialer.Name())
 				case "":
 					// Full
 					if s.nodeToTagMap[dialer] == param.Val {

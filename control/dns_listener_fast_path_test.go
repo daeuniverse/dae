@@ -115,11 +115,9 @@ func TestDNSMessage_ValidDNSDetection(t *testing.T) {
 			if tc.isValid {
 				assert.NotNil(t, msg, "Should detect valid DNS message")
 				assert.False(t, msg.Response, "Should be a query, not response")
-			} else {
+			} else if msg != nil {
 				// Either nil or a response
-				if msg != nil {
-					assert.True(t, msg.Response || len(tc.data) < 12, "Should be invalid (response or too short)")
-				}
+				assert.True(t, msg.Response || len(tc.data) < 12, "Should be invalid (response or too short)")
 			}
 		})
 	}

@@ -6,113 +6,169 @@
 package dns
 
 import (
+	"context"
+	"errors"
 	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-// TestUpstreamResolver_ErrorSentinelRetry tests that GetUpstream retries
-// when the error sentinel is stored (simulating transient failures).
-// This tests the core retry logic without requiring network access.
-func TestUpstreamResolver_ErrorSentinelRetry(t *testing.T) {
-	resolver := &UpstreamResolver{
-		Raw:     mustParseURL("udp://8.8.8.8:53"),
-		Network: "udp",
+func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing.T) {
+	original := newUpstreamFunc
+	t.Cleanup(func() {
+		newUpstreamFunc = original
+	})
+
+	var initCalls atomic.Int32
+	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string) (*Upstream, error) {
+		initCalls.Add(1)
+		return &Upstream{
+			Scheme:   UpstreamScheme_UDP,
+			Hostname: raw.Hostname(),
+			Port:     53,
+		}, nil
 	}
 
-	// Manually set error sentinel to simulate previous failure
-	resolver.state.Store(&errorSentinel)
-
-	// Verify error sentinel is set
-	if resolver.state.Load() != &errorSentinel {
-		t.Error("Expected error sentinel to be set")
-	}
-
-	// Next call should retry (will fail due to no network, but that's OK)
-	_, err := resolver.GetUpstream()
-	t.Logf("After retry: err=%v", err)
-
-	// The error sentinel should be set again since NewUpstream fails
-	if resolver.state.Load() != &errorSentinel {
-		t.Log("Note: State changed, possibly due to network being available")
-	}
-}
-
-// TestUpstreamResolver_ErrorSentinelIdentity tests that errorSentinel is a singleton.
-func TestUpstreamResolver_ErrorSentinelIdentity(t *testing.T) {
-	// All comparisons to errorSentinel should use pointer equality
-}
-
-// TestUpstreamResolver_StateTransitions tests the state machine transitions.
-func TestUpstreamResolver_StateTransitions(t *testing.T) {
-	resolver := &UpstreamResolver{
-		Raw:     mustParseURL("udp://8.8.8.8:53"),
-		Network: "udp",
-	}
-
-	// Initial state: nil
-	if resolver.state.Load() != nil {
-		t.Error("Expected initial state to be nil")
-	}
-	t.Logf("Initial state: nil")
-
-	// After failed init: errorSentinel
-	_, err := resolver.GetUpstream()
-	t.Logf("After first call: state=%v, err=%v", resolver.state.Load(), err)
-
-	// The state should be either errorSentinel (failed) or a valid state (succeeded)
-	state := resolver.state.Load()
-	if state != nil && state != &errorSentinel {
-		t.Logf("Initialization succeeded (network available)")
-		// Success path: subsequent calls should return same result
-		_, err2 := resolver.GetUpstream()
-		if err2 != nil {
-			t.Errorf("Expected success after initialization, got: %v", err2)
-		}
-	} else if state == &errorSentinel {
-		t.Logf("Initialization failed (network unavailable)")
-		// Failure path: should allow retry
-		_, err3 := resolver.GetUpstream()
-		t.Logf("After retry: err=%v", err3)
-	}
-}
-
-// TestUpstreamResolver_ConcurrentCalls tests concurrent initialization.
-// Multiple goroutines calling GetUpstream simultaneously should all get the same result.
-func TestUpstreamResolver_ConcurrentCalls(t *testing.T) {
 	resolver := &UpstreamResolver{
 		Raw:     mustParseURL("udp://8.8.8.8:53"),
 		Network: "udp",
 	}
 
 	var wg sync.WaitGroup
-	var errorCount atomic.Int32
-	var successCount atomic.Int32
-	var stateSnapshot atomic.Pointer[upstreamState]
-
-	for range 10 {
+	results := make(chan *Upstream, 8)
+	for range 8 {
 		wg.Go(func() {
-			_, err := resolver.GetUpstream()
+			upstream, err := resolver.GetUpstream()
 			if err != nil {
-				errorCount.Add(1)
-			} else {
-				successCount.Add(1)
+				t.Errorf("GetUpstream() error = %v", err)
+				return
 			}
-			// Capture state after call
-			stateSnapshot.Store(resolver.state.Load())
+			results <- upstream
 		})
 	}
-
 	wg.Wait()
+	close(results)
 
-	t.Logf("Concurrent calls: errors=%d, successes=%d", errorCount.Load(), successCount.Load())
-	t.Logf("Final state: %v", stateSnapshot.Load())
+	if got := initCalls.Load(); got < 1 {
+		t.Fatalf("expected initializer to be called at least once, got %d", got)
+	}
 
-	// All calls should complete (either success or failure)
-	total := errorCount.Load() + successCount.Load()
-	if total != 10 {
-		t.Errorf("Expected 10 total results, got %d", total)
+	firstState := resolver.state.Load()
+	if firstState == nil || firstState == &errorSentinel || firstState.upstream == nil {
+		t.Fatalf("expected successful cached state, got %#v", firstState)
+	}
+
+	for upstream := range results {
+		if upstream == nil {
+			t.Fatal("expected concurrent initialization to return an upstream")
+		}
+		if upstream.Hostname != firstState.upstream.Hostname || upstream.Port != firstState.upstream.Port || upstream.Scheme != firstState.upstream.Scheme {
+			t.Fatalf("expected all goroutines to observe equivalent upstream values, got %#v want %#v", upstream, firstState.upstream)
+		}
+	}
+
+	upstream, err := resolver.GetUpstream()
+	if err != nil {
+		t.Fatalf("expected cached call to succeed: %v", err)
+	}
+	if upstream != firstState.upstream {
+		t.Fatal("expected cached call to reuse the stored upstream pointer")
+	}
+}
+
+func TestUpstreamResolverRetriesAfterInitializerFailure(t *testing.T) {
+	original := newUpstreamFunc
+	t.Cleanup(func() {
+		newUpstreamFunc = original
+	})
+
+	var initCalls atomic.Int32
+	failErr := errors.New("transient failure")
+	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string) (*Upstream, error) {
+		call := initCalls.Add(1)
+		if call == 1 {
+			return nil, failErr
+		}
+		return &Upstream{
+			Scheme:   UpstreamScheme_UDP,
+			Hostname: raw.Hostname(),
+			Port:     53,
+		}, nil
+	}
+
+	resolver := &UpstreamResolver{
+		Raw:     mustParseURL("udp://1.1.1.1:53"),
+		Network: "udp",
+	}
+
+	if _, err := resolver.GetUpstream(); !errors.Is(err, failErr) {
+		t.Fatalf("expected first call to fail with %v, got %v", failErr, err)
+	}
+	if state := resolver.state.Load(); state != &errorSentinel {
+		t.Fatalf("expected error sentinel after failed init, got %#v", state)
+	}
+
+	upstream, err := resolver.GetUpstream()
+	if err != nil {
+		t.Fatalf("expected retry to succeed: %v", err)
+	}
+	if upstream == nil {
+		t.Fatal("expected retry to return an upstream")
+	}
+	if got := initCalls.Load(); got != 2 {
+		t.Fatalf("expected exactly two initializer calls, got %d", got)
+	}
+}
+
+func TestUpstreamResolverRetriesAfterFinishCallbackFailure(t *testing.T) {
+	original := newUpstreamFunc
+	t.Cleanup(func() {
+		newUpstreamFunc = original
+	})
+
+	var initCalls atomic.Int32
+	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string) (*Upstream, error) {
+		initCalls.Add(1)
+		return &Upstream{
+			Scheme:   UpstreamScheme_UDP,
+			Hostname: raw.Hostname(),
+			Port:     53,
+		}, nil
+	}
+
+	failErr := errors.New("callback rejected upstream")
+	var callbackCalls atomic.Int32
+	resolver := &UpstreamResolver{
+		Raw:     mustParseURL("udp://9.9.9.9:53"),
+		Network: "udp",
+		FinishInitCallback: func(_ *url.URL, _ *Upstream) error {
+			if callbackCalls.Add(1) == 1 {
+				return failErr
+			}
+			return nil
+		},
+	}
+
+	if _, err := resolver.GetUpstream(); !errors.Is(err, failErr) {
+		t.Fatalf("expected callback failure %v, got %v", failErr, err)
+	}
+	if state := resolver.state.Load(); state != &errorSentinel {
+		t.Fatalf("expected error sentinel after callback failure, got %#v", state)
+	}
+
+	upstream, err := resolver.GetUpstream()
+	if err != nil {
+		t.Fatalf("expected retry after callback failure to succeed: %v", err)
+	}
+	if upstream == nil {
+		t.Fatal("expected upstream after callback retry")
+	}
+	if got := callbackCalls.Load(); got != 2 {
+		t.Fatalf("expected callback to be retried, got %d calls", got)
+	}
+	if got := initCalls.Load(); got != 2 {
+		t.Fatalf("expected initializer to be retried, got %d calls", got)
 	}
 }
 

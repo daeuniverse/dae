@@ -26,8 +26,8 @@ import (
 	_ "github.com/daeuniverse/outbound/protocol/tuic"
 	_ "github.com/daeuniverse/outbound/protocol/vless"
 	_ "github.com/daeuniverse/outbound/protocol/vmess"
-	_ "github.com/daeuniverse/outbound/transport/simpleobfs"
 	_ "github.com/daeuniverse/outbound/transport/shadowtls"
+	_ "github.com/daeuniverse/outbound/transport/simpleobfs"
 	_ "github.com/daeuniverse/outbound/transport/tls"
 	_ "github.com/daeuniverse/outbound/transport/ws"
 )

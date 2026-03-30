@@ -148,7 +148,7 @@ func (b *ResponseMatcherBuilder) addQType(f *config_parser.Function, values []ui
 		}
 		b.rules = append(b.rules, responseMatchSet{
 			Type:     consts.MatchType_QType,
-			Value:    uint16(value),
+			Value:    value,
 			Not:      f.Not,
 			Upstream: uint8(upstreamId),
 		})
@@ -246,7 +246,7 @@ func (m *ResponseMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_QType:
-			if qType == uint16(match.Value) {
+			if qType == match.Value {
 				goodSubrule = true
 			}
 		case consts.MatchType_Upstream:

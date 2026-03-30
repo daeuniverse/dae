@@ -87,8 +87,7 @@ func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritS
 		}
 		// Parse children.
 		var children []*OutlineElem
-		switch typ.Kind() {
-		case reflect.Struct:
+		if typ.Kind() == reflect.Struct {
 			var nextDescSource Desc
 			if inheritSource {
 				nextDescSource = descSource

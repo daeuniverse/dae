@@ -23,7 +23,7 @@ type Global struct {
 	SoMarkFromDae     uint32 `mapstructure:"so_mark_from_dae"`
 	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
-	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
+	// DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
 	TcpCheckUrl           []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
 	TcpCheckHttpMethod    string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
 	UdpCheckDns           []string      `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
@@ -34,10 +34,10 @@ type Global struct {
 	AllowInsecure         bool          `mapstructure:"allow_insecure" default:"false"`
 	DialMode              string        `mapstructure:"dial_mode" default:"domain"`
 	DisableWaitingNetwork bool          `mapstructure:"disable_waiting_network" default:"false"`
-	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/912
+	// Deprecated: not used as of https://github.com/daeuniverse/dae/pull/912.
 	EnableLocalTcpFastRedirect bool `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
 	AutoConfigKernelParameter  bool `mapstructure:"auto_config_kernel_parameter" default:"false"`
-	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/458
+	// Deprecated: not used as of https://github.com/daeuniverse/dae/pull/458.
 	AutoConfigFirewallRule bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
 	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"30ms"`
 	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`

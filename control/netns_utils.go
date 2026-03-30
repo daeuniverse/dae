@@ -335,8 +335,8 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Flow:              -1,
 		Family:            unix.AF_INET,
 		Table:             table,
-		Mark:              uint32(consts.TproxyMark),
-		Mask:              ptrToUint32(uint32(consts.TproxyMark)),
+		Mark:              consts.TproxyMark,
+		Mask:              ptrToUint32(consts.TproxyMark),
 	}, {
 		SuppressIfgroup:   -1,
 		SuppressPrefixlen: -1,
@@ -345,8 +345,8 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Flow:              -1,
 		Family:            unix.AF_INET6,
 		Table:             table,
-		Mark:              uint32(consts.TproxyMark),
-		Mask:              ptrToUint32(uint32(consts.TproxyMark)),
+		Mark:              consts.TproxyMark,
+		Mask:              ptrToUint32(consts.TproxyMark),
 	}}
 
 	for _, rule := range rules {

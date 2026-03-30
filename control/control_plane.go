@@ -1555,7 +1555,7 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 
 	maxEntries := bpf.UdpConnStateMap.MaxEntries()
 	if maxEntries > 0 {
-		stats.usagePercent = int(stats.entries * 100 / int(maxEntries))
+		stats.usagePercent = stats.entries * 100 / int(maxEntries)
 	}
 
 	// Batch delete from UDP conn state map
@@ -1666,7 +1666,7 @@ func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanup
 
 	maxEntries := bpf.TcpConnStateMap.MaxEntries()
 	if maxEntries > 0 {
-		stats.usagePercent = int(stats.entries * 100 / int(maxEntries))
+		stats.usagePercent = stats.entries * 100 / int(maxEntries)
 	}
 
 	// Batch delete expired TCP conn state entries
@@ -2034,15 +2034,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								}).Warn("Failed to send SERVFAIL response in DNS fast path")
 								return
 							}
-						} else {
+						} else if c.log.IsLevelEnabled(logrus.TraceLevel) {
 							// Success logging for DNS fast path (trace level only)
-							if c.log.IsLevelEnabled(logrus.TraceLevel) {
-								c.log.WithFields(logrus.Fields{
-									"src":      convergeSrc.String(),
-									"dst":      realDst.String(),
-									"question": dnsMessage.Question,
-								}).Trace("DNS ingress fast path handled successfully")
-							}
+							c.log.WithFields(logrus.Fields{
+								"src":      convergeSrc.String(),
+								"dst":      realDst.String(),
+								"question": dnsMessage.Question,
+							}).Trace("DNS ingress fast path handled successfully")
 						}
 						return
 					}
@@ -2066,7 +2064,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				if routingResult == nil {
 					rr, retrieveErr := c.core.RetrieveRoutingResult(convergeSrc, realDst, unix.IPPROTO_UDP)
 					if retrieveErr != nil {
-						if stderrors.Is(retrieveErr, ebpf.ErrKeyNotExist) {
+						switch {
+						case stderrors.Is(retrieveErr, ebpf.ErrKeyNotExist):
 							// Keep behavior consistent with TCP path: missing tuple can happen
 							// in short race windows; fallback to userspace routing instead of
 							// dropping the packet.
@@ -2079,7 +2078,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 									"dst": realDst.String(),
 								}).WithError(retrieveErr).Debug("UDP routing tuple missing; fallback to userspace routing")
 							}
-						} else if realDst.Port() == 53 {
+						case realDst.Port() == 53:
 							// DNS should never be silently dropped due to transient eBPF lookup
 							// failures. Fall back to userspace routing to preserve availability.
 							routingResult = &bpfRoutingResult{
@@ -2089,7 +2088,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								"src": convergeSrc.String(),
 								"dst": realDst.String(),
 							}).WithError(retrieveErr).Warn("UDP routing tuple lookup failed for DNS; fallback to userspace routing")
-						} else {
+						default:
 							c.log.Warnf("No AddrPort presented: %v", retrieveErr)
 							return
 						}
@@ -2325,12 +2324,12 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			if err != nil {
 				continue
 			}
-			//if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			//	c.log.WithFields(logrus.Fields{
-			//		"name":     d.Name(),
-			//		"latency":  latency,
-			//		"network":  networkType.String(),
-			//		"outbound": dialerGroup.Name,
+			// if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			// 	c.log.WithFields(logrus.Fields{
+			// 		"name":     d.Name(),
+			// 		"latency":  latency,
+			// 		"network":  networkType.String(),
+			// 		"outbound": dialerGroup.Name,
 			//	}).Traceln("Choice")
 			//}
 			if bestDialer == nil || latency < bestLatency {

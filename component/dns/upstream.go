@@ -23,6 +23,9 @@ var (
 	ErrFormat = fmt.Errorf("format error")
 )
 
+// newUpstreamFunc is a test seam for deterministic UpstreamResolver contract tests.
+var newUpstreamFunc = NewUpstream
+
 type UpstreamScheme string
 
 const (
@@ -210,7 +213,7 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	upstream, err := NewUpstream(ctx, u.Raw, u.Network)
+	upstream, err := newUpstreamFunc(ctx, u.Raw, u.Network)
 	if err != nil {
 		// Mark as failed, allow retry on next call
 		u.state.Store(&errorSentinel)

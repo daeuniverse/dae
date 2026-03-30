@@ -61,10 +61,8 @@ func TestDispatchPattern_NoDropForDNS(t *testing.T) {
 		if flowDecision.ShouldUseGoroutineDirectly() {
 			// Direct spawn - no drop possible
 			go task()
-		} else {
-			if !runner.Submit(dnsKey, task) {
-				dnsDropped.Add(1)
-			}
+		} else if !runner.Submit(dnsKey, task) {
+			dnsDropped.Add(1)
 		}
 	}
 

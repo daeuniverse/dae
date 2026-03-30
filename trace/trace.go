@@ -106,7 +106,7 @@ func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects
 		pad       uint8
 	}{
 		port:      Htons(uint16(port)),
-		l4Proto:   uint16(l4ProtoNo),
+		l4Proto:   l4ProtoNo,
 		ipVersion: uint8(ipVersion),
 		pad:       0,
 	}); err != nil {
@@ -149,7 +149,7 @@ func searchAvailableTargets() (targets map[string]int, kfreeSkbReasons map[uint6
 			continue
 		}
 
-		fnName := string(fn.Name)
+		fnName := fn.Name
 
 		fnProto := fn.Type.(*btf.FuncProto)
 		i := 1
@@ -183,7 +183,7 @@ func getKFreeSKBReasons(spec *btf.Spec) (map[uint64]string, error) {
 
 	ret := map[uint64]string{}
 	for _, val := range dropReasonsEnum.Values {
-		ret[uint64(val.Value)] = val.Name
+		ret[val.Value] = val.Name
 
 	}
 

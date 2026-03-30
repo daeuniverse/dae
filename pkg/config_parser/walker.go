@@ -119,7 +119,7 @@ func (w *Walker) ReportError(ctx any, errorType ErrorType, target ...string) {
 	if _, ok := ctx.(*antlr.ErrorNodeImpl); ok {
 		return
 	}
-	//debug.PrintStack()
+	// debug.PrintStack()
 	bCtx := BaseContext(ctx)
 	tgt := strconv.Quote(bCtx.GetStart().GetText())
 	if len(target) != 0 {
@@ -133,10 +133,10 @@ func (w *Walker) ReportError(ctx any, errorType ErrorType, target ...string) {
 }
 
 func (w *Walker) declarationFunctionVerifier(function *Function, ctx any) bool {
-	//if function.Not {
-	//	w.ReportError(ctx, ErrorType_Unsupported, "Not operator in param declaration")
-	//	return false
-	//}
+	// if function.Not {
+	// 	w.ReportError(ctx, ErrorType_Unsupported, "Not operator in param declaration")
+	// 	return false
+	// }
 	return true
 }
 
@@ -235,7 +235,7 @@ func (w *Walker) parseRoutingRule(ctx dae_config.IRoutingRuleContext) *RoutingRu
 		w.ReportError(ctx, ErrorType_Unsupported, "bad routing rule expression")
 		return nil
 	}
-	//logrus.Debugln(ctx.GetText(), children)
+	// logrus.Debugln(ctx.GetText(), children)
 	functionList, ok := children[0].(*dae_config.FunctionPrototypeExpressionContext)
 	if !ok {
 		w.ReportError(ctx, ErrorType_Unsupported, "not *FunctionPrototypeExpressionContext: "+ctx.GetText())

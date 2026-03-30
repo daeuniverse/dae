@@ -165,7 +165,7 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 	if sniffDns {
 		var dnsmsg dnsmessage.Msg
 		if err := dnsmsg.Unpack(data); err == nil && !dnsmsg.Response && dnsmsg.Rcode == dnsmessage.RcodeSuccess {
-			//log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
+			// log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
 			return &dnsmsg, DnsNatTimeout
 		}
 	}
@@ -396,14 +396,15 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		}
 	}
 	if ueExists {
-		if ue.SniffedDomain == "" && isQuicInitial {
+		switch {
+		case ue.SniffedDomain == "" && isQuicInitial:
 			// Chrome reuses UDP sockets; remove domain-less endpoint for new QUIC Initial.
 			if c.log.IsLevelEnabled(logrus.DebugLevel) {
 				c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
 			}
 			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 			ueExists = false
-		} else if ue.SniffedDomain != "" {
+		case ue.SniffedDomain != "":
 			// It is quic ...
 			// Fast path.
 			domain = ue.SniffedDomain
@@ -456,7 +457,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 				ue = nil
 				ueExists = false
 			}
-		} else {
+		default:
 			// Non-fast-path existing endpoint. Check health.
 			if !c.checkUdpEndpointHealth(ue, ueKey, false) {
 				ue = nil

@@ -117,6 +117,7 @@ func (c *DnsCache) MarkRouteBindingRefreshed(now time.Time) {
 }
 
 // ShouldRefreshRouteBinding checks if route binding needs to be refreshed.
+//
 // Deprecated: Use NeedsBpfUpdate for differential updates.
 func (c *DnsCache) ShouldRefreshRouteBinding(now time.Time, minInterval time.Duration) bool {
 	if minInterval <= 0 {

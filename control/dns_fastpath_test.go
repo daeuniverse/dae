@@ -469,12 +469,10 @@ func TestChooseNatTimeout_SNIDetection(t *testing.T) {
 			expectDNS: false, // sniffing disabled
 		},
 		{
-			name:     "Invalid packet with sniffing enabled",
-			sniffDns: true,
-			buildPacket: func(t *testing.T) []byte {
-				return buildTestNonDNSPacket(t)
-			},
-			expectDNS: false,
+			name:        "Invalid packet with sniffing enabled",
+			sniffDns:    true,
+			buildPacket: buildTestNonDNSPacket,
+			expectDNS:   false,
 		},
 		{
 			// DNS response packets must not be treated as queries;

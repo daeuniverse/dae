@@ -90,14 +90,15 @@ func (b *Buffer[T]) grow(n int) int {
 		return 0
 	}
 	c := cap(b.buf)
-	if n <= c/2-m {
+	switch {
+	case n <= c/2-m:
 		// We can slide things down instead of allocating a new
 		// slice. We only need m+n <= c to slide, but
 		// we instead let capacity get twice as large so we
 		// don't spend all our time copying.
-	} else if c > maxInt-c-n {
+	case c > maxInt-c-n:
 		panic(ErrTooLarge)
-	} else {
+	default:
 		// Not enough space anywhere, we need to allocate.
 		buf := makeSlice[T](2*c + n)
 		copy(buf, b.buf)
