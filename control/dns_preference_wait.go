@@ -30,10 +30,10 @@ const (
 // When a non-preferred response arrives (e.g., A when prefer=6), we wait briefly
 // to see if the preferred response (e.g., AAAA) arrives before responding.
 type preferenceWait struct {
-	qtype    uint16          // Original query type (A or AAAA)
-	resp     *dnsmessage.Msg // Received non-preferred response
-	done     chan struct{}   // Closed when wait is complete (timeout or preferred arrived)
-	deadline time.Time       // Wait deadline
+	qtype     uint16        // Original query type (A or AAAA)
+	preferred bool          // Whether the preferred response arrived in time
+	done      chan struct{} // Closed when wait is complete (timeout or preferred arrived)
+	deadline  time.Time     // Wait deadline
 }
 
 // preferenceWaitRegistry manages concurrent DNS queries waiting for preferred response types.
@@ -53,7 +53,7 @@ func newPreferenceWaitRegistry() *preferenceWaitRegistry {
 // registerWait registers a wait for the preferred response type.
 // Returns the wait struct if registered, nil if qtypePrefer is disabled.
 // If a wait already exists for this qname, returns the existing wait.
-func (r *preferenceWaitRegistry) registerWait(qname string, qtype uint16, qtypePrefer uint16, resp *dnsmessage.Msg) *preferenceWait {
+func (r *preferenceWaitRegistry) registerWait(qname string, qtype uint16, qtypePrefer uint16) *preferenceWait {
 	// Fast path: preference not enabled
 	if qtypePrefer == 0 {
 		return nil
@@ -80,7 +80,6 @@ func (r *preferenceWaitRegistry) registerWait(qname string, qtype uint16, qtypeP
 	// Create new wait
 	w := &preferenceWait{
 		qtype:    qtype,
-		resp:     resp,
 		done:     make(chan struct{}),
 		deadline: time.Now().Add(PreferenceResolutionDelay),
 	}
@@ -90,7 +89,7 @@ func (r *preferenceWaitRegistry) registerWait(qname string, qtype uint16, qtypeP
 
 // notifyPreferred notifies a waiting query that the preferred response has arrived.
 // Returns true if a waiter was found and notified.
-func (r *preferenceWaitRegistry) notifyPreferred(qname string, qtype uint16, qtypePrefer uint16, resp *dnsmessage.Msg) bool {
+func (r *preferenceWaitRegistry) notifyPreferred(qname string, qtype uint16, qtypePrefer uint16) bool {
 	// Fast path: preference not enabled
 	if qtypePrefer == 0 {
 		return false
@@ -109,8 +108,8 @@ func (r *preferenceWaitRegistry) notifyPreferred(qname string, qtype uint16, qty
 	r.mu.Lock()
 	w, ok := r.waits[qname]
 	if ok {
-		// Update the response and close done channel
-		w.resp = resp
+		// Mark the preferred response as observed before releasing the waiter.
+		w.preferred = true
 		close(w.done)
 		delete(r.waits, qname)
 	}
@@ -126,12 +125,10 @@ func (r *preferenceWaitRegistry) remove(qname string) {
 }
 
 // waitFor waits for the preferred response or timeout.
-// Returns:
-// - resp: the response to use (preferred if arrived, otherwise original)
-// - preferred: true if preferred response arrived
-func (w *preferenceWait) waitFor() (resp *dnsmessage.Msg, preferred bool) {
+// Returns true if the preferred response arrived before the timeout.
+func (w *preferenceWait) waitFor() (preferred bool) {
 	if w == nil {
-		return nil, false
+		return false
 	}
 
 	deadline := w.deadline
@@ -145,15 +142,15 @@ func (w *preferenceWait) waitFor() (resp *dnsmessage.Msg, preferred bool) {
 		select {
 		case <-w.done:
 			// Preferred response arrived
-			return w.resp, true
+			return w.preferred
 		case <-timeout.C:
 			// Timeout, use original response
-			return w.resp, false
+			return false
 		}
 	}
 
 	// Already past deadline
-	return w.resp, false
+	return false
 }
 
 // isPreferredType returns true if qtype is the preferred A/AAAA type.

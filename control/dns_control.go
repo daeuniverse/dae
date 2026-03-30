@@ -1741,7 +1741,7 @@ func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage
 	// Case 1: This is the preferred response type - notify waiting requests
 	if isPreferredType(q.Qtype, c.qtypePrefer) {
 		// Notify any waiting requests for this domain
-		if c.prefWaitRegistry.notifyPreferred(qname, q.Qtype, c.qtypePrefer, respMsg) {
+		if c.prefWaitRegistry.notifyPreferred(qname, q.Qtype, c.qtypePrefer) {
 			if c.log.IsLevelEnabled(logrus.TraceLevel) {
 				c.log.Tracef("Preferred %v response for %v notified waiting request", QtypeToString(q.Qtype), qname)
 			}
@@ -1750,7 +1750,7 @@ func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage
 	}
 
 	// Case 2: This is a non-preferred response - register wait and wait for preferred
-	if wait := c.prefWaitRegistry.registerWait(qname, q.Qtype, c.qtypePrefer, respMsg); wait != nil {
+	if wait := c.prefWaitRegistry.registerWait(qname, q.Qtype, c.qtypePrefer); wait != nil {
 		// Non-preferred response arrived before preferred - wait briefly for preferred
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.Tracef("Non-preferred %v response for %v, waiting %v for preferred %v",
@@ -1758,25 +1758,23 @@ func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage
 		}
 
 		// Wait for preferred response or timeout
-		finalResp, preferred := wait.waitFor()
+		preferred := wait.waitFor()
 
 		// Clean up wait registry
 		c.prefWaitRegistry.remove(qname)
 
 		if preferred {
 			if c.log.IsLevelEnabled(logrus.TraceLevel) {
-				c.log.Tracef("Preferred %v response arrived for %v, using it instead of %v",
+				c.log.Tracef("Preferred %v response arrived for %v during wait for %v",
 					QtypeToString(c.qtypePrefer), qname, QtypeToString(q.Qtype))
 			}
-			// Use preferred response, but keep original request ID
-			finalResp.Id = respMsg.Id
-			return finalResp
-		}
-
-		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		} else if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.Tracef("Preferred %v response not arrived for %v within %v, using %v response",
 				QtypeToString(c.qtypePrefer), qname, PreferenceResolutionDelay, QtypeToString(q.Qtype))
 		}
+
+		// Always return the original response. The wait only changes when we
+		// release the response, not the DNS question/answer type pairing.
 		return respMsg
 	}
 

@@ -32,6 +32,13 @@ var (
 	FallbackDns netip.AddrPort
 )
 
+const maxDNSMessageSize = 65535
+
+type dnsResolveResult struct {
+	ans []dnsmessage.RR
+	err error
+}
+
 func TryUpdateSystemDns() (err error) {
 	systemDnsMu.Lock()
 	err = tryUpdateSystemDns()
@@ -242,11 +249,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	if err != nil {
 		return nil, err
 	}
-	type result struct {
-		ans []dnsmessage.RR
-		err error
-	}
-	ch := make(chan result, 2)
+	ch := make(chan dnsResolveResult, 2)
 	if magicNetwork.Network == "udp" {
 		go func() {
 			// Resend every 3 seconds for UDP.
@@ -259,62 +262,43 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 				}
 				_, err := WriteUDPConn(c, dns.String(), b)
 				if err != nil {
-					ch <- result{err: err}
+					ch <- dnsResolveResult{err: err}
 					return
 				}
 			}
 		}()
 	}
 	go func() {
+		if magicNetwork.Network == "tcp" {
+			var header [2]byte
+			// Read DNS response length
+			if _, err := io.ReadFull(c, header[:]); err != nil {
+				ch <- dnsResolveResult{err: err}
+				return
+			}
+			msgLen := int(binary.BigEndian.Uint16(header[:]))
+			if msgLen <= 0 || msgLen > maxDNSMessageSize {
+				ch <- dnsResolveResult{err: fmt.Errorf("invalid dns resp size: %d", msgLen)}
+				return
+			}
+			buf := pool.GetFullCap(msgLen)
+			defer buf.Put()
+			if _, err := io.ReadFull(c, buf[:msgLen]); err != nil {
+				ch <- dnsResolveResult{err: err}
+				return
+			}
+			ch <- decodeResolvedAnswer(buf[:msgLen], builder.Id)
+			return
+		}
+
 		buf := pool.GetFullCap(consts.EthernetMtu)
 		defer buf.Put()
-		if magicNetwork.Network == "tcp" {
-			// Read DNS response length
-			_, err := io.ReadFull(c, buf[:2])
-			if err != nil {
-				ch <- result{err: err}
-				return
-			}
-			n := binary.BigEndian.Uint16(buf)
-			if int(n) > cap(buf) {
-				ch <- result{err: fmt.Errorf("too big dns resp")}
-				return
-			}
-			buf = buf[:n]
-		}
-		var n int
-		if magicNetwork.Network == "udp" {
-			n, err = ReadUDPConn(c, buf)
-		} else {
-			n, err = c.Read(buf)
-		}
+		n, err := ReadUDPConn(c, buf)
 		if err != nil {
-			ch <- result{err: err}
+			ch <- dnsResolveResult{err: err}
 			return
 		}
-		// Resolve DNS response and extract A/AAAA record.
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(buf[:n]); err != nil {
-			ch <- result{err: err}
-			return
-		}
-
-		if msg.Id != builder.Id {
-			ch <- result{err: fmt.Errorf("id mismatch: expect %v, got %v", builder.Id, msg.Id)}
-			return
-		}
-
-		// Use miekg/dns.Msg.Answer directly but ensure we don't return until
-		// we are sure the caller doesn't need the buffer anymore.
-		// Actually, to be absolutely safe against UAF, we should copy the RRs.
-		var ans []dnsmessage.RR
-		if len(msg.Answer) > 0 {
-			ans = make([]dnsmessage.RR, len(msg.Answer))
-			for i, rr := range msg.Answer {
-				ans[i] = dnsmessage.Copy(rr)
-			}
-		}
-		ch <- result{ans: ans}
+		ch <- decodeResolvedAnswer(buf[:n], builder.Id)
 	}()
 	select {
 	case <-ctx.Done():
@@ -325,4 +309,25 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 		}
 		return res.ans, nil
 	}
+}
+
+func decodeResolvedAnswer(payload []byte, expectedID uint16) dnsResolveResult {
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(payload); err != nil {
+		return dnsResolveResult{err: err}
+	}
+
+	if msg.Id != expectedID {
+		return dnsResolveResult{err: fmt.Errorf("id mismatch: expect %v, got %v", expectedID, msg.Id)}
+	}
+
+	// Copy RRs before returning so callers don't retain pooled memory indirectly.
+	var ans []dnsmessage.RR
+	if len(msg.Answer) > 0 {
+		ans = make([]dnsmessage.RR, len(msg.Answer))
+		for i, rr := range msg.Answer {
+			ans[i] = dnsmessage.Copy(rr)
+		}
+	}
+	return dnsResolveResult{ans: ans}
 }
