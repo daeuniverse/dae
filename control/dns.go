@@ -23,6 +23,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
@@ -813,7 +814,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	}
 
 	// Send DNS request directly without creating goroutine
-	if _, err = conn.Write(data); err != nil {
+	if _, err = netutils.WriteUDPConn(conn, d.dialArgument.bestTarget.String(), data); err != nil {
 		_ = conn.Close() // Mark as bad
 		badConn = true
 		return nil, err
@@ -826,7 +827,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	staleResponses := 0
 
 	for {
-		n, err := conn.Read(respBuf)
+		n, err := netutils.ReadUDPConn(conn, respBuf)
 		if err != nil {
 			// If timeout, we don't mark connection as bad to avoid expensive reconstruction
 			// (especially for SOCKS5 tunnel). Stale packets might be an issue but
