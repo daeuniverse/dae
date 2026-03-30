@@ -582,6 +582,74 @@ func TestUdpEndpointPoolUnregisterKeepsDialerBucketForReuse(t *testing.T) {
 	bucket.mu.RUnlock()
 }
 
+func TestUdpEndpointPoolGetOrCreate_NoAliveDialerDoesNotNegativeCachePerFlow(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:13001")}
+	var calls atomic.Int32
+
+	createOption := &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: time.Second,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			calls.Add(1)
+			return nil, ob.ErrNoAliveDialer
+		},
+	}
+
+	if _, _, err := pool.GetOrCreate(key, createOption); err == nil || err != ob.ErrNoAliveDialer {
+		t.Fatalf("first GetOrCreate err = %v, want %v", err, ob.ErrNoAliveDialer)
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.RLock()
+	_, ok := shard.pool[key]
+	shard.mu.RUnlock()
+	if ok {
+		t.Fatal("expected no failed entry to be stored for no-alive admission rejection")
+	}
+
+	if _, _, err := pool.GetOrCreate(key, createOption); err == nil || err != ob.ErrNoAliveDialer {
+		t.Fatalf("second GetOrCreate err = %v, want %v", err, ob.ErrNoAliveDialer)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("GetDialOption calls = %d, want 2", got)
+	}
+}
+
+func TestUdpEndpointPoolGetOrCreate_GenericFailureStillNegativeCaches(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:13002")}
+	var calls atomic.Int32
+
+	createOption := &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: time.Second,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			calls.Add(1)
+			return nil, io.EOF
+		},
+	}
+
+	if _, _, err := pool.GetOrCreate(key, createOption); err == nil || err != io.EOF {
+		t.Fatalf("first GetOrCreate err = %v, want %v", err, io.EOF)
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.RLock()
+	failed, ok := shard.pool[key]
+	shard.mu.RUnlock()
+	if !ok || failed == nil || !failed.failed.Load() {
+		t.Fatal("expected generic creation failure to store a failed entry")
+	}
+
+	if _, _, err := pool.GetOrCreate(key, createOption); err == nil || err != ErrEndpointFailed {
+		t.Fatalf("second GetOrCreate err = %v, want %v", err, ErrEndpointFailed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("GetDialOption calls = %d, want 1", got)
+	}
+}
+
 func TestUdpEndpointWriteTo_ShortWriteClosesConn(t *testing.T) {
 	conn := &scriptedPacketConn{
 		writeN:      3,

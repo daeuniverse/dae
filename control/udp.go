@@ -107,6 +107,19 @@ func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
 	}
 }
 
+func shouldRejectNewUdpDialSelection(res *proxyDialResult) bool {
+	if res == nil || res.Dialer == nil || res.SelectionNetworkTypeObj == nil {
+		return false
+	}
+	if res.SelectionNetworkTypeObj.L4Proto != consts.L4ProtoStr_UDP {
+		return false
+	}
+	if res.Outbound != nil && res.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
+		return false
+	}
+	return !res.Dialer.MustGetAlive(res.SelectionNetworkTypeObj)
+}
+
 func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpointKey, isFastPath bool) bool {
 	if ue == nil || ue.Dialer == nil {
 		return false
@@ -706,6 +719,19 @@ getNew:
 					}
 					return nil, err
 				}
+				if shouldRejectNewUdpDialSelection(res) {
+					if res.Outbound != nil {
+						res.Outbound.HandleNoAliveDialer(
+							res.OrigNetworkType,
+							res.SelectionNetworkTypeObj,
+							realSrc,
+							realDst,
+							domain,
+							res.IsDialIp,
+						)
+					}
+					return nil, ob.ErrNoAliveDialer
+				}
 
 				return &DialOption{
 					// Keep fixed-IP target even if chooseProxyDialer selected a domain target.
@@ -732,24 +758,12 @@ getNew:
 		}
 	}
 
-	// If the udp endpoint has been not alive, remove it from pool and get a new one.
-	if !isNew && ue.Outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
-
-		// Optimization: For QUIC/WebRTC, do not aggressively remove endpoint on hot path
-		// just because one health check failed. Let the idle timeout or explicit write error
-		// handle it to prevent flapping. Only remove if this was a DNS-type endpoint which
-		// is more sensitive to staleness.
-		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			c.log.WithFields(logrus.Fields{
-				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
-				"network": networkType.String(),
-				"dialer":  ue.Dialer.Property().Name,
-				"retry":   retry,
-			}).Debugln("Old udp endpoint was not alive and removed.")
-		}
+	// If GetOrCreate reused an existing endpoint on the slow path, re-check the
+	// exact endpoint network type before writing. This keeps the slow path aligned
+	// with the fast-path health checks and exact per-family invalidation.
+	if !isNew && !c.checkUdpEndpointHealth(ue, ueKey, false) {
 		// Exclude the dead dialer to force selection of a different one on retry.
 		excludedDialer = ue.Dialer
-		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 		retry++
 		goto getNew
 	}

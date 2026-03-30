@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net"
@@ -816,7 +817,9 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 
 	dialOption, err := createOption.GetDialOption(ctx)
 	if err != nil {
-		p.cacheFailureLocked(key, createOption.Log)
+		if shouldCacheUdpEndpointCreateFailure(err) {
+			p.cacheFailureLocked(key, createOption.Log)
+		}
 		return nil, err
 	}
 	udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
@@ -876,6 +879,16 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	// Receive UDP messages.
 	go ue.start()
 	return ue, nil
+}
+
+func shouldCacheUdpEndpointCreateFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// "No alive dialer" is group-level admission state rather than flow-local
+	// endpoint creation failure. Caching it per flow key can explode memory
+	// under unhealthy-node bursts without preventing any extra dial attempts.
+	return !stderrors.Is(err, outbound.ErrNoAliveDialer)
 }
 
 func (p *UdpEndpointPool) cacheFailureLocked(key UdpEndpointKey, log *logrus.Logger) {
