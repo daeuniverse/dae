@@ -4,6 +4,7 @@
 package control
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -611,6 +612,113 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 		}
 		if !hookCalled {
 			t.Fatal("expected gather-write path to use BufferedConn prefix")
+		}
+
+		_ = dstServer.CloseWrite()
+		got, err := io.ReadAll(dstClient)
+		if err != nil {
+			t.Fatalf("read destination failed: %v", err)
+		}
+		want := append(append([]byte(nil), prefix...), payload...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %q want %q", got, want)
+		}
+	})
+}
+
+func TestDefaultRelayCopyEngine_UsesGatherWriteForBufioConnSource(t *testing.T) {
+	srcLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srcLn.Close() }()
+
+	srcAccepted := make(chan *net.TCPConn, 1)
+	srcErr := make(chan error, 1)
+	go func() {
+		conn, err := srcLn.AcceptTCP()
+		if err != nil {
+			srcErr <- err
+			return
+		}
+		srcAccepted <- conn
+	}()
+
+	srcClient, err := net.DialTCP("tcp", nil, srcLn.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srcClient.Close() }()
+
+	var srcServer *net.TCPConn
+	select {
+	case err := <-srcErr:
+		t.Fatal(err)
+	case srcServer = <-srcAccepted:
+	}
+	defer func() { _ = srcServer.Close() }()
+
+	dstLn, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstLn.Close() }()
+
+	dstAccepted := make(chan *net.TCPConn, 1)
+	dstErr := make(chan error, 1)
+	go func() {
+		conn, err := dstLn.AcceptTCP()
+		if err != nil {
+			dstErr <- err
+			return
+		}
+		dstAccepted <- conn
+	}()
+
+	dstClient, err := net.DialTCP("tcp", nil, dstLn.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstClient.Close() }()
+
+	var dstServer *net.TCPConn
+	select {
+	case err := <-dstErr:
+		t.Fatal(err)
+	case dstServer = <-dstAccepted:
+	}
+	defer func() { _ = dstServer.Close() }()
+
+	prefix := []byte("buffered-")
+	payload := []byte("payload-body")
+	go func() {
+		_, _ = srcClient.Write(prefix)
+		_, _ = srcClient.Write(payload)
+		_ = srcClient.CloseWrite()
+	}()
+
+	reader := bufio.NewReaderSize(srcServer, len(prefix)+len(payload))
+	if _, err := reader.Peek(len(prefix)); err != nil {
+		t.Fatalf("peek failed: %v", err)
+	}
+	buffered := &bufioConn{Conn: srcServer, reader: reader}
+
+	var hookCalled bool
+	withRelayGatherWriteTestHook(func(prefixLen, bodyLen int) {
+		hookCalled = true
+		if prefixLen < len(prefix) {
+			t.Fatalf("expected at least %d buffered bytes, got %d", len(prefix), prefixLen)
+		}
+	}, func() {
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered)
+		if err != nil {
+			t.Fatalf("copy failed: %v", err)
+		}
+		if n != int64(len(prefix)+len(payload)) {
+			t.Fatalf("unexpected copied bytes: got %d want %d", n, len(prefix)+len(payload))
+		}
+		if !hookCalled {
+			t.Fatal("expected gather-write path to use bufioConn prefix")
 		}
 
 		_ = dstServer.CloseWrite()

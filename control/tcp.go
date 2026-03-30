@@ -428,6 +428,65 @@ type bufioConn struct {
 	reader *bufio.Reader
 }
 
+func (c *bufioConn) UnderlyingConn() net.Conn {
+	return c.Conn
+}
+
+func (c *bufioConn) TakeRelaySegments() [][]byte {
+	prefix := c.TakeRelayPrefix()
+	if len(prefix) == 0 {
+		return nil
+	}
+	return [][]byte{prefix}
+}
+
+// TakeRelayPrefix exposes already-buffered bytes so relay can flush them
+// before switching back to the underlying TCP stream.
+//
+// The returned slice aliases the bufio.Reader buffer and is only safe for
+// immediate synchronous use by the relay goroutine before the next read.
+func (c *bufioConn) TakeRelayPrefix() []byte {
+	if c == nil || c.reader == nil {
+		return nil
+	}
+	buffered := c.reader.Buffered()
+	if buffered == 0 {
+		return nil
+	}
+	prefix, err := c.reader.Peek(buffered)
+	if err != nil {
+		return nil
+	}
+	if _, err := c.reader.Discard(buffered); err != nil {
+		return nil
+	}
+	return prefix
+}
+
+func (c *bufioConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+	if c == nil {
+		return 0, nil
+	}
+	if c.reader == nil {
+		return relayCopyDirect(dst, c.Conn, buf)
+	}
+
+	// Once buffered bytes are drained we can resume directly on the underlying
+	// TCP sockets, allowing the normal splice-based fast path to continue.
+	if c.reader.Buffered() == 0 {
+		if dstConn, ok := dst.(netproxy.Conn); ok {
+			if dstTCP, ok := unwrapRelayTCPConn(dstConn); ok {
+				if srcTCP, ok := unwrapRelayTCPConn(c.Conn); ok {
+					return io.Copy(dstTCP, srcTCP)
+				}
+			}
+		}
+		return relayCopyDirect(dst, c.Conn, buf)
+	}
+
+	return relayCopyDirect(dst, c.reader, buf)
+}
+
 func (c *bufioConn) Read(b []byte) (int, error) {
 	return c.reader.Read(b)
 }

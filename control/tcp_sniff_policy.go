@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -30,7 +31,17 @@ const (
 	// tcpSniffFirstPayloadWait bounds how long we wait for initial client data.
 	// If no payload arrives quickly, we treat it as non-sniffable flow.
 	tcpSniffFirstPayloadWait = 15 * time.Millisecond
+	// Common sniff probes only need a tiny read buffer. Pool it so successful
+	// probes don't pay an extra temporary heap allocation before wrapping.
+	tcpSniffPrefetchInlineCap = 64
 )
+
+var tcpSniffPrefetchBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, tcpSniffPrefetchInlineCap)
+		return &buf
+	},
+}
 
 // tcpSniffingExcludedPorts contains ports that are known to carry non-HTTP/TLS traffic.
 // Connections to these ports skip sniffing entirely to avoid unnecessary delays.
@@ -272,14 +283,23 @@ func prefetchForTcpSniff(conn net.Conn, wait time.Duration, maxBytes int) (wrapp
 		return conn, nil, true, nil
 	}
 
-	buf := make([]byte, maxBytes)
+	var pooledBuf *[]byte
+	var buf []byte
+	if maxBytes <= tcpSniffPrefetchInlineCap {
+		pooledBuf = tcpSniffPrefetchBufPool.Get().(*[]byte)
+		defer tcpSniffPrefetchBufPool.Put(pooledBuf)
+		buf = (*pooledBuf)[:maxBytes]
+	} else {
+		buf = make([]byte, maxBytes)
+	}
 	deadline := time.Now().Add(wait)
 	_ = conn.SetReadDeadline(deadline)
 	n, readErr := conn.Read(buf)
 	_ = conn.SetReadDeadline(time.Time{})
 
 	if n > 0 {
-		prefetched = append([]byte(nil), buf[:n]...)
+		prefetched = make([]byte, n)
+		copy(prefetched, buf[:n])
 		return &prefixedConn{
 			Conn:   conn,
 			prefix: prefetched,
