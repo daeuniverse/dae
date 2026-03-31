@@ -781,34 +781,32 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 		return nil, io.ErrClosedPipe
 	}
 
-	for {
-		if conn, err, ok := p.takeIdleConn(); ok {
-			return conn, err
-		}
+	if conn, err, ok := p.takeIdleConn(); ok {
+		return conn, err
+	}
 
-		if p.closed.Load() {
-			return nil, io.ErrClosedPipe
-		}
+	if p.closed.Load() {
+		return nil, io.ErrClosedPipe
+	}
 
-		if p.tryAcquireActiveSlot() {
-			conn, err := p.dialer(ctx)
-			if err != nil {
-				p.releaseActiveSlot()
-				return nil, err
-			}
-			p.registerLiveConn(conn)
-			if p.closed.Load() {
-				p.discard(conn)
-				return nil, io.ErrClosedPipe
-			}
-			return conn, nil
-		}
-
-		if err := ctx.Err(); err != nil {
+	if p.tryAcquireActiveSlot() {
+		conn, err := p.dialer(ctx)
+		if err != nil {
+			p.releaseActiveSlot()
 			return nil, err
 		}
-		return nil, ErrDNSUDPConnPoolExhausted
+		p.registerLiveConn(conn)
+		if p.closed.Load() {
+			p.discard(conn)
+			return nil, io.ErrClosedPipe
+		}
+		return conn, nil
 	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, ErrDNSUDPConnPoolExhausted
 }
 
 func (p *udpConnPool) put(conn netproxy.Conn) {
