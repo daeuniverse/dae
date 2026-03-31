@@ -118,5 +118,5 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use a local outbound fork copy so dae/outbound fixes are reproducible from this repo.
-replace github.com/daeuniverse/outbound => ./third_party/outbound_local
+// Use outbound fixes from the forked remote until they are merged upstream.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260331084054-80c3a9f61c45
