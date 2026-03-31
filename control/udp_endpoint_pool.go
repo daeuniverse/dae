@@ -88,10 +88,9 @@ type UdpEndpoint struct {
 
 	softErrorCount int
 
-	// poolRef and poolKey allow the read loop to self-remove from the pool the
-	// instant it detects death. This minimises the window during which a stale
-	// dead entry lurks in the pool and forces callers through the slower
-	// dead-check recovery branch in GetOrCreate.
+	// poolRef and poolKey allow hard-failure paths to self-remove from the pool
+	// immediately. Soft read-loop exits intentionally keep the endpoint cached so
+	// active flows continue to follow the old timer-based reuse model.
 	poolRef *UdpEndpointPool
 	poolKey UdpEndpointKey
 
@@ -170,6 +169,20 @@ func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 	}
 }
 
+func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Connection-refused class errors must still retire the endpoint so proxy IP
+	// failure handling can evict the bad upstream target immediately.
+	if ue.isConnectionRefused(err) {
+		return true
+	}
+	// Keep old behavior for EOF/timeouts/normal closures: stop the read loop but
+	// leave the endpoint pooled until write failure or NAT expiry proves it dead.
+	return !errors.IsUDPEndpointNormalClose(err)
+}
+
 func (ue *UdpEndpoint) start() {
 	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
@@ -208,12 +221,14 @@ func (ue *UdpEndpoint) start() {
 				}
 			}
 
-			ue.retire()
+			if ue.shouldRetireOnReadError(err) {
+				ue.retire()
 
-			// Check if this is a connection refused error from proxy server
-			// If so, invalidate the cached proxy IP so we can try a different one
-			if ue.isConnectionRefused(err) {
-				ue.handleProxyServerFailure()
+				// Check if this is a connection refused error from proxy server
+				// If so, invalidate the cached proxy IP so we can try a different one
+				if ue.isConnectionRefused(err) {
+					ue.handleProxyServerFailure()
+				}
 			}
 
 			ue.logEndpointExit(err, "read loop")

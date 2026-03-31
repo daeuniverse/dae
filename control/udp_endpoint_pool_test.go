@@ -294,6 +294,122 @@ func TestUdpEndpointStart_DropsUnexpectedInitialReplyUntilPeerMatches(t *testing
 	}
 }
 
+func TestUdpEndpointStart_NormalReadExitKeepsEndpointReusable(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:15001")}
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead, 1),
+		closeCh: make(chan struct{}),
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+		handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		poolRef:    pool,
+		poolKey:    key,
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = ue
+	shard.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ue.start()
+	}()
+
+	conn.reads <- scriptedPacketRead{err: io.EOF}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for read loop to exit after normal close")
+	}
+
+	if ue.IsDead() {
+		t.Fatal("expected EOF read exit to keep endpoint reusable")
+	}
+	if got := conn.closeCalls.Load(); got != 0 {
+		t.Fatalf("close calls = %d, want 0", got)
+	}
+	if got, ok := pool.Get(key); !ok || got != ue {
+		t.Fatal("expected endpoint to remain in pool after normal read exit")
+	}
+
+	var createCalls atomic.Int32
+	reused, isNew, err := pool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: time.Second,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			createCalls.Add(1)
+			return nil, io.ErrUnexpectedEOF
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate after normal read exit: %v", err)
+	}
+	if isNew {
+		t.Fatal("expected pooled endpoint reuse after normal read exit")
+	}
+	if reused != ue {
+		t.Fatal("expected GetOrCreate to return existing endpoint after normal read exit")
+	}
+	if got := createCalls.Load(); got != 0 {
+		t.Fatalf("create calls = %d, want 0", got)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	waitForCloseSignal(t, conn.closeCh, "manual close after normal read exit should close the socket")
+}
+
+func TestUdpEndpointStart_HardReadErrorClosesConn(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:15002")}
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead, 1),
+		closeCh: make(chan struct{}),
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+		handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		poolRef:    pool,
+		poolKey:    key,
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = ue
+	shard.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ue.start()
+	}()
+
+	conn.reads <- scriptedPacketRead{err: io.ErrUnexpectedEOF}
+
+	waitForCloseSignal(t, conn.closeCh, "hard read error should retire the endpoint")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for read loop to exit after hard read error")
+	}
+
+	if !ue.IsDead() {
+		t.Fatal("expected endpoint to be marked dead after hard read error")
+	}
+	if _, ok := pool.Get(key); ok {
+		t.Fatal("expected endpoint to be removed from pool after hard read error")
+	}
+}
+
 func TestUdpEndpointStart_HandlerErrorClosesConn(t *testing.T) {
 	conn := &scriptedPacketConn{
 		reads:   make(chan scriptedPacketRead, 1),
