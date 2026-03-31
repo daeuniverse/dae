@@ -222,6 +222,7 @@ const (
 type AliveDialerSetSet map[*AliveDialerSet]int
 
 func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
+	soMarkFromDae := common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
 	return &GlobalOption{
 		ExtraOption: D.ExtraOption{
 			AllowInsecure:       global.AllowInsecure,
@@ -235,12 +236,12 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 			UDPHopInterval:      global.UDPHopInterval,
 		},
 		Log:               log,
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
+		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Somark: soMarkFromDae},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
-		SoMarkFromDae:     global.SoMarkFromDae,
+		SoMarkFromDae:     soMarkFromDae,
 		Mptcp:             global.Mptcp,
 	}
 }

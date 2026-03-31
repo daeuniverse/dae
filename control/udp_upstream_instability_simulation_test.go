@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	daerrors "github.com/daeuniverse/dae/common/errors"
 	ob "github.com/daeuniverse/dae/component/outbound"
 	componentdialer "github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -188,6 +189,11 @@ func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
 	}
 
 	d.ReportUnavailableForced(udp4NetworkType(), io.ErrUnexpectedEOF)
+	d.ReportUnavailableForced(&componentdialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
+		IsDns:     false,
+	}, io.ErrUnexpectedEOF)
 	removed := DefaultUdpEndpointPool.InvalidateDialerNetworkType(d, udp4NetworkType())
 	if removed != 1 {
 		t.Fatalf("InvalidateDialerNetworkType removed = %d, want 1", removed)
@@ -202,6 +208,92 @@ func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
 	}
 	if _, ok := DefaultUdpEndpointPool.Get(key); ok {
 		t.Fatal("expected no endpoint to be recreated while dialer is unhealthy")
+	}
+}
+
+func TestHandlePkt_CreateFailureFromNetworkUnreachableMarksDialerUnavailable(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	d, underlay := newFailingProxyEndpointDialer("hysteria2", "proxy.example:443", daerrors.ErrNetworkUnreachable)
+	cp := newUdpReuseSimulationControlPlane(newTestRandomOutboundGroup(d))
+	cp.lastConnectionErrorLogTime.Store(time.Now().UnixNano())
+
+	dst := mustParseAddrPort("52.199.194.44:23002")
+	payload := []byte{0x61, 0x62, 0x63, 0x64}
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundUserDefinedMin),
+	}
+
+	src1 := mustParseAddrPort("192.168.89.3:42687")
+	flow1 := ClassifyUdpFlow(src1, dst, payload)
+	if err := cp.handlePkt(nil, payload, src1, dst, routingResult, flow1, false); err != nil {
+		t.Fatalf("first handlePkt after create failure: %v", err)
+	}
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls after first failure = %d, want 2", got)
+	}
+	if d.MustGetAlive(udp4NetworkType()) {
+		t.Fatal("expected create-time network unreachable to mark udp4 unavailable immediately")
+	}
+
+	src2 := mustParseAddrPort("192.168.89.3:42688")
+	flow2 := ClassifyUdpFlow(src2, dst, payload)
+	if err := cp.handlePkt(nil, payload, src2, dst, routingResult, flow2, false); err != nil {
+		t.Fatalf("second handlePkt after forced death: %v", err)
+	}
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls after forced death = %d, want 2", got)
+	}
+}
+
+func TestHandlePkt_CreateFailureImmediatelyRetriesAlternateFamilyOnSameDialer(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	d, underlay := newSequenceProxyEndpointDialer(
+		"shadowsocks_2022",
+		"proxy.example:443",
+		scriptedDialResult{err: daerrors.ErrNetworkUnreachable},
+		scriptedDialResult{conn: conn},
+	)
+	cp := newUdpReuseSimulationControlPlane(newTestFixedOutboundGroup(d))
+	cp.lastConnectionErrorLogTime.Store(time.Now().UnixNano())
+
+	src := mustParseAddrPort("[2001:db8::10]:42687")
+	dst := mustParseAddrPort("[2606:4700:4700::1111]:443")
+	payload := []byte{0x71, 0x72, 0x73, 0x74}
+	flowDecision := ClassifyUdpFlow(src, dst, payload)
+	key := flowDecision.FullConeNatEndpointKey()
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundUserDefinedMin),
+	}
+
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("handlePkt after family fallback retry: %v", err)
+	}
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls after family fallback retry = %d, want 2", got)
+	}
+
+	ue, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || ue == nil {
+		t.Fatal("expected endpoint to be created after alternate-family retry")
+	}
+	if got := ue.endpointNetworkType.IpVersion; got != consts.IpVersionStr_4 {
+		t.Fatalf("endpoint network type = %v, want %v", got, consts.IpVersionStr_4)
 	}
 }
 

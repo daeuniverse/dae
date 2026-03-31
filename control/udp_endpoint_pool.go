@@ -12,8 +12,10 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -121,6 +123,22 @@ func isProxyBackedDialer(d *dialer.Dialer) bool {
 	return property != nil && property.Address != ""
 }
 
+func isLongLivedProxyBackedUdpProtocol(d *dialer.Dialer) bool {
+	if !isProxyBackedDialer(d) {
+		return false
+	}
+	property := d.Property()
+	if property == nil {
+		return false
+	}
+	switch strings.ToLower(property.Protocol) {
+	case "hysteria2", "tuic", "juicity":
+		return true
+	default:
+		return false
+	}
+}
+
 func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
 	if requested <= 0 {
 		return requested
@@ -135,10 +153,27 @@ func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
 }
 
 func effectiveUdpEndpointNatTimeout(d *dialer.Dialer, requested time.Duration) time.Duration {
-	if !isProxyBackedDialer(d) {
+	if !isLongLivedProxyBackedUdpProtocol(d) {
 		return requested
 	}
 	return proxyBackedUdpNatTimeout(requested)
+}
+
+func isTransientLocalUdpDialCreateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if stderrors.Is(err, syscall.EADDRINUSE) ||
+		stderrors.Is(err, syscall.EADDRNOTAVAIL) ||
+		stderrors.Is(err, syscall.EAGAIN) ||
+		stderrors.Is(err, syscall.ENOBUFS) ||
+		stderrors.Is(err, syscall.EMFILE) ||
+		stderrors.Is(err, syscall.ENFILE) {
+		return true
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "bind: address already in use") ||
+		strings.Contains(errStr, "cannot assign requested address")
 }
 
 func udpEndpointIgnoresDialerHealth(ue *UdpEndpoint) bool {
@@ -896,9 +931,26 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	}
 	udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
 	if err != nil {
-		p.cacheFailureLocked(key, createOption.Log)
+		reportUdpEndpointDialCreateFailure(key, dialOption, err)
+		if shouldForceMarkUnavailableOnProxyDialError(err) {
+			retryOption, retryErr := createOption.GetDialOption(ctx)
+			if retryErr == nil {
+				dialOption = retryOption
+				udpConn, err = dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
+				if err == nil {
+					goto dialSuccess
+				}
+				reportUdpEndpointDialCreateFailure(key, dialOption, err)
+			} else {
+				err = retryErr
+			}
+		}
+		if shouldCacheUdpEndpointCreateFailure(err) {
+			p.cacheFailureLocked(key, createOption.Log)
+		}
 		return nil, err
 	}
+dialSuccess:
 	packetConn, ok := udpConn.(netproxy.PacketConn)
 	if !ok {
 		_ = udpConn.Close()
@@ -953,6 +1005,34 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	return ue, nil
 }
 
+func reportUdpEndpointDialCreateFailure(key UdpEndpointKey, dialOption *DialOption, err error) {
+	if err == nil || dialOption == nil || dialOption.Dialer == nil {
+		return
+	}
+	if stderrors.Is(err, context.Canceled) {
+		return
+	}
+	if isTransientLocalUdpDialCreateError(err) {
+		return
+	}
+
+	networkType := dialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionFromAddr(key.Src.Addr()),
+		IsDns:     false,
+	}
+	if dialOption.NetworkType != nil {
+		networkType = *dialOption.NetworkType
+	}
+
+	wrappedErr := fmt.Errorf("udp endpoint dial failed: %w", err)
+	if shouldForceMarkUnavailableOnProxyDialError(err) {
+		dialOption.Dialer.ReportUnavailableForced(&networkType, wrappedErr)
+		return
+	}
+	dialOption.Dialer.ReportUnavailable(&networkType, wrappedErr)
+}
+
 func shouldCacheUdpEndpointCreateFailure(err error) bool {
 	if err == nil {
 		return false
@@ -960,7 +1040,16 @@ func shouldCacheUdpEndpointCreateFailure(err error) bool {
 	// "No alive dialer" is group-level admission state rather than flow-local
 	// endpoint creation failure. Caching it per flow key can explode memory
 	// under unhealthy-node bursts without preventing any extra dial attempts.
-	return !stderrors.Is(err, outbound.ErrNoAliveDialer)
+	if stderrors.Is(err, outbound.ErrNoAliveDialer) {
+		return false
+	}
+	if isTransientLocalUdpDialCreateError(err) {
+		return false
+	}
+	if shouldForceMarkUnavailableOnProxyDialError(err) {
+		return false
+	}
+	return true
 }
 
 func (p *UdpEndpointPool) cacheFailureLocked(key UdpEndpointKey, log *logrus.Logger) {

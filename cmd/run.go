@@ -426,6 +426,15 @@ loop:
 		_ = os.Remove(PidFilePath)
 	}()
 
+	// Stop accepting new ingress immediately so shutdown does not continue to
+	// create fresh UDP/TCP work while the control plane is being torn down.
+	if listener != nil {
+		if e := listener.Close(); e != nil {
+			log.Warnf("close listener: %v", e)
+		}
+		listener = nil
+	}
+
 	// Restore network state immediately.
 	if e := c.DetachBpfHooks(); e != nil {
 		log.Warnf("detach BPF hooks: %v", e)
@@ -453,6 +462,10 @@ func sendSigExit(sigs chan<- os.Signal) {
 func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
+	if conf.Global.SoMarkFromDae == 0 {
+		conf.Global.SoMarkFromDae = common.EffectiveSoMarkFromDae(0)
+		log.Warnf("so_mark_from_dae is unset; using internal socket mark %#x to prevent dae UDP self-capture", conf.Global.SoMarkFromDae)
+	}
 
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}

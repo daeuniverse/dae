@@ -20,6 +20,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type trackedTestConn struct {
+	closeOnce  sync.Once
+	closeCalls atomic.Int32
+	closeCh    chan struct{}
+}
+
+func (c *trackedTestConn) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *trackedTestConn) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (c *trackedTestConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeCalls.Add(1)
+		if c.closeCh != nil {
+			close(c.closeCh)
+		}
+	})
+	return nil
+}
+
+func (c *trackedTestConn) SetDeadline(_ time.Time) error {
+	return nil
+}
+
+func (c *trackedTestConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (c *trackedTestConn) SetWriteDeadline(_ time.Time) error {
+	return nil
+}
+
 func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
 	p := newUdpConnPool(8, 8, func(ctx context.Context) (netproxy.Conn, error) {
 		return newTestPipeConn(), nil
@@ -64,7 +100,7 @@ func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
 	}
 }
 
-func TestUdpConnPool_GetReturnsExhaustedWithoutExtraDial(t *testing.T) {
+func TestUdpConnPool_GetWaitsForReturnedConnWithoutExtraDial(t *testing.T) {
 	var dialCalls atomic.Int32
 	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
 		dialCalls.Add(1)
@@ -79,15 +115,32 @@ func TestUdpConnPool_GetReturnsExhaustedWithoutExtraDial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	start := time.Now()
-	blocked, err := p.get(ctx)
-	elapsed := time.Since(start)
-	require.Nil(t, blocked)
-	require.ErrorIs(t, err, ErrDNSUDPConnPoolExhausted)
-	require.Less(t, elapsed, 80*time.Millisecond, "pool exhaustion should fail fast instead of waiting for request timeout")
-	require.EqualValues(t, 1, dialCalls.Load())
+	type result struct {
+		conn netproxy.Conn
+		err  error
+	}
+	waiterDone := make(chan result, 1)
+	go func() {
+		reused, err := p.get(ctx)
+		waiterDone <- result{conn: reused, err: err}
+	}()
+
+	select {
+	case res := <-waiterDone:
+		t.Fatalf("get returned too early while pool was saturated: conn=%v err=%v", res.conn, res.err)
+	case <-time.After(40 * time.Millisecond):
+	}
 
 	p.put(conn)
+
+	select {
+	case res := <-waiterDone:
+		require.NoError(t, res.err)
+		require.Same(t, conn, res.conn)
+		p.put(res.conn)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for saturated get() to reuse returned connection")
+	}
 
 	reused, err := p.get(context.Background())
 	require.NoError(t, err)
@@ -96,7 +149,32 @@ func TestUdpConnPool_GetReturnsExhaustedWithoutExtraDial(t *testing.T) {
 	p.put(reused)
 }
 
-func TestUdpConnPool_ConcurrentBurstCapsDialsAtMaxActive(t *testing.T) {
+func TestUdpConnPool_CloseClosesBorrowedLiveConnImmediately(t *testing.T) {
+	tracked := &trackedTestConn{closeCh: make(chan struct{})}
+	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
+		return tracked, nil
+	})
+
+	conn, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, tracked, conn)
+
+	require.NoError(t, p.close())
+
+	select {
+	case <-tracked.closeCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for borrowed live conn to close during pool shutdown")
+	}
+
+	require.EqualValues(t, 1, tracked.closeCalls.Load())
+	require.Zero(t, p.activeCount.Load())
+
+	_, err = p.get(context.Background())
+	require.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+func TestUdpConnPool_ConcurrentBurstWaitsAndCapsDialsAtMaxActive(t *testing.T) {
 	var dialCalls atomic.Int32
 	p := newUdpConnPool(2, 2, func(ctx context.Context) (netproxy.Conn, error) {
 		dialCalls.Add(1)
@@ -117,7 +195,7 @@ func TestUdpConnPool_ConcurrentBurstCapsDialsAtMaxActive(t *testing.T) {
 	for range burst {
 		wg.Go(func() {
 			<-start
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 			defer cancel()
 			_, err := p.get(ctx)
 			errCh <- err
@@ -129,7 +207,7 @@ func TestUdpConnPool_ConcurrentBurstCapsDialsAtMaxActive(t *testing.T) {
 	close(errCh)
 
 	for err := range errCh {
-		require.ErrorIs(t, err, ErrDNSUDPConnPoolExhausted)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 	require.EqualValues(t, 2, dialCalls.Load())
 

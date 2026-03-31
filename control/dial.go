@@ -12,6 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	commonerrors "github.com/daeuniverse/dae/common/errors"
 	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -42,6 +43,48 @@ type proxyDialResult struct {
 	SelectionNetworkType    string
 	OrigNetworkTypeObj      *dialer.NetworkType
 	SelectionNetworkTypeObj *dialer.NetworkType
+}
+
+func shouldForceMarkUnavailableOnProxyDialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return commonerrors.IsNetworkUnreachable(err) || commonerrors.IsAddressNotSuitable(err)
+}
+
+func alternateNetworkType(networkType *dialer.NetworkType) *dialer.NetworkType {
+	if networkType == nil {
+		return nil
+	}
+	switch networkType.IpVersion {
+	case consts.IpVersionStr_4:
+		alt := *networkType
+		alt.IpVersion = consts.IpVersionStr_6
+		return &alt
+	case consts.IpVersionStr_6:
+		alt := *networkType
+		alt.IpVersion = consts.IpVersionStr_4
+		return &alt
+	default:
+		return nil
+	}
+}
+
+func preferAlternateSelectionNetworkType(d *dialer.Dialer, networkType *dialer.NetworkType) *dialer.NetworkType {
+	if d == nil || networkType == nil {
+		return networkType
+	}
+	if d.MustGetAlive(networkType) {
+		return networkType
+	}
+	altType := alternateNetworkType(networkType)
+	if altType == nil {
+		return networkType
+	}
+	if d.MustGetAlive(altType) {
+		return altType
+	}
+	return networkType
 }
 
 func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam) (*proxyDialResult, error) {
@@ -118,15 +161,7 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	if err != nil && err == ob.ErrNoAliveDialer {
 		// Fallback for UDP/TCP: if selection failed (probably due to health check fail),
 		// try the other IP version if strictIpVersion is not absolutely required by domain routing.
-		altVersion := consts.IpVersionStr_4
-		if selectionNetworkType.IpVersion == consts.IpVersionStr_4 {
-			altVersion = consts.IpVersionStr_6
-		}
-		altType := &dialer.NetworkType{
-			L4Proto:   selectionNetworkType.L4Proto,
-			IpVersion: altVersion,
-			IsDns:     false,
-		}
+		altType := alternateNetworkType(selectionNetworkType)
 		d, _, err = outbound.SelectWithExclusion(altType, false, p.Excluded)
 		if err == nil {
 			selectionNetworkType = altType
@@ -150,6 +185,8 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 			)
 	}
 
+	selectionNetworkType = preferAlternateSelectionNetworkType(d, selectionNetworkType)
+
 	return &proxyDialResult{
 		Outbound:                outbound,
 		Dialer:                  d,
@@ -169,15 +206,31 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var lastRes *proxyDialResult
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		res, err := c.chooseProxyDialer(ctx, p)
+		if err != nil {
+			return nil, res, err
+		}
+		lastRes = res
 
-	res, err := c.chooseProxyDialer(ctx, p)
-	if err != nil {
-		return nil, res, err
+		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+		conn, err := res.Dialer.DialContext(dialCtx, res.Network, res.DialTarget)
+		cancel()
+		if err == nil {
+			return conn, res, nil
+		}
+		lastErr = err
+		if attempt > 0 || !shouldForceMarkUnavailableOnProxyDialError(err) {
+			return nil, res, err
+		}
+		if res.SelectionNetworkTypeObj != nil {
+			res.Dialer.ReportUnavailableForced(
+				res.SelectionNetworkTypeObj,
+				fmt.Errorf("proxy dial failed: %w", err),
+			)
+		}
 	}
-
-	dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-	defer cancel()
-
-	conn, err := res.Dialer.DialContext(dialCtx, res.Network, res.DialTarget)
-	return conn, res, err
+	return nil, lastRes, lastErr
 }

@@ -7,9 +7,12 @@ package control
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
+	"net"
 	"net/netip"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -143,6 +146,37 @@ func newTestProxyEndpointDialer(protocol, address string, conns ...netproxy.Conn
 			},
 		},
 	)
+}
+
+type errorDialer struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (d *errorDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
+	d.calls.Add(1)
+	return nil, d.err
+}
+
+func newTestEndpointErrorDialer(protocol, address string, err error) (*componentdialer.Dialer, *errorDialer) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	underlay := &errorDialer{err: err}
+	return componentdialer.NewDialer(
+		underlay,
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		componentdialer.InstanceOption{DisableCheck: true},
+		&componentdialer.Property{
+			Property: D.Property{
+				Name:     protocol,
+				Address:  address,
+				Protocol: protocol,
+			},
+		},
+	), underlay
 }
 
 func newTestFixedOutboundGroup(dialers ...*componentdialer.Dialer) *ob.DialerGroup {
@@ -906,6 +940,70 @@ func TestUdpEndpointStart_ProxyBackedEndpointAcceptsFirstReplyWithoutPeerMatch(t
 
 	if !ue.hasReply.Load() {
 		t.Fatal("expected proxy-backed endpoint to promote after first reply")
+	}
+}
+
+func TestEffectiveUdpEndpointNatTimeout_LongLivedProtocolsUseQuicFloor(t *testing.T) {
+	d := newTestProxyEndpointDialer("hysteria2", "proxy.example:443")
+
+	got := effectiveUdpEndpointNatTimeout(d, DefaultNatTimeout)
+	if got != QuicNatTimeout {
+		t.Fatalf("effective timeout = %v, want %v", got, QuicNatTimeout)
+	}
+}
+
+func TestEffectiveUdpEndpointNatTimeout_ShadowsocksKeepsRequestedTimeout(t *testing.T) {
+	d := newTestProxyEndpointDialer("shadowsocks", "proxy.example:443")
+
+	got := effectiveUdpEndpointNatTimeout(d, DefaultNatTimeout)
+	if got != DefaultNatTimeout {
+		t.Fatalf("effective timeout = %v, want %v", got, DefaultNatTimeout)
+	}
+}
+
+func TestUdpEndpointPoolGetOrCreate_LocalBindExhaustionDoesNotNegativeCachePerFlow(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:13003")}
+	d, underlay := newTestEndpointErrorDialer(
+		"shadowsocks",
+		"proxy.example:443",
+		&net.OpError{Op: "listen", Net: "udp", Err: syscall.EADDRINUSE},
+	)
+
+	createOption := &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: time.Second,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			return &DialOption{
+				Dialer:  d,
+				Network: "udp",
+				Target:  "[2001:db8::20]:443",
+				NetworkType: &componentdialer.NetworkType{
+					L4Proto:   consts.L4ProtoStr_UDP,
+					IpVersion: consts.IpVersionStr_6,
+					IsDns:     false,
+				},
+			}, nil
+		},
+	}
+
+	if _, _, err := pool.GetOrCreate(key, createOption); err == nil || !stderrors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("first GetOrCreate err = %v, want wrapped EADDRINUSE", err)
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.RLock()
+	_, ok := shard.pool[key]
+	shard.mu.RUnlock()
+	if ok {
+		t.Fatal("expected no failed entry to be stored for local bind exhaustion")
+	}
+
+	if _, _, err := pool.GetOrCreate(key, createOption); err == nil || !stderrors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("second GetOrCreate err = %v, want wrapped EADDRINUSE", err)
+	}
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls = %d, want 2", got)
 	}
 }
 

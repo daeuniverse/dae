@@ -43,6 +43,15 @@ func mustListenLoopbackUDP(t *testing.T) *net.UDPConn {
 	return conn
 }
 
+func mustListenLoopbackUDP6(t *testing.T) *net.UDPConn {
+	t.Helper()
+	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
+	if err != nil {
+		t.Skipf("ListenUDP(loopback ipv6): %v", err)
+	}
+	return conn
+}
+
 func startUDPSenderCapture(t *testing.T, conn *net.UDPConn, want int) <-chan udpCaptureResult {
 	t.Helper()
 	resultCh := make(chan udpCaptureResult, 1)
@@ -170,6 +179,47 @@ func TestHandlePkt_DirectFullconeOutboundReusesStableLocalPortPerFlow(t *testing
 	ue, ok := DefaultUdpEndpointPool.Get(key)
 	if !ok || ue == nil {
 		t.Fatal("expected direct fullcone flow to keep a pooled UDP endpoint")
+	}
+	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 1 {
+		t.Fatalf("pooled endpoint count = %d, want 1", got)
+	}
+}
+
+func TestHandlePkt_DirectFullconeOutboundReusesStableLocalPortPerIPv6Flow(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	server := mustListenLoopbackUDP6(t)
+	defer server.Close()
+
+	const packets = 8
+	resultCh := startUDPSenderCapture(t, server, packets)
+
+	cp := newDirectFullconeTestControlPlane(t)
+
+	src := mustParseAddrPort("[2001:db8::89]:42687")
+	dst := server.LocalAddr().(*net.UDPAddr).AddrPort()
+	payload := []byte{0xde, 0xad, 0xbe, 0xef}
+	flowDecision := ClassifyUdpFlow(src, dst, payload)
+	key := flowDecision.FullConeNatEndpointKey()
+
+	sendDirectFullconeFlowPackets(t, cp, src, dst, payload, packets)
+
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("capture error: %v", result.err)
+	}
+	if got := len(uniqueUDPPorts(result.addrs)); got != 1 {
+		t.Fatalf("unique sender ports for one ipv6 flow = %d, want 1", got)
+	}
+
+	ue, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || ue == nil {
+		t.Fatal("expected direct fullcone ipv6 flow to keep a pooled UDP endpoint")
 	}
 	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 1 {
 		t.Fatalf("pooled endpoint count = %d, want 1", got)

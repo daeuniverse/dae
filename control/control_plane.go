@@ -243,6 +243,11 @@ func NewControlPlaneWithContext(
 	// for DCIDs that previously failed.
 	ClearFailedQuicDcids()
 
+	if global.SoMarkFromDae == 0 {
+		global.SoMarkFromDae = common.EffectiveSoMarkFromDae(0)
+		log.Warnf("so_mark_from_dae is unset; using internal socket mark %#x to prevent dae UDP self-capture", global.SoMarkFromDae)
+	}
+
 	// Register the cache clear function with dialer package so health checks
 	// can clear the failed DCID cache when network conditions improve.
 	dialer.SetQuicDcidCacheClearFunc(ClearFailedQuicDcids)
@@ -721,14 +726,9 @@ func NewControlPlaneWithContext(
 
 	// Restore DNS cache from last control plane if available.
 	if dnsCache != nil {
-		// Clear all global pools and reset log limiters on reload.
-		// This prevents stale connections/endpoints from using pre-reload routing state,
-		// which could cause UDP routing failures after configuration changes.
-		DefaultUdpEndpointPool.Reset()
-		DefaultAnyfromPool.Reset()
-		DefaultUdpTaskPool.Reset()
-		DefaultPacketSnifferSessionMgr.Reset()
-		ResetUdpLogLimiters()
+		// Clear all global UDP state on reload so stale sockets and sniff sessions
+		// cannot leak pre-reload routing state into the new control plane.
+		resetGlobalUdpState()
 
 		count := 0
 		now := time.Now()
@@ -2437,9 +2437,24 @@ func (c *ControlPlane) DetachBpfHooks() error {
 	return c.core.DetachBpfHooks()
 }
 
+func resetGlobalUdpState() {
+	DefaultUdpEndpointPool.Reset()
+	DefaultAnyfromPool.Reset()
+	DefaultUdpTaskPool.Reset()
+	DefaultPacketSnifferSessionMgr.Reset()
+	ResetUdpLogLimiters()
+}
+
 func (c *ControlPlane) Close() (err error) {
 	c.stopRealDomainNegJanitor()
 	c.stopConnStateJanitor()
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	// Shutdown must retire global UDP resources eagerly so stop/reload does not
+	// leave old sockets alive until background timeouts eventually reclaim them.
+	resetGlobalUdpState()
 
 	// Collect errors from defer funcs using errors.Join (Go 1.26 best practice)
 	var errs []error
@@ -2448,7 +2463,6 @@ func (c *ControlPlane) Close() (err error) {
 			errs = append(errs, e)
 		}
 	}
-	c.cancel()
 
 	// Clear sync.Maps to prevent memory leak on reload.
 	// These maps accumulate data over time and must be explicitly cleared.
@@ -2465,8 +2479,10 @@ func (c *ControlPlane) Close() (err error) {
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
 	// Combine defer errors with core.Close error
-	if coreErr := c.core.Close(); coreErr != nil {
-		errs = append(errs, coreErr)
+	if c.core != nil {
+		if coreErr := c.core.Close(); coreErr != nil {
+			errs = append(errs, coreErr)
+		}
 	}
 	return stderrors.Join(errs...)
 }

@@ -644,11 +644,15 @@ type udpConnWithTimestamp struct {
 // Connections are tracked with timestamps to prevent stale packet issues.
 type udpConnPool struct {
 	idleConns   chan *udpConnWithTimestamp
-	connSlots   chan struct{}
 	dialer      func(context.Context) (netproxy.Conn, error)
 	closed      atomic.Bool
 	opsMu       sync.Mutex
+	liveMu      sync.Mutex
+	liveConns   map[netproxy.Conn]struct{}
 	maxIdleTime time.Duration // Connections older than this are discarded
+	activeCount atomic.Int32
+	maxActive   int32
+	done        chan struct{}
 }
 
 func newUdpConnPool(maxIdle, maxActive int, dialer func(context.Context) (netproxy.Conn, error)) *udpConnPool {
@@ -663,32 +667,69 @@ func newUdpConnPool(maxIdle, maxActive int, dialer func(context.Context) (netpro
 	}
 	p := &udpConnPool{
 		idleConns:   make(chan *udpConnWithTimestamp, maxIdle),
-		connSlots:   make(chan struct{}, maxActive),
 		dialer:      dialer,
+		liveConns:   make(map[netproxy.Conn]struct{}, maxActive),
 		maxIdleTime: 60 * time.Second, // Increased from 30s to reduce connection churn
-	}
-	for range maxActive {
-		p.connSlots <- struct{}{}
+		maxActive:   int32(maxActive),
+		done:        make(chan struct{}),
 	}
 	return p
 }
 
-func (p *udpConnPool) tryAcquireConnSlot(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func (p *udpConnPool) registerLiveConn(conn netproxy.Conn) {
+	if conn == nil {
+		return
 	}
-	select {
-	case <-p.connSlots:
-		return nil
-	default:
-		return ErrDNSUDPConnPoolExhausted
+	p.liveMu.Lock()
+	p.liveConns[conn] = struct{}{}
+	p.liveMu.Unlock()
+}
+
+func (p *udpConnPool) unregisterLiveConn(conn netproxy.Conn) bool {
+	if conn == nil {
+		return false
+	}
+	p.liveMu.Lock()
+	_, ok := p.liveConns[conn]
+	if ok {
+		delete(p.liveConns, conn)
+	}
+	p.liveMu.Unlock()
+	return ok
+}
+
+func (p *udpConnPool) snapshotLiveConns() []netproxy.Conn {
+	p.liveMu.Lock()
+	defer p.liveMu.Unlock()
+
+	conns := make([]netproxy.Conn, 0, len(p.liveConns))
+	for conn := range p.liveConns {
+		conns = append(conns, conn)
+	}
+	return conns
+}
+
+func (p *udpConnPool) tryAcquireActiveSlot() bool {
+	for {
+		current := p.activeCount.Load()
+		if current >= p.maxActive {
+			return false
+		}
+		if p.activeCount.CompareAndSwap(current, current+1) {
+			return true
+		}
 	}
 }
 
-func (p *udpConnPool) releaseConnSlot() {
-	select {
-	case p.connSlots <- struct{}{}:
-	default:
+func (p *udpConnPool) releaseActiveSlot() {
+	for {
+		current := p.activeCount.Load()
+		if current <= 0 {
+			return
+		}
+		if p.activeCount.CompareAndSwap(current, current-1) {
+			return
+		}
 	}
 }
 
@@ -697,7 +738,32 @@ func (p *udpConnPool) discard(conn netproxy.Conn) {
 		return
 	}
 	_ = conn.Close()
-	p.releaseConnSlot()
+	if p.unregisterLiveConn(conn) {
+		p.releaseActiveSlot()
+	}
+}
+
+func (p *udpConnPool) takeIdleConn() (netproxy.Conn, error, bool) {
+	select {
+	case connWithTime := <-p.idleConns:
+		if connWithTime == nil {
+			return nil, io.ErrClosedPipe, true
+		}
+
+		if p.closed.Load() {
+			p.discard(connWithTime.conn)
+			return nil, io.ErrClosedPipe, true
+		}
+
+		if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
+			p.discard(connWithTime.conn)
+			return nil, nil, false
+		}
+
+		return connWithTime.conn, nil, true
+	default:
+		return nil, nil, false
+	}
 }
 
 func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
@@ -705,11 +771,36 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 		return nil, io.ErrClosedPipe
 	}
 
-	// Try to get an idle connection, checking for expiry
 	for {
+		if conn, err, ok := p.takeIdleConn(); ok {
+			return conn, err
+		}
+
+		if p.closed.Load() {
+			return nil, io.ErrClosedPipe
+		}
+
+		if p.tryAcquireActiveSlot() {
+			conn, err := p.dialer(ctx)
+			if err != nil {
+				p.releaseActiveSlot()
+				return nil, err
+			}
+			p.registerLiveConn(conn)
+			if p.closed.Load() {
+				p.discard(conn)
+				return nil, io.ErrClosedPipe
+			}
+			return conn, nil
+		}
+
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.done:
+			return nil, io.ErrClosedPipe
 		case connWithTime := <-p.idleConns:
-			if connWithTime == nil { // Channel closed (double check)
+			if connWithTime == nil {
 				return nil, io.ErrClosedPipe
 			}
 
@@ -719,30 +810,11 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 			}
 
 			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
-				// Connection expired, close it and try next one
 				p.discard(connWithTime.conn)
 				continue
 			}
 
 			return connWithTime.conn, nil
-		default:
-			// No idle connection, create new one
-			if p.closed.Load() {
-				return nil, io.ErrClosedPipe
-			}
-			if err := p.tryAcquireConnSlot(ctx); err != nil {
-				return nil, err
-			}
-			conn, err := p.dialer(ctx)
-			if err != nil {
-				p.releaseConnSlot()
-				return nil, err
-			}
-			if p.closed.Load() {
-				p.discard(conn)
-				return nil, io.ErrClosedPipe
-			}
-			return conn, nil
 		}
 	}
 }
@@ -783,6 +855,11 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 func (p *udpConnPool) close() error {
 	if p.closed.Swap(true) {
 		return nil
+	}
+	close(p.done)
+
+	for _, conn := range p.snapshotLiveConns() {
+		p.discard(conn)
 	}
 
 	p.opsMu.Lock()
@@ -825,8 +902,8 @@ func (d *DoUDP) getPool() *udpConnPool {
 		return d.pool
 	}
 
-	// Reuse up to 8 idle sockets and cap total live sockets at 8 to prevent
-	// timeout storms from turning into unbounded local UDP socket creation.
+	// DNS fast path only needs a small fixed live set. Keeping this bounded avoids
+	// runaway socket creation under bursts while still providing hot-socket reuse.
 	d.pool = newUdpConnPool(8, 8, func(ctx context.Context) (netproxy.Conn, error) {
 		return d.dialArgument.bestDialer.DialContext(
 			ctx,

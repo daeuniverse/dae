@@ -103,6 +103,35 @@ func (d *packetConnFactoryDialer) DialContext(context.Context, string, string) (
 	return d.factory(), nil
 }
 
+type failingPacketDialer struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (d *failingPacketDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
+	d.calls.Add(1)
+	return nil, d.err
+}
+
+type scriptedDialResult struct {
+	conn netproxy.Conn
+	err  error
+}
+
+type sequencePacketDialer struct {
+	results []scriptedDialResult
+	calls   atomic.Int32
+}
+
+func (d *sequencePacketDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
+	call := int(d.calls.Add(1)) - 1
+	if call >= len(d.results) {
+		call = len(d.results) - 1
+	}
+	result := d.results[call]
+	return result.conn, result.err
+}
+
 func newCountingProxyEndpointDialer(protocol, address string, conn netproxy.Conn) (*componentdialer.Dialer, *countingPacketDialer) {
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
@@ -128,6 +157,48 @@ func newFactoryProxyEndpointDialer(protocol, address string, factory func() netp
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	underlay := &packetConnFactoryDialer{factory: factory}
+	return componentdialer.NewDialer(
+		underlay,
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		componentdialer.InstanceOption{DisableCheck: true},
+		&componentdialer.Property{
+			Property: D.Property{
+				Name:     protocol,
+				Address:  address,
+				Protocol: protocol,
+			},
+		},
+	), underlay
+}
+
+func newFailingProxyEndpointDialer(protocol, address string, err error) (*componentdialer.Dialer, *failingPacketDialer) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	underlay := &failingPacketDialer{err: err}
+	return componentdialer.NewDialer(
+		underlay,
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		componentdialer.InstanceOption{DisableCheck: true},
+		&componentdialer.Property{
+			Property: D.Property{
+				Name:     protocol,
+				Address:  address,
+				Protocol: protocol,
+			},
+		},
+	), underlay
+}
+
+func newSequenceProxyEndpointDialer(protocol, address string, results ...scriptedDialResult) (*componentdialer.Dialer, *sequencePacketDialer) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	underlay := &sequencePacketDialer{results: results}
 	return componentdialer.NewDialer(
 		underlay,
 		&componentdialer.GlobalOption{

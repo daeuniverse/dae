@@ -445,6 +445,19 @@ func MagicNetwork(network string, mark uint32, mptcp bool) string {
 	}
 }
 
+const InternalSoMarkFromDae uint32 = 0x100
+
+// EffectiveSoMarkFromDae returns the socket mark dae should use for its own
+// outbound sockets. When the user leaves so_mark_from_dae unset, dae still
+// needs a private mark to prevent wan_egress from re-capturing control-plane
+// UDP traffic and recursively feeding it back into userspace.
+func EffectiveSoMarkFromDae(mark uint32) uint32 {
+	if mark != 0 {
+		return mark
+	}
+	return InternalSoMarkFromDae
+}
+
 func IsValidHttpMethod(method string) bool {
 	switch method {
 	case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND", "CONNECT", "TRACE":
