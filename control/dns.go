@@ -644,18 +644,60 @@ type udpConnWithTimestamp struct {
 // Connections are tracked with timestamps to prevent stale packet issues.
 type udpConnPool struct {
 	idleConns   chan *udpConnWithTimestamp
+	connSlots   chan struct{}
 	dialer      func(context.Context) (netproxy.Conn, error)
 	closed      atomic.Bool
 	opsMu       sync.Mutex
 	maxIdleTime time.Duration // Connections older than this are discarded
 }
 
-func newUdpConnPool(maxIdle int, dialer func(context.Context) (netproxy.Conn, error)) *udpConnPool {
-	return &udpConnPool{
+func newUdpConnPool(maxIdle, maxActive int, dialer func(context.Context) (netproxy.Conn, error)) *udpConnPool {
+	if maxIdle <= 0 {
+		maxIdle = 1
+	}
+	if maxActive <= 0 {
+		maxActive = maxIdle
+	}
+	if maxIdle > maxActive {
+		maxIdle = maxActive
+	}
+	p := &udpConnPool{
 		idleConns:   make(chan *udpConnWithTimestamp, maxIdle),
+		connSlots:   make(chan struct{}, maxActive),
 		dialer:      dialer,
 		maxIdleTime: 60 * time.Second, // Increased from 30s to reduce connection churn
 	}
+	for range maxActive {
+		p.connSlots <- struct{}{}
+	}
+	return p
+}
+
+func (p *udpConnPool) tryAcquireConnSlot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-p.connSlots:
+		return nil
+	default:
+		return ErrDNSUDPConnPoolExhausted
+	}
+}
+
+func (p *udpConnPool) releaseConnSlot() {
+	select {
+	case p.connSlots <- struct{}{}:
+	default:
+	}
+}
+
+func (p *udpConnPool) discard(conn netproxy.Conn) {
+	if conn == nil {
+		return
+	}
+	_ = conn.Close()
+	p.releaseConnSlot()
 }
 
 func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
@@ -672,13 +714,13 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 			}
 
 			if p.closed.Load() {
-				_ = connWithTime.conn.Close()
+				p.discard(connWithTime.conn)
 				return nil, io.ErrClosedPipe
 			}
 
 			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
 				// Connection expired, close it and try next one
-				_ = connWithTime.conn.Close()
+				p.discard(connWithTime.conn)
 				continue
 			}
 
@@ -688,7 +730,19 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 			if p.closed.Load() {
 				return nil, io.ErrClosedPipe
 			}
-			return p.dialer(ctx)
+			if err := p.tryAcquireConnSlot(ctx); err != nil {
+				return nil, err
+			}
+			conn, err := p.dialer(ctx)
+			if err != nil {
+				p.releaseConnSlot()
+				return nil, err
+			}
+			if p.closed.Load() {
+				p.discard(conn)
+				return nil, io.ErrClosedPipe
+			}
+			return conn, nil
 		}
 	}
 }
@@ -699,7 +753,7 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 	}
 
 	if p.closed.Load() {
-		_ = conn.Close()
+		p.discard(conn)
 		return
 	}
 
@@ -713,7 +767,7 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 	defer p.opsMu.Unlock()
 
 	if p.closed.Load() {
-		_ = conn.Close()
+		p.discard(conn)
 		return
 	}
 
@@ -722,7 +776,7 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 
 	default:
 		// Pool full, close connection
-		_ = conn.Close()
+		p.discard(conn)
 	}
 }
 
@@ -738,7 +792,7 @@ func (p *udpConnPool) close() error {
 		select {
 		case connWithTime := <-p.idleConns:
 			if connWithTime != nil && connWithTime.conn != nil {
-				_ = connWithTime.conn.Close()
+				p.discard(connWithTime.conn)
 			}
 		default:
 			return nil
@@ -771,8 +825,9 @@ func (d *DoUDP) getPool() *udpConnPool {
 		return d.pool
 	}
 
-	// Create UDP connection pool with 8 connections (UDP is lightweight)
-	d.pool = newUdpConnPool(8, func(ctx context.Context) (netproxy.Conn, error) {
+	// Reuse up to 8 idle sockets and cap total live sockets at 8 to prevent
+	// timeout storms from turning into unbounded local UDP socket creation.
+	d.pool = newUdpConnPool(8, 8, func(ctx context.Context) (netproxy.Conn, error) {
 		return d.dialArgument.bestDialer.DialContext(
 			ctx,
 			common.MagicNetwork("udp", d.dialArgument.mark, d.dialArgument.mptcp),
@@ -815,7 +870,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 
 	// Send DNS request directly without creating goroutine
 	if _, err = netutils.WriteUDPConn(conn, d.dialArgument.bestTarget.String(), data); err != nil {
-		_ = conn.Close() // Mark as bad
+		udpPool.discard(conn)
 		badConn = true
 		return nil, err
 	}
@@ -835,7 +890,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				return nil, err
 			}
-			_ = conn.Close() // Mark as bad
+			udpPool.discard(conn)
 			badConn = true
 			return nil, err
 		}
@@ -843,7 +898,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 		if n < 2 {
 			staleResponses++
 			if staleResponses > maxStaleResponses {
-				_ = conn.Close()
+				udpPool.discard(conn)
 				badConn = true
 				return nil, fmt.Errorf("too many malformed UDP DNS responses")
 			}
@@ -859,7 +914,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 				d.log.Debugf("discard stale UDP DNS response: expected %d, got %d", originalID, responseID)
 			}
 			if staleResponses > maxStaleResponses {
-				_ = conn.Close()
+				udpPool.discard(conn)
 				badConn = true
 				return nil, fmt.Errorf("too many stale UDP DNS responses")
 			}
@@ -868,7 +923,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 
 		var msg dnsmessage.Msg
 		if err = msg.Unpack(respBuf[:n]); err != nil {
-			_ = conn.Close()
+			udpPool.discard(conn)
 			badConn = true
 			return nil, err
 		}

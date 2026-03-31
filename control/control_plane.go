@@ -98,14 +98,16 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout            time.Duration
-	tproxyPortProtect          bool
-	soMarkFromDae              uint32
-	mptcp                      bool
-	udpUnorderedRunner         *udpUnorderedTaskRunner
-	udpBoundedPool             *udpBoundedPoolManager
-	failedQuicDcidCache        *failedQuicDcidCache
-	lastConnectionErrorLogTime atomic.Int64
+	sniffingTimeout                time.Duration
+	tproxyPortProtect              bool
+	soMarkFromDae                  uint32
+	mptcp                          bool
+	udpUnorderedRunner             *udpUnorderedTaskRunner
+	udpBoundedPool                 *udpBoundedPoolManager
+	failedQuicDcidCache            *failedQuicDcidCache
+	lastConnectionErrorLogTime     atomic.Int64
+	lastDnsFastPathErrorLogTime    atomic.Int64
+	lastDnsFastPathServfailLogTime atomic.Int64
 }
 
 var (
@@ -148,6 +150,7 @@ var (
 	// connStateJanitorPressureExitUsage is the usage percentage below which the
 	// janitor starts counting down to leave pressure mode.
 	connStateJanitorPressureExitUsage = 50
+	dnsFastPathErrorLogInterval       = 5 * time.Second
 	// connStateJanitorPressureExitRounds is the number of consecutive low-usage
 	// cleanup rounds required before leaving pressure mode.
 	connStateJanitorPressureExitRounds = 3
@@ -1761,6 +1764,32 @@ func (c *ControlPlane) readMapOverflowCounters(m *ebpf.Map) (udpOverflow uint64,
 	return udpOverflow, tcpOverflow
 }
 
+func (c *ControlPlane) allowDnsFastPathErrorLog(now time.Time) bool {
+	nowNano := now.UnixNano()
+	for {
+		last := c.lastDnsFastPathErrorLogTime.Load()
+		if nowNano-last < int64(dnsFastPathErrorLogInterval) {
+			return false
+		}
+		if c.lastDnsFastPathErrorLogTime.CompareAndSwap(last, nowNano) {
+			return true
+		}
+	}
+}
+
+func (c *ControlPlane) allowDnsFastPathServfailLog(now time.Time) bool {
+	nowNano := now.UnixNano()
+	for {
+		last := c.lastDnsFastPathServfailLogTime.Load()
+		if nowNano-last < int64(dnsFastPathErrorLogInterval) {
+			return false
+		}
+		if c.lastDnsFastPathServfailLogTime.CompareAndSwap(last, nowNano) {
+			return true
+		}
+	}
+}
+
 // readBpfStatsCounter reads a counter from the BPF stats map by key index.
 func readBpfStatsCounter(m *ebpf.Map, key uint32) (uint64, error) {
 	var value uint64
@@ -2018,8 +2047,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								}
 								return
 							}
-							// Enhanced error logging for DNS fast path failures
-							if c.log.IsLevelEnabled(logrus.WarnLevel) {
+							if c.log.IsLevelEnabled(logrus.WarnLevel) && c.allowDnsFastPathErrorLog(time.Now()) {
 								c.log.WithFields(logrus.Fields{
 									"src":      convergeSrc.String(),
 									"dst":      realDst.String(),
@@ -2028,10 +2056,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								}).Warn("DNS ingress fast path failed; sending SERVFAIL response")
 							}
 							if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns ingress fast path)", req, nil); sendErr != nil {
-								c.log.WithError(stderrors.Join(e, sendErr)).WithFields(logrus.Fields{
-									"src": convergeSrc.String(),
-									"dst": realDst.String(),
-								}).Warn("Failed to send SERVFAIL response in DNS fast path")
+								if c.log.IsLevelEnabled(logrus.WarnLevel) && c.allowDnsFastPathServfailLog(time.Now()) {
+									c.log.WithError(stderrors.Join(e, sendErr)).WithFields(logrus.Fields{
+										"src": convergeSrc.String(),
+										"dst": realDst.String(),
+									}).Warn("Failed to send SERVFAIL response in DNS fast path")
+								}
 								return
 							}
 						} else if c.log.IsLevelEnabled(logrus.TraceLevel) {

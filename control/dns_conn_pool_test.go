@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -20,7 +21,7 @@ import (
 )
 
 func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
-	p := newUdpConnPool(8, func(ctx context.Context) (netproxy.Conn, error) {
+	p := newUdpConnPool(8, 8, func(ctx context.Context) (netproxy.Conn, error) {
 		return newTestPipeConn(), nil
 	})
 
@@ -61,6 +62,84 @@ func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
 		t.Fatalf("unexpected panic from concurrent put/close: %v", r)
 	default:
 	}
+}
+
+func TestUdpConnPool_GetReturnsExhaustedWithoutExtraDial(t *testing.T) {
+	var dialCalls atomic.Int32
+	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
+		dialCalls.Add(1)
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = p.close() }()
+
+	conn, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	start := time.Now()
+	blocked, err := p.get(ctx)
+	elapsed := time.Since(start)
+	require.Nil(t, blocked)
+	require.ErrorIs(t, err, ErrDNSUDPConnPoolExhausted)
+	require.Less(t, elapsed, 80*time.Millisecond, "pool exhaustion should fail fast instead of waiting for request timeout")
+	require.EqualValues(t, 1, dialCalls.Load())
+
+	p.put(conn)
+
+	reused, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, conn, reused)
+	require.EqualValues(t, 1, dialCalls.Load())
+	p.put(reused)
+}
+
+func TestUdpConnPool_ConcurrentBurstCapsDialsAtMaxActive(t *testing.T) {
+	var dialCalls atomic.Int32
+	p := newUdpConnPool(2, 2, func(ctx context.Context) (netproxy.Conn, error) {
+		dialCalls.Add(1)
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = p.close() }()
+
+	conn1, err := p.get(context.Background())
+	require.NoError(t, err)
+	conn2, err := p.get(context.Background())
+	require.NoError(t, err)
+
+	const burst = 16
+	start := make(chan struct{})
+	errCh := make(chan error, burst)
+	var wg sync.WaitGroup
+
+	for range burst {
+		wg.Go(func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, err := p.get(ctx)
+			errCh <- err
+		})
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		require.ErrorIs(t, err, ErrDNSUDPConnPoolExhausted)
+	}
+	require.EqualValues(t, 2, dialCalls.Load())
+
+	p.put(conn1)
+	p.put(conn2)
+
+	reused, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, reused)
+	p.put(reused)
 }
 
 func newTestPipeConn() netproxy.Conn {
@@ -126,6 +205,24 @@ func TestConnPool_GetNotBlockedBySlowDial(t *testing.T) {
 
 	close(releaseDial)
 	require.NoError(t, <-done)
+}
+
+func TestDnsControllerReportDnsForwardFailureIgnoresLocalPoolExhaustion(t *testing.T) {
+	var callbackCalls atomic.Int32
+	controller := &DnsController{
+		timeoutExceedCallback: func(*dialArgument, error) {
+			callbackCalls.Add(1)
+		},
+	}
+
+	controller.reportDnsForwardFailure(&dialArgument{}, ErrDNSUDPConnPoolExhausted)
+	require.Zero(t, callbackCalls.Load())
+
+	controller.reportDnsForwardFailure(&dialArgument{}, context.Canceled)
+	require.Zero(t, callbackCalls.Load())
+
+	controller.reportDnsForwardFailure(&dialArgument{}, errors.New("upstream timeout"))
+	require.EqualValues(t, 1, callbackCalls.Load())
 }
 
 func TestResponseSlot_ReuseHasNoStaleData(t *testing.T) {

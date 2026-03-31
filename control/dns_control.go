@@ -54,6 +54,7 @@ const (
 var (
 	ErrUnsupportedQuestionType          = fmt.Errorf("unsupported question type")
 	ErrDNSQueryConcurrencyLimitExceeded = errors.New("dns query concurrency limit exceeded")
+	ErrDNSUDPConnPoolExhausted          = errors.New("dns udp conn pool exhausted")
 	ErrDNSTruncated                     = errors.New("dns response truncated")
 )
 
@@ -1159,7 +1160,7 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 		return
 	}
 	// Caller-driven cancellation should not mark a dialer as unavailable.
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
 		return
 	}
 	c.timeoutExceedCallback(dialArg, err)

@@ -8,8 +8,10 @@ import (
 	"context"
 	stderrors "errors"
 	"io"
+	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,6 +105,74 @@ func (c *packetOnlyUpstreamConn) SetDeadline(_ time.Time) error      { return ni
 func (c *packetOnlyUpstreamConn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *packetOnlyUpstreamConn) SetWriteDeadline(_ time.Time) error { return nil }
 
+type timeoutNetError struct{}
+
+func (timeoutNetError) Error() string   { return "i/o timeout" }
+func (timeoutNetError) Timeout() bool   { return true }
+func (timeoutNetError) Temporary() bool { return true }
+
+type deadlineTimeoutUpstreamConn struct {
+	serverAddr   netip.AddrPort
+	deadlineNano atomic.Int64
+	writeStarted chan struct{}
+	writeOnce    sync.Once
+	closed       atomic.Bool
+}
+
+func (c *deadlineTimeoutUpstreamConn) Write(_ []byte) (int, error) {
+	return 0, stderrors.New("Write should not be used for UDP PacketConn")
+}
+
+func (c *deadlineTimeoutUpstreamConn) Read(_ []byte) (int, error) {
+	return 0, stderrors.New("Read should not be used for UDP PacketConn")
+}
+
+func (c *deadlineTimeoutUpstreamConn) WriteTo(p []byte, addr string) (int, error) {
+	if addr != c.serverAddr.String() {
+		return 0, stderrors.New("unexpected upstream address")
+	}
+	c.writeOnce.Do(func() {
+		if c.writeStarted != nil {
+			close(c.writeStarted)
+		}
+	})
+	return len(p), nil
+}
+
+func (c *deadlineTimeoutUpstreamConn) ReadFrom(_ []byte) (int, netip.AddrPort, error) {
+	deadlineNano := c.deadlineNano.Load()
+	if deadlineNano > 0 {
+		wait := time.Until(time.Unix(0, deadlineNano))
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			<-timer.C
+		}
+	}
+	if c.closed.Load() {
+		return 0, netip.AddrPort{}, io.EOF
+	}
+	return 0, netip.AddrPort{}, timeoutNetError{}
+}
+
+func (c *deadlineTimeoutUpstreamConn) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+func (c *deadlineTimeoutUpstreamConn) SetDeadline(t time.Time) error {
+	c.deadlineNano.Store(t.UnixNano())
+	return nil
+}
+
+func (c *deadlineTimeoutUpstreamConn) SetReadDeadline(t time.Time) error {
+	return c.SetDeadline(t)
+}
+
+func (c *deadlineTimeoutUpstreamConn) SetWriteDeadline(_ time.Time) error {
+	return nil
+}
+
 func TestDoUDPForwardDNSUsesPacketConnForUDP(t *testing.T) {
 	serverAddr := netip.MustParseAddrPort("198.51.100.53:53")
 	conn := &packetOnlyUpstreamConn{serverAddr: serverAddr}
@@ -111,7 +181,7 @@ func TestDoUDPForwardDNSUsesPacketConnForUDP(t *testing.T) {
 		dialArgument: dialArgument{
 			bestTarget: serverAddr,
 		},
-		pool: newUdpConnPool(1, func(context.Context) (netproxy.Conn, error) {
+		pool: newUdpConnPool(1, 1, func(context.Context) (netproxy.Conn, error) {
 			return conn, nil
 		}),
 	}
@@ -159,5 +229,83 @@ func TestDoUDPForwardDNSUsesPacketConnForUDP(t *testing.T) {
 	}
 	if conn.readFromHit == 0 {
 		t.Fatal("expected ReadFrom to be used")
+	}
+}
+
+func TestDoUDPForwardDNSPoolSaturationFailsFastAndReusesTimedOutConn(t *testing.T) {
+	serverAddr := netip.MustParseAddrPort("198.51.100.53:53")
+	writeStarted := make(chan struct{})
+	timeoutConn := &deadlineTimeoutUpstreamConn{
+		serverAddr:   serverAddr,
+		writeStarted: writeStarted,
+	}
+
+	var dialCalls atomic.Int32
+	doUDP := &DoUDP{
+		dialArgument: dialArgument{
+			bestTarget: serverAddr,
+		},
+		pool: newUdpConnPool(1, 1, func(context.Context) (netproxy.Conn, error) {
+			dialCalls.Add(1)
+			return timeoutConn, nil
+		}),
+	}
+	defer func() {
+		_ = doUDP.Close()
+	}()
+
+	req := dnsmessage.Msg{}
+	req.SetQuestion("example.org.", dnsmessage.TypeA)
+	packed, err := req.Pack()
+	if err != nil {
+		t.Fatalf("Pack failed: %v", err)
+	}
+
+	firstCtx, firstCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer firstCancel()
+
+	firstErrCh := make(chan error, 1)
+	go func() {
+		_, err := doUDP.ForwardDNS(firstCtx, packed)
+		firstErrCh <- err
+	}()
+
+	select {
+	case <-writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not reach upstream write")
+	}
+
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), time.Second)
+	defer secondCancel()
+
+	start := time.Now()
+	_, err = doUDP.ForwardDNS(secondCtx, packed)
+	elapsed := time.Since(start)
+	if !stderrors.Is(err, ErrDNSUDPConnPoolExhausted) {
+		t.Fatalf("second ForwardDNS error = %v, want %v", err, ErrDNSUDPConnPoolExhausted)
+	}
+	if elapsed > 80*time.Millisecond {
+		t.Fatalf("second ForwardDNS took %v, want fast failure under saturation", elapsed)
+	}
+	if got := dialCalls.Load(); got != 1 {
+		t.Fatalf("dial calls after saturated request = %d, want 1", got)
+	}
+
+	err = <-firstErrCh
+	var netErr net.Error
+	if !stderrors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("first ForwardDNS error = %v, want timeout", err)
+	}
+
+	thirdCtx, thirdCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer thirdCancel()
+
+	_, err = doUDP.ForwardDNS(thirdCtx, packed)
+	if !stderrors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("third ForwardDNS error = %v, want timeout", err)
+	}
+	if got := dialCalls.Load(); got != 1 {
+		t.Fatalf("dial calls after timed-out reuse = %d, want 1", got)
 	}
 }
