@@ -56,7 +56,7 @@ func TestDefaultNetworkDialerAddsDefaultsToPlainNetwork(t *testing.T) {
 func TestDefaultNetworkDialerMergesExistingMagicNetwork(t *testing.T) {
 	parent := &recordingNetworkDialer{}
 	dialer := newDefaultNetworkDialer(parent, 123, true)
-	network := netproxy.MagicNetwork{Network: "tcp", Mark: 7}.Encode()
+	network := netproxy.MagicNetwork{Network: "tcp", Mark: 7, IPVersion: "6"}.Encode()
 
 	if _, err := dialer.DialContext(context.Background(), network, "proxy.example:443"); err != nil {
 		t.Fatalf("DialContext() error = %v", err)
@@ -74,6 +74,9 @@ func TestDefaultNetworkDialerMergesExistingMagicNetwork(t *testing.T) {
 	}
 	if !magicNetwork.Mptcp {
 		t.Fatal("mptcp = false, want true")
+	}
+	if got, want := magicNetwork.IPVersion, "6"; got != want {
+		t.Fatalf("ip version = %q, want %q", got, want)
 	}
 }
 

@@ -551,6 +551,45 @@ int testcheck_wan_egress_udp_first_fragment_listener(struct __sk_buff *skb)
 	return check_redirect_with_listener_l4proto(skb, IPPROTO_UDP);
 }
 
+SEC("tc/pktgen/lan_ingress_udp_non_initial_fragment_passthrough")
+int testpktgen_lan_ingress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_non_initial_fragment(skb,
+						 IPV4(192,168,0,1), IPV4(8,8,8,8));
+}
+
+SEC("tc/setup/lan_ingress_udp_non_initial_fragment_passthrough")
+int testsetup_lan_ingress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
+{
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/lan_ingress_udp_non_initial_fragment_passthrough")
+int testcheck_lan_ingress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
+{
+	return check_status_and_mark(skb, TC_ACT_OK, 0);
+}
+
+SEC("tc/pktgen/wan_egress_udp_non_initial_fragment_passthrough")
+int testpktgen_wan_egress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_non_initial_fragment(skb,
+						 IPV4(127,0,0,1), IPV4(8,8,4,4));
+}
+
+SEC("tc/setup/wan_egress_udp_non_initial_fragment_passthrough")
+int testsetup_wan_egress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/wan_egress_udp_non_initial_fragment_passthrough")
+int testcheck_wan_egress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
+{
+	return check_status_and_mark(skb, TC_ACT_OK, 0);
+}
+
 SEC("tc/pktgen/wan_egress_direct_mark_reroute")
 int testpktgen_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
 {

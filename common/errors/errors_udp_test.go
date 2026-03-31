@@ -17,7 +17,7 @@ func TestIsUDPEndpointNormalClose_ConnectionRefused(t *testing.T) {
 		},
 	}
 
-	if !IsUDPEndpointNormalClose(err) {
-		t.Fatalf("expected ECONNREFUSED to be treated as normal UDP endpoint closure, got false")
+	if IsUDPEndpointNormalClose(err) {
+		t.Fatalf("expected ECONNREFUSED to be treated as a real UDP endpoint failure, got normal close")
 	}
 }

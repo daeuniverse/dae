@@ -188,10 +188,15 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	selectionNetworkType = preferAlternateSelectionNetworkType(d, selectionNetworkType)
 
 	return &proxyDialResult{
-		Outbound:                outbound,
-		Dialer:                  d,
-		DialTarget:              dialTarget,
-		Network:                 common.MagicNetwork(p.Network, mark, c.mptcp),
+		Outbound:   outbound,
+		Dialer:     d,
+		DialTarget: dialTarget,
+		Network: func() string {
+			if p.Network == "udp" {
+				return common.MagicNetworkWithIPVersion(p.Network, mark, c.mptcp, string(selectionNetworkType.IpVersion))
+			}
+			return common.MagicNetwork(p.Network, mark, c.mptcp)
+		}(),
 		SniffedDomain:           domain,
 		Mark:                    mark,
 		IsDialIp:                strictIpVersion,

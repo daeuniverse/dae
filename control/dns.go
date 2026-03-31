@@ -655,6 +655,16 @@ type udpConnPool struct {
 	done        chan struct{}
 }
 
+const (
+	// dnsUdpPoolMaxIdle keeps a modest number of warm sockets per upstream so bursty
+	// DNS traffic can reuse hot sockets without retaining the full active set forever.
+	dnsUdpPoolMaxIdle = 16
+	// dnsUdpPoolMaxActive bounds the true concurrent capacity of a UDP DNS forwarder.
+	// Each socket serves one in-flight request at a time in this implementation, so
+	// requests beyond this budget should fail fast instead of queueing in userspace.
+	dnsUdpPoolMaxActive = 64
+)
+
 func newUdpConnPool(maxIdle, maxActive int, dialer func(context.Context) (netproxy.Conn, error)) *udpConnPool {
 	if maxIdle <= 0 {
 		maxIdle = 1
@@ -794,28 +804,10 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 			return conn, nil
 		}
 
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-p.done:
-			return nil, io.ErrClosedPipe
-		case connWithTime := <-p.idleConns:
-			if connWithTime == nil {
-				return nil, io.ErrClosedPipe
-			}
-
-			if p.closed.Load() {
-				p.discard(connWithTime.conn)
-				return nil, io.ErrClosedPipe
-			}
-
-			if time.Since(connWithTime.lastUsed) > p.maxIdleTime {
-				p.discard(connWithTime.conn)
-				continue
-			}
-
-			return connWithTime.conn, nil
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+		return nil, ErrDNSUDPConnPoolExhausted
 	}
 }
 
@@ -902,9 +894,11 @@ func (d *DoUDP) getPool() *udpConnPool {
 		return d.pool
 	}
 
-	// DNS fast path only needs a small fixed live set. Keeping this bounded avoids
-	// runaway socket creation under bursts while still providing hot-socket reuse.
-	d.pool = newUdpConnPool(8, 8, func(ctx context.Context) (netproxy.Conn, error) {
+	// Keep a bounded but realistic UDP live set. The controller may admit far more
+	// concurrent requests globally, but a single UDP upstream can only service one
+	// request per socket here, so saturation must fail fast locally instead of
+	// accumulating a large waiter queue in userspace.
+	d.pool = newUdpConnPool(dnsUdpPoolMaxIdle, dnsUdpPoolMaxActive, func(ctx context.Context) (netproxy.Conn, error) {
 		return d.dialArgument.bestDialer.DialContext(
 			ctx,
 			common.MagicNetwork("udp", d.dialArgument.mark, d.dialArgument.mptcp),

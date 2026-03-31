@@ -667,24 +667,14 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
 
-		// Punt all IP fragments to Linux kernel for defragmentation.
-		// Preserve listener assignment for UDP and first-fragment TCP SYN.
+		// Preserve the historical behavior for the first fragment, which still
+		// carries the transport header and can participate in normal routing.
+		// Only non-initial fragments lack the L4 header and must fall back to
+		// the kernel stack for reassembly.
 		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
 
-		if ((frag_off & 0x3FFF) != 0) {
-			if ((frag_off & 0x1FFF) == 0) {
-				if (iph_ptr->protocol == IPPROTO_UDP) {
-					*listener_l4proto = IPPROTO_UDP;
-				} else if (iph_ptr->protocol == IPPROTO_TCP) {
-					struct tcphdr *frag_tcph_ptr = data + l4_offset;
-
-					if ((void *)(frag_tcph_ptr + 1) > data_end)
-						return -1;
-					*listener_l4proto = tcp_listener_l4proto(frag_tcph_ptr);
-				}
-			}
+		if ((frag_off & 0x1FFF) != 0)
 			return PARSE_FRAGMENT;
-		}
 
 		// L4 parsing: simplified with single boundary check
 		switch (iph->protocol) {
@@ -762,29 +752,21 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
 			if (nexthdr == IPPROTO_FRAGMENT) {
-				// Keep original L4 protocol for fragment punt path and
-				// preserve listener assignment for UDP and first TCP SYN.
+				// Mirror the stable pre-c0a0f1 behavior: keep parsing the first
+				// fragment, which still carries the transport header, but pass
+				// non-initial fragments back to the kernel stack.
 				struct frag_hdr *fragh = data + offset;
 
 				if ((void *)(fragh + 1) > data_end)
 					return -EFAULT;
 				__u16 frag_off = bpf_ntohs(fragh->frag_off);
 
-				*l4proto = fragh->nexthdr;
+				nexthdr = fragh->nexthdr;
+				*l4proto = nexthdr;
+				offset += sizeof(*fragh);
 				if ((frag_off & 0xFFF8) != 0)
 					return PARSE_FRAGMENT;
-				if (fragh->nexthdr == IPPROTO_UDP) {
-					*listener_l4proto = IPPROTO_UDP;
-				} else if (fragh->nexthdr == IPPROTO_TCP) {
-					struct tcphdr *frag_tcph_ptr =
-						data + offset + sizeof(*fragh);
-
-					if ((void *)(frag_tcph_ptr + 1) > data_end)
-						return -1;
-					*listener_l4proto =
-						tcp_listener_l4proto(frag_tcph_ptr);
-				}
-				return PARSE_FRAGMENT;
+				continue;
 			}
 			if (!is_extension_header(nexthdr))
 				break;
@@ -903,25 +885,13 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		*ihl = iph->ihl;
 		*l4proto = iph->protocol;
 
-		// Punt fragments to the kernel for reassembly while preserving
-		// listener assignment for UDP and first-fragment TCP SYN.
+		// Preserve the stable routing behavior for the first fragment, which
+		// still exposes the transport header. Only non-initial fragments need
+		// to fall back to the kernel for reassembly.
 		__u16 frag_off = bpf_ntohs(iph->frag_off);
 
-		if ((frag_off & 0x3FFF) != 0) {
-			if ((frag_off & 0x1FFF) == 0) {
-				offset += iph->ihl * 4;
-				if (iph->protocol == IPPROTO_UDP) {
-					*listener_l4proto = IPPROTO_UDP;
-				} else if (iph->protocol == IPPROTO_TCP) {
-					ret = bpf_skb_load_bytes(skb, offset, tcph,
-								 sizeof(struct tcphdr));
-					if (ret)
-						return -EFAULT;
-					*listener_l4proto = tcp_listener_l4proto(tcph);
-				}
-			}
+		if ((frag_off & 0x1FFF) != 0)
 			return PARSE_FRAGMENT;
-		}
 
 		offset += iph->ihl * 4;
 
@@ -961,28 +931,20 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
 			if (nexthdr == IPPROTO_FRAGMENT) {
-				// Preserve listener assignment for UDP and first
-				// TCP SYN fragments before punting to the kernel.
+				// Preserve the stable first-fragment behavior while letting
+				// non-initial fragments pass through for kernel reassembly.
 				struct frag_hdr fragh = {};
 
 				ret = bpf_skb_load_bytes(skb, offset, &fragh,
 							 sizeof(fragh));
 				if (ret)
 					return -EFAULT;
-				*l4proto = fragh.nexthdr;
+				nexthdr = fragh.nexthdr;
+				*l4proto = nexthdr;
+				offset += sizeof(fragh);
 				if ((bpf_ntohs(fragh.frag_off) & 0xFFF8) != 0)
 					return PARSE_FRAGMENT;
-				if (fragh.nexthdr == IPPROTO_UDP) {
-					*listener_l4proto = IPPROTO_UDP;
-				} else if (fragh.nexthdr == IPPROTO_TCP) {
-					ret = bpf_skb_load_bytes(
-						skb, offset + sizeof(fragh), tcph,
-						sizeof(struct tcphdr));
-					if (ret)
-						return -EFAULT;
-					*listener_l4proto = tcp_listener_l4proto(tcph);
-				}
-				return PARSE_FRAGMENT;
+				continue;
 			}
 
 			if (!is_extension_header(nexthdr))
@@ -1101,11 +1063,8 @@ parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 		return 1;
 
 	// Always populate out with whatever IP context was parsed.
-	// This is critical for PARSE_FRAGMENT (ret==2): the IP header was fully
-	// parsed before the fragment was detected, so src/dst IPs are valid.
-	// Without this, prep_redirect_to_control_plane() would receive an all-zero
-	// tuple, writing a 0.0.0.0->0.0.0.0 entry into redirect_track and
-	// causing all fragments to share the same corrupted route entry.
+	// PARSE_FRAGMENT still leaves a valid IP tuple behind, which keeps callers
+	// and diagnostics aligned without forcing a control-plane redirect.
 	__builtin_memset(out, 0, sizeof(*out));
 	out->ethh = ctx->ethh;
 	out->tcph = ctx->tcph;
@@ -1151,8 +1110,8 @@ parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
 	if (ctx->l4proto == IPPROTO_ICMPV6)
 		return 1;
 
-	// Always populate out with whatever IP context was parsed (same fix as
-	// parse_lan_ingress_packet: preserve valid SIP/DIP for PARSE_FRAGMENT path).
+	// Always populate out with whatever IP context was parsed so PARSE_FRAGMENT
+	// still preserves the source/destination tuple for callers and diagnostics.
 	__builtin_memset(out, 0, sizeof(*out));
 	out->ethh = ctx->ethh;
 	out->tcph = ctx->tcph;
@@ -2049,20 +2008,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
 
-	if (ret == PARSE_FRAGMENT) {
-		// Punt fragments to the control plane.
-		// Linux Netfilter will reconstruct them before passing to the proxy.
-		if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
-						   pkt->listener_l4proto,
-						   &pkt->ethh, 0)) {
-			return TC_ACT_OK;
-		}
-		return redirect_to_control_plane_ingress();
-	}
-
 	if (ret) {
 		// Negative return: parsing error (malformed packet, too many extension headers, etc.)
-		// Positive return: unsupported protocol (ICMPv6, etc.) - pass through
+		// Positive return: unsupported protocol or non-initial fragment - pass through
 		if (ret < 0) {
 			bpf_printk("parse_transport error: %d, dropping", ret);
 			return TC_ACT_SHOT;  // Drop malformed/suspicious packets
@@ -2800,26 +2748,6 @@ fast_path_skip_routing:
 	return redirect_to_control_plane_egress();
 }
 
-// wan_egress_punt_fragment handles IP fragments arriving on the WAN egress hook.
-// Extracted as a separate __noinline subprogram so the BPF verifier resets its
-// combined-stack counter here, keeping the 5-call chain depth below 512 bytes.
-static __noinline int
-wan_egress_punt_fragment(struct __sk_buff *skb, u32 link_h_len)
-{
-	__u32 scratch_key = 0;
-	struct wan_egress_parsed *pkt =
-		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
-
-	if (!pkt)
-		return TC_ACT_OK;
-
-	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
-					   pkt->listener_l4proto,
-					   &pkt->ethh, 1))
-		return TC_ACT_OK;
-	return redirect_to_control_plane_egress();
-}
-
 /*
  * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
  * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
@@ -2848,12 +2776,9 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 	__builtin_memset(pkt, 0, sizeof(*pkt));
 	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
 
-	if (ret == PARSE_FRAGMENT)
-		return wan_egress_punt_fragment(skb, link_h_len);
-
 	if (ret) {
 		// Negative return: parsing error - drop
-		// Positive return: unsupported protocol - pass through
+		// Positive return: unsupported protocol or non-initial fragment - pass through
 		if (ret < 0) {
 			bpf_printk("wan_egress parse error: %d, dropping", ret);
 			return TC_ACT_SHOT;

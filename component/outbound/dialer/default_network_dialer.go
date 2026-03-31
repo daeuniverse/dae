@@ -59,5 +59,5 @@ func (d *defaultNetworkDialer) mergeNetwork(network string) string {
 	if !magicNetwork.Mptcp {
 		magicNetwork.Mptcp = d.mptcp
 	}
-	return common.MagicNetwork(magicNetwork.Network, magicNetwork.Mark, magicNetwork.Mptcp)
+	return common.MagicNetworkWithIPVersion(magicNetwork.Network, magicNetwork.Mark, magicNetwork.Mptcp, magicNetwork.IPVersion)
 }

@@ -317,9 +317,10 @@ func (ue *UdpEndpoint) handleProxyServerFailure() {
 		return
 	}
 
-	// Notify the dialer about the proxy server failure
-	// This will invalidate the UDP cache for this proxy address
-	ue.Dialer.NotifyProxyFailure(proxyAddr, "udp")
+	// Notify the dialer about the proxy server failure.
+	// This invalidates the failed UDP family cache so retries can pivot immediately.
+	networkType := udpEndpointNetworkType(ue)
+	ue.Dialer.NotifyProxyFailure(proxyAddr, &networkType)
 
 	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
@@ -402,9 +403,8 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	n, err := ue.conn.WriteTo(b, addr)
 	if err != nil {
 		ue.retire()
-		if !errors.IsUDPEndpointNormalClose(err) && ue.Dialer != nil {
-			networkType := udpEndpointNetworkType(ue)
-			ue.Dialer.ReportUnavailable(&networkType, fmt.Errorf("udp endpoint write failed: %w", err))
+		if ue.isConnectionRefused(err) {
+			ue.handleProxyServerFailure()
 		}
 		return n, err
 	}

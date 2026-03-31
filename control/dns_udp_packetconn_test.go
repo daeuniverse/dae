@@ -232,7 +232,7 @@ func TestDoUDPForwardDNSUsesPacketConnForUDP(t *testing.T) {
 	}
 }
 
-func TestDoUDPForwardDNSPoolSaturationWaitsAndReusesTimedOutConn(t *testing.T) {
+func TestDoUDPForwardDNSPoolSaturationFailsFast(t *testing.T) {
 	serverAddr := netip.MustParseAddrPort("198.51.100.53:53")
 	writeStarted := make(chan struct{})
 	timeoutConn := &deadlineTimeoutUpstreamConn{
@@ -282,18 +282,18 @@ func TestDoUDPForwardDNSPoolSaturationWaitsAndReusesTimedOutConn(t *testing.T) {
 	start := time.Now()
 	_, err = doUDP.ForwardDNS(secondCtx, packed)
 	elapsed := time.Since(start)
-	var netErr net.Error
-	if !stderrors.As(err, &netErr) || !netErr.Timeout() {
-		t.Fatalf("second ForwardDNS error = %v, want timeout after waiting for pooled conn reuse", err)
+	if !stderrors.Is(err, ErrDNSUDPConnPoolExhausted) {
+		t.Fatalf("second ForwardDNS error = %v, want pool exhaustion", err)
 	}
-	if elapsed < 140*time.Millisecond {
-		t.Fatalf("second ForwardDNS took %v, want it to wait for the first request to release the pooled conn", elapsed)
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("second ForwardDNS took %v, want fast local rejection", elapsed)
 	}
 	if got := dialCalls.Load(); got != 1 {
-		t.Fatalf("dial calls after waiting request = %d, want 1", got)
+		t.Fatalf("dial calls after saturated request = %d, want 1", got)
 	}
 
 	err = <-firstErrCh
+	var netErr net.Error
 	if !stderrors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("first ForwardDNS error = %v, want timeout", err)
 	}

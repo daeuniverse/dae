@@ -363,6 +363,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	var realSrc netip.AddrPort
 	var domain string
 	var ueKey UdpEndpointKey
+	var excludedDialer *dialer.Dialer
 	now := time.Now()
 	nowNano := now.UnixNano()
 	realSrc = src
@@ -484,6 +485,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 						"network": "udp(fp)",
 						"err":     err.Error(),
 					}).Debugln("Failed to write UDP fast-path packet. Remove stale endpoint and rebuild.")
+				}
+				if c.shouldPenalizeUdpEndpointWriteError(err) {
+					nt := udpEndpointNetworkType(ue)
+					ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
+					excludedDialer = ue.Dialer
 				}
 				_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 				ue = nil
@@ -659,7 +665,6 @@ afterSniffing:
 	payloads = append(payloads, data)
 	packetIndex := 0
 	retry := 0
-	var excludedDialer *dialer.Dialer
 	var isNew bool
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
@@ -809,12 +814,12 @@ getNew:
 				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 			}
 			nt := udpEndpointNetworkType(ue)
-			if !errors.IsUDPEndpointNormalClose(err) {
+			if c.shouldPenalizeUdpEndpointWriteError(err) {
 				ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
 			}
 			// Ensure the failed dialer is excluded in the immediate retry if it was a real failure.
 			// For normal closures, we still remove the endpoint but don't penalize the dialer.
-			if !errors.IsUDPEndpointNormalClose(err) {
+			if c.shouldPenalizeUdpEndpointWriteError(err) {
 				excludedDialer = ue.Dialer
 			}
 			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
@@ -850,4 +855,8 @@ getNew:
 	}
 
 	return nil
+}
+
+func (c *ControlPlane) shouldPenalizeUdpEndpointWriteError(err error) bool {
+	return err != nil && !errors.IsUDPEndpointNormalClose(err)
 }

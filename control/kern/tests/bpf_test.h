@@ -530,6 +530,54 @@ set_ipv4_udp_first_fragment(struct __sk_buff *skb,
 }
 
 static __always_inline int
+set_ipv4_udp_non_initial_fragment(struct __sk_buff *skb,
+				  __u32 saddr, __u32 daddr)
+{
+	const __u32 payload_len = 8;
+
+	if (bpf_skb_change_tail(skb, ETH_HLEN + IP4_HLEN + payload_len, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + ETH_HLEN + IP4_HLEN + payload_len > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IP);
+
+	struct iphdr *ip = data + ETH_HLEN;
+	ip->ihl = 5;
+	ip->version = 4;
+	ip->protocol = IPPROTO_UDP;
+	ip->saddr = bpf_htonl(saddr);
+	ip->daddr = bpf_htonl(daddr);
+	ip->tos = 0;
+	ip->tot_len = bpf_htons(IP4_HLEN + payload_len);
+	ip->id = bpf_htons(1);
+	ip->frag_off = bpf_htons(IPV4_MF_FLAG | 1);
+	ip->ttl = 64;
+	ip->check = 0;
+
+	__builtin_memset(data + ETH_HLEN + IP4_HLEN, 0xab, payload_len);
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 set_ipv4_tcp_first_fragment_with_flags(struct __sk_buff *skb,
 				       __u32 saddr, __u32 daddr,
 				       __u16 sport, __u16 dport,

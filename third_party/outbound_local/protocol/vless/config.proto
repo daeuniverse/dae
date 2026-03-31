@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package outbound.protocol.vless;
+option go_package = "github.com/daeuniverse/outbound/protocol/vless";
+
+message Addons {
+  string Flow = 1;
+  bytes Seed = 2;
+}

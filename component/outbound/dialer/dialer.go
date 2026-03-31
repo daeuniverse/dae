@@ -407,14 +407,20 @@ func (d *Dialer) protoIdx(proto consts.L4ProtoStr) int {
 }
 
 // NotifyProxyFailure is called when a proxy server connection fails (e.g., connection refused).
-// It immediately invalidates the cached IP for the specified protocol so that
-// the next connection can try a different IP.
-func (d *Dialer) NotifyProxyFailure(proxyAddr, protocol string) {
+// It immediately invalidates the cached IP for the failed protocol and address family so that
+// the next connection can try a different IP without discarding healthy families.
+func (d *Dialer) NotifyProxyFailure(proxyAddr string, networkType *NetworkType) {
 	if d.stickyIpDialer == nil {
 		return
 	}
-	// Invalidate the cache for this specific protocol
-	d.stickyIpDialer.InvalidateProtocolCache(proxyAddr, protocol)
+	if networkType == nil {
+		return
+	}
+	if networkType.IpVersion != "" {
+		d.stickyIpDialer.InvalidateProtocolAndIpVersionCache(proxyAddr, string(networkType.L4Proto), string(networkType.IpVersion))
+		return
+	}
+	d.stickyIpDialer.InvalidateProtocolCache(proxyAddr, string(networkType.L4Proto))
 }
 
 // notifyQuicDcidCacheClearImpl is the actual implementation.

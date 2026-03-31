@@ -100,7 +100,7 @@ func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
 	}
 }
 
-func TestUdpConnPool_GetWaitsForReturnedConnWithoutExtraDial(t *testing.T) {
+func TestUdpConnPool_GetFailsFastWhenSaturated(t *testing.T) {
 	var dialCalls atomic.Int32
 	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
 		dialCalls.Add(1)
@@ -127,20 +127,13 @@ func TestUdpConnPool_GetWaitsForReturnedConnWithoutExtraDial(t *testing.T) {
 
 	select {
 	case res := <-waiterDone:
-		t.Fatalf("get returned too early while pool was saturated: conn=%v err=%v", res.conn, res.err)
-	case <-time.After(40 * time.Millisecond):
+		require.Nil(t, res.conn)
+		require.ErrorIs(t, res.err, ErrDNSUDPConnPoolExhausted)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for saturated get() to fail fast")
 	}
 
 	p.put(conn)
-
-	select {
-	case res := <-waiterDone:
-		require.NoError(t, res.err)
-		require.Same(t, conn, res.conn)
-		p.put(res.conn)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for saturated get() to reuse returned connection")
-	}
 
 	reused, err := p.get(context.Background())
 	require.NoError(t, err)
@@ -174,7 +167,7 @@ func TestUdpConnPool_CloseClosesBorrowedLiveConnImmediately(t *testing.T) {
 	require.ErrorIs(t, err, io.ErrClosedPipe)
 }
 
-func TestUdpConnPool_ConcurrentBurstWaitsAndCapsDialsAtMaxActive(t *testing.T) {
+func TestUdpConnPool_ConcurrentBurstFailsFastAndCapsDialsAtMaxActive(t *testing.T) {
 	var dialCalls atomic.Int32
 	p := newUdpConnPool(2, 2, func(ctx context.Context) (netproxy.Conn, error) {
 		dialCalls.Add(1)
@@ -207,7 +200,7 @@ func TestUdpConnPool_ConcurrentBurstWaitsAndCapsDialsAtMaxActive(t *testing.T) {
 	close(errCh)
 
 	for err := range errCh {
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.ErrorIs(t, err, ErrDNSUDPConnPoolExhausted)
 	}
 	require.EqualValues(t, 2, dialCalls.Load())
 

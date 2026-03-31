@@ -434,15 +434,19 @@ nextLink:
 }
 
 func MagicNetwork(network string, mark uint32, mptcp bool) string {
-	if mark == 0 && !mptcp {
+	return MagicNetworkWithIPVersion(network, mark, mptcp, "")
+}
+
+func MagicNetworkWithIPVersion(network string, mark uint32, mptcp bool, ipVersion string) string {
+	if mark == 0 && !mptcp && ipVersion == "" {
 		return network
-	} else {
-		return netproxy.MagicNetwork{
-			Network: network,
-			Mark:    mark,
-			Mptcp:   mptcp,
-		}.Encode()
 	}
+	return netproxy.MagicNetwork{
+		Network:   network,
+		Mark:      mark,
+		Mptcp:     mptcp,
+		IPVersion: ipVersion,
+	}.Encode()
 }
 
 const InternalSoMarkFromDae uint32 = 0x100

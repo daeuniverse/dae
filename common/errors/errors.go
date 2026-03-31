@@ -222,18 +222,9 @@ func IsUDPEndpointNormalClose(err error) bool {
 
 	// Fast path: check sentinel errors first (no allocations, pointer comparison only)
 	if errors.Is(err, io.EOF) ||
-		errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, ErrClosedListener) ||
 		errors.Is(err, ErrClosedConnection) {
 		return true
-	}
-
-	// Fast path: check wrapped syscall errors
-	var sysErr *os.SyscallError
-	if errors.As(err, &sysErr) {
-		if errors.Is(sysErr.Err, syscall.ECONNREFUSED) {
-			return true
-		}
 	}
 
 	// Check for timeout errors (common for UDP NAT expiration)
