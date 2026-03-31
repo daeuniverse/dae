@@ -108,7 +108,7 @@ func sendDirectFullconeFlowPackets(t *testing.T, cp *ControlPlane, src, dst neti
 
 func TestDirectFullconeDialer_RepeatedDialsAllocateFreshLocalPorts(t *testing.T) {
 	server := mustListenLoopbackUDP(t)
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	const dials = 12
 	resultCh := startUDPSenderCapture(t, server, dials)
@@ -153,7 +153,7 @@ func TestHandlePkt_DirectFullconeOutboundReusesStableLocalPortPerFlow(t *testing
 	}()
 
 	server := mustListenLoopbackUDP(t)
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	const packets = 8
 	resultCh := startUDPSenderCapture(t, server, packets)
@@ -194,7 +194,7 @@ func TestHandlePkt_DirectFullconeOutboundReusesStableLocalPortPerIPv6Flow(t *tes
 	}()
 
 	server := mustListenLoopbackUDP6(t)
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	const packets = 8
 	resultCh := startUDPSenderCapture(t, server, packets)
@@ -235,7 +235,7 @@ func TestHandlePkt_DirectFullconeConcurrentManyFlowsAllocateOneLocalPortPerFlow(
 	}()
 
 	server := mustListenLoopbackUDP(t)
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	const flows = 24
 	const packetsPerFlow = 4
@@ -299,7 +299,7 @@ func TestHandlePkt_DirectFullconeReloadReusesSingleNewLocalPortPerFlow(t *testin
 	}()
 
 	server := mustListenLoopbackUDP(t)
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	const packetsPerPhase = 4
 	resultCh := startUDPSenderCapture(t, server, packetsPerPhase*2)

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"io"
 	"net/netip"
 	"testing"
@@ -58,7 +59,7 @@ func TestChooseProxyDialer_FixedOutboundFallsBackToAlternateFamilyOnSameDialer(t
 	d.ReportUnavailableForced(udp6, nil)
 
 	cp := newTestDialControlPlane(newTestFixedOutboundGroup(d))
-	res, err := cp.chooseProxyDialer(nil, &proxyDialParam{
+	res, err := cp.chooseProxyDialer(context.Background(), &proxyDialParam{
 		Outbound: consts.OutboundUserDefinedMin,
 		Src:      netip.MustParseAddrPort("[2001:db8::10]:12345"),
 		Dest:     netip.MustParseAddrPort("[2606:4700:4700::1111]:53"),
@@ -82,7 +83,7 @@ func TestChooseProxyDialer_SingleDialerGroupFallsBackToAlternateFamilyOnSameDial
 	d.ReportUnavailableForced(udp6, nil)
 
 	cp := newTestDialControlPlane(newTestSingleRandomOutboundGroup(d))
-	res, err := cp.chooseProxyDialer(nil, &proxyDialParam{
+	res, err := cp.chooseProxyDialer(context.Background(), &proxyDialParam{
 		Outbound: consts.OutboundUserDefinedMin,
 		Src:      netip.MustParseAddrPort("[2001:db8::10]:12345"),
 		Dest:     netip.MustParseAddrPort("[2606:4700:4700::1111]:53"),

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"testing"
@@ -16,8 +17,8 @@ import (
 
 func TestRouteDial_RetriesAlternateFamilyAfterLocalNetworkFailure(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
 
 	d, underlay := newSequenceProxyEndpointDialer(
 		"shadowsocks_2022",
@@ -27,7 +28,7 @@ func TestRouteDial_RetriesAlternateFamilyAfterLocalNetworkFailure(t *testing.T) 
 	)
 	cp := newTestDialControlPlane(newTestFixedOutboundGroup(d))
 
-	conn, res, err := cp.routeDial(nil, &proxyDialParam{
+	conn, res, err := cp.routeDial(context.Background(), &proxyDialParam{
 		Outbound: consts.OutboundUserDefinedMin,
 		Src:      netip.MustParseAddrPort("[2001:db8::10]:42687"),
 		Dest:     netip.MustParseAddrPort("[2606:4700:4700::1111]:443"),
@@ -36,7 +37,7 @@ func TestRouteDial_RetriesAlternateFamilyAfterLocalNetworkFailure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("routeDial() error = %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if got := underlay.calls.Load(); got != 2 {
 		t.Fatalf("DialContext calls = %d, want 2", got)
