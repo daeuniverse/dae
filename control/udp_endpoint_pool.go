@@ -41,9 +41,11 @@ type UdpEndpoint struct {
 	conn          netproxy.PacketConn
 	expiresAtNano atomic.Int64
 	handler       UdpHandler
-	NatTimeout    time.Duration
-	closeOnce     sync.Once
-	closeErr      error
+	// NatTimeout is guarded by natTimeoutMu after endpoint creation.
+	NatTimeout   time.Duration
+	natTimeoutMu sync.RWMutex
+	closeOnce    sync.Once
+	closeErr     error
 
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
@@ -149,12 +151,13 @@ func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 	if ue.log == nil {
 		return
 	}
+	natTimeout := ue.natTimeout()
 	fields := logrus.Fields{
 		"lAddr":       ue.lAddr.String(),
 		"dialer":      ue.Dialer.Property().Name,
 		"proxy_addr":  ue.DialTarget,
 		"sniffed":     ue.SniffedDomain,
-		"nat_timeout": ue.NatTimeout.String(),
+		"nat_timeout": natTimeout.String(),
 	}
 	entry := ue.log.WithFields(fields).WithError(err)
 	if errors.IsUDPEndpointNormalClose(err) {
@@ -402,6 +405,18 @@ func (ue *UdpEndpoint) RefreshTtl() {
 	ue.RefreshTtlWithTime(0)
 }
 
+func (ue *UdpEndpoint) natTimeout() time.Duration {
+	ue.natTimeoutMu.RLock()
+	defer ue.natTimeoutMu.RUnlock()
+	return ue.NatTimeout
+}
+
+func (ue *UdpEndpoint) setNatTimeout(timeout time.Duration) {
+	ue.natTimeoutMu.Lock()
+	ue.NatTimeout = timeout
+	ue.natTimeoutMu.Unlock()
+}
+
 // requiresInitialReplyGuard reports whether dae needs to verify the first
 // upstream reply itself before promoting the endpoint to established state.
 // Proxy-backed PacketConn implementations already demultiplex packets by
@@ -415,17 +430,18 @@ func (ue *UdpEndpoint) requiresInitialReplyGuard() bool {
 // initialReplyTimeout returns the bounded probing lifetime before the
 // endpoint has observed its first upstream reply.
 func (ue *UdpEndpoint) initialReplyTimeout() time.Duration {
-	if ue.NatTimeout <= 0 {
+	timeout := ue.natTimeout()
+	if timeout <= 0 {
 		return 0
 	}
 	// Reuse the dial timeout budget instead of introducing another user-facing
 	// tuning knob. An unreplied UDP flow should not survive longer than two dial
 	// attempts before it proves bidirectional liveness.
 	maxProbe := 2 * consts.DefaultDialTimeout
-	if ue.NatTimeout > maxProbe {
+	if timeout > maxProbe {
 		return maxProbe
 	}
-	return ue.NatTimeout
+	return timeout
 }
 
 // ensureInitialReplyDeadline pins a fixed deadline for probing endpoints.
@@ -459,7 +475,7 @@ func (ue *UdpEndpoint) markReplied(nowNano int64) {
 	if !ue.hasReply.Swap(true) {
 		ue.clearPendingReplyPeers()
 		ue.lastRefreshNano.Store(nowNano)
-		ue.expiresAtNano.Store(nowNano + int64(ue.NatTimeout))
+		ue.expiresAtNano.Store(nowNano + int64(ue.natTimeout()))
 		return
 	}
 	ue.RefreshTtlWithTime(nowNano)
@@ -540,7 +556,7 @@ func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 		ue.ensureInitialReplyDeadline(nowNano)
 		return
 	}
-	timeout := ue.NatTimeout
+	timeout := ue.natTimeout()
 	if timeout <= 0 {
 		return
 	}
@@ -569,7 +585,7 @@ func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
 	if timeout <= 0 {
 		return
 	}
-	ue.NatTimeout = timeout
+	ue.setNatTimeout(timeout)
 	now := time.Now().UnixNano()
 	if !ue.hasReply.Load() && ue.requiresInitialReplyGuard() {
 		ue.ensureInitialReplyDeadline(now)

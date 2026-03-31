@@ -688,7 +688,7 @@ getNew:
 	ueKey = flowDecision.EndpointKeyForDial(domain)
 	if ueExists && foundUeKey.Dst.Port() != 0 && ueKey.Dst.Port() == 0 {
 		ueKey = foundUeKey
-		natTimeout = ue.NatTimeout
+		natTimeout = ue.natTimeout()
 	}
 
 	// Fast path: reuse the endpoint already loaded by the initial Get when the
