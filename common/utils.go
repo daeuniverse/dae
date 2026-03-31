@@ -462,6 +462,16 @@ func EffectiveSoMarkFromDae(mark uint32) uint32 {
 	return InternalSoMarkFromDae
 }
 
+// ResolveSoMarkFromDae returns the effective socket mark and whether dae had
+// to auto-select an internal mark because the user left so_mark_from_dae
+// unspecified.
+func ResolveSoMarkFromDae(mark uint32, explicitlyConfigured bool) (effective uint32, autoSelected bool) {
+	if mark != 0 {
+		return mark, false
+	}
+	return InternalSoMarkFromDae, !explicitlyConfigured
+}
+
 func IsValidHttpMethod(method string) bool {
 	switch method {
 	case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND", "CONNECT", "TRACE":

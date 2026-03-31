@@ -37,7 +37,7 @@ var SectionDescription = map[string]Desc{
 var GlobalDesc = Desc{
 	"tproxy_port":           "tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.\nIn normal case, you do not need to use it.",
 	"tproxy_port_protect":   "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
-	"so_mark_from_dae":      "If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy rules.",
+	"so_mark_from_dae":      "Socket mark for dae-originated traffic. If omitted, dae auto-selects an internal mark to prevent UDP self-capture. Set a non-zero value to override that mark. Set 0 explicitly to keep the internal protection mark without the unset warning.",
 	"log_level":             "Log level: error, warn, info, debug, trace.",
 	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
 	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",

@@ -21,6 +21,7 @@ type Global struct {
 	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
 	SoMarkFromDae     uint32 `mapstructure:"so_mark_from_dae"`
+	SoMarkFromDaeSet  bool   `mapstructure:"_"`
 	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	// DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
@@ -143,6 +144,19 @@ type Config struct {
 	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
 }
 
+func sectionHasParam(section *config_parser.Section, key string) bool {
+	for _, item := range section.Items {
+		param, ok := item.Value.(*config_parser.Param)
+		if !ok {
+			continue
+		}
+		if param.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // New params from sections. This func assumes merging (section "include") and deduplication for section names has been executed.
 func New(sections []*config_parser.Section) (conf *Config, err error) {
 	// Set up name to section for further use.
@@ -181,6 +195,9 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 		// Parse section and unmarshal to field.
 		if err := SectionParser(field.Addr(), section.Val); err != nil {
 			return nil, fmt.Errorf("failed to parse \"%v\": %w", sectionName, err)
+		}
+		if sectionName == "global" {
+			conf.Global.SoMarkFromDaeSet = sectionHasParam(section.Val, "so_mark_from_dae")
 		}
 		section.Parsed = true
 	}

@@ -244,8 +244,11 @@ func NewControlPlaneWithContext(
 	ClearFailedQuicDcids()
 
 	if global.SoMarkFromDae == 0 {
-		global.SoMarkFromDae = common.EffectiveSoMarkFromDae(0)
-		log.Warnf("so_mark_from_dae is unset; using internal socket mark %#x to prevent dae UDP self-capture", global.SoMarkFromDae)
+		var autoSelected bool
+		global.SoMarkFromDae, autoSelected = common.ResolveSoMarkFromDae(global.SoMarkFromDae, global.SoMarkFromDaeSet)
+		if autoSelected {
+			log.Warnf("so_mark_from_dae is unset; using internal socket mark %#x to prevent dae UDP self-capture", global.SoMarkFromDae)
+		}
 	}
 
 	// Register the cache clear function with dialer package so health checks

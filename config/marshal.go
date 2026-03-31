@@ -228,6 +228,7 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 			switch structField.Name {
 			case "Name":
 			case "FilterAnnotation":
+			case "SoMarkFromDaeSet":
 				continue
 			case "Rules":
 				// Expand.

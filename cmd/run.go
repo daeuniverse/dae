@@ -463,8 +463,11 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 	if conf.Global.SoMarkFromDae == 0 {
-		conf.Global.SoMarkFromDae = common.EffectiveSoMarkFromDae(0)
-		log.Warnf("so_mark_from_dae is unset; using internal socket mark %#x to prevent dae UDP self-capture", conf.Global.SoMarkFromDae)
+		var autoSelected bool
+		conf.Global.SoMarkFromDae, autoSelected = common.ResolveSoMarkFromDae(conf.Global.SoMarkFromDae, conf.Global.SoMarkFromDaeSet)
+		if autoSelected {
+			log.Warnf("so_mark_from_dae is unset; using internal socket mark %#x to prevent dae UDP self-capture", conf.Global.SoMarkFromDae)
+		}
 	}
 
 	/// Get tag -> nodeList mapping.
