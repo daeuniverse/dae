@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,6 +154,10 @@ func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
 }
 
 func effectiveUdpEndpointNatTimeout(d *dialer.Dialer, requested time.Duration) time.Duration {
+	// Only long-lived proxy-backed UDP protocols should receive a longer NAT
+	// timeout floor. Other proxy-backed protocols (for example Shadowsocks)
+	// keep the caller-requested timeout to avoid retaining stale endpoints
+	// longer than necessary.
 	if !isLongLivedProxyBackedUdpProtocol(d) {
 		return requested
 	}
@@ -216,8 +221,10 @@ func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
 	if ue.isConnectionRefused(err) {
 		return true
 	}
-	// Keep old behavior for EOF/timeouts/normal closures: stop the read loop but
-	// leave the endpoint pooled until write failure or NAT expiry proves it dead.
+	// Preserve the historical behavior for normal closures (EOF, explicit close,
+	// deadline expiry mapped as a normal endpoint shutdown): stop the read loop
+	// without forcing immediate retirement. Hard failures still retire the
+	// endpoint so subsequent packets redial a fresh transport.
 	return !errors.IsUDPEndpointNormalClose(err)
 }
 
@@ -294,14 +301,27 @@ func (ue *UdpEndpoint) start() {
 }
 
 // isConnectionRefused checks if the error indicates connection was refused.
+// Uses typed syscall matching first (handles kernel ICMP errors), then falls
+// back to string matching for wrapped errors from SOCKS5 and other proxy protocols.
 func (ue *UdpEndpoint) isConnectionRefused(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return contains(errStr, "connection refused") ||
-		contains(errStr, "port unreachable") ||
-		contains(errStr, "host unreachable")
+	// Fast path: typed syscall errors from kernel ICMP responses.
+	if stderrors.Is(err, syscall.ECONNREFUSED) || stderrors.Is(err, syscall.EHOSTUNREACH) {
+		return true
+	}
+	var sysErr *os.SyscallError
+	if stderrors.As(err, &sysErr) {
+		if stderrors.Is(sysErr.Err, syscall.ECONNREFUSED) || stderrors.Is(sysErr.Err, syscall.EHOSTUNREACH) {
+			return true
+		}
+	}
+	// Slow path: string matching for proxy-protocol wrapped errors (e.g. SOCKS5 replies).
+	errStr := errStrLower(err)
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "port unreachable") ||
+		strings.Contains(errStr, "host unreachable")
 }
 
 // handleProxyServerFailure is called when the proxy server refuses the connection.
@@ -330,34 +350,10 @@ func (ue *UdpEndpoint) handleProxyServerFailure() {
 	}
 }
 
-// contains checks if a string contains a substring (case-insensitive).
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || (len(s) > len(substr) && containsIgnoreCase(s, substr)))
-}
-
-// containsIgnoreCase is a helper for case-insensitive substring search.
-func containsIgnoreCase(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			c1 := s[i+j]
-			c2 := substr[j]
-			if c1 >= 'A' && c1 <= 'Z' {
-				c1 += 32
-			}
-			if c2 >= 'A' && c2 <= 'Z' {
-				c2 += 32
-			}
-			if c1 != c2 {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
+// errStrLower returns the lowercased error message. Used as a helper for
+// case-insensitive string matching in fallback error detection.
+func errStrLower(err error) string {
+	return strings.ToLower(err.Error())
 }
 
 // selfRemoveFromPool performs a best-effort CAS delete of this endpoint from
@@ -788,6 +784,17 @@ func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
 	return ue.dialerGeneration == p.currentDialerGeneration(ue.Dialer, udpEndpointNetworkType(ue))
 }
 
+// endpointSurvivesDialerInvalidation reports whether an endpoint should remain
+// reusable after its dialer transitions to not alive.
+//
+// Established UDP sessions stay sticky on the original node once they have seen
+// bidirectional traffic. New flows are still blocked by dialer selection and
+// health checks; only the exact pooled flow key may continue reusing the
+// existing transport until it naturally fails or expires.
+func (p *UdpEndpointPool) endpointSurvivesDialerInvalidation(ue *UdpEndpoint) bool {
+	return ue != nil && ue.hasReply.Load()
+}
+
 func (p *UdpEndpointPool) registerEndpoint(ue *UdpEndpoint) {
 	if udpEndpointIgnoresDialerHealth(ue) {
 		return
@@ -844,10 +851,15 @@ func (p *UdpEndpointPool) InvalidateDialerNetworkType(d *dialer.Dialer, networkT
 	}
 	bucket.mu.RUnlock()
 
+	removed := 0
 	for _, ue := range endpoints {
+		if p.endpointSurvivesDialerInvalidation(ue) {
+			continue
+		}
 		ue.retire()
+		removed++
 	}
-	return len(endpoints)
+	return removed
 }
 
 // Reset clears all cached UDP endpoints.
@@ -898,7 +910,7 @@ func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok 
 	if !ok {
 		return nil, ok
 	}
-	if ue.failed.Load() || ue.IsDead() || !p.endpointGenerationCurrent(ue) {
+	if ue.failed.Load() || ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)) {
 		return nil, false
 	}
 	return ue, ok
@@ -933,15 +945,24 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	if err != nil {
 		reportUdpEndpointDialCreateFailure(key, dialOption, err)
 		if shouldForceMarkUnavailableOnProxyDialError(err) {
-			retryOption, retryErr := createOption.GetDialOption(ctx)
+			// Use a fresh timeout context for the retry to avoid inheriting a
+			// nearly-expired deadline from the first dial attempt. When the first
+			// dial consumes most of DefaultDialTimeout (e.g. network unreachable
+			// after a long timeout), the second dial would otherwise immediately
+			// fail with context.DeadlineExceeded and incorrectly penalize the new
+			// dialer selected by GetDialOption.
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+			retryOption, retryErr := createOption.GetDialOption(retryCtx)
 			if retryErr == nil {
 				dialOption = retryOption
-				udpConn, err = dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
+				udpConn, err = dialOption.Dialer.DialContext(retryCtx, dialOption.Network, dialOption.Target)
+				retryCancel()
 				if err == nil {
 					goto dialSuccess
 				}
 				reportUdpEndpointDialCreateFailure(key, dialOption, err)
 			} else {
+				retryCancel()
 				err = retryErr
 			}
 		}
@@ -1081,7 +1102,7 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 				return nil, false, ErrEndpointFailed
 			}
 			// Expired failure entry — fall through to lock and replace.
-		case ue.IsDead() || !p.endpointGenerationCurrent(ue):
+		case ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)):
 			// Expired dead entry — fall through to lock and replace.
 		default:
 			// Update NAT timeout based on current forwarding state
@@ -1116,7 +1137,7 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 			}
 			delete(shard.pool, key)
 			staleToClose = ue
-		case ue.IsDead() || !p.endpointGenerationCurrent(ue):
+		case ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)):
 			delete(shard.pool, key)
 			staleToClose = ue
 		default:
@@ -1166,7 +1187,7 @@ func (p *UdpEndpointPool) startJanitor() {
 					shard.mu.Lock()
 					toClose = toClose[:0]
 					for key, ue := range shard.pool {
-						if ue.IsExpired(nowNano) || !p.endpointGenerationCurrent(ue) {
+						if ue.IsExpired(nowNano) || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)) {
 							delete(shard.pool, key)
 							toClose = append(toClose, ue)
 						}

@@ -127,10 +127,19 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 	if ue.Outbound != nil && ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
 		return true
 	}
+	if ue.hasReply.Load() {
+		// Keep established UDP sessions sticky even if health probes temporarily
+		// mark the dialer unavailable. For interactive traffic (especially games),
+		// tearing down a live session based on control-plane health causes repeated
+		// redials and log spam. Real data-plane failures still retire the endpoint
+		// via write/read errors, read-loop exit, or NAT expiry.
+		return true
+	}
 	networkType := udpEndpointNetworkType(ue)
 
 	// Short-circuit: lightweight check MustGetAlive first.
-	// Don't proactively drop existing healthy connections in fast-path.
+	// Unreplied/probing endpoints are still safe to cull aggressively because
+	// they have not yet proved bidirectional liveness.
 	if !ue.Dialer.MustGetAlive(&networkType) {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			path := "UDP"

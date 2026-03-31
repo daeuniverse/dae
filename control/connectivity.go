@@ -86,6 +86,6 @@ func (c *controlPlaneCore) dialerAliveTransitionCallback(d *dialer.Dialer) func(
 			"dialer":  d.Property().Name,
 			"network": networkType.String(),
 			"removed": removed,
-		}).Debug("Invalidated UDP endpoints after dialer transitioned to not alive")
+		}).Debug("Invalidated probing UDP endpoints after dialer transitioned to not alive")
 	}
 }

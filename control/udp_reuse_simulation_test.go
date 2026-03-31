@@ -247,6 +247,21 @@ func countPooledUdpEndpoints(p *UdpEndpointPool) int {
 	return total
 }
 
+func waitForUdpEndpointReplyState(t *testing.T, key UdpEndpointKey) *UdpEndpoint {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ue, ok := DefaultUdpEndpointPool.Get(key)
+		if ok && ue != nil && ue.hasReply.Load() {
+			return ue
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for UDP endpoint to observe upstream reply")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestHandlePkt_RepeatedSameIngressReusesSingleUdpEndpoint(t *testing.T) {
 	oldPool := DefaultUdpEndpointPool
 	DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -360,6 +375,10 @@ func TestHandlePkt_ReusesEndpointAfterSoftReadLoopExit(t *testing.T) {
 		t.Fatalf("WriteTo calls after soft read exit = %d, want 2", got)
 	}
 
+	if got := conn.closeCalls.Load(); got != 0 {
+		t.Fatal("expected soft read exit to keep the original connection open for reuse")
+	}
+
 	if err := ue.Close(); err != nil {
 		t.Fatalf("unexpected close error: %v", err)
 	}
@@ -433,6 +452,244 @@ func TestHandlePkt_ConcurrentSameIngressReusesSingleUdpEndpoint(t *testing.T) {
 	if !ok || ue == nil {
 		t.Fatal("expected pooled endpoint to remain available after concurrent same-flow pressure")
 	}
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+}
+
+func TestHandlePkt_GameLikeBidirectionalFlowReusesSingleUdpEndpoint(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:      make(chan scriptedPacketRead, 16),
+		readExitCh: make(chan error, 1),
+		closeCh:    make(chan struct{}),
+	}
+	d, underlay := newCountingProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	src := mustParseAddrPort("192.168.89.3:42687")
+	dst := mustParseAddrPort("52.199.194.44:23002")
+	from := mustParseAddrPort("52.199.194.44:23002")
+	payload := []byte{0x10, 0x20, 0x30, 0x40}
+	key := UdpEndpointKey{Src: src}
+
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		Log:        logger,
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Target:      dst.String(),
+				Dialer:      d,
+				Outbound:    newTestFixedOutboundGroup(d),
+				Network:     "udp",
+				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate initial endpoint: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected initial GetOrCreate to create a new endpoint")
+	}
+
+	for i := 0; i < 6; i++ {
+		if _, err := ue.WriteTo(payload, dst.String()); err != nil {
+			t.Fatalf("WriteTo warmup #%d: %v", i+1, err)
+		}
+		conn.reads <- scriptedPacketRead{data: []byte{byte(i + 1)}, from: from}
+	}
+
+	ue = waitForUdpEndpointReplyState(t, key)
+
+	for i := 0; i < 12; i++ {
+		if _, err := ue.WriteTo(payload, dst.String()); err != nil {
+			t.Fatalf("WriteTo established #%d: %v", i+1, err)
+		}
+		conn.reads <- scriptedPacketRead{data: []byte{0x90, byte(i)}, from: from}
+	}
+
+	if got := underlay.calls.Load(); got != 1 {
+		t.Fatalf("DialContext calls = %d, want 1 for stable game-like bidirectional flow", got)
+	}
+	if got := conn.writeCalls.Load(); got != 18 {
+		t.Fatalf("WriteTo calls = %d, want 18", got)
+	}
+
+	ue, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || ue == nil {
+		t.Fatal("expected bidirectional game-like flow to keep a pooled UDP endpoint")
+	}
+	if !ue.hasReply.Load() {
+		t.Fatal("expected endpoint to enter established state after upstream replies")
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+}
+
+func TestHandlePkt_GameLikeFlowDoesNotRedialDuringIntermittentReplyBursts(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:      make(chan scriptedPacketRead, 16),
+		readExitCh: make(chan error, 1),
+		closeCh:    make(chan struct{}),
+	}
+	d, underlay := newCountingProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	src := mustParseAddrPort("192.168.89.3:42687")
+	dst := mustParseAddrPort("52.199.194.44:23002")
+	from := mustParseAddrPort("52.199.194.44:23002")
+	payload := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+	key := UdpEndpointKey{Src: src}
+
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		Log:        logger,
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Target:      dst.String(),
+				Dialer:      d,
+				Outbound:    newTestFixedOutboundGroup(d),
+				Network:     "udp",
+				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate initial endpoint: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected initial GetOrCreate to create a new endpoint")
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := ue.WriteTo(payload, dst.String()); err != nil {
+			t.Fatalf("warmup WriteTo #%d: %v", i+1, err)
+		}
+		conn.reads <- scriptedPacketRead{data: []byte{0x01, byte(i)}, from: from}
+	}
+
+	ue = waitForUdpEndpointReplyState(t, key)
+
+	for i := 0; i < 20; i++ {
+		if _, err := ue.WriteTo(payload, dst.String()); err != nil {
+			t.Fatalf("steady-state WriteTo #%d: %v", i+1, err)
+		}
+		if i%5 == 0 {
+			conn.reads <- scriptedPacketRead{data: []byte{0x02, byte(i)}, from: from}
+		}
+	}
+
+	if got := underlay.calls.Load(); got != 1 {
+		t.Fatalf("DialContext calls = %d, want 1 for intermittent-reply game flow", got)
+	}
+	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 1 {
+		t.Fatalf("pooled endpoint count = %d, want 1", got)
+	}
+
+	ue, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || ue == nil {
+		t.Fatal("expected intermittent-reply game flow to keep a pooled endpoint")
+	}
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+}
+
+func TestHandlePkt_ShadowsocksGameLikeBidirectionalFlowReusesSingleUdpEndpoint(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:      make(chan scriptedPacketRead, 16),
+		readExitCh: make(chan error, 1),
+		closeCh:    make(chan struct{}),
+	}
+	d, underlay := newCountingProxyEndpointDialer("shadowsocks", "proxy.example:443", conn)
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	src := mustParseAddrPort("192.168.89.3:42687")
+	dst := mustParseAddrPort("52.199.194.44:23002")
+	from := mustParseAddrPort("52.199.194.44:23002")
+	payload := []byte{0x21, 0x22, 0x23, 0x24}
+	key := UdpEndpointKey{Src: src}
+
+	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		Log:        logger,
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Target:      dst.String(),
+				Dialer:      d,
+				Outbound:    newTestFixedOutboundGroup(d),
+				Network:     "udp",
+				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate initial endpoint: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected initial GetOrCreate to create a new endpoint")
+	}
+
+	for i := 0; i < 5; i++ {
+		if _, err := ue.WriteTo(payload, dst.String()); err != nil {
+			t.Fatalf("WriteTo warmup #%d: %v", i+1, err)
+		}
+		conn.reads <- scriptedPacketRead{data: []byte{0x30, byte(i)}, from: from}
+	}
+
+	ue = waitForUdpEndpointReplyState(t, key)
+
+	for i := 0; i < 10; i++ {
+		if _, err := ue.WriteTo(payload, dst.String()); err != nil {
+			t.Fatalf("WriteTo established #%d: %v", i+1, err)
+		}
+		conn.reads <- scriptedPacketRead{data: []byte{0x40, byte(i)}, from: from}
+	}
+
+	if got := underlay.calls.Load(); got != 1 {
+		t.Fatalf("DialContext calls = %d, want 1 for stable Shadowsocks game flow", got)
+	}
+	if got := conn.writeCalls.Load(); got != 15 {
+		t.Fatalf("WriteTo calls = %d, want 15", got)
+	}
+
+	ue, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || ue == nil {
+		t.Fatal("expected Shadowsocks game flow to keep a pooled UDP endpoint")
+	}
+	if !ue.hasReply.Load() {
+		t.Fatal("expected Shadowsocks endpoint to enter established state after upstream replies")
+	}
+
 	if err := ue.Close(); err != nil {
 		t.Fatalf("unexpected close error: %v", err)
 	}

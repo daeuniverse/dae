@@ -6,7 +6,9 @@
 package control
 
 import (
+	"context"
 	"io"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -171,6 +173,11 @@ func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
 	}
 	d, underlay := newCountingProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
 	cp := newUdpReuseSimulationControlPlane(newTestRandomOutboundGroup(d))
+	core := &controlPlaneCore{
+		log:    cp.log,
+		closed: context.Background(),
+	}
+	d.RegisterAliveTransitionCallback(core.dialerAliveTransitionCallback(d))
 
 	src := mustParseAddrPort("192.168.89.3:42687")
 	dst := mustParseAddrPort("52.199.194.44:23002")
@@ -194,10 +201,6 @@ func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
 		IpVersion: consts.IpVersionStr_6,
 		IsDns:     false,
 	}, io.ErrUnexpectedEOF)
-	removed := DefaultUdpEndpointPool.InvalidateDialerNetworkType(d, udp4NetworkType())
-	if removed != 1 {
-		t.Fatalf("InvalidateDialerNetworkType removed = %d, want 1", removed)
-	}
 	waitForUdpEndpointRemoval(t, key)
 
 	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
@@ -208,6 +211,162 @@ func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
 	}
 	if _, ok := DefaultUdpEndpointPool.Get(key); ok {
 		t.Fatal("expected no endpoint to be recreated while dialer is unhealthy")
+	}
+}
+
+func TestHandlePkt_EstablishedFlowSurvivesTransientHealthFailure(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:      make(chan scriptedPacketRead, 4),
+		readExitCh: make(chan error, 1),
+		closeCh:    make(chan struct{}),
+	}
+	d, underlay := newCountingProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	src := mustParseAddrPort("192.168.89.3:42687")
+	dst := mustParseAddrPort("52.199.194.44:23002")
+	from := mustParseAddrPort("52.199.194.44:23002")
+	payload := []byte{0x81, 0x82, 0x83, 0x84}
+	flowDecision := ClassifyUdpFlow(src, dst, payload)
+	key := flowDecision.FullConeNatEndpointKey()
+	cp := newUdpReuseSimulationControlPlane(newTestRandomOutboundGroup(d))
+	core := &controlPlaneCore{
+		log:    cp.log,
+		closed: context.Background(),
+	}
+	d.RegisterAliveTransitionCallback(core.dialerAliveTransitionCallback(d))
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundUserDefinedMin),
+	}
+
+	created, isNew, err := DefaultUdpEndpointPool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		Log:        logger,
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Target:      dst.String(),
+				Dialer:      d,
+				Outbound:    newTestRandomOutboundGroup(d),
+				Network:     "udp",
+				NetworkType: udp4NetworkType(),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate initial endpoint: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected initial GetOrCreate to create a new endpoint")
+	}
+
+	conn.reads <- scriptedPacketRead{data: []byte{0x01}, from: from}
+	ue := waitForUdpEndpointReplyState(t, key)
+
+	d.ReportUnavailableForced(udp4NetworkType(), io.ErrUnexpectedEOF)
+
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("second handlePkt after transient health failure: %v", err)
+	}
+	got, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || got == nil {
+		t.Fatal("expected established endpoint to remain pooled after transient health failure")
+	}
+	if got != created {
+		t.Fatal("expected established flow to reuse existing endpoint instead of redialing")
+	}
+	if dials := underlay.calls.Load(); dials != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", dials)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+}
+
+func TestHandlePkt_ShadowsocksEstablishedFlowSurvivesTransientHealthFailure(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:      make(chan scriptedPacketRead, 4),
+		readExitCh: make(chan error, 1),
+		closeCh:    make(chan struct{}),
+	}
+	d, underlay := newCountingProxyEndpointDialer("shadowsocks", "proxy.example:443", conn)
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	src := mustParseAddrPort("192.168.89.3:42687")
+	dst := mustParseAddrPort("52.199.194.44:23002")
+	from := mustParseAddrPort("52.199.194.44:23002")
+	payload := []byte{0x91, 0x92, 0x93, 0x94}
+	flowDecision := ClassifyUdpFlow(src, dst, payload)
+	key := flowDecision.FullConeNatEndpointKey()
+	cp := newUdpReuseSimulationControlPlane(newTestRandomOutboundGroup(d))
+	core := &controlPlaneCore{
+		log:    cp.log,
+		closed: context.Background(),
+	}
+	d.RegisterAliveTransitionCallback(core.dialerAliveTransitionCallback(d))
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundUserDefinedMin),
+	}
+
+	created, isNew, err := DefaultUdpEndpointPool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		Log:        logger,
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Target:      dst.String(),
+				Dialer:      d,
+				Outbound:    newTestRandomOutboundGroup(d),
+				Network:     "udp",
+				NetworkType: udp4NetworkType(),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate initial endpoint: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected initial GetOrCreate to create a new endpoint")
+	}
+
+	conn.reads <- scriptedPacketRead{data: []byte{0x11}, from: from}
+	ue := waitForUdpEndpointReplyState(t, key)
+
+	d.ReportUnavailableForced(udp4NetworkType(), io.ErrUnexpectedEOF)
+
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("second handlePkt after transient Shadowsocks health failure: %v", err)
+	}
+	got, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || got == nil {
+		t.Fatal("expected established Shadowsocks endpoint to remain pooled after transient health failure")
+	}
+	if got != created {
+		t.Fatal("expected established Shadowsocks flow to reuse existing endpoint instead of redialing")
+	}
+	if dials := underlay.calls.Load(); dials != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", dials)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
 	}
 }
 

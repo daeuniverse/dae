@@ -668,6 +668,95 @@ func TestUdpEndpointPoolInvalidateDialerNetworkType_DoesNotTouchFixedEndpoints(t
 	}
 }
 
+func TestUdpEndpointPoolInvalidateDialerNetworkType_PreservesEstablishedEndpointsPerNode(t *testing.T) {
+	pool := NewUdpEndpointPool()
+
+	connSticky := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	connProbing := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	connOtherNode := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+
+	d1 := newTestEndpointDialer(connSticky, connProbing)
+	d2 := newTestEndpointDialer(connOtherNode)
+	outbound := newTestRandomOutboundGroup(d1, d2)
+
+	makeEndpoint := func(d *componentdialer.Dialer, target string) *UdpEndpointOptions {
+		return &UdpEndpointOptions{
+			Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			NatTimeout: time.Second,
+			GetDialOption: func(context.Context) (*DialOption, error) {
+				return &DialOption{
+					Dialer:   d,
+					Outbound: outbound,
+					Network:  "udp",
+					Target:   target,
+					NetworkType: &componentdialer.NetworkType{
+						L4Proto:   consts.L4ProtoStr_UDP,
+						IpVersion: consts.IpVersionStr_6,
+						IsDns:     false,
+					},
+				}, nil
+			},
+		}
+	}
+
+	keySticky := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11501")}
+	keyProbing := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11502")}
+	keyOtherNode := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11503")}
+
+	sticky, _, err := pool.GetOrCreate(keySticky, makeEndpoint(d1, "[2001:db8::10]:443"))
+	if err != nil {
+		t.Fatalf("create sticky endpoint: %v", err)
+	}
+	sticky.hasReply.Store(true)
+
+	probing, _, err := pool.GetOrCreate(keyProbing, makeEndpoint(d1, "[2001:db8::11]:443"))
+	if err != nil {
+		t.Fatalf("create probing endpoint: %v", err)
+	}
+	otherNode, _, err := pool.GetOrCreate(keyOtherNode, makeEndpoint(d2, "[2001:db8::12]:443"))
+	if err != nil {
+		t.Fatalf("create other-node endpoint: %v", err)
+	}
+	otherNode.hasReply.Store(true)
+
+	removed := pool.InvalidateDialerNetworkType(d1, &componentdialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
+		IsDns:     false,
+	})
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 probing endpoint from the failed node", removed)
+	}
+
+	waitForCloseSignal(t, connProbing.closeCh, "probing endpoint on failed node should close")
+
+	if got, ok := pool.Get(keySticky); !ok || got != sticky {
+		t.Fatal("expected established endpoint on failed node to remain reusable")
+	}
+	if _, ok := pool.Get(keyProbing); ok {
+		t.Fatal("expected probing endpoint on failed node to be removed")
+	}
+	if got, ok := pool.Get(keyOtherNode); !ok || got != otherNode {
+		t.Fatal("expected endpoint on other node in the same outbound group to remain available")
+	}
+	if got := connSticky.closeCalls.Load(); got != 0 {
+		t.Fatalf("sticky endpoint close calls = %d, want 0", got)
+	}
+	if got := connOtherNode.closeCalls.Load(); got != 0 {
+		t.Fatalf("other-node endpoint close calls = %d, want 0", got)
+	}
+
+	if err := sticky.Close(); err != nil {
+		t.Fatalf("close sticky endpoint: %v", err)
+	}
+	if err := probing.Close(); err != nil {
+		t.Fatalf("close probing endpoint: %v", err)
+	}
+	if err := otherNode.Close(); err != nil {
+		t.Fatalf("close other-node endpoint: %v", err)
+	}
+}
+
 func TestUdpEndpointPoolUnregisterKeepsDialerBucketForReuse(t *testing.T) {
 	pool := NewUdpEndpointPool()
 

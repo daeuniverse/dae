@@ -806,6 +806,13 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 		if isTraffic {
 			// Higher threshold for data traffic to avoid flipping during transient jitter.
 			threshold = 50
+		} else {
+			// UDP health checks use DNS queries which are more susceptible to
+			// transient packet loss than TCP HTTP checks. A single dropped DNS
+			// response should not tear down all established UDP endpoints (game
+			// sessions, QUIC connections, etc.). Require 3 consecutive failures
+			// before declaring the dialer dead for UDP.
+			threshold = 3
 		}
 	case consts.L4ProtoStr_TCP:
 		if isTraffic {
