@@ -502,7 +502,7 @@ func TestHandlePkt_GameLikeBidirectionalFlowReusesSingleUdpEndpoint(t *testing.T
 				Dialer:      d,
 				Outbound:    newTestFixedOutboundGroup(d),
 				Network:     "udp",
-				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},
+				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: componentdialer.UdpHealthDomainData},
 			}, nil
 		},
 	})
@@ -582,7 +582,7 @@ func TestHandlePkt_GameLikeFlowDoesNotRedialDuringIntermittentReplyBursts(t *tes
 				Dialer:      d,
 				Outbound:    newTestFixedOutboundGroup(d),
 				Network:     "udp",
-				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},
+				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: componentdialer.UdpHealthDomainData},
 			}, nil
 		},
 	})
@@ -660,7 +660,7 @@ func TestHandlePkt_ShadowsocksGameLikeBidirectionalFlowReusesSingleUdpEndpoint(t
 				Dialer:      d,
 				Outbound:    newTestFixedOutboundGroup(d),
 				Network:     "udp",
-				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},
+				NetworkType: &componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: componentdialer.UdpHealthDomainData},
 			}, nil
 		},
 	})

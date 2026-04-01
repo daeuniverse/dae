@@ -186,7 +186,7 @@ func TestDeduplicatedPunishment(t *testing.T) {
 
 func TestAliveTransitionCallbackOnlyFiresOnStateChanges(t *testing.T) {
 	d := newRecoveryTestDialer()
-	typ := &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4}
+	typ := &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: UdpHealthDomainData}
 
 	var transitions []bool
 	d.RegisterAliveTransitionCallback(func(networkType *NetworkType, alive bool) {

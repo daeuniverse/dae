@@ -20,9 +20,9 @@ import (
 func TestShouldRejectNewUdpDialSelection(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	tcp6 := &componentdialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
@@ -57,9 +57,9 @@ func TestShouldRejectNewUdpDialSelection(t *testing.T) {
 func TestShouldRejectNewUdpDialSelection_FixedOutboundIgnoresHealth(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	outbound := newTestFixedOutboundGroup(d)
 
@@ -77,9 +77,9 @@ func TestShouldRejectNewUdpDialSelection_FixedOutboundIgnoresHealth(t *testing.T
 func TestShouldRejectNewUdpDialSelection_SingleDialerFallbackStillRejects(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
@@ -121,9 +121,9 @@ func TestCheckUdpEndpointHealth_UsesEndpointSelectionNetworkType(t *testing.T) {
 
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	d.ReportUnavailableForced(udp6, nil)
 
@@ -167,9 +167,9 @@ func TestCheckUdpEndpointHealth_EstablishedEndpointIgnoresTransientDialerHealth(
 
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	d.ReportUnavailableForced(udp6, nil)
 

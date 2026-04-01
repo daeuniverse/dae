@@ -240,7 +240,7 @@ func (g *DialerGroup) Resuscitate(networkType *dialer.NetworkType) bool {
 func (g *DialerGroup) resuscitate(networkType *dialer.NetworkType) {
 	for _, d := range g.Dialers {
 		if networkType.L4Proto == consts.L4ProtoStr_UDP {
-			d.NotifyCheckUdp()
+			d.NotifyCheckDnsUdp()
 		} else {
 			d.NotifyCheckTcp()
 		}

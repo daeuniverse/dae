@@ -112,9 +112,9 @@ func injectHardReadErrorAndWait(t *testing.T, conn *udpReuseSimulationConn) {
 
 func udp4NetworkType() *componentdialer.NetworkType {
 	return &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 }
 

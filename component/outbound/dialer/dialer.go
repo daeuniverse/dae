@@ -59,9 +59,7 @@ const (
 	IdxUdp4    = 6
 	IdxUdp6    = 7
 
-	idxTcp = 0
-	// idxUdp remains as the historical alias for DNS UDP recovery state.
-	idxUdp     = 1
+	idxTcp     = 0
 	idxDnsUdp  = 1
 	idxDataUdp = 2
 )
@@ -99,13 +97,13 @@ type Dialer struct {
 	aliveTransitionMu        sync.RWMutex
 	aliveTransitionCallbacks []func(networkType *NetworkType, alive bool)
 
-	tickerMu   sync.Mutex
-	ticker     *time.Timer
-	checkCh    chan time.Time
-	checkUdpCh chan struct{} // trigger resuscitation for all UDP collections (IPv4+v6)
-	checkTcpCh chan struct{} // trigger resuscitation for all TCP collections (IPv4+v6)
-	ctx        context.Context
-	cancel     context.CancelFunc
+	tickerMu      sync.Mutex
+	ticker        *time.Timer
+	checkCh       chan time.Time
+	checkDnsUdpCh chan struct{} // trigger resuscitation for DNS-UDP collections (IPv4+v6)
+	checkTcpCh    chan struct{} // trigger resuscitation for all TCP collections (IPv4+v6)
+	ctx           context.Context
+	cancel        context.CancelFunc
 
 	checkActivated bool
 
@@ -299,7 +297,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		tickerMu:         sync.Mutex{},
 		ticker:           nil,
 		checkCh:          make(chan time.Time, 1),
-		checkUdpCh:       make(chan struct{}, 1),
+		checkDnsUdpCh:    make(chan struct{}, 1),
 		checkTcpCh:       make(chan struct{}, 1),
 		ctx:              ctx,
 		cancel:           cancel,

@@ -79,11 +79,10 @@ func (t *NetworkType) EffectiveUdpHealthDomain() UdpHealthDomain {
 	if t == nil || t.L4Proto != consts.L4ProtoStr_UDP {
 		return UdpHealthDomainUnset
 	}
+	// UDP callers must set DNS explicitly via UdpHealthDomainDns. Unset falls
+	// back only to the ordinary data-UDP domain.
 	if t.UdpHealthDomain != UdpHealthDomainUnset {
 		return t.UdpHealthDomain
-	}
-	if t.IsDns {
-		return UdpHealthDomainDns
 	}
 	return UdpHealthDomainData
 }
@@ -625,7 +624,7 @@ func (d *Dialer) aliveBackground() {
 			return
 		}
 
-		// checkFamily is non-empty when triggered by NotifyCheckUdp/NotifyCheckTcp:
+		// checkFamily is non-empty when triggered by NotifyCheckDnsUdp/NotifyCheckTcp:
 		// only the matching check opts are run (both IPv4 and IPv6), and the
 		// periodic ticker is left untouched so the regular schedule is not disrupted.
 		var checkFamily consts.L4ProtoStr
@@ -635,7 +634,7 @@ func (d *Dialer) aliveBackground() {
 			return
 		case <-d.ticker.C:
 		case <-d.checkCh:
-		case <-d.checkUdpCh:
+		case <-d.checkDnsUdpCh:
 			checkFamily = consts.L4ProtoStr_UDP
 		case <-d.checkTcpCh:
 			checkFamily = consts.L4ProtoStr_TCP
@@ -691,7 +690,7 @@ func (d *Dialer) aliveBackground() {
 }
 
 // filterCheckOptsByFamily returns the subset of opts whose networkType matches
-// the given proto family. Both data and DNS probes are included for the family.
+// the given proto family.
 func filterCheckOptsByFamily(opts []*CheckOption, family consts.L4ProtoStr) []*CheckOption {
 	var result []*CheckOption
 	for _, opt := range opts {
@@ -747,8 +746,8 @@ func (d *Dialer) NotifyCheck() {
 	}
 }
 
-// NotifyCheckUdp triggers a targeted health check for all UDP collections (IPv4 and IPv6).
-func (d *Dialer) NotifyCheckUdp() {
+// NotifyCheckDnsUdp triggers a targeted DNS-UDP health check for both IPv4 and IPv6.
+func (d *Dialer) NotifyCheckDnsUdp() {
 	select {
 	case <-d.ctx.Done():
 		return
@@ -766,7 +765,7 @@ func (d *Dialer) NotifyCheckUdp() {
 	}
 
 	select {
-	case d.checkUdpCh <- struct{}{}:
+	case d.checkDnsUdpCh <- struct{}{}:
 	default:
 	}
 }

@@ -35,7 +35,7 @@ func TestProxyFailureThreshold(t *testing.T) {
 
 func TestRecoveryBackoffLevel(t *testing.T) {
 	d := newRecoveryTestDialer()
-	d.recoveryState[idxUdp].maxBackoff = 20 * time.Second
+	d.recoveryState[idxDnsUdp].maxBackoff = 20 * time.Second
 
 	testCases := []struct {
 		level    int
@@ -47,7 +47,7 @@ func TestRecoveryBackoffLevel(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		d.recoveryState[idxUdp].backoffLevel = tc.level
+		d.recoveryState[idxDnsUdp].backoffLevel = tc.level
 		duration := d.getRecoveryBackoffDuration(consts.L4ProtoStr_UDP)
 		if duration != tc.expected {
 			t.Errorf("Level %d: expected %v, got %v", tc.level, tc.expected, duration)
@@ -57,17 +57,17 @@ func TestRecoveryBackoffLevel(t *testing.T) {
 
 func TestStabilityCountReset(t *testing.T) {
 	d := newRecoveryTestDialer()
-	d.recoveryState[idxUdp].backoffLevel = 3
-	d.recoveryState[idxUdp].stableSuccessCount = 5
+	d.recoveryState[idxDnsUdp].backoffLevel = 3
+	d.recoveryState[idxDnsUdp].stableSuccessCount = 5
 
 	// Reset should clear count but NOT level
 	d.resetStabilityCount(consts.L4ProtoStr_UDP)
 
-	if d.recoveryState[idxUdp].backoffLevel != 3 {
-		t.Errorf("Expected level 3 points to persist, got %d", d.recoveryState[idxUdp].backoffLevel)
+	if d.recoveryState[idxDnsUdp].backoffLevel != 3 {
+		t.Errorf("Expected level 3 points to persist, got %d", d.recoveryState[idxDnsUdp].backoffLevel)
 	}
-	if d.recoveryState[idxUdp].stableSuccessCount != 0 {
-		t.Errorf("Expected count 0 after reset, got %d", d.recoveryState[idxUdp].stableSuccessCount)
+	if d.recoveryState[idxDnsUdp].stableSuccessCount != 0 {
+		t.Errorf("Expected count 0 after reset, got %d", d.recoveryState[idxDnsUdp].stableSuccessCount)
 	}
 }
 
@@ -159,16 +159,16 @@ func TestNotifyPeriodicCheckResult_NewThreshold(t *testing.T) {
 
 func TestRecoveryStateConcurrency(t *testing.T) {
 	d := newRecoveryTestDialer()
-	d.recoveryState[idxUdp].maxBackoff = 20 * time.Second
+	d.recoveryState[idxDnsUdp].maxBackoff = 20 * time.Second
 	var wg sync.WaitGroup
 	iterations := 100
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			d.recoveryState[idxUdp].Lock()
-			d.recoveryState[idxUdp].backoffLevel++
-			d.recoveryState[idxUdp].Unlock()
+			d.recoveryState[idxDnsUdp].Lock()
+			d.recoveryState[idxDnsUdp].backoffLevel++
+			d.recoveryState[idxDnsUdp].Unlock()
 		}
 	}()
 	go func() {

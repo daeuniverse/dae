@@ -52,9 +52,9 @@ func newTestDialControlPlane(outbound *ob.DialerGroup) *ControlPlane {
 func TestChooseProxyDialer_FixedOutboundFallsBackToAlternateFamilyOnSameDialer(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	d.ReportUnavailableForced(udp6, nil)
 
@@ -76,9 +76,9 @@ func TestChooseProxyDialer_FixedOutboundFallsBackToAlternateFamilyOnSameDialer(t
 func TestChooseProxyDialer_SingleDialerGroupFallsBackToAlternateFamilyOnSameDialer(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_6,
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
 	}
 	d.ReportUnavailableForced(udp6, nil)
 

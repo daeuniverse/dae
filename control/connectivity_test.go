@@ -103,9 +103,10 @@ func TestDialerAliveTransitionCallback_IgnoresDnsUdpTransitions(t *testing.T) {
 	}
 
 	core.dialerAliveTransitionCallback(d)(&dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     true,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: dialer.UdpHealthDomainDns,
 	}, false)
 
 	if got, ok := DefaultUdpEndpointPool.Get(key); !ok || got != ue {

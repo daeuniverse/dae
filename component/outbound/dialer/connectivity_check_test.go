@@ -380,6 +380,18 @@ func TestNetworkTypeIndex_SplitsDnsAndDataUdpDomains(t *testing.T) {
 	}
 }
 
+func TestNetworkTypeIndex_UdpDoesNotInferDnsFromLegacyFlag(t *testing.T) {
+	legacyDnsFlagOnly := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     true,
+	}
+
+	if got := legacyDnsFlagOnly.Index(); got != IdxUdp4 {
+		t.Fatalf("legacyDnsFlagOnly.Index() = %d, want %d", got, IdxUdp4)
+	}
+}
+
 func TestDialerUdpHealthDomainsRemainIndependent(t *testing.T) {
 	d := newTestDialer(t)
 	dnsType := &NetworkType{
