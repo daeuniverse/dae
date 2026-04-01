@@ -78,6 +78,12 @@ func (c *controlPlaneCore) dialerAliveTransitionCallback(d *dialer.Dialer) func(
 		if alive || d == nil || networkType == nil || networkType.L4Proto != consts.L4ProtoStr_UDP {
 			return
 		}
+		// DNS UDP health transitions must not directly invalidate generic UDP
+		// endpoints. DNS fast path uses a separate forwarder/cache lifecycle,
+		// while pooled data-plane UDP endpoints serve non-DNS traffic.
+		if networkType.EffectiveUdpHealthDomain() == dialer.UdpHealthDomainDns {
+			return
+		}
 		removed := DefaultUdpEndpointPool.InvalidateDialerNetworkType(d, networkType)
 		if removed == 0 || !c.log.IsLevelEnabled(logrus.DebugLevel) {
 			return

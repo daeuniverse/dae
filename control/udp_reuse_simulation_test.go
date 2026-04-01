@@ -312,7 +312,7 @@ func TestHandlePkt_RepeatedSameIngressReusesSingleUdpEndpoint(t *testing.T) {
 	}
 }
 
-func TestHandlePkt_ReusesEndpointAfterSoftReadLoopExit(t *testing.T) {
+func TestHandlePkt_ProxyBackedSoftReadLoopExitRedialsFreshEndpoint(t *testing.T) {
 	oldPool := DefaultUdpEndpointPool
 	DefaultUdpEndpointPool = NewUdpEndpointPool()
 	defer func() {
@@ -320,12 +320,23 @@ func TestHandlePkt_ReusesEndpointAfterSoftReadLoopExit(t *testing.T) {
 		DefaultUdpEndpointPool = oldPool
 	}()
 
-	conn := &udpReuseSimulationConn{
+	conn1 := &udpReuseSimulationConn{
 		reads:      make(chan scriptedPacketRead, 1),
 		readExitCh: make(chan error, 1),
 		closeCh:    make(chan struct{}),
 	}
-	d, underlay := newCountingProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+	conn2 := &udpReuseSimulationConn{
+		reads:   make(chan scriptedPacketRead, 1),
+		closeCh: make(chan struct{}),
+	}
+	var factoryCalls atomic.Int32
+	d, underlay := newFactoryProxyEndpointDialer("hysteria2", "proxy.example:443", func() netproxy.Conn {
+		call := factoryCalls.Add(1)
+		if call == 1 {
+			return conn1
+		}
+		return conn2
+	})
 	cp := newUdpReuseSimulationControlPlane(newTestFixedOutboundGroup(d))
 
 	src := mustParseAddrPort("192.168.89.3:42687")
@@ -346,10 +357,10 @@ func TestHandlePkt_ReusesEndpointAfterSoftReadLoopExit(t *testing.T) {
 		t.Fatal("expected first packet to create a pooled UDP endpoint")
 	}
 
-	conn.reads <- scriptedPacketRead{err: io.EOF}
+	conn1.reads <- scriptedPacketRead{err: io.EOF}
 
 	select {
-	case err := <-conn.readExitCh:
+	case err := <-conn1.readExitCh:
 		if err != io.EOF {
 			t.Fatalf("soft read exit err = %v, want %v", err, io.EOF)
 		}
@@ -361,25 +372,26 @@ func TestHandlePkt_ReusesEndpointAfterSoftReadLoopExit(t *testing.T) {
 		t.Fatalf("second handlePkt after soft read exit: %v", err)
 	}
 
-	reused, ok := DefaultUdpEndpointPool.Get(key)
-	if !ok || reused == nil {
-		t.Fatal("expected endpoint to remain pooled after soft read exit")
+	recreated, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || recreated == nil {
+		t.Fatal("expected endpoint to be recreated after proxy-backed soft read exit")
 	}
-	if reused != ue {
-		t.Fatal("expected second packet to reuse the original endpoint after soft read exit")
+	if recreated == ue {
+		t.Fatal("expected second packet to redial instead of reusing the original endpoint")
 	}
-	if got := underlay.calls.Load(); got != 1 {
-		t.Fatalf("DialContext calls after soft read exit = %d, want 1", got)
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls after soft read exit = %d, want 2", got)
 	}
-	if got := conn.writeCalls.Load(); got != 2 {
-		t.Fatalf("WriteTo calls after soft read exit = %d, want 2", got)
+	if got := conn1.writeCalls.Load(); got != 1 {
+		t.Fatalf("first conn WriteTo calls after soft read exit = %d, want 1", got)
 	}
-
-	if got := conn.closeCalls.Load(); got != 0 {
-		t.Fatal("expected soft read exit to keep the original connection open for reuse")
+	if got := conn2.writeCalls.Load(); got != 1 {
+		t.Fatalf("second conn WriteTo calls after redial = %d, want 1", got)
 	}
-
-	if err := ue.Close(); err != nil {
+	if got := conn1.closeCalls.Load(); got != 1 {
+		t.Fatalf("first conn close calls = %d, want 1", got)
+	}
+	if err := recreated.Close(); err != nil {
 		t.Fatalf("unexpected close error: %v", err)
 	}
 }

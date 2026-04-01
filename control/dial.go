@@ -138,9 +138,10 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 
 	outbound := c.outbounds[outboundIndex]
 	networkType := &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr(p.Network),
-		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr(p.Network),
+		IpVersion:       consts.IpVersionFromAddr(dst.Addr()),
+		IsDns:           false,
+		UdpHealthDomain: dialer.UdpHealthDomainData,
 	}
 
 	// For UDP, ensure dialer's address family matches client's to prevent
@@ -149,9 +150,10 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	if p.Network == "udp" {
 		if clientIpVersion := consts.IpVersionFromAddr(src.Addr()); clientIpVersion != networkType.IpVersion {
 			selectionNetworkType = &dialer.NetworkType{
-				L4Proto:   networkType.L4Proto,
-				IpVersion: clientIpVersion,
-				IsDns:     false,
+				L4Proto:         networkType.L4Proto,
+				IpVersion:       clientIpVersion,
+				IsDns:           false,
+				UdpHealthDomain: dialer.UdpHealthDomainData,
 			}
 		}
 	}

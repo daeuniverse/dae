@@ -1166,6 +1166,34 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 	c.timeoutExceedCallback(dialArg, err)
 }
 
+func (c *DnsController) shouldRetireCachedDnsForwarder(dialArg *dialArgument, err error) bool {
+	if dialArg == nil || err == nil {
+		return false
+	}
+	if dialArg.l4proto != consts.L4ProtoStr_UDP {
+		return false
+	}
+	if !isProxyBackedDialer(dialArg.bestDialer) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
+		return false
+	}
+	return true
+}
+
+func (c *DnsController) retireCachedDnsForwarder(key dnsForwarderKey, entry *cachedDnsForwarder) {
+	if entry == nil {
+		return
+	}
+	if !c.dnsForwarderCache.CompareAndDelete(key, entry) {
+		return
+	}
+	if err := entry.forwarder.Close(); err != nil && c.log != nil {
+		c.log.WithError(err).Debugln("failed to close retired dns forwarder")
+	}
+}
+
 func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg *dialArgument) (*cachedDnsForwarder, error) {
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
 	now := time.Now()
@@ -1222,6 +1250,7 @@ func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg 
 }
 
 func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Upstream, dialArg *dialArgument, data []byte) (*dnsmessage.Msg, error) {
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
 	entry, err := c.getOrCreateDnsForwarder(upstream, dialArg)
 	if err != nil {
 		return nil, err
@@ -1231,6 +1260,9 @@ func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Up
 
 	respMsg, err := entry.forwarder.ForwardDNS(ctx, data)
 	if err != nil {
+		if c.shouldRetireCachedDnsForwarder(dialArg, err) {
+			c.retireCachedDnsForwarder(key, entry)
+		}
 		c.reportDnsForwardFailure(dialArg, err)
 		return nil, err
 	}
@@ -1832,9 +1864,10 @@ func (c *DnsController) dialSend(
 	}
 
 	networkType := &dialer.NetworkType{
-		L4Proto:   usedDialArg.l4proto,
-		IpVersion: usedDialArg.ipversion,
-		IsDns:     true,
+		L4Proto:         usedDialArg.l4proto,
+		IpVersion:       usedDialArg.ipversion,
+		IsDns:           true,
+		UdpHealthDomain: dialer.UdpHealthDomainDns,
 	}
 
 	// Route response.

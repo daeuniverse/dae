@@ -117,6 +117,7 @@ type deadlineTimeoutUpstreamConn struct {
 	writeStarted chan struct{}
 	writeOnce    sync.Once
 	closed       atomic.Bool
+	closeCalls   atomic.Int32
 }
 
 func (c *deadlineTimeoutUpstreamConn) Write(_ []byte) (int, error) {
@@ -156,6 +157,7 @@ func (c *deadlineTimeoutUpstreamConn) ReadFrom(_ []byte) (int, netip.AddrPort, e
 }
 
 func (c *deadlineTimeoutUpstreamConn) Close() error {
+	c.closeCalls.Add(1)
 	c.closed.Store(true)
 	return nil
 }
@@ -307,5 +309,71 @@ func TestDoUDPForwardDNSPoolSaturationFailsFast(t *testing.T) {
 	}
 	if got := dialCalls.Load(); got != 1 {
 		t.Fatalf("dial calls after timed-out reuse = %d, want 1", got)
+	}
+}
+
+func TestDoUDPForwardDNSProxyTimeoutDiscardsConnAndRedials(t *testing.T) {
+	serverAddr := netip.MustParseAddrPort("198.51.100.53:53")
+	var (
+		mu        sync.Mutex
+		conns     []*deadlineTimeoutUpstreamConn
+		dialCalls atomic.Int32
+	)
+
+	proxyDialer := newTestProxyEndpointDialer("hysteria2", "proxy.example:443")
+	doUDP := &DoUDP{
+		dialArgument: dialArgument{
+			bestDialer: proxyDialer,
+			bestTarget: serverAddr,
+		},
+		pool: newUdpConnPool(1, 1, func(context.Context) (netproxy.Conn, error) {
+			dialCalls.Add(1)
+			conn := &deadlineTimeoutUpstreamConn{serverAddr: serverAddr}
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+			return conn, nil
+		}),
+	}
+	defer func() {
+		_ = doUDP.Close()
+	}()
+
+	req := dnsmessage.Msg{}
+	req.SetQuestion("example.org.", dnsmessage.TypeA)
+	packed, err := req.Pack()
+	if err != nil {
+		t.Fatalf("Pack failed: %v", err)
+	}
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel1()
+	_, err = doUDP.ForwardDNS(ctx1, packed)
+	var netErr net.Error
+	if !stderrors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("first ForwardDNS error = %v, want timeout", err)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel2()
+	_, err = doUDP.ForwardDNS(ctx2, packed)
+	if !stderrors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("second ForwardDNS error = %v, want timeout", err)
+	}
+
+	if got := dialCalls.Load(); got != 2 {
+		t.Fatalf("dial calls after proxy timeouts = %d, want 2", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(conns) != 2 {
+		t.Fatalf("created conns = %d, want 2", len(conns))
+	}
+	if got := conns[0].closeCalls.Load(); got != 1 {
+		t.Fatalf("first conn close calls = %d, want 1", got)
+	}
+	if got := conns[1].closeCalls.Load(); got != 1 {
+		t.Fatalf("second conn close calls = %d, want 1", got)
 	}
 }

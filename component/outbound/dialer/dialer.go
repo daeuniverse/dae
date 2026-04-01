@@ -36,8 +36,9 @@ import (
 // as aliases to access the shared AliveDialerSet/collection. When a dialer needs to
 // check TCP DNS connectivity, it uses the same result as plain TCP (IdxTcp4/IdxTcp6).
 //
-// In contrast, UDP DNS uses separate indices (IdxDnsUdp4/IdxDnsUdp6) because UDP has
-// different transport characteristics and may have different connectivity results.
+// UDP health is split into two domains:
+//   - DNS UDP: DNS request / probe paths
+//   - Data UDP: proxied application traffic such as QUIC and games
 //
 // Memory layout:
 //   - [0] IdxDnsTcp4 -> aliases to [4] IdxTcp4
@@ -46,6 +47,8 @@ import (
 //   - [3] IdxDnsUdp6 -> independent UDP DNS IPv6 check
 //   - [4] IdxTcp4    -> TCP IPv4 check (shared with TCP DNS)
 //   - [5] IdxTcp6    -> TCP IPv6 check (shared with TCP DNS)
+//   - [6] IdxUdp4    -> independent data UDP IPv4 health
+//   - [7] IdxUdp6    -> independent data UDP IPv6 health
 const (
 	IdxDnsTcp4 = 0
 	IdxDnsTcp6 = 1
@@ -53,9 +56,14 @@ const (
 	IdxDnsUdp6 = 3
 	IdxTcp4    = 4
 	IdxTcp6    = 5
+	IdxUdp4    = 6
+	IdxUdp6    = 7
 
 	idxTcp = 0
-	idxUdp = 1
+	// idxUdp remains as the historical alias for DNS UDP recovery state.
+	idxUdp     = 1
+	idxDnsUdp  = 1
+	idxDataUdp = 2
 )
 
 var (
@@ -86,7 +94,7 @@ type Dialer struct {
 	property *Property
 
 	collectionFineMu sync.RWMutex
-	collections      [6]*collection
+	collections      [8]*collection
 
 	aliveTransitionMu        sync.RWMutex
 	aliveTransitionCallbacks []func(networkType *NetworkType, alive bool)
@@ -104,17 +112,19 @@ type Dialer struct {
 	httpClients  map[string]*http.Client
 	httpClientMu sync.Mutex
 
-	failCount        [6]int
-	trafficFailCount [6]atomic.Int32
+	failCount        [8]int
+	trafficFailCount [8]atomic.Int32
 
 	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
 	// This is used for health check cycle management and failover tracking
 	stickyIpDialer *stickyip.StickyIpDialer
 
-	// recoveryState manages exponential backoff for recovery detection
-	// This prevents flapping when a dialer recovers but might fail again soon.
-	// Index 0: TCP, Index 1: UDP.
-	recoveryState [2]struct {
+	// recoveryState manages exponential backoff for recovery detection.
+	// Domains:
+	//   0: TCP
+	//   1: DNS UDP
+	//   2: Data UDP
+	recoveryState [3]struct {
 		sync.Mutex
 
 		// backoffLevel indicates current backoff level (0, 1, 2, 3...)
@@ -137,16 +147,16 @@ type Dialer struct {
 	}
 	lastNotifyUdp atomic.Int64
 	lastNotifyTcp atomic.Int64
-	lastPunish    [2]atomic.Int64
+	lastPunish    [3]atomic.Int64
 
 	recoveryStoreReleaseOnce sync.Once
 }
 
 // recoveryBackoffLevelStore provides persistent backoff level storage
 // This allows recovery state to survive Clone() operations and reloads
-// Key: Dialer name, Value: [TCP level, UDP level]
+// Key: Dialer name, Value: [TCP level, DNS UDP level, Data UDP level]
 type recoveryBackoffLevelStoreEntry struct {
-	levels [2]int
+	levels [3]int
 	refs   int
 }
 
@@ -161,7 +171,7 @@ var globalRecoveryBackoffLevelStore = &recoveryBackoffLevelStore{
 
 // Acquire increments the reference count for the given dialer name and returns
 // the currently persisted backoff levels.
-func (s *recoveryBackoffLevelStore) Acquire(dialerName string) [2]int {
+func (s *recoveryBackoffLevelStore) Acquire(dialerName string) [3]int {
 	s.Lock()
 	defer s.Unlock()
 	entry := s.levels[dialerName]
@@ -272,8 +282,8 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
-	var collections [6]*collection
-	for _, i := range []int{IdxDnsUdp4, IdxDnsUdp6, IdxTcp4, IdxTcp6} {
+	var collections [8]*collection
+	for _, i := range []int{IdxDnsUdp4, IdxDnsUdp6, IdxTcp4, IdxTcp6, IdxUdp4, IdxUdp6} {
 		collections[i] = newCollection()
 	}
 	collections[IdxDnsTcp4] = collections[IdxTcp4]
@@ -306,7 +316,8 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		if dialerName := d.Property().Name; dialerName != "" {
 			levels := globalRecoveryBackoffLevelStore.Acquire(dialerName)
 			d.recoveryState[idxTcp].backoffLevel = levels[idxTcp]
-			d.recoveryState[idxUdp].backoffLevel = levels[idxUdp]
+			d.recoveryState[idxDnsUdp].backoffLevel = levels[idxDnsUdp]
+			d.recoveryState[idxDataUdp].backoffLevel = levels[idxDataUdp]
 		}
 	}
 
@@ -332,7 +343,17 @@ func (d *Dialer) Close() error {
 
 	// Cancel any pending recovery confirmation to prevent timer leaks
 	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_TCP)
-	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_UDP)
+	d.cancelPendingRecoveryConfirmationForType(&NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	})
+	d.cancelPendingRecoveryConfirmationForType(&NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	})
 
 	d.tickerMu.Lock()
 	if d.ticker != nil {
@@ -410,14 +431,14 @@ func (d *Dialer) NotifyHealthCheckResult(typ *NetworkType, success bool, isReviv
 		}
 	} else {
 		// Increment backoff level on any failure (Punishment)
-		d.incrementBackoffLevel(typ.L4Proto)
+		d.incrementBackoffLevelForType(typ)
 
 		// Reset stability counter on any failure (Trust Level Reset)
-		d.resetStabilityCount(typ.L4Proto)
+		d.resetStabilityCountForType(typ)
 
 		// Cancel any pending recovery confirmation to prevent premature recovery
 		// if the node revives again before the original timer fires.
-		d.cancelPendingRecoveryConfirmation(typ.L4Proto)
+		d.cancelPendingRecoveryConfirmationForType(typ)
 
 		// Track failures - may trigger immediate unavailability
 		if d.property.Address != "" {
@@ -430,9 +451,19 @@ func (d *Dialer) NotifyHealthCheckResult(typ *NetworkType, success bool, isReviv
 	}
 }
 
+func (d *Dialer) recoveryIdxForType(typ *NetworkType) int {
+	if typ == nil || typ.L4Proto == consts.L4ProtoStr_TCP {
+		return idxTcp
+	}
+	if typ.EffectiveUdpHealthDomain() == UdpHealthDomainDns {
+		return idxDnsUdp
+	}
+	return idxDataUdp
+}
+
 func (d *Dialer) protoIdx(proto consts.L4ProtoStr) int {
 	if proto == consts.L4ProtoStr_UDP {
-		return idxUdp
+		return idxDnsUdp
 	}
 	return idxTcp
 }
@@ -479,7 +510,7 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 		maxBackoff = minRecoveryBackoff
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range d.recoveryState {
 		d.recoveryState[i].Lock()
 		d.recoveryState[i].maxBackoff = maxBackoff
 		d.recoveryState[i].Unlock()
@@ -509,7 +540,7 @@ func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
 	default:
 	}
 
-	protoIdx := d.protoIdx(target.L4Proto)
+	protoIdx := d.recoveryIdxForType(target)
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
 
@@ -562,7 +593,7 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
 	default:
 	}
 
-	protoIdx := d.protoIdx(networkType.L4Proto)
+	protoIdx := d.recoveryIdxForType(networkType)
 	d.recoveryState[protoIdx].Lock()
 	// Clear timer safely (compare-and-nil) to avoid racing with a NEW timer
 	// scheduled by a concurrent revival.
@@ -586,7 +617,7 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
 
 	// Double-check if still healthy (might have failed during backoff period)
 	d.recoveryState[protoIdx].Lock()
-	alive := d.isProtocolAlive(networkType.L4Proto)
+	alive := d.isRecoveryTypeAlive(networkType)
 	if !alive {
 		d.recoveryState[protoIdx].Unlock()
 		d.Log.WithFields(logrus.Fields{
@@ -633,6 +664,18 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
 // This is called when the dialer fails again during recovery observation period.
 func (d *Dialer) cancelPendingRecoveryConfirmation(proto consts.L4ProtoStr) {
 	protoIdx := d.protoIdx(proto)
+	d.cancelPendingRecoveryConfirmationByIndex(protoIdx, proto)
+}
+
+func (d *Dialer) cancelPendingRecoveryConfirmationForType(typ *NetworkType) {
+	if typ == nil {
+		return
+	}
+	protoIdx := d.recoveryIdxForType(typ)
+	d.cancelPendingRecoveryConfirmationByIndex(protoIdx, typ.L4Proto)
+}
+
+func (d *Dialer) cancelPendingRecoveryConfirmationByIndex(protoIdx int, proto consts.L4ProtoStr) {
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
 
@@ -651,6 +694,17 @@ func (d *Dialer) cancelPendingRecoveryConfirmation(proto consts.L4ProtoStr) {
 // Thread-safe: acquires lock to read backoffLevel and maxBackoff.
 func (d *Dialer) getRecoveryBackoffDuration(proto consts.L4ProtoStr) time.Duration {
 	protoIdx := d.protoIdx(proto)
+	return d.getRecoveryBackoffDurationByIndex(protoIdx)
+}
+
+func (d *Dialer) getRecoveryBackoffDurationForType(typ *NetworkType) time.Duration {
+	if typ == nil {
+		return 0
+	}
+	return d.getRecoveryBackoffDurationByIndex(d.recoveryIdxForType(typ))
+}
+
+func (d *Dialer) getRecoveryBackoffDurationByIndex(protoIdx int) time.Duration {
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
 
@@ -682,6 +736,17 @@ func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Durat
 // the current backoff (penalty) level.
 func (d *Dialer) resetStabilityCount(proto consts.L4ProtoStr) {
 	protoIdx := d.protoIdx(proto)
+	d.resetStabilityCountByIndex(protoIdx)
+}
+
+func (d *Dialer) resetStabilityCountForType(typ *NetworkType) {
+	if typ == nil {
+		return
+	}
+	d.resetStabilityCountByIndex(d.recoveryIdxForType(typ))
+}
+
+func (d *Dialer) resetStabilityCountByIndex(protoIdx int) {
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
 
@@ -692,7 +757,17 @@ const maxBackoffLevel = 6
 
 func (d *Dialer) incrementBackoffLevel(proto consts.L4ProtoStr) {
 	protoIdx := d.protoIdx(proto)
+	d.incrementBackoffLevelByIndex(protoIdx)
+}
 
+func (d *Dialer) incrementBackoffLevelForType(typ *NetworkType) {
+	if typ == nil {
+		return
+	}
+	d.incrementBackoffLevelByIndex(d.recoveryIdxForType(typ))
+}
+
+func (d *Dialer) incrementBackoffLevelByIndex(protoIdx int) {
 	// Deduplicate punishment in the same cycle (e.g., dual-stack IPv4/IPv6 both failing).
 	// A 1-second cooldown using atomic swap ensures zero lock contention for hot-path failures.
 	now := CachedTimeNano()
@@ -717,6 +792,17 @@ func (d *Dialer) incrementBackoffLevel(proto consts.L4ProtoStr) {
 
 func (d *Dialer) GetBackoffLevel(proto consts.L4ProtoStr) int {
 	protoIdx := d.protoIdx(proto)
+	return d.getBackoffLevelByIndex(protoIdx)
+}
+
+func (d *Dialer) getBackoffLevelForType(typ *NetworkType) int {
+	if typ == nil {
+		return 0
+	}
+	return d.getBackoffLevelByIndex(d.recoveryIdxForType(typ))
+}
+
+func (d *Dialer) getBackoffLevelByIndex(protoIdx int) int {
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
 	return d.recoveryState[protoIdx].backoffLevel
@@ -727,6 +813,17 @@ func (d *Dialer) GetBackoffLevel(proto consts.L4ProtoStr) int {
 // This ensures recently recovered nodes are deprioritized until stable.
 func (d *Dialer) GetBackoffPenalty(proto consts.L4ProtoStr) time.Duration {
 	protoIdx := d.protoIdx(proto)
+	return d.getBackoffPenaltyByIndex(protoIdx)
+}
+
+func (d *Dialer) getBackoffPenaltyForType(typ *NetworkType) time.Duration {
+	if typ == nil {
+		return 0
+	}
+	return d.getBackoffPenaltyByIndex(d.recoveryIdxForType(typ))
+}
+
+func (d *Dialer) getBackoffPenaltyByIndex(protoIdx int) time.Duration {
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
 
@@ -740,13 +837,24 @@ func (d *Dialer) GetBackoffPenalty(proto consts.L4ProtoStr) time.Duration {
 // NotifyPeriodicCheckResult handles stability-based "wash white" logic for a protocol.
 // Any failure resets the counter. A single success (with no failures) increments the stability counter.
 func (d *Dialer) NotifyPeriodicCheckResult(proto consts.L4ProtoStr, success bool, failure bool) {
+	protoIdx := d.protoIdx(proto)
+	d.notifyPeriodicCheckResultByIndex(protoIdx, proto, success, failure)
+}
+
+func (d *Dialer) NotifyPeriodicCheckResultForType(typ *NetworkType, success bool, failure bool) {
+	if typ == nil {
+		return
+	}
+	d.notifyPeriodicCheckResultByIndex(d.recoveryIdxForType(typ), typ.L4Proto, success, failure)
+}
+
+func (d *Dialer) notifyPeriodicCheckResultByIndex(protoIdx int, proto consts.L4ProtoStr, success bool, failure bool) {
 	if failure {
-		d.resetStabilityCount(proto)
+		d.resetStabilityCountByIndex(protoIdx)
 		return
 	}
 
 	if success {
-		protoIdx := d.protoIdx(proto)
 		d.recoveryState[protoIdx].Lock()
 		defer d.recoveryState[protoIdx].Unlock()
 
@@ -784,39 +892,52 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 		"dialer": d.Property().Name,
 	}).Warnln("Marking dialer as unavailable due to persistent proxy IP failures")
 
-	// Use existing markUnavailable logic from connectivity_check.go
-	// This will update collection.Alive and notify AliveDialerSet
-	// Mark both TCP and UDP across all supported IP versions as dead since they
-	// share the same proxy IP/health. Bypass threshold to ensure immediate failover.
-	protocols := []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP}
-	ipVersions := []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
-
-	for _, proto := range protocols {
-		for _, ipVersion := range ipVersions {
-			networkType := &NetworkType{
-				L4Proto:   proto,
-				IpVersion: ipVersion,
-				IsDns:     false,
-			}
-			d.ReportUnavailableForced(networkType, nil)
-		}
+	// Use existing markUnavailable logic from connectivity_check.go.
+	// Shared proxy transport failures must fan out into all transport domains.
+	for _, networkType := range []*NetworkType{
+		{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
+		{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6},
+		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: UdpHealthDomainDns, IsDns: true},
+		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, UdpHealthDomain: UdpHealthDomainDns, IsDns: true},
+		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: UdpHealthDomainData},
+		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, UdpHealthDomain: UdpHealthDomainData},
+	} {
+		d.ReportUnavailableForced(networkType, nil)
 	}
 
-	// Punishment: Increment backoff level and reset stability count (Trust Level Reset)
-	// deduplicated: only once per protocol family.
-	for _, proto := range protocols {
-		d.incrementBackoffLevel(proto)
-		d.resetStabilityCount(proto)
-		d.cancelPendingRecoveryConfirmation(proto)
+	// Punishment: increment each recovery domain once.
+	for _, recovery := range []struct {
+		idx   int
+		proto consts.L4ProtoStr
+	}{
+		{idx: idxTcp, proto: consts.L4ProtoStr_TCP},
+		{idx: idxDnsUdp, proto: consts.L4ProtoStr_UDP},
+		{idx: idxDataUdp, proto: consts.L4ProtoStr_UDP},
+	} {
+		d.incrementBackoffLevelByIndex(recovery.idx)
+		d.resetStabilityCountByIndex(recovery.idx)
+		d.cancelPendingRecoveryConfirmationByIndex(recovery.idx, recovery.proto)
 	}
 }
 
-// isProtocolAlive returns true if any IP version of the specified protocol is currently alive.
-// This is used for recovery detection to allow dual-stack nodes to recover if at least one
-// stack is stable.
-func (d *Dialer) isProtocolAlive(proto consts.L4ProtoStr) bool {
-	v4 := &NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStr_4}
-	v6 := &NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStr_6}
+// isRecoveryTypeAlive returns true if any IP version of the specified health
+// domain is currently alive.
+func (d *Dialer) isRecoveryTypeAlive(networkType *NetworkType) bool {
+	if networkType == nil {
+		return false
+	}
+	v4 := &NetworkType{
+		L4Proto:         networkType.L4Proto,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           networkType.IsDns,
+		UdpHealthDomain: networkType.EffectiveUdpHealthDomain(),
+	}
+	v6 := &NetworkType{
+		L4Proto:         networkType.L4Proto,
+		IpVersion:       consts.IpVersionStr_6,
+		IsDns:           networkType.IsDns,
+		UdpHealthDomain: networkType.EffectiveUdpHealthDomain(),
+	}
 	return d.MustGetAlive(v4) || d.MustGetAlive(v6)
 }
 

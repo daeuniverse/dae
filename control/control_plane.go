@@ -80,6 +80,7 @@ type ControlPlane struct {
 	realDomainSet     *bloom.BloomFilter
 	realDomainNegSet  sync.Map // map[string]int64 (expiresAt unix nano)
 	dnsDialerSnapshot sync.Map // map[dnsDialerSnapshotKey]*dnsDialerSnapshotEntry
+	dnsDialerPenalty  sync.Map // map[dnsDialerPenaltyKey]*dnsDialerPenaltyEntry
 	tcpSniffNegMu     sync.RWMutex
 	tcpSniffNegSet    map[tcpSniffNegKey]tcpSniffNegEntry
 	realDomainProbeS  singleflight.Group
@@ -122,6 +123,7 @@ var (
 	// Set to 2s since dialer health status only updates every 30s (default CheckInterval).
 	// This provides good cache hit rate without missing dialer state changes.
 	dnsDialerSnapshotTTL         = 2 * time.Second
+	dnsDialerPenaltyTTL          = 5 * time.Second
 	realDomainNegJanitorInterval = 30 * time.Second
 
 	// UDP connection state timeout constants (matching former bpf_timer values).
@@ -693,13 +695,18 @@ func NewControlPlaneWithContext(
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		TimeoutExceedCallback: func(dialArgument *dialArgument, err error) {
+			plane.penalizeDnsDialArg(dialArgument, time.Now())
 			if commonerrors.IsIgnorableConnectionError(err) {
 				return
 			}
+			if dialArgument == nil || dialArgument.l4proto == consts.L4ProtoStr_UDP {
+				return
+			}
 			dialArgument.bestDialer.ReportUnavailable(&dialer.NetworkType{
-				L4Proto:   dialArgument.l4proto,
-				IpVersion: dialArgument.ipversion,
-				IsDns:     true,
+				L4Proto:         dialArgument.l4proto,
+				IpVersion:       dialArgument.ipversion,
+				IsDns:           true,
+				UdpHealthDomain: dialer.UdpHealthDomainDns,
 			}, err)
 		},
 		IpVersionPrefer: dnsConfig.IpVersionPrefer,
@@ -1183,6 +1190,17 @@ type dnsDialerSnapshotEntry struct {
 	dialArg           dialArgument
 }
 
+type dnsDialerPenaltyKey struct {
+	dialer    *dialer.Dialer
+	target    netip.AddrPort
+	l4proto   consts.L4ProtoStr
+	ipversion consts.IpVersionStr
+}
+
+type dnsDialerPenaltyEntry struct {
+	expiresAtUnixNano int64
+}
+
 func buildDnsDialerSnapshotKey(req *udpRequest, upstream *dns.Upstream) (dnsDialerSnapshotKey, bool) {
 	if req == nil || upstream == nil {
 		return dnsDialerSnapshotKey{}, false
@@ -1234,6 +1252,10 @@ func (c *ControlPlane) loadDnsDialerSnapshot(key dnsDialerSnapshotKey, now time.
 	}
 
 	dialArg := entry.dialArg
+	if c.isDnsDialArgPenalized(&dialArg, now) {
+		c.dnsDialerSnapshot.CompareAndDelete(key, entry)
+		return nil, false
+	}
 	return &dialArg, true
 }
 
@@ -1260,6 +1282,52 @@ func (c *ControlPlane) cleanupDnsDialerSnapshot(now time.Time) {
 			c.dnsDialerSnapshot.CompareAndDelete(key, entry)
 		}
 		return true
+	})
+}
+
+func buildDnsDialerPenaltyKey(dialArg *dialArgument) (dnsDialerPenaltyKey, bool) {
+	if dialArg == nil || dialArg.bestDialer == nil || !dialArg.bestTarget.IsValid() {
+		return dnsDialerPenaltyKey{}, false
+	}
+	return dnsDialerPenaltyKey{
+		dialer:    dialArg.bestDialer,
+		target:    dialArg.bestTarget,
+		l4proto:   dialArg.l4proto,
+		ipversion: dialArg.ipversion,
+	}, true
+}
+
+func (c *ControlPlane) isDnsDialArgPenalized(dialArg *dialArgument, now time.Time) bool {
+	key, ok := buildDnsDialerPenaltyKey(dialArg)
+	if !ok {
+		return false
+	}
+	value, ok := c.dnsDialerPenalty.Load(key)
+	if !ok {
+		return false
+	}
+	entry, ok := value.(*dnsDialerPenaltyEntry)
+	if !ok {
+		c.dnsDialerPenalty.Delete(key)
+		return false
+	}
+	if entry.expiresAtUnixNano <= now.UnixNano() {
+		c.dnsDialerPenalty.CompareAndDelete(key, entry)
+		return false
+	}
+	return true
+}
+
+func (c *ControlPlane) penalizeDnsDialArg(dialArg *dialArgument, now time.Time) {
+	if dnsDialerPenaltyTTL <= 0 {
+		return
+	}
+	key, ok := buildDnsDialerPenaltyKey(dialArg)
+	if !ok {
+		return
+	}
+	c.dnsDialerPenalty.Store(key, &dnsDialerPenaltyEntry{
+		expiresAtUnixNano: now.Add(dnsDialerPenaltyTTL).UnixNano(),
 	})
 }
 
@@ -2326,7 +2394,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	)
 	// Get the min latency path.
 	networkType := dialer.NetworkType{
-		IsDns: true,
+		IsDns:           true,
+		UdpHealthDomain: dialer.UdpHealthDomainDns,
 	}
 	for _, ver := range ipversions {
 		for _, proto := range l4protos {
@@ -2355,6 +2424,18 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			// DNS always dial IP.
 			d, latency, err := dialerGroup.Select(&networkType, true)
 			if err != nil {
+				continue
+			}
+			candidate := &dialArgument{
+				l4proto:      proto,
+				ipversion:    ver,
+				bestDialer:   d,
+				bestOutbound: dialerGroup,
+				bestTarget:   netip.AddrPortFrom(dAddr, dnsUpstream.Port),
+				mark:         mark,
+				mptcp:        c.mptcp,
+			}
+			if c.isDnsDialArgPenalized(candidate, now) {
 				continue
 			}
 			// if c.log.IsLevelEnabled(logrus.TraceLevel) {
@@ -2475,6 +2556,10 @@ func (c *ControlPlane) Close() (err error) {
 	})
 	c.dnsDialerSnapshot.Range(func(key, value any) bool {
 		c.dnsDialerSnapshot.Delete(key)
+		return true
+	})
+	c.dnsDialerPenalty.Range(func(key, value any) bool {
+		c.dnsDialerPenalty.Delete(key)
 		return true
 	})
 	c.clearAllTcpSniffNegative()

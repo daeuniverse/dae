@@ -358,3 +358,82 @@ func TestDialerReportAvailableTraffic_ResetsFailureCounter(t *testing.T) {
 		t.Fatal("traffic success should reset failure streak; first failure must not mark unavailable")
 	}
 }
+
+func TestNetworkTypeIndex_SplitsDnsAndDataUdpDomains(t *testing.T) {
+	dnsType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}
+	dataType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	}
+
+	if got := dnsType.Index(); got != IdxDnsUdp4 {
+		t.Fatalf("dnsType.Index() = %d, want %d", got, IdxDnsUdp4)
+	}
+	if got := dataType.Index(); got != IdxUdp4 {
+		t.Fatalf("dataType.Index() = %d, want %d", got, IdxUdp4)
+	}
+}
+
+func TestDialerUdpHealthDomainsRemainIndependent(t *testing.T) {
+	d := newTestDialer(t)
+	dnsType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}
+	dataType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	}
+
+	d.ReportUnavailableForced(dnsType, errors.New("simulated dns udp failure"))
+	if d.MustGetAlive(dataType) != true {
+		t.Fatal("DNS UDP failure should not poison data UDP health")
+	}
+	if d.MustGetAlive(dnsType) != false {
+		t.Fatal("DNS UDP failure should mark only DNS UDP domain unavailable")
+	}
+
+	d.ReportUnavailableForced(dataType, errors.New("simulated data udp failure"))
+	if d.MustGetAlive(dataType) != false {
+		t.Fatal("data UDP failure should mark data UDP domain unavailable")
+	}
+	if d.MustGetAlive(dnsType) != false {
+		t.Fatal("data UDP failure should not revive DNS UDP domain")
+	}
+}
+
+func TestDialerReportAvailableTraffic_RevivesOnlyDataUdpDomain(t *testing.T) {
+	d := newTestDialer(t)
+	dnsType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}
+	dataType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	}
+
+	d.ReportUnavailableForced(dnsType, errors.New("simulated dns udp failure"))
+	d.ReportUnavailableForced(dataType, errors.New("simulated data udp failure"))
+
+	d.ReportAvailableTraffic(dataType)
+
+	if !d.MustGetAlive(dataType) {
+		t.Fatal("data UDP traffic success should revive the data UDP domain")
+	}
+	if d.MustGetAlive(dnsType) {
+		t.Fatal("data UDP traffic success should not revive the DNS UDP domain")
+	}
+}

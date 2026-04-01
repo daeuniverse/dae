@@ -400,9 +400,57 @@ func TestUdpEndpointStart_NormalReadExitKeepsEndpointReusable(t *testing.T) {
 	waitForCloseSignal(t, conn.closeCh, "manual close after normal read exit should close the socket")
 }
 
-func TestUdpEndpointStart_HardReadErrorClosesConn(t *testing.T) {
+func TestUdpEndpointStart_ProxyBackedNormalReadExitRetiresEndpoint(t *testing.T) {
 	pool := NewUdpEndpointPool()
 	key := UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:15002")}
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead, 1),
+		closeCh: make(chan struct{}),
+	}
+	ue := &UdpEndpoint{
+		conn:                conn,
+		NatTimeout:          QuicNatTimeout,
+		Dialer:              newTestProxyEndpointDialer("hysteria2", "proxy.example:443"),
+		handler:             func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		poolRef:             pool,
+		poolKey:             key,
+		endpointNetworkType: componentdialer.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4},
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = ue
+	shard.mu.Unlock()
+	pool.registerEndpoint(ue)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ue.start()
+	}()
+
+	conn.reads <- scriptedPacketRead{err: io.EOF}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy-backed read loop to exit after EOF")
+	}
+
+	if !ue.IsDead() {
+		t.Fatal("expected proxy-backed EOF read exit to retire endpoint")
+	}
+	if got := conn.closeCalls.Load(); got != 1 {
+		t.Fatalf("close calls = %d, want 1", got)
+	}
+	if _, ok := pool.Get(key); ok {
+		t.Fatal("expected proxy-backed endpoint to be removed from pool after EOF")
+	}
+}
+
+func TestUdpEndpointStart_HardReadErrorClosesConn(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:15003")}
 	conn := &scriptedPacketConn{
 		reads:   make(chan scriptedPacketRead, 1),
 		closeCh: make(chan struct{}),

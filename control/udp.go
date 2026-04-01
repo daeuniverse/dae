@@ -101,9 +101,10 @@ func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
 		return ue.endpointNetworkType
 	}
 	return dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionFromAddr(ue.lAddr.Addr()),
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionFromAddr(ue.lAddr.Addr()),
+		IsDns:           false,
+		UdpHealthDomain: dialer.UdpHealthDomainData,
 	}
 }
 
@@ -676,9 +677,10 @@ afterSniffing:
 	retry := 0
 	var isNew bool
 	networkType := &dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionFromAddr(realDst.Addr()),
+		IsDns:           false,
+		UdpHealthDomain: dialer.UdpHealthDomainData,
 	}
 	// Keep UDP target pinned to original destination IP to avoid QUIC session issues.
 	dialTarget := realDst.String()

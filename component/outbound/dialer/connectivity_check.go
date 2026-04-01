@@ -37,14 +37,34 @@ import (
 
 const Timeout = 10 * time.Second
 
+type UdpHealthDomain uint8
+
+const (
+	UdpHealthDomainUnset UdpHealthDomain = iota
+	UdpHealthDomainDns
+	UdpHealthDomainData
+)
+
+func (d UdpHealthDomain) String() string {
+	switch d {
+	case UdpHealthDomainDns:
+		return "dns_udp"
+	case UdpHealthDomainData:
+		return "data_udp"
+	default:
+		return "udp"
+	}
+}
+
 type NetworkType struct {
-	L4Proto   consts.L4ProtoStr
-	IpVersion consts.IpVersionStr
-	IsDns     bool
+	L4Proto         consts.L4ProtoStr
+	IpVersion       consts.IpVersionStr
+	IsDns           bool
+	UdpHealthDomain UdpHealthDomain
 }
 
 func (t *NetworkType) String() string {
-	if t.IsDns {
+	if t.IsDnsSemantic() {
 		return t.StringWithoutDns() + "(DNS)"
 	} else {
 		return t.StringWithoutDns()
@@ -53,6 +73,29 @@ func (t *NetworkType) String() string {
 
 func (t *NetworkType) StringWithoutDns() string {
 	return string(t.L4Proto) + string(t.IpVersion)
+}
+
+func (t *NetworkType) EffectiveUdpHealthDomain() UdpHealthDomain {
+	if t == nil || t.L4Proto != consts.L4ProtoStr_UDP {
+		return UdpHealthDomainUnset
+	}
+	if t.UdpHealthDomain != UdpHealthDomainUnset {
+		return t.UdpHealthDomain
+	}
+	if t.IsDns {
+		return UdpHealthDomainDns
+	}
+	return UdpHealthDomainData
+}
+
+func (t *NetworkType) IsDnsSemantic() bool {
+	if t == nil {
+		return false
+	}
+	if t.L4Proto == consts.L4ProtoStr_UDP {
+		return t.EffectiveUdpHealthDomain() == UdpHealthDomainDns
+	}
+	return t.IsDns
 }
 
 // Index returns the collection index for this network type.
@@ -64,9 +107,13 @@ func (t *NetworkType) StringWithoutDns() string {
 //     for both DNS-over-TCP and plain TCP traffic.
 //  3. This consolidation eliminates redundant probes, reducing network overhead and memory usage.
 //
-// In contrast, UDP DNS uses separate indices (IdxDnsUdp4/IdxDnsUdp6) because UDP health checks
-// perform actual DNS queries, which test a different code path than plain UDP (which is rarely
-// used directly and typically shares DNS check results anyway).
+// UDP health is split into two independent domains:
+//  1. DNS UDP health, driven by DNS probes and DNS request failures.
+//  2. Data UDP health, driven by real proxied UDP traffic and shared hard failures.
+//
+// This prevents transient DNS probe failures from directly poisoning long-lived
+// data UDP traffic such as QUIC and games, while still allowing shared transport
+// failures to fan out into both domains when appropriate.
 func (t *NetworkType) Index() int {
 	switch t.L4Proto {
 	case consts.L4ProtoStr_TCP:
@@ -77,11 +124,18 @@ func (t *NetworkType) Index() int {
 			return IdxTcp6
 		}
 	case consts.L4ProtoStr_UDP:
+		domain := t.EffectiveUdpHealthDomain()
 		switch t.IpVersion {
 		case consts.IpVersionStr_4:
-			return IdxDnsUdp4
+			if domain == UdpHealthDomainDns {
+				return IdxDnsUdp4
+			}
+			return IdxUdp4
 		case consts.IpVersionStr_6:
-			return IdxDnsUdp6
+			if domain == UdpHealthDomainDns {
+				return IdxDnsUdp6
+			}
+			return IdxUdp6
 		}
 	}
 	panic("invalid network type")
@@ -143,7 +197,7 @@ func (d *Dialer) snapshotLatencyForPolicy(
 	d.collectionFineMu.RUnlock()
 
 	if hasLatency {
-		rawLatency += d.GetBackoffPenalty(typ.L4Proto)
+		rawLatency += d.getBackoffPenaltyForType(typ)
 	}
 	return rawLatency, hasLatency
 }
@@ -478,17 +532,19 @@ func (d *Dialer) aliveBackground() {
 
 	udp4CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     true,
+			L4Proto:         consts.L4ProtoStr_UDP,
+			IpVersion:       consts.IpVersionStr_4,
+			IsDns:           true,
+			UdpHealthDomain: UdpHealthDomainDns,
 		},
 		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip4 }, &udpNetwork),
 	}
 	udp6CheckDnsOpt := &CheckOption{
 		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     true,
+			L4Proto:         consts.L4ProtoStr_UDP,
+			IpVersion:       consts.IpVersionStr_6,
+			IsDns:           true,
+			UdpHealthDomain: UdpHealthDomainDns,
 		},
 		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &udpNetwork),
 	}
@@ -602,7 +658,7 @@ func (d *Dialer) aliveBackground() {
 			// WITHOUT any successes in this cycle. This allows partially-working dual-stack
 			// nodes (e.g. V4 OK, V6 broken) to eventually wash white their penalty.
 			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure && !cycleRes.tcpSuccess)
-			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_UDP, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
+			d.NotifyPeriodicCheckResultForType(udp4CheckDnsOpt.networkType, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
 		}
 
 		// Targeted checks don't disturb the periodic timer — only full checks do.
@@ -896,6 +952,29 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	return update, avg
 }
 
+func (d *Dialer) markAvailableTraffic(typ *NetworkType) collectionUpdate {
+	d.collectionFineMu.Lock()
+	idx := typ.Index()
+	collection := d.collections[idx]
+
+	d.failCount[idx] = 0
+	d.trafficFailCount[idx].Store(0)
+	wasAlive := collection.Alive.Swap(true)
+	update := collectionUpdate{
+		alive:             true,
+		movingAverage:     collection.MovingAverage,
+		aliveDialerGroups: d.snapshotAliveDialerGroupsLocked(collection),
+	}
+	d.collectionFineMu.Unlock()
+
+	isRevival := !wasAlive
+	d.NotifyHealthCheckResult(typ, true, isRevival)
+	if isRevival {
+		d.notifyAliveTransition(typ, true)
+	}
+	return update
+}
+
 func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
 	for _, a := range update.aliveDialerGroups {
 		a.NotifyLatencyChange(d, update.alive)
@@ -916,6 +995,9 @@ func (d *Dialer) ReportAvailableTraffic(typ *NetworkType) {
 	idx := typ.Index()
 	if d.trafficFailCount[idx].Load() != 0 {
 		d.trafficFailCount[idx].Store(0)
+	}
+	if typ.L4Proto == consts.L4ProtoStr_UDP && typ.EffectiveUdpHealthDomain() == UdpHealthDomainData && !d.MustGetAlive(typ) {
+		d.informDialerGroupUpdate(d.markAvailableTraffic(typ))
 	}
 }
 

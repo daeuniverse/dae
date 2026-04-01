@@ -103,6 +103,43 @@ func TestControlPlane_DnsDialerSnapshotCache_HitAndExpire(t *testing.T) {
 	require.False(t, stillExists)
 }
 
+func TestControlPlane_DnsDialerSnapshotCache_SkipsPenalizedDialer(t *testing.T) {
+	oldTTL := dnsDialerSnapshotTTL
+	oldPenaltyTTL := dnsDialerPenaltyTTL
+	dnsDialerSnapshotTTL = time.Second
+	dnsDialerPenaltyTTL = time.Second
+	defer func() {
+		dnsDialerSnapshotTTL = oldTTL
+		dnsDialerPenaltyTTL = oldPenaltyTTL
+	}()
+
+	cp := &ControlPlane{}
+	req := &udpRequest{
+		realSrc: netip.MustParseAddrPort("10.0.0.2:23456"),
+		realDst: netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+	upstream := testDnsDialerSnapshotUpstream()
+	key, ok := buildDnsDialerSnapshotKey(req, upstream)
+	require.True(t, ok)
+
+	dialArg := &dialArgument{
+		l4proto:    consts.L4ProtoStr_UDP,
+		ipversion:  consts.IpVersionStr_4,
+		bestDialer: newTestProxyEndpointDialer("hysteria2", "proxy.example:443"),
+		bestTarget: netip.MustParseAddrPort("1.1.1.1:53"),
+	}
+	now := time.Now()
+	cp.storeDnsDialerSnapshot(key, dialArg, now)
+	cp.penalizeDnsDialArg(dialArg, now)
+
+	cached, hit := cp.loadDnsDialerSnapshot(key, now.Add(10*time.Millisecond))
+	require.False(t, hit)
+	require.Nil(t, cached)
+
+	_, stillExists := cp.dnsDialerSnapshot.Load(key)
+	require.False(t, stillExists, "penalized snapshots should be removed eagerly")
+}
+
 // TestDnsDialerSnapshot_PortExemption verifies that DNS queries from the same client
 // but with different source ports generate the same cache key, enabling cache reuse.
 func TestDnsDialerSnapshot_PortExemption(t *testing.T) {

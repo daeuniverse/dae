@@ -163,7 +163,13 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument, log *log
 		case consts.L4ProtoStr_UDP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_UDP, dns.UpstreamScheme_TCP_UDP:
-				return &DoUDP{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument, log: log}, nil
+				return &DoUDP{
+					Upstream:     *upstream,
+					Dialer:       dialArgument.bestDialer,
+					dialArgument: dialArgument,
+					profile:      newDnsLifecycleProfile(dialArgument.bestDialer),
+					log:          log,
+				}, nil
 			case dns.UpstreamScheme_QUIC:
 				return &DoQ{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_H3:
@@ -663,6 +669,10 @@ const (
 	// Each socket serves one in-flight request at a time in this implementation, so
 	// requests beyond this budget should fail fast instead of queueing in userspace.
 	dnsUdpPoolMaxActive = 64
+	// Proxy-backed UDP DNS sockets go stale more easily because they sit behind an
+	// upstream relay session rather than a raw UDP socket.
+	dnsUdpProxyPoolMaxIdleTime  = 10 * time.Second
+	dnsUdpDirectPoolMaxIdleTime = 30 * time.Second
 )
 
 func newUdpConnPool(maxIdle, maxActive int, dialer func(context.Context) (netproxy.Conn, error)) *udpConnPool {
@@ -679,7 +689,7 @@ func newUdpConnPool(maxIdle, maxActive int, dialer func(context.Context) (netpro
 		idleConns:   make(chan *udpConnWithTimestamp, maxIdle),
 		dialer:      dialer,
 		liveConns:   make(map[netproxy.Conn]struct{}, maxActive),
-		maxIdleTime: 60 * time.Second, // Increased from 30s to reduce connection churn
+		maxIdleTime: dnsUdpDirectPoolMaxIdleTime,
 		maxActive:   int32(maxActive),
 		done:        make(chan struct{}),
 	}
@@ -872,12 +882,21 @@ type DoUDP struct {
 	netproxy.Dialer
 	dialArgument dialArgument
 
-	pool *udpConnPool
-	mu   sync.RWMutex
-	log  *logrus.Logger
+	profile UdpLifecycleProfile
+	pool    *udpConnPool
+	mu      sync.RWMutex
+	log     *logrus.Logger
 }
 
 func (d *DoUDP) getPool() *udpConnPool {
+	if d.profile.Kind == 0 {
+		d.mu.Lock()
+		if d.profile.Kind == 0 {
+			d.profile = newDnsLifecycleProfile(d.dialArgument.bestDialer)
+		}
+		d.mu.Unlock()
+	}
+
 	d.mu.RLock()
 	if d.pool != nil {
 		defer d.mu.RUnlock()
@@ -891,7 +910,6 @@ func (d *DoUDP) getPool() *udpConnPool {
 	if d.pool != nil {
 		return d.pool
 	}
-
 	// Keep a bounded but realistic UDP live set. The controller may admit far more
 	// concurrent requests globally, but a single UDP upstream can only service one
 	// request per socket here, so saturation must fail fast locally instead of
@@ -903,6 +921,9 @@ func (d *DoUDP) getPool() *udpConnPool {
 			d.dialArgument.bestTarget.String(),
 		)
 	})
+	if d.profile.PooledConnIdleTTL > 0 {
+		d.pool.maxIdleTime = d.profile.PooledConnIdleTTL
+	}
 
 	return d.pool
 }
@@ -953,10 +974,15 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	for {
 		n, err := netutils.ReadUDPConn(conn, respBuf)
 		if err != nil {
-			// If timeout, we don't mark connection as bad to avoid expensive reconstruction
-			// (especially for SOCKS5 tunnel). Stale packets might be an issue but
-			// usually less critical than connection storm.
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// Direct UDP sockets can usually survive a single DNS timeout, but a
+			// proxy-backed UDP timeout often means the relay-side session has gone
+			// stale. Reusing that socket causes timeout loops and stale-response churn.
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				if d.profile.DiscardPooledConnOnTimeout {
+					udpPool.discard(conn)
+					badConn = true
+				}
 				return nil, err
 			}
 			udpPool.discard(conn)

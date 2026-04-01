@@ -101,6 +101,7 @@ type UdpEndpoint struct {
 
 	dialerGeneration    uint64
 	endpointNetworkType dialer.NetworkType
+	lifecycleProfile    UdpLifecycleProfile
 }
 
 func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
@@ -221,11 +222,17 @@ func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
 	if ue.isConnectionRefused(err) {
 		return true
 	}
-	// Preserve the historical behavior for normal closures (EOF, explicit close,
-	// deadline expiry mapped as a normal endpoint shutdown): stop the read loop
-	// without forcing immediate retirement. Hard failures still retire the
-	// endpoint so subsequent packets redial a fresh transport.
-	return !errors.IsUDPEndpointNormalClose(err)
+	if !errors.IsUDPEndpointNormalClose(err) {
+		return true
+	}
+	// Proxy-backed UDP read loops run on top of a relay/session transport. Once
+	// that transport reports a normal close, the cached endpoint has lost its
+	// ability to forward future packets and must be retired immediately.
+	profile := ue.lifecycleProfile
+	if profile.Kind == 0 {
+		profile = newDataSessionLifecycleProfile(ue.Dialer)
+	}
+	return profile.RetireOnNormalClose
 }
 
 func (ue *UdpEndpoint) start() {
@@ -742,6 +749,9 @@ func normalizeUdpEndpointPoolNetworkType(networkType dialer.NetworkType) dialer.
 		networkType.L4Proto = consts.L4ProtoStr_UDP
 	}
 	networkType.IsDns = false
+	if networkType.L4Proto == consts.L4ProtoStr_UDP {
+		networkType.UdpHealthDomain = dialer.UdpHealthDomainData
+	}
 	return networkType
 }
 
@@ -1002,25 +1012,27 @@ dialSuccess:
 		return nil, fmt.Errorf("protocol does not support udp")
 	}
 	ue := &UdpEndpoint{
-		conn:          packetConn,
-		handler:       createOption.Handler,
-		NatTimeout:    effectiveUdpEndpointNatTimeout(dialOption.Dialer, createOption.NatTimeout),
-		Dialer:        dialOption.Dialer,
-		Outbound:      dialOption.Outbound,
-		SniffedDomain: dialOption.SniffedDomain,
-		DialTarget:    dialOption.Target,
-		lAddr:         key.Src,
-		log:           createOption.Log,
-		poolRef:       p,
-		poolKey:       key,
+		conn:             packetConn,
+		handler:          createOption.Handler,
+		NatTimeout:       effectiveUdpEndpointNatTimeout(dialOption.Dialer, createOption.NatTimeout),
+		Dialer:           dialOption.Dialer,
+		Outbound:         dialOption.Outbound,
+		SniffedDomain:    dialOption.SniffedDomain,
+		DialTarget:       dialOption.Target,
+		lAddr:            key.Src,
+		log:              createOption.Log,
+		poolRef:          p,
+		poolKey:          key,
+		lifecycleProfile: newDataSessionLifecycleProfile(dialOption.Dialer),
 		endpointNetworkType: normalizeUdpEndpointPoolNetworkType(func() dialer.NetworkType {
 			if dialOption.NetworkType != nil {
 				return *dialOption.NetworkType
 			}
 			return dialer.NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionFromAddr(key.Src.Addr()),
-				IsDns:     false,
+				L4Proto:         consts.L4ProtoStr_UDP,
+				IpVersion:       consts.IpVersionFromAddr(key.Src.Addr()),
+				IsDns:           false,
+				UdpHealthDomain: dialer.UdpHealthDomainData,
 			}
 		}()),
 	}
@@ -1062,9 +1074,10 @@ func reportUdpEndpointDialCreateFailure(key UdpEndpointKey, dialOption *DialOpti
 	}
 
 	networkType := dialer.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionFromAddr(key.Src.Addr()),
-		IsDns:     false,
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionFromAddr(key.Src.Addr()),
+		IsDns:           false,
+		UdpHealthDomain: dialer.UdpHealthDomainData,
 	}
 	if dialOption.NetworkType != nil {
 		networkType = *dialOption.NetworkType

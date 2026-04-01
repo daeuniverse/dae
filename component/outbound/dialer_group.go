@@ -29,12 +29,12 @@ type DialerGroup struct {
 
 	Dialers []*dialer.Dialer
 
-	aliveDialerSets [6]*dialer.AliveDialerSet
+	aliveDialerSets [8]*dialer.AliveDialerSet
 
 	selectionPolicy *DialerSelectionPolicy
 
 	resuscitateLastTime atomic.Int64
-	noAliveLogLastTimes [6]atomic.Int64
+	noAliveLogLastTimes [8]atomic.Int64
 
 	cachedMinCheckInterval time.Duration
 }
@@ -67,34 +67,42 @@ func NewDialerGroup(
 		log.Panicf("Unexpected dialer selection policy: %v", p.Policy)
 	}
 
-	// networkTypeSpecs defines the 4 standard probe network types in the order
-	// expected by aliveDialerSets (indices 0-3 map to DNS-TCP4/6, DNS-UDP4/6;
-	// indices 4-5 map to TCP4/6 which are appended below).
+	// networkTypeSpecs defines the standard health domains in the order expected
+	// by aliveDialerSets. TCP DNS aliases plain TCP, while DNS UDP and data UDP
+	// each get their own independent health set.
 	type networkTypeSpec struct {
-		l4proto   consts.L4ProtoStr
-		ipVersion consts.IpVersionStr
-		isDns     bool
+		l4proto         consts.L4ProtoStr
+		ipVersion       consts.IpVersionStr
+		isDns           bool
+		udpHealthDomain dialer.UdpHealthDomain
 	}
-	specs := [4]networkTypeSpec{
-		// aliveDialerSets[IdxDnsTcp4..IdxDnsTcp6]: DNS-TCP sets (for CheckDnsTcp path – filled below).
-		// aliveDialerSets[IdxDnsUdp4..IdxDnsUdp6]: DNS-UDP
-		{consts.L4ProtoStr_UDP, consts.IpVersionStr_4, true}, // [2] aliveDnsUdp4
-		{consts.L4ProtoStr_UDP, consts.IpVersionStr_6, true}, // [3] aliveDnsUdp6
-		// aliveDialerSets[IdxTcp4..IdxTcp6]: plain TCP
-		{consts.L4ProtoStr_TCP, consts.IpVersionStr_4, false}, // [4] aliveTcp4
-		{consts.L4ProtoStr_TCP, consts.IpVersionStr_6, false}, // [5] aliveTcp6
+	specs := [6]networkTypeSpec{
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_4, true, dialer.UdpHealthDomainDns},    // [2] aliveDnsUdp4
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_6, true, dialer.UdpHealthDomainDns},    // [3] aliveDnsUdp6
+		{consts.L4ProtoStr_TCP, consts.IpVersionStr_4, false, dialer.UdpHealthDomainUnset}, // [4] aliveTcp4
+		{consts.L4ProtoStr_TCP, consts.IpVersionStr_6, false, dialer.UdpHealthDomainUnset}, // [5] aliveTcp6
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_4, false, dialer.UdpHealthDomainData},  // [6] aliveUdp4
+		{consts.L4ProtoStr_UDP, consts.IpVersionStr_6, false, dialer.UdpHealthDomainData},  // [7] aliveUdp6
 	}
 
-	// Indices within aliveDialerSets that correspond to specs[0..3].
-	setIdx := [4]int{dialer.IdxDnsUdp4, dialer.IdxDnsUdp6, dialer.IdxTcp4, dialer.IdxTcp6}
+	// Indices within aliveDialerSets that correspond to specs[0..5].
+	setIdx := [6]int{
+		dialer.IdxDnsUdp4,
+		dialer.IdxDnsUdp6,
+		dialer.IdxTcp4,
+		dialer.IdxTcp6,
+		dialer.IdxUdp4,
+		dialer.IdxUdp6,
+	}
 
-	var aliveDialerSets [6]*dialer.AliveDialerSet
+	var aliveDialerSets [8]*dialer.AliveDialerSet
 
 	for i, spec := range specs {
 		nt := &dialer.NetworkType{
-			L4Proto:   spec.l4proto,
-			IpVersion: spec.ipVersion,
-			IsDns:     spec.isDns,
+			L4Proto:         spec.l4proto,
+			IpVersion:       spec.ipVersion,
+			IsDns:           spec.isDns,
+			UdpHealthDomain: spec.udpHealthDomain,
 		}
 		if needAliveState {
 			set := dialer.NewAliveDialerSet(
