@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cilium/ebpf v0.20.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-20260401100812-f05d663b0a4b
+	github.com/daeuniverse/outbound v0.0.0-sticky-ip.0.20260401154811-cc1a217490f9
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mholt/archives v0.1.5
@@ -119,4 +119,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use the synced outbound perf branch HEAD for joint review until these commits land upstream.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260401100812-f05d663b0a4b
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260401154811-cc1a217490f9
