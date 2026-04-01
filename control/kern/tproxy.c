@@ -2449,6 +2449,14 @@ static __noinline bool
 wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 		      __be16 dport)
 {
+	/* DNS queries must always reach the control plane. User-space DNS
+	 * routing is responsible for fallback, rejection and SERVFAIL
+	 * synthesis; dropping UDP/53 here turns upstream health noise into
+	 * client-visible timeouts.
+	 */
+	if (l4proto == IPPROTO_UDP && dport == bpf_htons(53))
+		return true;
+
 	// ARRAY map key: outbound_id * 6 + domain * 2 + ipversion
 	// domain: 0=TCP, 1=DNS UDP, 2=data UDP; ipversion: 0=IPv4, 1=IPv6
 	__u32 domain_idx = 0;
