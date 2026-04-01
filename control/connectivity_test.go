@@ -25,7 +25,7 @@ func TestOutboundConnectivityMapKey(t *testing.T) {
 				L4Proto:   consts.L4ProtoStr_TCP,
 				IpVersion: consts.IpVersionStr_4,
 			},
-			want: 8,
+			want: 12,
 		},
 		{
 			name:     "tcp6",
@@ -34,25 +34,58 @@ func TestOutboundConnectivityMapKey(t *testing.T) {
 				L4Proto:   consts.L4ProtoStr_TCP,
 				IpVersion: consts.IpVersionStr_6,
 			},
-			want: 9,
+			want: 13,
 		},
 		{
-			name:     "udp4",
+			name:     "dns_udp4",
+			outbound: 2,
+			network: &dialer.NetworkType{
+				L4Proto:         consts.L4ProtoStr_UDP,
+				IpVersion:       consts.IpVersionStr_4,
+				IsDns:           true,
+				UdpHealthDomain: dialer.UdpHealthDomainDns,
+			},
+			want: 14,
+		},
+		{
+			name:     "dns_udp6",
+			outbound: 2,
+			network: &dialer.NetworkType{
+				L4Proto:         consts.L4ProtoStr_UDP,
+				IpVersion:       consts.IpVersionStr_6,
+				IsDns:           true,
+				UdpHealthDomain: dialer.UdpHealthDomainDns,
+			},
+			want: 15,
+		},
+		{
+			name:     "data_udp4",
+			outbound: 2,
+			network: &dialer.NetworkType{
+				L4Proto:         consts.L4ProtoStr_UDP,
+				IpVersion:       consts.IpVersionStr_4,
+				UdpHealthDomain: dialer.UdpHealthDomainData,
+			},
+			want: 16,
+		},
+		{
+			name:     "data_udp6",
+			outbound: 2,
+			network: &dialer.NetworkType{
+				L4Proto:         consts.L4ProtoStr_UDP,
+				IpVersion:       consts.IpVersionStr_6,
+				UdpHealthDomain: dialer.UdpHealthDomainData,
+			},
+			want: 17,
+		},
+		{
+			name:     "legacy_udp_defaults_to_data_domain",
 			outbound: 2,
 			network: &dialer.NetworkType{
 				L4Proto:   consts.L4ProtoStr_UDP,
 				IpVersion: consts.IpVersionStr_4,
 			},
-			want: 10,
-		},
-		{
-			name:     "udp6",
-			outbound: 2,
-			network: &dialer.NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionStr_6,
-			},
-			want: 11,
+			want: 16,
 		},
 	}
 

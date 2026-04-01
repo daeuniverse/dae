@@ -336,8 +336,8 @@ func Test(t *testing.T) {
 	// via bpf_tail_call would get TC_ACT_SHOT.
 	aliveVal := uint32(1)
 	for i := uint32(0); i < 256; i++ {
-		for j := uint32(0); j < 4; j++ {
-			ck := i*4 + j
+		for j := uint32(0); j < 6; j++ {
+			ck := i*6 + j
 			obj.OutboundConnectivityMap.Update(ck, aliveVal, ebpf.UpdateAny)
 		}
 	}

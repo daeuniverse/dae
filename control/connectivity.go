@@ -14,6 +14,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	outboundConnectivitySlotsPerDomain   = uint32(2)
+	outboundConnectivityDomainTCP        = uint32(0)
+	outboundConnectivityDomainDnsUDP     = uint32(1)
+	outboundConnectivityDomainDataUDP    = uint32(2)
+	outboundConnectivitySlotsPerOutbound = outboundConnectivitySlotsPerDomain * 3
+)
+
 func FormatL4Proto(l4proto uint8) string {
 	if l4proto == consts.IPPROTO_TCP {
 		return "tcp"
@@ -24,16 +32,23 @@ func FormatL4Proto(l4proto uint8) string {
 	return strconv.Itoa(int(l4proto))
 }
 
-func outboundConnectivityMapKey(outbound uint8, networkType *dialer.NetworkType) uint32 {
-	protoIdx := uint32(0)
-	if networkType.L4Proto == consts.L4ProtoStr_UDP {
-		protoIdx = 1
+func outboundConnectivityDomainIndex(networkType *dialer.NetworkType) uint32 {
+	if networkType.L4Proto != consts.L4ProtoStr_UDP {
+		return outboundConnectivityDomainTCP
 	}
+	if networkType.EffectiveUdpHealthDomain() == dialer.UdpHealthDomainDns {
+		return outboundConnectivityDomainDnsUDP
+	}
+	return outboundConnectivityDomainDataUDP
+}
+
+func outboundConnectivityMapKey(outbound uint8, networkType *dialer.NetworkType) uint32 {
+	domainIdx := outboundConnectivityDomainIndex(networkType)
 	ipVersionIdx := uint32(0)
 	if networkType.IpVersion == consts.IpVersionStr_6 {
 		ipVersionIdx = 1
 	}
-	return uint32(outbound)*4 + protoIdx*2 + ipVersionIdx
+	return uint32(outbound)*outboundConnectivitySlotsPerOutbound + domainIdx*outboundConnectivitySlotsPerDomain + ipVersionIdx
 }
 
 func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bool) func(alive bool, networkType *dialer.NetworkType, isInit bool) {
@@ -60,8 +75,8 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		if alive {
 			value = 1
 		}
-		// ARRAY map key: outbound_id * 4 + l4proto * 2 + ipversion
-		// l4proto: 0=TCP, 1=UDP; ipversion: 0=IPv4, 1=IPv6
+		// ARRAY map key: outbound_id * 6 + domain * 2 + ipversion
+		// domain: 0=TCP, 1=DNS UDP, 2=data UDP; ipversion: 0=IPv4, 1=IPv6
 		key := outboundConnectivityMapKey(outbound, networkType)
 		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
 			c.log.WithFields(logrus.Fields{

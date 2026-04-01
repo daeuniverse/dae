@@ -66,14 +66,14 @@ static const __u32 two_key = 2;
 
 // outbound_connectivity_query is deprecated. Using direct index calculation for
 // ARRAY map to achieve O(1) lookup performance.
-// Key format: outbound_id * 4 + l4proto * 2 + ipversion
-// where: l4proto (0=TCP, 1=UDP), ipversion (0=IPv4, 1=IPv6)
+// Key format: outbound_id * 6 + domain * 2 + ipversion
+// where: domain (0=TCP, 1=DNS UDP, 2=data UDP), ipversion (0=IPv4, 1=IPv6)
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, __u32);
 	__type(value, __u32); // true, false
-	__uint(max_entries, 1024); // 256 outbounds * 2 l4protos * 2 ipversions
+	__uint(max_entries, 1536); // 256 outbounds * 3 domains * 2 ipversions
 } outbound_connectivity_map SEC(".maps");
 
 // Sockmap:
@@ -2449,17 +2449,22 @@ static __noinline bool
 wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 		      __be16 dport)
 {
-	// ARRAY map key: outbound_id * 4 + l4proto * 2 + ipversion
-	// l4proto: 0=TCP, 1=UDP; ipversion: 0=IPv4, 1=IPv6
-	__u32 proto_idx = l4proto == IPPROTO_UDP ? 1 : 0;
+	// ARRAY map key: outbound_id * 6 + domain * 2 + ipversion
+	// domain: 0=TCP, 1=DNS UDP, 2=data UDP; ipversion: 0=IPv4, 1=IPv6
+	__u32 domain_idx = 0;
 	__u32 ip_idx = skb->protocol == bpf_htons(ETH_P_IP) ? 0 : 1;
-	__u32 key = ((__u32)outbound * 4) + (proto_idx * 2) + ip_idx;
+	__u32 key;
 	__u32 *alive;
 
+	if (l4proto == IPPROTO_UDP) {
+		if (dport == bpf_htons(53))
+			domain_idx = 1;
+		else
+			domain_idx = 2;
+	}
+	key = ((__u32)outbound * 6) + (domain_idx * 2) + ip_idx;
 	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &key);
-	if (alive && *alive == 0 &&
-	    !((l4proto == IPPROTO_UDP || l4proto == IPPROTO_TCP) && dport == bpf_htons(53))) {
-		// Outbound is not alive. Dns is an exception.
+	if (alive && *alive == 0) {
 		return false;
 	}
 	return true;
