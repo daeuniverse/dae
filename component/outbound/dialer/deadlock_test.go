@@ -13,6 +13,10 @@ import (
 )
 
 func newRecoveryTestDialer() *Dialer {
+	return newNamedRecoveryTestDialer("test")
+}
+
+func newNamedRecoveryTestDialer(name string) *Dialer {
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	d := NewDialer(
@@ -24,7 +28,7 @@ func newRecoveryTestDialer() *Dialer {
 		InstanceOption{},
 		&Property{
 			Property: D.Property{
-				Name: "test",
+				Name: name,
 			},
 		},
 	)

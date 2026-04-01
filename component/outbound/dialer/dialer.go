@@ -138,38 +138,62 @@ type Dialer struct {
 	lastNotifyUdp atomic.Int64
 	lastNotifyTcp atomic.Int64
 	lastPunish    [2]atomic.Int64
+
+	recoveryStoreReleaseOnce sync.Once
 }
 
 // recoveryBackoffLevelStore provides persistent backoff level storage
 // This allows recovery state to survive Clone() operations and reloads
 // Key: Dialer name, Value: [TCP level, UDP level]
+type recoveryBackoffLevelStoreEntry struct {
+	levels [2]int
+	refs   int
+}
+
 type recoveryBackoffLevelStore struct {
 	sync.RWMutex
-	levels map[string][2]int
+	levels map[string]recoveryBackoffLevelStoreEntry
 }
 
 var globalRecoveryBackoffLevelStore = &recoveryBackoffLevelStore{
-	levels: make(map[string][2]int),
+	levels: make(map[string]recoveryBackoffLevelStoreEntry),
 }
 
-// Get returns the backoff level for the given dialer name and protocol index.
-// Returns 0 if the dialer name or protocol is not found.
-func (s *recoveryBackoffLevelStore) Get(dialerName string) [2]int {
-	s.RLock()
-	defer s.RUnlock()
-	if level, ok := s.levels[dialerName]; ok {
-		return level
-	}
-	return [2]int{0, 0}
+// Acquire increments the reference count for the given dialer name and returns
+// the currently persisted backoff levels.
+func (s *recoveryBackoffLevelStore) Acquire(dialerName string) [2]int {
+	s.Lock()
+	defer s.Unlock()
+	entry := s.levels[dialerName]
+	entry.refs++
+	s.levels[dialerName] = entry
+	return entry.levels
 }
 
 // Set updates the backoff level for the given dialer name and protocol index.
 func (s *recoveryBackoffLevelStore) Set(dialerName string, protoIdx int, level int) {
 	s.Lock()
 	defer s.Unlock()
-	l := s.levels[dialerName]
-	l[protoIdx] = level
-	s.levels[dialerName] = l
+	entry := s.levels[dialerName]
+	entry.levels[protoIdx] = level
+	s.levels[dialerName] = entry
+}
+
+// Release decrements the reference count for the given dialer name.
+// The entry is removed once the last dialer instance is gone.
+func (s *recoveryBackoffLevelStore) Release(dialerName string) {
+	s.Lock()
+	defer s.Unlock()
+	entry, ok := s.levels[dialerName]
+	if !ok {
+		return
+	}
+	if entry.refs <= 1 {
+		delete(s.levels, dialerName)
+		return
+	}
+	entry.refs--
+	s.levels[dialerName] = entry
 }
 
 // Delete removes the backoff level for the given dialer name.
@@ -185,7 +209,7 @@ func (s *recoveryBackoffLevelStore) Delete(dialerName string) {
 func (s *recoveryBackoffLevelStore) Reset() {
 	s.Lock()
 	defer s.Unlock()
-	s.levels = make(map[string][2]int)
+	s.levels = make(map[string]recoveryBackoffLevelStoreEntry)
 }
 
 type GlobalOption struct {
@@ -280,7 +304,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	// This maintains recovery progression across dialer recreations
 	if d.property != nil {
 		if dialerName := d.Property().Name; dialerName != "" {
-			levels := globalRecoveryBackoffLevelStore.Get(dialerName)
+			levels := globalRecoveryBackoffLevelStore.Acquire(dialerName)
 			d.recoveryState[idxTcp].backoffLevel = levels[idxTcp]
 			d.recoveryState[idxUdp].backoffLevel = levels[idxUdp]
 		}
@@ -298,6 +322,13 @@ func (d *Dialer) Clone() *Dialer {
 
 func (d *Dialer) Close() error {
 	d.cancel()
+	if d.property != nil {
+		if dialerName := d.Property().Name; dialerName != "" {
+			d.recoveryStoreReleaseOnce.Do(func() {
+				globalRecoveryBackoffLevelStore.Release(dialerName)
+			})
+		}
+	}
 
 	// Cancel any pending recovery confirmation to prevent timer leaks
 	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_TCP)

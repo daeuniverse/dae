@@ -210,3 +210,44 @@ func TestAliveTransitionCallbackOnlyFiresOnStateChanges(t *testing.T) {
 		t.Fatal("expected second transition to be alive")
 	}
 }
+
+func TestRecoveryBackoffStoreReleasedAfterLastCloneCloses(t *testing.T) {
+	globalRecoveryBackoffLevelStore.Reset()
+
+	d := newNamedRecoveryTestDialer("clone-test")
+	d.lastPunish[idxTcp].Store(0)
+	d.incrementBackoffLevel(consts.L4ProtoStr_TCP)
+
+	clone := d.Clone()
+	if got := clone.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 1 {
+		t.Fatalf("clone backoff level = %d, want 1", got)
+	}
+
+	if err := d.Close(); err != nil {
+		t.Fatalf("close original dialer: %v", err)
+	}
+
+	globalRecoveryBackoffLevelStore.RLock()
+	entry, ok := globalRecoveryBackoffLevelStore.levels["clone-test"]
+	globalRecoveryBackoffLevelStore.RUnlock()
+	if !ok {
+		t.Fatal("expected recovery entry to remain while clone is alive")
+	}
+	if entry.refs != 1 {
+		t.Fatalf("recovery entry refs = %d, want 1", entry.refs)
+	}
+	if entry.levels[idxTcp] != 1 {
+		t.Fatalf("recovery entry tcp level = %d, want 1", entry.levels[idxTcp])
+	}
+
+	if err := clone.Close(); err != nil {
+		t.Fatalf("close cloned dialer: %v", err)
+	}
+
+	globalRecoveryBackoffLevelStore.RLock()
+	_, ok = globalRecoveryBackoffLevelStore.levels["clone-test"]
+	globalRecoveryBackoffLevelStore.RUnlock()
+	if ok {
+		t.Fatal("expected recovery entry to be removed after last dialer closed")
+	}
+}
