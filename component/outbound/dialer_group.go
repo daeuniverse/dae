@@ -335,15 +335,17 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 	if len(g.Dialers) == 0 {
 		return nil, 0, fmt.Errorf("no dialer in this group")
 	}
-	a := g.MustGetAliveDialerSet(networkType)
 	switch policy.Policy {
 	case consts.DialerSelectionPolicy_Random:
-		d := a.GetRandExcluded(excluded)
-		if d == nil {
-			// No alive dialer.
-			return nil, time.Hour, ErrNoAliveDialer
+		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
+		for i := 0; i < count; i++ {
+			a := g.MustGetAliveDialerSet(&networkTypes[i])
+			d := a.GetRandExcluded(excluded)
+			if d != nil {
+				return d, 0, nil
+			}
 		}
-		return d, 0, nil
+		return nil, time.Hour, ErrNoAliveDialer
 
 	case consts.DialerSelectionPolicy_Fixed:
 		// Fixed policy represents explicit user intent to use a specific dialer.
@@ -358,14 +360,45 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, policy *DialerSel
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		d, latency := a.GetMinLatency(excluded)
-		if d == nil {
-			// No alive dialer.
-			return nil, time.Hour, ErrNoAliveDialer
+		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
+		for i := 0; i < count; i++ {
+			a := g.MustGetAliveDialerSet(&networkTypes[i])
+			d, latency := a.GetMinLatency(excluded)
+			if d != nil {
+				return d, latency, nil
+			}
 		}
-		return d, latency, nil
+		return nil, time.Hour, ErrNoAliveDialer
 
 	default:
 		return nil, 0, fmt.Errorf("unsupported DialerSelectionPolicy: %v", policy)
 	}
+}
+
+func (g *DialerGroup) selectionNetworkTypes(networkType *dialer.NetworkType, policy *DialerSelectionPolicy) (networkTypes [3]dialer.NetworkType, count int) {
+	networkTypes[0] = *networkType
+	count = 1
+
+	if policy.Policy == consts.DialerSelectionPolicy_Fixed ||
+		networkType.L4Proto != consts.L4ProtoStr_UDP ||
+		networkType.EffectiveUdpHealthDomain() != dialer.UdpHealthDomainData {
+		return networkTypes, count
+	}
+
+	// If data-plane UDP has no alive dialer, retry selection against DNS UDP
+	// first, then shared TCP health for the same IP family. A successful real
+	// UDP flow will revive the data-UDP domain via ReportAvailableTraffic.
+	networkTypes[count] = dialer.NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       networkType.IpVersion,
+		IsDns:           true,
+		UdpHealthDomain: dialer.UdpHealthDomainDns,
+	}
+	count++
+	networkTypes[count] = dialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: networkType.IpVersion,
+	}
+	count++
+	return networkTypes, count
 }

@@ -28,6 +28,19 @@ var TestNetworkType = &dialer.NetworkType{
 	IsDns:     false,
 }
 
+var TestDnsUdp4NetworkType = &dialer.NetworkType{
+	L4Proto:         consts.L4ProtoStr_UDP,
+	IpVersion:       consts.IpVersionStr_4,
+	IsDns:           true,
+	UdpHealthDomain: dialer.UdpHealthDomainDns,
+}
+
+var TestDataUdp4NetworkType = &dialer.NetworkType{
+	L4Proto:         consts.L4ProtoStr_UDP,
+	IpVersion:       consts.IpVersionStr_4,
+	UdpHealthDomain: dialer.UdpHealthDomainData,
+}
+
 var log = logrus.New()
 
 func init() {
@@ -46,6 +59,28 @@ func newEmptyAnnotations(n int) []*dialer.Annotation {
 		annotations[i] = &dialer.Annotation{}
 	}
 	return annotations
+}
+
+func newTestGroupForSelection(policy DialerSelectionPolicy) (*DialerGroup, []*dialer.Dialer) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+		CheckTolerance:    0,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	group := NewDialerGroup(option, "test-group", dialers, newEmptyAnnotations(len(dialers)), policy, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+	return group, dialers
+}
+
+func markDialersDead(set *dialer.AliveDialerSet, dialers ...*dialer.Dialer) {
+	for _, d := range dialers {
+		set.NotifyLatencyChange(d, false)
+	}
 }
 
 func TestDialerGroup_Select_Fixed(t *testing.T) {
@@ -248,5 +283,56 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	}
 	if count[zeroTarget] != 0 {
 		t.Fail()
+	}
+}
+
+func TestDialerGroup_Select_DataUdpFallsBackToDnsUdp(t *testing.T) {
+	g, dialers := newTestGroupForSelection(DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_Random,
+	})
+
+	markDialersDead(g.MustGetAliveDialerSet(TestDataUdp4NetworkType), dialers...)
+	markDialersDead(g.MustGetAliveDialerSet(TestDnsUdp4NetworkType), dialers[0])
+	markDialersDead(g.MustGetAliveDialerSet(TestNetworkType), dialers...)
+
+	d, _, err := g.Select(TestDataUdp4NetworkType, true)
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
+	}
+	if d != dialers[1] {
+		t.Fatalf("expected DNS UDP fallback to select dialers[1], got another dialer")
+	}
+}
+
+func TestDialerGroup_Select_DataUdpFallsBackToTcp(t *testing.T) {
+	g, dialers := newTestGroupForSelection(DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_Random,
+	})
+
+	markDialersDead(g.MustGetAliveDialerSet(TestDataUdp4NetworkType), dialers...)
+	markDialersDead(g.MustGetAliveDialerSet(TestDnsUdp4NetworkType), dialers...)
+	markDialersDead(g.MustGetAliveDialerSet(TestNetworkType), dialers[1])
+
+	d, _, err := g.Select(TestDataUdp4NetworkType, true)
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
+	}
+	if d != dialers[0] {
+		t.Fatalf("expected TCP fallback to select dialers[0], got another dialer")
+	}
+}
+
+func TestDialerGroup_Select_DataUdpFixedPolicyDoesNotFallback(t *testing.T) {
+	g, dialers := newTestGroupForSelection(DialerSelectionPolicy{
+		Policy:     consts.DialerSelectionPolicy_Fixed,
+		FixedIndex: 1,
+	})
+
+	d, _, err := g.Select(TestDataUdp4NetworkType, true)
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
+	}
+	if d != dialers[1] {
+		t.Fatalf("expected fixed policy to keep selecting dialers[1], got another dialer")
 	}
 }
