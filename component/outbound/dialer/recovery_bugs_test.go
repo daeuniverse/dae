@@ -228,24 +228,24 @@ func TestCloneWithGlobalOptionUsesOverrideCheckInterval(t *testing.T) {
 	defer func() { _ = d.Close() }()
 
 	override := &GlobalOption{
-		ExtraOption: d.GlobalOption.ExtraOption,
-		Log:         d.GlobalOption.Log,
+		ExtraOption: d.ExtraOption,
+		Log:         d.Log,
 		TcpCheckOptionRaw: TcpCheckOptionRaw{
-			Log:             d.GlobalOption.TcpCheckOptionRaw.Log,
-			Raw:             slices.Clone(d.GlobalOption.TcpCheckOptionRaw.Raw),
-			ResolverNetwork: d.GlobalOption.TcpCheckOptionRaw.ResolverNetwork,
-			Method:          d.GlobalOption.TcpCheckOptionRaw.Method,
+			Log:             d.TcpCheckOptionRaw.Log,
+			Raw:             slices.Clone(d.TcpCheckOptionRaw.Raw),
+			ResolverNetwork: d.TcpCheckOptionRaw.ResolverNetwork,
+			Method:          d.TcpCheckOptionRaw.Method,
 		},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{
-			Raw:             slices.Clone(d.GlobalOption.CheckDnsOptionRaw.Raw),
-			ResolverNetwork: d.GlobalOption.CheckDnsOptionRaw.ResolverNetwork,
-			Somark:          d.GlobalOption.CheckDnsOptionRaw.Somark,
+			Raw:             slices.Clone(d.CheckDnsOptionRaw.Raw),
+			ResolverNetwork: d.CheckDnsOptionRaw.ResolverNetwork,
+			Somark:          d.CheckDnsOptionRaw.Somark,
 		},
 		CheckInterval:  90 * time.Second,
-		CheckTolerance: d.GlobalOption.CheckTolerance,
-		CheckDnsTcp:    d.GlobalOption.CheckDnsTcp,
-		SoMarkFromDae:  d.GlobalOption.SoMarkFromDae,
-		Mptcp:          d.GlobalOption.Mptcp,
+		CheckTolerance: d.CheckTolerance,
+		CheckDnsTcp:    d.CheckDnsTcp,
+		SoMarkFromDae:  d.SoMarkFromDae,
+		Mptcp:          d.Mptcp,
 	}
 
 	clone := d.CloneWithGlobalOption(override)
