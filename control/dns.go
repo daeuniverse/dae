@@ -930,6 +930,7 @@ func (d *DoUDP) getPool() *udpConnPool {
 
 func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
 	udpPool := d.getPool()
+	lifecycle, hasLifecycle := newDnsUdpLifecycleContext(&d.dialArgument, d.profile)
 	conn, err := udpPool.get(ctx)
 	if err != nil {
 		return nil, err
@@ -977,6 +978,11 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 			// Direct UDP sockets can usually survive a single DNS timeout, but a
 			// proxy-backed UDP timeout often means the relay-side session has gone
 			// stale. Reusing that socket causes timeout loops and stale-response churn.
+			if hasLifecycle && lifecycle.shouldDiscardPooledConnOnTimeout(err) {
+				udpPool.discard(conn)
+				badConn = true
+				return nil, err
+			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				if d.profile.DiscardPooledConnOnTimeout {

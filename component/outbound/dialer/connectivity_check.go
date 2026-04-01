@@ -986,6 +986,11 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, false, true))
 }
 
+func (d *Dialer) ReportUnavailableTransactional(typ *NetworkType, err error) {
+	d.logUnavailable(typ, err)
+	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, false, false))
+}
+
 func (d *Dialer) ReportUnavailableForced(typ *NetworkType, err error) {
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, true, true))

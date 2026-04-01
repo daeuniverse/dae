@@ -1156,14 +1156,19 @@ func (c *DnsController) evictIdleDnsForwarders(now time.Time) {
 }
 
 func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error) {
-	if c.timeoutExceedCallback == nil || dialArg == nil || err == nil {
+	if dialArg == nil || err == nil {
 		return
 	}
 	// Caller-driven cancellation should not mark a dialer as unavailable.
 	if errors.Is(err, context.Canceled) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
 		return
 	}
-	c.timeoutExceedCallback(dialArg, err)
+	if lifecycle, ok := newDnsUdpLifecycleContext(dialArg, UdpLifecycleProfile{}); ok {
+		lifecycle.reportUnavailable(err)
+	}
+	if c.timeoutExceedCallback != nil {
+		c.timeoutExceedCallback(dialArg, err)
+	}
 }
 
 func (c *DnsController) shouldRetireCachedDnsForwarder(dialArg *dialArgument, err error) bool {

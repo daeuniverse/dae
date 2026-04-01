@@ -98,7 +98,17 @@ func ResetUdpLogLimiters() {
 
 func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
 	if ue != nil && ue.endpointNetworkType.L4Proto != "" {
-		return ue.endpointNetworkType
+		networkType := ue.endpointNetworkType
+		if networkType.IpVersion == "" && ue.lAddr.IsValid() {
+			networkType.IpVersion = consts.IpVersionFromAddr(ue.lAddr.Addr())
+		}
+		if networkType.L4Proto == consts.L4ProtoStr_UDP {
+			networkType.IsDns = false
+			if networkType.UdpHealthDomain == dialer.UdpHealthDomainUnset {
+				networkType.UdpHealthDomain = dialer.UdpHealthDomainData
+			}
+		}
+		return networkType
 	}
 	return dialer.NetworkType{
 		L4Proto:         consts.L4ProtoStr_UDP,
@@ -479,8 +489,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 
 				_, err = ue.WriteTo(data, dialTarget)
 				if err == nil {
-					nt := udpEndpointNetworkType(ue)
-					ue.Dialer.ReportAvailableTraffic(&nt)
+					if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+						lifecycle.reportTrafficSuccess()
+					}
 					return nil
 				}
 				if c.log.IsLevelEnabled(logrus.DebugLevel) {
@@ -497,8 +508,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 					}).Debugln("Failed to write UDP fast-path packet. Remove stale endpoint and rebuild.")
 				}
 				if c.shouldPenalizeUdpEndpointWriteError(err) {
-					nt := udpEndpointNetworkType(ue)
-					ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
+					if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+						lifecycle.reportUnavailable(fmt.Errorf("udp endpoint write failed: %w", err))
+					}
 					excludedDialer = ue.Dialer
 				}
 				_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
@@ -824,9 +836,10 @@ getNew:
 					"packet":  packetIndex,
 				}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
 			}
-			nt := udpEndpointNetworkType(ue)
 			if c.shouldPenalizeUdpEndpointWriteError(err) {
-				ue.Dialer.ReportUnavailable(&nt, fmt.Errorf("udp endpoint write failed: %w", err))
+				if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+					lifecycle.reportUnavailable(fmt.Errorf("udp endpoint write failed: %w", err))
+				}
 			}
 			// Ensure the failed dialer is excluded in the immediate retry if it was a real failure.
 			// For normal closures, we still remove the endpoint but don't penalize the dialer.
@@ -839,8 +852,9 @@ getNew:
 		}
 		packetIndex++
 	}
-	nt := udpEndpointNetworkType(ue)
-	ue.Dialer.ReportAvailableTraffic(&nt)
+	if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+		lifecycle.reportTrafficSuccess()
+	}
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).

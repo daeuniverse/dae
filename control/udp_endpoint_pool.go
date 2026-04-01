@@ -225,14 +225,12 @@ func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
 	if !errors.IsUDPEndpointNormalClose(err) {
 		return true
 	}
-	// Proxy-backed UDP read loops run on top of a relay/session transport. Once
-	// that transport reports a normal close, the cached endpoint has lost its
-	// ability to forward future packets and must be retired immediately.
-	profile := ue.lifecycleProfile
-	if profile.Kind == 0 {
-		profile = newDataSessionLifecycleProfile(ue.Dialer)
+	// Delegate the "normal close" policy to the lifecycle model so all UDP
+	// session managers use the same rule.
+	if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+		return lifecycle.shouldRetireOnNormalClose(err)
 	}
-	return profile.RetireOnNormalClose
+	return false
 }
 
 func (ue *UdpEndpoint) start() {
@@ -298,7 +296,11 @@ func (ue *UdpEndpoint) start() {
 			}
 			continue
 		}
-		ue.markReplied(time.Now().UnixNano())
+		if lifecycle, ok := newUdpSessionLifecycleContext(ue, consts.IpVersionFromAddr(from.Addr())); ok {
+			lifecycle.handleReply(ue, time.Now().UnixNano())
+		} else {
+			ue.markReplied(time.Now().UnixNano())
+		}
 		if err = ue.handler(ue, buf[:n], from); err != nil {
 			ue.retire()
 			ue.logEndpointExit(err, "handler")
@@ -1073,22 +1075,17 @@ func reportUdpEndpointDialCreateFailure(key UdpEndpointKey, dialOption *DialOpti
 		return
 	}
 
-	networkType := dialer.NetworkType{
-		L4Proto:         consts.L4ProtoStr_UDP,
-		IpVersion:       consts.IpVersionFromAddr(key.Src.Addr()),
-		IsDns:           false,
-		UdpHealthDomain: dialer.UdpHealthDomainData,
-	}
-	if dialOption.NetworkType != nil {
-		networkType = *dialOption.NetworkType
+	lifecycle, ok := newUdpDialOptionLifecycleContext(dialOption, key.Src)
+	if !ok {
+		return
 	}
 
 	wrappedErr := fmt.Errorf("udp endpoint dial failed: %w", err)
 	if shouldForceMarkUnavailableOnProxyDialError(err) {
-		dialOption.Dialer.ReportUnavailableForced(&networkType, wrappedErr)
+		lifecycle.reportUnavailableForced(wrappedErr)
 		return
 	}
-	dialOption.Dialer.ReportUnavailable(&networkType, wrappedErr)
+	lifecycle.reportUnavailable(wrappedErr)
 }
 
 func shouldCacheUdpEndpointCreateFailure(err error) bool {
