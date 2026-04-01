@@ -116,8 +116,11 @@ type Dialer struct {
 	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
 	// This is used for health check cycle management and failover tracking
 	stickyIpDialer *stickyip.StickyIpDialer
+	proxyIpCache   *ProxyIpCache
 
 	// recoveryState manages exponential backoff for recovery detection.
+	// It is intentionally scoped to a single dialer instance so cloned or
+	// recreated dialers start clean under their own health-check semantics.
 	// Domains:
 	//   0: TCP
 	//   1: DNS UDP
@@ -146,78 +149,6 @@ type Dialer struct {
 	lastNotifyUdp atomic.Int64
 	lastNotifyTcp atomic.Int64
 	lastPunish    [3]atomic.Int64
-
-	recoveryStoreReleaseOnce sync.Once
-}
-
-// recoveryBackoffLevelStore provides persistent backoff level storage
-// This allows recovery state to survive Clone() operations and reloads
-// Key: Dialer name, Value: [TCP level, DNS UDP level, Data UDP level]
-type recoveryBackoffLevelStoreEntry struct {
-	levels [3]int
-	refs   int
-}
-
-type recoveryBackoffLevelStore struct {
-	sync.RWMutex
-	levels map[string]recoveryBackoffLevelStoreEntry
-}
-
-var globalRecoveryBackoffLevelStore = &recoveryBackoffLevelStore{
-	levels: make(map[string]recoveryBackoffLevelStoreEntry),
-}
-
-// Acquire increments the reference count for the given dialer name and returns
-// the currently persisted backoff levels.
-func (s *recoveryBackoffLevelStore) Acquire(dialerName string) [3]int {
-	s.Lock()
-	defer s.Unlock()
-	entry := s.levels[dialerName]
-	entry.refs++
-	s.levels[dialerName] = entry
-	return entry.levels
-}
-
-// Set updates the backoff level for the given dialer name and protocol index.
-func (s *recoveryBackoffLevelStore) Set(dialerName string, protoIdx int, level int) {
-	s.Lock()
-	defer s.Unlock()
-	entry := s.levels[dialerName]
-	entry.levels[protoIdx] = level
-	s.levels[dialerName] = entry
-}
-
-// Release decrements the reference count for the given dialer name.
-// The entry is removed once the last dialer instance is gone.
-func (s *recoveryBackoffLevelStore) Release(dialerName string) {
-	s.Lock()
-	defer s.Unlock()
-	entry, ok := s.levels[dialerName]
-	if !ok {
-		return
-	}
-	if entry.refs <= 1 {
-		delete(s.levels, dialerName)
-		return
-	}
-	entry.refs--
-	s.levels[dialerName] = entry
-}
-
-// Delete removes the backoff level for the given dialer name.
-// This can be used when a dialer is permanently removed.
-func (s *recoveryBackoffLevelStore) Delete(dialerName string) {
-	s.Lock()
-	defer s.Unlock()
-	delete(s.levels, dialerName)
-}
-
-// Reset clears all stored backoff levels.
-// Primarily used for testing to ensure a clean state between test runs.
-func (s *recoveryBackoffLevelStore) Reset() {
-	s.Lock()
-	defer s.Unlock()
-	s.levels = make(map[string]recoveryBackoffLevelStoreEntry)
 }
 
 type GlobalOption struct {
@@ -308,35 +239,42 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	// Initialize recovery detection with adjusted max backoff
 	d.initRecoveryDetection(option.CheckInterval)
 
-	// Restore backoff level from persistent store (for Clone() and reload scenarios)
-	// This maintains recovery progression across dialer recreations
-	if d.property != nil {
-		if dialerName := d.Property().Name; dialerName != "" {
-			levels := globalRecoveryBackoffLevelStore.Acquire(dialerName)
-			d.recoveryState[idxTcp].backoffLevel = levels[idxTcp]
-			d.recoveryState[idxDnsUdp].backoffLevel = levels[idxDnsUdp]
-			d.recoveryState[idxDataUdp].backoffLevel = levels[idxDataUdp]
-		}
-	}
-
 	option.Log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
 	return d
 }
 
+// Clone returns a new dialer instance with the same GlobalOption.
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.property)
+	return d.CloneWithGlobalOption(d.GlobalOption)
+}
+
+// CloneWithGlobalOption returns a new dialer instance initialized with option.
+func (d *Dialer) CloneWithGlobalOption(option *GlobalOption) *Dialer {
+	if d.property != nil && d.property.Link != "" {
+		clone, err := newFromLinkWithProxyCache(option, d.InstanceOption, d.property.Link, d.property.SubscriptionTag, NewProxyIpCache())
+		if err == nil {
+			clone.property = cloneProperty(d.property)
+			return clone
+		}
+		if option != nil && option.Log != nil {
+			option.Log.WithError(err).
+				WithField("dialer", d.Property().Name).
+				Warnln("Failed to reconstruct dialer clone from link; falling back to shared dialer instance")
+		}
+	}
+
+	clone := NewDialer(d.Dialer, option, d.InstanceOption, cloneProperty(d.property))
+	clone.stickyIpDialer = d.stickyIpDialer
+	clone.proxyIpCache = d.proxyIpCache
+	return clone
 }
 
 func (d *Dialer) Close() error {
 	d.cancel()
 	if d.property != nil {
-		if dialerName := d.Property().Name; dialerName != "" {
-			d.recoveryStoreReleaseOnce.Do(func() {
-				globalRecoveryBackoffLevelStore.Release(dialerName)
-			})
-		}
+		unregisterProxyCache(d.property.Address, d.proxyIpCache)
 	}
 
 	// Cancel any pending recovery confirmation to prevent timer leaks
@@ -374,6 +312,14 @@ func (d *Dialer) Close() error {
 
 func (d *Dialer) Property() *Property {
 	return d.property
+}
+
+func cloneProperty(property *Property) *Property {
+	if property == nil {
+		return nil
+	}
+	cloned := *property
+	return &cloned
 }
 
 func (d *Dialer) RegisterAliveTransitionCallback(callback func(networkType *NetworkType, alive bool)) {
@@ -632,12 +578,6 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
 		if d.recoveryState[protoIdx].backoffLevel > 0 {
 			d.recoveryState[protoIdx].backoffLevel--
 		}
-		// Persist the decremented backoff level to survive Clone() and reloads
-		if d.property != nil {
-			if dialerName := d.Property().Name; dialerName != "" {
-				globalRecoveryBackoffLevelStore.Set(dialerName, protoIdx, d.recoveryState[protoIdx].backoffLevel)
-			}
-		}
 		d.Log.WithFields(logrus.Fields{
 			"dialer":        d.Property().Name,
 			"proto":         networkType.L4Proto,
@@ -772,13 +712,6 @@ func (d *Dialer) incrementBackoffLevelByIndex(protoIdx int) {
 	if d.recoveryState[protoIdx].backoffLevel < maxBackoffLevel {
 		d.recoveryState[protoIdx].backoffLevel++
 	}
-
-	// Persist the incremented backoff level
-	if d.property != nil {
-		if dialerName := d.Property().Name; dialerName != "" {
-			globalRecoveryBackoffLevelStore.Set(dialerName, protoIdx, d.recoveryState[protoIdx].backoffLevel)
-		}
-	}
 }
 
 func (d *Dialer) GetBackoffLevel(proto consts.L4ProtoStr) int {
@@ -852,13 +785,6 @@ func (d *Dialer) notifyPeriodicCheckResultByIndex(protoIdx int, proto consts.L4P
 		if d.recoveryState[protoIdx].stableSuccessCount >= 2 {
 			d.recoveryState[protoIdx].stableSuccessCount = 0
 			d.recoveryState[protoIdx].backoffLevel--
-
-			// Persist the decremented backoff level
-			if d.property != nil {
-				if dialerName := d.Property().Name; dialerName != "" {
-					globalRecoveryBackoffLevelStore.Set(dialerName, protoIdx, d.recoveryState[protoIdx].backoffLevel)
-				}
-			}
 
 			d.Log.WithFields(logrus.Fields{
 				"dialer":        d.Property().Name,

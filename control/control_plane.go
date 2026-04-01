@@ -504,9 +504,8 @@ func NewControlPlaneWithContext(
 		if err == nil && groupOption != nil {
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
-				newDialer := d.Clone()
+				newDialer := d.CloneWithGlobalOption(groupOption)
 				deferFuncs = append(deferFuncs, newDialer.Close)
-				newDialer.GlobalOption = groupOption
 				newDialers = append(newDialers, newDialer)
 			}
 			log.Infof(`Group "%v"'s check option has been override.`, group.Name)

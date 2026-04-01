@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	_ "github.com/daeuniverse/outbound/dialer/shadowsocks"
+	_ "github.com/daeuniverse/outbound/protocol/shadowsocks"
+	"github.com/sirupsen/logrus"
 )
 
 func TestRecoveryTimerCancellation(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(60 * time.Second)
 	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
@@ -46,7 +48,6 @@ func TestRecoveryTimerCancellation(t *testing.T) {
 }
 
 func TestEmergencyProbeNonPunishment(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(60 * time.Second)
 	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
@@ -68,7 +69,6 @@ func TestEmergencyProbeNonPunishment(t *testing.T) {
 }
 
 func TestBackoffOverflowProtection(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	maxBackoff := 30 * time.Second
 	d.recoveryState[idxTcp].maxBackoff = maxBackoff
@@ -92,7 +92,6 @@ func TestBackoffOverflowProtection(t *testing.T) {
 }
 
 func TestRecoveryConfirmationDecrementsLevel(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(60 * time.Second)
 	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
@@ -112,7 +111,6 @@ func TestRecoveryConfirmationDecrementsLevel(t *testing.T) {
 }
 
 func TestDualStackRecoveryInterference(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(60 * time.Second)
 
@@ -159,7 +157,6 @@ func TestDualStackRecoveryInterference(t *testing.T) {
 }
 
 func TestDeduplicatedPunishment(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	typ4 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 	typ6 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6}
@@ -211,43 +208,103 @@ func TestAliveTransitionCallbackOnlyFiresOnStateChanges(t *testing.T) {
 	}
 }
 
-func TestRecoveryBackoffStoreReleasedAfterLastCloneCloses(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
-
+func TestCloneStartsWithCleanBackoffState(t *testing.T) {
 	d := newNamedRecoveryTestDialer("clone-test")
+	defer func() { _ = d.Close() }()
 	d.lastPunish[idxTcp].Store(0)
 	d.incrementBackoffLevel(consts.L4ProtoStr_TCP)
 
 	clone := d.Clone()
-	if got := clone.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 1 {
-		t.Fatalf("clone backoff level = %d, want 1", got)
+	defer func() { _ = clone.Close() }()
+
+	if got := clone.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 0 {
+		t.Fatalf("clone backoff level = %d, want 0", got)
 	}
+}
+
+func TestCloneWithGlobalOptionUsesOverrideCheckInterval(t *testing.T) {
+	d := newNamedRecoveryTestDialer("clone-option-test")
+	defer func() { _ = d.Close() }()
+
+	override := *d.GlobalOption
+	override.CheckInterval = 90 * time.Second
+
+	clone := d.CloneWithGlobalOption(&override)
+	defer func() { _ = clone.Close() }()
+
+	clone.recoveryState[idxTcp].Lock()
+	got := clone.recoveryState[idxTcp].maxBackoff
+	clone.recoveryState[idxTcp].Unlock()
+
+	want := 60 * time.Second
+	if got != want {
+		t.Fatalf("clone maxBackoff = %v, want %v", got, want)
+	}
+}
+
+func TestRecreatedDialerStartsWithCleanBackoffState(t *testing.T) {
+	d := newNamedRecoveryTestDialer("recreate-test")
+	d.lastPunish[idxTcp].Store(0)
+	d.incrementBackoffLevel(consts.L4ProtoStr_TCP)
 
 	if err := d.Close(); err != nil {
 		t.Fatalf("close original dialer: %v", err)
 	}
 
-	globalRecoveryBackoffLevelStore.RLock()
-	entry, ok := globalRecoveryBackoffLevelStore.levels["clone-test"]
-	globalRecoveryBackoffLevelStore.RUnlock()
-	if !ok {
-		t.Fatal("expected recovery entry to remain while clone is alive")
+	recreated := newNamedRecoveryTestDialer("recreate-test")
+	defer func() { _ = recreated.Close() }()
+
+	if got := recreated.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 0 {
+		t.Fatalf("recreated dialer backoff level = %d, want 0", got)
 	}
-	if entry.refs != 1 {
-		t.Fatalf("recovery entry refs = %d, want 1", entry.refs)
-	}
-	if entry.levels[idxTcp] != 1 {
-		t.Fatalf("recovery entry tcp level = %d, want 1", entry.levels[idxTcp])
+}
+
+func TestCloneWithGlobalOptionUsesIndependentStickyIpCycle(t *testing.T) {
+	oldGlobalProxyIpCache := globalProxyIpCache
+	globalProxyIpCache = NewProxyIpCache()
+	defer func() {
+		globalProxyIpCache = oldGlobalProxyIpCache
+	}()
+
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	option := &GlobalOption{
+		Log:           log,
+		CheckInterval: 30 * time.Second,
 	}
 
-	if err := clone.Close(); err != nil {
-		t.Fatalf("close cloned dialer: %v", err)
+	original, err := NewFromLink(option, InstanceOption{}, "custom:ss://YWVzLTEyOC1nY206cGFzcw@proxy.example.com:443#node", "sub")
+	if err != nil {
+		t.Fatalf("NewFromLink error = %v", err)
+	}
+	defer func() { _ = original.Close() }()
+
+	clone := original.CloneWithGlobalOption(option)
+	defer func() { _ = clone.Close() }()
+
+	if original.stickyIpDialer == nil {
+		t.Fatal("expected original stickyIpDialer to be initialized")
+	}
+	if clone.stickyIpDialer == nil {
+		t.Fatal("expected clone stickyIpDialer to be initialized")
+	}
+	if original.stickyIpDialer == clone.stickyIpDialer {
+		t.Fatal("expected clone to have an independent stickyIpDialer")
+	}
+	if clone.Property().Name != original.Property().Name {
+		t.Fatalf("clone name = %q, want %q", clone.Property().Name, original.Property().Name)
 	}
 
-	globalRecoveryBackoffLevelStore.RLock()
-	_, ok = globalRecoveryBackoffLevelStore.levels["clone-test"]
-	globalRecoveryBackoffLevelStore.RUnlock()
-	if ok {
-		t.Fatal("expected recovery entry to be removed after last dialer closed")
+	const cachedAddr = "203.0.113.10:443"
+	globalProxyIpCache.Set(original.Property().Address, cachedAddr, "tcp", "4", 0)
+
+	if got := original.stickyIpDialer.GetCachedProxyAddrWithIpVersion("tcp", "4"); got != cachedAddr {
+		t.Fatalf("original cached addr before clone cycle increment = %q, want %q", got, cachedAddr)
+	}
+
+	clone.IncrementCheckCycle()
+
+	if got := original.stickyIpDialer.GetCachedProxyAddrWithIpVersion("tcp", "4"); got != cachedAddr {
+		t.Fatalf("original cached addr after clone cycle increment = %q, want %q", got, cachedAddr)
 	}
 }

@@ -72,7 +72,6 @@ func TestStabilityCountReset(t *testing.T) {
 }
 
 func TestRevivalTrigger(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.CheckInterval = 30 * time.Second
 	d.initRecoveryDetection(30 * time.Second)
@@ -104,7 +103,6 @@ func TestRevivalTrigger(t *testing.T) {
 }
 
 func TestExponentialProgression(t *testing.T) {
-	globalRecoveryBackoffLevelStore.Reset()
 	d := newRecoveryTestDialer()
 	d.initRecoveryDetection(30 * time.Second)
 	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}

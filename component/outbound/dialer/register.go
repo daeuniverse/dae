@@ -18,6 +18,14 @@ import (
 )
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
+	return newFromLinkWithProxyCache(gOption, iOption, link, subscriptionTag, globalProxyIpCache)
+}
+
+func newFromLinkWithProxyCache(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string, proxyCache *ProxyIpCache) (*Dialer, error) {
+	if proxyCache == nil {
+		proxyCache = globalProxyIpCache
+	}
+
 	normalizedLink := normalizeShadowTLSPluginOptions(link)
 	baseDialer := newDefaultNetworkDialer(direct.SymmetricDirect, gOption.SoMarkFromDae, gOption.Mptcp)
 
@@ -49,7 +57,7 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 		if gOption.Log != nil && gOption.Log.IsLevelEnabled(logrus.DebugLevel) {
 			gOption.Log.WithField("proxy_address", p.Address).Debug("[DialerRegister] Creating sticky IP dialer wrapper for proxy domain")
 		}
-		stickyWrapper = stickyip.NewStickyIpDialer(baseDialer, p.Address, globalProxyIpCache)
+		stickyWrapper = stickyip.NewStickyIpDialer(baseDialer, p.Address, proxyCache)
 
 		// Re-create the protocol dialer with sticky wrapper as base
 		d, _p, err = D.NewNetproxyDialerFromLink(stickyWrapper, &gOption.ExtraOption, normalizedLink)
@@ -72,6 +80,8 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 	// Store reference to sticky wrapper for health check cycle management
 	if stickyWrapper != nil {
 		daeDialer.stickyIpDialer = stickyWrapper
+		daeDialer.proxyIpCache = proxyCache
+		registerProxyCache(p.Address, proxyCache)
 	}
 
 	return daeDialer, nil

@@ -21,10 +21,64 @@ var NewProxyIpCache = stickyip.NewProxyIpCache
 // It ensures that the same proxy domain resolves to the same IP across all dialers.
 var globalProxyIpCache = NewProxyIpCache()
 
+type proxyIpCacheRegistry struct {
+	sync.Mutex
+	caches map[string]map[*ProxyIpCache]int
+}
+
+var globalProxyIpCacheRegistry = &proxyIpCacheRegistry{
+	caches: make(map[string]map[*ProxyIpCache]int),
+}
+
+func registerProxyCache(proxyAddr string, cache *ProxyIpCache) {
+	if proxyAddr == "" || cache == nil || cache == globalProxyIpCache {
+		return
+	}
+	globalProxyIpCacheRegistry.Lock()
+	defer globalProxyIpCacheRegistry.Unlock()
+	cacheSet := globalProxyIpCacheRegistry.caches[proxyAddr]
+	if cacheSet == nil {
+		cacheSet = make(map[*ProxyIpCache]int)
+		globalProxyIpCacheRegistry.caches[proxyAddr] = cacheSet
+	}
+	cacheSet[cache]++
+}
+
+func unregisterProxyCache(proxyAddr string, cache *ProxyIpCache) {
+	if proxyAddr == "" || cache == nil || cache == globalProxyIpCache {
+		return
+	}
+	globalProxyIpCacheRegistry.Lock()
+	defer globalProxyIpCacheRegistry.Unlock()
+	cacheSet := globalProxyIpCacheRegistry.caches[proxyAddr]
+	if cacheSet == nil {
+		return
+	}
+	cacheSet[cache]--
+	if cacheSet[cache] <= 0 {
+		delete(cacheSet, cache)
+	}
+	if len(cacheSet) == 0 {
+		delete(globalProxyIpCacheRegistry.caches, proxyAddr)
+	}
+}
+
 // invalidateProxyCache removes the cached IP for a proxy address.
 // This should be called when consecutive failures are detected.
 func invalidateProxyCache(proxyAddr string) {
 	globalProxyIpCache.Invalidate(proxyAddr)
+
+	globalProxyIpCacheRegistry.Lock()
+	cacheSet := globalProxyIpCacheRegistry.caches[proxyAddr]
+	caches := make([]*ProxyIpCache, 0, len(cacheSet))
+	for cache := range cacheSet {
+		caches = append(caches, cache)
+	}
+	globalProxyIpCacheRegistry.Unlock()
+
+	for _, cache := range caches {
+		cache.Invalidate(proxyAddr)
+	}
 }
 
 // proxyIpHealthTracker tracks consecutive failures for proxy IPs.
