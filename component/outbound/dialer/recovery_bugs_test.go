@@ -2,6 +2,7 @@ package dialer
 
 import (
 	"io"
+	"slices"
 	"testing"
 	"time"
 
@@ -226,10 +227,28 @@ func TestCloneWithGlobalOptionUsesOverrideCheckInterval(t *testing.T) {
 	d := newNamedRecoveryTestDialer("clone-option-test")
 	defer func() { _ = d.Close() }()
 
-	override := *d.GlobalOption
-	override.CheckInterval = 90 * time.Second
+	override := &GlobalOption{
+		ExtraOption: d.GlobalOption.ExtraOption,
+		Log:         d.GlobalOption.Log,
+		TcpCheckOptionRaw: TcpCheckOptionRaw{
+			Log:             d.GlobalOption.TcpCheckOptionRaw.Log,
+			Raw:             slices.Clone(d.GlobalOption.TcpCheckOptionRaw.Raw),
+			ResolverNetwork: d.GlobalOption.TcpCheckOptionRaw.ResolverNetwork,
+			Method:          d.GlobalOption.TcpCheckOptionRaw.Method,
+		},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{
+			Raw:             slices.Clone(d.GlobalOption.CheckDnsOptionRaw.Raw),
+			ResolverNetwork: d.GlobalOption.CheckDnsOptionRaw.ResolverNetwork,
+			Somark:          d.GlobalOption.CheckDnsOptionRaw.Somark,
+		},
+		CheckInterval:  90 * time.Second,
+		CheckTolerance: d.GlobalOption.CheckTolerance,
+		CheckDnsTcp:    d.GlobalOption.CheckDnsTcp,
+		SoMarkFromDae:  d.GlobalOption.SoMarkFromDae,
+		Mptcp:          d.GlobalOption.Mptcp,
+	}
 
-	clone := d.CloneWithGlobalOption(&override)
+	clone := d.CloneWithGlobalOption(override)
 	defer func() { _ = clone.Close() }()
 
 	clone.recoveryState[idxTcp].Lock()
