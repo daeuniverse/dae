@@ -695,13 +695,6 @@ func (d *Dialer) getRecoveryBackoffDuration(proto consts.L4ProtoStr) time.Durati
 	return d.getRecoveryBackoffDurationByIndex(protoIdx)
 }
 
-func (d *Dialer) getRecoveryBackoffDurationForType(typ *NetworkType) time.Duration {
-	if typ == nil {
-		return 0
-	}
-	return d.getRecoveryBackoffDurationByIndex(d.recoveryIdxForType(typ))
-}
-
 func (d *Dialer) getRecoveryBackoffDurationByIndex(protoIdx int) time.Duration {
 	d.recoveryState[protoIdx].Lock()
 	defer d.recoveryState[protoIdx].Unlock()
@@ -791,13 +784,6 @@ func (d *Dialer) incrementBackoffLevelByIndex(protoIdx int) {
 func (d *Dialer) GetBackoffLevel(proto consts.L4ProtoStr) int {
 	protoIdx := d.protoIdx(proto)
 	return d.getBackoffLevelByIndex(protoIdx)
-}
-
-func (d *Dialer) getBackoffLevelForType(typ *NetworkType) int {
-	if typ == nil {
-		return 0
-	}
-	return d.getBackoffLevelByIndex(d.recoveryIdxForType(typ))
 }
 
 func (d *Dialer) getBackoffLevelByIndex(protoIdx int) int {

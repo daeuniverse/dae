@@ -2464,9 +2464,8 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 	}
 	key = ((__u32)outbound * 6) + (domain_idx * 2) + ip_idx;
 	alive = bpf_map_lookup_elem(&outbound_connectivity_map, &key);
-	if (alive && *alive == 0) {
+	if (alive && *alive == 0)
 		return false;
-	}
 	return true;
 }
 
