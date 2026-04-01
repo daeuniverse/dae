@@ -119,16 +119,20 @@ func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
 }
 
 func shouldRejectNewUdpDialSelection(res *proxyDialResult) bool {
-	if res == nil || res.Dialer == nil || res.SelectionNetworkTypeObj == nil {
+	if res == nil || res.Dialer == nil {
 		return false
 	}
-	if res.SelectionNetworkTypeObj.L4Proto != consts.L4ProtoStr_UDP {
+	networkType := res.SelectionNetworkTypeObj
+	if res.AdmissionNetworkTypeObj != nil {
+		networkType = res.AdmissionNetworkTypeObj
+	}
+	if networkType == nil || networkType.L4Proto != consts.L4ProtoStr_UDP {
 		return false
 	}
 	if res.Outbound != nil && res.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
 		return false
 	}
-	return !res.Dialer.MustGetAlive(res.SelectionNetworkTypeObj)
+	return !res.Dialer.MustGetAlive(networkType)
 }
 
 func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpointKey, isFastPath bool) bool {

@@ -54,6 +54,31 @@ func TestShouldRejectNewUdpDialSelection(t *testing.T) {
 	}
 }
 
+func TestShouldRejectNewUdpDialSelection_UsesAdmissionNetworkType(t *testing.T) {
+	d := newTestEndpointDialer()
+	dataUDP6 := &componentdialer.NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
+	}
+	dnsUDP6 := &componentdialer.NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		IsDns:           true,
+		UdpHealthDomain: componentdialer.UdpHealthDomainDns,
+	}
+
+	d.ReportUnavailableForced(dataUDP6, nil)
+
+	if shouldRejectNewUdpDialSelection(&proxyDialResult{
+		Dialer:                  d,
+		SelectionNetworkTypeObj: dataUDP6,
+		AdmissionNetworkTypeObj: dnsUDP6,
+	}) {
+		t.Fatal("expected DNS-UDP admission fallback to bypass the data-UDP guard")
+	}
+}
+
 func TestShouldRejectNewUdpDialSelection_FixedOutboundIgnoresHealth(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{

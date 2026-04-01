@@ -43,6 +43,7 @@ type proxyDialResult struct {
 	SelectionNetworkType    string
 	OrigNetworkTypeObj      *dialer.NetworkType
 	SelectionNetworkTypeObj *dialer.NetworkType
+	AdmissionNetworkTypeObj *dialer.NetworkType
 }
 
 func shouldForceMarkUnavailableOnProxyDialError(err error) bool {
@@ -70,21 +71,19 @@ func alternateNetworkType(networkType *dialer.NetworkType) *dialer.NetworkType {
 	}
 }
 
-func preferAlternateSelectionNetworkType(d *dialer.Dialer, networkType *dialer.NetworkType) *dialer.NetworkType {
-	if d == nil || networkType == nil {
-		return networkType
+func endpointNetworkTypeForSelection(requestedNetworkType *dialer.NetworkType, admissionNetworkType *dialer.NetworkType) *dialer.NetworkType {
+	if requestedNetworkType == nil {
+		return nil
 	}
-	if d.MustGetAlive(networkType) {
-		return networkType
+	endpointType := *requestedNetworkType
+	if admissionNetworkType != nil && admissionNetworkType.IpVersion != "" {
+		endpointType.IpVersion = admissionNetworkType.IpVersion
 	}
-	altType := alternateNetworkType(networkType)
-	if altType == nil {
-		return networkType
+	if endpointType.L4Proto == consts.L4ProtoStr_UDP {
+		endpointType.IsDns = false
+		endpointType.UdpHealthDomain = dialer.UdpHealthDomainData
 	}
-	if d.MustGetAlive(altType) {
-		return altType
-	}
-	return networkType
+	return &endpointType
 }
 
 func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam) (*proxyDialResult, error) {
@@ -159,12 +158,12 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 	}
 
 	strictIpVersion := dialIp
-	d, _, err := outbound.SelectWithExclusion(selectionNetworkType, strictIpVersion, p.Excluded)
+	d, _, admissionNetworkType, err := outbound.SelectWithExclusionResult(selectionNetworkType, strictIpVersion, p.Excluded)
 	if err != nil && err == ob.ErrNoAliveDialer {
 		// Fallback for UDP/TCP: if selection failed (probably due to health check fail),
 		// try the other IP version if strictIpVersion is not absolutely required by domain routing.
 		altType := alternateNetworkType(selectionNetworkType)
-		d, _, err = outbound.SelectWithExclusion(altType, false, p.Excluded)
+		d, _, admissionNetworkType, err = outbound.SelectWithExclusionResult(altType, false, p.Excluded)
 		if err == nil {
 			selectionNetworkType = altType
 		}
@@ -178,6 +177,7 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 				SelectionNetworkType:    selectionNetworkType.StringWithoutDns(),
 				OrigNetworkTypeObj:      networkType,
 				SelectionNetworkTypeObj: selectionNetworkType,
+				AdmissionNetworkTypeObj: admissionNetworkType,
 			}, fmt.Errorf("select dialer from group %v (orig:%v sel:%v src:%v): %w",
 				outbound.Name,
 				networkType.StringWithoutDns(),
@@ -187,7 +187,7 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 			)
 	}
 
-	selectionNetworkType = preferAlternateSelectionNetworkType(d, selectionNetworkType)
+	selectionNetworkType = endpointNetworkTypeForSelection(selectionNetworkType, admissionNetworkType)
 
 	return &proxyDialResult{
 		Outbound:   outbound,
@@ -206,6 +206,7 @@ func (c *ControlPlane) chooseProxyDialer(ctx context.Context, p *proxyDialParam)
 		SelectionNetworkType:    selectionNetworkType.StringWithoutDns(),
 		OrigNetworkTypeObj:      networkType,
 		SelectionNetworkTypeObj: selectionNetworkType,
+		AdmissionNetworkTypeObj: admissionNetworkType,
 	}, nil
 }
 

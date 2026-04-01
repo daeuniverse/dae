@@ -6,13 +6,16 @@
 package outbound
 
 import (
+	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 )
@@ -59,6 +62,34 @@ func newEmptyAnnotations(n int) []*dialer.Annotation {
 		annotations[i] = &dialer.Annotation{}
 	}
 	return annotations
+}
+
+type noopTestDialer struct{}
+
+func (noopTestDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
+	return nil, errors.New("not implemented")
+}
+
+func newNoopDialer(option *dialer.GlobalOption) *dialer.Dialer {
+	return dialer.NewDialer(
+		noopTestDialer{},
+		option,
+		dialer.InstanceOption{DisableCheck: true},
+		&dialer.Property{},
+	)
+}
+
+func dialerSignalLen(t *testing.T, d *dialer.Dialer, field string) int {
+	t.Helper()
+
+	v := reflect.ValueOf(d).Elem().FieldByName(field)
+	if !v.IsValid() {
+		t.Fatalf("field %q not found", field)
+	}
+	if v.Kind() != reflect.Chan {
+		t.Fatalf("field %q kind = %v, want chan", field, v.Kind())
+	}
+	return v.Len()
 }
 
 func newTestGroupForSelection(policy DialerSelectionPolicy) (*DialerGroup, []*dialer.Dialer) {
@@ -238,6 +269,50 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 			t.Fail()
 		}
 		t.Logf("count[%v]: %v", i, c)
+	}
+}
+
+func TestDialerGroup_Resuscitate_UDPTriggersDnsUdpAndTcp(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+	}
+	d := newNoopDialer(option)
+	g := &DialerGroup{
+		Dialers: []*dialer.Dialer{d},
+	}
+
+	g.resuscitate(TestDataUdp4NetworkType)
+
+	if got := dialerSignalLen(t, d, "checkDnsUdpCh"); got != 1 {
+		t.Fatalf("DNS-UDP resuscitation signals = %d, want 1", got)
+	}
+	if got := dialerSignalLen(t, d, "checkTcpCh"); got != 1 {
+		t.Fatalf("TCP resuscitation signals = %d, want 1", got)
+	}
+}
+
+func TestDialerGroup_Resuscitate_TCPTriggersOnlyTcp(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+	}
+	d := newNoopDialer(option)
+	g := &DialerGroup{
+		Dialers: []*dialer.Dialer{d},
+	}
+
+	g.resuscitate(TestNetworkType)
+
+	if got := dialerSignalLen(t, d, "checkDnsUdpCh"); got != 0 {
+		t.Fatalf("DNS-UDP resuscitation signals = %d, want 0", got)
+	}
+	if got := dialerSignalLen(t, d, "checkTcpCh"); got != 1 {
+		t.Fatalf("TCP resuscitation signals = %d, want 1", got)
 	}
 }
 

@@ -159,7 +159,7 @@ func TestHandlePkt_UpstreamHardErrorsCauseSameFlowRedial(t *testing.T) {
 	}
 }
 
-func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
+func TestHandlePkt_HealthDeathAllowsFallbackNewUdpDialSelection(t *testing.T) {
 	oldPool := DefaultUdpEndpointPool
 	DefaultUdpEndpointPool = NewUdpEndpointPool()
 	defer func() {
@@ -206,11 +206,14 @@ func TestHandlePkt_HealthDeathStopsNewUdpDialSelection(t *testing.T) {
 	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
 		t.Fatalf("second handlePkt after health death: %v", err)
 	}
-	if got := underlay.calls.Load(); got != 1 {
-		t.Fatalf("DialContext calls after health death = %d, want 1", got)
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls after health death = %d, want 2", got)
 	}
-	if _, ok := DefaultUdpEndpointPool.Get(key); ok {
-		t.Fatal("expected no endpoint to be recreated while dialer is unhealthy")
+	if !d.MustGetAlive(udp4NetworkType()) {
+		t.Fatal("expected successful fallback traffic to restore data-UDP health")
+	}
+	if _, ok := DefaultUdpEndpointPool.Get(key); !ok {
+		t.Fatal("expected endpoint to be recreated through fallback admission")
 	}
 }
 
@@ -370,7 +373,7 @@ func TestHandlePkt_ShadowsocksEstablishedFlowSurvivesTransientHealthFailure(t *t
 	}
 }
 
-func TestHandlePkt_CreateFailureFromNetworkUnreachableMarksDialerUnavailable(t *testing.T) {
+func TestHandlePkt_CreateFailureFromNetworkUnreachableKeepsFallbackAdmissionAlive(t *testing.T) {
 	oldPool := DefaultUdpEndpointPool
 	DefaultUdpEndpointPool = NewUdpEndpointPool()
 	defer func() {
@@ -399,14 +402,26 @@ func TestHandlePkt_CreateFailureFromNetworkUnreachableMarksDialerUnavailable(t *
 	if d.MustGetAlive(udp4NetworkType()) {
 		t.Fatal("expected create-time network unreachable to mark udp4 unavailable immediately")
 	}
+	dnsUDP4 := &componentdialer.NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: componentdialer.UdpHealthDomainDns,
+	}
+	if !d.MustGetAlive(dnsUDP4) {
+		t.Fatal("expected DNS-UDP admission health to remain alive after data-UDP failure")
+	}
 
 	src2 := mustParseAddrPort("192.168.89.3:42688")
 	flow2 := ClassifyUdpFlow(src2, dst, payload)
 	if err := cp.handlePkt(nil, payload, src2, dst, routingResult, flow2, false); err != nil {
 		t.Fatalf("second handlePkt after forced death: %v", err)
 	}
-	if got := underlay.calls.Load(); got != 2 {
-		t.Fatalf("DialContext calls after forced death = %d, want 2", got)
+	if got := underlay.calls.Load(); got != 4 {
+		t.Fatalf("DialContext calls after forced death = %d, want 4", got)
+	}
+	if _, ok := DefaultUdpEndpointPool.Get(flow2.FullConeNatEndpointKey()); ok {
+		t.Fatal("expected no endpoint to be pooled after repeated create failures")
 	}
 }
 
