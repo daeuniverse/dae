@@ -118,5 +118,5 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use outbound fixes from origin/perf/complete-optimizations until they are merged upstream.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260401015152-44ef03feb1b7
+// Use the synced local outbound perf branch HEAD for joint review until these commits are pushed upstream.
+replace github.com/daeuniverse/outbound => ../outbound
