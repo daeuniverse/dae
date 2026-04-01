@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -144,5 +145,45 @@ func TestRelayTCP_Cancellation(t *testing.T) {
 		t.Error("lConn.SetReadDeadline should have been called")
 	} else if !dl.Before(time.Now()) {
 		t.Errorf("lConn.SetReadDeadline should be in the past, got %v", dl)
+	}
+}
+
+func TestRelayTCPContext_ExternalCancellation(t *testing.T) {
+	lConn := newMockConn(true, nil)
+	rConn := newMockConn(true, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RelayTCPContext(ctx, lConn, rConn)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation to terminate relay")
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("unexpected relay error after cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RelayTCPContext did not exit after external cancellation")
+	}
+
+	lConn.mu.Lock()
+	leftDeadline := lConn.deadline
+	lConn.mu.Unlock()
+	if leftDeadline.IsZero() {
+		t.Fatal("left connection deadline was not forced during cancellation")
+	}
+
+	rConn.mu.Lock()
+	rightDeadline := rConn.deadline
+	rConn.mu.Unlock()
+	if rightDeadline.IsZero() {
+		t.Fatal("right connection deadline was not forced during cancellation")
 	}
 }

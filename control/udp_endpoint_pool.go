@@ -704,6 +704,8 @@ type udpEndpointDialerNetworkKey struct {
 type UdpEndpointPool struct {
 	shards      [udpEndpointCreateShardCount]udpEndpointPoolShard
 	janitorOnce sync.Once
+	janitorStop chan struct{}
+	janitorDone chan struct{}
 	dialerIndex sync.Map // map[udpEndpointDialerNetworkKey]*udpEndpointDialerBucket
 	dialerEpoch sync.Map // map[udpEndpointDialerNetworkKey]*atomic.Uint64
 }
@@ -724,7 +726,10 @@ type UdpEndpointOptions struct {
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
 
 func NewUdpEndpointPool() *UdpEndpointPool {
-	p := &UdpEndpointPool{}
+	p := &UdpEndpointPool{
+		janitorStop: make(chan struct{}),
+		janitorDone: make(chan struct{}),
+	}
 	for i := range udpEndpointCreateShardCount {
 		p.shards[i].pool = make(map[UdpEndpointKey]*UdpEndpoint, 16)
 	}
@@ -885,6 +890,25 @@ func (p *UdpEndpointPool) Reset() {
 	}
 	p.dialerIndex = sync.Map{}
 	p.dialerEpoch = sync.Map{}
+}
+
+// Close stops the janitor goroutine and clears all pooled endpoints.
+// Non-singleton pools must be closed when no longer needed.
+func (p *UdpEndpointPool) Close() {
+	if p == nil {
+		return
+	}
+	if p.janitorStop != nil {
+		select {
+		case <-p.janitorStop:
+		default:
+			close(p.janitorStop)
+		}
+	}
+	if p.janitorDone != nil {
+		<-p.janitorDone
+	}
+	p.Reset()
 }
 
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
@@ -1177,24 +1201,30 @@ func (p *UdpEndpointPool) startJanitor() {
 		go func() {
 			ticker := time.NewTicker(udpEndpointJanitorInterval)
 			defer ticker.Stop()
+			defer close(p.janitorDone)
 
 			var toClose []*UdpEndpoint
 
-			for now := range ticker.C {
-				nowNano := now.UnixNano()
-				for i := range udpEndpointCreateShardCount {
-					shard := &p.shards[i]
-					shard.mu.Lock()
-					toClose = toClose[:0]
-					for key, ue := range shard.pool {
-						if ue.IsExpired(nowNano) || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)) {
-							delete(shard.pool, key)
-							toClose = append(toClose, ue)
+			for {
+				select {
+				case <-p.janitorStop:
+					return
+				case now := <-ticker.C:
+					nowNano := now.UnixNano()
+					for i := range udpEndpointCreateShardCount {
+						shard := &p.shards[i]
+						shard.mu.Lock()
+						toClose = toClose[:0]
+						for key, ue := range shard.pool {
+							if ue.IsExpired(nowNano) || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)) {
+								delete(shard.pool, key)
+								toClose = append(toClose, ue)
+							}
 						}
-					}
-					shard.mu.Unlock()
-					for _, ue := range toClose {
-						_ = ue.Close()
+						shard.mu.Unlock()
+						for _, ue := range toClose {
+							_ = ue.Close()
+						}
 					}
 				}
 			}

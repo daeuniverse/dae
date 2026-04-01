@@ -49,6 +49,8 @@ func (c *relayCore) run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	defer close(watchDone)
 	defer cancel()
 
 	results := make(chan relayResult, 2)
@@ -65,6 +67,14 @@ func (c *relayCore) run(ctx context.Context) error {
 			_ = c.right.Close()
 		})
 	}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			forceClose()
+		case <-watchDone:
+		}
+	}()
 
 	runDirection := func(dir relayDirection) {
 		_, err := c.copyEngine.Copy(ctx, dir.dst, dir.src)

@@ -212,7 +212,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		return nil
 	}
 
-	if err = RelayTCP(lRelayConn, rConn); err != nil {
+	if err = RelayTCPContext(ctx, lRelayConn, rConn); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}

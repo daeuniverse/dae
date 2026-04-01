@@ -420,6 +420,8 @@ func parseQuicInitialFingerprint(data []byte) (sig quicInitialFingerprint, ok bo
 type PacketSnifferPool struct {
 	pool        sync.Map
 	janitorOnce sync.Once
+	janitorStop chan struct{}
+	janitorDone chan struct{}
 }
 
 type PacketSnifferOptions struct {
@@ -463,7 +465,10 @@ func NewPacketSnifferKey(src, dst netip.AddrPort, data []byte) PacketSnifferKey 
 var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
 
 func NewPacketSnifferPool() *PacketSnifferPool {
-	p := &PacketSnifferPool{}
+	p := &PacketSnifferPool{
+		janitorStop: make(chan struct{}),
+		janitorDone: make(chan struct{}),
+	}
 	p.startJanitor()
 	return p
 }
@@ -484,6 +489,24 @@ func (p *PacketSnifferPool) Reset() {
 			_ = ps.Close()
 		}
 	}
+}
+
+// Close stops the janitor goroutine and clears all packet sniffers.
+func (p *PacketSnifferPool) Close() {
+	if p == nil {
+		return
+	}
+	if p.janitorStop != nil {
+		select {
+		case <-p.janitorStop:
+		default:
+			close(p.janitorStop)
+		}
+	}
+	if p.janitorDone != nil {
+		<-p.janitorDone
+	}
+	p.Reset()
 }
 
 func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
@@ -538,6 +561,7 @@ func (p *PacketSnifferPool) startJanitor() {
 		go func() {
 			ticker := time.NewTicker(packetSnifferJanitorInterval)
 			defer ticker.Stop()
+			defer close(p.janitorDone)
 			// janitorMinScanItems is the minimum number of items to check per cycle.
 			// This ensures we make progress on cleanup even when most items are unexpired.
 			// With 250ms interval and 5s TTL, items get checked within ~20 cycles = 5s.
@@ -546,38 +570,43 @@ func (p *PacketSnifferPool) startJanitor() {
 			// we'll scan before giving up on this cycle. This prevents wasting CPU when
 			// the pool is mostly active.
 			const janitorMaxConsecutiveFresh = 512
-			for now := range ticker.C {
-				nowNano := now.UnixNano()
-				consecutiveFresh := 0
-				totalScanned := 0
-				expiredFound := 0
+			for {
+				select {
+				case <-p.janitorStop:
+					return
+				case now := <-ticker.C:
+					nowNano := now.UnixNano()
+					consecutiveFresh := 0
+					totalScanned := 0
+					expiredFound := 0
 
-				p.pool.Range(func(key, value any) bool {
-					totalScanned++
-					ps := value.(*PacketSniffer)
-					if ps.IsExpired(nowNano) {
-						consecutiveFresh = 0
-						expiredFound++
-						// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
-						if p.pool.CompareAndDelete(key, ps) {
-							_ = ps.Close()
+					p.pool.Range(func(key, value any) bool {
+						totalScanned++
+						ps := value.(*PacketSniffer)
+						if ps.IsExpired(nowNano) {
+							consecutiveFresh = 0
+							expiredFound++
+							// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
+							if p.pool.CompareAndDelete(key, ps) {
+								_ = ps.Close()
+							}
+							// Continue scanning - there might be more expired items
+							return true
 						}
-						// Continue scanning - there might be more expired items
+						consecutiveFresh++
+						// Early exit if we've seen many fresh items without finding expired ones.
+						// This bounds the cleanup cost per cycle for large, active pools.
+						if consecutiveFresh >= janitorMaxConsecutiveFresh {
+							return false
+						}
+						// Always scan at least a minimum number of items
+						if totalScanned >= janitorMinScanItems && expiredFound == 0 {
+							// We've scanned enough and found nothing expired - likely a mostly active pool
+							return false
+						}
 						return true
-					}
-					consecutiveFresh++
-					// Early exit if we've seen many fresh items without finding expired ones.
-					// This bounds the cleanup cost per cycle for large, active pools.
-					if consecutiveFresh >= janitorMaxConsecutiveFresh {
-						return false
-					}
-					// Always scan at least a minimum number of items
-					if totalScanned >= janitorMinScanItems && expiredFound == 0 {
-						// We've scanned enough and found nothing expired - likely a mostly active pool
-						return false
-					}
-					return true
-				})
+					})
+				}
 			}
 		}()
 	})

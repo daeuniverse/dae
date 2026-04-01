@@ -230,6 +230,8 @@ type anyfromPoolShard struct {
 type AnyfromPool struct {
 	shards      [anyfromPoolShardCount]anyfromPoolShard
 	janitorOnce sync.Once
+	janitorStop chan struct{}
+	janitorDone chan struct{}
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
@@ -241,7 +243,10 @@ func SetAnyfromSoMark(mark uint32) {
 }
 
 func NewAnyfromPool() *AnyfromPool {
-	p := &AnyfromPool{}
+	p := &AnyfromPool{
+		janitorStop: make(chan struct{}),
+		janitorDone: make(chan struct{}),
+	}
 	for i := range anyfromPoolShardCount {
 		p.shards[i].pool = make(map[netip.AddrPort]*Anyfrom, 16)
 	}
@@ -272,6 +277,24 @@ func (p *AnyfromPool) Reset() {
 		}
 		shard.mu.Unlock()
 	}
+}
+
+// Close stops the janitor goroutine and clears all cached Anyfrom sockets.
+func (p *AnyfromPool) Close() {
+	if p == nil {
+		return
+	}
+	if p.janitorStop != nil {
+		select {
+		case <-p.janitorStop:
+		default:
+			close(p.janitorStop)
+		}
+	}
+	if p.janitorDone != nil {
+		<-p.janitorDone
+	}
+	p.Reset()
 }
 
 func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
@@ -389,28 +412,34 @@ func (p *AnyfromPool) startJanitor() {
 		go func() {
 			ticker := time.NewTicker(anyfromJanitorPeriod)
 			defer ticker.Stop()
+			defer close(p.janitorDone)
 
 			// Reuse slice to reduce allocations across janitor cycles.
 			var toClose []*Anyfrom
 
-			for now := range ticker.C {
-				nowNano := now.UnixNano()
-				for i := range anyfromPoolShardCount {
-					shard := &p.shards[i]
-					// Collect expired connections under lock, close after release.
-					// This minimizes lock hold time even with many expired entries.
-					shard.mu.Lock()
-					toClose = toClose[:0] // reset without reallocating
-					for key, af := range shard.pool {
-						if af.IsExpired(nowNano) {
-							delete(shard.pool, key)
-							toClose = append(toClose, af)
+			for {
+				select {
+				case <-p.janitorStop:
+					return
+				case now := <-ticker.C:
+					nowNano := now.UnixNano()
+					for i := range anyfromPoolShardCount {
+						shard := &p.shards[i]
+						// Collect expired connections under lock, close after release.
+						// This minimizes lock hold time even with many expired entries.
+						shard.mu.Lock()
+						toClose = toClose[:0] // reset without reallocating
+						for key, af := range shard.pool {
+							if af.IsExpired(nowNano) {
+								delete(shard.pool, key)
+								toClose = append(toClose, af)
+							}
 						}
-					}
-					shard.mu.Unlock()
-					// Close connections outside the critical section.
-					for _, af := range toClose {
-						_ = af.Close()
+						shard.mu.Unlock()
+						// Close connections outside the critical section.
+						for _, af := range toClose {
+							_ = af.Close()
+						}
 					}
 				}
 			}
