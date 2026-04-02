@@ -39,6 +39,11 @@ type scriptedPacketConn struct {
 	closeCalls  atomic.Int32
 }
 
+type scriptedTransportPacketConn struct {
+	*scriptedPacketConn
+	transportDone chan struct{}
+}
+
 type scriptedDialer struct {
 	conns []netproxy.Conn
 	idx   atomic.Int32
@@ -103,6 +108,10 @@ func (c *scriptedPacketConn) SetReadDeadline(_ time.Time) error {
 
 func (c *scriptedPacketConn) SetWriteDeadline(_ time.Time) error {
 	return nil
+}
+
+func (c *scriptedTransportPacketConn) TransportDone() <-chan struct{} {
+	return c.transportDone
 }
 
 func waitForCloseSignal(t *testing.T, ch <-chan struct{}, context string) {
@@ -445,6 +454,53 @@ func TestUdpEndpointStart_ProxyBackedNormalReadExitRetiresEndpoint(t *testing.T)
 	}
 	if _, ok := pool.Get(key); ok {
 		t.Fatal("expected proxy-backed endpoint to be removed from pool after EOF")
+	}
+}
+
+func TestUdpEndpointStart_TransportLifecycleRetiresEndpointBeforeReadError(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:15021")}
+	conn := &scriptedTransportPacketConn{
+		scriptedPacketConn: &scriptedPacketConn{
+			reads:   make(chan scriptedPacketRead),
+			closeCh: make(chan struct{}),
+		},
+		transportDone: make(chan struct{}),
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+		handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		poolRef:    pool,
+		poolKey:    key,
+	}
+
+	shard := pool.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = ue
+	shard.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ue.start()
+	}()
+
+	close(conn.transportDone)
+
+	waitForCloseSignal(t, conn.closeCh, "transport lifecycle shutdown should close the endpoint")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for read loop to exit after transport shutdown")
+	}
+
+	if !ue.IsDead() {
+		t.Fatal("expected transport lifecycle shutdown to retire the endpoint")
+	}
+	if _, ok := pool.Get(key); ok {
+		t.Fatal("expected retired endpoint to be removed from pool after transport shutdown")
 	}
 }
 

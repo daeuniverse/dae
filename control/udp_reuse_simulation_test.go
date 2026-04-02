@@ -32,6 +32,11 @@ type udpReuseSimulationConn struct {
 	closeCalls atomic.Int32
 }
 
+type udpReuseSimulationTransportConn struct {
+	*udpReuseSimulationConn
+	transportDone chan struct{}
+}
+
 func (c *udpReuseSimulationConn) Read(_ []byte) (int, error) {
 	return 0, io.EOF
 }
@@ -81,6 +86,10 @@ func (c *udpReuseSimulationConn) SetReadDeadline(_ time.Time) error {
 
 func (c *udpReuseSimulationConn) SetWriteDeadline(_ time.Time) error {
 	return nil
+}
+
+func (c *udpReuseSimulationTransportConn) TransportDone() <-chan struct{} {
+	return c.transportDone
 }
 
 type countingPacketDialer struct {
@@ -384,6 +393,88 @@ func TestHandlePkt_ProxyBackedSoftReadLoopExitRedialsFreshEndpoint(t *testing.T)
 	}
 	if got := conn1.writeCalls.Load(); got != 1 {
 		t.Fatalf("first conn WriteTo calls after soft read exit = %d, want 1", got)
+	}
+	if got := conn2.writeCalls.Load(); got != 1 {
+		t.Fatalf("second conn WriteTo calls after redial = %d, want 1", got)
+	}
+	if got := conn1.closeCalls.Load(); got != 1 {
+		t.Fatalf("first conn close calls = %d, want 1", got)
+	}
+	if err := recreated.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+}
+
+func TestHandlePkt_TransportLifecycleShutdownRedialsFreshProxyEndpoint(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn1 := &udpReuseSimulationTransportConn{
+		udpReuseSimulationConn: &udpReuseSimulationConn{
+			reads:   make(chan scriptedPacketRead),
+			closeCh: make(chan struct{}),
+		},
+		transportDone: make(chan struct{}),
+	}
+	conn2 := &udpReuseSimulationConn{
+		reads:   make(chan scriptedPacketRead, 1),
+		closeCh: make(chan struct{}),
+	}
+	var factoryCalls atomic.Int32
+	d, underlay := newFactoryProxyEndpointDialer("hysteria2", "proxy.example:443", func() netproxy.Conn {
+		call := factoryCalls.Add(1)
+		if call == 1 {
+			return conn1
+		}
+		return conn2
+	})
+	cp := newUdpReuseSimulationControlPlane(newTestFixedOutboundGroup(d))
+
+	src := mustParseAddrPort("192.168.89.3:42688")
+	dst := mustParseAddrPort("52.199.194.44:23003")
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundUserDefinedMin),
+	}
+	payload := []byte{0xaa, 0xbb, 0xcc}
+	flowDecision := ClassifyUdpFlow(src, dst, payload)
+	key := flowDecision.FullConeNatEndpointKey()
+
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("first handlePkt: %v", err)
+	}
+
+	ue, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || ue == nil {
+		t.Fatal("expected first packet to create a pooled UDP endpoint")
+	}
+
+	close(conn1.transportDone)
+	waitForCloseSignal(t, conn1.closeCh, "transport lifecycle shutdown should retire the first endpoint")
+
+	if _, ok := DefaultUdpEndpointPool.Get(key); ok {
+		t.Fatal("expected transport lifecycle shutdown to remove the endpoint from the pool")
+	}
+
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("second handlePkt after transport shutdown: %v", err)
+	}
+
+	recreated, ok := DefaultUdpEndpointPool.Get(key)
+	if !ok || recreated == nil {
+		t.Fatal("expected endpoint to be recreated after transport lifecycle shutdown")
+	}
+	if recreated == ue {
+		t.Fatal("expected second packet to redial instead of reusing the retired endpoint")
+	}
+	if got := underlay.calls.Load(); got != 2 {
+		t.Fatalf("DialContext calls after transport shutdown = %d, want 2", got)
+	}
+	if got := conn1.writeCalls.Load(); got != 1 {
+		t.Fatalf("first conn WriteTo calls after transport shutdown = %d, want 1", got)
 	}
 	if got := conn2.writeCalls.Load(); got != 1 {
 		t.Fatalf("second conn WriteTo calls after redial = %d, want 1", got)

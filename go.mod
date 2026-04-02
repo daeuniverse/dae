@@ -119,4 +119,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use the synced outbound perf branch HEAD for joint review until these commits land upstream.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260402043326-aee898b8d6e9
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260402074621-97428237de39

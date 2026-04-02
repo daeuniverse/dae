@@ -50,6 +50,10 @@ type UdpEndpoint struct {
 	closeOnce    sync.Once
 	closeErr     error
 
+	closeSignalOnce    sync.Once
+	closeSignal        chan struct{}
+	transportWatchOnce sync.Once
+
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
 	lastRefreshNano atomic.Int64
@@ -115,6 +119,46 @@ func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 		return nil
 	}
 	return &ue.respConn
+}
+
+func (ue *UdpEndpoint) closeNotify() chan struct{} {
+	if ue == nil {
+		return nil
+	}
+	ue.closeSignalOnce.Do(func() {
+		ue.closeSignal = make(chan struct{})
+	})
+	return ue.closeSignal
+}
+
+func (ue *UdpEndpoint) watchTransportLifecycle() {
+	if ue == nil || ue.conn == nil {
+		return
+	}
+	ue.transportWatchOnce.Do(func() {
+		lifecycle, ok := ue.conn.(netproxy.TransportLifecycle)
+		if !ok {
+			return
+		}
+		transportDone := lifecycle.TransportDone()
+		if transportDone == nil {
+			return
+		}
+		endpointClosed := ue.closeNotify()
+		go func() {
+			select {
+			case <-transportDone:
+			case <-endpointClosed:
+				return
+			}
+			if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
+				ue.log.WithFields(logrus.Fields{
+					"lAddr": ue.lAddr.String(),
+				}).Debug("[UdpEndpoint] Retiring endpoint after transport lifecycle ended")
+			}
+			ue.retire()
+		}()
+	})
 }
 
 func isProxyBackedDialer(d *dialer.Dialer) bool {
@@ -230,6 +274,7 @@ func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
 }
 
 func (ue *UdpEndpoint) start() {
+	ue.watchTransportLifecycle()
 	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
 			"lAddr":      ue.lAddr.String(),
@@ -418,6 +463,9 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 
 func (ue *UdpEndpoint) Close() error {
 	ue.closeOnce.Do(func() {
+		if closeSignal := ue.closeNotify(); closeSignal != nil {
+			close(closeSignal)
+		}
 		ue.expiresAtNano.Store(0)
 		if ue.poolRef != nil {
 			ue.poolRef.unregisterEndpoint(ue)
