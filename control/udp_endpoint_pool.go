@@ -260,11 +260,14 @@ func (ue *UdpEndpoint) start() {
 	// Async reply dispatch: the read loop pushes replies into this channel
 	// and a dedicated sender goroutine drains it. This prevents slow sendPkt
 	// operations (Anyfrom cache miss → bind syscall) from stalling the read
-	// loop and indirectly causing the upstream ReceiveCh to overflow and
-	// silently drop game packets.
+	// loop during short bursts. Once the burst buffer fills, we intentionally
+	// backpressure the read loop instead of introducing a second lossy queue in
+	// dae itself. Generic UDP traffic cannot assume that older packets are safe
+	// to discard.
 	replyCh := make(chan udpEndpointReply, udpEndpointReplyQueueSize)
+	senderStop := make(chan struct{})
 	senderDone := make(chan struct{})
-	go ue.replySender(replyCh, senderDone)
+	go ue.replySender(replyCh, senderStop, senderDone)
 
 	buf := pool.GetFullCap(consts.EthernetMtu)
 	defer func() {
@@ -331,33 +334,16 @@ func (ue *UdpEndpoint) start() {
 			ue.markReplied(time.Now().UnixNano())
 		}
 		// Dispatch reply asynchronously: copy data into a pool buffer and
-		// push it to the sender goroutine. This keeps the read loop fast
-		// and prevents upstream ReceiveCh overflow.
+		// push it to the sender goroutine. Short bursts are absorbed by replyCh.
+		// If the sender falls behind, block here and apply backpressure instead
+		// of dropping queued packets inside dae.
 		pktCopy := pool.Get(n)
 		copy(pktCopy, buf[:n])
 		select {
 		case replyCh <- udpEndpointReply{data: pktCopy, from: from}:
-		default:
-			// Reply queue full — sender goroutine is backlogged. Drop the
-			// oldest queued reply to make room for the freshest data. For
-			// real-time game traffic, the most recent server state is always
-			// more valuable than stale queued packets.
-			select {
-			case stale := <-replyCh:
-				stale.data.Put()
-			default:
-			}
-			select {
-			case replyCh <- udpEndpointReply{data: pktCopy, from: from}:
-			default:
-				pktCopy.Put()
-				if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-					ue.log.WithFields(logrus.Fields{
-						"lAddr":  ue.lAddr.String(),
-						"dialer": ue.Dialer.Property().Name,
-					}).Debug("[UdpEndpoint] Reply queue overflow, packet dropped")
-				}
-			}
+		case <-senderStop:
+			pktCopy.Put()
+			return
 		}
 	}
 }
@@ -365,7 +351,7 @@ func (ue *UdpEndpoint) start() {
 // replySender is the dedicated goroutine that drains the reply channel and
 // calls the handler (which invokes sendPkt). Running this off the read loop
 // avoids blocking the upstream protocol layer's ReceiveCh.
-func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, done chan<- struct{}) {
+func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, stop chan<- struct{}, done chan<- struct{}) {
 	defer close(done)
 	for reply := range replyCh {
 		// Do NOT skip queued replies when dead: these were already received
@@ -376,6 +362,7 @@ func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, done chan<- 
 		if err := ue.handler(ue, reply.data, reply.from); err != nil {
 			reply.data.Put()
 			ue.retire()
+			close(stop)
 			ue.logEndpointExit(err, "reply sender")
 			// Drain remaining queued replies to release pool buffers.
 			for r := range replyCh {
