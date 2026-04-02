@@ -128,8 +128,7 @@ var (
 
 	// UDP connection state timeout constants (matching former bpf_timer values).
 	// DNS connections are shorter-lived since they're typically query/response.
-	udpConnStateTimeoutDNS    = 17 * time.Second
-	udpConnStateTimeoutNormal = 60 * time.Second
+	udpConnStateTimeoutDNS = 17 * time.Second
 
 	// DNS port in network byte order for connection state cleanup.
 	// Precomputed to avoid repeated Htons() calls during janitor iterations.
@@ -1574,7 +1573,7 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 
 	// Default timeouts
 	dnsTimeoutNano := udpConnStateTimeoutDNS.Nanoseconds()
-	normalTimeoutNano := udpConnStateTimeoutNormal.Nanoseconds()
+	normalTimeoutNano := QuicNatTimeout.Nanoseconds() // Align eBPF state with Userspace proxy QuicNatTimeout
 
 	// Pre-allocate slice for better performance
 	keysToDelete := make([]bpfTuplesKey, 0, 256)

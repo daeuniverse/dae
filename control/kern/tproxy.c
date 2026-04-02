@@ -1708,7 +1708,7 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 // rather than dropping packets.
 //
 // Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
-#define UDP_CONN_STATE_TIMEOUT_NS 60000000000ULL         // 60 seconds
+#define UDP_CONN_STATE_TIMEOUT_NS 120000000000ULL        // 120 seconds (Aligns with Userspace QuicNatTimeout)
 #define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 
 static __always_inline bool

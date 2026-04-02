@@ -150,6 +150,17 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 		// via write/read errors, read-loop exit, or NAT expiry.
 		return true
 	}
+	if isProxyBackedDialer(ue.Dialer) && !isStatelessProxyBackedUdpProtocol(ue.Dialer) {
+		// Proxy-backed endpoints already hold a working transport connection
+		// (TCP stream or QUIC session) established during dial. Killing an
+		// unreplied proxy endpoint on every packet because a control-plane
+		// health probe failed causes per-packet recreation: the upstream
+		// round-trip through the proxy exceeds the interval between outbound
+		// game packets, so hasReply is never set before the next health check
+		// kills the endpoint. Let actual data-plane errors (WriteTo/ReadFrom)
+		// and NAT timeout expiry handle cleanup instead.
+		return true
+	}
 	networkType := udpEndpointNetworkType(ue)
 
 	// Short-circuit: lightweight check MustGetAlive first.

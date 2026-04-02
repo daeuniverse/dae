@@ -125,7 +125,7 @@ func isProxyBackedDialer(d *dialer.Dialer) bool {
 	return property != nil && property.Address != ""
 }
 
-func isLongLivedProxyBackedUdpProtocol(d *dialer.Dialer) bool {
+func isStatelessProxyBackedUdpProtocol(d *dialer.Dialer) bool {
 	if !isProxyBackedDialer(d) {
 		return false
 	}
@@ -134,7 +134,7 @@ func isLongLivedProxyBackedUdpProtocol(d *dialer.Dialer) bool {
 		return false
 	}
 	switch strings.ToLower(property.Protocol) {
-	case "hysteria2", "tuic", "juicity":
+	case "shadowsocks", "shadowsocksr", "socks4", "socks5":
 		return true
 	default:
 		return false
@@ -147,7 +147,7 @@ func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
 	}
 	// Proxy-backed UDP sessions are multiplexed over a longer-lived transport.
 	// Recreating them too aggressively causes avoidable session churn and log
-	// spam for interactive traffic such as games, even when the flow is not QUIC.
+	// spam for interactive traffic such as games.
 	if requested < QuicNatTimeout {
 		return QuicNatTimeout
 	}
@@ -155,11 +155,7 @@ func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
 }
 
 func effectiveUdpEndpointNatTimeout(d *dialer.Dialer, requested time.Duration) time.Duration {
-	// Only long-lived proxy-backed UDP protocols should receive a longer NAT
-	// timeout floor. Other proxy-backed protocols (for example Shadowsocks)
-	// keep the caller-requested timeout to avoid retaining stale endpoints
-	// longer than necessary.
-	if !isLongLivedProxyBackedUdpProtocol(d) {
+	if !isProxyBackedDialer(d) || isStatelessProxyBackedUdpProtocol(d) {
 		return requested
 	}
 	return proxyBackedUdpNatTimeout(requested)
@@ -805,11 +801,21 @@ func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
 // reusable after its dialer transitions to not alive.
 //
 // Established UDP sessions stay sticky on the original node once they have seen
-// bidirectional traffic. New flows are still blocked by dialer selection and
-// health checks; only the exact pooled flow key may continue reusing the
-// existing transport until it naturally fails or expires.
+// bidirectional traffic. Proxy-backed endpoints additionally survive because
+// they already hold a working transport connection (TCP/QUIC) established
+// during dial. Killing them before the first upstream reply arrives forces
+// per-packet endpoint recreation for interactive traffic such as games, where
+// the round-trip through the proxy exceeds the interval between outbound
+// packets. Real data-plane failures are still caught by WriteTo/ReadFrom
+// errors and NAT timeout expiry.
 func (p *UdpEndpointPool) endpointSurvivesDialerInvalidation(ue *UdpEndpoint) bool {
-	return ue != nil && ue.hasReply.Load()
+	if ue == nil {
+		return false
+	}
+	if ue.hasReply.Load() {
+		return true
+	}
+	return isProxyBackedDialer(ue.Dialer) && !isStatelessProxyBackedUdpProtocol(ue.Dialer)
 }
 
 func (p *UdpEndpointPool) registerEndpoint(ue *UdpEndpoint) {

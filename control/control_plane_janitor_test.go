@@ -146,7 +146,7 @@ func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	copy(freshState.Mac[:], []byte{1, 2, 3, 4, 5, 6})
 
 	staleState := freshState
-	staleState.LastSeenNs = staleTimestampNs(now, udpConnStateTimeoutNormal+time.Second)
+	staleState.LastSeenNs = staleTimestampNs(now, QuicNatTimeout+time.Second)
 	staleState.Meta.Data.Mark = 202
 	staleState.Meta.Data.Outbound = 9
 	staleState.Pid = 43

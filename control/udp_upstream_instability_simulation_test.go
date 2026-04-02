@@ -159,7 +159,7 @@ func TestHandlePkt_UpstreamHardErrorsCauseSameFlowRedial(t *testing.T) {
 	}
 }
 
-func TestHandlePkt_HealthDeathAllowsFallbackNewUdpDialSelection(t *testing.T) {
+func TestHandlePkt_HealthDeathKeepsProxyBackedEndpoint(t *testing.T) {
 	oldPool := DefaultUdpEndpointPool
 	DefaultUdpEndpointPool = NewUdpEndpointPool()
 	defer func() {
@@ -195,25 +195,26 @@ func TestHandlePkt_HealthDeathAllowsFallbackNewUdpDialSelection(t *testing.T) {
 		t.Fatalf("DialContext calls after first packet = %d, want 1", got)
 	}
 
+	// Mark dialer not-alive. Proxy-backed unreplied endpoints should survive
+	// because they hold a working transport connection.
 	d.ReportUnavailableForced(udp4NetworkType(), io.ErrUnexpectedEOF)
 	d.ReportUnavailableForced(&componentdialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStr_6,
 		IsDns:     false,
 	}, io.ErrUnexpectedEOF)
-	waitForUdpEndpointRemoval(t, key)
+
+	// Endpoint should still exist (proxy-backed endpoints survive invalidation).
+	if _, ok := DefaultUdpEndpointPool.Get(key); !ok {
+		t.Fatal("expected proxy-backed unreplied endpoint to survive health death")
+	}
 
 	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
 		t.Fatalf("second handlePkt after health death: %v", err)
 	}
-	if got := underlay.calls.Load(); got != 2 {
-		t.Fatalf("DialContext calls after health death = %d, want 2", got)
-	}
-	if !d.MustGetAlive(udp4NetworkType()) {
-		t.Fatal("expected successful fallback traffic to restore data-UDP health")
-	}
-	if _, ok := DefaultUdpEndpointPool.Get(key); !ok {
-		t.Fatal("expected endpoint to be recreated through fallback admission")
+	// Should reuse the existing endpoint, not dial a new one.
+	if got := underlay.calls.Load(); got != 1 {
+		t.Fatalf("DialContext calls after health death = %d, want 1 (reused)", got)
 	}
 }
 
