@@ -356,6 +356,8 @@ func TestUdpEndpointStart_NormalReadExitKeepsEndpointReusable(t *testing.T) {
 	shard.mu.Lock()
 	shard.pool[key] = ue
 	shard.mu.Unlock()
+	pool.registerEndpoint(ue)
+	pool.registerEndpoint(ue)
 
 	done := make(chan struct{})
 	go func() {
@@ -479,6 +481,7 @@ func TestUdpEndpointStart_TransportLifecycleRetiresEndpointBeforeReadError(t *te
 	shard.mu.Lock()
 	shard.pool[key] = ue
 	shard.mu.Unlock()
+	pool.registerEndpoint(ue)
 
 	done := make(chan struct{})
 	go func() {
@@ -501,6 +504,76 @@ func TestUdpEndpointStart_TransportLifecycleRetiresEndpointBeforeReadError(t *te
 	}
 	if _, ok := pool.Get(key); ok {
 		t.Fatal("expected retired endpoint to be removed from pool after transport shutdown")
+	}
+}
+
+func TestUdpEndpointPool_TransportLifecycleSharesSingleBucketPerTransport(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	sharedTransportDone := make(chan struct{})
+
+	newEndpoint := func(src string) (*UdpEndpoint, *scriptedTransportPacketConn, chan struct{}) {
+		conn := &scriptedTransportPacketConn{
+			scriptedPacketConn: &scriptedPacketConn{
+				reads:   make(chan scriptedPacketRead),
+				closeCh: make(chan struct{}),
+			},
+			transportDone: sharedTransportDone,
+		}
+		key := UdpEndpointKey{Src: netip.MustParseAddrPort(src)}
+		ue := &UdpEndpoint{
+			conn:       conn,
+			NatTimeout: QuicNatTimeout,
+			handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			poolRef:    pool,
+			poolKey:    key,
+		}
+		shard := pool.shardFor(key)
+		shard.mu.Lock()
+		shard.pool[key] = ue
+		shard.mu.Unlock()
+		pool.registerEndpoint(ue)
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			ue.start()
+		}()
+		return ue, conn, done
+	}
+
+	_, conn1, done1 := newEndpoint("127.0.0.1:16001")
+	_, conn2, done2 := newEndpoint("127.0.0.1:16002")
+
+	actual, ok := pool.transportIndex.Load((<-chan struct{})(sharedTransportDone))
+	if !ok {
+		t.Fatal("expected shared transport to be indexed once")
+	}
+	bucket := actual.(*udpEndpointTransportBucket)
+	bucket.mu.RLock()
+	if got := len(bucket.endpoints); got != 2 {
+		bucket.mu.RUnlock()
+		t.Fatalf("shared transport bucket size = %d, want 2", got)
+	}
+	bucket.mu.RUnlock()
+
+	close(sharedTransportDone)
+
+	waitForCloseSignal(t, conn1.closeCh, "shared transport shutdown should close first endpoint")
+	waitForCloseSignal(t, conn2.closeCh, "shared transport shutdown should close second endpoint")
+
+	select {
+	case <-done1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first read loop to exit after shared transport shutdown")
+	}
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second read loop to exit after shared transport shutdown")
+	}
+
+	if _, ok := pool.transportIndex.Load((<-chan struct{})(sharedTransportDone)); ok {
+		t.Fatal("expected closed shared transport bucket to be removed from index")
 	}
 }
 

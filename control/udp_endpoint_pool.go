@@ -50,10 +50,6 @@ type UdpEndpoint struct {
 	closeOnce    sync.Once
 	closeErr     error
 
-	closeSignalOnce    sync.Once
-	closeSignal        chan struct{}
-	transportWatchOnce sync.Once
-
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
 	lastRefreshNano atomic.Int64
@@ -106,6 +102,7 @@ type UdpEndpoint struct {
 	dialerGeneration    uint64
 	endpointNetworkType dialer.NetworkType
 	lifecycleProfile    UdpLifecycleProfile
+	transportDone       <-chan struct{}
 }
 
 func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
@@ -119,46 +116,6 @@ func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 		return nil
 	}
 	return &ue.respConn
-}
-
-func (ue *UdpEndpoint) closeNotify() chan struct{} {
-	if ue == nil {
-		return nil
-	}
-	ue.closeSignalOnce.Do(func() {
-		ue.closeSignal = make(chan struct{})
-	})
-	return ue.closeSignal
-}
-
-func (ue *UdpEndpoint) watchTransportLifecycle() {
-	if ue == nil || ue.conn == nil {
-		return
-	}
-	ue.transportWatchOnce.Do(func() {
-		lifecycle, ok := ue.conn.(netproxy.TransportLifecycle)
-		if !ok {
-			return
-		}
-		transportDone := lifecycle.TransportDone()
-		if transportDone == nil {
-			return
-		}
-		endpointClosed := ue.closeNotify()
-		go func() {
-			select {
-			case <-transportDone:
-			case <-endpointClosed:
-				return
-			}
-			if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-				ue.log.WithFields(logrus.Fields{
-					"lAddr": ue.lAddr.String(),
-				}).Debug("[UdpEndpoint] Retiring endpoint after transport lifecycle ended")
-			}
-			ue.retire()
-		}()
-	})
 }
 
 func isProxyBackedDialer(d *dialer.Dialer) bool {
@@ -274,7 +231,6 @@ func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
 }
 
 func (ue *UdpEndpoint) start() {
-	ue.watchTransportLifecycle()
 	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
 			"lAddr":      ue.lAddr.String(),
@@ -463,9 +419,6 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 
 func (ue *UdpEndpoint) Close() error {
 	ue.closeOnce.Do(func() {
-		if closeSignal := ue.closeNotify(); closeSignal != nil {
-			close(closeSignal)
-		}
 		ue.expiresAtNano.Store(0)
 		if ue.poolRef != nil {
 			ue.poolRef.unregisterEndpoint(ue)
@@ -748,6 +701,12 @@ type udpEndpointDialerBucket struct {
 	endpoints map[*UdpEndpoint]struct{}
 }
 
+type udpEndpointTransportBucket struct {
+	mu        sync.RWMutex
+	endpoints map[*UdpEndpoint]struct{}
+	watchOnce sync.Once
+}
+
 type udpEndpointDialerNetworkKey struct {
 	dialer      *dialer.Dialer
 	networkType dialer.NetworkType
@@ -755,12 +714,13 @@ type udpEndpointDialerNetworkKey struct {
 
 // UdpEndpointPool is a UDP connection pool.
 type UdpEndpointPool struct {
-	shards      [udpEndpointCreateShardCount]udpEndpointPoolShard
-	janitorOnce sync.Once
-	janitorStop chan struct{}
-	janitorDone chan struct{}
-	dialerIndex sync.Map // map[udpEndpointDialerNetworkKey]*udpEndpointDialerBucket
-	dialerEpoch sync.Map // map[udpEndpointDialerNetworkKey]*atomic.Uint64
+	shards         [udpEndpointCreateShardCount]udpEndpointPoolShard
+	janitorOnce    sync.Once
+	janitorStop    chan struct{}
+	janitorDone    chan struct{}
+	dialerIndex    sync.Map // map[udpEndpointDialerNetworkKey]*udpEndpointDialerBucket
+	dialerEpoch    sync.Map // map[udpEndpointDialerNetworkKey]*atomic.Uint64
+	transportIndex sync.Map // map[<-chan struct{}]*udpEndpointTransportBucket
 }
 
 type UdpEndpointOptions struct {
@@ -866,38 +826,110 @@ func (p *UdpEndpointPool) endpointSurvivesDialerInvalidation(ue *UdpEndpoint) bo
 	return isProxyBackedDialer(ue.Dialer) && !isStatelessProxyBackedUdpProtocol(ue.Dialer)
 }
 
-func (p *UdpEndpointPool) registerEndpoint(ue *UdpEndpoint) {
-	if udpEndpointIgnoresDialerHealth(ue) {
-		return
+func endpointTransportDoneChannel(ue *UdpEndpoint) <-chan struct{} {
+	if ue == nil {
+		return nil
 	}
-	key, ok := p.endpointDialerNetworkKey(ue)
+	if ue.transportDone != nil {
+		return ue.transportDone
+	}
+	if ue.conn == nil {
+		return nil
+	}
+	lifecycle, ok := ue.conn.(netproxy.TransportLifecycle)
 	if !ok {
+		return nil
+	}
+	return lifecycle.TransportDone()
+}
+
+func (p *UdpEndpointPool) registerTransportEndpoint(ue *UdpEndpoint) {
+	transportDone := endpointTransportDoneChannel(ue)
+	if transportDone == nil {
 		return
 	}
-	actual, _ := p.dialerIndex.LoadOrStore(key, &udpEndpointDialerBucket{
+	ue.transportDone = transportDone
+
+	actual, _ := p.transportIndex.LoadOrStore(transportDone, &udpEndpointTransportBucket{
 		endpoints: make(map[*UdpEndpoint]struct{}),
 	})
-	bucket := actual.(*udpEndpointDialerBucket)
+	bucket := actual.(*udpEndpointTransportBucket)
 	bucket.mu.Lock()
 	bucket.endpoints[ue] = struct{}{}
 	bucket.mu.Unlock()
+
+	bucket.watchOnce.Do(func() {
+		go p.watchTransportLifecycle(transportDone, bucket)
+	})
+}
+
+func (p *UdpEndpointPool) watchTransportLifecycle(transportDone <-chan struct{}, bucket *udpEndpointTransportBucket) {
+	<-transportDone
+	p.transportIndex.CompareAndDelete(transportDone, bucket)
+
+	bucket.mu.RLock()
+	endpoints := make([]*UdpEndpoint, 0, len(bucket.endpoints))
+	for ue := range bucket.endpoints {
+		endpoints = append(endpoints, ue)
+	}
+	bucket.mu.RUnlock()
+
+	for _, ue := range endpoints {
+		if ue != nil && ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
+			ue.log.WithFields(logrus.Fields{
+				"lAddr": ue.lAddr.String(),
+			}).Debug("[UdpEndpoint] Retiring endpoint after transport lifecycle ended")
+		}
+		if ue != nil {
+			ue.retire()
+		}
+	}
+}
+
+func (p *UdpEndpointPool) registerEndpoint(ue *UdpEndpoint) {
+	if udpEndpointIgnoresDialerHealth(ue) {
+		p.registerTransportEndpoint(ue)
+		return
+	}
+	key, ok := p.endpointDialerNetworkKey(ue)
+	if ok {
+		actual, _ := p.dialerIndex.LoadOrStore(key, &udpEndpointDialerBucket{
+			endpoints: make(map[*UdpEndpoint]struct{}),
+		})
+		bucket := actual.(*udpEndpointDialerBucket)
+		bucket.mu.Lock()
+		bucket.endpoints[ue] = struct{}{}
+		bucket.mu.Unlock()
+	}
+	p.registerTransportEndpoint(ue)
 }
 
 func (p *UdpEndpointPool) unregisterEndpoint(ue *UdpEndpoint) {
 	key, ok := p.endpointDialerNetworkKey(ue)
+	if ok {
+		actual, ok := p.dialerIndex.Load(key)
+		if ok {
+			bucket := actual.(*udpEndpointDialerBucket)
+			bucket.mu.Lock()
+			delete(bucket.endpoints, ue)
+			// Keep empty buckets for the lifetime of the pool. The key space is tiny
+			// (dialer x UDP family), and never deleting avoids a register/unregister
+			// race where a newly re-added endpoint could lose its reverse index.
+			bucket.mu.Unlock()
+		}
+	}
+
+	transportDone := endpointTransportDoneChannel(ue)
+	if transportDone == nil {
+		return
+	}
+	actual, ok := p.transportIndex.Load(transportDone)
 	if !ok {
 		return
 	}
-	actual, ok := p.dialerIndex.Load(key)
-	if !ok {
-		return
-	}
-	bucket := actual.(*udpEndpointDialerBucket)
+	bucket := actual.(*udpEndpointTransportBucket)
 	bucket.mu.Lock()
 	delete(bucket.endpoints, ue)
-	// Keep empty buckets for the lifetime of the pool. The key space is tiny
-	// (dialer x UDP family), and never deleting avoids a register/unregister
-	// race where a newly re-added endpoint could lose its reverse index.
 	bucket.mu.Unlock()
 }
 
@@ -956,6 +988,7 @@ func (p *UdpEndpointPool) Reset() {
 	}
 	p.dialerIndex = sync.Map{}
 	p.dialerEpoch = sync.Map{}
+	p.transportIndex = sync.Map{}
 }
 
 // Close stops the janitor goroutine and clears all pooled endpoints.
