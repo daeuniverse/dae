@@ -301,7 +301,9 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 			}
 			return nil
 		}
-		// cached socket is stale; fall through to fresh pool lookup
+		// Cached socket is stale or broken; clear the cache slot immediately
+		// so the next call doesn't waste time retrying a dead socket.
+		*afp = nil
 		if debugEnabled {
 			log.WithFields(logrus.Fields{
 				"error": err.Error(),
@@ -312,7 +314,9 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
 		if stderrors.Is(err, ErrAnyfromBindFailed) {
-			return nil
+			// Return the error instead of silently dropping. The caller decides
+			// whether the packet loss is acceptable (reply path) or must be retried.
+			return err
 		}
 		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
 			return nil
@@ -376,6 +380,14 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 	// broken. Keeping the endpoint alive avoids recreating a fresh UDP session
 	// for every subsequent client packet after a transient local send failure.
 	if err := send(log, data, from, clientAddr, cacheSlot); err != nil {
+		if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
+			log.WithFields(logrus.Fields{
+				"from":      from.String(),
+				"to":        clientAddr.String(),
+				"data_size": len(data),
+				"error":     err.Error(),
+			}).Debug("forwardUdpEndpointReplyToClient: reply to client failed (packet dropped)")
+		}
 		return nil
 	}
 	return nil

@@ -235,6 +235,19 @@ func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
 	return false
 }
 
+// udpEndpointReplyQueueSize is the buffer depth for the async reply dispatch
+// channel in UdpEndpoint.start(). This decouples the protocol-layer read loop
+// (which must drain the upstream ReceiveCh as fast as possible) from the
+// potentially slower sendPkt path (Anyfrom bind, tproxy write). The value is
+// generous enough to absorb burst game server ticks without dropping, while
+// still bounded to avoid unbounded memory under pathological conditions.
+const udpEndpointReplyQueueSize = 256
+
+type udpEndpointReply struct {
+	data pool.PB
+	from netip.AddrPort
+}
+
 func (ue *UdpEndpoint) start() {
 	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
@@ -243,8 +256,22 @@ func (ue *UdpEndpoint) start() {
 			"proxy_addr": ue.DialTarget,
 		}).Debug("[UdpEndpoint] Read loop started")
 	}
+
+	// Async reply dispatch: the read loop pushes replies into this channel
+	// and a dedicated sender goroutine drains it. This prevents slow sendPkt
+	// operations (Anyfrom cache miss → bind syscall) from stalling the read
+	// loop and indirectly causing the upstream ReceiveCh to overflow and
+	// silently drop game packets.
+	replyCh := make(chan udpEndpointReply, udpEndpointReplyQueueSize)
+	senderDone := make(chan struct{})
+	go ue.replySender(replyCh, senderDone)
+
 	buf := pool.GetFullCap(consts.EthernetMtu)
-	defer pool.Put(buf)
+	defer func() {
+		pool.Put(buf)
+		close(replyCh)
+		<-senderDone
+	}()
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
@@ -303,11 +330,60 @@ func (ue *UdpEndpoint) start() {
 		} else {
 			ue.markReplied(time.Now().UnixNano())
 		}
-		if err = ue.handler(ue, buf[:n], from); err != nil {
-			ue.retire()
-			ue.logEndpointExit(err, "handler")
-			break
+		// Dispatch reply asynchronously: copy data into a pool buffer and
+		// push it to the sender goroutine. This keeps the read loop fast
+		// and prevents upstream ReceiveCh overflow.
+		pktCopy := pool.Get(n)
+		copy(pktCopy, buf[:n])
+		select {
+		case replyCh <- udpEndpointReply{data: pktCopy, from: from}:
+		default:
+			// Reply queue full — sender goroutine is backlogged. Drop the
+			// oldest queued reply to make room for the freshest data. For
+			// real-time game traffic, the most recent server state is always
+			// more valuable than stale queued packets.
+			select {
+			case stale := <-replyCh:
+				stale.data.Put()
+			default:
+			}
+			select {
+			case replyCh <- udpEndpointReply{data: pktCopy, from: from}:
+			default:
+				pktCopy.Put()
+				if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
+					ue.log.WithFields(logrus.Fields{
+						"lAddr":  ue.lAddr.String(),
+						"dialer": ue.Dialer.Property().Name,
+					}).Debug("[UdpEndpoint] Reply queue overflow, packet dropped")
+				}
+			}
 		}
+	}
+}
+
+// replySender is the dedicated goroutine that drains the reply channel and
+// calls the handler (which invokes sendPkt). Running this off the read loop
+// avoids blocking the upstream protocol layer's ReceiveCh.
+func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, done chan<- struct{}) {
+	defer close(done)
+	for reply := range replyCh {
+		// Do NOT skip queued replies when dead: these were already received
+		// from the upstream before the read loop exited, and must be forwarded
+		// to the client. The handler (forwardUdpEndpointReplyToClient) only
+		// writes to the local tproxy socket, which is independent of the
+		// upstream endpoint's liveness.
+		if err := ue.handler(ue, reply.data, reply.from); err != nil {
+			reply.data.Put()
+			ue.retire()
+			ue.logEndpointExit(err, "reply sender")
+			// Drain remaining queued replies to release pool buffers.
+			for r := range replyCh {
+				r.data.Put()
+			}
+			return
+		}
+		reply.data.Put()
 	}
 }
 
@@ -576,6 +652,14 @@ func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 	// CAS to avoid thundering herd on the same connection.
 	if ue.lastRefreshNano.CompareAndSwap(last, nowNano) {
 		ue.expiresAtNano.Store(nowNano + int64(timeout))
+		// Keep the cached response socket alive as long as the endpoint is
+		// alive. Without this, the Anyfrom socket expires after 5s idle
+		// (AnyfromTimeout), forcing a bind syscall on the next reply and
+		// causing a latency spike that can cascade into upstream ReceiveCh
+		// overflow for proxy-backed sessions.
+		if ue.respConn != nil {
+			ue.respConn.RefreshTtlWithTime(nowNano)
+		}
 	}
 }
 
