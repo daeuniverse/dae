@@ -211,7 +211,7 @@ func newTestFixedOutboundGroup(dialers ...*componentdialer.Dialer) *ob.DialerGro
 	)
 }
 
-func TestUdpEndpointRefreshTtlWithTime_BoundsInitialLifetimeByDialTimeout(t *testing.T) {
+func TestUdpEndpointRefreshTtlWithTime_UsesConfiguredLifetimeBeforeReply(t *testing.T) {
 	now := time.Unix(123, 0)
 	ue := &UdpEndpoint{
 		NatTimeout: QuicNatTimeout,
@@ -220,13 +220,27 @@ func TestUdpEndpointRefreshTtlWithTime_BoundsInitialLifetimeByDialTimeout(t *tes
 	ue.RefreshTtlWithTime(now.UnixNano())
 
 	got := time.Duration(ue.expiresAtNano.Load() - now.UnixNano())
-	want := 2 * consts.DefaultDialTimeout
+	want := QuicNatTimeout
 	if got != want {
 		t.Fatalf("expires delta = %v, want %v", got, want)
 	}
 }
 
-func TestUdpEndpointRefreshTtlWithTime_DoesNotExtendUnrepliedDeadline(t *testing.T) {
+func TestUdpEndpointRefreshTtlWithTime_ProxyBackedUsesFullInitialLifetime(t *testing.T) {
+	now := time.Unix(234, 0)
+	ue := &UdpEndpoint{
+		NatTimeout: QuicNatTimeout,
+		Dialer:     newTestProxyEndpointDialer("hysteria2", "proxy.example:443"),
+	}
+
+	ue.RefreshTtlWithTime(now.UnixNano())
+
+	if got := time.Duration(ue.expiresAtNano.Load() - now.UnixNano()); got != QuicNatTimeout {
+		t.Fatalf("expires delta = %v, want %v", got, QuicNatTimeout)
+	}
+}
+
+func TestUdpEndpointRefreshTtlWithTime_ExtendsDeadlineBeforeReply(t *testing.T) {
 	now := time.Unix(456, 0)
 	ue := &UdpEndpoint{
 		NatTimeout: QuicNatTimeout,
@@ -236,8 +250,8 @@ func TestUdpEndpointRefreshTtlWithTime_DoesNotExtendUnrepliedDeadline(t *testing
 	firstDeadline := ue.expiresAtNano.Load()
 	ue.RefreshTtlWithTime(now.Add(5 * time.Second).UnixNano())
 
-	if got := ue.expiresAtNano.Load(); got != firstDeadline {
-		t.Fatalf("expiresAt = %v, want %v", got, firstDeadline)
+	if got := ue.expiresAtNano.Load(); got <= firstDeadline {
+		t.Fatalf("expiresAt = %v, want greater than %v", got, firstDeadline)
 	}
 }
 
@@ -934,6 +948,71 @@ func TestUdpEndpointPoolInvalidateDialerNetworkType_PreservesEstablishedEndpoint
 	}
 }
 
+func TestUdpEndpointPoolInvalidateDialerNetworkType_PreservesForwardedUnrepliedEndpoints(t *testing.T) {
+	pool := NewUdpEndpointPool()
+
+	connForwarded := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+	connNeverUsed := &scriptedPacketConn{reads: make(chan scriptedPacketRead), closeCh: make(chan struct{})}
+
+	d := newTestEndpointDialer(connForwarded, connNeverUsed)
+	outbound := newTestRandomOutboundGroup(d)
+
+	makeEndpoint := func(target string) *UdpEndpointOptions {
+		return &UdpEndpointOptions{
+			Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			NatTimeout: time.Second,
+			GetDialOption: func(context.Context) (*DialOption, error) {
+				return &DialOption{
+					Dialer:   d,
+					Outbound: outbound,
+					Network:  "udp",
+					Target:   target,
+					NetworkType: &componentdialer.NetworkType{
+						L4Proto:   consts.L4ProtoStr_UDP,
+						IpVersion: consts.IpVersionStr_6,
+						IsDns:     false,
+					},
+				}, nil
+			},
+		}
+	}
+
+	keyForwarded := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11601")}
+	keyNeverUsed := UdpEndpointKey{Src: netip.MustParseAddrPort("[::1]:11602")}
+
+	forwarded, _, err := pool.GetOrCreate(keyForwarded, makeEndpoint("[2001:db8::20]:443"))
+	if err != nil {
+		t.Fatalf("create forwarded endpoint: %v", err)
+	}
+	forwarded.hasSent.Store(true)
+
+	neverUsed, _, err := pool.GetOrCreate(keyNeverUsed, makeEndpoint("[2001:db8::21]:443"))
+	if err != nil {
+		t.Fatalf("create never-used endpoint: %v", err)
+	}
+
+	removed := pool.InvalidateDialerNetworkType(d, &componentdialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
+		IsDns:     false,
+	})
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 never-used endpoint", removed)
+	}
+
+	waitForCloseSignal(t, connNeverUsed.closeCh, "never-used endpoint should close after invalidation")
+
+	if got, ok := pool.Get(keyForwarded); !ok || got != forwarded {
+		t.Fatal("expected forwarded endpoint to remain reusable after invalidation")
+	}
+	if got := connForwarded.closeCalls.Load(); got != 0 {
+		t.Fatalf("forwarded endpoint close calls = %d, want 0", got)
+	}
+	if got, ok := pool.Get(keyNeverUsed); ok || got == neverUsed {
+		t.Fatal("expected never-used endpoint to be removed after invalidation")
+	}
+}
+
 func TestUdpEndpointPoolUnregisterKeepsDialerBucketForReuse(t *testing.T) {
 	pool := NewUdpEndpointPool()
 
@@ -1110,18 +1189,17 @@ func TestUdpEndpointWriteTo_ShortWriteClosesConn(t *testing.T) {
 	}
 }
 
-func TestUdpEndpointUpdateNatTimeout_DoesNotExtendUnrepliedDeadline(t *testing.T) {
-	now := time.Unix(1000, 0)
+func TestUdpEndpointUpdateNatTimeout_ExtendsDeadlineBeforeReply(t *testing.T) {
 	ue := &UdpEndpoint{
 		NatTimeout: DefaultNatTimeout,
 	}
 
-	ue.RefreshTtlWithTime(now.UnixNano())
+	ue.RefreshTtlWithTime(time.Now().UnixNano())
 	firstDeadline := ue.expiresAtNano.Load()
 	ue.UpdateNatTimeout(QuicNatTimeout)
 
-	if got := ue.expiresAtNano.Load(); got != firstDeadline {
-		t.Fatalf("expiresAt = %v, want %v", got, firstDeadline)
+	if got := ue.expiresAtNano.Load(); got <= firstDeadline {
+		t.Fatalf("expiresAt = %v, want greater than %v", got, firstDeadline)
 	}
 }
 

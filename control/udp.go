@@ -142,30 +142,17 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 	if ue.Outbound != nil && ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
 		return true
 	}
-	if ue.hasReply.Load() {
-		// Keep established UDP sessions sticky even if health probes temporarily
-		// mark the dialer unavailable. For interactive traffic (especially games),
-		// tearing down a live session based on control-plane health causes repeated
-		// redials and log spam. Real data-plane failures still retire the endpoint
-		// via write/read errors, read-loop exit, or NAT expiry.
-		return true
-	}
-	if isProxyBackedDialer(ue.Dialer) && !isStatelessProxyBackedUdpProtocol(ue.Dialer) {
-		// Proxy-backed endpoints already hold a working transport connection
-		// (TCP stream or QUIC session) established during dial. Killing an
-		// unreplied proxy endpoint on every packet because a control-plane
-		// health probe failed causes per-packet recreation: the upstream
-		// round-trip through the proxy exceeds the interval between outbound
-		// game packets, so hasReply is never set before the next health check
-		// kills the endpoint. Let actual data-plane errors (WriteTo/ReadFrom)
-		// and NAT timeout expiry handle cleanup instead.
+	if ue.hasSent.Load() || ue.hasReply.Load() {
+		// Once an endpoint has forwarded real traffic, treat it as a live session.
+		// Control-plane health should gate only new dial selection; existing UDP
+		// sessions must be retired by actual data-plane failures or timeout, not
+		// by probe jitter.
 		return true
 	}
 	networkType := udpEndpointNetworkType(ue)
 
-	// Short-circuit: lightweight check MustGetAlive first.
-	// Unreplied/probing endpoints are still safe to cull aggressively because
-	// they have not yet proved bidirectional liveness.
+	// Only endpoints that have never forwarded a packet are safe to cull based
+	// on health probes alone.
 	if !ue.Dialer.MustGetAlive(&networkType) {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			path := "UDP"
@@ -455,6 +442,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	// - Symmetric NAT (Src+Dst) for QUIC/sniffing sessions/443 traffic
 	// - Full-Cone NAT (Src-only) for other UDP traffic
 	isQuicInitial := flowDecision.IsQuicInitial
+	var quicSnifferKey PacketSnifferKey
+	failedQuicDcidKnown := false
+	if isQuicInitial {
+		quicSnifferKey = NewPacketSnifferKey(realSrc, realDst, data)
+		failedQuicDcidKnown = IsQuicDcidFailedAt(quicSnifferKey, now)
+	}
 	ueKey = flowDecision.EndpointKeyForInitialLookup()
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
 	if !ueExists {
@@ -466,12 +459,24 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	if ueExists {
 		switch {
 		case ue.SniffedDomain == "" && isQuicInitial:
-			// Chrome reuses UDP sockets; remove domain-less endpoint for new QUIC Initial.
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
+			// Chrome can reuse UDP sockets for different QUIC handshakes, but
+			// the QUIC Initial heuristic is intentionally loose. Tearing down an
+			// existing endpoint before consulting the failed-DCID cache, or after
+			// the flow has already received replies, causes repeated redials and
+			// read-loop EOF churn on false positives (for example, game traffic).
+			shouldResetForQuicInitial := quicSnifferKey.HasCacheableDcid() && !failedQuicDcidKnown && !ue.hasReply.Load()
+			if shouldResetForQuicInitial {
+				if c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
+				}
+				_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+				ueExists = false
+				break
 			}
-			_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
-			ueExists = false
+			if !c.checkUdpEndpointHealth(ue, ueKey, false) {
+				ue = nil
+				ueExists = false
+			}
 		case ue.SniffedDomain != "":
 			// It is quic ...
 			// Fast path.
@@ -556,12 +561,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		// Create sniffer key with DCID for QUIC connections.
 		// Each DCID is like a different bus - passengers (packets) wait
 		// for their specific bus to depart (complete sniffing).
-		key := NewPacketSnifferKey(realSrc, realDst, data)
-
 		// Check if this DCID has failed sniffing before.
 		// Failed DCIDs bypass sniffing entirely and use IP routing directly.
 		// This prevents blocking when a previous sniffing attempt timed out.
-		if IsQuicDcidFailedAt(key, now) {
+		key := quicSnifferKey
+		if failedQuicDcidKnown {
 			goto afterSniffing
 		}
 

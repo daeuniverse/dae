@@ -218,6 +218,61 @@ func TestHandlePkt_HealthDeathKeepsProxyBackedEndpoint(t *testing.T) {
 	}
 }
 
+func TestHandlePkt_HealthDeathKeepsStatelessProxyBackedEndpoint(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	conn := &udpReuseSimulationConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	d, underlay := newCountingProxyEndpointDialer("shadowsocks", "proxy.example:443", conn)
+	cp := newUdpReuseSimulationControlPlane(newTestRandomOutboundGroup(d))
+	core := &controlPlaneCore{
+		log:    cp.log,
+		closed: context.Background(),
+	}
+	d.RegisterAliveTransitionCallback(core.dialerAliveTransitionCallback(d))
+
+	src := mustParseAddrPort("192.168.89.3:42688")
+	dst := mustParseAddrPort("52.199.194.44:23003")
+	payload := []byte{0x45, 0x46, 0x47, 0x48}
+	flowDecision := ClassifyUdpFlow(src, dst, payload)
+	key := flowDecision.FullConeNatEndpointKey()
+
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundUserDefinedMin),
+	}
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("first handlePkt: %v", err)
+	}
+	if got := underlay.calls.Load(); got != 1 {
+		t.Fatalf("DialContext calls after first packet = %d, want 1", got)
+	}
+
+	d.ReportUnavailableForced(udp4NetworkType(), io.ErrUnexpectedEOF)
+	d.ReportUnavailableForced(&componentdialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_6,
+		IsDns:     false,
+	}, io.ErrUnexpectedEOF)
+
+	if _, ok := DefaultUdpEndpointPool.Get(key); !ok {
+		t.Fatal("expected stateless proxy-backed unreplied endpoint to survive health death")
+	}
+
+	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+		t.Fatalf("second handlePkt after health death: %v", err)
+	}
+	if got := underlay.calls.Load(); got != 1 {
+		t.Fatalf("DialContext calls after stateless health death = %d, want 1 (reused)", got)
+	}
+}
+
 func TestHandlePkt_EstablishedFlowSurvivesTransientHealthFailure(t *testing.T) {
 	oldPool := DefaultUdpEndpointPool
 	DefaultUdpEndpointPool = NewUdpEndpointPool()

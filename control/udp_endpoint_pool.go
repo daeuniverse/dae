@@ -58,6 +58,11 @@ type UdpEndpoint struct {
 	// Before this flips true, the endpoint is still probing and must not
 	// use the normal sliding NAT lifetime.
 	hasReply atomic.Bool
+	// hasSent indicates the endpoint has already forwarded at least one client
+	// packet successfully. Once a flow reaches this point, control-plane health
+	// probes should not tear it down proactively; only data-plane errors,
+	// transport lifecycle end, or NAT timeout should retire it.
+	hasSent atomic.Bool
 
 	// pendingReplyPeers keeps a small ring of recently written upstream peers
 	// while the endpoint is still probing. The first reply must match one of
@@ -410,6 +415,7 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 		}
 		return n, err
 	}
+	ue.hasSent.Store(true)
 	if n != len(b) {
 		ue.retire()
 		return n, fmt.Errorf("%w: udp endpoint wrote %d/%d bytes to %s", io.ErrShortWrite, n, len(b), addr)
@@ -462,45 +468,6 @@ func (ue *UdpEndpoint) setNatTimeout(timeout time.Duration) {
 // proxy layer.
 func (ue *UdpEndpoint) requiresInitialReplyGuard() bool {
 	return ue == nil || !isProxyBackedDialer(ue.Dialer)
-}
-
-// initialReplyTimeout returns the bounded probing lifetime before the
-// endpoint has observed its first upstream reply.
-func (ue *UdpEndpoint) initialReplyTimeout() time.Duration {
-	timeout := ue.natTimeout()
-	if timeout <= 0 {
-		return 0
-	}
-	// Reuse the dial timeout budget instead of introducing another user-facing
-	// tuning knob. An unreplied UDP flow should not survive longer than two dial
-	// attempts before it proves bidirectional liveness.
-	maxProbe := 2 * consts.DefaultDialTimeout
-	if timeout > maxProbe {
-		return maxProbe
-	}
-	return timeout
-}
-
-// ensureInitialReplyDeadline pins a fixed deadline for probing endpoints.
-// Repeated outbound writes must not turn this into a sliding timeout.
-func (ue *UdpEndpoint) ensureInitialReplyDeadline(nowNano int64) {
-	timeout := ue.initialReplyTimeout()
-	if timeout <= 0 {
-		return
-	}
-	if nowNano == 0 {
-		nowNano = time.Now().UnixNano()
-	}
-	deadline := nowNano + int64(timeout)
-	for {
-		expiresAt := ue.expiresAtNano.Load()
-		if expiresAt > 0 && expiresAt <= deadline {
-			return
-		}
-		if ue.expiresAtNano.CompareAndSwap(expiresAt, deadline) {
-			return
-		}
-	}
 }
 
 // markReplied promotes the endpoint from probing to established state.
@@ -589,10 +556,6 @@ func (ue *UdpEndpoint) acceptsInitialReplyFrom(from netip.AddrPort) bool {
 // RefreshTtlWithTime updates the expiration time using a pre-calculated
 // timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
 func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
-	if !ue.hasReply.Load() && ue.requiresInitialReplyGuard() {
-		ue.ensureInitialReplyDeadline(nowNano)
-		return
-	}
 	timeout := ue.natTimeout()
 	if timeout <= 0 {
 		return
@@ -624,10 +587,6 @@ func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
 	}
 	ue.setNatTimeout(timeout)
 	now := time.Now().UnixNano()
-	if !ue.hasReply.Load() && ue.requiresInitialReplyGuard() {
-		ue.ensureInitialReplyDeadline(now)
-		return
-	}
 	// Force immediate refresh on timeout change (bypass throttling).
 	ue.lastRefreshNano.Store(now)
 	ue.expiresAtNano.Store(now + int64(timeout))
@@ -808,22 +767,16 @@ func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
 // endpointSurvivesDialerInvalidation reports whether an endpoint should remain
 // reusable after its dialer transitions to not alive.
 //
-// Established UDP sessions stay sticky on the original node once they have seen
-// bidirectional traffic. Proxy-backed endpoints additionally survive because
-// they already hold a working transport connection (TCP/QUIC) established
-// during dial. Killing them before the first upstream reply arrives forces
-// per-packet endpoint recreation for interactive traffic such as games, where
-// the round-trip through the proxy exceeds the interval between outbound
-// packets. Real data-plane failures are still caught by WriteTo/ReadFrom
-// errors and NAT timeout expiry.
+// Control-plane health is an admission signal for new selections, not a hard
+// kill switch for live sessions. Once an endpoint has successfully forwarded at
+// least one packet, proactively retiring it based only on health probes causes
+// avoidable redials and session churn. Real failures are still surfaced by
+// WriteTo/ReadFrom errors, transport lifecycle end, or NAT timeout expiry.
 func (p *UdpEndpointPool) endpointSurvivesDialerInvalidation(ue *UdpEndpoint) bool {
 	if ue == nil {
 		return false
 	}
-	if ue.hasReply.Load() {
-		return true
-	}
-	return isProxyBackedDialer(ue.Dialer) && !isStatelessProxyBackedUdpProtocol(ue.Dialer)
+	return ue.hasSent.Load() || ue.hasReply.Load()
 }
 
 func endpointTransportDoneChannel(ue *UdpEndpoint) <-chan struct{} {

@@ -225,3 +225,50 @@ func TestCheckUdpEndpointHealth_EstablishedEndpointIgnoresTransientDialerHealth(
 		t.Fatal("expected established endpoint to remain pooled")
 	}
 }
+
+func TestCheckUdpEndpointHealth_ForwardedEndpointIgnoresTransientDialerHealth(t *testing.T) {
+	oldPool := DefaultUdpEndpointPool
+	DefaultUdpEndpointPool = NewUdpEndpointPool()
+	defer func() {
+		DefaultUdpEndpointPool.Reset()
+		DefaultUdpEndpointPool = oldPool
+	}()
+
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	d := newTestEndpointDialer()
+	udp6 := &componentdialer.NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_6,
+		UdpHealthDomain: componentdialer.UdpHealthDomainData,
+	}
+	d.ReportUnavailableForced(udp6, nil)
+
+	key := UdpEndpointKey{
+		Src: netip.MustParseAddrPort("192.0.2.10:12346"),
+		Dst: netip.MustParseAddrPort("198.51.100.21:443"),
+	}
+	ue := &UdpEndpoint{
+		Dialer:              d,
+		lAddr:               key.Src,
+		log:                 logger,
+		poolRef:             DefaultUdpEndpointPool,
+		poolKey:             key,
+		endpointNetworkType: *udp6,
+	}
+	ue.hasSent.Store(true)
+
+	shard := DefaultUdpEndpointPool.shardFor(key)
+	shard.mu.Lock()
+	shard.pool[key] = ue
+	shard.mu.Unlock()
+
+	c := &ControlPlane{log: logger}
+	if !c.checkUdpEndpointHealth(ue, key, false) {
+		t.Fatal("expected forwarded endpoint to survive transient dialer health failure")
+	}
+	if got, ok := DefaultUdpEndpointPool.Get(key); !ok || got != ue {
+		t.Fatal("expected forwarded endpoint to remain pooled")
+	}
+}
