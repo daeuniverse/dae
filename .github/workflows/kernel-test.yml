@@ -243,7 +243,10 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae dig @2606:4700:4700::1111 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup WAN UDP port conflict
@@ -287,7 +290,10 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae dig @2606:4700:4700::1111 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup LAN
@@ -416,7 +422,10 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
 
       - name: Setup LAN UDP port conflict
@@ -448,6 +457,10 @@ jobs:
             fi
             nohup docker exec dae nc -lu 53 &> nc.log &
 
+            # Wait for IPv6 connectivity to converge after namespace rebuild
+            sleep 3
+            docker exec dae ping -c1 fd00:ffff::1
+
       - name: Check LAN IPv4 UDP with port conflict
         uses: cilium/little-vm-helper@v0.0.28
         with:
@@ -466,5 +479,8 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
