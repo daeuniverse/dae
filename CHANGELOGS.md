@@ -382,7 +382,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - docs(protocols): delete redundant line in [#452](https://github.com/daeuniverse/dae/pull/452) by (@bradfordzhang)
 - ci(Makefile): enable trace module by default in [#455](https://github.com/daeuniverse/dae/pull/455) by (@hero-intelligent)
-- ci: update actions/checkout@v3 to actions/checkout@v4 in [#461](https://github.com/daeuniverse/dae/pull/461) by (@MarksonHon)
+- ci: update actions/checkout@v3 to actions/checkout@v6 in [#461](https://github.com/daeuniverse/dae/pull/461) by (@MarksonHon)
 - ci: update ci modules using nodejs to latest in [#465](https://github.com/daeuniverse/dae/pull/465) by (@MarksonHon)
 - style: format bpf c code using kernel checkpatch.pl in [#477](https://github.com/daeuniverse/dae/pull/477) by (@jschwinger233)
 - chore: bump submodule dae_bpf_headers in [#487](https://github.com/daeuniverse/dae/pull/487) by (@jschwinger233)
