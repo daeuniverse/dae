@@ -51,7 +51,7 @@ type UdpFlowDecision struct {
 }
 
 func udpPortAllowsSniffing(port uint16) bool {
-	return port == 443 || port == 853
+	return port == 443 || port == 8443
 }
 
 func udpFlowAllowsSniffing(src, dst netip.AddrPort) bool {
@@ -67,7 +67,7 @@ func ClassifyUdpFlow(src, dst netip.AddrPort, data []byte) UdpFlowDecision {
 		snifferKey = NewPacketSnifferKey(src, dst, data)
 	}
 
-	// Tightened UDP sniffing semantics: only QUIC/DoQ ports are allowed to
+	// Tightened UDP sniffing semantics: only explicit QUIC ports (443, 8443) are allowed to
 	// enter the sniffing-related flow model. All other UDP bypasses sniffing
 	// entirely, even if the payload happens to resemble a QUIC Initial packet.
 	return UdpFlowDecision{

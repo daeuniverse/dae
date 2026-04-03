@@ -110,7 +110,7 @@ func TestUdpFlowDecision_DomainPromotesSymmetricDialPlan(t *testing.T) {
 	}
 }
 
-func TestClassifyUdpFlow_Only443And853EnableUdpSniffing(t *testing.T) {
+func TestClassifyUdpFlow_Only443And8443EnableUdpSniffing(t *testing.T) {
 	src := mustParseUdpFlowAddrPort(t, "192.0.2.10:40000")
 	initialLikePayload := makeLikelyQuicInitialPayload(0x61)
 
@@ -122,23 +122,23 @@ func TestClassifyUdpFlow_Only443And853EnableUdpSniffing(t *testing.T) {
 		t.Fatal("expected udp/443 flow to remain in the sniff allowlist")
 	}
 
-	doqDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:853"), initialLikePayload)
+	doqDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:8443"), initialLikePayload)
 	if !doqDecision.IsQuicInitial {
-		t.Fatal("expected udp/853 Initial-shaped payload to stay sniff-eligible")
+		t.Fatal("expected udp/8443 Initial-shaped payload to stay sniff-eligible")
 	}
 	if !doqDecision.AllowsSniffing {
-		t.Fatal("expected udp/853 flow to remain in the sniff allowlist")
+		t.Fatal("expected udp/8443 flow to remain in the sniff allowlist")
 	}
 
-	altPortDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:8443"), initialLikePayload)
+	altPortDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:853"), initialLikePayload)
 	if altPortDecision.IsQuicInitial {
-		t.Fatal("expected udp/8443 Initial-shaped payload to bypass sniffing")
+		t.Fatal("expected udp/853 Initial-shaped payload to bypass sniffing")
 	}
 	if altPortDecision.AllowsSniffing {
-		t.Fatal("expected udp/8443 flow to bypass the sniff allowlist")
+		t.Fatal("expected udp/853 flow to bypass the sniff allowlist")
 	}
 	if altPortDecision.HasConfirmedQuicState() {
-		t.Fatal("expected udp/8443 flow to avoid confirmed QUIC state without sniff eligibility")
+		t.Fatal("expected udp/853 flow to avoid confirmed QUIC state without sniff eligibility")
 	}
 	if got := altPortDecision.EndpointKeyForInitialLookup(); got != altPortDecision.FullConeNatEndpointKey() {
 		t.Fatalf("EndpointKeyForInitialLookup() = %v, want full-cone %v", got, altPortDecision.FullConeNatEndpointKey())
