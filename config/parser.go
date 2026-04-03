@@ -61,7 +61,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		if !ok {
 			return fmt.Errorf("field \"%v\" has no mapstructure tag", structField.Name)
 		}
-		if key == "_" {
+		if key == "_" || key == "so_mark_from_dae_set" {
 			// omit
 			continue
 		}

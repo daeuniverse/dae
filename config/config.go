@@ -21,7 +21,7 @@ type Global struct {
 	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
 	SoMarkFromDae     uint32 `mapstructure:"so_mark_from_dae"`
-	SoMarkFromDaeSet  bool   `mapstructure:"_"`
+	SoMarkFromDaeSet  bool   `mapstructure:"so_mark_from_dae_set"`
 	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	// DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`

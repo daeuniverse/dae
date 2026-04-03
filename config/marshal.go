@@ -224,7 +224,7 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 			return fmt.Errorf("tag mapstructure is required")
 		}
 		// Reserved field.
-		if key == "_" {
+		if key == "_" || key == "so_mark_from_dae_set" {
 			switch structField.Name {
 			case "Name":
 			case "FilterAnnotation":
