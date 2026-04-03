@@ -43,6 +43,10 @@ type RoutingMatcherBuilder struct {
 	compiledRules      []compiledRoutingMatch
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
+	// packetMetadataSensitiveRouting is true when routing rules depend on
+	// metadata that userspace UDP handling cannot reconstruct from payload
+	// alone. In that case, broad UDP endpoint/routing-result reuse is unsafe.
+	packetMetadataSensitiveRouting bool
 	// referencedOutbounds tracks outbound names referenced by routing rules.
 	// This is used to limit health checks to only nodes in used groups.
 	referencedOutbounds map[string]struct{}
@@ -171,6 +175,10 @@ func (b *RoutingMatcherBuilder) GetReferencedOutbounds() map[string]struct{} {
 	return b.referencedOutbounds
 }
 
+func (b *RoutingMatcherBuilder) UsesPacketMetadataRouting() bool {
+	return b.packetMetadataSensitiveRouting
+}
+
 func newCompiledRoutingBase(matchType consts.MatchType, not bool, outboundID uint8, mark uint32, must bool) compiledRoutingMatch {
 	return compiledRoutingMatch{
 		matchType: matchType,
@@ -218,6 +226,7 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 }
 
 func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound *routing.Outbound) (err error) {
+	b.packetMetadataSensitiveRouting = true
 	var addr16 [16]byte
 	values := make([]netip.Prefix, 0, len(macAddrs))
 	for _, mac := range macAddrs {
@@ -419,6 +428,7 @@ func (b *RoutingMatcherBuilder) addIpVersion(f *config_parser.Function, values c
 }
 
 func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound *routing.Outbound) (err error) {
+	b.packetMetadataSensitiveRouting = true
 	for i, value := range values {
 		outboundName := consts.OutboundLogicalOr.String()
 		if i == len(values)-1 {
@@ -444,6 +454,7 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 }
 
 func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint8, outbound *routing.Outbound) (err error) {
+	b.packetMetadataSensitiveRouting = true
 	for i, value := range values {
 		outboundName := consts.OutboundLogicalOr.String()
 		if i == len(values)-1 {

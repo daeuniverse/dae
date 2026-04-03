@@ -259,14 +259,26 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 	return bindAddr, writeAddr
 }
 
-// sendPkt sends a UDP packet to the destination.
-// Parameters:
-//   - log: logger to use
-//   - data: packet data to send
-//   - from: source address of the packet (for logging/metadata only)
-//   - realTo: destination address where the packet should be sent
-//   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
+type udpEndpointReplySender func(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) error
+
+func swapPinnedAnyfrom(slot **Anyfrom, next *Anyfrom) {
+	if slot == nil {
+		return
+	}
+	current := *slot
+	if current == next {
+		return
+	}
+	if next != nil {
+		next.Pin()
+	}
+	*slot = next
+	if current != nil {
+		current.Unpin()
+	}
+}
+
+func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom, cache udpEndpointResponseConnCache) (err error) {
 	// Proxy chain support: Use original 'from' address as bindAddr to ensure
 	// each server response gets its own UDP socket. This prevents response mixing
 	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
@@ -303,11 +315,34 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 		}
 		// Cached socket is stale or broken; clear the cache slot immediately
 		// so the next call doesn't waste time retrying a dead socket.
-		*afp = nil
+		swapPinnedAnyfrom(afp, nil)
 		if debugEnabled {
 			log.WithFields(logrus.Fields{
 				"error": err.Error(),
 			}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+		}
+	}
+
+	if cache != nil {
+		if cached := cache.CachedResponseConn(bindAddr); cached != nil {
+			if _, err = cached.WriteToUDPAddrPort(data, writeAddr); err == nil {
+				if traceEnabled {
+					log.WithFields(logrus.Fields{
+						"to":         realTo.String(),
+						"write_addr": writeAddr.String(),
+						"cached":     true,
+						"cache_kind": "bind_addr",
+					}).Trace("sendPkt: sent via bind-address cached socket")
+				}
+				return nil
+			}
+			cache.ClearCachedResponseConn(bindAddr, cached)
+			if debugEnabled {
+				log.WithFields(logrus.Fields{
+					"bind_addr": bindAddr.String(),
+					"error":     err.Error(),
+				}).Debug("sendPkt: bind-address cached socket failed, getting new socket from pool")
+			}
 		}
 	}
 
@@ -361,24 +396,49 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 
 	// Update caller's cached socket so future calls skip the pool lookup
 	if afp != nil && err == nil {
-		*afp = uConn
+		swapPinnedAnyfrom(afp, uConn)
+	}
+	if cache != nil && err == nil {
+		cache.StoreCachedResponseConn(bindAddr, uConn)
 	}
 	return err
 }
 
-type udpEndpointReplySender func(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) error
+// sendPkt sends a UDP packet to the destination.
+// Parameters:
+//   - log: logger to use
+//   - data: packet data to send
+//   - from: source address of the packet (for logging/metadata only)
+//   - realTo: destination address where the packet should be sent
+//   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
+func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
+	return sendPktWithCacheProvider(log, data, from, realTo, afp, nil)
+}
 
 func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) error {
-	if send == nil {
-		send = sendPkt
-	}
 	var cacheSlot **Anyfrom
+	var cacheProvider udpEndpointResponseConnCache
 	if ue != nil {
 		cacheSlot = ue.responseConnCacheSlot()
+		cacheProvider = ue
 	}
 	// Local reply reinjection failures do not mean the upstream proxy session is
 	// broken. Keeping the endpoint alive avoids recreating a fresh UDP session
 	// for every subsequent client packet after a transient local send failure.
+	if send == nil {
+		if err := sendPktWithCacheProvider(log, data, from, clientAddr, cacheSlot, cacheProvider); err != nil {
+			if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
+				log.WithFields(logrus.Fields{
+					"from":      from.String(),
+					"to":        clientAddr.String(),
+					"data_size": len(data),
+					"error":     err.Error(),
+				}).Debug("forwardUdpEndpointReplyToClient: reply to client failed (packet dropped)")
+			}
+			return nil
+		}
+		return nil
+	}
 	if err := send(log, data, from, clientAddr, cacheSlot); err != nil {
 		if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
 			log.WithFields(logrus.Fields{
@@ -401,6 +461,12 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	now := time.Now()
 	nowNano := now.UnixNano()
 	realSrc = src
+	routeScope := udpEndpointRouteScope{}
+	forceSymmetricKey := false
+	if c.udpRouteScopeSensitive {
+		routeScope = newUdpEndpointRouteScope(routingResult)
+		forceSymmetricKey = udpRouteScopeNeedsDestinationAffinity(routingResult)
+	}
 
 	// DNS Fast Path: Skip UdpEndpoint lookup for DNS traffic (port 53).
 	// DNS is a stateless protocol and doesn't need the connection tracking
@@ -460,16 +526,16 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		quicSnifferKey = NewPacketSnifferKey(realSrc, realDst, data)
 		failedQuicDcidKnown = IsQuicDcidFailedAt(quicSnifferKey, now)
 	}
-	ueKey = flowDecision.EndpointKeyForInitialLookup()
+	ueKey = flowDecision.EndpointKeyForInitialLookupWithScope(routeScope, forceSymmetricKey)
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
-	if !ueExists {
+	if !ueExists && !forceSymmetricKey {
 		if ueKey.Dst.Port() != 0 {
 			// Sniff-eligible UDP can re-enter here with a symmetric lookup even
 			// though the live session is already tracked under the cheaper
 			// src-only key. Reuse that exact src-only endpoint when it targets
 			// the same remote, otherwise we fork a second UdpEndpoint for the
 			// same 4-tuple and start another read loop.
-			srcOnlyKey := flowDecision.FullConeNatEndpointKey()
+			srcOnlyKey := flowDecision.FullConeNatEndpointKeyWithScope(routeScope)
 			if srcOnlyKey != ueKey {
 				if candidate, ok := DefaultUdpEndpointPool.Get(srcOnlyKey); ok && candidate.DialTarget == realDst.String() {
 					ueKey = srcOnlyKey
@@ -483,7 +549,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			// packet reaches here. Probe that exact symmetric key before
 			// creating a new src-only endpoint so the visible UDP flow stays
 			// single-instanced.
-			symmetricKey := flowDecision.SymmetricNatEndpointKey()
+			symmetricKey := flowDecision.SymmetricNatEndpointKeyWithScope(routeScope)
 			if symmetricKey != ueKey {
 				if candidate, ok := DefaultUdpEndpointPool.Get(symmetricKey); ok && candidate.DialTarget == realDst.String() {
 					ueKey = symmetricKey
@@ -494,7 +560,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		}
 	}
 	if !ueExists {
-		if fallbackKey, ok := flowDecision.InitialLookupFallbackKey(); ok {
+		if fallbackKey, ok := flowDecision.InitialLookupFallbackKeyWithScope(routeScope, forceSymmetricKey); ok {
 			ueKey = fallbackKey
 			ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
 		}
@@ -560,6 +626,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 					c.log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 				}
 
+				ue.TrackUdpConnStateTuplePair(realSrc, realDst)
 				_, err = ue.WriteTo(data, dialTarget)
 				if err == nil {
 					if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
@@ -788,7 +855,7 @@ getNew:
 	// lookup found an existing symmetric endpoint via the sniff-eligible UDP
 	// path, keep using that existing entry instead of silently forking a new
 	// src-only one.
-	ueKey = flowDecision.EndpointKeyForDial(domain)
+	ueKey = flowDecision.EndpointKeyForDialWithScope(domain, routeScope, forceSymmetricKey)
 	if ueExists && foundUeKey.Dst.Port() != 0 && ueKey.Dst.Port() == 0 {
 		ueKey = foundUeKey
 		natTimeout = ue.natTimeout()
@@ -817,9 +884,10 @@ getNew:
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil)
 			},
-			NatTimeout: natTimeout,
-			Log:        c.log,
-			NowNano:    nowNano,
+			NatTimeout:     natTimeout,
+			ConnStateOwner: c.core,
+			Log:            c.log,
+			NowNano:        nowNano,
 			GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 				dialParam := &proxyDialParam{
 					Outbound:    consts.OutboundIndex(routingResult.Outbound),
@@ -901,6 +969,7 @@ getNew:
 		// It is used for showing.
 		domain = ue.SniffedDomain
 	}
+	ue.TrackUdpConnStateTuplePair(realSrc, realDst)
 
 	for packetIndex < len(payloads) {
 		_, err = ue.WriteTo(payloads[packetIndex], dialTarget)

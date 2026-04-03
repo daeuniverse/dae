@@ -103,6 +103,7 @@ type ControlPlane struct {
 	tproxyPortProtect              bool
 	soMarkFromDae                  uint32
 	mptcp                          bool
+	udpRouteScopeSensitive         bool
 	udpUnorderedRunner             *udpUnorderedTaskRunner
 	udpBoundedPool                 *udpBoundedPoolManager
 	failedQuicDcidCache            *failedQuicDcidCache
@@ -606,35 +607,36 @@ func NewControlPlaneWithContext(
 	// New control plane.
 	cctx, cancel := context.WithCancel(ctx)
 	plane = &ControlPlane{
-		log:                  log,
-		core:                 core,
-		deferFuncs:           deferFuncs,
-		listenIp:             "0.0.0.0",
-		outbounds:            outbounds,
-		referencedOutbounds:  referencedOutbounds,
-		dnsController:        nil,
-		onceNetworkReady:     sync.Once{},
-		dialMode:             dialMode,
-		routingMatcher:       routingMatcher,
-		ctx:                  cctx,
-		cancel:               cancel,
-		ready:                make(chan struct{}),
-		muRealDomainSet:      sync.RWMutex{},
-		realDomainSet:        bloom.NewWithEstimates(2048, 0.001),
-		tcpSniffNegSet:       make(map[tcpSniffNegKey]tcpSniffNegEntry),
-		negJanitorStop:       make(chan struct{}),
-		negJanitorDone:       make(chan struct{}),
-		connStateJanitorStop: make(chan struct{}),
-		connStateJanitorDone: make(chan struct{}),
-		lanInterface:         global.LanInterface,
-		wanInterface:         global.WanInterface,
-		sniffingTimeout:      sniffingTimeout,
-		tproxyPortProtect:    global.TproxyPortProtect,
-		soMarkFromDae:        global.SoMarkFromDae,
-		mptcp:                global.Mptcp,
-		udpUnorderedRunner:   newDefaultUdpUnorderedTaskRunner(cctx),
-		udpBoundedPool:       newUdpBoundedPoolManager(cctx),
-		failedQuicDcidCache:  newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
+		log:                    log,
+		core:                   core,
+		deferFuncs:             deferFuncs,
+		listenIp:               "0.0.0.0",
+		outbounds:              outbounds,
+		referencedOutbounds:    referencedOutbounds,
+		dnsController:          nil,
+		onceNetworkReady:       sync.Once{},
+		dialMode:               dialMode,
+		routingMatcher:         routingMatcher,
+		ctx:                    cctx,
+		cancel:                 cancel,
+		ready:                  make(chan struct{}),
+		muRealDomainSet:        sync.RWMutex{},
+		realDomainSet:          bloom.NewWithEstimates(2048, 0.001),
+		tcpSniffNegSet:         make(map[tcpSniffNegKey]tcpSniffNegEntry),
+		negJanitorStop:         make(chan struct{}),
+		negJanitorDone:         make(chan struct{}),
+		connStateJanitorStop:   make(chan struct{}),
+		connStateJanitorDone:   make(chan struct{}),
+		lanInterface:           global.LanInterface,
+		wanInterface:           global.WanInterface,
+		sniffingTimeout:        sniffingTimeout,
+		tproxyPortProtect:      global.TproxyPortProtect,
+		soMarkFromDae:          global.SoMarkFromDae,
+		mptcp:                  global.Mptcp,
+		udpRouteScopeSensitive: builder.UsesPacketMetadataRouting(),
+		udpUnorderedRunner:     newDefaultUdpUnorderedTaskRunner(cctx),
+		udpBoundedPool:         newUdpBoundedPoolManager(cctx),
+		failedQuicDcidCache:    newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
 	}
 	SetFailedQuicDcidCache(plane.failedQuicDcidCache)
 	SetAnyfromSoMark(global.SoMarkFromDae)
@@ -1544,8 +1546,9 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 }
 
 // cleanupUdpConnStateMap iterates through the UDP conn state map and removes
-// entries that haven't been seen within their timeout period.
-// DNS entries use a shorter timeout (17s) while normal UDP uses 60s.
+// cold entries that escaped endpoint-owned teardown.
+// DNS entries use a shorter timeout (17s) while non-DNS UDP keeps a longer
+// backstop timeout so datapath-only tuples still age out after crashes/reload races.
 // When map is under pressure (high usage), timeouts are dynamically reduced
 // to free up space more aggressively in a single pass.
 func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
@@ -2145,16 +2148,18 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 				}
 
-				if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
-					if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
-						routingResult = cached
+				if !c.udpRouteScopeSensitive {
+					if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
+						if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
+							routingResult = cached
+						}
 					}
-				}
-				if routingResult == nil {
-					if fallbackKey, ok := flowDecision.CachedRoutingFallbackKey(); ok {
-						if ue, ok := DefaultUdpEndpointPool.Get(fallbackKey); ok {
-							if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
-								routingResult = cached
+					if routingResult == nil {
+						if fallbackKey, ok := flowDecision.CachedRoutingFallbackKey(); ok {
+							if ue, ok := DefaultUdpEndpointPool.Get(fallbackKey); ok {
+								if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
+									routingResult = cached
+								}
 							}
 						}
 					}
@@ -2203,7 +2208,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					return
 				}
 
-				if freshRoutingResult != nil {
+				if !c.udpRouteScopeSensitive && freshRoutingResult != nil {
 					updatedCache := false
 					if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
 						ue.UpdateCachedRoutingResult(realDst, unix.IPPROTO_UDP, freshRoutingResult)
@@ -2221,11 +2226,14 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 			// Keep ordered ingress scoped to QUIC Initial flows and flows with an
 			// active sniff session so multi-packet ClientHello reassembly stays
-			// deterministic; other UDP traffic stays on the direct path.
+			// deterministic. Ordinary non-QUIC UDP must not be funneled through
+			// DefaultUdpTaskPool: it does not require cross-packet serialization,
+			// and forcing it through the ordered queue only adds latency and hot-key
+			// contention without improving correctness.
 			//
 			// Layered dispatch strategy for optimal throughput, latency, and reliability:
 			// 1. Ordered Ingress: For QUIC Initial and sniffing sessions (preserves order)
-			// 2. Direct Goroutine: For DNS/VoIP (lowest latency, zero drops)
+			// 2. Direct Goroutine: For DNS/VoIP and ordinary UDP (lowest latency, zero drops)
 			// 3. Bounded Pool: For WireGuard/VPN (backpressure without drops)
 			// 4. Task Runner: Fallback for other traffic (may drop under load)
 			switch flowDecision.DispatchStrategy() {

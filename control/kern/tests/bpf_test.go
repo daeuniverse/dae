@@ -11,7 +11,6 @@ package tests
 import (
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"syscall"
@@ -62,16 +61,16 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 
 func collectPrograms(t *testing.T) (obj *bpftestObjects, progset []programSet, err error) {
 	obj = &bpftestObjects{}
-	pinPath := "/sys/fs/bpf/dae"
-	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
-		return
+	spec, err := loadBpftest()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err = disableAllPinnedMapsForTests(spec); err != nil {
+		return nil, nil, err
 	}
 
-	if err = loadBpftestObjects(obj,
+	if err = spec.LoadAndAssign(obj,
 		&ebpf.CollectionOptions{
-			Maps: ebpf.MapOptions{
-				PinPath: pinPath,
-			},
 			Programs: ebpf.ProgramOptions{},
 		},
 	); err != nil {

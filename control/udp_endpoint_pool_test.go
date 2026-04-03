@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	ob "github.com/daeuniverse/dae/component/outbound"
 	componentdialer "github.com/daeuniverse/dae/component/outbound/dialer"
@@ -255,6 +256,53 @@ func TestUdpEndpointRefreshTtlWithTime_ExtendsDeadlineBeforeReply(t *testing.T) 
 	}
 }
 
+func TestAnyfromRefreshTtlWithTime_DoesNotShortenExtendedDeadline(t *testing.T) {
+	now := time.Unix(500, 0)
+	extendedDeadline := now.Add(DefaultNatTimeout).UnixNano()
+	af := &Anyfrom{
+		ttl: AnyfromTimeout,
+	}
+	af.expiresAtNano.Store(extendedDeadline)
+
+	af.RefreshTtlWithTime(now.Add(3 * time.Second).UnixNano())
+
+	if got := af.expiresAtNano.Load(); got != extendedDeadline {
+		t.Fatalf("expiresAt = %v, want %v", got, extendedDeadline)
+	}
+}
+
+func TestUdpEndpointRefreshTtlWithTime_ExtendsFullConeCachedResponseConnsToEndpointDeadline(t *testing.T) {
+	now := time.Unix(520, 0)
+	ue := &UdpEndpoint{
+		NatTimeout: DefaultNatTimeout,
+	}
+	bindA := netip.MustParseAddrPort("127.0.0.1:20001")
+	bindB := netip.MustParseAddrPort("127.0.0.1:20002")
+	connA := &Anyfrom{ttl: AnyfromTimeout}
+	connB := &Anyfrom{ttl: AnyfromTimeout}
+
+	ue.StoreCachedResponseConn(bindA, connA)
+	ue.StoreCachedResponseConn(bindB, connB)
+	ue.RefreshTtlWithTime(now.UnixNano())
+
+	wantDeadline := now.UnixNano() + int64(DefaultNatTimeout)
+	if got := ue.expiresAtNano.Load(); got != wantDeadline {
+		t.Fatalf("endpoint expiresAt = %v, want %v", got, wantDeadline)
+	}
+	if got := connA.expiresAtNano.Load(); got != wantDeadline {
+		t.Fatalf("connA expiresAt = %v, want %v", got, wantDeadline)
+	}
+	if got := connB.expiresAtNano.Load(); got != wantDeadline {
+		t.Fatalf("connB expiresAt = %v, want %v", got, wantDeadline)
+	}
+	if got := connA.pins.Load(); got != 1 {
+		t.Fatalf("connA pins = %d, want 1", got)
+	}
+	if got := connB.pins.Load(); got != 1 {
+		t.Fatalf("connB pins = %d, want 1", got)
+	}
+}
+
 func TestUdpEndpointPromoteAfterReply_UsesFullLifetimeImmediately(t *testing.T) {
 	now := time.Unix(789, 0)
 	ue := &UdpEndpoint{
@@ -267,6 +315,96 @@ func TestUdpEndpointPromoteAfterReply_UsesFullLifetimeImmediately(t *testing.T) 
 	got := time.Duration(ue.expiresAtNano.Load() - ue.lastRefreshNano.Load())
 	if got != QuicNatTimeout {
 		t.Fatalf("expires delta = %v, want %v", got, QuicNatTimeout)
+	}
+}
+
+func TestUdpEndpointClose_ReleasesCachedResponseConnPins(t *testing.T) {
+	ue := &UdpEndpoint{
+		poolKey: UdpEndpointKey{Src: netip.MustParseAddrPort("192.0.2.10:40000")},
+	}
+	bindA := netip.MustParseAddrPort("127.0.0.1:21001")
+	bindB := netip.MustParseAddrPort("127.0.0.1:21002")
+	connA := &Anyfrom{ttl: AnyfromTimeout}
+	connB := &Anyfrom{ttl: AnyfromTimeout}
+
+	ue.StoreCachedResponseConn(bindA, connA)
+	ue.StoreCachedResponseConn(bindB, connB)
+
+	if got := connA.pins.Load(); got != 1 {
+		t.Fatalf("connA pins before close = %d, want 1", got)
+	}
+	if got := connB.pins.Load(); got != 1 {
+		t.Fatalf("connB pins before close = %d, want 1", got)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+
+	if got := connA.pins.Load(); got != 0 {
+		t.Fatalf("connA pins after close = %d, want 0", got)
+	}
+	if got := connB.pins.Load(); got != 0 {
+		t.Fatalf("connB pins after close = %d, want 0", got)
+	}
+	if got := ue.CachedResponseConn(bindA); got != nil {
+		t.Fatalf("CachedResponseConn(bindA) after close = %p, want nil", got)
+	}
+	if got := ue.CachedResponseConn(bindB); got != nil {
+		t.Fatalf("CachedResponseConn(bindB) after close = %p, want nil", got)
+	}
+}
+
+func TestUdpEndpointClose_ReleasesTrackedUdpConnStateTuples(t *testing.T) {
+	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	core := &controlPlaneCore{
+		bpf: &bpfObjects{
+			bpfMaps: bpfMaps{
+				UdpConnStateMap: udpMap,
+			},
+		},
+	}
+	ue := &UdpEndpoint{
+		poolKey: UdpEndpointKey{
+			Src: netip.MustParseAddrPort("192.0.2.10:40000"),
+		},
+		udpConnStateOwner: core,
+	}
+
+	src := netip.MustParseAddrPort("192.0.2.10:40000")
+	peers := []netip.AddrPort{
+		netip.MustParseAddrPort("198.51.100.1:27015"),
+		netip.MustParseAddrPort("203.0.113.2:3478"),
+	}
+
+	for _, dst := range peers {
+		ue.TrackUdpConnStateTuplePair(src, dst)
+
+		for _, key := range []bpfTuplesKey{
+			bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP)),
+			bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP)),
+		} {
+			state := bpfUdpConnState{LastSeenNs: 1}
+			if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
+				t.Fatalf("update udp conn-state %v: %v", key, err)
+			}
+		}
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+
+	for _, dst := range peers {
+		for _, key := range []bpfTuplesKey{
+			bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP)),
+			bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP)),
+		} {
+			var state bpfUdpConnState
+			if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+				t.Fatalf("Lookup(%v) err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
+			}
+		}
 	}
 }
 

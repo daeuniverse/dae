@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"structs"
 	"syscall"
 	"unsafe"
 
@@ -49,30 +48,28 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	return
 }
 
-func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
-	srcIp6 := src.Addr().As16()
-	dstIp6 := dst.Addr().As16()
+func bpfTuplesKeyFromAddrPorts(src, dst netip.AddrPort, l4proto uint8) bpfTuplesKey {
+	src = common.ConvergeAddrPort(src)
+	dst = common.ConvergeAddrPort(dst)
 
-	tuples := &bpfTuplesKey{
-		Sip: struct {
-			_       structs.HostLayout
-			U6Addr8 [16]uint8
-		}{U6Addr8: srcIp6},
-		Sport: common.Htons(src.Port()),
-		Dip: struct {
-			_       structs.HostLayout
-			U6Addr8 [16]uint8
-		}{U6Addr8: dstIp6},
-		Dport:   common.Htons(dst.Port()),
-		L4proto: l4proto,
-	}
+	var key bpfTuplesKey
+	key.Sip.U6Addr8 = src.Addr().As16()
+	key.Dip.U6Addr8 = dst.Addr().As16()
+	key.Sport = common.Htons(src.Port())
+	key.Dport = common.Htons(dst.Port())
+	key.L4proto = l4proto
+	return key
+}
+
+func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
+	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
 
 	// Scheme3: Routing is embedded in conn_state maps. Try to retrieve from the appropriate map.
 	var routingResult bpfRoutingResult
 	switch l4proto {
 	case unix.IPPROTO_TCP:
 		var connState bpfTcpConnState
-		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
+		if err := c.bpf.TcpConnStateMap.Lookup(&tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
@@ -90,7 +87,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		routingResult.Pid = connState.Pid
 	case unix.IPPROTO_UDP:
 		var connState bpfUdpConnState
-		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
+		if err := c.bpf.UdpConnStateMap.Lookup(&tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}

@@ -58,6 +58,8 @@ type controlPlaneCore struct {
 	closed context.Context
 	close  context.CancelFunc
 	ifmgr  *component.InterfaceManager
+
+	udpConnStateTracker atomic.Pointer[udpConnStateTracker]
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -80,7 +82,7 @@ func newControlPlaneCore(log *logrus.Logger,
 	closed, toClose := context.WithCancel(context.Background())
 	ifmgr := component.NewInterfaceManager(log)
 	deferFuncs = append(deferFuncs, ifmgr.Close)
-	return &controlPlaneCore{
+	core := &controlPlaneCore{
 		log:                log,
 		deferFuncs:         deferFuncs,
 		bpfHookDetachFuncs: make([]func() error, 0),
@@ -95,6 +97,22 @@ func newControlPlaneCore(log *logrus.Logger,
 		closed:             closed,
 		close:              toClose,
 	}
+	core.udpConnStateTracker.Store(newUdpConnStateTracker())
+	return core
+}
+
+func (c *controlPlaneCore) getUdpConnStateTracker() *udpConnStateTracker {
+	if c == nil {
+		return nil
+	}
+	if tracker := c.udpConnStateTracker.Load(); tracker != nil {
+		return tracker
+	}
+	tracker := newUdpConnStateTracker()
+	if c.udpConnStateTracker.CompareAndSwap(nil, tracker) {
+		return tracker
+	}
+	return c.udpConnStateTracker.Load()
 }
 
 func (c *controlPlaneCore) Flip() {
@@ -774,6 +792,42 @@ func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
 		return err
 	}
 	return nil
+}
+
+func (c *controlPlaneCore) RetainUdpConnStateTuples(keys []bpfTuplesKey) {
+	if tracker := c.getUdpConnStateTracker(); tracker != nil {
+		tracker.Retain(keys)
+	}
+}
+
+func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error {
+	if c == nil || len(keys) == 0 {
+		return nil
+	}
+	tracker := c.getUdpConnStateTracker()
+	if tracker == nil {
+		bpf := c.PeekBpf()
+		if bpf == nil || bpf.UdpConnStateMap == nil {
+			return nil
+		}
+		_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keys)
+		return err
+	}
+	releases := tracker.BeginRelease(keys)
+	defer tracker.FinalizeRelease(releases)
+	if len(releases) == 0 {
+		return nil
+	}
+	bpf := c.PeekBpf()
+	if bpf == nil || bpf.UdpConnStateMap == nil {
+		return nil
+	}
+	deleteKeys := make([]bpfTuplesKey, 0, len(releases))
+	for _, release := range releases {
+		deleteKeys = append(deleteKeys, release.key)
+	}
+	_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, deleteKeys)
+	return err
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.

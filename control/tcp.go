@@ -28,6 +28,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	// tcpRoutingLookupRetryAttempts keeps TCP on the kernel-derived routing
+	// path across very short conn-state publication windows. The steady-state
+	// path still succeeds on the first lookup, so this only affects transient
+	// ErrKeyNotExist races.
+	tcpRoutingLookupRetryAttempts = 3
+	// Keep the retry interval tiny so a genuine miss does not noticeably delay
+	// connection handoff, while still allowing the common publish/accept race
+	// to settle without losing metadata such as DSCP.
+	tcpRoutingLookupRetryDelay = 2 * time.Millisecond
+)
+
 func buildTCPLinkLogFields(res *proxyDialResult, dialParam *proxyDialParam, dst netip.AddrPort, domain string, annotateOffload bool, offloaded bool, offloadReason string) logrus.Fields {
 	fields := logrus.Fields{
 		"network":  res.OrigNetworkType,
@@ -57,6 +69,44 @@ func isOffloadGloballyDisabledReason(reason string) bool {
 	return reason == "eBPF offload disabled due to kernel bug" || reason == "platform unsupported"
 }
 
+func retryRetrieveRoutingResult(ctx context.Context, retrieve func() (*bpfRoutingResult, error), attempts int, delay time.Duration) (*bpfRoutingResult, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		result, err := retrieve()
+		if err == nil {
+			return result, nil
+		}
+		if !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt == attempts-1 || delay <= 0 {
+			continue
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
+}
+
 func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {
 	defer func() { _ = lConn.Close() }()
 
@@ -64,7 +114,9 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	// Converge IPv4-mapped IPv6 addresses before looking up eBPF routing tuples.
 	src := common.ConvergeAddrPort(lConn.RemoteAddr().(*net.TCPAddr).AddrPort())
 	dst := common.ConvergeAddrPort(lConn.LocalAddr().(*net.TCPAddr).AddrPort())
-	routingResult, err := c.core.RetrieveRoutingResult(src, dst, consts.IPPROTO_TCP)
+	routingResult, err := retryRetrieveRoutingResult(ctx, func() (*bpfRoutingResult, error) {
+		return c.core.RetrieveRoutingResult(src, dst, consts.IPPROTO_TCP)
+	}, tcpRoutingLookupRetryAttempts, tcpRoutingLookupRetryDelay)
 	if err != nil {
 		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			// Graceful fallback: routing tuple might be unavailable due to race/window

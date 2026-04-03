@@ -7,9 +7,11 @@ package control
 
 import (
 	"net/netip"
+	"sync/atomic"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 func makeLikelyQuicInitialPayload(dcidSeed byte) []byte {
@@ -177,11 +179,14 @@ func TestHandlePkt_PendingDomainlessEndpointReusesSameQuicInitial(t *testing.T) 
 func TestHandlePkt_ActiveQuicSnifferMismatchResetsDomainlessEndpoint(t *testing.T) {
 	defer setupQuicInitialRegressionTestState(t)()
 
-	conn := &udpReuseSimulationConn{
-		reads:   make(chan scriptedPacketRead),
-		closeCh: make(chan struct{}),
-	}
-	d, underlay := newCountingProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+	var totalWriteCalls atomic.Int32
+	d, underlay := newFactoryProxyEndpointDialer("hysteria2", "proxy.example:443", func() netproxy.Conn {
+		return &udpReuseSimulationConn{
+			reads:            make(chan scriptedPacketRead),
+			closeCh:          make(chan struct{}),
+			sharedWriteCalls: &totalWriteCalls,
+		}
+	})
 	cp := newUdpReuseSimulationControlPlane(newTestFixedOutboundGroup(d))
 
 	firstPayload := makeLikelyQuicInitialPayload(0x28)
@@ -211,7 +216,7 @@ func TestHandlePkt_ActiveQuicSnifferMismatchResetsDomainlessEndpoint(t *testing.
 	if got := underlay.calls.Load(); got != 2 {
 		t.Fatalf("DialContext calls after QUIC Initial mismatch = %d, want 2", got)
 	}
-	if got := conn.writeCalls.Load(); got != 2 {
+	if got := totalWriteCalls.Load(); got != 2 {
 		t.Fatalf("WriteTo calls after QUIC Initial mismatch = %d, want 2", got)
 	}
 	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 1 {

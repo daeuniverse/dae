@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing"
 )
 
@@ -18,6 +19,14 @@ import (
 type UdpFlowKey struct {
 	Src netip.AddrPort
 	Dst netip.AddrPort
+}
+
+type udpEndpointRouteScope struct {
+	Outbound uint8
+	Mark     uint32
+	Dscp     uint8
+	Pname    [16]uint8
+	Mac      [6]uint8
 }
 
 func NewUdpFlowKey(src, dst netip.AddrPort) UdpFlowKey {
@@ -33,11 +42,39 @@ func (k UdpFlowKey) PacketSnifferKey() PacketSnifferKey {
 }
 
 func (k UdpFlowKey) SymmetricNatEndpointKey() UdpEndpointKey {
-	return UdpEndpointKey(k)
+	return UdpEndpointKey{Src: k.Src, Dst: k.Dst}
+}
+
+func (k UdpFlowKey) SymmetricNatEndpointKeyWithScope(scope udpEndpointRouteScope) UdpEndpointKey {
+	return UdpEndpointKey{Src: k.Src, Dst: k.Dst, RouteScope: scope}
 }
 
 func (k UdpFlowKey) FullConeNatEndpointKey() UdpEndpointKey {
 	return UdpEndpointKey{Src: k.Src}
+}
+
+func (k UdpFlowKey) FullConeNatEndpointKeyWithScope(scope udpEndpointRouteScope) UdpEndpointKey {
+	return UdpEndpointKey{Src: k.Src, RouteScope: scope}
+}
+
+func newUdpEndpointRouteScope(result *bpfRoutingResult) udpEndpointRouteScope {
+	if result == nil {
+		return udpEndpointRouteScope{}
+	}
+	scope := udpEndpointRouteScope{
+		Outbound: result.Outbound,
+		Mark:     result.Mark,
+	}
+	if result.Outbound == uint8(consts.OutboundControlPlaneRouting) {
+		scope.Dscp = result.Dscp
+		scope.Pname = result.Pname
+		scope.Mac = result.Mac
+	}
+	return scope
+}
+
+func udpRouteScopeNeedsDestinationAffinity(result *bpfRoutingResult) bool {
+	return result != nil && result.Outbound == uint8(consts.OutboundControlPlaneRouting)
 }
 
 // UdpFlowDecision centralizes the cheap ingress classification that is shared
@@ -90,8 +127,16 @@ func (d UdpFlowDecision) SymmetricNatEndpointKey() UdpEndpointKey {
 	return d.Key.SymmetricNatEndpointKey()
 }
 
+func (d UdpFlowDecision) SymmetricNatEndpointKeyWithScope(scope udpEndpointRouteScope) UdpEndpointKey {
+	return d.Key.SymmetricNatEndpointKeyWithScope(scope)
+}
+
 func (d UdpFlowDecision) FullConeNatEndpointKey() UdpEndpointKey {
 	return d.Key.FullConeNatEndpointKey()
+}
+
+func (d UdpFlowDecision) FullConeNatEndpointKeyWithScope(scope udpEndpointRouteScope) UdpEndpointKey {
+	return d.Key.FullConeNatEndpointKeyWithScope(scope)
 }
 
 // HasConfirmedQuicState returns true only for signals that are strong enough to
@@ -126,6 +171,13 @@ func (d UdpFlowDecision) EndpointKeyForDial(domain string) UdpEndpointKey {
 	return d.FullConeNatEndpointKey()
 }
 
+func (d UdpFlowDecision) EndpointKeyForDialWithScope(domain string, scope udpEndpointRouteScope, forceSymmetric bool) UdpEndpointKey {
+	if forceSymmetric || domain != "" || d.HasConfirmedQuicState() {
+		return d.SymmetricNatEndpointKeyWithScope(scope)
+	}
+	return d.FullConeNatEndpointKeyWithScope(scope)
+}
+
 func (d UdpFlowDecision) NatTimeoutForDial(domain string) time.Duration {
 	if domain != "" || d.HasConfirmedQuicState() {
 		return QuicNatTimeout
@@ -145,13 +197,29 @@ func (d UdpFlowDecision) EndpointKeyForInitialLookup() UdpEndpointKey {
 	return d.FullConeNatEndpointKey() // {Src, 0}
 }
 
+func (d UdpFlowDecision) EndpointKeyForInitialLookupWithScope(scope udpEndpointRouteScope, forceSymmetric bool) UdpEndpointKey {
+	if forceSymmetric || d.HasConfirmedQuicState() || d.AllowsSniffing {
+		return d.SymmetricNatEndpointKeyWithScope(scope) // {Src, Dst}
+	}
+	return d.FullConeNatEndpointKeyWithScope(scope) // {Src, 0}
+}
+
 // InitialLookupFallbackKey returns the cheaper fallback key used after a miss
 // on the sniff-eligible symmetric lookup path. This prevents sniff-eligible UDP
-// traffic from permanently allocating
-// per-destination state.
+// traffic from permanently allocating per-destination state.
 func (d UdpFlowDecision) InitialLookupFallbackKey() (UdpEndpointKey, bool) {
 	if d.AllowsSniffing && !d.HasConfirmedQuicState() {
 		return d.FullConeNatEndpointKey(), true
+	}
+	return UdpEndpointKey{}, false
+}
+
+func (d UdpFlowDecision) InitialLookupFallbackKeyWithScope(scope udpEndpointRouteScope, forceSymmetric bool) (UdpEndpointKey, bool) {
+	if forceSymmetric {
+		return UdpEndpointKey{}, false
+	}
+	if d.AllowsSniffing && !d.HasConfirmedQuicState() {
+		return d.FullConeNatEndpointKeyWithScope(scope), true
 	}
 	return UdpEndpointKey{}, false
 }

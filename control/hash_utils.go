@@ -79,12 +79,28 @@ func hashAddrPort(ap netip.AddrPort) uint64 {
 
 // hashUdpEndpointKey computes a 64-bit hash of a UdpEndpointKey.
 // It mainly hashes the Src address to maintain consistency with historical
-// shard selection, but incorporates Dst for better distribution across
-// different destination targets from the same source.
+// shard selection, but incorporates Dst and RouteScope for better distribution
+// across destination-affine and metadata-sensitive UDP flows.
 func hashUdpEndpointKey(key UdpEndpointKey) uint64 {
 	h := hashAddrPort(key.Src)
 	if key.Dst.Port() != 0 {
 		h ^= hashAddrPort(key.Dst)
+	}
+	if key.RouteScope.Outbound != 0 ||
+		key.RouteScope.Mark != 0 ||
+		key.RouteScope.Dscp != 0 ||
+		key.RouteScope.Pname != [16]uint8{} ||
+		key.RouteScope.Mac != [6]uint8{} {
+		scopeSeed := uint64(key.RouteScope.Outbound)<<56 |
+			uint64(key.RouteScope.Dscp)<<48 |
+			uint64(key.RouteScope.Mark)
+		h ^= wyMix(scopeSeed^wyHashP0, wyHashP1)
+		scopePnameHi := wyRead64(key.RouteScope.Pname[:8])
+		scopePnameLo := wyRead64(key.RouteScope.Pname[8:])
+		h ^= wyMix(scopePnameHi^wyHashP2, scopePnameLo^wyHashP3)
+		var macBuf [8]byte
+		copy(macBuf[:], key.RouteScope.Mac[:])
+		h ^= wyMix(wyRead64(macBuf[:])^wyHashP4, wyHashP0)
 	}
 	return h
 }

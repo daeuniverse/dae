@@ -5,7 +5,6 @@ package control
 
 import (
 	"errors"
-	"os"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -17,15 +16,7 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 
 func TestLoadMainBPFObjects(t *testing.T) {
 	var obj bpfObjects
-	pinPath := "/sys/fs/bpf/dae"
-	if err := os.MkdirAll(pinPath, 0755); err != nil {
-		t.Fatalf("mkdir pin path: %v", err)
-	}
-
 	opts := &ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{
-			PinPath: pinPath,
-		},
 		Programs: ebpf.ProgramOptions{
 			LogLevel:     ebpf.LogLevelInstruction,
 			LogSizeStart: 1 << 20,
@@ -47,7 +38,7 @@ func TestLoadMainBPFObjects(t *testing.T) {
 		}{},
 	}
 
-	if err := loadBpfObjectsWithConstants(&obj, opts, constants); err != nil {
+	if err := loadBpfObjectsWithConstantsAndCustomizer(&obj, opts, constants, disableAllPinnedMapsForTests); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
 			t.Fatalf("load main bpf objects: verifier:\n%+v", ve)

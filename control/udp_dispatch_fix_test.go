@@ -7,6 +7,8 @@ package control
 
 import (
 	"context"
+	"net/netip"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,5 +113,131 @@ func TestUdpFlowDecision_ShouldUseGoroutineDirectly(t *testing.T) {
 				t.Errorf("ShouldUseGoroutineDirectly() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestUdpFlowDecision_NonQuicTrafficDoesNotUseOrderedIngress(t *testing.T) {
+	tests := []struct {
+		name        string
+		src         string
+		dst         string
+		payload     []byte
+		wantOrdered bool
+	}{
+		{
+			name:        "plain game udp on random port",
+			src:         "192.168.1.10:40000",
+			dst:         "203.0.113.10:27015",
+			payload:     []byte{0x01, 0x02, 0x03},
+			wantOrdered: false,
+		},
+		{
+			name:        "wireguard uses bounded pool not ordered ingress",
+			src:         "192.168.1.10:40001",
+			dst:         "203.0.113.20:51820",
+			payload:     []byte{0x11, 0x22, 0x33},
+			wantOrdered: false,
+		},
+		{
+			name:        "quic-like payload on non-allowlisted port still bypasses ordered ingress",
+			src:         "192.168.1.10:40002",
+			dst:         "203.0.113.30:30000",
+			payload:     []byte{0xc3, 0x00, 0x00, 0x00, 0x01},
+			wantOrdered: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := mustParseAddrPort(tt.src)
+			dst := mustParseAddrPort(tt.dst)
+			decision := ClassifyUdpFlow(src, dst, tt.payload)
+
+			if got := decision.ShouldUseOrderedIngress(); got != tt.wantOrdered {
+				t.Fatalf("ShouldUseOrderedIngress() = %v, want %v", got, tt.wantOrdered)
+			}
+			if got := decision.DispatchStrategy(); got == StrategyOrderedIngress {
+				t.Fatalf("DispatchStrategy() = %v, want non-ordered strategy for non-QUIC traffic", got)
+			}
+		})
+	}
+}
+
+func TestUdpFlowDecision_OnlyQuicSniffingUsesOrderedIngress(t *testing.T) {
+	quicInitialPayload := []byte{0xc3, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00}
+	src := mustParseAddrPort("192.168.1.10:40100")
+	dst := mustParseAddrPort("203.0.113.40:443")
+
+	decision := ClassifyUdpFlow(src, dst, quicInitialPayload)
+	if !decision.ShouldUseOrderedIngress() {
+		t.Fatal("expected QUIC Initial on allowlisted port to use ordered ingress")
+	}
+	if got := decision.DispatchStrategy(); got != StrategyOrderedIngress {
+		t.Fatalf("DispatchStrategy() = %v, want %v", got, StrategyOrderedIngress)
+	}
+}
+
+func TestNonQuicDirectDispatchIsConcurrencySafe(t *testing.T) {
+	decision := ClassifyUdpFlow(
+		mustParseAddrPort("192.168.1.10:40200"),
+		mustParseAddrPort("203.0.113.50:27015"),
+		[]byte{0x01, 0x02},
+	)
+	if decision.DispatchStrategy() != StrategyDirectGoroutine {
+		t.Fatalf("DispatchStrategy() = %v, want %v", decision.DispatchStrategy(), StrategyDirectGoroutine)
+	}
+
+	var running atomic.Int64
+	var peak atomic.Int64
+	var wg sync.WaitGroup
+
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cur := running.Add(1)
+			for {
+				old := peak.Load()
+				if cur <= old || peak.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+			running.Add(-1)
+		}()
+	}
+	wg.Wait()
+
+	if peak.Load() <= 1 {
+		t.Fatalf("expected direct goroutine dispatch to allow concurrent execution, peak=%d", peak.Load())
+	}
+}
+
+func TestUdpEndpointFullConeResponseCacheByBindAddr(t *testing.T) {
+	ue := &UdpEndpoint{}
+	bindA := netip.MustParseAddrPort("127.0.0.1:20001")
+	bindB := netip.MustParseAddrPort("127.0.0.1:20002")
+	connA := &Anyfrom{}
+	connB := &Anyfrom{}
+
+	ue.StoreCachedResponseConn(bindA, connA)
+	ue.StoreCachedResponseConn(bindB, connB)
+
+	if got := ue.CachedResponseConn(bindA); got != connA {
+		t.Fatalf("CachedResponseConn(bindA) = %p, want %p", got, connA)
+	}
+	if got := ue.CachedResponseConn(bindB); got != connB {
+		t.Fatalf("CachedResponseConn(bindB) = %p, want %p", got, connB)
+	}
+
+	ue.ClearCachedResponseConn(bindA, connA)
+	if got := ue.CachedResponseConn(bindA); got != nil {
+		t.Fatalf("CachedResponseConn(bindA) after clear = %p, want nil", got)
+	}
+	if got := ue.CachedResponseConn(bindB); got != connB {
+		t.Fatalf("CachedResponseConn(bindB) after clearing A = %p, want %p", got, connB)
+	}
+	if got := ue.responseConnCacheSlot(); got != nil {
+		t.Fatal("full-cone endpoint should not expose single-slot response cache")
 	}
 }

@@ -1708,7 +1708,7 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 // rather than dropping packets.
 //
 // Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
-#define UDP_CONN_STATE_TIMEOUT_NS 120000000000ULL        // 120 seconds (Aligns with Userspace QuicNatTimeout)
+#define UDP_CONN_STATE_TIMEOUT_NS 120000000000ULL        // 120-second backstop; userspace endpoint teardown is the primary owner
 #define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 
 static __always_inline bool
@@ -1835,8 +1835,18 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 {
 	__u64 now = bpf_ktime_get_ns();
 	struct tcp_conn_state *state = bpf_map_lookup_elem(&tcp_conn_state_map, key);
+	bool new_conn_syn = tcph->syn && !tcph->ack;
 
-	if (tcp_conn_state_expired(state, now)) {
+	/*
+	 * A pure SYN always starts a fresh TCP lifecycle. If an older entry still
+	 * exists under the same 4-tuple (for example because only the reverse-side
+	 * FIN/RST was observed previously), drop it now so the new connection does
+	 * not inherit stale routing metadata.
+	 */
+	if (state && new_conn_syn) {
+		bpf_map_delete_elem(&tcp_conn_state_map, key);
+		state = NULL;
+	} else if (tcp_conn_state_expired(state, now)) {
 		bpf_map_delete_elem(&tcp_conn_state_map, key);
 		state = NULL;
 	}
@@ -1871,7 +1881,7 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	}
 
 	// Only create new entry on SYN (new connection)
-	if (tcph->syn && !tcph->ack) {
+	if (new_conn_syn) {
 		// Slow path: create new entry
 		struct tcp_conn_state new_state = {
 			.is_wan_ingress_direction = is_wan_ingress_direction,
@@ -1952,7 +1962,20 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 	}
 
 	// Update UDP Conntrack
-	if (ctx->l4proto == IPPROTO_UDP) {
+	if (ctx->l4proto == IPPROTO_TCP) {
+		struct tuples tuples;
+		struct tuples_key reversed_tuples_key;
+
+		get_tuples(skb, &tuples, &ctx->iph, &ctx->ipv6h,
+			   &ctx->tcph, &ctx->udph, ctx->l4proto);
+		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
+		// Reverse-side TCP packets should refresh the forward conn-state and
+		// surface FIN/RST so the lifecycle does not remain ACTIVE until the
+		// janitor backstop expires.
+		mark_tcp_seen(&reversed_tuples_key, &ctx->tcph, true,
+			      NULL, NULL, NULL, NULL,
+			      0, NULL, 0);
+	} else if (ctx->l4proto == IPPROTO_UDP) {
 		// DNS traffic is short-lived and stateless in our fast path.
 		// Skip tuple build + conntrack update to reduce state churn.
 		if (ctx->udph.source == bpf_htons(53) || ctx->udph.dest == bpf_htons(53))
@@ -2407,8 +2430,19 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 		return TC_ACT_OK;
 	}
 
-	// Update UDP Conntrack
-	if (ctx->l4proto == IPPROTO_UDP) {
+	// Update reverse-direction conntrack state so server/local FIN/RST keeps
+	// the original client-side lifecycle in sync.
+	if (ctx->l4proto == IPPROTO_TCP) {
+		struct tuples tuples;
+		struct tuples_key reversed_tuples_key;
+
+		get_tuples(skb, &tuples, &ctx->iph, &ctx->ipv6h,
+			   &ctx->tcph, &ctx->udph, ctx->l4proto);
+		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
+		mark_tcp_seen(&reversed_tuples_key, &ctx->tcph, true,
+			      NULL, NULL, NULL, NULL,
+			      0, NULL, 0);
+	} else if (ctx->l4proto == IPPROTO_UDP) {
 		// DNS traffic is short-lived and stateless in our fast path.
 		// Skip tuple build + conntrack update to reduce state churn.
 		if (ctx->udph.source == bpf_htons(53) || ctx->udph.dest == bpf_htons(53))

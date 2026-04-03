@@ -8,6 +8,8 @@ package control
 import (
 	"net/netip"
 	"testing"
+
+	"github.com/daeuniverse/dae/common/consts"
 )
 
 func mustParseUdpFlowAddrPort(t *testing.T, s string) netip.AddrPort {
@@ -142,5 +144,55 @@ func TestClassifyUdpFlow_Only443And8443EnableUdpSniffing(t *testing.T) {
 	}
 	if got := altPortDecision.EndpointKeyForInitialLookup(); got != altPortDecision.FullConeNatEndpointKey() {
 		t.Fatalf("EndpointKeyForInitialLookup() = %v, want full-cone %v", got, altPortDecision.FullConeNatEndpointKey())
+	}
+}
+
+func TestUdpEndpointRouteScope_ControlPlaneRoutingSeparatesDscpAndForcesDestinationAffinity(t *testing.T) {
+	src := mustParseUdpFlowAddrPort(t, "192.0.2.10:40000")
+	dst := mustParseUdpFlowAddrPort(t, "198.51.100.20:40001")
+	decision := UdpFlowDecision{
+		Key: NewUdpFlowKey(src, dst),
+	}
+	firstResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundControlPlaneRouting),
+		Dscp:     8,
+	}
+	secondResult := &bpfRoutingResult{
+		Outbound: uint8(consts.OutboundControlPlaneRouting),
+		Dscp:     46,
+	}
+
+	if !udpRouteScopeNeedsDestinationAffinity(firstResult) {
+		t.Fatal("udpRouteScopeNeedsDestinationAffinity() = false, want true for userspace-routed UDP")
+	}
+
+	firstScope := newUdpEndpointRouteScope(firstResult)
+	secondScope := newUdpEndpointRouteScope(secondResult)
+	firstKey := decision.EndpointKeyForInitialLookupWithScope(firstScope, true)
+	secondKey := decision.EndpointKeyForInitialLookupWithScope(secondScope, true)
+
+	if firstKey.Dst != dst {
+		t.Fatalf("EndpointKeyForInitialLookupWithScope().Dst = %v, want %v", firstKey.Dst, dst)
+	}
+	if firstKey == secondKey {
+		t.Fatalf("EndpointKeyForInitialLookupWithScope() reused key across DSCP values: %v", firstKey)
+	}
+	if _, ok := decision.InitialLookupFallbackKeyWithScope(firstScope, true); ok {
+		t.Fatal("InitialLookupFallbackKeyWithScope() = fallback, want no fallback when destination affinity is forced")
+	}
+}
+
+func TestUdpEndpointRouteScope_FinalKernelOutboundIgnoresDscp(t *testing.T) {
+	first := newUdpEndpointRouteScope(&bpfRoutingResult{
+		Outbound: uint8(consts.OutboundDirect),
+		Dscp:     8,
+	})
+	second := newUdpEndpointRouteScope(&bpfRoutingResult{
+		Outbound: uint8(consts.OutboundDirect),
+		Dscp:     46,
+	})
+
+	if first != second {
+		t.Fatalf("newUdpEndpointRouteScope() = %v and %v, want identical scope for final kernel-routed outbounds", first, second)
 	}
 }

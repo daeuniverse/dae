@@ -500,6 +500,7 @@ int testpktgen_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
 SEC("tc/setup/lan_ingress_udp_first_fragment_listener")
 int testsetup_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
 {
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false);
 	return do_tproxy_lan_ingress(skb, 14);
 }
 
@@ -521,6 +522,7 @@ int testpktgen_lan_ingress_tcp_syn_first_fragment_listener(struct __sk_buff *skb
 SEC("tc/setup/lan_ingress_tcp_syn_first_fragment_listener")
 int testsetup_lan_ingress_tcp_syn_first_fragment_listener(struct __sk_buff *skb)
 {
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false);
 	return do_tproxy_lan_ingress(skb, 14);
 }
 
@@ -541,6 +543,7 @@ int testpktgen_wan_egress_udp_first_fragment_listener(struct __sk_buff *skb)
 SEC("tc/setup/wan_egress_udp_first_fragment_listener")
 int testsetup_wan_egress_udp_first_fragment_listener(struct __sk_buff *skb)
 {
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }

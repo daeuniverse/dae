@@ -25,11 +25,12 @@ import (
 )
 
 type udpReuseSimulationConn struct {
-	reads      chan scriptedPacketRead
-	readExitCh chan error
-	closeCh    chan struct{}
-	writeCalls atomic.Int32
-	closeCalls atomic.Int32
+	reads            chan scriptedPacketRead
+	readExitCh       chan error
+	closeCh          chan struct{}
+	writeCalls       atomic.Int32
+	sharedWriteCalls *atomic.Int32 // optional shared counter across multiple conn instances
+	closeCalls       atomic.Int32
 }
 
 type udpReuseSimulationTransportConn struct {
@@ -66,6 +67,9 @@ func (c *udpReuseSimulationConn) ReadFrom(p []byte) (int, netip.AddrPort, error)
 
 func (c *udpReuseSimulationConn) WriteTo(b []byte, _ string) (int, error) {
 	c.writeCalls.Add(1)
+	if c.sharedWriteCalls != nil {
+		c.sharedWriteCalls.Add(1)
+	}
 	return len(b), nil
 }
 
@@ -977,5 +981,41 @@ func TestAnyfromPool_ConcurrentFailedBindEntrySuppressesRetryStorm(t *testing.T)
 	shard.mu.RUnlock()
 	if current != failed {
 		t.Fatal("expected failed bind cache entry to remain unchanged during retry storm suppression")
+	}
+}
+
+func TestAnyfromPool_JanitorKeepsPinnedConnUntilReleased(t *testing.T) {
+	pool := NewAnyfromPool()
+	defer pool.Close()
+
+	lAddr := mustParseAddrPort("127.0.0.1:5454")
+	af := &Anyfrom{
+		ttl: 50 * time.Millisecond,
+	}
+	af.RefreshTtl()
+	af.Pin()
+
+	shard := pool.shardFor(lAddr)
+	shard.mu.Lock()
+	shard.pool[lAddr] = af
+	shard.mu.Unlock()
+
+	time.Sleep(anyfromJanitorPeriod + 100*time.Millisecond)
+
+	shard.mu.RLock()
+	_, ok := shard.pool[lAddr]
+	shard.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected pinned anyfrom conn to survive janitor sweep")
+	}
+
+	af.Unpin()
+	time.Sleep(anyfromJanitorPeriod + 100*time.Millisecond)
+
+	shard.mu.RLock()
+	_, ok = shard.pool[lAddr]
+	shard.mu.RUnlock()
+	if ok {
+		t.Fatal("expected released anyfrom conn to be reclaimed by janitor")
 	}
 }

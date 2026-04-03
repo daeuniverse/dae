@@ -42,6 +42,9 @@ type Anyfrom struct {
 	// multiple goroutines may call Write methods concurrently, each triggering
 	// afterWrite.  A plain bool would be a data race under go test -race.
 	gotGSOError atomic.Bool
+	// pins tracks long-lived owners (UdpEndpoint response caches) that must keep
+	// the Anyfrom socket alive independent of the pool's idle janitor.
+	pins atomic.Int32
 
 	failed atomic.Bool
 }
@@ -83,12 +86,68 @@ func (a *Anyfrom) RefreshTtlWithTime(nowNano int64) {
 	}
 	// CAS to avoid thundering herd on the same connection.
 	if a.lastRefreshNano.CompareAndSwap(last, nowNano) {
-		a.expiresAtNano.Store(nowNano + int64(a.ttl))
+		a.extendExpiryTo(nowNano + int64(a.ttl))
 	}
 }
 
 func (a *Anyfrom) refreshTtl() {
 	a.RefreshTtl()
+}
+
+func (a *Anyfrom) ExtendExpiryTo(deadlineNano int64) {
+	if deadlineNano <= 0 {
+		return
+	}
+	a.extendExpiryTo(deadlineNano)
+}
+
+func (a *Anyfrom) Pin() {
+	if a == nil {
+		return
+	}
+	a.pins.Add(1)
+}
+
+func (a *Anyfrom) Unpin() {
+	if a == nil {
+		return
+	}
+	pins := a.pins.Add(-1)
+	if pins < 0 {
+		a.pins.Store(0)
+		pins = 0
+	}
+	if pins == 0 && a.ttl > 0 {
+		a.shrinkExpiryTo(time.Now().Add(a.ttl).UnixNano())
+	}
+}
+
+func (a *Anyfrom) IsPinned() bool {
+	return a != nil && a.pins.Load() > 0
+}
+
+func (a *Anyfrom) extendExpiryTo(deadlineNano int64) {
+	for {
+		current := a.expiresAtNano.Load()
+		if current >= deadlineNano {
+			return
+		}
+		if a.expiresAtNano.CompareAndSwap(current, deadlineNano) {
+			return
+		}
+	}
+}
+
+func (a *Anyfrom) shrinkExpiryTo(deadlineNano int64) {
+	for {
+		current := a.expiresAtNano.Load()
+		if current <= deadlineNano {
+			return
+		}
+		if a.expiresAtNano.CompareAndSwap(current, deadlineNano) {
+			return
+		}
+	}
 }
 
 func (a *Anyfrom) IsExpired(nowNano int64) bool {
@@ -430,6 +489,9 @@ func (p *AnyfromPool) startJanitor() {
 						shard.mu.Lock()
 						toClose = toClose[:0] // reset without reallocating
 						for key, af := range shard.pool {
+							if af.IsPinned() {
+								continue
+							}
 							if af.IsExpired(nowNano) {
 								delete(shard.pool, key)
 								toClose = append(toClose, af)

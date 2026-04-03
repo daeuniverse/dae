@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,6 +261,49 @@ func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	}
 }
 
+func TestCleanupTcpConnStateMapRemovesClosingStateByClosingTimeout(t *testing.T) {
+	tcpMap := newJanitorTestMap(t, "tcp_conn_state_map")
+	now := monotonicNowNs(t)
+
+	src := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.2.1:32345"))
+	dst := common.ConvergeAddrPort(netip.MustParseAddrPort("3.3.3.3:443"))
+	key := tuplesKeyFromAddrPorts(src, dst, unix.IPPROTO_TCP)
+
+	var state bpfTcpConnState
+	state.State = 1 // TCP_STATE_CLOSING
+	state.LastSeenNs = staleTimestampNs(now, tcpConnStateTimeoutClosing+time.Second)
+	state.Meta.Data.Mark = 505
+	state.Meta.Data.Outbound = 17
+	state.Meta.Data.HasRouting = 1
+
+	if err := tcpMap.Update(key, &state, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update closing tcp conn-state: %v", err)
+	}
+
+	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{TcpConnStateMap: tcpMap}}}
+	plane := &ControlPlane{
+		log:                  logrus.New(),
+		core:                 core,
+		connStateJanitorStop: make(chan struct{}),
+	}
+
+	stats := plane.cleanupTcpConnStateMap(false)
+	if stats.entries != 1 {
+		t.Fatalf("cleanupTcpConnStateMap entries = %d, want 1", stats.entries)
+	}
+	if stats.deleted != 1 {
+		t.Fatalf("cleanupTcpConnStateMap deleted = %d, want 1", stats.deleted)
+	}
+
+	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
+	if !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("RetrieveRoutingResult closing tcp err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if result != nil {
+		t.Fatalf("closing tcp routing result = %+v, want nil", result)
+	}
+}
+
 func TestCleanupRedirectTrackMapUsesIndependentTTL(t *testing.T) {
 	redirectMap := newJanitorTestMap(t, "redirect_track")
 	now := monotonicNowNs(t)
@@ -319,6 +363,9 @@ func newJanitorTestMap(t *testing.T, mapName string) *ebpf.Map {
 
 	spec, err := loadBpf()
 	if err != nil {
+		if strings.Contains(err.Error(), "stub build") {
+			t.Skipf("loadBpf: %v", err)
+		}
 		t.Fatalf("loadBpf: %v", err)
 	}
 

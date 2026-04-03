@@ -37,8 +37,14 @@ var ErrEndpointFailed = fmt.Errorf("endpoint creation recently failed (negative 
 const udpEndpointCreateShardCount = 64
 const udpEndpointJanitorInterval = 250 * time.Millisecond
 const udpEndpointPendingReplyPeerLimit = 8
+const udpEndpointReplyCacheSlots = 4
 
 type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
+
+type udpConnStateOwner interface {
+	RetainUdpConnStateTuples(keys []bpfTuplesKey)
+	ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error
+}
 
 type UdpEndpoint struct {
 	conn          netproxy.PacketConn
@@ -90,6 +96,16 @@ type UdpEndpoint struct {
 	// respConn is a cached Anyfrom socket used to send responses back to the client.
 	// This avoids repeated pool lookups and bind syscalls in the hot path.
 	respConn *Anyfrom
+	// fullConeRespCache keeps a tiny bindAddr-keyed Anyfrom cache for full-cone
+	// reply reinjection. This preserves safety for multi-peer sessions while
+	// still skipping repeated pool lookups on hot reply paths.
+	fullConeRespCacheMu   sync.Mutex
+	fullConeRespCache     [udpEndpointReplyCacheSlots]udpEndpointResponseCacheEntry
+	fullConeRespCacheNext int
+	udpConnStateMu        sync.Mutex
+	udpConnStateTuples    map[bpfTuplesKey]struct{}
+	udpConnStateClosed    bool
+	udpConnStateOwner     udpConnStateOwner
 
 	log *logrus.Logger
 
@@ -110,6 +126,11 @@ type UdpEndpoint struct {
 	transportDone       <-chan struct{}
 }
 
+type udpEndpointResponseCacheEntry struct {
+	bindAddr netip.AddrPort
+	conn     *Anyfrom
+}
+
 func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 	if ue == nil {
 		return nil
@@ -121,6 +142,181 @@ func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 		return nil
 	}
 	return &ue.respConn
+}
+
+func (ue *UdpEndpoint) cachedResponseConn(bindAddr netip.AddrPort) *Anyfrom {
+	if ue == nil || !bindAddr.IsValid() || ue.poolKey.Dst.Port() != 0 {
+		return nil
+	}
+	ue.fullConeRespCacheMu.Lock()
+	defer ue.fullConeRespCacheMu.Unlock()
+	for i := range ue.fullConeRespCache {
+		entry := ue.fullConeRespCache[i]
+		if entry.bindAddr == bindAddr {
+			return entry.conn
+		}
+	}
+	return nil
+}
+
+func (ue *UdpEndpoint) storeCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
+	if ue == nil || !bindAddr.IsValid() || conn == nil || ue.poolKey.Dst.Port() != 0 {
+		return
+	}
+	ue.fullConeRespCacheMu.Lock()
+	defer ue.fullConeRespCacheMu.Unlock()
+	for i := range ue.fullConeRespCache {
+		if ue.fullConeRespCache[i].bindAddr == bindAddr {
+			if ue.fullConeRespCache[i].conn == conn {
+				return
+			}
+			conn.Pin()
+			if old := ue.fullConeRespCache[i].conn; old != nil {
+				old.Unpin()
+			}
+			ue.fullConeRespCache[i].conn = conn
+			return
+		}
+	}
+	conn.Pin()
+	if old := ue.fullConeRespCache[ue.fullConeRespCacheNext].conn; old != nil {
+		old.Unpin()
+	}
+	ue.fullConeRespCache[ue.fullConeRespCacheNext] = udpEndpointResponseCacheEntry{
+		bindAddr: bindAddr,
+		conn:     conn,
+	}
+	ue.fullConeRespCacheNext = (ue.fullConeRespCacheNext + 1) % len(ue.fullConeRespCache)
+}
+
+func (ue *UdpEndpoint) clearCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
+	if ue == nil || !bindAddr.IsValid() || ue.poolKey.Dst.Port() != 0 {
+		return
+	}
+	ue.fullConeRespCacheMu.Lock()
+	defer ue.fullConeRespCacheMu.Unlock()
+	for i := range ue.fullConeRespCache {
+		entry := &ue.fullConeRespCache[i]
+		if entry.bindAddr == bindAddr && (conn == nil || entry.conn == conn) {
+			if entry.conn != nil {
+				entry.conn.Unpin()
+			}
+			entry.bindAddr = netip.AddrPort{}
+			entry.conn = nil
+		}
+	}
+}
+
+type udpEndpointResponseConnCache interface {
+	CachedResponseConn(bindAddr netip.AddrPort) *Anyfrom
+	StoreCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom)
+	ClearCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom)
+}
+
+func (ue *UdpEndpoint) CachedResponseConn(bindAddr netip.AddrPort) *Anyfrom {
+	return ue.cachedResponseConn(bindAddr)
+}
+
+func (ue *UdpEndpoint) StoreCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
+	ue.storeCachedResponseConn(bindAddr, conn)
+}
+
+func (ue *UdpEndpoint) ClearCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
+	ue.clearCachedResponseConn(bindAddr, conn)
+}
+
+func (ue *UdpEndpoint) refreshCachedResponseConnsWithTime(deadlineNano int64) {
+	if ue == nil {
+		return
+	}
+	if ue.respConn != nil {
+		ue.respConn.ExtendExpiryTo(deadlineNano)
+	}
+	ue.fullConeRespCacheMu.Lock()
+	defer ue.fullConeRespCacheMu.Unlock()
+	for i := range ue.fullConeRespCache {
+		if conn := ue.fullConeRespCache[i].conn; conn != nil {
+			conn.ExtendExpiryTo(deadlineNano)
+		}
+	}
+}
+
+func (ue *UdpEndpoint) releaseCachedResponseConns() {
+	if ue == nil {
+		return
+	}
+	if ue.respConn != nil {
+		ue.respConn.Unpin()
+		ue.respConn = nil
+	}
+	ue.fullConeRespCacheMu.Lock()
+	defer ue.fullConeRespCacheMu.Unlock()
+	for i := range ue.fullConeRespCache {
+		if ue.fullConeRespCache[i].conn != nil {
+			ue.fullConeRespCache[i].conn.Unpin()
+			ue.fullConeRespCache[i].conn = nil
+		}
+		ue.fullConeRespCache[i].bindAddr = netip.AddrPort{}
+	}
+}
+
+func (ue *UdpEndpoint) TrackUdpConnStateTuplePair(src, dst netip.AddrPort) {
+	if ue == nil || ue.udpConnStateOwner == nil || !src.IsValid() || !dst.IsValid() {
+		return
+	}
+
+	forward := bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP))
+	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
+
+	ue.udpConnStateMu.Lock()
+	defer ue.udpConnStateMu.Unlock()
+
+	if ue.udpConnStateClosed {
+		return
+	}
+	if ue.udpConnStateTuples == nil {
+		ue.udpConnStateTuples = make(map[bpfTuplesKey]struct{}, 4)
+	}
+	newKeys := make([]bpfTuplesKey, 0, 2)
+	if _, ok := ue.udpConnStateTuples[forward]; !ok {
+		ue.udpConnStateTuples[forward] = struct{}{}
+		newKeys = append(newKeys, forward)
+	}
+	if _, ok := ue.udpConnStateTuples[reverse]; !ok {
+		ue.udpConnStateTuples[reverse] = struct{}{}
+		newKeys = append(newKeys, reverse)
+	}
+	if len(newKeys) > 0 {
+		ue.udpConnStateOwner.RetainUdpConnStateTuples(newKeys)
+	}
+}
+
+func (ue *UdpEndpoint) releaseTrackedUdpConnState() {
+	if ue == nil || ue.udpConnStateOwner == nil {
+		return
+	}
+
+	ue.udpConnStateMu.Lock()
+	if ue.udpConnStateClosed {
+		ue.udpConnStateMu.Unlock()
+		return
+	}
+	ue.udpConnStateClosed = true
+	if len(ue.udpConnStateTuples) == 0 {
+		ue.udpConnStateMu.Unlock()
+		return
+	}
+	keys := make([]bpfTuplesKey, 0, len(ue.udpConnStateTuples))
+	for key := range ue.udpConnStateTuples {
+		keys = append(keys, key)
+	}
+	ue.udpConnStateTuples = nil
+	ue.udpConnStateMu.Unlock()
+
+	if err := ue.udpConnStateOwner.ReleaseUdpConnStateTuples(keys); err != nil &&
+		ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
+		ue.log.WithError(err).Debug("[UdpEndpoint] Failed to release tracked UDP conn-state tuples")
+	}
 }
 
 func isProxyBackedDialer(d *dialer.Dialer) bool {
@@ -353,24 +549,47 @@ func (ue *UdpEndpoint) start() {
 // avoids blocking the upstream protocol layer's ReceiveCh.
 func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, stop chan<- struct{}, done chan<- struct{}) {
 	defer close(done)
+	batch := make([]udpEndpointReply, 0, 8)
 	for reply := range replyCh {
-		// Do NOT skip queued replies when dead: these were already received
-		// from the upstream before the read loop exited, and must be forwarded
-		// to the client. The handler (forwardUdpEndpointReplyToClient) only
-		// writes to the local tproxy socket, which is independent of the
-		// upstream endpoint's liveness.
-		if err := ue.handler(ue, reply.data, reply.from); err != nil {
-			reply.data.Put()
-			ue.retire()
-			close(stop)
-			ue.logEndpointExit(err, "reply sender")
-			// Drain remaining queued replies to release pool buffers.
-			for r := range replyCh {
-				r.data.Put()
+		batch = append(batch[:0], reply)
+		for len(batch) < cap(batch) {
+			select {
+			case next, ok := <-replyCh:
+				if !ok {
+					replyCh = nil
+					goto drainBatch
+				}
+				batch = append(batch, next)
+			default:
+				goto drainBatch
 			}
+		}
+
+	drainBatch:
+		for _, queued := range batch {
+			// Do NOT skip queued replies when dead: these were already received
+			// from the upstream before the read loop exited, and must be forwarded
+			// to the client. The handler (forwardUdpEndpointReplyToClient) only
+			// writes to the local tproxy socket, which is independent of the
+			// upstream endpoint's liveness.
+			if err := ue.handler(ue, queued.data, queued.from); err != nil {
+				queued.data.Put()
+				ue.retire()
+				close(stop)
+				ue.logEndpointExit(err, "reply sender")
+				// Drain remaining queued replies to release pool buffers.
+				if replyCh != nil {
+					for r := range replyCh {
+						r.data.Put()
+					}
+				}
+				return
+			}
+			queued.data.Put()
+		}
+		if replyCh == nil {
 			return
 		}
-		reply.data.Put()
 	}
 }
 
@@ -489,6 +708,7 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 func (ue *UdpEndpoint) Close() error {
 	ue.closeOnce.Do(func() {
 		ue.expiresAtNano.Store(0)
+		ue.releaseCachedResponseConns()
 		if ue.poolRef != nil {
 			ue.poolRef.unregisterEndpoint(ue)
 		}
@@ -496,6 +716,7 @@ func (ue *UdpEndpoint) Close() error {
 		ue.routingMu.Lock()
 		ue.hasRoutingCache = false
 		ue.routingMu.Unlock()
+		ue.releaseTrackedUdpConnState()
 
 		// conn is nil for negatively-cached failure entries; guard against panic.
 		if ue.conn != nil {
@@ -638,15 +859,14 @@ func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 	}
 	// CAS to avoid thundering herd on the same connection.
 	if ue.lastRefreshNano.CompareAndSwap(last, nowNano) {
-		ue.expiresAtNano.Store(nowNano + int64(timeout))
-		// Keep the cached response socket alive as long as the endpoint is
-		// alive. Without this, the Anyfrom socket expires after 5s idle
-		// (AnyfromTimeout), forcing a bind syscall on the next reply and
-		// causing a latency spike that can cascade into upstream ReceiveCh
-		// overflow for proxy-backed sessions.
-		if ue.respConn != nil {
-			ue.respConn.RefreshTtlWithTime(nowNano)
-		}
+		deadlineNano := nowNano + int64(timeout)
+		ue.expiresAtNano.Store(deadlineNano)
+		// Keep cached reply sockets alive as long as the endpoint is alive.
+		// Without this, Anyfrom entries can expire before the owning UDP
+		// endpoint does, forcing a bind syscall on a later reply and causing
+		// a latency spike for active proxy-backed sessions whose
+		// server->client traffic is sparse on a given source address.
+		ue.refreshCachedResponseConnsWithTime(deadlineNano)
 	}
 }
 
@@ -713,11 +933,15 @@ func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uin
 	ue.routingMu.Unlock()
 }
 
-// UdpEndpointKey is the pool key. Dst=0 for Full-Cone NAT, non-zero for QUIC.
+// UdpEndpointKey is the pool key. Dst=0 for Full-Cone NAT, non-zero for
+// destination-affine flows such as QUIC or userspace-routed UDP. RouteScope is
+// only populated when UDP routing depends on packet metadata that userspace
+// cannot safely infer from payload reuse alone.
 
 type UdpEndpointKey struct {
-	Src netip.AddrPort
-	Dst netip.AddrPort
+	Src        netip.AddrPort
+	Dst        netip.AddrPort
+	RouteScope udpEndpointRouteScope
 }
 
 type udpEndpointPoolShard struct {
@@ -756,6 +980,8 @@ type UdpEndpointPool struct {
 type UdpEndpointOptions struct {
 	Handler    UdpHandler
 	NatTimeout time.Duration
+	// ConnStateOwner releases eBPF UDP conn-state tuples when the endpoint exits.
+	ConnStateOwner udpConnStateOwner
 	// GetTarget is useful only if the underlay does not support Full-cone.
 	GetDialOption func(ctx context.Context) (option *DialOption, err error)
 	// Log is the logger to use for endpoint lifecycle events.
@@ -1010,9 +1236,22 @@ func (p *UdpEndpointPool) Reset() {
 		}
 		shard.mu.Unlock()
 	}
-	p.dialerIndex = sync.Map{}
-	p.dialerEpoch = sync.Map{}
-	p.transportIndex = sync.Map{}
+	// Clear index maps by deleting entries rather than reassigning a new
+	// sync.Map struct. Struct assignment races with background goroutines
+	// (e.g. endpoint retire → unregisterEndpoint) that concurrently Load
+	// from the same map.
+	p.dialerIndex.Range(func(key, _ any) bool {
+		p.dialerIndex.Delete(key)
+		return true
+	})
+	p.dialerEpoch.Range(func(key, _ any) bool {
+		p.dialerEpoch.Delete(key)
+		return true
+	})
+	p.transportIndex.Range(func(key, _ any) bool {
+		p.transportIndex.Delete(key)
+		return true
+	})
 }
 
 // Close stops the janitor goroutine and clears all pooled endpoints.
@@ -1125,18 +1364,19 @@ dialSuccess:
 		return nil, fmt.Errorf("protocol does not support udp")
 	}
 	ue := &UdpEndpoint{
-		conn:             packetConn,
-		handler:          createOption.Handler,
-		NatTimeout:       effectiveUdpEndpointNatTimeout(dialOption.Dialer, createOption.NatTimeout),
-		Dialer:           dialOption.Dialer,
-		Outbound:         dialOption.Outbound,
-		SniffedDomain:    dialOption.SniffedDomain,
-		DialTarget:       dialOption.Target,
-		lAddr:            key.Src,
-		log:              createOption.Log,
-		poolRef:          p,
-		poolKey:          key,
-		lifecycleProfile: newDataSessionLifecycleProfile(dialOption.Dialer),
+		conn:              packetConn,
+		handler:           createOption.Handler,
+		NatTimeout:        effectiveUdpEndpointNatTimeout(dialOption.Dialer, createOption.NatTimeout),
+		Dialer:            dialOption.Dialer,
+		Outbound:          dialOption.Outbound,
+		SniffedDomain:     dialOption.SniffedDomain,
+		DialTarget:        dialOption.Target,
+		lAddr:             key.Src,
+		log:               createOption.Log,
+		poolRef:           p,
+		poolKey:           key,
+		udpConnStateOwner: createOption.ConnStateOwner,
+		lifecycleProfile:  newDataSessionLifecycleProfile(dialOption.Dialer),
 		endpointNetworkType: normalizeUdpEndpointPoolNetworkType(func() dialer.NetworkType {
 			if dialOption.NetworkType != nil {
 				return *dialOption.NetworkType
@@ -1159,6 +1399,7 @@ dialSuccess:
 		bindAddr, _ := normalizeSendPktAddrFamily(key.Dst, key.Src)
 		if af, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout); err == nil {
 			ue.respConn = af
+			ue.respConn.Pin()
 		}
 	}
 

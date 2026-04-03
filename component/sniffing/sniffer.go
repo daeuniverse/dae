@@ -273,6 +273,11 @@ func (s *Sniffer) CompactPacketState() {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
+	if s.buf == nil {
+		// Already closed by concurrent Close(); nothing to compact.
+		return
+	}
+
 	for _, p := range s.quicPlaintexts {
 		p.Put()
 	}
@@ -318,6 +323,9 @@ func (s *Sniffer) Close() (err error) {
 		if s.cancel != nil {
 			s.cancel()
 		}
+		// Hold readMu to synchronize with CompactPacketState which also
+		// touches s.buf and s.quicPlaintexts under the same lock.
+		s.readMu.Lock()
 		if s.buf != nil {
 			pool.PutBuffer(s.buf)
 			s.buf = nil
@@ -326,6 +334,7 @@ func (s *Sniffer) Close() (err error) {
 			p.Put()
 		}
 		s.quicPlaintexts = nil
+		s.readMu.Unlock()
 	})
 	return nil
 }

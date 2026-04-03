@@ -445,6 +445,8 @@ type packetSnifferFlowFamilyRef struct {
 	refs atomic.Int32
 }
 
+const packetSnifferFlowFamilyRefDraining = int32(-1)
+
 // PacketSnifferKey identifies a QUIC sniffing session by 5-tuple + DCID.
 // Each QUIC connection has a unique Destination Connection ID, so we group
 // by DCID to separate different QUIC connections on the same UDP flow.
@@ -684,7 +686,7 @@ func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *Pack
 		return qs, false
 	}
 	p.retainFlowFamily(key)
-	return qs, !loaded
+	return qs, true
 }
 
 func (p *PacketSnifferPool) startJanitor() {
@@ -804,8 +806,42 @@ func (p *PacketSnifferPool) retainFlowFamily(key PacketSnifferKey) {
 	if p == nil || !key.HasCacheableDcid() {
 		return
 	}
-	actual, _ := p.flowFamilies.LoadOrStore(key.FlowFamilyKey(), &packetSnifferFlowFamilyRef{})
-	actual.(*packetSnifferFlowFamilyRef).refs.Add(1)
+	familyKey := key.FlowFamilyKey()
+
+	if value, ok := p.flowFamilies.Load(familyKey); ok {
+		ref := value.(*packetSnifferFlowFamilyRef)
+		for {
+			refs := ref.refs.Load()
+			if refs <= 0 {
+				p.flowFamilies.CompareAndDelete(familyKey, ref)
+				break
+			}
+			if ref.refs.CompareAndSwap(refs, refs+1) {
+				return
+			}
+		}
+	}
+
+	for {
+		newRef := &packetSnifferFlowFamilyRef{}
+		newRef.refs.Store(1)
+		actual, loaded := p.flowFamilies.LoadOrStore(familyKey, newRef)
+		if !loaded {
+			return
+		}
+
+		ref := actual.(*packetSnifferFlowFamilyRef)
+		for {
+			refs := ref.refs.Load()
+			if refs <= 0 {
+				p.flowFamilies.CompareAndDelete(familyKey, ref)
+				break
+			}
+			if ref.refs.CompareAndSwap(refs, refs+1) {
+				return
+			}
+		}
+	}
 }
 
 func (p *PacketSnifferPool) releaseFlowFamily(key PacketSnifferKey) {
@@ -817,7 +853,21 @@ func (p *PacketSnifferPool) releaseFlowFamily(key PacketSnifferKey) {
 		return
 	}
 	ref := value.(*packetSnifferFlowFamilyRef)
-	if ref.refs.Add(-1) <= 0 {
-		p.flowFamilies.CompareAndDelete(key.FlowFamilyKey(), ref)
+	for {
+		refs := ref.refs.Load()
+		switch {
+		case refs > 1:
+			if ref.refs.CompareAndSwap(refs, refs-1) {
+				return
+			}
+		case refs == 1:
+			if !ref.refs.CompareAndSwap(1, packetSnifferFlowFamilyRefDraining) {
+				continue
+			}
+			p.flowFamilies.CompareAndDelete(key.FlowFamilyKey(), ref)
+			return
+		default:
+			return
+		}
 	}
 }

@@ -11,7 +11,6 @@ package control
 import (
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,18 +41,15 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 
 func collectBpfTestPrograms(t *testing.T) (obj *bpftestObjects, progsets []testProgramSet, err error) {
 	obj = &bpftestObjects{}
-	pinPath := "/sys/fs/bpf/dae_test"
-	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
-		return
+	spec, err := loadBpftest()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err = disableAllPinnedMapsForTests(spec); err != nil {
+		return nil, nil, err
 	}
 
-	if err = loadBpftestObjects(obj,
-		&ebpf.CollectionOptions{
-			Maps: ebpf.MapOptions{
-				PinPath: pinPath,
-			},
-		},
-	); err != nil {
+	if err = spec.LoadAndAssign(obj, &ebpf.CollectionOptions{}); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
 			t.Logf("Verifier error: %+v\n", ve)
