@@ -260,6 +260,38 @@ func (s *Sniffer) NeedMore() bool {
 	return s.needMore
 }
 
+// CompactPacketState releases buffered UDP sniffing payloads while keeping the
+// logical sniff result intact. This is used once a packet sniffer session no
+// longer needs historical datagrams for QUIC reassembly, so the session can
+// stay alive as lightweight flow state instead of retaining large handshake
+// buffers until TTL expiry.
+func (s *Sniffer) CompactPacketState() {
+	if s.stream {
+		return
+	}
+
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+
+	for _, p := range s.quicPlaintexts {
+		p.Put()
+	}
+	s.quicPlaintexts = nil
+	s.quicCryptos = nil
+	s.quicNextRead = 0
+	s.needMore = false
+
+	oldBuf := s.buf
+	newBuf := pool.GetBuffer()
+	newBuf.Reset()
+	s.buf = newBuf
+	s.data = [][]byte{newBuf.Bytes()}
+
+	if oldBuf != nil {
+		pool.PutBuffer(oldBuf)
+	}
+}
+
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
 

@@ -72,6 +72,15 @@ func newSnifferNeedMorePayloads(t *testing.T) (first, second []byte) {
 		decodeSnifferNeedMorePayload(t, quicNeedMorePayload2Hex)
 }
 
+func countPooledPacketSniffers(p *PacketSnifferPool) int {
+	total := 0
+	p.pool.Range(func(_, _ any) bool {
+		total++
+		return true
+	})
+	return total
+}
+
 func TestHandlePkt_QuicSnifferNeedMoreHoldsFirstPacket(t *testing.T) {
 	defer setupQuicInitialRegressionTestState(t)()
 
@@ -108,6 +117,12 @@ func TestHandlePkt_QuicSnifferNeedMoreHoldsFirstPacket(t *testing.T) {
 	if sniffer == nil {
 		t.Fatal("expected DCID-specific sniffer session after first NeedMore packet")
 	}
+	if got := countPooledPacketSniffers(DefaultPacketSnifferSessionMgr); got != 1 {
+		t.Fatalf("pooled packet sniffers after first NeedMore packet = %d, want 1", got)
+	}
+	if got := DefaultPacketSnifferSessionMgr.Get(UdpFlowKey{Src: src, Dst: dst}.PacketSnifferKey()); got != nil {
+		t.Fatal("expected no coarse src/dst sniffer alias alongside the DCID-specific session")
+	}
 	sniffer.Mu.Lock()
 	defer sniffer.Mu.Unlock()
 	if !sniffer.NeedMore() {
@@ -118,6 +133,44 @@ func TestHandlePkt_QuicSnifferNeedMoreHoldsFirstPacket(t *testing.T) {
 	}
 	if got := len(sniffer.Data()[1]); got != len(first) {
 		t.Fatalf("buffered first packet length = %d, want %d", got, len(first))
+	}
+}
+
+func TestClassifyUdpFlow_SiblingPacketUsesFlowFamilySnifferSession(t *testing.T) {
+	defer setupQuicInitialRegressionTestState(t)()
+
+	src := mustParseAddrPort("192.168.89.3:42688")
+	dst := mustParseAddrPort("52.199.194.44:443")
+	initialLikePayload := makeLikelyQuicInitialPayload(0x55)
+	initialDecision := ClassifyUdpFlow(src, dst, initialLikePayload).EnsureSnifferSession()
+	if !initialDecision.IsQuicInitial {
+		t.Fatal("expected Initial-shaped payload on sniff port to enter the QUIC Initial path")
+	}
+	if !initialDecision.HasSnifferSession {
+		t.Fatal("expected EnsureSnifferSession to mark the flow as having a sniffer session")
+	}
+
+	exactKey := NewPacketSnifferKey(src, dst, initialLikePayload)
+	if got := DefaultPacketSnifferSessionMgr.Get(exactKey); got == nil {
+		t.Fatal("expected exact DCID-specific sniffer session to exist")
+	}
+
+	ordinaryPayload := []byte{0x10, 0x20, 0x30, 0x40}
+	siblingDecision := ClassifyUdpFlow(src, dst, ordinaryPayload)
+	if siblingDecision.IsQuicInitial {
+		t.Fatal("expected ordinary sibling packet to avoid QUIC Initial classification")
+	}
+	if !siblingDecision.HasSnifferSession {
+		t.Fatal("expected sibling packet to observe flow-family sniffer state")
+	}
+	if !siblingDecision.ShouldUseOrderedIngress() {
+		t.Fatal("expected sibling packet with flow-family sniffer state to use ordered ingress")
+	}
+	if got := siblingDecision.EndpointKeyForInitialLookup(); got != (UdpEndpointKey{Src: src, Dst: dst}) {
+		t.Fatalf("initial lookup key = %+v, want symmetric key", got)
+	}
+	if got := DefaultPacketSnifferSessionMgr.Get(siblingDecision.PacketSnifferKey()); got != nil {
+		t.Fatal("expected sibling packet to rely on flow-family state, not a coarse sniffer alias entry")
 	}
 }
 
@@ -159,6 +212,23 @@ func TestHandlePkt_QuicSnifferCompletionReplaysBufferedPackets(t *testing.T) {
 	}
 	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 1 {
 		t.Fatalf("pooled udp endpoints after sniffer completion = %d, want 1", got)
+	}
+
+	snifferKey := NewPacketSnifferKey(src, dst, second)
+	sniffer := DefaultPacketSnifferSessionMgr.Get(snifferKey)
+	if sniffer == nil {
+		t.Fatal("expected sniffer session to remain as lightweight flow state after completion")
+	}
+	sniffer.Mu.Lock()
+	defer sniffer.Mu.Unlock()
+	if sniffer.NeedMore() {
+		t.Fatal("expected completed sniffer session to exit NeedMore state")
+	}
+	if got := len(sniffer.Data()); got != 1 {
+		t.Fatalf("completed sniffer buffered packet count = %d, want 1 sentinel after compaction", got)
+	}
+	if got := len(sniffer.Data()[0]); got != 0 {
+		t.Fatalf("completed sniffer sentinel length = %d, want 0", got)
 	}
 }
 

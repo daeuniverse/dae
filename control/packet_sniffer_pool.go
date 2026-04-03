@@ -56,6 +56,7 @@ const (
 	failedQuicDcidPanicTtl        = 1 * time.Minute
 	failedQuicDcidMaxTtl          = 5 * time.Minute
 	failedQuicDcidMaxBackoffShift = 4
+	failedQuicDcidCleanupInterval = 2 * time.Second
 )
 
 type quicDcidFailureReason uint8
@@ -169,6 +170,13 @@ func hashPacketSnifferKey(key PacketSnifferKey) uint64 {
 
 func (k PacketSnifferKey) HasCacheableDcid() bool {
 	return k.DCIDLen > 0
+}
+
+func (k PacketSnifferKey) FlowFamilyKey() PacketSnifferKey {
+	return PacketSnifferKey{
+		LAddr: k.LAddr,
+		RAddr: k.RAddr,
+	}
 }
 
 func (c *failedQuicDcidCache) shardFor(key PacketSnifferKey) *failedQuicDcidCacheShard {
@@ -363,22 +371,26 @@ func (ps *PacketSniffer) RecordSniffSuccess() {
 	ps.bypassSniffUntil = time.Time{}
 }
 
-// ObserveQuicInitial fingerprints the QUIC Initial connection IDs carried by
-// the current flow. The caller must hold ps.Mu. It returns true only when the
-// packet is a QUIC Initial for a different connection than the one already
-// associated with this sniffer session, which is the safe moment to reset the
-// session for source-port reuse without breaking multi-packet handshakes.
-func (ps *PacketSniffer) ObserveQuicInitial(data []byte) bool {
-	sig, ok := parseQuicInitialFingerprint(data)
-	if !ok {
-		return false
-	}
+func (ps *PacketSniffer) observeParsedQuicInitial(sig quicInitialFingerprint) (observed bool, changed bool) {
 	if !ps.hasQuicInitialSig {
 		ps.quicInitialSig = sig
 		ps.hasQuicInitialSig = true
-		return false
+		return true, false
 	}
-	return ps.quicInitialSig != sig
+	return true, ps.quicInitialSig != sig
+}
+
+// ObserveQuicInitial fingerprints the QUIC Initial connection IDs carried by
+// the current flow. The caller must hold ps.Mu. It returns observed for any
+// parseable QUIC Initial and changed only when the packet belongs to a
+// different connection than the one already associated with this sniffer
+// session.
+func (ps *PacketSniffer) ObserveQuicInitial(data []byte) (observed bool, changed bool) {
+	sig, ok := parseQuicInitialFingerprint(data)
+	if !ok {
+		return false, false
+	}
+	return ps.observeParsedQuicInitial(sig)
 }
 
 func parseQuicInitialFingerprint(data []byte) (sig quicInitialFingerprint, ok bool) {
@@ -418,14 +430,19 @@ func parseQuicInitialFingerprint(data []byte) (sig quicInitialFingerprint, ok bo
 // PacketSnifferPool is a full-cone udp conn pool.
 // Uses sync.Map for lock-free concurrent access.
 type PacketSnifferPool struct {
-	pool        sync.Map
-	janitorOnce sync.Once
-	janitorStop chan struct{}
-	janitorDone chan struct{}
+	pool         sync.Map
+	flowFamilies sync.Map
+	janitorOnce  sync.Once
+	janitorStop  chan struct{}
+	janitorDone  chan struct{}
 }
 
 type PacketSnifferOptions struct {
 	Ttl time.Duration
+}
+
+type packetSnifferFlowFamilyRef struct {
+	refs atomic.Int32
 }
 
 // PacketSnifferKey identifies a QUIC sniffing session by 5-tuple + DCID.
@@ -485,10 +502,15 @@ func (p *PacketSnifferPool) Reset() {
 	})
 	for _, key := range keys {
 		if value, ok := p.pool.LoadAndDelete(key); ok {
+			p.releaseFlowFamily(key.(PacketSnifferKey))
 			ps := value.(*PacketSniffer)
 			_ = ps.Close()
 		}
 	}
+	p.flowFamilies.Range(func(key, _ any) bool {
+		p.flowFamilies.Delete(key)
+		return true
+	})
 }
 
 // Close stops the janitor goroutine and clears all packet sniffers.
@@ -515,6 +537,7 @@ func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer)
 		_ = sniffer.Close()
 		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
+	p.releaseFlowFamily(key)
 	_ = sniffer.Close()
 	return nil
 }
@@ -525,6 +548,109 @@ func (p *PacketSnifferPool) Get(key PacketSnifferKey) *PacketSniffer {
 		return nil
 	}
 	return _qs.(*PacketSniffer)
+}
+
+func (p *PacketSnifferPool) HasFlowFamilySession(key PacketSnifferKey) bool {
+	if p == nil {
+		return false
+	}
+	if p.Get(key) != nil {
+		return true
+	}
+	value, ok := p.flowFamilies.Load(key.FlowFamilyKey())
+	if !ok {
+		return false
+	}
+	return value.(*packetSnifferFlowFamilyRef).refs.Load() > 0
+}
+
+// ObserveFlowFamilyQuicInitial compares the current packet against any active
+// QUIC sniffing state on the same flow family. It returns changed only when
+// an already-observed family signature disagrees with the current Initial and
+// no tracked session still matches it, which is the safe reset condition for
+// source-port reuse.
+func (p *PacketSnifferPool) ObserveFlowFamilyQuicInitial(key PacketSnifferKey, data []byte) (observed bool, changed bool) {
+	if p == nil || !key.HasCacheableDcid() {
+		return false, false
+	}
+
+	sig, ok := parseQuicInitialFingerprint(data)
+	if !ok {
+		return false, false
+	}
+
+	familyKey := key.FlowFamilyKey()
+	matched := false
+	mismatched := false
+	seededExact := false
+
+	p.pool.Range(func(candidateKey, value any) bool {
+		snifferKey := candidateKey.(PacketSnifferKey)
+		if snifferKey.FlowFamilyKey() != familyKey {
+			return true
+		}
+
+		sniffer := value.(*PacketSniffer)
+		sniffer.Mu.Lock()
+		if sniffer.hasQuicInitialSig {
+			if sniffer.quicInitialSig == sig {
+				matched = true
+			} else {
+				mismatched = true
+			}
+		} else if snifferKey == key {
+			sniffer.quicInitialSig = sig
+			sniffer.hasQuicInitialSig = true
+		}
+		if snifferKey == key {
+			seededExact = true
+		}
+		sniffer.Mu.Unlock()
+
+		if matched && mismatched {
+			return false
+		}
+		return true
+	})
+
+	return matched || mismatched || seededExact, mismatched && !matched
+}
+
+// RemoveFlowFamilySessions closes and removes every sniffer session that
+// belongs to the same {src,dst} flow family as key.
+func (p *PacketSnifferPool) RemoveFlowFamilySessions(key PacketSnifferKey) int {
+	if p == nil || !key.HasCacheableDcid() {
+		return 0
+	}
+
+	type flowFamilyEntry struct {
+		key     PacketSnifferKey
+		sniffer *PacketSniffer
+	}
+
+	familyKey := key.FlowFamilyKey()
+	var entries []flowFamilyEntry
+	p.pool.Range(func(candidateKey, value any) bool {
+		snifferKey := candidateKey.(PacketSnifferKey)
+		if snifferKey.FlowFamilyKey() != familyKey {
+			return true
+		}
+		entries = append(entries, flowFamilyEntry{
+			key:     snifferKey,
+			sniffer: value.(*PacketSniffer),
+		})
+		return true
+	})
+
+	removed := 0
+	for _, entry := range entries {
+		if p.pool.CompareAndDelete(entry.key, entry.sniffer) {
+			p.releaseFlowFamily(entry.key)
+			_ = entry.sniffer.Close()
+			removed++
+		}
+	}
+	return removed
 }
 
 func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
@@ -553,6 +679,11 @@ func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *Pack
 	actual, loaded := p.pool.LoadOrStore(key, newQs)
 	qs = actual.(*PacketSniffer)
 	qs.RefreshTtl()
+	if loaded {
+		_ = newQs.Close()
+		return qs, false
+	}
+	p.retainFlowFamily(key)
 	return qs, !loaded
 }
 
@@ -570,11 +701,18 @@ func (p *PacketSnifferPool) startJanitor() {
 			// we'll scan before giving up on this cycle. This prevents wasting CPU when
 			// the pool is mostly active.
 			const janitorMaxConsecutiveFresh = 512
+			var lastFailedCacheCleanup time.Time
 			for {
 				select {
 				case <-p.janitorStop:
 					return
 				case now := <-ticker.C:
+					if now.Sub(lastFailedCacheCleanup) >= failedQuicDcidCleanupInterval {
+						if cache := getFailedQuicDcidCache(); cache != nil {
+							cache.CleanupExpired(now)
+						}
+						lastFailedCacheCleanup = now
+					}
 					nowNano := now.UnixNano()
 					consecutiveFresh := 0
 					totalScanned := 0
@@ -588,6 +726,7 @@ func (p *PacketSnifferPool) startJanitor() {
 							expiredFound++
 							// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
 							if p.pool.CompareAndDelete(key, ps) {
+								p.releaseFlowFamily(key.(PacketSnifferKey))
 								_ = ps.Close()
 							}
 							// Continue scanning - there might be more expired items
@@ -658,5 +797,27 @@ func NotifyHealthCheckSuccess() {
 	ClearFailedQuicDcids()
 	if HealthCheckSuccessCallback != nil {
 		HealthCheckSuccessCallback()
+	}
+}
+
+func (p *PacketSnifferPool) retainFlowFamily(key PacketSnifferKey) {
+	if p == nil || !key.HasCacheableDcid() {
+		return
+	}
+	actual, _ := p.flowFamilies.LoadOrStore(key.FlowFamilyKey(), &packetSnifferFlowFamilyRef{})
+	actual.(*packetSnifferFlowFamilyRef).refs.Add(1)
+}
+
+func (p *PacketSnifferPool) releaseFlowFamily(key PacketSnifferKey) {
+	if p == nil || !key.HasCacheableDcid() {
+		return
+	}
+	value, ok := p.flowFamilies.Load(key.FlowFamilyKey())
+	if !ok {
+		return
+	}
+	ref := value.(*packetSnifferFlowFamilyRef)
+	if ref.refs.Add(-1) <= 0 {
+		p.flowFamilies.CompareAndDelete(key.FlowFamilyKey(), ref)
 	}
 }

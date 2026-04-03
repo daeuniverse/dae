@@ -112,3 +112,29 @@ func TestFailedQuicDcidCache_HardCapacity(t *testing.T) {
 		t.Fatalf("Len() = %d, want <= %d", got, failedQuicDcidCacheShardCount)
 	}
 }
+
+func TestPacketSnifferPool_JanitorCleansExpiredFailedQuicDcidCache(t *testing.T) {
+	cache := newFailedQuicDcidCache(failedQuicDcidCacheShardCount)
+	oldCache := getFailedQuicDcidCache()
+	SetFailedQuicDcidCache(cache)
+	defer SetFailedQuicDcidCache(oldCache)
+
+	pool := NewPacketSnifferPool()
+	defer pool.Close()
+
+	key := testPacketSnifferKey(t, []byte{9, 8, 7, 6}, 0)
+	cache.MarkFailed(key, quicDcidFailureReasonDecryptFailure, time.Now().Add(-failedQuicDcidDecryptFailTtl-time.Second))
+	if cache.Len() == 0 {
+		t.Fatal("expected expired entry to exist before janitor cleanup")
+	}
+
+	deadline := time.Now().Add(failedQuicDcidCleanupInterval + 2*packetSnifferJanitorInterval + time.Second)
+	for time.Now().Before(deadline) {
+		if cache.Len() == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatalf("expected janitor to clean expired failed-DCID entries, Len() = %d", cache.Len())
+}

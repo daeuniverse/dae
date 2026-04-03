@@ -44,28 +44,45 @@ func (k UdpFlowKey) FullConeNatEndpointKey() UdpEndpointKey {
 // across scheduling, sniffing, and UDP endpoint selection.
 type UdpFlowDecision struct {
 	Key               UdpFlowKey
+	SnifferKey        PacketSnifferKey
 	HasSnifferSession bool
 	IsQuicInitial     bool
-	IsLikelyQuicData  bool
+	AllowsSniffing    bool
+}
+
+func udpPortAllowsSniffing(port uint16) bool {
+	return port == 443 || port == 853
+}
+
+func udpFlowAllowsSniffing(src, dst netip.AddrPort) bool {
+	return udpPortAllowsSniffing(dst.Port()) || udpPortAllowsSniffing(src.Port())
 }
 
 func ClassifyUdpFlow(src, dst netip.AddrPort, data []byte) UdpFlowDecision {
 	key := NewUdpFlowKey(src, dst)
-	isQuicInitial := sniffing.IsLikelyQuicInitialPacket(data)
+	sniffEligible := udpFlowAllowsSniffing(src, dst)
+	isQuicInitial := sniffEligible && sniffing.IsLikelyQuicInitialPacket(data)
+	snifferKey := key.PacketSnifferKey()
+	if sniffEligible {
+		snifferKey = NewPacketSnifferKey(src, dst, data)
+	}
 
-	// Heuristic: If it's on a port that usually runs QUIC, treat it as part of a potential QUIC flow.
-	// This ensures Symmetric NAT and Ordered Ingress for the entire session from the first packet.
-	isLikelyQuicData := dst.Port() == 443 || dst.Port() == 8443 || src.Port() == 443 || src.Port() == 8443
-
+	// Tightened UDP sniffing semantics: only QUIC/DoQ ports are allowed to
+	// enter the sniffing-related flow model. All other UDP bypasses sniffing
+	// entirely, even if the payload happens to resemble a QUIC Initial packet.
 	return UdpFlowDecision{
 		Key:               key,
-		HasSnifferSession: DefaultPacketSnifferSessionMgr.Get(key.PacketSnifferKey()) != nil,
+		SnifferKey:        snifferKey,
+		HasSnifferSession: sniffEligible && DefaultPacketSnifferSessionMgr.HasFlowFamilySession(snifferKey),
 		IsQuicInitial:     isQuicInitial,
-		IsLikelyQuicData:  isLikelyQuicData,
+		AllowsSniffing:    sniffEligible,
 	}
 }
 
 func (d UdpFlowDecision) PacketSnifferKey() PacketSnifferKey {
+	if d.SnifferKey.LAddr.IsValid() || d.SnifferKey.RAddr.IsValid() {
+		return d.SnifferKey
+	}
 	return d.Key.PacketSnifferKey()
 }
 
@@ -93,10 +110,10 @@ func (d UdpFlowDecision) CachedRoutingEndpointKey() UdpEndpointKey {
 
 // CachedRoutingFallbackKey returns the alternate cache key to probe when the
 // primary key misses. This preserves hits for already-established symmetric
-// sessions while allowing heuristic-only UDP/443 traffic to store new cache
+// sessions while allowing sniff-eligible UDP traffic to store new cache
 // entries under the cheaper src-only key.
 func (d UdpFlowDecision) CachedRoutingFallbackKey() (UdpEndpointKey, bool) {
-	if d.IsLikelyQuicData && !d.HasConfirmedQuicState() {
+	if d.AllowsSniffing && !d.HasConfirmedQuicState() {
 		return d.SymmetricNatEndpointKey(), true
 	}
 	return UdpEndpointKey{}, false
@@ -117,22 +134,23 @@ func (d UdpFlowDecision) NatTimeoutForDial(domain string) time.Duration {
 }
 
 // EndpointKeyForInitialLookup returns the appropriate endpoint pool key for the initial lookup.
-// Port-based QUIC heuristics are intentionally used here only for reuse of an
+// Port-based sniff eligibility is intentionally used here only for reuse of an
 // already-established symmetric session. Allocation decisions are deferred
-// until after the lookup so heuristic-only traffic can still fall back to the
+// until after the lookup so sniff-eligible UDP can still fall back to the
 // cheaper src-only key on a miss.
 func (d UdpFlowDecision) EndpointKeyForInitialLookup() UdpEndpointKey {
-	if d.HasConfirmedQuicState() || d.IsLikelyQuicData {
+	if d.HasConfirmedQuicState() || d.AllowsSniffing {
 		return d.SymmetricNatEndpointKey() // {Src, Dst}
 	}
 	return d.FullConeNatEndpointKey() // {Src, 0}
 }
 
 // InitialLookupFallbackKey returns the cheaper fallback key used after a miss
-// on the heuristic symmetric lookup path. This prevents UDP/443 traffic that is
-// merely QUIC-like by port from permanently allocating per-destination state.
+// on the sniff-eligible symmetric lookup path. This prevents sniff-eligible UDP
+// traffic from permanently allocating
+// per-destination state.
 func (d UdpFlowDecision) InitialLookupFallbackKey() (UdpEndpointKey, bool) {
-	if d.IsLikelyQuicData && !d.HasConfirmedQuicState() {
+	if d.AllowsSniffing && !d.HasConfirmedQuicState() {
 		return d.FullConeNatEndpointKey(), true
 	}
 	return UdpEndpointKey{}, false
@@ -155,7 +173,7 @@ func (d UdpFlowDecision) ShouldUseOrderedIngress() bool {
 	// Ordered ingress is only needed for:
 	// 1. Flows with active sniffer session (multi-packet ClientHello reassembly)
 	// 2. QUIC Initial packets (to establish the sniff session)
-	// Port heuristic (IsLikelyQuicData) is NOT used here to avoid forcing
+	// Port allowlist state (AllowsSniffing) is NOT used here to avoid forcing
 	// Hysteria2/TUIC (which also use UDP/443) onto the slower ordered path.
 	return d.HasSnifferSession || d.IsQuicInitial
 }
@@ -216,8 +234,8 @@ func (d UdpFlowDecision) ShouldUseBoundedPool() bool {
 		return true
 	}
 
-	// QUIC data packets (after initial) - long-lived
-	if d.IsLikelyQuicData && !d.IsQuicInitial {
+	// Explicit sniff-eligible UDP data packets (after initial) - long-lived
+	if d.AllowsSniffing && !d.IsQuicInitial {
 		return true
 	}
 

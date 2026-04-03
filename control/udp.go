@@ -451,7 +451,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 
 	// Determine the correct endpoint key for initial lookup based on flow classification.
 	// This avoids double sync.Map lookups by pre-selecting the appropriate key:
-	// - Symmetric NAT (Src+Dst) for QUIC/sniffing sessions/443 traffic
+	// - Symmetric NAT (Src+Dst) for confirmed QUIC/sniffing sessions on sniff-eligible UDP
 	// - Full-Cone NAT (Src-only) for other UDP traffic
 	isQuicInitial := flowDecision.IsQuicInitial
 	var quicSnifferKey PacketSnifferKey
@@ -463,6 +463,37 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	ueKey = flowDecision.EndpointKeyForInitialLookup()
 	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
 	if !ueExists {
+		if ueKey.Dst.Port() != 0 {
+			// Sniff-eligible UDP can re-enter here with a symmetric lookup even
+			// though the live session is already tracked under the cheaper
+			// src-only key. Reuse that exact src-only endpoint when it targets
+			// the same remote, otherwise we fork a second UdpEndpoint for the
+			// same 4-tuple and start another read loop.
+			srcOnlyKey := flowDecision.FullConeNatEndpointKey()
+			if srcOnlyKey != ueKey {
+				if candidate, ok := DefaultUdpEndpointPool.Get(srcOnlyKey); ok && candidate.DialTarget == realDst.String() {
+					ueKey = srcOnlyKey
+					ue = candidate
+					ueExists = true
+				}
+			}
+		} else {
+			// The reverse race also exists: a sniff-eligible packet may have
+			// already created a symmetric endpoint before a sibling ordinary
+			// packet reaches here. Probe that exact symmetric key before
+			// creating a new src-only endpoint so the visible UDP flow stays
+			// single-instanced.
+			symmetricKey := flowDecision.SymmetricNatEndpointKey()
+			if symmetricKey != ueKey {
+				if candidate, ok := DefaultUdpEndpointPool.Get(symmetricKey); ok && candidate.DialTarget == realDst.String() {
+					ueKey = symmetricKey
+					ue = candidate
+					ueExists = true
+				}
+			}
+		}
+	}
+	if !ueExists {
 		if fallbackKey, ok := flowDecision.InitialLookupFallbackKey(); ok {
 			ueKey = fallbackKey
 			ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
@@ -471,17 +502,27 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	if ueExists {
 		switch {
 		case ue.SniffedDomain == "" && isQuicInitial:
-			// Chrome can reuse UDP sockets for different QUIC handshakes, but
-			// the QUIC Initial heuristic is intentionally loose. Tearing down an
-			// existing endpoint before consulting the failed-DCID cache, or after
-			// the flow has already received replies, causes repeated redials and
-			// read-loop EOF churn on false positives (for example, game traffic).
-			shouldResetForQuicInitial := quicSnifferKey.HasCacheableDcid() && !failedQuicDcidKnown && !ue.hasReply.Load()
+			snifferObserved, snifferChanged := DefaultPacketSnifferSessionMgr.ObserveFlowFamilyQuicInitial(quicSnifferKey, data)
+
+			// With sniffing restricted to explicit QUIC ports, the only remaining
+			// reset guard we need is "same QUIC Initial must not retrigger reset".
+			// Keep reuse when the active sniffer family still matches the same
+			// connection ID, and only tear down the probing endpoint when the
+			// current Initial conflicts with an already-observed QUIC session.
+			shouldResetForQuicInitial := quicSnifferKey.HasCacheableDcid() && snifferChanged
 			if shouldResetForQuicInitial {
+				removedSniffers := DefaultPacketSnifferSessionMgr.RemoveFlowFamilySessions(quicSnifferKey)
 				if c.log.IsLevelEnabled(logrus.DebugLevel) {
-					c.log.WithField("src", realSrc).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet")
+					c.log.WithFields(logrus.Fields{
+						"src":              realSrc,
+						"dst":              realDst,
+						"failed_dcid":      failedQuicDcidKnown,
+						"sniffer_observed": snifferObserved,
+						"sniffers_removed": removedSniffers,
+					}).Debug("Removed trapped domain-less UdpEndpoint for new QUIC Initial packet after flow-family mismatch")
 				}
 				_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
+				ue = nil
 				ueExists = false
 				break
 			}
@@ -561,8 +602,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	var natTimeout time.Duration
 	if domain == "" && !skipSniffing && !ueExists {
-		// Fast path: only QUIC Initial packets should enter sniffing.
-		// Normal UDP traffic should be forwarded immediately without blocking.
+		// Fast path: only sniff-eligible QUIC Initial packets should enter sniffing.
+		// All other UDP traffic should be forwarded immediately without blocking.
 		if !isQuicInitial {
 			// Not a QUIC Initial packet - skip sniffing entirely.
 			// Even if there's an existing sniffer session, non-QUIC packets
@@ -614,6 +655,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 					}
 				}()
 
+				_, _ = sniffer.ObserveQuicInitial(data)
 				sniffer.AppendData(data)
 				domain, err = sniffer.SniffUdp()
 				if err != nil {
@@ -683,6 +725,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 						replayPackets = append(replayPackets, dCopy)
 					}
 				}
+				sniffer.CompactPacketState()
 				sniffer.Mu.Unlock()
 			}()
 			if sniffer.NeedMore() {
@@ -742,10 +785,20 @@ getNew:
 	natTimeout = flowDecision.NatTimeoutForDial(domain)
 
 	// Allocate symmetric endpoints only for confirmed QUIC state. If the initial
-	// lookup found an existing symmetric endpoint via the UDP/443 heuristic, keep
-	// using that existing entry instead of silently forking a new src-only one.
+	// lookup found an existing symmetric endpoint via the sniff-eligible UDP
+	// path, keep using that existing entry instead of silently forking a new
+	// src-only one.
 	ueKey = flowDecision.EndpointKeyForDial(domain)
 	if ueExists && foundUeKey.Dst.Port() != 0 && ueKey.Dst.Port() == 0 {
+		ueKey = foundUeKey
+		natTimeout = ue.natTimeout()
+	}
+	if ueExists &&
+		foundUeKey.Dst.Port() == 0 &&
+		ueKey.Dst.Port() != 0 &&
+		domain == "" &&
+		ue.SniffedDomain == "" &&
+		ue.DialTarget == dialTarget {
 		ueKey = foundUeKey
 		natTimeout = ue.natTimeout()
 	}

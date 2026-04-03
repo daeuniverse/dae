@@ -15,12 +15,12 @@ func mustParseUdpFlowAddrPort(t *testing.T, s string) netip.AddrPort {
 	return netip.MustParseAddrPort(s)
 }
 
-func TestUdpFlowDecision_HeuristicQuicPortDoesNotForceSymmetricAllocation(t *testing.T) {
+func TestUdpFlowDecision_SniffEligiblePortDoesNotForceSymmetricAllocation(t *testing.T) {
 	src := mustParseUdpFlowAddrPort(t, "192.0.2.10:40000")
 	dst := mustParseUdpFlowAddrPort(t, "198.51.100.20:443")
 	decision := UdpFlowDecision{
-		Key:              NewUdpFlowKey(src, dst),
-		IsLikelyQuicData: true,
+		Key:            NewUdpFlowKey(src, dst),
+		AllowsSniffing: true,
 	}
 
 	if got := decision.EndpointKeyForInitialLookup(); got != decision.SymmetricNatEndpointKey() {
@@ -97,8 +97,8 @@ func TestUdpFlowDecision_DomainPromotesSymmetricDialPlan(t *testing.T) {
 	src := mustParseUdpFlowAddrPort(t, "192.0.2.10:40000")
 	dst := mustParseUdpFlowAddrPort(t, "198.51.100.20:443")
 	decision := UdpFlowDecision{
-		Key:              NewUdpFlowKey(src, dst),
-		IsLikelyQuicData: true,
+		Key:            NewUdpFlowKey(src, dst),
+		AllowsSniffing: true,
 	}
 
 	if got := decision.EndpointKeyForDial("example.com"); got != decision.SymmetricNatEndpointKey() {
@@ -107,5 +107,40 @@ func TestUdpFlowDecision_DomainPromotesSymmetricDialPlan(t *testing.T) {
 
 	if got := decision.NatTimeoutForDial("example.com"); got != QuicNatTimeout {
 		t.Fatalf("NatTimeoutForDial(domain) = %v, want %v", got, QuicNatTimeout)
+	}
+}
+
+func TestClassifyUdpFlow_Only443And853EnableUdpSniffing(t *testing.T) {
+	src := mustParseUdpFlowAddrPort(t, "192.0.2.10:40000")
+	initialLikePayload := makeLikelyQuicInitialPayload(0x61)
+
+	httpsDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:443"), initialLikePayload)
+	if !httpsDecision.IsQuicInitial {
+		t.Fatal("expected udp/443 Initial-shaped payload to stay sniff-eligible")
+	}
+	if !httpsDecision.AllowsSniffing {
+		t.Fatal("expected udp/443 flow to remain in the sniff allowlist")
+	}
+
+	doqDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:853"), initialLikePayload)
+	if !doqDecision.IsQuicInitial {
+		t.Fatal("expected udp/853 Initial-shaped payload to stay sniff-eligible")
+	}
+	if !doqDecision.AllowsSniffing {
+		t.Fatal("expected udp/853 flow to remain in the sniff allowlist")
+	}
+
+	altPortDecision := ClassifyUdpFlow(src, mustParseUdpFlowAddrPort(t, "198.51.100.20:8443"), initialLikePayload)
+	if altPortDecision.IsQuicInitial {
+		t.Fatal("expected udp/8443 Initial-shaped payload to bypass sniffing")
+	}
+	if altPortDecision.AllowsSniffing {
+		t.Fatal("expected udp/8443 flow to bypass the sniff allowlist")
+	}
+	if altPortDecision.HasConfirmedQuicState() {
+		t.Fatal("expected udp/8443 flow to avoid confirmed QUIC state without sniff eligibility")
+	}
+	if got := altPortDecision.EndpointKeyForInitialLookup(); got != altPortDecision.FullConeNatEndpointKey() {
+		t.Fatalf("EndpointKeyForInitialLookup() = %v, want full-cone %v", got, altPortDecision.FullConeNatEndpointKey())
 	}
 }
