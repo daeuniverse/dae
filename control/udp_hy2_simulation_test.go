@@ -27,19 +27,32 @@ type hy2SimulationPacket struct {
 type hy2SimulationConn struct {
 	receiveCh chan hy2SimulationPacket
 	closeCh   chan struct{}
+	readStart chan struct{}
 
-	sealOnce sync.Once
+	sealOnce      sync.Once
+	startReadOnce sync.Once
 
 	fedPackets     atomic.Int64
 	droppedPackets atomic.Int64
 	readPackets    atomic.Int64
 }
 
-func newHy2SimulationConn() *hy2SimulationConn {
-	return &hy2SimulationConn{
+func newHy2SimulationConn(readStartsBlocked bool) *hy2SimulationConn {
+	conn := &hy2SimulationConn{
 		receiveCh: make(chan hy2SimulationPacket, hy2ModelReceiveQueueSize),
 		closeCh:   make(chan struct{}),
+		readStart: make(chan struct{}),
 	}
+	if !readStartsBlocked {
+		conn.StartReading()
+	}
+	return conn
+}
+
+func (c *hy2SimulationConn) StartReading() {
+	c.startReadOnce.Do(func() {
+		close(c.readStart)
+	})
 }
 
 func (c *hy2SimulationConn) Feed(data []byte, from netip.AddrPort) {
@@ -67,6 +80,11 @@ func (c *hy2SimulationConn) Write(_ []byte) (int, error) {
 }
 
 func (c *hy2SimulationConn) ReadFrom(p []byte) (int, netip.AddrPort, error) {
+	select {
+	case <-c.closeCh:
+		return 0, netip.AddrPort{}, io.EOF
+	case <-c.readStart:
+	}
 	select {
 	case <-c.closeCh:
 		return 0, netip.AddrPort{}, io.EOF
@@ -124,10 +142,13 @@ type hy2BoundarySimulationResult struct {
 	elapsed    time.Duration
 }
 
-func runHy2BoundarySimulation(t *testing.T, mode hy2BoundaryMode, totalPackets int, producerGap, handlerDelay time.Duration) hy2BoundarySimulationResult {
+func runHy2BoundarySimulation(t *testing.T, mode hy2BoundaryMode, totalPackets int, producerGap, handlerDelay time.Duration, prebufferBeforeDrain bool) hy2BoundarySimulationResult {
 	t.Helper()
 
-	conn := newHy2SimulationConn()
+	// Some scenarios model a burst that has already filled HY2's receive queue
+	// before dae gets CPU time. Hold ReadFrom behind an explicit gate there so the
+	// test does not accidentally depend on goroutine scheduling.
+	conn := newHy2SimulationConn(prebufferBeforeDrain)
 	replySrc := netip.MustParseAddrPort("203.0.113.10:3478")
 	start := time.Now()
 
@@ -170,8 +191,14 @@ func runHy2BoundarySimulation(t *testing.T, mode hy2BoundaryMode, totalPackets i
 		t.Fatalf("unknown simulation mode %q", mode)
 	}
 
+	if !prebufferBeforeDrain {
+		conn.StartReading()
+	}
 	feedHy2SimulationPackets(conn, totalPackets, replySrc, producerGap)
 	conn.Seal()
+	if prebufferBeforeDrain {
+		conn.StartReading()
+	}
 
 	select {
 	case <-done:
@@ -278,9 +305,9 @@ func TestHy2BoundarySimulation_PreBufferedBurst(t *testing.T) {
 		handlerDelay = 1 * time.Millisecond
 	)
 
-	mainResult := runHy2BoundarySimulation(t, hy2BoundaryModeMainSync, totalPackets, 0, handlerDelay)
-	lossyResult := runHy2BoundarySimulation(t, hy2BoundaryModeDaeLossy, totalPackets, 0, handlerDelay)
-	backpressureResult := runHy2BoundarySimulation(t, hy2BoundaryModeBackpressure, totalPackets, 0, handlerDelay)
+	mainResult := runHy2BoundarySimulation(t, hy2BoundaryModeMainSync, totalPackets, 0, handlerDelay, true)
+	lossyResult := runHy2BoundarySimulation(t, hy2BoundaryModeDaeLossy, totalPackets, 0, handlerDelay, true)
+	backpressureResult := runHy2BoundarySimulation(t, hy2BoundaryModeBackpressure, totalPackets, 0, handlerDelay, true)
 
 	logHy2BoundarySimulationResult(t, mainResult)
 	logHy2BoundarySimulationResult(t, lossyResult)
@@ -310,9 +337,9 @@ func TestHy2BoundarySimulation_ReceiveQueuePressure(t *testing.T) {
 		totalPackets = 1200
 	)
 
-	mainResult := runHy2BoundarySimulation(t, hy2BoundaryModeMainSync, totalPackets, producerGap, handlerDelay)
-	lossyResult := runHy2BoundarySimulation(t, hy2BoundaryModeDaeLossy, totalPackets, producerGap, handlerDelay)
-	backpressureResult := runHy2BoundarySimulation(t, hy2BoundaryModeBackpressure, totalPackets, producerGap, handlerDelay)
+	mainResult := runHy2BoundarySimulation(t, hy2BoundaryModeMainSync, totalPackets, producerGap, handlerDelay, false)
+	lossyResult := runHy2BoundarySimulation(t, hy2BoundaryModeDaeLossy, totalPackets, producerGap, handlerDelay, false)
+	backpressureResult := runHy2BoundarySimulation(t, hy2BoundaryModeBackpressure, totalPackets, producerGap, handlerDelay, false)
 
 	logHy2BoundarySimulationResult(t, mainResult)
 	logHy2BoundarySimulationResult(t, lossyResult)
@@ -351,9 +378,9 @@ func TestHy2BoundarySimulation_TotalBufferLimit(t *testing.T) {
 		totalPackets = 1800
 	)
 
-	mainResult := runHy2BoundarySimulation(t, hy2BoundaryModeMainSync, totalPackets, producerGap, handlerDelay)
-	lossyResult := runHy2BoundarySimulation(t, hy2BoundaryModeDaeLossy, totalPackets, producerGap, handlerDelay)
-	backpressureResult := runHy2BoundarySimulation(t, hy2BoundaryModeBackpressure, totalPackets, producerGap, handlerDelay)
+	mainResult := runHy2BoundarySimulation(t, hy2BoundaryModeMainSync, totalPackets, producerGap, handlerDelay, false)
+	lossyResult := runHy2BoundarySimulation(t, hy2BoundaryModeDaeLossy, totalPackets, producerGap, handlerDelay, false)
+	backpressureResult := runHy2BoundarySimulation(t, hy2BoundaryModeBackpressure, totalPackets, producerGap, handlerDelay, false)
 
 	logHy2BoundarySimulationResult(t, mainResult)
 	logHy2BoundarySimulationResult(t, lossyResult)

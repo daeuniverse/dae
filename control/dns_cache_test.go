@@ -75,3 +75,29 @@ func TestDnsCache_CloneResetsSyncState(t *testing.T) {
 	// After NeedsBpfUpdate, the timestamp should be updated to now
 	require.Equal(t, now.UnixNano(), clone.lastRouteSyncNano.Load(), "lastRouteSyncNano should be updated after NeedsBpfUpdate")
 }
+
+func TestDnsCache_CloneForReloadReusesImmutablePayload(t *testing.T) {
+	now := time.Now()
+	answer := &dnsmessage.A{
+		Hdr: dnsmessage.RR_Header{Name: "reload.example.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 120},
+		A:   net.IPv4(4, 3, 2, 1),
+	}
+	cache := &DnsCache{
+		DomainBitmap:     []uint32{1, 2, 3},
+		Answer:           []dnsmessage.RR{answer},
+		Deadline:         now.Add(2 * time.Minute),
+		OriginalDeadline: now.Add(2 * time.Minute),
+	}
+	cache.lastAccessNano.Store(now.UnixNano())
+	cache.MarkBpfUpdated(now)
+	require.NoError(t, cache.PrepackResponse("reload.example.", dnsmessage.TypeA))
+
+	clone := cache.CloneForReload()
+	require.NotNil(t, clone)
+	require.Same(t, cache.Answer[0], clone.Answer[0], "reload clone should reuse immutable RR payload")
+	require.Equal(t, cache.GetPackedResponse(), clone.GetPackedResponse(), "reload clone should reuse pre-packed response bytes")
+	require.Equal(t, cache.lastAccessNano.Load(), clone.lastAccessNano.Load(), "reload clone should preserve LRU access time")
+	require.Equal(t, int64(0), clone.lastRouteSyncNano.Load(), "reload clone should force fresh BPF sync")
+	require.Equal(t, uint64(0), clone.lastBpfDataHash.Load(), "reload clone should force fresh BPF sync hash")
+	require.False(t, clone.refreshing.Load(), "reload clone should not inherit old refresh-in-progress state")
+}

@@ -140,6 +140,36 @@ func TestControlPlane_DnsDialerSnapshotCache_SkipsPenalizedDialer(t *testing.T) 
 	require.False(t, stillExists, "penalized snapshots should be removed eagerly")
 }
 
+func TestControlPlane_DnsDialerPenaltyCleanup_RemovesExpiredEntries(t *testing.T) {
+	cp := &ControlPlane{}
+	now := time.Now()
+	liveKey := dnsDialerPenaltyKey{
+		dialer:    newTestProxyEndpointDialer("trojan", "proxy-live.example:443"),
+		target:    netip.MustParseAddrPort("1.1.1.1:53"),
+		l4proto:   consts.L4ProtoStr_TCP,
+		ipversion: consts.IpVersionStr_4,
+	}
+	expiredKey := dnsDialerPenaltyKey{
+		dialer:    newTestProxyEndpointDialer("trojan", "proxy-expired.example:443"),
+		target:    netip.MustParseAddrPort("8.8.8.8:53"),
+		l4proto:   consts.L4ProtoStr_UDP,
+		ipversion: consts.IpVersionStr_4,
+	}
+
+	cp.dnsDialerPenalty.Store(liveKey, &dnsDialerPenaltyEntry{expiresAtUnixNano: now.Add(time.Second).UnixNano()})
+	cp.dnsDialerPenalty.Store(expiredKey, &dnsDialerPenaltyEntry{expiresAtUnixNano: now.Add(-time.Second).UnixNano()})
+	cp.dnsDialerPenalty.Store("bad-entry", "bad-value")
+
+	cp.cleanupDnsDialerPenalty(now)
+
+	_, liveExists := cp.dnsDialerPenalty.Load(liveKey)
+	require.True(t, liveExists)
+	_, expiredExists := cp.dnsDialerPenalty.Load(expiredKey)
+	require.False(t, expiredExists)
+	_, badExists := cp.dnsDialerPenalty.Load("bad-entry")
+	require.False(t, badExists)
+}
+
 // TestDnsDialerSnapshot_PortExemption verifies that DNS queries from the same client
 // but with different source ports generate the same cache key, enabling cache reuse.
 func TestDnsDialerSnapshot_PortExemption(t *testing.T) {

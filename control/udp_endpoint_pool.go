@@ -207,6 +207,53 @@ func (ue *UdpEndpoint) clearCachedResponseConn(bindAddr netip.AddrPort, conn *An
 	}
 }
 
+func (ue *UdpEndpoint) prewarmResponseConn(target string) {
+	if ue == nil || !ue.lAddr.IsValid() {
+		return
+	}
+
+	replyPeer := ue.poolKey.Dst
+	if !replyPeer.IsValid() || replyPeer.Port() == 0 {
+		parsedTarget, err := netip.ParseAddrPort(target)
+		if err != nil || !parsedTarget.IsValid() || parsedTarget.Port() == 0 {
+			return
+		}
+		replyPeer = parsedTarget
+	}
+
+	bindAddr, _ := normalizeSendPktAddrFamily(replyPeer, ue.lAddr)
+	var af *Anyfrom
+	if DefaultAnyfromPool != nil {
+		shard := DefaultAnyfromPool.shardFor(bindAddr)
+		nowNano := time.Now().UnixNano()
+		shard.mu.RLock()
+		if cached, ok := shard.pool[bindAddr]; ok && cached != nil && !cached.failed.Load() && !cached.IsExpired(nowNano) {
+			af = cached
+		}
+		shard.mu.RUnlock()
+		if af != nil {
+			af.RefreshTtlWithTime(nowNano)
+		}
+	}
+
+	if af == nil {
+		if GetDaeNetns() == nil || DefaultAnyfromPool == nil {
+			return
+		}
+		var err error
+		af, _, err = DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
+		if err != nil {
+			return
+		}
+	}
+
+	if ue.poolKey.Dst.Port() != 0 {
+		swapPinnedAnyfrom(&ue.respConn, af)
+		return
+	}
+	ue.storeCachedResponseConn(bindAddr, af)
+}
+
 type udpEndpointResponseConnCache interface {
 	CachedResponseConn(bindAddr netip.AddrPort) *Anyfrom
 	StoreCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom)
@@ -1391,17 +1438,12 @@ dialSuccess:
 	}
 	ue.dialerGeneration = p.currentDialerGeneration(dialOption.Dialer, ue.endpointNetworkType)
 
-	// Pre-cache the Anyfrom socket for responses. Caching is only safe for
-	// fixed-destination sessions (Symmetric NAT) where the response bind address
-	// remains constant. Full-Cone sessions must lookup on every packet as the
-	// server source can change.
-	if key.Dst.Port() != 0 {
-		bindAddr, _ := normalizeSendPktAddrFamily(key.Dst, key.Src)
-		if af, _, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout); err == nil {
-			ue.respConn = af
-			ue.respConn.Pin()
-		}
-	}
+	// Prewarm the initial Anyfrom socket used to reinject replies back to the
+	// client. Symmetric endpoints can pin a single fixed socket. Full-cone
+	// endpoints still keep their bind-address cache keyed by remote peer, but
+	// priming the first dial target removes the cold bind syscall from the
+	// earliest reply path that games are sensitive to.
+	ue.prewarmResponseConn(dialOption.Target)
 
 	ue.RefreshTtlWithTime(createOption.NowNano)
 

@@ -287,6 +287,8 @@ type loadBpfOptions struct {
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
+const fastSockPlaceholderMaxEntries = 1
+
 func loadBpfObjectsWithConstantsAndCustomizer(
 	obj interface{},
 	opts *ebpf.CollectionOptions,
@@ -320,6 +322,32 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 			return fmt.Errorf("missing map spec %q", mapName)
 		}
 		m.Pinning = ebpf.PinNone
+	}
+	return nil
+}
+
+func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+
+	fastSock, ok := spec.Maps["fast_sock"]
+	if !ok || fastSock == nil {
+		return fmt.Errorf("missing map spec %q", "fast_sock")
+	}
+	// fast_sock is retained only to keep the generated Go ABI stable while the
+	// sockhash redirect path remains disabled, so a single placeholder slot is
+	// sufficient.
+	fastSock.MaxEntries = fastSockPlaceholderMaxEntries
+	return nil
+}
+
+func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
+	if err := disablePinnedConnStateMaps(spec); err != nil {
+		return err
+	}
+	if err := tunePlaceholderBpfMaps(spec); err != nil {
+		return err
 	}
 	return nil
 }
@@ -417,7 +445,7 @@ retryLoadBpf:
 		bpf,
 		opts.CollectionOptions,
 		constants,
-		disablePinnedConnStateMaps,
+		customizeBpfMapSpecs,
 	); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.

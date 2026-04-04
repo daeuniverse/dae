@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,6 +92,7 @@ type ControlPlane struct {
 	connStateJanitorStop chan struct{}
 	connStateJanitorDone chan struct{}
 	connStateJanitorOnce sync.Once
+	connStateScratch     *connStateJanitorScratch
 
 	// Track last alert time to avoid spamming logs
 	lastBpfOverflowAlertTime atomic.Int64
@@ -110,6 +112,47 @@ type ControlPlane struct {
 	lastConnectionErrorLogTime     atomic.Int64
 	lastDnsFastPathErrorLogTime    atomic.Int64
 	lastDnsFastPathServfailLogTime atomic.Int64
+}
+
+type connStateJanitorScratch struct {
+	redirectKeys   []bpfRedirectTuple
+	redirectValues []bpfRedirectEntry
+	redirectDelete []bpfRedirectTuple
+
+	udpKeys   []bpfTuplesKey
+	udpValues []bpfUdpConnState
+	udpDelete []bpfTuplesKey
+
+	tcpKeys   []bpfTuplesKey
+	tcpValues []bpfTcpConnState
+	tcpDelete []bpfTuplesKey
+}
+
+const (
+	janitorBatchLookupSize = 1024
+	janitorDeleteInitCap   = 256
+	janitorDeleteRetainMax = 8192
+)
+
+func ensureJanitorLookupScratch[T any](buf []T) []T {
+	if cap(buf) < janitorBatchLookupSize {
+		return make([]T, janitorBatchLookupSize)
+	}
+	return buf[:janitorBatchLookupSize]
+}
+
+func takeJanitorDeleteScratch[T any](buf []T) []T {
+	if cap(buf) < janitorDeleteInitCap {
+		return make([]T, 0, janitorDeleteInitCap)
+	}
+	return buf[:0]
+}
+
+func keepJanitorDeleteScratch[T any](buf []T) []T {
+	if cap(buf) > janitorDeleteRetainMax {
+		return make([]T, 0, janitorDeleteInitCap)
+	}
+	return buf[:0]
 }
 
 var (
@@ -596,9 +639,10 @@ func NewControlPlaneWithContext(
 		}
 	}
 
-	// Memory optimization: Force GC after building routing matcher
-	// to release temporary allocations from rule processing.
-	runtime.GC()
+	// Routing compilation allocates large temporary slices and trie builders.
+	// Startup/reload is infrequent, so force a full scavenging pass here to
+	// return released pages before the control plane starts serving.
+	debug.FreeOSMemory()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	log.Infof("Memory usage after routing build: Alloc=%vMiB, Sys=%vMiB, HeapObjects=%v",
@@ -880,14 +924,17 @@ func (c *ControlPlane) currentBpf() *bpfObjects {
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
+	if c == nil || c.dnsController == nil {
+		return nil
+	}
 	result := make(map[string]*DnsCache)
 	c.dnsController.dnsCache.Range(func(key, value any) bool {
 		k, ok1 := key.(string)
 		v, ok2 := value.(*DnsCache)
 		if ok1 && ok2 {
-			// Deep copy to prevent data race on the returned map values
-			// Use manual Clone instead of reflection-based deepcopy for performance
-			result[k] = v.Clone()
+			// Keep immutable DNS payload across generations while resetting
+			// generation-local routing sync state for reload.
+			result[k] = v.CloneForReload()
 		} else {
 			c.log.Errorf("CloneDnsCache: invalid type found in sync.Map: key=%T, value=%T", key, value)
 		}
@@ -1285,6 +1332,21 @@ func (c *ControlPlane) cleanupDnsDialerSnapshot(now time.Time) {
 	})
 }
 
+func (c *ControlPlane) cleanupDnsDialerPenalty(now time.Time) {
+	nowNano := now.UnixNano()
+	c.dnsDialerPenalty.Range(func(key, value any) bool {
+		entry, ok := value.(*dnsDialerPenaltyEntry)
+		if !ok {
+			c.dnsDialerPenalty.Delete(key)
+			return true
+		}
+		if entry.expiresAtUnixNano <= nowNano {
+			c.dnsDialerPenalty.CompareAndDelete(key, entry)
+		}
+		return true
+	})
+}
+
 func buildDnsDialerPenaltyKey(dialArg *dialArgument) (dnsDialerPenaltyKey, bool) {
 	if dialArg == nil || dialArg.bestDialer == nil || !dialArg.bestTarget.IsValid() {
 		return dnsDialerPenaltyKey{}, false
@@ -1343,6 +1405,7 @@ func (c *ControlPlane) startRealDomainNegJanitor() {
 			case now := <-ticker.C:
 				c.cleanupNegativeCaches(now)
 				c.cleanupDnsDialerSnapshot(now)
+				c.cleanupDnsDialerPenalty(now)
 			}
 		}
 	}()
@@ -1486,18 +1549,23 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 
 	timeoutNano := redirectTrackTimeout.Nanoseconds()
 
-	var keysToDelete []bpfRedirectTuple
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.redirectDelete)
 	totalEntries := 0
 	maxAge := int64(0)
 	totalAge := int64(0)
 
-	var (
-		keysOut   = make([]bpfRedirectTuple, 1024)
-		valuesOut = make([]bpfRedirectEntry, 1024)
-		cursor    = new(ebpf.MapBatchCursor)
-	)
+	keysOut := ensureJanitorLookupScratch(scratch.redirectKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.redirectValues)
+	defer func() {
+		scratch.redirectDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.redirectKeys = keysOut
+		scratch.redirectValues = valuesOut
+	}()
+
+	var cursor ebpf.MapBatchCursor
 	for {
-		count, err := bpf.RedirectTrack.BatchLookup(cursor, keysOut, valuesOut, nil)
+		count, err := bpf.RedirectTrack.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := 0; i < count; i++ {
 				key := keysOut[i]
@@ -1578,19 +1646,22 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 	dnsTimeoutNano := udpConnStateTimeoutDNS.Nanoseconds()
 	normalTimeoutNano := QuicNatTimeout.Nanoseconds() // Align eBPF state with Userspace proxy QuicNatTimeout
 
-	// Pre-allocate slice for better performance
-	keysToDelete := make([]bpfTuplesKey, 0, 256)
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.udpDelete)
+	keysOut := ensureJanitorLookupScratch(scratch.udpKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.udpValues)
+	defer func() {
+		scratch.udpDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.udpKeys = keysOut
+		scratch.udpValues = valuesOut
+	}()
 
-	var (
-		keysOut   = make([]bpfTuplesKey, 1024)
-		valuesOut = make([]bpfUdpConnState, 1024)
-		cursor    = new(ebpf.MapBatchCursor)
-	)
+	var cursor ebpf.MapBatchCursor
 	aggressiveTimeout := normalTimeoutNano / 2
 	aggressiveDnsTimeout := dnsTimeoutNano / 2
 
 	for {
-		count, err := bpf.UdpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
+		count, err := bpf.UdpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := 0; i < count; i++ {
 				stats.entries++
@@ -1683,18 +1754,22 @@ func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanup
 	establishedTimeoutNano := tcpConnStateTimeoutEstablished.Nanoseconds()
 	closingTimeoutNano := tcpConnStateTimeoutClosing.Nanoseconds()
 
-	var keysToDelete []bpfTuplesKey
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.tcpDelete)
+	keysOut := ensureJanitorLookupScratch(scratch.tcpKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.tcpValues)
+	defer func() {
+		scratch.tcpDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.tcpKeys = keysOut
+		scratch.tcpValues = valuesOut
+	}()
 
-	var (
-		keysOut   = make([]bpfTuplesKey, 1024)
-		valuesOut = make([]bpfTcpConnState, 1024)
-		cursor    = new(ebpf.MapBatchCursor)
-	)
+	var cursor ebpf.MapBatchCursor
 	aggressiveEstablishedTimeout := establishedTimeoutNano / 2
 	aggressiveClosingTimeout := closingTimeoutNano / 2
 
 	for {
-		count, err := bpf.TcpConnStateMap.BatchLookup(cursor, keysOut, valuesOut, nil)
+		count, err := bpf.TcpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := 0; i < count; i++ {
 				stats.entries++
@@ -1763,6 +1838,13 @@ func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanup
 	}
 
 	return stats
+}
+
+func (c *ControlPlane) connStateJanitorScratch() *connStateJanitorScratch {
+	if c.connStateScratch == nil {
+		c.connStateScratch = &connStateJanitorScratch{}
+	}
+	return c.connStateScratch
 }
 
 // checkBpfMapHealth monitors map usage and overflow counters for robustness.
@@ -1940,6 +2022,81 @@ func (l *Listener) Close() error {
 		}
 	}
 	return err
+}
+
+// Clone duplicates the listener sockets so a new control plane generation can
+// take over serving before the old generation closes its copies. This allows
+// reload to wake the old Accept/Read goroutines without rebinding the port.
+func (l *Listener) Clone() (cloned *Listener, err error) {
+	if l == nil {
+		return nil, fmt.Errorf("nil listener")
+	}
+
+	cloned = &Listener{port: l.port}
+	defer func() {
+		if err != nil && cloned != nil {
+			_ = cloned.Close()
+		}
+	}()
+
+	if l.tcp4Listener != nil {
+		cloned.tcp4Listener, err = cloneTCPListener(l.tcp4Listener)
+		if err != nil {
+			return nil, fmt.Errorf("clone tcp4 listener: %w", err)
+		}
+	}
+	if l.tcp6Listener != nil {
+		cloned.tcp6Listener, err = cloneTCPListener(l.tcp6Listener)
+		if err != nil {
+			return nil, fmt.Errorf("clone tcp6 listener: %w", err)
+		}
+	}
+	if l.packetConn != nil {
+		cloned.packetConn, err = cloneUDPPacketConn(l.packetConn)
+		if err != nil {
+			return nil, fmt.Errorf("clone udp packet conn: %w", err)
+		}
+	}
+
+	return cloned, nil
+}
+
+func cloneTCPListener(listener net.Listener) (net.Listener, error) {
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		return nil, fmt.Errorf("unexpected tcp listener type %T", listener)
+	}
+
+	file, err := tcpListener.File()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	cloned, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	return cloned, nil
+}
+
+func cloneUDPPacketConn(packetConn net.PacketConn) (net.PacketConn, error) {
+	udpConn, ok := packetConn.(*net.UDPConn)
+	if !ok {
+		return nil, fmt.Errorf("unexpected udp packet conn type %T", packetConn)
+	}
+
+	file, err := udpConn.File()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	cloned, err := net.FilePacketConn(file)
+	if err != nil {
+		return nil, err
+	}
+	return cloned, nil
 }
 
 func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {

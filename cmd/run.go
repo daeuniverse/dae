@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -296,17 +297,40 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			// Inject bpf objects into the new control plane life-cycle.
 			newC.InjectBpf(obj)
 
+			// Keep the old listener copy only long enough to wake the previous
+			// Serve generation. A cloned listener lets the new generation reuse
+			// the same bound socket without rebinding the port.
+			var oldListener *control.Listener
+			if listener != nil && !portChanged {
+				clonedListener, cloneErr := listener.Clone()
+				if cloneErr != nil {
+					log.WithError(cloneErr).Warnln("[Reload] Failed to clone listener; falling back to listener restart")
+					oldListener = listener
+					listener = nil
+				} else {
+					oldListener = listener
+					listener = clonedListener
+				}
+			}
+
 			// Prepare new context.
 			oldC := c
 			c = newC
 			conf = newConf
 			reloading.Store(true)
 
+			if oldListener != nil {
+				if err := oldListener.Close(); err != nil {
+					log.WithError(err).Warnln("[Reload] Failed to close previous listener generation")
+				}
+			}
+
 			// Ready to close.
 			if abortConnections {
 				_ = oldC.AbortConnections()
 			}
 			_ = oldC.Close()
+			debug.FreeOSMemory()
 
 			if pprofServer != nil {
 				pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)

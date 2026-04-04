@@ -316,6 +316,43 @@ func (c *DnsCache) Clone() *DnsCache {
 
 }
 
+// CloneForReload creates a new generation-local cache wrapper for reload.
+//
+// Immutable payload such as RR slices and the current packed response are reused
+// to avoid the reload-time deep-copy spike. Per-generation routing metadata is
+// reset so the new control plane can repopulate BPF state with its own routing
+// matcher and lifecycle bookkeeping.
+func (c *DnsCache) CloneForReload() *DnsCache {
+	newCache := &DnsCache{
+		Answer:           c.Answer,
+		NS:               c.NS,
+		Extra:            c.Extra,
+		Deadline:         c.Deadline,
+		OriginalDeadline: c.OriginalDeadline,
+	}
+
+	if packedPtr := c.packedResponse.Load(); packedPtr != nil && *packedPtr != nil {
+		// Packed responses are immutable after publication. Sharing the current
+		// bytes avoids a reload-only copy, and each generation still owns its own
+		// atomic pointer for future TTL refreshes.
+		newCache.packedResponse.Store(packedPtr)
+		newCache.packedResponseTTL.Store(c.packedResponseTTL.Load())
+		newCache.packedResponseCreatedAt.Store(c.packedResponseCreatedAt.Load())
+	}
+
+	deadlineNano := c.deadlineNano.Load()
+	if deadlineNano == 0 && !c.Deadline.IsZero() {
+		deadlineNano = c.Deadline.UnixNano()
+	}
+	newCache.deadlineNano.Store(deadlineNano)
+	newCache.lastAccessNano.Store(c.lastAccessNano.Load())
+	newCache.lastRouteSyncNano.Store(0)
+	newCache.lastBpfDataHash.Store(0)
+	newCache.refreshing.Store(false)
+
+	return newCache
+}
+
 // PrepackResponse generates a pre-packed DNS response message.
 // This should be called once when creating the cache entry.
 // The qname should be the full qualified domain name (with trailing dot).

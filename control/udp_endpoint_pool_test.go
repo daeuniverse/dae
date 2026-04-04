@@ -124,6 +124,20 @@ func waitForCloseSignal(t *testing.T, ch <-chan struct{}, context string) {
 	}
 }
 
+func waitForCondition(t *testing.T, timeout time.Duration, context string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for condition: %s", context)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func newTestEndpointDialer(conns ...netproxy.Conn) *componentdialer.Dialer {
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
@@ -1552,4 +1566,134 @@ func TestUdpEndpointPoolGetOrCreate_ProxyBackedEndpointUsesLongerNatTimeout(t *t
 	if err := ue.Close(); err != nil {
 		t.Fatalf("unexpected close error: %v", err)
 	}
+}
+
+func TestUdpEndpointPoolGetOrCreate_FullConeEndpointPrewarmsCachedResponseConn(t *testing.T) {
+	oldAnyfromPool := DefaultAnyfromPool
+	DefaultAnyfromPool = newTestAnyfromPoolWithoutJanitor()
+	defer func() {
+		DefaultAnyfromPool.Reset()
+		DefaultAnyfromPool = oldAnyfromPool
+	}()
+
+	pool := NewUdpEndpointPool()
+	defer pool.Reset()
+
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("192.0.2.10:40000")}
+	target := "198.51.100.20:23002"
+	targetAddr := netip.MustParseAddrPort(target)
+	bindAddr, _ := normalizeSendPktAddrFamily(targetAddr, key.Src)
+
+	af := &Anyfrom{ttl: AnyfromTimeout}
+	af.RefreshTtl()
+	shard := DefaultAnyfromPool.shardFor(bindAddr)
+	shard.mu.Lock()
+	shard.pool[bindAddr] = af
+	shard.mu.Unlock()
+
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	d := newTestProxyEndpointDialer("hysteria2", "proxy.example:443", conn)
+
+	ue, isNew, err := pool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: DefaultNatTimeout,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			return &DialOption{
+				Dialer:  d,
+				Network: "udp",
+				Target:  target,
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected GetOrCreate to create a new endpoint")
+	}
+	if got := ue.CachedResponseConn(bindAddr); got != af {
+		t.Fatalf("CachedResponseConn(%v) = %p, want %p", bindAddr, got, af)
+	}
+	if got := af.pins.Load(); got != 1 {
+		t.Fatalf("pins = %d, want 1", got)
+	}
+	if got, want := af.expiresAtNano.Load(), ue.expiresAtNano.Load(); got != want {
+		t.Fatalf("anyfrom expiresAt = %v, want %v", got, want)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if got := af.pins.Load(); got != 0 {
+		t.Fatalf("pins after close = %d, want 0", got)
+	}
+}
+
+func TestUdpEndpointPoolGetOrCreate_NoReplyTimeoutReleasesPrewarmedAnyfrom(t *testing.T) {
+	oldAnyfromPool := DefaultAnyfromPool
+	DefaultAnyfromPool = NewAnyfromPool()
+	defer func() {
+		DefaultAnyfromPool.Close()
+		DefaultAnyfromPool = oldAnyfromPool
+	}()
+
+	pool := NewUdpEndpointPool()
+	defer pool.Close()
+
+	key := UdpEndpointKey{Src: netip.MustParseAddrPort("192.0.2.10:40000")}
+	target := "198.51.100.20:23002"
+	targetAddr := netip.MustParseAddrPort(target)
+	bindAddr, _ := normalizeSendPktAddrFamily(targetAddr, key.Src)
+
+	af := &Anyfrom{ttl: 50 * time.Millisecond}
+	af.RefreshTtl()
+	shard := DefaultAnyfromPool.shardFor(bindAddr)
+	shard.mu.Lock()
+	shard.pool[bindAddr] = af
+	shard.mu.Unlock()
+
+	conn := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	d := newTestProxyEndpointDialer("shadowsocks", "proxy.example:443", conn)
+
+	ue, isNew, err := pool.GetOrCreate(key, &UdpEndpointOptions{
+		Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+		NatTimeout: 50 * time.Millisecond,
+		GetDialOption: func(context.Context) (*DialOption, error) {
+			return &DialOption{
+				Dialer:  d,
+				Network: "udp",
+				Target:  target,
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected GetOrCreate to create a new endpoint")
+	}
+	if got := ue.CachedResponseConn(bindAddr); got != af {
+		t.Fatalf("CachedResponseConn(%v) = %p, want %p", bindAddr, got, af)
+	}
+	if got := af.pins.Load(); got != 1 {
+		t.Fatalf("pins after prewarm = %d, want 1", got)
+	}
+
+	waitForCloseSignal(t, conn.closeCh, "idle no-reply endpoint should expire and close")
+	waitForCondition(t, 2*time.Second, "expired endpoint removed from pool", func() bool {
+		_, ok := pool.Get(key)
+		return !ok
+	})
+	waitForCondition(t, 2*time.Second, "prewarmed anyfrom pin released after endpoint timeout", func() bool {
+		return af.pins.Load() == 0
+	})
+	waitForCondition(t, 2*time.Second, "anyfrom janitor reclaims released prewarm socket", func() bool {
+		return countPooledAnyfromConns(DefaultAnyfromPool) == 0
+	})
 }

@@ -363,6 +363,8 @@ type loadBpfOptions struct {
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
+const fastSockPlaceholderMaxEntries = 1
+
 func fullLoadBpfObjects(
 	log *logrus.Logger,
 	bpf *bpfObjects,
@@ -418,6 +420,29 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 			return fmt.Errorf("missing map spec %q", mapName)
 		}
 		m.Pinning = ebpf.PinNone
+	}
+	return nil
+}
+
+func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+
+	fastSock, ok := spec.Maps["fast_sock"]
+	if !ok || fastSock == nil {
+		return fmt.Errorf("missing map spec %q", "fast_sock")
+	}
+	fastSock.MaxEntries = fastSockPlaceholderMaxEntries
+	return nil
+}
+
+func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
+	if err := disablePinnedConnStateMaps(spec); err != nil {
+		return err
+	}
+	if err := tunePlaceholderBpfMaps(spec); err != nil {
+		return err
 	}
 	return nil
 }

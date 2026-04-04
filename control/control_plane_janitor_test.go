@@ -101,6 +101,56 @@ func TestDisablePinnedConnStateMaps(t *testing.T) {
 	}
 }
 
+func TestTunePlaceholderBpfMaps(t *testing.T) {
+	spec := &ebpf.CollectionSpec{
+		Maps: map[string]*ebpf.MapSpec{
+			"fast_sock": {
+				Name:       "fast_sock",
+				MaxEntries: 65535,
+			},
+		},
+	}
+
+	if err := tunePlaceholderBpfMaps(spec); err != nil {
+		t.Fatalf("tunePlaceholderBpfMaps returned error: %v", err)
+	}
+	if got := spec.Maps["fast_sock"].MaxEntries; got != fastSockPlaceholderMaxEntries {
+		t.Fatalf("fast_sock max_entries = %d, want %d", got, fastSockPlaceholderMaxEntries)
+	}
+}
+
+func TestCustomizeBpfMapSpecs(t *testing.T) {
+	spec := &ebpf.CollectionSpec{
+		Maps: map[string]*ebpf.MapSpec{
+			"tcp_conn_state_map": {
+				Name:    "tcp_conn_state_map",
+				Pinning: ebpf.PinByName,
+			},
+			"udp_conn_state_map": {
+				Name:    "udp_conn_state_map",
+				Pinning: ebpf.PinByName,
+			},
+			"fast_sock": {
+				Name:       "fast_sock",
+				MaxEntries: 65535,
+			},
+		},
+	}
+
+	if err := customizeBpfMapSpecs(spec); err != nil {
+		t.Fatalf("customizeBpfMapSpecs returned error: %v", err)
+	}
+	if got := spec.Maps["tcp_conn_state_map"].Pinning; got != ebpf.PinNone {
+		t.Fatalf("tcp_conn_state_map pinning = %v, want %v", got, ebpf.PinNone)
+	}
+	if got := spec.Maps["udp_conn_state_map"].Pinning; got != ebpf.PinNone {
+		t.Fatalf("udp_conn_state_map pinning = %v, want %v", got, ebpf.PinNone)
+	}
+	if got := spec.Maps["fast_sock"].MaxEntries; got != fastSockPlaceholderMaxEntries {
+		t.Fatalf("fast_sock max_entries = %d, want %d", got, fastSockPlaceholderMaxEntries)
+	}
+}
+
 func TestCleanupPinnedConnStateMapFiles(t *testing.T) {
 	pinPath := t.TempDir()
 	for _, name := range []string{"tcp_conn_state_map", "udp_conn_state_map", "domain_routing_map"} {
