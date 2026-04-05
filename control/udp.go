@@ -880,6 +880,7 @@ getNew:
 		isNew = false
 	} else {
 		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
+			Ctx: c.ctx,
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
 				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil)

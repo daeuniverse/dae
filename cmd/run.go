@@ -291,7 +291,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				newConf = conf
 				log.Errorln("[Reload] Last reload failed; rolled back configuration")
 			} else {
-				log.Warnln("[Reload] Stopped old control plane")
+				log.Warnln("[Reload] Prepared new control plane")
 			}
 
 			// Inject bpf objects into the new control plane life-cycle.
@@ -329,7 +329,9 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			if abortConnections {
 				_ = oldC.AbortConnections()
 			}
+			log.Warnln("[Reload] Stopping old control plane")
 			_ = oldC.Close()
+			log.Warnln("[Reload] Stopped old control plane")
 			debug.FreeOSMemory()
 
 			if pprofServer != nil {

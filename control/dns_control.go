@@ -68,6 +68,7 @@ var (
 
 type DnsControllerOption struct {
 	Log                   *logrus.Logger
+	LifecycleContext      context.Context
 	CacheAccessCallback   func(cache *DnsCache) (err error)
 	CacheRemoveCallback   func(cache *DnsCache) (err error)
 	NewCache              func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
@@ -90,6 +91,7 @@ type DnsController struct {
 	optimisticCacheEnabled bool
 	optimisticCacheTtl     int // seconds, 0 means never expire
 	maxCacheSize           int // maximum number of cache entries (0 = unlimited)
+	lifecycleCtx           context.Context
 
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
@@ -210,6 +212,10 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	if optimisticCacheTtl == 0 && maxCacheSize == 0 {
 		optimisticCacheTtl = 60 // Old default
 	}
+	lifecycleCtx := option.LifecycleContext
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
 
 	controller := &DnsController{
 		routing:            routing,
@@ -219,6 +225,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		optimisticCacheEnabled: option.OptimisticCache,
 		optimisticCacheTtl:     optimisticCacheTtl,
 		maxCacheSize:           maxCacheSize,
+		lifecycleCtx:           lifecycleCtx,
 
 		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
@@ -247,6 +254,17 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
 	return controller, nil
+}
+
+func (c *DnsController) baseContext() context.Context {
+	if c != nil && c.lifecycleCtx != nil {
+		return c.lifecycleCtx
+	}
+	return context.Background()
+}
+
+func (c *DnsController) newWorkContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c.baseContext(), timeout)
 }
 
 func (c *DnsController) Close() error {
@@ -1412,14 +1430,10 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		// Cache miss - use singleflight to coalesce concurrent requests
 		// This prevents thundering herd on upstream DNS servers
 		res, err, _ := c.sf.Do(cacheKey, func() (any, error) {
-			// CRITICAL: Use a detached context for the shared resolution.
-			// This prevents cancellation of the first request from terminating
-			// the resolution for all other concurrent waiters.
-			baseCtx := context.Background()
-			if ctx != nil {
-				baseCtx = context.WithoutCancel(ctx)
-			}
-			resCtx, resCancel := context.WithTimeout(baseCtx, 5*time.Second)
+			// Shared singleflight resolution should ignore individual client
+			// cancellation, but it must still stop promptly when the DNS
+			// controller is closing during reload/shutdown.
+			resCtx, resCancel := c.newWorkContext(5 * time.Second)
 			defer resCancel()
 
 			// This goroutine performs the actual resolution.

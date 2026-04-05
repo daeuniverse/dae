@@ -177,15 +177,50 @@ type errorDialer struct {
 	calls atomic.Int32
 }
 
+type blockingDialer struct {
+	started chan struct{}
+}
+
 func (d *errorDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
 	d.calls.Add(1)
 	return nil, d.err
+}
+
+func (d *blockingDialer) DialContext(ctx context.Context, _ string, _ string) (netproxy.Conn, error) {
+	select {
+	case <-d.started:
+	default:
+		close(d.started)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func newTestEndpointErrorDialer(protocol, address string, err error) (*componentdialer.Dialer, *errorDialer) {
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	underlay := &errorDialer{err: err}
+	return componentdialer.NewDialer(
+		underlay,
+		&componentdialer.GlobalOption{
+			Log:           logger,
+			CheckInterval: time.Second,
+		},
+		componentdialer.InstanceOption{DisableCheck: true},
+		&componentdialer.Property{
+			Property: D.Property{
+				Name:     protocol,
+				Address:  address,
+				Protocol: protocol,
+			},
+		},
+	), underlay
+}
+
+func newTestEndpointBlockingDialer(protocol, address string) (*componentdialer.Dialer, *blockingDialer) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	underlay := &blockingDialer{started: make(chan struct{})}
 	return componentdialer.NewDialer(
 		underlay,
 		&componentdialer.GlobalOption{
@@ -238,6 +273,57 @@ func TestUdpEndpointRefreshTtlWithTime_UsesConfiguredLifetimeBeforeReply(t *test
 	want := QuicNatTimeout
 	if got != want {
 		t.Fatalf("expires delta = %v, want %v", got, want)
+	}
+}
+
+func TestUdpEndpointPool_CreateEndpointLocked_UsesCallerContextCancellation(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	t.Cleanup(pool.Close)
+
+	testDialer, blocker := newTestEndpointBlockingDialer("socks5", "203.0.113.10:1080")
+	t.Cleanup(func() {
+		_ = testDialer.Close()
+	})
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	createOption := &UdpEndpointOptions{
+		Ctx: baseCtx,
+		Handler: func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error {
+			return nil
+		},
+		GetDialOption: func(ctx context.Context) (*DialOption, error) {
+			return &DialOption{
+				Dialer:  testDialer,
+				Network: "udp",
+				Target:  "198.51.100.1:53",
+			}, nil
+		},
+		Log: logrus.New(),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := pool.createEndpointLocked(UdpEndpointKey{Src: netip.MustParseAddrPort("127.0.0.1:30000")}, createOption)
+		errCh <- err
+	}()
+
+	select {
+	case <-blocker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocking dialer to start")
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !stderrors.Is(err, context.Canceled) {
+			t.Fatalf("createEndpointLocked error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for endpoint creation to honor caller cancellation")
 	}
 }
 

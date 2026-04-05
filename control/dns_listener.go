@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	daerrors "github.com/daeuniverse/dae/common/errors"
@@ -73,6 +74,8 @@ type DNSListener struct {
 	controller *ControlPlane
 	mu         sync.Mutex
 }
+
+const dnsListenerShutdownTimeout = 5 * time.Second
 
 // NewDNSListener creates a new DNS listener
 func NewDNSListener(log *logrus.Logger, endpoint string, controller *ControlPlane) (*DNSListener, error) {
@@ -158,17 +161,21 @@ func (d *DNSListener) Stop() error {
 
 	// Stop UDP server
 	if d.udpServer != nil {
-		if err := d.udpServer.Shutdown(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsListenerShutdownTimeout)
+		if err := d.udpServer.ShutdownContext(ctx); err != nil {
 			errs = append(errs, err)
 		}
+		cancel()
 		d.udpServer = nil
 	}
 
 	// Stop TCP server
 	if d.tcpServer != nil {
-		if err := d.tcpServer.Shutdown(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsListenerShutdownTimeout)
+		if err := d.tcpServer.ShutdownContext(ctx); err != nil {
 			errs = append(errs, err)
 		}
+		cancel()
 		d.tcpServer = nil
 	}
 
@@ -339,7 +346,11 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		routingResult: routingResult,
 	}
 
-	err = h.controller.dnsController.HandleWithResponseWriter_(context.Background(), r, udpReq, w)
+	ctx := context.Background()
+	if h.controller != nil && h.controller.ctx != nil {
+		ctx = h.controller.ctx
+	}
+	err = h.controller.dnsController.HandleWithResponseWriter_(ctx, r, udpReq, w)
 	if err != nil {
 		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 			// REFUSED response has been written by DNS controller.

@@ -6,7 +6,6 @@
 package control
 
 import (
-	"context"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -25,8 +24,9 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 		}
 	}()
 
-	// Create a background context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Background refresh must stop when the controller is closing, otherwise
+	// reload can get stuck waiting for stale refresh work to time out.
+	ctx, cancel := c.newWorkContext(5 * time.Second)
 	defer cancel()
 
 	// Ensure refreshing flag is cleared even if refresh fails

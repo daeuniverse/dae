@@ -703,7 +703,8 @@ func NewControlPlaneWithContext(
 		return nil, err
 	}
 	plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
-		Log: log,
+		Log:              log,
+		LifecycleContext: cctx,
 		// ConcurrencyLimit: use default (16384)
 		// Suitable for proxy scenarios with higher latency
 		// Each concurrent query uses ~4KB, so 16384 = ~64MB memory

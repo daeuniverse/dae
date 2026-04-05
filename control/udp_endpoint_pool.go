@@ -1025,6 +1025,7 @@ type UdpEndpointPool struct {
 }
 
 type UdpEndpointOptions struct {
+	Ctx        context.Context
 	Handler    UdpHandler
 	NatTimeout time.Duration
 	// ConnStateOwner releases eBPF UDP conn-state tuples when the endpoint exits.
@@ -1362,9 +1363,14 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 		return nil, fmt.Errorf("createOption.Handler cannot be nil")
 	}
 
-	// Use context.Background() as base for UDP endpoint creation.
-	// The timeout context ensures the dial operation doesn't hang indefinitely.
-	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+	baseCtx := createOption.Ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+
+	// Tie endpoint creation to the caller lifecycle so reload/shutdown cancels
+	// in-flight UDP dials instead of waiting for the full dial timeout.
+	ctx, cancel := context.WithTimeout(baseCtx, consts.DefaultDialTimeout)
 	defer cancel()
 
 	dialOption, err := createOption.GetDialOption(ctx)
@@ -1384,7 +1390,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 			// after a long timeout), the second dial would otherwise immediately
 			// fail with context.DeadlineExceeded and incorrectly penalize the new
 			// dialer selected by GetDialOption.
-			retryCtx, retryCancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+			retryCtx, retryCancel := context.WithTimeout(baseCtx, consts.DefaultDialTimeout)
 			retryOption, retryErr := createOption.GetDialOption(retryCtx)
 			if retryErr == nil {
 				dialOption = retryOption
