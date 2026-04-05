@@ -2071,7 +2071,7 @@ func cloneTCPListener(listener net.Listener) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	cloned, err := net.FileListener(file)
 	if err != nil {
@@ -2090,7 +2090,7 @@ func cloneUDPPacketConn(packetConn net.PacketConn) (net.PacketConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	cloned, err := net.FilePacketConn(file)
 	if err != nil {
