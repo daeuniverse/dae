@@ -3,8 +3,11 @@ package cmd
 import (
 	"errors"
 	"io"
+	"os"
 	"reflect"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
@@ -161,5 +164,52 @@ func TestShutdownAfterSignalTypedNilResourcesAreSkipped(t *testing.T) {
 
 	if err := shutdownAfterSignal(newDiscardLogger(), listener, plane, netns, true); err != nil {
 		t.Fatalf("shutdownAfterSignal() error = %v, want nil", err)
+	}
+}
+
+func TestWaitReloadReadyOrSignalReturnsOnReady(t *testing.T) {
+	sigs := make(chan os.Signal, 1)
+	readyChan := make(chan bool, 1)
+	readyChan <- true
+
+	ready, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan)
+	if !ready {
+		t.Fatal("ready = false, want true")
+	}
+	if termSig != nil {
+		t.Fatalf("termSig = %v, want nil", termSig)
+	}
+}
+
+func TestWaitReloadReadyOrSignalReturnsOnTerminationSignal(t *testing.T) {
+	sigs := make(chan os.Signal, 1)
+	readyChan := make(chan bool)
+	sigs <- syscall.SIGINT
+
+	ready, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan)
+	if ready {
+		t.Fatal("ready = true, want false")
+	}
+	if termSig != syscall.SIGINT {
+		t.Fatalf("termSig = %v, want SIGINT", termSig)
+	}
+}
+
+func TestWaitReloadReadyOrSignalIgnoresReloadSignalsUntilReady(t *testing.T) {
+	sigs := make(chan os.Signal, 1)
+	readyChan := make(chan bool, 1)
+	sigs <- syscall.SIGUSR1
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		readyChan <- true
+	}()
+
+	ready, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan)
+	if !ready {
+		t.Fatal("ready = false, want true")
+	}
+	if termSig != nil {
+		t.Fatalf("termSig = %v, want nil", termSig)
 	}
 }

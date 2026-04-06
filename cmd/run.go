@@ -345,7 +345,9 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				_ = oldC.AbortConnections()
 			}
 			log.Warnln("[Reload] Stopping old control plane")
-			_ = oldC.Close()
+			if closeErr := oldC.Close(); closeErr != nil {
+				log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
+			}
 			log.Warnln("[Reload] Stopped old control plane")
 			debug.FreeOSMemory()
 
@@ -394,7 +396,20 @@ loop:
 						}
 						sendSigExit(sigs)
 					}()
-					<-readyChan
+					ready, termSig := waitReloadReadyOrSignal(log, sigs, readyChan)
+					if termSig != nil {
+						log.Infof("Received termination signal while waiting for reload readiness: %v", termSig.String())
+						fastExit = true
+						break loop
+					}
+					if !ready {
+						reloadingErr = fmt.Errorf("reload listener failed before becoming ready")
+						_ = sdnotify.Ready()
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+						log.WithError(reloadingErr).Errorln("[Reload] Reload listener failed before becoming ready")
+						reloading.Store(false)
+						continue
+					}
 					_ = sdnotify.Ready()
 					if reloadingErr == nil {
 						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
@@ -421,7 +436,20 @@ loop:
 					}
 					sendSigExit(sigs)
 				}()
-				<-readyChan
+				ready, termSig := waitReloadReadyOrSignal(log, sigs, readyChan)
+				if termSig != nil {
+					log.Infof("Received termination signal while waiting for reload readiness: %v", termSig.String())
+					fastExit = true
+					break loop
+				}
+				if !ready {
+					reloadingErr = fmt.Errorf("reload serve failed before becoming ready")
+					_ = sdnotify.Ready()
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+					log.WithError(reloadingErr).Errorln("[Reload] Reload serve failed before becoming ready")
+					reloading.Store(false)
+					continue
+				}
 				_ = sdnotify.Ready()
 				if reloadingErr == nil {
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
@@ -477,6 +505,31 @@ func sendSigExit(sigs chan<- os.Signal) {
 	select {
 	case sigs <- nil:
 	default:
+	}
+}
+
+func waitReloadReadyOrSignal(log *logrus.Logger, sigs <-chan os.Signal, readyChan <-chan bool) (ready bool, termSig os.Signal) {
+	for {
+		select {
+		case ready = <-readyChan:
+			return ready, nil
+		case sig := <-sigs:
+			switch sig {
+			case nil, syscall.SIGHUP:
+				continue
+			case syscall.SIGUSR1, syscall.SIGUSR2:
+				if log != nil {
+					log.Warnln("[Reload] Signal received while current reload is still becoming ready; ignoring it")
+				}
+				continue
+			case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL:
+				return false, sig
+			default:
+				if sig != nil && log != nil {
+					log.Infof("Received signal while waiting for reload readiness: %v", sig.String())
+				}
+			}
+		}
 	}
 }
 

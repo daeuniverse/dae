@@ -10,7 +10,9 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -118,4 +120,44 @@ func TestControlPlaneClose_ResetsGlobalUdpPoolsAndClosesSockets(t *testing.T) {
 		t.Fatalf("rebind anyfrom addr after close: %v", err)
 	}
 	_ = rebound.Close()
+}
+
+func TestControlPlaneClose_TimesOutSlowDeferredCleanup(t *testing.T) {
+	oldTimeout := controlPlaneDeferredCleanupTimeout
+	controlPlaneDeferredCleanupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() {
+		controlPlaneDeferredCleanupTimeout = oldTimeout
+	})
+
+	plane := newShutdownTestControlPlane()
+	release := make(chan struct{})
+	done := make(chan struct{})
+	plane.deferFuncs = []func() error{
+		func() error {
+			defer close(done)
+			<-release
+			return nil
+		},
+	}
+
+	start := time.Now()
+	err := plane.Close()
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("ControlPlane.Close() error = %v, want timeout", err)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("ControlPlane.Close() took %v, want < 250ms", elapsed)
+	}
+	if plane.ctx.Err() == nil {
+		t.Fatal("expected control plane context to be canceled on timeout path")
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for deferred cleanup goroutine to finish")
+	}
 }

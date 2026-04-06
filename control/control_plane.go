@@ -162,6 +162,9 @@ var (
 	// gracefulShutdownWaitTimeout bounds how long shutdown waits for background
 	// janitors and workers before continuing teardown.
 	gracefulShutdownWaitTimeout = 5 * time.Second
+	// controlPlaneDeferredCleanupTimeout bounds non-critical Close tail work
+	// such as old-generation dialer, DNS, and hook cleanup during reload.
+	controlPlaneDeferredCleanupTimeout = 2 * time.Second
 	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
 	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
 	// Reduced from 800ms to 500ms for faster fallback under poor network conditions.
@@ -2710,30 +2713,7 @@ func resetGlobalUdpState() {
 	ResetUdpLogLimiters()
 }
 
-func (c *ControlPlane) Close() (err error) {
-	if c == nil {
-		return nil
-	}
-
-	var stopWg sync.WaitGroup
-	stopWg.Add(2)
-	go func() {
-		defer stopWg.Done()
-		c.stopRealDomainNegJanitor()
-	}()
-	go func() {
-		defer stopWg.Done()
-		c.stopConnStateJanitor()
-	}()
-	stopWg.Wait()
-	if c.cancel != nil {
-		c.cancel()
-	}
-
-	// Shutdown must retire global UDP resources eagerly so stop/reload does not
-	// leave old sockets alive until background timeouts eventually reclaim them.
-	resetGlobalUdpState()
-
+func (c *ControlPlane) closeTail() error {
 	// Collect errors from defer funcs using errors.Join (Go 1.26 best practice)
 	var errs []error
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
@@ -2767,6 +2747,51 @@ func (c *ControlPlane) Close() (err error) {
 		}
 	}
 	return stderrors.Join(errs...)
+}
+
+func (c *ControlPlane) Close() (err error) {
+	if c == nil {
+		return nil
+	}
+
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	var stopWg sync.WaitGroup
+	stopWg.Add(2)
+	go func() {
+		defer stopWg.Done()
+		c.stopRealDomainNegJanitor()
+	}()
+	go func() {
+		defer stopWg.Done()
+		c.stopConnStateJanitor()
+	}()
+	stopWg.Wait()
+
+	// Shutdown must retire global UDP resources eagerly so stop/reload does not
+	// leave old sockets alive until background timeouts eventually reclaim them.
+	resetGlobalUdpState()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.closeTail()
+	}()
+
+	timer := time.NewTimer(controlPlaneDeferredCleanupTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		timeoutErr := fmt.Errorf("control plane close tail timed out after %v", controlPlaneDeferredCleanupTimeout)
+		if c.log != nil {
+			c.log.WithError(timeoutErr).Warn("ControlPlane.Close: continuing while tail cleanup finishes in background")
+		}
+		return timeoutErr
+	}
 }
 
 // StopDNSListener stops the DNS listener if it's running
