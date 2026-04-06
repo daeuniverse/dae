@@ -29,6 +29,9 @@
 // #define unlikely(x) x
 #define likely(x) __builtin_expect((x), 1)
 #define unlikely(x) __builtin_expect((x), 0)
+#ifndef BIT
+#define BIT(nr) (1UL << (nr))
+#endif
 
 #define IPV6_BYTE_LENGTH 16
 #define TASK_COMM_LEN 16
@@ -187,7 +190,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_SOCKHASH);
 	__type(key, struct tuples_key);
 	__type(value, __u64);
-	__uint(max_entries, 65535);
+	__uint(max_entries, 1);
 } fast_sock SEC(".maps");
 
 // Array of LPM tries:
@@ -1193,6 +1196,75 @@ struct {
 	__uint(max_entries, 1);
 } wan_egress_route_scratch_map SEC(".maps");
 
+// Conntrack argument passing: per-CPU scratch for noinline __mark_*_seen.
+// Avoids exceeding the BPF subprogram 5-argument limit while keeping the
+// public mark_*_seen() signatures unchanged for all callers.
+#define CT_ARGS_HAS_ROUTING  BIT(0)
+#define CT_ARGS_HAS_MAC      BIT(1)
+#define CT_ARGS_HAS_PNAME    BIT(2)
+
+struct conntrack_args {
+	__u8 flags;        // CT_ARGS_HAS_* bitmask
+	__u8 outbound;
+	__u8 must;
+	__u8 dscp;
+	__u32 mark;
+	__u32 pid;
+	__u8 mac[6];
+	__u8 padding[2];
+	__u8 pname[TASK_COMM_LEN];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct conntrack_args);
+	__uint(max_entries, 1);
+} conntrack_args_map SEC(".maps");
+
+// conntrack_args_set fully overwrites the per-CPU scratch so omitted optional
+// fields never leak stale data from a previous packet processed on the same
+// CPU. When called with compile-time NULL pointers the compiler can still
+// dead-code-eliminate the corresponding branches.
+static __always_inline void
+conntrack_args_set(struct conntrack_args *a,
+		   __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
+		   __u8 dscp, const char *pname, __u32 pid)
+{
+	__u8 flags = 0;
+
+	a->outbound = 0;
+	a->must = 0;
+	a->dscp = dscp;
+	a->mark = 0;
+	a->pid = 0;
+	__builtin_memset(a->mac, 0, sizeof(a->mac));
+	__builtin_memset(a->pname, 0, sizeof(a->pname));
+
+	if (outbound) {
+		flags |= CT_ARGS_HAS_ROUTING;
+		a->outbound = *outbound;
+		a->mark = *mark;
+		a->must = *must;
+	}
+	if (mac) {
+		flags |= CT_ARGS_HAS_MAC;
+		__builtin_memcpy(a->mac, mac, 6);
+	}
+	if (pname) {
+		flags |= CT_ARGS_HAS_PNAME;
+		__builtin_memcpy(a->pname, pname, TASK_COMM_LEN);
+	}
+	a->pid = pid;
+	a->flags = flags;
+}
+
+static __always_inline const char *
+conntrack_args_pname_or_null(const struct conntrack_args *a)
+{
+	return a->flags & CT_ARGS_HAS_PNAME ? (const char *)a->pname : NULL;
+}
+
 /*
  * Helper functions to simplify route_loop_cb switch-case.
  * These inline functions reduce code duplication and improve maintainability.
@@ -1731,7 +1803,9 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 // Callers should gracefully degrade: continue processing without conntrack state
 // rather than dropping packets.
 //
-// Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
+// Performance: The heavy body (__mark_udp_seen) is __noinline so it is emitted
+// once in the BPF object instead of being duplicated at every call-site.
+// Routing args are passed via conntrack_args_map (PERCPU_ARRAY, ~0 cost).
 #define UDP_CONN_STATE_TIMEOUT_NS 120000000000ULL        // 120-second backstop; userspace endpoint teardown is the primary owner
 #define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 
@@ -1741,13 +1815,19 @@ udp_conn_state_expired(const struct udp_conn_state *state, __u64 now)
 	return state && now - state->last_seen_ns > UDP_CONN_STATE_TIMEOUT_NS;
 }
 
-static __always_inline struct udp_conn_state *
-mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
-	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
-	      __u8 dscp, const char *pname, __u32 pid)
+static __noinline struct udp_conn_state *
+__mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 {
+	__u32 zero = 0;
+	struct conntrack_args *args =
+		bpf_map_lookup_elem(&conntrack_args_map, &zero);
+
+	if (!args)
+		return NULL;
+
 	__u64 now = bpf_ktime_get_ns();
-	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
+	struct udp_conn_state *state =
+		bpf_map_lookup_elem(&udp_conn_state_map, key);
 
 	if (udp_conn_state_expired(state, now)) {
 		bpf_map_delete_elem(&udp_conn_state_map, key);
@@ -1756,21 +1836,21 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
-		// No spinlock needed: directly writing to state->last_seen_ns is atomic
 		if (now - state->last_seen_ns > UDP_CONN_STATE_UPDATE_INTERVAL_NS)
 			state->last_seen_ns = now;
 
 		// Update routing if provided (e.g., routing decision changed)
-		if (outbound) {
-			state->meta.data.outbound = *outbound;
-			state->meta.data.mark = *mark;
-			state->meta.data.must = *must;
-			if (mac)
-				__builtin_memcpy(state->mac, mac, 6);
-			state->meta.data.dscp = dscp;
-			if (pname)
-				__builtin_memcpy(state->pname, pname, TASK_COMM_LEN);
-			state->pid = pid;
+		if (args->flags & CT_ARGS_HAS_ROUTING) {
+			state->meta.data.outbound = args->outbound;
+			state->meta.data.mark = args->mark;
+			state->meta.data.must = args->must;
+			if (args->flags & CT_ARGS_HAS_MAC)
+				__builtin_memcpy(state->mac, args->mac, 6);
+			state->meta.data.dscp = args->dscp;
+			if (args->flags & CT_ARGS_HAS_PNAME)
+				__builtin_memcpy(state->pname, args->pname,
+						 TASK_COMM_LEN);
+			state->pid = args->pid;
 			/* Publish has_routing after the payload fields are ready. */
 			barrier();
 			state->meta.data.has_routing = 1;
@@ -1779,41 +1859,62 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	}
 
 	// Slow path: create new entry (either no entry or expired one was deleted)
+	bool has_rt = !!(args->flags & CT_ARGS_HAS_ROUTING);
 	struct udp_conn_state new_state = {
 		.is_wan_ingress_direction = is_wan_ingress_direction,
 		.last_seen_ns = now,
-		.meta = { .data = { .has_routing = outbound ? 1 : 0, .dscp = dscp } },
-		.pid = pid,
+		.meta = { .data = { .has_routing = has_rt ? 1 : 0,
+				     .dscp = args->dscp } },
+		.pid = args->pid,
 	};
 
-	if (outbound) {
-		new_state.meta.data.outbound = *outbound;
-		new_state.meta.data.mark = *mark;
-		new_state.meta.data.must = *must;
-		if (mac)
-			__builtin_memcpy(new_state.mac, mac, 6);
-		if (pname)
-			__builtin_memcpy(new_state.pname, pname, TASK_COMM_LEN);
+	if (has_rt) {
+		new_state.meta.data.outbound = args->outbound;
+		new_state.meta.data.mark = args->mark;
+		new_state.meta.data.must = args->must;
+		if (args->flags & CT_ARGS_HAS_MAC)
+			__builtin_memcpy(new_state.mac, args->mac, 6);
+		if (args->flags & CT_ARGS_HAS_PNAME)
+			__builtin_memcpy(new_state.pname, args->pname,
+					 TASK_COMM_LEN);
 	}
 
-	int ret = bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_ANY);
+	int ret = bpf_map_update_elem(&udp_conn_state_map, key,
+				      &new_state, BPF_ANY);
 
 	if (unlikely(ret)) {
-		// Map full or other error: increment overflow counter for monitoring
-		// Return NULL to signal caller to degrade gracefully
+		// Map full or other error: increment overflow counter
 		__u32 stats_key = BPF_STATS_UDP_CONN_OVERFLOW;
-		__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+		__u64 *overflow_count =
+			bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
 
 		if (overflow_count)
 			__sync_fetch_and_add(overflow_count, 1);
-		// Send DAE_EVENT_UDP_CONN_OVERFLOW event
-		send_dae_event(DAE_EVENT_UDP_CONN_OVERFLOW, pid, pname, 0,
+		send_dae_event(DAE_EVENT_UDP_CONN_OVERFLOW, args->pid,
+			       conntrack_args_pname_or_null(args), 0,
 			       key->l4proto, key->sip.u6_addr32,
 			       key->dip.u6_addr32, key->sport, key->dport);
 		return NULL;
 	}
 
 	return bpf_map_lookup_elem(&udp_conn_state_map, key);
+}
+
+// mark_udp_seen: thin inline wrapper that populates per-CPU scratch args
+// then delegates to the single-copy __mark_udp_seen body.
+static __always_inline struct udp_conn_state *
+mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
+	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
+	      __u8 dscp, const char *pname, __u32 pid)
+{
+	__u32 zero = 0;
+	struct conntrack_args *args =
+		bpf_map_lookup_elem(&conntrack_args_map, &zero);
+
+	if (unlikely(!args))
+		return NULL;
+	conntrack_args_set(args, outbound, mark, must, mac, dscp, pname, pid);
+	return __mark_udp_seen(key, is_wan_ingress_direction);
 }
 
 // mark_tcp_seen updates TCP connection state for lifecycle tracking.
@@ -1834,7 +1935,8 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 //
 // Returns state pointer on success, or NULL if allocation failed or a non-SYN
 // packet has no cached state (caller should preserve passthrough behavior).
-// Performance: Lazy timestamp updates reduce map update overhead in high-throughput.
+// Performance: The heavy body (__mark_tcp_seen) is __noinline so it is emitted
+// once in the BPF object instead of being duplicated at every call-site.
 #define TCP_CONN_STATE_ESTABLISHED_TIMEOUT_NS 120000000000ULL  // 120 seconds
 #define TCP_CONN_STATE_CLOSING_TIMEOUT_NS 10000000000ULL       // 10 seconds
 #define TCP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
@@ -1851,15 +1953,24 @@ tcp_conn_state_expired(const struct tcp_conn_state *state, __u64 now)
 	return now - state->last_seen_ns > timeout;
 }
 
-static __always_inline struct tcp_conn_state *
-mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
-	      bool is_wan_ingress_direction,
-	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
-	      __u8 dscp, const char *pname, __u32 pid)
+// __mark_tcp_seen: noinline core.  Reads routing args from conntrack_args_map.
+// tcp_flags: bit 0 = SYN && !ACK (new connection), bit 1 = FIN || RST.
+static __noinline struct tcp_conn_state *
+__mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
+		__u8 tcp_flags)
 {
+	__u32 zero = 0;
+	struct conntrack_args *args =
+		bpf_map_lookup_elem(&conntrack_args_map, &zero);
+
+	if (!args)
+		return NULL;
+
 	__u64 now = bpf_ktime_get_ns();
-	struct tcp_conn_state *state = bpf_map_lookup_elem(&tcp_conn_state_map, key);
-	bool new_conn_syn = tcph->syn && !tcph->ack;
+	struct tcp_conn_state *state =
+		bpf_map_lookup_elem(&tcp_conn_state_map, key);
+	bool new_conn_syn = tcp_flags & 1;
+	bool is_fin_rst   = tcp_flags & 2;
 
 	/*
 	 * A pure SYN always starts a fresh TCP lifecycle. If an older entry still
@@ -1877,26 +1988,25 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 	if (state) {
 		// Fast path: lazy timestamp update (only if interval > 1 second)
-		// No spinlock needed: directly writing to state->last_seen_ns is atomic
 		if (now - state->last_seen_ns > TCP_CONN_STATE_UPDATE_INTERVAL_NS)
 			state->last_seen_ns = now;
 
 		// Check for connection close signals (FIN or RST)
-		if (tcph->fin || tcph->rst)
+		if (is_fin_rst)
 			state->state = TCP_STATE_CLOSING;
 
-		// Update routing if provided (rare: routing decision changed mid-connection)
-		if (outbound) {
-			state->meta.data.outbound = *outbound;
-			state->meta.data.mark = *mark;
-			state->meta.data.must = *must;
-			if (mac)
-				__builtin_memcpy(state->mac, mac, 6);
-			state->meta.data.dscp = dscp;
-			if (pname)
-				__builtin_memcpy(state->pname, pname, TASK_COMM_LEN);
-			state->pid = pid;
-			/* Publish has_routing after the payload fields are ready. */
+		// Update routing if provided (rare: routing decision changed)
+		if (args->flags & CT_ARGS_HAS_ROUTING) {
+			state->meta.data.outbound = args->outbound;
+			state->meta.data.mark = args->mark;
+			state->meta.data.must = args->must;
+			if (args->flags & CT_ARGS_HAS_MAC)
+				__builtin_memcpy(state->mac, args->mac, 6);
+			state->meta.data.dscp = args->dscp;
+			if (args->flags & CT_ARGS_HAS_PNAME)
+				__builtin_memcpy(state->pname, args->pname,
+						 TASK_COMM_LEN);
+			state->pid = args->pid;
 			barrier();
 			state->meta.data.has_routing = 1;
 		}
@@ -1906,38 +2016,42 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 
 	// Only create new entry on SYN (new connection)
 	if (new_conn_syn) {
-		// Slow path: create new entry
+		bool has_rt = !!(args->flags & CT_ARGS_HAS_ROUTING);
 		struct tcp_conn_state new_state = {
 			.is_wan_ingress_direction = is_wan_ingress_direction,
 			.state = TCP_STATE_ACTIVE,
 			.last_seen_ns = now,
-			.meta = { .data = { .has_routing = outbound ? 1 : 0, .dscp = dscp } },
-			.pid = pid,
+			.meta = { .data = { .has_routing = has_rt ? 1 : 0,
+					     .dscp = args->dscp } },
+			.pid = args->pid,
 		};
 
-		if (outbound) {
-			new_state.meta.data.outbound = *outbound;
-			new_state.meta.data.mark = *mark;
-			new_state.meta.data.must = *must;
-			if (mac)
-				__builtin_memcpy(new_state.mac, mac, 6);
-			if (pname)
-				__builtin_memcpy(new_state.pname, pname, TASK_COMM_LEN);
+		if (has_rt) {
+			new_state.meta.data.outbound = args->outbound;
+			new_state.meta.data.mark = args->mark;
+			new_state.meta.data.must = args->must;
+			if (args->flags & CT_ARGS_HAS_MAC)
+				__builtin_memcpy(new_state.mac, args->mac, 6);
+			if (args->flags & CT_ARGS_HAS_PNAME)
+				__builtin_memcpy(new_state.pname, args->pname,
+						 TASK_COMM_LEN);
 		}
 
-		int ret = bpf_map_update_elem(&tcp_conn_state_map, key, &new_state, BPF_ANY);
+		int ret = bpf_map_update_elem(&tcp_conn_state_map, key,
+					      &new_state, BPF_ANY);
 
 		if (unlikely(ret)) {
-			// Map full or other error: increment overflow counter
 			__u32 stats_key = BPF_STATS_TCP_CONN_OVERFLOW;
-			__u64 *overflow_count = bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
+			__u64 *overflow_count =
+				bpf_map_lookup_elem(&bpf_stats_map, &stats_key);
 
 			if (overflow_count)
 				__sync_fetch_and_add(overflow_count, 1);
-			// Send DAE_EVENT_TCP_CONN_OVERFLOW event
-			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, pid, pname, 0,
+			send_dae_event(DAE_EVENT_TCP_CONN_OVERFLOW, args->pid,
+				       conntrack_args_pname_or_null(args), 0,
 				       key->l4proto, key->sip.u6_addr32,
-				       key->dip.u6_addr32, key->sport, key->dport);
+				       key->dip.u6_addr32, key->sport,
+				       key->dport);
 			return NULL;
 		}
 
@@ -1945,8 +2059,32 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	}
 
 	// Non-SYN packets without existing state must never allocate new state.
-	// Callers treat NULL as "no cached state" and preserve passthrough behavior.
 	return NULL;
+}
+
+// mark_tcp_seen: thin inline wrapper that populates per-CPU scratch args
+// then delegates to the single-copy __mark_tcp_seen body.
+static __always_inline struct tcp_conn_state *
+mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
+	      bool is_wan_ingress_direction,
+	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
+	      __u8 dscp, const char *pname, __u32 pid)
+{
+	__u32 zero = 0;
+	struct conntrack_args *args =
+		bpf_map_lookup_elem(&conntrack_args_map, &zero);
+
+	if (unlikely(!args))
+		return NULL;
+	conntrack_args_set(args, outbound, mark, must, mac, dscp, pname, pid);
+
+	__u8 tcp_flags = 0;
+
+	if (tcph->syn && !tcph->ack)
+		tcp_flags |= 1;
+	if (tcph->fin || tcph->rst)
+		tcp_flags |= 2;
+	return __mark_tcp_seen(key, is_wan_ingress_direction, tcp_flags);
 }
 
 static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)

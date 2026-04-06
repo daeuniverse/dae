@@ -406,3 +406,7 @@ func Test(t *testing.T) {
 func TestWanEgressDirectMarkReroute(t *testing.T) {
 	runProgramSetByID(t, "WanEgressDirectMarkReroute")
 }
+
+func TestConntrackArgsScratchReset(t *testing.T) {
+	runProgramSetByID(t, "ConntrackArgsScratchReset")
+}

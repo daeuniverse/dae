@@ -716,6 +716,66 @@ int testcheck_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
 					     true);
 }
 
+SEC("tc/pktgen/conntrack_args_scratch_reset")
+int testpktgen_conntrack_args_scratch_reset(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb,
+			    IPV4(192,168,0,1), IPV4(1,1,1,1),
+			    19233, 443);
+}
+
+SEC("tc/setup/conntrack_args_scratch_reset")
+int testsetup_conntrack_args_scratch_reset(struct __sk_buff *skb)
+{
+	__u8 outbound = OUTBOUND_USER_DEFINED_MIN;
+	__u32 mark = 0x12345678;
+	__u8 must = 1;
+	__u8 mac[6] = { 0, 1, 2, 3, 4, 5 };
+	char pname[TASK_COMM_LEN] = "conntrack-test";
+	struct conntrack_args *args =
+		bpf_map_lookup_elem(&conntrack_args_map, &zero_key);
+
+	if (!args)
+		return TC_ACT_SHOT;
+
+	conntrack_args_set(args, &outbound, &mark, &must, mac, 11, pname, 99);
+	conntrack_args_set(args, NULL, NULL, NULL, NULL, 0, NULL, 0);
+
+	if (args->flags != 0) {
+		bpf_printk("args->flags(%u) != 0\n", args->flags);
+		return TC_ACT_SHOT;
+	}
+	if (args->dscp != 0) {
+		bpf_printk("args->dscp(%u) != 0\n", args->dscp);
+		return TC_ACT_SHOT;
+	}
+	if (conntrack_args_pname_or_null(args)) {
+		bpf_printk("conntrack_args_pname_or_null(args) != NULL\n");
+		return TC_ACT_SHOT;
+	}
+	for (int i = 0; i < 6; i++) {
+		if (args->mac[i] != 0) {
+			bpf_printk("args->mac[%d](%u) != 0\n", i, args->mac[i]);
+			return TC_ACT_SHOT;
+		}
+	}
+	for (int i = 0; i < TASK_COMM_LEN; i++) {
+		if (args->pname[i] != 0) {
+			bpf_printk("args->pname[%d](%u) != 0\n", i,
+				   args->pname[i]);
+			return TC_ACT_SHOT;
+		}
+	}
+
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/conntrack_args_scratch_reset")
+int testcheck_conntrack_args_scratch_reset(struct __sk_buff *skb)
+{
+	return check_status_and_mark(skb, TC_ACT_OK, 0);
+}
+
 SEC("tc/pktgen/l4proto_match")
 int testpktgen_l4proto_match(struct __sk_buff *skb)
 {
