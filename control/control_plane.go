@@ -105,6 +105,7 @@ type ControlPlane struct {
 	tproxyPortProtect              bool
 	soMarkFromDae                  uint32
 	mptcp                          bool
+	bootstrapResolver              netip.AddrPort
 	udpRouteScopeSensitive         bool
 	udpUnorderedRunner             *udpUnorderedTaskRunner
 	failedQuicDcidCache            *failedQuicDcidCache
@@ -210,7 +211,6 @@ var (
 	tcpConnStateTimeoutClosing     = 10 * time.Second
 
 	// Test seam: injected in tests to avoid external DNS dependency.
-	systemDnsForRealDomainProbe   = netutils.SystemDns
 	resolveIp46ForRealDomainProbe = netutils.ResolveIp46
 )
 
@@ -301,6 +301,14 @@ func NewControlPlaneWithContext(
 	// Register the cache clear function with dialer package so health checks
 	// can clear the failed DCID cache when network conditions improve.
 	dialer.SetQuicDcidCacheClearFunc(ClearFailedQuicDcids)
+
+	var bootstrapResolver netip.AddrPort
+	if global.BootstrapResolver != "" {
+		bootstrapResolver, err = netip.ParseAddrPort(global.BootstrapResolver)
+		if err != nil {
+			return nil, fmt.Errorf("parse global.bootstrap_resolver: %w", err)
+		}
+	}
 
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		_ = os.Setenv("QUIC_GO_DISABLE_GSO", "1")
@@ -679,6 +687,7 @@ func NewControlPlaneWithContext(
 		tproxyPortProtect:      global.TproxyPortProtect,
 		soMarkFromDae:          global.SoMarkFromDae,
 		mptcp:                  global.Mptcp,
+		bootstrapResolver:      bootstrapResolver,
 		udpRouteScopeSensitive: builder.UsesPacketMetadataRouting(),
 		udpUnorderedRunner:     newDefaultUdpUnorderedTaskRunner(cctx),
 		failedQuicDcidCache:    newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
@@ -688,12 +697,18 @@ func NewControlPlaneWithContext(
 	plane.startRealDomainNegJanitor()
 	plane.startConnStateJanitor()
 
+	var upstreamHostResolver func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
+	if bootstrapResolver.IsValid() {
+		upstreamHostResolver = plane.resolveBootstrapIp46
+	}
+
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
 		Logger:                  log,
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
 		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp),
+		UpstreamHostResolver:    upstreamHostResolver,
 	})
 	if err != nil {
 		return nil, err
@@ -789,6 +804,7 @@ func NewControlPlaneWithContext(
 				// Re-patch domain bitmap for new routing rules.
 				v.DomainBitmap = plane.routingMatcher.domainMatcher.MatchDomainBitmap(v.GetFqdn())
 				plane.dnsController.dnsCache.Store(k, v)
+				plane.dnsController.rememberDnsKnowledge(dnsCacheBaseKey(k), v.OriginalDeadline)
 				// Trigger async BPF update to populate the cleared domain_routing_map.
 				plane.dnsController.triggerBpfUpdateIfNeeded(v, now)
 				count++
@@ -1065,7 +1081,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			if isIPLikeDomain(domain) {
 				break
 			}
-			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
+			if c.dnsController.HasDnsKnowledge(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr()))) {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
 				shouldReroute = true
@@ -1140,6 +1156,14 @@ func (c *ControlPlane) lookupRealDomainCache(domain string) (known bool, real bo
 	return false, false
 }
 
+func (c *ControlPlane) resolveBootstrapIp46(ctx context.Context, host string, network string) (*netutils.Ip46, error, error) {
+	if !c.bootstrapResolver.IsValid() {
+		err := fmt.Errorf("bootstrap resolver is not configured")
+		return &netutils.Ip46{}, err, err
+	}
+	return netutils.ResolveIp46(ctx, direct.SymmetricDirect, c.bootstrapResolver, host, network, false)
+}
+
 func (c *ControlPlane) triggerRealDomainProbe(domain string) {
 	if domain == "" || isIPLikeDomain(domain) {
 		return
@@ -1177,14 +1201,12 @@ func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
 	ctx, cancel := context.WithTimeout(c.ctx, realDomainProbeTimeout)
 	defer cancel()
 
-	systemDns, err := systemDnsForRealDomainProbe()
-	if err != nil {
-		// Do not negative-cache probe infra errors.
+	if !c.bootstrapResolver.IsValid() {
+		// Fail closed when no explicit bootstrap resolver is configured.
 		return false
 	}
 
-	// TODO: use DNS controller and re-route by control plane.
-	ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+	ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, c.bootstrapResolver, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
 	if err4 != nil && err6 != nil {
 		// Probe failed for both families; avoid sticky false negatives.
 		return false

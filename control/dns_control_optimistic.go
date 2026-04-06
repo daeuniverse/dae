@@ -41,7 +41,8 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 
 	// Perform the actual DNS resolution
 	// This will update the cache with fresh data
-	_, err := c.resolveForSingleflight(ctx, dnsMessage, req, upstreamIndex, upstream)
+	baseCacheKey := dnsCacheBaseKey(cacheKey)
+	_, err := c.resolveForSingleflight(ctx, dnsMessage, req, upstreamIndex, upstream, cacheKey, baseCacheKey)
 	if err != nil {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			c.log.WithFields(logrus.Fields{

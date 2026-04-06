@@ -6,6 +6,7 @@
 package dns
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	dnsmessage "github.com/miekg/dns"
@@ -35,6 +37,7 @@ type NewOption struct {
 	LocationFinder          *assets.LocationFinder
 	UpstreamReadyCallback   func(dnsUpstream *Upstream) (err error)
 	UpstreamResolverNetwork string
+	UpstreamHostResolver    func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
 }
 
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
@@ -60,8 +63,9 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			return nil, fmt.Errorf("%w: %v", ErrBadUpstreamFormat, err)
 		}
 		r := &UpstreamResolver{
-			Raw:     u,
-			Network: opt.UpstreamResolverNetwork,
+			Raw:         u,
+			Network:     opt.UpstreamResolverNetwork,
+			ResolveIp46: opt.UpstreamHostResolver,
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
 				return func(raw *url.URL, upstream *Upstream) (err error) {
 					if opt.UpstreamReadyCallback != nil { // Redundant comparison 'opt != nil' removed
@@ -123,9 +127,12 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 
 func (s *Dns) CheckUpstreamsFormat() error {
 	for _, upstream := range s.upstream {
-		_, _, _, _, err := ParseRawUpstream(upstream.Raw)
+		_, hostname, _, _, err := ParseRawUpstream(upstream.Raw)
 		if err != nil {
 			return err
+		}
+		if _, err := netip.ParseAddr(hostname); err != nil && upstream.ResolveIp46 == nil {
+			return fmt.Errorf("dns upstream %q requires global.bootstrap_resolver because hostname %q is not an IP address", upstream.Raw.String(), hostname)
 		}
 	}
 	return nil

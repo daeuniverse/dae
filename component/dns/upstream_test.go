@@ -8,10 +8,14 @@ package dns
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/daeuniverse/dae/common/netutils"
 )
 
 func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing.T) {
@@ -21,7 +25,7 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 	})
 
 	var initCalls atomic.Int32
-	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string) (*Upstream, error) {
+	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string, _ resolveUpstreamIp46Func) (*Upstream, error) {
 		initCalls.Add(1)
 		return &Upstream{
 			Scheme:   UpstreamScheme_UDP,
@@ -85,7 +89,7 @@ func TestUpstreamResolverRetriesAfterInitializerFailure(t *testing.T) {
 
 	var initCalls atomic.Int32
 	failErr := errors.New("transient failure")
-	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string) (*Upstream, error) {
+	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string, _ resolveUpstreamIp46Func) (*Upstream, error) {
 		call := initCalls.Add(1)
 		if call == 1 {
 			return nil, failErr
@@ -128,7 +132,7 @@ func TestUpstreamResolverRetriesAfterFinishCallbackFailure(t *testing.T) {
 	})
 
 	var initCalls atomic.Int32
-	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string) (*Upstream, error) {
+	newUpstreamFunc = func(_ context.Context, raw *url.URL, _ string, _ resolveUpstreamIp46Func) (*Upstream, error) {
 		initCalls.Add(1)
 		return &Upstream{
 			Scheme:   UpstreamScheme_UDP,
@@ -169,6 +173,70 @@ func TestUpstreamResolverRetriesAfterFinishCallbackFailure(t *testing.T) {
 	}
 	if got := initCalls.Load(); got != 2 {
 		t.Fatalf("expected initializer to be retried, got %d calls", got)
+	}
+}
+
+func TestCheckUpstreamsFormat_RequiresBootstrapResolverForNamedHost(t *testing.T) {
+	s := &Dns{
+		upstream: []*UpstreamResolver{
+			{
+				Raw:     mustParseURL("udp://dns.google:53"),
+				Network: "udp",
+			},
+		},
+	}
+
+	err := s.CheckUpstreamsFormat()
+	if err == nil {
+		t.Fatal("expected named upstream without bootstrap resolver to be rejected")
+	}
+	if !strings.Contains(err.Error(), "bootstrap_resolver") {
+		t.Fatalf("expected bootstrap_resolver guidance, got %v", err)
+	}
+}
+
+func TestNewUpstream_UsesExplicitBootstrapResolver(t *testing.T) {
+	var calls atomic.Int32
+	upstream, err := NewUpstream(context.Background(), mustParseURL("udp://dns.google:53"), "udp", func(_ context.Context, host string, network string) (*netutils.Ip46, error, error) {
+		calls.Add(1)
+		if host != "dns.google" {
+			t.Fatalf("unexpected host %q", host)
+		}
+		if network != "udp" {
+			t.Fatalf("unexpected network %q", network)
+		}
+		return &netutils.Ip46{
+			Ip4: netip.MustParseAddr("8.8.8.8"),
+			Ip6: netip.MustParseAddr("2001:4860:4860::8888"),
+		}, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("NewUpstream() error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected explicit bootstrap resolver to be called once, got %d", got)
+	}
+	if upstream.Hostname != "dns.google" {
+		t.Fatalf("unexpected upstream hostname %q", upstream.Hostname)
+	}
+	if !upstream.Ip4.IsValid() || !upstream.Ip6.IsValid() {
+		t.Fatalf("expected bootstrap resolver to populate both families, got %+v", upstream.Ip46)
+	}
+}
+
+func TestNewUpstream_IPHostDoesNotRequireBootstrapResolver(t *testing.T) {
+	upstream, err := NewUpstream(context.Background(), mustParseURL("udp://1.1.1.1:53"), "udp", func(_ context.Context, _ string, _ string) (*netutils.Ip46, error, error) {
+		t.Fatal("bootstrap resolver should not be used for IP upstreams")
+		return nil, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("NewUpstream() error = %v", err)
+	}
+	if upstream.Hostname != "1.1.1.1" {
+		t.Fatalf("unexpected upstream hostname %q", upstream.Hostname)
+	}
+	if upstream.Ip4 != netip.MustParseAddr("1.1.1.1") {
+		t.Fatalf("unexpected upstream IPv4 %v", upstream.Ip4)
 	}
 }
 

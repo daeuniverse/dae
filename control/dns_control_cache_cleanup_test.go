@@ -8,12 +8,14 @@ package control
 import (
 	"io"
 	"net"
+	"net/netip"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
@@ -110,6 +112,172 @@ func TestDnsController_RemoveDnsRespCacheTriggersCallback(t *testing.T) {
 	_, ok := c.dnsCache.Load(cacheKey)
 	require.False(t, ok, "cache should be removed")
 	require.EqualValues(t, 1, removed.Load(), "remove callback should be called")
+}
+
+func newDnsControllerForRemovalTracking(t *testing.T) (*DnsController, func() []string) {
+	t.Helper()
+
+	var (
+		mu      sync.Mutex
+		removed []string
+	)
+	controller := &DnsController{
+		cacheRemoveCallback: func(cache *DnsCache) error {
+			mu.Lock()
+			defer mu.Unlock()
+			removed = append(removed, dnsCacheAnswerIPs(cache)...)
+			return nil
+		},
+		newCache: func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
+			return &DnsCache{
+				Answer:           answers,
+				NS:               ns,
+				Extra:            extra,
+				Deadline:         deadline,
+				OriginalDeadline: originalDeadline,
+			}, nil
+		},
+	}
+	snapshot := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), removed...)
+	}
+	return controller, snapshot
+}
+
+func TestDnsController_RemoveDnsRespCache_PreservesSharedScopedIps(t *testing.T) {
+	controller, removed := newDnsControllerForRemovalTracking(t)
+
+	baseKey := controller.cacheKey("shared-remove.test.", dnsmessage.TypeA)
+	req1 := &udpRequest{realDst: netip.MustParseAddrPort("8.8.8.8:53")}
+	req2 := &udpRequest{realDst: netip.MustParseAddrPort("1.1.1.1:53")}
+	cacheKey1 := controller.responseCacheKey(baseKey, req1, consts.DnsRequestOutboundIndex_AsIs, nil)
+	cacheKey2 := controller.responseCacheKey(baseKey, req2, consts.DnsRequestOutboundIndex_AsIs, nil)
+
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey1, "shared-remove.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-remove.test.", "203.0.113.10").Answer, nil, nil, 60))
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey2, "shared-remove.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-remove.test.", "203.0.113.10").Answer, nil, nil, 60))
+
+	controller.RemoveDnsRespCache(cacheKey1)
+
+	require.Empty(t, removed(), "shared scoped IP should remain while another scoped cache entry is still live")
+}
+
+func TestDnsController_UpdateDnsCacheTtlWithKey_PreservesSharedScopedStaleIps(t *testing.T) {
+	controller, removed := newDnsControllerForRemovalTracking(t)
+
+	baseKey := controller.cacheKey("shared-refresh.test.", dnsmessage.TypeA)
+	req1 := &udpRequest{realDst: netip.MustParseAddrPort("8.8.8.8:53")}
+	req2 := &udpRequest{realDst: netip.MustParseAddrPort("1.1.1.1:53")}
+	cacheKey1 := controller.responseCacheKey(baseKey, req1, consts.DnsRequestOutboundIndex_AsIs, nil)
+	cacheKey2 := controller.responseCacheKey(baseKey, req2, consts.DnsRequestOutboundIndex_AsIs, nil)
+
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey1, "shared-refresh.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-refresh.test.", "203.0.113.10").Answer, nil, nil, 60))
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey2, "shared-refresh.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-refresh.test.", "203.0.113.10").Answer, nil, nil, 60))
+
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey1, "shared-refresh.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-refresh.test.", "203.0.113.20").Answer, nil, nil, 60))
+
+	require.Empty(t, removed(), "refreshing one scoped cache entry must not remove an IP still present in a sibling scope")
+}
+
+func TestDnsController_RemoveDnsRespCacheFamily_DeduplicatesSharedScopedIps(t *testing.T) {
+	controller, removed := newDnsControllerForRemovalTracking(t)
+
+	baseKey := controller.cacheKey("shared-family.test.", dnsmessage.TypeA)
+	req1 := &udpRequest{realDst: netip.MustParseAddrPort("8.8.8.8:53")}
+	req2 := &udpRequest{realDst: netip.MustParseAddrPort("1.1.1.1:53")}
+	cacheKey1 := controller.responseCacheKey(baseKey, req1, consts.DnsRequestOutboundIndex_AsIs, nil)
+	cacheKey2 := controller.responseCacheKey(baseKey, req2, consts.DnsRequestOutboundIndex_AsIs, nil)
+
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey1, "shared-family.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-family.test.", "203.0.113.10").Answer, nil, nil, 60))
+	require.NoError(t, controller.UpdateDnsCacheTtlWithKey(cacheKey2, "shared-family.test.", dnsmessage.TypeA, dnsAResponseMsg("shared-family.test.", "203.0.113.10").Answer, nil, nil, 60))
+
+	controller.RemoveDnsRespCacheFamily(baseKey)
+
+	require.Equal(t, []string{"203.0.113.10"}, removed(), "family removal should emit each shared scoped IP once")
+}
+
+func TestDnsController_RemoveDnsRespCache_RecomputesKnowledgeFromRemainingScopedEntries(t *testing.T) {
+	ctrl := newScopedDnsController(t)
+
+	baseKey := ctrl.cacheKey("knowledge-scope.test.", dnsmessage.TypeA)
+	req1 := &udpRequest{realDst: netip.MustParseAddrPort("8.8.8.8:53")}
+	req2 := &udpRequest{realDst: netip.MustParseAddrPort("1.1.1.1:53")}
+	cacheKey1 := ctrl.responseCacheKey(baseKey, req1, consts.DnsRequestOutboundIndex_AsIs, nil)
+	cacheKey2 := ctrl.responseCacheKey(baseKey, req2, consts.DnsRequestOutboundIndex_AsIs, nil)
+
+	require.NoError(t, ctrl.__updateDnsCacheDeadline(cacheKey1, "knowledge-scope.test.", dnsmessage.TypeA, dnsAResponseMsg("knowledge-scope.test.", "8.8.8.8").Answer, nil, nil, func(now time.Time, _ string) (time.Time, time.Time) {
+		deadline := now.Add(25 * time.Millisecond)
+		return deadline, deadline
+	}))
+	require.NoError(t, ctrl.__updateDnsCacheDeadline(cacheKey2, "knowledge-scope.test.", dnsmessage.TypeA, dnsAResponseMsg("knowledge-scope.test.", "1.1.1.1").Answer, nil, nil, func(now time.Time, _ string) (time.Time, time.Time) {
+		deadline := now.Add(150 * time.Millisecond)
+		return deadline, deadline
+	}))
+
+	require.True(t, ctrl.HasDnsKnowledge(baseKey), "knowledge should exist while scoped cache entries are present")
+
+	ctrl.RemoveDnsRespCache(cacheKey2)
+
+	require.True(t, ctrl.HasDnsKnowledge(baseKey), "knowledge should fall back to the remaining scoped cache entry")
+	require.Eventually(t, func() bool {
+		return !ctrl.HasDnsKnowledge(baseKey)
+	}, 300*time.Millisecond, 10*time.Millisecond, "knowledge should expire with the last remaining scoped cache entry, not the removed one")
+}
+
+func TestDnsController_EvictExpiredDnsCache_RemovesKnowledgeForLastScopedEntry(t *testing.T) {
+	ctrl := newScopedDnsController(t)
+
+	baseKey := ctrl.cacheKey("knowledge-expire.test.", dnsmessage.TypeA)
+	req := &udpRequest{realDst: netip.MustParseAddrPort("9.9.9.9:53")}
+	cacheKey := ctrl.responseCacheKey(baseKey, req, consts.DnsRequestOutboundIndex_AsIs, nil)
+
+	require.NoError(t, ctrl.__updateDnsCacheDeadline(cacheKey, "knowledge-expire.test.", dnsmessage.TypeA, dnsAResponseMsg("knowledge-expire.test.", "9.9.9.9").Answer, nil, nil, func(now time.Time, _ string) (time.Time, time.Time) {
+		deadline := now.Add(20 * time.Millisecond)
+		return deadline, deadline
+	}))
+	require.True(t, ctrl.HasDnsKnowledge(baseKey), "knowledge should exist before expiry")
+
+	time.Sleep(40 * time.Millisecond)
+	ctrl.evictExpiredDnsCache(time.Now())
+
+	require.False(t, ctrl.HasDnsKnowledge(baseKey), "expiring the last scoped cache entry should clear dns knowledge")
+	_, ok := ctrl.dnsCache.Load(cacheKey)
+	require.False(t, ok, "expired cache entry should be evicted")
+}
+
+func TestDnsController_EvictLRUIfFull_RemovesKnowledgeForEvictedBaseKey(t *testing.T) {
+	ctrl := newScopedDnsController(t)
+	ctrl.maxCacheSize = 1
+
+	baseKey1 := ctrl.cacheKey("knowledge-lru-old.test.", dnsmessage.TypeA)
+	req1 := &udpRequest{realDst: netip.MustParseAddrPort("8.8.4.4:53")}
+	cacheKey1 := ctrl.responseCacheKey(baseKey1, req1, consts.DnsRequestOutboundIndex_AsIs, nil)
+	require.NoError(t, ctrl.UpdateDnsCacheTtlWithKey(cacheKey1, "knowledge-lru-old.test.", dnsmessage.TypeA, dnsAResponseMsg("knowledge-lru-old.test.", "8.8.4.4").Answer, nil, nil, 60))
+
+	baseKey2 := ctrl.cacheKey("knowledge-lru-new.test.", dnsmessage.TypeA)
+	req2 := &udpRequest{realDst: netip.MustParseAddrPort("1.0.0.1:53")}
+	cacheKey2 := ctrl.responseCacheKey(baseKey2, req2, consts.DnsRequestOutboundIndex_AsIs, nil)
+	require.NoError(t, ctrl.UpdateDnsCacheTtlWithKey(cacheKey2, "knowledge-lru-new.test.", dnsmessage.TypeA, dnsAResponseMsg("knowledge-lru-new.test.", "1.0.0.1").Answer, nil, nil, 60))
+
+	oldValue, ok := ctrl.dnsCache.Load(cacheKey1)
+	require.True(t, ok)
+	oldCache, ok := oldValue.(*DnsCache)
+	require.True(t, ok)
+	oldCache.lastAccessNano.Store(time.Now().Add(-time.Minute).UnixNano())
+
+	newValue, ok := ctrl.dnsCache.Load(cacheKey2)
+	require.True(t, ok)
+	newCache, ok := newValue.(*DnsCache)
+	require.True(t, ok)
+	newCache.lastAccessNano.Store(time.Now().UnixNano())
+
+	ctrl.evictLRUIfFull()
+
+	require.False(t, ctrl.HasDnsKnowledge(baseKey1), "knowledge should be cleared for the base key evicted by LRU")
+	require.True(t, ctrl.HasDnsKnowledge(baseKey2), "knowledge for the surviving cache entry should remain")
+	_, ok = ctrl.dnsCache.Load(cacheKey1)
+	require.False(t, ok, "oldest cache entry should be evicted by LRU")
 }
 
 func TestDnsController_CloseNoPanicDuringBpfUpdate(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"sync/atomic"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
 var (
@@ -25,6 +25,8 @@ var (
 
 // newUpstreamFunc is a test seam for deterministic UpstreamResolver contract tests.
 var newUpstreamFunc = NewUpstream
+
+type resolveUpstreamIp46Func func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
 
 type UpstreamScheme string
 
@@ -99,23 +101,32 @@ type Upstream struct {
 	*netutils.Ip46
 }
 
-func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
+func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string, resolveIp46 resolveUpstreamIp46Func) (up *Upstream, err error) {
 	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	systemDns, err := netutils.SystemDns()
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
+	ip46 := &netutils.Ip46{}
+	if addr, parseErr := netip.ParseAddr(hostname); parseErr == nil {
+		if addr.Is4() || addr.Is4In6() {
+			ip46.Ip4 = addr.Unmap()
+		} else {
+			ip46.Ip6 = addr
 		}
-	}()
-
-	ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
+	} else {
+		if resolveIp46 == nil {
+			return nil, fmt.Errorf("dns_upstream %v requires global.bootstrap_resolver because hostname is not an IP address", upstream.String())
+		}
+		var err4, err6 error
+		ip46, err4, err6 = resolveIp46(ctx, hostname, resolverNetwork)
+		if ip46 == nil {
+			ip46 = &netutils.Ip46{}
+		}
+		if err4 != nil && err6 != nil {
+			return nil, fmt.Errorf("resolve dns_upstream %v: A(%v) AAAA(%v)", upstream.String(), err4, err6)
+		}
+	}
 	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
 	}
@@ -156,8 +167,9 @@ func (u *Upstream) String() string {
 }
 
 type UpstreamResolver struct {
-	Raw     *url.URL
-	Network string
+	Raw         *url.URL
+	Network     string
+	ResolveIp46 resolveUpstreamIp46Func
 	// FinishInitCallback may be invoked again if err is not nil
 	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
 
@@ -213,7 +225,7 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	upstream, err := newUpstreamFunc(ctx, u.Raw, u.Network)
+	upstream, err := newUpstreamFunc(ctx, u.Raw, u.Network, u.ResolveIp46)
 	if err != nil {
 		// Mark as failed, allow retry on next call
 		u.state.Store(&errorSentinel)

@@ -26,29 +26,25 @@ func newTestControlPlaneForRealDomainProbe() *ControlPlane {
 	log.SetOutput(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ControlPlane{
-		realDomainSet: bloom.NewWithEstimates(2048, 0.001),
-		log:           log,
-		soMarkFromDae: 0,
-		mptcp:         false,
-		ctx:           ctx,
-		cancel:        cancel,
+		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
+		log:               log,
+		soMarkFromDae:     0,
+		mptcp:             false,
+		bootstrapResolver: netip.MustParseAddrPort("1.1.1.1:53"),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 }
 
 func TestIsRealDomain_NegativeCacheAvoidsRepeatedProbe(t *testing.T) {
 	oldTTL := realDomainNegativeCacheTTL
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
 		realDomainNegativeCacheTTL = oldTTL
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	realDomainNegativeCacheTTL = 200 * time.Millisecond
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
 
 	var calls atomic.Int32
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
@@ -72,18 +68,13 @@ func TestIsRealDomain_NegativeCacheAvoidsRepeatedProbe(t *testing.T) {
 
 func TestIsRealDomain_NegativeCacheExpiresAndReprobe(t *testing.T) {
 	oldTTL := realDomainNegativeCacheTTL
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
 		realDomainNegativeCacheTTL = oldTTL
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	realDomainNegativeCacheTTL = 15 * time.Millisecond
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
 
 	var calls atomic.Int32
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
@@ -108,18 +99,13 @@ func TestIsRealDomain_NegativeCacheExpiresAndReprobe(t *testing.T) {
 
 func TestIsRealDomain_ConcurrentProbeDeduplicated(t *testing.T) {
 	oldTTL := realDomainNegativeCacheTTL
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
 		realDomainNegativeCacheTTL = oldTTL
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	realDomainNegativeCacheTTL = 200 * time.Millisecond
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
 
 	var calls atomic.Int32
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
@@ -159,18 +145,13 @@ func TestIsRealDomain_ConcurrentProbeDeduplicated(t *testing.T) {
 
 func TestIsRealDomain_PositivePathCachedInBloom(t *testing.T) {
 	oldTTL := realDomainNegativeCacheTTL
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
 		realDomainNegativeCacheTTL = oldTTL
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	realDomainNegativeCacheTTL = 200 * time.Millisecond
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
 
 	var calls atomic.Int32
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
@@ -189,6 +170,51 @@ func TestIsRealDomain_PositivePathCachedInBloom(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("expected positive probe to run only once, got %d", got)
+	}
+}
+
+func TestIsRealDomain_UsesConfiguredBootstrapResolver(t *testing.T) {
+	oldResolver := resolveIp46ForRealDomainProbe
+	defer func() {
+		resolveIp46ForRealDomainProbe = oldResolver
+	}()
+
+	expectedBootstrap := netip.MustParseAddrPort("9.9.9.9:53")
+	cp := newTestControlPlaneForRealDomainProbe()
+	cp.bootstrapResolver = expectedBootstrap
+
+	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
+		if dns != expectedBootstrap {
+			t.Fatalf("expected bootstrap resolver %v, got %v", expectedBootstrap, dns)
+		}
+		return &netutils.Ip46{Ip4: netip.MustParseAddr("93.184.216.34")}, nil, nil
+	}
+
+	if !cp.isRealDomain("bootstrap-route.example") {
+		t.Fatal("expected real domain when bootstrap resolver succeeds")
+	}
+}
+
+func TestIsRealDomain_NoBootstrapResolverFailsClosed(t *testing.T) {
+	oldResolver := resolveIp46ForRealDomainProbe
+	defer func() {
+		resolveIp46ForRealDomainProbe = oldResolver
+	}()
+
+	var calls atomic.Int32
+	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
+		calls.Add(1)
+		return &netutils.Ip46{Ip4: netip.MustParseAddr("93.184.216.34")}, nil, nil
+	}
+
+	cp := newTestControlPlaneForRealDomainProbe()
+	cp.bootstrapResolver = netip.AddrPort{}
+
+	if cp.isRealDomain("no-bootstrap.example") {
+		t.Fatal("expected fail-closed probe result without bootstrap resolver")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("expected no external probe without bootstrap resolver, got %d calls", got)
 	}
 }
 
@@ -217,18 +243,12 @@ func TestIsIPLikeDomain(t *testing.T) {
 }
 
 func TestChooseDialTarget_DomainMode_IPLikeSkipsProbe(t *testing.T) {
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	var calls atomic.Int32
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		calls.Add(1)
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
 		calls.Add(1)
 		return &netutils.Ip46{}, nil, nil
@@ -250,18 +270,13 @@ func TestChooseDialTarget_DomainMode_IPLikeSkipsProbe(t *testing.T) {
 
 func TestChooseDialTarget_DomainMode_UnknownDomainDoesNotBlock(t *testing.T) {
 	oldTimeout := realDomainProbeTimeout
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
 		realDomainProbeTimeout = oldTimeout
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	realDomainProbeTimeout = 500 * time.Millisecond
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
 
 	started := make(chan struct{}, 1)
 	unblock := make(chan struct{})
@@ -302,19 +317,13 @@ func TestChooseDialTarget_DomainMode_UnknownDomainDoesNotBlock(t *testing.T) {
 
 func TestChooseDialTarget_DomainMode_WarmupEnablesReroute(t *testing.T) {
 	oldTimeout := realDomainProbeTimeout
-	oldSystemDNS := systemDnsForRealDomainProbe
 	oldResolver := resolveIp46ForRealDomainProbe
 	defer func() {
 		realDomainProbeTimeout = oldTimeout
-		systemDnsForRealDomainProbe = oldSystemDNS
 		resolveIp46ForRealDomainProbe = oldResolver
 	}()
 
 	realDomainProbeTimeout = 200 * time.Millisecond
-	systemDnsForRealDomainProbe = func() (netip.AddrPort, error) {
-		return netip.MustParseAddrPort("1.1.1.1:53"), nil
-	}
-
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
 		return &netutils.Ip46{Ip4: netip.MustParseAddr("93.184.216.34")}, nil, nil
 	}

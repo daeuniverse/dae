@@ -105,6 +105,8 @@ type DnsController struct {
 	dnsForwarderIdleTTL time.Duration // TTL for idle DNS forwarders
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
+	dnsKnowledge      sync.Map // map[string]int64 (base cache key -> original deadline unix nano)
+	dnsKnowledgeMu    sync.Mutex
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedDnsForwarder
 	sf                singleflight.Group
 
@@ -361,6 +363,10 @@ func (c *DnsController) Close() error {
 		c.dnsCache.Delete(key)
 		return true
 	})
+	c.dnsKnowledge.Range(func(key, value any) bool {
+		c.dnsKnowledge.Delete(key)
+		return true
+	})
 
 	return errors.Join(errs...)
 }
@@ -391,12 +397,289 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 	return qname + strconv.Itoa(int(qtype))
 }
 
+func dnsCacheBaseKey(cacheKey string) string {
+	if i := strings.IndexByte(cacheKey, '|'); i >= 0 {
+		return cacheKey[:i]
+	}
+	return cacheKey
+}
+
+func (c *DnsController) responseCacheScope(req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) string {
+	switch upstreamIndex {
+	case consts.DnsRequestOutboundIndex_AsIs:
+		if req != nil && req.realDst.IsValid() {
+			return "asis@" + req.realDst.String()
+		}
+		return "asis"
+	case consts.DnsRequestOutboundIndex_Reject:
+		return "reject"
+	default:
+		if upstream != nil {
+			return "upstream@" + upstream.String()
+		}
+		if upstreamIndex != 0 {
+			return "upstream-index@" + strconv.Itoa(int(upstreamIndex))
+		}
+		return ""
+	}
+}
+
+func (c *DnsController) responseCacheKey(baseKey string, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) string {
+	scope := c.responseCacheScope(req, upstreamIndex, upstream)
+	if scope == "" {
+		return baseKey
+	}
+	return baseKey + "|" + scope
+}
+
+func aggregateDnsRemovalCandidate(caches []*DnsCache) *DnsCache {
+	var (
+		base    *DnsCache
+		answers []dnsmessage.RR
+		seen    = make(map[netip.Addr]struct{})
+	)
+
+	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		if base == nil {
+			base = cache
+		}
+		for _, ans := range cache.Answer {
+			ip, ok := dnsAnswerIP(ans)
+			if !ok || ip.IsUnspecified() {
+				continue
+			}
+			if _, ok := seen[ip]; ok {
+				continue
+			}
+			seen[ip] = struct{}{}
+			answers = append(answers, ans)
+		}
+	}
+
+	if base == nil || len(answers) == 0 {
+		return nil
+	}
+	return &DnsCache{
+		DomainBitmap:     base.DomainBitmap,
+		Answer:           answers,
+		Deadline:         base.Deadline,
+		OriginalDeadline: base.OriginalDeadline,
+	}
+}
+
+// orphanedDnsSideEffects filters removal side effects against the authoritative
+// remaining cache state for the same base key. Once scoped cache keys exist,
+// removing one scoped entry must not blindly delete IP-derived side effects
+// that are still backed by another live scoped entry.
+func (c *DnsController) orphanedDnsSideEffects(baseKey string, candidate *DnsCache) *DnsCache {
+	if candidate == nil {
+		return nil
+	}
+	if baseKey == "" {
+		return candidate
+	}
+
+	liveIPs := make(map[netip.Addr]struct{})
+	c.dnsCache.Range(func(key, value any) bool {
+		cacheKey, ok := key.(string)
+		if !ok || dnsCacheBaseKey(cacheKey) != baseKey {
+			return true
+		}
+		cache, ok := value.(*DnsCache)
+		if !ok {
+			c.dnsCache.Delete(cacheKey)
+			return true
+		}
+		for _, ans := range cache.Answer {
+			ip, ok := dnsAnswerIP(ans)
+			if !ok || ip.IsUnspecified() {
+				continue
+			}
+			liveIPs[ip] = struct{}{}
+		}
+		return true
+	})
+
+	if len(liveIPs) == 0 {
+		return candidate
+	}
+
+	orphaned := make([]dnsmessage.RR, 0, len(candidate.Answer))
+	for _, ans := range candidate.Answer {
+		ip, ok := dnsAnswerIP(ans)
+		if !ok || ip.IsUnspecified() {
+			continue
+		}
+		if _, ok := liveIPs[ip]; ok {
+			continue
+		}
+		orphaned = append(orphaned, ans)
+	}
+
+	if len(orphaned) == 0 {
+		return nil
+	}
+	return &DnsCache{
+		DomainBitmap:     candidate.DomainBitmap,
+		Answer:           orphaned,
+		Deadline:         candidate.Deadline,
+		OriginalDeadline: candidate.OriginalDeadline,
+	}
+}
+
+func (c *DnsController) onBaseKeySideEffectsEvicted(baseKey string, candidate *DnsCache) {
+	if cache := c.orphanedDnsSideEffects(baseKey, candidate); cache != nil {
+		c.onDnsCacheEvicted(cache)
+	}
+}
+
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 	if removed, ok := c.dnsCache.LoadAndDelete(cacheKey); ok {
 		if cache, ok := removed.(*DnsCache); ok {
-			c.onDnsCacheEvicted(cache)
+			baseKey := dnsCacheBaseKey(cacheKey)
+			c.forgetDnsKnowledge(cacheKey, cache)
+			c.onBaseKeySideEffectsEvicted(baseKey, cache)
 		}
 	}
+}
+
+func (c *DnsController) RemoveDnsRespCacheFamily(baseKey string) {
+	if baseKey == "" {
+		return
+	}
+	var removedCaches []*DnsCache
+	c.dnsCache.Range(func(key, value any) bool {
+		cacheKey, ok := key.(string)
+		if !ok || dnsCacheBaseKey(cacheKey) != baseKey {
+			return true
+		}
+		cache, ok := value.(*DnsCache)
+		if !ok {
+			c.dnsCache.Delete(cacheKey)
+			return true
+		}
+		if c.dnsCache.CompareAndDelete(cacheKey, cache) {
+			removedCaches = append(removedCaches, cache)
+		}
+		return true
+	})
+	c.syncDnsKnowledge(baseKey)
+	c.onBaseKeySideEffectsEvicted(baseKey, aggregateDnsRemovalCandidate(removedCaches))
+}
+
+func (c *DnsController) rememberDnsKnowledge(baseKey string, originalDeadline time.Time) {
+	if baseKey == "" || originalDeadline.IsZero() {
+		return
+	}
+	expiresAt := originalDeadline.UnixNano()
+	c.dnsKnowledgeMu.Lock()
+	defer c.dnsKnowledgeMu.Unlock()
+
+	current, ok := c.dnsKnowledge.Load(baseKey)
+	if !ok {
+		c.dnsKnowledge.Store(baseKey, expiresAt)
+		return
+	}
+	currentExpiresAt, ok := current.(int64)
+	if !ok || currentExpiresAt < expiresAt {
+		c.dnsKnowledge.Store(baseKey, expiresAt)
+	}
+}
+
+func (c *DnsController) removeDnsKnowledge(baseKey string) {
+	if baseKey == "" {
+		return
+	}
+	c.dnsKnowledgeMu.Lock()
+	defer c.dnsKnowledgeMu.Unlock()
+	c.dnsKnowledge.Delete(baseKey)
+}
+
+func (c *DnsController) forgetDnsKnowledge(cacheKey string, cache *DnsCache) {
+	baseKey := dnsCacheBaseKey(cacheKey)
+	if baseKey == "" || cache == nil {
+		return
+	}
+
+	deletedExpiresAt := cache.OriginalDeadline.UnixNano()
+
+	c.dnsKnowledgeMu.Lock()
+	defer c.dnsKnowledgeMu.Unlock()
+
+	current, ok := c.dnsKnowledge.Load(baseKey)
+	if !ok {
+		return
+	}
+	currentExpiresAt, ok := current.(int64)
+	if !ok {
+		c.syncDnsKnowledgeLocked(baseKey)
+		return
+	}
+	if deletedExpiresAt < currentExpiresAt {
+		return
+	}
+	c.syncDnsKnowledgeLocked(baseKey)
+}
+
+func (c *DnsController) syncDnsKnowledge(baseKey string) {
+	if baseKey == "" {
+		return
+	}
+	c.dnsKnowledgeMu.Lock()
+	defer c.dnsKnowledgeMu.Unlock()
+	c.syncDnsKnowledgeLocked(baseKey)
+}
+
+func (c *DnsController) syncDnsKnowledgeLocked(baseKey string) {
+	nowNano := time.Now().UnixNano()
+	var maxExpiresAt int64
+
+	c.dnsCache.Range(func(key, value any) bool {
+		cacheKey, ok := key.(string)
+		if !ok || dnsCacheBaseKey(cacheKey) != baseKey {
+			return true
+		}
+		cache, ok := value.(*DnsCache)
+		if !ok {
+			c.dnsCache.Delete(cacheKey)
+			return true
+		}
+
+		expiresAt := cache.OriginalDeadline.UnixNano()
+		if expiresAt > nowNano && expiresAt > maxExpiresAt {
+			maxExpiresAt = expiresAt
+		}
+		return true
+	})
+
+	if maxExpiresAt == 0 {
+		c.dnsKnowledge.Delete(baseKey)
+		return
+	}
+	c.dnsKnowledge.Store(baseKey, maxExpiresAt)
+}
+
+func (c *DnsController) HasDnsKnowledge(baseKey string) bool {
+	if baseKey == "" {
+		return false
+	}
+	value, ok := c.dnsKnowledge.Load(baseKey)
+	if !ok {
+		return false
+	}
+	expiresAt, ok := value.(int64)
+	if !ok {
+		c.dnsKnowledge.Delete(baseKey)
+		return false
+	}
+	if expiresAt <= time.Now().UnixNano() {
+		c.dnsKnowledge.CompareAndDelete(baseKey, value)
+		return false
+	}
+	return true
 }
 
 // startBpfUpdateWorker lazily starts the BPF update worker goroutine.
@@ -597,7 +880,9 @@ func (c *DnsController) evictDnsRespCacheIfSame(cacheKey string, cache *DnsCache
 		return
 	}
 	if c.dnsCache.CompareAndDelete(cacheKey, cache) {
-		c.onDnsCacheEvicted(cache)
+		baseKey := dnsCacheBaseKey(cacheKey)
+		c.forgetDnsKnowledge(cacheKey, cache)
+		c.onBaseKeySideEffectsEvicted(baseKey, cache)
 	}
 }
 
@@ -905,7 +1190,7 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 }
 
 // NormalizeAndCacheDnsResp_ handle DNS resp in place.
-func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err error) {
+func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg, responseCacheKey string) (err error) {
 	// Check healthy resp.
 	if !msg.Response || len(msg.Question) == 0 || msg.Rcode != dnsmessage.RcodeSuccess {
 		return nil
@@ -935,10 +1220,10 @@ func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err erro
 	}
 
 	// Update DnsCache.
-	return c.updateDnsCache(msg, ttl, &q)
+	return c.updateDnsCache(msg, responseCacheKey, ttl, &q)
 }
 
-func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsmessage.Question) error {
+func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, responseCacheKey string, ttl uint32, q *dnsmessage.Question) error {
 	// Update DnsCache.
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		c.log.WithFields(logrus.Fields{
@@ -948,7 +1233,7 @@ func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsme
 		}).Tracef("Update DNS record cache")
 	}
 
-	if err := c.UpdateDnsCacheTtl(q.Name, q.Qtype, msg.Answer, msg.Ns, msg.Extra, int(ttl)); err != nil {
+	if err := c.UpdateDnsCacheTtlWithKey(responseCacheKey, q.Name, q.Qtype, msg.Answer, msg.Ns, msg.Extra, int(ttl)); err != nil {
 		return err
 	}
 	return nil
@@ -1005,7 +1290,7 @@ func staleDnsSideEffects(prev, next *DnsCache) *DnsCache {
 
 type daedlineFunc func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time)
 
-func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
+func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
 	var fqdn string
 	if strings.HasSuffix(host, ".") {
 		fqdn = strings.ToLower(host)
@@ -1021,7 +1306,10 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	now := time.Now()
 	deadline, originalDeadline := deadlineFunc(now, host)
 
-	cacheKey := c.cacheKey(fqdn, dnsTyp)
+	if cacheKey == "" {
+		cacheKey = c.cacheKey(fqdn, dnsTyp)
+	}
+	baseKey := dnsCacheBaseKey(cacheKey)
 
 	// Atomic cache update: create new cache entry and store it atomically
 	// This allows concurrent updates without blocking each other
@@ -1034,7 +1322,9 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	// This avoids Pack() overhead on cache hits while keeping the published RR
 	// values unchanged.
 	if err = newCache.prepackResponseBeforeStore(fqdn, dnsTyp, ttlFromDeadline(deadline, now), now); err != nil {
-		c.log.Warnf("failed to prepack DNS response: %v", err)
+		if c.log != nil {
+			c.log.Warnf("failed to prepack DNS response: %v", err)
+		}
 		// Continue without pre-packed response - will fall back to Pack() on hit
 	}
 
@@ -1047,27 +1337,40 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 
 	// Store atomically - concurrent writes don't block each other
 	c.dnsCache.Store(cacheKey, newCache)
+	c.rememberDnsKnowledge(baseKey, originalDeadline)
 
-	if err = c.cacheAccessCallback(newCache); err != nil {
-		return err
+	if c.cacheAccessCallback != nil {
+		if err = c.cacheAccessCallback(newCache); err != nil {
+			return err
+		}
 	}
 	// Mark BPF as updated with current data hash to enable differential updates
 	newCache.MarkBpfUpdated(now)
 	if staleSideEffects != nil {
-		c.onDnsCacheEvicted(staleSideEffects)
+		c.onBaseKeySideEffectsEvicted(baseKey, staleSideEffects)
 	}
 
 	return nil
 }
 
 func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
-	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
+	return c.__updateDnsCacheDeadline("", host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
 		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
 			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
 		} else {
 			return originalDeadline, originalDeadline
 		}
+	})
+}
+
+func (c *DnsController) UpdateDnsCacheTtlWithKey(cacheKey string, host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
+	return c.__updateDnsCacheDeadline(cacheKey, host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time) {
+		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
+		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
+			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
+		}
+		return originalDeadline, originalDeadline
 	})
 }
 
@@ -1384,18 +1687,19 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 	// Prepare qname, qtype for cache lookup
 	var qname string
 	var qtype uint16
-	var cacheKey string
+	var baseCacheKey string
+	var responseCacheKey string
 	if len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		qname = q.Name
 		qtype = q.Qtype
-		cacheKey = c.cacheKey(qname, qtype)
+		baseCacheKey = c.cacheKey(qname, qtype)
 	}
 
 	// Route request first, then check cache.
 	// This ensures Reject rules are always applied, even if cache exists.
 	// Cache lookup overhead (~1µs) is negligible compared to network latency (~ms).
-	if cacheKey != "" && !dnsMessage.Response {
+	if baseCacheKey != "" && !dnsMessage.Response {
 		// Route request to get upstream
 		if c.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
@@ -1405,19 +1709,20 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if err != nil {
 			return err
 		}
+		responseCacheKey = c.responseCacheKey(baseCacheKey, req, upstreamIndex, upstream)
 
 		if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
-			c.RemoveDnsRespCache(cacheKey)
+			c.RemoveDnsRespCacheFamily(baseCacheKey)
 			return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 		}
 
 		// Check cache after routing (non-reject case)
-		if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+		if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false); resp != nil {
 			// Cache hit - return immediately without singleflight
 			// OPTIMISTIC CACHE: resp may be stale, trigger background refresh if needed
 			if needRefresh {
 				// Background refresh - don't block the current request
-				go c.backgroundRefresh(cacheKey, dnsMessage, req, upstreamIndex, upstream)
+				go c.backgroundRefresh(responseCacheKey, dnsMessage, req, upstreamIndex, upstream)
 			}
 
 			if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
@@ -1441,7 +1746,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 
 		// Cache miss - use singleflight to coalesce concurrent requests
 		// This prevents thundering herd on upstream DNS servers
-		res, err, _ := c.sf.Do(cacheKey, func() (any, error) {
+		res, err, _ := c.sf.Do(responseCacheKey, func() (any, error) {
 			// Shared singleflight resolution should ignore individual client
 			// cancellation, but it must still stop promptly when the DNS
 			// controller is closing during reload/shutdown.
@@ -1450,7 +1755,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
-			return c.resolveForSingleflight(resCtx, dnsMessage, req, upstreamIndex, upstream)
+			return c.resolveForSingleflight(resCtx, dnsMessage, req, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 		})
 
 		if err != nil {
@@ -1462,8 +1767,8 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 
 		// Optimization: Try to get pre-packed response from cache after singleflight.
 		// This avoids another Pack() call which is common in high-concurrency scenarios.
-		if cacheKey != "" {
-			if resp, _ := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+		if responseCacheKey != "" {
+			if resp, _ := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false); resp != nil {
 				if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter); err != nil {
 					return err
 				}
@@ -1496,17 +1801,17 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		return nil
 	}
 
-	return c.handleWithResponseWriterInternal(ctx, dnsMessage, req, responseWriter, upstreamIndex, upstream)
+	return c.handleWithResponseWriterInternal(ctx, dnsMessage, req, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 }
 
-func (c *DnsController) resolveForSingleflight(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) (*dnsmessage.Msg, error) {
+func (c *DnsController) resolveForSingleflight(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream, responseCacheKey string, baseCacheKey string) (*dnsmessage.Msg, error) {
 	// We need a way to capture the response message from the resolution process.
 	// Currently `handleWithResponseWriterInternal` writes to a writer or sends a packet.
 	// We need to refactor or spy on it.
 
 	// Since refactoring everything is risky, let's use a Fake ResponseWriter to capture the message.
 	capturer := &msgCapturer{}
-	err := c.handleWithResponseWriterInternal(ctx, dnsMessage, req, capturer, upstreamIndex, upstream)
+	err := c.handleWithResponseWriterInternal(ctx, dnsMessage, req, capturer, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1537,7 +1842,7 @@ func (m *msgCapturer) Hijack()                     {}
 // Resolution Delay: wait briefly for preferred response type before responding.
 //
 // Renamed from HandleWithResponseWriter_ to internal to avoid recursion loop with SF.
-func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) (err error) {
+func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream, responseCacheKey string, baseCacheKey string) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		c.log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
@@ -1557,16 +1862,16 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 
 	// Fast path: no ip_version_prefer set, bypass all preference logic
 	if c.qtypePrefer == 0 {
-		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
+		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 	}
 
 	// Only A and AAAA queries are subject to preference handling
 	if qtype != dnsmessage.TypeA && qtype != dnsmessage.TypeAAAA {
-		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
+		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 	}
 
 	// Handle with preference waiting logic in response phase
-	return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream)
+	return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 }
 
 func (c *DnsController) handleWithResponseWriter_(
@@ -1577,6 +1882,8 @@ func (c *DnsController) handleWithResponseWriter_(
 	responseWriter dnsmessage.ResponseWriter,
 	upstreamIndex consts.DnsRequestOutboundIndex,
 	upstream *dns.Upstream,
+	responseCacheKey string,
+	baseCacheKey string,
 ) (err error) {
 	// Prepare qname, qtype.
 	var qname string
@@ -1598,22 +1905,27 @@ func (c *DnsController) handleWithResponseWriter_(
 		}
 	}
 
-	cacheKey := c.cacheKey(qname, qtype)
+	if baseCacheKey == "" {
+		baseCacheKey = c.cacheKey(qname, qtype)
+	}
+	if responseCacheKey == "" {
+		responseCacheKey = c.responseCacheKey(baseCacheKey, req, upstreamIndex, upstream)
+	}
 
 	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
 		// Reject with empty answer.
-		c.RemoveDnsRespCache(cacheKey)
+		c.RemoveDnsRespCacheFamily(baseCacheKey)
 		if !needResp {
 			return nil
 		}
 		return c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 	}
 
-	if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+	if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false); resp != nil {
 		// Send cache to client directly.
 		// OPTIMISTIC CACHE: Trigger background refresh if stale
 		if needRefresh {
-			go c.backgroundRefresh(cacheKey, dnsMessage, req, upstreamIndex, upstream)
+			go c.backgroundRefresh(responseCacheKey, dnsMessage, req, upstreamIndex, upstream)
 		}
 
 		if needResp {
@@ -1650,7 +1962,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	return c.dialSend(ctx, 0, req, data, dnsMessage.Id, upstream, needResp, responseWriter)
+	return c.dialSend(ctx, 0, req, data, dnsMessage.Id, upstream, needResp, responseWriter, responseCacheKey, baseCacheKey)
 }
 
 // writeCachedResponse sends a cached DNS response to the client.
@@ -1854,6 +2166,8 @@ func (c *DnsController) dialSend(
 	upstream *dns.Upstream,
 	needResp bool,
 	responseWriter dnsmessage.ResponseWriter,
+	responseCacheKey string,
+	baseCacheKey string,
 ) (err error) {
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
@@ -1933,7 +2247,7 @@ func (c *DnsController) dialSend(
 				"next_upstream": nextUpstream.String(),
 			}).Traceln("Change DNS upstream and resend")
 		}
-		return c.dialSend(ctx, invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter)
+		return c.dialSend(ctx, invokingDepth+1, req, data, id, nextUpstream, needResp, responseWriter, responseCacheKey, baseCacheKey)
 	}
 
 	// Apply preference wait logic for A/AAAA responses.
@@ -1992,7 +2306,7 @@ func (c *DnsController) dialSend(
 		if responseWriter != nil {
 			// For responseWriter path, cache synchronously because
 			// responseWriter may need the message after we return.
-			if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+			if err = c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
 				c.log.Warnf("failed to cache DNS response: %v", err)
 			}
 			return responseWriter.WriteMsg(respMsg)
@@ -2014,7 +2328,7 @@ func (c *DnsController) dialSend(
 					c.log.Errorf("panic in async DNS cache: %v", r)
 				}
 			}()
-			if err := c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+			if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
 				c.log.Debugf("failed to cache DNS response (async): %v", err)
 			}
 		}()
@@ -2023,7 +2337,7 @@ func (c *DnsController) dialSend(
 	}
 
 	// No response needed, just cache synchronously
-	if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+	if err = c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
 		return err
 	}
 	return nil

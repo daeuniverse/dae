@@ -280,6 +280,7 @@ struct domain_routing {
 // - Userspace manages cleanup via TTL/explicit deletion for semantic correctness.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, __be32[4]);
 	__type(value, struct domain_routing);
 	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
