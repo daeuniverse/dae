@@ -159,6 +159,9 @@ var (
 	// realDomainNegativeCacheTTL controls how long failed real-domain probes are cached.
 	// Keep it short to avoid stale negatives while still damping bursty probe storms.
 	realDomainNegativeCacheTTL = 10 * time.Second
+	// gracefulShutdownWaitTimeout bounds how long shutdown waits for background
+	// janitors and workers before continuing teardown.
+	gracefulShutdownWaitTimeout = 5 * time.Second
 	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
 	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
 	// Reduced from 800ms to 500ms for faster fallback under poor network conditions.
@@ -1418,7 +1421,7 @@ func (c *ControlPlane) stopRealDomainNegJanitor() {
 			close(c.negJanitorStop)
 		}
 		if c.negJanitorDone != nil {
-			timer := time.NewTimer(5 * time.Second)
+			timer := time.NewTimer(gracefulShutdownWaitTimeout)
 			defer timer.Stop()
 			select {
 			case <-c.negJanitorDone:
@@ -1507,7 +1510,7 @@ func (c *ControlPlane) stopConnStateJanitor() {
 			close(c.connStateJanitorStop)
 		}
 		if c.connStateJanitorDone != nil {
-			timer := time.NewTimer(5 * time.Second)
+			timer := time.NewTimer(gracefulShutdownWaitTimeout)
 			defer timer.Stop()
 			select {
 			case <-c.connStateJanitorDone:
@@ -2694,8 +2697,17 @@ func resetGlobalUdpState() {
 }
 
 func (c *ControlPlane) Close() (err error) {
-	c.stopRealDomainNegJanitor()
-	c.stopConnStateJanitor()
+	var stopWg sync.WaitGroup
+	stopWg.Add(2)
+	go func() {
+		defer stopWg.Done()
+		c.stopRealDomainNegJanitor()
+	}()
+	go func() {
+		defer stopWg.Done()
+		c.stopConnStateJanitor()
+	}()
+	stopWg.Wait()
 	if c.cancel != nil {
 		c.cancel()
 	}

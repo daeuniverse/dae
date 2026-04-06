@@ -268,12 +268,16 @@ func (c *DnsController) newWorkContext(timeout time.Duration) (context.Context, 
 }
 
 func (c *DnsController) Close() error {
+	var (
+		bpfWorkerDone <-chan struct{}
+		janitorDone   <-chan struct{}
+		evictorDone   <-chan struct{}
+	)
+
 	// Acquire lock before closeOnce to synchronize with startBpfUpdateWorker.
 	// This prevents the race where Close and startBpfUpdateWorker access
 	// bpfUpdateStop concurrently.
 	c.bpfUpdateStopMu.Lock()
-	defer c.bpfUpdateStopMu.Unlock()
-
 	c.closeOnce.Do(func() {
 		// Stop BPF update worker (if it was started).
 		if c.bpfUpdateStop != nil {
@@ -281,21 +285,13 @@ func (c *DnsController) Close() error {
 			c.bpfUpdateClosed.Store(true)
 			// Signal worker to stop and drain remaining tasks
 			close(c.bpfUpdateStop)
-			// Wait for worker to finish draining (with safety timeout)
+			// Wait for worker to finish draining.
 			done := make(chan struct{})
 			go func() {
 				c.bpfUpdateWg.Wait()
 				close(done)
 			}()
-			timer := time.NewTimer(5 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-done:
-			case <-timer.C:
-				if c.log != nil {
-					c.log.Warn("DnsController.Close: timeout waiting for bpfUpdateWg")
-				}
-			}
+			bpfWorkerDone = done
 			// Note: We intentionally do NOT close bpfUpdateCh here.
 			// Closing the channel while concurrent sends might be in progress
 			// would cause panics. Instead, the channel will be garbage collected
@@ -306,28 +302,44 @@ func (c *DnsController) Close() error {
 			close(c.janitorStop)
 		}
 		if c.janitorDone != nil {
-			timer := time.NewTimer(5 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-c.janitorDone:
-			case <-timer.C:
-				if c.log != nil {
-					c.log.Warn("DnsController.Close: timeout waiting for janitorDone")
-				}
-			}
+			janitorDone = c.janitorDone
 		}
 		if c.evictorDone != nil {
-			timer := time.NewTimer(5 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-c.evictorDone:
-			case <-timer.C:
-				if c.log != nil {
-					c.log.Warn("DnsController.Close: timeout waiting for evictorDone")
-				}
-			}
+			evictorDone = c.evictorDone
 		}
 	})
+	c.bpfUpdateStopMu.Unlock()
+
+	if bpfWorkerDone != nil || janitorDone != nil || evictorDone != nil {
+		timer := time.NewTimer(gracefulShutdownWaitTimeout)
+		defer timer.Stop()
+
+		for bpfWorkerDone != nil || janitorDone != nil || evictorDone != nil {
+			select {
+			case <-bpfWorkerDone:
+				bpfWorkerDone = nil
+			case <-janitorDone:
+				janitorDone = nil
+			case <-evictorDone:
+				evictorDone = nil
+			case <-timer.C:
+				if c.log != nil {
+					if bpfWorkerDone != nil {
+						c.log.Warn("DnsController.Close: timeout waiting for bpfUpdateWg")
+					}
+					if janitorDone != nil {
+						c.log.Warn("DnsController.Close: timeout waiting for janitorDone")
+					}
+					if evictorDone != nil {
+						c.log.Warn("DnsController.Close: timeout waiting for evictorDone")
+					}
+				}
+				bpfWorkerDone = nil
+				janitorDone = nil
+				evictorDone = nil
+			}
+		}
+	}
 
 	var errs []error
 	c.dnsForwarderCache.Range(func(key, value any) bool {

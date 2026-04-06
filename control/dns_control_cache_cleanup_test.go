@@ -6,6 +6,7 @@
 package control
 
 import (
+	"io"
 	"net"
 	"runtime"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	dnsmessage "github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -167,6 +169,35 @@ func TestDnsController_CloseNoPanicDuringBpfUpdate(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestDnsController_CloseWaitsForShutdownTasksConcurrently(t *testing.T) {
+	oldTimeout := gracefulShutdownWaitTimeout
+	gracefulShutdownWaitTimeout = 100 * time.Millisecond
+	defer func() {
+		gracefulShutdownWaitTimeout = oldTimeout
+	}()
+
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	c := &DnsController{
+		janitorStop:   make(chan struct{}),
+		janitorDone:   make(chan struct{}),
+		evictorDone:   make(chan struct{}),
+		bpfUpdateStop: make(chan struct{}),
+		log:           logger,
+	}
+	c.bpfUpdateWg.Add(1)
+
+	start := time.Now()
+	err := c.Close()
+	elapsed := time.Since(start)
+
+	c.bpfUpdateWg.Done()
+
+	require.NoError(t, err)
+	require.Less(t, elapsed, 220*time.Millisecond, "shutdown waits should run concurrently instead of stacking")
 }
 
 func TestDnsController_UpdateDnsCacheTtlRemovesOnlyStaleIpsOnReplacement(t *testing.T) {
