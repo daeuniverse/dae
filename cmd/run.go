@@ -58,6 +58,20 @@ var (
 	}
 )
 
+type signalShutdownListener interface {
+	Close() error
+}
+
+type signalShutdownControlPlane interface {
+	DetachBpfHooks() error
+	AbortConnections() error
+	Close() error
+}
+
+type signalShutdownNetns interface {
+	Close() error
+}
+
 func init() {
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
 	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to stdout and stderr.")
@@ -189,6 +203,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	var reloading atomic.Bool
 	reloadingErr := error(nil)
 	abortConnections := false
+	fastExit := false
 
 	go func() {
 		for req := range reloadReqs {
@@ -421,6 +436,7 @@ loop:
 			}
 		case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL:
 			log.Infof("Received termination signal: %v", sig.String())
+			fastExit = true
 			break loop
 		case syscall.SIGUSR2:
 			select {
@@ -454,28 +470,7 @@ loop:
 
 	// Stop accepting new ingress immediately so shutdown does not continue to
 	// create fresh UDP/TCP work while the control plane is being torn down.
-	if listener != nil {
-		if e := listener.Close(); e != nil {
-			log.Warnf("close listener: %v", e)
-		}
-		listener = nil
-	}
-
-	// Restore network state immediately.
-	if e := c.DetachBpfHooks(); e != nil {
-		log.Warnf("detach BPF hooks: %v", e)
-	}
-	if e := control.GetDaeNetns().Close(); e != nil {
-		log.Warnf("close dae netns: %v", e)
-	}
-
-	if e := c.AbortConnections(); e != nil {
-		log.Warnf("abort connections: %v", e)
-	}
-	if e := c.Close(); e != nil {
-		return fmt.Errorf("close control plane: %w", e)
-	}
-	return nil
+	return shutdownAfterSignal(log, listener, c, control.GetDaeNetns(), fastExit)
 }
 
 func sendSigExit(sigs chan<- os.Signal) {
@@ -483,6 +478,48 @@ func sendSigExit(sigs chan<- os.Signal) {
 	case sigs <- nil:
 	default:
 	}
+}
+
+func shutdownAfterSignal(
+	log *logrus.Logger,
+	listener signalShutdownListener,
+	c signalShutdownControlPlane,
+	netns signalShutdownNetns,
+	fastExit bool,
+) error {
+	if listener != nil {
+		if e := listener.Close(); e != nil {
+			log.Warnf("close listener: %v", e)
+		}
+	}
+
+	if c != nil {
+		if e := c.DetachBpfHooks(); e != nil {
+			log.Warnf("detach BPF hooks: %v", e)
+		}
+	}
+
+	if fastExit {
+		log.Infoln("[Shutdown] Fast exit enabled; skipping in-process netns and control-plane teardown. Residual kernel state will be purged on next startup.")
+		return nil
+	}
+
+	if netns != nil {
+		if e := netns.Close(); e != nil {
+			log.Warnf("close dae netns: %v", e)
+		}
+	}
+
+	if c == nil {
+		return nil
+	}
+	if e := c.AbortConnections(); e != nil {
+		log.Warnf("abort connections: %v", e)
+	}
+	if e := c.Close(); e != nil {
+		return fmt.Errorf("close control plane: %w", e)
+	}
+	return nil
 }
 
 func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
