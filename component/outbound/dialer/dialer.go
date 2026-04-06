@@ -20,10 +20,9 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
+	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
-
-	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
 )
 
 // Connectivity check indices.

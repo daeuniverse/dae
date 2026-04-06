@@ -12,9 +12,7 @@ import (
 
 func TestProxyFailureThreshold(t *testing.T) {
 	proxyAddr := "test-proxy.com:8080"
-	globalProxyIpHealthTracker.Lock()
-	globalProxyIpHealthTracker.failures = make(map[string]int32)
-	globalProxyIpHealthTracker.Unlock()
+	resetGlobalProxyState()
 
 	if recordProxyFailure(proxyAddr) {
 		t.Error("Expected false after 1st failure")
@@ -194,7 +192,7 @@ func BenchmarkRecordProxyFailure(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		globalProxyIpHealthTracker.Lock()
-		globalProxyIpHealthTracker.failures[proxyAddr] = 0
+		globalProxyIpHealthTracker.failures[proxyAddr] = proxyIpFailureEntry{}
 		globalProxyIpHealthTracker.Unlock()
 		recordProxyFailure(proxyAddr)
 		recordProxyFailure(proxyAddr)

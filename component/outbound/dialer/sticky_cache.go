@@ -7,6 +7,7 @@ package dialer
 
 import (
 	"sync"
+	"time"
 
 	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
 )
@@ -84,29 +85,73 @@ func invalidateProxyCache(proxyAddr string) {
 // proxyIpHealthTracker tracks consecutive failures for proxy IPs.
 type proxyIpHealthTracker struct {
 	sync.Mutex
-	failures map[string]int32 // proxy address -> consecutive failure count
+	failures      map[string]proxyIpFailureEntry
+	nextCleanupAt time.Time
 }
 
 var globalProxyIpHealthTracker = &proxyIpHealthTracker{
-	failures: make(map[string]int32),
+	failures: make(map[string]proxyIpFailureEntry),
 }
 
-const maxConsecutiveFailures = 3
+type proxyIpFailureEntry struct {
+	count       int32
+	lastUpdated time.Time
+}
+
+const (
+	maxConsecutiveFailures      = 3
+	proxyFailureTTL             = 15 * time.Minute
+	proxyFailureCleanupInterval = 5 * time.Minute
+)
+
+func (t *proxyIpHealthTracker) maybeCleanupLocked(now time.Time) {
+	if !t.nextCleanupAt.IsZero() && now.Before(t.nextCleanupAt) {
+		return
+	}
+	for proxyAddr, entry := range t.failures {
+		if now.Sub(entry.lastUpdated) >= proxyFailureTTL {
+			delete(t.failures, proxyAddr)
+		}
+	}
+	t.nextCleanupAt = now.Add(proxyFailureCleanupInterval)
+}
+
+func resetGlobalProxyState() {
+	globalProxyIpCache = NewProxyIpCache()
+
+	globalProxyIpCacheRegistry.Lock()
+	globalProxyIpCacheRegistry.caches = make(map[string]map[*ProxyIpCache]int)
+	globalProxyIpCacheRegistry.Unlock()
+
+	globalProxyIpHealthTracker.Lock()
+	globalProxyIpHealthTracker.failures = make(map[string]proxyIpFailureEntry)
+	globalProxyIpHealthTracker.nextCleanupAt = time.Time{}
+	globalProxyIpHealthTracker.Unlock()
+}
 
 // recordProxyFailure records a failure for the given proxy address.
 // Returns true if the threshold has been reached.
 func recordProxyFailure(proxyAddr string) bool {
+	now := time.Now()
+
 	globalProxyIpHealthTracker.Lock()
-	defer globalProxyIpHealthTracker.Unlock()
-	globalProxyIpHealthTracker.failures[proxyAddr]++
-	count := globalProxyIpHealthTracker.failures[proxyAddr]
-	if count >= maxConsecutiveFailures {
-		// Reset counter after reaching threshold to allow retry
+	globalProxyIpHealthTracker.maybeCleanupLocked(now)
+
+	entry := globalProxyIpHealthTracker.failures[proxyAddr]
+	entry.count++
+	entry.lastUpdated = now
+
+	if entry.count >= maxConsecutiveFailures {
 		delete(globalProxyIpHealthTracker.failures, proxyAddr)
-		// Invalidate the cache to force IP refresh
+		globalProxyIpHealthTracker.Unlock()
+
+		// Invalidate the cache to force IP refresh.
 		invalidateProxyCache(proxyAddr)
 		return true
 	}
+
+	globalProxyIpHealthTracker.failures[proxyAddr] = entry
+	globalProxyIpHealthTracker.Unlock()
 	return false
 }
 
