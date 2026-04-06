@@ -589,15 +589,6 @@ func (c *DnsController) rememberDnsKnowledge(baseKey string, originalDeadline ti
 	}
 }
 
-func (c *DnsController) removeDnsKnowledge(baseKey string) {
-	if baseKey == "" {
-		return
-	}
-	c.dnsKnowledgeMu.Lock()
-	defer c.dnsKnowledgeMu.Unlock()
-	c.dnsKnowledge.Delete(baseKey)
-}
-
 func (c *DnsController) forgetDnsKnowledge(cacheKey string, cache *DnsCache) {
 	baseKey := dnsCacheBaseKey(cacheKey)
 	if baseKey == "" || cache == nil {

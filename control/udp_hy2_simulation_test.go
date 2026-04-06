@@ -42,10 +42,6 @@ type hy2SimulationConn struct {
 	readPackets    atomic.Int64
 }
 
-func newHy2SimulationConn(readStartsBlocked bool) *hy2SimulationConn {
-	return newHy2SimulationConnWithQueueSize(readStartsBlocked, hy2ModelReceiveQueueSize)
-}
-
 func newHy2SimulationConnWithQueueSize(readStartsBlocked bool, queueSize int) *hy2SimulationConn {
 	if queueSize <= 0 {
 		queueSize = hy2ModelReceiveQueueSize
