@@ -15,6 +15,16 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 }
 
 func TestLoadMainBPFObjects(t *testing.T) {
+	testLoadMainBPFObjects(t, 0)
+}
+
+func TestLoadMainBPFObjectsWithDaeSocketMark(t *testing.T) {
+	testLoadMainBPFObjects(t, 0x73ae)
+}
+
+func testLoadMainBPFObjects(t *testing.T, daeSocketMark uint32) {
+	t.Helper()
+
 	var obj bpfObjects
 	opts := &ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{
@@ -35,7 +45,9 @@ func TestLoadMainBPFObjects(t *testing.T) {
 			padding1        uint8
 			padding2        uint16
 			daeSocketMark   uint32
-		}{},
+		}{
+			daeSocketMark: daeSocketMark,
+		},
 	}
 
 	if err := loadBpfObjectsWithConstantsAndCustomizer(&obj, opts, constants, disableAllPinnedMapsForTests); err != nil {

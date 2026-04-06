@@ -118,5 +118,5 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use the synced outbound fix branch HEAD until these commits land upstream.
+// Use the synced outbound perf/complete-optimizations branch HEAD until these commits land upstream.
 replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260405153117-e95777550d1d

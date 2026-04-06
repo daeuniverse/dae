@@ -81,6 +81,26 @@ set_ipv4_tcp(struct __sk_buff *skb,
 }
 
 static __always_inline int
+set_ipv4_tcp_with_dscp(struct __sk_buff *skb,
+		       __u32 saddr, __u32 daddr,
+		       __u16 sport, __u16 dport,
+		       __u8 dscp)
+{
+	if (set_ipv4_tcp(skb, saddr, daddr, sport, dport))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct iphdr *ip = data + ETH_HLEN;
+
+	if ((void *)(ip + 1) > data_end)
+		return TC_ACT_SHOT;
+
+	ip->tos = dscp << 2;
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 check_status_and_mark(struct __sk_buff *skb,
 		      __u32 expected_status_code,
 		      __u32 expected_mark)
@@ -270,6 +290,106 @@ check_tcp_conn_state_ipv4_tcp(struct __sk_buff *skb,
 }
 
 static __always_inline int
+check_tcp_conn_state_ipv4_tcp_dscp(struct __sk_buff *skb,
+				   __u32 expected_status_code,
+				   __u32 saddr, __u32 daddr,
+				   __u16 sport, __u16 dport,
+				   __u8 expected_outbound,
+				   __u32 expected_mark,
+				   __u8 expected_dscp,
+				   bool expect_eth)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != expected_status_code) {
+		bpf_printk("status_code(%d) != %d\n", *status_code, expected_status_code);
+		return TC_ACT_SHOT;
+	}
+
+	struct iphdr *ip;
+
+	if (expect_eth) {
+		struct ethhdr *eth = data + sizeof(*status_code);
+		if ((void *)(eth + 1) > data_end) {
+			bpf_printk("data + sizeof(*eth) > data_end\n");
+			return TC_ACT_SHOT;
+		}
+		if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+			bpf_printk("eth->h_proto != ETH_P_IP\n");
+			return TC_ACT_SHOT;
+		}
+		ip = (void *)eth + ETH_HLEN;
+	} else {
+		ip = data + sizeof(*status_code);
+	}
+
+	if ((void *)(ip + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip->protocol != IPPROTO_TCP) {
+		bpf_printk("ip->protocol != IPPROTO_TCP\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tcphdr *tcp = (void *)ip + IP4_HLEN;
+	if ((void *)(tcp + 1) > data_end) {
+		bpf_printk("data + sizeof(*tcp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tuples tuples = {};
+	tuples.five.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	tuples.five.sip.u6_addr32[3] = ip->saddr;
+	tuples.five.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	tuples.five.dip.u6_addr32[3] = ip->daddr;
+	tuples.five.sport = tcp->source;
+	tuples.five.dport = tcp->dest;
+	tuples.five.l4proto = ip->protocol;
+
+	struct tcp_conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+	if (!conn_state) {
+		bpf_printk("conn_state == NULL\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.has_routing == 0) {
+		bpf_printk("conn_state->meta.data.has_routing == 0\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.outbound != expected_outbound) {
+		bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+			   conn_state->meta.data.outbound, expected_outbound);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.mark != expected_mark) {
+		bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+			   conn_state->meta.data.mark, expected_mark);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.dscp != expected_dscp) {
+		bpf_printk("conn_state->meta.data.dscp(%d) != %d\n",
+			   conn_state->meta.data.dscp, expected_dscp);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 check_routing_ipv4_tcp_state(struct __sk_buff *skb,
 			     __u32 expected_status_code,
 			     __u32 saddr, __u32 daddr,
@@ -395,6 +515,106 @@ check_routing_ipv4_tcp_state(struct __sk_buff *skb,
 }
 
 static __always_inline int
+check_udp_conn_state_ipv4_udp_dscp(struct __sk_buff *skb,
+				   __u32 expected_status_code,
+				   __u32 saddr, __u32 daddr,
+				   __u16 sport, __u16 dport,
+				   __u8 expected_outbound,
+				   __u32 expected_mark,
+				   __u8 expected_dscp,
+				   bool expect_eth)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != expected_status_code) {
+		bpf_printk("status_code(%d) != %d\n", *status_code, expected_status_code);
+		return TC_ACT_SHOT;
+	}
+
+	struct iphdr *ip;
+
+	if (expect_eth) {
+		struct ethhdr *eth = data + sizeof(*status_code);
+		if ((void *)(eth + 1) > data_end) {
+			bpf_printk("data + sizeof(*eth) > data_end\n");
+			return TC_ACT_SHOT;
+		}
+		if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+			bpf_printk("eth->h_proto != ETH_P_IP\n");
+			return TC_ACT_SHOT;
+		}
+		ip = (void *)eth + ETH_HLEN;
+	} else {
+		ip = data + sizeof(*status_code);
+	}
+
+	if ((void *)(ip + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip->protocol != IPPROTO_UDP) {
+		bpf_printk("ip->protocol != IPPROTO_UDP\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct udphdr *udp = (void *)ip + IP4_HLEN;
+	if ((void *)(udp + 1) > data_end) {
+		bpf_printk("data + sizeof(*udp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tuples tuples = {};
+	tuples.five.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	tuples.five.sip.u6_addr32[3] = ip->saddr;
+	tuples.five.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	tuples.five.dip.u6_addr32[3] = ip->daddr;
+	tuples.five.sport = udp->source;
+	tuples.five.dport = udp->dest;
+	tuples.five.l4proto = ip->protocol;
+
+	struct udp_conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five);
+	if (!conn_state) {
+		bpf_printk("conn_state == NULL\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.has_routing == 0) {
+		bpf_printk("conn_state->meta.data.has_routing == 0\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.outbound != expected_outbound) {
+		bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+			   conn_state->meta.data.outbound, expected_outbound);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.mark != expected_mark) {
+		bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+			   conn_state->meta.data.mark, expected_mark);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.dscp != expected_dscp) {
+		bpf_printk("conn_state->meta.data.dscp(%d) != %d\n",
+			   conn_state->meta.data.dscp, expected_dscp);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 check_routing_ipv4_tcp(struct __sk_buff *skb,
 		       __u32 expected_status_code,
 		       __u32 saddr, __u32 daddr,
@@ -475,6 +695,26 @@ set_minimal_ipv4_udp(struct __sk_buff *skb,
 	udp->len = bpf_htons(8);
 	udp->check = 0;
 
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+set_minimal_ipv4_udp_with_dscp(struct __sk_buff *skb,
+			       __u32 saddr, __u32 daddr,
+			       __u16 sport, __u16 dport,
+			       __u8 dscp)
+{
+	if (set_minimal_ipv4_udp(skb, saddr, daddr, sport, dport))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct iphdr *ip = data + ETH_HLEN;
+
+	if ((void *)(ip + 1) > data_end)
+		return TC_ACT_SHOT;
+
+	ip->tos = dscp << 2;
 	return TC_ACT_OK;
 }
 

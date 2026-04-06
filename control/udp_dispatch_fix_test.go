@@ -116,34 +116,30 @@ func TestUdpFlowDecision_ShouldUseGoroutineDirectly(t *testing.T) {
 	}
 }
 
-func TestUdpFlowDecision_NonQuicTrafficDoesNotUseOrderedIngress(t *testing.T) {
+func TestUdpFlowDecision_SessionTrafficUsesOrderedIngress(t *testing.T) {
 	tests := []struct {
-		name        string
-		src         string
-		dst         string
-		payload     []byte
-		wantOrdered bool
+		name    string
+		src     string
+		dst     string
+		payload []byte
 	}{
 		{
-			name:        "plain game udp on random port",
-			src:         "192.168.1.10:40000",
-			dst:         "203.0.113.10:27015",
-			payload:     []byte{0x01, 0x02, 0x03},
-			wantOrdered: false,
+			name:    "plain game udp on random port",
+			src:     "192.168.1.10:40000",
+			dst:     "203.0.113.10:27015",
+			payload: []byte{0x01, 0x02, 0x03},
 		},
 		{
-			name:        "wireguard uses bounded pool not ordered ingress",
-			src:         "192.168.1.10:40001",
-			dst:         "203.0.113.20:51820",
-			payload:     []byte{0x11, 0x22, 0x33},
-			wantOrdered: false,
+			name:    "wireguard keeps session fifo",
+			src:     "192.168.1.10:40001",
+			dst:     "203.0.113.20:51820",
+			payload: []byte{0x11, 0x22, 0x33},
 		},
 		{
-			name:        "quic-like payload on non-allowlisted port still bypasses ordered ingress",
-			src:         "192.168.1.10:40002",
-			dst:         "203.0.113.30:30000",
-			payload:     []byte{0xc3, 0x00, 0x00, 0x00, 0x01},
-			wantOrdered: false,
+			name:    "quic-like payload on non-allowlisted port still uses ordered ingress",
+			src:     "192.168.1.10:40002",
+			dst:     "203.0.113.30:30000",
+			payload: []byte{0xc3, 0x00, 0x00, 0x00, 0x01},
 		},
 	}
 
@@ -153,17 +149,17 @@ func TestUdpFlowDecision_NonQuicTrafficDoesNotUseOrderedIngress(t *testing.T) {
 			dst := mustParseAddrPort(tt.dst)
 			decision := ClassifyUdpFlow(src, dst, tt.payload)
 
-			if got := decision.ShouldUseOrderedIngress(); got != tt.wantOrdered {
-				t.Fatalf("ShouldUseOrderedIngress() = %v, want %v", got, tt.wantOrdered)
+			if !decision.ShouldUseOrderedIngress() {
+				t.Fatal("ShouldUseOrderedIngress() = false, want true")
 			}
-			if got := decision.DispatchStrategy(); got == StrategyOrderedIngress {
-				t.Fatalf("DispatchStrategy() = %v, want non-ordered strategy for non-QUIC traffic", got)
+			if got := decision.DispatchStrategy(); got != StrategyOrderedIngress {
+				t.Fatalf("DispatchStrategy() = %v, want %v", got, StrategyOrderedIngress)
 			}
 		})
 	}
 }
 
-func TestUdpFlowDecision_OnlyQuicSniffingUsesOrderedIngress(t *testing.T) {
+func TestUdpFlowDecision_QuicInitialUsesOrderedIngress(t *testing.T) {
 	quicInitialPayload := []byte{0xc3, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00}
 	src := mustParseAddrPort("192.168.1.10:40100")
 	dst := mustParseAddrPort("203.0.113.40:443")
@@ -177,39 +173,99 @@ func TestUdpFlowDecision_OnlyQuicSniffingUsesOrderedIngress(t *testing.T) {
 	}
 }
 
-func TestNonQuicDirectDispatchIsConcurrencySafe(t *testing.T) {
+func TestOrderedDispatchStillAllowsCrossFlowConcurrency(t *testing.T) {
+	pool := NewUdpTaskPool()
+
 	decision := ClassifyUdpFlow(
 		mustParseAddrPort("192.168.1.10:40200"),
 		mustParseAddrPort("203.0.113.50:27015"),
 		[]byte{0x01, 0x02},
 	)
-	if decision.DispatchStrategy() != StrategyDirectGoroutine {
-		t.Fatalf("DispatchStrategy() = %v, want %v", decision.DispatchStrategy(), StrategyDirectGoroutine)
+	if decision.DispatchStrategy() != StrategyOrderedIngress {
+		t.Fatalf("DispatchStrategy() = %v, want %v", decision.DispatchStrategy(), StrategyOrderedIngress)
 	}
 
 	var running atomic.Int64
 	var peak atomic.Int64
 	var wg sync.WaitGroup
+	release := make(chan struct{})
 
-	for i := 0; i < 32; i++ {
+	keys := []UdpFlowKey{
+		NewUdpFlowKey(
+			mustParseAddrPort("192.168.1.10:40200"),
+			mustParseAddrPort("203.0.113.50:27015"),
+		),
+		NewUdpFlowKey(
+			mustParseAddrPort("192.168.1.10:40201"),
+			mustParseAddrPort("203.0.113.51:27015"),
+		),
+	}
+
+	for _, key := range keys {
 		wg.Add(1)
-		go func() {
+		pool.EmitTask(key, func() {
 			defer wg.Done()
 			cur := running.Add(1)
+			defer running.Add(-1)
 			for {
 				old := peak.Load()
 				if cur <= old || peak.CompareAndSwap(old, cur) {
 					break
 				}
 			}
-			time.Sleep(2 * time.Millisecond)
-			running.Add(-1)
-		}()
+			<-release
+		})
 	}
+
+	waitForCondition(t, time.Second, "both per-flow convoys active", func() bool {
+		return peak.Load() >= 2
+	})
+	close(release)
 	wg.Wait()
 
 	if peak.Load() <= 1 {
-		t.Fatalf("expected direct goroutine dispatch to allow concurrent execution, peak=%d", peak.Load())
+		t.Fatalf("expected ordered ingress to stay per-flow rather than global, peak=%d", peak.Load())
+	}
+}
+
+func TestUdpTaskPool_PreservesPerFlowOrderAcrossOverflow(t *testing.T) {
+	pool := NewUdpTaskPool()
+	key := NewUdpFlowKey(
+		mustParseAddrPort("192.168.1.10:40300"),
+		mustParseAddrPort("203.0.113.60:27015"),
+	)
+
+	const total = UdpTaskQueueLength + 64
+
+	var (
+		mu   sync.Mutex
+		got  = make([]int, 0, total)
+		done sync.WaitGroup
+	)
+	done.Add(total)
+
+	for i := 0; i < total; i++ {
+		seq := i
+		pool.EmitTask(key, func() {
+			defer done.Done()
+			mu.Lock()
+			got = append(got, seq)
+			mu.Unlock()
+			time.Sleep(50 * time.Microsecond)
+		})
+	}
+
+	done.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != total {
+		t.Fatalf("executed %d tasks, want %d", len(got), total)
+	}
+	for i, seq := range got {
+		if seq != i {
+			t.Fatalf("got execution order[%d]=%d, want %d", i, seq, i)
+		}
 	}
 }
 

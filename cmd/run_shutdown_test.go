@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
 )
 
@@ -150,5 +151,15 @@ func TestShutdownAfterSignalGracefulExitRunsFullTeardown(t *testing.T) {
 	}
 	if !reflect.DeepEqual(recorder.order, wantOrder) {
 		t.Fatalf("call order = %v, want %v", recorder.order, wantOrder)
+	}
+}
+
+func TestShutdownAfterSignalTypedNilResourcesAreSkipped(t *testing.T) {
+	var listener *control.Listener
+	var plane *control.ControlPlane
+	var netns *control.DaeNetns
+
+	if err := shutdownAfterSignal(newDiscardLogger(), listener, plane, netns, true); err != nil {
+		t.Fatalf("shutdownAfterSignal() error = %v, want nil", err)
 	}
 }

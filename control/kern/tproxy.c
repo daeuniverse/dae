@@ -323,6 +323,29 @@ union routing_meta {
 	__u64 raw;
 } __attribute__((aligned(8)));
 
+static __always_inline union routing_meta
+build_routing_meta(__u8 outbound, __u32 mark, __u8 must, __u8 dscp)
+{
+	union routing_meta meta = { 0 };
+
+	meta.data.outbound = outbound;
+	meta.data.mark = mark;
+	meta.data.must = must;
+	meta.data.dscp = dscp;
+	meta.data.has_routing = 1;
+	return meta;
+}
+
+static __always_inline bool bpf_sock_is_dae_socket(const struct bpf_sock *sk)
+{
+	if (!sk || !PARAM.dae_socket_mark)
+		return false;
+
+	struct bpf_sock *fullsock = bpf_sk_fullsock((struct bpf_sock *)sk);
+
+	return fullsock && fullsock->mark == PARAM.dae_socket_mark;
+}
+
 struct udp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
@@ -2108,14 +2131,14 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		// cascade deletion when the connection expires.
 		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false,
 					  NULL, NULL, NULL, NULL,
-					  0, NULL, 0);
+					  pkt->tuples.dscp, NULL, 0);
 		route_flag[0] = L4ProtoType_TCP;
 	} else {
 		if (!is_short_lived_udp_traffic(&pkt->tuples.five)) {
 			// Fast path: Check conn state for established UDP flows
 			udp_state = mark_udp_seen(&pkt->tuples.five, false,
 						  NULL, NULL, NULL, NULL,
-						  0, NULL, 0);
+						  pkt->tuples.dscp, NULL, 0);
 			// Robustness: If conntrack map is full (conn_state == NULL),
 			// gracefully degrade by continuing with normal routing instead of
 			// dropping the packet. We lose the "direct return path" optimization
@@ -2211,7 +2234,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 				sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
 							PARAM.dae_netns_id, 0);
 				if (sk) {
-					if (sk->state == BPF_TCP_LISTEN) {
+					if (!bpf_sock_is_dae_socket(sk) &&
+					    sk->state == BPF_TCP_LISTEN) {
 						// Found LISTEN socket - local service (NAT loopback).
 						// Pass through to kernel stack directly, bypassing dae.
 						bpf_sk_release(sk);
@@ -2227,12 +2251,19 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			}
 			// For SYN packets (new connections), skip socket lookup and continue to routing
 		} else {
-			// UDP: Skip socket lookup.
-			// dae's Anyfrom sockets bind to DNS server IPs, not client IPs.
-			// bpf_sk_lookup_udp() looks for sockets bound to (dip, dport) of the packet,
-			// which is (clientIP, clientPort) for DNS responses - this won't match
-			// Anyfrom sockets bound to (dnsServerIP, 0).
-			// So we skip the socket lookup entirely to avoid overhead.
+			// UDP: Any non-dae socket matching the destination tuple is a local service.
+			sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
+					       PARAM.dae_netns_id, 0);
+			if (sk) {
+				if (!bpf_sock_is_dae_socket(sk)) {
+					bpf_sk_release(sk);
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+					bpf_printk("udp(lan): local socket found, pass through");
+#endif
+					return TC_ACT_OK;
+				}
+				bpf_sk_release(sk);
+			}
 		}
 		// No socket found - continue to routing
 	}
@@ -2266,22 +2297,14 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	} else if (pkt->l4proto == IPPROTO_TCP && tcp_state) {
 		// Directly update the TCP conn state we already looked up
 		__builtin_memcpy(tcp_state->mac, pkt->ethh.h_source, 6);
-		union routing_meta _m = {0};
-
-		_m.data.outbound = outbound;
-		_m.data.mark = mark;
-		_m.data.must = must;
-		_m.data.has_routing = 1;
+		union routing_meta _m = build_routing_meta(outbound, mark, must,
+							    pkt->tuples.dscp);
 		*(volatile __u64 *)&tcp_state->meta.raw = _m.raw;
 	} else if (pkt->l4proto == IPPROTO_UDP && udp_state) {
 		// Directly update the UDP conn state we already looked up
 		__builtin_memcpy(udp_state->mac, pkt->ethh.h_source, 6);
-		union routing_meta _m = {0};
-
-		_m.data.outbound = outbound;
-		_m.data.mark = mark;
-		_m.data.must = must;
-		_m.data.has_routing = 1;
+		union routing_meta _m = build_routing_meta(outbound, mark, must,
+							    pkt->tuples.dscp);
 		*(volatile __u64 *)&udp_state->meta.raw = _m.raw;
 	}
 	// No separate routing_tuples_map write needed - routing is embedded.
@@ -2757,13 +2780,10 @@ fast_path_skip_routing:
 						 TASK_COMM_LEN);
 				udp_conn_state->pid = pid_pname->pid;
 			}
-			union routing_meta _m = {0};
-
-			_m.data.outbound = outbound;
-			_m.data.mark = mark;
-			_m.data.must = must;
-			_m.data.dscp = tuples->dscp;
-			_m.data.has_routing = 1;
+			union routing_meta _m = build_routing_meta(outbound,
+								   mark,
+								   must,
+								   tuples->dscp);
 			*(volatile __u64 *)&udp_conn_state->meta.raw = _m.raw;
 		}
 		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();

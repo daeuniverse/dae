@@ -113,6 +113,9 @@ func (ns *DaeNetns) Setup() (err error) {
 }
 
 func (ns *DaeNetns) Close() (err error) {
+	if ns == nil {
+		return nil
+	}
 	_ = DeleteNamedNetns(NsName)
 	_ = DeleteLink(HostVethName)
 	return

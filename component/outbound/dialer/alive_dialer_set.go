@@ -55,10 +55,6 @@ type AliveDialerSet struct {
 	// Using a slice of structs provides better cache locality and eliminates map lookups.
 	aliveEntries []aliveEntry
 
-	// randCandidatesBuf is a pre-allocated buffer for GetRandExcluded to reuse
-	// and avoid heap allocations on each call.
-	randCandidatesBuf []*Dialer
-
 	selectionPolicy consts.DialerSelectionPolicy
 	minLatency      minLatency
 }
@@ -92,7 +88,6 @@ func NewAliveDialerSet(
 		dialerToLatency:       make(map[*Dialer]time.Duration),
 		dialerToLatencyOffset: dialerToLatencyOffset,
 		aliveEntries:          make([]aliveEntry, 0, len(dialers)),
-		randCandidatesBuf:     make([]*Dialer, 0, len(dialers)),
 		selectionPolicy:       selectionPolicy,
 		minLatency: minLatency{
 			// Initiate the latency with a very big value.
@@ -116,28 +111,21 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if len(a.aliveEntries) == 0 {
-		return nil
-	}
-
-	// Reuse pre-allocated buffer to avoid heap allocations.
-	// Slice to zero length but keep the underlying capacity.
-	candidates := a.randCandidatesBuf[:0]
-
+	var chosen *Dialer
+	var candidateCount int
 	for i := range a.aliveEntries {
 		d := a.aliveEntries[i].dialer
 		if d == excluded {
 			continue
 		}
-		candidates = append(candidates, d)
+		candidateCount++
+		// Reservoir sampling keeps uniform randomness without a shared scratch buffer.
+		if fastrand.Intn(candidateCount) == 0 {
+			chosen = d
+		}
 	}
 
-	if len(candidates) > 0 {
-		return candidates[fastrand.Intn(len(candidates))]
-	}
-
-	// No dialer available
-	return nil
+	return chosen
 }
 
 func (a *AliveDialerSet) Len() int {
@@ -393,5 +381,52 @@ func (a *AliveDialerSet) calcMinLatency() {
 		(a.minLatency.sortingLatency < a.tolerance || minLatency <= a.minLatency.sortingLatency-a.tolerance) {
 		a.minLatency.sortingLatency = minLatency
 		a.minLatency.dialer = minDialer
+	}
+}
+
+func (a *AliveDialerSet) SetSelectionPolicy(policy consts.DialerSelectionPolicy) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.selectionPolicy == policy {
+		return
+	}
+	a.selectionPolicy = policy
+	a.recomputeSelectionStateLocked()
+}
+
+func (a *AliveDialerSet) recomputeSelectionStateLocked() {
+	a.dialerToLatency = make(map[*Dialer]time.Duration, len(a.dialerToLatencyOffset))
+	a.minLatency = minLatency{
+		sortingLatency: time.Hour,
+	}
+
+	if !isMinLatencyPolicy(a.selectionPolicy) {
+		return
+	}
+
+	for i := range a.aliveEntries {
+		entry := &a.aliveEntries[i]
+		rawLatency, hasLatency := entry.dialer.snapshotLatencyForPolicy(a.CheckTyp, a.selectionPolicy)
+		if hasLatency {
+			a.dialerToLatency[entry.dialer] = rawLatency
+			entry.sortingLatency = rawLatency + a.dialerToLatencyOffset[entry.dialer]
+			continue
+		}
+		// Keep optimistic startup semantics for alive dialers without latency data yet.
+		entry.sortingLatency = 0
+	}
+
+	a.calcMinLatency()
+}
+
+func isMinLatencyPolicy(policy consts.DialerSelectionPolicy) bool {
+	switch policy {
+	case consts.DialerSelectionPolicy_MinLastLatency,
+		consts.DialerSelectionPolicy_MinAverage10Latencies,
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		return true
+	default:
+		return false
 	}
 }

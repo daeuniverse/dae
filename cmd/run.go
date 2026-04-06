@@ -510,14 +510,13 @@ func shutdownAfterSignal(
 		}
 	}
 
-	if c == nil {
-		return nil
-	}
-	if e := c.AbortConnections(); e != nil {
-		log.Warnf("abort connections: %v", e)
-	}
-	if e := c.Close(); e != nil {
-		return fmt.Errorf("close control plane: %w", e)
+	if c != nil {
+		if e := c.AbortConnections(); e != nil {
+			log.Warnf("abort connections: %v", e)
+		}
+		if e := c.Close(); e != nil {
+			return fmt.Errorf("close control plane: %w", e)
+		}
 	}
 	return nil
 }

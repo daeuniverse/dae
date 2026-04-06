@@ -15,7 +15,12 @@ import (
 	"time"
 )
 
-const hy2ModelReceiveQueueSize = 1024
+const (
+	hy2ModelReceiveQueueSize = 1024
+	// Mirror the current hysteria2 client receive queue depth so SLO tests
+	// exercise the same burst budget as the live outbound implementation.
+	hy2CurrentReceiveQueueSize = 2048
+)
 
 type hy2SimulationPacket struct {
 	data []byte
@@ -38,8 +43,15 @@ type hy2SimulationConn struct {
 }
 
 func newHy2SimulationConn(readStartsBlocked bool) *hy2SimulationConn {
+	return newHy2SimulationConnWithQueueSize(readStartsBlocked, hy2ModelReceiveQueueSize)
+}
+
+func newHy2SimulationConnWithQueueSize(readStartsBlocked bool, queueSize int) *hy2SimulationConn {
+	if queueSize <= 0 {
+		queueSize = hy2ModelReceiveQueueSize
+	}
 	conn := &hy2SimulationConn{
-		receiveCh: make(chan hy2SimulationPacket, hy2ModelReceiveQueueSize),
+		receiveCh: make(chan hy2SimulationPacket, queueSize),
 		closeCh:   make(chan struct{}),
 		readStart: make(chan struct{}),
 	}
@@ -143,12 +155,16 @@ type hy2BoundarySimulationResult struct {
 }
 
 func runHy2BoundarySimulation(t *testing.T, mode hy2BoundaryMode, totalPackets int, producerGap, handlerDelay time.Duration, prebufferBeforeDrain bool) hy2BoundarySimulationResult {
+	return runHy2BoundarySimulationWithQueueSize(t, mode, totalPackets, producerGap, handlerDelay, prebufferBeforeDrain, hy2ModelReceiveQueueSize)
+}
+
+func runHy2BoundarySimulationWithQueueSize(t *testing.T, mode hy2BoundaryMode, totalPackets int, producerGap, handlerDelay time.Duration, prebufferBeforeDrain bool, queueSize int) hy2BoundarySimulationResult {
 	t.Helper()
 
 	// Some scenarios model a burst that has already filled HY2's receive queue
 	// before dae gets CPU time. Hold ReadFrom behind an explicit gate there so the
 	// test does not accidentally depend on goroutine scheduling.
-	conn := newHy2SimulationConn(prebufferBeforeDrain)
+	conn := newHy2SimulationConnWithQueueSize(prebufferBeforeDrain, queueSize)
 	replySrc := netip.MustParseAddrPort("203.0.113.10:3478")
 	start := time.Now()
 

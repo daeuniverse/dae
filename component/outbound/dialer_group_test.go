@@ -144,7 +144,10 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 	}
 
 	fixedIndex = 0
-	g.selectionPolicy.FixedIndex = fixedIndex
+	g.SetSelectionPolicy(DialerSelectionPolicy{
+		Policy:     consts.DialerSelectionPolicy_Fixed,
+		FixedIndex: fixedIndex,
+	})
 	for range 10 {
 		d, _, err := g.Select(TestNetworkType, false)
 		if err != nil {
@@ -358,6 +361,121 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	}
 	if count[zeroTarget] != 0 {
 		t.Fail()
+	}
+}
+
+func TestDialerGroup_SetSelectionPolicy_FixedToRandomCreatesAliveState(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+		CheckTolerance:    0,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	g := NewDialerGroup(option, "test-group", dialers, newEmptyAnnotations(len(dialers)),
+		DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+
+	if got := g.MustGetAliveDialerSet(TestNetworkType); got != nil {
+		t.Fatal("fixed policy should not eagerly allocate alive-state sets")
+	}
+
+	g.SetSelectionPolicy(DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_Random,
+	})
+
+	set := g.MustGetAliveDialerSet(TestNetworkType)
+	if set == nil {
+		t.Fatal("random policy should allocate alive-state sets on demand")
+	}
+	if got := set.Len(); got != len(dialers) {
+		t.Fatalf("alive dialer count = %d, want %d", got, len(dialers))
+	}
+}
+
+func TestDialerGroup_SetSelectionPolicy_FixedToRandomPreservesAliveState(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+		CheckTolerance:    0,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	g := NewDialerGroup(option, "test-group", dialers, newEmptyAnnotations(len(dialers)),
+		DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: 0,
+		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+
+	dialers[1].ReportUnavailableForced(TestNetworkType, errors.New("forced dead for policy switch"))
+
+	g.SetSelectionPolicy(DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_Random,
+	})
+
+	set := g.MustGetAliveDialerSet(TestNetworkType)
+	if set == nil {
+		t.Fatal("random policy should allocate alive-state sets")
+	}
+	if got := set.Len(); got != 1 {
+		t.Fatalf("alive dialer count = %d, want 1", got)
+	}
+
+	selected, _, err := g.Select(TestNetworkType, true)
+	if err != nil {
+		t.Fatalf("Select() error after preserving alive state: %v", err)
+	}
+	if selected != dialers[0] {
+		t.Fatal("expected selection to skip dialer that was already dead before policy switch")
+	}
+}
+
+func TestDialerGroup_SetSelectionPolicy_RecomputesMinLatencyOrdering(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+		CheckTolerance:    0,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	g := NewDialerGroup(option, "test-group", dialers, newEmptyAnnotations(len(dialers)),
+		DialerSelectionPolicy{
+			Policy: consts.DialerSelectionPolicy_Random,
+		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+
+	dialers[0].MustGetLatencies10(TestNetworkType).AppendLatency(90 * time.Millisecond)
+	dialers[0].MustGetLatencies10(TestNetworkType).AppendLatency(80 * time.Millisecond)
+	dialers[1].MustGetLatencies10(TestNetworkType).AppendLatency(50 * time.Millisecond)
+	dialers[1].MustGetLatencies10(TestNetworkType).AppendLatency(40 * time.Millisecond)
+
+	set := g.MustGetAliveDialerSet(TestNetworkType)
+	set.NotifyLatencyChange(dialers[0], true)
+	set.NotifyLatencyChange(dialers[1], true)
+
+	g.SetSelectionPolicy(DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_MinAverage10Latencies,
+	})
+
+	selected, _, err := g.Select(TestNetworkType, true)
+	if err != nil {
+		t.Fatalf("Select() error after policy update: %v", err)
+	}
+	if selected != dialers[1] {
+		t.Fatal("expected lower-average-latency dialer after policy recompute")
 	}
 }
 

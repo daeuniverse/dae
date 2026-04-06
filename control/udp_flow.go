@@ -238,12 +238,16 @@ func (d UdpFlowDecision) ShouldAttemptSniff() bool {
 }
 
 func (d UdpFlowDecision) ShouldUseOrderedIngress() bool {
-	// Ordered ingress is only needed for:
-	// 1. Flows with active sniffer session (multi-packet ClientHello reassembly)
-	// 2. QUIC Initial packets (to establish the sniff session)
-	// Port allowlist state (AllowsSniffing) is NOT used here to avoid forcing
-	// Hysteria2/TUIC (which also use UDP/443) onto the slower ordered path.
-	return d.HasSnifferSession || d.IsQuicInitial
+	// Preserve ingress order for every session-oriented UDP flow once dae has
+	// accepted the packet. Without this, ordinary UDP/game traffic can reach
+	// handlePkt and ue.WriteTo through multiple concurrent goroutines, which
+	// means same-flow packets are no longer guaranteed to arrive at the outbound
+	// in the order they were read from the client socket.
+	//
+	// Keep a narrow direct-dispatch escape hatch only for request/response and
+	// ultra-latency-sensitive protocols where same-flow FIFO is less important
+	// than shaving queue handoff overhead (DNS, SIP/RTP, STUN).
+	return !d.ShouldUseGoroutineDirectly()
 }
 
 // ShouldUseGoroutineDirectly returns true if the traffic should use direct
@@ -278,50 +282,11 @@ func (d UdpFlowDecision) ShouldUseGoroutineDirectly() bool {
 	return false
 }
 
-// ShouldUseBoundedPool returns true if traffic should use the bounded goroutine pool.
-// This provides backpressure without dropping packets, suitable for:
-// 1. Long-lived UDP connections (WireGuard, VPN)
-// 2. High-throughput UDP traffic
-// 3. General UDP traffic that needs concurrency control
-func (d UdpFlowDecision) ShouldUseBoundedPool() bool {
-	dstPort := d.Key.Dst.Port()
-	srcPort := d.Key.Src.Port()
-
-	// WireGuard - long-lived, high throughput
-	if dstPort == 51820 || srcPort == 51820 {
-		return true
-	}
-
-	// OpenVPN
-	if dstPort == 1194 || srcPort == 1194 {
-		return true
-	}
-
-	// IPsec IKE
-	if dstPort == 500 || srcPort == 500 {
-		return true
-	}
-
-	// Explicit sniff-eligible UDP data packets (after initial) - long-lived
-	if d.AllowsSniffing && !d.IsQuicInitial {
-		return true
-	}
-
-	return false
-}
-
 // DispatchStrategy returns the recommended dispatch strategy for this flow.
 func (d UdpFlowDecision) DispatchStrategy() UdpDispatchStrategy {
 	if d.ShouldUseOrderedIngress() {
 		return StrategyOrderedIngress
 	}
-	if d.ShouldUseGoroutineDirectly() {
-		return StrategyDirectGoroutine
-	}
-	if d.ShouldUseBoundedPool() {
-		return StrategyBoundedPool
-	}
-	// Default to direct goroutine for safety (no drops)
 	return StrategyDirectGoroutine
 }
 
@@ -333,15 +298,7 @@ const (
 	// Lowest latency, no drops, but no concurrency control.
 	StrategyDirectGoroutine UdpDispatchStrategy = iota
 
-	// StrategyBoundedPool uses a bounded goroutine pool.
-	// Low latency, no drops, provides backpressure via blocking.
-	StrategyBoundedPool
-
 	// StrategyOrderedIngress uses ordered task pool.
-	// Higher latency, preserves packet ordering for sniffing.
+	// Preserves packet ordering within each UDP flow.
 	StrategyOrderedIngress
-
-	// StrategyTaskRunner uses the unordered task runner.
-	// May drop packets under load, use only for drop-tolerant traffic.
-	StrategyTaskRunner
 )

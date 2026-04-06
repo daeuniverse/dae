@@ -73,7 +73,7 @@ func TestChooseProxyDialer_FixedOutboundFallsBackToAlternateFamilyOnSameDialer(t
 	}
 }
 
-func TestChooseProxyDialer_SingleDialerGroupFallsBackToAlternateFamilyOnSameDialer(t *testing.T) {
+func TestChooseProxyDialer_SingleDialerGroupPrefersSameFamilyDnsAdmissionFallback(t *testing.T) {
 	d := newTestEndpointDialer()
 	udp6 := &componentdialer.NetworkType{
 		L4Proto:         consts.L4ProtoStr_UDP,
@@ -92,8 +92,11 @@ func TestChooseProxyDialer_SingleDialerGroupFallsBackToAlternateFamilyOnSameDial
 	if err != nil {
 		t.Fatalf("chooseProxyDialer() error = %v", err)
 	}
-	if got := res.SelectionNetworkTypeObj.IpVersion; got != consts.IpVersionStr_4 {
-		t.Fatalf("selection ip version = %v, want %v", got, consts.IpVersionStr_4)
+	if got := res.SelectionNetworkTypeObj.IpVersion; got != consts.IpVersionStr_6 {
+		t.Fatalf("selection ip version = %v, want %v", got, consts.IpVersionStr_6)
+	}
+	if res.AdmissionNetworkTypeObj == nil || res.AdmissionNetworkTypeObj.EffectiveUdpHealthDomain() != componentdialer.UdpHealthDomainDns {
+		t.Fatalf("admission network type = %+v, want dns_udp", res.AdmissionNetworkTypeObj)
 	}
 }
 

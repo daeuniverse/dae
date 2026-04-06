@@ -107,7 +107,6 @@ type ControlPlane struct {
 	mptcp                          bool
 	udpRouteScopeSensitive         bool
 	udpUnorderedRunner             *udpUnorderedTaskRunner
-	udpBoundedPool                 *udpBoundedPoolManager
 	failedQuicDcidCache            *failedQuicDcidCache
 	lastConnectionErrorLogTime     atomic.Int64
 	lastDnsFastPathErrorLogTime    atomic.Int64
@@ -682,7 +681,6 @@ func NewControlPlaneWithContext(
 		mptcp:                  global.Mptcp,
 		udpRouteScopeSensitive: builder.UsesPacketMetadataRouting(),
 		udpUnorderedRunner:     newDefaultUdpUnorderedTaskRunner(cctx),
-		udpBoundedPool:         newUdpBoundedPoolManager(cctx),
 		failedQuicDcidCache:    newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
 	}
 	SetFailedQuicDcidCache(plane.failedQuicDcidCache)
@@ -764,10 +762,6 @@ func NewControlPlaneWithContext(
 		return nil, err
 	}
 	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
-	plane.deferFuncs = append(plane.deferFuncs, func() error {
-		plane.udpBoundedPool.Close()
-		return nil
-	})
 
 	// On reload, clear the BPF domain routing map to ensure DNS configuration
 	// changes take effect immediately. The dnsCache parameter is preserved for
@@ -2002,6 +1996,10 @@ func udpIngressSupportsBatch(conn *net.UDPConn) bool {
 }
 
 func (l *Listener) Close() error {
+	if l == nil {
+		return nil
+	}
+
 	var err error
 
 	if l.tcp4Listener != nil {
@@ -2385,34 +2383,21 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			// Keep ordered ingress scoped to QUIC Initial flows and flows with an
-			// active sniff session so multi-packet ClientHello reassembly stays
-			// deterministic. Ordinary non-QUIC UDP must not be funneled through
-			// DefaultUdpTaskPool: it does not require cross-packet serialization,
-			// and forcing it through the ordered queue only adds latency and hot-key
-			// contention without improving correctness.
-			//
-			// Layered dispatch strategy for optimal throughput, latency, and reliability:
-			// 1. Ordered Ingress: For QUIC Initial and sniffing sessions (preserves order)
-			// 2. Direct Goroutine: For DNS/VoIP and ordinary UDP (lowest latency, zero drops)
-			// 3. Bounded Pool: For WireGuard/VPN (backpressure without drops)
-			// 4. Task Runner: Fallback for other traffic (may drop under load)
+			// Session FIFO now takes precedence for generic UDP forwarding.
+			// Ordered ingress keeps same-flow packets in the order they were read
+			// from the client socket before they reach handlePkt/ue.WriteTo.
+			// Direct goroutine dispatch remains only for narrow low-latency
+			// exceptions where queue handoff is less valuable than minimal overhead
+			// (DNS, SIP/RTP, STUN).
 			switch flowDecision.DispatchStrategy() {
 			case StrategyOrderedIngress:
 				DefaultUdpTaskPool.EmitTask(flowDecision.Key, task)
 			case StrategyDirectGoroutine:
-				// DNS, VoIP, and other drop-sensitive traffic use direct goroutine spawn.
-				// This provides the lowest latency and guarantees no drops.
+				// DNS, VoIP, and other low-latency exception traffic bypasses the
+				// ordered per-flow queue and runs immediately.
 				go task()
-			case StrategyBoundedPool:
-				// WireGuard, VPN, and long-lived UDP connections use bounded pool.
-				// This provides concurrency control with backpressure (no drops).
-				if !c.udpBoundedPool.Submit(task) {
-					// Pool closed (shutdown), fall back to direct goroutine
-					go task()
-				}
 			default:
-				// For any other traffic, use task runner (may drop under load)
+				// Defensive fallback for unknown future strategy values.
 				if !c.udpUnorderedRunner.Submit(flowDecision.Key, task) {
 					pktBuf.Put()
 				}
@@ -2663,6 +2648,10 @@ func (c *ControlPlane) chooseBestDnsDialer(
 }
 
 func (c *ControlPlane) AbortConnections() (err error) {
+	if c == nil {
+		return nil
+	}
+
 	var errs []error
 	c.inConnections.Range(func(key, value any) bool {
 		// Use comma-ok pattern for type safety to prevent panic if key is not net.Conn
@@ -2685,6 +2674,9 @@ func (c *ControlPlane) AbortConnections() (err error) {
 // even if the rest of the shutdown process takes too long and gets SIGKILL'd.
 // This is safe to call multiple times - subsequent calls will be no-ops.
 func (c *ControlPlane) DetachBpfHooks() error {
+	if c == nil || c.core == nil {
+		return nil
+	}
 	return c.core.DetachBpfHooks()
 }
 
@@ -2697,6 +2689,10 @@ func resetGlobalUdpState() {
 }
 
 func (c *ControlPlane) Close() (err error) {
+	if c == nil {
+		return nil
+	}
+
 	var stopWg sync.WaitGroup
 	stopWg.Add(2)
 	go func() {
