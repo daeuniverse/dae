@@ -443,9 +443,89 @@ type PacketSnifferOptions struct {
 
 type packetSnifferFlowFamilyRef struct {
 	refs atomic.Int32
+	mu   sync.RWMutex
+
+	members map[PacketSnifferKey]*PacketSniffer
 }
 
 const packetSnifferFlowFamilyRefDraining = int32(-1)
+
+type packetSnifferFlowFamilyEntry struct {
+	key     PacketSnifferKey
+	sniffer *PacketSniffer
+}
+
+func newPacketSnifferFlowFamilyRef() *packetSnifferFlowFamilyRef {
+	ref := &packetSnifferFlowFamilyRef{
+		members: make(map[PacketSnifferKey]*PacketSniffer),
+	}
+	ref.refs.Store(1)
+	return ref
+}
+
+func (ref *packetSnifferFlowFamilyRef) storeMember(key PacketSnifferKey, sniffer *PacketSniffer) {
+	if ref == nil || sniffer == nil {
+		return
+	}
+	ref.mu.Lock()
+	if ref.members == nil {
+		ref.members = make(map[PacketSnifferKey]*PacketSniffer)
+	}
+	ref.members[key] = sniffer
+	ref.mu.Unlock()
+}
+
+func (ref *packetSnifferFlowFamilyRef) deleteMember(key PacketSnifferKey, sniffer *PacketSniffer) {
+	if ref == nil {
+		return
+	}
+	ref.mu.Lock()
+	if current, ok := ref.members[key]; ok && current == sniffer {
+		delete(ref.members, key)
+	}
+	ref.mu.Unlock()
+}
+
+func (ref *packetSnifferFlowFamilyRef) snapshotMembers() []packetSnifferFlowFamilyEntry {
+	if ref == nil {
+		return nil
+	}
+	ref.mu.RLock()
+	defer ref.mu.RUnlock()
+
+	entries := make([]packetSnifferFlowFamilyEntry, 0, len(ref.members))
+	for key, sniffer := range ref.members {
+		entries = append(entries, packetSnifferFlowFamilyEntry{
+			key:     key,
+			sniffer: sniffer,
+		})
+	}
+	return entries
+}
+
+func (ref *packetSnifferFlowFamilyRef) rangeMembers(fn func(PacketSnifferKey, *PacketSniffer) bool) {
+	if ref == nil || fn == nil {
+		return
+	}
+	ref.mu.RLock()
+	defer ref.mu.RUnlock()
+	for key, sniffer := range ref.members {
+		if !fn(key, sniffer) {
+			return
+		}
+	}
+}
+
+func (ref *packetSnifferFlowFamilyRef) takeMembers() map[PacketSnifferKey]*PacketSniffer {
+	if ref == nil {
+		return nil
+	}
+	ref.mu.Lock()
+	members := ref.members
+	ref.members = nil
+	ref.mu.Unlock()
+	return members
+}
 
 // PacketSnifferKey identifies a QUIC sniffing session by 5-tuple + DCID.
 // Each QUIC connection has a unique Destination Connection ID, so we group
@@ -504,8 +584,9 @@ func (p *PacketSnifferPool) Reset() {
 	})
 	for _, key := range keys {
 		if value, ok := p.pool.LoadAndDelete(key); ok {
-			p.releaseFlowFamily(key.(PacketSnifferKey))
 			ps := value.(*PacketSniffer)
+			p.deleteFlowFamilyMember(key.(PacketSnifferKey), ps)
+			p.releaseFlowFamily(key.(PacketSnifferKey))
 			_ = ps.Close()
 		}
 	}
@@ -539,6 +620,7 @@ func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer)
 		_ = sniffer.Close()
 		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
+	p.deleteFlowFamilyMember(key, sniffer)
 	p.releaseFlowFamily(key)
 	_ = sniffer.Close()
 	return nil
@@ -586,13 +668,16 @@ func (p *PacketSnifferPool) ObserveFlowFamilyQuicInitial(key PacketSnifferKey, d
 	mismatched := false
 	seededExact := false
 
-	p.pool.Range(func(candidateKey, value any) bool {
-		snifferKey := candidateKey.(PacketSnifferKey)
+	family := p.loadFlowFamily(key)
+	if family == nil {
+		return false, false
+	}
+
+	family.rangeMembers(func(snifferKey PacketSnifferKey, sniffer *PacketSniffer) bool {
 		if snifferKey.FlowFamilyKey() != familyKey {
 			return true
 		}
 
-		sniffer := value.(*PacketSniffer)
 		sniffer.Mu.Lock()
 		if sniffer.hasQuicInitialSig {
 			if sniffer.quicInitialSig == sig {
@@ -609,10 +694,7 @@ func (p *PacketSnifferPool) ObserveFlowFamilyQuicInitial(key PacketSnifferKey, d
 		}
 		sniffer.Mu.Unlock()
 
-		if matched && mismatched {
-			return false
-		}
-		return true
+		return !matched || !mismatched
 	})
 
 	return matched || mismatched || seededExact, mismatched && !matched
@@ -625,30 +707,16 @@ func (p *PacketSnifferPool) RemoveFlowFamilySessions(key PacketSnifferKey) int {
 		return 0
 	}
 
-	type flowFamilyEntry struct {
-		key     PacketSnifferKey
-		sniffer *PacketSniffer
+	family := p.loadFlowFamily(key)
+	if family == nil {
+		return 0
 	}
 
-	familyKey := key.FlowFamilyKey()
-	var entries []flowFamilyEntry
-	p.pool.Range(func(candidateKey, value any) bool {
-		snifferKey := candidateKey.(PacketSnifferKey)
-		if snifferKey.FlowFamilyKey() != familyKey {
-			return true
-		}
-		entries = append(entries, flowFamilyEntry{
-			key:     snifferKey,
-			sniffer: value.(*PacketSniffer),
-		})
-		return true
-	})
-
 	removed := 0
-	for _, entry := range entries {
-		if p.pool.CompareAndDelete(entry.key, entry.sniffer) {
-			p.releaseFlowFamily(entry.key)
-			_ = entry.sniffer.Close()
+	for entryKey, entrySniffer := range family.takeMembers() {
+		if p.pool.CompareAndDelete(entryKey, entrySniffer) {
+			p.releaseFlowFamily(entryKey)
+			_ = entrySniffer.Close()
 			removed++
 		}
 	}
@@ -685,7 +753,9 @@ func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *Pack
 		_ = newQs.Close()
 		return qs, false
 	}
-	p.retainFlowFamily(key)
+	if family := p.retainFlowFamilyRef(key); family != nil {
+		family.storeMember(key, qs)
+	}
 	return qs, true
 }
 
@@ -728,6 +798,7 @@ func (p *PacketSnifferPool) startJanitor() {
 							expiredFound++
 							// Use CompareAndDelete for atomic CAS - only delete if still the same expired sniffer
 							if p.pool.CompareAndDelete(key, ps) {
+								p.deleteFlowFamilyMember(key.(PacketSnifferKey), ps)
 								p.releaseFlowFamily(key.(PacketSnifferKey))
 								_ = ps.Close()
 							}
@@ -802,9 +873,30 @@ func NotifyHealthCheckSuccess() {
 	}
 }
 
-func (p *PacketSnifferPool) retainFlowFamily(key PacketSnifferKey) {
+func (p *PacketSnifferPool) loadFlowFamily(key PacketSnifferKey) *packetSnifferFlowFamilyRef {
 	if p == nil || !key.HasCacheableDcid() {
-		return
+		return nil
+	}
+	value, ok := p.flowFamilies.Load(key.FlowFamilyKey())
+	if !ok {
+		return nil
+	}
+	return value.(*packetSnifferFlowFamilyRef)
+}
+
+func (p *PacketSnifferPool) deleteFlowFamilyMember(key PacketSnifferKey, sniffer *PacketSniffer) {
+	if family := p.loadFlowFamily(key); family != nil {
+		family.deleteMember(key, sniffer)
+	}
+}
+
+func (p *PacketSnifferPool) retainFlowFamily(key PacketSnifferKey) {
+	_ = p.retainFlowFamilyRef(key)
+}
+
+func (p *PacketSnifferPool) retainFlowFamilyRef(key PacketSnifferKey) *packetSnifferFlowFamilyRef {
+	if p == nil || !key.HasCacheableDcid() {
+		return nil
 	}
 	familyKey := key.FlowFamilyKey()
 
@@ -817,17 +909,16 @@ func (p *PacketSnifferPool) retainFlowFamily(key PacketSnifferKey) {
 				break
 			}
 			if ref.refs.CompareAndSwap(refs, refs+1) {
-				return
+				return ref
 			}
 		}
 	}
 
 	for {
-		newRef := &packetSnifferFlowFamilyRef{}
-		newRef.refs.Store(1)
+		newRef := newPacketSnifferFlowFamilyRef()
 		actual, loaded := p.flowFamilies.LoadOrStore(familyKey, newRef)
 		if !loaded {
-			return
+			return newRef
 		}
 
 		ref := actual.(*packetSnifferFlowFamilyRef)
@@ -838,7 +929,7 @@ func (p *PacketSnifferPool) retainFlowFamily(key PacketSnifferKey) {
 				break
 			}
 			if ref.refs.CompareAndSwap(refs, refs+1) {
-				return
+				return ref
 			}
 		}
 	}

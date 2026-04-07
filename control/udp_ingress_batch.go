@@ -12,10 +12,11 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/outbound/pool"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 const (
-	defaultUdpIngressBatchSize = 8
+	defaultUDPIngressBatchSize = 8
 	udpIngressOobSize          = 120
 )
 
@@ -25,20 +26,37 @@ type udpIngressBatchSlot struct {
 	oob     [udpIngressOobSize]byte
 }
 
-type udpIngressBatchReader struct {
-	pc    *ipv4.PacketConn
-	slots []udpIngressBatchSlot
-	msgs  []ipv4.Message
+type udpIngressBatchPacketConn interface {
+	ReadBatch([]ipv6.Message, int) (int, error)
 }
 
-func newUdpIngressBatchReader(conn *net.UDPConn, batchSize int) *udpIngressBatchReader {
+type udpIngressBatchReader struct {
+	pc    udpIngressBatchPacketConn
+	slots []udpIngressBatchSlot
+	msgs  []ipv6.Message
+}
+
+func newUDPIngressBatchReader(conn *net.UDPConn, batchSize int) *udpIngressBatchReader {
+	if conn == nil {
+		return nil
+	}
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || addr == nil {
+		return nil
+	}
 	if batchSize <= 0 {
-		batchSize = defaultUdpIngressBatchSize
+		batchSize = defaultUDPIngressBatchSize
+	}
+	var pc udpIngressBatchPacketConn
+	if addr.AddrPort().Addr().Is4() {
+		pc = ipv4.NewPacketConn(conn)
+	} else {
+		pc = ipv6.NewPacketConn(conn)
 	}
 	r := &udpIngressBatchReader{
-		pc:    ipv4.NewPacketConn(conn),
+		pc:    pc,
 		slots: make([]udpIngressBatchSlot, batchSize),
-		msgs:  make([]ipv4.Message, batchSize),
+		msgs:  make([]ipv6.Message, batchSize),
 	}
 	for i := range r.slots {
 		r.slots[i].buffers = make([][]byte, 1)

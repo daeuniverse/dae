@@ -576,16 +576,13 @@ func (ue *UdpEndpoint) start() {
 		} else {
 			ue.markReplied(time.Now().UnixNano())
 		}
-		// Dispatch reply asynchronously: copy data into a pool buffer and
-		// push it to the sender goroutine. Short bursts are absorbed by replyCh.
-		// If the sender falls behind, block here and apply backpressure instead
-		// of dropping queued packets inside dae.
-		pktCopy := pool.Get(n)
-		copy(pktCopy, buf[:n])
+		// Dispatch reply asynchronously by transferring ownership of the current
+		// read buffer to the sender goroutine. This removes one per-packet copy
+		// from the hot reply path while keeping the same backpressure semantics.
 		select {
-		case replyCh <- udpEndpointReply{data: pktCopy, from: from}:
+		case replyCh <- udpEndpointReply{data: buf[:n], from: from}:
+			buf = pool.GetFullCap(consts.EthernetMtu)
 		case <-senderStop:
-			pktCopy.Put()
 			return
 		}
 	}

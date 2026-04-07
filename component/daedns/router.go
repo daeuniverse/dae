@@ -215,22 +215,15 @@ func (r *Router) MatchNodeUpstream(meta NodeMeta) (string, bool) {
 }
 
 func (r *Router) compileSubscriptionMatcher(rules []*config_parser.RoutingRule) (*compiledMatcher[subscriptionMeta], error) {
-	return compileMatcher(r.upstreams, rules, functionSub, func(f *config_parser.Function) (func(subscriptionMeta) bool, error) {
-		return compileSubscriptionPredicate(f)
-	})
+	return compileMatcher(r.upstreams, rules, functionSub, compileSubscriptionPredicate)
 }
 
 func (r *Router) compileNodeMatcher(rules []*config_parser.RoutingRule) (*compiledMatcher[NodeMeta], error) {
-	return compileMatcher(r.upstreams, rules, functionNode, func(f *config_parser.Function) (func(NodeMeta) bool, error) {
-		return compileNodePredicate(f)
-	})
+	return compileMatcher(r.upstreams, rules, functionNode, compileNodePredicate)
 }
 
 func (r *Router) compileSubNodeMatcher(rules []*config_parser.RoutingRule) (*compiledMatcher[NodeMeta], error) {
-	compile := func(f *config_parser.Function) (func(NodeMeta) bool, error) {
-		return compileSubNodePredicate(f)
-	}
-	return compileMatcher(r.upstreams, rules, functionSubNode, compile)
+	return compileMatcher(r.upstreams, rules, functionSubNode, compileSubNodePredicate)
 }
 
 func compileMatcher[T any](

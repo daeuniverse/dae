@@ -2197,11 +2197,8 @@ func udpIngressSupportsBatch(conn *net.UDPConn) bool {
 	if conn == nil {
 		return false
 	}
-	addr, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		return false
-	}
-	return common.ConvergeAddrPort(addr.AddrPort()).Addr().Is4()
+	_, ok := conn.LocalAddr().(*net.UDPAddr)
+	return ok
 }
 
 func wakeTCPListener(listener net.Listener) {
@@ -2669,7 +2666,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 
 		if udpIngressSupportsBatch(udpConn) {
-			batchReader := newUdpIngressBatchReader(udpConn, 0)
+			batchReader := newUDPIngressBatchReader(udpConn, 0)
+			if batchReader == nil {
+				goto singleRead
+			}
 			defer batchReader.Close()
 
 			for {
@@ -2699,6 +2699,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			return
 		}
 
+	singleRead:
 		var oob [udpIngressOobSize]byte
 		for {
 			select {

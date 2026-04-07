@@ -112,13 +112,13 @@ func (r *Router) lookupType(ctx context.Context, upstream *componentdns.Upstream
 			if !ok {
 				continue
 			}
-			addrs = append(addrs, net.IPAddr{IP: net.IP(a.A)})
+			addrs = append(addrs, net.IPAddr{IP: a.A[:]})
 		case dnsmessage.TypeAAAA:
 			aaaa, ok := ans.(*dnsmessage.AAAA)
 			if !ok {
 				continue
 			}
-			addrs = append(addrs, net.IPAddr{IP: net.IP(aaaa.AAAA)})
+			addrs = append(addrs, net.IPAddr{IP: aaaa.AAAA[:]})
 		}
 	}
 	return addrs, nil

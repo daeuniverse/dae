@@ -523,7 +523,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	var quicSnifferKey PacketSnifferKey
 	failedQuicDcidKnown := false
 	if isQuicInitial {
-		quicSnifferKey = NewPacketSnifferKey(realSrc, realDst, data)
+		quicSnifferKey = flowDecision.PacketSnifferKey()
 		failedQuicDcidKnown = IsQuicDcidFailedAt(quicSnifferKey, now)
 	}
 	ueKey = flowDecision.EndpointKeyForInitialLookupWithScope(routeScope, forceSymmetricKey)
@@ -568,7 +568,14 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 	if ueExists {
 		switch {
 		case ue.SniffedDomain == "" && isQuicInitial:
-			snifferObserved, snifferChanged := DefaultPacketSnifferSessionMgr.ObserveFlowFamilyQuicInitial(quicSnifferKey, data)
+			snifferObserved := false
+			snifferChanged := false
+			// Same-flow QUIC packets are serialized by ordered ingress, so a quick
+			// flow-family presence check safely avoids the expensive global scan
+			// when no active sniffing state exists for this 4-tuple family.
+			if DefaultPacketSnifferSessionMgr.HasFlowFamilySession(quicSnifferKey) {
+				snifferObserved, snifferChanged = DefaultPacketSnifferSessionMgr.ObserveFlowFamilyQuicInitial(quicSnifferKey, data)
+			}
 
 			// With sniffing restricted to explicit QUIC ports, the only remaining
 			// reset guard we need is "same QUIC Initial must not retrigger reset".
