@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -447,5 +448,79 @@ func TestDialerReportAvailableTraffic_RevivesOnlyDataUdpDomain(t *testing.T) {
 	}
 	if d.MustGetAlive(dnsType) {
 		t.Fatal("data UDP traffic success should not revive the DNS UDP domain")
+	}
+}
+
+func TestTcpCheckOptionRawResetForcesReparse(t *testing.T) {
+	raw := &TcpCheckOptionRaw{
+		Raw:    []string{"http://cp.cloudflare.com", "1.1.1.1"},
+		Method: "HEAD",
+	}
+
+	first, err := raw.Option()
+	if err != nil {
+		t.Fatalf("first Option() error = %v", err)
+	}
+
+	raw.Raw = []string{"http://example.com", "8.8.8.8"}
+	cached, err := raw.Option()
+	if err != nil {
+		t.Fatalf("cached Option() error = %v", err)
+	}
+	if cached.Url.Hostname() != first.Url.Hostname() {
+		t.Fatal("Option() unexpectedly reparsed without Reset")
+	}
+
+	raw.Reset()
+	refreshed, err := raw.Option()
+	if err != nil {
+		t.Fatalf("refreshed Option() error = %v", err)
+	}
+	if refreshed == first {
+		t.Fatal("Reset() should drop cached tcp check option")
+	}
+	if got := refreshed.Url.Hostname(); got != "example.com" {
+		t.Fatalf("tcp check hostname = %q, want %q", got, "example.com")
+	}
+	if got := refreshed.Ip4; got != netip.MustParseAddr("8.8.8.8") {
+		t.Fatalf("tcp check IPv4 = %v, want %v", got, netip.MustParseAddr("8.8.8.8"))
+	}
+}
+
+func TestCheckDnsOptionRawResetForcesReparse(t *testing.T) {
+	raw := &CheckDnsOptionRaw{
+		Raw: []string{"dns.google:53", "8.8.8.8"},
+	}
+
+	first, err := raw.Option()
+	if err != nil {
+		t.Fatalf("first Option() error = %v", err)
+	}
+
+	raw.Raw = []string{"one.one.one.one:853", "1.1.1.1"}
+	cached, err := raw.Option()
+	if err != nil {
+		t.Fatalf("cached Option() error = %v", err)
+	}
+	if cached.DnsHost != first.DnsHost {
+		t.Fatal("Option() unexpectedly reparsed without Reset")
+	}
+
+	raw.Reset()
+	refreshed, err := raw.Option()
+	if err != nil {
+		t.Fatalf("refreshed Option() error = %v", err)
+	}
+	if refreshed == first {
+		t.Fatal("Reset() should drop cached dns check option")
+	}
+	if got := refreshed.DnsHost; got != "one.one.one.one" {
+		t.Fatalf("dns host = %q, want %q", got, "one.one.one.one")
+	}
+	if got := refreshed.DnsPort; got != 853 {
+		t.Fatalf("dns port = %d, want %d", got, 853)
+	}
+	if got := refreshed.Ip4; got != netip.MustParseAddr("1.1.1.1") {
+		t.Fatalf("dns IPv4 = %v, want %v", got, netip.MustParseAddr("1.1.1.1"))
 	}
 }

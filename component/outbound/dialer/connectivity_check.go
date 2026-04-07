@@ -325,6 +325,12 @@ type TcpCheckOptionRaw struct {
 	Method          string
 }
 
+func (c *TcpCheckOptionRaw) Reset() {
+	c.mu.Lock()
+	c.opt = nil
+	c.mu.Unlock()
+}
+
 func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -350,6 +356,12 @@ type CheckDnsOptionRaw struct {
 	Somark          uint32
 }
 
+func (c *CheckDnsOptionRaw) Reset() {
+	c.mu.Lock()
+	c.opt = nil
+	c.mu.Unlock()
+}
+
 func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -358,7 +370,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 		defer cancel()
 		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, c.ResolverNetwork)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
+			return nil, fmt.Errorf("failed to parse udp_check_dns: %w", err)
 		}
 		c.opt = udpCheckOption
 	}
@@ -639,6 +651,9 @@ func (d *Dialer) aliveBackground() {
 		case <-d.checkTcpCh:
 			checkFamily = consts.L4ProtoStr_TCP
 		}
+
+		d.TcpCheckOptionRaw.Reset()
+		d.CheckDnsOptionRaw.Reset()
 
 		opts := CheckOpts
 		if checkFamily != "" {

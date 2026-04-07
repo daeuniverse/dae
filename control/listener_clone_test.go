@@ -402,3 +402,58 @@ func TestListenerCloneReloadLikeCyclesKeepHeapFlat(t *testing.T) {
 		)
 	}
 }
+
+func TestListenerCloseReturnsPromptlyAfterServeLikeFileExports(t *testing.T) {
+	tcp4Listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp4: %v", err)
+	}
+	udpConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		_ = tcp4Listener.Close()
+		t.Fatalf("listen udp4: %v", err)
+	}
+
+	listener := &Listener{
+		tcp4Listener: tcp4Listener,
+		packetConn:   udpConn,
+	}
+
+	tcpFile, err := dupTCPListenerFile(listener.tcp4Listener)
+	if err != nil {
+		_ = listener.Close()
+		t.Fatalf("dupTCPListenerFile(): %v", err)
+	}
+	defer func() { _ = tcpFile.Close() }()
+
+	udpFile, err := dupUDPPacketConnFile(listener.packetConn)
+	if err != nil {
+		_ = listener.Close()
+		t.Fatalf("dupUDPPacketConnFile(): %v", err)
+	}
+	defer func() { _ = udpFile.Close() }()
+
+	cloned, err := listener.Clone()
+	if err != nil {
+		_ = listener.Close()
+		t.Fatalf("clone listener: %v", err)
+	}
+	defer func() { _ = cloned.Close() }()
+
+	tcpDone, udpDone := startListenerBlockingWorkers(t, listener, 1)
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- listener.Close()
+	}()
+
+	if err := waitChannelResult(t, closeDone, time.Second, "listener close"); err != nil {
+		t.Fatalf("listener close failed: %v", err)
+	}
+	if err := waitChannelResult(t, tcpDone, time.Second, "tcp accept exit"); err == nil {
+		t.Fatal("expected tcp accept to exit with error")
+	}
+	if err := waitChannelResult(t, udpDone, time.Second, "udp read exit"); err == nil {
+		t.Fatal("expected udp read to exit with error")
+	}
+}

@@ -313,20 +313,10 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			// Inject bpf objects into the new control plane life-cycle.
 			newC.InjectBpf(obj)
 
-			// Keep the old listener copy only long enough to wake the previous
-			// Serve generation. A cloned listener lets the new generation reuse
-			// the same bound socket without rebinding the port.
 			var oldListener *control.Listener
-			if listener != nil && !portChanged {
-				clonedListener, cloneErr := listener.Clone()
-				if cloneErr != nil {
-					log.WithError(cloneErr).Warnln("[Reload] Failed to clone listener; falling back to listener restart")
-					oldListener = listener
-					listener = nil
-				} else {
-					oldListener = listener
-					listener = clonedListener
-				}
+			if listener != nil {
+				oldListener = listener
+				listener = nil
 			}
 
 			// Prepare new context.
@@ -377,8 +367,7 @@ loop:
 		case nil:
 			if reloading.Load() {
 				if listener == nil {
-					// Re-listen if port changed.
-					log.Warnln("[Reload] Port changed; re-listening")
+					log.Warnln("[Reload] Re-listening after reload")
 					readyChan := make(chan bool, 1)
 					go func() {
 						defer func() {
@@ -388,8 +377,12 @@ loop:
 							}
 						}()
 						if runErr := control.GetDaeNetns().WithRequired("listen and serve in dae netns", func() error {
-							if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
-								log.Errorln("ListenAndServe:", err)
+							if listener, err = c.Listen(conf.Global.TproxyPort); err != nil {
+								log.Errorln("Listen:", err)
+								return err
+							}
+							if err = c.Serve(readyChan, listener); err != nil {
+								log.Errorln("Serve:", err)
 							}
 							return err
 						}); runErr != nil {
@@ -417,7 +410,7 @@ loop:
 					} else {
 						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
 					}
-					log.Warnln("[Reload] Finished (with port change)")
+					log.Warnln("[Reload] Finished")
 					reloading.Store(false)
 					continue
 				}
@@ -692,7 +685,7 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 				sem <- struct{}{}        // Acquire semaphore
 				defer func() { <-sem }() // Release semaphore
 
-				subDialer := netproxy.Dialer(direct.SymmetricDirect)
+				subDialer := direct.SymmetricDirect
 				if daeDNSRouter != nil {
 					wrappedDialer, wrapErr := daeDNSRouter.WrapSubscriptionDialer(subDialer, string(s))
 					if wrapErr != nil {

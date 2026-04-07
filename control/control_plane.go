@@ -2025,6 +2025,24 @@ func udpIngressSupportsBatch(conn *net.UDPConn) bool {
 	return common.ConvergeAddrPort(addr.AddrPort()).Addr().Is4()
 }
 
+func wakeTCPListener(listener net.Listener) {
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok || tcpListener == nil {
+		return
+	}
+	_ = tcpListener.SetDeadline(time.Now())
+}
+
+func wakePacketConn(packetConn net.PacketConn) {
+	udpConn, ok := packetConn.(*net.UDPConn)
+	if !ok || udpConn == nil {
+		return
+	}
+	now := time.Now()
+	_ = udpConn.SetReadDeadline(now)
+	_ = udpConn.SetWriteDeadline(now)
+}
+
 func (l *Listener) Close() error {
 	if l == nil {
 		return nil
@@ -2033,9 +2051,11 @@ func (l *Listener) Close() error {
 	var err error
 
 	if l.tcp4Listener != nil {
+		wakeTCPListener(l.tcp4Listener)
 		err = l.tcp4Listener.Close()
 	}
 	if l.tcp6Listener != nil {
+		wakeTCPListener(l.tcp6Listener)
 		if err2 := l.tcp6Listener.Close(); err2 != nil {
 			if err == nil {
 				err = err2
@@ -2045,6 +2065,7 @@ func (l *Listener) Close() error {
 		}
 	}
 	if l.packetConn != nil {
+		wakePacketConn(l.packetConn)
 		if err2 := l.packetConn.Close(); err2 != nil {
 			if err == nil {
 				err = err2
@@ -2094,12 +2115,7 @@ func (l *Listener) Clone() (cloned *Listener, err error) {
 }
 
 func cloneTCPListener(listener net.Listener) (net.Listener, error) {
-	tcpListener, ok := listener.(*net.TCPListener)
-	if !ok {
-		return nil, fmt.Errorf("unexpected tcp listener type %T", listener)
-	}
-
-	file, err := tcpListener.File()
+	file, err := dupTCPListenerFile(listener)
 	if err != nil {
 		return nil, err
 	}
@@ -2113,12 +2129,7 @@ func cloneTCPListener(listener net.Listener) (net.Listener, error) {
 }
 
 func cloneUDPPacketConn(packetConn net.PacketConn) (net.PacketConn, error) {
-	udpConn, ok := packetConn.(*net.UDPConn)
-	if !ok {
-		return nil, fmt.Errorf("unexpected udp packet conn type %T", packetConn)
-	}
-
-	file, err := udpConn.File()
+	file, err := dupUDPPacketConnFile(packetConn)
 	if err != nil {
 		return nil, err
 	}
@@ -2129,6 +2140,47 @@ func cloneUDPPacketConn(packetConn net.PacketConn) (net.PacketConn, error) {
 		return nil, err
 	}
 	return cloned, nil
+}
+
+func dupTCPListenerFile(listener net.Listener) (*os.File, error) {
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		return nil, fmt.Errorf("unexpected tcp listener type %T", listener)
+	}
+	rawConn, err := tcpListener.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	return dupRawConnFile(rawConn, "dae-tcp-listener")
+}
+
+func dupUDPPacketConnFile(packetConn net.PacketConn) (*os.File, error) {
+	udpConn, ok := packetConn.(*net.UDPConn)
+	if !ok {
+		return nil, fmt.Errorf("unexpected udp packet conn type %T", packetConn)
+	}
+	rawConn, err := udpConn.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	return dupRawConnFile(rawConn, "dae-udp-packet-conn")
+}
+
+func dupRawConnFile(rawConn syscall.RawConn, name string) (*os.File, error) {
+	var dupFD int
+	var dupErr error
+	if err := rawConn.Control(func(fd uintptr) {
+		dupFD, dupErr = unix.Dup(int(fd))
+		if dupErr == nil {
+			unix.CloseOnExec(dupFD)
+		}
+	}); err != nil {
+		return nil, err
+	}
+	if dupErr != nil {
+		return nil, dupErr
+	}
+	return os.NewFile(uintptr(dupFD), name), nil
 }
 
 func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
@@ -2144,7 +2196,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	udpConn := listener.packetConn.(*net.UDPConn)
 	/// Serve.
 	// TCP IPv4 socket.
-	tcp4File, err := listener.tcp4Listener.(*net.TCPListener).File()
+	tcp4File, err := dupTCPListenerFile(listener.tcp4Listener)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv4 listener file")
 	}
@@ -2155,7 +2207,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		return err
 	}
 	// TCP IPv6 socket.
-	tcp6File, err := listener.tcp6Listener.(*net.TCPListener).File()
+	tcp6File, err := dupTCPListenerFile(listener.tcp6Listener)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv6 listener file")
 	}
@@ -2166,7 +2218,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		return err
 	}
 	// UDP socket.
-	udpFile, err := udpConn.File()
+	udpFile, err := dupUDPPacketConnFile(listener.packetConn)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
 	}
@@ -2497,7 +2549,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	return nil
 }
 
-func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
+// Listen opens the ingress listeners without starting the serving loops.
+func (c *ControlPlane) Listen(port uint16) (listener *Listener, err error) {
 	// Listen.
 	tcpListenConfig := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -2543,7 +2596,15 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 		}
 	}()
 
-	// Serve
+	return listener, nil
+}
+
+func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
+	listener, err = c.Listen(port)
+	if err != nil {
+		return nil, err
+	}
+
 	if err = c.Serve(readyChan, listener); err != nil {
 		return nil, fmt.Errorf("failed to serve: %w", err)
 	}
