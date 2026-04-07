@@ -1728,9 +1728,9 @@ func (c *ControlPlane) cleanupCookiePidMap() {
 		c.log.Debugf("cleanupCookiePidMap: removed %d entries", len(keysToDelete))
 	}
 
-	const cookiePidCapacity = 65536
-	if totalEntries > 0 {
-		usagePercent := float64(totalEntries) / float64(cookiePidCapacity) * 100
+	maxEntries := bpf.CookiePidMap.MaxEntries()
+	if totalEntries > 0 && maxEntries > 0 {
+		usagePercent := float64(totalEntries) / float64(maxEntries) * 100
 		if usagePercent > 90 {
 			c.log.Warnf("cleanupCookiePidMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
 		}
