@@ -18,6 +18,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/daedns"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
@@ -153,6 +154,7 @@ type Dialer struct {
 type GlobalOption struct {
 	D.ExtraOption
 	Log               *logrus.Logger
+	DaeDNS            *daedns.Router
 	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration

@@ -246,6 +246,31 @@ dns {
         request {
             # Lookup China mainland domains using alidns, otherwise googledns.
             qname(geosite:cn) -> alidns
+
+            # The same request block can also route dae's own internal DNS lookups.
+            # These selectors are independent from normal qname/qtype matching and can only use names
+            # defined in dns.upstream on the right-hand side.
+            #
+            # sub() is for subscription fetch requests.
+            # Example: use googledns when fetching subscription "my_sub".
+            # sub(my_sub) -> googledns
+            #
+            # node() is for node host resolution.
+            # Example: use googledns for nodes whose names contain "hk".
+            # node(name_keyword: hk) -> googledns
+            #
+            # subnode() is for subscription-derived node host resolution and is checked before node().
+            # Example: nodes from "my_sub" with "hk" in the node name use alidns first.
+            # subnode(subtag: my_sub, name_keyword: hk) -> alidns
+            #
+            # Catch-all forms are also supported:
+            # sub() -> googledns
+            # node() -> googledns
+            # subnode() -> alidns
+            #
+            # Note: sub() only affects fetching the subscription itself.
+            # Parsed nodes from that subscription will still follow subnode()/node() rules instead.
+
             # fallback is also called default.
             fallback: googledns
         }

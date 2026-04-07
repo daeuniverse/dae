@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/daeuniverse/dae/component/daedns"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/dialer/stickyip"
 	"github.com/daeuniverse/outbound/protocol/direct"
@@ -37,6 +38,25 @@ func newFromLinkWithProxyCache(gOption *GlobalOption, iOption InstanceOption, li
 	p := Property{
 		Property:        *_p,
 		SubscriptionTag: subscriptionTag,
+	}
+
+	if gOption.DaeDNS != nil {
+		baseDialer, err = gOption.DaeDNS.WrapNodeDialer(baseDialer, daedns.NodeMeta{
+			SubscriptionTag: subscriptionTag,
+			Name:            p.Name,
+			Link:            normalizedLink,
+		})
+		if err != nil {
+			return nil, err
+		}
+		d, _p, err = D.NewNetproxyDialerFromLink(baseDialer, &gOption.ExtraOption, normalizedLink)
+		if err != nil {
+			return nil, err
+		}
+		p = Property{
+			Property:        *_p,
+			SubscriptionTag: subscriptionTag,
+		}
 	}
 
 	// Debug: log proxy address type

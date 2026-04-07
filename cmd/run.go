@@ -35,6 +35,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
+	"github.com/daeuniverse/dae/component/daedns"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -600,6 +601,10 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 	/// Init Direct Dialers.
 	direct.InitDirectDialers(conf.Global.FallbackResolver)
 	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
+	daeDNSRouter, err := daedns.New(log, &conf.Global, &conf.Dns)
+	if err != nil {
+		return nil, err
+	}
 
 	// Start timing the startup process
 	startTime := time.Now()
@@ -664,22 +669,6 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 	if len(conf.Subscription) > 0 {
 		log.Infoln("Fetching subscriptions...")
 	}
-	client := http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
-				if err != nil {
-					return nil, err
-				}
-				return &netproxy.FakeNetConn{
-					Conn:  conn,
-					LAddr: nil,
-					RAddr: nil,
-				}, nil
-			},
-		},
-		Timeout: 30 * time.Second,
-	}
 	// Parallelize subscription resolution to improve startup performance.
 	// Use a semaphore to limit concurrency and avoid overwhelming the network.
 	type subscriptionResult struct {
@@ -703,6 +692,19 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 				sem <- struct{}{}        // Acquire semaphore
 				defer func() { <-sem }() // Release semaphore
 
+				subDialer := netproxy.Dialer(direct.SymmetricDirect)
+				if daeDNSRouter != nil {
+					wrappedDialer, wrapErr := daeDNSRouter.WrapSubscriptionDialer(subDialer, string(s))
+					if wrapErr != nil {
+						results <- subscriptionResult{
+							err: wrapErr,
+							sub: s,
+						}
+						return
+					}
+					subDialer = wrappedDialer
+				}
+				client := newHTTPClientForDialer(subDialer, 30*time.Second, conf.Global.SoMarkFromDae, conf.Global.Mptcp)
 				tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(s))
 				results <- subscriptionResult{
 					tag:   tag,
@@ -784,6 +786,26 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 	runtime.GC()
 
 	return c, nil
+}
+
+func newHTTPClientForDialer(d netproxy.Dialer, timeout time.Duration, soMark uint32, mptcp bool) http.Client {
+	soMark = common.EffectiveSoMarkFromDae(soMark)
+	return http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				conn, err := d.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), addr)
+				if err != nil {
+					return nil, err
+				}
+				return &netproxy.FakeNetConn{
+					Conn:  conn,
+					LAddr: nil,
+					RAddr: nil,
+				}, nil
+			},
+		},
+		Timeout: timeout,
+	}
 }
 
 func preprocessWanInterfaceAuto(params *config.Config) error {

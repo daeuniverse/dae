@@ -32,6 +32,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	commonerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/daedns"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -499,6 +500,10 @@ func NewControlPlaneWithContext(
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
 	option := dialer.NewGlobalOption(global, log)
+	option.DaeDNS, err = daedns.New(log, global, dnsConfig)
+	if err != nil {
+		return nil, err
+	}
 
 	// Dial mode.
 	dialMode, err := consts.ParseDialMode(global.DialMode)

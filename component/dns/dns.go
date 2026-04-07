@@ -100,6 +100,10 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	if err != nil {
 		return nil, err
 	}
+	requestRules, _, _, _, err = SplitRequestRules(requestRules)
+	if err != nil {
+		return nil, err
+	}
 	// Parse request routing.
 	reqMatcherBuilder, err := NewRequestMatcherBuilder(opt.Logger, requestRules, upstreamName2Id, dns.Routing.Request.Fallback)
 	if err != nil {
