@@ -98,6 +98,7 @@ type ControlPlane struct {
 	// Track last alert time to avoid spamming logs
 	lastBpfOverflowAlertTime atomic.Int64
 	lastUdpPressureAlertTime atomic.Int64
+	lastTcpPressureAlertTime atomic.Int64
 
 	wanInterface []string
 	lanInterface []string
@@ -119,6 +120,14 @@ type connStateJanitorScratch struct {
 	redirectKeys   []bpfRedirectTuple
 	redirectValues []bpfRedirectEntry
 	redirectDelete []bpfRedirectTuple
+
+	cookiePidKeys   []uint64
+	cookiePidValues []bpfPidPname
+	cookiePidDelete []uint64
+
+	routingHandoffKeys   []bpfTuplesKey
+	routingHandoffValues []bpfRoutingHandoff
+	routingHandoffDelete []bpfTuplesKey
 
 	udpKeys   []bpfTuplesKey
 	udpValues []bpfUdpConnState
@@ -196,6 +205,12 @@ var (
 	// redirectTrackJanitorSteadyInterval is sufficient for the redirect cache
 	// because stale entries have a limited blast radius.
 	redirectTrackJanitorSteadyInterval = 30 * time.Second
+	// cookiePidMapTimeout bounds stale cookie metadata when sock_release backstop
+	// is missed for any reason. Active sockets refresh this timestamp from BPF.
+	cookiePidMapTimeout = 5 * time.Minute
+	// routingHandoffTimeout bounds how long cold metadata is kept for control
+	// plane retrieval after the datapath redirects the first packet.
+	routingHandoffTimeout = 30 * time.Second
 	// connStateJanitorPressureEnterUsage is the usage percentage that activates
 	// pressure mode for connection-state cleanup.
 	connStateJanitorPressureEnterUsage = 70
@@ -744,9 +759,8 @@ func NewControlPlaneWithContext(
 			}
 			return nil
 		},
-		CacheRemoveCallback: func(cache *DnsCache) (err error) {
-			// Write mappings into eBPF map:
-			// IP record (from dns lookup) -> domain routing
+		CacheDeleteCallback: func(cacheKey string, cache *DnsCache) (err error) {
+			_ = cacheKey
 			if err = core.BatchRemoveDomainRouting(cache); err != nil {
 				return fmt.Errorf("BatchRemoveDomainRouting: %w", err)
 			}
@@ -915,6 +929,7 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		m    *ebpf.Map
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
+		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
@@ -1467,10 +1482,12 @@ func (c *ControlPlane) startConnStateJanitor() {
 		defer close(c.connStateJanitorDone)
 
 		var (
-			lastConnCleanup     time.Time
-			lastRedirectCleanup time.Time
-			lastHealthCheck     time.Time
-			pressureState       connStateJanitorPressureState
+			lastConnCleanup           time.Time
+			lastRedirectCleanup       time.Time
+			lastCookiePidCleanup      time.Time
+			lastRoutingHandoffCleanup time.Time
+			lastHealthCheck           time.Time
+			pressureState             connStateJanitorPressureState
 		)
 
 		for {
@@ -1503,6 +1520,14 @@ func (c *ControlPlane) startConnStateJanitor() {
 				if lastRedirectCleanup.IsZero() || now.Sub(lastRedirectCleanup) >= redirectCleanupInterval {
 					c.cleanupRedirectTrackMap()
 					lastRedirectCleanup = now
+				}
+				if lastCookiePidCleanup.IsZero() || now.Sub(lastCookiePidCleanup) >= redirectCleanupInterval {
+					c.cleanupCookiePidMap()
+					lastCookiePidCleanup = now
+				}
+				if lastRoutingHandoffCleanup.IsZero() || now.Sub(lastRoutingHandoffCleanup) >= redirectCleanupInterval {
+					c.cleanupRoutingHandoffMap()
+					lastRoutingHandoffCleanup = now
 				}
 
 				if lastConnCleanup.IsZero() || now.Sub(lastConnCleanup) >= connCleanupInterval {
@@ -1641,6 +1666,140 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 	}
 }
 
+// cleanupCookiePidMap removes stale cookie->pid metadata that escaped the
+// cgroup sock_release backstop. Active sockets refresh last_seen_ns in BPF.
+func (c *ControlPlane) cleanupCookiePidMap() {
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
+	bpf := c.currentBpf()
+	if bpf == nil || bpf.CookiePidMap == nil {
+		return
+	}
+
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		c.log.Errorf("cleanupCookiePidMap: failed to get monotonic time: %v", err)
+		return
+	}
+	nowNano := ts.Nano()
+	timeoutNano := cookiePidMapTimeout.Nanoseconds()
+
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.cookiePidDelete)
+	keysOut := ensureJanitorLookupScratch(scratch.cookiePidKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.cookiePidValues)
+	totalEntries := 0
+	defer func() {
+		scratch.cookiePidDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.cookiePidKeys = keysOut
+		scratch.cookiePidValues = valuesOut
+	}()
+
+	var cursor ebpf.MapBatchCursor
+	for {
+		count, err := bpf.CookiePidMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := 0; i < count; i++ {
+				totalEntries++
+				age := nowNano - int64(valuesOut[i].LastSeenNs)
+				if age > timeoutNano {
+					keysToDelete = append(keysToDelete, keysOut[i])
+				}
+			}
+		}
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupCookiePidMap: BatchLookup error: %v", err)
+			}
+			break
+		}
+	}
+
+	if len(keysToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.CookiePidMap, keysToDelete); err != nil {
+			c.log.Debugf("cleanupCookiePidMap: batch delete error: %v", err)
+		}
+		c.log.Debugf("cleanupCookiePidMap: removed %d entries", len(keysToDelete))
+	}
+
+	const cookiePidCapacity = 65536
+	if totalEntries > 0 {
+		usagePercent := float64(totalEntries) / float64(cookiePidCapacity) * 100
+		if usagePercent > 90 {
+			c.log.Warnf("cleanupCookiePidMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
+		}
+	}
+}
+
+// cleanupRoutingHandoffMap iterates through the short-lived routing handoff map
+// and removes entries that are too old to be useful for control-plane retrieval.
+func (c *ControlPlane) cleanupRoutingHandoffMap() {
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
+	bpf := c.currentBpf()
+	if bpf == nil || bpf.RoutingHandoffMap == nil {
+		return
+	}
+
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		c.log.Errorf("cleanupRoutingHandoffMap: failed to get monotonic time: %v", err)
+		return
+	}
+	nowNano := ts.Nano()
+	timeoutNano := routingHandoffTimeout.Nanoseconds()
+
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.routingHandoffDelete)
+	keysOut := ensureJanitorLookupScratch(scratch.routingHandoffKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.routingHandoffValues)
+	defer func() {
+		scratch.routingHandoffDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.routingHandoffKeys = keysOut
+		scratch.routingHandoffValues = valuesOut
+	}()
+
+	var cursor ebpf.MapBatchCursor
+	for {
+		count, err := bpf.RoutingHandoffMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := 0; i < count; i++ {
+				key := keysOut[i]
+				value := valuesOut[i]
+				age := nowNano - int64(value.LastSeenNs)
+				if age > timeoutNano {
+					keysToDelete = append(keysToDelete, key)
+				}
+			}
+		}
+		if err != nil {
+			if !strings.Contains(err.Error(), "bad file descriptor") &&
+				!strings.Contains(err.Error(), "file descriptor") &&
+				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+				c.log.Errorf("cleanupRoutingHandoffMap: BatchLookup error: %v", err)
+			}
+			break
+		}
+	}
+
+	if len(keysToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.RoutingHandoffMap, keysToDelete); err != nil {
+			c.log.Debugf("cleanupRoutingHandoffMap: batch delete error: %v", err)
+		}
+		c.log.Debugf("cleanupRoutingHandoffMap: removed %d entries", len(keysToDelete))
+	}
+}
+
 // cleanupUdpConnStateMap iterates through the UDP conn state map and removes
 // cold entries that escaped endpoint-owned teardown.
 // DNS entries use a shorter timeout (17s) while non-DNS UDP keeps a longer
@@ -1736,6 +1895,9 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 	if len(keysToDelete) > 0 {
 		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupUdpConnStateMap: batch delete error: %v", err)
+		}
+		if err := deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, keysToDelete); err != nil {
+			c.log.Debugf("cleanupUdpConnStateMap: handoff delete error: %v", err)
 		}
 	}
 	stats.deleted = len(keysToDelete)
@@ -1852,6 +2014,9 @@ func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanup
 		if _, err := BpfMapBatchDelete(bpf.TcpConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupTcpConnStateMap: batch delete error: %v", err)
 		}
+		if err := deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, keysToDelete); err != nil {
+			c.log.Debugf("cleanupTcpConnStateMap: handoff delete error: %v", err)
+		}
 	}
 	stats.deleted = len(keysToDelete)
 
@@ -1925,8 +2090,22 @@ func (c *ControlPlane) checkBpfMapHealth() {
 			if last == 0 || last+int64(alertCooldown) < nowNano {
 				if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
 					c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
-						"Consider increasing MAX_DST_MAPPING_NUM or reducing connection timeout.",
-						udpOverflow)
+						"Configured capacity=%d. Consider increasing udp_conn_state_map capacity or reducing UDP connection timeout.",
+						udpOverflow, maxEntries)
+				}
+			}
+		}
+	}
+	if bpf.TcpConnStateMap != nil {
+		maxEntries := bpf.TcpConnStateMap.MaxEntries()
+		if tcpOverflow > 100 && maxEntries > 0 {
+			nowNano := now.UnixNano()
+			last := c.lastTcpPressureAlertTime.Load()
+			if last == 0 || last+int64(alertCooldown) < nowNano {
+				if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
+					c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
+						"Configured capacity=%d. Consider increasing tcp_conn_state_map capacity or reducing TCP connection timeout.",
+						tcpOverflow, maxEntries)
 				}
 			}
 		}

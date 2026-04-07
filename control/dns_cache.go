@@ -33,6 +33,7 @@ const (
 )
 
 type DnsCache struct {
+	RouteOwnerKey    string
 	DomainBitmap     []uint32
 	Answer           []dnsmessage.RR
 	NS               []dnsmessage.RR
@@ -274,6 +275,7 @@ func (c *DnsCache) FillIntoWithPacked(req *dnsmessage.Msg) []byte {
 
 func (c *DnsCache) Clone() *DnsCache {
 	newCache := &DnsCache{
+		RouteOwnerKey:    c.RouteOwnerKey,
 		Deadline:         c.Deadline,
 		OriginalDeadline: c.OriginalDeadline,
 	}
@@ -324,6 +326,7 @@ func (c *DnsCache) Clone() *DnsCache {
 // matcher and lifecycle bookkeeping.
 func (c *DnsCache) CloneForReload() *DnsCache {
 	newCache := &DnsCache{
+		RouteOwnerKey:    c.RouteOwnerKey,
 		Answer:           c.Answer,
 		NS:               c.NS,
 		Extra:            c.Extra,

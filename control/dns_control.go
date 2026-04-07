@@ -71,6 +71,7 @@ type DnsControllerOption struct {
 	LifecycleContext      context.Context
 	CacheAccessCallback   func(cache *DnsCache) (err error)
 	CacheRemoveCallback   func(cache *DnsCache) (err error)
+	CacheDeleteCallback   func(cacheKey string, cache *DnsCache) (err error)
 	NewCache              func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	BestDialerChooser     func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	TimeoutExceedCallback func(dialArgument *dialArgument, err error)
@@ -96,6 +97,7 @@ type DnsController struct {
 	log                 *logrus.Logger
 	cacheAccessCallback func(cache *DnsCache) (err error)
 	cacheRemoveCallback func(cache *DnsCache) (err error)
+	cacheDeleteCallback func(cacheKey string, cache *DnsCache) (err error)
 	newCache            func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
 	bestDialerChooser   func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
@@ -232,6 +234,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		log:                   option.Log,
 		cacheAccessCallback:   option.CacheAccessCallback,
 		cacheRemoveCallback:   option.CacheRemoveCallback,
+		cacheDeleteCallback:   option.CacheDeleteCallback,
 		newCache:              option.NewCache,
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
@@ -432,7 +435,17 @@ func (c *DnsController) responseCacheKey(baseKey string, req *udpRequest, upstre
 	return baseKey + "|" + scope
 }
 
-func aggregateDnsRemovalCandidate(caches []*DnsCache) *DnsCache {
+func ensureDNSCacheRouteOwnerKey(cacheKey string, cache *DnsCache) *DnsCache {
+	if cache == nil {
+		return nil
+	}
+	if cache.RouteOwnerKey == "" {
+		cache.RouteOwnerKey = cacheKey
+	}
+	return cache
+}
+
+func aggregateDNSRemovalCandidate(caches []*DnsCache) *DnsCache {
 	var (
 		base    *DnsCache
 		answers []dnsmessage.RR
@@ -541,6 +554,7 @@ func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 		if cache, ok := removed.(*DnsCache); ok {
 			baseKey := dnsCacheBaseKey(cacheKey)
 			c.forgetDnsKnowledge(cacheKey, cache)
+			c.invokeCacheDeleteCallback(cacheKey, cache)
 			c.onBaseKeySideEffectsEvicted(baseKey, cache)
 		}
 	}
@@ -562,12 +576,13 @@ func (c *DnsController) RemoveDnsRespCacheFamily(baseKey string) {
 			return true
 		}
 		if c.dnsCache.CompareAndDelete(cacheKey, cache) {
+			c.invokeCacheDeleteCallback(cacheKey, cache)
 			removedCaches = append(removedCaches, cache)
 		}
 		return true
 	})
 	c.syncDnsKnowledge(baseKey)
-	c.onBaseKeySideEffectsEvicted(baseKey, aggregateDnsRemovalCandidate(removedCaches))
+	c.onBaseKeySideEffectsEvicted(baseKey, aggregateDNSRemovalCandidate(removedCaches))
 }
 
 func (c *DnsController) rememberDnsKnowledge(baseKey string, originalDeadline time.Time) {
@@ -866,6 +881,17 @@ func (c *DnsController) invokeCacheRemoveCallback(cache *DnsCache) {
 	}
 }
 
+func (c *DnsController) invokeCacheDeleteCallback(cacheKey string, cache *DnsCache) {
+	if cache == nil || c.cacheDeleteCallback == nil {
+		return
+	}
+	if err := c.cacheDeleteCallback(cacheKey, ensureDNSCacheRouteOwnerKey(cacheKey, cache)); err != nil {
+		if c.log != nil {
+			c.log.Warnf("failed to delete exact dns cache side effects: %v", err)
+		}
+	}
+}
+
 func (c *DnsController) evictDnsRespCacheIfSame(cacheKey string, cache *DnsCache) {
 	if cache == nil {
 		return
@@ -873,6 +899,7 @@ func (c *DnsController) evictDnsRespCacheIfSame(cacheKey string, cache *DnsCache
 	if c.dnsCache.CompareAndDelete(cacheKey, cache) {
 		baseKey := dnsCacheBaseKey(cacheKey)
 		c.forgetDnsKnowledge(cacheKey, cache)
+		c.invokeCacheDeleteCallback(cacheKey, cache)
 		c.onBaseKeySideEffectsEvicted(baseKey, cache)
 	}
 }
@@ -1327,6 +1354,7 @@ func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, d
 	}
 
 	// Store atomically - concurrent writes don't block each other
+	newCache.RouteOwnerKey = cacheKey
 	c.dnsCache.Store(cacheKey, newCache)
 	c.rememberDnsKnowledge(baseKey, originalDeadline)
 
@@ -1338,6 +1366,7 @@ func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, d
 	// Mark BPF as updated with current data hash to enable differential updates
 	newCache.MarkBpfUpdated(now)
 	if staleSideEffects != nil {
+		staleSideEffects.RouteOwnerKey = cacheKey
 		c.onBaseKeySideEffectsEvicted(baseKey, staleSideEffects)
 	}
 

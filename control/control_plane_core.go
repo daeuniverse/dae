@@ -17,7 +17,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
@@ -60,6 +59,7 @@ type controlPlaneCore struct {
 	ifmgr  *component.InterfaceManager
 
 	udpConnStateTracker atomic.Pointer[udpConnStateTracker]
+	domainRouting       *domainRoutingTracker
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -96,6 +96,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		ifmgr:              ifmgr,
 		closed:             closed,
 		close:              toClose,
+		domainRouting:      newDomainRoutingTracker(),
 	}
 	core.udpConnStateTracker.Store(newUdpConnStateTracker())
 	return core
@@ -723,7 +724,7 @@ func tryDeleteFlippedFilter(f *netlink.BpfFilter) {
 
 // extractIpsFromDnsCache returns the unique, valid non-unspecified IP addresses
 // contained in the A/AAAA records of a DNS cache entry.
-func extractIpsFromDnsCache(cache *DnsCache) []netip.Addr {
+func extractIPsFromDnsCache(cache *DnsCache) []netip.Addr {
 	if cache == nil || len(cache.Answer) == 0 {
 		return nil
 	}
@@ -738,60 +739,47 @@ func extractIpsFromDnsCache(cache *DnsCache) []netip.Addr {
 	return ips
 }
 
+func deleteRoutingHandoffTuplesMap(m *ebpf.Map, keys []bpfTuplesKey) error {
+	if m == nil || len(keys) == 0 {
+		return nil
+	}
+	_, err := BpfMapBatchDelete(m, keys)
+	return err
+}
+
 // BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
 // be invoked every A/AAAA-record lookup.
 func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
-	ips := extractIpsFromDnsCache(cache)
-	if len(ips) == 0 {
+	if c == nil || cache == nil {
 		return nil
 	}
-
-	// Update bpf map.
-	// Construct keys and vals, and BpfMapBatchUpdate.
-	// OPTIMIZATION: Pre-allocate capacity to avoid multiple allocations.
-	numIps := len(ips)
-	keys := make([][4]uint32, 0, numIps)
-	vals := make([]bpfDomainRouting, 0, numIps)
-
-	// Pre-check bitmap length compatibility once
-	if len(cache.DomainBitmap) != len(bpfDomainRouting{}.Bitmap) {
-		return fmt.Errorf("domain bitmap length not sync with kern program")
+	if c.domainRouting == nil {
+		c.domainRouting = newDomainRoutingTracker()
 	}
-
-	for _, ip := range ips {
-		ip6 := ip.As16()
-		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
-		r := bpfDomainRouting{}
-		copy(r.Bitmap[:], cache.DomainBitmap)
-		vals = append(vals, r)
-	}
-
-	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
-		ElemFlags: uint64(ebpf.UpdateAny),
-	}); err != nil {
+	snapshot, err := buildDomainRoutingOwnerSnapshot(cache)
+	if err != nil {
 		return err
 	}
-	return nil
+	bpf := c.PeekBpf()
+	if bpf == nil {
+		return nil
+	}
+	return c.domainRouting.syncOwner(bpf.DomainRoutingMap, cache.RouteOwnerKey, snapshot)
 }
 
 // BatchRemoveDomainRouting remove bpf map domain_routing.
 func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
-	ips := extractIpsFromDnsCache(cache)
-	if len(ips) == 0 {
+	if c == nil || cache == nil {
 		return nil
 	}
-
-	// Update bpf map.
-	// Construct keys and BpfMapBatchDelete.
-	keys := make([][4]uint32, 0, len(ips))
-	for _, ip := range ips {
-		ip6 := ip.As16()
-		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+	if c.domainRouting == nil {
+		c.domainRouting = newDomainRoutingTracker()
 	}
-	if _, err := BpfMapBatchDelete(c.bpf.DomainRoutingMap, keys); err != nil {
-		return err
+	bpf := c.PeekBpf()
+	if bpf == nil {
+		return nil
 	}
-	return nil
+	return c.domainRouting.syncOwner(bpf.DomainRoutingMap, cache.RouteOwnerKey, domainRoutingOwnerSnapshot{})
 }
 
 func (c *controlPlaneCore) RetainUdpConnStateTuples(keys []bpfTuplesKey) {
@@ -807,11 +795,15 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 	tracker := c.getUdpConnStateTracker()
 	if tracker == nil {
 		bpf := c.PeekBpf()
-		if bpf == nil || bpf.UdpConnStateMap == nil {
+		if bpf == nil {
 			return nil
 		}
-		_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keys)
-		return err
+		if bpf.UdpConnStateMap != nil {
+			if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keys); err != nil {
+				return err
+			}
+		}
+		return deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, keys)
 	}
 	releases := tracker.BeginRelease(keys)
 	defer tracker.FinalizeRelease(releases)
@@ -819,15 +811,19 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 		return nil
 	}
 	bpf := c.PeekBpf()
-	if bpf == nil || bpf.UdpConnStateMap == nil {
+	if bpf == nil {
 		return nil
 	}
 	deleteKeys := make([]bpfTuplesKey, 0, len(releases))
 	for _, release := range releases {
 		deleteKeys = append(deleteKeys, release.key)
 	}
-	_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, deleteKeys)
-	return err
+	if bpf.UdpConnStateMap != nil {
+		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, deleteKeys); err != nil {
+			return err
+		}
+	}
+	return deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, deleteKeys)
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.

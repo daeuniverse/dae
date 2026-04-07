@@ -685,7 +685,6 @@ int testsetup_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
 	__u8 outbound = OUTBOUND_DIRECT;
 	__u32 mark = TPROXY_MARK;
 	__u8 must = 0;
-	__u8 mac[6] = { 0, 1, 2, 3, 4, 5 };
 
 	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
 	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
@@ -697,7 +696,7 @@ int testsetup_wan_egress_direct_mark_reroute(struct __sk_buff *skb)
 	tcph.syn = true;
 
 	if (!mark_tcp_seen(&key, &tcph, false,
-			   &outbound, &mark, &must, mac,
+			   &outbound, &mark, &must,
 			   0, NULL, 0))
 		return TC_ACT_SHOT;
 
@@ -730,7 +729,6 @@ int testsetup_conntrack_args_scratch_reset(struct __sk_buff *skb)
 	__u8 outbound = OUTBOUND_USER_DEFINED_MIN;
 	__u32 mark = 0x12345678;
 	__u8 must = 1;
-	__u8 mac[6] = { 0, 1, 2, 3, 4, 5 };
 	char pname[TASK_COMM_LEN] = "conntrack-test";
 	struct conntrack_args *args =
 		bpf_map_lookup_elem(&conntrack_args_map, &zero_key);
@@ -738,8 +736,8 @@ int testsetup_conntrack_args_scratch_reset(struct __sk_buff *skb)
 	if (!args)
 		return TC_ACT_SHOT;
 
-	conntrack_args_set(args, &outbound, &mark, &must, mac, 11, pname, 99);
-	conntrack_args_set(args, NULL, NULL, NULL, NULL, 0, NULL, 0);
+	conntrack_args_set(args, &outbound, &mark, &must, 11, pname, 99);
+	conntrack_args_set(args, NULL, NULL, NULL, 0, NULL, 0);
 
 	if (args->flags != 0) {
 		bpf_printk("args->flags(%u) != 0\n", args->flags);
@@ -753,18 +751,16 @@ int testsetup_conntrack_args_scratch_reset(struct __sk_buff *skb)
 		bpf_printk("conntrack_args_pname_or_null(args) != NULL\n");
 		return TC_ACT_SHOT;
 	}
-	for (int i = 0; i < 6; i++) {
-		if (args->mac[i] != 0) {
-			bpf_printk("args->mac[%d](%u) != 0\n", i, args->mac[i]);
-			return TC_ACT_SHOT;
-		}
-	}
 	for (int i = 0; i < TASK_COMM_LEN; i++) {
 		if (args->pname[i] != 0) {
 			bpf_printk("args->pname[%d](%u) != 0\n", i,
 				   args->pname[i]);
 			return TC_ACT_SHOT;
 		}
+	}
+	if (args->pid != 0) {
+		bpf_printk("args->pid(%u) != 0\n", args->pid);
+		return TC_ACT_SHOT;
 	}
 
 	return TC_ACT_OK;

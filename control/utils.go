@@ -61,6 +61,24 @@ func bpfTuplesKeyFromAddrPorts(src, dst netip.AddrPort, l4proto uint8) bpfTuples
 	return key
 }
 
+func (c *controlPlaneCore) overlayRoutingHandoff(tuples *bpfTuplesKey, routingResult *bpfRoutingResult) error {
+	if c.bpf == nil || c.bpf.RoutingHandoffMap == nil {
+		return nil
+	}
+
+	var handoff bpfRoutingHandoff
+	if err := c.bpf.RoutingHandoffMap.Lookup(tuples, &handoff); err != nil {
+		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading routing_handoff_map: %w", err)
+	}
+
+	copy(routingResult.Mac[:], handoff.Mac[:])
+	copy(routingResult.Pname[:], handoff.Pname[:])
+	return nil
+}
+
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
 
@@ -81,10 +99,7 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		routingResult.Mark = connState.Meta.Data.Mark
 		routingResult.Must = connState.Meta.Data.Must
 		routingResult.Outbound = connState.Meta.Data.Outbound
-		copy(routingResult.Mac[:], connState.Mac[:])
 		routingResult.Dscp = connState.Meta.Data.Dscp
-		copy(routingResult.Pname[:], connState.Pname[:])
-		routingResult.Pid = connState.Pid
 	case unix.IPPROTO_UDP:
 		var connState bpfUdpConnState
 		if err := c.bpf.UdpConnStateMap.Lookup(&tuples, &connState); err != nil {
@@ -99,12 +114,13 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		routingResult.Mark = connState.Meta.Data.Mark
 		routingResult.Must = connState.Meta.Data.Must
 		routingResult.Outbound = connState.Meta.Data.Outbound
-		copy(routingResult.Mac[:], connState.Mac[:])
 		routingResult.Dscp = connState.Meta.Data.Dscp
-		copy(routingResult.Pname[:], connState.Pname[:])
-		routingResult.Pid = connState.Pid
 	default:
 		return nil, ebpf.ErrKeyNotExist
+	}
+
+	if err := c.overlayRoutingHandoff(&tuples, &routingResult); err != nil {
+		return nil, err
 	}
 
 	return &routingResult, nil
