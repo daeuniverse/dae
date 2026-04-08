@@ -65,11 +65,13 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 	firstUpstream := firstState.upstream
 	if firstUpstream == nil {
 		t.Fatalf("expected successful cached state, got %#v", firstState)
+		return
 	}
 
 	for upstream := range results {
 		if upstream == nil {
 			t.Fatal("expected concurrent initialization to return an upstream")
+			continue
 		}
 		if upstream.Hostname != firstUpstream.Hostname || upstream.Port != firstUpstream.Port || upstream.Scheme != firstUpstream.Scheme {
 			t.Fatalf("expected all goroutines to observe equivalent upstream values, got %#v want %#v", upstream, firstUpstream)

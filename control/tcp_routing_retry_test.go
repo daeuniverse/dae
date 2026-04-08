@@ -32,6 +32,7 @@ func TestRetryRetrieveRoutingResult_RetriesTransientMiss(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("retryRetrieveRoutingResult() = nil, want routing result")
+		return
 	}
 	if *got != *want {
 		t.Fatalf("retryRetrieveRoutingResult() = %+v, want %+v", *got, *want)
@@ -56,6 +57,7 @@ func TestRetryRetrieveRoutingResult_StopsOnNonRetryableError(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("retryRetrieveRoutingResult() = %+v, want nil", *got)
+		return
 	}
 	if calls != 1 {
 		t.Fatalf("retryRetrieveRoutingResult() calls = %d, want 1", calls)
@@ -78,6 +80,7 @@ func TestRetryRetrieveRoutingResult_RespectsContextCancellation(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("retryRetrieveRoutingResult() = %+v, want nil", *got)
+		return
 	}
 	if calls != 1 {
 		t.Fatalf("retryRetrieveRoutingResult() calls = %d, want 1", calls)
