@@ -88,14 +88,6 @@ type bpfRedirectTuple struct {
 	}
 }
 
-type bpfRoutingHandoff struct {
-	_          structs.HostLayout
-	LastSeenNs uint64
-	Mac        [6]uint8
-	Padding    [2]uint8
-	Pname      [16]uint8
-}
-
 type bpfRoutingResult struct {
 	_        structs.HostLayout
 	Mark     uint32
@@ -124,9 +116,11 @@ type bpfTuplesKey struct {
 }
 
 type bpfUdpConnState struct {
-	_          structs.HostLayout
-	LastSeenNs uint64
-	Meta       struct {
+	_                     structs.HostLayout
+	IsWanIngressDirection bool
+	_                     [7]byte
+	LastSeenNs            uint64
+	Meta                  struct {
 		_    structs.HostLayout
 		Data struct {
 			_          structs.HostLayout
@@ -137,14 +131,19 @@ type bpfUdpConnState struct {
 			HasRouting uint8
 		}
 	}
-	IsWanIngressDirection bool
-	Padding               [7]uint8
+	Mac   [6]uint8
+	_     [2]byte
+	Pname [16]uint8
+	Pid   uint32
 }
 
 type bpfTcpConnState struct {
-	_          structs.HostLayout
-	LastSeenNs uint64
-	Meta       struct {
+	_                     structs.HostLayout
+	IsWanIngressDirection bool
+	State                 uint8
+	_                     [6]byte
+	LastSeenNs            uint64
+	Meta                  struct {
 		_    structs.HostLayout
 		Data struct {
 			_          structs.HostLayout
@@ -155,9 +154,10 @@ type bpfTcpConnState struct {
 			HasRouting uint8
 		}
 	}
-	IsWanIngressDirection bool
-	State                 uint8
-	Padding               [6]uint8
+	Mac   [6]uint8
+	_     [2]byte
+	Pname [16]uint8
+	Pid   uint32
 }
 
 type bpfDaeEvent struct {
@@ -221,7 +221,6 @@ type bpfMapSpecs struct {
 	LpmArrayMap             *ebpf.MapSpec `ebpf:"lpm_array_map"`
 	OutboundConnectivityMap *ebpf.MapSpec `ebpf:"outbound_connectivity_map"`
 	RedirectTrack           *ebpf.MapSpec `ebpf:"redirect_track"`
-	RoutingHandoffMap       *ebpf.MapSpec `ebpf:"routing_handoff_map"`
 	RoutingMap              *ebpf.MapSpec `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.MapSpec `ebpf:"routing_meta_map"`
 	TcpConnStateMap         *ebpf.MapSpec `ebpf:"tcp_conn_state_map"`
@@ -257,7 +256,6 @@ type bpfMaps struct {
 	LpmArrayMap             *ebpf.Map `ebpf:"lpm_array_map"`
 	OutboundConnectivityMap *ebpf.Map `ebpf:"outbound_connectivity_map"`
 	RedirectTrack           *ebpf.Map `ebpf:"redirect_track"`
-	RoutingHandoffMap       *ebpf.Map `ebpf:"routing_handoff_map"`
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.Map `ebpf:"routing_meta_map"`
 	TcpConnStateMap         *ebpf.Map `ebpf:"tcp_conn_state_map"`
@@ -277,7 +275,6 @@ func (m *bpfMaps) Close() error {
 		m.LpmArrayMap,
 		m.OutboundConnectivityMap,
 		m.RedirectTrack,
-		m.RoutingHandoffMap,
 		m.RoutingMap,
 		m.RoutingMetaMap,
 		m.TcpConnStateMap,
@@ -368,11 +365,7 @@ type loadBpfOptions struct {
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
-const (
-	defaultTCPConnStateMapMaxEntries = 65536
-	defaultUDPConnStateMapMaxEntries = 65536
-	fastSockPlaceholderMaxEntries    = 1
-)
+const fastSockPlaceholderMaxEntries = 1
 
 func fullLoadBpfObjects(
 	log *logrus.Logger,
@@ -433,26 +426,6 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
-func tuneConnStateBpfMaps(spec *ebpf.CollectionSpec) error {
-	if spec == nil {
-		return fmt.Errorf("nil collection spec")
-	}
-
-	tcpConnState, ok := spec.Maps["tcp_conn_state_map"]
-	if !ok || tcpConnState == nil {
-		return fmt.Errorf("missing map spec %q", "tcp_conn_state_map")
-	}
-	tcpConnState.MaxEntries = defaultTCPConnStateMapMaxEntries
-
-	udpConnState, ok := spec.Maps["udp_conn_state_map"]
-	if !ok || udpConnState == nil {
-		return fmt.Errorf("missing map spec %q", "udp_conn_state_map")
-	}
-	udpConnState.MaxEntries = defaultUDPConnStateMapMaxEntries
-
-	return nil
-}
-
 func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 	if spec == nil {
 		return fmt.Errorf("nil collection spec")
@@ -468,9 +441,6 @@ func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 
 func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
 	if err := disablePinnedConnStateMaps(spec); err != nil {
-		return err
-	}
-	if err := tuneConnStateBpfMaps(spec); err != nil {
 		return err
 	}
 	if err := tunePlaceholderBpfMaps(spec); err != nil {

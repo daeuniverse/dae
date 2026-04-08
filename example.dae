@@ -128,9 +128,9 @@ global {
     mptcp: false
 
     # Explicit DNS resolver for bootstrap-only lookups before dae DNS routing is ready, such as resolving named DNS
-    # upstream hosts and dial_mode real-domain probes. Leave it unset to disable these bootstrap lookups instead of
-    # leaking them to the system resolver. For IPv4 DNS servers, use "ipv4:port". For IPv6 DNS servers, use
-    # "[ipv6]:port".
+    # upstream hosts and dial_mode real-domain probes. When unset, dae uses 119.29.29.29:53 and 223.5.5.5:53 in
+    # order. Setting bootstrap_resolver disables those defaults. For IPv4 DNS servers, use "ipv4:port". For IPv6
+    # DNS servers, use "[ipv6]:port".
     # bootstrap_resolver: '9.9.9.9:53'
 
     # The maximum bandwidth for accessing the Internet. It is useful for some specific protocols (e.g., Hysteria2),

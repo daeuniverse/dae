@@ -739,14 +739,6 @@ func extractIPsFromDnsCache(cache *DnsCache) []netip.Addr {
 	return ips
 }
 
-func deleteRoutingHandoffTuplesMap(m *ebpf.Map, keys []bpfTuplesKey) error {
-	if m == nil || len(keys) == 0 {
-		return nil
-	}
-	_, err := BpfMapBatchDelete(m, keys)
-	return err
-}
-
 // BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
 // be invoked every A/AAAA-record lookup.
 func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
@@ -795,15 +787,11 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 	tracker := c.getUdpConnStateTracker()
 	if tracker == nil {
 		bpf := c.PeekBpf()
-		if bpf == nil {
+		if bpf == nil || bpf.UdpConnStateMap == nil {
 			return nil
 		}
-		if bpf.UdpConnStateMap != nil {
-			if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keys); err != nil {
-				return err
-			}
-		}
-		return deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, keys)
+		_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keys)
+		return err
 	}
 	releases := tracker.BeginRelease(keys)
 	defer tracker.FinalizeRelease(releases)
@@ -811,19 +799,15 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 		return nil
 	}
 	bpf := c.PeekBpf()
-	if bpf == nil {
+	if bpf == nil || bpf.UdpConnStateMap == nil {
 		return nil
 	}
 	deleteKeys := make([]bpfTuplesKey, 0, len(releases))
 	for _, release := range releases {
 		deleteKeys = append(deleteKeys, release.key)
 	}
-	if bpf.UdpConnStateMap != nil {
-		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, deleteKeys); err != nil {
-			return err
-		}
-	}
-	return deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, deleteKeys)
+	_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, deleteKeys)
+	return err
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.

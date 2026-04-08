@@ -52,12 +52,10 @@ func TestUdpConnStateTrackerRetainWaitsForFinalize(t *testing.T) {
 
 func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testing.T) {
 	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
-	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
 	core := &controlPlaneCore{
 		bpf: &bpfObjects{
 			bpfMaps: bpfMaps{
-				UdpConnStateMap:   udpMap,
-				RoutingHandoffMap: handoffMap,
+				UdpConnStateMap: udpMap,
 			},
 		},
 	}
@@ -71,10 +69,6 @@ func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testin
 		state := bpfUdpConnState{LastSeenNs: 1}
 		if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
 			t.Fatalf("update udp conn-state %v: %v", key, err)
-		}
-		handoff := bpfRoutingHandoff{LastSeenNs: 1}
-		if err := handoffMap.Update(&key, &handoff, ebpf.UpdateAny); err != nil {
-			t.Fatalf("update handoff %v: %v", key, err)
 		}
 	}
 
@@ -98,10 +92,6 @@ func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testin
 		if err := udpMap.Lookup(&key, &state); err != nil {
 			t.Fatalf("Lookup(%v) after first close err = %v, want tuple to remain", key, err)
 		}
-		var handoff bpfRoutingHandoff
-		if err := handoffMap.Lookup(&key, &handoff); err != nil {
-			t.Fatalf("HandoffLookup(%v) after first close err = %v, want handoff to remain", key, err)
-		}
 	}
 
 	if err := ue2.Close(); err != nil {
@@ -111,10 +101,6 @@ func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testin
 		var state bpfUdpConnState
 		if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			t.Fatalf("Lookup(%v) after second close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
-		}
-		var handoff bpfRoutingHandoff
-		if err := handoffMap.Lookup(&key, &handoff); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
-			t.Fatalf("HandoffLookup(%v) after second close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
 		}
 	}
 }

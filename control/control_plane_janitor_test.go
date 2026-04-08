@@ -120,40 +120,12 @@ func TestTunePlaceholderBpfMaps(t *testing.T) {
 	}
 }
 
-func TestTuneConnStateBpfMaps(t *testing.T) {
-	spec := &ebpf.CollectionSpec{
-		Maps: map[string]*ebpf.MapSpec{
-			"tcp_conn_state_map": {
-				Name:       "tcp_conn_state_map",
-				MaxEntries: 131072,
-			},
-			"udp_conn_state_map": {
-				Name:       "udp_conn_state_map",
-				MaxEntries: 131072,
-			},
-		},
+func TestConnStateStructSizes(t *testing.T) {
+	if got := unsafe.Sizeof(bpfTcpConnState{}); got != 56 {
+		t.Fatalf("sizeof(bpfTcpConnState) = %d, want 56", got)
 	}
-
-	if err := tuneConnStateBpfMaps(spec); err != nil {
-		t.Fatalf("tuneConnStateBpfMaps returned error: %v", err)
-	}
-	if got := spec.Maps["tcp_conn_state_map"].MaxEntries; got != defaultTCPConnStateMapMaxEntries {
-		t.Fatalf("tcp_conn_state_map max_entries = %d, want %d", got, defaultTCPConnStateMapMaxEntries)
-	}
-	if got := spec.Maps["udp_conn_state_map"].MaxEntries; got != defaultUDPConnStateMapMaxEntries {
-		t.Fatalf("udp_conn_state_map max_entries = %d, want %d", got, defaultUDPConnStateMapMaxEntries)
-	}
-}
-
-func TestConnStateAndHandoffStructSizes(t *testing.T) {
-	if got := unsafe.Sizeof(bpfTcpConnState{}); got != 24 {
-		t.Fatalf("sizeof(bpfTcpConnState) = %d, want 24", got)
-	}
-	if got := unsafe.Sizeof(bpfUdpConnState{}); got != 24 {
-		t.Fatalf("sizeof(bpfUdpConnState) = %d, want 24", got)
-	}
-	if got := unsafe.Sizeof(bpfRoutingHandoff{}); got != 32 {
-		t.Fatalf("sizeof(bpfRoutingHandoff) = %d, want 32", got)
+	if got := unsafe.Sizeof(bpfUdpConnState{}); got != 56 {
+		t.Fatalf("sizeof(bpfUdpConnState) = %d, want 56", got)
 	}
 	if got := unsafe.Sizeof(bpfPidPname{}); got != 32 {
 		t.Fatalf("sizeof(bpfPidPname) = %d, want 32", got)
@@ -187,12 +159,6 @@ func TestCustomizeBpfMapSpecs(t *testing.T) {
 	if got := spec.Maps["udp_conn_state_map"].Pinning; got != ebpf.PinNone {
 		t.Fatalf("udp_conn_state_map pinning = %v, want %v", got, ebpf.PinNone)
 	}
-	if got := spec.Maps["tcp_conn_state_map"].MaxEntries; got != defaultTCPConnStateMapMaxEntries {
-		t.Fatalf("tcp_conn_state_map max_entries = %d, want %d", got, defaultTCPConnStateMapMaxEntries)
-	}
-	if got := spec.Maps["udp_conn_state_map"].MaxEntries; got != defaultUDPConnStateMapMaxEntries {
-		t.Fatalf("udp_conn_state_map max_entries = %d, want %d", got, defaultUDPConnStateMapMaxEntries)
-	}
 	if got := spec.Maps["fast_sock"].MaxEntries; got != fastSockPlaceholderMaxEntries {
 		t.Fatalf("fast_sock max_entries = %d, want %d", got, fastSockPlaceholderMaxEntries)
 	}
@@ -223,7 +189,6 @@ func TestCleanupPinnedConnStateMapFiles(t *testing.T) {
 
 func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
-	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
 	now := monotonicNowNs(t)
 
 	freshSrc := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.0.1:12345"))
@@ -252,21 +217,7 @@ func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	if err := udpMap.Update(staleKey, &staleState, ebpf.UpdateAny); err != nil {
 		t.Fatalf("update stale udp conn-state: %v", err)
 	}
-	freshHandoff := bpfRoutingHandoff{LastSeenNs: now}
-	staleHandoff := bpfRoutingHandoff{LastSeenNs: now}
-	copy(freshHandoff.Pname[:], "fresh-udp")
-	copy(staleHandoff.Pname[:], "stale-udp")
-	if err := handoffMap.Update(freshKey, &freshHandoff, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update fresh udp handoff: %v", err)
-	}
-	if err := handoffMap.Update(staleKey, &staleHandoff, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update stale udp handoff: %v", err)
-	}
-
-	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{
-		UdpConnStateMap:   udpMap,
-		RoutingHandoffMap: handoffMap,
-	}}}
+	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{UdpConnStateMap: udpMap}}}
 	plane := &ControlPlane{
 		log:                  logrus.New(),
 		core:                 core,
@@ -296,20 +247,10 @@ func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	if staleResult != nil {
 		t.Fatalf("stale udp routing result = %+v, want nil", staleResult)
 	}
-
-	var freshHandoffResult bpfRoutingHandoff
-	if err := handoffMap.Lookup(freshKey, &freshHandoffResult); err != nil {
-		t.Fatalf("fresh udp handoff lookup failed: %v", err)
-	}
-	var staleHandoffResult bpfRoutingHandoff
-	if err := handoffMap.Lookup(staleKey, &staleHandoffResult); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Fatalf("stale udp handoff lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
-	}
 }
 
 func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	tcpMap := newJanitorTestMap(t, "tcp_conn_state_map")
-	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
 	now := monotonicNowNs(t)
 
 	freshSrc := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.1.1:22345"))
@@ -339,21 +280,7 @@ func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	if err := tcpMap.Update(staleKey, &staleState, ebpf.UpdateAny); err != nil {
 		t.Fatalf("update stale tcp conn-state: %v", err)
 	}
-	freshHandoff := bpfRoutingHandoff{LastSeenNs: now}
-	staleHandoff := bpfRoutingHandoff{LastSeenNs: now}
-	copy(freshHandoff.Pname[:], "fresh-tcp")
-	copy(staleHandoff.Pname[:], "stale-tcp")
-	if err := handoffMap.Update(freshKey, &freshHandoff, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update fresh tcp handoff: %v", err)
-	}
-	if err := handoffMap.Update(staleKey, &staleHandoff, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update stale tcp handoff: %v", err)
-	}
-
-	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{
-		TcpConnStateMap:   tcpMap,
-		RoutingHandoffMap: handoffMap,
-	}}}
+	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{TcpConnStateMap: tcpMap}}}
 	plane := &ControlPlane{
 		log:                  logrus.New(),
 		core:                 core,
@@ -382,15 +309,6 @@ func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	}
 	if staleResult != nil {
 		t.Fatalf("stale tcp routing result = %+v, want nil", staleResult)
-	}
-
-	var freshHandoffResult bpfRoutingHandoff
-	if err := handoffMap.Lookup(freshKey, &freshHandoffResult); err != nil {
-		t.Fatalf("fresh tcp handoff lookup failed: %v", err)
-	}
-	var staleHandoffResult bpfRoutingHandoff
-	if err := handoffMap.Lookup(staleKey, &staleHandoffResult); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Fatalf("stale tcp handoff lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
 	}
 }
 
@@ -530,9 +448,8 @@ func TestCleanupCookiePidMapRemovesExpiredEntries(t *testing.T) {
 	}
 }
 
-func TestRetrieveRoutingResultPrefersRoutingHandoffMetadata(t *testing.T) {
+func TestRetrieveRoutingResultReturnsEmbeddedMetadata(t *testing.T) {
 	tcpMap := newJanitorTestMap(t, "tcp_conn_state_map")
-	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
 	now := monotonicNowNs(t)
 
 	src := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.3.1:42345"))
@@ -546,25 +463,16 @@ func TestRetrieveRoutingResultPrefersRoutingHandoffMetadata(t *testing.T) {
 	state.Meta.Data.Must = 1
 	state.Meta.Data.Dscp = 22
 	state.Meta.Data.HasRouting = 1
-
-	handoff := bpfRoutingHandoff{
-		LastSeenNs: now,
-	}
-	copy(handoff.Pname[:], "handoff-name")
-	copy(handoff.Mac[:], []byte{9, 8, 7, 6, 5, 4})
+	state.Pid = 4242
+	copy(state.Pname[:], "embedded-name")
+	copy(state.Mac[:], []byte{9, 8, 7, 6, 5, 4})
 
 	if err := tcpMap.Update(key, &state, ebpf.UpdateAny); err != nil {
 		t.Fatalf("update tcp conn-state: %v", err)
 	}
-	if err := handoffMap.Update(key, &handoff, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update routing_handoff_map: %v", err)
-	}
 
 	core := &controlPlaneCore{
-		bpf: &bpfObjects{bpfMaps: bpfMaps{
-			TcpConnStateMap:   tcpMap,
-			RoutingHandoffMap: handoffMap,
-		}},
+		bpf: &bpfObjects{bpfMaps: bpfMaps{TcpConnStateMap: tcpMap}},
 	}
 
 	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
@@ -576,56 +484,14 @@ func TestRetrieveRoutingResultPrefersRoutingHandoffMetadata(t *testing.T) {
 		t.Fatalf("RetrieveRoutingResult routing fields = %+v, want mark=%d outbound=%d must=%d dscp=%d",
 			result, state.Meta.Data.Mark, state.Meta.Data.Outbound, state.Meta.Data.Must, state.Meta.Data.Dscp)
 	}
-	if ProcessName2String(result.Pname[:]) != "handoff-name" {
-		t.Fatalf("RetrieveRoutingResult pname = %q, want %q", ProcessName2String(result.Pname[:]), "handoff-name")
+	if ProcessName2String(result.Pname[:]) != "embedded-name" {
+		t.Fatalf("RetrieveRoutingResult pname = %q, want %q", ProcessName2String(result.Pname[:]), "embedded-name")
 	}
 	if got := result.Mac; got != [6]uint8{9, 8, 7, 6, 5, 4} {
 		t.Fatalf("RetrieveRoutingResult mac = %v, want %v", got, [6]uint8{9, 8, 7, 6, 5, 4})
 	}
-}
-
-func TestCleanupRoutingHandoffMapRemovesExpiredEntries(t *testing.T) {
-	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
-	now := monotonicNowNs(t)
-
-	freshSrc := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.4.1:52345"))
-	freshDst := common.ConvergeAddrPort(netip.MustParseAddrPort("5.5.5.5:443"))
-	staleSrc := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.4.2:52346"))
-	staleDst := common.ConvergeAddrPort(netip.MustParseAddrPort("5.5.5.6:443"))
-
-	freshKey := tuplesKeyFromAddrPorts(freshSrc, freshDst, unix.IPPROTO_TCP)
-	staleKey := tuplesKeyFromAddrPorts(staleSrc, staleDst, unix.IPPROTO_UDP)
-
-	fresh := bpfRoutingHandoff{LastSeenNs: now}
-	stale := bpfRoutingHandoff{LastSeenNs: staleTimestampNs(now, routingHandoffTimeout+time.Second)}
-	copy(fresh.Pname[:], "fresh-handoff")
-	copy(stale.Pname[:], "stale-handoff")
-
-	if err := handoffMap.Update(freshKey, &fresh, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update fresh routing_handoff_map: %v", err)
-	}
-	if err := handoffMap.Update(staleKey, &stale, ebpf.UpdateAny); err != nil {
-		t.Fatalf("update stale routing_handoff_map: %v", err)
-	}
-
-	plane := &ControlPlane{
-		log: logrus.New(),
-		core: &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
-		},
-		connStateJanitorStop: make(chan struct{}),
-	}
-
-	plane.cleanupRoutingHandoffMap()
-
-	var gotFresh bpfRoutingHandoff
-	if err := handoffMap.Lookup(freshKey, &gotFresh); err != nil {
-		t.Fatalf("fresh routing_handoff_map lookup failed: %v", err)
-	}
-
-	var gotStale bpfRoutingHandoff
-	if err := handoffMap.Lookup(staleKey, &gotStale); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Fatalf("stale routing_handoff_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	if result.Pid != state.Pid {
+		t.Fatalf("RetrieveRoutingResult pid = %d, want %d", result.Pid, state.Pid)
 	}
 }
 

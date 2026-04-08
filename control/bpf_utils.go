@@ -287,11 +287,7 @@ type loadBpfOptions struct {
 	CollectionOptions   *ebpf.CollectionOptions
 }
 
-const (
-	defaultTCPConnStateMapMaxEntries = 65536
-	defaultUDPConnStateMapMaxEntries = 65536
-	fastSockPlaceholderMaxEntries    = 1
-)
+const fastSockPlaceholderMaxEntries = 1
 
 func loadBpfObjectsWithConstantsAndCustomizer(
 	obj interface{},
@@ -330,26 +326,6 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
-func tuneConnStateBpfMaps(spec *ebpf.CollectionSpec) error {
-	if spec == nil {
-		return fmt.Errorf("nil collection spec")
-	}
-
-	tcpConnState, ok := spec.Maps["tcp_conn_state_map"]
-	if !ok || tcpConnState == nil {
-		return fmt.Errorf("missing map spec %q", "tcp_conn_state_map")
-	}
-	tcpConnState.MaxEntries = defaultTCPConnStateMapMaxEntries
-
-	udpConnState, ok := spec.Maps["udp_conn_state_map"]
-	if !ok || udpConnState == nil {
-		return fmt.Errorf("missing map spec %q", "udp_conn_state_map")
-	}
-	udpConnState.MaxEntries = defaultUDPConnStateMapMaxEntries
-
-	return nil
-}
-
 func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 	if spec == nil {
 		return fmt.Errorf("nil collection spec")
@@ -368,9 +344,6 @@ func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 
 func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
 	if err := disablePinnedConnStateMaps(spec); err != nil {
-		return err
-	}
-	if err := tuneConnStateBpfMaps(spec); err != nil {
 		return err
 	}
 	if err := tunePlaceholderBpfMaps(spec); err != nil {

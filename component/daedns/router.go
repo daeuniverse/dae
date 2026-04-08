@@ -48,7 +48,7 @@ type Router struct {
 	subMatcher     *compiledMatcher[subscriptionMeta]
 	nodeMatcher    *compiledMatcher[NodeMeta]
 	subNodeMatcher *compiledMatcher[NodeMeta]
-	bootstrapDns   netip.AddrPort
+	bootstrapDns   []netip.AddrPort
 	soMark         uint32
 	mptcp          bool
 }
@@ -100,11 +100,9 @@ func New(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns) (*Router
 		soMark:    common.EffectiveSoMarkFromDae(global.SoMarkFromDae),
 		mptcp:     global.Mptcp,
 	}
-	if global.BootstrapResolver != "" {
-		router.bootstrapDns, err = netip.ParseAddrPort(global.BootstrapResolver)
-		if err != nil {
-			return nil, fmt.Errorf("parse global.bootstrap_resolver: %w", err)
-		}
+	router.bootstrapDns, err = config.BootstrapResolvers(global)
+	if err != nil {
+		return nil, err
 	}
 	if err = router.initUpstreams(dnsCfg.Upstream); err != nil {
 		return nil, err
@@ -127,7 +125,7 @@ func New(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns) (*Router
 
 func (r *Router) initUpstreams(rawUpstreams []config.KeyableString) error {
 	resolveIp46 := r.resolveBootstrap
-	if !r.bootstrapDns.IsValid() {
+	if len(r.bootstrapDns) == 0 {
 		resolveIp46 = nil
 	}
 	for _, upstreamRaw := range rawUpstreams {
@@ -500,11 +498,46 @@ func groupParamValuesByKey(params []*config_parser.Param) (map[string][]string, 
 }
 
 func (r *Router) resolveBootstrap(ctx context.Context, host string, network string) (*netutils.Ip46, error, error) {
-	if !r.bootstrapDns.IsValid() {
+	if len(r.bootstrapDns) == 0 {
 		err := fmt.Errorf("bootstrap resolver is not configured")
 		return &netutils.Ip46{}, err, err
 	}
-	return netutils.ResolveIp46(ctx, direct.SymmetricDirect, r.bootstrapDns, host, network, false)
+	var firstErr4 error
+	var firstErr6 error
+	var lastNoRecord *netutils.Ip46
+	var lastNoRecordErr4 error
+	var lastNoRecordErr6 error
+	for _, resolver := range r.bootstrapDns {
+		ip46, err4, err6 := netutils.ResolveIp46(ctx, direct.SymmetricDirect, resolver, host, network, false)
+		if ip46 == nil {
+			ip46 = &netutils.Ip46{}
+		}
+		if ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
+			return ip46, err4, err6
+		}
+		if err4 == nil || err6 == nil {
+			lastNoRecord = ip46
+			lastNoRecordErr4 = err4
+			lastNoRecordErr6 = err6
+			continue
+		}
+		if firstErr4 == nil {
+			firstErr4 = err4
+		}
+		if firstErr6 == nil {
+			firstErr6 = err6
+		}
+	}
+	if lastNoRecord != nil {
+		return lastNoRecord, lastNoRecordErr4, lastNoRecordErr6
+	}
+	if firstErr4 == nil {
+		firstErr4 = fmt.Errorf("bootstrap resolver failed")
+	}
+	if firstErr6 == nil {
+		firstErr6 = firstErr4
+	}
+	return &netutils.Ip46{}, firstErr4, firstErr6
 }
 
 type resolvingDialer struct {

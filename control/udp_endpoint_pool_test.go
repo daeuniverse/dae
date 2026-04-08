@@ -1654,6 +1654,80 @@ func TestUdpEndpointPoolGetOrCreate_ProxyBackedEndpointUsesLongerNatTimeout(t *t
 	}
 }
 
+func TestUdpEndpointPoolGetOrCreate_RouteScopePreventsMetadataReuse(t *testing.T) {
+	pool := NewUdpEndpointPool()
+	defer pool.Reset()
+
+	src := netip.MustParseAddrPort("192.0.2.10:40000")
+	dst := netip.MustParseAddrPort("198.51.100.20:443")
+	conn1 := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	conn2 := &scriptedPacketConn{
+		reads:   make(chan scriptedPacketRead),
+		closeCh: make(chan struct{}),
+	}
+	d := newTestProxyEndpointDialer("hysteria2", "proxy.example:443", conn1, conn2)
+
+	makeOption := func() *UdpEndpointOptions {
+		return &UdpEndpointOptions{
+			Handler:    func(_ *UdpEndpoint, _ []byte, _ netip.AddrPort) error { return nil },
+			NatTimeout: DefaultNatTimeout,
+			GetDialOption: func(context.Context) (*DialOption, error) {
+				return &DialOption{
+					Dialer:  d,
+					Network: "udp",
+					Target:  dst.String(),
+				}, nil
+			},
+		}
+	}
+
+	firstScope := udpEndpointRouteScope{
+		Outbound: uint8(consts.OutboundControlPlaneRouting),
+		Dscp:     8,
+		Pname:    [16]uint8{'g', 'a', 'm', 'e'},
+		Mac:      [6]uint8{0x02, 0x42, 0xac, 0x11, 0x00, 0x02},
+	}
+	secondScope := udpEndpointRouteScope{
+		Outbound: uint8(consts.OutboundControlPlaneRouting),
+		Dscp:     46,
+		Pname:    [16]uint8{'v', 'o', 'i', 'p'},
+		Mac:      [6]uint8{0x02, 0x42, 0xac, 0x11, 0x00, 0x03},
+	}
+	firstKey := UdpEndpointKey{Src: src, Dst: dst, RouteScope: firstScope}
+	secondKey := UdpEndpointKey{Src: src, Dst: dst, RouteScope: secondScope}
+
+	ue1, isNew, err := pool.GetOrCreate(firstKey, makeOption())
+	if err != nil {
+		t.Fatalf("first GetOrCreate error: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected first GetOrCreate to create a new endpoint")
+	}
+
+	ue2, isNew, err := pool.GetOrCreate(secondKey, makeOption())
+	if err != nil {
+		t.Fatalf("second GetOrCreate error: %v", err)
+	}
+	if !isNew {
+		t.Fatal("expected second GetOrCreate to create a new endpoint")
+	}
+	if ue1 == ue2 {
+		t.Fatal("expected different route scopes to create distinct endpoints")
+	}
+
+	got1, ok := pool.Get(firstKey)
+	if !ok || got1 != ue1 {
+		t.Fatalf("Get(firstKey) = (%p, %v), want (%p, true)", got1, ok, ue1)
+	}
+	got2, ok := pool.Get(secondKey)
+	if !ok || got2 != ue2 {
+		t.Fatalf("Get(secondKey) = (%p, %v), want (%p, true)", got2, ok, ue2)
+	}
+}
+
 func TestUdpEndpointPoolGetOrCreate_FullConeEndpointPrewarmsCachedResponseConn(t *testing.T) {
 	oldAnyfromPool := DefaultAnyfromPool
 	DefaultAnyfromPool = newTestAnyfromPoolWithoutJanitor()

@@ -6,6 +6,7 @@
 package daedns
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/daeuniverse/dae/common"
@@ -106,6 +107,52 @@ func TestRouterUsesEffectiveSoMarkFromDae(t *testing.T) {
 
 	if router.soMark != common.InternalSoMarkFromDae {
 		t.Fatalf("expected router to use effective internal so_mark, got %d", router.soMark)
+	}
+}
+
+func TestRouterUsesDefaultBootstrapResolversWhenUnset(t *testing.T) {
+	router := mustNewTestRouter(t,
+		testInternalRule("subdns", testInternalFunction("sub")),
+	)
+
+	want := []netip.AddrPort{
+		netip.MustParseAddrPort("119.29.29.29:53"),
+		netip.MustParseAddrPort("223.5.5.5:53"),
+	}
+	if len(router.bootstrapDns) != len(want) {
+		t.Fatalf("len(router.bootstrapDns) = %d, want %d", len(router.bootstrapDns), len(want))
+	}
+	for i := range want {
+		if router.bootstrapDns[i] != want[i] {
+			t.Fatalf("router.bootstrapDns[%d] = %v, want %v", i, router.bootstrapDns[i], want[i])
+		}
+	}
+}
+
+func TestRouterExplicitBootstrapResolverOverridesDefaults(t *testing.T) {
+	router, err := New(logrus.New(), &config.Global{
+		BootstrapResolver: "9.9.9.9:53",
+	}, &config.Dns{
+		Upstream: []config.KeyableString{
+			"subdns:udp://1.1.1.1:53",
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("subdns", testInternalFunction("sub")),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if len(router.bootstrapDns) != 1 {
+		t.Fatalf("len(router.bootstrapDns) = %d, want 1", len(router.bootstrapDns))
+	}
+	if router.bootstrapDns[0] != netip.MustParseAddrPort("9.9.9.9:53") {
+		t.Fatalf("router.bootstrapDns[0] = %v, want 9.9.9.9:53", router.bootstrapDns[0])
 	}
 }
 

@@ -40,6 +40,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/grpc"
@@ -107,7 +108,7 @@ type ControlPlane struct {
 	tproxyPortProtect              bool
 	soMarkFromDae                  uint32
 	mptcp                          bool
-	bootstrapResolver              netip.AddrPort
+	bootstrapResolvers             []netip.AddrPort
 	udpRouteScopeSensitive         bool
 	udpUnorderedRunner             *udpUnorderedTaskRunner
 	failedQuicDcidCache            *failedQuicDcidCache
@@ -124,10 +125,6 @@ type connStateJanitorScratch struct {
 	cookiePidKeys   []uint64
 	cookiePidValues []bpfPidPname
 	cookiePidDelete []uint64
-
-	routingHandoffKeys   []bpfTuplesKey
-	routingHandoffValues []bpfRoutingHandoff
-	routingHandoffDelete []bpfTuplesKey
 
 	udpKeys   []bpfTuplesKey
 	udpValues []bpfUdpConnState
@@ -208,9 +205,6 @@ var (
 	// cookiePidMapTimeout bounds stale cookie metadata when sock_release backstop
 	// is missed for any reason. Active sockets refresh this timestamp from BPF.
 	cookiePidMapTimeout = 5 * time.Minute
-	// routingHandoffTimeout bounds how long cold metadata is kept for control
-	// plane retrieval after the datapath redirects the first packet.
-	routingHandoffTimeout = 30 * time.Second
 	// connStateJanitorPressureEnterUsage is the usage percentage that activates
 	// pressure mode for connection-state cleanup.
 	connStateJanitorPressureEnterUsage = 70
@@ -229,7 +223,8 @@ var (
 	tcpConnStateTimeoutEstablished = 120 * time.Second
 	tcpConnStateTimeoutClosing     = 10 * time.Second
 
-	// Test seam: injected in tests to avoid external DNS dependency.
+	// Test seams: injected in tests to avoid external DNS dependency.
+	resolveIp46ForBootstrap       = netutils.ResolveIp46
 	resolveIp46ForRealDomainProbe = netutils.ResolveIp46
 )
 
@@ -321,12 +316,9 @@ func NewControlPlaneWithContext(
 	// can clear the failed DCID cache when network conditions improve.
 	dialer.SetQuicDcidCacheClearFunc(ClearFailedQuicDcids)
 
-	var bootstrapResolver netip.AddrPort
-	if global.BootstrapResolver != "" {
-		bootstrapResolver, err = netip.ParseAddrPort(global.BootstrapResolver)
-		if err != nil {
-			return nil, fmt.Errorf("parse global.bootstrap_resolver: %w", err)
-		}
+	bootstrapResolvers, err := config.BootstrapResolvers(global)
+	if err != nil {
+		return nil, err
 	}
 
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
@@ -710,7 +702,7 @@ func NewControlPlaneWithContext(
 		tproxyPortProtect:      global.TproxyPortProtect,
 		soMarkFromDae:          global.SoMarkFromDae,
 		mptcp:                  global.Mptcp,
-		bootstrapResolver:      bootstrapResolver,
+		bootstrapResolvers:     bootstrapResolvers,
 		udpRouteScopeSensitive: builder.UsesPacketMetadataRouting(),
 		udpUnorderedRunner:     newDefaultUdpUnorderedTaskRunner(cctx),
 		failedQuicDcidCache:    newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
@@ -721,7 +713,7 @@ func NewControlPlaneWithContext(
 	plane.startConnStateJanitor()
 
 	var upstreamHostResolver func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
-	if bootstrapResolver.IsValid() {
+	if len(bootstrapResolvers) > 0 {
 		upstreamHostResolver = plane.resolveBootstrapIp46
 	}
 
@@ -929,7 +921,6 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		m    *ebpf.Map
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
-		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
@@ -1180,11 +1171,11 @@ func (c *ControlPlane) lookupRealDomainCache(domain string) (known bool, real bo
 }
 
 func (c *ControlPlane) resolveBootstrapIp46(ctx context.Context, host string, network string) (*netutils.Ip46, error, error) {
-	if !c.bootstrapResolver.IsValid() {
+	if len(c.bootstrapResolvers) == 0 {
 		err := fmt.Errorf("bootstrap resolver is not configured")
 		return &netutils.Ip46{}, err, err
 	}
-	return netutils.ResolveIp46(ctx, direct.SymmetricDirect, c.bootstrapResolver, host, network, false)
+	return c.resolveIp46WithBootstrapResolvers(ctx, host, network, false, resolveIp46ForBootstrap)
 }
 
 func (c *ControlPlane) triggerRealDomainProbe(domain string) {
@@ -1224,12 +1215,18 @@ func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
 	ctx, cancel := context.WithTimeout(c.ctx, realDomainProbeTimeout)
 	defer cancel()
 
-	if !c.bootstrapResolver.IsValid() {
-		// Fail closed when no explicit bootstrap resolver is configured.
+	if len(c.bootstrapResolvers) == 0 {
+		// Fail closed when no bootstrap resolver is configured.
 		return false
 	}
 
-	ip46, err4, err6 := resolveIp46ForRealDomainProbe(ctx, direct.SymmetricDirect, c.bootstrapResolver, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true)
+	ip46, err4, err6 := c.resolveIp46WithBootstrapResolvers(
+		ctx,
+		domain,
+		common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp),
+		true,
+		resolveIp46ForRealDomainProbe,
+	)
 	if err4 != nil && err6 != nil {
 		// Probe failed for both families; avoid sticky false negatives.
 		return false
@@ -1244,6 +1241,56 @@ func (c *ControlPlane) probeAndUpdateRealDomain(domain string) bool {
 	c.muRealDomainSet.Unlock()
 	c.realDomainNegSet.Delete(domain)
 	return true
+}
+
+func (c *ControlPlane) resolveIp46WithBootstrapResolvers(
+	ctx context.Context,
+	host string,
+	network string,
+	race bool,
+	resolve func(context.Context, netproxy.Dialer, netip.AddrPort, string, string, bool) (*netutils.Ip46, error, error),
+) (*netutils.Ip46, error, error) {
+	if len(c.bootstrapResolvers) == 0 {
+		err := fmt.Errorf("bootstrap resolver is not configured")
+		return &netutils.Ip46{}, err, err
+	}
+
+	var firstErr4 error
+	var firstErr6 error
+	var lastNoRecord *netutils.Ip46
+	var lastNoRecordErr4 error
+	var lastNoRecordErr6 error
+	for _, resolver := range c.bootstrapResolvers {
+		ip46, err4, err6 := resolve(ctx, direct.SymmetricDirect, resolver, host, network, race)
+		if ip46 == nil {
+			ip46 = &netutils.Ip46{}
+		}
+		if ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
+			return ip46, err4, err6
+		}
+		if err4 == nil || err6 == nil {
+			lastNoRecord = ip46
+			lastNoRecordErr4 = err4
+			lastNoRecordErr6 = err6
+			continue
+		}
+		if firstErr4 == nil {
+			firstErr4 = err4
+		}
+		if firstErr6 == nil {
+			firstErr6 = err6
+		}
+	}
+	if lastNoRecord != nil {
+		return lastNoRecord, lastNoRecordErr4, lastNoRecordErr6
+	}
+	if firstErr4 == nil {
+		firstErr4 = fmt.Errorf("bootstrap resolver failed")
+	}
+	if firstErr6 == nil {
+		firstErr6 = firstErr4
+	}
+	return &netutils.Ip46{}, firstErr4, firstErr6
 }
 
 func (c *ControlPlane) cleanupNegativeCaches(now time.Time) {
@@ -1482,12 +1529,11 @@ func (c *ControlPlane) startConnStateJanitor() {
 		defer close(c.connStateJanitorDone)
 
 		var (
-			lastConnCleanup           time.Time
-			lastRedirectCleanup       time.Time
-			lastCookiePidCleanup      time.Time
-			lastRoutingHandoffCleanup time.Time
-			lastHealthCheck           time.Time
-			pressureState             connStateJanitorPressureState
+			lastConnCleanup      time.Time
+			lastRedirectCleanup  time.Time
+			lastCookiePidCleanup time.Time
+			lastHealthCheck      time.Time
+			pressureState        connStateJanitorPressureState
 		)
 
 		for {
@@ -1524,10 +1570,6 @@ func (c *ControlPlane) startConnStateJanitor() {
 				if lastCookiePidCleanup.IsZero() || now.Sub(lastCookiePidCleanup) >= redirectCleanupInterval {
 					c.cleanupCookiePidMap()
 					lastCookiePidCleanup = now
-				}
-				if lastRoutingHandoffCleanup.IsZero() || now.Sub(lastRoutingHandoffCleanup) >= redirectCleanupInterval {
-					c.cleanupRoutingHandoffMap()
-					lastRoutingHandoffCleanup = now
 				}
 
 				if lastConnCleanup.IsZero() || now.Sub(lastConnCleanup) >= connCleanupInterval {
@@ -1737,69 +1779,6 @@ func (c *ControlPlane) cleanupCookiePidMap() {
 	}
 }
 
-// cleanupRoutingHandoffMap iterates through the short-lived routing handoff map
-// and removes entries that are too old to be useful for control-plane retrieval.
-func (c *ControlPlane) cleanupRoutingHandoffMap() {
-	select {
-	case <-c.connStateJanitorStop:
-		return
-	default:
-	}
-
-	bpf := c.currentBpf()
-	if bpf == nil || bpf.RoutingHandoffMap == nil {
-		return
-	}
-
-	var ts unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		c.log.Errorf("cleanupRoutingHandoffMap: failed to get monotonic time: %v", err)
-		return
-	}
-	nowNano := ts.Nano()
-	timeoutNano := routingHandoffTimeout.Nanoseconds()
-
-	scratch := c.connStateJanitorScratch()
-	keysToDelete := takeJanitorDeleteScratch(scratch.routingHandoffDelete)
-	keysOut := ensureJanitorLookupScratch(scratch.routingHandoffKeys)
-	valuesOut := ensureJanitorLookupScratch(scratch.routingHandoffValues)
-	defer func() {
-		scratch.routingHandoffDelete = keepJanitorDeleteScratch(keysToDelete)
-		scratch.routingHandoffKeys = keysOut
-		scratch.routingHandoffValues = valuesOut
-	}()
-
-	var cursor ebpf.MapBatchCursor
-	for {
-		count, err := bpf.RoutingHandoffMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
-		if count > 0 {
-			for i := 0; i < count; i++ {
-				key := keysOut[i]
-				value := valuesOut[i]
-				age := nowNano - int64(value.LastSeenNs)
-				if age > timeoutNano {
-					keysToDelete = append(keysToDelete, key)
-				}
-			}
-		}
-		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
-				c.log.Errorf("cleanupRoutingHandoffMap: BatchLookup error: %v", err)
-			}
-			break
-		}
-	}
-
-	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.RoutingHandoffMap, keysToDelete); err != nil {
-			c.log.Debugf("cleanupRoutingHandoffMap: batch delete error: %v", err)
-		}
-		c.log.Debugf("cleanupRoutingHandoffMap: removed %d entries", len(keysToDelete))
-	}
-}
-
 // cleanupUdpConnStateMap iterates through the UDP conn state map and removes
 // cold entries that escaped endpoint-owned teardown.
 // DNS entries use a shorter timeout (17s) while non-DNS UDP keeps a longer
@@ -1895,9 +1874,6 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 	if len(keysToDelete) > 0 {
 		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupUdpConnStateMap: batch delete error: %v", err)
-		}
-		if err := deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, keysToDelete); err != nil {
-			c.log.Debugf("cleanupUdpConnStateMap: handoff delete error: %v", err)
 		}
 	}
 	stats.deleted = len(keysToDelete)
@@ -2013,9 +1989,6 @@ func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanup
 	if len(keysToDelete) > 0 {
 		if _, err := BpfMapBatchDelete(bpf.TcpConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupTcpConnStateMap: batch delete error: %v", err)
-		}
-		if err := deleteRoutingHandoffTuplesMap(bpf.RoutingHandoffMap, keysToDelete); err != nil {
-			c.log.Debugf("cleanupTcpConnStateMap: handoff delete error: %v", err)
 		}
 	}
 	stats.deleted = len(keysToDelete)

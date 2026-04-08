@@ -26,13 +26,13 @@ func newTestControlPlaneForRealDomainProbe() *ControlPlane {
 	log.SetOutput(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ControlPlane{
-		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
-		log:               log,
-		soMarkFromDae:     0,
-		mptcp:             false,
-		bootstrapResolver: netip.MustParseAddrPort("1.1.1.1:53"),
-		ctx:               ctx,
-		cancel:            cancel,
+		realDomainSet:      bloom.NewWithEstimates(2048, 0.001),
+		log:                log,
+		soMarkFromDae:      0,
+		mptcp:              false,
+		bootstrapResolvers: []netip.AddrPort{netip.MustParseAddrPort("1.1.1.1:53")},
+		ctx:                ctx,
+		cancel:             cancel,
 	}
 }
 
@@ -181,7 +181,7 @@ func TestIsRealDomain_UsesConfiguredBootstrapResolver(t *testing.T) {
 
 	expectedBootstrap := netip.MustParseAddrPort("9.9.9.9:53")
 	cp := newTestControlPlaneForRealDomainProbe()
-	cp.bootstrapResolver = expectedBootstrap
+	cp.bootstrapResolvers = []netip.AddrPort{expectedBootstrap}
 
 	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
 		if dns != expectedBootstrap {
@@ -208,13 +208,48 @@ func TestIsRealDomain_NoBootstrapResolverFailsClosed(t *testing.T) {
 	}
 
 	cp := newTestControlPlaneForRealDomainProbe()
-	cp.bootstrapResolver = netip.AddrPort{}
+	cp.bootstrapResolvers = nil
 
 	if cp.isRealDomain("no-bootstrap.example") {
 		t.Fatal("expected fail-closed probe result without bootstrap resolver")
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("expected no external probe without bootstrap resolver, got %d calls", got)
+	}
+}
+
+func TestIsRealDomain_FallsBackToSecondBootstrapResolver(t *testing.T) {
+	oldResolver := resolveIp46ForRealDomainProbe
+	defer func() {
+		resolveIp46ForRealDomainProbe = oldResolver
+	}()
+
+	first := netip.MustParseAddrPort("119.29.29.29:53")
+	second := netip.MustParseAddrPort("223.5.5.5:53")
+	cp := newTestControlPlaneForRealDomainProbe()
+	cp.bootstrapResolvers = []netip.AddrPort{first, second}
+
+	var calls []netip.AddrPort
+	resolveIp46ForRealDomainProbe = func(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (*netutils.Ip46, error, error) {
+		calls = append(calls, dns)
+		if dns == first {
+			err := context.DeadlineExceeded
+			return &netutils.Ip46{}, err, err
+		}
+		if dns != second {
+			t.Fatalf("unexpected bootstrap resolver %v", dns)
+		}
+		return &netutils.Ip46{Ip4: netip.MustParseAddr("93.184.216.34")}, nil, nil
+	}
+
+	if !cp.isRealDomain("bootstrap-fallback.example") {
+		t.Fatal("expected second bootstrap resolver to succeed")
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected two bootstrap resolver attempts, got %d", len(calls))
+	}
+	if calls[0] != first || calls[1] != second {
+		t.Fatalf("unexpected bootstrap resolver sequence: %v", calls)
 	}
 }
 
