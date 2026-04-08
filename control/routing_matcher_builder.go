@@ -226,6 +226,10 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 }
 
 func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound *routing.Outbound) (err error) {
+	if f.Not {
+		// Automatically exclude Zero MAC for negative MAC rules to avoid capturing internal/local traffic.
+		macAddrs = append(macAddrs, [6]byte{})
+	}
 	b.packetMetadataSensitiveRouting = true
 	var addr16 [16]byte
 	values := make([]netip.Prefix, 0, len(macAddrs))

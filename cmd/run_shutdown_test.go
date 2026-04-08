@@ -167,6 +167,25 @@ func TestShutdownAfterSignalTypedNilResourcesAreSkipped(t *testing.T) {
 	}
 }
 
+func TestNotifyRunStateChangeCoalescesPendingNotification(t *testing.T) {
+	runStateChanges := make(chan struct{}, 1)
+
+	notifyRunStateChange(runStateChanges)
+	notifyRunStateChange(runStateChanges)
+
+	select {
+	case <-runStateChanges:
+	default:
+		t.Fatal("expected a pending run-state notification")
+	}
+
+	select {
+	case <-runStateChanges:
+		t.Fatal("expected notifications to coalesce while the channel is full")
+	default:
+	}
+}
+
 func TestWaitReloadReadyOrSignalReturnsOnReady(t *testing.T) {
 	sigs := make(chan os.Signal, 1)
 	readyChan := make(chan bool, 1)

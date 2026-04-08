@@ -161,6 +161,8 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
+	// Keep internal wake-ups separate so queued OS signals cannot mask reload handoff notifications.
+	runStateChanges := make(chan struct{}, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
 
 	ctx, stop := context.WithCancel(context.Background())
@@ -193,7 +195,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		}); runErr != nil {
 			log.Errorln("GetDaeNetns.With:", runErr)
 		}
-		sendSigExit(sigs)
+		notifyRunStateChange(runStateChanges)
 	}()
 
 	type reloadRequest struct {
@@ -354,7 +356,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				go func() { _ = pprofServer.ListenAndServe() }()
 			}
 
-			sendSigExit(sigs)
+			notifyRunStateChange(runStateChanges)
 		}
 	}()
 
@@ -362,9 +364,33 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	reloadingErr = error(nil)
 	abortConnections = false
 loop:
-	for sig := range sigs {
-		switch sig {
-		case nil:
+	for {
+		select {
+		case sig := <-sigs:
+			switch sig {
+			case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL:
+				log.Infof("Received termination signal: %v", sig.String())
+				fastExit = true
+				break loop
+			case syscall.SIGUSR2:
+				select {
+				case reloadReqs <- reloadRequest{isSuspend: true}:
+				default:
+					log.Warnln("[Reload] Last reload request still processing, ignore this one")
+				}
+			case syscall.SIGUSR1:
+				select {
+				case reloadReqs <- reloadRequest{isSuspend: false}:
+				default:
+					log.Warnln("[Reload] Last reload request still processing, ignore this one")
+				}
+			case syscall.SIGHUP:
+				// Ignore.
+				continue
+			default:
+				log.Infof("Received signal: %v", sig.String())
+			}
+		case <-runStateChanges:
 			if reloading.Load() {
 				if listener == nil {
 					log.Warnln("[Reload] Re-listening after reload")
@@ -388,7 +414,7 @@ loop:
 						}); runErr != nil {
 							log.Errorln("GetDaeNetns.With:", runErr)
 						}
-						sendSigExit(sigs)
+						notifyRunStateChange(runStateChanges)
 					}()
 					ready, termSig := waitReloadReadyOrSignal(log, sigs, readyChan)
 					if termSig != nil {
@@ -428,7 +454,7 @@ loop:
 					if err := c.Serve(readyChan, listener); err != nil {
 						log.Errorln("ListenAndServe:", err)
 					}
-					sendSigExit(sigs)
+					notifyRunStateChange(runStateChanges)
 				}()
 				ready, termSig := waitReloadReadyOrSignal(log, sigs, readyChan)
 				if termSig != nil {
@@ -456,29 +482,9 @@ loop:
 				log.Errorln("[Critical] Listener failed; exiting")
 				break loop
 			}
-		case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL:
-			log.Infof("Received termination signal: %v", sig.String())
-			fastExit = true
-			break loop
-		case syscall.SIGUSR2:
-			select {
-			case reloadReqs <- reloadRequest{isSuspend: true}:
-			default:
-				log.Warnln("[Reload] Last reload request still processing, ignore this one")
-			}
-		case syscall.SIGUSR1:
-			select {
-			case reloadReqs <- reloadRequest{isSuspend: false}:
-			default:
-				log.Warnln("[Reload] Last reload request still processing, ignore this one")
-			}
-		case syscall.SIGHUP:
-			// Ignore.
-			continue
-		default:
-			log.Infof("Received signal: %v", sig.String())
 		}
 	}
+
 	defer func() {
 		_ = sdnotify.Stopping()
 		if pprofServer != nil {
@@ -495,9 +501,9 @@ loop:
 	return shutdownAfterSignal(log, listener, c, control.GetDaeNetns(), fastExit)
 }
 
-func sendSigExit(sigs chan<- os.Signal) {
+func notifyRunStateChange(runStateChanges chan<- struct{}) {
 	select {
-	case sigs <- nil:
+	case runStateChanges <- struct{}{}:
 	default:
 	}
 }
