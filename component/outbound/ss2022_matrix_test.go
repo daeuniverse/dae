@@ -162,18 +162,20 @@ func TestSS2022_NewFromLink_Matrix(t *testing.T) {
 				t.Fatal("dialer is nil")
 			}
 
-			prop := d.Property()
-			if prop == nil {
-				t.Fatal("property is nil")
-			}
-			if prop.Protocol != "shadowsocks" {
-				t.Fatalf("unexpected protocol: %q", prop.Protocol)
-			}
-			if prop.SubscriptionTag != "matrix-sub" {
-				t.Fatalf("unexpected subscription tag: %q", prop.SubscriptionTag)
-			}
-			if prop.Address != "127.0.0.1:443" {
-				t.Fatalf("unexpected address: %q", prop.Address)
+			if d != nil {
+				prop := d.Property()
+				if prop == nil {
+					t.Fatal("property is nil")
+				}
+				if prop.Protocol != "shadowsocks" {
+					t.Fatalf("unexpected protocol: %q", prop.Protocol)
+				}
+				if prop.SubscriptionTag != "matrix-sub" {
+					t.Fatalf("unexpected subscription tag: %q", prop.SubscriptionTag)
+				}
+				if prop.Address != "127.0.0.1:443" {
+					t.Fatalf("unexpected address: %q", prop.Address)
+				}
 			}
 		})
 	}

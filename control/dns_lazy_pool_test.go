@@ -235,18 +235,20 @@ func TestLazyConnPool_RealWorldPattern(t *testing.T) {
 	}
 
 	// Verify the new forwarder works
-	f := forwarders["key1"]
-	if f == nil {
+	f, ok := forwarders["key1"]
+	if !ok || f == nil {
 		t.Fatal("forwarder should exist")
 	}
 	// New lazyConnPool should work normally
-	p := f.pool.getOrInit(func() *connPool {
-		return newConnPool(2, func(ctx context.Context) (netproxy.Conn, error) {
-			return nil, nil
+	if f != nil {
+		p := f.pool.getOrInit(func() *connPool {
+			return newConnPool(2, func(ctx context.Context) (netproxy.Conn, error) {
+				return nil, nil
+			})
 		})
-	})
-	if p == nil {
-		t.Error("new forwarder pool should be initialized")
+		if p == nil {
+			t.Error("new forwarder pool should be initialized")
+		}
 	}
 }
 

@@ -59,7 +59,11 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 	}
 
 	firstState := resolver.state.Load()
-	if firstState == nil || firstState == &errorSentinel || firstState.upstream == nil {
+	if firstState == nil || firstState == &errorSentinel {
+		t.Fatalf("expected successful cached state, got %#v", firstState)
+	}
+	firstUpstream := firstState.upstream
+	if firstUpstream == nil {
 		t.Fatalf("expected successful cached state, got %#v", firstState)
 	}
 
@@ -67,8 +71,8 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 		if upstream == nil {
 			t.Fatal("expected concurrent initialization to return an upstream")
 		}
-		if upstream.Hostname != firstState.upstream.Hostname || upstream.Port != firstState.upstream.Port || upstream.Scheme != firstState.upstream.Scheme {
-			t.Fatalf("expected all goroutines to observe equivalent upstream values, got %#v want %#v", upstream, firstState.upstream)
+		if upstream.Hostname != firstUpstream.Hostname || upstream.Port != firstUpstream.Port || upstream.Scheme != firstUpstream.Scheme {
+			t.Fatalf("expected all goroutines to observe equivalent upstream values, got %#v want %#v", upstream, firstUpstream)
 		}
 	}
 
@@ -76,7 +80,7 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 	if err != nil {
 		t.Fatalf("expected cached call to succeed: %v", err)
 	}
-	if upstream != firstState.upstream {
+	if upstream != firstUpstream {
 		t.Fatal("expected cached call to reuse the stored upstream pointer")
 	}
 }
