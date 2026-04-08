@@ -65,6 +65,7 @@ func TestCompareAndDelete_RaceCondition(t *testing.T) {
 	// Verify: Q2 should still be usable
 	if q2 == nil {
 		t.Fatal("Q2 should not be nil")
+		return
 	}
 
 	// Verify: Q2 is not draining
@@ -125,6 +126,7 @@ func TestCompareAndDelete_AcquireQueueRace(t *testing.T) {
 	// The new queue should not be draining
 	if q2 == nil {
 		t.Fatal("Queue should not be nil")
+		return
 	}
 	if q2.refs.Load() < 0 {
 		t.Error("New queue should not be draining")

@@ -219,6 +219,7 @@ func TestHandlePkt_QuicSnifferCompletionReplaysBufferedPackets(t *testing.T) {
 	sniffer := DefaultPacketSnifferSessionMgr.Get(snifferKey)
 	if sniffer == nil {
 		t.Fatal("expected sniffer session to remain as lightweight flow state after completion")
+		return
 	}
 	sniffer.Mu.Lock()
 	defer sniffer.Mu.Unlock()
