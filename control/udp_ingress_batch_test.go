@@ -60,6 +60,7 @@ func TestUdpIngressBatchReader_ReadBatchUDP4(t *testing.T) {
 	reader := newUDPIngressBatchReader(conn, 1)
 	if reader == nil {
 		t.Fatal("newUDPIngressBatchReader() returned nil")
+		return
 	}
 	defer reader.Close()
 	if _, ok := reader.pc.(*ipv4.PacketConn); !ok {
@@ -109,6 +110,7 @@ func TestUdpIngressBatchReader_ReadBatchDualStackUDP4(t *testing.T) {
 	reader := newUDPIngressBatchReader(conn, 1)
 	if reader == nil {
 		t.Fatal("newUDPIngressBatchReader() returned nil")
+		return
 	}
 	defer reader.Close()
 	if _, ok := reader.pc.(*ipv6.PacketConn); !ok {

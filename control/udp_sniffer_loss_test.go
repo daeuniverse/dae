@@ -116,6 +116,7 @@ func TestHandlePkt_QuicSnifferNeedMoreHoldsFirstPacket(t *testing.T) {
 	sniffer := DefaultPacketSnifferSessionMgr.Get(snifferKey)
 	if sniffer == nil {
 		t.Fatal("expected DCID-specific sniffer session after first NeedMore packet")
+		return
 	}
 	if got := countPooledPacketSniffers(DefaultPacketSnifferSessionMgr); got != 1 {
 		t.Fatalf("pooled packet sniffers after first NeedMore packet = %d, want 1", got)
