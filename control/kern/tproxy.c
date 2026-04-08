@@ -1218,9 +1218,13 @@ struct {
 	__uint(max_entries, 1);
 } wan_egress_route_scratch_map SEC(".maps");
 
-// Conntrack argument passing: per-CPU scratch for noinline __mark_*_seen.
-// Avoids exceeding the BPF subprogram 5-argument limit while keeping the
-// public mark_*_seen() signatures unchanged for all callers.
+// Conntrack argument passing: per-CPU scratch for mark_*_seen wrappers.
+// This avoids exceeding the BPF subprogram 5-argument limit while keeping the
+// public mark_*_seen() signatures unchanged for all callers. The wrapper does a
+// single PERCPU_ARRAY lookup, populates the scratch, and then threads the map
+// value pointer into the noinline core to avoid a second helper call on the hot
+// path. Older kernels may be stricter about BPF-to-BPF pointer propagation, so
+// BPF tests should be kept enabled when touching this boundary.
 #define CT_ARGS_HAS_ROUTING  BIT(0)
 #define CT_ARGS_HAS_MAC      BIT(1)
 #define CT_ARGS_HAS_PNAME    BIT(2)
@@ -1836,12 +1840,9 @@ udp_conn_state_expired(const struct udp_conn_state *state, __u64 now)
 }
 
 static __noinline struct udp_conn_state *
-__mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
+__mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
+		const struct conntrack_args *args)
 {
-	__u32 zero = 0;
-	struct conntrack_args *args =
-		bpf_map_lookup_elem(&conntrack_args_map, &zero);
-
 	if (!args)
 		return NULL;
 
@@ -1920,8 +1921,8 @@ __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction)
 	return bpf_map_lookup_elem(&udp_conn_state_map, key);
 }
 
-// mark_udp_seen: thin inline wrapper that populates per-CPU scratch args
-// then delegates to the single-copy __mark_udp_seen body.
+// mark_udp_seen: thin inline wrapper that populates per-CPU scratch args once
+// and then delegates to the single-copy __mark_udp_seen body.
 static __always_inline struct udp_conn_state *
 mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
@@ -1934,7 +1935,7 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	if (unlikely(!args))
 		return NULL;
 	conntrack_args_set(args, outbound, mark, must, mac, dscp, pname, pid);
-	return __mark_udp_seen(key, is_wan_ingress_direction);
+	return __mark_udp_seen(key, is_wan_ingress_direction, args);
 }
 
 // mark_tcp_seen updates TCP connection state for lifecycle tracking.
@@ -1973,16 +1974,12 @@ tcp_conn_state_expired(const struct tcp_conn_state *state, __u64 now)
 	return now - state->last_seen_ns > timeout;
 }
 
-// __mark_tcp_seen: noinline core.  Reads routing args from conntrack_args_map.
-// tcp_flags: bit 0 = SYN && !ACK (new connection), bit 1 = FIN || RST.
+// __mark_tcp_seen: noinline core. tcp_flags: bit 0 = SYN && !ACK (new
+// connection), bit 1 = FIN || RST.
 static __noinline struct tcp_conn_state *
 __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
-		__u8 tcp_flags)
+		__u8 tcp_flags, const struct conntrack_args *args)
 {
-	__u32 zero = 0;
-	struct conntrack_args *args =
-		bpf_map_lookup_elem(&conntrack_args_map, &zero);
-
 	if (!args)
 		return NULL;
 
@@ -2082,8 +2079,8 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	return NULL;
 }
 
-// mark_tcp_seen: thin inline wrapper that populates per-CPU scratch args
-// then delegates to the single-copy __mark_tcp_seen body.
+// mark_tcp_seen: thin inline wrapper that populates per-CPU scratch args once
+// and then delegates to the single-copy __mark_tcp_seen body.
 static __always_inline struct tcp_conn_state *
 mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	      bool is_wan_ingress_direction,
@@ -2104,7 +2101,7 @@ mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 		tcp_flags |= 1;
 	if (tcph->fin || tcph->rst)
 		tcp_flags |= 2;
-	return __mark_tcp_seen(key, is_wan_ingress_direction, tcp_flags);
+	return __mark_tcp_seen(key, is_wan_ingress_direction, tcp_flags, args);
 }
 
 static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
