@@ -109,3 +109,43 @@ func TestControlPlaneRoute_DscpHexLiteralUsesExactDscpValue(t *testing.T) {
 		})
 	}
 }
+
+func TestNewRoutingMatcherBuilder_DscpKeepsLegacyLiteralCompatibility(t *testing.T) {
+	tests := []string{"64", "0xb8", "255"}
+
+	for _, literal := range tests {
+		t.Run(literal, func(t *testing.T) {
+			rules := []*config_parser.RoutingRule{
+				{
+					AndFunctions: []*config_parser.Function{
+						{
+							Name: consts.Function_Dscp,
+							Params: []*config_parser.Param{
+								{Val: literal},
+							},
+						},
+					},
+					Outbound: config_parser.Function{Name: "proxy"},
+				},
+			}
+
+			builder, err := NewRoutingMatcherBuilder(
+				logrus.New(),
+				rules,
+				map[string]uint8{
+					"direct": uint8(consts.OutboundDirect),
+					"proxy":  uint8(consts.OutboundUserDefinedMin),
+				},
+				nil,
+				config.FunctionOrString("direct"),
+			)
+			if err != nil {
+				t.Fatalf("NewRoutingMatcherBuilder(%q): %v", literal, err)
+			}
+
+			if _, err := builder.BuildUserspace(); err != nil {
+				t.Fatalf("BuildUserspace(%q): %v", literal, err)
+			}
+		})
+	}
+}

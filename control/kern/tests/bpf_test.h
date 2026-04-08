@@ -100,6 +100,70 @@ set_ipv4_tcp_with_dscp(struct __sk_buff *skb,
 	return TC_ACT_OK;
 }
 
+static __always_inline void
+set_ipv6_header_dscp(struct ipv6hdr *ip6, __u8 dscp)
+{
+	__u8 tc = dscp << 2;
+	__u8 *raw = (__u8 *)ip6;
+
+	raw[0] = (6 << 4) | (tc >> 4);
+	raw[1] = (tc & 0x0f) << 4;
+}
+
+static __always_inline int
+set_ipv6_tcp_with_dscp(struct __sk_buff *skb,
+		       __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+		       __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+		       __u16 sport, __u16 dport,
+		       __u8 dscp)
+{
+	if (bpf_skb_change_tail(skb, ETH_HLEN + IP6_HLEN + TCP_HLEN, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + ETH_HLEN + IP6_HLEN + TCP_HLEN > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IPV6);
+
+	struct ipv6hdr *ip6 = data + ETH_HLEN;
+	set_ipv6_header_dscp(ip6, dscp);
+	ip6->payload_len = bpf_htons(TCP_HLEN);
+	ip6->nexthdr = IPPROTO_TCP;
+	ip6->hop_limit = 64;
+	ip6->saddr.in6_u.u6_addr32[0] = bpf_htonl(saddr0);
+	ip6->saddr.in6_u.u6_addr32[1] = bpf_htonl(saddr1);
+	ip6->saddr.in6_u.u6_addr32[2] = bpf_htonl(saddr2);
+	ip6->saddr.in6_u.u6_addr32[3] = bpf_htonl(saddr3);
+	ip6->daddr.in6_u.u6_addr32[0] = bpf_htonl(daddr0);
+	ip6->daddr.in6_u.u6_addr32[1] = bpf_htonl(daddr1);
+	ip6->daddr.in6_u.u6_addr32[2] = bpf_htonl(daddr2);
+	ip6->daddr.in6_u.u6_addr32[3] = bpf_htonl(daddr3);
+
+	struct tcphdr *tcp = data + ETH_HLEN + IP6_HLEN;
+	tcp->source = bpf_htons(sport);
+	tcp->dest = bpf_htons(dport);
+	tcp->doff = 5;
+	tcp->syn = 1;
+
+	return TC_ACT_OK;
+}
+
 static __always_inline int
 check_status_and_mark(struct __sk_buff *skb,
 		      __u32 expected_status_code,
@@ -390,6 +454,120 @@ check_tcp_conn_state_ipv4_tcp_dscp(struct __sk_buff *skb,
 }
 
 static __always_inline int
+check_tcp_conn_state_ipv6_tcp_dscp(struct __sk_buff *skb,
+				   __u32 expected_status_code,
+				   __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+				   __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+				   __u16 sport, __u16 dport,
+				   __u8 expected_outbound,
+				   __u32 expected_mark,
+				   __u8 expected_dscp,
+				   bool expect_eth)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != expected_status_code) {
+		bpf_printk("status_code(%d) != %d\n", *status_code, expected_status_code);
+		return TC_ACT_SHOT;
+	}
+
+	struct ipv6hdr *ip6;
+
+	if (expect_eth) {
+		struct ethhdr *eth = data + sizeof(*status_code);
+		if ((void *)(eth + 1) > data_end) {
+			bpf_printk("data + sizeof(*eth) > data_end\n");
+			return TC_ACT_SHOT;
+		}
+		if (eth->h_proto != bpf_htons(ETH_P_IPV6)) {
+			bpf_printk("eth->h_proto != ETH_P_IPV6\n");
+			return TC_ACT_SHOT;
+		}
+		ip6 = (void *)eth + ETH_HLEN;
+	} else {
+		ip6 = data + sizeof(*status_code);
+	}
+
+	if ((void *)(ip6 + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip6) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip6->nexthdr != IPPROTO_TCP) {
+		bpf_printk("ip6->nexthdr != IPPROTO_TCP\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tcphdr *tcp = (void *)ip6 + IP6_HLEN;
+	if ((void *)(tcp + 1) > data_end) {
+		bpf_printk("data + sizeof(*tcp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (ip6->saddr.in6_u.u6_addr32[0] != bpf_htonl(saddr0) ||
+	    ip6->saddr.in6_u.u6_addr32[1] != bpf_htonl(saddr1) ||
+	    ip6->saddr.in6_u.u6_addr32[2] != bpf_htonl(saddr2) ||
+	    ip6->saddr.in6_u.u6_addr32[3] != bpf_htonl(saddr3)) {
+		bpf_printk("ip6->saddr mismatch\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip6->daddr.in6_u.u6_addr32[0] != bpf_htonl(daddr0) ||
+	    ip6->daddr.in6_u.u6_addr32[1] != bpf_htonl(daddr1) ||
+	    ip6->daddr.in6_u.u6_addr32[2] != bpf_htonl(daddr2) ||
+	    ip6->daddr.in6_u.u6_addr32[3] != bpf_htonl(daddr3)) {
+		bpf_printk("ip6->daddr mismatch\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tuples tuples = {};
+	__builtin_memcpy(&tuples.five.sip, &ip6->saddr, sizeof(ip6->saddr));
+	__builtin_memcpy(&tuples.five.dip, &ip6->daddr, sizeof(ip6->daddr));
+	tuples.five.sport = tcp->source;
+	tuples.five.dport = tcp->dest;
+	tuples.five.l4proto = ip6->nexthdr;
+
+	struct tcp_conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+	if (!conn_state) {
+		bpf_printk("conn_state == NULL\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.has_routing == 0) {
+		bpf_printk("conn_state->meta.data.has_routing == 0\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.outbound != expected_outbound) {
+		bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+			   conn_state->meta.data.outbound, expected_outbound);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.mark != expected_mark) {
+		bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+			   conn_state->meta.data.mark, expected_mark);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.dscp != expected_dscp) {
+		bpf_printk("conn_state->meta.data.dscp(%d) != %d\n",
+			   conn_state->meta.data.dscp, expected_dscp);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 check_routing_ipv4_tcp_state(struct __sk_buff *skb,
 			     __u32 expected_status_code,
 			     __u32 saddr, __u32 daddr,
@@ -615,6 +793,151 @@ check_udp_conn_state_ipv4_udp_dscp(struct __sk_buff *skb,
 }
 
 static __always_inline int
+check_routing_ipv6_tcp_state(struct __sk_buff *skb,
+			     __u32 expected_status_code,
+			     __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+			     __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+			     __u16 sport, __u16 dport,
+			     __u8 expected_outbound,
+			     __u32 expected_mark,
+			     bool expect_eth)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != expected_status_code) {
+		bpf_printk("status_code(%d) != %d\n", *status_code, expected_status_code);
+		return TC_ACT_SHOT;
+	}
+
+	if (expected_status_code == TC_ACT_REDIRECT) {
+		if (skb->cb[0] != TPROXY_MARK) {
+			bpf_printk("skb->cb[0] != TPROXY_MARK\n");
+			return TC_ACT_SHOT;
+		}
+		if (skb->cb[1] != IPPROTO_TCP) {
+			bpf_printk("skb->cb[1] != IPPROTO_TCP\n");
+			return TC_ACT_SHOT;
+		}
+	}
+
+	struct ipv6hdr *ip6;
+
+	if (expect_eth) {
+		struct ethhdr *eth = data + sizeof(*status_code);
+		if ((void *)(eth + 1) > data_end) {
+			bpf_printk("data + sizeof(*eth) > data_end\n");
+			return TC_ACT_SHOT;
+		}
+		if (eth->h_proto != bpf_htons(ETH_P_IPV6)) {
+			bpf_printk("eth->h_proto != ETH_P_IPV6\n");
+			return TC_ACT_SHOT;
+		}
+		ip6 = (void *)eth + ETH_HLEN;
+	} else {
+		ip6 = data + sizeof(*status_code);
+	}
+
+	if ((void *)(ip6 + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip6) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip6->nexthdr != IPPROTO_TCP) {
+		bpf_printk("ip6->nexthdr != IPPROTO_TCP\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tcphdr *tcp = (void *)ip6 + IP6_HLEN;
+	if ((void *)(tcp + 1) > data_end) {
+		bpf_printk("data + sizeof(*tcp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (tcp->source != bpf_htons(sport)) {
+		bpf_printk("tcp->source != %d\n", sport);
+		return TC_ACT_SHOT;
+	}
+	if (tcp->dest != bpf_htons(dport)) {
+		bpf_printk("tcp->dest != %d\n", dport);
+		return TC_ACT_SHOT;
+	}
+
+	if (ip6->saddr.in6_u.u6_addr32[0] != bpf_htonl(saddr0) ||
+	    ip6->saddr.in6_u.u6_addr32[1] != bpf_htonl(saddr1) ||
+	    ip6->saddr.in6_u.u6_addr32[2] != bpf_htonl(saddr2) ||
+	    ip6->saddr.in6_u.u6_addr32[3] != bpf_htonl(saddr3)) {
+		bpf_printk("ip6->saddr mismatch\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip6->daddr.in6_u.u6_addr32[0] != bpf_htonl(daddr0) ||
+	    ip6->daddr.in6_u.u6_addr32[1] != bpf_htonl(daddr1) ||
+	    ip6->daddr.in6_u.u6_addr32[2] != bpf_htonl(daddr2) ||
+	    ip6->daddr.in6_u.u6_addr32[3] != bpf_htonl(daddr3)) {
+		bpf_printk("ip6->daddr mismatch\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (expected_status_code == TC_ACT_REDIRECT) {
+		struct tuples tuples = {};
+		__builtin_memcpy(&tuples.five.sip, &ip6->saddr, sizeof(ip6->saddr));
+		__builtin_memcpy(&tuples.five.dip, &ip6->daddr, sizeof(ip6->daddr));
+		tuples.five.sport = tcp->source;
+		tuples.five.dport = tcp->dest;
+		tuples.five.l4proto = ip6->nexthdr;
+
+		struct tcp_conn_state *conn_state;
+		conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+		if (!conn_state) {
+			bpf_printk("conn_state == NULL\n");
+			return TC_ACT_SHOT;
+		}
+
+		if (conn_state->meta.data.has_routing == 0) {
+			bpf_printk("conn_state->meta.data.has_routing == 0\n");
+			return TC_ACT_SHOT;
+		}
+
+		if (conn_state->meta.data.outbound != expected_outbound) {
+			bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+				   conn_state->meta.data.outbound, expected_outbound);
+			return TC_ACT_SHOT;
+		}
+
+		if (conn_state->meta.data.mark != expected_mark) {
+			bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+				   conn_state->meta.data.mark, expected_mark);
+			return TC_ACT_SHOT;
+		}
+	}
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+check_routing_ipv6_tcp(struct __sk_buff *skb,
+		       __u32 expected_status_code,
+		       __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+		       __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+		       __u16 sport, __u16 dport)
+{
+	return check_routing_ipv6_tcp_state(skb,
+					    expected_status_code,
+					    saddr0, saddr1, saddr2, saddr3,
+					    daddr0, daddr1, daddr2, daddr3,
+					    sport, dport,
+					    OUTBOUND_USER_DEFINED_MIN,
+					    0,
+					    true);
+}
+
+static __always_inline int
 check_routing_ipv4_tcp(struct __sk_buff *skb,
 		       __u32 expected_status_code,
 		       __u32 saddr, __u32 daddr,
@@ -715,6 +1038,174 @@ set_minimal_ipv4_udp_with_dscp(struct __sk_buff *skb,
 		return TC_ACT_SHOT;
 
 	ip->tos = dscp << 2;
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+set_minimal_ipv6_udp_with_dscp(struct __sk_buff *skb,
+			       __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+			       __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+			       __u16 sport, __u16 dport,
+			       __u8 dscp)
+{
+	if (bpf_skb_change_tail(skb, ETH_HLEN + IP6_HLEN + sizeof(struct udphdr), 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + ETH_HLEN + IP6_HLEN + sizeof(struct udphdr) > data_end)
+		return TC_ACT_SHOT;
+
+	struct ethhdr *eth = data;
+	eth->h_dest[0] = 0x0;
+	eth->h_dest[1] = 0x1;
+	eth->h_dest[2] = 0x2;
+	eth->h_dest[3] = 0x3;
+	eth->h_dest[4] = 0x4;
+	eth->h_dest[5] = 0x5;
+	eth->h_source[0] = 0x6;
+	eth->h_source[1] = 0x7;
+	eth->h_source[2] = 0x8;
+	eth->h_source[3] = 0x9;
+	eth->h_source[4] = 0xa;
+	eth->h_source[5] = 0xb;
+	eth->h_proto = bpf_htons(ETH_P_IPV6);
+
+	struct ipv6hdr *ip6 = data + ETH_HLEN;
+	set_ipv6_header_dscp(ip6, dscp);
+	ip6->payload_len = bpf_htons(sizeof(struct udphdr));
+	ip6->nexthdr = IPPROTO_UDP;
+	ip6->hop_limit = 64;
+	ip6->saddr.in6_u.u6_addr32[0] = bpf_htonl(saddr0);
+	ip6->saddr.in6_u.u6_addr32[1] = bpf_htonl(saddr1);
+	ip6->saddr.in6_u.u6_addr32[2] = bpf_htonl(saddr2);
+	ip6->saddr.in6_u.u6_addr32[3] = bpf_htonl(saddr3);
+	ip6->daddr.in6_u.u6_addr32[0] = bpf_htonl(daddr0);
+	ip6->daddr.in6_u.u6_addr32[1] = bpf_htonl(daddr1);
+	ip6->daddr.in6_u.u6_addr32[2] = bpf_htonl(daddr2);
+	ip6->daddr.in6_u.u6_addr32[3] = bpf_htonl(daddr3);
+
+	struct udphdr *udp = data + ETH_HLEN + IP6_HLEN;
+	udp->source = bpf_htons(sport);
+	udp->dest = bpf_htons(dport);
+	udp->len = bpf_htons(sizeof(struct udphdr));
+	udp->check = 0;
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+check_udp_conn_state_ipv6_udp_dscp(struct __sk_buff *skb,
+				   __u32 expected_status_code,
+				   __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+				   __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+				   __u16 sport, __u16 dport,
+				   __u8 expected_outbound,
+				   __u32 expected_mark,
+				   __u8 expected_dscp,
+				   bool expect_eth)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != expected_status_code) {
+		bpf_printk("status_code(%d) != %d\n", *status_code, expected_status_code);
+		return TC_ACT_SHOT;
+	}
+
+	struct ipv6hdr *ip6;
+
+	if (expect_eth) {
+		struct ethhdr *eth = data + sizeof(*status_code);
+		if ((void *)(eth + 1) > data_end) {
+			bpf_printk("data + sizeof(*eth) > data_end\n");
+			return TC_ACT_SHOT;
+		}
+		if (eth->h_proto != bpf_htons(ETH_P_IPV6)) {
+			bpf_printk("eth->h_proto != ETH_P_IPV6\n");
+			return TC_ACT_SHOT;
+		}
+		ip6 = (void *)eth + ETH_HLEN;
+	} else {
+		ip6 = data + sizeof(*status_code);
+	}
+
+	if ((void *)(ip6 + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip6) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip6->nexthdr != IPPROTO_UDP) {
+		bpf_printk("ip6->nexthdr != IPPROTO_UDP\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct udphdr *udp = (void *)ip6 + IP6_HLEN;
+	if ((void *)(udp + 1) > data_end) {
+		bpf_printk("data + sizeof(*udp) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (ip6->saddr.in6_u.u6_addr32[0] != bpf_htonl(saddr0) ||
+	    ip6->saddr.in6_u.u6_addr32[1] != bpf_htonl(saddr1) ||
+	    ip6->saddr.in6_u.u6_addr32[2] != bpf_htonl(saddr2) ||
+	    ip6->saddr.in6_u.u6_addr32[3] != bpf_htonl(saddr3)) {
+		bpf_printk("ip6->saddr mismatch\n");
+		return TC_ACT_SHOT;
+	}
+	if (ip6->daddr.in6_u.u6_addr32[0] != bpf_htonl(daddr0) ||
+	    ip6->daddr.in6_u.u6_addr32[1] != bpf_htonl(daddr1) ||
+	    ip6->daddr.in6_u.u6_addr32[2] != bpf_htonl(daddr2) ||
+	    ip6->daddr.in6_u.u6_addr32[3] != bpf_htonl(daddr3)) {
+		bpf_printk("ip6->daddr mismatch\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct tuples tuples = {};
+	__builtin_memcpy(&tuples.five.sip, &ip6->saddr, sizeof(ip6->saddr));
+	__builtin_memcpy(&tuples.five.dip, &ip6->daddr, sizeof(ip6->daddr));
+	tuples.five.sport = udp->source;
+	tuples.five.dport = udp->dest;
+	tuples.five.l4proto = ip6->nexthdr;
+
+	struct udp_conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five);
+	if (!conn_state) {
+		bpf_printk("conn_state == NULL\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.has_routing == 0) {
+		bpf_printk("conn_state->meta.data.has_routing == 0\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.outbound != expected_outbound) {
+		bpf_printk("conn_state->meta.data.outbound(%d) != %d\n",
+			   conn_state->meta.data.outbound, expected_outbound);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.mark != expected_mark) {
+		bpf_printk("conn_state->meta.data.mark(%d) != %d\n",
+			   conn_state->meta.data.mark, expected_mark);
+		return TC_ACT_SHOT;
+	}
+
+	if (conn_state->meta.data.dscp != expected_dscp) {
+		bpf_printk("conn_state->meta.data.dscp(%d) != %d\n",
+			   conn_state->meta.data.dscp, expected_dscp);
+		return TC_ACT_SHOT;
+	}
+
 	return TC_ACT_OK;
 }
 

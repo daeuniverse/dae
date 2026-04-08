@@ -117,8 +117,8 @@ jobs:
         run: |
           mkdir -p ./build/
           export GOFLAGS="-trimpath -modcacherw"
-          # Go 1.26 optimization: newinliner and simd (loopvar is automatic with go 1.26, arenas requires code changes)
-          export GOEXPERIMENT="newinliner,simd"
+          # Go 1.26 optimization: newinliner, simd, heapminimum512kib, and randomizedheapbase64.
+          export GOEXPERIMENT="newinliner,simd,heapminimum512kib,randomizedheapbase64"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export CLANG=clang-15

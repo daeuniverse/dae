@@ -134,8 +134,8 @@ struct ip_port {
 };
 
 // routing_result: Routing decision result structure.
-// NOTE: This struct is preserved for Go code generation (bpf2go compatibility).
-// The actual routing caching is now embedded in conn_state maps (Scheme3).
+// NOTE: This struct is used by userspace caches and the first-packet routing
+// fallback handoff map. Conn-state maps remain the authoritative datapath cache.
 struct routing_result {
 	__u32 mark;
 	__u8 must;
@@ -157,6 +157,11 @@ struct tuples_key {
 struct tuples {
 	struct tuples_key five;
 	__u8 dscp;
+};
+
+struct routing_handoff_entry {
+	__u64 last_seen_ns;
+	struct routing_result result;
 };
 
 struct dae_param {
@@ -192,6 +197,13 @@ struct {
 	__type(value, __u64);
 	__uint(max_entries, 1);
 } fast_sock SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct tuples_key);
+	__type(value, struct routing_handoff_entry);
+	__uint(max_entries, 65536);
+} routing_handoff_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -526,7 +538,15 @@ static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph)
 
 static __always_inline __u8 ipv6_get_dscp(const struct ipv6hdr *ipv6h)
 {
-	return (ipv6h->priority << 2) | (ipv6h->flow_lbl[0] >> 6);
+	const __u8 *version_and_tc = (const __u8 *)ipv6h;
+
+	/* Extract DSCP from the raw IPv6 version / traffic-class bytes instead of
+	 * relying on bitfields. This keeps the result stable across kernels/BTF
+	 * layouts and matches the on-wire header layout directly:
+	 *   byte0 low nibble  = traffic class bits [7:4]
+	 *   byte1 high 2 bits = traffic class bits [3:2]
+	 */
+	return ((version_and_tc[0] & 0x0f) << 2) | (version_and_tc[1] >> 6);
 }
 
 static __always_inline void
@@ -1710,36 +1730,37 @@ static __always_inline int redirect_to_control_plane_egress(void)
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
-static __always_inline int prep_redirect_to_control_plane(
+static __noinline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
-	__u8 listener_l4proto, struct ethhdr *ethh, __u8 from_wan)
+	struct ethhdr *ethh, __u8 from_wan)
 {
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
+	__u32 local_link_h_len = link_h_len;
+	struct ethhdr *local_ethh = ethh;
+	__u8 local_from_wan = from_wan;
+	bool use_redirect_peer = PARAM.use_redirect_peer && !local_from_wan;
 
-	if (PARAM.use_redirect_peer && !from_wan)
-		goto skip_eth_prep;
+	if (!use_redirect_peer) {
+		if (!local_link_h_len) {
+			__u16 l3proto = skb->protocol;
+			__u8 zero_mac[6] = {0};
+			int ret;
 
-	if (!link_h_len) {
-		__u16 l3proto = skb->protocol;
-		__u8 zero_mac[6] = {0};
-		int ret;
-
-		ret = bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
-		if (ret) {
-			bpf_printk("prep_redirect: bpf_skb_change_head failed: %d", ret);
-			return ret;
+			ret = bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
+			if (ret) {
+				bpf_printk("prep_redirect: bpf_skb_change_head failed: %d", ret);
+				return ret;
+			}
+			bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
+					    &l3proto, sizeof(l3proto), 0);
+			bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+					    zero_mac, sizeof(zero_mac), 0);
 		}
-		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
-				    &l3proto, sizeof(l3proto), 0);
-		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-				    zero_mac, sizeof(zero_mac), 0);
+
+		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+				    (void *)&PARAM.dae0peer_mac, 6, 0);
 	}
-
-	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-			    (void *)&PARAM.dae0peer_mac, 6, 0);
-
-skip_eth_prep:
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
 		redirect_tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
@@ -1752,19 +1773,16 @@ skip_eth_prep:
 	}
 
 	redirect_entry.ifindex = skb->ifindex;
-	redirect_entry.from_wan = from_wan;
+	redirect_entry.from_wan = local_from_wan;
 	redirect_entry.last_seen_ns = bpf_ktime_get_ns();
-	if (link_h_len == ETH_HLEN) {
-		__builtin_memcpy(redirect_entry.smac, ethh->h_source, 6);
-		__builtin_memcpy(redirect_entry.dmac, ethh->h_dest, 6);
+	if (local_link_h_len == ETH_HLEN) {
+		__builtin_memcpy(redirect_entry.smac, local_ethh->h_source, 6);
+		__builtin_memcpy(redirect_entry.dmac, local_ethh->h_dest, 6);
 	} else {
 		__builtin_memset(redirect_entry.smac, 0, 6);
 		__builtin_memset(redirect_entry.dmac, 0, 6);
 	}
 	bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
-
-	skb->cb[0] = TPROXY_MARK;
-	skb->cb[1] = listener_l4proto;
 
 	return 0;
 }
@@ -2178,6 +2196,37 @@ static __noinline bool
 wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 		      __be16 dport);
 
+static __noinline int
+redirect_lan_packet_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
+				     struct lan_ingress_parsed *pkt,
+				     __u64 routing_meta_raw)
+{
+	union routing_meta routing_meta = {
+		.raw = routing_meta_raw,
+	};
+	struct routing_handoff_entry handoff = {};
+
+	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
+					   &pkt->ethh, 0)) {
+		// Failed to prepare packet (e.g., bpf_skb_change_head failed under memory pressure)
+		// Fall back to direct pass to avoid packet corruption
+		return TC_ACT_OK;
+	}
+
+	skb->cb[0] = TPROXY_MARK;
+	skb->cb[1] = pkt->listener_l4proto;
+
+	handoff.last_seen_ns = bpf_ktime_get_ns();
+	handoff.result.mark = routing_meta.data.mark;
+	handoff.result.must = routing_meta.data.must;
+	handoff.result.outbound = routing_meta.data.outbound;
+	handoff.result.dscp = routing_meta.data.dscp;
+	__builtin_memcpy(handoff.result.mac, pkt->ethh.h_source, 6);
+	bpf_map_update_elem(&routing_handoff_map, &pkt->tuples.five,
+			    &handoff, BPF_ANY);
+	return redirect_to_control_plane_ingress();
+}
+
 static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
@@ -2258,7 +2307,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
 					   pkt->tuples.five.dport))
 			return TC_ACT_SHOT;
-		goto control_plane;
+		return redirect_lan_packet_to_control_plane(
+			skb, link_h_len, pkt, tcp_state->meta.raw);
 	}
 
 	// Routing for new connection.
@@ -2308,7 +2358,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 				// Update conn state timestamp for this fast path packet
 				udp_state->last_seen_ns = bpf_ktime_get_ns();
-				goto control_plane;
+				return redirect_lan_packet_to_control_plane(
+					skb, link_h_len, pkt, udp_state->meta.raw);
 			}
 		}
 		route_flag[0] = L4ProtoType_UDP;
@@ -2448,7 +2499,6 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 							    pkt->tuples.dscp);
 		*(volatile __u64 *)&udp_state->meta.raw = _m.raw;
 	}
-	// No separate routing_tuples_map write needed - routing is embedded.
 
 	// SECURITY: Fail-Closed for TCP connections requiring proxy when conn state map is full.
 	// If we couldn't store conn state for a TCP packet that needs proxying,
@@ -2510,17 +2560,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
 				   pkt->tuples.five.dport))
 		goto block;
-
-	// Assign to control plane.
-control_plane:
-	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
-					   pkt->listener_l4proto,
-					   &pkt->ethh, 0)) {
-		// Failed to prepare packet (e.g., bpf_skb_change_head failed under memory pressure)
-		// Fall back to direct pass to avoid packet corruption
-		return TC_ACT_OK;
-	}
-	return redirect_to_control_plane_ingress();
+	return redirect_lan_packet_to_control_plane(
+		skb, link_h_len, pkt,
+		build_routing_meta(outbound, mark, must, pkt->tuples.dscp).raw);
 
 direct:
 	return TC_ACT_OK;
@@ -2686,14 +2728,17 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 	bool must;
 	__u32 mark;
 	struct pid_pname *pid_pname = NULL;
+	const char *handoff_pname = NULL;
+	__u32 handoff_pid = 0;
+	__u8 handoff_mac[6] = {};
+	__u32 scratch_key = 0;
+	struct wan_egress_route_scratch *scratch =
+		bpf_map_lookup_elem(&wan_egress_route_scratch_map, &scratch_key);
+
+	if (!scratch)
+		return TC_ACT_SHOT;
 
 	if (unlikely(tcp_state_syn)) {
-		__u32 scratch_key = 0;
-		struct wan_egress_route_scratch *scratch =
-			bpf_map_lookup_elem(&wan_egress_route_scratch_map, &scratch_key);
-		if (!scratch)
-			return TC_ACT_SHOT;
-
 		__builtin_memset(scratch, 0, sizeof(*scratch));
 		scratch->flag[0] = L4ProtoType_TCP;
 		if (skb->protocol == bpf_htons(ETH_P_IP))
@@ -2739,7 +2784,10 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		if (pid_pname) {
 			pname_str = pid_pname->pname;
 			pid_val = pid_pname->pid;
+			handoff_pname = pid_pname->pname;
+			handoff_pid = pid_pname->pid;
 		}
+		__builtin_memcpy(handoff_mac, scratch->mac, 6);
 
 		__u8 *outbound_ptr = &outbound;
 		__u32 *mark_ptr = &mark;
@@ -2797,6 +2845,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			// Use cache to ensure all packets go through proxy.
 			outbound = tcp_conn->meta.data.outbound;
 			mark = tcp_conn->meta.data.mark;
+			must = tcp_conn->meta.data.must;
+			__builtin_memcpy(handoff_mac, tcp_conn->mac, 6);
+			__builtin_memcpy(scratch->mac, tcp_conn->mac, 6);
+			handoff_pname = (const char *)tcp_conn->pname;
+			handoff_pid = tcp_conn->pid;
 		} else {
 			// No cached routing state.
 			// This must be a direct connection (we don't save state for direct+mark==0)
@@ -2826,10 +2879,28 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 		return TC_ACT_SHOT;
 
 	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
-					   tcp_listener_l4proto(tcph), ethh, 1)) {
+					   ethh, 1)) {
 		// Failed to prepare packet (e.g., bpf_skb_change_head failed)
 		// Fall back to direct pass to avoid packet corruption
 		return TC_ACT_OK;
+	}
+	skb->cb[0] = TPROXY_MARK;
+	skb->cb[1] = tcp_listener_l4proto(tcph);
+	{
+		struct routing_handoff_entry handoff = {};
+
+		handoff.last_seen_ns = bpf_ktime_get_ns();
+		handoff.result.mark = mark;
+		handoff.result.must = must;
+		handoff.result.outbound = outbound;
+		handoff.result.pid = handoff_pid;
+		handoff.result.dscp = tuples->dscp;
+		__builtin_memcpy(handoff.result.mac, handoff_mac, 6);
+		if (handoff_pname)
+			__builtin_memcpy(handoff.result.pname, handoff_pname,
+					 TASK_COMM_LEN);
+		bpf_map_update_elem(&routing_handoff_map, &tuples->five,
+				    &handoff, BPF_ANY);
 	}
 	return redirect_to_control_plane_egress();
 }
@@ -2845,6 +2916,8 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	bool must;
 	struct udp_conn_state *udp_conn_state = NULL;
 	__u8 mac[6] = {};
+	const char *handoff_pname = NULL;
+	__u32 handoff_pid = 0;
 
 	__u32 scratch_key = 0;
 	struct wan_egress_route_scratch *scratch =
@@ -2875,6 +2948,8 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 			mark = udp_conn_state->meta.data.mark;
 			must = udp_conn_state->meta.data.must;
 			__builtin_memcpy(mac, udp_conn_state->mac, 6);
+			handoff_pname = (const char *)udp_conn_state->pname;
+			handoff_pid = udp_conn_state->pid;
 			goto fast_path_skip_routing;
 		}
 	}
@@ -2882,6 +2957,8 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	if (pid_pname) {
 		__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 				 TASK_COMM_LEN);
+		handoff_pname = pid_pname->pname;
+		handoff_pid = pid_pname->pid;
 	}
 	scratch->flag[7] = 1;
 	if (ethh) {
@@ -2947,8 +3024,26 @@ fast_path_skip_routing:
 		return TC_ACT_SHOT;
 
 	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
-					   IPPROTO_UDP, ethh, 1)) {
+					   ethh, 1)) {
 		return TC_ACT_OK;
+	}
+	skb->cb[0] = TPROXY_MARK;
+	skb->cb[1] = IPPROTO_UDP;
+	{
+		struct routing_handoff_entry handoff = {};
+
+		handoff.last_seen_ns = bpf_ktime_get_ns();
+		handoff.result.mark = mark;
+		handoff.result.must = must;
+		handoff.result.outbound = outbound;
+		handoff.result.pid = handoff_pid;
+		handoff.result.dscp = tuples->dscp;
+		__builtin_memcpy(handoff.result.mac, mac, 6);
+		if (handoff_pname)
+			__builtin_memcpy(handoff.result.pname, handoff_pname,
+					 TASK_COMM_LEN);
+		bpf_map_update_elem(&routing_handoff_map, &tuples->five,
+				    &handoff, BPF_ANY);
 	}
 	return redirect_to_control_plane_egress();
 }

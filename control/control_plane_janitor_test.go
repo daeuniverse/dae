@@ -495,6 +495,129 @@ func TestRetrieveRoutingResultReturnsEmbeddedMetadata(t *testing.T) {
 	}
 }
 
+func TestRetrieveRoutingResultFallsBackToRoutingHandoffMap(t *testing.T) {
+	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
+	now := monotonicNowNs(t)
+
+	src := common.ConvergeAddrPort(netip.MustParseAddrPort("[2001:db8::10]:12345"))
+	dst := common.ConvergeAddrPort(netip.MustParseAddrPort("[2606:4700::1111]:53"))
+	key := tuplesKeyFromAddrPorts(src, dst, unix.IPPROTO_UDP)
+
+	entry := newRoutingHandoffEntryForTest(now, bpfRoutingResult{
+		Mark:     4242,
+		Must:     1,
+		Outbound: 23,
+		Dscp:     10,
+		Pid:      2024,
+		Mac:      [6]uint8{1, 2, 3, 4, 5, 6},
+		Pname:    [16]uint8{'h', 'a', 'n', 'd', 'o', 'f', 'f', '-', 'n', 'a', 'm', 'e'},
+	})
+
+	if err := handoffMap.Update(key, &entry, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update routing_handoff_map: %v", err)
+	}
+
+	core := &controlPlaneCore{
+		bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
+	}
+
+	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
+	if err != nil {
+		t.Fatalf("RetrieveRoutingResult fallback: %v", err)
+	}
+	if result.Mark != entry.Result.Mark || result.Outbound != entry.Result.Outbound ||
+		result.Must != entry.Result.Must || result.Dscp != entry.Result.Dscp {
+		t.Fatalf("RetrieveRoutingResult fallback routing fields = %+v, want %+v", result, entry.Result)
+	}
+	if ProcessName2String(result.Pname[:]) != "handoff-name" {
+		t.Fatalf("RetrieveRoutingResult fallback pname = %q, want %q", ProcessName2String(result.Pname[:]), "handoff-name")
+	}
+	if result.Mac != entry.Result.Mac {
+		t.Fatalf("RetrieveRoutingResult fallback mac = %v, want %v", result.Mac, entry.Result.Mac)
+	}
+	if result.Pid != entry.Result.Pid {
+		t.Fatalf("RetrieveRoutingResult fallback pid = %d, want %d", result.Pid, entry.Result.Pid)
+	}
+}
+
+func TestRetrieveRoutingResultRejectsExpiredRoutingHandoffMapEntry(t *testing.T) {
+	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
+	now := monotonicNowNs(t)
+
+	src := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.3.1:42345"))
+	dst := common.ConvergeAddrPort(netip.MustParseAddrPort("4.4.4.4:443"))
+	key := tuplesKeyFromAddrPorts(src, dst, unix.IPPROTO_TCP)
+
+	entry := newRoutingHandoffEntryForTest(
+		staleTimestampNs(now, routingHandoffTimeout+time.Second),
+		bpfRoutingResult{Outbound: 9},
+	)
+	if err := handoffMap.Update(key, &entry, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update expired routing_handoff_map: %v", err)
+	}
+
+	core := &controlPlaneCore{
+		bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
+	}
+
+	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
+	if !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("RetrieveRoutingResult expired handoff err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if result != nil {
+		t.Fatalf("RetrieveRoutingResult expired handoff = %+v, want nil", result)
+	}
+
+	var got bpfRoutingHandoffEntry
+	if err := handoffMap.Lookup(key, &got); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("routing_handoff_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+}
+
+func TestCleanupRoutingHandoffMapRemovesExpiredEntries(t *testing.T) {
+	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
+	now := monotonicNowNs(t)
+
+	freshSrc := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.3.1:42345"))
+	freshDst := common.ConvergeAddrPort(netip.MustParseAddrPort("4.4.4.4:443"))
+	staleSrc := common.ConvergeAddrPort(netip.MustParseAddrPort("10.0.3.2:42346"))
+	staleDst := common.ConvergeAddrPort(netip.MustParseAddrPort("4.4.4.5:443"))
+	freshKey := tuplesKeyFromAddrPorts(freshSrc, freshDst, unix.IPPROTO_TCP)
+	staleKey := tuplesKeyFromAddrPorts(staleSrc, staleDst, unix.IPPROTO_TCP)
+
+	freshEntry := newRoutingHandoffEntryForTest(now, bpfRoutingResult{Outbound: 7})
+	staleEntry := newRoutingHandoffEntryForTest(
+		staleTimestampNs(now, routingHandoffTimeout+time.Second),
+		bpfRoutingResult{Outbound: 8},
+	)
+
+	if err := handoffMap.Update(freshKey, &freshEntry, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update fresh routing_handoff_map: %v", err)
+	}
+	if err := handoffMap.Update(staleKey, &staleEntry, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update stale routing_handoff_map: %v", err)
+	}
+
+	plane := &ControlPlane{
+		log: logrus.New(),
+		core: &controlPlaneCore{
+			bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
+		},
+		connStateJanitorStop: make(chan struct{}),
+	}
+
+	plane.cleanupRoutingHandoffMap()
+
+	var gotFresh bpfRoutingHandoffEntry
+	if err := handoffMap.Lookup(freshKey, &gotFresh); err != nil {
+		t.Fatalf("fresh routing_handoff_map lookup failed: %v", err)
+	}
+	var gotStale bpfRoutingHandoffEntry
+	if err := handoffMap.Lookup(staleKey, &gotStale); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("stale routing_handoff_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+}
+
 func newJanitorTestMap(t *testing.T, mapName string) *ebpf.Map {
 	t.Helper()
 
@@ -541,6 +664,19 @@ func staleTimestampNs(now uint64, age time.Duration) uint64 {
 		return 0
 	}
 	return now - delta
+}
+
+func newRoutingHandoffEntryForTest(lastSeenNs uint64, result bpfRoutingResult) bpfRoutingHandoffEntry {
+	var entry bpfRoutingHandoffEntry
+	entry.LastSeenNs = lastSeenNs
+	entry.Result.Mark = result.Mark
+	entry.Result.Must = result.Must
+	entry.Result.Mac = result.Mac
+	entry.Result.Outbound = result.Outbound
+	entry.Result.Pname = result.Pname
+	entry.Result.Pid = result.Pid
+	entry.Result.Dscp = result.Dscp
+	return entry
 }
 
 func tuplesKeyFromAddrPorts(src, dst netip.AddrPort, l4proto uint8) *bpfTuplesKey {

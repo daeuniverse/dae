@@ -28,10 +28,11 @@ func TestValidateRequiredBpfMapsLoaded(t *testing.T) {
 	t.Run("all_required_maps_present", func(t *testing.T) {
 		b := &bpfObjects{
 			bpfMaps: bpfMaps{
-				DomainRoutingMap: &ebpf.Map{},
-				UdpConnStateMap:  &ebpf.Map{},
-				RoutingMap:       &ebpf.Map{},
-				RoutingMetaMap:   &ebpf.Map{},
+				DomainRoutingMap:  &ebpf.Map{},
+				UdpConnStateMap:   &ebpf.Map{},
+				RoutingHandoffMap: &ebpf.Map{},
+				RoutingMap:        &ebpf.Map{},
+				RoutingMetaMap:    &ebpf.Map{},
 			},
 		}
 		if err := validateRequiredBpfMapsLoaded(b); err != nil {

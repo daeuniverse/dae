@@ -111,6 +111,13 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	if len(a.aliveEntries) == 0 {
+		return nil
+	}
+	if excluded == nil {
+		return a.aliveEntries[fastrand.Intn(len(a.aliveEntries))].dialer
+	}
+
 	var chosen *Dialer
 	var candidateCount int
 	for i := range a.aliveEntries {
@@ -138,11 +145,8 @@ func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	// Find dialer in aliveEntries and return its cached sorting latency.
-	for i := range a.aliveEntries {
-		if a.aliveEntries[i].dialer == d {
-			return a.aliveEntries[i].sortingLatency
-		}
+	if idx, ok := a.dialerToIndex[d]; ok && idx >= 0 && idx < len(a.aliveEntries) {
+		return a.aliveEntries[idx].sortingLatency
 	}
 	// Fallback to direct calculation (should not happen in normal operation).
 	return a.dialerToLatency[d] + a.dialerToLatencyOffset[d]
@@ -152,6 +156,10 @@ func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
 func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency time.Duration) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+
+	if a.minLatency.dialer != nil && excluded != a.minLatency.dialer {
+		return a.minLatency.dialer, a.minLatency.sortingLatency
+	}
 
 	// Find the best non-excluded dialer.
 	// Using aliveEntries with direct field access avoids map lookups.

@@ -570,6 +570,46 @@ int testcheck_lan_ingress_tcp_dscp_conn_state(struct __sk_buff *skb)
 						  0, 10, true);
 }
 
+SEC("tc/pktgen/lan_ingress_tcp_ipv6_dscp_conn_state")
+int testpktgen_lan_ingress_tcp_ipv6_dscp_conn_state(struct __sk_buff *skb)
+{
+	return set_ipv6_tcp_with_dscp(skb,
+				      0x20010db8, 0, 0, 0x10,
+				      0x26064700, 0, 0, 0x1111,
+				      19233, 443, 10);
+}
+
+SEC("tc/setup/lan_ingress_tcp_ipv6_dscp_conn_state")
+int testsetup_lan_ingress_tcp_ipv6_dscp_conn_state(struct __sk_buff *skb)
+{
+	struct match_set ms = {};
+	struct port_range pr = {443, 443};
+
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/lan_ingress_tcp_ipv6_dscp_conn_state")
+int testcheck_lan_ingress_tcp_ipv6_dscp_conn_state(struct __sk_buff *skb)
+{
+	return check_tcp_conn_state_ipv6_tcp_dscp(skb,
+						  TC_ACT_REDIRECT,
+						  0x20010db8, 0, 0, 0x10,
+						  0x26064700, 0, 0, 0x1111,
+						  19233, 443,
+						  OUTBOUND_USER_DEFINED_MIN,
+						  0, 10, true);
+}
+
 SEC("tc/pktgen/lan_ingress_udp_dscp_conn_state")
 int testpktgen_lan_ingress_udp_dscp_conn_state(struct __sk_buff *skb)
 {
@@ -603,6 +643,46 @@ int testcheck_lan_ingress_udp_dscp_conn_state(struct __sk_buff *skb)
 	return check_udp_conn_state_ipv4_udp_dscp(skb,
 						  TC_ACT_REDIRECT,
 						  IPV4(192,168,0,1), IPV4(1,1,1,1),
+						  24567, 443,
+						  OUTBOUND_USER_DEFINED_MIN,
+						  0, 10, true);
+}
+
+SEC("tc/pktgen/lan_ingress_udp_ipv6_dscp_conn_state")
+int testpktgen_lan_ingress_udp_ipv6_dscp_conn_state(struct __sk_buff *skb)
+{
+	return set_minimal_ipv6_udp_with_dscp(skb,
+					      0x20010db8, 0, 0, 0x10,
+					      0x26064700, 0, 0, 0x1111,
+					      24567, 443, 10);
+}
+
+SEC("tc/setup/lan_ingress_udp_ipv6_dscp_conn_state")
+int testsetup_lan_ingress_udp_ipv6_dscp_conn_state(struct __sk_buff *skb)
+{
+	struct match_set ms = {};
+	struct port_range pr = {443, 443};
+
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	return do_tproxy_lan_ingress(skb, 14);
+}
+
+SEC("tc/check/lan_ingress_udp_ipv6_dscp_conn_state")
+int testcheck_lan_ingress_udp_ipv6_dscp_conn_state(struct __sk_buff *skb)
+{
+	return check_udp_conn_state_ipv6_udp_dscp(skb,
+						  TC_ACT_REDIRECT,
+						  0x20010db8, 0, 0, 0x10,
+						  0x26064700, 0, 0, 0x1111,
 						  24567, 443,
 						  OUTBOUND_USER_DEFINED_MIN,
 						  0, 10, true);
@@ -1065,6 +1145,44 @@ int testcheck_dscp_match(struct __sk_buff *skb)
 				      19233, 79);
 }
 
+SEC("tc/pktgen/dscp_ipv6_match")
+int testpktgen_dscp_ipv6_match(struct __sk_buff *skb)
+{
+	return set_ipv6_tcp_with_dscp(skb,
+				      0x20010db8, 0, 0, 0x10,
+				      0x26064700, 0, 0, 0x1111,
+				      19233, 79, 4);
+}
+
+SEC("tc/setup/dscp_ipv6_match")
+int testsetup_dscp_ipv6_match(struct __sk_buff *skb)
+{
+	struct match_set ms = {};
+
+	ms.dscp = 4;
+	ms.not = false;
+	ms.type = MatchType_Dscp;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/dscp_ipv6_match")
+int testcheck_dscp_ipv6_match(struct __sk_buff *skb)
+{
+	return check_routing_ipv6_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      0x20010db8, 0, 0, 0x10,
+				      0x26064700, 0, 0, 0x1111,
+				      19233, 79);
+}
+
 SEC("tc/pktgen/dscp_mismatch")
 int testpktgen_dscp_mismatch(struct __sk_buff *skb)
 {
@@ -1098,6 +1216,44 @@ int testcheck_dscp_mismatch(struct __sk_buff *skb)
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_OK,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 79);
+}
+
+SEC("tc/pktgen/dscp_ipv6_mismatch")
+int testpktgen_dscp_ipv6_mismatch(struct __sk_buff *skb)
+{
+	return set_ipv6_tcp_with_dscp(skb,
+				      0x20010db8, 0, 0, 0x10,
+				      0x26064700, 0, 0, 0x1111,
+				      19233, 79, 4);
+}
+
+SEC("tc/setup/dscp_ipv6_mismatch")
+int testsetup_dscp_ipv6_mismatch(struct __sk_buff *skb)
+{
+	struct match_set ms = {};
+
+	ms.dscp = 5;
+	ms.not = false;
+	ms.type = MatchType_Dscp;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/dscp_ipv6_mismatch")
+int testcheck_dscp_ipv6_mismatch(struct __sk_buff *skb)
+{
+	return check_routing_ipv6_tcp(skb,
+				      TC_ACT_OK,
+				      0x20010db8, 0, 0, 0x10,
+				      0x26064700, 0, 0, 0x1111,
 				      19233, 79);
 }
 

@@ -19,6 +19,8 @@ jobs:
   ebpf_audit:
     name: Load, Verifier, and Dump Audit
     runs-on: ubuntu-22.04
+    env:
+      GOEXPERIMENT: heapminimum512kib,randomizedheapbase64
 
     steps:
       - name: Checkout code

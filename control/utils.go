@@ -64,12 +64,30 @@ func bpfTuplesKeyFromAddrPorts(src, dst netip.AddrPort, l4proto uint8) bpfTuples
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
 
-	// Scheme3: Routing is embedded in conn_state maps. Try to retrieve from the appropriate map.
+	if c == nil || c.bpf == nil {
+		return nil, ebpf.ErrKeyNotExist
+	}
+
+	routingResult, err := c.retrieveEmbeddedRoutingResult(&tuples, l4proto)
+	if err == nil {
+		return routingResult, nil
+	}
+	if !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		return nil, err
+	}
+	return c.retrieveRoutingHandoffResult(&tuples)
+}
+
+func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l4proto uint8) (*bpfRoutingResult, error) {
 	var routingResult bpfRoutingResult
+
 	switch l4proto {
 	case unix.IPPROTO_TCP:
+		if c.bpf.TcpConnStateMap == nil {
+			return nil, ebpf.ErrKeyNotExist
+		}
 		var connState bpfTcpConnState
-		if err := c.bpf.TcpConnStateMap.Lookup(&tuples, &connState); err != nil {
+		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
@@ -78,16 +96,21 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		routingResult.Mark = connState.Meta.Data.Mark
-		routingResult.Must = connState.Meta.Data.Must
-		routingResult.Outbound = connState.Meta.Data.Outbound
-		copy(routingResult.Mac[:], connState.Mac[:])
-		routingResult.Dscp = connState.Meta.Data.Dscp
-		copy(routingResult.Pname[:], connState.Pname[:])
-		routingResult.Pid = connState.Pid
+		routingResult = routingResultFromConnState(
+			connState.Meta.Data.Mark,
+			connState.Meta.Data.Must,
+			connState.Meta.Data.Outbound,
+			connState.Mac,
+			connState.Meta.Data.Dscp,
+			connState.Pname,
+			connState.Pid,
+		)
 	case unix.IPPROTO_UDP:
+		if c.bpf.UdpConnStateMap == nil {
+			return nil, ebpf.ErrKeyNotExist
+		}
 		var connState bpfUdpConnState
-		if err := c.bpf.UdpConnStateMap.Lookup(&tuples, &connState); err != nil {
+		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
@@ -96,18 +119,88 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		routingResult.Mark = connState.Meta.Data.Mark
-		routingResult.Must = connState.Meta.Data.Must
-		routingResult.Outbound = connState.Meta.Data.Outbound
-		copy(routingResult.Mac[:], connState.Mac[:])
-		routingResult.Dscp = connState.Meta.Data.Dscp
-		copy(routingResult.Pname[:], connState.Pname[:])
-		routingResult.Pid = connState.Pid
+		routingResult = routingResultFromConnState(
+			connState.Meta.Data.Mark,
+			connState.Meta.Data.Must,
+			connState.Meta.Data.Outbound,
+			connState.Mac,
+			connState.Meta.Data.Dscp,
+			connState.Pname,
+			connState.Pid,
+		)
 	default:
 		return nil, ebpf.ErrKeyNotExist
 	}
 
 	return &routingResult, nil
+}
+
+func routingResultFromConnState(mark uint32, must uint8, outbound uint8, mac [6]uint8, dscp uint8, pname [16]uint8, pid uint32) bpfRoutingResult {
+	var routingResult bpfRoutingResult
+	routingResult.Mark = mark
+	routingResult.Must = must
+	routingResult.Outbound = outbound
+	routingResult.Mac = mac
+	routingResult.Dscp = dscp
+	routingResult.Pname = pname
+	routingResult.Pid = pid
+	return routingResult
+}
+
+func (c *controlPlaneCore) retrieveRoutingHandoffResult(tuples *bpfTuplesKey) (*bpfRoutingResult, error) {
+	if c == nil || c.bpf == nil || c.bpf.RoutingHandoffMap == nil {
+		return nil, ebpf.ErrKeyNotExist
+	}
+
+	var entry bpfRoutingHandoffEntry
+	if err := c.bpf.RoutingHandoffMap.Lookup(tuples, &entry); err != nil {
+		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil, ebpf.ErrKeyNotExist
+		}
+		return nil, fmt.Errorf("reading routing_handoff_map: %w", err)
+	}
+
+	now, err := monotonicNowNano()
+	if err != nil {
+		return nil, fmt.Errorf("reading monotonic clock for routing handoff: %w", err)
+	}
+	if routingHandoffExpired(now, entry.LastSeenNs) {
+		if deleteErr := c.bpf.RoutingHandoffMap.Delete(tuples); deleteErr != nil &&
+			!stderrors.Is(deleteErr, ebpf.ErrKeyNotExist) {
+			return nil, fmt.Errorf("deleting expired routing_handoff_map entry: %w", deleteErr)
+		}
+		return nil, ebpf.ErrKeyNotExist
+	}
+
+	routingResult := routingResultFromConnState(
+		entry.Result.Mark,
+		entry.Result.Must,
+		entry.Result.Outbound,
+		entry.Result.Mac,
+		entry.Result.Dscp,
+		entry.Result.Pname,
+		entry.Result.Pid,
+	)
+	return &routingResult, nil
+}
+
+func routingHandoffExpired(nowNano, lastSeenNs uint64) bool {
+	if lastSeenNs == 0 {
+		return true
+	}
+	timeoutNano := uint64(routingHandoffTimeout.Nanoseconds())
+	if nowNano <= lastSeenNs {
+		return false
+	}
+	return nowNano-lastSeenNs > timeoutNano
+}
+
+func monotonicNowNano() (uint64, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0, err
+	}
+	return uint64(ts.Nano()), nil
 }
 
 func RetrieveOriginalDest(oob []byte) netip.AddrPort {

@@ -109,6 +109,39 @@ func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp 
 	return rr, src, dst
 }
 
+func retrieveRoutingHandoffResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp uint8, mac [6]uint8, pname string) (*bpfRoutingResult, netip.AddrPort, netip.AddrPort) {
+	t.Helper()
+
+	src := common.ConvergeAddrPort(netip.MustParseAddrPort("192.0.2.10:12345"))
+	dst := common.ConvergeAddrPort(netip.MustParseAddrPort("198.51.100.20:443"))
+	key := tuplesKeyFromAddrPorts(src, dst, l4proto)
+	now := monotonicNowNs(t)
+
+	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
+	var pnameBuf [16]uint8
+	copy(pnameBuf[:], pname)
+	entry := newRoutingHandoffEntryForTest(now, bpfRoutingResult{
+		Outbound: uint8(consts.OutboundDirect),
+		Dscp:     dscp,
+		Pid:      1234,
+		Mac:      mac,
+		Pname:    pnameBuf,
+	})
+	if err := handoffMap.Update(key, &entry, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update routing_handoff_map: %v", err)
+	}
+
+	core := &controlPlaneCore{
+		bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
+	}
+
+	rr, err := core.RetrieveRoutingResult(src, dst, l4proto)
+	if err != nil {
+		t.Fatalf("RetrieveRoutingResult handoff(%d): %v", l4proto, err)
+	}
+	return rr, src, dst
+}
+
 func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) {
 	matchMac, err := common.ParseMac("02:42:ac:11:00:02")
 	if err != nil {
@@ -118,6 +151,7 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 	tests := []struct {
 		name         string
 		l4proto      uint8
+		source       string
 		functionName string
 		literal      string
 		dscp         uint8
@@ -127,6 +161,7 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 		{
 			name:         "tcp_dscp",
 			l4proto:      unix.IPPROTO_TCP,
+			source:       "embedded",
 			functionName: consts.Function_Dscp,
 			literal:      "10",
 			dscp:         10,
@@ -134,6 +169,7 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 		{
 			name:         "udp_dscp",
 			l4proto:      unix.IPPROTO_UDP,
+			source:       "embedded",
 			functionName: consts.Function_Dscp,
 			literal:      "10",
 			dscp:         10,
@@ -141,6 +177,7 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 		{
 			name:         "tcp_mac",
 			l4proto:      unix.IPPROTO_TCP,
+			source:       "embedded",
 			functionName: consts.Function_Mac,
 			literal:      "02:42:ac:11:00:02",
 			mac:          matchMac,
@@ -148,6 +185,7 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 		{
 			name:         "udp_mac",
 			l4proto:      unix.IPPROTO_UDP,
+			source:       "embedded",
 			functionName: consts.Function_Mac,
 			literal:      "02:42:ac:11:00:02",
 			mac:          matchMac,
@@ -155,6 +193,7 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 		{
 			name:         "tcp_pname",
 			l4proto:      unix.IPPROTO_TCP,
+			source:       "embedded",
 			functionName: consts.Function_ProcessName,
 			literal:      "curl",
 			pname:        "curl",
@@ -162,6 +201,55 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 		{
 			name:         "udp_pname",
 			l4proto:      unix.IPPROTO_UDP,
+			source:       "embedded",
+			functionName: consts.Function_ProcessName,
+			literal:      "curl",
+			pname:        "curl",
+		},
+		{
+			name:         "tcp_dscp_handoff",
+			l4proto:      unix.IPPROTO_TCP,
+			source:       "handoff",
+			functionName: consts.Function_Dscp,
+			literal:      "10",
+			dscp:         10,
+		},
+		{
+			name:         "udp_dscp_handoff",
+			l4proto:      unix.IPPROTO_UDP,
+			source:       "handoff",
+			functionName: consts.Function_Dscp,
+			literal:      "10",
+			dscp:         10,
+		},
+		{
+			name:         "tcp_mac_handoff",
+			l4proto:      unix.IPPROTO_TCP,
+			source:       "handoff",
+			functionName: consts.Function_Mac,
+			literal:      "02:42:ac:11:00:02",
+			mac:          matchMac,
+		},
+		{
+			name:         "udp_mac_handoff",
+			l4proto:      unix.IPPROTO_UDP,
+			source:       "handoff",
+			functionName: consts.Function_Mac,
+			literal:      "02:42:ac:11:00:02",
+			mac:          matchMac,
+		},
+		{
+			name:         "tcp_pname_handoff",
+			l4proto:      unix.IPPROTO_TCP,
+			source:       "handoff",
+			functionName: consts.Function_ProcessName,
+			literal:      "curl",
+			pname:        "curl",
+		},
+		{
+			name:         "udp_pname_handoff",
+			l4proto:      unix.IPPROTO_UDP,
+			source:       "handoff",
 			functionName: consts.Function_ProcessName,
 			literal:      "curl",
 			pname:        "curl",
@@ -170,7 +258,16 @@ func TestRetrievedRoutingResultStillMatchesMetadataSensitiveRules(t *testing.T) 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rr, src, dst := retrieveRoutingResultForMetadataRuleTest(t, tt.l4proto, tt.dscp, tt.mac, tt.pname)
+			var rr *bpfRoutingResult
+			var src, dst netip.AddrPort
+			switch tt.source {
+			case "embedded":
+				rr, src, dst = retrieveRoutingResultForMetadataRuleTest(t, tt.l4proto, tt.dscp, tt.mac, tt.pname)
+			case "handoff":
+				rr, src, dst = retrieveRoutingHandoffResultForMetadataRuleTest(t, tt.l4proto, tt.dscp, tt.mac, tt.pname)
+			default:
+				t.Fatalf("unknown metadata source %q", tt.source)
+			}
 			plane := newTestControlPlaneWithSingleMetadataRule(t, tt.functionName, tt.literal)
 
 			outbound, _, _, err := plane.Route(src, dst, "", consts.L4ProtoType(tt.l4proto), rr)

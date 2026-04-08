@@ -38,7 +38,7 @@ import (
 // - bpfMatchSet, bpfPidPname, bpfRedirectEntry, etc.
 //
 // However, some types cannot be auto-generated and are defined here:
-// - bpfRoutingResult (struct routing_result) - defined here (no longer used in BPF maps)
+// - bpfRoutingResult (struct routing_result) - userspace routing metadata
 // - _bpfLpmKey (struct lpm_key) - contains bpf_lpm_trie_key (kernel BPF type)
 //
 // Note: _bpfTuples was removed as it was unused in the codebase.
@@ -51,9 +51,6 @@ import (
 // 3. Run BPF tests: go test -tags="linux dae_bpf_tests" ./control/kern/tests/...
 // ============================================================================
 
-// bpfRoutingResult corresponds to C struct routing_result in tproxy.c.
-// NOTE: The routing_tuples_map has been removed (routing is now embedded in conn_state maps),
-// but this type is still used in userspace for caching and passing routing decisions.
 type bpfRoutingResult struct {
 	Mark     uint32
 	Must     uint8

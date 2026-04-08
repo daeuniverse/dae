@@ -13,6 +13,9 @@ TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
 MAX_MATCH_SET_LEN ?= 1024
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
+DEFAULT_GOEXPERIMENT := heapminimum512kib,randomizedheapbase64
+GOEXPERIMENT_MERGED := $(shell printf '%s\n' "$(DEFAULT_GOEXPERIMENT),$(GOEXPERIMENT)" | tr ',' '\n' | sed '/^$$/d' | awk '!seen[$$0]++' | paste -sd, -)
+export GOEXPERIMENT := $(GOEXPERIMENT_MERGED)
 NOSTRIP ?= n
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
 BUILD_TAGS_FILE := .build_tags

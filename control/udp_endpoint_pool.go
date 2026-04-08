@@ -121,6 +121,7 @@ type UdpEndpoint struct {
 	poolKey UdpEndpointKey
 
 	dialerGeneration    uint64
+	dialerGenerationRef *atomic.Uint64
 	endpointNetworkType dialer.NetworkType
 	lifecycleProfile    UdpLifecycleProfile
 	transportDone       <-chan struct{}
@@ -1103,7 +1104,10 @@ func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
 	if udpEndpointIgnoresDialerHealth(ue) {
 		return true
 	}
-	return ue.dialerGeneration == p.currentDialerGeneration(ue.Dialer, udpEndpointNetworkType(ue))
+	if ue.dialerGenerationRef == nil {
+		return ue.dialerGeneration == p.currentDialerGeneration(ue.Dialer, udpEndpointNetworkType(ue))
+	}
+	return ue.dialerGeneration == ue.dialerGenerationRef.Load()
 }
 
 // endpointSurvivesDialerInvalidation reports whether an endpoint should remain
@@ -1439,7 +1443,10 @@ dialSuccess:
 			}
 		}()),
 	}
-	ue.dialerGeneration = p.currentDialerGeneration(dialOption.Dialer, ue.endpointNetworkType)
+	ue.dialerGenerationRef = p.dialerEpochCounter(dialOption.Dialer, ue.endpointNetworkType)
+	if ue.dialerGenerationRef != nil {
+		ue.dialerGeneration = ue.dialerGenerationRef.Load()
+	}
 
 	// Prewarm the initial Anyfrom socket used to reinject replies back to the
 	// client. Symmetric endpoints can pin a single fixed socket. Full-cone

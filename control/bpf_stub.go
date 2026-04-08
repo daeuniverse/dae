@@ -99,6 +99,12 @@ type bpfRoutingResult struct {
 	Dscp     uint8
 }
 
+type bpfRoutingHandoffEntry struct {
+	_          structs.HostLayout
+	LastSeenNs uint64
+	Result     bpfRoutingResult
+}
+
 type bpfTuplesKey struct {
 	_   structs.HostLayout
 	Sip struct {
@@ -221,6 +227,7 @@ type bpfMapSpecs struct {
 	LpmArrayMap             *ebpf.MapSpec `ebpf:"lpm_array_map"`
 	OutboundConnectivityMap *ebpf.MapSpec `ebpf:"outbound_connectivity_map"`
 	RedirectTrack           *ebpf.MapSpec `ebpf:"redirect_track"`
+	RoutingHandoffMap       *ebpf.MapSpec `ebpf:"routing_handoff_map"`
 	RoutingMap              *ebpf.MapSpec `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.MapSpec `ebpf:"routing_meta_map"`
 	TcpConnStateMap         *ebpf.MapSpec `ebpf:"tcp_conn_state_map"`
@@ -256,6 +263,7 @@ type bpfMaps struct {
 	LpmArrayMap             *ebpf.Map `ebpf:"lpm_array_map"`
 	OutboundConnectivityMap *ebpf.Map `ebpf:"outbound_connectivity_map"`
 	RedirectTrack           *ebpf.Map `ebpf:"redirect_track"`
+	RoutingHandoffMap       *ebpf.Map `ebpf:"routing_handoff_map"`
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.Map `ebpf:"routing_meta_map"`
 	TcpConnStateMap         *ebpf.Map `ebpf:"tcp_conn_state_map"`
@@ -275,6 +283,7 @@ func (m *bpfMaps) Close() error {
 		m.LpmArrayMap,
 		m.OutboundConnectivityMap,
 		m.RedirectTrack,
+		m.RoutingHandoffMap,
 		m.RoutingMap,
 		m.RoutingMetaMap,
 		m.TcpConnStateMap,

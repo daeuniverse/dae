@@ -24,6 +24,8 @@ jobs:
   go_test:
     name: Go Unit Test
     runs-on: ubuntu-22.04
+    env:
+      GOEXPERIMENT: heapminimum512kib,randomizedheapbase64
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

@@ -89,7 +89,7 @@ func (m *RoutingMatcher) Match(
 	l4proto consts.L4ProtoType,
 	domain string,
 	processName [16]uint8,
-	tos uint8,
+	dscp uint8,
 	mac [16]uint8,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
@@ -164,7 +164,7 @@ func (m *RoutingMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_Dscp:
-			if tos == match.dscp {
+			if dscp == match.dscp {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:

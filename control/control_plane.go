@@ -133,6 +133,10 @@ type connStateJanitorScratch struct {
 	tcpKeys   []bpfTuplesKey
 	tcpValues []bpfTcpConnState
 	tcpDelete []bpfTuplesKey
+
+	routingHandoffKeys   []bpfTuplesKey
+	routingHandoffValues []bpfRoutingHandoffEntry
+	routingHandoffDelete []bpfTuplesKey
 }
 
 const (
@@ -211,10 +215,20 @@ var (
 	// connStateJanitorPressureExitUsage is the usage percentage below which the
 	// janitor starts counting down to leave pressure mode.
 	connStateJanitorPressureExitUsage = 50
-	dnsFastPathErrorLogInterval       = 5 * time.Second
 	// connStateJanitorPressureExitRounds is the number of consecutive low-usage
 	// cleanup rounds required before leaving pressure mode.
 	connStateJanitorPressureExitRounds = 3
+	// routingHandoffTimeout bounds the tuple-miss metadata bridge between eBPF
+	// and userspace. Keep it short so the handoff map does not become a second
+	// long-lived conn-state cache.
+	routingHandoffTimeout = 10 * time.Second
+	// routingHandoffPressureInterval lets the janitor react quickly when the
+	// handoff map is churning under repeated tuple misses.
+	routingHandoffPressureInterval = 1 * time.Second
+	// routingHandoffSteadyInterval is sufficient because RetrieveRoutingResult
+	// also rejects expired handoff entries on read.
+	routingHandoffSteadyInterval = 5 * time.Second
+	dnsFastPathErrorLogInterval  = 5 * time.Second
 
 	// TCP connection state timeout constants.
 	// TCP connections are longer-lived but we still need to clean up closed connections.
@@ -922,6 +936,7 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
 		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
+		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
 	}
@@ -1532,6 +1547,7 @@ func (c *ControlPlane) startConnStateJanitor() {
 			lastConnCleanup      time.Time
 			lastRedirectCleanup  time.Time
 			lastCookiePidCleanup time.Time
+			lastRoutingHandoff   time.Time
 			lastHealthCheck      time.Time
 			pressureState        connStateJanitorPressureState
 		)
@@ -1570,6 +1586,14 @@ func (c *ControlPlane) startConnStateJanitor() {
 				if lastCookiePidCleanup.IsZero() || now.Sub(lastCookiePidCleanup) >= redirectCleanupInterval {
 					c.cleanupCookiePidMap()
 					lastCookiePidCleanup = now
+				}
+				routingHandoffInterval := routingHandoffSteadyInterval
+				if pressureState.active {
+					routingHandoffInterval = routingHandoffPressureInterval
+				}
+				if lastRoutingHandoff.IsZero() || now.Sub(lastRoutingHandoff) >= routingHandoffInterval {
+					c.cleanupRoutingHandoffMap()
+					lastRoutingHandoff = now
 				}
 
 				if lastConnCleanup.IsZero() || now.Sub(lastConnCleanup) >= connCleanupInterval {
@@ -1775,6 +1799,76 @@ func (c *ControlPlane) cleanupCookiePidMap() {
 		usagePercent := float64(totalEntries) / float64(maxEntries) * 100
 		if usagePercent > 90 {
 			c.log.Warnf("cleanupCookiePidMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
+		}
+	}
+}
+
+// cleanupRoutingHandoffMap removes expired tuple-miss routing metadata entries.
+// The handoff map is a short-lived bridge for userspace consumers that miss the
+// authoritative conn-state publication window.
+func (c *ControlPlane) cleanupRoutingHandoffMap() {
+	select {
+	case <-c.connStateJanitorStop:
+		return
+	default:
+	}
+
+	bpf := c.currentBpf()
+	if bpf == nil || bpf.RoutingHandoffMap == nil {
+		return
+	}
+
+	nowNano, err := monotonicNowNano()
+	if err != nil {
+		c.log.Errorf("cleanupRoutingHandoffMap: failed to get monotonic time: %v", err)
+		return
+	}
+
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.routingHandoffDelete)
+	keysOut := ensureJanitorLookupScratch(scratch.routingHandoffKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.routingHandoffValues)
+	totalEntries := 0
+	defer func() {
+		scratch.routingHandoffDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.routingHandoffKeys = keysOut
+		scratch.routingHandoffValues = valuesOut
+	}()
+
+	var cursor ebpf.MapBatchCursor
+	for {
+		count, batchErr := bpf.RoutingHandoffMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := 0; i < count; i++ {
+				totalEntries++
+				if routingHandoffExpired(nowNano, valuesOut[i].LastSeenNs) {
+					keysToDelete = append(keysToDelete, keysOut[i])
+				}
+			}
+		}
+		if batchErr != nil {
+			if !strings.Contains(batchErr.Error(), "bad file descriptor") &&
+				!strings.Contains(batchErr.Error(), "file descriptor") &&
+				!strings.Contains(batchErr.Error(), "closed") &&
+				!strings.Contains(batchErr.Error(), "key does not exist") {
+				c.log.Errorf("cleanupRoutingHandoffMap: BatchLookup error: %v", batchErr)
+			}
+			break
+		}
+	}
+
+	if len(keysToDelete) > 0 {
+		if _, deleteErr := BpfMapBatchDelete(bpf.RoutingHandoffMap, keysToDelete); deleteErr != nil {
+			c.log.Debugf("cleanupRoutingHandoffMap: batch delete error: %v", deleteErr)
+		}
+		c.log.Debugf("cleanupRoutingHandoffMap: removed %d expired entries", len(keysToDelete))
+	}
+
+	maxEntries := bpf.RoutingHandoffMap.MaxEntries()
+	if totalEntries > 0 && maxEntries > 0 {
+		usagePercent := float64(totalEntries) / float64(maxEntries) * 100
+		if usagePercent > 90 {
+			c.log.Warnf("cleanupRoutingHandoffMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
 		}
 	}
 }
