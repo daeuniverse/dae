@@ -42,6 +42,7 @@ import (
 	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -141,6 +142,14 @@ func NewControlPlane(
 	InitDaeNetns(log)
 	if err = InitSysctlManager(log); err != nil {
 		return nil, err
+	}
+
+	for _, ifname := range append(global.LanInterface, global.WanInterface...) {
+		link, err := netlink.LinkByName(ifname)
+		if err != nil {
+			return nil, err
+		}
+		netutils.UpdateEthernetMtu(link.Attrs().MTU)
 	}
 
 	if err = GetDaeNetns().Setup(); err != nil {
@@ -801,7 +810,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
+		buf := pool.GetFullCap(netutils.GetEthernetMtu())
 		var oob [120]byte // Size for original dest
 		defer buf.Put()
 		for {
