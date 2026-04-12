@@ -43,6 +43,7 @@ type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
 
 type udpConnStateOwner interface {
 	RetainUdpConnStateTuples(keys []bpfTuplesKey)
+	TransferRetainedUdpConnStateTuplesFrom(previous udpConnStateOwner, keys []bpfTuplesKey)
 	ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error
 }
 
@@ -106,6 +107,8 @@ type UdpEndpoint struct {
 	udpConnStateTuples    map[bpfTuplesKey]struct{}
 	udpConnStateClosed    bool
 	udpConnStateOwner     udpConnStateOwner
+	drainTracker          *controlPlaneDrainTracker
+	drainRelease          func()
 
 	log *logrus.Logger
 
@@ -309,7 +312,7 @@ func (ue *UdpEndpoint) releaseCachedResponseConns() {
 }
 
 func (ue *UdpEndpoint) TrackUdpConnStateTuplePair(src, dst netip.AddrPort) {
-	if ue == nil || ue.udpConnStateOwner == nil || !src.IsValid() || !dst.IsValid() {
+	if ue == nil || !src.IsValid() || !dst.IsValid() {
 		return
 	}
 
@@ -319,7 +322,7 @@ func (ue *UdpEndpoint) TrackUdpConnStateTuplePair(src, dst netip.AddrPort) {
 	ue.udpConnStateMu.Lock()
 	defer ue.udpConnStateMu.Unlock()
 
-	if ue.udpConnStateClosed {
+	if ue.udpConnStateClosed || ue.udpConnStateOwner == nil {
 		return
 	}
 	if ue.udpConnStateTuples == nil {
@@ -340,17 +343,18 @@ func (ue *UdpEndpoint) TrackUdpConnStateTuplePair(src, dst netip.AddrPort) {
 }
 
 func (ue *UdpEndpoint) releaseTrackedUdpConnState() {
-	if ue == nil || ue.udpConnStateOwner == nil {
+	if ue == nil {
 		return
 	}
 
 	ue.udpConnStateMu.Lock()
+	owner := ue.udpConnStateOwner
 	if ue.udpConnStateClosed {
 		ue.udpConnStateMu.Unlock()
 		return
 	}
 	ue.udpConnStateClosed = true
-	if len(ue.udpConnStateTuples) == 0 {
+	if owner == nil || len(ue.udpConnStateTuples) == 0 {
 		ue.udpConnStateMu.Unlock()
 		return
 	}
@@ -361,9 +365,46 @@ func (ue *UdpEndpoint) releaseTrackedUdpConnState() {
 	ue.udpConnStateTuples = nil
 	ue.udpConnStateMu.Unlock()
 
-	if err := ue.udpConnStateOwner.ReleaseUdpConnStateTuples(keys); err != nil &&
+	if err := owner.ReleaseUdpConnStateTuples(keys); err != nil &&
 		ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithError(err).Debug("[UdpEndpoint] Failed to release tracked UDP conn-state tuples")
+	}
+}
+
+func (ue *UdpEndpoint) adoptGeneration(owner udpConnStateOwner, tracker *controlPlaneDrainTracker) {
+	if ue == nil {
+		return
+	}
+
+	var oldRelease func()
+
+	ue.udpConnStateMu.Lock()
+	if ue.udpConnStateClosed {
+		ue.udpConnStateMu.Unlock()
+		return
+	}
+	if owner != nil {
+		if owner != ue.udpConnStateOwner && len(ue.udpConnStateTuples) > 0 {
+			keys := make([]bpfTuplesKey, 0, len(ue.udpConnStateTuples))
+			for key := range ue.udpConnStateTuples {
+				keys = append(keys, key)
+			}
+			owner.TransferRetainedUdpConnStateTuplesFrom(ue.udpConnStateOwner, keys)
+		}
+		ue.udpConnStateOwner = owner
+	}
+	if tracker == nil || tracker == ue.drainTracker {
+		ue.udpConnStateMu.Unlock()
+		return
+	}
+	newRelease := tracker.Acquire()
+	oldRelease = ue.drainRelease
+	ue.drainTracker = tracker
+	ue.drainRelease = newRelease
+	ue.udpConnStateMu.Unlock()
+
+	if oldRelease != nil {
+		oldRelease()
 	}
 }
 
@@ -767,6 +808,15 @@ func (ue *UdpEndpoint) Close() error {
 		if ue.conn != nil {
 			ue.closeErr = ue.conn.Close()
 		}
+
+		ue.udpConnStateMu.Lock()
+		drainRelease := ue.drainRelease
+		ue.drainRelease = nil
+		ue.drainTracker = nil
+		ue.udpConnStateMu.Unlock()
+		if drainRelease != nil {
+			drainRelease()
+		}
 	})
 	return ue.closeErr
 }
@@ -1028,6 +1078,9 @@ type UdpEndpointOptions struct {
 	NatTimeout time.Duration
 	// ConnStateOwner releases eBPF UDP conn-state tuples when the endpoint exits.
 	ConnStateOwner udpConnStateOwner
+	// DrainTracker keeps the owning generation alive while the endpoint remains
+	// active. Reused endpoints may transfer this ownership to the next generation.
+	DrainTracker *controlPlaneDrainTracker
 	// GetTarget is useful only if the underlay does not support Full-cone.
 	GetDialOption func(ctx context.Context) (option *DialOption, err error)
 	// Log is the logger to use for endpoint lifecycle events.
@@ -1430,6 +1483,7 @@ dialSuccess:
 		poolRef:           p,
 		poolKey:           key,
 		udpConnStateOwner: createOption.ConnStateOwner,
+		drainTracker:      createOption.DrainTracker,
 		lifecycleProfile:  newDataSessionLifecycleProfile(dialOption.Dialer),
 		endpointNetworkType: normalizeUdpEndpointPoolNetworkType(func() dialer.NetworkType {
 			if dialOption.NetworkType != nil {
@@ -1442,6 +1496,9 @@ dialSuccess:
 				UdpHealthDomain: dialer.UdpHealthDomainData,
 			}
 		}()),
+	}
+	if createOption.DrainTracker != nil {
+		ue.drainRelease = createOption.DrainTracker.Acquire()
 	}
 	ue.dialerGenerationRef = p.dialerEpochCounter(dialOption.Dialer, ue.endpointNetworkType)
 	if ue.dialerGenerationRef != nil {
@@ -1541,7 +1598,7 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 			}
 			// Expired failure entry — fall through to lock and replace.
 		case ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)):
-			// Expired dead entry — fall through to lock and replace.
+		// Expired dead entry — fall through to lock and replace.
 		default:
 			// Update NAT timeout based on current forwarding state
 			if createOption != nil && createOption.NatTimeout > 0 {
@@ -1552,6 +1609,9 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 					nowNano = createOption.NowNano
 				}
 				ue.RefreshTtlWithTime(nowNano)
+			}
+			if createOption != nil {
+				ue.adoptGeneration(createOption.ConnStateOwner, createOption.DrainTracker)
 			}
 			shard.mu.RUnlock()
 			return ue, false, nil
@@ -1587,6 +1647,9 @@ func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpo
 					nowNano = createOption.NowNano
 				}
 				ue.RefreshTtlWithTime(nowNano)
+			}
+			if createOption != nil {
+				ue.adoptGeneration(createOption.ConnStateOwner, createOption.DrainTracker)
 			}
 			shard.mu.Unlock()
 			return ue, false, nil

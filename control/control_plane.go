@@ -65,18 +65,21 @@ type ControlPlane struct {
 	outbounds           []*outbound.DialerGroup
 	referencedOutbounds map[string]struct{} // outbounds referenced by routing rules
 	inConnections       sync.Map
+	drainTracker        *controlPlaneDrainTracker
 
-	dnsController    *DnsController
-	dnsListener      *DNSListener
-	onceNetworkReady sync.Once
+	dnsController             *DnsController
+	dnsListener               *DNSListener
+	dnsListenerStopRegistered bool
+	onceNetworkReady          sync.Once
 
 	dialMode consts.DialMode
 
 	routingMatcher *RoutingMatcher
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	ready  chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
+	ready     chan struct{}
+	readyOnce sync.Once
 
 	muRealDomainSet   sync.RWMutex
 	realDomainSet     *bloom.BloomFilter
@@ -90,10 +93,11 @@ type ControlPlane struct {
 	negJanitorDone    chan struct{}
 	negJanitorOnce    sync.Once
 
-	connStateJanitorStop chan struct{}
-	connStateJanitorDone chan struct{}
-	connStateJanitorOnce sync.Once
-	connStateScratch     *connStateJanitorScratch
+	connStateJanitorStop    chan struct{}
+	connStateJanitorDone    chan struct{}
+	connStateJanitorOnce    sync.Once
+	connStateJanitorStarted atomic.Bool
+	connStateScratch        *connStateJanitorScratch
 
 	// Track last alert time to avoid spamming logs
 	lastBpfOverflowAlertTime atomic.Int64
@@ -114,8 +118,21 @@ type ControlPlane struct {
 	lastConnectionErrorLogTime     atomic.Int64
 	lastDnsFastPathErrorLogTime    atomic.Int64
 	lastDnsFastPathServfailLogTime atomic.Int64
+	listenerPublishMu              sync.Mutex
+	listenerFiles                  []*os.File
+	preparedDatapathCommit         bool
+	delayDNSListenerStart          bool
+	autoConfigKernelParameter      bool
+	routingBuilder                 *RoutingMatcherBuilder
+	pendingDnsReloadCache          map[string]*DnsCache
+	sharedBpfReload                bool
 	closeOnce                      sync.Once
 	closeErr                       error
+}
+
+type controlPlaneBuildOptions struct {
+	delayDatapathCommit   bool
+	delayDNSListenerStart bool
 }
 
 type connStateJanitorScratch struct {
@@ -288,7 +305,7 @@ func NewControlPlane(
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
 ) (plane *ControlPlane, err error) {
-	return NewControlPlaneWithContext(
+	return newControlPlaneWithContextOptions(
 		context.Background(),
 		log,
 		_bpf,
@@ -299,6 +316,7 @@ func NewControlPlane(
 		global,
 		dnsConfig,
 		externGeoDataDirs,
+		controlPlaneBuildOptions{},
 	)
 }
 
@@ -313,6 +331,66 @@ func NewControlPlaneWithContext(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+) (plane *ControlPlane, err error) {
+	return newControlPlaneWithContextOptions(
+		ctx,
+		log,
+		_bpf,
+		dnsCache,
+		tagToNodeList,
+		groups,
+		routingA,
+		global,
+		dnsConfig,
+		externGeoDataDirs,
+		controlPlaneBuildOptions{},
+	)
+}
+
+// NewPreparedControlPlaneWithContext builds a new generation without mutating
+// the shared datapath. Call CommitPreparedDatapath before switching traffic.
+func NewPreparedControlPlaneWithContext(
+	ctx context.Context,
+	log *logrus.Logger,
+	_bpf any,
+	dnsCache map[string]*DnsCache,
+	tagToNodeList map[string][]string,
+	groups []config.Group,
+	routingA *config.Routing,
+	global *config.Global,
+	dnsConfig *config.Dns,
+	externGeoDataDirs []string,
+) (plane *ControlPlane, err error) {
+	return newControlPlaneWithContextOptions(
+		ctx,
+		log,
+		_bpf,
+		dnsCache,
+		tagToNodeList,
+		groups,
+		routingA,
+		global,
+		dnsConfig,
+		externGeoDataDirs,
+		controlPlaneBuildOptions{
+			delayDatapathCommit:   true,
+			delayDNSListenerStart: true,
+		},
+	)
+}
+
+func newControlPlaneWithContextOptions(
+	ctx context.Context,
+	log *logrus.Logger,
+	_bpf any,
+	dnsCache map[string]*DnsCache,
+	tagToNodeList map[string][]string,
+	groups []config.Group,
+	routingA *config.Routing,
+	global *config.Global,
+	dnsConfig *config.Dns,
+	externGeoDataDirs []string,
+	buildOpts controlPlaneBuildOptions,
 ) (plane *ControlPlane, err error) {
 	// Clear failed QUIC DCID cache on reload/startup.
 	// Network conditions may have changed, so we should allow retrying sniffing
@@ -467,56 +545,6 @@ func NewControlPlaneWithContext(
 		}
 	}()
 
-	// Bind to links.
-	// Bind to LAN
-	if len(global.LanInterface) > 0 {
-		if global.AutoConfigKernelParameter {
-			// Enable IP forwarding for LAN interfaces
-			if err := SetIpv4forward("1"); err != nil {
-				// Log warning but don't fail - may be running in restricted environment (e.g., container)
-				log.WithError(err).Warnln("Failed to enable IPv4 forwarding; proxy functionality may be limited")
-			}
-			if err := setForwarding("all", consts.IpVersionStr_6, "1"); err != nil {
-				log.WithError(err).Warnln("Failed to enable IPv6 forwarding; proxy functionality may be limited")
-			}
-		}
-		global.LanInterface = common.Deduplicate(global.LanInterface)
-		for _, ifname := range global.LanInterface {
-			core.bindLan(ifname, global.AutoConfigKernelParameter)
-		}
-	}
-	// Bind to WAN
-	if len(global.WanInterface) > 0 {
-		if err = core.setupSkPidMonitor(); err != nil {
-			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
-		}
-		if err = core.setupTCPRelayOffload(); err != nil {
-			log.WithError(err).Debugln("TCP relay eBPF offload disabled")
-		}
-		for _, ifname := range global.WanInterface {
-			if len(global.LanInterface) > 0 {
-				// NOTE: Linux kernel behavior: ipv6.forwarding=1 suppresses accept_ra=1.
-				// We set accept_ra=2 to enable RA reception without auto-configuring
-				// default routes. This allows LAN+WAN coexistence with IPv6 SLAAC.
-				// Ref: https://sysctl-explorer.net/net/ipv6/accept_ra/
-				if global.AutoConfigKernelParameter {
-					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
-					val, err := acceptRa.Get()
-					if err == nil && val == "1" {
-						if err := acceptRa.Set("2", false); err != nil {
-							log.WithError(err).Warnf("Failed to set accept_ra=2 for %v; IPv6 autoconfig may not work as expected", ifname)
-						}
-					}
-				}
-			}
-			core.bindWan(ifname)
-		}
-	}
-	// Bind to dae0 and dae0peer
-	if err = core.bindDaens(); err != nil {
-		return nil, fmt.Errorf("bindDaens: %w", err)
-	}
-
 	/// DialerGroups (outbounds).
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
@@ -651,12 +679,16 @@ func NewControlPlaneWithContext(
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
-	log.Infoln("Loading routing rules into kernel space (BPF)...")
-	var lpmIndices []uint32
-	if lpmIndices, err = builder.BuildKernspace(log); err != nil {
-		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	if !buildOpts.delayDatapathCommit {
+		log.Infoln("Loading routing rules into kernel space (BPF)...")
+		var lpmIndices []uint32
+		if lpmIndices, err = builder.BuildKernspace(log); err != nil {
+			return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+		}
+		core.lpmTrieIndices = lpmIndices
+	} else {
+		log.Infoln("Prepared routing matcher; kernel-space routing commit deferred until listener cutover")
 	}
-	core.lpmTrieIndices = lpmIndices
 	log.Infoln("Building userspace routing matcher...")
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
@@ -691,41 +723,51 @@ func NewControlPlaneWithContext(
 	// New control plane.
 	cctx, cancel := context.WithCancel(ctx)
 	plane = &ControlPlane{
-		log:                    log,
-		core:                   core,
-		deferFuncs:             deferFuncs,
-		listenIp:               "0.0.0.0",
-		outbounds:              outbounds,
-		referencedOutbounds:    referencedOutbounds,
-		dnsController:          nil,
-		onceNetworkReady:       sync.Once{},
-		dialMode:               dialMode,
-		routingMatcher:         routingMatcher,
-		ctx:                    cctx,
-		cancel:                 cancel,
-		ready:                  make(chan struct{}),
-		muRealDomainSet:        sync.RWMutex{},
-		realDomainSet:          bloom.NewWithEstimates(2048, 0.001),
-		tcpSniffNegSet:         make(map[tcpSniffNegKey]tcpSniffNegEntry),
-		negJanitorStop:         make(chan struct{}),
-		negJanitorDone:         make(chan struct{}),
-		connStateJanitorStop:   make(chan struct{}),
-		connStateJanitorDone:   make(chan struct{}),
-		lanInterface:           global.LanInterface,
-		wanInterface:           global.WanInterface,
-		sniffingTimeout:        sniffingTimeout,
-		tproxyPortProtect:      global.TproxyPortProtect,
-		soMarkFromDae:          global.SoMarkFromDae,
-		mptcp:                  global.Mptcp,
-		bootstrapResolvers:     bootstrapResolvers,
-		udpRouteScopeSensitive: builder.UsesPacketMetadataRouting(),
-		udpUnorderedRunner:     newDefaultUdpUnorderedTaskRunner(cctx),
-		failedQuicDcidCache:    newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
+		log:                       log,
+		core:                      core,
+		deferFuncs:                deferFuncs,
+		listenIp:                  "0.0.0.0",
+		outbounds:                 outbounds,
+		referencedOutbounds:       referencedOutbounds,
+		dnsController:             nil,
+		onceNetworkReady:          sync.Once{},
+		dialMode:                  dialMode,
+		routingMatcher:            routingMatcher,
+		drainTracker:              newControlPlaneDrainTracker(),
+		ctx:                       cctx,
+		cancel:                    cancel,
+		ready:                     make(chan struct{}),
+		autoConfigKernelParameter: global.AutoConfigKernelParameter,
+		routingBuilder:            builder,
+		preparedDatapathCommit:    buildOpts.delayDatapathCommit,
+		delayDNSListenerStart:     buildOpts.delayDNSListenerStart,
+		sharedBpfReload:           _bpf != nil,
+		pendingDnsReloadCache:     dnsCache,
+		muRealDomainSet:           sync.RWMutex{},
+		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
+		tcpSniffNegSet:            make(map[tcpSniffNegKey]tcpSniffNegEntry),
+		negJanitorStop:            make(chan struct{}),
+		negJanitorDone:            make(chan struct{}),
+		connStateJanitorStop:      make(chan struct{}),
+		connStateJanitorDone:      make(chan struct{}),
+		lanInterface:              global.LanInterface,
+		wanInterface:              global.WanInterface,
+		sniffingTimeout:           sniffingTimeout,
+		tproxyPortProtect:         global.TproxyPortProtect,
+		soMarkFromDae:             global.SoMarkFromDae,
+		mptcp:                     global.Mptcp,
+		bootstrapResolvers:        bootstrapResolvers,
+		udpRouteScopeSensitive:    builder.UsesPacketMetadataRouting(),
+		udpUnorderedRunner:        newDefaultUdpUnorderedTaskRunner(cctx),
+		failedQuicDcidCache:       newFailedQuicDcidCache(failedQuicDcidCacheMaxEntries),
 	}
 	SetFailedQuicDcidCache(plane.failedQuicDcidCache)
 	SetAnyfromSoMark(global.SoMarkFromDae)
+	plane.deferFuncs = append(plane.deferFuncs, plane.closePublishedListenerFiles)
 	plane.startRealDomainNegJanitor()
-	plane.startConnStateJanitor()
+	if !buildOpts.delayDatapathCommit {
+		plane.startConnStateJanitor()
+	}
 
 	var upstreamHostResolver func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
 	if len(bootstrapResolvers) > 0 {
@@ -807,51 +849,19 @@ func NewControlPlaneWithContext(
 	}
 	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
 
-	// On reload, clear the BPF domain routing map to ensure DNS configuration
-	// changes take effect immediately. The dnsCache parameter is preserved for
-	// dae-wing compatibility but not used for cache refresh.
-	// TODO: Implement selective cache refresh based on what changed in DNS config.
-	if _bpf != nil {
-		// Keep reload behavior aligned with main: clear domain_routing_map only.
-		// Connection-state maps are intentionally preserved to avoid affecting
-		// established flows during reload.
-		if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
-			return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
-		}
-	}
-
-	// Restore DNS cache from last control plane if available.
-	if dnsCache != nil {
-		count := 0
-		now := time.Now()
-		for k, v := range dnsCache {
-			if v != nil {
-				// Re-patch domain bitmap for new routing rules.
-				v.DomainBitmap = plane.routingMatcher.domainMatcher.MatchDomainBitmap(v.GetFqdn())
-				plane.dnsController.dnsCache.Store(k, v)
-				plane.dnsController.rememberDnsKnowledge(dnsCacheBaseKey(k), v.OriginalDeadline)
-				// Trigger async BPF update to populate the cleared domain_routing_map.
-				plane.dnsController.triggerBpfUpdateIfNeeded(v, now)
-				count++
-			}
-		}
-		if count > 0 {
-			log.Infof("Restored %d DNS cache entries from previous control plane", count)
-		}
-	}
-
 	// Create and start DNS listener if configured
 	if dnsConfig.Bind != "" {
 		plane.dnsListener, err = NewDNSListener(log, dnsConfig.Bind, plane)
 		if err != nil {
 			return nil, err
 		}
-		if err = plane.dnsListener.Start(); err != nil {
-			log.Errorf("Failed to start DNS listener: %v", err)
-		} else {
-			log.Infof("DNS listener started on %s", dnsConfig.Bind)
-			// Add DNS listener stop to defer functions
-			plane.deferFuncs = append(plane.deferFuncs, plane.dnsListener.Stop)
+		if !buildOpts.delayDNSListenerStart {
+			if err = plane.dnsListener.Start(); err != nil {
+				log.Errorf("Failed to start DNS listener: %v", err)
+			} else {
+				log.Infof("DNS listener started on %s", dnsConfig.Bind)
+				plane.registerDNSListenerStop()
+			}
 		}
 	}
 
@@ -862,7 +872,20 @@ func NewControlPlaneWithContext(
 	}
 	go dnsUpstream.InitUpstreams(plane.ctx)
 
-	close(plane.ready)
+	if buildOpts.delayDatapathCommit {
+		plane.preparedDatapathCommit = true
+	} else {
+		if err = plane.commitInterfaceBindings(); err != nil {
+			return nil, err
+		}
+		if plane.sharedBpfReload {
+			if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
+				return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
+			}
+		}
+		plane.replayDnsReloadCache()
+		plane.markReady()
+	}
 	return plane, nil
 }
 
@@ -956,11 +979,60 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
+func (c *ControlPlane) PeekBpf() *bpfObjects {
+	if c == nil || c.core == nil {
+		return nil
+	}
+	return c.core.PeekBpf()
+}
+
+func (c *ControlPlane) ActiveSessionCount() int {
+	if c == nil || c.drainTracker == nil {
+		return 0
+	}
+	return c.drainTracker.Count()
+}
+
+func (c *ControlPlane) DrainIdleCh() <-chan struct{} {
+	if c == nil || c.drainTracker == nil {
+		return closedDrainIdleCh
+	}
+	return c.drainTracker.IdleCh()
+}
+
+func (c *ControlPlane) EjectLpmIndices() []uint32 {
+	if c == nil || c.core == nil {
+		return nil
+	}
+	return c.core.EjectLpmIndices()
+}
+
+func (c *ControlPlane) InheritLpmIndices(indices []uint32) {
+	if c == nil || c.core == nil {
+		return
+	}
+	c.core.InheritLpmIndices(indices)
+}
+
+func (c *ControlPlane) ReplaceLpmIndices(indices []uint32) {
+	if c == nil || c.core == nil {
+		return
+	}
+	c.core.ReplaceLpmIndices(indices)
+}
+
 func (c *ControlPlane) currentBpf() *bpfObjects {
 	if c == nil || c.core == nil {
 		return nil
 	}
 	return c.core.PeekBpf()
+}
+
+func (c *ControlPlane) acquireDrainTicket() func() {
+	if c == nil || c.drainTracker == nil {
+		return func() {}
+	}
+	return c.drainTracker.Acquire()
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
@@ -1006,6 +1078,232 @@ func updateConnStateJanitorPressure(
 	}
 	state.belowThresholdRounds = 0
 	return state
+}
+
+func (c *ControlPlane) markReady() {
+	if c == nil {
+		return
+	}
+	c.readyOnce.Do(func() {
+		close(c.ready)
+	})
+}
+
+func (c *ControlPlane) registerDNSListenerStop() {
+	if c == nil || c.dnsListener == nil || c.dnsListenerStopRegistered {
+		return
+	}
+	c.dnsListenerStopRegistered = true
+	c.deferFuncs = append(c.deferFuncs, c.dnsListener.Stop)
+}
+
+func (c *ControlPlane) closePublishedListenerFiles() error {
+	if c == nil {
+		return nil
+	}
+
+	c.listenerPublishMu.Lock()
+	files := c.listenerFiles
+	c.listenerFiles = nil
+	c.listenerPublishMu.Unlock()
+
+	var errs []error
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if err := f.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return stderrors.Join(errs...)
+}
+
+func (c *ControlPlane) publishListenerSockets(listener *Listener) error {
+	if c == nil || c.core == nil || listener == nil {
+		return fmt.Errorf("publishListenerSockets: nil control plane or listener")
+	}
+
+	var (
+		newFiles []*os.File
+		err      error
+	)
+	closeNewFiles := func() {
+		for _, f := range newFiles {
+			if f != nil {
+				_ = f.Close()
+			}
+		}
+	}
+
+	if listener.tcp4Listener != nil {
+		tcp4File, e := dupTCPListenerFile(listener.tcp4Listener)
+		if e != nil {
+			return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv4 listener file")
+		}
+		newFiles = append(newFiles, tcp4File)
+		if err = c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcp4File.Fd()), ebpf.UpdateAny); err != nil {
+			closeNewFiles()
+			return err
+		}
+	}
+	if listener.tcp6Listener != nil {
+		tcp6File, e := dupTCPListenerFile(listener.tcp6Listener)
+		if e != nil {
+			closeNewFiles()
+			return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv6 listener file")
+		}
+		newFiles = append(newFiles, tcp6File)
+		if err = c.core.bpf.ListenSocketMap.Update(consts.TwoKey, uint64(tcp6File.Fd()), ebpf.UpdateAny); err != nil {
+			closeNewFiles()
+			return err
+		}
+	}
+	if listener.packetConn != nil {
+		udpFile, e := dupUDPPacketConnFile(listener.packetConn)
+		if e != nil {
+			closeNewFiles()
+			return fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
+		}
+		newFiles = append(newFiles, udpFile)
+		if err = c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+			closeNewFiles()
+			return err
+		}
+	}
+
+	c.listenerPublishMu.Lock()
+	oldFiles := c.listenerFiles
+	c.listenerFiles = newFiles
+	c.listenerPublishMu.Unlock()
+	for _, f := range oldFiles {
+		if f != nil {
+			_ = f.Close()
+		}
+	}
+	return nil
+}
+
+func (c *ControlPlane) PublishListenerSockets(listener *Listener) error {
+	return c.publishListenerSockets(listener)
+}
+
+func (c *ControlPlane) commitInterfaceBindings() error {
+	if c == nil || c.core == nil {
+		return nil
+	}
+
+	if len(c.lanInterface) > 0 {
+		if c.autoConfigKernelParameter {
+			if err := SetIpv4forward("1"); err != nil {
+				c.log.WithError(err).Warnln("Failed to enable IPv4 forwarding; proxy functionality may be limited")
+			}
+			if err := setForwarding("all", consts.IpVersionStr_6, "1"); err != nil {
+				c.log.WithError(err).Warnln("Failed to enable IPv6 forwarding; proxy functionality may be limited")
+			}
+		}
+		c.lanInterface = common.Deduplicate(c.lanInterface)
+		for _, ifname := range c.lanInterface {
+			c.core.bindLan(ifname, c.autoConfigKernelParameter)
+		}
+	}
+
+	if len(c.wanInterface) > 0 {
+		if err := c.core.setupSkPidMonitor(); err != nil {
+			c.log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
+		}
+		if err := c.core.setupTCPRelayOffload(); err != nil {
+			c.log.WithError(err).Debugln("TCP relay eBPF offload disabled")
+		}
+		for _, ifname := range c.wanInterface {
+			if len(c.lanInterface) > 0 && c.autoConfigKernelParameter {
+				acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
+				val, err := acceptRa.Get()
+				if err == nil && val == "1" {
+					if err := acceptRa.Set("2", false); err != nil {
+						c.log.WithError(err).Warnf("Failed to set accept_ra=2 for %v; IPv6 autoconfig may not work as expected", ifname)
+					}
+				}
+			}
+			c.core.bindWan(ifname)
+		}
+	}
+
+	if err := c.core.bindDaens(); err != nil {
+		return fmt.Errorf("bindDaens: %w", err)
+	}
+	return nil
+}
+
+func (c *ControlPlane) replayDnsReloadCache() {
+	if c == nil || c.dnsController == nil || c.pendingDnsReloadCache == nil {
+		return
+	}
+	count := 0
+	now := time.Now()
+	for k, v := range c.pendingDnsReloadCache {
+		if v == nil {
+			continue
+		}
+		v.DomainBitmap = c.routingMatcher.domainMatcher.MatchDomainBitmap(v.GetFqdn())
+		c.dnsController.dnsCache.Store(k, v)
+		c.dnsController.rememberDnsKnowledge(dnsCacheBaseKey(k), v.OriginalDeadline)
+		c.dnsController.triggerBpfUpdateIfNeeded(v, now)
+		count++
+	}
+	if count > 0 {
+		c.log.Infof("Restored %d DNS cache entries from previous control plane", count)
+	}
+	c.pendingDnsReloadCache = nil
+}
+
+// CommitPreparedDatapath applies deferred kernel/BPF mutations for a prepared
+// control plane. It is safe to call once; subsequent calls are no-ops.
+func (c *ControlPlane) CommitPreparedDatapath() error {
+	if c == nil || !c.preparedDatapathCommit {
+		return nil
+	}
+	if err := c.commitInterfaceBindings(); err != nil {
+		return err
+	}
+	if c.routingBuilder != nil {
+		c.log.Infoln("Loading routing rules into kernel space (BPF)...")
+		lpmIndices, err := c.routingBuilder.BuildKernspace(c.log)
+		if err != nil {
+			return fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+		}
+		c.core.lpmTrieIndices = lpmIndices
+	}
+	if c.sharedBpfReload {
+		if err := clearReloadDomainRoutingMap(c.core.bpf); err != nil {
+			return fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
+		}
+	}
+	c.replayDnsReloadCache()
+	c.startConnStateJanitor()
+	c.preparedDatapathCommit = false
+	return nil
+}
+
+// RebuildReloadDatapath restores this generation's datapath after a staged
+// reload attempt modified shared BPF state but failed before cutover completed.
+func (c *ControlPlane) RebuildReloadDatapath() error {
+	if c == nil || c.routingBuilder == nil || c.core == nil || c.core.PeekBpf() == nil {
+		return nil
+	}
+	c.log.Warnln("[Reload] Rebuilding previous generation datapath after staged handoff failure")
+	lpmIndices, err := c.routingBuilder.BuildKernspace(c.log)
+	if err != nil {
+		return fmt.Errorf("rebuild routing kernspace: %w", err)
+	}
+	c.ReplaceLpmIndices(lpmIndices)
+	if err := clearReloadDomainRoutingMap(c.core.bpf); err != nil {
+		return fmt.Errorf("rebuild clearReloadDomainRoutingMap: %w", err)
+	}
+	cache := c.CloneDnsCache()
+	c.pendingDnsReloadCache = cache
+	c.replayDnsReloadCache()
+	return nil
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
@@ -1537,6 +1835,9 @@ func (c *ControlPlane) stopRealDomainNegJanitor() {
 // former bpf_timer-based automatic cleanup, providing better hot path performance
 // and avoiding CVE-2024-41045.
 func (c *ControlPlane) startConnStateJanitor() {
+	if c == nil || !c.connStateJanitorStarted.CompareAndSwap(false, true) {
+		return
+	}
 	go func() {
 		ticker := time.NewTicker(connStateJanitorPressureInterval)
 		defer ticker.Stop()
@@ -1621,6 +1922,9 @@ func (c *ControlPlane) startConnStateJanitor() {
 // stopConnStateJanitor signals the conn state janitor to stop and waits
 // for it to exit gracefully.
 func (c *ControlPlane) stopConnStateJanitor() {
+	if c == nil || !c.connStateJanitorStarted.Load() {
+		return
+	}
 	c.connStateJanitorOnce.Do(func() {
 		if c.connStateJanitorStop != nil {
 			close(c.connStateJanitorStop)
@@ -2438,41 +2742,17 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	udpConn := listener.packetConn.(*net.UDPConn)
-	/// Serve.
-	// TCP IPv4 socket.
-	tcp4File, err := dupTCPListenerFile(listener.tcp4Listener)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv4 listener file")
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return tcp4File.Close()
-	})
-	if err := c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcp4File.Fd()), ebpf.UpdateAny); err != nil {
+	if err := c.publishListenerSockets(listener); err != nil {
 		return err
 	}
-	// TCP IPv6 socket.
-	tcp6File, err := dupTCPListenerFile(listener.tcp6Listener)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv6 listener file")
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return tcp6File.Close()
-	})
-	if err := c.core.bpf.ListenSocketMap.Update(consts.TwoKey, uint64(tcp6File.Fd()), ebpf.UpdateAny); err != nil {
+	if err := c.CommitPreparedDatapath(); err != nil {
 		return err
 	}
-	// UDP socket.
-	udpFile, err := dupUDPPacketConnFile(listener.packetConn)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return udpFile.Close()
-	})
-	if err := c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+	if err := c.StartPreparedDNSListener(); err != nil {
 		return err
 	}
 
+	c.markReady()
 	sentReady = true
 	select {
 	case readyChan <- true:
@@ -2492,7 +2772,9 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 				return
 			}
-			go func(lconn net.Conn) {
+			drainRelease := c.acquireDrainTicket()
+			go func(lconn net.Conn, release func()) {
+				defer release()
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
 				// Keep the ControlPlane lifecycle context so shutdown/reload can cancel
@@ -2501,7 +2783,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				if err := c.handleConn(c.ctx, lconn); err != nil {
 					c.log.Warnln("handleConn:", err)
 				}
-			}(lconn)
+			}(lconn, drainRelease)
 		}
 	}
 	go serveTCP(listener.tcp4Listener)
@@ -3125,5 +3407,29 @@ func (c *ControlPlane) StopDNSListener() error {
 	if c.dnsListener != nil {
 		return c.dnsListener.Stop()
 	}
+	return nil
+}
+
+// RestartDNSListener restarts the control plane's DNS listener after it was
+// explicitly stopped during reload preparation.
+func (c *ControlPlane) RestartDNSListener() error {
+	if c == nil || c.dnsListener == nil {
+		return nil
+	}
+	if err := c.dnsListener.Start(); err != nil {
+		return err
+	}
+	c.registerDNSListenerStop()
+	return nil
+}
+
+func (c *ControlPlane) StartPreparedDNSListener() error {
+	if c == nil || !c.delayDNSListenerStart {
+		return nil
+	}
+	if err := c.RestartDNSListener(); err != nil {
+		return err
+	}
+	c.delayDNSListenerStart = false
 	return nil
 }

@@ -30,6 +30,55 @@ import (
 // coreFlip should be 0 or 1; accessed atomically.
 var coreFlip int32
 
+type sharedUdpConnStateTrackerEntry struct {
+	tracker *udpConnStateTracker
+	refs    int
+}
+
+var sharedUdpConnStateTrackerRegistry = struct {
+	mu      sync.Mutex
+	entries map[*bpfObjects]*sharedUdpConnStateTrackerEntry
+}{
+	entries: make(map[*bpfObjects]*sharedUdpConnStateTrackerEntry),
+}
+
+func acquireSharedUdpConnStateTracker(bpf *bpfObjects) *udpConnStateTracker {
+	if bpf == nil {
+		return newUdpConnStateTracker()
+	}
+
+	sharedUdpConnStateTrackerRegistry.mu.Lock()
+	defer sharedUdpConnStateTrackerRegistry.mu.Unlock()
+
+	entry := sharedUdpConnStateTrackerRegistry.entries[bpf]
+	if entry == nil {
+		entry = &sharedUdpConnStateTrackerEntry{
+			tracker: newUdpConnStateTracker(),
+		}
+		sharedUdpConnStateTrackerRegistry.entries[bpf] = entry
+	}
+	entry.refs++
+	return entry.tracker
+}
+
+func releaseSharedUdpConnStateTracker(bpf *bpfObjects, tracker *udpConnStateTracker) {
+	if bpf == nil || tracker == nil {
+		return
+	}
+
+	sharedUdpConnStateTrackerRegistry.mu.Lock()
+	defer sharedUdpConnStateTrackerRegistry.mu.Unlock()
+
+	entry := sharedUdpConnStateTrackerRegistry.entries[bpf]
+	if entry == nil || entry.tracker != tracker {
+		return
+	}
+	entry.refs--
+	if entry.refs <= 0 {
+		delete(sharedUdpConnStateTrackerRegistry.entries, bpf)
+	}
+}
+
 type controlPlaneCore struct {
 	mu sync.Mutex
 
@@ -99,7 +148,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		domainRouting:      newDomainRoutingTracker(),
 		bpfOwned:           bpfOwned,
 	}
-	core.udpConnStateTracker.Store(newUdpConnStateTracker())
+	core.udpConnStateTracker.Store(acquireSharedUdpConnStateTracker(bpf))
 	return core
 }
 
@@ -110,10 +159,11 @@ func (c *controlPlaneCore) getUdpConnStateTracker() *udpConnStateTracker {
 	if tracker := c.udpConnStateTracker.Load(); tracker != nil {
 		return tracker
 	}
-	tracker := newUdpConnStateTracker()
+	tracker := acquireSharedUdpConnStateTracker(c.bpf)
 	if c.udpConnStateTracker.CompareAndSwap(nil, tracker) {
 		return tracker
 	}
+	releaseSharedUdpConnStateTracker(c.bpf, tracker)
 	return c.udpConnStateTracker.Load()
 }
 
@@ -191,12 +241,12 @@ func (c *controlPlaneCore) Close() (err error) {
 	// Invoke defer funcs in reverse order and collect errors.
 	// Use errors.Join (Go 1.20+) for clean multi-error handling.
 	var errs []error
-	// Explicitly clear allocated LPM trie slots from the shared LpmArrayMap.
-	// This ensures that inner maps are physically purged from the kernel
-	// instead of leaking until the 1024-slot ring buffer wraps around.
+	// Clear LPM slots still owned by this generation. Retired generations hand
+	// their slots to the next generation before draining so they cannot delete a
+	// slot that has already been reused by a later reload.
 	if c.bpf != nil && c.bpf.LpmArrayMap != nil && len(c.lpmTrieIndices) > 0 {
 		for _, idx := range c.lpmTrieIndices {
-			if e := c.bpf.LpmArrayMap.Delete(idx); e != nil {
+			if e := c.bpf.LpmArrayMap.Delete(idx); e != nil && !errors.Is(e, ebpf.ErrKeyNotExist) {
 				c.log.Errorf("Failed to clear BPF LPM slot %d: %v", idx, e)
 			}
 		}
@@ -212,6 +262,9 @@ func (c *controlPlaneCore) Close() (err error) {
 		if e := c.bpf.Close(); e != nil {
 			errs = append(errs, e)
 		}
+	}
+	if tracker := c.udpConnStateTracker.Swap(nil); tracker != nil {
+		releaseSharedUdpConnStateTracker(c.bpf, tracker)
 	}
 
 	c.close()
@@ -804,6 +857,26 @@ func (c *controlPlaneCore) RetainUdpConnStateTuples(keys []bpfTuplesKey) {
 	}
 }
 
+func (c *controlPlaneCore) TransferRetainedUdpConnStateTuplesFrom(previous udpConnStateOwner, keys []bpfTuplesKey) {
+	if c == nil || previous == nil || previous == c || len(keys) == 0 {
+		return
+	}
+
+	previousCore, ok := previous.(*controlPlaneCore)
+	if !ok || previousCore == nil {
+		return
+	}
+
+	currentTracker := c.getUdpConnStateTracker()
+	previousTracker := previousCore.getUdpConnStateTracker()
+	if currentTracker == nil || previousTracker == nil || currentTracker == previousTracker {
+		return
+	}
+
+	currentTracker.Retain(keys)
+	previousTracker.Forget(keys)
+}
+
 func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error {
 	if c == nil || len(keys) == 0 {
 		return nil
@@ -851,12 +924,71 @@ func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	return c.bpf
 }
 
+func (c *controlPlaneCore) EjectLpmIndices() []uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	indices := c.lpmTrieIndices
+	c.lpmTrieIndices = nil
+	return indices
+}
+
+// InheritLpmIndices adopts retired generations' ring slots. Slots that are no
+// longer referenced by the current generation are deleted immediately to free
+// memory; slots already reused by the current generation are skipped.
+func (c *controlPlaneCore) InheritLpmIndices(indices []uint32) {
+	if len(indices) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	current := make(map[uint32]struct{}, len(c.lpmTrieIndices))
+	for _, idx := range c.lpmTrieIndices {
+		current[idx] = struct{}{}
+	}
+
+	pending := make([]uint32, 0, len(indices))
+	for _, idx := range indices {
+		if _, reused := current[idx]; reused {
+			continue
+		}
+		if c.bpf == nil || c.bpf.LpmArrayMap == nil {
+			pending = append(pending, idx)
+			current[idx] = struct{}{}
+			continue
+		}
+		if err := c.bpf.LpmArrayMap.Delete(idx); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			c.log.Errorf("Failed to clear inherited BPF LPM slot %d: %v", idx, err)
+			pending = append(pending, idx)
+			current[idx] = struct{}{}
+		}
+	}
+	c.lpmTrieIndices = append(c.lpmTrieIndices, pending...)
+}
+
+// ReplaceLpmIndices installs a new active LPM index set for this generation
+// and eagerly reclaims the superseded indices when possible.
+func (c *controlPlaneCore) ReplaceLpmIndices(indices []uint32) {
+	c.mu.Lock()
+	old := c.lpmTrieIndices
+	c.lpmTrieIndices = append([]uint32(nil), indices...)
+	shouldCleanupOld := c.bpf != nil && c.bpf.LpmArrayMap != nil
+	c.mu.Unlock()
+
+	if shouldCleanupOld {
+		c.InheritLpmIndices(old)
+	}
+}
+
 // InjectBpf will inject bpf back.
 func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
-	if c.bpfEjected {
-		c.bpfEjected = false
-		c.bpfOwned = true
+	if bpf != nil {
+		c.bpf = bpf
 	}
+	c.bpfEjected = false
+	c.bpfOwned = true
 }
 
 // PeekBpf returns the current BPF objects without transferring ownership.

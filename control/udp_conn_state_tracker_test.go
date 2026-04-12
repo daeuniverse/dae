@@ -7,12 +7,14 @@ package control
 
 import (
 	stderrors "errors"
+	"io"
 	"net/netip"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/sirupsen/logrus"
 )
 
 func TestUdpConnStateTrackerRetainWaitsForFinalize(t *testing.T) {
@@ -123,5 +125,166 @@ func TestControlPlaneCoreReleaseUdpConnStateTuplesWithoutMapDropsTrackerRef(t *t
 	defer tracker.mu.Unlock()
 	if _, ok := tracker.entries[key]; ok {
 		t.Fatal("expected tracker entry to be removed even when no BPF map is attached")
+	}
+}
+
+func TestAcquireSharedUdpConnStateTrackerSharesByBpfObject(t *testing.T) {
+	bpf := &bpfObjects{}
+
+	first := acquireSharedUdpConnStateTracker(bpf)
+	second := acquireSharedUdpConnStateTracker(bpf)
+	if first != second {
+		t.Fatal("expected same BPF object to share one UDP conn-state tracker")
+	}
+
+	releaseSharedUdpConnStateTracker(bpf, first)
+	releaseSharedUdpConnStateTracker(bpf, second)
+
+	sharedUdpConnStateTrackerRegistry.mu.Lock()
+	_, ok := sharedUdpConnStateTrackerRegistry.entries[bpf]
+	sharedUdpConnStateTrackerRegistry.mu.Unlock()
+	if ok {
+		t.Fatal("expected tracker registry entry to be released after the last owner")
+	}
+}
+
+func TestUdpEndpointAdoptGenerationTransfersTrackedTupleOwnership(t *testing.T) {
+	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	oldCore := &controlPlaneCore{
+		bpf: &bpfObjects{
+			bpfMaps: bpfMaps{
+				UdpConnStateMap: udpMap,
+			},
+		},
+	}
+	newCore := &controlPlaneCore{
+		bpf: &bpfObjects{
+			bpfMaps: bpfMaps{
+				UdpConnStateMap: udpMap,
+			},
+		},
+	}
+
+	src := netip.MustParseAddrPort("192.0.2.40:40040")
+	dst := netip.MustParseAddrPort("198.51.100.50:443")
+	forward := bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP))
+	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
+
+	for _, key := range []bpfTuplesKey{forward, reverse} {
+		state := bpfUdpConnState{LastSeenNs: 1}
+		if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
+			t.Fatalf("update udp conn-state %v: %v", key, err)
+		}
+	}
+
+	ue := &UdpEndpoint{
+		poolKey:           UdpEndpointKey{Src: src},
+		udpConnStateOwner: oldCore,
+	}
+	ue.TrackUdpConnStateTuplePair(src, dst)
+
+	oldTracker := oldCore.getUdpConnStateTracker()
+	oldTracker.mu.Lock()
+	if len(oldTracker.entries) != 2 {
+		oldTracker.mu.Unlock()
+		t.Fatalf("old tracker entries before adoption = %d, want 2", len(oldTracker.entries))
+	}
+	oldTracker.mu.Unlock()
+
+	ue.adoptGeneration(newCore, nil)
+
+	oldTracker.mu.Lock()
+	oldEntryCount := len(oldTracker.entries)
+	oldTracker.mu.Unlock()
+	if oldEntryCount != 0 {
+		t.Fatalf("old tracker entries after adoption = %d, want 0", oldEntryCount)
+	}
+
+	newTracker := newCore.getUdpConnStateTracker()
+	newTracker.mu.Lock()
+	newEntryCount := len(newTracker.entries)
+	newTracker.mu.Unlock()
+	if newEntryCount != 2 {
+		t.Fatalf("new tracker entries after adoption = %d, want 2", newEntryCount)
+	}
+
+	if err := ue.Close(); err != nil {
+		t.Fatalf("ue.Close(): %v", err)
+	}
+	for _, key := range []bpfTuplesKey{forward, reverse} {
+		var state bpfUdpConnState
+		if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+			t.Fatalf("Lookup(%v) after close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
+		}
+	}
+}
+
+func TestUdpEndpointAdoptGenerationKeepsSharedTupleUntilLastEndpointCloses(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	sharedBpf := &bpfObjects{
+		bpfMaps: bpfMaps{
+			UdpConnStateMap: udpMap,
+		},
+	}
+	tracker := acquireSharedUdpConnStateTracker(sharedBpf)
+	defer releaseSharedUdpConnStateTracker(sharedBpf, tracker)
+
+	oldCore := &controlPlaneCore{
+		log: logger,
+		bpf: sharedBpf,
+	}
+	oldCore.udpConnStateTracker.Store(tracker)
+	newCore := &controlPlaneCore{
+		log: logger,
+		bpf: sharedBpf,
+	}
+	newCore.udpConnStateTracker.Store(tracker)
+
+	src := netip.MustParseAddrPort("192.0.2.60:40060")
+	dst := netip.MustParseAddrPort("198.51.100.70:443")
+	forward := bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP))
+	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
+
+	for _, key := range []bpfTuplesKey{forward, reverse} {
+		state := bpfUdpConnState{LastSeenNs: 1}
+		if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
+			t.Fatalf("update udp conn-state %v: %v", key, err)
+		}
+	}
+
+	ueOld := &UdpEndpoint{
+		poolKey:           UdpEndpointKey{Src: src},
+		udpConnStateOwner: oldCore,
+	}
+	ueAdopted := &UdpEndpoint{
+		poolKey:           UdpEndpointKey{Src: src, RouteScope: udpEndpointRouteScope{Outbound: 1}},
+		udpConnStateOwner: oldCore,
+	}
+
+	ueOld.TrackUdpConnStateTuplePair(src, dst)
+	ueAdopted.TrackUdpConnStateTuplePair(src, dst)
+	ueAdopted.adoptGeneration(newCore, nil)
+
+	if err := ueOld.Close(); err != nil {
+		t.Fatalf("ueOld.Close(): %v", err)
+	}
+	for _, key := range []bpfTuplesKey{forward, reverse} {
+		var state bpfUdpConnState
+		if err := udpMap.Lookup(&key, &state); err != nil {
+			t.Fatalf("Lookup(%v) after old endpoint close err = %v, want tuple to remain", key, err)
+		}
+	}
+
+	if err := ueAdopted.Close(); err != nil {
+		t.Fatalf("ueAdopted.Close(): %v", err)
+	}
+	for _, key := range []bpfTuplesKey{forward, reverse} {
+		var state bpfUdpConnState
+		if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+			t.Fatalf("Lookup(%v) after adopted endpoint close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
+		}
 	}
 }

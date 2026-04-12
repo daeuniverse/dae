@@ -72,37 +72,57 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 		// Per-interface queues to preserve order
 		queues := make(map[string]chan func())
 		timers := make(map[string]*time.Timer)
-		for j := range jobChan {
-			ifQ, ok := queues[j.ifName]
-			if !ok {
-				ifQ = make(chan func(), 32)
-				queues[j.ifName] = ifQ
-				go func(ifName string, q chan func()) {
-					for f := range q {
-						f()
-					}
-				}(j.ifName, ifQ)
-			}
-
-			// Debounce logic: if a new event for the same interface arrives,
-			// reset the timer to delay execution.
-			fn := j.fn
-			if t, ok := timers[j.ifName]; ok {
+		stopTimers := func() {
+			for _, t := range timers {
 				t.Stop()
 			}
-			timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
-				select {
-				case ifQ <- fn:
-				default:
-					m.log.Warnf("Interface callback queue full for %s, skipping", j.ifName)
+		}
+		defer stopTimers()
+
+		for {
+			select {
+			case <-m.closed.Done():
+				return
+			case j, ok := <-jobChan:
+				if !ok {
+					return
 				}
-			})
-		}
-		for _, q := range queues {
-			close(q)
-		}
-		for _, t := range timers {
-			t.Stop()
+				ifQ, exists := queues[j.ifName]
+				if !exists {
+					ifQ = make(chan func(), 32)
+					queues[j.ifName] = ifQ
+					go func(q chan func()) {
+						for {
+							select {
+							case <-m.closed.Done():
+								return
+							case f, ok := <-q:
+								if !ok {
+									return
+								}
+								f()
+							}
+						}
+					}(ifQ)
+				}
+
+				// Debounce logic: if a new event for the same interface arrives,
+				// reset the timer to delay execution.
+				fn := j.fn
+				if t, ok := timers[j.ifName]; ok {
+					t.Stop()
+				}
+				ifName := j.ifName
+				timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
+					select {
+					case <-m.closed.Done():
+						return
+					case ifQ <- fn:
+					default:
+						m.log.Warnf("Interface callback queue full for %s, skipping", ifName)
+					}
+				})
+			}
 		}
 	}()
 

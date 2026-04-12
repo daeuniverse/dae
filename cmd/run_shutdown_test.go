@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -79,6 +80,30 @@ func (f *fakeShutdownNetns) Close() error {
 		f.recorder.add("netns.Close")
 	}
 	return f.closeErr
+}
+
+type fakeRetirementControlPlane struct {
+	active int32
+	idleCh chan struct{}
+}
+
+func newFakeRetirementControlPlane(active int32) *fakeRetirementControlPlane {
+	f := &fakeRetirementControlPlane{
+		active: active,
+		idleCh: make(chan struct{}),
+	}
+	if active == 0 {
+		close(f.idleCh)
+	}
+	return f
+}
+
+func (f *fakeRetirementControlPlane) ActiveSessionCount() int {
+	return int(atomic.LoadInt32(&f.active))
+}
+
+func (f *fakeRetirementControlPlane) DrainIdleCh() <-chan struct{} {
+	return f.idleCh
 }
 
 func newDiscardLogger() *logrus.Logger {
@@ -168,6 +193,58 @@ func TestShutdownAfterSignalTypedNilResourcesAreSkipped(t *testing.T) {
 	}
 }
 
+func TestShutdownAfterSignalWithPendingHandoffFastExitDetachesBothGenerations(t *testing.T) {
+	recorder := &shutdownCallRecorder{}
+	newListener := &fakeShutdownListener{recorder: recorder}
+	oldListener := &fakeShutdownListener{recorder: recorder}
+	newPlane := &fakeShutdownControlPlane{recorder: recorder}
+	oldPlane := &fakeShutdownControlPlane{recorder: recorder}
+	netns := &fakeShutdownNetns{recorder: recorder}
+
+	err := shutdownAfterSignalWithHandoff(
+		newDiscardLogger(),
+		newListener,
+		newPlane,
+		netns,
+		true,
+		&signalShutdownStagedHandoff{
+			oldListener:     oldListener,
+			oldControlPlane: oldPlane,
+			newListener:     newListener,
+			newControlPlane: newPlane,
+		},
+	)
+	if err != nil {
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v", err)
+	}
+
+	if newPlane.detachCalls != 1 {
+		t.Fatalf("newPlane DetachBpfHooks calls = %d, want 1", newPlane.detachCalls)
+	}
+	if oldPlane.detachCalls != 1 {
+		t.Fatalf("oldPlane DetachBpfHooks calls = %d, want 1", oldPlane.detachCalls)
+	}
+	if newPlane.abortCalls != 0 || oldPlane.abortCalls != 0 {
+		t.Fatalf("AbortConnections calls = (%d, %d), want (0, 0)", newPlane.abortCalls, oldPlane.abortCalls)
+	}
+	if newPlane.closeCalls != 0 || oldPlane.closeCalls != 0 {
+		t.Fatalf("Close calls = (%d, %d), want (0, 0)", newPlane.closeCalls, oldPlane.closeCalls)
+	}
+	if netns.closeCalls != 0 {
+		t.Fatalf("netns.Close calls = %d, want 0", netns.closeCalls)
+	}
+
+	wantOrder := []string{
+		"listener.Close",
+		"listener.Close",
+		"control.DetachBpfHooks",
+		"control.DetachBpfHooks",
+	}
+	if !reflect.DeepEqual(recorder.order, wantOrder) {
+		t.Fatalf("call order = %v, want %v", recorder.order, wantOrder)
+	}
+}
+
 func TestNotifyRunStateChangeCoalescesPendingNotification(t *testing.T) {
 	runStateChanges := make(chan struct{}, 1)
 
@@ -184,6 +261,30 @@ func TestNotifyRunStateChangeCoalescesPendingNotification(t *testing.T) {
 	case <-runStateChanges:
 		t.Fatal("expected notifications to coalesce while the channel is full")
 	default:
+	}
+}
+
+func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
+	reqs := make(chan reloadRequest, 1)
+	var reloadPending atomic.Bool
+
+	if !tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadPending, reloadRequest{isSuspend: false}) {
+		t.Fatal("expected first reload request to be queued")
+	}
+	if !reloadPending.Load() {
+		t.Fatal("expected reloadPending to remain set after queuing reload")
+	}
+	if tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadPending, reloadRequest{isSuspend: true}) {
+		t.Fatal("expected concurrent reload request to be rejected")
+	}
+
+	select {
+	case req := <-reqs:
+		if req.isSuspend {
+			t.Fatal("expected first queued reload request to be preserved")
+		}
+	default:
+		t.Fatal("expected queued reload request")
 	}
 }
 
@@ -209,9 +310,9 @@ func TestWaitReloadReadyOrSignalReturnsOnReady(t *testing.T) {
 	readyChan := make(chan bool, 1)
 	readyChan <- true
 
-	ready, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan)
-	if !ready {
-		t.Fatal("ready = false, want true")
+	result, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan, time.Second)
+	if result != reloadReadyWaitReady {
+		t.Fatalf("result = %v, want reloadReadyWaitReady", result)
 	}
 	if termSig != nil {
 		t.Fatalf("termSig = %v, want nil", termSig)
@@ -223,9 +324,9 @@ func TestWaitReloadReadyOrSignalReturnsOnTerminationSignal(t *testing.T) {
 	readyChan := make(chan bool)
 	sigs <- syscall.SIGINT
 
-	ready, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan)
-	if ready {
-		t.Fatal("ready = true, want false")
+	result, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan, time.Second)
+	if result != reloadReadyWaitSignal {
+		t.Fatalf("result = %v, want reloadReadyWaitSignal", result)
 	}
 	if termSig != syscall.SIGINT {
 		t.Fatalf("termSig = %v, want SIGINT", termSig)
@@ -242,11 +343,66 @@ func TestWaitReloadReadyOrSignalIgnoresReloadSignalsUntilReady(t *testing.T) {
 		readyChan <- true
 	}()
 
-	ready, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan)
-	if !ready {
-		t.Fatal("ready = false, want true")
+	result, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan, time.Second)
+	if result != reloadReadyWaitReady {
+		t.Fatalf("result = %v, want reloadReadyWaitReady", result)
 	}
 	if termSig != nil {
 		t.Fatalf("termSig = %v, want nil", termSig)
+	}
+}
+
+func TestWaitReloadReadyOrSignalReturnsTimeout(t *testing.T) {
+	sigs := make(chan os.Signal, 1)
+	readyChan := make(chan bool)
+
+	result, termSig := waitReloadReadyOrSignal(newDiscardLogger(), sigs, readyChan, 10*time.Millisecond)
+	if result != reloadReadyWaitTimeout {
+		t.Fatalf("result = %v, want reloadReadyWaitTimeout", result)
+	}
+	if termSig != nil {
+		t.Fatalf("termSig = %v, want nil", termSig)
+	}
+}
+
+func TestWaitForControlPlaneDrainReturnsIdleImmediately(t *testing.T) {
+	result := waitForControlPlaneDrain(newDiscardLogger(), context.Background(), newFakeRetirementControlPlane(0), time.Second, 0)
+	if result != controlPlaneDrainIdle {
+		t.Fatalf("result = %v, want controlPlaneDrainIdle", result)
+	}
+}
+
+func TestWaitForControlPlaneDrainReturnsIdleAfterSignal(t *testing.T) {
+	plane := newFakeRetirementControlPlane(1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		atomic.StoreInt32(&plane.active, 0)
+		close(plane.idleCh)
+	}()
+
+	result := waitForControlPlaneDrain(newDiscardLogger(), context.Background(), plane, time.Second, 0)
+	if result != controlPlaneDrainIdle {
+		t.Fatalf("result = %v, want controlPlaneDrainIdle", result)
+	}
+}
+
+func TestWaitForControlPlaneDrainReturnsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	plane := newFakeRetirementControlPlane(1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	result := waitForControlPlaneDrain(newDiscardLogger(), ctx, plane, time.Second, 0)
+	if result != controlPlaneDrainCanceled {
+		t.Fatalf("result = %v, want controlPlaneDrainCanceled", result)
+	}
+}
+
+func TestWaitForControlPlaneDrainReturnsTimeout(t *testing.T) {
+	result := waitForControlPlaneDrain(newDiscardLogger(), context.Background(), newFakeRetirementControlPlane(1), 10*time.Millisecond, 0)
+	if result != controlPlaneDrainTimeout {
+		t.Fatalf("result = %v, want controlPlaneDrainTimeout", result)
 	}
 }

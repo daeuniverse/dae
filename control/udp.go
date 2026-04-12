@@ -894,6 +894,7 @@ getNew:
 			},
 			NatTimeout:     natTimeout,
 			ConnStateOwner: c.core,
+			DrainTracker:   c.drainTracker,
 			Log:            c.log,
 			NowNano:        nowNano,
 			GetDialOption: func(ctx context.Context) (option *DialOption, err error) {

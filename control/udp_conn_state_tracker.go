@@ -91,6 +91,45 @@ func (t *udpConnStateTracker) BeginRelease(keys []bpfTuplesKey) []udpConnStateTr
 	return releases
 }
 
+// Forget drops tracker ownership without deleting the underlying BPF tuples.
+// Reload handoff uses this after the next generation has retained the same keys.
+func (t *udpConnStateTracker) Forget(keys []bpfTuplesKey) {
+	if t == nil || len(keys) == 0 {
+		return
+	}
+	for _, key := range keys {
+		t.forget(key)
+	}
+}
+
+func (t *udpConnStateTracker) forget(key bpfTuplesKey) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for {
+		entry, ok := t.entries[key]
+		if !ok {
+			return
+		}
+		if entry.deleting {
+			if entry.waiters == nil {
+				entry.waiters = sync.NewCond(&t.mu)
+			}
+			entry.waiters.Wait()
+			continue
+		}
+		if entry.refs > 1 {
+			entry.refs--
+			return
+		}
+		delete(t.entries, key)
+		if entry.waiters != nil {
+			entry.waiters.Broadcast()
+		}
+		return
+	}
+}
+
 func (t *udpConnStateTracker) FinalizeRelease(releases []udpConnStateTrackedRelease) {
 	if t == nil || len(releases) == 0 {
 		return
