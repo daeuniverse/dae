@@ -253,17 +253,19 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	if magicNetwork.Network == "udp" {
 		go func() {
 			// Resend every 3 seconds for UDP.
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				default:
-					time.Sleep(3 * time.Second)
-				}
-				_, err := WriteUDPConn(c, dns.String(), b)
-				if err != nil {
-					ch <- dnsResolveResult{err: err}
-					return
+				case <-ticker.C:
+					_, err := WriteUDPConn(c, dns.String(), b)
+					if err != nil {
+						ch <- dnsResolveResult{err: err}
+						return
+					}
 				}
 			}
 		}()

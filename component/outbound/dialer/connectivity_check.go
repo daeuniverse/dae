@@ -430,8 +430,10 @@ func registerConnectivityCheckDialer() {
 	poolActiveCount++
 	size := calcPoolSize(poolActiveCount)
 	if connectivityCheckPool == nil {
-		// No WithPreAlloc: lazy allocation lets Tune() resize freely.
-		p, err := ants.NewPool(size)
+		// Use nonblocking mode so reload/cancel paths never stall behind a
+		// saturated health-check pool. Skipping a probe is preferable to
+		// keeping an old dialer generation alive.
+		p, err := ants.NewPool(size, ants.WithNonblocking(true))
 		if err != nil {
 			panic("failed to initialize ants pool for connectivity check: " + err.Error())
 		}
@@ -625,7 +627,6 @@ func (d *Dialer) aliveBackground() {
 			Traceln("cleaned up connectivity check goroutine")
 	}()
 
-	var wg sync.WaitGroup
 	// Pool pointer is stable (Tune never replaces it); capture once.
 	workerPool := getConnectivityCheckPool()
 	isFirstCheck := true
@@ -665,8 +666,18 @@ func (d *Dialer) aliveBackground() {
 			cycleRes = &cycleResult{}
 		}
 
+		var wg sync.WaitGroup
 		d.submitCheckTasks(workerPool, &wg, opts, checkFamily != "", cycleRes)
-		wg.Wait()
+		waitDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-d.ctx.Done():
+			return
+		}
 		if checkFamily == "" {
 			// Stability-based wash white: only reset stability if a protocol family had failures
 			// WITHOUT any successes in this cycle. This allows partially-working dual-stack
@@ -716,7 +727,7 @@ func filterCheckOptsByFamily(opts []*CheckOption, family consts.L4ProtoStr) []*C
 	return result
 }
 
-// submitCheckTasks submits check tasks to worker pool
+// submitCheckTasks submits check tasks to worker pool.
 func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opts []*CheckOption, isResuscitation bool, cycle *cycleResult) {
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
@@ -724,24 +735,45 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 			continue
 		}
 
+		select {
+		case <-d.ctx.Done():
+			return
+		default:
+		}
+
 		wg.Add(1)
 		checkOpt := opt
 		err := workerPool.Submit(func() {
 			defer wg.Done()
+			select {
+			case <-d.ctx.Done():
+				return
+			default:
+			}
 			if isResuscitation {
 				// Stagger resuscitation probes to prevent thundering herd.
-				// Random delay between 0 and 2 seconds.
-				time.Sleep(time.Duration(fastrand.Int63n(int64(2 * time.Second))))
+				// Random delay between 0 and 2 seconds, but allow reload/cancel
+				// to interrupt the probe before it starts.
+				timer := time.NewTimer(time.Duration(fastrand.Int63n(int64(2 * time.Second))))
+				defer timer.Stop()
+				select {
+				case <-d.ctx.Done():
+					return
+				case <-timer.C:
+				}
 			}
 			_, _ = d.check(checkOpt, isResuscitation, cycle)
 		})
 
 		if err != nil {
-			// If pool is closed or errors out, fallback to goroutine to ensure check proceeds
-			go func() {
-				defer wg.Done()
-				_, _ = d.check(checkOpt, isResuscitation, cycle)
-			}()
+			// Nonblocking pools report overload immediately. Health checks are
+			// periodic, so skip this probe instead of spawning an unbounded
+			// goroutine that can outlive the dialer lifecycle.
+			wg.Done()
+			if stderrors.Is(err, ants.ErrPoolClosed) || stderrors.Is(err, ants.ErrPoolOverload) {
+				continue
+			}
+			continue
 		}
 	}
 }
@@ -1031,7 +1063,7 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 	var bestLatency time.Duration
 
 	for i := 0; i < maxAttempts; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+		ctx, cancel := context.WithTimeout(d.ctx, Timeout)
 		start := time.Now()
 		ok, err = opts.CheckFunc(ctx, opts.networkType)
 		latency := time.Since(start)
@@ -1039,6 +1071,9 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 
 		if ok && err == nil {
 			bestLatency = latency
+			break
+		}
+		if stderrors.Is(err, context.Canceled) {
 			break
 		}
 		if err == nil {
@@ -1074,7 +1109,7 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 			d.Log.WithFields(fields).Debugln("Connectivity Check")
 		}
 		d.informDialerGroupUpdate(update)
-	} else if err != nil {
+	} else if err != nil && !stderrors.Is(err, context.Canceled) {
 		// Failure: mark unavailable only if there's an actual error.
 		d.logUnavailable(opts.networkType, err)
 		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))

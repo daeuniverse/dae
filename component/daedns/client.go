@@ -50,7 +50,7 @@ func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network 
 	if !ok {
 		return nil, fmt.Errorf("dns upstream %q not found", upstreamName)
 	}
-	upstream, err := upstreamResolver.GetUpstream()
+	upstream, err := upstreamResolver.GetUpstream(ctx)
 	if err != nil {
 		return nil, err
 	}

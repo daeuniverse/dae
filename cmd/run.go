@@ -16,10 +16,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -47,8 +46,9 @@ import (
 )
 
 const (
-	PidFilePath            = "/var/run/dae.pid"
-	SignalProgressFilePath = "/var/run/dae.progress"
+	PidFilePath                 = "/var/run/dae.pid"
+	SignalProgressFilePath      = "/var/run/dae.progress"
+	controlPlaneRetirementDelay = 5 * time.Second
 )
 
 var (
@@ -142,12 +142,17 @@ var (
 )
 
 func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+	var currCancel context.CancelFunc
+
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
-	c, err := newControlPlane(context.Background(), log, nil, nil, conf, externGeoDataDirs)
+	ctx, cancel := context.WithCancel(context.Background())
+	currCancel = cancel
+	c, err := newControlPlane(ctx, log, nil, nil, conf, externGeoDataDirs)
 	if err != nil {
+		cancel()
 		return err
 	}
 
@@ -164,9 +169,6 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	// Keep internal wake-ups separate so queued OS signals cannot mask reload handoff notifications.
 	runStateChanges := make(chan struct{}, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
-
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
 
 	go func() {
 		readyChan := make(chan bool, 1)
@@ -205,11 +207,25 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 
 	var reloading atomic.Bool
 	reloadingErr := error(nil)
-	abortConnections := false
+	var lastRetirementCancel context.CancelFunc
+	var lastRetirementMu sync.Mutex
 	fastExit := false
 
 	go func() {
 		for req := range reloadReqs {
+			// Coalesce rapid reload requests: skip intermediate requests if multiple are queued
+			// while we were building the previous one. Only the latest state matters.
+		coalesce:
+			for {
+				select {
+				case nextReq := <-reloadReqs:
+					req = nextReq
+					continue
+				default:
+					break coalesce
+				}
+			}
+
 			if req.isSuspend {
 				log.Warnln("[Reload] Received suspend signal; prepare to suspend")
 			} else {
@@ -220,7 +236,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			reloadingErr = nil
 
 			// Load new config.
-			abortConnections = os.Remove(AbortFile) == nil
+			abortConnections := os.Remove(AbortFile) == nil
 			log.Warnln("[Reload] Load new config")
 			var newConf *config.Config
 			if req.isSuspend {
@@ -276,39 +292,48 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				// Only keep dns cache when ip version preference not change.
 				dnsCache = c.CloneDnsCache()
 			}
+			rollbackDNSCache := dnsCache
 			// Stop old DNS listener before creating new one to avoid port conflicts
 			if err := c.StopDNSListener(); err != nil {
 				log.Warnf("[Reload] Failed to stop old DNS listener: %v", err)
 			}
 
 			log.Warnln("[Reload] Load new control plane")
+			ctx, cancel := context.WithCancel(context.Background())
 			newC, err := newControlPlane(ctx, log, obj, dnsCache, newConf, externGeoDataDirs)
+			dnsCache = nil // Allow previous generation's clone to be GC'd.
+
+			var newCancel context.CancelFunc
 			if err != nil {
 				reloadingErr = err
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
+				cancel()
+
 				// Load last config back.
 				if portChanged {
-					// If port changed, it's impossible to roll back easily because we already closed things.
-					// But we can try to re-load the old configuration with fresh objects.
 					log.Warnln("[Reload] Port already changed; attempting rollback with fresh eBPF objects")
 					obj = nil
 				}
-				newC, err = newControlPlane(ctx, log, obj, dnsCache, conf, externGeoDataDirs)
+				ctx, cancel = context.WithCancel(context.Background())
+				newC, err = newControlPlane(ctx, log, obj, rollbackDNSCache, conf, externGeoDataDirs)
 				if err != nil {
 					_ = sdnotify.Stopping()
 					if obj != nil {
 						_ = obj.Close()
 					}
 					_ = c.Close()
+					cancel()
 					log.WithFields(logrus.Fields{
 						"err": err,
 					}).Fatalln("[Reload] Failed to roll back configuration")
 				}
 				newConf = conf
+				newCancel = cancel
 				log.Errorln("[Reload] Last reload failed; rolled back configuration")
 			} else {
+				newCancel = cancel
 				log.Warnln("[Reload] Prepared new control plane")
 			}
 
@@ -323,9 +348,12 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 
 			// Prepare new context.
 			oldC := c
+			oldCancel := currCancel
+
 			c = newC
+			currCancel = newCancel
 			conf = newConf
-			reloading.Store(true)
+			beginReloadHandoff(&reloading, runStateChanges)
 
 			if oldListener != nil {
 				if err := oldListener.Close(); err != nil {
@@ -334,15 +362,41 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			}
 
 			// Ready to close.
-			if abortConnections {
-				_ = oldC.AbortConnections()
+			if oldC != nil {
+				// Generational Coalescing: If there is already a generation waiting for retirement,
+				// cancel its grace period and force it to close immediately to prevent heap stacking.
+				lastRetirementMu.Lock()
+				if lastRetirementCancel != nil {
+					lastRetirementCancel()
+				}
+				retireCtx, retireCancel := context.WithCancel(context.Background())
+				lastRetirementCancel = retireCancel
+				lastRetirementMu.Unlock()
+
+				log.Warnln("[Reload] Retiring old control plane")
+				go func(ctx context.Context, c *control.ControlPlane, cancel context.CancelFunc, abort bool) {
+					select {
+					case <-ctx.Done():
+						log.Warnln("[Reload] New generation ready; accelerating old generation retirement")
+					case <-time.After(controlPlaneRetirementDelay):
+						log.Infoln("[Reload] Retirement grace period expired")
+					}
+
+					if abort {
+						_ = c.AbortConnections()
+					}
+
+					// Crucial: Cancel the generation's workers before closing structural resources.
+					if cancel != nil {
+						cancel()
+					}
+
+					if closeErr := c.Close(); closeErr != nil {
+						log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
+					}
+					log.Warnln("[Reload] Retired old control plane")
+				}(retireCtx, oldC, oldCancel, abortConnections)
 			}
-			log.Warnln("[Reload] Stopping old control plane")
-			if closeErr := oldC.Close(); closeErr != nil {
-				log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
-			}
-			log.Warnln("[Reload] Stopped old control plane")
-			debug.FreeOSMemory()
 
 			if pprofServer != nil {
 				pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -357,12 +411,10 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			}
 
 			notifyRunStateChange(runStateChanges)
+
 		}
 	}()
 
-	reloading.Store(false)
-	reloadingErr = error(nil)
-	abortConnections = false
 loop:
 	for {
 		select {
@@ -506,6 +558,13 @@ func notifyRunStateChange(runStateChanges chan<- struct{}) {
 	case runStateChanges <- struct{}{}:
 	default:
 	}
+}
+
+func beginReloadHandoff(reloading *atomic.Bool, runStateChanges chan<- struct{}) {
+	if reloading != nil {
+		reloading.Store(true)
+	}
+	notifyRunStateChange(runStateChanges)
 }
 
 func waitReloadReadyOrSignal(log *logrus.Logger, sigs <-chan os.Signal, readyChan <-chan bool) (ready bool, termSig os.Signal) {
@@ -780,9 +839,6 @@ func newControlPlane(ctx context.Context, log *logrus.Logger, bpf any, dnsCache 
 	}
 	log.Infof("Control plane built in %v", time.Since(stageStart))
 	log.Infof("Total startup time: %v", time.Since(startTime))
-	// Call GC to release memory.
-	log.Infoln("Control plane built successfully, running GC...")
-	runtime.GC()
 
 	return c, nil
 }

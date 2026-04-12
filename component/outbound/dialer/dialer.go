@@ -212,6 +212,11 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
+	return NewDialerContext(context.Background(), dialer, option, iOption, property)
+}
+
+// NewDialerContext is for internal use with lifecycle management.
+func NewDialerContext(ctx context.Context, dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
 	var collections [8]*collection
 	for _, i := range []int{IdxDnsUdp4, IdxDnsUdp6, IdxTcp4, IdxTcp6, IdxUdp4, IdxUdp6} {
 		collections[i] = newCollection()
@@ -219,7 +224,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	collections[IdxDnsTcp4] = collections[IdxTcp4]
 	collections[IdxDnsTcp6] = collections[IdxTcp6]
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	d := &Dialer{
 		GlobalOption:     option,
 		InstanceOption:   iOption,
@@ -253,8 +258,13 @@ func (d *Dialer) Clone() *Dialer {
 
 // CloneWithGlobalOption returns a new dialer instance initialized with option.
 func (d *Dialer) CloneWithGlobalOption(option *GlobalOption) *Dialer {
+	return d.CloneWithGlobalOptionContext(d.ctx, option)
+}
+
+// CloneWithGlobalOptionContext returns a new dialer instance initialized with option.
+func (d *Dialer) CloneWithGlobalOptionContext(ctx context.Context, option *GlobalOption) *Dialer {
 	if d.property != nil && d.property.Link != "" {
-		clone, err := newFromLinkWithProxyCache(option, d.InstanceOption, d.property.Link, d.property.SubscriptionTag, NewProxyIpCache())
+		clone, err := NewFromLinkWithProxyCacheContext(ctx, option, d.InstanceOption, d.property.Link, d.property.SubscriptionTag, NewProxyIpCache())
 		if err == nil {
 			clone.property = cloneProperty(d.property)
 			return clone
@@ -266,7 +276,7 @@ func (d *Dialer) CloneWithGlobalOption(option *GlobalOption) *Dialer {
 		}
 	}
 
-	clone := NewDialer(d.Dialer, option, d.InstanceOption, cloneProperty(d.property))
+	clone := NewDialerContext(ctx, d.Dialer, option, d.InstanceOption, cloneProperty(d.property))
 	clone.stickyIpDialer = d.stickyIpDialer
 	clone.proxyIpCache = d.proxyIpCache
 	return clone
@@ -301,6 +311,8 @@ func (d *Dialer) Close() error {
 	d.httpClientMu.Lock()
 	for k, cli := range d.httpClients {
 		if cli != nil {
+			cli.CloseIdleConnections()
+			// Further help the Go GC by clearing the pool reference.
 			if t, ok := cli.Transport.(*http.Transport); ok {
 				t.CloseIdleConnections()
 			}
@@ -308,6 +320,13 @@ func (d *Dialer) Close() error {
 		}
 	}
 	d.httpClientMu.Unlock()
+
+	// If the underlying dialer supports explicit closure (common for QUIC/Hysteria2),
+	// call it to retire background workers immediately.
+	if closer, ok := d.Dialer.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+
 	return nil
 }
 
@@ -853,8 +872,11 @@ func (d *Dialer) isRecoveryTypeAlive(networkType *NetworkType) bool {
 }
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
-	key := fmt.Sprintf("%d-%s", idx, ip.String())
+	if d == nil {
+		return nil
+	}
 
+	key := fmt.Sprintf("%d-%s", idx, ip.String())
 	d.httpClientMu.Lock()
 	defer d.httpClientMu.Unlock()
 
@@ -864,13 +886,26 @@ func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool
 
 	cli := &http.Client{
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				// Use the specific IP resolved for this probe to ensure accurate measurement.
+			DialContext: func(reqCtx context.Context, network, addr string) (c net.Conn, err error) {
+				// Abort if the dialer is nil or its generation is already retired.
+				if d == nil || d.ctx == nil || d.ctx.Err() != nil {
+					return nil, context.Canceled
+				}
+
+				// Defensive check: ensure the underlying dialer implementation exists.
+				// This prevents panics during rapid generation cleanup where some metadata
+				// might persist even if the dialer pipeline is being torn down.
+				if d.Dialer == nil {
+					return nil, fmt.Errorf("dialer de-initialized")
+				}
+
+				// Combine request context with Dialer lifecycle context.
+				// This ensures that when the Dialer is closed, all pending dials for health checks ARE ABORTED.
 				// Connection reuse will happen naturally at the Transport level for the same host/IP.
 				_, port, _ := net.SplitHostPort(addr)
 				addr = net.JoinHostPort(ip.String(), port)
 
-				conn, err := d.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), addr)
+				conn, err := d.DialContext(reqCtx, common.MagicNetwork("tcp", soMark, mptcp), addr)
 				if err != nil {
 					return nil, err
 				}

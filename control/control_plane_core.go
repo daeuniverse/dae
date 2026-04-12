@@ -60,6 +60,8 @@ type controlPlaneCore struct {
 
 	udpConnStateTracker atomic.Pointer[udpConnStateTracker]
 	domainRouting       *domainRoutingTracker
+	lpmTrieIndices      []uint32
+	bpfOwned            bool
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -76,9 +78,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		flip = int(atomic.LoadInt32(&coreFlip))
 	}
 	var deferFuncs []func() error
-	if !isReload {
-		deferFuncs = append(deferFuncs, bpf.Close)
-	}
+	bpfOwned := !isReload
 	closed, toClose := context.WithCancel(context.Background())
 	ifmgr := component.NewInterfaceManager(log)
 	deferFuncs = append(deferFuncs, ifmgr.Close)
@@ -97,6 +97,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		closed:             closed,
 		close:              toClose,
 		domainRouting:      newDomainRoutingTracker(),
+		bpfOwned:           bpfOwned,
 	}
 	core.udpConnStateTracker.Store(newUdpConnStateTracker())
 	return core
@@ -134,6 +135,15 @@ func (c *controlPlaneCore) addBpfHookDetach(detachFunc func() error) {
 	c.bpfHookMu.Lock()
 	defer c.bpfHookMu.Unlock()
 	c.bpfHookDetachFuncs = append(c.bpfHookDetachFuncs, detachFunc)
+}
+
+// addManagedBpfHookCleanup registers hook cleanup for both regular close and
+// immediate detach paths. Hook cleanup must remain active after EjectBpf():
+// ownership transfer only skips bpf.Close(), not removal of this generation's
+// TC filters from the system.
+func (c *controlPlaneCore) addManagedBpfHookCleanup(detachFunc func() error) {
+	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	c.addBpfHookDetach(detachFunc)
 }
 
 // DetachBpfHooks immediately detaches all BPF hooks from the system.
@@ -181,11 +191,29 @@ func (c *controlPlaneCore) Close() (err error) {
 	// Invoke defer funcs in reverse order and collect errors.
 	// Use errors.Join (Go 1.20+) for clean multi-error handling.
 	var errs []error
+	// Explicitly clear allocated LPM trie slots from the shared LpmArrayMap.
+	// This ensures that inner maps are physically purged from the kernel
+	// instead of leaking until the 1024-slot ring buffer wraps around.
+	if c.bpf != nil && c.bpf.LpmArrayMap != nil && len(c.lpmTrieIndices) > 0 {
+		for _, idx := range c.lpmTrieIndices {
+			if e := c.bpf.LpmArrayMap.Delete(idx); e != nil {
+				c.log.Errorf("Failed to clear BPF LPM slot %d: %v", idx, e)
+			}
+		}
+	}
+
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
 			errs = append(errs, e)
 		}
 	}
+
+	if c.bpfOwned && c.bpf != nil {
+		if e := c.bpf.Close(); e != nil {
+			errs = append(errs, e)
+		}
+	}
+
 	c.close()
 
 	if len(errs) > 0 {
@@ -573,8 +601,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		}
 		return nil
 	}
-	c.deferFuncs = append(c.deferFuncs, egressDetachFunc)
-	c.addBpfHookDetach(egressDetachFunc)
+	c.addManagedBpfHookCleanup(egressDetachFunc)
 
 	filterIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -602,14 +629,13 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	detachFunc := func() error {
+	ingressDetachFunc := func() error {
 		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
 	}
-	c.deferFuncs = append(c.deferFuncs, detachFunc)
-	c.addBpfHookDetach(detachFunc)
+	c.addManagedBpfHookCleanup(ingressDetachFunc)
 
 	return nil
 }
@@ -675,8 +701,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 			return nil
 		})
 	}
-	c.deferFuncs = append(c.deferFuncs, detachFunc)
-	c.addBpfHookDetach(detachFunc)
+	c.addManagedBpfHookCleanup(detachFunc)
 
 	// tproxy_dae0_ingress@dae0 at host netns
 	// Best effort to add qdisc; it may already exist.
@@ -708,8 +733,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		}
 		return nil
 	}
-	c.deferFuncs = append(c.deferFuncs, dae0DetachFunc)
-	c.addBpfHookDetach(dae0DetachFunc)
+	c.addManagedBpfHookCleanup(dae0DetachFunc)
 	return
 }
 
@@ -815,9 +839,9 @@ func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	if c.bpfEjected {
 		return c.bpf
 	}
-	if !c.isReload {
-		c.deferFuncs = c.deferFuncs[1:]
-	}
+
+	// Transfer ownership: this generation is no longer responsible for closing BPF.
+	c.bpfOwned = false
 	c.bpfEjected = true
 
 	// Stop link watcher immediately during handover period to avoid race condition
@@ -831,7 +855,7 @@ func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 	if c.bpfEjected {
 		c.bpfEjected = false
-		c.deferFuncs = append([]func() error{bpf.Close}, c.deferFuncs...)
+		c.bpfOwned = true
 	}
 }
 

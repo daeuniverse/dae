@@ -734,7 +734,8 @@ func (c *DnsController) bpfUpdateWorker() {
 		select {
 		case task := <-c.bpfUpdateCh:
 			c.processBpfUpdateTask(task, false)
-
+		case <-c.baseContext().Done():
+			return
 		case <-c.bpfUpdateStop:
 			// Stop signal received - drain queue first before exiting
 			// This ensures all pending updates are processed
@@ -1070,6 +1071,8 @@ func (c *DnsController) startDnsCacheJanitor() {
 			select {
 			case <-c.janitorStop:
 				return
+			case <-c.baseContext().Done():
+				return
 			case now := <-ticker.C:
 				c.evictExpiredDnsCache(now)
 				c.evictIdleDnsForwarders(now)
@@ -1095,6 +1098,8 @@ func (c *DnsController) startCacheEvictor() {
 				c.drainEvictorSpill()
 			case <-c.evictorWake:
 				c.drainEvictorSpill()
+			case <-c.baseContext().Done():
+				return
 			case <-c.janitorStop:
 				for {
 					select {
@@ -1725,7 +1730,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			return fmt.Errorf("dns routing is not configured")
 		}
 		var err error
-		upstreamIndex, upstream, err = c.routing.RequestSelect(qname, qtype)
+		upstreamIndex, upstream, err = c.routing.RequestSelect(ctx, qname, qtype)
 		if err != nil {
 			return err
 		}
@@ -1919,7 +1924,7 @@ func (c *DnsController) handleWithResponseWriter_(
 		if c.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
-		upstreamIndex, upstream, err = c.routing.RequestSelect(qname, qtype)
+		upstreamIndex, upstream, err = c.routing.RequestSelect(ctx, qname, qtype)
 		if err != nil {
 			return err
 		}
@@ -2236,7 +2241,7 @@ func (c *DnsController) dialSend(
 	}
 
 	// Route response.
-	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
+	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(ctx, respMsg, upstream)
 	if err != nil {
 		return err
 	}

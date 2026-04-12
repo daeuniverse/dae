@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -183,6 +184,23 @@ func TestNotifyRunStateChangeCoalescesPendingNotification(t *testing.T) {
 	case <-runStateChanges:
 		t.Fatal("expected notifications to coalesce while the channel is full")
 	default:
+	}
+}
+
+func TestBeginReloadHandoffSetsReloadingBeforeNotification(t *testing.T) {
+	var reloading atomic.Bool
+	runStateChanges := make(chan struct{}, 1)
+
+	beginReloadHandoff(&reloading, runStateChanges)
+
+	select {
+	case <-runStateChanges:
+	default:
+		t.Fatal("expected a pending run-state notification")
+	}
+
+	if !reloading.Load() {
+		t.Fatal("expected reload handoff to remain latched until the consumer clears it")
 	}
 }
 

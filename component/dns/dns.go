@@ -142,12 +142,12 @@ func (s *Dns) CheckUpstreamsFormat() error {
 	return nil
 }
 
-func (s *Dns) InitUpstreams() {
+func (s *Dns) InitUpstreams(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, upstream := range s.upstream {
 		wg.Add(1)
 		go func(upstream *UpstreamResolver) {
-			_, err := upstream.GetUpstream()
+			_, err := upstream.GetUpstream(ctx)
 			if err != nil {
 				s.log.WithError(err).Debugln("Dns.GetUpstream")
 			}
@@ -157,7 +157,7 @@ func (s *Dns) InitUpstreams() {
 	wg.Wait()
 }
 
-func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) RequestSelect(ctx context.Context, qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
 	// Route.
 	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
 	if err != nil {
@@ -172,14 +172,14 @@ func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.Dn
 		return 0, nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
 	}
 	// Get corresponding upstream.
-	upstream, err = s.upstream[upstreamIndex].GetUpstream()
+	upstream, err = s.upstream[upstreamIndex].GetUpstream(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
 	return upstreamIndex, upstream, nil
 }
 
-func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
 	if !msg.Response {
 		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
 	}
@@ -228,7 +228,7 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstr
 		if int(upstreamIndex) >= len(s.upstream) {
 			return 0, nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
 		}
-		upstream, err = s.upstream[upstreamIndex].GetUpstream()
+		upstream, err = s.upstream[upstreamIndex].GetUpstream(ctx)
 		if err != nil {
 			return 0, nil, err
 		}

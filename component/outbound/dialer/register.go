@@ -6,6 +6,7 @@
 package dialer
 
 import (
+	"context"
 	"encoding/base64"
 	"net"
 	"net/url"
@@ -19,10 +20,14 @@ import (
 )
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
-	return newFromLinkWithProxyCache(gOption, iOption, link, subscriptionTag, globalProxyIpCache)
+	return NewFromLinkContext(context.Background(), gOption, iOption, link, subscriptionTag)
 }
 
-func newFromLinkWithProxyCache(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string, proxyCache *ProxyIpCache) (*Dialer, error) {
+func NewFromLinkContext(ctx context.Context, gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
+	return NewFromLinkWithProxyCacheContext(ctx, gOption, iOption, link, subscriptionTag, globalProxyIpCache)
+}
+
+func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string, proxyCache *ProxyIpCache) (*Dialer, error) {
 	if proxyCache == nil {
 		proxyCache = globalProxyIpCache
 	}
@@ -95,7 +100,7 @@ func newFromLinkWithProxyCache(gOption *GlobalOption, iOption InstanceOption, li
 		}
 	}
 
-	daeDialer := NewDialer(d, gOption, iOption, &p)
+	daeDialer := NewDialerContext(ctx, d, gOption, iOption, &p)
 
 	// Store reference to sticky wrapper for health check cycle management
 	if stickyWrapper != nil {

@@ -199,6 +199,10 @@ func IsIgnorableTCPRelayError(err error) bool {
 	// Slow path: single string allocation for all pattern checks
 	errStr := err.Error()
 
+	if isNormalWebSocketCloseErrorString(errStr) {
+		return true
+	}
+
 	// Check for QUIC stream cancellation with error code 0
 	// Fast path: check prefix before errors.As
 	if HasPrefix(errStr, "stream") && Contains(errStr, "canceled by") {
@@ -240,6 +244,10 @@ func IsUDPEndpointNormalClose(err error) bool {
 	// Slow path: single string allocation for all string-based checks.
 	// This handles wrapped errors that don't match sentinel errors.
 	errStr := err.Error()
+
+	if isNormalWebSocketCloseErrorString(errStr) {
+		return true
+	}
 
 	// Check for closed connection (string-based for backward compatibility)
 	if Contains(errStr, "use of closed network connection") {
@@ -291,6 +299,9 @@ var ignorableErrorPatterns = []string{
 	"canceled by local with error code 0",
 	"canceled by remote with error code 0",
 	"use of closed network connection",
+	"websocket: close 1000 (normal)",
+	"websocket: close 1001 (going away)",
+	"websocket: close sent",
 }
 
 // ContainsIgnorableErrorPattern provides fallback pattern matching
@@ -303,6 +314,12 @@ func ContainsIgnorableErrorPattern(s string) bool {
 		}
 	}
 	return false
+}
+
+func isNormalWebSocketCloseErrorString(s string) bool {
+	return Contains(s, "websocket: close 1000 (normal)") ||
+		Contains(s, "websocket: close 1001 (going away)") ||
+		Contains(s, "websocket: close sent")
 }
 
 // ============================================================================

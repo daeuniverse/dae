@@ -6,6 +6,7 @@
 package outbound
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -35,6 +36,10 @@ type DialerSet struct {
 }
 
 func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
+	return NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList)
+}
+
+func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
 	s := &DialerSet{
 		log:          option.Log,
 		dialers:      make([]*dialer.Dialer, 0),
@@ -42,7 +47,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
 		for _, node := range nodes {
-			d, err := dialer.NewFromLink(option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
+			d, err := dialer.NewFromLinkContext(ctx, option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
 				s.log.Infof("failed to parse node: %v", err)
 				continue

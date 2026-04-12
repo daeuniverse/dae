@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,16 +104,23 @@ func TestControlPlaneClose_ResetsGlobalUdpPoolsAndClosesSockets(t *testing.T) {
 		t.Fatalf("ControlPlane.Close() error = %v", err)
 	}
 
-	waitForCloseSignal(t, endpointConn.closeCh, "control plane shutdown closes udp endpoint")
+	// Note: ControlPlane.Close() no longer resets global UDP pools (ResetGlobalUdpState)
+	// to prevent inter-generational interference during hot reloads.
+	// Instead, we verify that the generation's own context and core are cleaned up.
 
-	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 0 {
-		t.Fatalf("pooled udp endpoint count after close = %d, want 0", got)
-	}
-	if got := countPooledAnyfromConns(DefaultAnyfromPool); got != 0 {
-		t.Fatalf("pooled anyfrom conn count after close = %d, want 0", got)
-	}
 	if plane.ctx.Err() == nil {
 		t.Fatal("expected control plane context to be canceled on close")
+	}
+
+	// Verify that global state can still be reset explicitly (manual cleanup or full stop)
+	ResetGlobalUdpState()
+	waitForCloseSignal(t, endpointConn.closeCh, "explicit global reset closes udp endpoint")
+
+	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 0 {
+		t.Fatalf("pooled udp endpoint count after explicit reset = %d, want 0", got)
+	}
+	if got := countPooledAnyfromConns(DefaultAnyfromPool); got != 0 {
+		t.Fatalf("pooled anyfrom conn count after explicit reset = %d, want 0", got)
 	}
 
 	rebound, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(anyfromAddr))
@@ -155,9 +163,45 @@ func TestControlPlaneClose_TimesOutSlowDeferredCleanup(t *testing.T) {
 	}
 
 	close(release)
+	<-done
+}
+
+func TestControlPlaneClose_Idempotent(t *testing.T) {
+	plane := newShutdownTestControlPlane()
+	var wg sync.WaitGroup
+	count := 50
+	errs := make(chan error, count)
+
+	wg.Add(count)
+	for i := 0; i < count; i++ {
+		go func() {
+			defer wg.Done()
+			errs <- plane.Close()
+		}()
+	}
+
+	// wait with timeout to detect deadlock
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for deferred cleanup goroutine to finish")
+	case <-time.After(gracefulShutdownWaitTimeout + 2*time.Second):
+		t.Fatal("ControlPlane.Close() deadlocked during concurrent calls")
+	}
+
+	if plane.ctx.Err() == nil {
+		t.Fatal("expected control plane context to be canceled")
+	}
+
+	// Verify all callers got the same (nil) result if no errors occurred
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("expected nil error from concurrent Close(), got %v", err)
+		}
 	}
 }

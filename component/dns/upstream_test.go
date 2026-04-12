@@ -43,9 +43,9 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 	results := make(chan *Upstream, 8)
 	for range 8 {
 		wg.Go(func() {
-			upstream, err := resolver.GetUpstream()
+			upstream, err := resolver.GetUpstream(context.Background())
 			if err != nil {
-				t.Errorf("GetUpstream() error = %v", err)
+				t.Errorf("GetUpstream(context.Background()) error = %v", err)
 				return
 			}
 			results <- upstream
@@ -78,7 +78,7 @@ func TestUpstreamResolverConcurrentCallsCacheSuccessfulInitialization(t *testing
 		}
 	}
 
-	upstream, err := resolver.GetUpstream()
+	upstream, err := resolver.GetUpstream(context.Background())
 	if err != nil {
 		t.Fatalf("expected cached call to succeed: %v", err)
 	}
@@ -112,14 +112,14 @@ func TestUpstreamResolverRetriesAfterInitializerFailure(t *testing.T) {
 		Network: "udp",
 	}
 
-	if _, err := resolver.GetUpstream(); !errors.Is(err, failErr) {
+	if _, err := resolver.GetUpstream(context.Background()); !errors.Is(err, failErr) {
 		t.Fatalf("expected first call to fail with %v, got %v", failErr, err)
 	}
 	if state := resolver.state.Load(); state != &errorSentinel {
 		t.Fatalf("expected error sentinel after failed init, got %#v", state)
 	}
 
-	upstream, err := resolver.GetUpstream()
+	upstream, err := resolver.GetUpstream(context.Background())
 	if err != nil {
 		t.Fatalf("expected retry to succeed: %v", err)
 	}
@@ -160,14 +160,14 @@ func TestUpstreamResolverRetriesAfterFinishCallbackFailure(t *testing.T) {
 		},
 	}
 
-	if _, err := resolver.GetUpstream(); !errors.Is(err, failErr) {
+	if _, err := resolver.GetUpstream(context.Background()); !errors.Is(err, failErr) {
 		t.Fatalf("expected callback failure %v, got %v", failErr, err)
 	}
 	if state := resolver.state.Load(); state != &errorSentinel {
 		t.Fatalf("expected error sentinel after callback failure, got %#v", state)
 	}
 
-	upstream, err := resolver.GetUpstream()
+	upstream, err := resolver.GetUpstream(context.Background())
 	if err != nil {
 		t.Fatalf("expected retry after callback failure to succeed: %v", err)
 	}

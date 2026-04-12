@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,6 +114,8 @@ type ControlPlane struct {
 	lastConnectionErrorLogTime     atomic.Int64
 	lastDnsFastPathErrorLogTime    atomic.Int64
 	lastDnsFastPathServfailLogTime atomic.Int64
+	closeOnce                      sync.Once
+	closeErr                       error
 }
 
 type connStateJanitorScratch struct {
@@ -175,7 +176,7 @@ var (
 	gracefulShutdownWaitTimeout = 5 * time.Second
 	// controlPlaneDeferredCleanupTimeout bounds non-critical Close tail work
 	// such as old-generation dialer, DNS, and hook cleanup during reload.
-	controlPlaneDeferredCleanupTimeout = 2 * time.Second
+	controlPlaneDeferredCleanupTimeout = 5 * time.Second
 	// realDomainProbeTimeout bounds synchronous probe latency on connection setup path.
 	// Keep it sub-second to avoid hurting first-paint responsiveness under DNS jitter.
 	// Reduced from 800ms to 500ms for faster fallback under poor network conditions.
@@ -537,9 +538,9 @@ func NewControlPlaneWithContext(
 	}
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	_direct, directProperty := dialer.NewDirectDialer(option, true)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
+	direct := dialer.NewDialerContext(ctx, _direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
+	block := dialer.NewDialerContext(ctx, _block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -558,7 +559,7 @@ func NewControlPlaneWithContext(
 	// Filter out groups.
 	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
-	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
+	dialerSet := outbound.NewDialerSetFromLinksContext(ctx, option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
 		// Parse policy.
@@ -586,7 +587,7 @@ func NewControlPlaneWithContext(
 		if err == nil && groupOption != nil {
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
-				newDialer := d.CloneWithGlobalOption(groupOption)
+				newDialer := d.CloneWithGlobalOptionContext(ctx, groupOption)
 				deferFuncs = append(deferFuncs, newDialer.Close)
 				newDialers = append(newDialers, newDialer)
 			}
@@ -651,9 +652,11 @@ func NewControlPlaneWithContext(
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
 	log.Infoln("Loading routing rules into kernel space (BPF)...")
-	if err = builder.BuildKernspace(log); err != nil {
+	var lpmIndices []uint32
+	if lpmIndices, err = builder.BuildKernspace(log); err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
+	core.lpmTrieIndices = lpmIndices
 	log.Infoln("Building userspace routing matcher...")
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
@@ -679,9 +682,7 @@ func NewControlPlaneWithContext(
 	}
 
 	// Routing compilation allocates large temporary slices and trie builders.
-	// Startup/reload is infrequent, so force a full scavenging pass here to
-	// return released pages before the control plane starts serving.
-	debug.FreeOSMemory()
+	// Startup/reload is infrequent.
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	log.Infof("Memory usage after routing build: Alloc=%vMiB, Sys=%vMiB, HeapObjects=%v",
@@ -821,10 +822,6 @@ func NewControlPlaneWithContext(
 
 	// Restore DNS cache from last control plane if available.
 	if dnsCache != nil {
-		// Clear all global UDP state on reload so stale sockets and sniff sessions
-		// cannot leak pre-reload routing state into the new control plane.
-		resetGlobalUdpState()
-
 		count := 0
 		now := time.Now()
 		for k, v := range dnsCache {
@@ -863,7 +860,7 @@ func NewControlPlaneWithContext(
 	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
 		return nil, err
 	}
-	go dnsUpstream.InitUpstreams()
+	go dnsUpstream.InitUpstreams(plane.ctx)
 
 	close(plane.ready)
 	return plane, nil
@@ -1507,6 +1504,8 @@ func (c *ControlPlane) startRealDomainNegJanitor() {
 			select {
 			case <-c.negJanitorStop:
 				return
+			case <-c.ctx.Done():
+				return
 			case now := <-ticker.C:
 				c.cleanupNegativeCaches(now)
 				c.cleanupDnsDialerSnapshot(now)
@@ -1555,6 +1554,8 @@ func (c *ControlPlane) startConnStateJanitor() {
 		for {
 			select {
 			case <-c.connStateJanitorStop:
+				return
+			case <-c.ctx.Done():
 				return
 			case now := <-ticker.C:
 				bpf := c.currentBpf()
@@ -3004,6 +3005,13 @@ func (c *ControlPlane) AbortConnections() (err error) {
 		}
 		return true
 	})
+
+	// Explicitly clear the map to release resources for GC immediately.
+	c.inConnections.Range(func(key, _ any) bool {
+		c.inConnections.Delete(key)
+		return true
+	})
+
 	return stderrors.Join(errs...)
 }
 
@@ -3018,7 +3026,10 @@ func (c *ControlPlane) DetachBpfHooks() error {
 	return c.core.DetachBpfHooks()
 }
 
-func resetGlobalUdpState() {
+// ResetGlobalUdpState clears all global UDP-related pools (endpoints and sniffers).
+// This is used during reload to ensure no stale connections from the previous
+// generation leak into the new one.
+func ResetGlobalUdpState() {
 	DefaultUdpEndpointPool.Reset()
 	DefaultAnyfromPool.Reset()
 	DefaultUdpTaskPool.Reset()
@@ -3027,8 +3038,8 @@ func resetGlobalUdpState() {
 }
 
 func (c *ControlPlane) closeTail() error {
-	// Collect errors from defer funcs using errors.Join (Go 1.26 best practice)
 	var errs []error
+
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
 			errs = append(errs, e)
@@ -3051,6 +3062,7 @@ func (c *ControlPlane) closeTail() error {
 	})
 	c.clearAllTcpSniffNegative()
 	c.failedQuicDcidCache.Clear()
+
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
 	// Combine defer errors with core.Close error
@@ -3059,6 +3071,7 @@ func (c *ControlPlane) closeTail() error {
 			errs = append(errs, coreErr)
 		}
 	}
+
 	return stderrors.Join(errs...)
 }
 
@@ -3067,44 +3080,44 @@ func (c *ControlPlane) Close() (err error) {
 		return nil
 	}
 
-	if c.cancel != nil {
-		c.cancel()
-	}
-
-	var stopWg sync.WaitGroup
-	stopWg.Add(2)
-	go func() {
-		defer stopWg.Done()
-		c.stopRealDomainNegJanitor()
-	}()
-	go func() {
-		defer stopWg.Done()
-		c.stopConnStateJanitor()
-	}()
-	stopWg.Wait()
-
-	// Shutdown must retire global UDP resources eagerly so stop/reload does not
-	// leave old sockets alive until background timeouts eventually reclaim them.
-	resetGlobalUdpState()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- c.closeTail()
-	}()
-
-	timer := time.NewTimer(controlPlaneDeferredCleanupTimeout)
-	defer timer.Stop()
-
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		timeoutErr := fmt.Errorf("control plane close tail timed out after %v", controlPlaneDeferredCleanupTimeout)
-		if c.log != nil {
-			c.log.WithError(timeoutErr).Warn("ControlPlane.Close: continuing while tail cleanup finishes in background")
+	c.closeOnce.Do(func() {
+		if c.cancel != nil {
+			c.cancel()
 		}
-		return timeoutErr
-	}
+
+		var stopWg sync.WaitGroup
+		stopWg.Add(2)
+		go func() {
+			defer stopWg.Done()
+			c.stopRealDomainNegJanitor()
+		}()
+		go func() {
+			defer stopWg.Done()
+			c.stopConnStateJanitor()
+		}()
+		stopWg.Wait()
+
+		done := make(chan error, 1)
+		go func() {
+			done <- c.closeTail()
+		}()
+
+		timer := time.NewTimer(controlPlaneDeferredCleanupTimeout)
+		defer timer.Stop()
+
+		select {
+		case err := <-done:
+			c.closeErr = err
+		case <-timer.C:
+			timeoutErr := fmt.Errorf("control plane close tail timed out after %v", controlPlaneDeferredCleanupTimeout)
+			if c.log != nil {
+				c.log.WithError(timeoutErr).Warn("ControlPlane.Close: continuing while tail cleanup finishes in background")
+			}
+			c.closeErr = timeoutErr
+		}
+	})
+
+	return c.closeErr
 }
 
 // StopDNSListener stops the DNS listener if it's running

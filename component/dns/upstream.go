@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strconv"
 	"sync/atomic"
-	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -208,7 +207,7 @@ var errorSentinel upstreamState
 //   - On transient failure (e.g., proxy timeout), stores errorSentinel to allow retry
 //   - On retry, attempts initialization again
 //   - Once initialized successfully, returns cached result without blocking
-func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
+func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
 	// Fast path: check if already initialized (lock-free read)
 	state := u.state.Load()
 	if state != nil && state != &errorSentinel {
@@ -221,9 +220,6 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 	// This is acceptable because:
 	// 1. Initialization is idempotent (same URL always produces same result)
 	// 2. The cost of duplicate initialization is outweighed by avoiding lock contention
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	upstream, err := newUpstreamFunc(ctx, u.Raw, u.Network, u.ResolveIp46)
 	if err != nil {
