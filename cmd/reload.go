@@ -18,8 +18,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func readSignalProgressFile() (code byte, content string, err error) {
-	b, err := os.ReadFile(SignalProgressFilePath)
+const reloadProgressWaitTimeout = 60 * time.Second
+
+func readSignalProgressFile(path string) (code byte, content string, err error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0, "", err
 	}
@@ -75,6 +77,39 @@ func writeReloadSendAndSignal(path string, pid int, kill func(int, syscall.Signa
 	return nil
 }
 
+func waitReloadCompletion(path string, initialDelay, pollInterval, timeout time.Duration) (code byte, content string, err error) {
+	if initialDelay > 0 {
+		time.Sleep(initialDelay)
+	}
+
+	code, _, err = readSignalProgressFile(path)
+	if err != nil {
+		return 0, "", err
+	}
+	if code == consts.ReloadSend {
+		return code, "", nil
+	}
+
+	deadline := time.Time{}
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+
+	for {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return 0, "", fmt.Errorf("reload timed out after %v", timeout)
+		}
+		time.Sleep(pollInterval)
+		code, content, err = readSignalProgressFile(path)
+		if err != nil {
+			return 0, "", err
+		}
+		if code == consts.ReloadDone || code == consts.ReloadError {
+			return code, content, nil
+		}
+	}
+}
+
 var (
 	abort     bool
 	reloadCmd = &cobra.Command{
@@ -101,7 +136,7 @@ var (
 				}
 			}
 			// Read the first line of SignalProgressFilePath.
-			code, _, err := readSignalProgressFile()
+			code, _, err := readSignalProgressFile(SignalProgressFilePath)
 			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
 				// In progress.
 				fmt.Printf("%v shows another reload operation is in progress.\n", SignalProgressFilePath)
@@ -112,26 +147,20 @@ var (
 				fmt.Printf("failed to request reload: %v\n", err)
 				os.Exit(1)
 			}
-			time.Sleep(500 * time.Millisecond)
-			code, _, _ = readSignalProgressFile()
-			if code == consts.ReloadSend {
-				// Old version dae is running.
-				goto fallback
+			code, content, err := waitReloadCompletion(
+				SignalProgressFilePath,
+				500*time.Millisecond,
+				200*time.Millisecond,
+				reloadProgressWaitTimeout,
+			)
+			if err != nil {
+				fmt.Printf("failed to wait reload result: %v\n", err)
+				os.Exit(1)
 			}
-
-			for {
-				time.Sleep(200 * time.Millisecond)
-				code, content, err := readSignalProgressFile()
-				if err != nil {
-					// Unexpecetd case.
-					goto fallback
-				}
-				if code == consts.ReloadDone || code == consts.ReloadError {
-					fmt.Println(content)
-					return
-				}
+			if code == consts.ReloadDone || code == consts.ReloadError {
+				fmt.Println(content)
+				return
 			}
-		fallback:
 			fmt.Println("OK")
 		},
 	}

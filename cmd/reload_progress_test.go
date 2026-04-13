@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 )
@@ -83,5 +84,39 @@ func TestWriteReloadSendAndSignalWritesReloadSendOnSuccess(t *testing.T) {
 	want := []byte{consts.ReloadSend}
 	if string(got) != string(want) {
 		t.Fatalf("progress content = %q, want %q", string(got), string(want))
+	}
+}
+
+func TestWaitReloadCompletionReturnsDoneContent(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	if err := os.WriteFile(progressPath, []byte{consts.ReloadProcessing}, 0644); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = os.WriteFile(progressPath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+	}()
+
+	code, content, err := waitReloadCompletion(progressPath, 0, 5*time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("waitReloadCompletion() error = %v", err)
+	}
+	if code != consts.ReloadDone {
+		t.Fatalf("code = %v, want ReloadDone", code)
+	}
+	if content != "OK" {
+		t.Fatalf("content = %q, want %q", content, "OK")
+	}
+}
+
+func TestWaitReloadCompletionTimesOut(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	if err := os.WriteFile(progressPath, []byte{consts.ReloadProcessing}, 0644); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+
+	if _, _, err := waitReloadCompletion(progressPath, 0, 5*time.Millisecond, 20*time.Millisecond); err == nil {
+		t.Fatal("waitReloadCompletion() error = nil, want timeout")
 	}
 }

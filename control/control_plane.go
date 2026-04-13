@@ -2742,10 +2742,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	udpConn := listener.packetConn.(*net.UDPConn)
-	if err := c.publishListenerSockets(listener); err != nil {
+	if err := c.CommitPreparedDatapath(); err != nil {
 		return err
 	}
-	if err := c.CommitPreparedDatapath(); err != nil {
+	if err := c.publishListenerSockets(listener); err != nil {
 		return err
 	}
 	if err := c.StartPreparedDNSListener(); err != nil {
