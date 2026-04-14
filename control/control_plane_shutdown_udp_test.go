@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/sirupsen/logrus"
 )
 
@@ -203,5 +206,76 @@ func TestControlPlaneClose_Idempotent(t *testing.T) {
 		if err != nil {
 			t.Errorf("expected nil error from concurrent Close(), got %v", err)
 		}
+	}
+}
+
+func TestControlPlaneClose_ReleasesRetainedState(t *testing.T) {
+	oldFailedCache := getFailedQuicDcidCache()
+	t.Cleanup(func() {
+		SetFailedQuicDcidCache(oldFailedCache)
+	})
+
+	plane := newShutdownTestControlPlane()
+	plane.outbounds = []*outbound.DialerGroup{{Name: "proxy"}}
+	plane.referencedOutbounds = map[string]struct{}{"proxy": {}}
+	plane.dnsRouting = &dns.Dns{}
+	plane.dnsFixedDomainTtl = map[string]int{"example.com": 60}
+	plane.routingMatcher = &RoutingMatcher{compiledMatches: make([]compiledRoutingMatch, 64)}
+	plane.muRealDomainSet.Lock()
+	plane.realDomainSet = bloom.NewWithEstimates(1024, 0.01)
+	plane.muRealDomainSet.Unlock()
+	plane.connStateScratch = &connStateJanitorScratch{
+		udpKeys:   make([]bpfTuplesKey, janitorBatchLookupSize),
+		udpDelete: make([]bpfTuplesKey, 0, janitorDeleteRetainMax+1),
+	}
+	plane.pendingDnsReloadCache = map[string]*DnsCache{
+		"example.com.1": {},
+	}
+	plane.failedQuicDcidCache.MarkFailed(testPacketSnifferKey(t, []byte{9, 9, 9, 9}, 0), quicDcidFailureReasonSoftBypass, time.Now())
+	SetFailedQuicDcidCache(plane.failedQuicDcidCache)
+	plane.dnsHandoffController.Store(&DnsController{})
+
+	if err := plane.Close(); err != nil {
+		t.Fatalf("ControlPlane.Close() error = %v", err)
+	}
+
+	if plane.outbounds != nil {
+		t.Fatal("expected outbounds to be released on close")
+	}
+	if plane.referencedOutbounds != nil {
+		t.Fatal("expected referencedOutbounds to be released on close")
+	}
+	if plane.dnsRouting != nil {
+		t.Fatal("expected dnsRouting to be released on close")
+	}
+	if plane.dnsFixedDomainTtl != nil {
+		t.Fatal("expected dnsFixedDomainTtl to be released on close")
+	}
+	if plane.routingMatcher != nil {
+		t.Fatal("expected routingMatcher to be released on close")
+	}
+	plane.muRealDomainSet.RLock()
+	realDomainSetReleased := plane.realDomainSet == nil
+	plane.muRealDomainSet.RUnlock()
+	if !realDomainSetReleased {
+		t.Fatal("expected realDomainSet to be released on close")
+	}
+	if plane.connStateScratch != nil {
+		t.Fatal("expected connStateScratch to be released on close")
+	}
+	if plane.pendingDnsReloadCache != nil {
+		t.Fatal("expected pendingDnsReloadCache to be released on close")
+	}
+	if plane.failedQuicDcidCache != nil {
+		t.Fatal("expected failedQuicDcidCache to be released on close")
+	}
+	if getFailedQuicDcidCache() != nil {
+		t.Fatal("expected global failedQuicDcidCache pointer to be cleared when closing the active cache")
+	}
+	if plane.ActiveDnsController() != nil {
+		t.Fatal("expected active DNS controller pointer to be cleared on close")
+	}
+	if plane.core != nil {
+		t.Fatal("expected control plane core to be released on close")
 	}
 }

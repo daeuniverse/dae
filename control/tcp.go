@@ -612,7 +612,11 @@ func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn,
 	// Handle DNS queries in a loop (TCP connections can be persistent)
 	for {
 		// Handle the query
-		err := c.dnsController.HandleWithResponseWriter_(ctx, msg, req, writer)
+		dnsController := c.ActiveDnsController()
+		if dnsController == nil {
+			return false, fmt.Errorf("dns controller is not available")
+		}
+		err := dnsController.HandleWithResponseWriter_(ctx, msg, req, writer)
 		if err != nil {
 			if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 				// REFUSED was already sent by the controller

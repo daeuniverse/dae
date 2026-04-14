@@ -121,6 +121,8 @@ type Dialer struct {
 	// recoveryState manages exponential backoff for recovery detection.
 	// It is intentionally scoped to a single dialer instance so cloned or
 	// recreated dialers start clean under their own health-check semantics.
+	// Reload snapshots may explicitly restore this state into a replacement
+	// dialer to keep health selection seamless across generations.
 	// Domains:
 	//   0: TCP
 	//   1: DNS UDP
@@ -145,10 +147,35 @@ type Dialer struct {
 
 		// pendingNetworkType is the network type being verified for recovery
 		pendingNetworkType *NetworkType
+
+		// confirmDeadlineUnixNano tracks when the current confirmation timer
+		// should fire so reload snapshots can restore the remaining delay.
+		confirmDeadlineUnixNano int64
 	}
 	lastNotifyUdp atomic.Int64
 	lastNotifyTcp atomic.Int64
 	lastPunish    [3]atomic.Int64
+}
+
+type DialerCollectionHealthSnapshot struct {
+	Alive            bool
+	MovingAverage    time.Duration
+	Latencies        LatenciesNSnapshot
+	FailCount        int
+	TrafficFailCount int32
+}
+
+type DialerRecoveryHealthSnapshot struct {
+	BackoffLevel        int
+	StableSuccessCount  int
+	PendingNetworkType  *NetworkType
+	PendingConfirmDelay time.Duration
+	LastPunishUnixNano  int64
+}
+
+type DialerHealthSnapshot struct {
+	Collections [8]DialerCollectionHealthSnapshot
+	Recovery    [3]DialerRecoveryHealthSnapshot
 }
 
 type GlobalOption struct {
@@ -366,6 +393,148 @@ func (d *Dialer) notifyAliveTransition(networkType *NetworkType, alive bool) {
 	}
 }
 
+func networkTypeForCollectionIndex(idx int) *NetworkType {
+	switch idx {
+	case IdxDnsTcp4:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4, IsDns: true}
+	case IdxDnsTcp6:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6, IsDns: true}
+	case IdxDnsUdp4:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: true, UdpHealthDomain: UdpHealthDomainDns}
+	case IdxDnsUdp6:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, IsDns: true, UdpHealthDomain: UdpHealthDomainDns}
+	case IdxTcp4:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	case IdxTcp6:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6}
+	case IdxUdp4:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: UdpHealthDomainData}
+	case IdxUdp6:
+		return &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, UdpHealthDomain: UdpHealthDomainData}
+	default:
+		return nil
+	}
+}
+
+func cloneNetworkType(networkType *NetworkType) *NetworkType {
+	if networkType == nil {
+		return nil
+	}
+	cloned := *networkType
+	return &cloned
+}
+
+func (d *Dialer) HealthSnapshot() DialerHealthSnapshot {
+	var snapshot DialerHealthSnapshot
+	if d == nil {
+		return snapshot
+	}
+
+	d.collectionFineMu.RLock()
+	defer d.collectionFineMu.RUnlock()
+	for idx, collection := range d.collections {
+		if collection == nil {
+			continue
+		}
+		snapshot.Collections[idx] = DialerCollectionHealthSnapshot{
+			Alive:            collection.Alive.Load(),
+			MovingAverage:    collection.MovingAverage,
+			Latencies:        collection.Latencies10.Snapshot(),
+			FailCount:        d.failCount[idx],
+			TrafficFailCount: d.trafficFailCount[idx].Load(),
+		}
+	}
+	nowNano := time.Now().UnixNano()
+	for idx := range d.recoveryState {
+		state := &d.recoveryState[idx]
+		state.Lock()
+		snapshot.Recovery[idx] = DialerRecoveryHealthSnapshot{
+			BackoffLevel:       state.backoffLevel,
+			StableSuccessCount: state.stableSuccessCount,
+			LastPunishUnixNano: d.lastPunish[idx].Load(),
+		}
+		if state.confirmTimer != nil && state.pendingNetworkType != nil && state.confirmDeadlineUnixNano > nowNano {
+			snapshot.Recovery[idx].PendingNetworkType = cloneNetworkType(state.pendingNetworkType)
+			snapshot.Recovery[idx].PendingConfirmDelay = time.Duration(state.confirmDeadlineUnixNano - nowNano)
+		}
+		state.Unlock()
+	}
+	return snapshot
+}
+
+func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
+	if d == nil {
+		return
+	}
+
+	type restoreUpdate struct {
+		typ    *NetworkType
+		was    bool
+		alive  bool
+		groups []*AliveDialerSet
+	}
+
+	updates := make([]restoreUpdate, 0, len(d.collections))
+	d.collectionFineMu.Lock()
+	for idx, collection := range d.collections {
+		if collection == nil {
+			continue
+		}
+		s := snapshot.Collections[idx]
+		wasAlive := collection.Alive.Load()
+		collection.Alive.Store(s.Alive)
+		collection.MovingAverage = s.MovingAverage
+		collection.Latencies10.Restore(s.Latencies)
+		d.failCount[idx] = s.FailCount
+		d.trafficFailCount[idx].Store(s.TrafficFailCount)
+		updates = append(updates, restoreUpdate{
+			typ:    networkTypeForCollectionIndex(idx),
+			was:    wasAlive,
+			alive:  s.Alive,
+			groups: d.snapshotAliveDialerGroupsLocked(collection),
+		})
+	}
+	d.collectionFineMu.Unlock()
+
+	for _, update := range updates {
+		for _, a := range update.groups {
+			a.NotifyLatencyChange(d, update.alive)
+		}
+		if update.typ != nil && update.was != update.alive {
+			d.notifyAliveTransition(update.typ, update.alive)
+		}
+	}
+
+	for idx := range d.recoveryState {
+		recoverySnapshot := snapshot.Recovery[idx]
+		state := &d.recoveryState[idx]
+		state.Lock()
+		if state.confirmTimer != nil {
+			state.confirmTimer.Stop()
+			state.confirmTimer = nil
+		}
+		state.pendingNetworkType = nil
+		state.confirmDeadlineUnixNano = 0
+		state.backoffLevel = recoverySnapshot.BackoffLevel
+		state.stableSuccessCount = recoverySnapshot.StableSuccessCount
+		state.Unlock()
+
+		d.lastPunish[idx].Store(recoverySnapshot.LastPunishUnixNano)
+		if recoverySnapshot.PendingNetworkType == nil {
+			continue
+		}
+		delay := recoverySnapshot.PendingConfirmDelay
+		if delay < 0 {
+			delay = 0
+		}
+		maxDelay := d.getRecoveryBackoffDurationByIndex(idx)
+		if maxDelay > 0 && delay > maxDelay {
+			delay = maxDelay
+		}
+		d.armRecoveryConfirmationFromSnapshot(idx, recoverySnapshot.PendingNetworkType, delay)
+	}
+}
+
 // IncrementCheckCycle advances the health check cycle for sticky IP caching.
 // This is called by the health checker to advance the cycle and invalidate
 // old cache entries, allowing IP failover to different resolved IPs.
@@ -533,12 +702,47 @@ func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
 	}).Debugln("Recovery detection scheduled with exponential backoff")
 
 	// Schedule confirmation timer
-	d.recoveryState[protoIdx].pendingNetworkType = networkType
+	d.recoveryState[protoIdx].pendingNetworkType = cloneNetworkType(networkType)
+	d.recoveryState[protoIdx].confirmDeadlineUnixNano = time.Now().Add(backoff).UnixNano()
 	var timer *time.Timer
 	timer = time.AfterFunc(backoff, func() {
 		d.confirmRecovery(networkType, timer)
 	})
 	d.recoveryState[protoIdx].confirmTimer = timer
+}
+
+func (d *Dialer) armRecoveryConfirmationFromSnapshot(protoIdx int, target *NetworkType, delay time.Duration) {
+	if d == nil || target == nil {
+		return
+	}
+	select {
+	case <-d.ctx.Done():
+		return
+	default:
+	}
+	if delay < 0 {
+		delay = 0
+	}
+
+	networkType := cloneNetworkType(target)
+	if networkType == nil {
+		return
+	}
+
+	state := &d.recoveryState[protoIdx]
+	state.Lock()
+	defer state.Unlock()
+	if state.confirmTimer != nil {
+		state.confirmTimer.Stop()
+		state.confirmTimer = nil
+	}
+	state.pendingNetworkType = cloneNetworkType(networkType)
+	state.confirmDeadlineUnixNano = time.Now().Add(delay).UnixNano()
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		d.confirmRecovery(networkType, timer)
+	})
+	state.confirmTimer = timer
 }
 
 // confirmRecovery confirms recovery after backoff period.
@@ -563,6 +767,8 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
 	// scheduled by a concurrent revival.
 	if d.recoveryState[protoIdx].confirmTimer == timer {
 		d.recoveryState[protoIdx].confirmTimer = nil
+		d.recoveryState[protoIdx].confirmDeadlineUnixNano = 0
+		d.recoveryState[protoIdx].pendingNetworkType = nil
 	}
 	// Snapshot backoff level while holding lock to detect concurrent resets
 	currentBackoffLevel := d.recoveryState[protoIdx].backoffLevel
@@ -640,6 +846,8 @@ func (d *Dialer) cancelPendingRecoveryConfirmationByIndex(protoIdx int, proto co
 	if d.recoveryState[protoIdx].confirmTimer != nil {
 		d.recoveryState[protoIdx].confirmTimer.Stop()
 		d.recoveryState[protoIdx].confirmTimer = nil
+		d.recoveryState[protoIdx].confirmDeadlineUnixNano = 0
+		d.recoveryState[protoIdx].pendingNetworkType = nil
 
 		d.Log.WithFields(logrus.Fields{
 			"dialer": d.Property().Name,

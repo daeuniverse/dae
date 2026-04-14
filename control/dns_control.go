@@ -83,28 +83,40 @@ type DnsControllerOption struct {
 	MaxCacheSize          int // maximum number of cache entries (0 = unlimited)
 }
 
+type dnsControllerRuntimeState struct {
+	routing               *dns.Dns
+	lifecycleCtx          context.Context
+	cacheAccessCallback   func(cache *DnsCache) (err error)
+	cacheRemoveCallback   func(cache *DnsCache) (err error)
+	cacheDeleteCallback   func(cacheKey string, cache *DnsCache) (err error)
+	newCache              func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
+	bestDialerChooser     func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	timeoutExceedCallback func(dialArgument *dialArgument, err error)
+	fixedDomainTtl        map[string]int
+}
+
 type DnsController struct {
 	concurrencyLimiter chan struct{}
 
+	// Legacy runtime fields are kept for test compatibility and as a fallback
+	// when a controller is manually constructed without calling NewDnsController.
 	routing     *dns.Dns
 	qtypePrefer uint16
 
 	optimisticCacheEnabled bool
-	optimisticCacheTtl     int // seconds, 0 means never expire
-	maxCacheSize           int // maximum number of cache entries (0 = unlimited)
+	optimisticCacheTtl     int           // seconds, 0 means never expire
+	maxCacheSize           int           // maximum number of cache entries (0 = unlimited)
+	dnsForwarderIdleTTL    time.Duration // TTL for idle DNS forwarders
 	lifecycleCtx           context.Context
-
-	log                 *logrus.Logger
-	cacheAccessCallback func(cache *DnsCache) (err error)
-	cacheRemoveCallback func(cache *DnsCache) (err error)
-	cacheDeleteCallback func(cacheKey string, cache *DnsCache) (err error)
-	newCache            func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
-	bestDialerChooser   func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
-	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
-	timeoutExceedCallback func(dialArgument *dialArgument, err error)
-
-	fixedDomainTtl      map[string]int
-	dnsForwarderIdleTTL time.Duration // TTL for idle DNS forwarders
+	log                    *logrus.Logger
+	cacheAccessCallback    func(cache *DnsCache) (err error)
+	cacheRemoveCallback    func(cache *DnsCache) (err error)
+	cacheDeleteCallback    func(cacheKey string, cache *DnsCache) (err error)
+	newCache               func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
+	bestDialerChooser      func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	timeoutExceedCallback  func(dialArgument *dialArgument, err error)
+	fixedDomainTtl         map[string]int
+	runtimeState           atomic.Pointer[dnsControllerRuntimeState]
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
 	dnsKnowledge      sync.Map // map[string]int64 (base cache key -> original deadline unix nano)
@@ -216,30 +228,15 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	if optimisticCacheTtl == 0 && maxCacheSize == 0 {
 		optimisticCacheTtl = 60 // Old default
 	}
-	lifecycleCtx := option.LifecycleContext
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
 	controller := &DnsController{
-		routing:            routing,
 		qtypePrefer:        prefer,
 		concurrencyLimiter: make(chan struct{}, limit), // 0 means no limit (unbuffered channel, always non-blocking)
 
 		optimisticCacheEnabled: option.OptimisticCache,
 		optimisticCacheTtl:     optimisticCacheTtl,
 		maxCacheSize:           maxCacheSize,
-		lifecycleCtx:           lifecycleCtx,
 
-		log:                   option.Log,
-		cacheAccessCallback:   option.CacheAccessCallback,
-		cacheRemoveCallback:   option.CacheRemoveCallback,
-		cacheDeleteCallback:   option.CacheDeleteCallback,
-		newCache:              option.NewCache,
-		bestDialerChooser:     option.BestDialerChooser,
-		timeoutExceedCallback: option.TimeoutExceedCallback,
-
-		fixedDomainTtl:      option.FixedDomainTtl,
+		log:                 option.Log,
 		dnsForwarderIdleTTL: dnsForwarderIdleTTL, // Use package-level default
 		dnsCache:            sync.Map{},
 		dnsForwarderCache:   sync.Map{},
@@ -256,14 +253,91 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 		prefWaitRegistry: newPreferenceWaitRegistry(),
 	}
+	controller.updateRuntime(option, routing)
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
 	return controller, nil
 }
 
+func (c *DnsController) updateRuntime(option *DnsControllerOption, routing *dns.Dns) {
+	if c == nil {
+		return
+	}
+	if option == nil {
+		option = &DnsControllerOption{}
+	}
+	lifecycleCtx := option.LifecycleContext
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+	c.routing = routing
+	c.lifecycleCtx = lifecycleCtx
+	c.cacheAccessCallback = option.CacheAccessCallback
+	c.cacheRemoveCallback = option.CacheRemoveCallback
+	c.cacheDeleteCallback = option.CacheDeleteCallback
+	c.newCache = option.NewCache
+	c.bestDialerChooser = option.BestDialerChooser
+	c.timeoutExceedCallback = option.TimeoutExceedCallback
+	c.fixedDomainTtl = option.FixedDomainTtl
+	c.runtimeState.Store(&dnsControllerRuntimeState{
+		routing:               routing,
+		lifecycleCtx:          lifecycleCtx,
+		cacheAccessCallback:   option.CacheAccessCallback,
+		cacheRemoveCallback:   option.CacheRemoveCallback,
+		cacheDeleteCallback:   option.CacheDeleteCallback,
+		newCache:              option.NewCache,
+		bestDialerChooser:     option.BestDialerChooser,
+		timeoutExceedCallback: option.TimeoutExceedCallback,
+		fixedDomainTtl:        option.FixedDomainTtl,
+	})
+}
+
+func (c *DnsController) runtime() *dnsControllerRuntimeState {
+	if c == nil {
+		return nil
+	}
+	rt := c.runtimeState.Load()
+	if rt == nil {
+		rt = &dnsControllerRuntimeState{}
+	}
+	merged := *rt
+	if c.routing != nil {
+		merged.routing = c.routing
+	}
+	if c.lifecycleCtx != nil {
+		merged.lifecycleCtx = c.lifecycleCtx
+	}
+	if c.cacheAccessCallback != nil {
+		merged.cacheAccessCallback = c.cacheAccessCallback
+	}
+	if c.cacheRemoveCallback != nil {
+		merged.cacheRemoveCallback = c.cacheRemoveCallback
+	}
+	if c.cacheDeleteCallback != nil {
+		merged.cacheDeleteCallback = c.cacheDeleteCallback
+	}
+	if c.newCache != nil {
+		merged.newCache = c.newCache
+	}
+	if c.bestDialerChooser != nil {
+		merged.bestDialerChooser = c.bestDialerChooser
+	}
+	if c.timeoutExceedCallback != nil {
+		merged.timeoutExceedCallback = c.timeoutExceedCallback
+	}
+	if c.fixedDomainTtl != nil {
+		merged.fixedDomainTtl = c.fixedDomainTtl
+	}
+	return &merged
+}
+
+func (c *DnsController) UpdateRuntime(option *DnsControllerOption, routing *dns.Dns) {
+	c.updateRuntime(option, routing)
+}
+
 func (c *DnsController) baseContext() context.Context {
-	if c != nil && c.lifecycleCtx != nil {
-		return c.lifecycleCtx
+	if rt := c.runtime(); rt != nil && rt.lifecycleCtx != nil {
+		return rt.lifecycleCtx
 	}
 	return context.Background()
 }
@@ -284,10 +358,9 @@ func (c *DnsController) Close() error {
 	// bpfUpdateStop concurrently.
 	c.bpfUpdateStopMu.Lock()
 	c.closeOnce.Do(func() {
+		c.bpfUpdateClosed.Store(true)
 		// Stop BPF update worker (if it was started).
 		if c.bpfUpdateStop != nil {
-			// Signal shutdown first - this prevents new sends
-			c.bpfUpdateClosed.Store(true)
 			// Signal worker to stop and drain remaining tasks
 			close(c.bpfUpdateStop)
 			// Wait for worker to finish draining.
@@ -346,18 +419,7 @@ func (c *DnsController) Close() error {
 		}
 	}
 
-	var errs []error
-	c.dnsForwarderCache.Range(func(key, value any) bool {
-		k := key.(dnsForwarderKey)
-		forwarder := c.extractDnsForwarder(value)
-		if forwarder != nil {
-			if err := forwarder.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close dns forwarder %q: %w", k.upstream, err))
-			}
-		}
-		c.dnsForwarderCache.Delete(k)
-		return true
-	})
+	errs := c.closeAllDnsForwarders()
 
 	// Clear dnsCache to prevent memory leak on reload.
 	// Each DnsCache entry contains DomainBitmap and Answer which can accumulate
@@ -370,8 +432,81 @@ func (c *DnsController) Close() error {
 		c.dnsKnowledge.Delete(key)
 		return true
 	})
+	c.evictorMu.Lock()
+	c.evictorBuf = nil
+	c.evictorMu.Unlock()
+	c.lruScratchMu.Lock()
+	c.lruScratch = nil
+	c.lruScratchMu.Unlock()
+	c.evictorWake = nil
+	c.evictorQ = nil
+	c.bpfUpdateCh = nil
+	c.bpfUpdateStop = nil
 
 	return errors.Join(errs...)
+}
+
+func (c *DnsController) closeAllDnsForwarders() []error {
+	if c == nil {
+		return nil
+	}
+	var errs []error
+	c.dnsForwarderCache.Range(func(key, value any) bool {
+		k := key.(dnsForwarderKey)
+		c.dnsForwarderCache.Delete(k)
+		switch entry := value.(type) {
+		case *cachedDnsForwarder:
+			if err := entry.closeNow(); err != nil {
+				errs = append(errs, fmt.Errorf("close dns forwarder %q: %w", k.upstream, err))
+			}
+		default:
+			forwarder := c.extractDnsForwarder(value)
+			if forwarder != nil {
+				if err := forwarder.Close(); err != nil {
+					errs = append(errs, fmt.Errorf("close dns forwarder %q: %w", k.upstream, err))
+				}
+			}
+		}
+		return true
+	})
+	return errs
+}
+
+func (c *DnsController) retireAllDnsForwarders() []error {
+	if c == nil {
+		return nil
+	}
+	var errs []error
+	c.dnsForwarderCache.Range(func(key, value any) bool {
+		k := key.(dnsForwarderKey)
+		switch entry := value.(type) {
+		case *cachedDnsForwarder:
+			if !c.dnsForwarderCache.CompareAndDelete(k, entry) {
+				return true
+			}
+			if err := entry.retire(); err != nil {
+				errs = append(errs, fmt.Errorf("retire dns forwarder %q: %w", k.upstream, err))
+			}
+		default:
+			if !c.dnsForwarderCache.CompareAndDelete(k, value) {
+				return true
+			}
+			forwarder := c.extractDnsForwarder(value)
+			if forwarder != nil {
+				if err := forwarder.Close(); err != nil {
+					errs = append(errs, fmt.Errorf("close dns forwarder %q: %w", k.upstream, err))
+				}
+			}
+		}
+		return true
+	})
+	return errs
+}
+
+func (c *DnsController) ResetDnsForwarders() error {
+	// Retire cached forwarders so new requests redial using the replacement
+	// generation's runtime, while in-flight upstream exchanges finish cleanly.
+	return errors.Join(c.retireAllDnsForwarders()...)
 }
 
 var (
@@ -708,8 +843,8 @@ func (c *DnsController) processBpfUpdateTask(task *bpfUpdateTask, draining bool)
 	if task == nil || task.cache == nil {
 		return false
 	}
-	if c.cacheAccessCallback != nil {
-		if err := c.cacheAccessCallback(task.cache); err != nil {
+	if rt := c.runtime(); rt != nil && rt.cacheAccessCallback != nil {
+		if err := rt.cacheAccessCallback(task.cache); err != nil {
 			if c.log != nil {
 				suffix := ""
 				if draining {
@@ -756,7 +891,8 @@ func (c *DnsController) bpfUpdateWorker() {
 // This is non-blocking: if the queue is full, the update is skipped
 // (CAS in NeedsBpfUpdate ensures it will be retried next time).
 func (c *DnsController) triggerBpfUpdateIfNeeded(cache *DnsCache, now time.Time) {
-	if c.cacheAccessCallback == nil {
+	rt := c.runtime()
+	if rt == nil || rt.cacheAccessCallback == nil {
 		return
 	}
 	if !cache.NeedsBpfUpdate(now) {
@@ -799,7 +935,8 @@ func (c *DnsController) sendBpfUpdateTask(task *bpfUpdateTask) (sent bool) {
 }
 
 func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
-	if cache == nil || c.cacheRemoveCallback == nil {
+	rt := c.runtime()
+	if cache == nil || rt == nil || rt.cacheRemoveCallback == nil {
 		return
 	}
 
@@ -872,10 +1009,11 @@ func (c *DnsController) drainEvictorSpill() {
 }
 
 func (c *DnsController) invokeCacheRemoveCallback(cache *DnsCache) {
-	if cache == nil || c.cacheRemoveCallback == nil {
+	rt := c.runtime()
+	if cache == nil || rt == nil || rt.cacheRemoveCallback == nil {
 		return
 	}
-	if err := c.cacheRemoveCallback(cache); err != nil {
+	if err := rt.cacheRemoveCallback(cache); err != nil {
 		if c.log != nil {
 			c.log.Warnf("failed to remove dns cache side effects: %v", err)
 		}
@@ -883,10 +1021,11 @@ func (c *DnsController) invokeCacheRemoveCallback(cache *DnsCache) {
 }
 
 func (c *DnsController) invokeCacheDeleteCallback(cacheKey string, cache *DnsCache) {
-	if cache == nil || c.cacheDeleteCallback == nil {
+	rt := c.runtime()
+	if cache == nil || rt == nil || rt.cacheDeleteCallback == nil {
 		return
 	}
-	if err := c.cacheDeleteCallback(cacheKey, ensureDNSCacheRouteOwnerKey(cacheKey, cache)); err != nil {
+	if err := rt.cacheDeleteCallback(cacheKey, ensureDNSCacheRouteOwnerKey(cacheKey, cache)); err != nil {
 		if c.log != nil {
 			c.log.Warnf("failed to delete exact dns cache side effects: %v", err)
 		}
@@ -1336,7 +1475,11 @@ func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, d
 
 	// Atomic cache update: create new cache entry and store it atomically
 	// This allows concurrent updates without blocking each other
-	newCache, err := c.newCache(fqdn, answers, ns, extra, deadline, originalDeadline)
+	rt := c.runtime()
+	if rt == nil || rt.newCache == nil {
+		return fmt.Errorf("dns controller runtime newCache is not configured")
+	}
+	newCache, err := rt.newCache(fqdn, answers, ns, extra, deadline, originalDeadline)
 	if err != nil {
 		return err
 	}
@@ -1363,8 +1506,8 @@ func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, d
 	c.dnsCache.Store(cacheKey, newCache)
 	c.rememberDnsKnowledge(baseKey, originalDeadline)
 
-	if c.cacheAccessCallback != nil {
-		if err = c.cacheAccessCallback(newCache); err != nil {
+	if rt.cacheAccessCallback != nil {
+		if err = rt.cacheAccessCallback(newCache); err != nil {
 			return err
 		}
 	}
@@ -1381,19 +1524,22 @@ func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, d
 func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
 	return c.__updateDnsCacheDeadline("", host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
-		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
-			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
-		} else {
-			return originalDeadline, originalDeadline
+		if rt := c.runtime(); rt != nil {
+			if fixedTtl, ok := rt.fixedDomainTtl[host]; ok {
+				return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
+			}
 		}
+		return originalDeadline, originalDeadline
 	})
 }
 
 func (c *DnsController) UpdateDnsCacheTtlWithKey(cacheKey string, host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
 	return c.__updateDnsCacheDeadline(cacheKey, host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
-		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
-			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
+		if rt := c.runtime(); rt != nil {
+			if fixedTtl, ok := rt.fixedDomainTtl[host]; ok {
+				return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
+			}
 		}
 		return originalDeadline, originalDeadline
 	})
@@ -1419,13 +1565,21 @@ type dialArgument struct {
 
 type dnsForwarderKey struct {
 	upstream     string
-	dialArgument dialArgument
+	l4proto      consts.L4ProtoStr
+	ipversion    consts.IpVersionStr
+	dialerName   string
+	outboundName string
+	bestTarget   netip.AddrPort
+	mark         uint32
+	mptcp        bool
 }
 
 type cachedDnsForwarder struct {
 	forwarder    DnsForwarder
 	lastUsedNano atomic.Int64
 	inFlight     atomic.Int32
+	retired      atomic.Bool
+	closeOnce    sync.Once
 }
 
 func newCachedDnsForwarder(forwarder DnsForwarder, now time.Time) *cachedDnsForwarder {
@@ -1438,14 +1592,53 @@ func (c *cachedDnsForwarder) touch(now time.Time) {
 	c.lastUsedNano.Store(now.UnixNano())
 }
 
-func (c *cachedDnsForwarder) beginUse() {
+func (c *cachedDnsForwarder) beginUse() bool {
+	if c == nil || c.retired.Load() {
+		return false
+	}
 	c.inFlight.Add(1)
 	c.touch(time.Now())
+	if !c.retired.Load() {
+		return true
+	}
+	if c.inFlight.Add(-1) == 0 {
+		_ = c.closeNow()
+	}
+	return false
 }
 
 func (c *cachedDnsForwarder) endUse() {
+	if c == nil {
+		return
+	}
 	c.touch(time.Now())
-	c.inFlight.Add(-1)
+	if c.inFlight.Add(-1) == 0 && c.retired.Load() {
+		_ = c.closeNow()
+	}
+}
+
+func (c *cachedDnsForwarder) closeNow() error {
+	if c == nil {
+		return nil
+	}
+	var err error
+	c.closeOnce.Do(func() {
+		if c.forwarder != nil {
+			err = c.forwarder.Close()
+		}
+	})
+	return err
+}
+
+func (c *cachedDnsForwarder) retire() error {
+	if c == nil {
+		return nil
+	}
+	c.retired.Store(true)
+	if c.inFlight.Load() == 0 {
+		return c.closeNow()
+	}
+	return nil
 }
 
 var dnsForwarderFactory = newDnsForwarder
@@ -1524,8 +1717,8 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 	if lifecycle, ok := newDnsUdpLifecycleContext(dialArg, UdpLifecycleProfile{}); ok {
 		lifecycle.reportUnavailable(err)
 	}
-	if c.timeoutExceedCallback != nil {
-		c.timeoutExceedCallback(dialArg, err)
+	if rt := c.runtime(); rt != nil && rt.timeoutExceedCallback != nil {
+		rt.timeoutExceedCallback(dialArg, err)
 	}
 }
 
@@ -1552,13 +1745,35 @@ func (c *DnsController) retireCachedDnsForwarder(key dnsForwarderKey, entry *cac
 	if !c.dnsForwarderCache.CompareAndDelete(key, entry) {
 		return
 	}
-	if err := entry.forwarder.Close(); err != nil && c.log != nil {
+	if err := entry.retire(); err != nil && c.log != nil {
 		c.log.WithError(err).Debugln("failed to close retired dns forwarder")
 	}
 }
 
+func newDnsForwarderKey(upstream *dns.Upstream, dialArg *dialArgument) dnsForwarderKey {
+	key := dnsForwarderKey{}
+	if upstream != nil {
+		key.upstream = upstream.String()
+	}
+	if dialArg == nil {
+		return key
+	}
+	key.l4proto = dialArg.l4proto
+	key.ipversion = dialArg.ipversion
+	if dialArg.bestDialer != nil && dialArg.bestDialer.Property() != nil {
+		key.dialerName = dialArg.bestDialer.Property().Name
+	}
+	if dialArg.bestOutbound != nil {
+		key.outboundName = dialArg.bestOutbound.Name
+	}
+	key.bestTarget = dialArg.bestTarget
+	key.mark = dialArg.mark
+	key.mptcp = dialArg.mptcp
+	return key
+}
+
 func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg *dialArgument) (*cachedDnsForwarder, error) {
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	key := newDnsForwarderKey(upstream, dialArg)
 	now := time.Now()
 
 	for range 3 {
@@ -1613,23 +1828,28 @@ func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg 
 }
 
 func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Upstream, dialArg *dialArgument, data []byte) (*dnsmessage.Msg, error) {
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	entry, err := c.getOrCreateDnsForwarder(upstream, dialArg)
-	if err != nil {
-		return nil, err
-	}
-	entry.beginUse()
-	defer entry.endUse()
-
-	respMsg, err := entry.forwarder.ForwardDNS(ctx, data)
-	if err != nil {
-		if c.shouldRetireCachedDnsForwarder(dialArg, err) {
-			c.retireCachedDnsForwarder(key, entry)
+	key := newDnsForwarderKey(upstream, dialArg)
+	for attempts := 0; attempts < 2; attempts++ {
+		entry, err := c.getOrCreateDnsForwarder(upstream, dialArg)
+		if err != nil {
+			return nil, err
 		}
-		c.reportDnsForwardFailure(dialArg, err)
-		return nil, err
+		if !entry.beginUse() {
+			continue
+		}
+
+		respMsg, err := entry.forwarder.ForwardDNS(ctx, data)
+		entry.endUse()
+		if err != nil {
+			if c.shouldRetireCachedDnsForwarder(dialArg, err) {
+				c.retireCachedDnsForwarder(key, entry)
+			}
+			c.reportDnsForwardFailure(dialArg, err)
+			return nil, err
+		}
+		return respMsg, nil
 	}
-	return respMsg, nil
+	return nil, fmt.Errorf("dns forwarder retired before request could start")
 }
 
 func (c *DnsController) forwardWithFallback(
@@ -1660,7 +1880,11 @@ func (c *DnsController) forwardWithFallback(
 	fallbackUpstream := *upstream
 	fallbackUpstream.Scheme = dns.UpstreamScheme_TCP
 
-	fallbackDialArg, chooseErr := c.bestDialerChooser(ctx, req, &fallbackUpstream)
+	rt := c.runtime()
+	if rt == nil || rt.bestDialerChooser == nil {
+		return nil, primaryDialArg, fmt.Errorf("dns controller runtime bestDialerChooser is not configured")
+	}
+	fallbackDialArg, chooseErr := rt.bestDialerChooser(ctx, req, &fallbackUpstream)
 	if chooseErr != nil {
 		return nil, primaryDialArg, fmt.Errorf("udp forward failed: %w; tcp fallback select failed: %v", primaryErr, chooseErr)
 	}
@@ -1726,11 +1950,12 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 	// Cache lookup overhead (~1µs) is negligible compared to network latency (~ms).
 	if baseCacheKey != "" && !dnsMessage.Response {
 		// Route request to get upstream
-		if c.routing == nil {
+		rt := c.runtime()
+		if rt == nil || rt.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
 		var err error
-		upstreamIndex, upstream, err = c.routing.RequestSelect(ctx, qname, qtype)
+		upstreamIndex, upstream, err = rt.routing.RequestSelect(ctx, qname, qtype)
 		if err != nil {
 			return err
 		}
@@ -1820,7 +2045,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+		if err = sendPktFresh(c.log, data, req.realDst, req.realSrc); err != nil {
 			return err
 		}
 		return nil
@@ -1921,10 +2146,11 @@ func (c *DnsController) handleWithResponseWriter_(
 
 	// Route request if not already routed.
 	if upstream == nil && upstreamIndex == 0 {
-		if c.routing == nil {
+		rt := c.runtime()
+		if rt == nil || rt.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
-		upstreamIndex, upstream, err = c.routing.RequestSelect(ctx, qname, qtype)
+		upstreamIndex, upstream, err = rt.routing.RequestSelect(ctx, qname, qtype)
 		if err != nil {
 			return err
 		}
@@ -2220,7 +2446,11 @@ func (c *DnsController) dialSend(
 	}
 
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
-	dialArg, err := c.bestDialerChooser(ctx, req, upstream)
+	rt := c.runtime()
+	if rt == nil || rt.bestDialerChooser == nil {
+		return fmt.Errorf("dns controller runtime bestDialerChooser is not configured")
+	}
+	dialArg, err := rt.bestDialerChooser(ctx, req, upstream)
 	if err != nil {
 		return err
 	}
@@ -2241,7 +2471,10 @@ func (c *DnsController) dialSend(
 	}
 
 	// Route response.
-	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(ctx, respMsg, upstream)
+	if rt.routing == nil {
+		return fmt.Errorf("dns routing is not configured")
+	}
+	upstreamIndex, nextUpstream, err := rt.routing.ResponseSelect(ctx, respMsg, upstream)
 	if err != nil {
 		return err
 	}
@@ -2340,7 +2573,25 @@ func (c *DnsController) dialSend(
 		if err != nil {
 			return err
 		}
-		if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+		if req != nil && req.lConn != nil {
+			if err = sendPktViaListener(req.lConn, data, req.realDst, req.realSrc); err == nil {
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							c.log.Errorf("panic in async DNS cache: %v", r)
+						}
+					}()
+					if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
+						c.log.Debugf("failed to cache DNS response (async): %v", err)
+					}
+				}()
+				return nil
+			}
+			if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithError(err).Debug("DNS reply via listener socket failed; fallback to Anyfrom sender")
+			}
+		}
+		if err = sendPktFresh(c.log, data, req.realDst, req.realSrc); err != nil {
 			return err
 		}
 

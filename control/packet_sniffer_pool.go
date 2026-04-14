@@ -47,6 +47,14 @@ const (
 	// sniff negative cache. Capacity is intentionally finite because the cache is
 	// a resilience hint, not correctness-critical state.
 	failedQuicDcidCacheMaxEntries = 16384
+	// Allocate failed-DCID shards lazily and keep their initial size modest.
+	// Large bursts still grow on demand, but idle generations do not pay the
+	// full worst-case reservation upfront.
+	failedQuicDcidCacheInitialEntriesPerShard = 8
+	// Rebuild sparse shards after cleanup so long-lived processes do not retain
+	// peak bucket allocation long after the traffic burst is gone.
+	failedQuicDcidCacheShrinkMinEntriesPerShard = 16
+	failedQuicDcidCacheShrinkRatio              = 4
 
 	// Failure-specific base TTLs. Soft bypasses are short because they often
 	// reflect transient "no SNI yet" situations, while parser panics get a
@@ -113,10 +121,57 @@ func newFailedQuicDcidCache(maxEntries int) *failedQuicDcidCache {
 	cache := &failedQuicDcidCache{
 		maxEntriesPerShard: perShard,
 	}
-	for i := range failedQuicDcidCacheShardCount {
-		cache.shards[i].entries = make(map[PacketSnifferKey]failedQuicDcidCacheEntry, perShard)
-	}
 	return cache
+}
+
+func (c *failedQuicDcidCache) initialEntriesPerShard() int {
+	if c == nil || c.maxEntriesPerShard <= 0 {
+		return 1
+	}
+	if c.maxEntriesPerShard < failedQuicDcidCacheInitialEntriesPerShard {
+		return c.maxEntriesPerShard
+	}
+	return failedQuicDcidCacheInitialEntriesPerShard
+}
+
+func (c *failedQuicDcidCache) targetShardEntriesCap(liveEntries int) int {
+	if c == nil || liveEntries <= 0 {
+		return 0
+	}
+	target := liveEntries
+	if target < c.initialEntriesPerShard() {
+		target = c.initialEntriesPerShard()
+	}
+	if target > c.maxEntriesPerShard {
+		target = c.maxEntriesPerShard
+	}
+	return target
+}
+
+func (c *failedQuicDcidCache) shouldShrinkShard(entriesBefore, liveEntries int) bool {
+	if c == nil || entriesBefore <= 0 || liveEntries >= entriesBefore {
+		return false
+	}
+	if liveEntries == 0 {
+		return true
+	}
+	if entriesBefore < failedQuicDcidCacheShrinkMinEntriesPerShard {
+		return false
+	}
+	return liveEntries*failedQuicDcidCacheShrinkRatio <= entriesBefore
+}
+
+func (c *failedQuicDcidCache) rebuildShardLocked(shard *failedQuicDcidCacheShard, liveEntries int) {
+	if liveEntries <= 0 {
+		shard.entries = nil
+		return
+	}
+
+	shrunk := make(map[PacketSnifferKey]failedQuicDcidCacheEntry, c.targetShardEntriesCap(liveEntries))
+	for key, entry := range shard.entries {
+		shrunk[key] = entry
+	}
+	shard.entries = shrunk
 }
 
 func failedQuicDcidBaseTtl(reason quicDcidFailureReason) time.Duration {
@@ -204,6 +259,9 @@ func (c *failedQuicDcidCache) IsFailed(key PacketSnifferKey, now time.Time) bool
 	shard.mu.Lock()
 	if current, ok := shard.entries[key]; ok && current == entry && current.expiresAtUnixNano <= nowNano {
 		delete(shard.entries, key)
+		if len(shard.entries) == 0 {
+			shard.entries = nil
+		}
 	}
 	shard.mu.Unlock()
 	return false
@@ -218,6 +276,10 @@ func (c *failedQuicDcidCache) MarkFailed(key PacketSnifferKey, reason quicDcidFa
 	shard := c.shardFor(key)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
+
+	if shard.entries == nil {
+		shard.entries = make(map[PacketSnifferKey]failedQuicDcidCacheEntry, c.targetShardEntriesCap(1))
+	}
 
 	if entry, ok := shard.entries[key]; ok && entry.expiresAtUnixNano > nowNano {
 		if entry.backoffShift < failedQuicDcidMaxBackoffShift {
@@ -268,10 +330,15 @@ func (c *failedQuicDcidCache) CleanupExpired(now time.Time) {
 	for i := range failedQuicDcidCacheShardCount {
 		shard := &c.shards[i]
 		shard.mu.Lock()
+		entriesBefore := len(shard.entries)
 		for key, entry := range shard.entries {
 			if entry.expiresAtUnixNano <= nowNano {
 				delete(shard.entries, key)
 			}
+		}
+		liveEntries := len(shard.entries)
+		if c.shouldShrinkShard(entriesBefore, liveEntries) {
+			c.rebuildShardLocked(shard, liveEntries)
 		}
 		shard.mu.Unlock()
 	}
@@ -285,7 +352,7 @@ func (c *failedQuicDcidCache) Clear() {
 	for i := range failedQuicDcidCacheShardCount {
 		shard := &c.shards[i]
 		shard.mu.Lock()
-		clear(shard.entries)
+		shard.entries = nil
 		shard.mu.Unlock()
 	}
 }

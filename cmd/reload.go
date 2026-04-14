@@ -8,6 +8,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,6 +20,44 @@ import (
 )
 
 const reloadProgressWaitTimeout = 60 * time.Second
+
+func encodeSignalProgress(code byte, content string) []byte {
+	payload := []byte{code}
+	if content == "" {
+		return payload
+	}
+	payload = append(payload, '\n')
+	payload = append(payload, content...)
+	return payload
+}
+
+func writeSignalProgressBytesFile(path string, payload []byte) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err = tmpFile.Write(payload); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err = tmpFile.Chmod(0644); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err = tmpFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func writeSignalProgressFile(path string, code byte, content string) error {
+	return writeSignalProgressBytesFile(path, encodeSignalProgress(code, content))
+}
 
 func readSignalProgressFile(path string) (code byte, content string, err error) {
 	b, err := os.ReadFile(path)
@@ -57,7 +96,7 @@ func restoreSignalProgressFile(path string, snapshot signalProgressSnapshot) err
 		}
 		return nil
 	}
-	return os.WriteFile(path, snapshot.content, 0644)
+	return writeSignalProgressBytesFile(path, snapshot.content)
 }
 
 func writeReloadSendAndSignal(path string, pid int, kill func(int, syscall.Signal) error) error {
@@ -65,7 +104,7 @@ func writeReloadSendAndSignal(path string, pid int, kill func(int, syscall.Signa
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte{consts.ReloadSend}, 0644); err != nil {
+	if err := writeSignalProgressFile(path, consts.ReloadSend, ""); err != nil {
 		return err
 	}
 	if err := kill(pid, syscall.SIGUSR1); err != nil {
@@ -82,24 +121,12 @@ func waitReloadCompletion(path string, initialDelay, pollInterval, timeout time.
 		time.Sleep(initialDelay)
 	}
 
-	code, _, err = readSignalProgressFile(path)
-	if err != nil {
-		return 0, "", err
-	}
-	if code == consts.ReloadSend {
-		return code, "", nil
-	}
-
 	deadline := time.Time{}
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)
 	}
 
 	for {
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			return 0, "", fmt.Errorf("reload timed out after %v", timeout)
-		}
-		time.Sleep(pollInterval)
 		code, content, err = readSignalProgressFile(path)
 		if err != nil {
 			return 0, "", err
@@ -107,6 +134,10 @@ func waitReloadCompletion(path string, initialDelay, pollInterval, timeout time.
 		if code == consts.ReloadDone || code == consts.ReloadError {
 			return code, content, nil
 		}
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return 0, "", fmt.Errorf("reload timed out after %v", timeout)
+		}
+		time.Sleep(pollInterval)
 	}
 }
 

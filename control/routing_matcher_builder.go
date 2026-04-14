@@ -57,6 +57,12 @@ type RoutingMatcherBuilder struct {
 	lpmDedup map[uint64]lpmDedupEntry
 }
 
+type routingKernspaceSnapshot struct {
+	rules             []bpfMatchSet
+	simulatedLpmTries [][]netip.Prefix
+	dedupCount        int
+}
+
 // lpmDedupEntry stores the deduplication mapping with collision detection.
 type lpmDedupEntry struct {
 	index    uint32
@@ -532,6 +538,17 @@ func reserveLpmRingSlots(count uint32) (uint32, error) {
 	return getNextRingLpmIndex(count), nil
 }
 
+func (b *RoutingMatcherBuilder) KernspaceSnapshot() *routingKernspaceSnapshot {
+	if b == nil {
+		return nil
+	}
+	return &routingKernspaceSnapshot{
+		rules:             b.rules,
+		simulatedLpmTries: b.simulatedLpmTries,
+		dedupCount:        len(b.lpmDedup),
+	}
+}
+
 func rewriteKernRulesWithRingLpmIndex(rules []bpfMatchSet, allocStartIdx uint32, lpmCount uint32) ([]bpfMatchSet, error) {
 	maxEntries := uint32(consts.MaxMatchSetLen)
 	kernRules := make([]bpfMatchSet, len(rules))
@@ -559,13 +576,26 @@ func rewriteKernRulesWithRingLpmIndex(rules []bpfMatchSet, allocStartIdx uint32,
 // race conditions in globalNextLpmIndex allocation and LPM map updates.
 //
 // Thread Safety: NOT thread-safe. Caller must ensure mutual exclusion.
-func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices []uint32, err error) {
-	lpmCount := uint32(len(b.simulatedLpmTries))
+func buildRoutingKernspace(
+	log *logrus.Logger,
+	bpf *bpfObjects,
+	rules []bpfMatchSet,
+	simulatedLpmTries [][]netip.Prefix,
+	dedupCount int,
+) (usedIndices []uint32, err error) {
+	if bpf == nil {
+		return nil, fmt.Errorf("nil bpf objects")
+	}
+	if len(rules) == 0 {
+		return nil, fmt.Errorf("no routing rules to build")
+	}
+
+	lpmCount := uint32(len(simulatedLpmTries))
 	if lpmCount > 0 {
-		dedupCount := uint32(len(b.lpmDedup))
-		reduction := float64(lpmCount-dedupCount) / float64(lpmCount) * 100
+		dedupCountU32 := uint32(dedupCount)
+		reduction := float64(lpmCount-dedupCountU32) / float64(lpmCount) * 100
 		log.Infof("Building %d LPM tries (deduplicated from %d sets, %.1f%% reduction)",
-			dedupCount, lpmCount, reduction)
+			dedupCountU32, lpmCount, reduction)
 	}
 	allocStartIdx, err := reserveLpmRingSlots(lpmCount)
 	if err != nil {
@@ -573,7 +603,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 	}
 
 	// Pre-allocate results slice with exact capacity
-	results := make([]lpmMapResult, len(b.simulatedLpmTries))
+	results := make([]lpmMapResult, len(simulatedLpmTries))
 
 	// Pre-convert all CIDRs to BPF keys in parallel for better cache utilization
 	numWorkers := runtime.GOMAXPROCS(0)
@@ -584,18 +614,18 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 		numWorkers = 1
 	}
 
-	if numWorkers > 1 && len(b.simulatedLpmTries) > 1 {
+	if numWorkers > 1 && len(simulatedLpmTries) > 1 {
 		// Parallel conversion
 		sem := make(chan struct{}, numWorkers)
 		var wg sync.WaitGroup
-		for i := range b.simulatedLpmTries {
+		for i := range simulatedLpmTries {
 			wg.Add(1)
 			sem <- struct{}{}
 			go func(idx int) {
 				defer func() { <-sem }()
 				defer wg.Done()
 
-				cidrs := b.simulatedLpmTries[idx]
+				cidrs := simulatedLpmTries[idx]
 				// Pre-allocate with exact capacity to avoid append growth
 				keys := make([]_bpfLpmKey, len(cidrs))
 				values := make([]uint32, len(cidrs))
@@ -616,7 +646,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 		wg.Wait()
 	} else {
 		// Serial conversion for small sets
-		for i, cidrs := range b.simulatedLpmTries {
+		for i, cidrs := range simulatedLpmTries {
 			keys := make([]_bpfLpmKey, len(cidrs))
 			values := make([]uint32, len(cidrs))
 			for j, cidr := range cidrs {
@@ -648,7 +678,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 				defer wg.Done()
 
 				r := results[idx]
-				m, mapErr := b.bpf.newLpmMap(r.keys, r.values)
+				m, mapErr := bpf.newLpmMap(r.keys, r.values)
 				if mapErr != nil {
 					mu.Lock()
 					if firstErr == nil {
@@ -659,7 +689,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 				}
 
 				mu.Lock()
-				mapErr = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny)
+				mapErr = bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny)
 				mu.Unlock()
 				if mapErr != nil {
 					_ = m.Close()
@@ -681,11 +711,11 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 	} else {
 		// Serial path for small sets
 		for _, r := range results {
-			m, err := b.bpf.newLpmMap(r.keys, r.values)
+			m, err := bpf.newLpmMap(r.keys, r.values)
 			if err != nil {
 				return nil, fmt.Errorf("newLpmMap: %w", err)
 			}
-			if err = b.bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny); err != nil {
+			if err = bpf.LpmArrayMap.Update(r.lpmIndex, m, ebpf.UpdateAny); err != nil {
 				_ = m.Close()
 				return nil, fmt.Errorf("Update: %w", err)
 			}
@@ -695,24 +725,24 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 
 	// Write routings.
 	// Fallback rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
+	if rules[len(rules)-1].Type != uint8(consts.MatchType_Fallback) {
 		return nil, fmt.Errorf("fallback rule MUST be the last")
 	}
-	routingsLen := uint32(len(b.rules))
-	kernRules, err := rewriteKernRulesWithRingLpmIndex(b.rules, allocStartIdx, lpmCount)
+	routingsLen := uint32(len(rules))
+	kernRules, err := rewriteKernRulesWithRingLpmIndex(rules, allocStartIdx, lpmCount)
 	if err != nil {
 		return nil, err
 	}
 	routingsKeys := common.ARangeU32(routingsLen)
-	if _, err = BpfMapBatchUpdate(b.bpf.RoutingMap, routingsKeys, kernRules, &ebpf.BatchOptions{
+	if _, err = BpfMapBatchUpdate(bpf.RoutingMap, routingsKeys, kernRules, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return nil, fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
-	if err = b.bpf.RoutingMetaMap.Update(uint32(0), routingsLen, ebpf.UpdateAny); err != nil {
+	if err = bpf.RoutingMetaMap.Update(uint32(0), routingsLen, ebpf.UpdateAny); err != nil {
 		return nil, fmt.Errorf("update routing_meta_map: %w", err)
 	}
-	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
+	log.Infof("Routing match set len: %v/%v", len(rules), consts.MaxMatchSetLen)
 
 	// Collect all unique indices that were actually updated in the shared map.
 	// Since lpmCount includes duplicates, we use results to get the mapped ring indices.
@@ -726,6 +756,20 @@ func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices 
 	}
 
 	return usedIndices, nil
+}
+
+func (b *RoutingMatcherBuilder) BuildKernspace(log *logrus.Logger) (usedIndices []uint32, err error) {
+	if b == nil {
+		return nil, fmt.Errorf("nil routing matcher builder")
+	}
+	return buildRoutingKernspace(log, b.bpf, b.rules, b.simulatedLpmTries, len(b.lpmDedup))
+}
+
+func (s *routingKernspaceSnapshot) BuildKernspace(log *logrus.Logger, bpf *bpfObjects) (usedIndices []uint32, err error) {
+	if s == nil {
+		return nil, fmt.Errorf("nil routing kernspace snapshot")
+	}
+	return buildRoutingKernspace(log, bpf, s.rules, s.simulatedLpmTries, s.dedupCount)
 }
 
 func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {

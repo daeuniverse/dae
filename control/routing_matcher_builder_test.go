@@ -6,6 +6,7 @@
 package control
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -50,5 +51,37 @@ func TestReserveLpmRingSlotsWrapsAroundRing(t *testing.T) {
 func TestReserveLpmRingSlotsRejectsOversizeAllocation(t *testing.T) {
 	if _, err := reserveLpmRingSlots(uint32(consts.MaxMatchSetLen) + 1); err == nil {
 		t.Fatal("reserveLpmRingSlots() error = nil, want oversize allocation error")
+	}
+}
+
+func TestRoutingKernspaceSnapshotRetainsBuilderStateAfterRelease(t *testing.T) {
+	builder := &RoutingMatcherBuilder{
+		rules: []bpfMatchSet{
+			{Type: uint8(consts.MatchType_Fallback)},
+		},
+		simulatedLpmTries: [][]netip.Prefix{
+			{netip.MustParsePrefix("192.0.2.0/24")},
+		},
+		lpmDedup: map[uint64]lpmDedupEntry{
+			1: {index: 0, prefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}},
+		},
+	}
+
+	snapshot := builder.KernspaceSnapshot()
+	builder.rules = nil
+	builder.simulatedLpmTries = nil
+	builder.lpmDedup = nil
+
+	if snapshot == nil {
+		t.Fatal("KernspaceSnapshot() = nil, want snapshot")
+	}
+	if got := len(snapshot.rules); got != 1 {
+		t.Fatalf("len(snapshot.rules) = %d, want 1", got)
+	}
+	if got := len(snapshot.simulatedLpmTries); got != 1 {
+		t.Fatalf("len(snapshot.simulatedLpmTries) = %d, want 1", got)
+	}
+	if snapshot.dedupCount != 1 {
+		t.Fatalf("snapshot.dedupCount = %d, want 1", snapshot.dedupCount)
 	}
 }

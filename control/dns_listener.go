@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -67,12 +68,13 @@ func ParseEndpoint(raw string) (endpoint Endpoint, err error) {
 }
 
 type DNSListener struct {
-	log        *logrus.Logger
-	tcpServer  *dnsmessage.Server
-	udpServer  *dnsmessage.Server
-	endpoint   Endpoint
-	controller *ControlPlane
-	mu         sync.Mutex
+	log       *logrus.Logger
+	tcpServer *dnsmessage.Server
+	udpServer *dnsmessage.Server
+	endpoint  Endpoint
+	mu        sync.Mutex
+
+	controller atomic.Pointer[ControlPlane]
 }
 
 const dnsListenerShutdownTimeout = 5 * time.Second
@@ -85,16 +87,30 @@ func NewDNSListener(log *logrus.Logger, endpoint string, controller *ControlPlan
 	}
 
 	ret := &DNSListener{
-		log:        log,
-		controller: controller,
-		endpoint:   e,
+		log:      log,
+		endpoint: e,
 	}
+	ret.controller.Store(controller)
 
 	return ret, nil
 }
 
 func (d *DNSListener) Addr() string {
 	return d.endpoint.Addr
+}
+
+func (d *DNSListener) Controller() *ControlPlane {
+	if d == nil {
+		return nil
+	}
+	return d.controller.Load()
+}
+
+func (d *DNSListener) SwapController(controller *ControlPlane) {
+	if d == nil {
+		return
+	}
+	d.controller.Store(controller)
 }
 
 // Start starts the DNS listener
@@ -111,8 +127,8 @@ func (d *DNSListener) Start() error {
 
 	// Create DNS handler
 	handler := &dnsHandler{
-		controller: d.controller,
-		log:        d.log,
+		listener: d,
+		log:      d.log,
 	}
 
 	if d.endpoint.UDP {
@@ -228,8 +244,8 @@ func parseDNSListenerAddrPort(raw string, preferV6 bool) (netip.AddrPort, error)
 
 // dnsHandler implements the dns.Handler interface
 type dnsHandler struct {
-	controller *ControlPlane
-	log        *logrus.Logger
+	listener *DNSListener
+	log      *logrus.Logger
 }
 
 func isDNSClientWriteGoneError(err error) bool {
@@ -315,10 +331,11 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 
 	clientIPPort = netip.AddrPortFrom(clientIP, uint16(port))
 	preferV6 := clientIP.Is6() && !clientIP.Is4In6()
+	controller := h.listener.Controller()
 
 	listenerAddr := ":53"
-	if h.controller != nil && h.controller.dnsListener != nil && h.controller.dnsListener.Addr() != "" {
-		listenerAddr = h.controller.dnsListener.Addr()
+	if controller != nil && controller.dnsListener != nil && controller.dnsListener.Addr() != "" {
+		listenerAddr = controller.dnsListener.Addr()
 	}
 	realDst, err := parseDNSListenerAddrPort(listenerAddr, preferV6)
 	if err != nil {
@@ -347,10 +364,23 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	}
 
 	ctx := context.Background()
-	if h.controller != nil && h.controller.ctx != nil {
-		ctx = h.controller.ctx
+	if controller != nil && controller.ctx != nil {
+		ctx = controller.ctx
 	}
-	err = h.controller.dnsController.HandleWithResponseWriter_(ctx, r, udpReq, w)
+	if controller == nil {
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+		return
+	}
+	dnsController := controller.ActiveDnsController()
+	if dnsController == nil {
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+		return
+	}
+	err = dnsController.HandleWithResponseWriter_(ctx, r, udpReq, w)
 	if err != nil {
 		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 			// REFUSED response has been written by DNS controller.

@@ -89,13 +89,36 @@ func TestWriteReloadSendAndSignalWritesReloadSendOnSuccess(t *testing.T) {
 
 func TestWaitReloadCompletionReturnsDoneContent(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
-	if err := os.WriteFile(progressPath, []byte{consts.ReloadProcessing}, 0644); err != nil {
+	if err := writeSignalProgressFile(progressPath, consts.ReloadProcessing, ""); err != nil {
 		t.Fatalf("WriteFile(): %v", err)
 	}
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		_ = os.WriteFile(progressPath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
+		_ = writeSignalProgressFile(progressPath, consts.ReloadDone, "OK")
+	}()
+
+	code, content, err := waitReloadCompletion(progressPath, 0, 5*time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("waitReloadCompletion() error = %v", err)
+	}
+	if code != consts.ReloadDone {
+		t.Fatalf("code = %v, want ReloadDone", code)
+	}
+	if content != "OK" {
+		t.Fatalf("content = %q, want %q", content, "OK")
+	}
+}
+
+func TestWaitReloadCompletionWaitsPastReloadSend(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	if err := writeSignalProgressFile(progressPath, consts.ReloadSend, ""); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = writeSignalProgressFile(progressPath, consts.ReloadDone, "OK")
 	}()
 
 	code, content, err := waitReloadCompletion(progressPath, 0, 5*time.Millisecond, time.Second)
@@ -112,7 +135,7 @@ func TestWaitReloadCompletionReturnsDoneContent(t *testing.T) {
 
 func TestWaitReloadCompletionTimesOut(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
-	if err := os.WriteFile(progressPath, []byte{consts.ReloadProcessing}, 0644); err != nil {
+	if err := writeSignalProgressFile(progressPath, consts.ReloadProcessing, ""); err != nil {
 		t.Fatalf("WriteFile(): %v", err)
 	}
 

@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
 )
@@ -266,15 +268,16 @@ func TestNotifyRunStateChangeCoalescesPendingNotification(t *testing.T) {
 
 func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
 	reqs := make(chan reloadRequest, 1)
+	var reloadActive atomic.Bool
 	var reloadPending atomic.Bool
 
-	if !tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadPending, reloadRequest{isSuspend: false}) {
+	if !tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadActive, &reloadPending, reloadRequest{isSuspend: false}) {
 		t.Fatal("expected first reload request to be queued")
 	}
 	if !reloadPending.Load() {
 		t.Fatal("expected reloadPending to remain set after queuing reload")
 	}
-	if tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadPending, reloadRequest{isSuspend: true}) {
+	if tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadActive, &reloadPending, reloadRequest{isSuspend: true}) {
 		t.Fatal("expected concurrent reload request to be rejected")
 	}
 
@@ -285,6 +288,90 @@ func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected queued reload request")
+	}
+}
+
+func TestRestoreRejectedReloadProgressUsesDoneWhileSettling(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	oldWriter := setRunSignalProgress
+	setRunSignalProgress = func(code byte, content string) error {
+		return writeSignalProgressFile(progressPath, code, content)
+	}
+	t.Cleanup(func() {
+		setRunSignalProgress = oldWriter
+	})
+
+	restoreRejectedReloadProgress(nil, false)
+
+	code, content, err := readSignalProgressFile(progressPath)
+	if err != nil {
+		t.Fatalf("readSignalProgressFile() error = %v", err)
+	}
+	if code != consts.ReloadDone {
+		t.Fatalf("code = %q, want ReloadDone", code)
+	}
+	if content == "" {
+		t.Fatal("expected settling rejection to write a human-readable message")
+	}
+}
+
+func TestRestoreRejectedReloadProgressUsesProcessingWhileActive(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	oldWriter := setRunSignalProgress
+	setRunSignalProgress = func(code byte, content string) error {
+		return writeSignalProgressFile(progressPath, code, content)
+	}
+	t.Cleanup(func() {
+		setRunSignalProgress = oldWriter
+	})
+
+	var reloadActive atomic.Bool
+	reloadActive.Store(true)
+
+	restoreRejectedReloadProgress(&reloadActive, false)
+
+	code, content, err := readSignalProgressFile(progressPath)
+	if err != nil {
+		t.Fatalf("readSignalProgressFile() error = %v", err)
+	}
+	if code != consts.ReloadProcessing {
+		t.Fatalf("code = %q, want ReloadProcessing", code)
+	}
+	if content == "" {
+		t.Fatal("expected active rejection to write a human-readable message")
+	}
+}
+
+func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
+	var reloadPending atomic.Bool
+	reloadPending.Store(true)
+	retirementDone := make(chan struct{})
+
+	releaseReloadPendingAfterRetirement(&reloadPending, retirementDone)
+	if !reloadPending.Load() {
+		t.Fatal("expected reloadPending to remain set before retirement completes")
+	}
+	close(retirementDone)
+	time.Sleep(10 * time.Millisecond)
+	if reloadPending.Load() {
+		t.Fatal("expected reloadPending to clear after retirement completes")
+	}
+}
+
+func TestRemainingReloadRetirementBudgetUsesElapsedTime(t *testing.T) {
+	budget := 10 * time.Second
+	remaining := remainingReloadRetirementBudget(time.Now().Add(-3*time.Second), budget)
+	if remaining <= 0 {
+		t.Fatal("expected positive remaining budget")
+	}
+	if remaining >= budget {
+		t.Fatal("expected elapsed time to reduce remaining budget")
+	}
+}
+
+func TestRemainingReloadRetirementBudgetClampsAtZero(t *testing.T) {
+	if remaining := remainingReloadRetirementBudget(time.Now().Add(-15*time.Second), 10*time.Second); remaining != 0 {
+		t.Fatalf("remaining = %v, want 0", remaining)
 	}
 }
 

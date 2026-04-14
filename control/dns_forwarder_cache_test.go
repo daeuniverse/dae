@@ -15,6 +15,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/outbound"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
@@ -55,9 +56,7 @@ func TestDnsController_EvictIdleDnsForwarders(t *testing.T) {
 
 	key := dnsForwarderKey{
 		upstream: "dns.example:53",
-		dialArgument: dialArgument{
-			l4proto: consts.L4ProtoStr_UDP,
-		},
+		l4proto:  consts.L4ProtoStr_UDP,
 	}
 
 	c := &DnsController{
@@ -82,9 +81,7 @@ func TestDnsController_EvictIdleDnsForwarders_SkipInFlight(t *testing.T) {
 
 	key := dnsForwarderKey{
 		upstream: "dns.example:53",
-		dialArgument: dialArgument{
-			l4proto: consts.L4ProtoStr_TCP,
-		},
+		l4proto:  consts.L4ProtoStr_TCP,
 	}
 
 	c := &DnsController{
@@ -133,4 +130,83 @@ func TestDnsController_ForwardWithDialArg_RetiresProxyUdpForwarderOnError(t *tes
 		t.Fatal("retired forwarder should not remain cached")
 		return false
 	})
+}
+
+func TestDnsController_ResetDnsForwardersDrainsInFlightForwarders(t *testing.T) {
+	forwarder := &countingDnsForwarder{}
+	entry := newCachedDnsForwarder(forwarder, time.Now())
+	require.True(t, entry.beginUse(), "expected cached forwarder to accept in-flight use before retirement")
+
+	key := dnsForwarderKey{
+		upstream: "dns.example:53",
+		l4proto:  consts.L4ProtoStr_UDP,
+	}
+
+	c := &DnsController{
+		log: logrus.New(),
+	}
+	c.dnsForwarderCache.Store(key, entry)
+
+	require.NoError(t, c.ResetDnsForwarders())
+
+	_, ok := c.dnsForwarderCache.Load(key)
+	require.False(t, ok, "retired forwarder should be removed from cache immediately")
+	require.EqualValues(t, 0, forwarder.closed.Load(), "in-flight forwarder should not be closed during retirement")
+
+	entry.endUse()
+
+	require.Eventually(t, func() bool {
+		return forwarder.closed.Load() == 1
+	}, time.Second, 10*time.Millisecond, "retired forwarder should close after the final in-flight request completes")
+}
+
+func TestNewDnsForwarderKeyIsStableAcrossReloadGenerations(t *testing.T) {
+	upstream := &dns.Upstream{
+		Scheme:   "udp",
+		Hostname: "dns.example",
+		Port:     53,
+	}
+
+	makeDialArg := func() *dialArgument {
+		return &dialArgument{
+			l4proto:      consts.L4ProtoStr_UDP,
+			ipversion:    consts.IpVersionStr_4,
+			bestDialer:   newTestProxyEndpointDialer("hysteria2", "proxy.example:443"),
+			bestOutbound: &outbound.DialerGroup{Name: "proxy"},
+			bestTarget:   netip.MustParseAddrPort("1.1.1.1:53"),
+			mark:         0x2023,
+			mptcp:        true,
+		}
+	}
+
+	first := makeDialArg()
+	second := makeDialArg()
+
+	require.Equal(t, newDnsForwarderKey(upstream, first), newDnsForwarderKey(upstream, second))
+}
+
+func TestDnsControllerClose_ReleasesRetainedBuffers(t *testing.T) {
+	c := &DnsController{
+		log:         logrus.New(),
+		evictorBuf:  make([]*DnsCache, 0, 32),
+		lruScratch:  make([]cacheEntry, 16),
+		evictorWake: make(chan struct{}, 1),
+		evictorQ:    make(chan *DnsCache, 4),
+	}
+	c.dnsCache.Store("example.com.1", &DnsCache{})
+	c.dnsKnowledge.Store("example.com", time.Now().UnixNano())
+
+	require.NoError(t, c.Close())
+	require.Nil(t, c.evictorBuf, "Close should release evictor scratch")
+	require.Nil(t, c.lruScratch, "Close should release LRU scratch")
+	require.Nil(t, c.evictorWake, "Close should release evictor wake channel reference")
+	require.Nil(t, c.evictorQ, "Close should release evictor queue reference")
+	require.Nil(t, c.bpfUpdateCh, "Close should release BPF queue reference")
+	require.Nil(t, c.bpfUpdateStop, "Close should release BPF stop channel reference")
+	require.True(t, c.bpfUpdateClosed.Load(), "Close should mark BPF updates closed")
+
+	_, ok := c.dnsCache.Load("example.com.1")
+	require.False(t, ok, "Close should clear DNS cache entries")
+	_, ok = c.dnsKnowledge.Load("example.com")
+	require.False(t, ok, "Close should clear DNS knowledge entries")
 }

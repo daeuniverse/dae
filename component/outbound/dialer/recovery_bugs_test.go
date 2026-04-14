@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	D "github.com/daeuniverse/outbound/dialer"
 	_ "github.com/daeuniverse/outbound/dialer/shadowsocks"
 	_ "github.com/daeuniverse/outbound/protocol/shadowsocks"
 	"github.com/sirupsen/logrus"
@@ -258,6 +259,115 @@ func TestCloneWithGlobalOptionUsesOverrideCheckInterval(t *testing.T) {
 	want := 60 * time.Second
 	if got != want {
 		t.Fatalf("clone maxBackoff = %v, want %v", got, want)
+	}
+}
+
+func TestRestoreHealthSnapshotRestoresCollectionState(t *testing.T) {
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	opt := &GlobalOption{
+		Log:            log,
+		CheckInterval:  30 * time.Second,
+		CheckTolerance: time.Second,
+	}
+	src := NewDialer(nil, opt, InstanceOption{}, &Property{Property: D.Property{Name: "src"}})
+	dst := NewDialer(nil, opt, InstanceOption{}, &Property{Property: D.Property{Name: "dst"}})
+
+	tcp4 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	update, _ := src.markAvailable(tcp4, 120*time.Millisecond)
+	src.informDialerGroupUpdate(update)
+	src.informDialerGroupUpdate(src.markUnavailableInternal(&NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}, true, false))
+
+	dst.RestoreHealthSnapshot(src.HealthSnapshot())
+
+	if !dst.MustGetAlive(tcp4) {
+		t.Fatal("expected restored TCP dialer health to be alive")
+	}
+	last, ok := dst.MustGetLatencies10(tcp4).LastLatency()
+	if !ok || last != 120*time.Millisecond {
+		t.Fatalf("restored TCP last latency = %v, %v, want 120ms, true", last, ok)
+	}
+
+	udpDns4 := &NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: true, UdpHealthDomain: UdpHealthDomainDns}
+	if dst.MustGetAlive(udpDns4) {
+		t.Fatal("expected restored DNS-UDP dialer health to be unavailable")
+	}
+}
+
+func TestRestoreHealthSnapshotRestoresRecoveryState(t *testing.T) {
+	src := newNamedRecoveryTestDialer("src-recovery")
+	defer func() { _ = src.Close() }()
+	dst := newNamedRecoveryTestDialer("dst-recovery")
+	defer func() { _ = dst.Close() }()
+
+	src.lastPunish[idxTcp].Store(0)
+	src.incrementBackoffLevel(consts.L4ProtoStr_TCP)
+	src.recoveryState[idxTcp].Lock()
+	src.recoveryState[idxTcp].stableSuccessCount = 1
+	src.recoveryState[idxTcp].Unlock()
+	src.lastPunish[idxTcp].Store(1234)
+
+	dst.RestoreHealthSnapshot(src.HealthSnapshot())
+
+	if got := dst.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 1 {
+		t.Fatalf("restored TCP backoff level = %d, want 1", got)
+	}
+	dst.recoveryState[idxTcp].Lock()
+	stableSuccessCount := dst.recoveryState[idxTcp].stableSuccessCount
+	dst.recoveryState[idxTcp].Unlock()
+	if stableSuccessCount != 1 {
+		t.Fatalf("restored stableSuccessCount = %d, want 1", stableSuccessCount)
+	}
+	if got := dst.lastPunish[idxTcp].Load(); got != 1234 {
+		t.Fatalf("restored lastPunish = %d, want 1234", got)
+	}
+}
+
+func TestRestoreHealthSnapshotRearmsPendingRecoveryConfirmation(t *testing.T) {
+	dst := newNamedRecoveryTestDialer("dst-pending-recovery")
+	defer func() { _ = dst.Close() }()
+
+	tcp4 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	snapshot := DialerHealthSnapshot{
+		Recovery: [3]DialerRecoveryHealthSnapshot{
+			idxTcp: {
+				BackoffLevel:        1,
+				PendingNetworkType:  tcp4,
+				PendingConfirmDelay: 5 * time.Millisecond,
+			},
+		},
+	}
+
+	dst.RestoreHealthSnapshot(snapshot)
+
+	dst.recoveryState[idxTcp].Lock()
+	pending := cloneNetworkType(dst.recoveryState[idxTcp].pendingNetworkType)
+	timer := dst.recoveryState[idxTcp].confirmTimer
+	dst.recoveryState[idxTcp].Unlock()
+	if timer == nil {
+		t.Fatal("expected pending recovery timer to be re-armed")
+	}
+	if pending == nil || *pending != *tcp4 {
+		t.Fatalf("pending network type = %#v, want %#v", pending, tcp4)
+	}
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for {
+		dst.recoveryState[idxTcp].Lock()
+		timer = dst.recoveryState[idxTcp].confirmTimer
+		dst.recoveryState[idxTcp].Unlock()
+		if timer == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected pending recovery timer to complete")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

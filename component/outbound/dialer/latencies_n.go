@@ -19,6 +19,12 @@ type LatenciesN struct {
 	mu sync.Mutex
 }
 
+type LatenciesNSnapshot struct {
+	Latencies     []time.Duration
+	Head          int
+	SumNLatencies time.Duration
+}
+
 func NewLatenciesN(n int) *LatenciesN {
 	return &LatenciesN{
 		N:         n,
@@ -72,4 +78,22 @@ func (ln *LatenciesN) Len() int {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
 	return len(ln.latencies)
+}
+
+func (ln *LatenciesN) Snapshot() LatenciesNSnapshot {
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	return LatenciesNSnapshot{
+		Latencies:     append([]time.Duration(nil), ln.latencies...),
+		Head:          ln.head,
+		SumNLatencies: ln.SumNLatencies,
+	}
+}
+
+func (ln *LatenciesN) Restore(snapshot LatenciesNSnapshot) {
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	ln.latencies = append(ln.latencies[:0], snapshot.Latencies...)
+	ln.head = snapshot.Head
+	ln.SumNLatencies = snapshot.SumNLatencies
 }

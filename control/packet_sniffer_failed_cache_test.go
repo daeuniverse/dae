@@ -8,6 +8,7 @@ package control
 import (
 	"encoding/binary"
 	"net/netip"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -95,6 +96,13 @@ func TestFailedQuicDcidCache_CleanupExpired(t *testing.T) {
 	if cache.IsFailed(key, now.Add(failedQuicDcidDecryptFailTtl+time.Second)) {
 		t.Fatal("IsFailed() = true after expiry cleanup")
 	}
+
+	shard := cache.shardFor(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+	if shard.entries != nil {
+		t.Fatal("expected CleanupExpired to release empty shard storage")
+	}
 }
 
 func TestFailedQuicDcidCache_HardCapacity(t *testing.T) {
@@ -137,4 +145,54 @@ func TestPacketSnifferPool_JanitorCleansExpiredFailedQuicDcidCache(t *testing.T)
 	}
 
 	t.Fatalf("expected janitor to clean expired failed-DCID entries, Len() = %d", cache.Len())
+}
+
+func TestFailedQuicDcidCache_ClearReleasesShardStorage(t *testing.T) {
+	cache := newFailedQuicDcidCache(failedQuicDcidCacheShardCount)
+	key := testPacketSnifferKey(t, []byte{4, 3, 2, 1}, 0)
+	now := time.Unix(6000, 0)
+
+	cache.MarkFailed(key, quicDcidFailureReasonSoftBypass, now)
+	shard := cache.shardFor(key)
+	shard.mu.RLock()
+	if shard.entries == nil {
+		shard.mu.RUnlock()
+		t.Fatal("expected shard storage to exist after MarkFailed")
+	}
+	shard.mu.RUnlock()
+
+	cache.Clear()
+
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+	if shard.entries != nil {
+		t.Fatal("expected Clear to release shard storage")
+	}
+}
+
+func TestFailedQuicDcidCache_CleanupExpiredShrinksSparseShard(t *testing.T) {
+	cache := newFailedQuicDcidCache(failedQuicDcidCacheShardCount)
+	shard := &cache.shards[0]
+	now := time.Unix(7000, 0)
+
+	shard.entries = make(map[PacketSnifferKey]failedQuicDcidCacheEntry, 64)
+	for i := 0; i < 32; i++ {
+		key := testPacketSnifferKey(t, []byte{1, 2, 3, 4}, uint16(i))
+		expiresAt := now.Add(-time.Second).UnixNano()
+		if i == 0 {
+			expiresAt = now.Add(time.Minute).UnixNano()
+		}
+		shard.entries[key] = failedQuicDcidCacheEntry{expiresAtUnixNano: expiresAt}
+	}
+	beforePtr := reflect.ValueOf(shard.entries).Pointer()
+
+	cache.CleanupExpired(now)
+
+	if got := len(shard.entries); got != 1 {
+		t.Fatalf("len(shard.entries) = %d, want 1 live entry after cleanup", got)
+	}
+	afterPtr := reflect.ValueOf(shard.entries).Pointer()
+	if afterPtr == 0 || afterPtr == beforePtr {
+		t.Fatal("expected CleanupExpired to rebuild sparse shard storage")
+	}
 }
