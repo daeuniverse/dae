@@ -52,7 +52,7 @@ func TestDnsController_RuntimeWorkersSurviveContextCancel(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, controller)
-	defer controller.Close()
+	defer func() { require.NoError(t, controller.Close()) }()
 
 	// Trigger a BPF update to lazily start the worker.
 	cache := &DnsCache{Deadline: time.Now().Add(time.Hour)}
