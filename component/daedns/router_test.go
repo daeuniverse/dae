@@ -453,7 +453,7 @@ func skipIfNoSocketMark(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: cannot create socket: %v", err)
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 	err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, 0)
 	if err != nil {
 		t.Skipf("skipping: SO_MARK not permitted (need CAP_NET_ADMIN): %v", err)
