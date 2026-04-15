@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/daeuniverse/dae/common"
@@ -168,6 +169,7 @@ func TestRouterExplicitBootstrapResolverOverridesDefaults(t *testing.T) {
 }
 
 func TestRouterWrapNodeDialerUsesGeneralRequestRoutingFallback(t *testing.T) {
+	skipIfNoSocketMark(t)
 	addr, stop := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.7"))
 	defer stop()
 
@@ -265,6 +267,7 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverForPassThroughFallback(t *te
 }
 
 func TestRouterWrapNodeDialerFallsBackToBaseResolverWhenRequestUpstreamReturnsNoAddress(t *testing.T) {
+	skipIfNoSocketMark(t)
 	addr, stop := startTestEmptyDNSUDPServer(t)
 	defer stop()
 
@@ -310,6 +313,7 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverWhenRequestUpstreamReturnsNo
 }
 
 func TestRouterUsesExternalGeodataDirsForRequestRules(t *testing.T) {
+	skipIfNoSocketMark(t)
 	addr, stop := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.9"))
 	defer stop()
 
@@ -438,6 +442,21 @@ func writeTestGeoSite(t *testing.T, path string, code string, domain string) {
 	}
 	if err = os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+// skipIfNoSocketMark skips the test if the process lacks permission to set
+// SO_MARK on sockets (e.g. CI containers without CAP_NET_ADMIN).
+func skipIfNoSocketMark(t *testing.T) {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		t.Skipf("skipping: cannot create socket: %v", err)
+	}
+	defer syscall.Close(fd)
+	err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, 0)
+	if err != nil {
+		t.Skipf("skipping: SO_MARK not permitted (need CAP_NET_ADMIN): %v", err)
 	}
 }
 
