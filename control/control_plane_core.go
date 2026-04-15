@@ -102,6 +102,7 @@ type controlPlaneCore struct {
 	isReload         bool
 	bpfEjected       bool
 	bpfHooksDetached bool // Track if BPF hooks were already detached
+	retired          atomic.Bool
 
 	closed context.Context
 	close  context.CancelFunc

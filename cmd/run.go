@@ -683,6 +683,12 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					done chan struct{},
 				) {
 					defer close(done)
+
+					// Mark the old generation as retired before draining so that
+					// stale health check callbacks stop writing to the shared
+					// OutboundConnectivityMap BPF map immediately.
+					c.MarkRetired()
+
 					switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
 					case controlPlaneDrainIdle:
 						log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")
@@ -935,6 +941,9 @@ loop:
 							done chan struct{},
 						) {
 							defer close(done)
+
+							c.MarkRetired()
+
 							switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
 							case controlPlaneDrainIdle:
 								log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")

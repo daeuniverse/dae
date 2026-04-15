@@ -58,6 +58,9 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 			return
 		default:
 		}
+		if c.retired.Load() {
+			return
+		}
 		if !isInit && dryrun {
 			return
 		}

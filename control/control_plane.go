@@ -407,6 +407,14 @@ func newControlPlaneWithContextOptions(
 	externGeoDataDirs []string,
 	buildOpts controlPlaneBuildOptions,
 ) (plane *ControlPlane, err error) {
+	// The ctx parameter may carry a preparation timeout from the caller (e.g.
+	// context.WithTimeout in cmd/run.go).  All long-lived objects owned by the
+	// ControlPlane — its lifecycle context, dialer contexts, goroutines — MUST
+	// derive from a background context so they are not cancelled when the
+	// preparation deadline expires.  The caller's ctx is NOT used as a parent
+	// for any perennnial context below.
+	_ = ctx
+
 	// Clear failed QUIC DCID cache on reload/startup.
 	// Network conditions may have changed, so we should allow retrying sniffing
 	// for DCIDs that previously failed.
@@ -582,9 +590,9 @@ func newControlPlaneWithContextOptions(
 	}
 	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
 	_direct, directProperty := dialer.NewDirectDialer(option, true)
-	direct := dialer.NewDialerContext(ctx, _direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
+	direct := dialer.NewDialerContext(context.Background(), _direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialerContext(ctx, _block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
+	block := dialer.NewDialerContext(context.Background(), _block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -601,7 +609,7 @@ func newControlPlaneWithContextOptions(
 	}
 
 	// Filter out groups.
-	dialerSet := outbound.NewDialerSetFromLinksContext(ctx, option, tagToNodeList)
+	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	deferFuncs = append(deferFuncs, func() error {
 		dialer.CleanupTransportCacheNamespace(option.TransportCacheNamespace)
@@ -634,7 +642,7 @@ func newControlPlaneWithContextOptions(
 			groupOption.TransportCacheNamespace = option.TransportCacheNamespace
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
-				newDialer := d.CloneWithGlobalOptionContext(ctx, groupOption)
+				newDialer := d.CloneWithGlobalOptionContext(context.Background(), groupOption)
 				deferFuncs = append(deferFuncs, newDialer.Close)
 				newDialers = append(newDialers, newDialer)
 			}
@@ -740,7 +748,7 @@ func newControlPlaneWithContextOptions(
 		m.Alloc/1024/1024, m.Sys/1024/1024, m.HeapObjects)
 
 	// New control plane.
-	cctx, cancel := context.WithCancel(ctx)
+	cctx, cancel := context.WithCancel(context.Background())
 	plane = &ControlPlane{
 		log:                       log,
 		core:                      core,
@@ -3363,6 +3371,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	}()
 	c.ActivateCheck()
 	<-c.ctx.Done()
+	// Log the reason Serve() is exiting to help distinguish intentional
+	// shutdown/reload from unexpected context cancellation (e.g. a leaked
+	// timeout inherited from the reload preparation context).
+	ctxErr := c.ctx.Err()
+	if ctxErr != nil {
+		c.log.WithFields(logrus.Fields{
+			"error": ctxErr.Error(),
+		}).Info("[ControlPlane] Serve() exiting; context cancelled")
+	}
 	return nil
 }
 
@@ -3577,6 +3594,19 @@ func (c *ControlPlane) DetachBpfHooks() error {
 		return nil
 	}
 	return c.core.DetachBpfHooks()
+}
+
+// MarkRetired signals that this generation is no longer authoritative for
+// outbound liveness. After this call, outboundAliveChangeCallback returns
+// early and will not write to the shared OutboundConnectivityMap BPF map.
+// This must be called before the drain period starts so that stale health
+// check results from the retiring generation cannot clobber the successor's
+// map entries.
+func (c *ControlPlane) MarkRetired() {
+	if c == nil || c.core == nil {
+		return
+	}
+	c.core.retired.Store(true)
 }
 
 // ResetGlobalUdpState clears all global UDP-related pools (endpoints and sniffers).
