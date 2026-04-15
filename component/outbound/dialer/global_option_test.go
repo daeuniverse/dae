@@ -32,6 +32,9 @@ func TestNewGlobalOptionUsesEffectiveSoMarkFromDaeWhenUnset(t *testing.T) {
 	if magicNetwork.Mark != common.InternalSoMarkFromDae {
 		t.Fatalf("dns resolver mark = %#x, want %#x", magicNetwork.Mark, common.InternalSoMarkFromDae)
 	}
+	if option.TransportCacheNamespace == "" {
+		t.Fatal("expected transport cache namespace to be initialized")
+	}
 }
 
 func TestNewGlobalOptionPreservesConfiguredSoMarkFromDae(t *testing.T) {
@@ -39,5 +42,13 @@ func TestNewGlobalOptionPreservesConfiguredSoMarkFromDae(t *testing.T) {
 	option := NewGlobalOption(&config.Global{SoMarkFromDae: configured}, nil)
 	if option.SoMarkFromDae != configured {
 		t.Fatalf("SoMarkFromDae = %#x, want %#x", option.SoMarkFromDae, configured)
+	}
+}
+
+func TestNewGlobalOptionCreatesUniqueTransportCacheNamespace(t *testing.T) {
+	first := NewGlobalOption(&config.Global{}, nil)
+	second := NewGlobalOption(&config.Global{}, nil)
+	if first.TransportCacheNamespace == second.TransportCacheNamespace {
+		t.Fatalf("transport cache namespace collision: %q", first.TransportCacheNamespace)
 	}
 }

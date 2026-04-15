@@ -34,9 +34,10 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 
 	normalizedLink := normalizeShadowTLSPluginOptions(link)
 	baseDialer := newDefaultNetworkDialer(direct.SymmetricDirect, gOption.SoMarkFromDae, gOption.Mptcp)
+	scopedBaseDialer := scopeTransportCacheDialer(baseDialer, gOption.TransportCacheNamespace)
 
 	// First, create the protocol dialer with direct dialer to get the property
-	d, _p, err := D.NewNetproxyDialerFromLink(baseDialer, &gOption.ExtraOption, normalizedLink)
+	d, _p, err := D.NewNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +55,8 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 		if err != nil {
 			return nil, err
 		}
-		d, _p, err = D.NewNetproxyDialerFromLink(baseDialer, &gOption.ExtraOption, normalizedLink)
+		scopedBaseDialer = scopeTransportCacheDialer(baseDialer, gOption.TransportCacheNamespace)
+		d, _p, err = D.NewNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
 		if err != nil {
 			return nil, err
 		}
@@ -83,9 +85,10 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 			gOption.Log.WithField("proxy_address", p.Address).Debug("[DialerRegister] Creating sticky IP dialer wrapper for proxy domain")
 		}
 		stickyWrapper = stickyip.NewStickyIpDialer(baseDialer, p.Address, proxyCache)
+		scopedStickyWrapper := scopeTransportCacheDialer(stickyWrapper, gOption.TransportCacheNamespace)
 
 		// Re-create the protocol dialer with sticky wrapper as base
-		d, _p, err = D.NewNetproxyDialerFromLink(stickyWrapper, &gOption.ExtraOption, normalizedLink)
+		d, _p, err = D.NewNetproxyDialerFromLink(scopedStickyWrapper, &gOption.ExtraOption, normalizedLink)
 		if err != nil {
 			return nil, err
 		}

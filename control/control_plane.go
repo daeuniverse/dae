@@ -42,8 +42,6 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
-	"github.com/daeuniverse/outbound/transport/grpc"
-	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -602,10 +600,12 @@ func newControlPlaneWithContextOptions(
 	}
 
 	// Filter out groups.
-	grpc.CleanGlobalClientConnectionCache()
-	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinksContext(ctx, option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
+	deferFuncs = append(deferFuncs, func() error {
+		dialer.CleanupTransportCacheNamespace(option.TransportCacheNamespace)
+		return nil
+	})
 	for _, group := range groups {
 		// Parse policy.
 		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group)
@@ -630,6 +630,7 @@ func newControlPlaneWithContextOptions(
 		groupOption, err := ParseGroupOverrideOption(group, *global, log)
 		finalOption := option
 		if err == nil && groupOption != nil {
+			groupOption.TransportCacheNamespace = option.TransportCacheNamespace
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
 				newDialer := d.CloneWithGlobalOptionContext(ctx, groupOption)

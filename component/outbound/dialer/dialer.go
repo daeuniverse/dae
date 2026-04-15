@@ -194,6 +194,10 @@ type GlobalOption struct {
 	CheckDnsTcp       bool
 	SoMarkFromDae     uint32
 	Mptcp             bool
+	// TransportCacheNamespace isolates process-global transport caches
+	// across reload generations so a replacement control plane never reuses
+	// transports bound to the previous generation's dialer lifecycle.
+	TransportCacheNamespace string
 }
 
 type InstanceOption struct {
@@ -231,14 +235,15 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 			TlsFragmentInterval: global.TlsFragmentInterval,
 			UDPHopInterval:      global.UDPHopInterval,
 		},
-		Log:               log,
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Somark: soMarkFromDae},
-		CheckInterval:     global.CheckInterval,
-		CheckTolerance:    global.CheckTolerance,
-		CheckDnsTcp:       true,
-		SoMarkFromDae:     soMarkFromDae,
-		Mptcp:             global.Mptcp,
+		Log:                     log,
+		TcpCheckOptionRaw:       TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Log: log, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw:       CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Somark: soMarkFromDae},
+		CheckInterval:           global.CheckInterval,
+		CheckTolerance:          global.CheckTolerance,
+		CheckDnsTcp:             true,
+		SoMarkFromDae:           soMarkFromDae,
+		Mptcp:                   global.Mptcp,
+		TransportCacheNamespace: newTransportCacheNamespace(),
 	}
 }
 
