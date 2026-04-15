@@ -1,6 +1,8 @@
 package dialer
 
 import (
+	"context"
+	"errors"
 	"io"
 	"slices"
 	"testing"
@@ -328,6 +330,64 @@ func TestRestoreHealthSnapshotRestoresRecoveryState(t *testing.T) {
 	}
 }
 
+func TestReloadHealthSnapshotPreservesAvailabilityAndClearsPunishment(t *testing.T) {
+	src := newNamedRecoveryTestDialer("src-reload")
+	defer func() { _ = src.Close() }()
+	dst := newNamedRecoveryTestDialer("dst-reload")
+	defer func() { _ = dst.Close() }()
+
+	tcp4 := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	src.ReportUnavailableForced(tcp4, nil)
+	if src.MustGetAlive(tcp4) {
+		t.Fatal("expected source dialer to be unavailable before reload snapshot")
+	}
+
+	src.NotifyHealthCheckResult(tcp4, false, false)
+	src.lastPunish[idxTcp].Store(1234)
+	src.recoveryState[idxTcp].Lock()
+	src.recoveryState[idxTcp].stableSuccessCount = 1
+	src.recoveryState[idxTcp].Unlock()
+
+	snapshot := src.ReloadHealthSnapshot()
+	if snapshot.Collections[tcp4.Index()].Alive {
+		t.Fatal("expected reload snapshot to preserve unavailable state")
+	}
+	if snapshot.Collections[tcp4.Index()].FailCount != 0 {
+		t.Fatalf("reload snapshot failCount = %d, want 0", snapshot.Collections[tcp4.Index()].FailCount)
+	}
+	if snapshot.Collections[tcp4.Index()].TrafficFailCount != 0 {
+		t.Fatalf("reload snapshot trafficFailCount = %d, want 0", snapshot.Collections[tcp4.Index()].TrafficFailCount)
+	}
+	if len(snapshot.Collections[tcp4.Index()].Latencies.Latencies) == 0 {
+		t.Fatal("expected reload snapshot to preserve latency history")
+	}
+	if snapshot.Recovery[idxTcp].BackoffLevel != 0 {
+		t.Fatalf("reload snapshot backoff level = %d, want 0", snapshot.Recovery[idxTcp].BackoffLevel)
+	}
+	if snapshot.Recovery[idxTcp].StableSuccessCount != 0 {
+		t.Fatalf("reload snapshot stableSuccessCount = %d, want 0", snapshot.Recovery[idxTcp].StableSuccessCount)
+	}
+	if snapshot.Recovery[idxTcp].LastPunishUnixNano != 0 {
+		t.Fatalf("reload snapshot lastPunish = %d, want 0", snapshot.Recovery[idxTcp].LastPunishUnixNano)
+	}
+
+	dst.RestoreHealthSnapshot(snapshot)
+
+	if !dst.reloadInheritedHealth.Load() {
+		t.Fatal("expected reload restore to defer the first inherited health check")
+	}
+	if dst.MustGetAlive(tcp4) {
+		t.Fatal("expected destination dialer to preserve unavailable state after reload restore")
+	}
+	if got := dst.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 0 {
+		t.Fatalf("restored backoff level = %d, want 0", got)
+	}
+	last, ok := dst.MustGetLatencies10(tcp4).LastLatency()
+	if !ok || last != Timeout {
+		t.Fatalf("restored last latency = %v, %v, want %v, true", last, ok, Timeout)
+	}
+}
+
 func TestRestoreHealthSnapshotRearmsPendingRecoveryConfirmation(t *testing.T) {
 	dst := newNamedRecoveryTestDialer("dst-pending-recovery")
 	defer func() { _ = dst.Close() }()
@@ -385,6 +445,44 @@ func TestRecreatedDialerStartsWithCleanBackoffState(t *testing.T) {
 
 	if got := recreated.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 0 {
 		t.Fatalf("recreated dialer backoff level = %d, want 0", got)
+	}
+}
+
+func TestReportUnavailableIgnoresTeardownCancellation(t *testing.T) {
+	d := newNamedRecoveryTestDialer("teardown-traffic")
+	typ := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionStr_4,
+	}
+
+	for range 64 {
+		d.ReportUnavailable(typ, context.Canceled)
+	}
+
+	if !d.MustGetAlive(typ) {
+		t.Fatal("teardown cancellation must not mark traffic dialer unavailable")
+	}
+	if got := d.trafficFailCount[typ.Index()].Load(); got != 0 {
+		t.Fatalf("traffic fail counter = %d, want 0", got)
+	}
+}
+
+func TestReportUnavailableTransactionalIgnoresOperationCanceled(t *testing.T) {
+	d := newNamedRecoveryTestDialer("teardown-transactional")
+	typ := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainDns,
+		IsDns:           true,
+	}
+
+	d.ReportUnavailableTransactional(typ, errors.New("dial udp 1.2.3.4:53: operation was canceled"))
+
+	if !d.MustGetAlive(typ) {
+		t.Fatal("teardown cancellation must not mark transactional dialer unavailable")
+	}
+	if got := d.failCount[typ.Index()]; got != 0 {
+		t.Fatalf("transactional fail counter = %d, want 0", got)
 	}
 }
 

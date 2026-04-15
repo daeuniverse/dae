@@ -131,7 +131,7 @@ func waitReloadCompletion(path string, initialDelay, pollInterval, timeout time.
 		if err != nil {
 			return 0, "", err
 		}
-		if code == consts.ReloadDone || code == consts.ReloadError {
+		if code == consts.ReloadDone || code == consts.ReloadError || code == consts.ReloadBusy {
 			return code, content, nil
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -167,10 +167,13 @@ var (
 				}
 			}
 			// Read the first line of SignalProgressFilePath.
-			code, _, err := readSignalProgressFile(SignalProgressFilePath)
+			code, content, err := readSignalProgressFile(SignalProgressFilePath)
 			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
-				// In progress.
-				fmt.Printf("%v shows another reload operation is in progress.\n", SignalProgressFilePath)
+				if content != "" {
+					fmt.Println(content)
+				} else {
+					fmt.Printf("%v shows another reload operation is in progress.\n", SignalProgressFilePath)
+				}
 				return
 			}
 			// Set the progress as ReloadSend and roll it back if signaling fails.
@@ -178,7 +181,7 @@ var (
 				fmt.Printf("failed to request reload: %v\n", err)
 				os.Exit(1)
 			}
-			code, content, err := waitReloadCompletion(
+			code, content, err = waitReloadCompletion(
 				SignalProgressFilePath,
 				500*time.Millisecond,
 				200*time.Millisecond,
@@ -188,7 +191,7 @@ var (
 				fmt.Printf("failed to wait reload result: %v\n", err)
 				os.Exit(1)
 			}
-			if code == consts.ReloadDone || code == consts.ReloadError {
+			if code == consts.ReloadDone || code == consts.ReloadError || code == consts.ReloadBusy {
 				fmt.Println(content)
 				return
 			}

@@ -413,6 +413,17 @@ func calcPoolSize(nodes int) int {
 	return size
 }
 
+func initialConnectivityCheckJitterWindow(cycle time.Duration, activeDialers int) time.Duration {
+	coldStartWindow := time.Duration(activeDialers) * 50 * time.Millisecond
+	if maxWindow := cycle / 4; maxWindow > 0 && coldStartWindow > maxWindow {
+		coldStartWindow = maxWindow
+	}
+	if coldStartWindow < time.Second {
+		coldStartWindow = time.Second
+	}
+	return coldStartWindow
+}
+
 // getConnectivityCheckPool returns the global worker pool.
 // The pool pointer is stable (Tune never replaces it), so callers may
 // capture it once before entering a loop.
@@ -603,15 +614,13 @@ func (d *Dialer) aliveBackground() {
 	//
 	// After the first check completes we re-spread within the full cycle
 	// so steady-state checks are evenly distributed.
-	coldStartWindow := time.Duration(getActiveDialerCount()) * 50 * time.Millisecond
-	if maxWindow := cycle / 4; coldStartWindow > maxWindow {
-		coldStartWindow = maxWindow
-	}
-	if coldStartWindow < time.Second {
-		coldStartWindow = time.Second
+	coldStartWindow := initialConnectivityCheckJitterWindow(cycle, getActiveDialerCount())
+	initialDelay := time.Duration(fastrand.Int63n(int64(coldStartWindow)))
+	if d.reloadInheritedHealth.Swap(false) && cycle > 0 {
+		initialDelay += cycle
 	}
 	d.tickerMu.Lock()
-	d.ticker = time.NewTimer(time.Duration(fastrand.Int63n(int64(coldStartWindow))))
+	d.ticker = time.NewTimer(initialDelay)
 	d.tickerMu.Unlock()
 	defer func() {
 		d.tickerMu.Lock()
@@ -897,6 +906,24 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	d.collectionFineMu.Lock()
 	idx := typ.Index()
 	collection := d.collections[idx]
+	if !force && proxyFailureSuppressedForReload() {
+		update := collectionUpdate{
+			alive:         collection.Alive.Load(),
+			movingAverage: collection.MovingAverage,
+		}
+		d.collectionFineMu.Unlock()
+		if d.Log != nil && d.Log.IsLevelEnabled(logrus.DebugLevel) {
+			nodeName := ""
+			if d.property != nil {
+				nodeName = d.property.Name
+			}
+			d.Log.WithFields(logrus.Fields{
+				"network": typ.String(),
+				"node":    nodeName,
+			}).Debugln("Suppressing dialer availability failure during reload handoff")
+		}
+		return update
+	}
 	collection.Latencies10.AppendLatency(Timeout)
 	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
 
@@ -1027,12 +1054,40 @@ func (d *Dialer) informDialerGroupUpdate(update collectionUpdate) {
 	}
 }
 
+func (d *Dialer) shouldIgnoreAvailabilityError(typ *NetworkType, err error) bool {
+	if !commonerrors.IsCanceledOrClosed(err) {
+		return false
+	}
+	if d != nil && d.Log != nil && d.Log.IsLevelEnabled(logrus.DebugLevel) {
+		nodeName := ""
+		networkName := ""
+		if d.property != nil {
+			nodeName = d.property.Name
+		}
+		if typ != nil {
+			networkName = typ.String()
+		}
+		d.Log.WithFields(logrus.Fields{
+			"network": networkName,
+			"node":    nodeName,
+			"err":     err.Error(),
+		}).Debugln("Ignoring teardown-related dialer failure")
+	}
+	return true
+}
+
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
+	if d.shouldIgnoreAvailabilityError(typ, err) {
+		return
+	}
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, false, true))
 }
 
 func (d *Dialer) ReportUnavailableTransactional(typ *NetworkType, err error) {
+	if d.shouldIgnoreAvailabilityError(typ, err) {
+		return
+	}
 	d.logUnavailable(typ, err)
 	d.informDialerGroupUpdate(d.markUnavailableInternal(typ, false, false))
 }

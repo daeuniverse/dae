@@ -380,7 +380,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		_ = w.WriteMsg(m)
 		return
 	}
-	err = dnsController.HandleWithResponseWriter_(ctx, r, udpReq, w)
+	err = dnsController.HandleWithResponseWriter_(controller.dnsRequestContext(ctx, dnsController), r, udpReq, w)
 	if err != nil {
 		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 			// REFUSED response has been written by DNS controller.

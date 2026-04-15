@@ -12,7 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/sirupsen/logrus"
 )
 
@@ -322,6 +327,194 @@ func TestReuseDNSControllerFromUpdatesRuntime(t *testing.T) {
 	}
 	if rt.fixedDomainTtl["example.com"] != 60 {
 		t.Fatal("expected reused DNS controller runtime to use new fixedDomainTtl")
+	}
+}
+
+func TestDnsRequestContextUsesNewLifecycleDuringDNSHandoff(t *testing.T) {
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	defer oldCancel()
+	newCtx, newCancel := context.WithCancel(context.Background())
+	defer newCancel()
+
+	oldController := &DnsController{}
+	oldCP := &ControlPlane{
+		ctx:           oldCtx,
+		dnsController: oldController,
+	}
+	newCP := &ControlPlane{
+		ctx:           newCtx,
+		dnsController: &DnsController{},
+		dnsRouting:    &dns.Dns{},
+	}
+
+	if !newCP.ReuseDNSControllerFrom(oldCP) {
+		t.Fatal("ReuseDNSControllerFrom() = false, want true")
+	}
+
+	oldCancel()
+	got := oldCP.dnsRequestContext(oldCtx, oldCP.ActiveDnsController())
+	if got != newCtx {
+		t.Fatal("expected old control plane DNS handoff requests to use new lifecycle context")
+	}
+	select {
+	case <-got.Done():
+		t.Fatal("expected handoff DNS request context to remain active after old control plane cancellation")
+	default:
+	}
+
+	type requestContextKey struct{}
+	requestCtx := context.WithValue(context.Background(), requestContextKey{}, "request")
+	if got := newCP.dnsRequestContext(requestCtx, newCP.ActiveDnsController()); got != requestCtx {
+		t.Fatal("expected new control plane DNS requests to preserve caller context")
+	}
+}
+
+func TestInheritDialerHealthFromUsesReloadSafeSnapshot(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	newTestDialer := func(name string) *dialer.Dialer {
+		return dialer.NewDialer(
+			direct.SymmetricDirect,
+			&dialer.GlobalOption{
+				Log:            logger,
+				CheckInterval:  30 * time.Second,
+				CheckTolerance: time.Second,
+			},
+			dialer.InstanceOption{},
+			&dialer.Property{
+				Property: D.Property{Name: name},
+			},
+		)
+	}
+
+	oldDialer := newTestDialer("node-a")
+	defer func() { _ = oldDialer.Close() }()
+	newDialer := newTestDialer("node-a")
+	defer func() { _ = newDialer.Close() }()
+
+	oldGroup := outbound.NewDialerGroup(
+		&dialer.GlobalOption{
+			Log:            logger,
+			CheckInterval:  30 * time.Second,
+			CheckTolerance: time.Second,
+		},
+		"group-a",
+		[]*dialer.Dialer{oldDialer},
+		[]*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *dialer.NetworkType, bool) {},
+	)
+	defer func() { _ = oldGroup.Close() }()
+	newGroup := outbound.NewDialerGroup(
+		&dialer.GlobalOption{
+			Log:            logger,
+			CheckInterval:  30 * time.Second,
+			CheckTolerance: time.Second,
+		},
+		"group-a",
+		[]*dialer.Dialer{newDialer},
+		[]*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *dialer.NetworkType, bool) {},
+	)
+	defer func() { _ = newGroup.Close() }()
+
+	tcp4 := &dialer.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	oldDialer.ReportUnavailableForced(tcp4, nil)
+	oldDialer.NotifyHealthCheckResult(tcp4, false, false)
+	if oldDialer.MustGetAlive(tcp4) {
+		t.Fatal("expected source dialer to be unavailable before inheritance")
+	}
+
+	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
+	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
+
+	newCP.InheritDialerHealthFrom(oldCP)
+
+	if !newDialer.MustGetAlive(tcp4) {
+		t.Fatal("expected reload selection floor to keep the only group candidate alive")
+	}
+	if got := newDialer.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 0 {
+		t.Fatalf("inherited backoff level = %d, want 0", got)
+	}
+}
+
+func TestInheritDialerHealthFromDoesNotReviveDeadDialerWhenGroupHasCandidate(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	newTestDialer := func(name string) *dialer.Dialer {
+		return dialer.NewDialer(
+			direct.SymmetricDirect,
+			&dialer.GlobalOption{
+				Log:            logger,
+				CheckInterval:  30 * time.Second,
+				CheckTolerance: time.Second,
+			},
+			dialer.InstanceOption{},
+			&dialer.Property{
+				Property: D.Property{Name: name},
+			},
+		)
+	}
+
+	oldDialerA := newTestDialer("node-a")
+	defer func() { _ = oldDialerA.Close() }()
+	oldDialerB := newTestDialer("node-b")
+	defer func() { _ = oldDialerB.Close() }()
+	newDialerA := newTestDialer("node-a")
+	defer func() { _ = newDialerA.Close() }()
+	newDialerB := newTestDialer("node-b")
+	defer func() { _ = newDialerB.Close() }()
+
+	oldGroup := outbound.NewDialerGroup(
+		&dialer.GlobalOption{
+			Log:            logger,
+			CheckInterval:  30 * time.Second,
+			CheckTolerance: time.Second,
+		},
+		"group-a",
+		[]*dialer.Dialer{oldDialerA, oldDialerB},
+		[]*dialer.Annotation{{}, {}},
+		outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *dialer.NetworkType, bool) {},
+	)
+	defer func() { _ = oldGroup.Close() }()
+	newGroup := outbound.NewDialerGroup(
+		&dialer.GlobalOption{
+			Log:            logger,
+			CheckInterval:  30 * time.Second,
+			CheckTolerance: time.Second,
+		},
+		"group-a",
+		[]*dialer.Dialer{newDialerA, newDialerB},
+		[]*dialer.Annotation{{}, {}},
+		outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *dialer.NetworkType, bool) {},
+	)
+	defer func() { _ = newGroup.Close() }()
+
+	tcp4 := &dialer.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	oldDialerA.ReportUnavailableForced(tcp4, nil)
+	oldDialerA.NotifyHealthCheckResult(tcp4, false, false)
+	if oldDialerA.MustGetAlive(tcp4) {
+		t.Fatal("expected source dialer A to be unavailable before inheritance")
+	}
+	if !oldDialerB.MustGetAlive(tcp4) {
+		t.Fatal("expected source dialer B to remain available before inheritance")
+	}
+
+	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
+	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
+
+	newCP.InheritDialerHealthFrom(oldCP)
+
+	if newDialerA.MustGetAlive(tcp4) {
+		t.Fatal("expected dead dialer A to remain unavailable while group has another candidate")
+	}
+	if !newDialerB.MustGetAlive(tcp4) {
+		t.Fatal("expected dialer B to remain available after inheritance")
 	}
 }
 

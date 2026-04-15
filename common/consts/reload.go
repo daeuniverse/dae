@@ -10,4 +10,5 @@ const (
 	ReloadProcessing
 	ReloadDone
 	ReloadError
+	ReloadBusy
 )

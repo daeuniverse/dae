@@ -540,7 +540,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			if dnsController == nil {
 				return fmt.Errorf("dns controller is not available")
 			}
-			if err := dnsController.Handle_(c.ctx, dnsMessage, req); err != nil {
+			if err := dnsController.Handle_(c.dnsRequestContext(c.ctx, dnsController), dnsMessage, req); err != nil {
 				if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 					return nil
 				}

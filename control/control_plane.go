@@ -100,6 +100,7 @@ type ControlPlane struct {
 	connStateJanitorDone    chan struct{}
 	connStateJanitorOnce    sync.Once
 	connStateJanitorStarted atomic.Bool
+	connStateCleanupMu      sync.Mutex
 	connStateScratch        *connStateJanitorScratch
 
 	// Track last alert time to avoid spamming logs
@@ -1043,6 +1044,19 @@ func (c *ControlPlane) ActiveDnsController() *DnsController {
 	return c.dnsController
 }
 
+func (c *ControlPlane) dnsRequestContext(ctx context.Context, controller *DnsController) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil || controller == nil || controller == c.dnsController {
+		return ctx
+	}
+	if c.dnsHandoffController.Load() == controller {
+		return controller.baseContext()
+	}
+	return ctx
+}
+
 // SharesActiveDnsControllerWith reports whether both control planes currently
 // resolve DNS through the same active controller instance.
 func (c *ControlPlane) SharesActiveDnsControllerWith(other *ControlPlane) bool {
@@ -1113,6 +1127,7 @@ func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) {
 		if oldGroup == nil {
 			continue
 		}
+		fallback := group.CaptureReloadSelectionFallback()
 		oldDialers := make(map[string]*dialer.Dialer, len(oldGroup.Dialers))
 		for _, d := range oldGroup.Dialers {
 			if d == nil || d.Property() == nil {
@@ -1125,9 +1140,10 @@ func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) {
 				continue
 			}
 			if oldDialer := oldDialers[d.Property().Name]; oldDialer != nil {
-				d.RestoreHealthSnapshot(oldDialer.HealthSnapshot())
+				d.RestoreHealthSnapshot(oldDialer.ReloadHealthSnapshot())
 			}
 		}
+		group.EnsureReloadSelectionFloor(fallback)
 	}
 }
 
@@ -1220,10 +1236,10 @@ func (c *ControlPlane) dnsControllerOption() *DnsControllerOption {
 		},
 		BestDialerChooser: c.chooseBestDnsDialer,
 		TimeoutExceedCallback: func(dialArgument *dialArgument, err error) {
-			c.penalizeDnsDialArg(dialArgument, time.Now())
 			if commonerrors.IsIgnorableConnectionError(err) {
 				return
 			}
+			c.penalizeDnsDialArg(dialArgument, time.Now())
 			if dialArgument == nil || dialArgument.l4proto == consts.L4ProtoStr_UDP {
 				return
 			}
@@ -2065,6 +2081,38 @@ func (c *ControlPlane) startConnStateJanitor() {
 	}()
 }
 
+func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
+	if c == nil || staleBeforeNs == 0 {
+		return
+	}
+
+	c.connStateCleanupMu.Lock()
+	redirectDeleted := c.cleanupRedirectTrackMapBeforeLocked(staleBeforeNs)
+	cookieDeleted := c.cleanupCookiePidMapBeforeLocked(staleBeforeNs)
+	routingHandoffDeleted := c.cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs)
+	udpStats := c.cleanupUdpConnStateMapBeforeLocked(true, staleBeforeNs)
+	tcpStats := c.cleanupTcpConnStateMapBeforeLocked(true, staleBeforeNs)
+	c.connStateCleanupMu.Unlock()
+
+	if c.log == nil {
+		return
+	}
+	if redirectDeleted == 0 && cookieDeleted == 0 && routingHandoffDeleted == 0 &&
+		udpStats.deleted == 0 && tcpStats.deleted == 0 {
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.Debugln("[Reload] No stale datapath state remained after generation retirement")
+		}
+		return
+	}
+	c.log.WithFields(logrus.Fields{
+		"redirect_deleted":        redirectDeleted,
+		"cookie_pid_deleted":      cookieDeleted,
+		"routing_handoff_deleted": routingHandoffDeleted,
+		"udp_conn_deleted":        udpStats.deleted,
+		"tcp_conn_deleted":        tcpStats.deleted,
+	}).Infoln("[Reload] Cleaned stale datapath state after generation retirement")
+}
+
 // stopConnStateJanitor signals the conn state janitor to stop and waits
 // for it to exit gracefully.
 func (c *ControlPlane) stopConnStateJanitor() {
@@ -2097,23 +2145,29 @@ const redirectTrackTimeout = 5 * time.Minute
 // entries that haven't been accessed within redirectTrackTimeout.
 // This is necessary because redirect_track uses HASH (not LRU) to avoid
 // the problem where long-lived connections prevent cleanup of other entries.
-func (c *ControlPlane) cleanupRedirectTrackMap() {
+func (c *ControlPlane) cleanupRedirectTrackMap() int {
+	c.connStateCleanupMu.Lock()
+	defer c.connStateCleanupMu.Unlock()
+	return c.cleanupRedirectTrackMapBeforeLocked(0)
+}
+
+func (c *ControlPlane) cleanupRedirectTrackMapBeforeLocked(staleBeforeNs uint64) int {
 	// Check if we're shutting down - if stop signal is sent, skip cleanup
 	select {
 	case <-c.connStateJanitorStop:
-		return
+		return 0
 	default:
 	}
 
 	bpf := c.currentBpf()
 	if bpf == nil || bpf.RedirectTrack == nil {
-		return
+		return 0
 	}
 
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
 		c.log.Errorf("cleanupRedirectTrackMap: failed to get monotonic time: %v", err)
-		return
+		return 0
 	}
 	nowNano := ts.Nano()
 
@@ -2146,7 +2200,8 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 				if age > maxAge {
 					maxAge = age
 				}
-				if age > timeoutNano {
+				if age > timeoutNano ||
+					(staleBeforeNs > 0 && (value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs)) {
 					keysToDelete = append(keysToDelete, key)
 				}
 			}
@@ -2181,26 +2236,33 @@ func (c *ControlPlane) cleanupRedirectTrackMap() {
 				usagePercent, totalEntries)
 		}
 	}
+	return len(keysToDelete)
 }
 
 // cleanupCookiePidMap removes stale cookie->pid metadata that escaped the
 // cgroup sock_release backstop. Active sockets refresh last_seen_ns in BPF.
-func (c *ControlPlane) cleanupCookiePidMap() {
+func (c *ControlPlane) cleanupCookiePidMap() int {
+	c.connStateCleanupMu.Lock()
+	defer c.connStateCleanupMu.Unlock()
+	return c.cleanupCookiePidMapBeforeLocked(0)
+}
+
+func (c *ControlPlane) cleanupCookiePidMapBeforeLocked(staleBeforeNs uint64) int {
 	select {
 	case <-c.connStateJanitorStop:
-		return
+		return 0
 	default:
 	}
 
 	bpf := c.currentBpf()
 	if bpf == nil || bpf.CookiePidMap == nil {
-		return
+		return 0
 	}
 
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
 		c.log.Errorf("cleanupCookiePidMap: failed to get monotonic time: %v", err)
-		return
+		return 0
 	}
 	nowNano := ts.Nano()
 	timeoutNano := cookiePidMapTimeout.Nanoseconds()
@@ -2223,7 +2285,8 @@ func (c *ControlPlane) cleanupCookiePidMap() {
 			for i := 0; i < count; i++ {
 				totalEntries++
 				age := nowNano - int64(valuesOut[i].LastSeenNs)
-				if age > timeoutNano {
+				if age > timeoutNano ||
+					(staleBeforeNs > 0 && (valuesOut[i].LastSeenNs == 0 || valuesOut[i].LastSeenNs < staleBeforeNs)) {
 					keysToDelete = append(keysToDelete, keysOut[i])
 				}
 			}
@@ -2252,27 +2315,34 @@ func (c *ControlPlane) cleanupCookiePidMap() {
 			c.log.Warnf("cleanupCookiePidMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
 		}
 	}
+	return len(keysToDelete)
 }
 
 // cleanupRoutingHandoffMap removes expired tuple-miss routing metadata entries.
 // The handoff map is a short-lived bridge for userspace consumers that miss the
 // authoritative conn-state publication window.
-func (c *ControlPlane) cleanupRoutingHandoffMap() {
+func (c *ControlPlane) cleanupRoutingHandoffMap() int {
+	c.connStateCleanupMu.Lock()
+	defer c.connStateCleanupMu.Unlock()
+	return c.cleanupRoutingHandoffMapBeforeLocked(0)
+}
+
+func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64) int {
 	select {
 	case <-c.connStateJanitorStop:
-		return
+		return 0
 	default:
 	}
 
 	bpf := c.currentBpf()
 	if bpf == nil || bpf.RoutingHandoffMap == nil {
-		return
+		return 0
 	}
 
 	nowNano, err := monotonicNowNano()
 	if err != nil {
 		c.log.Errorf("cleanupRoutingHandoffMap: failed to get monotonic time: %v", err)
-		return
+		return 0
 	}
 
 	scratch := c.connStateJanitorScratch()
@@ -2292,7 +2362,8 @@ func (c *ControlPlane) cleanupRoutingHandoffMap() {
 		if count > 0 {
 			for i := 0; i < count; i++ {
 				totalEntries++
-				if routingHandoffExpired(nowNano, valuesOut[i].LastSeenNs) {
+				if routingHandoffExpired(nowNano, valuesOut[i].LastSeenNs) ||
+					(staleBeforeNs > 0 && (valuesOut[i].LastSeenNs == 0 || valuesOut[i].LastSeenNs < staleBeforeNs)) {
 					keysToDelete = append(keysToDelete, keysOut[i])
 				}
 			}
@@ -2322,6 +2393,7 @@ func (c *ControlPlane) cleanupRoutingHandoffMap() {
 			c.log.Warnf("cleanupRoutingHandoffMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
 		}
 	}
+	return len(keysToDelete)
 }
 
 // cleanupUdpConnStateMap iterates through the UDP conn state map and removes
@@ -2331,6 +2403,12 @@ func (c *ControlPlane) cleanupRoutingHandoffMap() {
 // When map is under pressure (high usage), timeouts are dynamically reduced
 // to free up space more aggressively in a single pass.
 func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
+	c.connStateCleanupMu.Lock()
+	defer c.connStateCleanupMu.Unlock()
+	return c.cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup, 0)
+}
+
+func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool, staleBeforeNs uint64) mapCleanupStats {
 	stats := mapCleanupStats{}
 
 	// Check if we're shutting down - if stop signal is sent, skip cleanup
@@ -2395,7 +2473,8 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 				}
 
 				age := nowNano - int64(value.LastSeenNs)
-				if age > timeout {
+				if age > timeout ||
+					(staleBeforeNs > 0 && (value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs)) {
 					keysToDelete = append(keysToDelete, key)
 				}
 			}
@@ -2440,6 +2519,12 @@ func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanup
 // entries that haven't been seen within their timeout period or are in CLOSING state.
 // When map is under pressure, aggressive cleanup applies with shorter timeouts.
 func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
+	c.connStateCleanupMu.Lock()
+	defer c.connStateCleanupMu.Unlock()
+	return c.cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup, 0)
+}
+
+func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool, staleBeforeNs uint64) mapCleanupStats {
 	stats := mapCleanupStats{}
 
 	// Check if we're shutting down - if stop signal is sent, skip cleanup
@@ -2508,6 +2593,10 @@ func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanup
 					if age > establishedTimeout {
 						shouldDelete = true
 					}
+				}
+				if !shouldDelete && staleBeforeNs > 0 &&
+					(value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs) {
+					shouldDelete = true
 				}
 
 				if shouldDelete {
@@ -3026,7 +3115,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 						if dnsController == nil {
 							return
 						}
-						if e := dnsController.Handle_(c.ctx, dnsMessage, req); e != nil {
+						if e := dnsController.Handle_(c.dnsRequestContext(c.ctx, dnsController), dnsMessage, req); e != nil {
 							if stderrors.Is(e, ErrDNSQueryConcurrencyLimitExceeded) {
 								if c.log.IsLevelEnabled(logrus.DebugLevel) {
 									c.log.WithFields(logrus.Fields{

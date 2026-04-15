@@ -291,7 +291,7 @@ func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
 	}
 }
 
-func TestRestoreRejectedReloadProgressUsesDoneWhileSettling(t *testing.T) {
+func TestRestoreRejectedReloadProgressUsesBusyWhileSettling(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
 	oldWriter := setRunSignalProgress
 	setRunSignalProgress = func(code byte, content string) error {
@@ -307,15 +307,15 @@ func TestRestoreRejectedReloadProgressUsesDoneWhileSettling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readSignalProgressFile() error = %v", err)
 	}
-	if code != consts.ReloadDone {
-		t.Fatalf("code = %q, want ReloadDone", code)
+	if code != consts.ReloadBusy {
+		t.Fatalf("code = %q, want ReloadBusy", code)
 	}
 	if content == "" {
 		t.Fatal("expected settling rejection to write a human-readable message")
 	}
 }
 
-func TestRestoreRejectedReloadProgressUsesProcessingWhileActive(t *testing.T) {
+func TestRestoreRejectedReloadProgressUsesBusyWhileActive(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
 	oldWriter := setRunSignalProgress
 	setRunSignalProgress = func(code byte, content string) error {
@@ -334,8 +334,8 @@ func TestRestoreRejectedReloadProgressUsesProcessingWhileActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readSignalProgressFile() error = %v", err)
 	}
-	if code != consts.ReloadProcessing {
-		t.Fatalf("code = %q, want ReloadProcessing", code)
+	if code != consts.ReloadBusy {
+		t.Fatalf("code = %q, want ReloadBusy", code)
 	}
 	if content == "" {
 		t.Fatal("expected active rejection to write a human-readable message")
@@ -343,6 +343,19 @@ func TestRestoreRejectedReloadProgressUsesProcessingWhileActive(t *testing.T) {
 }
 
 func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	oldWriter := setRunSignalProgress
+	setRunSignalProgress = func(code byte, content string) error {
+		return writeSignalProgressFile(progressPath, code, content)
+	}
+	t.Cleanup(func() {
+		setRunSignalProgress = oldWriter
+	})
+
+	if err := writeSignalProgressFile(progressPath, consts.ReloadBusy, reloadBusyRetiringMessage); err != nil {
+		t.Fatalf("writeSignalProgressFile() error = %v", err)
+	}
+
 	var reloadPending atomic.Bool
 	reloadPending.Store(true)
 	retirementDone := make(chan struct{})
@@ -355,6 +368,17 @@ func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if reloadPending.Load() {
 		t.Fatal("expected reloadPending to clear after retirement completes")
+	}
+
+	code, content, err := readSignalProgressFile(progressPath)
+	if err != nil {
+		t.Fatalf("readSignalProgressFile() error = %v", err)
+	}
+	if code != consts.ReloadDone {
+		t.Fatalf("code = %q, want ReloadDone", code)
+	}
+	if content != "" {
+		t.Fatalf("content = %q, want empty after retirement completes", content)
 	}
 }
 

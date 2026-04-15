@@ -113,6 +113,11 @@ type Dialer struct {
 	failCount        [8]int
 	trafficFailCount [8]atomic.Int32
 
+	// reloadInheritedHealth defers the first health check after a warm reload.
+	// The replacement generation already has a usable health snapshot; running
+	// another cold-start probe immediately would amplify reload storms.
+	reloadInheritedHealth atomic.Bool
+
 	// stickyIpDialer holds reference to the sticky IP wrapper for cache management
 	// This is used for health check cycle management and failover tracking
 	stickyIpDialer *stickyip.StickyIpDialer
@@ -462,10 +467,27 @@ func (d *Dialer) HealthSnapshot() DialerHealthSnapshot {
 	return snapshot
 }
 
+// ReloadHealthSnapshot returns a sanitized snapshot that is safe to inherit
+// across generations during reload. It preserves the last known availability
+// and latency history, but intentionally drops transient punishment/backoff
+// state so a replacement generation does not get pinned into a dead-on-arrival
+// health view by the previous generation's last failure burst.
+func (d *Dialer) ReloadHealthSnapshot() DialerHealthSnapshot {
+	snapshot := d.HealthSnapshot()
+	for idx := range snapshot.Collections {
+		collection := &snapshot.Collections[idx]
+		collection.FailCount = 0
+		collection.TrafficFailCount = 0
+	}
+	snapshot.Recovery = [3]DialerRecoveryHealthSnapshot{}
+	return snapshot
+}
+
 func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 	if d == nil {
 		return
 	}
+	d.reloadInheritedHealth.Store(true)
 
 	type restoreUpdate struct {
 		typ    *NetworkType
@@ -535,6 +557,46 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 	}
 }
 
+// MarkAliveForReloadFallback keeps one group candidate selectable when reload
+// health inheritance would otherwise leave a selection set empty.
+func (d *Dialer) MarkAliveForReloadFallback(typ *NetworkType) {
+	if d == nil || typ == nil {
+		return
+	}
+	d.reloadInheritedHealth.Store(true)
+
+	type restoreUpdate struct {
+		typ    *NetworkType
+		was    bool
+		groups []*AliveDialerSet
+	}
+
+	idx := typ.Index()
+	d.collectionFineMu.Lock()
+	collection := d.collections[idx]
+	if collection == nil {
+		d.collectionFineMu.Unlock()
+		return
+	}
+	wasAlive := collection.Alive.Load()
+	collection.Alive.Store(true)
+	d.failCount[idx] = 0
+	d.trafficFailCount[idx].Store(0)
+	update := restoreUpdate{
+		typ:    cloneNetworkType(typ),
+		was:    wasAlive,
+		groups: d.snapshotAliveDialerGroupsLocked(collection),
+	}
+	d.collectionFineMu.Unlock()
+
+	for _, a := range update.groups {
+		a.NotifyLatencyChange(d, true)
+	}
+	if update.typ != nil && !update.was {
+		d.notifyAliveTransition(update.typ, true)
+	}
+}
+
 // IncrementCheckCycle advances the health check cycle for sticky IP caching.
 // This is called by the health checker to advance the cycle and invalidate
 // old cache entries, allowing IP failover to different resolved IPs.
@@ -575,7 +637,12 @@ func (d *Dialer) NotifyHealthCheckResult(typ *NetworkType, success bool, isReviv
 
 		// Track failures - may trigger immediate unavailability
 		if d.property.Address != "" {
-			if recordProxyFailure(d.property.Address) {
+			if proxyFailureSuppressedForReload() {
+				if d.Log != nil && d.Log.IsLevelEnabled(logrus.DebugLevel) {
+					d.Log.WithField("dialer", d.property.Name).
+						Debugln("Suppressing proxy failure promotion during reload handoff")
+				}
+			} else if recordProxyFailure(d.property.Address) {
 				// Threshold reached - immediately mark dialer as unavailable
 				// This bypasses the 30-second health check cycle for faster failover
 				d.markUnavailableFromProxyFailure()

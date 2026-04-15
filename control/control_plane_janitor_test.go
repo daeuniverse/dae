@@ -618,6 +618,162 @@ func TestCleanupRoutingHandoffMapRemovesExpiredEntries(t *testing.T) {
 	}
 }
 
+func TestRunReloadRetirementCleanupRemovesOnlyEntriesUntouchedSinceCutover(t *testing.T) {
+	now := monotonicNowNs(t)
+	cutoff := now - uint64((2 * time.Second).Nanoseconds())
+	staleNs := cutoff - 1
+	freshNs := cutoff + 1
+
+	redirectMap := newJanitorTestMap(t, "redirect_track")
+	cookieMap := newJanitorTestMap(t, "cookie_pid_map")
+	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	tcpMap := newJanitorTestMap(t, "tcp_conn_state_map")
+	handoffMap := newJanitorTestMap(t, "routing_handoff_map")
+
+	staleRedirectKey := redirectTupleFromAddrs(netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("10.0.0.1"))
+	freshRedirectKey := redirectTupleFromAddrs(netip.MustParseAddr("1.1.1.2"), netip.MustParseAddr("10.0.0.2"))
+	staleRedirect := bpfRedirectEntry{Ifindex: 7, FromWan: 1, LastSeenNs: staleNs}
+	freshRedirect := bpfRedirectEntry{Ifindex: 8, FromWan: 1, LastSeenNs: freshNs}
+	if err := redirectMap.Update(staleRedirectKey, &staleRedirect, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update stale redirect_track: %v", err)
+	}
+	if err := redirectMap.Update(freshRedirectKey, &freshRedirect, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update fresh redirect_track: %v", err)
+	}
+
+	staleCookieKey := uint64(101)
+	freshCookieKey := uint64(202)
+	staleCookie := bpfPidPname{LastSeenNs: staleNs, Pid: 1234}
+	freshCookie := bpfPidPname{LastSeenNs: freshNs, Pid: 5678}
+	if err := cookieMap.Update(staleCookieKey, &staleCookie, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update stale cookie_pid_map: %v", err)
+	}
+	if err := cookieMap.Update(freshCookieKey, &freshCookie, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update fresh cookie_pid_map: %v", err)
+	}
+
+	staleUDPKey := tuplesKeyFromAddrPorts(
+		netip.MustParseAddrPort("10.0.1.1:12345"),
+		netip.MustParseAddrPort("9.9.9.9:443"),
+		unix.IPPROTO_UDP,
+	)
+	freshUDPKey := tuplesKeyFromAddrPorts(
+		netip.MustParseAddrPort("10.0.1.2:12346"),
+		netip.MustParseAddrPort("9.9.9.9:443"),
+		unix.IPPROTO_UDP,
+	)
+	staleUDP := bpfUdpConnState{LastSeenNs: staleNs}
+	staleUDP.Meta.Data.HasRouting = 1
+	staleUDP.Meta.Data.Outbound = 3
+	freshUDP := bpfUdpConnState{LastSeenNs: freshNs}
+	freshUDP.Meta.Data.HasRouting = 1
+	freshUDP.Meta.Data.Outbound = 4
+	if err := udpMap.Update(staleUDPKey, &staleUDP, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update stale udp_conn_state_map: %v", err)
+	}
+	if err := udpMap.Update(freshUDPKey, &freshUDP, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update fresh udp_conn_state_map: %v", err)
+	}
+
+	staleTCPKey := tuplesKeyFromAddrPorts(
+		netip.MustParseAddrPort("10.0.2.1:22345"),
+		netip.MustParseAddrPort("8.8.8.8:443"),
+		unix.IPPROTO_TCP,
+	)
+	freshTCPKey := tuplesKeyFromAddrPorts(
+		netip.MustParseAddrPort("10.0.2.2:22346"),
+		netip.MustParseAddrPort("8.8.8.8:443"),
+		unix.IPPROTO_TCP,
+	)
+	staleTCP := bpfTcpConnState{LastSeenNs: staleNs}
+	staleTCP.Meta.Data.HasRouting = 1
+	staleTCP.Meta.Data.Outbound = 5
+	freshTCP := bpfTcpConnState{LastSeenNs: freshNs}
+	freshTCP.Meta.Data.HasRouting = 1
+	freshTCP.Meta.Data.Outbound = 6
+	if err := tcpMap.Update(staleTCPKey, &staleTCP, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update stale tcp_conn_state_map: %v", err)
+	}
+	if err := tcpMap.Update(freshTCPKey, &freshTCP, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update fresh tcp_conn_state_map: %v", err)
+	}
+
+	staleHandoffKey := tuplesKeyFromAddrPorts(
+		netip.MustParseAddrPort("10.0.3.1:32345"),
+		netip.MustParseAddrPort("4.4.4.4:443"),
+		unix.IPPROTO_TCP,
+	)
+	freshHandoffKey := tuplesKeyFromAddrPorts(
+		netip.MustParseAddrPort("10.0.3.2:32346"),
+		netip.MustParseAddrPort("4.4.4.5:443"),
+		unix.IPPROTO_TCP,
+	)
+	staleHandoff := newRoutingHandoffEntryForTest(staleNs, bpfRoutingResult{Outbound: 7})
+	freshHandoff := newRoutingHandoffEntryForTest(freshNs, bpfRoutingResult{Outbound: 8})
+	if err := handoffMap.Update(staleHandoffKey, &staleHandoff, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update stale routing_handoff_map: %v", err)
+	}
+	if err := handoffMap.Update(freshHandoffKey, &freshHandoff, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update fresh routing_handoff_map: %v", err)
+	}
+
+	plane := &ControlPlane{
+		log: logrus.New(),
+		core: &controlPlaneCore{
+			bpf: &bpfObjects{bpfMaps: bpfMaps{
+				RedirectTrack:     redirectMap,
+				CookiePidMap:      cookieMap,
+				UdpConnStateMap:   udpMap,
+				TcpConnStateMap:   tcpMap,
+				RoutingHandoffMap: handoffMap,
+			}},
+		},
+		connStateJanitorStop: make(chan struct{}),
+	}
+
+	plane.RunReloadRetirementCleanup(cutoff)
+
+	var gotRedirect bpfRedirectEntry
+	if err := redirectMap.Lookup(staleRedirectKey, &gotRedirect); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("stale redirect_track lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if err := redirectMap.Lookup(freshRedirectKey, &gotRedirect); err != nil {
+		t.Fatalf("fresh redirect_track lookup failed: %v", err)
+	}
+
+	var gotCookie bpfPidPname
+	if err := cookieMap.Lookup(staleCookieKey, &gotCookie); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("stale cookie_pid_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if err := cookieMap.Lookup(freshCookieKey, &gotCookie); err != nil {
+		t.Fatalf("fresh cookie_pid_map lookup failed: %v", err)
+	}
+
+	var gotUDP bpfUdpConnState
+	if err := udpMap.Lookup(staleUDPKey, &gotUDP); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("stale udp_conn_state_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if err := udpMap.Lookup(freshUDPKey, &gotUDP); err != nil {
+		t.Fatalf("fresh udp_conn_state_map lookup failed: %v", err)
+	}
+
+	var gotTCP bpfTcpConnState
+	if err := tcpMap.Lookup(staleTCPKey, &gotTCP); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("stale tcp_conn_state_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if err := tcpMap.Lookup(freshTCPKey, &gotTCP); err != nil {
+		t.Fatalf("fresh tcp_conn_state_map lookup failed: %v", err)
+	}
+
+	var gotHandoff bpfRoutingHandoffEntry
+	if err := handoffMap.Lookup(staleHandoffKey, &gotHandoff); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("stale routing_handoff_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+	if err := handoffMap.Lookup(freshHandoffKey, &gotHandoff); err != nil {
+		t.Fatalf("fresh routing_handoff_map lookup failed: %v", err)
+	}
+}
+
 func newJanitorTestMap(t *testing.T, mapName string) *ebpf.Map {
 	t.Helper()
 

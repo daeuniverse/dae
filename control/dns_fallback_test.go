@@ -114,3 +114,29 @@ func TestDnsForwarder_ReportUnavailable_IgnoresCanceled(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.EqualValues(t, 0, unavailableCalls.Load(), "context canceled should not poison dialer health")
 }
+
+func TestDnsForwarder_ReportUnavailable_IgnoresOperationCanceled(t *testing.T) {
+	originalFactory := dnsForwarderFactory
+	t.Cleanup(func() {
+		dnsForwarderFactory = originalFactory
+	})
+
+	var unavailableCalls atomic.Int32
+	operationCanceled := errors.New("operation was canceled")
+
+	dnsForwarderFactory = func(upstream *dns.Upstream, dialArg dialArgument, _ *logrus.Logger) (DnsForwarder, error) {
+		return &stubDnsForwarder{forward: func(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+			return nil, operationCanceled
+		}}, nil
+	}
+
+	ctrl := &DnsController{
+		timeoutExceedCallback: func(dialArg *dialArgument, err error) {
+			unavailableCalls.Add(1)
+		},
+	}
+
+	_, err := ctrl.forwardWithDialArg(context.Background(), &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "dns.example", Port: 53}, &dialArgument{l4proto: consts.L4ProtoStr_UDP}, []byte{0, 1})
+	require.ErrorIs(t, err, operationCanceled)
+	require.EqualValues(t, 0, unavailableCalls.Load(), "operation-canceled teardown should not poison dialer health")
+}

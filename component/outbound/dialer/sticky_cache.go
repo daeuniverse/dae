@@ -7,6 +7,7 @@ package dialer
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	stickyip "github.com/daeuniverse/outbound/dialer/stickyip"
@@ -93,6 +94,9 @@ var globalProxyIpHealthTracker = &proxyIpHealthTracker{
 	failures: make(map[string]proxyIpFailureEntry),
 }
 
+var reloadProxyFailureSuppression atomic.Int32
+var reloadProxyFailureSuppressUntil atomic.Int64
+
 type proxyIpFailureEntry struct {
 	count       int32
 	lastUpdated time.Time
@@ -102,6 +106,7 @@ const (
 	maxConsecutiveFailures      = 3
 	proxyFailureTTL             = 15 * time.Minute
 	proxyFailureCleanupInterval = 5 * time.Minute
+	reloadFailureQuiesce        = Timeout + 10*time.Second
 )
 
 func (t *proxyIpHealthTracker) maybeCleanupLocked(now time.Time) {
@@ -127,6 +132,47 @@ func resetGlobalProxyState() {
 	globalProxyIpHealthTracker.failures = make(map[string]proxyIpFailureEntry)
 	globalProxyIpHealthTracker.nextCleanupAt = time.Time{}
 	globalProxyIpHealthTracker.Unlock()
+}
+
+// ResetGlobalProxyStateForReload rotates process-global proxy sticky-IP and
+// failure-tracker state before building a replacement generation. Existing
+// dialers keep using the cache objects they already hold, while the new
+// generation starts from a clean global view instead of inheriting poisoned
+// proxy IP or failure state from the previous generation.
+func ResetGlobalProxyStateForReload() {
+	resetGlobalProxyState()
+}
+
+// BeginReloadProxyFailureSuppression suppresses cross-dialer proxy-IP failure
+// promotion while reload is actively cutting over between generations. The
+// matching EndReloadProxyFailureSuppression must be called when the reload
+// attempt fully settles or aborts.
+func BeginReloadProxyFailureSuppression() {
+	reloadProxyFailureSuppression.Add(1)
+}
+
+// EndReloadProxyFailureSuppression releases one outstanding reload-time
+// suppression scope.
+func EndReloadProxyFailureSuppression() {
+	for {
+		current := reloadProxyFailureSuppression.Load()
+		if current <= 0 {
+			return
+		}
+		if reloadProxyFailureSuppression.CompareAndSwap(current, current-1) {
+			if current == 1 {
+				reloadProxyFailureSuppressUntil.Store(time.Now().Add(reloadFailureQuiesce).UnixNano())
+			}
+			return
+		}
+	}
+}
+
+func proxyFailureSuppressedForReload() bool {
+	if reloadProxyFailureSuppression.Load() > 0 {
+		return true
+	}
+	return time.Now().UnixNano() < reloadProxyFailureSuppressUntil.Load()
 }
 
 // recordProxyFailure records a failure for the given proxy address.

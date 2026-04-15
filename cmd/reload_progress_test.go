@@ -133,6 +133,24 @@ func TestWaitReloadCompletionWaitsPastReloadSend(t *testing.T) {
 	}
 }
 
+func TestWaitReloadCompletionReturnsBusyContent(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	if err := writeSignalProgressFile(progressPath, consts.ReloadBusy, "reload already in progress"); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+
+	code, content, err := waitReloadCompletion(progressPath, 0, 5*time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("waitReloadCompletion() error = %v", err)
+	}
+	if code != consts.ReloadBusy {
+		t.Fatalf("code = %v, want ReloadBusy", code)
+	}
+	if content != "reload already in progress" {
+		t.Fatalf("content = %q, want busy message", content)
+	}
+}
+
 func TestWaitReloadCompletionTimesOut(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
 	if err := writeSignalProgressFile(progressPath, consts.ReloadProcessing, ""); err != nil {

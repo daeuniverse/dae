@@ -616,7 +616,7 @@ func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn,
 		if dnsController == nil {
 			return false, fmt.Errorf("dns controller is not available")
 		}
-		err := dnsController.HandleWithResponseWriter_(ctx, msg, req, writer)
+		err := dnsController.HandleWithResponseWriter_(c.dnsRequestContext(ctx, dnsController), msg, req, writer)
 		if err != nil {
 			if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 				// REFUSED was already sent by the controller

@@ -36,6 +36,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/daedns"
+	outbounddialer "github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -44,6 +45,7 @@ import (
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -55,12 +57,20 @@ const (
 	reloadReadyTimeout             = 45 * time.Second
 )
 
+const (
+	reloadBusyActiveMessage   = "reload already in progress"
+	reloadBusyRetiringMessage = "reload request ignored: previous reload is still retiring old generation"
+)
+
 var (
 	CheckNetworkLinks = []string{
 		"http://edge.microsoft.com/captiveportal/generate_204",
 		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
+	beginReloadProxyFailureSuppression = outbounddialer.BeginReloadProxyFailureSuppression
+	endReloadProxyFailureSuppression   = outbounddialer.EndReloadProxyFailureSuppression
+	resetReloadProxyRuntimeState       = outbounddialer.ResetGlobalProxyStateForReload
 )
 
 type signalShutdownListener interface {
@@ -85,8 +95,9 @@ type signalShutdownStagedHandoff struct {
 }
 
 type reloadRequest struct {
-	isSuspend   bool
-	requestedAt time.Time
+	isSuspend       bool
+	requestedAt     time.Time
+	requestedAtMono uint64
 }
 
 type reloadRetirementControlPlane interface {
@@ -136,6 +147,7 @@ func tryQueueReloadRequest(
 		restoreRejectedReloadProgress(reloadActive, false)
 		return false
 	}
+	beginReloadProxyFailureSuppression()
 	select {
 	case reloadReqs <- req:
 		return true
@@ -143,6 +155,7 @@ func tryQueueReloadRequest(
 		if reloadPending != nil {
 			reloadPending.Store(false)
 		}
+		endReloadProxyFailureSuppression()
 		if log != nil {
 			log.Warnln("[Reload] Last reload request still processing, ignore this one")
 		}
@@ -157,23 +170,42 @@ var setRunSignalProgress = func(code byte, content string) error {
 
 func restoreRejectedReloadProgress(reloadActive *atomic.Bool, forceProcessing bool) {
 	if forceProcessing || (reloadActive != nil && reloadActive.Load()) {
-		_ = setRunSignalProgress(consts.ReloadProcessing, "reload already in progress")
+		_ = setRunSignalProgress(consts.ReloadBusy, reloadBusyActiveMessage)
 		return
 	}
-	_ = setRunSignalProgress(consts.ReloadDone, "reload request ignored: previous reload is still retiring old generation")
+	_ = setRunSignalProgress(consts.ReloadBusy, reloadBusyRetiringMessage)
+}
+
+func clearRejectedReloadProgress() {
+	code, _, err := readSignalProgressFile(SignalProgressFilePath)
+	if err != nil {
+		return
+	}
+	if code == consts.ReloadBusy {
+		_ = setRunSignalProgress(consts.ReloadDone, "")
+	}
+}
+
+func clearReloadPending(flag *atomic.Bool) {
+	if flag != nil {
+		flag.Store(false)
+	}
+	endReloadProxyFailureSuppression()
+	clearRejectedReloadProgress()
 }
 
 func releaseReloadPendingAfterRetirement(flag *atomic.Bool, retirementDone <-chan struct{}) {
 	if flag == nil {
+		endReloadProxyFailureSuppression()
 		return
 	}
 	if retirementDone == nil {
-		flag.Store(false)
+		clearReloadPending(flag)
 		return
 	}
 	go func() {
 		<-retirementDone
-		flag.Store(false)
+		clearReloadPending(flag)
 	}()
 }
 
@@ -189,6 +221,14 @@ func remainingReloadRetirementBudget(startedAt time.Time, budget time.Duration) 
 		return 0
 	}
 	return remaining
+}
+
+func monotonicNowNano() uint64 {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0
+	}
+	return uint64(ts.Nano())
 }
 
 func init() {
@@ -333,12 +373,14 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	var pendingStagedHandoff *stagedReloadHandoff
 	var pendingRetirementDone <-chan struct{}
 	var pendingReloadRequestedAt time.Time
+	var pendingReloadRequestedAtMono uint64
 	fastExit := false
 
 	go func() {
 		for req := range reloadReqs {
 			reloadActive.Store(true)
 			reloadStartedAt := req.requestedAt
+			reloadStartedAtMono := req.requestedAtMono
 			if reloadStartedAt.IsZero() {
 				reloadStartedAt = time.Now()
 			}
@@ -350,6 +392,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				case nextReq := <-reloadReqs:
 					req = nextReq
 					reloadStartedAt = req.requestedAt
+					reloadStartedAtMono = req.requestedAtMono
 					if reloadStartedAt.IsZero() {
 						reloadStartedAt = time.Now()
 					}
@@ -367,6 +410,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			_ = sdnotify.Reloading()
 			_ = setRunSignalProgress(consts.ReloadProcessing, "")
 			reloadingErr = nil
+			resetReloadProxyRuntimeState()
 
 			// Load new config.
 			abortConnections := os.Remove(AbortFile) == nil
@@ -381,7 +425,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, err.Error())
 					reloadActive.Store(false)
-					reloadPending.Store(false)
+					clearReloadPending(&reloadPending)
 					continue
 				}
 				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
@@ -398,7 +442,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, err.Error())
 					reloadActive.Store(false)
-					reloadPending.Store(false)
+					clearReloadPending(&reloadPending)
 					continue
 				}
 				log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
@@ -445,7 +489,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
 					reloadActive.Store(false)
-					reloadPending.Store(false)
+					clearReloadPending(&reloadPending)
 					continue
 				}
 
@@ -460,7 +504,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
 					reloadActive.Store(false)
-					reloadPending.Store(false)
+					clearReloadPending(&reloadPending)
 					continue
 				}
 
@@ -484,6 +528,8 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					newListener:      stagedListener,
 					abortConnections: abortConnections,
 				}
+				pendingReloadRequestedAt = reloadStartedAt
+				pendingReloadRequestedAtMono = reloadStartedAtMono
 				beginReloadHandoff(&reloading, runStateChanges)
 				notifyRunStateChange(runStateChanges)
 				continue
@@ -554,7 +600,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
 					reloadActive.Store(false)
-					reloadPending.Store(false)
+					clearReloadPending(&reloadPending)
 					continue
 				}
 			}
@@ -599,6 +645,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			}
 			pendingRetirementDone = nil
 			pendingReloadRequestedAt = reloadStartedAt
+			pendingReloadRequestedAtMono = reloadStartedAtMono
 			beginReloadHandoff(&reloading, runStateChanges)
 
 			// Ready to close.
@@ -622,7 +669,18 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				retirementDone := make(chan struct{})
 				pendingRetirementDone = retirementDone
 				drainBudget := remainingReloadRetirementBudget(pendingReloadRequestedAt, reloadTotalSwitchBudget)
-				go func(ctx context.Context, c *control.ControlPlane, cancel context.CancelFunc, abort bool, maxDrain time.Duration, done chan struct{}) {
+				staleBeforeNs := pendingReloadRequestedAtMono
+				successor := newC
+				go func(
+					ctx context.Context,
+					c *control.ControlPlane,
+					successor *control.ControlPlane,
+					cancel context.CancelFunc,
+					abort bool,
+					maxDrain time.Duration,
+					staleBeforeNs uint64,
+					done chan struct{},
+				) {
 					defer close(done)
 					switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
 					case controlPlaneDrainIdle:
@@ -646,8 +704,11 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					if closeErr := c.Close(); closeErr != nil {
 						log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
 					}
+					if successor != nil {
+						successor.RunReloadRetirementCleanup(staleBeforeNs)
+					}
 					log.Warnln("[Reload] Retired old control plane")
-				}(retireCtx, oldC, oldCancel, abortConnections, drainBudget, retirementDone)
+				}(retireCtx, oldC, successor, oldCancel, abortConnections, drainBudget, staleBeforeNs, retirementDone)
 			}
 
 			if pprofServer != nil {
@@ -677,9 +738,17 @@ loop:
 				fastExit = true
 				break loop
 			case syscall.SIGUSR2:
-				tryQueueReloadRequest(log, reloadReqs, &reloadActive, &reloadPending, reloadRequest{isSuspend: true, requestedAt: time.Now()})
+				tryQueueReloadRequest(log, reloadReqs, &reloadActive, &reloadPending, reloadRequest{
+					isSuspend:       true,
+					requestedAt:     time.Now(),
+					requestedAtMono: monotonicNowNano(),
+				})
 			case syscall.SIGUSR1:
-				tryQueueReloadRequest(log, reloadReqs, &reloadActive, &reloadPending, reloadRequest{isSuspend: false, requestedAt: time.Now()})
+				tryQueueReloadRequest(log, reloadReqs, &reloadActive, &reloadPending, reloadRequest{
+					isSuspend:       false,
+					requestedAt:     time.Now(),
+					requestedAtMono: monotonicNowNano(),
+				})
 			case syscall.SIGHUP:
 				// Ignore.
 				continue
@@ -728,7 +797,7 @@ loop:
 						log.WithError(reloadingErr).Errorln("[Reload] Reload listener failed before becoming ready")
 						reloading.Store(false)
 						reloadActive.Store(false)
-						reloadPending.Store(false)
+						clearReloadPending(&reloadPending)
 						continue
 					}
 					_ = sdnotify.Ready()
@@ -815,7 +884,7 @@ loop:
 					}
 					reloading.Store(false)
 					reloadActive.Store(false)
-					reloadPending.Store(false)
+					clearReloadPending(&reloadPending)
 					continue
 				}
 				dnsHandoffActive := pendingStagedHandoff != nil &&
@@ -852,7 +921,18 @@ loop:
 						retirementDone := make(chan struct{})
 						pendingRetirementDone = retirementDone
 						drainBudget := remainingReloadRetirementBudget(pendingReloadRequestedAt, reloadTotalSwitchBudget)
-						go func(ctx context.Context, c *control.ControlPlane, cancel context.CancelFunc, abort bool, maxDrain time.Duration, done chan struct{}) {
+						staleBeforeNs := pendingReloadRequestedAtMono
+						successor := c
+						go func(
+							ctx context.Context,
+							c *control.ControlPlane,
+							successor *control.ControlPlane,
+							cancel context.CancelFunc,
+							abort bool,
+							maxDrain time.Duration,
+							staleBeforeNs uint64,
+							done chan struct{},
+						) {
 							defer close(done)
 							switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
 							case controlPlaneDrainIdle:
@@ -873,8 +953,11 @@ loop:
 							if closeErr := c.Close(); closeErr != nil {
 								log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
 							}
+							if successor != nil {
+								successor.RunReloadRetirementCleanup(staleBeforeNs)
+							}
 							log.Warnln("[Reload] Retired old control plane")
-						}(retireCtx, oldC, oldCancel, abortConnections, drainBudget, retirementDone)
+						}(retireCtx, oldC, successor, oldCancel, abortConnections, drainBudget, staleBeforeNs, retirementDone)
 					}
 				}
 				_ = sdnotify.Ready()

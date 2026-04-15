@@ -8,6 +8,7 @@
 package errors
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -66,12 +67,29 @@ func IsClosedConnection(err error) bool {
 	}
 
 	// Standard check using errors.Is
-	if errors.Is(err, ErrClosedListener) || errors.Is(err, ErrClosedConnection) {
+	if errors.Is(err, ErrClosedListener) || errors.Is(err, ErrClosedConnection) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) {
 		return true
 	}
 
 	// Check by error message for backward compatibility
 	return Contains(err.Error(), "use of closed network connection")
+}
+
+// IsCanceledOrClosed reports whether err came from request cancellation or a
+// connection/listener being closed during lifecycle teardown. These errors are
+// expected during reload/shutdown and must not poison dialer health state.
+func IsCanceledOrClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if IsClosedConnection(err) {
+		return true
+	}
+	errStr := err.Error()
+	return Contains(errStr, "context canceled") || Contains(errStr, "operation was canceled")
 }
 
 // IsNetworkUnreachable checks if the error is due to network unreachability.
@@ -134,6 +152,9 @@ func IsAddressNotSuitable(err error) bool {
 func IsIgnorableConnectionError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if IsCanceledOrClosed(err) {
+		return true
 	}
 
 	// Fast path: sentinel errors (pointer comparison only)

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	commonerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -1711,7 +1712,7 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 		return
 	}
 	// Caller-driven cancellation should not mark a dialer as unavailable.
-	if errors.Is(err, context.Canceled) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
+	if commonerrors.IsCanceledOrClosed(err) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
 		return
 	}
 	if lifecycle, ok := newDnsUdpLifecycleContext(dialArg, UdpLifecycleProfile{}); ok {
@@ -1732,7 +1733,7 @@ func (c *DnsController) shouldRetireCachedDnsForwarder(dialArg *dialArgument, er
 	if !isProxyBackedDialer(dialArg.bestDialer) {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
+	if commonerrors.IsCanceledOrClosed(err) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
 		return false
 	}
 	return true

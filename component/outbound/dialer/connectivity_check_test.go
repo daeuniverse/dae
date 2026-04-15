@@ -524,3 +524,15 @@ func TestCheckDnsOptionRawResetForcesReparse(t *testing.T) {
 		t.Fatalf("dns IPv4 = %v, want %v", got, netip.MustParseAddr("1.1.1.1"))
 	}
 }
+
+func TestInitialConnectivityCheckJitterWindow(t *testing.T) {
+	if got := initialConnectivityCheckJitterWindow(300*time.Second, 20); got != time.Second {
+		t.Fatalf("small active set jitter window = %v, want 1s", got)
+	}
+	if got := initialConnectivityCheckJitterWindow(4*time.Second, 1000); got != time.Second {
+		t.Fatalf("jitter window should be capped by cycle/4; got %v, want 1s", got)
+	}
+	if got := initialConnectivityCheckJitterWindow(300*time.Second, 2000); got != 75*time.Second {
+		t.Fatalf("large active set jitter window = %v, want 75s", got)
+	}
+}

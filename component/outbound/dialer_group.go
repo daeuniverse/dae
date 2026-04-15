@@ -48,6 +48,10 @@ type dialerGroupSelectionState struct {
 	aliveDialerSets [8]*dialer.AliveDialerSet
 }
 
+// ReloadSelectionFallback records the candidate selected by a fresh group
+// before reload health inheritance applies the previous generation's state.
+type ReloadSelectionFallback [8]*dialer.Dialer
+
 func NewDialerGroup(
 	option *dialer.GlobalOption,
 	name string,
@@ -144,6 +148,55 @@ func (g *DialerGroup) MinCheckInterval() time.Duration {
 
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
 	return d.currentSelectionState().aliveDialerSets[typ.Index()]
+}
+
+// CaptureReloadSelectionFallback captures one fallback candidate per network
+// type so reload inheritance can avoid leaving a group with no selectable dialer.
+func (g *DialerGroup) CaptureReloadSelectionFallback() ReloadSelectionFallback {
+	var fallback ReloadSelectionFallback
+	if g == nil {
+		return fallback
+	}
+	for _, nt := range standardSelectionNetworkTypes() {
+		d, _, _, err := g.SelectWithExclusionResult(nt, false, nil)
+		if err == nil && d != nil {
+			fallback[nt.Index()] = d
+		}
+	}
+	return fallback
+}
+
+// EnsureReloadSelectionFloor keeps exactly one fallback candidate alive for
+// network types whose inherited health state would otherwise be empty.
+func (g *DialerGroup) EnsureReloadSelectionFloor(fallback ReloadSelectionFallback) {
+	if g == nil {
+		return
+	}
+	for _, nt := range standardSelectionNetworkTypes() {
+		set := g.MustGetAliveDialerSet(nt)
+		if set == nil || set.Len() > 0 {
+			continue
+		}
+		candidate := fallback[nt.Index()]
+		if candidate == nil && len(g.Dialers) > 0 {
+			candidate = g.Dialers[0]
+		}
+		if candidate == nil {
+			continue
+		}
+		candidate.MarkAliveForReloadFallback(nt)
+		if g.log != nil && g.log.IsLevelEnabled(logrus.DebugLevel) {
+			dialerName := ""
+			if p := candidate.Property(); p != nil {
+				dialerName = p.Name
+			}
+			g.log.WithFields(logrus.Fields{
+				"dialer":  dialerName,
+				"group":   g.Name,
+				"network": nt.String(),
+			}).Debugln("Reload health inheritance kept a selection fallback alive")
+		}
+	}
 }
 
 // tryDoRateLimitedAction checks if an action can be performed based on a rate limit.
