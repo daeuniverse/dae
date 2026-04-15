@@ -169,6 +169,10 @@ var setRunSignalProgress = func(code byte, content string) error {
 	return writeSignalProgressFile(SignalProgressFilePath, code, content)
 }
 
+var getRunSignalProgress = func() (byte, string, error) {
+	return readSignalProgressFile(SignalProgressFilePath)
+}
+
 func restoreRejectedReloadProgress(reloadActive *atomic.Bool, forceProcessing bool) {
 	if forceProcessing || (reloadActive != nil && reloadActive.Load()) {
 		_ = setRunSignalProgress(consts.ReloadBusy, reloadBusyActiveMessage)
@@ -178,7 +182,7 @@ func restoreRejectedReloadProgress(reloadActive *atomic.Bool, forceProcessing bo
 }
 
 func clearRejectedReloadProgress() {
-	code, _, err := readSignalProgressFile(SignalProgressFilePath)
+	code, _, err := getRunSignalProgress()
 	if err != nil {
 		return
 	}

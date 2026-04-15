@@ -294,11 +294,16 @@ func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
 func TestRestoreRejectedReloadProgressUsesBusyWhileSettling(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
 	oldWriter := setRunSignalProgress
+	oldReader := getRunSignalProgress
 	setRunSignalProgress = func(code byte, content string) error {
 		return writeSignalProgressFile(progressPath, code, content)
 	}
+	getRunSignalProgress = func() (byte, string, error) {
+		return readSignalProgressFile(progressPath)
+	}
 	t.Cleanup(func() {
 		setRunSignalProgress = oldWriter
+		getRunSignalProgress = oldReader
 	})
 
 	restoreRejectedReloadProgress(nil, false)
@@ -318,11 +323,16 @@ func TestRestoreRejectedReloadProgressUsesBusyWhileSettling(t *testing.T) {
 func TestRestoreRejectedReloadProgressUsesBusyWhileActive(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
 	oldWriter := setRunSignalProgress
+	oldReader := getRunSignalProgress
 	setRunSignalProgress = func(code byte, content string) error {
 		return writeSignalProgressFile(progressPath, code, content)
 	}
+	getRunSignalProgress = func() (byte, string, error) {
+		return readSignalProgressFile(progressPath)
+	}
 	t.Cleanup(func() {
 		setRunSignalProgress = oldWriter
+		getRunSignalProgress = oldReader
 	})
 
 	var reloadActive atomic.Bool
@@ -345,11 +355,16 @@ func TestRestoreRejectedReloadProgressUsesBusyWhileActive(t *testing.T) {
 func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "dae.progress")
 	oldWriter := setRunSignalProgress
+	oldReader := getRunSignalProgress
 	setRunSignalProgress = func(code byte, content string) error {
 		return writeSignalProgressFile(progressPath, code, content)
 	}
+	getRunSignalProgress = func() (byte, string, error) {
+		return readSignalProgressFile(progressPath)
+	}
 	t.Cleanup(func() {
 		setRunSignalProgress = oldWriter
+		getRunSignalProgress = oldReader
 	})
 
 	if err := writeSignalProgressFile(progressPath, consts.ReloadBusy, reloadBusyRetiringMessage); err != nil {
