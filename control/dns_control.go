@@ -863,6 +863,14 @@ func (c *DnsController) processBpfUpdateTask(task *bpfUpdateTask, draining bool)
 // bpfUpdateWorker processes BPF map updates asynchronously.
 // It runs until bpfUpdateStop is closed, then drains remaining tasks and exits.
 // Note: bpfUpdateCh is never closed; the worker exits when bpfUpdateStop is signaled.
+//
+// IMPORTANT: This goroutine intentionally does NOT watch baseContext().Done().
+// When the DnsController is reused across reload generations (ReuseDNSControllerFrom),
+// UpdateRuntime swaps the lifecycleCtx, but goroutines blocked in select still hold
+// a reference to the OLD context's Done channel. If the old generation's context is
+// canceled during retirement, the worker would exit prematurely, permanently killing
+// BPF domain_routing_map updates (sync.Once prevents restart). The worker exits only
+// via bpfUpdateStop, which is closed during DnsController.Close().
 func (c *DnsController) bpfUpdateWorker() {
 	defer c.bpfUpdateWg.Done()
 
@@ -870,8 +878,6 @@ func (c *DnsController) bpfUpdateWorker() {
 		select {
 		case task := <-c.bpfUpdateCh:
 			c.processBpfUpdateTask(task, false)
-		case <-c.baseContext().Done():
-			return
 		case <-c.bpfUpdateStop:
 			// Stop signal received - drain queue first before exiting
 			// This ensures all pending updates are processed
@@ -1201,6 +1207,12 @@ func (c *DnsController) evictLRUIfFull() {
 	}
 }
 
+// startDnsCacheJanitor runs a periodic goroutine that evicts expired DNS cache
+// entries and retires idle DNS forwarders.
+//
+// IMPORTANT: This goroutine intentionally does NOT watch baseContext().Done().
+// See bpfUpdateWorker comment for the rationale — the same stale-context problem
+// applies here when the DnsController is reused across reload generations.
 func (c *DnsController) startDnsCacheJanitor() {
 	go func() {
 		ticker := time.NewTicker(dnsCacheJanitorInterval)
@@ -1211,8 +1223,6 @@ func (c *DnsController) startDnsCacheJanitor() {
 			select {
 			case <-c.janitorStop:
 				return
-			case <-c.baseContext().Done():
-				return
 			case now := <-ticker.C:
 				c.evictExpiredDnsCache(now)
 				c.evictIdleDnsForwarders(now)
@@ -1221,6 +1231,12 @@ func (c *DnsController) startDnsCacheJanitor() {
 	}()
 }
 
+// startCacheEvictor runs a goroutine that processes asynchronous cache eviction
+// callbacks (CacheRemoveCallback / BatchRemoveDomainRouting).
+//
+// IMPORTANT: This goroutine intentionally does NOT watch baseContext().Done().
+// See bpfUpdateWorker comment for the rationale — the same stale-context problem
+// applies here when the DnsController is reused across reload generations.
 func (c *DnsController) startCacheEvictor() {
 	go func() {
 		defer close(c.evictorDone)
@@ -1238,8 +1254,6 @@ func (c *DnsController) startCacheEvictor() {
 				c.drainEvictorSpill()
 			case <-c.evictorWake:
 				c.drainEvictorSpill()
-			case <-c.baseContext().Done():
-				return
 			case <-c.janitorStop:
 				for {
 					select {
