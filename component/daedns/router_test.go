@@ -6,13 +6,23 @@
 package daedns
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/geodata"
+	"github.com/daeuniverse/outbound/netproxy"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRouterMatchSubscriptionUpstream(t *testing.T) {
@@ -141,6 +151,7 @@ func TestRouterExplicitBootstrapResolverOverridesDefaults(t *testing.T) {
 				Rules: []*config_parser.RoutingRule{
 					testInternalRule("subdns", testInternalFunction("sub")),
 				},
+				Fallback: "subdns",
 			},
 		},
 	})
@@ -156,6 +167,148 @@ func TestRouterExplicitBootstrapResolverOverridesDefaults(t *testing.T) {
 	}
 }
 
+func TestRouterWrapNodeDialerUsesGeneralRequestRoutingFallback(t *testing.T) {
+	addr, stop := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.7"))
+	defer stop()
+
+	router, err := New(logrus.New(), &config.Global{}, &config.Dns{
+		Upstream: []config.KeyableString{
+			config.KeyableString(fmt.Sprintf("fallbackdns:udp://%s", addr)),
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("fallbackdns", testInternalFunction("qname", testInternalParam("suffix", "example.com"))),
+				},
+				Fallback: "fallbackdns",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if router == nil {
+		t.Fatal("expected router to be created for general DNS request routing")
+	}
+
+	base := &stubDialer{}
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.example.com:443"})
+	if err != nil {
+		t.Fatalf("WrapNodeDialer() error = %v", err)
+	}
+	if wrapped == base {
+		t.Fatal("expected WrapNodeDialer to wrap base dialer when general request routing is available")
+	}
+
+	resolver, ok := wrapped.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	})
+	if !ok {
+		t.Fatal("wrapped dialer does not expose LookupIPAddr")
+	}
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.example.com")
+	if err != nil {
+		t.Fatalf("LookupIPAddr() error = %v", err)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(203, 0, 113, 7)) {
+		t.Fatalf("LookupIPAddr() = %v, want 203.0.113.7", ips)
+	}
+}
+
+func TestRouterWrapNodeDialerFallsBackToBaseResolverForPassThroughFallback(t *testing.T) {
+	for _, fallback := range []string{"asis", "reject"} {
+		t.Run(fallback, func(t *testing.T) {
+			router, err := New(logrus.New(), &config.Global{}, &config.Dns{
+				Upstream: []config.KeyableString{
+					"fallbackdns:udp://1.1.1.1:53",
+				},
+				Routing: config.DnsRouting{
+					Request: config.DnsRequestRouting{
+						Rules: []*config_parser.RoutingRule{
+							testInternalRule("fallbackdns", testInternalFunction("qname", testInternalParam("suffix", "example.com"))),
+						},
+						Fallback: fallback,
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			base := &stubDialer{lookupResult: []net.IPAddr{{IP: net.IPv4(198, 51, 100, 7)}}}
+			wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.invalid:443"})
+			if err != nil {
+				t.Fatalf("WrapNodeDialer() error = %v", err)
+			}
+
+			resolver, ok := wrapped.(interface {
+				LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+			})
+			if !ok {
+				t.Fatal("wrapped dialer does not expose LookupIPAddr")
+			}
+			ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.invalid")
+			if err != nil {
+				t.Fatalf("LookupIPAddr() error = %v", err)
+			}
+			if base.lookupCalls != 1 {
+				t.Fatalf("base lookup calls = %d, want 1", base.lookupCalls)
+			}
+			if base.lookupNetwork != "tcp" || base.lookupHost != "proxy.invalid" {
+				t.Fatalf("base lookup = (%q, %q), want (%q, %q)", base.lookupNetwork, base.lookupHost, "tcp", "proxy.invalid")
+			}
+			if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(198, 51, 100, 7)) {
+				t.Fatalf("LookupIPAddr() = %v, want 198.51.100.7", ips)
+			}
+		})
+	}
+}
+
+func TestRouterUsesExternalGeodataDirsForRequestRules(t *testing.T) {
+	addr, stop := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.9"))
+	defer stop()
+
+	geoDir := t.TempDir()
+	writeTestGeoSite(t, filepath.Join(geoDir, "geosite.dat"), "test-ext", "example.com")
+
+	router, err := NewWithOption(logrus.New(), &config.Global{}, &config.Dns{
+		Upstream: []config.KeyableString{
+			config.KeyableString(fmt.Sprintf("extdns:udp://%s", addr)),
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("extdns", testInternalFunction("qname", testInternalParam("geosite", "test-ext"))),
+				},
+				Fallback: "asis",
+			},
+		},
+	}, &NewOption{LocationFinder: assets.NewLocationFinder([]string{geoDir})})
+	if err != nil {
+		t.Fatalf("NewWithOption() error = %v", err)
+	}
+
+	base := &stubDialer{}
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.example.com:443"})
+	if err != nil {
+		t.Fatalf("WrapNodeDialer() error = %v", err)
+	}
+
+	resolver, ok := wrapped.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	})
+	if !ok {
+		t.Fatal("wrapped dialer does not expose LookupIPAddr")
+	}
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.example.com")
+	if err != nil {
+		t.Fatalf("LookupIPAddr() error = %v", err)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(203, 0, 113, 9)) {
+		t.Fatalf("LookupIPAddr() = %v, want 203.0.113.9", ips)
+	}
+}
+
 func mustNewTestRouter(t *testing.T, rules ...*config_parser.RoutingRule) *Router {
 	t.Helper()
 
@@ -168,7 +321,8 @@ func mustNewTestRouter(t *testing.T, rules ...*config_parser.RoutingRule) *Route
 		},
 		Routing: config.DnsRouting{
 			Request: config.DnsRequestRouting{
-				Rules: rules,
+				Rules:    rules,
+				Fallback: "subdns",
 			},
 		},
 	})
@@ -199,5 +353,85 @@ func testInternalParam(key, value string) *config_parser.Param {
 	return &config_parser.Param{
 		Key: key,
 		Val: value,
+	}
+}
+
+type stubDialer struct {
+	lookupResult  []net.IPAddr
+	lookupErr     error
+	lookupCalls   int
+	lookupNetwork string
+	lookupHost    string
+}
+
+func (d *stubDialer) DialContext(_ context.Context, _, _ string) (netproxy.Conn, error) {
+	return nil, fmt.Errorf("unexpected dial")
+}
+
+func (d *stubDialer) LookupIPAddr(_ context.Context, network, host string) ([]net.IPAddr, error) {
+	d.lookupCalls++
+	d.lookupNetwork = network
+	d.lookupHost = host
+	if d.lookupErr != nil {
+		return nil, d.lookupErr
+	}
+	return d.lookupResult, nil
+}
+
+func writeTestGeoSite(t *testing.T, path string, code string, domain string) {
+	t.Helper()
+
+	data, err := proto.Marshal(&geodata.GeoSiteList{Entry: []*geodata.GeoSite{{
+		CountryCode: code,
+		Domain: []*geodata.Domain{{
+			Type:  geodata.Domain_RootDomain,
+			Value: domain,
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	if err = os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func startTestDNSUDPServer(t *testing.T, addr netip.Addr) (string, func()) {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket() error = %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 2048)
+		for {
+			n, remoteAddr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			var req dnsmessage.Msg
+			if err = req.Unpack(buf[:n]); err != nil || len(req.Question) == 0 {
+				continue
+			}
+			resp := dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{Id: req.Id, Response: true, RecursionAvailable: true}, Question: req.Question}
+			if req.Question[0].Qtype == dnsmessage.TypeA {
+				resp.Answer = append(resp.Answer, &dnsmessage.A{
+					Hdr: dnsmessage.RR_Header{Name: req.Question[0].Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
+					A:   addr.AsSlice(),
+				})
+			}
+			wire, packErr := resp.Pack()
+			if packErr != nil {
+				continue
+			}
+			_, _ = pc.WriteTo(wire, remoteAddr)
+		}
+	}()
+	return pc.LocalAddr().String(), func() {
+		_ = pc.Close()
+		<-done
 	}
 }

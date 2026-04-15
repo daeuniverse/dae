@@ -564,8 +564,9 @@ func newControlPlaneWithContextOptions(
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
+	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	option := dialer.NewGlobalOption(global, log)
-	option.DaeDNS, err = daedns.New(log, global, dnsConfig)
+	option.DaeDNS, err = daedns.NewWithOption(log, global, dnsConfig, &daedns.NewOption{LocationFinder: locationFinder})
 	if err != nil {
 		return nil, err
 	}
@@ -673,7 +674,6 @@ func newControlPlaneWithContextOptions(
 	}
 	// Apply rules optimizers.
 	log.Infoln("Optimizing and loading routing rules (this may take a while for large rule sets)...")
-	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	var rules []*config_parser.RoutingRule
 	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
 		&routing.AliasOptimizer{},

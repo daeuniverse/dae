@@ -32,6 +32,7 @@ import (
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
@@ -1269,7 +1270,8 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	/// Init Direct Dialers.
 	direct.InitDirectDialers(conf.Global.FallbackResolver)
 	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
-	daeDNSRouter, err := daedns.New(log, &conf.Global, &conf.Dns)
+	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
+	daeDNSRouter, err := daedns.NewWithOption(log, &conf.Global, &conf.Dns, &daedns.NewOption{LocationFinder: locationFinder})
 	if err != nil {
 		return nil, err
 	}

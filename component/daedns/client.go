@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	componentdns "github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -31,6 +33,7 @@ import (
 )
 
 var errInternalDNSTruncated = fmt.Errorf("internal dns response truncated")
+var errPassthroughToBaseResolver = errors.New("dns request routing selected passthrough resolver")
 
 var (
 	// Test seams for queryHTTPS path validation without live network dependencies.
@@ -40,19 +43,35 @@ var (
 	}
 )
 
+func (r *Router) selectUpstream(ctx context.Context, upstreamName, host string, qtype uint16) (*componentdns.Upstream, error) {
+	if upstreamName != "" {
+		upstreamResolver, ok := r.upstreams[upstreamName]
+		if !ok {
+			return nil, fmt.Errorf("dns upstream %q not found", upstreamName)
+		}
+		return upstreamResolver.GetUpstream(ctx)
+	}
+	if r.requestMatcher == nil {
+		return nil, fmt.Errorf("dns request routing is not configured for %q", host)
+	}
+	upstreamIndex, err := r.requestMatcher.Match(dnsmessage.CanonicalName(host), qtype)
+	if err != nil {
+		return nil, err
+	}
+	switch upstreamIndex {
+	case consts.DnsRequestOutboundIndex_AsIs, consts.DnsRequestOutboundIndex_Reject:
+		return nil, errPassthroughToBaseResolver
+	}
+	if int(upstreamIndex) < 0 || int(upstreamIndex) >= len(r.upstreamByIndex) {
+		return nil, fmt.Errorf("dns request routing selected unsupported action %q for %q", upstreamIndex.String(), host)
+	}
+	return r.upstreamByIndex[upstreamIndex].GetUpstream(ctx)
+}
+
 func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network string, host string) ([]net.IPAddr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		ip := net.IP(addr.AsSlice())
 		return []net.IPAddr{{IP: ip}}, nil
-	}
-
-	upstreamResolver, ok := r.upstreams[upstreamName]
-	if !ok {
-		return nil, fmt.Errorf("dns upstream %q not found", upstreamName)
-	}
-	upstream, err := upstreamResolver.GetUpstream(ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	var qtypes []uint16
@@ -67,7 +86,19 @@ func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network 
 
 	addrs := make([]net.IPAddr, 0, 2)
 	var firstErr error
+	sawPassthrough := false
 	for _, qtype := range qtypes {
+		upstream, lookupErr := r.selectUpstream(ctx, upstreamName, host, qtype)
+		if lookupErr != nil {
+			if errors.Is(lookupErr, errPassthroughToBaseResolver) {
+				sawPassthrough = true
+				continue
+			}
+			if firstErr == nil {
+				firstErr = lookupErr
+			}
+			continue
+		}
 		ips, lookupErr := r.lookupType(ctx, upstream, host, qtype)
 		if lookupErr != nil {
 			if firstErr == nil {
@@ -77,8 +108,13 @@ func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network 
 		}
 		addrs = append(addrs, ips...)
 	}
-	if len(addrs) == 0 && firstErr != nil {
-		return nil, firstErr
+	if len(addrs) == 0 {
+		if sawPassthrough {
+			return nil, errPassthroughToBaseResolver
+		}
+		if firstErr != nil {
+			return nil, firstErr
+		}
 	}
 	return addrs, nil
 }

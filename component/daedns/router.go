@@ -7,6 +7,7 @@ package daedns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/netutils"
 	componentdns "github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/routing"
@@ -43,14 +45,20 @@ type subscriptionMeta struct {
 }
 
 type Router struct {
-	log            *logrus.Logger
-	upstreams      map[string]*componentdns.UpstreamResolver
-	subMatcher     *compiledMatcher[subscriptionMeta]
-	nodeMatcher    *compiledMatcher[NodeMeta]
-	subNodeMatcher *compiledMatcher[NodeMeta]
-	bootstrapDns   []netip.AddrPort
-	soMark         uint32
-	mptcp          bool
+	log             *logrus.Logger
+	upstreams       map[string]*componentdns.UpstreamResolver
+	upstreamByIndex []*componentdns.UpstreamResolver
+	requestMatcher  *componentdns.RequestMatcher
+	subMatcher      *compiledMatcher[subscriptionMeta]
+	nodeMatcher     *compiledMatcher[NodeMeta]
+	subNodeMatcher  *compiledMatcher[NodeMeta]
+	bootstrapDns    []netip.AddrPort
+	soMark          uint32
+	mptcp           bool
+}
+
+type NewOption struct {
+	LocationFinder *assets.LocationFinder
 }
 
 type compiledMatcher[T any] struct {
@@ -82,15 +90,31 @@ func (m *compiledMatcher[T]) Match(input T) (string, bool) {
 }
 
 func New(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns) (*Router, error) {
+	return NewWithOption(log, global, dnsCfg, nil)
+}
+
+func NewWithOption(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns, opt *NewOption) (*Router, error) {
 	if dnsCfg == nil {
 		return nil, nil
 	}
 
-	_, subRules, nodeRules, subNodeRules, err := componentdns.SplitRequestRules(dnsCfg.Routing.Request.Rules)
+	dnsRules, subRules, nodeRules, subNodeRules, err := componentdns.SplitRequestRules(dnsCfg.Routing.Request.Rules)
 	if err != nil {
 		return nil, err
 	}
-	if len(subRules) == 0 && len(nodeRules) == 0 && len(subNodeRules) == 0 {
+	locationFinder := assets.NewLocationFinder(nil)
+	if opt != nil && opt.LocationFinder != nil {
+		locationFinder = opt.LocationFinder
+	}
+	dnsRules, err = routing.ApplyRulesOptimizers(dnsRules,
+		&routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder},
+		&routing.MergeAndSortRulesOptimizer{},
+		&routing.DeduplicateParamsOptimizer{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(dnsRules) == 0 && len(subRules) == 0 && len(nodeRules) == 0 && len(subNodeRules) == 0 {
 		return nil, nil
 	}
 
@@ -105,6 +129,22 @@ func New(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns) (*Router
 		return nil, err
 	}
 	if err = router.initUpstreams(dnsCfg.Upstream); err != nil {
+		return nil, err
+	}
+	upstreamName2Id := make(map[string]uint8, len(router.upstreamByIndex))
+	for i, upstreamRaw := range dnsCfg.Upstream {
+		tag, _ := common.GetTagFromLinkLikePlaintext(string(upstreamRaw))
+		if tag == "" {
+			continue
+		}
+		upstreamName2Id[tag] = uint8(i)
+	}
+	requestMatcherBuilder, err := componentdns.NewRequestMatcherBuilder(log, dnsRules, upstreamName2Id, dnsCfg.Routing.Request.Fallback)
+	if err != nil {
+		return nil, err
+	}
+	router.requestMatcher, err = requestMatcherBuilder.Build()
+	if err != nil {
 		return nil, err
 	}
 
@@ -142,6 +182,7 @@ func (r *Router) initUpstreams(rawUpstreams []config.KeyableString) error {
 			Network:     common.MagicNetwork("udp", r.soMark, r.mptcp),
 			ResolveIp46: resolveIp46,
 		}
+		r.upstreamByIndex = append(r.upstreamByIndex, r.upstreams[tag])
 	}
 	return nil
 }
@@ -155,7 +196,7 @@ func (r *Router) WrapSubscriptionDialer(base netproxy.Dialer, rawSubscription st
 		Tag:  tag,
 		Link: link,
 	})
-	if !ok {
+	if !ok && r.requestMatcher == nil {
 		return base, nil
 	}
 	return &resolvingDialer{
@@ -179,7 +220,7 @@ func (r *Router) WrapNodeDialer(base netproxy.Dialer, meta NodeMeta) (netproxy.D
 	if !ok {
 		upstream, ok = r.nodeMatcher.Match(meta)
 	}
-	if !ok {
+	if !ok && r.requestMatcher == nil {
 		return base, nil
 	}
 	return &resolvingDialer{
@@ -556,6 +597,9 @@ func (d *resolvingDialer) DialContext(ctx context.Context, network, addr string)
 	}
 	ips, err := d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
 	if err != nil {
+		if errors.Is(err, errPassthroughToBaseResolver) {
+			return d.Dialer.DialContext(ctx, network, addr)
+		}
 		return nil, err
 	}
 	var firstErr error
@@ -575,5 +619,14 @@ func (d *resolvingDialer) DialContext(ctx context.Context, network, addr string)
 }
 
 func (d *resolvingDialer) LookupIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
-	return d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
+	ips, err := d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
+	if errors.Is(err, errPassthroughToBaseResolver) {
+		if resolver, ok := d.Dialer.(interface {
+			LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+		}); ok {
+			return resolver.LookupIPAddr(ctx, network, host)
+		}
+		return net.DefaultResolver.LookupIPAddr(ctx, host)
+	}
+	return ips, err
 }
