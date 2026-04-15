@@ -492,7 +492,6 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 	if d == nil {
 		return
 	}
-	d.reloadInheritedHealth.Store(true)
 
 	type restoreUpdate struct {
 		typ    *NetworkType
@@ -501,6 +500,7 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 		groups []*AliveDialerSet
 	}
 
+	allAlive := true
 	updates := make([]restoreUpdate, 0, len(d.collections))
 	d.collectionFineMu.Lock()
 	for idx, collection := range d.collections {
@@ -514,6 +514,9 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 		collection.Latencies10.Restore(s.Latencies)
 		d.failCount[idx] = s.FailCount
 		d.trafficFailCount[idx].Store(s.TrafficFailCount)
+		if !s.Alive {
+			allAlive = false
+		}
 		updates = append(updates, restoreUpdate{
 			typ:    networkTypeForCollectionIndex(idx),
 			was:    wasAlive,
@@ -522,6 +525,14 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 		})
 	}
 	d.collectionFineMu.Unlock()
+
+	// Only defer the first health check when ALL inherited collections are
+	// ALIVE.  If any network type was NOT ALIVE in the previous generation,
+	// the replacement dialer must probe ASAP to recover connectivity rather
+	// than waiting an extra cycle.
+	if allAlive {
+		d.reloadInheritedHealth.Store(true)
+	}
 
 	for _, update := range updates {
 		for _, a := range update.groups {

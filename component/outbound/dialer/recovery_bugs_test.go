@@ -373,8 +373,8 @@ func TestReloadHealthSnapshotPreservesAvailabilityAndClearsPunishment(t *testing
 
 	dst.RestoreHealthSnapshot(snapshot)
 
-	if !dst.reloadInheritedHealth.Load() {
-		t.Fatal("expected reload restore to defer the first inherited health check")
+	if dst.reloadInheritedHealth.Load() {
+		t.Fatal("expected reload restore NOT to defer health check when some collections are NOT ALIVE")
 	}
 	if dst.MustGetAlive(tcp4) {
 		t.Fatal("expected destination dialer to preserve unavailable state after reload restore")
