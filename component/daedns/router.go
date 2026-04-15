@@ -587,6 +587,29 @@ type resolvingDialer struct {
 	upstreamName string
 }
 
+func (d *resolvingDialer) lookupBaseIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
+	if resolver, ok := d.Dialer.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	}); ok {
+		return resolver.LookupIPAddr(ctx, network, host)
+	}
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
+func (d *resolvingDialer) lookupIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
+	ips, err := d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
+	if errors.Is(err, errPassthroughToBaseResolver) {
+		return d.lookupBaseIPAddr(ctx, network, host)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 && d.upstreamName == "" {
+		return d.lookupBaseIPAddr(ctx, network, host)
+	}
+	return ips, nil
+}
+
 func (d *resolvingDialer) DialContext(ctx context.Context, network, addr string) (netproxy.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -595,11 +618,8 @@ func (d *resolvingDialer) DialContext(ctx context.Context, network, addr string)
 	if _, err = netip.ParseAddr(host); err == nil {
 		return d.Dialer.DialContext(ctx, network, addr)
 	}
-	ips, err := d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
+	ips, err := d.lookupIPAddr(ctx, network, host)
 	if err != nil {
-		if errors.Is(err, errPassthroughToBaseResolver) {
-			return d.Dialer.DialContext(ctx, network, addr)
-		}
 		return nil, err
 	}
 	var firstErr error
@@ -619,14 +639,5 @@ func (d *resolvingDialer) DialContext(ctx context.Context, network, addr string)
 }
 
 func (d *resolvingDialer) LookupIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
-	ips, err := d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
-	if errors.Is(err, errPassthroughToBaseResolver) {
-		if resolver, ok := d.Dialer.(interface {
-			LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
-		}); ok {
-			return resolver.LookupIPAddr(ctx, network, host)
-		}
-		return net.DefaultResolver.LookupIPAddr(ctx, host)
-	}
-	return ips, err
+	return d.lookupIPAddr(ctx, network, host)
 }

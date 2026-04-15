@@ -264,6 +264,51 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverForPassThroughFallback(t *te
 	}
 }
 
+func TestRouterWrapNodeDialerFallsBackToBaseResolverWhenRequestUpstreamReturnsNoAddress(t *testing.T) {
+	addr, stop := startTestEmptyDNSUDPServer(t)
+	defer stop()
+
+	router, err := New(logrus.New(), &config.Global{}, &config.Dns{
+		Upstream: []config.KeyableString{
+			config.KeyableString(fmt.Sprintf("fallbackdns:udp://%s", addr)),
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("fallbackdns", testInternalFunction("qname", testInternalParam("suffix", "example.com"))),
+				},
+				Fallback: "fallbackdns",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	base := &stubDialer{lookupResult: []net.IPAddr{{IP: net.IPv4(198, 51, 100, 8)}}}
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.example.com:443"})
+	if err != nil {
+		t.Fatalf("WrapNodeDialer() error = %v", err)
+	}
+
+	resolver, ok := wrapped.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	})
+	if !ok {
+		t.Fatal("wrapped dialer does not expose LookupIPAddr")
+	}
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.example.com")
+	if err != nil {
+		t.Fatalf("LookupIPAddr() error = %v", err)
+	}
+	if base.lookupCalls != 1 {
+		t.Fatalf("base lookup calls = %d, want 1", base.lookupCalls)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(198, 51, 100, 8)) {
+		t.Fatalf("LookupIPAddr() = %v, want 198.51.100.8", ips)
+	}
+}
+
 func TestRouterUsesExternalGeodataDirsForRequestRules(t *testing.T) {
 	addr, stop := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.9"))
 	defer stop()
@@ -397,6 +442,24 @@ func writeTestGeoSite(t *testing.T, path string, code string, domain string) {
 }
 
 func startTestDNSUDPServer(t *testing.T, addr netip.Addr) (string, func()) {
+	return startTestDNSUDPServerWithResponse(t, func(question dnsmessage.Question) []dnsmessage.RR {
+		if question.Qtype != dnsmessage.TypeA {
+			return nil
+		}
+		return []dnsmessage.RR{&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{Name: question.Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
+			A:   addr.AsSlice(),
+		}}
+	})
+}
+
+func startTestEmptyDNSUDPServer(t *testing.T) (string, func()) {
+	return startTestDNSUDPServerWithResponse(t, func(question dnsmessage.Question) []dnsmessage.RR {
+		return nil
+	})
+}
+
+func startTestDNSUDPServerWithResponse(t *testing.T, answerFunc func(dnsmessage.Question) []dnsmessage.RR) (string, func()) {
 	t.Helper()
 
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -417,12 +480,7 @@ func startTestDNSUDPServer(t *testing.T, addr netip.Addr) (string, func()) {
 				continue
 			}
 			resp := dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{Id: req.Id, Response: true, RecursionAvailable: true}, Question: req.Question}
-			if req.Question[0].Qtype == dnsmessage.TypeA {
-				resp.Answer = append(resp.Answer, &dnsmessage.A{
-					Hdr: dnsmessage.RR_Header{Name: req.Question[0].Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
-					A:   addr.AsSlice(),
-				})
-			}
+			resp.Answer = append(resp.Answer, answerFunc(req.Question[0])...)
 			wire, packErr := resp.Pack()
 			if packErr != nil {
 				continue

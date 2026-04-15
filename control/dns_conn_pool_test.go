@@ -327,3 +327,29 @@ func TestResponseSlot_NilMeansUnexpectedEOF(t *testing.T) {
 	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 	require.Nil(t, got)
 }
+
+func TestConnPool_GetSkipsLocallyClosedConnection(t *testing.T) {
+	var dialCalls atomic.Int32
+	p := newConnPool(1, func(ctx context.Context) (netproxy.Conn, error) {
+		dialCalls.Add(1)
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = p.close() }()
+
+	first, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, first)
+
+	first.Close()
+	select {
+	case <-first.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pipelined connection to close")
+	}
+
+	second, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.NotSame(t, first, second, "pool should not reuse a connection closed by the caller")
+	require.EqualValues(t, 2, dialCalls.Load())
+}

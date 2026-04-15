@@ -140,6 +140,43 @@ func TestControlPlane_DnsDialerSnapshotCache_SkipsPenalizedDialer(t *testing.T) 
 	require.False(t, stillExists, "penalized snapshots should be removed eagerly")
 }
 
+func TestChooseDnsDialerCandidate_PrefersHealthyCandidate(t *testing.T) {
+	healthy := &dnsDialerCandidate{
+		dialArg: &dialArgument{
+			l4proto:    consts.L4ProtoStr_TCP,
+			ipversion:  consts.IpVersionStr_4,
+			bestTarget: netip.MustParseAddrPort("1.1.1.1:53"),
+		},
+		latency: 20 * time.Millisecond,
+	}
+	penalized := &dnsDialerCandidate{
+		dialArg: &dialArgument{
+			l4proto:    consts.L4ProtoStr_TCP,
+			ipversion:  consts.IpVersionStr_4,
+			bestTarget: netip.MustParseAddrPort("8.8.8.8:53"),
+		},
+		latency: 5 * time.Millisecond,
+	}
+	selected, usedPenalized := chooseDnsDialerCandidate(healthy, penalized)
+	require.Same(t, healthy, selected)
+	require.False(t, usedPenalized)
+}
+
+func TestChooseDnsDialerCandidate_FallsBackToBestPenalizedCandidate(t *testing.T) {
+	slower := &dnsDialerCandidate{
+		dialArg: &dialArgument{bestTarget: netip.MustParseAddrPort("8.8.8.8:53")},
+		latency: 40 * time.Millisecond,
+	}
+	faster := &dnsDialerCandidate{
+		dialArg: &dialArgument{bestTarget: netip.MustParseAddrPort("1.1.1.1:53")},
+		latency: 10 * time.Millisecond,
+	}
+	bestPenalized := pickBetterDnsDialerCandidate(slower, faster)
+	selected, usedPenalized := chooseDnsDialerCandidate(nil, bestPenalized)
+	require.Same(t, faster, selected)
+	require.True(t, usedPenalized)
+}
+
 func TestControlPlane_DnsDialerPenaltyCleanup_RemovesExpiredEntries(t *testing.T) {
 	cp := &ControlPlane{}
 	now := time.Now()

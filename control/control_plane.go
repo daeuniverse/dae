@@ -1811,6 +1811,31 @@ type dnsDialerPenaltyEntry struct {
 	expiresAtUnixNano int64
 }
 
+type dnsDialerCandidate struct {
+	dialArg *dialArgument
+	latency time.Duration
+}
+
+func pickBetterDnsDialerCandidate(best, candidate *dnsDialerCandidate) *dnsDialerCandidate {
+	if candidate == nil {
+		return best
+	}
+	if best == nil || candidate.latency < best.latency {
+		return candidate
+	}
+	return best
+}
+
+func chooseDnsDialerCandidate(preferred, penalized *dnsDialerCandidate) (*dnsDialerCandidate, bool) {
+	if preferred != nil {
+		return preferred, false
+	}
+	if penalized != nil {
+		return penalized, true
+	}
+	return nil, false
+}
+
 func buildDnsDialerSnapshotKey(req *udpRequest, upstream *dns.Upstream) (dnsDialerSnapshotKey, bool) {
 	if req == nil || upstream == nil {
 		return dnsDialerSnapshotKey{}, false
@@ -3003,6 +3028,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			lconn, err := tcpListener.Accept()
 			if err != nil {
+				var netErr net.Error
+				if stderrors.As(err, &netErr) && netErr.Timeout() {
+					return
+				}
 				if !commonerrors.IsClosedConnection(err) && !stderrors.Is(err, context.Canceled) {
 					c.log.Errorf("Error when accept: %v", err)
 				}
@@ -3123,6 +3152,24 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 										"src": convergeSrc.String(),
 										"dst": realDst.String(),
 									}).Debug("DNS query concurrency limit exceeded in fast path")
+								}
+								return
+							}
+							if stderrors.Is(e, ErrDNSTruncated) {
+								if c.log.IsLevelEnabled(logrus.DebugLevel) {
+									c.log.WithFields(logrus.Fields{
+										"src":      convergeSrc.String(),
+										"dst":      realDst.String(),
+										"question": dnsMessage.Question,
+									}).Debug("DNS ingress fast path got truncated UDP response; returning TC=1 to client")
+								}
+								if sendErr := dnsController.sendDnsTruncatedResponse_(dnsMessage, req, nil); sendErr != nil {
+									if c.log.IsLevelEnabled(logrus.WarnLevel) && c.allowDnsFastPathServfailLog(time.Now()) {
+										c.log.WithError(stderrors.Join(e, sendErr)).WithFields(logrus.Fields{
+											"src": convergeSrc.String(),
+											"dst": realDst.String(),
+										}).Warn("Failed to send truncated DNS response in DNS fast path")
+									}
 								}
 								return
 							}
@@ -3397,13 +3444,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
 	var (
-		bestLatency  time.Duration
-		l4proto      consts.L4ProtoStr
-		ipversion    consts.IpVersionStr
-		bestDialer   *dialer.Dialer
-		bestOutbound *outbound.DialerGroup
-		bestTarget   netip.AddrPort
-		dialMark     uint32
+		bestCandidate          *dnsDialerCandidate
+		bestPenalizedCandidate *dnsDialerCandidate
 	)
 	// Get the min latency path.
 	networkType := dialer.NetworkType{
@@ -3439,73 +3481,62 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			if err != nil {
 				continue
 			}
-			candidate := &dialArgument{
-				l4proto:      proto,
-				ipversion:    ver,
-				bestDialer:   d,
-				bestOutbound: dialerGroup,
-				bestTarget:   netip.AddrPortFrom(dAddr, dnsUpstream.Port),
-				mark:         mark,
-				mptcp:        c.mptcp,
+			candidate := &dnsDialerCandidate{
+				dialArg: &dialArgument{
+					l4proto:      proto,
+					ipversion:    ver,
+					bestDialer:   d,
+					bestOutbound: dialerGroup,
+					bestTarget:   netip.AddrPortFrom(dAddr, dnsUpstream.Port),
+					mark:         mark,
+					mptcp:        c.mptcp,
+				},
+				latency: latency,
 			}
-			if c.isDnsDialArgPenalized(candidate, now) {
+			if c.isDnsDialArgPenalized(candidate.dialArg, now) {
+				bestPenalizedCandidate = pickBetterDnsDialerCandidate(bestPenalizedCandidate, candidate)
 				continue
 			}
-			// if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			// 	c.log.WithFields(logrus.Fields{
-			// 		"name":     d.Name(),
-			// 		"latency":  latency,
-			// 		"network":  networkType.String(),
-			// 		"outbound": dialerGroup.Name,
-			//	}).Traceln("Choice")
-			//}
-			if bestDialer == nil || latency < bestLatency {
-				bestDialer = d
-				bestOutbound = dialerGroup
-				bestLatency = latency
-				l4proto = proto
-				ipversion = ver
-				dialMark = mark
-
-				if bestLatency == 0 {
-					break
-				}
+			bestCandidate = pickBetterDnsDialerCandidate(bestCandidate, candidate)
+			if bestCandidate.latency == 0 {
+				break
 			}
 		}
 	}
-	if bestDialer == nil {
+	selectedCandidate, selectedPenalized := chooseDnsDialerCandidate(bestCandidate, bestPenalizedCandidate)
+	if selectedCandidate == nil || selectedCandidate.dialArg == nil {
 		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
 	}
-	switch ipversion {
+	selected := *selectedCandidate.dialArg
+	switch selected.ipversion {
 	case consts.IpVersionStr_4:
-		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
+		selected.bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
 	case consts.IpVersionStr_6:
-		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
+		selected.bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
 	}
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		c.log.WithFields(logrus.Fields{
+		fields := logrus.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
 			"upstream":   dnsUpstream.String(),
-			"choose":     string(l4proto) + "+" + string(ipversion),
-			"use":        bestTarget.String(),
-			"outbound":   bestOutbound.Name,
-			"dialer":     bestDialer.Property().Name,
-		}).Traceln("Choose DNS path")
+			"choose":     string(selected.l4proto) + "+" + string(selected.ipversion),
+			"use":        selected.bestTarget.String(),
+		}
+		if selected.bestOutbound != nil {
+			fields["outbound"] = selected.bestOutbound.Name
+		}
+		if selected.bestDialer != nil {
+			fields["dialer"] = selected.bestDialer.Property().Name
+		}
+		if selectedPenalized {
+			fields["penalized_fallback"] = true
+		}
+		c.log.WithFields(fields).Traceln("Choose DNS path")
 	}
-	selected := &dialArgument{
-		l4proto:      l4proto,
-		ipversion:    ipversion,
-		bestDialer:   bestDialer,
-		bestOutbound: bestOutbound,
-		bestTarget:   bestTarget,
-		mark:         dialMark,
-		mptcp:        c.mptcp,
+	if snapshotEnabled && !selectedPenalized {
+		c.storeDnsDialerSnapshot(snapshotKey, &selected, now)
 	}
-	if snapshotEnabled {
-		c.storeDnsDialerSnapshot(snapshotKey, selected, now)
-	}
-	return selected, nil
+	return &selected, nil
 }
 
 func (c *ControlPlane) AbortConnections() (err error) {

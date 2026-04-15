@@ -1723,19 +1723,52 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 	}
 }
 
+func (c *DnsController) logDnsForwardFailure(upstream *dns.Upstream, dialArg *dialArgument, err error) {
+	if c == nil || c.log == nil || err == nil {
+		return
+	}
+	if commonerrors.IsCanceledOrClosed(err) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
+		return
+	}
+	fields := logrus.Fields{}
+	if upstream != nil {
+		fields["upstream"] = upstream.String()
+	}
+	if dialArg != nil {
+		fields["network"] = string(dialArg.l4proto) + "+" + string(dialArg.ipversion)
+		if dialArg.bestTarget.IsValid() {
+			fields["target"] = dialArg.bestTarget.String()
+		}
+		if dialArg.bestOutbound != nil {
+			fields["outbound"] = dialArg.bestOutbound.Name
+			fields["policy"] = dialArg.bestOutbound.GetSelectionPolicy()
+		}
+		if dialArg.bestDialer != nil && dialArg.bestDialer.Property() != nil {
+			fields["dialer"] = dialArg.bestDialer.Property().Name
+		}
+	}
+	c.log.WithError(err).WithFields(fields).Warn("DNS forward to upstream failed")
+}
+
 func (c *DnsController) shouldRetireCachedDnsForwarder(dialArg *dialArgument, err error) bool {
 	if dialArg == nil || err == nil {
-		return false
-	}
-	if dialArg.l4proto != consts.L4ProtoStr_UDP {
-		return false
-	}
-	if !isProxyBackedDialer(dialArg.bestDialer) {
 		return false
 	}
 	if commonerrors.IsCanceledOrClosed(err) || errors.Is(err, ErrDNSUDPConnPoolExhausted) {
 		return false
 	}
+	// UDP forwarders keep pooled sockets whose state can be poisoned by a single
+	// timeout or stale-response burst. Flush the whole cached forwarder so the
+	// next query starts from a clean socket pool.
+	if dialArg.l4proto == consts.L4ProtoStr_UDP {
+		return true
+	}
+	if !isProxyBackedDialer(dialArg.bestDialer) {
+		return false
+	}
+	// Proxy-backed stream forwarders keep transport state beyond a single
+	// request. Once they start failing, the safest recovery is to retire the
+	// cached instance and force a cold reconnect on the next query.
 	return true
 }
 
@@ -1842,10 +1875,18 @@ func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Up
 		respMsg, err := entry.forwarder.ForwardDNS(ctx, data)
 		entry.endUse()
 		if err != nil {
-			if c.shouldRetireCachedDnsForwarder(dialArg, err) {
-				c.retireCachedDnsForwarder(key, entry)
+			// ErrDNSTruncated is a valid DNS protocol signal (response too
+			// large for UDP), not a transport failure.  Propagate the error
+			// so the caller can react (e.g. tcp+udp fallback, or TC=1 to
+			// client), but do NOT retire the forwarder, penalise the dialer
+			// or emit a misleading failure log.
+			if !errors.Is(err, ErrDNSTruncated) {
+				if c.shouldRetireCachedDnsForwarder(dialArg, err) {
+					c.retireCachedDnsForwarder(key, entry)
+				}
+				c.logDnsForwardFailure(upstream, dialArg, err)
+				c.reportDnsForwardFailure(dialArg, err)
 			}
-			c.reportDnsForwardFailure(dialArg, err)
 			return nil, err
 		}
 		return respMsg, nil
@@ -2332,6 +2373,34 @@ func (c *DnsController) sendDnsErrorResponse_(
 // sendRefusedWithResponseWriter_ sends REFUSED response when overload protection is triggered.
 func (c *DnsController) sendRefusedWithResponseWriter_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	return c.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeRefused, "Refused due to concurrency limit", req, responseWriter)
+}
+
+func (c *DnsController) sendDnsTruncatedResponse_(dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) error {
+	dnsMessage.Answer = nil
+	dnsMessage.Rcode = dnsmessage.RcodeSuccess
+	dnsMessage.Response = true
+	dnsMessage.RecursionAvailable = true
+	dnsMessage.Truncated = true
+	dnsMessage.Compress = true
+	if c.log.IsLevelEnabled(logrus.TraceLevel) {
+		c.log.WithFields(logrus.Fields{
+			"question": dnsMessage.Question,
+		}).Traceln("Truncated")
+	}
+	if responseWriter != nil {
+		return responseWriter.WriteMsg(dnsMessage)
+	}
+	if req == nil || req.lConn == nil {
+		return nil
+	}
+	data, err := dnsMessage.Pack()
+	if err != nil {
+		return fmt.Errorf("pack DNS packet: %w", err)
+	}
+	if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+		return err
+	}
+	return nil
 }
 
 // sendRejectWithResponseWriter_ send empty answer.

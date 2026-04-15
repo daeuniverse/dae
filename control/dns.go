@@ -560,6 +560,7 @@ func (d *DoTLS) getPConn(ctx context.Context) (*pipelinedConn, error) {
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	var lastErr error
 	// With connection pool, we can retry with different connections
 	for range 2 {
 		pc, err := d.getPConn(ctx)
@@ -574,9 +575,13 @@ func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 
 		// Close the connection explicitly if RoundTrip fails
 		pc.Close()
+		lastErr = err
 
 		// Connection might be broken, but pool will handle it
 		// Next retry will get a different connection from pool
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to forward DNS after retry: %w", lastErr)
 	}
 	return nil, fmt.Errorf("failed to forward DNS after retry")
 }
@@ -614,6 +619,7 @@ func (d *DoTCP) getPConn(ctx context.Context) (*pipelinedConn, error) {
 }
 
 func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	var lastErr error
 	// With connection pool, we can retry with different connections
 	for range 2 {
 		pc, err := d.getPConn(ctx)
@@ -628,9 +634,13 @@ func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 
 		// Close the connection explicitly if RoundTrip fails
 		pc.Close()
+		lastErr = err
 
 		// Connection might be broken, but pool will handle it
 		// Next retry will get a different connection from pool
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to forward DNS after retry: %w", lastErr)
 	}
 	return nil, fmt.Errorf("failed to forward DNS after retry")
 }
@@ -1145,9 +1155,10 @@ type pipelinedConn struct {
 	pendingCount atomic.Int32
 
 	// lifecycle
-	errMu  sync.Mutex
-	err    error
-	closed chan struct{}
+	errMu     sync.Mutex
+	err       error
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func newPipelinedConn(conn netproxy.Conn) *pipelinedConn {
@@ -1160,60 +1171,58 @@ func newPipelinedConn(conn netproxy.Conn) *pipelinedConn {
 	return pc
 }
 
-func (pc *pipelinedConn) readLoop() {
-	defer func() {
-		_ = pc.conn.Close()
+func (pc *pipelinedConn) closeWithErr(err error) {
+	pc.closeOnce.Do(func() {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
 		pc.errMu.Lock()
 		if pc.err == nil {
-			pc.err = io.ErrUnexpectedEOF
+			pc.err = err
 		}
 		pc.errMu.Unlock()
 
+		_ = pc.conn.Close()
 		close(pc.closed)
 
-		// Cleanup all pending - close all response slots
 		for i := range pc.pending {
 			if slot := pc.pending[i].Swap(nil); slot != nil {
-				slot.set(nil) // Signal with nil to indicate error
+				slot.set(nil)
 			}
 		}
-	}()
+	})
+}
+
+func (pc *pipelinedConn) readLoop() {
+	defer pc.closeWithErr(io.ErrUnexpectedEOF)
 
 	for {
 		// Read 2-byte length
 		var header [2]byte
 		if _, err := io.ReadFull(pc.conn, header[:]); err != nil {
-			pc.errMu.Lock()
-			pc.err = err
-			pc.errMu.Unlock()
+			pc.closeWithErr(err)
 			return
 		}
 		l := binary.BigEndian.Uint16(header[:])
 
 		if l == 0 {
-			pc.errMu.Lock()
-			pc.err = fmt.Errorf("invalid DNS payload length: %d", l)
-			pc.errMu.Unlock()
+			pc.closeWithErr(fmt.Errorf("invalid DNS payload length: %d", l))
 			return
 		}
 
 		// Read payload
 		buf := pool.Get(int(l))
 		if _, err := io.ReadFull(pc.conn, buf); err != nil {
-			pc.errMu.Lock()
-			pc.err = err
-			pc.errMu.Unlock()
 			pool.Put(buf)
+			pc.closeWithErr(err)
 			return
 		}
 
 		respMsg := new(dnsmessage.Msg)
 		if err := respMsg.Unpack(buf); err != nil {
 			// Protocol error, close connection
-			pc.errMu.Lock()
-			pc.err = fmt.Errorf("bad DNS packet: %w", err)
-			pc.errMu.Unlock()
 			pool.Put(buf)
+			pc.closeWithErr(fmt.Errorf("bad DNS packet: %w", err))
 			return
 		}
 		pool.Put(buf)
@@ -1295,6 +1304,5 @@ func (pc *pipelinedConn) RoundTrip(ctx context.Context, data []byte) (*dnsmessag
 }
 
 func (pc *pipelinedConn) Close() {
-	_ = pc.conn.Close()
-	// readLoop will detect close and clean up
+	pc.closeWithErr(io.ErrClosedPipe)
 }
