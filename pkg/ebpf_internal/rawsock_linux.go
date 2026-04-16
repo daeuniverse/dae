@@ -27,6 +27,7 @@ func OpenRawSock(index int) (int, error) {
 		Protocol: Htons(syscall.ETH_P_ALL),
 	}
 	if err := syscall.Bind(sock, &sll); err != nil {
+		syscall.Close(sock) //nolint:errcheck
 		return 0, err
 	}
 	return sock, nil

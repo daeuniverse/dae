@@ -25,7 +25,13 @@ func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort
 
 	var log *logrus.Logger
 	if _log := ctx.Value("logger"); _log != nil {
-		log = _log.(*logrus.Logger)
+		var ok bool
+		log, ok = _log.(*logrus.Logger)
+		if !ok {
+			log = nil
+		}
+	}
+	if log != nil {
 		defer func() {
 			log.WithField("err4", err4).
 				WithField("err6", err6).

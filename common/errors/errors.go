@@ -242,7 +242,7 @@ func IsIgnorableTCPRelayError(err error) bool {
 // optimized to minimize allocations and reflection overhead.
 func IsUDPEndpointNormalClose(err error) bool {
 	if err == nil {
-		return true
+		return false
 	}
 
 	// Fast path: check sentinel errors first (no allocations, pointer comparison only)

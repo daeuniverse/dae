@@ -194,7 +194,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		return "", nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, err = io.ReadAll(resp.Body)
+	b, err = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max subscription size
 	if err != nil {
 		return "", nil, err
 	}
