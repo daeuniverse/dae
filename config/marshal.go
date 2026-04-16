@@ -150,8 +150,8 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		}
 		switch from.Index(0).Interface().(type) {
 		case fmt.Stringer, string,
-			uint8, uint16, uint32, uint64,
-			int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			int, int8, int16, int32, int64,
 			float32, float64,
 			bool:
 			var vals []string
@@ -178,8 +178,8 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 	default:
 		switch val := from.Interface().(type) {
 		case fmt.Stringer, string,
-			uint8, uint16, uint32, uint64,
-			int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			int, int8, int16, int32, int64,
 			float32, float64,
 			bool:
 			m.writeLine(depth, key+":"+strconv.Quote(fmt.Sprintf("%v", val)))
@@ -191,6 +191,51 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 	}
 	return nil
 }
+
+func (m *Marshaller) marshalFunctions(functions []*config_parser.Function) string {
+	var vals []string
+	for _, f := range functions {
+		vals = append(vals, f.String(false, true, false))
+	}
+	return strings.Join(vals, " && ")
+}
+
+func (m *Marshaller) marshalAnnotation(params []*config_parser.Param) string {
+	var vals []string
+	for _, p := range params {
+		vals = append(vals, p.String(false, true))
+	}
+	return strings.Join(vals, ", ")
+}
+
+func (m *Marshaller) marshalAnnotatedField(key string, from reflect.Value, annotation reflect.Value, depth int) error {
+	if from.Kind() != reflect.Slice || annotation.Kind() != reflect.Slice {
+		return fmt.Errorf("annotated field %v must be a slice", key)
+	}
+	if from.Len() != annotation.Len() {
+		return fmt.Errorf("annotated field %v has mismatched lengths: %v != %v", key, from.Len(), annotation.Len())
+	}
+	for i := 0; i < from.Len(); i++ {
+		item := from.Index(i).Interface()
+		functions, ok := item.([]*config_parser.Function)
+		if !ok {
+			return fmt.Errorf("unsupported annotated field type: %T", item)
+		}
+		line := key + ": " + m.marshalFunctions(functions)
+		if !annotation.Index(i).IsNil() {
+			params, ok := annotation.Index(i).Interface().([]*config_parser.Param)
+			if !ok {
+				return fmt.Errorf("unsupported annotation field type: %T", annotation.Index(i).Interface())
+			}
+			if len(params) > 0 {
+				line += " [" + m.marshalAnnotation(params) + "]"
+			}
+		}
+		m.writeLine(depth, line)
+	}
+	return nil
+}
+
 func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 	if from.Kind() != reflect.Struct {
 		return fmt.Errorf("marshalParam can only marshal struct")
@@ -206,21 +251,30 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		if !ok {
 			return fmt.Errorf("tag mapstructure is required")
 		}
+		if field.Type() == reflect.TypeOf([]*config_parser.RoutingRule{}) {
+			rules := field.Interface().([]*config_parser.RoutingRule)
+			for _, r := range rules {
+				m.writeLine(depth, r.String(false, true, true))
+			}
+			continue
+		}
 		// Reserved field.
 		if key == "_" {
 			switch structField.Name {
 			case "Name":
-			case "Rules":
-				// Expand.
-				rules, ok := field.Interface().([]*config_parser.RoutingRule)
-				if !ok {
-					return fmt.Errorf("unexpected Rules type: %v", field.Type())
-				}
-				for _, r := range rules {
-					m.writeLine(depth, r.String(false, true, true))
-				}
+			case "FilterAnnotation":
+			case "PolicyAnnotation":
+				// Ignore companion/reserved fields.
 			default:
 				return fmt.Errorf("unknown reserved field: %v", structField.Name)
+			}
+			continue
+		}
+
+		annotationSF, annotatable := typ.FieldByName(structField.Name + "Annotation")
+		if annotatable && annotationSF.Tag.Get("mapstructure") == "_" {
+			if err = m.marshalAnnotatedField(key, field, from.FieldByName(annotationSF.Name), depth); err != nil {
+				return err
 			}
 			continue
 		}
