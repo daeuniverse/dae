@@ -532,3 +532,72 @@ func TestWaitForControlPlaneDrainReturnsTimeout(t *testing.T) {
 		t.Fatalf("result = %v, want controlPlaneDrainTimeout", result)
 	}
 }
+
+// retirementBehaviorPlane extends fakeRetirementControlPlane with abort
+// tracking to prove the three-way retirement precedence rule:
+// abort → !overlap → drain.
+type retirementBehaviorPlane struct {
+	*fakeRetirementControlPlane
+	abortCalled atomic.Bool
+}
+
+func (r *retirementBehaviorPlane) AbortConnections() error {
+	r.abortCalled.Store(true)
+	return nil
+}
+
+func TestReloadRetirementBehavior(t *testing.T) {
+	tests := []struct {
+		name        string
+		overlap     bool
+		abort       bool
+		expectDrain bool
+	}{
+		{"staged_overlap_no_abortfile_graceful", true, false, true},
+		{"staged_no_overlap_no_abortfile_immediate_abort", false, false, false},
+		{"staged_overlap_abortfile_immediate_abort", true, true, false},
+		{"staged_no_overlap_abortfile_immediate_abort", false, true, false},
+		{"nonstaged_overlap_no_abortfile_graceful", true, false, true},
+		{"nonstaged_no_overlap_no_abortfile_immediate_abort", false, false, false},
+		{"nonstaged_overlap_abortfile_immediate_abort", true, true, false},
+		{"nonstaged_no_overlap_abortfile_immediate_abort", false, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plane := &retirementBehaviorPlane{
+				fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
+			}
+			done := make(chan struct{})
+
+			go func() {
+				defer close(done)
+				retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, tt.abort, tt.overlap, 10*time.Second)
+			}()
+
+			if tt.expectDrain {
+				select {
+				case <-done:
+					t.Fatal("graceful retirement completed while drain was still blocked")
+				case <-time.After(50 * time.Millisecond):
+				}
+				atomic.StoreInt32(&plane.active, 0)
+				close(plane.idleCh)
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("graceful retirement did not complete after drain release")
+				}
+			} else {
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("immediate-abort retirement did not complete in time")
+				}
+				if !plane.abortCalled.Load() {
+					t.Fatal("expected AbortConnections to be called for immediate-abort case")
+				}
+			}
+		})
+	}
+}

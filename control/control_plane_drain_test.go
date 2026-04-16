@@ -430,7 +430,9 @@ func TestInheritDialerHealthFromUsesReloadSafeSnapshot(t *testing.T) {
 	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
 	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
 
-	newCP.InheritDialerHealthFrom(oldCP)
+	if got := newCP.InheritDialerHealthFrom(oldCP); !got {
+		t.Fatal("expected InheritDialerHealthFrom to return true when dialers overlap")
+	}
 
 	if !newDialer.MustGetAlive(tcp4) {
 		t.Fatal("expected reload selection floor to keep the only group candidate alive")
@@ -508,7 +510,9 @@ func TestInheritDialerHealthFromDoesNotReviveDeadDialerWhenGroupHasCandidate(t *
 	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
 	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
 
-	newCP.InheritDialerHealthFrom(oldCP)
+	if got := newCP.InheritDialerHealthFrom(oldCP); !got {
+		t.Fatal("expected InheritDialerHealthFrom to return true when dialers overlap")
+	}
 
 	if newDialerA.MustGetAlive(tcp4) {
 		t.Fatal("expected dead dialer A to remain unavailable while group has another candidate")
@@ -518,19 +522,66 @@ func TestInheritDialerHealthFromDoesNotReviveDeadDialerWhenGroupHasCandidate(t *
 	}
 }
 
-func TestWaitDNSUpstreamsReadyReturnsWhenChannelCloses(t *testing.T) {
-	cp := &ControlPlane{
-		ctx:               context.Background(),
-		dnsUpstreamsReady: make(chan struct{}),
-	}
-	close(cp.dnsUpstreamsReady)
+func TestInheritDialerHealthFromReturnsFalseWhenNoOverlap(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
 
-	if err := cp.WaitDNSUpstreamsReady(time.Second); err != nil {
-		t.Fatalf("WaitDNSUpstreamsReady() error = %v", err)
+	newTestDialer := func(name string) *dialer.Dialer {
+		return dialer.NewDialer(
+			direct.SymmetricDirect,
+			&dialer.GlobalOption{
+				Log:            logger,
+				CheckInterval:  30 * time.Second,
+				CheckTolerance: time.Second,
+			},
+			dialer.InstanceOption{},
+			&dialer.Property{
+				Property: D.Property{Name: name},
+			},
+		)
+	}
+
+	oldDialer := newTestDialer("node-a")
+	defer func() { _ = oldDialer.Close() }()
+	newDialer := newTestDialer("node-b")
+	defer func() { _ = newDialer.Close() }()
+
+	oldGroup := outbound.NewDialerGroup(
+		&dialer.GlobalOption{
+			Log:            logger,
+			CheckInterval:  30 * time.Second,
+			CheckTolerance: time.Second,
+		},
+		"group-x",
+		[]*dialer.Dialer{oldDialer},
+		[]*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *dialer.NetworkType, bool) {},
+	)
+	defer func() { _ = oldGroup.Close() }()
+	newGroup := outbound.NewDialerGroup(
+		&dialer.GlobalOption{
+			Log:            logger,
+			CheckInterval:  30 * time.Second,
+			CheckTolerance: time.Second,
+		},
+		"group-y",
+		[]*dialer.Dialer{newDialer},
+		[]*dialer.Annotation{{}},
+		outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *dialer.NetworkType, bool) {},
+	)
+	defer func() { _ = newGroup.Close() }()
+
+	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
+	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
+
+	if got := newCP.InheritDialerHealthFrom(oldCP); got {
+		t.Fatal("expected InheritDialerHealthFrom to return false when no dialers overlap")
 	}
 }
 
-func TestDnsUpstreamReadyCallbackSignalsAvailabilityBeforeReady(t *testing.T) {
+func TestWaitDNSUpstreamsReadyReturnsWhenChannelCloses(t *testing.T) {
 	cp := &ControlPlane{
 		ctx:                  context.Background(),
 		ready:                make(chan struct{}),

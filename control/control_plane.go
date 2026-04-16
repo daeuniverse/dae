@@ -1115,10 +1115,16 @@ func (c *ControlPlane) SetDNSHandoffController(controller *DnsController) {
 	c.dnsHandoffController.Store(controller)
 }
 
-func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) {
+// InheritDialerHealthFrom copies health snapshots from a previous control plane
+// generation into the current one. It returns true when at least one dialer
+// matched by group+name between the old and new generation, indicating that
+// active connections on those dialers may survive the reload.
+func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) bool {
 	if c == nil || previous == nil {
-		return
+		return false
 	}
+
+	var hasOverlap bool
 
 	previousGroups := make(map[string]*outbound.DialerGroup, len(previous.outbounds))
 	for _, group := range previous.outbounds {
@@ -1150,10 +1156,12 @@ func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) {
 			}
 			if oldDialer := oldDialers[d.Property().Name]; oldDialer != nil {
 				d.RestoreHealthSnapshot(oldDialer.ReloadHealthSnapshot())
+				hasOverlap = true
 			}
 		}
 		group.EnsureReloadSelectionFloor(fallback)
 	}
+	return hasOverlap
 }
 
 func updateConnStateJanitorPressure(

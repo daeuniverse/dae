@@ -106,6 +106,11 @@ type reloadRetirementControlPlane interface {
 	DrainIdleCh() <-chan struct{}
 }
 
+type retirementDrainPlane interface {
+	reloadRetirementControlPlane
+	AbortConnections() error
+}
+
 type controlPlaneDrainWaitResult uint8
 
 const (
@@ -132,6 +137,7 @@ type stagedReloadHandoff struct {
 	newCancel        context.CancelFunc
 	newListener      *control.Listener
 	abortConnections bool
+	hasOverlap       bool
 }
 
 func tryQueueReloadRequest(
@@ -518,7 +524,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				oldConf := conf
 				oldListener := listener
 
-				newC.InheritDialerHealthFrom(oldC)
+				hasOverlap := newC.InheritDialerHealthFrom(oldC)
 				c = newC
 				currCancel = cancel
 				conf = newConf
@@ -532,6 +538,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					newCancel:        cancel,
 					newListener:      stagedListener,
 					abortConnections: abortConnections,
+					hasOverlap:       hasOverlap,
 				}
 				pendingReloadRequestedAt = reloadStartedAt
 				pendingReloadRequestedAtMono = reloadStartedAtMono
@@ -629,7 +636,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			oldCancel := currCancel
 			oldConf := conf
 
-			newC.InheritDialerHealthFrom(oldC)
+			hasOverlap := newC.InheritDialerHealthFrom(oldC)
 			c = newC
 			currCancel = newCancel
 			conf = newConf
@@ -644,6 +651,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					newCancel:        newCancel,
 					newListener:      stagedListener,
 					abortConnections: abortConnections,
+					hasOverlap:       hasOverlap,
 				}
 			} else {
 				pendingStagedHandoff = nil
@@ -682,6 +690,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					successor *control.ControlPlane,
 					cancel context.CancelFunc,
 					abort bool,
+					hasOverlap bool,
 					maxDrain time.Duration,
 					staleBeforeNs uint64,
 					done chan struct{},
@@ -693,19 +702,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					// OutboundConnectivityMap BPF map immediately.
 					c.MarkRetired()
 
-					switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
-					case controlPlaneDrainIdle:
-						log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")
-					case controlPlaneDrainCanceled:
-						log.Warnln("[Reload] New generation ready; accelerating old generation retirement")
-					case controlPlaneDrainTimeout:
-						log.WithField("active_sessions", c.ActiveSessionCount()).
-							Warnln("[Reload] Old control plane drain timed out; forcing retirement")
-					}
-
-					if abort {
-						_ = c.AbortConnections()
-					}
+					retireControlPlaneConnections(log, ctx, c, abort, hasOverlap, maxDrain)
 
 					// Crucial: Cancel the generation's workers before closing structural resources.
 					if cancel != nil {
@@ -719,7 +716,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 						successor.RunReloadRetirementCleanup(staleBeforeNs)
 					}
 					log.Warnln("[Reload] Retired old control plane")
-				}(retireCtx, oldC, successor, oldCancel, abortConnections, drainBudget, staleBeforeNs, retirementDone)
+				}(retireCtx, oldC, successor, oldCancel, abortConnections, hasOverlap, drainBudget, staleBeforeNs, retirementDone)
 			}
 
 			if pprofServer != nil {
@@ -906,6 +903,7 @@ loop:
 					oldC := pendingStagedHandoff.oldControlPlane
 					oldCancel := pendingStagedHandoff.oldCancel
 					abortConnections := pendingStagedHandoff.abortConnections
+					hasOverlap := pendingStagedHandoff.hasOverlap
 					if oldC != nil {
 						bpf := oldC.EjectBpf()
 						c.InjectBpf(bpf)
@@ -940,6 +938,7 @@ loop:
 							successor *control.ControlPlane,
 							cancel context.CancelFunc,
 							abort bool,
+							hasOverlap bool,
 							maxDrain time.Duration,
 							staleBeforeNs uint64,
 							done chan struct{},
@@ -948,19 +947,7 @@ loop:
 
 							c.MarkRetired()
 
-							switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
-							case controlPlaneDrainIdle:
-								log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")
-							case controlPlaneDrainCanceled:
-								log.Warnln("[Reload] New generation ready; accelerating old generation retirement")
-							case controlPlaneDrainTimeout:
-								log.WithField("active_sessions", c.ActiveSessionCount()).
-									Warnln("[Reload] Old control plane drain timed out; forcing retirement")
-							}
-
-							if abort {
-								_ = c.AbortConnections()
-							}
+							retireControlPlaneConnections(log, ctx, c, abort, hasOverlap, maxDrain)
 							if cancel != nil {
 								cancel()
 							}
@@ -971,7 +958,7 @@ loop:
 								successor.RunReloadRetirementCleanup(staleBeforeNs)
 							}
 							log.Warnln("[Reload] Retired old control plane")
-						}(retireCtx, oldC, successor, oldCancel, abortConnections, drainBudget, staleBeforeNs, retirementDone)
+						}(retireCtx, oldC, successor, oldCancel, abortConnections, hasOverlap, drainBudget, staleBeforeNs, retirementDone)
 					}
 				}
 				_ = sdnotify.Ready()
@@ -1071,6 +1058,33 @@ func waitForControlPlaneDrain(
 				log.WithField("active_sessions", c.ActiveSessionCount()).
 					Debugln("[Reload] Old control plane still draining active sessions")
 			}
+		}
+	}
+}
+
+func retireControlPlaneConnections(
+	log *logrus.Logger,
+	ctx context.Context,
+	c retirementDrainPlane,
+	abort bool,
+	hasOverlap bool,
+	maxDrain time.Duration,
+) {
+	if abort {
+		log.Warnln("[Reload] Abort requested; aborting stale connections immediately")
+		_ = c.AbortConnections()
+	} else if !hasOverlap {
+		log.Infoln("[Reload] No dialer overlap between generations; aborting stale connections")
+		_ = c.AbortConnections()
+	} else {
+		switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
+		case controlPlaneDrainIdle:
+			log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")
+		case controlPlaneDrainCanceled:
+			log.Warnln("[Reload] New generation ready; accelerating old generation retirement")
+		case controlPlaneDrainTimeout:
+			log.WithField("active_sessions", c.ActiveSessionCount()).
+				Warnln("[Reload] Old control plane drain timed out; forcing retirement")
 		}
 	}
 }

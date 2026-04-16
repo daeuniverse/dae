@@ -16,3 +16,4 @@ node_modules/
 venv
 CLAUDE.md
 AGENTS.md
+.sisyphus
