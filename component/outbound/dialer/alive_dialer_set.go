@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 )
 
@@ -36,6 +37,7 @@ type AliveDialerSet struct {
 	dialerGroupName string
 	CheckTyp        *NetworkType
 	tolerance       time.Duration
+	uniformWeight   bool
 
 	aliveChangeCallback func(alive bool)
 
@@ -66,16 +68,25 @@ func NewAliveDialerSet(
 	}
 	dialerToLatencyOffset := make(map[*Dialer]time.Duration)
 	dialerToWeight := make(map[*Dialer]int64)
+	uniformWeight := true
+	var firstWeight int64
 	for i := range dialers {
 		d, a := dialers[i], dialersAnnotations[i]
 		dialerToLatencyOffset[d] = a.AddLatency
-		dialerToWeight[d] = 1 + a.AddWeight
+		weight := 1 + a.AddWeight
+		dialerToWeight[d] = weight
+		if i == 0 {
+			firstWeight = weight
+		} else if weight != firstWeight {
+			uniformWeight = false
+		}
 	}
 	a := &AliveDialerSet{
 		log:                     log,
 		dialerGroupName:         dialerGroupName,
 		CheckTyp:                networkType,
 		tolerance:               tolerance,
+		uniformWeight:           uniformWeight,
 		aliveChangeCallback:     aliveChangeCallback,
 		dialerToIndex:           make(map[*Dialer]int),
 		dialerToLatency:         make(map[*Dialer]time.Duration),
@@ -103,6 +114,40 @@ func (a *AliveDialerSet) GetRand() *Dialer {
 	if len(a.inorderedAliveDialerSet) == 0 {
 		return nil
 	}
+	if a.uniformWeight {
+		ind := fastrand.Intn(len(a.inorderedAliveDialerSet))
+		return a.inorderedAliveDialerSet[ind]
+	}
+	var totalWeight uint64
+	for _, d := range a.inorderedAliveDialerSet {
+		weight := a.dialerToWeight[d]
+		if weight <= 0 {
+			continue
+		}
+		if totalWeight > math.MaxUint64-uint64(weight) {
+			return a.getRandExponentialRaceLocked()
+		}
+		totalWeight += uint64(weight)
+	}
+	if totalWeight == 0 {
+		return nil
+	}
+	ticket := randv2.Uint64N(totalWeight)
+	var cumulative uint64
+	for _, d := range a.inorderedAliveDialerSet {
+		weight := a.dialerToWeight[d]
+		if weight <= 0 {
+			continue
+		}
+		cumulative += uint64(weight)
+		if ticket < cumulative {
+			return d
+		}
+	}
+	return a.getRandExponentialRaceLocked()
+}
+
+func (a *AliveDialerSet) getRandExponentialRaceLocked() *Dialer {
 	var selected *Dialer
 	bestScore := math.Inf(1)
 	for _, d := range a.inorderedAliveDialerSet {
