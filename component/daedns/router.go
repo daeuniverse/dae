@@ -25,6 +25,7 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/dlclark/regexp2"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -55,6 +56,7 @@ type Router struct {
 	bootstrapDns    []netip.AddrPort
 	soMark          uint32
 	mptcp           bool
+	lookupSf        singleflight.Group
 }
 
 type NewOption struct {

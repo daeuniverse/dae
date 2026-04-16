@@ -1095,7 +1095,7 @@ func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, dat
 		return nil, fmt.Errorf("unexpected content-type: %v", contentType)
 	}
 
-	buf, err := io.ReadAll(resp.Body)
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -34,6 +35,10 @@ import (
 
 var errInternalDNSTruncated = fmt.Errorf("internal dns response truncated")
 var errPassthroughToBaseResolver = errors.New("dns request routing selected passthrough resolver")
+
+var udpDNSBufPool = sync.Pool{
+	New: func() any { return make([]byte, 65535) },
+}
 
 var (
 	// Test seams for queryHTTPS path validation without live network dependencies.
@@ -99,7 +104,15 @@ func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network 
 			}
 			continue
 		}
-		ips, lookupErr := r.lookupType(ctx, upstream, host, qtype)
+		// Deduplicate concurrent lookups for the same host and query type.
+		sfKey := fmt.Sprintf("%s/%d", host, qtype)
+		result, lookupErr, _ := r.lookupSf.Do(sfKey, func() (any, error) {
+			return r.lookupType(ctx, upstream, host, qtype)
+		})
+		var ips []net.IPAddr
+		if lookupErr == nil {
+			ips = result.([]net.IPAddr)
+		}
 		if lookupErr != nil {
 			if firstErr == nil {
 				firstErr = lookupErr
@@ -228,7 +241,8 @@ func (r *Router) queryUDP(ctx context.Context, target netip.AddrPort, data []byt
 	if _, err = netutils.WriteUDPConn(conn, target.String(), data); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 65535)
+	buf := udpDNSBufPool.Get().([]byte)
+	defer udpDNSBufPool.Put(buf) //nolint:staticcheck
 	for range 8 {
 		n, readErr := netutils.ReadUDPConn(conn, buf)
 		if readErr != nil {
@@ -420,7 +434,7 @@ func sendHTTPDNS(ctx context.Context, client *http.Client, target string, upstre
 	if contentType := resp.Header.Get("Content-Type"); contentType != "application/dns-message" {
 		return nil, fmt.Errorf("unexpected content-type: %v", contentType)
 	}
-	buf, err := io.ReadAll(resp.Body)
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
 	if err != nil {
 		return nil, err
 	}
