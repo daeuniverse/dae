@@ -7,13 +7,14 @@ package dialer
 
 import (
 	"fmt"
+	"math"
+	randv2 "math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 )
 
@@ -42,6 +43,7 @@ type AliveDialerSet struct {
 	dialerToIndex           map[*Dialer]int // *Dialer -> index of inorderedAliveDialerSet
 	dialerToLatency         map[*Dialer]time.Duration
 	dialerToLatencyOffset   map[*Dialer]time.Duration
+	dialerToWeight          map[*Dialer]int64
 	inorderedAliveDialerSet []*Dialer
 
 	selectionPolicy consts.DialerSelectionPolicy
@@ -63,9 +65,11 @@ func NewAliveDialerSet(
 		panic(fmt.Sprintf("unmatched annotations length: %v dialers and %v annotations", len(dialers), len(dialersAnnotations)))
 	}
 	dialerToLatencyOffset := make(map[*Dialer]time.Duration)
+	dialerToWeight := make(map[*Dialer]int64)
 	for i := range dialers {
 		d, a := dialers[i], dialersAnnotations[i]
 		dialerToLatencyOffset[d] = a.AddLatency
+		dialerToWeight[d] = 1 + a.AddWeight
 	}
 	a := &AliveDialerSet{
 		log:                     log,
@@ -76,6 +80,7 @@ func NewAliveDialerSet(
 		dialerToIndex:           make(map[*Dialer]int),
 		dialerToLatency:         make(map[*Dialer]time.Duration),
 		dialerToLatencyOffset:   dialerToLatencyOffset,
+		dialerToWeight:          dialerToWeight,
 		inorderedAliveDialerSet: make([]*Dialer, 0, len(dialers)),
 		selectionPolicy:         selectionPolicy,
 		minLatency: minLatency{
@@ -98,8 +103,21 @@ func (a *AliveDialerSet) GetRand() *Dialer {
 	if len(a.inorderedAliveDialerSet) == 0 {
 		return nil
 	}
-	ind := fastrand.Intn(len(a.inorderedAliveDialerSet))
-	return a.inorderedAliveDialerSet[ind]
+	var selected *Dialer
+	bestScore := math.Inf(1)
+	for _, d := range a.inorderedAliveDialerSet {
+		weight := a.dialerToWeight[d]
+		if weight <= 0 {
+			continue
+		}
+		u := 1 - randv2.Float64()
+		score := -math.Log(u) / float64(weight)
+		if score < bestScore {
+			bestScore = score
+			selected = d
+		}
+	}
+	return selected
 }
 
 func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
