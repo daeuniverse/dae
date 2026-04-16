@@ -1205,7 +1205,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, networkIdx int, u *netutils.URL,
 	// Judge the status code.
 	if page := path.Base(req.URL.Path); strings.HasPrefix(page, "generate_") {
 		if strconv.Itoa(resp.StatusCode) != strings.TrimPrefix(page, "generate_") {
-			b, _ := io.ReadAll(resp.Body)
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			buf := pool.GetBuffer()
 			defer pool.PutBuffer(buf)
 			_ = resp.Request.Write(buf)

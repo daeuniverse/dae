@@ -142,10 +142,22 @@ func (s *Sniffer) readStreamOnceAsync() error {
 	ready := s.dataReady
 	go func() {
 		defer close(ready)
-		// Read once.
-		_, err := s.buf.ReadFromOnce(s.r)
-		if err != nil {
-			s.dataError = err
+		type readResult struct {
+			n   int64
+			err error
+		}
+		ch := make(chan readResult, 1)
+		go func() {
+			n, err := s.buf.ReadFromOnce(s.r)
+			ch <- readResult{n, err}
+		}()
+		select {
+		case <-ctx.Done():
+			s.dataError = ctx.Err()
+		case rr := <-ch:
+			if rr.err != nil {
+				s.dataError = rr.err
+			}
 		}
 	}()
 
