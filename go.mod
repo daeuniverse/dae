@@ -118,5 +118,5 @@ require (
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use the pushed perf/complete-optimizations fork head until these commits land upstream.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260415045205-3d0f2cc78975
+// Use the pushed perf/complete-optimizations fork head with audit fixes applied.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260416064646-2cfddb7b721b

@@ -1070,13 +1070,14 @@ func retireControlPlaneConnections(
 	hasOverlap bool,
 	maxDrain time.Duration,
 ) {
-	if abort {
+	switch {
+	case abort:
 		log.Warnln("[Reload] Abort requested; aborting stale connections immediately")
 		_ = c.AbortConnections()
-	} else if !hasOverlap {
+	case !hasOverlap:
 		log.Infoln("[Reload] No dialer overlap between generations; aborting stale connections")
 		_ = c.AbortConnections()
-	} else {
+	default:
 		switch waitForControlPlaneDrain(log, ctx, c, maxDrain, controlPlaneRetirementLogEvery) {
 		case controlPlaneDrainIdle:
 			log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")
