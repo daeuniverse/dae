@@ -104,15 +104,7 @@ func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network 
 			}
 			continue
 		}
-		// Deduplicate concurrent lookups for the same host and query type.
-		sfKey := fmt.Sprintf("%s/%d", host, qtype)
-		result, lookupErr, _ := r.lookupSf.Do(sfKey, func() (any, error) {
-			return r.lookupType(ctx, upstream, host, qtype)
-		})
-		var ips []net.IPAddr
-		if lookupErr == nil {
-			ips = result.([]net.IPAddr)
-		}
+		ips, lookupErr := r.lookupTypeDedup(ctx, upstream, host, qtype)
 		if lookupErr != nil {
 			if firstErr == nil {
 				firstErr = lookupErr
@@ -130,6 +122,84 @@ func (r *Router) LookupIPAddr(ctx context.Context, upstreamName string, network 
 		}
 	}
 	return addrs, nil
+}
+
+func lookupTypeDedupKey(upstream *componentdns.Upstream, host string, qtype uint16) string {
+	return fmt.Sprintf("%s\x00%s\x00%d", upstream.String(), host, qtype)
+}
+
+func (r *Router) lookupTypeDedup(ctx context.Context, upstream *componentdns.Upstream, host string, qtype uint16) ([]net.IPAddr, error) {
+	key := lookupTypeDedupKey(upstream, host, qtype)
+	call := r.getOrCreateLookupCall(key, upstream, host, qtype)
+	defer r.releaseLookupCall(key, call)
+
+	select {
+	case <-call.done:
+		return call.res, call.err
+	default:
+	}
+
+	select {
+	case <-call.done:
+		return call.res, call.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (r *Router) getOrCreateLookupCall(key string, upstream *componentdns.Upstream, host string, qtype uint16) *lookupCall {
+	r.lookupMu.Lock()
+	if call, ok := r.lookupCalls[key]; ok {
+		call.waiters++
+		r.lookupMu.Unlock()
+		return call
+	}
+
+	lookupCtx, cancel := context.WithCancel(context.Background())
+	call := &lookupCall{
+		waiters: 1,
+		done:    make(chan struct{}),
+		cancel:  cancel,
+	}
+	r.lookupCalls[key] = call
+	r.lookupMu.Unlock()
+
+	go func() {
+		call.res, call.err = r.lookupType(lookupCtx, upstream, host, qtype)
+		close(call.done)
+		cancel()
+
+		r.lookupMu.Lock()
+		if current := r.lookupCalls[key]; current == call {
+			delete(r.lookupCalls, key)
+		}
+		r.lookupMu.Unlock()
+	}()
+
+	return call
+}
+
+func (r *Router) releaseLookupCall(key string, call *lookupCall) {
+	r.lookupMu.Lock()
+	defer r.lookupMu.Unlock()
+
+	if call.waiters == 0 {
+		return
+	}
+	call.waiters--
+	if call.waiters != 0 {
+		return
+	}
+
+	select {
+	case <-call.done:
+		return
+	default:
+		if current := r.lookupCalls[key]; current == call {
+			delete(r.lookupCalls, key)
+		}
+		call.cancel()
+	}
 }
 
 func (r *Router) lookupType(ctx context.Context, upstream *componentdns.Upstream, host string, qtype uint16) ([]net.IPAddr, error) {

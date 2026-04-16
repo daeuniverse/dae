@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -25,7 +26,6 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/dlclark/regexp2"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -56,7 +56,16 @@ type Router struct {
 	bootstrapDns    []netip.AddrPort
 	soMark          uint32
 	mptcp           bool
-	lookupSf        singleflight.Group
+	lookupMu        sync.Mutex
+	lookupCalls     map[string]*lookupCall
+}
+
+type lookupCall struct {
+	waiters int
+	done    chan struct{}
+	res     []net.IPAddr
+	err     error
+	cancel  context.CancelFunc
 }
 
 type NewOption struct {
@@ -121,10 +130,11 @@ func NewWithOption(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns
 	}
 
 	router := &Router{
-		log:       log,
-		upstreams: make(map[string]*componentdns.UpstreamResolver),
-		soMark:    common.EffectiveSoMarkFromDae(global.SoMarkFromDae),
-		mptcp:     global.Mptcp,
+		log:         log,
+		upstreams:   make(map[string]*componentdns.UpstreamResolver),
+		soMark:      common.EffectiveSoMarkFromDae(global.SoMarkFromDae),
+		mptcp:       global.Mptcp,
+		lookupCalls: make(map[string]*lookupCall),
 	}
 	router.bootstrapDns, err = config.BootstrapResolvers(global)
 	if err != nil {

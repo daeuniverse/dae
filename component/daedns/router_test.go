@@ -7,6 +7,7 @@ package daedns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -358,6 +360,170 @@ func TestRouterUsesExternalGeodataDirsForRequestRules(t *testing.T) {
 	}
 }
 
+func TestRouterLookupIPAddrDedupScopesByUpstream(t *testing.T) {
+	skipIfNoSocketMark(t)
+	addr1, got1, release1, stop1 := startBlockingDNSUDPServer(t, netip.MustParseAddr("203.0.113.11"))
+	defer stop1()
+	addr2, got2, release2, stop2 := startBlockingDNSUDPServer(t, netip.MustParseAddr("198.51.100.11"))
+	defer stop2()
+
+	router := newTestLookupRouter(t,
+		fmt.Sprintf("up1:udp://%s", addr1),
+		fmt.Sprintf("up2:udp://%s", addr2),
+	)
+
+	type lookupResult struct {
+		ips []net.IPAddr
+		err error
+	}
+	result1Ch := make(chan lookupResult, 1)
+	result2Ch := make(chan lookupResult, 1)
+
+	go func() {
+		ips, err := router.LookupIPAddr(context.Background(), "up1", "tcp", "proxy.example.com")
+		result1Ch <- lookupResult{ips: ips, err: err}
+	}()
+
+	select {
+	case <-got1:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first upstream query")
+	}
+
+	go func() {
+		ips, err := router.LookupIPAddr(context.Background(), "up2", "tcp", "proxy.example.com")
+		result2Ch <- lookupResult{ips: ips, err: err}
+	}()
+
+	select {
+	case <-got2:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second upstream query")
+	}
+
+	close(release1)
+	close(release2)
+
+	result1 := <-result1Ch
+	if result1.err != nil {
+		t.Fatalf("LookupIPAddr(up1) error = %v", result1.err)
+	}
+	if len(result1.ips) != 1 || !result1.ips[0].IP.Equal(net.IPv4(203, 0, 113, 11)) {
+		t.Fatalf("LookupIPAddr(up1) = %v, want 203.0.113.11", result1.ips)
+	}
+
+	result2 := <-result2Ch
+	if result2.err != nil {
+		t.Fatalf("LookupIPAddr(up2) error = %v", result2.err)
+	}
+	if len(result2.ips) != 1 || !result2.ips[0].IP.Equal(net.IPv4(198, 51, 100, 11)) {
+		t.Fatalf("LookupIPAddr(up2) = %v, want 198.51.100.11", result2.ips)
+	}
+}
+
+func TestRouterLookupIPAddrDedupKeepsFollowerAliveWhenLeaderTimesOut(t *testing.T) {
+	skipIfNoSocketMark(t)
+	addr, gotQuery, release, stop := startBlockingDNSUDPServer(t, netip.MustParseAddr("203.0.113.12"))
+	defer stop()
+
+	router := newTestLookupRouter(t, fmt.Sprintf("up1:udp://%s", addr))
+
+	type lookupResult struct {
+		ips []net.IPAddr
+		err error
+	}
+	leaderResultCh := make(chan lookupResult, 1)
+	followerResultCh := make(chan lookupResult, 1)
+
+	leaderCtx, leaderCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer leaderCancel()
+
+	go func() {
+		ips, err := router.LookupIPAddr(leaderCtx, "up1", "tcp", "proxy.example.com")
+		leaderResultCh <- lookupResult{ips: ips, err: err}
+	}()
+
+	select {
+	case <-gotQuery:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shared upstream query")
+	}
+
+	go func() {
+		ips, err := router.LookupIPAddr(context.Background(), "up1", "tcp", "proxy.example.com")
+		followerResultCh <- lookupResult{ips: ips, err: err}
+	}()
+
+	time.Sleep(40 * time.Millisecond)
+	close(release)
+
+	leaderResult := <-leaderResultCh
+	if leaderResult.err == nil || !isContextDeadlineExceeded(leaderResult.err) {
+		t.Fatalf("leader error = %v, want context deadline exceeded", leaderResult.err)
+	}
+
+	followerResult := <-followerResultCh
+	if followerResult.err != nil {
+		t.Fatalf("follower LookupIPAddr() error = %v", followerResult.err)
+	}
+	if len(followerResult.ips) != 1 || !followerResult.ips[0].IP.Equal(net.IPv4(203, 0, 113, 12)) {
+		t.Fatalf("follower LookupIPAddr() = %v, want 203.0.113.12", followerResult.ips)
+	}
+}
+
+func TestRouterLookupIPAddrDedupLetsFollowerCancelIndependently(t *testing.T) {
+	skipIfNoSocketMark(t)
+	addr, gotQuery, release, stop := startBlockingDNSUDPServer(t, netip.MustParseAddr("203.0.113.13"))
+	defer stop()
+
+	router := newTestLookupRouter(t, fmt.Sprintf("up1:udp://%s", addr))
+
+	type lookupResult struct {
+		ips []net.IPAddr
+		err error
+	}
+	leaderResultCh := make(chan lookupResult, 1)
+
+	go func() {
+		ips, err := router.LookupIPAddr(context.Background(), "up1", "tcp", "proxy.example.com")
+		leaderResultCh <- lookupResult{ips: ips, err: err}
+	}()
+
+	select {
+	case <-gotQuery:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shared upstream query")
+	}
+
+	followerCtx, followerCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer followerCancel()
+
+	followerDone := make(chan error, 1)
+	go func() {
+		_, err := router.LookupIPAddr(followerCtx, "up1", "tcp", "proxy.example.com")
+		followerDone <- err
+	}()
+
+	select {
+	case err := <-followerDone:
+		if err == nil || !isContextDeadlineExceeded(err) {
+			t.Fatalf("follower error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("follower lookup did not respect its own context deadline")
+	}
+
+	close(release)
+
+	leaderResult := <-leaderResultCh
+	if leaderResult.err != nil {
+		t.Fatalf("leader LookupIPAddr() error = %v", leaderResult.err)
+	}
+	if len(leaderResult.ips) != 1 || !leaderResult.ips[0].IP.Equal(net.IPv4(203, 0, 113, 13)) {
+		t.Fatalf("leader LookupIPAddr() = %v, want 203.0.113.13", leaderResult.ips)
+	}
+}
+
 func mustNewTestRouter(t *testing.T, rules ...*config_parser.RoutingRule) *Router {
 	t.Helper()
 
@@ -372,6 +538,37 @@ func mustNewTestRouter(t *testing.T, rules ...*config_parser.RoutingRule) *Route
 			Request: config.DnsRequestRouting{
 				Rules:    rules,
 				Fallback: "subdns",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if router == nil {
+		t.Fatal("expected router to be created")
+	}
+	return router
+}
+
+func newTestLookupRouter(t *testing.T, upstreams ...string) *Router {
+	t.Helper()
+	if len(upstreams) == 0 {
+		t.Fatal("expected at least one upstream")
+	}
+	firstTag, _ := common.GetTagFromLinkLikePlaintext(upstreams[0])
+	rawUpstreams := make([]config.KeyableString, 0, len(upstreams))
+	for _, upstream := range upstreams {
+		rawUpstreams = append(rawUpstreams, config.KeyableString(upstream))
+	}
+
+	router, err := New(logrus.New(), &config.Global{}, &config.Dns{
+		Upstream: rawUpstreams,
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule(firstTag, testInternalFunction("qname", testInternalParam("suffix", "never-match.invalid"))),
+				},
+				Fallback: firstTag,
 			},
 		},
 	})
@@ -511,4 +708,61 @@ func startTestDNSUDPServerWithResponse(t *testing.T, answerFunc func(dnsmessage.
 		_ = pc.Close()
 		<-done
 	}
+}
+
+func startBlockingDNSUDPServer(t *testing.T, addr netip.Addr) (string, <-chan struct{}, chan struct{}, func()) {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket() error = %v", err)
+	}
+	gotQuery := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 2048)
+		firstQuery := true
+		for {
+			n, remoteAddr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			var req dnsmessage.Msg
+			if err = req.Unpack(buf[:n]); err != nil || len(req.Question) == 0 {
+				continue
+			}
+			if firstQuery {
+				firstQuery = false
+				close(gotQuery)
+			}
+			<-release
+			resp := dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{Id: req.Id, Response: true, RecursionAvailable: true}, Question: req.Question}
+			if req.Question[0].Qtype == dnsmessage.TypeA {
+				resp.Answer = append(resp.Answer, &dnsmessage.A{
+					Hdr: dnsmessage.RR_Header{Name: req.Question[0].Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
+					A:   addr.AsSlice(),
+				})
+			}
+			wire, packErr := resp.Pack()
+			if packErr != nil {
+				continue
+			}
+			_, _ = pc.WriteTo(wire, remoteAddr)
+		}
+	}()
+	return pc.LocalAddr().String(), gotQuery, release, func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		_ = pc.Close()
+		<-done
+	}
+}
+
+func isContextDeadlineExceeded(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded)
 }
