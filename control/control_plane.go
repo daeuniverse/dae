@@ -1005,6 +1005,14 @@ func (c *ControlPlane) AbortConnections() (err error) {
 	return errors.Join(errs...)
 }
 
+func (c *ControlPlane) ActiveTCPConnections() (n int) {
+	c.inConnections.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
 func (c *ControlPlane) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
