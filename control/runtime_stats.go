@@ -15,6 +15,8 @@ const (
 	maxRuntimeHistorySeconds = 60 * 60
 	defaultRuntimeWindowSec  = 30 * 60
 	defaultRuntimeMaxPoints  = 180
+	runtimeBucketDuration    = 250 * time.Millisecond
+	runtimeRateWindow        = time.Second
 )
 
 type RuntimeTrafficSample struct {
@@ -34,16 +36,23 @@ type RuntimeStatsSnapshot struct {
 	Samples           []RuntimeTrafficSample
 }
 
+type runtimeBucket struct {
+	Timestamp     time.Time
+	UploadBytes   uint64
+	DownloadBytes uint64
+	Duration      time.Duration
+}
+
 type runtimeStats struct {
 	mu sync.Mutex
 
-	currentSecond  int64
-	currentUpload  uint64
-	currentDownload uint64
+	currentBucketStart time.Time
+	currentUploadBytes uint64
+	currentDownloadBytes uint64
 
 	uploadTotal   uint64
 	downloadTotal uint64
-	history       []RuntimeTrafficSample
+	history       []runtimeBucket
 }
 
 var globalRuntimeStats = &runtimeStats{}
@@ -70,9 +79,9 @@ func (s *runtimeStats) record(upload uint64, download uint64, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.advanceLocked(now.Unix())
-	s.currentUpload += upload
-	s.currentDownload += download
+	s.advanceLocked(bucketStart(now))
+	s.currentUploadBytes += upload
+	s.currentDownloadBytes += download
 	s.uploadTotal += upload
 	s.downloadTotal += download
 }
@@ -88,59 +97,66 @@ func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	nowSec := now.Unix()
-	s.advanceLocked(nowSec)
+	nowBucketStart := bucketStart(now)
+	s.advanceLocked(nowBucketStart)
 
-	startSec := nowSec - int64(windowSec) + 1
-	if startSec < 0 {
-		startSec = 0
-	}
+	startTime := now.Add(-time.Duration(windowSec) * time.Second)
 
-	samples := make([]RuntimeTrafficSample, 0, len(s.history)+1)
-	for _, sample := range s.history {
-		if sample.Timestamp.Unix() >= startSec {
-			samples = append(samples, sample)
+	buckets := make([]runtimeBucket, 0, len(s.history)+1)
+	for _, bucket := range s.history {
+		if !bucket.Timestamp.Before(startTime) {
+			buckets = append(buckets, bucket)
 		}
 	}
-	samples = append(samples, RuntimeTrafficSample{
-		Timestamp:    time.Unix(nowSec, 0),
-		UploadRate:   s.currentUpload,
-		DownloadRate: s.currentDownload,
+
+	currentDuration := now.Sub(s.currentBucketStart)
+	if currentDuration <= 0 {
+		currentDuration = runtimeBucketDuration
+	}
+	buckets = append(buckets, runtimeBucket{
+		Timestamp:     now,
+		UploadBytes:   s.currentUploadBytes,
+		DownloadBytes: s.currentDownloadBytes,
+		Duration:      currentDuration,
 	})
+
+	uploadRate, downloadRate := ratesFromBuckets(buckets, now, runtimeRateWindow)
 
 	return RuntimeStatsSnapshot{
 		UpdatedAt:         now,
-		UploadRate:        s.currentUpload,
-		DownloadRate:      s.currentDownload,
+		UploadRate:        uploadRate,
+		DownloadRate:      downloadRate,
 		UploadTotal:       s.uploadTotal,
 		DownloadTotal:     s.downloadTotal,
 		ActiveConnections: activeConnections,
 		UDPSessions:       udpSessions,
-		Samples:           bucketizeRuntimeSamples(samples, maxPoints),
+		Samples:           bucketizeRuntimeSamples(samplesFromBuckets(buckets), maxPoints),
 	}
 }
 
-func (s *runtimeStats) advanceLocked(targetSecond int64) {
-	if s.currentSecond == 0 {
-		s.currentSecond = targetSecond
+func (s *runtimeStats) advanceLocked(targetBucketStart time.Time) {
+	if s.currentBucketStart.IsZero() {
+		s.currentBucketStart = targetBucketStart
 		return
 	}
-	if targetSecond <= s.currentSecond {
+	if !targetBucketStart.After(s.currentBucketStart) {
 		return
 	}
 
-	for s.currentSecond < targetSecond {
-		s.history = append(s.history, RuntimeTrafficSample{
-			Timestamp:    time.Unix(s.currentSecond, 0),
-			UploadRate:   s.currentUpload,
-			DownloadRate: s.currentDownload,
+	for s.currentBucketStart.Before(targetBucketStart) {
+		s.history = append(s.history, runtimeBucket{
+			Timestamp:     s.currentBucketStart.Add(runtimeBucketDuration),
+			UploadBytes:   s.currentUploadBytes,
+			DownloadBytes: s.currentDownloadBytes,
+			Duration:      runtimeBucketDuration,
 		})
-		if len(s.history) > maxRuntimeHistorySeconds {
-			s.history = append([]RuntimeTrafficSample(nil), s.history[len(s.history)-maxRuntimeHistorySeconds:]...)
+		maxHistoryBuckets := int((time.Duration(maxRuntimeHistorySeconds) * time.Second) / runtimeBucketDuration)
+		if len(s.history) > maxHistoryBuckets {
+			s.history = append([]runtimeBucket(nil), s.history[len(s.history)-maxHistoryBuckets:]...)
 		}
-		s.currentSecond++
-		s.currentUpload = 0
-		s.currentDownload = 0
+		s.currentBucketStart = s.currentBucketStart.Add(runtimeBucketDuration)
+		s.currentUploadBytes = 0
+		s.currentDownloadBytes = 0
 	}
 }
 
@@ -179,4 +195,68 @@ func bucketizeRuntimeSamples(samples []RuntimeTrafficSample, maxPoints int) []Ru
 	}
 
 	return result
+}
+
+func bucketStart(now time.Time) time.Time {
+	return now.Truncate(runtimeBucketDuration)
+}
+
+func rateFromBytes(bytes uint64, duration time.Duration) uint64 {
+	if duration <= 0 {
+		return 0
+	}
+	return uint64(float64(bytes) * float64(time.Second) / float64(duration))
+}
+
+func samplesFromBuckets(buckets []runtimeBucket) []RuntimeTrafficSample {
+	samples := make([]RuntimeTrafficSample, 0, len(buckets))
+	for _, bucket := range buckets {
+		samples = append(samples, RuntimeTrafficSample{
+			Timestamp:    bucket.Timestamp,
+			UploadRate:   rateFromBytes(bucket.UploadBytes, bucket.Duration),
+			DownloadRate: rateFromBytes(bucket.DownloadBytes, bucket.Duration),
+		})
+	}
+	return samples
+}
+
+func ratesFromBuckets(buckets []runtimeBucket, now time.Time, window time.Duration) (uploadRate uint64, downloadRate uint64) {
+	if len(buckets) == 0 {
+		return 0, 0
+	}
+
+	windowStart := now.Add(-window)
+	var (
+		totalUpload   uint64
+		totalDownload uint64
+		totalDuration time.Duration
+	)
+
+	for _, bucket := range buckets {
+		bucketEnd := bucket.Timestamp
+		bucketStart := bucketEnd.Add(-bucket.Duration)
+		if !bucketEnd.After(windowStart) {
+			continue
+		}
+
+		effectiveStart := bucketStart
+		if effectiveStart.Before(windowStart) {
+			effectiveStart = windowStart
+		}
+		effectiveDuration := bucketEnd.Sub(effectiveStart)
+		if effectiveDuration <= 0 {
+			continue
+		}
+
+		ratio := float64(effectiveDuration) / float64(bucket.Duration)
+		totalUpload += uint64(float64(bucket.UploadBytes) * ratio)
+		totalDownload += uint64(float64(bucket.DownloadBytes) * ratio)
+		totalDuration += effectiveDuration
+	}
+
+	if totalDuration <= 0 {
+		return 0, 0
+	}
+
+	return rateFromBytes(totalUpload, totalDuration), rateFromBytes(totalDownload, totalDuration)
 }
