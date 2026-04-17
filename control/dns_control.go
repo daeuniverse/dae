@@ -1595,7 +1595,13 @@ type cachedDnsForwarder struct {
 	inFlight     atomic.Int32
 	retired      atomic.Bool
 	closeOnce    sync.Once
+	// consecutiveErrors counts back-to-back failures.  A single success
+	// resets the counter.  When it reaches maxConsecutiveForwardErrors the
+	// forwarder is retired even for stream-based upstream schemes.
+	consecutiveErrors atomic.Int32
 }
+
+const maxConsecutiveForwardErrors = 3
 
 func newCachedDnsForwarder(forwarder DnsForwarder, now time.Time) *cachedDnsForwarder {
 	entry := &cachedDnsForwarder{forwarder: forwarder}
@@ -1764,7 +1770,7 @@ func (c *DnsController) logDnsForwardFailure(upstream *dns.Upstream, dialArg *di
 	c.log.WithError(err).WithFields(fields).Warn("DNS forward to upstream failed")
 }
 
-func (c *DnsController) shouldRetireCachedDnsForwarder(dialArg *dialArgument, err error) bool {
+func (c *DnsController) shouldRetireCachedDnsForwarder(upstream *dns.Upstream, dialArg *dialArgument, entry *cachedDnsForwarder, err error) bool {
 	if dialArg == nil || err == nil {
 		return false
 	}
@@ -1777,13 +1783,30 @@ func (c *DnsController) shouldRetireCachedDnsForwarder(dialArg *dialArgument, er
 	if dialArg.l4proto == consts.L4ProtoStr_UDP {
 		return true
 	}
-	if !isProxyBackedDialer(dialArg.bestDialer) {
+	if upstream == nil || !isProxyBackedDialer(dialArg.bestDialer) {
 		return false
 	}
-	// Proxy-backed stream forwarders keep transport state beyond a single
-	// request. Once they start failing, the safest recovery is to retire the
-	// cached instance and force a cold reconnect on the next query.
-	return true
+	// Retire any forwarder that has failed too many times in a row, even
+	// stream-style ones, to prevent a permanently broken instance from
+	// accumulating retries without relief.
+	if entry != nil && entry.consecutiveErrors.Load() >= maxConsecutiveForwardErrors {
+		return true
+	}
+	switch upstream.Scheme {
+	case dns.UpstreamScheme_TCP,
+		dns.UpstreamScheme_TCP_UDP,
+		dns.UpstreamScheme_TLS,
+		dns.UpstreamScheme_HTTPS,
+		dns.UpstreamScheme_H3,
+		dns.UpstreamScheme_QUIC:
+		// Stream-style forwarders already rebuild their own transport state on
+		// request failures. Retiring the whole cached forwarder for an ordinary
+		// timeout only forces extra cold starts and can amplify control-plane
+		// DNS failures into repeated proxy-host re-resolution loops.
+		return false
+	default:
+		return false
+	}
 }
 
 func (c *DnsController) retireCachedDnsForwarder(key dnsForwarderKey, entry *cachedDnsForwarder) {
@@ -1895,7 +1918,8 @@ func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Up
 			// client), but do NOT retire the forwarder, penalise the dialer
 			// or emit a misleading failure log.
 			if !errors.Is(err, ErrDNSTruncated) {
-				if c.shouldRetireCachedDnsForwarder(dialArg, err) {
+				entry.consecutiveErrors.Add(1)
+				if c.shouldRetireCachedDnsForwarder(upstream, dialArg, entry, err) {
 					c.retireCachedDnsForwarder(key, entry)
 				}
 				c.logDnsForwardFailure(upstream, dialArg, err)
@@ -1903,6 +1927,7 @@ func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Up
 			}
 			return nil, err
 		}
+		entry.consecutiveErrors.Store(0)
 		return respMsg, nil
 	}
 	return nil, fmt.Errorf("dns forwarder retired before request could start")

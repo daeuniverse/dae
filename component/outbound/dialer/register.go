@@ -45,12 +45,14 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 		Property:        *_p,
 		SubscriptionTag: subscriptionTag,
 	}
+	proxyHost := controlPlaneAddressHost(p.Address)
 
 	if gOption.DaeDNS != nil {
 		baseDialer, err = gOption.DaeDNS.WrapNodeDialer(baseDialer, daedns.NodeMeta{
 			SubscriptionTag: subscriptionTag,
 			Name:            p.Name,
 			Link:            normalizedLink,
+			AddressHost:     proxyHost,
 		})
 		if err != nil {
 			return nil, err
@@ -128,6 +130,17 @@ func needsStickyIpCaching(addr string) bool {
 	}
 	// It's a domain - cache it
 	return true
+}
+
+func controlPlaneAddressHost(addr string) string {
+	host, _, err := stickyip.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ""
+	}
+	return host
 }
 
 // normalizeShadowTLSPluginOptions normalizes shadow-tls SIP003 plugin options in ss links.

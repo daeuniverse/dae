@@ -37,8 +37,12 @@ var errInternalDNSTruncated = fmt.Errorf("internal dns response truncated")
 var errPassthroughToBaseResolver = errors.New("dns request routing selected passthrough resolver")
 
 var udpDNSBufPool = sync.Pool{
+	// Keep the full UDP DNS payload budget so oversized replies still unpack
+	// correctly instead of failing before TCP fallback decisions are made.
 	New: func() any { return make([]byte, 65535) },
 }
+
+const lookupSharedTimeout = 10 * time.Second
 
 var (
 	// Test seams for queryHTTPS path validation without live network dependencies.
@@ -155,7 +159,7 @@ func (r *Router) getOrCreateLookupCall(key string, upstream *componentdns.Upstre
 		return call
 	}
 
-	lookupCtx, cancel := context.WithCancel(context.Background())
+	lookupCtx, cancel := context.WithTimeout(context.Background(), lookupSharedTimeout)
 	call := &lookupCall{
 		waiters: 1,
 		done:    make(chan struct{}),
@@ -199,6 +203,38 @@ func (r *Router) releaseLookupCall(key string, call *lookupCall) {
 			delete(r.lookupCalls, key)
 		}
 		call.cancel()
+	}
+}
+
+type deadlineCloser interface {
+	Close() error
+	SetDeadline(time.Time) error
+}
+
+// interruptConnOnCancel installs a cancellation hook that forcefully
+// interrupts blocking I/O on conn. Callers should defer the returned stop
+// function immediately after a successful dial so the hook is unregistered on
+// the normal completion path.
+func interruptConnOnCancel(ctx context.Context, conn deadlineCloser) func() {
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.SetDeadline(time.Now())
+		_ = conn.Close()
+	})
+	return func() {
+		_ = stop()
+	}
+}
+
+// interruptQUICConnOnCancel installs a cancellation hook that forcefully
+// interrupts blocking QUIC operations. Callers should defer the returned stop
+// function immediately after a successful dial so the hook is unregistered on
+// the normal completion path.
+func interruptQUICConnOnCancel(ctx context.Context, conn quic.EarlyConnection) func() {
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.CloseWithError(0, "")
+	})
+	return func() {
+		_ = stop()
 	}
 }
 
@@ -303,6 +339,7 @@ func (r *Router) queryUDP(ctx context.Context, target netip.AddrPort, data []byt
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
+	defer interruptConnOnCancel(ctx, conn)()
 
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
@@ -339,6 +376,7 @@ func (r *Router) queryTCP(ctx context.Context, target netip.AddrPort, data []byt
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
+	defer interruptConnOnCancel(ctx, conn)()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -356,6 +394,7 @@ func (r *Router) queryTLS(ctx context.Context, upstream *componentdns.Upstream, 
 		ServerName:         upstream.Hostname,
 		InsecureSkipVerify: false,
 	})
+	defer interruptConnOnCancel(ctx, tlsConn)()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = tlsConn.SetDeadline(deadline)
 	}
@@ -434,6 +473,7 @@ func (r *Router) queryQUIC(ctx context.Context, upstream *componentdns.Upstream,
 		return nil, err
 	}
 	defer func() { _ = qc.CloseWithError(0, "") }()
+	defer interruptQUICConnOnCancel(ctx, qc)()
 
 	stream, err := qc.OpenStreamSync(ctx)
 	if err != nil {

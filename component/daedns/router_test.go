@@ -170,7 +170,7 @@ func TestRouterExplicitBootstrapResolverOverridesDefaults(t *testing.T) {
 	}
 }
 
-func TestRouterWrapNodeDialerUsesGeneralRequestRoutingFallback(t *testing.T) {
+func TestRouterWrapNodeDialerUsesGeneralRequestRoutingForNonControlHost(t *testing.T) {
 	skipIfNoSocketMark(t)
 	addr, stop := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.7"))
 	defer stop()
@@ -196,7 +196,11 @@ func TestRouterWrapNodeDialerUsesGeneralRequestRoutingFallback(t *testing.T) {
 	}
 
 	base := &stubDialer{}
-	wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.example.com:443"})
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{
+		Name:        "test-node",
+		Link:        "ss://proxy.example.com:443",
+		AddressHost: "proxy.example.com",
+	})
 	if err != nil {
 		t.Fatalf("WrapNodeDialer() error = %v", err)
 	}
@@ -210,12 +214,66 @@ func TestRouterWrapNodeDialerUsesGeneralRequestRoutingFallback(t *testing.T) {
 	if !ok {
 		t.Fatal("wrapped dialer does not expose LookupIPAddr")
 	}
-	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.example.com")
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "service.example.com")
 	if err != nil {
 		t.Fatalf("LookupIPAddr() error = %v", err)
 	}
 	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(203, 0, 113, 7)) {
 		t.Fatalf("LookupIPAddr() = %v, want 203.0.113.7", ips)
+	}
+}
+
+func TestRouterWrapNodeDialerUsesBootstrapForControlHostWithoutExplicitNodeRule(t *testing.T) {
+	skipIfNoSocketMark(t)
+	requestAddr, stopRequest := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.7"))
+	defer stopRequest()
+	bootstrapAddr, stopBootstrap := startTestDNSUDPServer(t, netip.MustParseAddr("198.51.100.7"))
+	defer stopBootstrap()
+
+	router, err := New(logrus.New(), &config.Global{
+		BootstrapResolver: bootstrapAddr,
+	}, &config.Dns{
+		Upstream: []config.KeyableString{
+			config.KeyableString(fmt.Sprintf("fallbackdns:udp://%s", requestAddr)),
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("fallbackdns", testInternalFunction("qname", testInternalParam("suffix", "example.com"))),
+				},
+				Fallback: "fallbackdns",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	base := &stubDialer{}
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{
+		Name:        "test-node",
+		Link:        "ss://proxy.example.com:443",
+		AddressHost: "proxy.example.com",
+	})
+	if err != nil {
+		t.Fatalf("WrapNodeDialer() error = %v", err)
+	}
+
+	resolver, ok := wrapped.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	})
+	if !ok {
+		t.Fatal("wrapped dialer does not expose LookupIPAddr")
+	}
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.example.com")
+	if err != nil {
+		t.Fatalf("LookupIPAddr() error = %v", err)
+	}
+	if base.lookupCalls != 0 {
+		t.Fatalf("base lookup calls = %d, want 0", base.lookupCalls)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(198, 51, 100, 7)) {
+		t.Fatalf("LookupIPAddr() = %v, want 198.51.100.7", ips)
 	}
 }
 
@@ -240,7 +298,11 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverForPassThroughFallback(t *te
 			}
 
 			base := &stubDialer{lookupResult: []net.IPAddr{{IP: net.IPv4(198, 51, 100, 7)}}}
-			wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.invalid:443"})
+			wrapped, err := router.WrapNodeDialer(base, NodeMeta{
+				Name:        "test-node",
+				Link:        "ss://proxy.invalid:443",
+				AddressHost: "proxy.invalid",
+			})
 			if err != nil {
 				t.Fatalf("WrapNodeDialer() error = %v", err)
 			}
@@ -251,15 +313,15 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverForPassThroughFallback(t *te
 			if !ok {
 				t.Fatal("wrapped dialer does not expose LookupIPAddr")
 			}
-			ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.invalid")
+			ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "target.invalid")
 			if err != nil {
 				t.Fatalf("LookupIPAddr() error = %v", err)
 			}
 			if base.lookupCalls != 1 {
 				t.Fatalf("base lookup calls = %d, want 1", base.lookupCalls)
 			}
-			if base.lookupNetwork != "tcp" || base.lookupHost != "proxy.invalid" {
-				t.Fatalf("base lookup = (%q, %q), want (%q, %q)", base.lookupNetwork, base.lookupHost, "tcp", "proxy.invalid")
+			if base.lookupNetwork != "tcp" || base.lookupHost != "target.invalid" {
+				t.Fatalf("base lookup = (%q, %q), want (%q, %q)", base.lookupNetwork, base.lookupHost, "tcp", "target.invalid")
 			}
 			if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(198, 51, 100, 7)) {
 				t.Fatalf("LookupIPAddr() = %v, want 198.51.100.7", ips)
@@ -291,7 +353,11 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverWhenRequestUpstreamReturnsNo
 	}
 
 	base := &stubDialer{lookupResult: []net.IPAddr{{IP: net.IPv4(198, 51, 100, 8)}}}
-	wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.example.com:443"})
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{
+		Name:        "test-node",
+		Link:        "ss://proxy.example.com:443",
+		AddressHost: "proxy.example.com",
+	})
 	if err != nil {
 		t.Fatalf("WrapNodeDialer() error = %v", err)
 	}
@@ -302,7 +368,7 @@ func TestRouterWrapNodeDialerFallsBackToBaseResolverWhenRequestUpstreamReturnsNo
 	if !ok {
 		t.Fatal("wrapped dialer does not expose LookupIPAddr")
 	}
-	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "proxy.example.com")
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "target.example.com")
 	if err != nil {
 		t.Fatalf("LookupIPAddr() error = %v", err)
 	}
@@ -340,7 +406,66 @@ func TestRouterUsesExternalGeodataDirsForRequestRules(t *testing.T) {
 	}
 
 	base := &stubDialer{}
-	wrapped, err := router.WrapNodeDialer(base, NodeMeta{Name: "test-node", Link: "ss://proxy.example.com:443"})
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{
+		Name:        "test-node",
+		Link:        "ss://proxy.example.com:443",
+		AddressHost: "proxy.example.com",
+	})
+	if err != nil {
+		t.Fatalf("WrapNodeDialer() error = %v", err)
+	}
+
+	resolver, ok := wrapped.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	})
+	if !ok {
+		t.Fatal("wrapped dialer does not expose LookupIPAddr")
+	}
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "service.example.com")
+	if err != nil {
+		t.Fatalf("LookupIPAddr() error = %v", err)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(203, 0, 113, 9)) {
+		t.Fatalf("LookupIPAddr() = %v, want 203.0.113.9", ips)
+	}
+}
+
+func TestRouterWrapNodeDialerUsesExplicitNodeUpstreamForControlHost(t *testing.T) {
+	skipIfNoSocketMark(t)
+	nodeAddr, stopNode := startTestDNSUDPServer(t, netip.MustParseAddr("192.0.2.9"))
+	defer stopNode()
+	requestAddr, stopRequest := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.9"))
+	defer stopRequest()
+	bootstrapAddr, stopBootstrap := startTestDNSUDPServer(t, netip.MustParseAddr("198.51.100.9"))
+	defer stopBootstrap()
+
+	router, err := New(logrus.New(), &config.Global{
+		BootstrapResolver: bootstrapAddr,
+	}, &config.Dns{
+		Upstream: []config.KeyableString{
+			config.KeyableString(fmt.Sprintf("fallbackdns:udp://%s", requestAddr)),
+			config.KeyableString(fmt.Sprintf("nodedns:udp://%s", nodeAddr)),
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("fallbackdns", testInternalFunction("qname", testInternalParam("suffix", "example.com"))),
+					testInternalRule("nodedns", testInternalFunction("node", testInternalParam("", "test-node"))),
+				},
+				Fallback: "fallbackdns",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	base := &stubDialer{}
+	wrapped, err := router.WrapNodeDialer(base, NodeMeta{
+		Name:        "test-node",
+		Link:        "ss://proxy.example.com:443",
+		AddressHost: "proxy.example.com",
+	})
 	if err != nil {
 		t.Fatalf("WrapNodeDialer() error = %v", err)
 	}
@@ -355,8 +480,58 @@ func TestRouterUsesExternalGeodataDirsForRequestRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LookupIPAddr() error = %v", err)
 	}
-	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(203, 0, 113, 9)) {
-		t.Fatalf("LookupIPAddr() = %v, want 203.0.113.9", ips)
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(192, 0, 2, 9)) {
+		t.Fatalf("LookupIPAddr() = %v, want 192.0.2.9", ips)
+	}
+}
+
+func TestRouterWrapSubscriptionDialerUsesBootstrapForSubscriptionHostWithoutExplicitRule(t *testing.T) {
+	skipIfNoSocketMark(t)
+	requestAddr, stopRequest := startTestDNSUDPServer(t, netip.MustParseAddr("203.0.113.10"))
+	defer stopRequest()
+	bootstrapAddr, stopBootstrap := startTestDNSUDPServer(t, netip.MustParseAddr("198.51.100.10"))
+	defer stopBootstrap()
+
+	router, err := New(logrus.New(), &config.Global{
+		BootstrapResolver: bootstrapAddr,
+	}, &config.Dns{
+		Upstream: []config.KeyableString{
+			config.KeyableString(fmt.Sprintf("fallbackdns:udp://%s", requestAddr)),
+		},
+		Routing: config.DnsRouting{
+			Request: config.DnsRequestRouting{
+				Rules: []*config_parser.RoutingRule{
+					testInternalRule("fallbackdns", testInternalFunction("qname", testInternalParam("suffix", "example.com"))),
+				},
+				Fallback: "fallbackdns",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	base := &stubDialer{}
+	wrapped, err := router.WrapSubscriptionDialer(base, "my_sub:https://sub.example.com/list")
+	if err != nil {
+		t.Fatalf("WrapSubscriptionDialer() error = %v", err)
+	}
+
+	resolver, ok := wrapped.(interface {
+		LookupIPAddr(context.Context, string, string) ([]net.IPAddr, error)
+	})
+	if !ok {
+		t.Fatal("wrapped dialer does not expose LookupIPAddr")
+	}
+	ips, err := resolver.LookupIPAddr(context.Background(), "tcp", "sub.example.com")
+	if err != nil {
+		t.Fatalf("LookupIPAddr() error = %v", err)
+	}
+	if base.lookupCalls != 0 {
+		t.Fatalf("base lookup calls = %d, want 0", base.lookupCalls)
+	}
+	if len(ips) != 1 || !ips[0].IP.Equal(net.IPv4(198, 51, 100, 10)) {
+		t.Fatalf("LookupIPAddr() = %v, want 198.51.100.10", ips)
 	}
 }
 

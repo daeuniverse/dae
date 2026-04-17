@@ -38,6 +38,7 @@ type NodeMeta struct {
 	SubscriptionTag string
 	Name            string
 	Link            string
+	AddressHost     string
 }
 
 type subscriptionMeta struct {
@@ -208,13 +209,16 @@ func (r *Router) WrapSubscriptionDialer(base netproxy.Dialer, rawSubscription st
 		Tag:  tag,
 		Link: link,
 	})
-	if !ok && r.requestMatcher == nil {
+	controlHost := subscriptionHost(link)
+	if !ok && r.requestMatcher == nil && controlHost == "" {
 		return base, nil
 	}
 	return &resolvingDialer{
-		Dialer:       base,
-		router:       r,
-		upstreamName: upstream,
+		Dialer:              base,
+		router:              r,
+		upstreamName:        upstream,
+		controlUpstreamName: upstream,
+		controlHost:         controlHost,
 	}, nil
 }
 
@@ -232,13 +236,15 @@ func (r *Router) WrapNodeDialer(base netproxy.Dialer, meta NodeMeta) (netproxy.D
 	if !ok {
 		upstream, ok = r.nodeMatcher.Match(meta)
 	}
-	if !ok && r.requestMatcher == nil {
+	if !ok && r.requestMatcher == nil && meta.AddressHost == "" {
 		return base, nil
 	}
 	return &resolvingDialer{
-		Dialer:       base,
-		router:       r,
-		upstreamName: upstream,
+		Dialer:              base,
+		router:              r,
+		upstreamName:        upstream,
+		controlUpstreamName: upstream,
+		controlHost:         meta.AddressHost,
 	}, nil
 }
 
@@ -593,10 +599,68 @@ func (r *Router) resolveBootstrap(ctx context.Context, host string, network stri
 	return &netutils.Ip46{}, firstErr4, firstErr6
 }
 
+func (r *Router) lookupBootstrapIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return []net.IPAddr{{IP: net.IP(addr.AsSlice())}}, nil
+	}
+	dnsNetwork := common.MagicNetworkWithIPVersion("udp", r.soMark, r.mptcp, requestedIPVersion(network))
+	ip46, err4, err6 := r.resolveBootstrap(ctx, host, dnsNetwork)
+	addrs := make([]net.IPAddr, 0, 2)
+	switch requestedIPVersion(network) {
+	case "4":
+		if ip46 != nil && ip46.Ip4.IsValid() {
+			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip4.AsSlice())})
+		}
+	case "6":
+		if ip46 != nil && ip46.Ip6.IsValid() {
+			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip6.AsSlice())})
+		}
+	default:
+		if ip46 != nil && ip46.Ip4.IsValid() {
+			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip4.AsSlice())})
+		}
+		if ip46 != nil && ip46.Ip6.IsValid() {
+			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip6.AsSlice())})
+		}
+	}
+	if len(addrs) != 0 {
+		return addrs, nil
+	}
+	if err4 != nil {
+		return nil, err4
+	}
+	if err6 != nil {
+		return nil, err6
+	}
+	return nil, fmt.Errorf("bootstrap resolver returned no usable address for %q", host)
+}
+
+func subscriptionHost(link string) string {
+	if link == "" {
+		return ""
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+func sameDNSHost(a, b string) bool {
+	a = strings.TrimSuffix(a, ".")
+	b = strings.TrimSuffix(b, ".")
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.EqualFold(a, b)
+}
+
 type resolvingDialer struct {
 	netproxy.Dialer
-	router       *Router
-	upstreamName string
+	router              *Router
+	upstreamName        string
+	controlUpstreamName string
+	controlHost         string
 }
 
 func (d *resolvingDialer) lookupBaseIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
@@ -608,7 +672,27 @@ func (d *resolvingDialer) lookupBaseIPAddr(ctx context.Context, network, host st
 	return net.DefaultResolver.LookupIPAddr(ctx, host)
 }
 
+func (d *resolvingDialer) lookupControlIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
+	if d.controlUpstreamName == "" {
+		return d.router.lookupBootstrapIPAddr(ctx, network, host)
+	}
+	ips, err := d.router.LookupIPAddr(ctx, d.controlUpstreamName, network, host)
+	if errors.Is(err, errPassthroughToBaseResolver) {
+		return d.router.lookupBootstrapIPAddr(ctx, network, host)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return d.router.lookupBootstrapIPAddr(ctx, network, host)
+	}
+	return ips, nil
+}
+
 func (d *resolvingDialer) lookupIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
+	if d.controlHost != "" && sameDNSHost(host, d.controlHost) {
+		return d.lookupControlIPAddr(ctx, network, host)
+	}
 	ips, err := d.router.LookupIPAddr(ctx, d.upstreamName, network, host)
 	if errors.Is(err, errPassthroughToBaseResolver) {
 		return d.lookupBaseIPAddr(ctx, network, host)

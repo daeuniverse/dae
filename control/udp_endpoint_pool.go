@@ -488,10 +488,9 @@ func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
 		"nat_timeout": natTimeout.String(),
 	}
 	entry := ue.log.WithFields(fields).WithError(err)
-	if errors.IsUDPEndpointNormalClose(err) {
+	if err == nil || errors.IsUDPEndpointNormalClose(err) {
 		entry.Debugln("UdpEndpoint " + msg + " closed normally")
 	} else {
-		// Add error details for connection refused
 		if opErr, ok := err.(*net.OpError); ok {
 			fields["op"] = opErr.Op
 			fields["err_type"] = fmt.Sprintf("%T", err)

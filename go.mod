@@ -119,4 +119,4 @@ require (
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use the pushed perf/complete-optimizations fork head with audit fixes applied.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260416093205-2c66351e3f50
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260417011710-d2c9ae825671
