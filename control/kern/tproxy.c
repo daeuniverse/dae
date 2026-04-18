@@ -133,6 +133,7 @@ struct routing_result {
 	__u8 pname[TASK_COMM_LEN];
 	__u32 pid;
 	__u8 dscp;
+	__u32 ifindex;
 };
 
 struct tuples_key {
@@ -1176,6 +1177,7 @@ new_connection:;
 	routing_result.mark = s64_ret >> 8;
 	routing_result.must = (s64_ret >> 40) & 1;
 	routing_result.dscp = tuples.dscp;
+	routing_result.ifindex = skb->ifindex;
 	__builtin_memcpy(routing_result.mac, ethh.h_source,
 			 sizeof(routing_result.mac));
 	/// NOTICE: No pid pname info for LAN packet.
@@ -1464,6 +1466,12 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				// Do not impact previous connections and server connections.
 				return TC_ACT_OK;
 			}
+			// Check ifindex to avoid using cached entries from different interfaces
+			// (e.g., LAN entries used by WAN traffic).
+			if (routing_result->ifindex != skb->ifindex) {
+				// Interface mismatch - treat as new connection to get fresh routing.
+				return TC_ACT_OK;
+			}
 			outbound = routing_result->outbound;
 			mark = routing_result->mark;
 			must = routing_result->must;
@@ -1513,6 +1521,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				routing_result.mark = mark;
 				routing_result.must = must;
 				routing_result.dscp = tuples.dscp;
+				routing_result.ifindex = skb->ifindex;
 				__builtin_memcpy(routing_result.mac, ethh.h_source,
 						 sizeof(ethh.h_source));
 				if (pid_pname) {
@@ -1592,6 +1601,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			routing_result.mark = mark;
 			routing_result.must = must;
 			routing_result.dscp = tuples.dscp;
+			routing_result.ifindex = skb->ifindex;
 			__builtin_memcpy(routing_result.mac, ethh.h_source,
 					 sizeof(ethh.h_source));
 			if (pid_pname) {
