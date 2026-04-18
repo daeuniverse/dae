@@ -7,6 +7,7 @@ package control
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,4 +101,28 @@ func TestDnsCache_CloneForReloadReusesImmutablePayload(t *testing.T) {
 	require.Equal(t, int64(0), clone.lastRouteSyncNano.Load(), "reload clone should force fresh BPF sync")
 	require.Equal(t, uint64(0), clone.lastBpfDataHash.Load(), "reload clone should force fresh BPF sync hash")
 	require.False(t, clone.refreshing.Load(), "reload clone should not inherit old refresh-in-progress state")
+}
+
+func TestDnsCache_FillIntoWithTTL_DoesNotMutateRequestOnPackError(t *testing.T) {
+	req := new(dnsmessage.Msg)
+	req.SetQuestion(strings.Repeat("a", 64)+".example.", dnsmessage.TypeA)
+
+	_, err := req.Pack()
+	require.Error(t, err)
+	require.False(t, req.Response)
+
+	cache := &DnsCache{
+		Answer: []dnsmessage.RR{
+			&dnsmessage.A{
+				Hdr: dnsmessage.RR_Header{Name: "example.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
+				A:   net.IPv4(1, 1, 1, 1),
+			},
+		},
+		Deadline: time.Now().Add(time.Minute),
+	}
+
+	require.Nil(t, cache.FillIntoWithTTL(req, time.Now()))
+	require.False(t, req.Response, "request should remain a request when fallback packing fails")
+	require.Nil(t, req.Answer, "request answer should remain untouched when fallback packing fails")
+	require.False(t, req.RecursionAvailable)
 }

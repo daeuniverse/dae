@@ -60,17 +60,20 @@ type ControlPlane struct {
 	// 1. The slice is never modified after initialization
 	// 2. The ready channel is closed only after outbounds is fully populated
 	// 3. All reads happen-after the ready channel is closed
-	outbounds           []*outbound.DialerGroup
-	referencedOutbounds map[string]struct{} // outbounds referenced by routing rules
-	inConnections       sync.Map
-	drainTracker        *controlPlaneDrainTracker
+	outbounds            []*outbound.DialerGroup
+	referencedOutbounds  map[string]struct{} // outbounds referenced by routing rules
+	inConnections        sync.Map
+	rejectNewConnections atomic.Bool
+	drainTracker         *controlPlaneDrainTracker
 
 	dnsController             *DnsController
 	dnsRouting                *dns.Dns
 	dnsFixedDomainTtl         map[string]int
 	dnsListener               *DNSListener
 	dnsListenerStopRegistered bool
+	dnsHandoffMu              sync.Mutex
 	dnsHandoffController      atomic.Pointer[DnsController]
+	dnsHandoffOwned           bool
 	onceNetworkReady          sync.Once
 
 	dialMode consts.DialMode
@@ -1085,6 +1088,51 @@ func (c *ControlPlane) DetachDnsController() *DnsController {
 	return controller
 }
 
+func (c *ControlPlane) replaceDNSHandoffController(controller *DnsController, owned bool) (*DnsController, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.dnsHandoffMu.Lock()
+	defer c.dnsHandoffMu.Unlock()
+
+	previous := c.dnsHandoffController.Load()
+	previousOwned := c.dnsHandoffOwned
+	c.dnsHandoffOwned = owned && controller != nil
+	c.dnsHandoffController.Store(controller)
+	return previous, previousOwned
+}
+
+func (c *ControlPlane) clearDNSHandoffControllerIfMatch(controller *DnsController) (*DnsController, bool, bool) {
+	if c == nil {
+		return nil, false, false
+	}
+	c.dnsHandoffMu.Lock()
+	defer c.dnsHandoffMu.Unlock()
+
+	current := c.dnsHandoffController.Load()
+	if current != controller {
+		return current, false, false
+	}
+	owned := c.dnsHandoffOwned
+	c.dnsHandoffOwned = false
+	c.dnsHandoffController.Store(nil)
+	return current, owned, true
+}
+
+func (c *ControlPlane) takeDNSHandoffController() (*DnsController, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.dnsHandoffMu.Lock()
+	defer c.dnsHandoffMu.Unlock()
+
+	controller := c.dnsHandoffController.Load()
+	owned := c.dnsHandoffOwned
+	c.dnsHandoffOwned = false
+	c.dnsHandoffController.Store(nil)
+	return controller, owned
+}
+
 func (c *ControlPlane) EnableDNSHandoff(controller *DnsController, duration time.Duration) {
 	if c == nil || controller == nil {
 		return
@@ -1092,18 +1140,26 @@ func (c *ControlPlane) EnableDNSHandoff(controller *DnsController, duration time
 	if c.log != nil {
 		c.log.WithField("duration", duration).Warnln("[Reload] Enabled DNS handoff controller")
 	}
-	if previous := c.dnsHandoffController.Swap(controller); previous != nil {
+	if previous, previousOwned := c.replaceDNSHandoffController(controller, true); previous != nil && previousOwned && previous != controller {
 		_ = previous.Close()
 	}
 	go func(ctrl *DnsController) {
 		timer := time.NewTimer(duration)
 		defer timer.Stop()
-		<-timer.C
-		if c.dnsHandoffController.CompareAndSwap(ctrl, nil) {
-			if c.log != nil {
-				c.log.Warnln("[Reload] DNS handoff controller expired")
+		select {
+		case <-timer.C:
+			if _, owned, cleared := c.clearDNSHandoffControllerIfMatch(ctrl); cleared {
+				if c.log != nil {
+					c.log.Warnln("[Reload] DNS handoff controller expired")
+				}
+				if owned {
+					_ = ctrl.Close()
+				}
 			}
-			_ = ctrl.Close()
+		case <-c.ctx.Done():
+			if _, owned, cleared := c.clearDNSHandoffControllerIfMatch(ctrl); cleared && owned {
+				_ = ctrl.Close()
+			}
 		}
 	}(controller)
 }
@@ -1112,7 +1168,9 @@ func (c *ControlPlane) SetDNSHandoffController(controller *DnsController) {
 	if c == nil {
 		return
 	}
-	c.dnsHandoffController.Store(controller)
+	if previous, previousOwned := c.replaceDNSHandoffController(controller, false); previous != nil && previousOwned && previous != controller {
+		_ = previous.Close()
+	}
 }
 
 // InheritDialerHealthFrom copies health snapshots from a previous control plane
@@ -1429,6 +1487,30 @@ func (c *ControlPlane) replayDnsReloadCache() {
 		c.log.Infof("Restored %d DNS cache entries from previous control plane", count)
 	}
 	c.pendingDnsReloadCache = nil
+}
+
+func (c *ControlPlane) registerIncomingConnection(conn net.Conn) bool {
+	if c == nil || conn == nil {
+		return false
+	}
+	if c.rejectNewConnections.Load() {
+		_ = conn.Close()
+		return false
+	}
+	c.inConnections.Store(conn, struct{}{})
+	if c.rejectNewConnections.Load() {
+		c.inConnections.Delete(conn)
+		_ = conn.Close()
+		return false
+	}
+	return true
+}
+
+func (c *ControlPlane) unregisterIncomingConnection(conn net.Conn) {
+	if c == nil || conn == nil {
+		return
+	}
+	c.inConnections.Delete(conn)
 }
 
 // CommitPreparedDatapath applies deferred kernel/BPF mutations for a prepared
@@ -3050,8 +3132,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			drainRelease := c.acquireDrainTicket()
 			go func(lconn net.Conn, release func()) {
 				defer release()
-				c.inConnections.Store(lconn, struct{}{})
-				defer c.inConnections.Delete(lconn)
+				if !c.registerIncomingConnection(lconn) {
+					return
+				}
+				defer c.unregisterIncomingConnection(lconn)
 				// Keep the ControlPlane lifecycle context so shutdown/reload can cancel
 				// in-flight connection handling. Dial timeout is applied independently
 				// inside RouteDialTcp and is not reduced by sniffing time.
@@ -3562,6 +3646,7 @@ func (c *ControlPlane) AbortConnections() (err error) {
 	if c == nil {
 		return nil
 	}
+	c.rejectNewConnections.Store(true)
 
 	var errs []error
 	c.inConnections.Range(func(key, value any) bool {
@@ -3575,11 +3660,6 @@ func (c *ControlPlane) AbortConnections() (err error) {
 		if cerr := conn.Close(); cerr != nil {
 			errs = append(errs, cerr)
 		}
-		return true
-	})
-
-	// Explicitly clear the map to release resources for GC immediately.
-	c.inConnections.Range(func(key, _ any) bool {
 		c.inConnections.Delete(key)
 		return true
 	})
@@ -3680,7 +3760,9 @@ func (c *ControlPlane) releaseRetainedState() {
 	c.dnsFixedDomainTtl = nil
 	c.dnsListener = nil
 	c.dnsListenerStopRegistered = false
-	c.dnsHandoffController.Store(nil)
+	if handoff, owned := c.takeDNSHandoffController(); owned && handoff != nil {
+		_ = handoff.Close()
+	}
 	c.routingMatcher = nil
 	c.muRealDomainSet.Lock()
 	c.realDomainSet = nil

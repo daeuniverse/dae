@@ -600,10 +600,13 @@ func (c *DnsCache) MarkRefreshed() {
 	c.refreshing.Store(false)
 }
 
-// FillIntoWithTTL fills the DNS response with correct remaining TTL.
-// This is the standard DNS cache behavior - TTL decreases over time.
-// Returns the packed response bytes ready to send (with DNS ID = 0, caller should patch).
-func (c *DnsCache) FillIntoWithTTL(req *dnsmessage.Msg, now time.Time) []byte {
+// fillIntoWithTTLInPlace mutates req directly and should only be used when the
+// caller has unique ownership of req and will not reuse it after the call,
+// including on pack failure.
+func (c *DnsCache) fillIntoWithTTLInPlace(req *dnsmessage.Msg, now time.Time) []byte {
+	if req == nil {
+		return nil
+	}
 	req.Answer = nil
 	req.Rcode = dnsmessage.RcodeSuccess
 	req.Response = true
@@ -634,6 +637,24 @@ func (c *DnsCache) FillIntoWithTTL(req *dnsmessage.Msg, now time.Time) []byte {
 		return nil
 	}
 	return b
+}
+
+// FillIntoWithTTL fills the DNS response with correct remaining TTL.
+// This is the standard DNS cache behavior - TTL decreases over time.
+// Returns the packed response bytes ready to send (with DNS ID = 0, caller should patch).
+//
+// This method preserves the caller's request on failure by operating on a copy.
+// Hot paths that already own the message exclusively should use
+// fillIntoWithTTLInPlace to avoid the extra allocation.
+func (c *DnsCache) FillIntoWithTTL(req *dnsmessage.Msg, now time.Time) []byte {
+	if req == nil {
+		return nil
+	}
+	resp := req.Copy()
+	if resp == nil {
+		return nil
+	}
+	return c.fillIntoWithTTLInPlace(resp, now)
 }
 
 func (c *DnsCache) IncludeIp(ip netip.Addr) bool {

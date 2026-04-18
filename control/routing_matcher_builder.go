@@ -69,32 +69,36 @@ type lpmDedupEntry struct {
 	prefixes []netip.Prefix
 }
 
-// hashLpmSet creates a hash key for IP prefix deduplication with collision detection.
-// The hash is computed from the binary representation of sorted prefixes for efficiency.
-func hashLpmSet(prefixes []netip.Prefix) uint64 {
-	// Sort a copy of indices to ensure consistent hashing without modifying input
-	indices := make([]int, len(prefixes))
-	for i := range indices {
-		indices[i] = i
+func canonicalizePrefixes(prefixes []netip.Prefix) []netip.Prefix {
+	if len(prefixes) == 0 {
+		return nil
 	}
-	sort.Slice(indices, func(i, j int) bool {
-		pi := prefixes[indices[i]]
-		pj := prefixes[indices[j]]
-		// Compare by prefix length first, then by address bytes
-		if pi.Bits() != pj.Bits() {
-			return pi.Bits() < pj.Bits()
+	canonical := append([]netip.Prefix(nil), prefixes...)
+	sort.Slice(canonical, func(i, j int) bool {
+		if canonical[i].Bits() != canonical[j].Bits() {
+			return canonical[i].Bits() < canonical[j].Bits()
 		}
-		return pi.Addr().Less(pj.Addr())
+		return canonical[i].Addr().Less(canonical[j].Addr())
 	})
+	deduped := canonical[:0]
+	for _, prefix := range canonical {
+		if len(deduped) == 0 || deduped[len(deduped)-1] != prefix {
+			deduped = append(deduped, prefix)
+		}
+	}
+	return deduped
+}
 
+// hashLpmSet creates a hash key for IP prefix deduplication with collision detection.
+// The hash is computed from the binary representation of canonicalized prefixes.
+func hashLpmSet(prefixes []netip.Prefix) uint64 {
 	// FNV-1a hash for better distribution
 	const (
 		fnvOffsetBasis uint64 = 14695981039346656037
 		fnvPrime       uint64 = 1099511628211
 	)
 	h := fnvOffsetBasis
-	for _, idx := range indices {
-		p := prefixes[idx]
+	for _, p := range prefixes {
 		// Hash prefix length
 		h ^= uint64(p.Bits())
 		h *= fnvPrime
@@ -114,7 +118,6 @@ func prefixesEqual(a, b []netip.Prefix) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	// Both should already be sorted by hashLpmSet's logic
 	for i := range a {
 		if a[i] != b[i] {
 			return false
@@ -266,6 +269,7 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 }
 
 func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
+	values = canonicalizePrefixes(values)
 	// Deduplication: check if we've seen this IP set before with collision detection
 	hash := hashLpmSet(values)
 	var lpmTrieIndex uint32
@@ -333,6 +337,7 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 }
 
 func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
+	values = canonicalizePrefixes(values)
 	// Deduplication: check if we've seen this IP set before with collision detection
 	hash := hashLpmSet(values)
 	var lpmTrieIndex uint32

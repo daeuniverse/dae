@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"io"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +83,115 @@ func TestUdpEndpointAdoptGenerationTransfersDrainOwnership(t *testing.T) {
 	}
 	if newTracker.Count() != 0 {
 		t.Fatalf("newTracker Count() after close = %d, want 0", newTracker.Count())
+	}
+}
+
+func TestControlPlaneAbortConnectionsRejectsNewConnections(t *testing.T) {
+	cp := &ControlPlane{}
+
+	connA, peerA := net.Pipe()
+	defer func() { _ = peerA.Close() }()
+	if !cp.registerIncomingConnection(connA) {
+		t.Fatal("registerIncomingConnection() = false, want true before abort")
+	}
+
+	if err := cp.AbortConnections(); err != nil {
+		t.Fatalf("AbortConnections() error = %v", err)
+	}
+	if _, err := peerA.Write([]byte("x")); err == nil {
+		t.Fatal("expected tracked connection to be closed by AbortConnections")
+	}
+
+	connB, peerB := net.Pipe()
+	defer func() { _ = peerB.Close() }()
+	if cp.registerIncomingConnection(connB) {
+		t.Fatal("registerIncomingConnection() = true, want false after abort")
+	}
+	if _, err := peerB.Write([]byte("x")); err == nil {
+		t.Fatal("expected newly registered connection to be rejected after abort")
+	}
+}
+
+func TestControlPlaneReleaseRetainedStateClosesDnsHandoffController(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	janitorStop := make(chan struct{})
+	janitorDone := make(chan struct{})
+	evictorDone := make(chan struct{})
+	close(janitorDone)
+	close(evictorDone)
+
+	controller := &DnsController{
+		janitorStop: janitorStop,
+		janitorDone: janitorDone,
+		evictorDone: evictorDone,
+	}
+	cp := &ControlPlane{
+		ctx: ctx,
+	}
+	cp.EnableDNSHandoff(controller, time.Hour)
+	cp.releaseRetainedState()
+
+	select {
+	case <-janitorStop:
+	case <-time.After(time.Second):
+		t.Fatal("expected releaseRetainedState to close handoff controller")
+	}
+	if got := cp.dnsHandoffController.Load(); got != nil {
+		t.Fatalf("dnsHandoffController = %v, want nil", got)
+	}
+}
+
+func TestControlPlaneReleaseRetainedStateKeepsSharedDnsHandoffControllerAlive(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	janitorStop := make(chan struct{})
+	janitorDone := make(chan struct{})
+	evictorDone := make(chan struct{})
+	close(janitorDone)
+	close(evictorDone)
+
+	oldController := &DnsController{
+		janitorStop: janitorStop,
+		janitorDone: janitorDone,
+		evictorDone: evictorDone,
+	}
+	oldCP := &ControlPlane{
+		log:           logger,
+		ctx:           context.Background(),
+		dnsController: oldController,
+	}
+	newCP := &ControlPlane{
+		log:           logger,
+		ctx:           context.Background(),
+		dnsController: &DnsController{},
+		dnsRouting:    &dns.Dns{},
+	}
+
+	if !newCP.ReuseDNSControllerFrom(oldCP) {
+		t.Fatal("ReuseDNSControllerFrom() = false, want true")
+	}
+
+	oldCP.releaseRetainedState()
+
+	select {
+	case <-janitorStop:
+		t.Fatal("expected releaseRetainedState to keep shared handoff controller alive")
+	default:
+	}
+	if oldCP.ActiveDnsController() != nil {
+		t.Fatal("expected old control plane to clear handoff pointer on release")
+	}
+
+	if err := newCP.dnsController.Close(); err != nil {
+		t.Fatalf("shared dns controller Close() error = %v", err)
+	}
+	select {
+	case <-janitorStop:
+	case <-time.After(time.Second):
+		t.Fatal("expected shared dns controller to close when owned controller closes")
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 func TestReserveLpmRingSlotsReturnsCurrentIndexForZeroCount(t *testing.T) {
@@ -83,5 +85,31 @@ func TestRoutingKernspaceSnapshotRetainsBuilderStateAfterRelease(t *testing.T) {
 	}
 	if snapshot.dedupCount != 1 {
 		t.Fatalf("snapshot.dedupCount = %d, want 1", snapshot.dedupCount)
+	}
+}
+
+func TestRoutingMatcherBuilderAddIpCanonicalizesPrefixOrder(t *testing.T) {
+	builder := &RoutingMatcherBuilder{
+		outboundName2Id:     map[string]uint8{"test": 1},
+		referencedOutbounds: make(map[string]struct{}),
+		lpmDedup:            make(map[uint64]lpmDedupEntry),
+	}
+	outbound := &routing.Outbound{Name: "test"}
+	fn := &config_parser.Function{}
+	prefixA := netip.MustParsePrefix("198.51.100.0/24")
+	prefixB := netip.MustParsePrefix("203.0.113.0/24")
+
+	if err := builder.addIp(fn, []netip.Prefix{prefixA, prefixB}, outbound); err != nil {
+		t.Fatalf("first addIp() error = %v", err)
+	}
+	if err := builder.addIp(fn, []netip.Prefix{prefixB, prefixA}, outbound); err != nil {
+		t.Fatalf("second addIp() error = %v", err)
+	}
+
+	if got := len(builder.simulatedLpmTries); got != 1 {
+		t.Fatalf("len(simulatedLpmTries) = %d, want 1", got)
+	}
+	if got := builder.compiledRules[0].lpmIndex; got != builder.compiledRules[1].lpmIndex {
+		t.Fatalf("lpmIndex mismatch after canonical dedup: %d vs %d", got, builder.compiledRules[1].lpmIndex)
 	}
 }

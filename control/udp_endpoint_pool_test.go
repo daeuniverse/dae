@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	componentdialer "github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/pool"
 	"github.com/sirupsen/logrus"
 )
 
@@ -1438,6 +1440,95 @@ func TestUdpEndpointUpdateNatTimeout_ExtendsDeadlineBeforeReply(t *testing.T) {
 
 	if got := ue.expiresAtNano.Load(); got <= firstDeadline {
 		t.Fatalf("expiresAt = %v, want greater than %v", got, firstDeadline)
+	}
+}
+
+func TestUdpEndpointUpdateNatTimeout_ExtendsCachedResponseConnDeadline(t *testing.T) {
+	ue := &UdpEndpoint{
+		NatTimeout: DefaultNatTimeout,
+		poolKey: UdpEndpointKey{
+			Dst: netip.MustParseAddrPort("203.0.113.10:3478"),
+		},
+	}
+	respConn := &Anyfrom{ttl: time.Second}
+	ue.swapResponseConn(respConn)
+	t.Cleanup(func() {
+		ue.swapResponseConn(nil)
+	})
+
+	ue.UpdateNatTimeout(QuicNatTimeout)
+
+	if got := respConn.expiresAtNano.Load(); got < ue.expiresAtNano.Load() {
+		t.Fatalf("response conn expiresAt = %v, want >= endpoint expiresAt %v", got, ue.expiresAtNano.Load())
+	}
+}
+
+func TestUdpEndpointResponseConnConcurrentAccess(t *testing.T) {
+	ue := &UdpEndpoint{
+		poolKey: UdpEndpointKey{
+			Dst: netip.MustParseAddrPort("203.0.113.10:3478"),
+		},
+	}
+	connA := &Anyfrom{ttl: time.Second}
+	connB := &Anyfrom{ttl: time.Second}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			ue.swapResponseConn(connA)
+		}()
+		go func() {
+			defer wg.Done()
+			ue.refreshCachedResponseConnsWithTime(time.Now().Add(time.Second).UnixNano())
+		}()
+		go func() {
+			defer wg.Done()
+			ue.swapResponseConn(connB)
+		}()
+	}
+	wg.Wait()
+	ue.releaseCachedResponseConns()
+}
+
+func TestUdpEndpointReplySenderReleasesRemainingBatchOnError(t *testing.T) {
+	oldPut := putUdpEndpointReplyData
+	defer func() {
+		putUdpEndpointReplyData = oldPut
+	}()
+
+	var mu sync.Mutex
+	released := make(map[string]int)
+	putUdpEndpointReplyData = func(data pool.PB) {
+		mu.Lock()
+		defer mu.Unlock()
+		released[string(data)]++
+	}
+
+	replyCh := make(chan udpEndpointReply, 3)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	ue := &UdpEndpoint{
+		handler: func(_ *UdpEndpoint, data []byte, _ netip.AddrPort) error {
+			if string(data) == "second" {
+				return io.ErrClosedPipe
+			}
+			return nil
+		},
+	}
+
+	go ue.replySender(replyCh, stop, done)
+	replyCh <- udpEndpointReply{data: pool.PB([]byte("first")), from: netip.MustParseAddrPort("203.0.113.10:3478")}
+	replyCh <- udpEndpointReply{data: pool.PB([]byte("second")), from: netip.MustParseAddrPort("203.0.113.10:3478")}
+	replyCh <- udpEndpointReply{data: pool.PB([]byte("third")), from: netip.MustParseAddrPort("203.0.113.10:3478")}
+	close(replyCh)
+	<-done
+
+	for _, key := range []string{"first", "second", "third"} {
+		if got := released[key]; got != 1 {
+			t.Fatalf("released[%q] = %d, want 1", key, got)
+		}
 	}
 }
 

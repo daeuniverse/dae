@@ -132,31 +132,7 @@ type Dialer struct {
 	//   0: TCP
 	//   1: DNS UDP
 	//   2: Data UDP
-	recoveryState [3]struct {
-		sync.Mutex
-
-		// backoffLevel indicates current backoff level (0, 1, 2, 3...)
-		// Backoff duration = minBackoff * (2 ^ level), capped at maxBackoff
-		backoffLevel int
-
-		// stableSuccessCount is the number of consecutive stable periodic checks
-		// When this reaches 6, backoffLevel is decremented.
-		stableSuccessCount int
-
-		// maxBackoff is the maximum backoff duration, calculated based on check interval
-		// This is set during initialization and prevents overlap with health checks
-		maxBackoff time.Duration
-
-		// confirmTimer is the scheduled timer to confirm recovery after backoff period
-		confirmTimer *time.Timer
-
-		// pendingNetworkType is the network type being verified for recovery
-		pendingNetworkType *NetworkType
-
-		// confirmDeadlineUnixNano tracks when the current confirmation timer
-		// should fire so reload snapshots can restore the remaining delay.
-		confirmDeadlineUnixNano int64
-	}
+	recoveryState [3]dialerRecoveryState
 	lastNotifyUdp atomic.Int64
 	lastNotifyTcp atomic.Int64
 	lastPunish    [3]atomic.Int64
@@ -434,6 +410,51 @@ func cloneNetworkType(networkType *NetworkType) *NetworkType {
 	return &cloned
 }
 
+func networkTypesEqual(a, b *NetworkType) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+type dialerRecoveryState struct {
+	sync.Mutex
+
+	// backoffLevel indicates current backoff level (0, 1, 2, 3...)
+	// Backoff duration = minBackoff * (2 ^ level), capped at maxBackoff
+	backoffLevel int
+
+	// stableSuccessCount is the number of consecutive stable periodic checks
+	// When this reaches 6, backoffLevel is decremented.
+	stableSuccessCount int
+
+	// maxBackoff is the maximum backoff duration, calculated based on check interval
+	// This is set during initialization and prevents overlap with health checks
+	maxBackoff time.Duration
+
+	// confirmTimer is the scheduled timer to confirm recovery after backoff period
+	confirmTimer *time.Timer
+
+	// pendingNetworkType is the network type being verified for recovery
+	pendingNetworkType *NetworkType
+
+	// confirmDeadlineUnixNano tracks when the current confirmation timer
+	// should fire so reload snapshots can restore the remaining delay.
+	confirmDeadlineUnixNano int64
+
+	// confirmSequence uniquely identifies the currently pending confirmation timer.
+	// It is incremented under the state lock every time a new confirmation is armed.
+	confirmSequence uint64
+}
+
+func (s *dialerRecoveryState) nextConfirmSequenceLocked() uint64 {
+	s.confirmSequence++
+	if s.confirmSequence == 0 {
+		s.confirmSequence = 1
+	}
+	return s.confirmSequence
+}
+
 func (d *Dialer) HealthSnapshot() DialerHealthSnapshot {
 	var snapshot DialerHealthSnapshot
 	if d == nil {
@@ -629,7 +650,7 @@ func (d *Dialer) NotifyHealthCheckResult(typ *NetworkType, success bool, isReviv
 			recordProxySuccess(d.property.Address)
 		}
 		// Clear failed QUIC DCID cache
-		notifyQuicDcidCacheClearImpl()
+		notifyQuicDcidCacheClearImpl.Load().(func())()
 
 		// Trigger recovery detection with exponential backoff ONLY on TRUE transition from Dead to Alive
 		// isRevival parameter comes from markAvailable and currently includes isResuscitation.
@@ -698,17 +719,20 @@ func (d *Dialer) NotifyProxyFailure(proxyAddr string, networkType *NetworkType) 
 	d.stickyIpDialer.InvalidateProtocolCache(proxyAddr, string(networkType.L4Proto))
 }
 
-// notifyQuicDcidCacheClearImpl is the actual implementation.
-// It's defined as a var that gets initialized at runtime to avoid circular dependency.
-var notifyQuicDcidCacheClearImpl func() = func() {
-	// Default implementation does nothing
-	// Will be overridden by control package during initialization
+var defaultNotifyQuicDcidCacheClearImpl = func() {}
+var notifyQuicDcidCacheClearImpl atomic.Value
+
+func init() {
+	notifyQuicDcidCacheClearImpl.Store(defaultNotifyQuicDcidCacheClearImpl)
 }
 
 // SetQuicDcidCacheClearFunc sets the function to clear failed QUIC DCID cache.
 // This should be called by control package during initialization.
 func SetQuicDcidCacheClearFunc(fn func()) {
-	notifyQuicDcidCacheClearImpl = fn
+	if fn == nil {
+		fn = defaultNotifyQuicDcidCacheClearImpl
+	}
+	notifyQuicDcidCacheClearImpl.Store(fn)
 }
 
 // Recovery detection methods
@@ -780,12 +804,12 @@ func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
 
 	// Schedule confirmation timer
 	d.recoveryState[protoIdx].pendingNetworkType = cloneNetworkType(networkType)
-	d.recoveryState[protoIdx].confirmDeadlineUnixNano = time.Now().Add(backoff).UnixNano()
-	var timer *time.Timer
-	timer = time.AfterFunc(backoff, func() {
-		d.confirmRecovery(networkType, timer)
+	deadlineUnixNano := time.Now().Add(backoff).UnixNano()
+	d.recoveryState[protoIdx].confirmDeadlineUnixNano = deadlineUnixNano
+	confirmSequence := d.recoveryState[protoIdx].nextConfirmSequenceLocked()
+	d.recoveryState[protoIdx].confirmTimer = time.AfterFunc(backoff, func() {
+		d.confirmRecovery(networkType, confirmSequence)
 	})
-	d.recoveryState[protoIdx].confirmTimer = timer
 }
 
 func (d *Dialer) armRecoveryConfirmationFromSnapshot(protoIdx int, target *NetworkType, delay time.Duration) {
@@ -814,17 +838,17 @@ func (d *Dialer) armRecoveryConfirmationFromSnapshot(protoIdx int, target *Netwo
 		state.confirmTimer = nil
 	}
 	state.pendingNetworkType = cloneNetworkType(networkType)
-	state.confirmDeadlineUnixNano = time.Now().Add(delay).UnixNano()
-	var timer *time.Timer
-	timer = time.AfterFunc(delay, func() {
-		d.confirmRecovery(networkType, timer)
+	deadlineUnixNano := time.Now().Add(delay).UnixNano()
+	state.confirmDeadlineUnixNano = deadlineUnixNano
+	confirmSequence := state.nextConfirmSequenceLocked()
+	state.confirmTimer = time.AfterFunc(delay, func() {
+		d.confirmRecovery(networkType, confirmSequence)
 	})
-	state.confirmTimer = timer
 }
 
 // confirmRecovery confirms recovery after backoff period.
 // It checks if the dialer is still healthy before confirming.
-func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
+func (d *Dialer) confirmRecovery(networkType *NetworkType, confirmSequence uint64) {
 	// CRITICAL: Check context first to avoid accessing closed resources
 	// after SIGTERM/SIGINT. This prevents goroutines from running after
 	// the dialer has been partially closed.
@@ -840,13 +864,16 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType, timer *time.Timer) {
 
 	protoIdx := d.recoveryIdxForType(networkType)
 	d.recoveryState[protoIdx].Lock()
-	// Clear timer safely (compare-and-nil) to avoid racing with a NEW timer
-	// scheduled by a concurrent revival.
-	if d.recoveryState[protoIdx].confirmTimer == timer {
-		d.recoveryState[protoIdx].confirmTimer = nil
-		d.recoveryState[protoIdx].confirmDeadlineUnixNano = 0
-		d.recoveryState[protoIdx].pendingNetworkType = nil
+	// Clear timer only when the callback still matches the currently pending
+	// recovery confirmation for this network type and sequence.
+	if d.recoveryState[protoIdx].confirmSequence != confirmSequence ||
+		!networkTypesEqual(d.recoveryState[protoIdx].pendingNetworkType, networkType) {
+		d.recoveryState[protoIdx].Unlock()
+		return
 	}
+	d.recoveryState[protoIdx].confirmTimer = nil
+	d.recoveryState[protoIdx].confirmDeadlineUnixNano = 0
+	d.recoveryState[protoIdx].pendingNetworkType = nil
 	// Snapshot backoff level while holding lock to detect concurrent resets
 	currentBackoffLevel := d.recoveryState[protoIdx].backoffLevel
 	d.recoveryState[protoIdx].Unlock()

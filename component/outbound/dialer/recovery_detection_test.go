@@ -113,7 +113,7 @@ func TestExponentialProgression(t *testing.T) {
 
 	// Recovery: level 1 -> 0
 	d.NotifyHealthCheckResult(typ, true, true)
-	d.confirmRecovery(typ, nil)
+	d.confirmRecovery(typ, d.recoveryState[idxTcp].confirmSequence)
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 0 {
 		t.Errorf("Expected level 0 after recovery, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
 	}

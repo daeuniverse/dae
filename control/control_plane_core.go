@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"regexp"
@@ -29,6 +30,15 @@ import (
 
 // coreFlip should be 0 or 1; accessed atomically.
 var coreFlip int32
+
+type cgroupAttachment interface {
+	io.Closer
+}
+
+var detectCgroupPathFunc = detectCgroupPath
+var attachCgroupFunc = func(opts ciliumLink.CgroupOptions) (cgroupAttachment, error) {
+	return ciliumLink.AttachCgroup(opts)
+}
 
 type sharedUdpConnStateTrackerEntry struct {
 	tracker *udpConnStateTracker
@@ -80,7 +90,8 @@ func releaseSharedUdpConnStateTracker(bpf *bpfObjects, tracker *udpConnStateTrac
 }
 
 type controlPlaneCore struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	deferMu sync.Mutex
 
 	log        *logrus.Logger
 	deferFuncs []func() error
@@ -188,12 +199,29 @@ func (c *controlPlaneCore) addBpfHookDetach(detachFunc func() error) {
 	c.bpfHookDetachFuncs = append(c.bpfHookDetachFuncs, detachFunc)
 }
 
+func (c *controlPlaneCore) addDeferFunc(deferFunc func() error) bool {
+	c.deferMu.Lock()
+	defer c.deferMu.Unlock()
+	select {
+	case <-c.closed.Done():
+		return false
+	default:
+	}
+	c.deferFuncs = append(c.deferFuncs, deferFunc)
+	return true
+}
+
 // addManagedBpfHookCleanup registers hook cleanup for both regular close and
 // immediate detach paths. Hook cleanup must remain active after EjectBpf():
 // ownership transfer only skips bpf.Close(), not removal of this generation's
 // TC filters from the system.
 func (c *controlPlaneCore) addManagedBpfHookCleanup(detachFunc func() error) {
-	c.deferFuncs = append(c.deferFuncs, detachFunc)
+	if !c.addDeferFunc(detachFunc) {
+		if err := detachFunc(); err != nil && c.log != nil {
+			c.log.WithError(err).Warn("controlPlaneCore: failed to detach hook after close began")
+		}
+		return
+	}
 	c.addBpfHookDetach(detachFunc)
 }
 
@@ -252,9 +280,14 @@ func (c *controlPlaneCore) Close() (err error) {
 			}
 		}
 	}
+	c.close()
+	c.deferMu.Lock()
+	deferFuncs := append([]func() error(nil), c.deferFuncs...)
+	c.deferFuncs = nil
+	c.deferMu.Unlock()
 
-	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
-		if e := c.deferFuncs[i](); e != nil {
+	for i := len(deferFuncs) - 1; i >= 0; i-- {
+		if e := deferFuncs[i](); e != nil {
 			errs = append(errs, e)
 		}
 	}
@@ -267,8 +300,6 @@ func (c *controlPlaneCore) Close() (err error) {
 	if tracker := c.udpConnStateTracker.Swap(nil); tracker != nil {
 		releaseSharedUdpConnStateTracker(c.bpf, tracker)
 	}
-
-	c.close()
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -460,8 +491,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		}
 		return nil
 	}
-	c.deferFuncs = append(c.deferFuncs, detachFunc)
-	c.addBpfHookDetach(detachFunc)
+	c.addManagedBpfHookCleanup(detachFunc)
 
 	filterEgress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -497,17 +527,21 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		}
 		return nil
 	}
-	c.deferFuncs = append(c.deferFuncs, egressDetachFunc)
-	c.addBpfHookDetach(egressDetachFunc)
+	c.addManagedBpfHookCleanup(egressDetachFunc)
 
 	return nil
 }
 
 func (c *controlPlaneCore) setupSkPidMonitor() error {
+	select {
+	case <-c.closed.Done():
+		return nil
+	default:
+	}
 	/// Set-up SrcPidMapper.
 	/// Attach programs to support pname routing.
 	// Get the first-mounted cgroupv2 path.
-	cgroupPath, err := detectCgroupPath()
+	cgroupPath, err := detectCgroupPathFunc()
 	if err != nil {
 		return err
 	}
@@ -525,23 +559,32 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		{Prog: c.bpf.TproxyWanCgSendmsg4, Attach: ebpf.AttachCGroupUDP4Sendmsg},
 		{Prog: c.bpf.TproxyWanCgSendmsg6, Attach: ebpf.AttachCGroupUDP6Sendmsg},
 	}
+	attachedLinks := make([]cgroupAttachment, 0, len(cgProgs))
+	detachFuncs := make([]func() error, 0, len(cgProgs))
 	for _, prog := range cgProgs {
-		attached, err := ciliumLink.AttachCgroup(ciliumLink.CgroupOptions{
+		attached, err := attachCgroupFunc(ciliumLink.CgroupOptions{
 			Path:    cgroupPath,
 			Attach:  prog.Attach,
 			Program: prog.Prog,
 		})
 		if err != nil {
+			for i := len(attachedLinks) - 1; i >= 0; i-- {
+				_ = attachedLinks[i].Close()
+			}
 			return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
 		}
+		attachedLinks = append(attachedLinks, attached)
+		attachedLink := attached
 		detachFunc := func() error {
-			if err := attached.Close(); err != nil {
+			if err := attachedLink.Close(); err != nil {
 				return fmt.Errorf("inet6Bind.Close(): %w", err)
 			}
 			return nil
 		}
-		c.deferFuncs = append(c.deferFuncs, detachFunc)
-		c.addBpfHookDetach(detachFunc)
+		detachFuncs = append(detachFuncs, detachFunc)
+	}
+	for _, detachFunc := range detachFuncs {
+		c.addManagedBpfHookCleanup(detachFunc)
 	}
 	return nil
 }

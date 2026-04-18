@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -534,5 +535,30 @@ func TestInitialConnectivityCheckJitterWindow(t *testing.T) {
 	}
 	if got := initialConnectivityCheckJitterWindow(300*time.Second, 2000); got != 75*time.Second {
 		t.Fatalf("large active set jitter window = %v, want 75s", got)
+	}
+}
+
+func TestSetQuicDcidCacheClearFuncConcurrentNotify(t *testing.T) {
+	var calls atomic.Int32
+	d := &Dialer{property: &Property{}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			SetQuicDcidCacheClearFunc(func() {
+				calls.Add(int32(i + 1))
+			})
+		}(i)
+		go func() {
+			defer wg.Done()
+			d.NotifyHealthCheckResult(nil, true, false)
+		}()
+	}
+	wg.Wait()
+
+	if calls.Load() == 0 {
+		t.Fatal("expected NotifyHealthCheckResult to invoke a configured callback")
 	}
 }

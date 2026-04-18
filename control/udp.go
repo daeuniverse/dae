@@ -261,7 +261,25 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 	return bindAddr, writeAddr
 }
 
-type udpEndpointReplySender func(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) error
+type udpEndpointReplySender func(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, slot udpEndpointResponseConnSlot) error
+
+type anyfromPtrSlot struct {
+	ptr **Anyfrom
+}
+
+func (s anyfromPtrSlot) Load() *Anyfrom {
+	if s.ptr == nil {
+		return nil
+	}
+	return *s.ptr
+}
+
+func (s anyfromPtrSlot) Swap(next *Anyfrom) {
+	if s.ptr == nil {
+		return
+	}
+	swapPinnedAnyfrom(s.ptr, next)
+}
 
 func swapPinnedAnyfrom(slot **Anyfrom, next *Anyfrom) {
 	if slot == nil {
@@ -280,7 +298,7 @@ func swapPinnedAnyfrom(slot **Anyfrom, next *Anyfrom) {
 	}
 }
 
-func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom, cache udpEndpointResponseConnCache) (err error) {
+func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, slot udpEndpointResponseConnSlot, cache udpEndpointResponseConnCache) (err error) {
 	// Proxy chain support: Use original 'from' address as bindAddr to ensure
 	// each server response gets its own UDP socket. This prevents response mixing
 	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
@@ -304,24 +322,26 @@ func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPo
 	}
 
 	// Try cached socket first (for Symmetric NAT sessions)
-	if afp != nil && *afp != nil {
-		if _, err = (*afp).WriteToUDPAddrPort(data, writeAddr); err == nil {
-			if traceEnabled {
-				log.WithFields(logrus.Fields{
-					"to":         realTo.String(),
-					"write_addr": writeAddr.String(),
-					"cached":     true,
-				}).Trace("sendPkt: sent via cached socket")
+	if slot != nil {
+		if cached := slot.Load(); cached != nil {
+			if _, err = cached.WriteToUDPAddrPort(data, writeAddr); err == nil {
+				if traceEnabled {
+					log.WithFields(logrus.Fields{
+						"to":         realTo.String(),
+						"write_addr": writeAddr.String(),
+						"cached":     true,
+					}).Trace("sendPkt: sent via cached socket")
+				}
+				return nil
 			}
-			return nil
-		}
-		// Cached socket is stale or broken; clear the cache slot immediately
-		// so the next call doesn't waste time retrying a dead socket.
-		swapPinnedAnyfrom(afp, nil)
-		if debugEnabled {
-			log.WithFields(logrus.Fields{
-				"error": err.Error(),
-			}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+			// Cached socket is stale or broken; clear the cache slot immediately
+			// so the next call doesn't waste time retrying a dead socket.
+			slot.Swap(nil)
+			if debugEnabled {
+				log.WithFields(logrus.Fields{
+					"error": err.Error(),
+				}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+			}
 		}
 	}
 
@@ -397,13 +417,21 @@ func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPo
 	}
 
 	// Update caller's cached socket so future calls skip the pool lookup
-	if afp != nil && err == nil {
-		swapPinnedAnyfrom(afp, uConn)
+	if slot != nil && err == nil {
+		slot.Swap(uConn)
 	}
 	if cache != nil && err == nil {
 		cache.StoreCachedResponseConn(bindAddr, uConn)
 	}
 	return err
+}
+
+func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom, cache udpEndpointResponseConnCache) (err error) {
+	var slot udpEndpointResponseConnSlot
+	if afp != nil {
+		slot = anyfromPtrSlot{ptr: afp}
+	}
+	return sendPktWithResponseConnSlot(log, data, from, realTo, slot, cache)
 }
 
 // sendPkt sends a UDP packet to the destination.
@@ -465,17 +493,17 @@ func sendPktViaListener(conn *net.UDPConn, data []byte, from netip.AddrPort, rea
 }
 
 func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) error {
-	var cacheSlot **Anyfrom
+	var cacheSlot udpEndpointResponseConnSlot
 	var cacheProvider udpEndpointResponseConnCache
 	if ue != nil {
-		cacheSlot = ue.responseConnCacheSlot()
+		cacheSlot = ue.responseConnSlot()
 		cacheProvider = ue
 	}
 	// Local reply reinjection failures do not mean the upstream proxy session is
 	// broken. Keeping the endpoint alive avoids recreating a fresh UDP session
 	// for every subsequent client packet after a transient local send failure.
 	if send == nil {
-		if err := sendPktWithCacheProvider(log, data, from, clientAddr, cacheSlot, cacheProvider); err != nil {
+		if err := sendPktWithResponseConnSlot(log, data, from, clientAddr, cacheSlot, cacheProvider); err != nil {
 			if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
 				log.WithFields(logrus.Fields{
 					"from":      from.String(),

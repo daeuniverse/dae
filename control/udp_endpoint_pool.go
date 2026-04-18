@@ -69,7 +69,8 @@ type UdpEndpoint struct {
 	// packet successfully. Once a flow reaches this point, control-plane health
 	// probes should not tear it down proactively; only data-plane errors,
 	// transport lifecycle end, or NAT timeout should retire it.
-	hasSent atomic.Bool
+	hasSent    atomic.Bool
+	respConnMu sync.Mutex
 
 	// pendingReplyPeers keeps a small ring of recently written upstream peers
 	// while the endpoint is still probing. The first reply must match one of
@@ -135,7 +136,30 @@ type udpEndpointResponseCacheEntry struct {
 	conn     *Anyfrom
 }
 
-func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
+type udpEndpointResponseConnSlot interface {
+	Load() *Anyfrom
+	Swap(next *Anyfrom)
+}
+
+type udpEndpointSymmetricResponseConnSlot struct {
+	endpoint *UdpEndpoint
+}
+
+func (s udpEndpointSymmetricResponseConnSlot) Load() *Anyfrom {
+	if s.endpoint == nil {
+		return nil
+	}
+	return s.endpoint.loadResponseConn()
+}
+
+func (s udpEndpointSymmetricResponseConnSlot) Swap(next *Anyfrom) {
+	if s.endpoint == nil {
+		return
+	}
+	s.endpoint.swapResponseConn(next)
+}
+
+func (ue *UdpEndpoint) responseConnSlot() udpEndpointResponseConnSlot {
 	if ue == nil {
 		return nil
 	}
@@ -145,7 +169,7 @@ func (ue *UdpEndpoint) responseConnCacheSlot() **Anyfrom {
 	if ue.poolKey.Dst.Port() == 0 {
 		return nil
 	}
-	return &ue.respConn
+	return udpEndpointSymmetricResponseConnSlot{endpoint: ue}
 }
 
 func (ue *UdpEndpoint) cachedResponseConn(bindAddr netip.AddrPort) *Anyfrom {
@@ -252,7 +276,7 @@ func (ue *UdpEndpoint) prewarmResponseConn(target string) {
 	}
 
 	if ue.poolKey.Dst.Port() != 0 {
-		swapPinnedAnyfrom(&ue.respConn, af)
+		ue.swapResponseConn(af)
 		return
 	}
 	ue.storeCachedResponseConn(bindAddr, af)
@@ -276,12 +300,30 @@ func (ue *UdpEndpoint) ClearCachedResponseConn(bindAddr netip.AddrPort, conn *An
 	ue.clearCachedResponseConn(bindAddr, conn)
 }
 
+func (ue *UdpEndpoint) loadResponseConn() *Anyfrom {
+	if ue == nil {
+		return nil
+	}
+	ue.respConnMu.Lock()
+	defer ue.respConnMu.Unlock()
+	return ue.respConn
+}
+
+func (ue *UdpEndpoint) swapResponseConn(next *Anyfrom) {
+	if ue == nil {
+		return
+	}
+	ue.respConnMu.Lock()
+	defer ue.respConnMu.Unlock()
+	swapPinnedAnyfrom(&ue.respConn, next)
+}
+
 func (ue *UdpEndpoint) refreshCachedResponseConnsWithTime(deadlineNano int64) {
 	if ue == nil {
 		return
 	}
-	if ue.respConn != nil {
-		ue.respConn.ExtendExpiryTo(deadlineNano)
+	if conn := ue.loadResponseConn(); conn != nil {
+		conn.ExtendExpiryTo(deadlineNano)
 	}
 	ue.fullConeRespCacheMu.Lock()
 	defer ue.fullConeRespCacheMu.Unlock()
@@ -296,10 +338,7 @@ func (ue *UdpEndpoint) releaseCachedResponseConns() {
 	if ue == nil {
 		return
 	}
-	if ue.respConn != nil {
-		ue.respConn.Unpin()
-		ue.respConn = nil
-	}
+	ue.swapResponseConn(nil)
 	ue.fullConeRespCacheMu.Lock()
 	defer ue.fullConeRespCacheMu.Unlock()
 	for i := range ue.fullConeRespCache {
@@ -532,6 +571,18 @@ type udpEndpointReply struct {
 	from netip.AddrPort
 }
 
+// putUdpEndpointReplyData is a package-local seam for tests that need to observe
+// reply-buffer release without changing the production hot path.
+var putUdpEndpointReplyData = func(data pool.PB) {
+	data.Put()
+}
+
+func releaseUdpEndpointReplies(replies []udpEndpointReply) {
+	for i := range replies {
+		putUdpEndpointReplyData(replies[i].data)
+	}
+}
+
 func (ue *UdpEndpoint) start() {
 	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
 		ue.log.WithFields(logrus.Fields{
@@ -651,26 +702,27 @@ func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, stop chan<- 
 		}
 
 	drainBatch:
-		for _, queued := range batch {
+		for i := range batch {
+			queued := batch[i]
 			// Do NOT skip queued replies when dead: these were already received
 			// from the upstream before the read loop exited, and must be forwarded
 			// to the client. The handler (forwardUdpEndpointReplyToClient) only
 			// writes to the local tproxy socket, which is independent of the
 			// upstream endpoint's liveness.
 			if err := ue.handler(ue, queued.data, queued.from); err != nil {
-				queued.data.Put()
+				releaseUdpEndpointReplies(batch[i:])
 				ue.retire()
 				close(stop)
 				ue.logEndpointExit(err, "reply sender")
 				// Drain remaining queued replies to release pool buffers.
 				if replyCh != nil {
 					for r := range replyCh {
-						r.data.Put()
+						putUdpEndpointReplyData(r.data)
 					}
 				}
 				return
 			}
-			queued.data.Put()
+			putUdpEndpointReplyData(queued.data)
 		}
 		if replyCh == nil {
 			return
@@ -931,6 +983,13 @@ func (ue *UdpEndpoint) acceptsInitialReplyFrom(from netip.AddrPort) bool {
 	return false
 }
 
+func (ue *UdpEndpoint) setExpiry(deadlineNano int64, refreshCachedResponseConns bool) {
+	ue.expiresAtNano.Store(deadlineNano)
+	if refreshCachedResponseConns {
+		ue.refreshCachedResponseConnsWithTime(deadlineNano)
+	}
+}
+
 // RefreshTtlWithTime updates the expiration time using a pre-calculated
 // timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
 func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
@@ -954,13 +1013,12 @@ func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
 	// CAS to avoid thundering herd on the same connection.
 	if ue.lastRefreshNano.CompareAndSwap(last, nowNano) {
 		deadlineNano := nowNano + int64(timeout)
-		ue.expiresAtNano.Store(deadlineNano)
+		ue.setExpiry(deadlineNano, true)
 		// Keep cached reply sockets alive as long as the endpoint is alive.
 		// Without this, Anyfrom entries can expire before the owning UDP
 		// endpoint does, forcing a bind syscall on a later reply and causing
 		// a latency spike for active proxy-backed sessions whose
 		// server->client traffic is sparse on a given source address.
-		ue.refreshCachedResponseConnsWithTime(deadlineNano)
 	}
 }
 
@@ -974,7 +1032,7 @@ func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
 	now := time.Now().UnixNano()
 	// Force immediate refresh on timeout change (bypass throttling).
 	ue.lastRefreshNano.Store(now)
-	ue.expiresAtNano.Store(now + int64(timeout))
+	ue.setExpiry(now+int64(timeout), true)
 }
 
 func (ue *UdpEndpoint) IsExpired(nowNano int64) bool {

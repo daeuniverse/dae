@@ -316,6 +316,56 @@ func BenchmarkDnsCache_FillIntoWithTTL(b *testing.B) {
 	}
 }
 
+func BenchmarkDnsCache_FillIntoWithTTL_MutationStrategies(b *testing.B) {
+	answers := []dnsmessage.RR{
+		&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   "example.com.",
+				Rrtype: dnsmessage.TypeA,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    300,
+			},
+			A: []byte{93, 184, 216, 34},
+		},
+		&dnsmessage.AAAA{
+			Hdr: dnsmessage.RR_Header{
+				Name:   "example.com.",
+				Rrtype: dnsmessage.TypeAAAA,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    300,
+			},
+			AAAA: []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		},
+	}
+
+	cache := &DnsCache{
+		DomainBitmap:     []uint32{1, 2, 3},
+		Answer:           answers,
+		Deadline:         time.Now().Add(5 * time.Minute),
+		OriginalDeadline: time.Now().Add(5 * time.Minute),
+	}
+	req := new(dnsmessage.Msg)
+	req.Id = 1234
+	req.RecursionDesired = true
+	req.SetQuestion("example.com.", dnsmessage.TypeA)
+	now := time.Now()
+
+	b.Run("CopyOnWrite", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = cache.FillIntoWithTTL(req, now)
+		}
+	})
+
+	b.Run("OwnedInPlace", func(b *testing.B) {
+		b.ReportAllocs()
+		msg := req.Copy()
+		for i := 0; i < b.N; i++ {
+			_ = cache.fillIntoWithTTLInPlace(msg, now)
+		}
+	})
+}
+
 // BenchmarkDnsCache_FillIntoWithTTL_Parallel benchmarks parallel TTL-aware cache hits
 func BenchmarkDnsCache_FillIntoWithTTL_Parallel(b *testing.B) {
 	answers := []dnsmessage.RR{

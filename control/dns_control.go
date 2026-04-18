@@ -99,8 +99,9 @@ type dnsControllerRuntimeState struct {
 type DnsController struct {
 	concurrencyLimiter chan struct{}
 
-	// Legacy runtime fields are kept for test compatibility and as a fallback
-	// when a controller is manually constructed without calling NewDnsController.
+	// Legacy runtime fields are kept only as a fallback for tests or other
+	// manually-constructed controllers that never call updateRuntime.
+	// Production code should treat runtimeState as the single source of truth.
 	routing     *dns.Dns
 	qtypePrefer uint16
 
@@ -130,6 +131,7 @@ type DnsController struct {
 	evictorDone  chan struct{}
 	evictorQ     chan *DnsCache
 	evictorWake  chan struct{}
+	evictorChMu  sync.RWMutex
 	evictorMu    sync.Mutex
 	evictorBuf   []*DnsCache
 	lruScratchMu sync.Mutex
@@ -271,15 +273,6 @@ func (c *DnsController) updateRuntime(option *DnsControllerOption, routing *dns.
 	if lifecycleCtx == nil {
 		lifecycleCtx = context.Background()
 	}
-	c.routing = routing
-	c.lifecycleCtx = lifecycleCtx
-	c.cacheAccessCallback = option.CacheAccessCallback
-	c.cacheRemoveCallback = option.CacheRemoveCallback
-	c.cacheDeleteCallback = option.CacheDeleteCallback
-	c.newCache = option.NewCache
-	c.bestDialerChooser = option.BestDialerChooser
-	c.timeoutExceedCallback = option.TimeoutExceedCallback
-	c.fixedDomainTtl = option.FixedDomainTtl
 	c.runtimeState.Store(&dnsControllerRuntimeState{
 		routing:               routing,
 		lifecycleCtx:          lifecycleCtx,
@@ -293,43 +286,32 @@ func (c *DnsController) updateRuntime(option *DnsControllerOption, routing *dns.
 	})
 }
 
+func (c *DnsController) legacyRuntimeState() *dnsControllerRuntimeState {
+	if c == nil {
+		return nil
+	}
+	return &dnsControllerRuntimeState{
+		routing:               c.routing,
+		lifecycleCtx:          c.lifecycleCtx,
+		cacheAccessCallback:   c.cacheAccessCallback,
+		cacheRemoveCallback:   c.cacheRemoveCallback,
+		cacheDeleteCallback:   c.cacheDeleteCallback,
+		newCache:              c.newCache,
+		bestDialerChooser:     c.bestDialerChooser,
+		timeoutExceedCallback: c.timeoutExceedCallback,
+		fixedDomainTtl:        c.fixedDomainTtl,
+	}
+}
+
 func (c *DnsController) runtime() *dnsControllerRuntimeState {
 	if c == nil {
 		return nil
 	}
 	rt := c.runtimeState.Load()
 	if rt == nil {
-		rt = &dnsControllerRuntimeState{}
+		return c.legacyRuntimeState()
 	}
-	merged := *rt
-	if c.routing != nil {
-		merged.routing = c.routing
-	}
-	if c.lifecycleCtx != nil {
-		merged.lifecycleCtx = c.lifecycleCtx
-	}
-	if c.cacheAccessCallback != nil {
-		merged.cacheAccessCallback = c.cacheAccessCallback
-	}
-	if c.cacheRemoveCallback != nil {
-		merged.cacheRemoveCallback = c.cacheRemoveCallback
-	}
-	if c.cacheDeleteCallback != nil {
-		merged.cacheDeleteCallback = c.cacheDeleteCallback
-	}
-	if c.newCache != nil {
-		merged.newCache = c.newCache
-	}
-	if c.bestDialerChooser != nil {
-		merged.bestDialerChooser = c.bestDialerChooser
-	}
-	if c.timeoutExceedCallback != nil {
-		merged.timeoutExceedCallback = c.timeoutExceedCallback
-	}
-	if c.fixedDomainTtl != nil {
-		merged.fixedDomainTtl = c.fixedDomainTtl
-	}
-	return &merged
+	return rt
 }
 
 func (c *DnsController) UpdateRuntime(option *DnsControllerOption, routing *dns.Dns) {
@@ -439,10 +421,14 @@ func (c *DnsController) Close() error {
 	c.lruScratchMu.Lock()
 	c.lruScratch = nil
 	c.lruScratchMu.Unlock()
+	c.evictorChMu.Lock()
 	c.evictorWake = nil
 	c.evictorQ = nil
+	c.evictorChMu.Unlock()
+	c.bpfUpdateStopMu.Lock()
 	c.bpfUpdateCh = nil
 	c.bpfUpdateStop = nil
+	c.bpfUpdateStopMu.Unlock()
 
 	return errors.Join(errs...)
 }
@@ -829,6 +815,10 @@ func (c *DnsController) HasDnsKnowledge(baseKey string) bool {
 func (c *DnsController) startBpfUpdateWorker() {
 	c.bpfUpdateOnce.Do(func() {
 		c.bpfUpdateStopMu.Lock()
+		if c.bpfUpdateClosed.Load() {
+			c.bpfUpdateStopMu.Unlock()
+			return
+		}
 		const bpfUpdateQueueSize = 1024
 		c.bpfUpdateCh = make(chan *bpfUpdateTask, bpfUpdateQueueSize)
 		c.bpfUpdateStop = make(chan struct{})
@@ -929,11 +919,17 @@ func (c *DnsController) sendBpfUpdateTask(task *bpfUpdateTask) (sent bool) {
 	if c.bpfUpdateClosed.Load() {
 		return false
 	}
+	c.bpfUpdateStopMu.Lock()
+	bpfUpdateCh := c.bpfUpdateCh
+	c.bpfUpdateStopMu.Unlock()
+	if bpfUpdateCh == nil {
+		return false
+	}
 
 	// Try to send without blocking - if queue is full, skip this update.
 	// The worker will be notified on the next trigger.
 	select {
-	case c.bpfUpdateCh <- task:
+	case bpfUpdateCh <- task:
 		return true
 	default:
 		// Queue is full, skip this update (will be retried on next access)
@@ -947,11 +943,6 @@ func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
 		return
 	}
 
-	if c.evictorQ == nil {
-		c.invokeCacheRemoveCallback(cache)
-		return
-	}
-
 	if c.janitorStop != nil {
 		select {
 		case <-c.janitorStop:
@@ -961,8 +952,16 @@ func (c *DnsController) onDnsCacheEvicted(cache *DnsCache) {
 		}
 	}
 
+	c.evictorChMu.RLock()
+	evictorQ := c.evictorQ
+	c.evictorChMu.RUnlock()
+	if evictorQ == nil {
+		c.invokeCacheRemoveCallback(cache)
+		return
+	}
+
 	select {
-	case c.evictorQ <- cache:
+	case evictorQ <- cache:
 	default:
 		// Keep datapath non-blocking under eviction bursts without creating an
 		// unbounded number of short-lived goroutines. A single background worker
@@ -977,7 +976,10 @@ func (c *DnsController) enqueueEvictorSpill(cache *DnsCache) {
 	}
 	// If the evictor worker was never initialized, fall back to direct removal.
 	// This preserves behavior for manually constructed test controllers.
-	if c.evictorWake == nil {
+	c.evictorChMu.RLock()
+	evictorWake := c.evictorWake
+	c.evictorChMu.RUnlock()
+	if evictorWake == nil {
 		c.invokeCacheRemoveCallback(cache)
 		return
 	}
@@ -987,7 +989,7 @@ func (c *DnsController) enqueueEvictorSpill(cache *DnsCache) {
 	c.evictorMu.Unlock()
 
 	select {
-	case c.evictorWake <- struct{}{}:
+	case evictorWake <- struct{}{}:
 	default:
 	}
 }
@@ -1300,7 +1302,7 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 // OPTIMIZED: Uses pre-packed response with approximate TTL for near-zero latency.
 // TTL is refreshed when difference exceeds ttlRefreshThresholdSeconds (15 seconds by default).
 // OPTIMISTIC CACHE (RFC 8767): Returns stale response while background refresh is in progress.
-// Falls back to FillInto+Pack if pre-packed response is not available.
+// Falls back to an owned in-place TTL-aware pack if pre-packed response is not available.
 func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte, needRefresh bool) {
 	// Load cache directly without expiry check (to support optimistic cache)
 	val, ok := c.dnsCache.Load(cacheKey)
@@ -1339,8 +1341,11 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 			return resp, false
 		}
 
-		// Fallback: pre-packed response not available, use traditional path
-		if resp = cache.FillIntoWithTTL(msg, now); resp != nil {
+		// Fallback: pre-packed response not available, use the owned in-place path.
+		// LookupDnsRespCache_ already owns dnsMessage exclusively and is documented
+		// to mutate it in place, so this avoids the extra request copy on the
+		// remaining TTL-aware cache-hit fallback.
+		if resp = cache.fillIntoWithTTLInPlace(msg, now); resp != nil {
 			return resp, false
 		}
 		return nil, false

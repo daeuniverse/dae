@@ -105,9 +105,10 @@ func TestRecoveryConfirmationDecrementsLevel(t *testing.T) {
 
 	// 2. Revive -> starts timer
 	d.NotifyHealthCheckResult(typ, true, true)
+	confirmSequence := d.recoveryState[idxTcp].confirmSequence
 
 	// 3. Confirm -> level becomes 0
-	d.confirmRecovery(typ, nil)
+	d.confirmRecovery(typ, confirmSequence)
 
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 0 {
 		t.Errorf("Expected level 0 after successful confirmation, got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
@@ -150,13 +151,104 @@ func TestDualStackRecoveryInterference(t *testing.T) {
 	// We want to test the case where the timer EXPIRES and confirmRecovery is called,
 	// but the original pendingNetworkType (TCP4) is now dead, while TCP6 is still alive.
 	d.collections[IdxTcp4].Alive.Store(false)
+	confirmSequence := d.recoveryState[idxTcp].confirmSequence
 
 	// 4. Confirm recovery (Simulate timer firing)
-	d.confirmRecovery(tcp4, nil)
+	d.confirmRecovery(tcp4, confirmSequence)
 
 	// 5. Check results: Level should decrease to 1 because TCP6 was alive.
 	if d.GetBackoffLevel(consts.L4ProtoStr_TCP) != 1 {
 		t.Errorf("Expected level 1 after recovery (one stack alive), got %d", d.GetBackoffLevel(consts.L4ProtoStr_TCP))
+	}
+}
+
+func TestRecoveryConfirmationIgnoresStaleCallback(t *testing.T) {
+	d := newRecoveryTestDialer()
+	d.initRecoveryDetection(60 * time.Second)
+	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+
+	state := &d.recoveryState[idxTcp]
+	state.Lock()
+	state.backoffLevel = 1
+	state.pendingNetworkType = cloneNetworkType(typ)
+	staleSequence := state.nextConfirmSequenceLocked()
+	currentTimer := time.NewTimer(time.Hour)
+	state.confirmTimer = currentTimer
+	state.confirmDeadlineUnixNano = time.Now().Add(time.Minute).UnixNano()
+	currentSequence := state.nextConfirmSequenceLocked()
+	state.Unlock()
+	defer currentTimer.Stop()
+
+	d.collections[IdxTcp4].Alive.Store(true)
+	d.confirmRecovery(typ, staleSequence)
+
+	state.Lock()
+	timer := state.confirmTimer
+	sequence := state.confirmSequence
+	backoffLevel := state.backoffLevel
+	state.Unlock()
+
+	if timer != currentTimer {
+		t.Fatal("stale callback should not clear the current confirmation timer")
+	}
+	if sequence != currentSequence {
+		t.Fatalf("confirmSequence = %d, want %d", sequence, currentSequence)
+	}
+	if backoffLevel != 1 {
+		t.Fatalf("backoffLevel = %d, want 1", backoffLevel)
+	}
+}
+
+func TestRecoveryConfirmationSequenceRemainsMonotonicAcrossCancelAndRearm(t *testing.T) {
+	d := newRecoveryTestDialer()
+	d.initRecoveryDetection(60 * time.Second)
+	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+
+	d.NotifyHealthCheckResult(typ, false, false)
+	d.NotifyHealthCheckResult(typ, true, true)
+
+	state := &d.recoveryState[idxTcp]
+	state.Lock()
+	firstSequence := state.confirmSequence
+	firstTimer := state.confirmTimer
+	state.Unlock()
+	if firstTimer == nil {
+		t.Fatal("expected first recovery confirmation timer to be armed")
+	}
+
+	d.lastPunish[idxTcp].Store(0)
+	d.NotifyHealthCheckResult(typ, false, false)
+	d.collections[IdxTcp4].Alive.Store(true)
+	d.NotifyHealthCheckResult(typ, true, true)
+
+	state.Lock()
+	secondSequence := state.confirmSequence
+	secondTimer := state.confirmTimer
+	backoffLevel := state.backoffLevel
+	state.Unlock()
+	if secondTimer == nil {
+		t.Fatal("expected re-armed recovery confirmation timer")
+	}
+	if secondSequence <= firstSequence {
+		t.Fatalf("confirmSequence did not advance after re-arm: first=%d second=%d", firstSequence, secondSequence)
+	}
+
+	d.confirmRecovery(typ, firstSequence)
+
+	state.Lock()
+	currentTimer := state.confirmTimer
+	currentSequence := state.confirmSequence
+	currentBackoffLevel := state.backoffLevel
+	state.Unlock()
+
+	if currentTimer != secondTimer {
+		t.Fatal("stale callback should not clear the re-armed confirmation timer")
+	}
+	if currentSequence != secondSequence {
+		t.Fatalf("confirmSequence = %d, want %d", currentSequence, secondSequence)
+	}
+	if currentBackoffLevel != backoffLevel {
+		t.Fatalf("backoffLevel = %d, want %d", currentBackoffLevel, backoffLevel)
 	}
 }
 

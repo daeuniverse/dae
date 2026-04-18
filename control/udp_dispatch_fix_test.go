@@ -293,7 +293,7 @@ func TestUdpEndpointFullConeResponseCacheByBindAddr(t *testing.T) {
 	if got := ue.CachedResponseConn(bindB); got != connB {
 		t.Fatalf("CachedResponseConn(bindB) after clearing A = %p, want %p", got, connB)
 	}
-	if got := ue.responseConnCacheSlot(); got != nil {
+	if got := ue.responseConnSlot(); got != nil {
 		t.Fatal("full-cone endpoint should not expose single-slot response cache")
 	}
 }

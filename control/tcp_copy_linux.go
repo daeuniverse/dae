@@ -53,12 +53,12 @@ func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (i
 				}
 				// Set deadline on both connections.
 				// Ignore errors: connections may be closed by forceClose concurrently.
-				_ = dstTCP.SetReadDeadline(deadline)
-				_ = srcTCP.SetWriteDeadline(deadline)
+				_ = srcTCP.SetReadDeadline(deadline)
+				_ = dstTCP.SetWriteDeadline(deadline)
 				defer func() {
 					// Clear deadline on exit. Ignore errors for same reason.
-					_ = dstTCP.SetReadDeadline(time.Time{})
-					_ = srcTCP.SetWriteDeadline(time.Time{})
+					_ = srcTCP.SetReadDeadline(time.Time{})
+					_ = dstTCP.SetWriteDeadline(time.Time{})
 				}()
 			}
 		}

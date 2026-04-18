@@ -1,11 +1,14 @@
 package control
 
 import (
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/cilium/ebpf"
+	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/sirupsen/logrus"
 )
 
@@ -131,5 +134,59 @@ func TestControlPlaneCore_ReplaceLpmIndicesReplacesTrackedSet(t *testing.T) {
 
 	if got := core.lpmTrieIndices; len(got) != 2 || got[0] != 7 || got[1] != 11 {
 		t.Fatalf("expected replaced LPM indices [7 11], got %#v", got)
+	}
+}
+
+type fakeCgroupAttachment struct {
+	closeCalls atomic.Int32
+}
+
+func (f *fakeCgroupAttachment) Close() error {
+	f.closeCalls.Add(1)
+	return nil
+}
+
+func TestControlPlaneCore_SetupSkPidMonitorRollsBackPartialAttach(t *testing.T) {
+	oldDetect := detectCgroupPathFunc
+	oldAttach := attachCgroupFunc
+	detectCgroupPathFunc = func() (string, error) { return "/sys/fs/cgroup", nil }
+	var attachments []*fakeCgroupAttachment
+	attachCgroupFunc = func(ciliumLink.CgroupOptions) (cgroupAttachment, error) {
+		attachment := &fakeCgroupAttachment{}
+		attachments = append(attachments, attachment)
+		if len(attachments) == 3 {
+			return nil, fmt.Errorf("boom")
+		}
+		return attachment, nil
+	}
+	defer func() {
+		detectCgroupPathFunc = oldDetect
+		attachCgroupFunc = oldAttach
+	}()
+
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	core := newControlPlaneCore(logger, &bpfObjects{
+		bpfPrograms: bpfPrograms{
+			TproxyWanCgSockCreate:  &ebpf.Program{},
+			TproxyWanCgSockRelease: &ebpf.Program{},
+			TproxyWanCgConnect4:    &ebpf.Program{},
+			TproxyWanCgConnect6:    &ebpf.Program{},
+			TproxyWanCgSendmsg4:    &ebpf.Program{},
+			TproxyWanCgSendmsg6:    &ebpf.Program{},
+		},
+	}, nil, nil, false)
+
+	if err := core.setupSkPidMonitor(); err == nil {
+		t.Fatal("setupSkPidMonitor() error = nil, want failure")
+	}
+	if got := len(core.bpfHookDetachFuncs); got != 0 {
+		t.Fatalf("len(bpfHookDetachFuncs) = %d, want 0 after rollback", got)
+	}
+	if got := attachments[0].closeCalls.Load(); got != 1 {
+		t.Fatalf("first attachment Close() calls = %d, want 1", got)
+	}
+	if got := attachments[1].closeCalls.Load(); got != 1 {
+		t.Fatalf("second attachment Close() calls = %d, want 1", got)
 	}
 }

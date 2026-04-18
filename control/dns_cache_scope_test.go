@@ -115,6 +115,16 @@ func dnsAnswerIPv4(t *testing.T, msg *dnsmessage.Msg) string {
 	return netip.MustParseAddr(a.A.String()).String()
 }
 
+func setScopedBestDialerChooser(ctrl *DnsController, chooser func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error)) {
+	rt := ctrl.runtime()
+	if rt == nil {
+		return
+	}
+	updated := *rt
+	updated.bestDialerChooser = chooser
+	ctrl.runtimeState.Store(&updated)
+}
+
 func TestDnsController_AsIsCacheIsScopedByResolver(t *testing.T) {
 	originalFactory := dnsForwarderFactory
 	defer func() {
@@ -122,13 +132,13 @@ func TestDnsController_AsIsCacheIsScopedByResolver(t *testing.T) {
 	}()
 
 	ctrl := newScopedDnsController(t)
-	ctrl.bestDialerChooser = func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
+	setScopedBestDialerChooser(ctrl, func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
 		return &dialArgument{
 			l4proto:    consts.L4ProtoStr_UDP,
 			ipversion:  consts.IpVersionStr_4,
 			bestTarget: req.realDst,
 		}, nil
-	}
+	})
 
 	var forwardCalls atomic.Int32
 	dnsForwarderFactory = func(upstream *componentdns.Upstream, dialArg dialArgument, _ *logrus.Logger) (DnsForwarder, error) {
@@ -168,13 +178,13 @@ func TestDnsController_AsIsSingleflightIsScopedByResolver(t *testing.T) {
 	}()
 
 	ctrl := newScopedDnsController(t)
-	ctrl.bestDialerChooser = func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
+	setScopedBestDialerChooser(ctrl, func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
 		return &dialArgument{
 			l4proto:    consts.L4ProtoStr_UDP,
 			ipversion:  consts.IpVersionStr_4,
 			bestTarget: req.realDst,
 		}, nil
-	}
+	})
 
 	release := make(chan struct{})
 	var forwardCalls atomic.Int32

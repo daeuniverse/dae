@@ -368,6 +368,49 @@ func TestDnsController_CloseWaitsForShutdownTasksConcurrently(t *testing.T) {
 	require.Less(t, elapsed, 220*time.Millisecond, "shutdown waits should run concurrently instead of stacking")
 }
 
+func TestDnsController_OnDnsCacheEvictedConcurrentClose(t *testing.T) {
+	janitorDone := make(chan struct{})
+	evictorDone := make(chan struct{})
+	close(janitorDone)
+	close(evictorDone)
+
+	controller := &DnsController{
+		cacheRemoveCallback: func(cache *DnsCache) error { return nil },
+		janitorStop:         make(chan struct{}),
+		janitorDone:         janitorDone,
+		evictorDone:         evictorDone,
+		evictorQ:            make(chan *DnsCache, 1),
+		evictorWake:         make(chan struct{}, 1),
+	}
+
+	const (
+		goroutines = 8
+		iterations = 256
+	)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				controller.onDnsCacheEvicted(&DnsCache{})
+			}
+		}()
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		<-start
+		closeDone <- controller.Close()
+	}()
+
+	close(start)
+	wg.Wait()
+	require.NoError(t, <-closeDone)
+}
+
 func TestDnsController_UpdateDnsCacheTtlRemovesOnlyStaleIpsOnReplacement(t *testing.T) {
 	type ipSet []string
 

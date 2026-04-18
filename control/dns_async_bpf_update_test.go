@@ -268,6 +268,25 @@ func TestBpfUpdateWorker_LazyStart(t *testing.T) {
 	// This is fine - the key is that it's lazy
 }
 
+func TestBpfUpdateWorker_DoesNotStartAfterClose(t *testing.T) {
+	controller := &DnsController{
+		log: testLogger,
+		cacheAccessCallback: func(cache *DnsCache) error {
+			return nil
+		},
+		dnsCache: sync.Map{},
+	}
+
+	assert.NoError(t, controller.Close())
+
+	controller.startBpfUpdateWorker()
+	controller.triggerBpfUpdateIfNeeded(&DnsCache{}, time.Now())
+
+	assert.Nil(t, controller.bpfUpdateCh, "worker queue should remain nil after Close")
+	assert.Nil(t, controller.bpfUpdateStop, "worker stop channel should remain nil after Close")
+	assert.True(t, controller.bpfUpdateClosed.Load(), "Close should prevent lazy worker startup")
+}
+
 // TestBpfUpdateWorker_QueueFull verifies behavior when queue is full.
 func TestBpfUpdateWorker_QueueFull(t *testing.T) {
 	busy := make(chan struct{})

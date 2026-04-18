@@ -42,7 +42,7 @@ func TestForwardUdpEndpointReplyToClient_IgnoresLocalSendErrors(t *testing.T) {
 		[]byte("payload"),
 		netip.MustParseAddrPort("203.0.113.10:3478"),
 		netip.MustParseAddrPort("192.0.2.10:40000"),
-		func(_ *logrus.Logger, _ []byte, _ netip.AddrPort, _ netip.AddrPort, _ **Anyfrom) error {
+		func(_ *logrus.Logger, _ []byte, _ netip.AddrPort, _ netip.AddrPort, _ udpEndpointResponseConnSlot) error {
 			calls++
 			return io.ErrClosedPipe
 		},
@@ -74,7 +74,7 @@ func TestUdpEndpointStart_LocalReplySendErrorDoesNotRetireConn(t *testing.T) {
 				data,
 				from,
 				netip.MustParseAddrPort("192.0.2.10:40000"),
-				func(_ *logrus.Logger, _ []byte, _ netip.AddrPort, _ netip.AddrPort, _ **Anyfrom) error {
+				func(_ *logrus.Logger, _ []byte, _ netip.AddrPort, _ netip.AddrPort, _ udpEndpointResponseConnSlot) error {
 					return io.ErrClosedPipe
 				},
 			)
