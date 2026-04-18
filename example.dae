@@ -138,6 +138,12 @@ global {
     # For IPv6 DNS servers, the format is "[ipv6]:port", such as "[2001:4860:4860::8888]:53".
     # Fallback resolver will always be available, even if you do not specify it in the configuration file.
     # fallback_resolver: '8.8.8.8:53'
+
+    # Custom User-Agent for fetching subscriptions. If not set, dae will use its default User-Agent.
+    # Some subscription providers return different node formats based on User-Agent.
+    # You can also set per-subscription User-Agent via URL fragment (e.g., https://example.com/sub#ua=V2rayA).
+    # Per-subscription User-Agent takes priority over this global setting.
+    # subscription_user_agent: 'V2rayA/2.2.0'
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
@@ -153,6 +159,9 @@ subscription {
     # This file will serve as a fallback when fetching the subscription via a link fails.
     # It will be updated automatically once the fetch is successful.
     persist_sub: 'https-file://www.example.com/persist_sub/link'
+
+    # Per-subscription User-Agent via URL fragment (overrides global subscription_user_agent).
+    # sub_with_ua: 'https://example.com/sub#ua=V2rayA/2.2.0'
 }
 
 # Nodes defined here will be merged as a part of the global node pool.
