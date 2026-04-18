@@ -53,6 +53,20 @@ func shouldForceMarkUnavailableOnProxyDialError(err error) bool {
 	return commonerrors.IsNetworkUnreachable(err) || commonerrors.IsAddressNotSuitable(err)
 }
 
+func notifyProxyDialerHealthCheck(d *dialer.Dialer, l4proto consts.L4ProtoStr, err error) {
+	if d == nil || err == nil {
+		return
+	}
+	if commonerrors.IsCanceledOrClosed(err) || !isProxyBackedDialer(d) {
+		return
+	}
+	if l4proto == consts.L4ProtoStr_UDP {
+		d.NotifyCheckDnsUdp()
+		return
+	}
+	d.NotifyCheckTcp()
+}
+
 func alternateNetworkType(networkType *dialer.NetworkType) *dialer.NetworkType {
 	if networkType == nil {
 		return nil
@@ -231,6 +245,11 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 		}
 		lastErr = err
 		if attempt > 0 || !shouldForceMarkUnavailableOnProxyDialError(err) {
+			l4proto := consts.L4ProtoStr(p.Network)
+			if res.SelectionNetworkTypeObj != nil {
+				l4proto = res.SelectionNetworkTypeObj.L4Proto
+			}
+			notifyProxyDialerHealthCheck(res.Dialer, l4proto, err)
 			return nil, res, err
 		}
 		if res.SelectionNetworkTypeObj != nil {

@@ -1741,6 +1741,7 @@ func (c *DnsController) reportDnsForwardFailure(dialArg *dialArgument, err error
 	if rt := c.runtime(); rt != nil && rt.timeoutExceedCallback != nil {
 		rt.timeoutExceedCallback(dialArg, err)
 	}
+	notifyProxyDialerHealthCheck(dialArg.bestDialer, dialArg.l4proto, err)
 }
 
 func (c *DnsController) logDnsForwardFailure(upstream *dns.Upstream, dialArg *dialArgument, err error) {
