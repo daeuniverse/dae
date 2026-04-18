@@ -228,8 +228,7 @@ getNew:
 				}
 				routingResult.Outbound = uint8(outboundIndex)
 				if c.log.IsLevelEnabled(logrus.TraceLevel) {
-					c.log.Tracef("outbound: %v => %v",
-						consts.OutboundControlPlaneRouting.String(),
+					c.log.Tracef("outbound: %v => <Control Plane Routing>",
 						outboundIndex.String(),
 					)
 				}
