@@ -229,10 +229,7 @@ func (g *DialerGroup) HandleNoAliveDialer(
 
 	// 2. Log the failure (rate-limited by 5x check interval, min 10s)
 	idx := selectionNetworkType.Index()
-	logInterval := g.cachedMinCheckInterval * 5
-	if logInterval < 10*time.Second {
-		logInterval = 10 * time.Second
-	}
+	logInterval := max(g.cachedMinCheckInterval*5, 10*time.Second)
 
 	if g.tryDoRateLimitedAction(&g.noAliveLogLastTimes[idx], logInterval) {
 		g.logNoAlive(origNetworkType, selectionNetworkType, src, dst, domain, strictIpVersion, logInterval)
@@ -275,10 +272,7 @@ func (g *DialerGroup) LogNoAliveDialer(
 	strictIpVersion bool,
 ) {
 	idx := selectionNetworkType.Index()
-	interval := g.cachedMinCheckInterval * 5
-	if interval < 10*time.Second {
-		interval = 10 * time.Second
-	}
+	interval := max(g.cachedMinCheckInterval*5, 10*time.Second)
 
 	if g.tryDoRateLimitedAction(&g.noAliveLogLastTimes[idx], interval) {
 		g.logNoAlive(origNetworkType, selectionNetworkType, src, dst, domain, strictIpVersion, interval)
@@ -365,7 +359,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 	switch policy.Policy {
 	case consts.DialerSelectionPolicy_Random:
 		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			a := state.aliveDialerSets[networkTypes[i].Index()]
 			d := a.GetRandExcluded(excluded)
 			if d != nil {
@@ -390,7 +384,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
 		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			a := state.aliveDialerSets[networkTypes[i].Index()]
 			d, latency := a.GetMinLatency(excluded)
 			if d != nil {

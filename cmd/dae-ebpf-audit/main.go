@@ -107,7 +107,7 @@ func run(objectPath string, outputDir string, hold bool) error {
 		_ = os.WriteFile(filepath.Join(outputDir, "load-error.txt"), []byte(err.Error()+"\n"), 0o644)
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			_ = os.WriteFile(filepath.Join(verifierDir, "load-main-bpf.log"), []byte(fmt.Sprintf("%+v\n", ve)), 0o644)
+			_ = os.WriteFile(filepath.Join(verifierDir, "load-main-bpf.log"), fmt.Appendf(nil, "%+v\n", ve), 0o644)
 		}
 		return err
 	}
@@ -119,7 +119,7 @@ func run(objectPath string, outputDir string, hold bool) error {
 	if err := writeLiveObjectManifest(coll, outputDir); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(outputDir, "audit.ready"), []byte(fmt.Sprintf("pid=%d\n", os.Getpid())), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outputDir, "audit.ready"), fmt.Appendf(nil, "pid=%d\n", os.Getpid()), 0o644); err != nil {
 		return fmt.Errorf("write ready marker: %w", err)
 	}
 	if hold {

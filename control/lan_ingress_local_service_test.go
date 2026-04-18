@@ -1,5 +1,4 @@
 //go:build linux && dae_bpf_tests
-// +build linux,dae_bpf_tests
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only

@@ -1521,10 +1521,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		ttl := int(time.Until(deadline).Seconds())
-		if ttl < 0 {
-			ttl = 0
-		}
+		ttl := max(int(time.Until(deadline).Seconds()), 0)
 		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, nil, nil, ttl); err != nil {
 			return err
 		}
@@ -1541,10 +1538,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		ttl := int(time.Until(deadline).Seconds())
-		if ttl < 0 {
-			ttl = 0
-		}
+		ttl := max(int(time.Until(deadline).Seconds()), 0)
 		if err = c.dnsController.UpdateDnsCacheTtl(dnsUpstream.Hostname, typ, answers, nil, nil, ttl); err != nil {
 			return err
 		}
@@ -2233,7 +2227,7 @@ func (c *ControlPlane) cleanupRedirectTrackMapBeforeLocked(staleBeforeNs uint64)
 	for {
 		count, err := bpf.RedirectTrack.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
-			for i := 0; i < count; i++ {
+			for i := range count {
 				key := keysOut[i]
 				value := valuesOut[i]
 				totalEntries++
@@ -2324,7 +2318,7 @@ func (c *ControlPlane) cleanupCookiePidMapBeforeLocked(staleBeforeNs uint64) int
 	for {
 		count, err := bpf.CookiePidMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
-			for i := 0; i < count; i++ {
+			for i := range count {
 				totalEntries++
 				age := nowNano - int64(valuesOut[i].LastSeenNs)
 				if age > timeoutNano ||
@@ -2402,7 +2396,7 @@ func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64
 	for {
 		count, batchErr := bpf.RoutingHandoffMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
-			for i := 0; i < count; i++ {
+			for i := range count {
 				totalEntries++
 				if routingHandoffExpired(nowNano, valuesOut[i].LastSeenNs) ||
 					(staleBeforeNs > 0 && (valuesOut[i].LastSeenNs == 0 || valuesOut[i].LastSeenNs < staleBeforeNs)) {
@@ -2494,7 +2488,7 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 	for {
 		count, err := bpf.UdpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
-			for i := 0; i < count; i++ {
+			for i := range count {
 				stats.entries++
 				key := keysOut[i]
 				value := valuesOut[i]
@@ -2609,7 +2603,7 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 	for {
 		count, err := bpf.TcpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
-			for i := 0; i < count; i++ {
+			for i := range count {
 				stats.entries++
 				key := keysOut[i]
 				value := valuesOut[i]
@@ -3341,7 +3335,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 					break
 				}
-				for i := 0; i < n; i++ {
+				for i := range n {
 					pktBuf, src, oob, ok := batchReader.Take(i)
 					if !ok {
 						continue

@@ -36,7 +36,7 @@ const relayConnChainMaxDepth = 8
 // Iterative implementation reduces function call overhead and improves CPU
 // branch prediction compared to the previous recursive approach.
 func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
-	for depth := 0; depth < relayConnChainMaxDepth; depth++ {
+	for range relayConnChainMaxDepth {
 		if conn == nil {
 			return nil, false
 		}

@@ -68,7 +68,7 @@ func newUdpUnorderedTaskRunnerWithOverflow(ctx context.Context, workers, queueSi
 	}
 	if overflowWorkers > 0 && overflowQueueSize > 0 {
 		r.overflow = make(chan UdpTask, overflowQueueSize)
-		for i := 0; i < overflowWorkers; i++ {
+		for range overflowWorkers {
 			go r.worker(r.overflow)
 		}
 	}
@@ -79,10 +79,7 @@ func defaultUdpUnorderedOverflowWorkers(workers int) int {
 	if workers <= 0 {
 		return 1
 	}
-	overflowWorkers := workers / defaultUdpUnorderedOverflowWorkerDivisor
-	if overflowWorkers < 1 {
-		overflowWorkers = 1
-	}
+	overflowWorkers := max(workers/defaultUdpUnorderedOverflowWorkerDivisor, 1)
 	if overflowWorkers > defaultUdpUnorderedOverflowWorkerCap {
 		overflowWorkers = defaultUdpUnorderedOverflowWorkerCap
 	}

@@ -230,7 +230,7 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 	}
 	var lastRes *proxyDialResult
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		res, err := c.chooseProxyDialer(ctx, p)
 		if err != nil {
 			return nil, res, err

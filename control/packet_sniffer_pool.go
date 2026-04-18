@@ -8,6 +8,7 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -138,10 +139,7 @@ func (c *failedQuicDcidCache) targetShardEntriesCap(liveEntries int) int {
 	if c == nil || liveEntries <= 0 {
 		return 0
 	}
-	target := liveEntries
-	if target < c.initialEntriesPerShard() {
-		target = c.initialEntriesPerShard()
-	}
+	target := max(liveEntries, c.initialEntriesPerShard())
 	if target > c.maxEntriesPerShard {
 		target = c.maxEntriesPerShard
 	}
@@ -168,9 +166,7 @@ func (c *failedQuicDcidCache) rebuildShardLocked(shard *failedQuicDcidCacheShard
 	}
 
 	shrunk := make(map[PacketSnifferKey]failedQuicDcidCacheEntry, c.targetShardEntriesCap(liveEntries))
-	for key, entry := range shard.entries {
-		shrunk[key] = entry
-	}
+	maps.Copy(shrunk, shard.entries)
 	shard.entries = shrunk
 }
 

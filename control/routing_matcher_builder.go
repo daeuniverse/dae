@@ -606,10 +606,7 @@ func buildRoutingKernspace(
 	results := make([]lpmMapResult, len(simulatedLpmTries))
 
 	// Pre-convert all CIDRs to BPF keys in parallel for better cache utilization
-	numWorkers := runtime.GOMAXPROCS(0)
-	if numWorkers > 8 {
-		numWorkers = 8
-	}
+	numWorkers := min(runtime.GOMAXPROCS(0), 8)
 	if lpmCount < 4 {
 		numWorkers = 1
 	}
@@ -788,10 +785,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 
 	if numTries > 4 {
 		// Parallel path for larger sets
-		numWorkers := runtime.GOMAXPROCS(0)
-		if numWorkers > 8 {
-			numWorkers = 8
-		}
+		numWorkers := min(runtime.GOMAXPROCS(0), 8)
 
 		// Use buffered channel as semaphore
 		sem := make(chan struct{}, numWorkers)

@@ -247,10 +247,7 @@ func hasPrefixOverlap(probed, prefix []byte) bool {
 	if len(probed) == 0 || len(prefix) == 0 {
 		return false
 	}
-	n := len(probed)
-	if len(prefix) < n {
-		n = len(prefix)
-	}
+	n := min(len(probed), len(prefix))
 	return bytes.EqualFold(probed[:n], prefix[:n])
 }
 

@@ -537,8 +537,8 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func dnsCacheBaseKey(cacheKey string) string {
-	if i := strings.IndexByte(cacheKey, '|'); i >= 0 {
-		return cacheKey[:i]
+	if before, _, ok := strings.Cut(cacheKey, "|"); ok {
+		return before
 	}
 	return cacheKey
 }
@@ -1177,7 +1177,7 @@ func (c *DnsController) evictLRUIfFull() {
 		buildMinHeap(entries)
 
 		// Extract k oldest entries from heap
-		for i := 0; i < numToEvict; i++ {
+		for i := range numToEvict {
 			// Swap root (minimum) with last element
 			lastIdx := len(entries) - 1 - i
 			entries[0], entries[lastIdx] = entries[lastIdx], entries[0]
@@ -1901,7 +1901,7 @@ func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg 
 
 func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Upstream, dialArg *dialArgument, data []byte) (*dnsmessage.Msg, error) {
 	key := newDnsForwarderKey(upstream, dialArg)
-	for attempts := 0; attempts < 2; attempts++ {
+	for range 2 {
 		entry, err := c.getOrCreateDnsForwarder(upstream, dialArg)
 		if err != nil {
 			return nil, err

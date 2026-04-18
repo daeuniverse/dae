@@ -317,10 +317,7 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 		err   error
 	}
 
-	numWorkers := 4
-	if len(rules) < numWorkers {
-		numWorkers = len(rules)
-	}
+	numWorkers := min(len(rules), 4)
 
 	sem := make(chan struct{}, numWorkers)
 	results := make(chan ruleResult, len(rules))

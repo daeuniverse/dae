@@ -58,8 +58,8 @@ func (d *ConsoleErrorListener) detectDigitPrefixDomainError(msg, strLine string)
 	}
 
 	// Look for pattern: digit(s) followed by dot and colon (like "123.com:60")
-	words := strings.Fields(strLine)
-	for _, w := range words {
+	words := strings.FieldsSeq(strLine)
+	for w := range words {
 		if d.isDigitPrefixDomainPattern(w) {
 			return fmt.Sprintf("\n\n"+hintDigitPrefixDomain, w, w)
 		}

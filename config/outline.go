@@ -66,7 +66,6 @@ type outlineExporter struct {
 
 func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritSource bool) (outlines []*OutlineElem) {
 	for section := range t.Fields() {
-		section := section
 		// Parse desc.
 		var desc string
 		if descSource != nil {

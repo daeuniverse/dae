@@ -173,19 +173,17 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 
 	// Build AC automaton and trie in parallel for better performance.
 	// Use limited concurrency to avoid overwhelming the system.
-	numWorkers := runtime.GOMAXPROCS(0)
-	if numWorkers > 4 {
-		numWorkers = 4 // Limit to 4 workers to balance performance and memory
-	}
+	numWorkers := min(
+		runtime.GOMAXPROCS(0),
+		4, // Limit to 4 workers to balance performance and memory
+	)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var buildErr error
 
 	// Build AC automaton in parallel.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		sem := make(chan struct{}, numWorkers)
 		var innerWg sync.WaitGroup
 		for i, toBuild := range n.toBuildAc {
@@ -213,12 +211,10 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 			}(i, toBuild)
 		}
 		innerWg.Wait()
-	}()
+	})
 
 	// Build succinct trie in parallel.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		sem := make(chan struct{}, numWorkers)
 		var innerWg sync.WaitGroup
 		for i, toBuild := range n.toBuildTrie {
@@ -247,7 +243,7 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 			}(i, toBuild)
 		}
 		innerWg.Wait()
-	}()
+	})
 
 	wg.Wait()
 

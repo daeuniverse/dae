@@ -561,10 +561,7 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 		if recoverySnapshot.PendingNetworkType == nil {
 			continue
 		}
-		delay := recoverySnapshot.PendingConfirmDelay
-		if delay < 0 {
-			delay = 0
-		}
+		delay := max(recoverySnapshot.PendingConfirmDelay, 0)
 		maxDelay := d.getRecoveryBackoffDurationByIndex(idx)
 		if maxDelay > 0 && delay > maxDelay {
 			delay = maxDelay
@@ -721,10 +718,7 @@ func SetQuicDcidCacheClearFunc(fn func()) {
 func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 	// Max backoff should be < health check interval to prevent overlap
 	// Use 2/3 of check interval to leave room for confirmation
-	maxBackoff := time.Duration(float64(checkInterval) * 2.0 / 3.0)
-	if maxBackoff < minRecoveryBackoff {
-		maxBackoff = minRecoveryBackoff
-	}
+	maxBackoff := max(time.Duration(float64(checkInterval)*2.0/3.0), minRecoveryBackoff)
 
 	for i := range d.recoveryState {
 		d.recoveryState[i].Lock()

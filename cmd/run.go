@@ -1378,10 +1378,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	numSubscriptions := len(conf.Subscription)
 	if numSubscriptions > 0 {
 		// Limit concurrency to 4 subscriptions at a time to avoid overwhelming network
-		maxConcurrency := 4
-		if numSubscriptions < maxConcurrency {
-			maxConcurrency = numSubscriptions
-		}
+		maxConcurrency := min(numSubscriptions, 4)
 		sem := make(chan struct{}, maxConcurrency)
 		results := make(chan subscriptionResult, numSubscriptions)
 
@@ -1414,7 +1411,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		}
 
 		// Collect results
-		for i := 0; i < numSubscriptions; i++ {
+		for range numSubscriptions {
 			result := <-results
 			if result.err != nil {
 				log.Warnf(`failed to resolve subscription "%v": %v`, result.sub, result.err)

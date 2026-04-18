@@ -1,5 +1,4 @@
 //go:build linux && dae_bpf_map_tests
-// +build linux,dae_bpf_map_tests
 
 package control
 

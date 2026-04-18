@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 
@@ -406,12 +407,7 @@ func compileSubscriptionCondition(key string, values []string) (func(subscriptio
 	switch key {
 	case "", "tag":
 		return func(meta subscriptionMeta) bool {
-			for _, value := range values {
-				if meta.Tag == value {
-					return true
-				}
-			}
-			return false
+			return slices.Contains(values, meta.Tag)
 		}, nil
 	case "tag_regex", "regex":
 		regexps, err := compileRegexps(values)
@@ -447,12 +443,7 @@ func compileNodeCondition(key string, values []string) (func(NodeMeta) bool, err
 	switch key {
 	case "", "name":
 		return func(meta NodeMeta) bool {
-			for _, value := range values {
-				if meta.Name == value {
-					return true
-				}
-			}
-			return false
+			return slices.Contains(values, meta.Name)
 		}, nil
 	case "name_keyword":
 		return func(meta NodeMeta) bool {
@@ -497,12 +488,7 @@ func compileSubNodeCondition(key string, values []string) (func(NodeMeta) bool, 
 	switch key {
 	case "", "subtag":
 		return func(meta NodeMeta) bool {
-			for _, value := range values {
-				if meta.SubscriptionTag == value {
-					return true
-				}
-			}
-			return false
+			return slices.Contains(values, meta.SubscriptionTag)
 		}, nil
 	case "subtag_regex", "regex":
 		regexps, err := compileRegexps(values)

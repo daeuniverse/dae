@@ -161,7 +161,7 @@ func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *
 		return 0, fmt.Errorf("keys and values must have same length")
 	}
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		vKey := vKeys.Index(i)
 		vVal := vVals.Index(i)
 		if err = m.Update(vKey.Interface(), vVal.Interface(), ebpf.MapUpdateFlags(opts.ElemFlags)); err != nil {
@@ -208,7 +208,7 @@ func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
 	}
 	length := vKeys.Len()
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		vKey := vKeys.Index(i)
 		if err = m.Delete(vKey.Interface()); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return i, fmt.Errorf("batch delete map %s at index %d: %w", m.String(), i, err)
