@@ -171,17 +171,32 @@ type WriteCloser interface {
 	CloseWrite() error
 }
 
+type runtimeTrafficWriter struct {
+	writer netproxy.Conn
+	record func(int64)
+}
+
+func (w *runtimeTrafficWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if n > 0 {
+		w.record(int64(n))
+	}
+	return n, err
+}
+
 func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 	eCh := make(chan error, 1)
+	uploadWriter := &runtimeTrafficWriter{writer: rConn, record: RecordUploadTraffic}
+	downloadWriter := &runtimeTrafficWriter{writer: lConn, record: RecordDownloadTraffic}
 	go func() {
-		_, e := io.Copy(rConn, lConn)
+		_, e := io.Copy(uploadWriter, lConn)
 		if rConn, ok := rConn.(WriteCloser); ok {
 			rConn.CloseWrite()
 		}
 		rConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		eCh <- e
 	}()
-	_, e := io.Copy(lConn, rConn)
+	_, e := io.Copy(downloadWriter, rConn)
 	if lConn, ok := lConn.(WriteCloser); ok {
 		lConn.CloseWrite()
 	}
