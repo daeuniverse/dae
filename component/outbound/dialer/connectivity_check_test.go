@@ -1,0 +1,564 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ */
+
+package dialer
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
+	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/sirupsen/logrus"
+)
+
+func newTestDialer(t *testing.T) *Dialer {
+	return newNamedTestDialer(t, "test-dialer")
+}
+
+func newNamedTestDialer(t *testing.T, name string) *Dialer {
+	t.Helper()
+
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+
+	d := NewDialer(
+		direct.SymmetricDirect,
+		&GlobalOption{
+			Log:            log,
+			CheckInterval:  time.Minute,
+			CheckTolerance: 0,
+		},
+		InstanceOption{},
+		&Property{
+			Property: D.Property{Name: name},
+		},
+	)
+	t.Cleanup(func() {
+		_ = d.Close()
+	})
+	return d
+}
+
+func newTestNetworkType() *NetworkType {
+	return &NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     true,
+	}
+}
+
+func TestDialerCheck_SkipDoesNotCascadeToUnavailable(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	aliveSet := NewAliveDialerSet(
+		d.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_Random,
+		[]*Dialer{d},
+		[]*Annotation{{}},
+		func(bool) {},
+		true,
+	)
+	d.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	checkOpt := &CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			// Simulate "skip check" path used by connectivity check
+			// when DNS record is missing for this ip-version.
+			return false, nil
+		},
+	}
+
+	for i := range 128 {
+		ok, err := d.Check(checkOpt)
+		if err != nil {
+			t.Fatalf("unexpected error at round %d: %v", i, err)
+		}
+		if ok {
+			t.Fatalf("unexpected ok=true at round %d", i)
+		}
+	}
+
+	if !d.MustGetAlive(networkType) {
+		t.Fatal("skip checks must not mark dialer unavailable")
+	}
+	if aliveSet.GetRand() == nil {
+		t.Fatal("alive dialer set should keep dialer alive after repeated skip checks")
+	}
+	if got := d.MustGetLatencies10(networkType).Len(); got != 0 {
+		t.Fatalf("skip checks should not append latency samples, got %d", got)
+	}
+	if _, has := d.MustGetLatencies10(networkType).LastLatency(); has {
+		t.Fatal("skip checks should not append timeout latency")
+	}
+}
+
+func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	aliveSet := NewAliveDialerSet(
+		d.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_Random,
+		[]*Dialer{d},
+		[]*Annotation{{}},
+		func(bool) {},
+		true,
+	)
+	d.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	// Failure: should mark unavailable immediately due to threshold=1.
+	ok, err := d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated health check failure")
+		},
+	})
+	if err == nil {
+		t.Fatal("expected check error")
+	}
+	if ok {
+		t.Fatal("unexpected ok=true")
+	}
+
+	if d.MustGetAlive(networkType) {
+		t.Fatal("real check failure must mark dialer unavailable")
+	}
+	if aliveSet.GetRand() != nil {
+		t.Fatal("alive dialer set should remove unavailable dialer")
+	}
+	last, has := d.MustGetLatencies10(networkType).LastLatency()
+	if !has {
+		t.Fatal("expected timeout latency to be appended for failures")
+	}
+	if last != Timeout {
+		t.Fatalf("expected timeout latency %v, got %v", Timeout, last)
+	}
+}
+
+func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	aliveSet := NewAliveDialerSet(
+		d.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_Random,
+		[]*Dialer{d},
+		[]*Annotation{{}},
+		func(bool) {},
+		true,
+	)
+	d.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	// Fail once to mark unavailable.
+	_, err := d.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated health check failure")
+		},
+	})
+	if err == nil {
+		t.Fatal("expected initial failure")
+	}
+
+	for i := range 64 {
+		ok, skipErr := d.Check(&CheckOption{
+			networkType: networkType,
+			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+				return false, nil
+			},
+		})
+		if skipErr != nil || ok {
+			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
+		}
+	}
+
+	if d.MustGetAlive(networkType) {
+		t.Fatal("skip checks must preserve existing unavailable state")
+	}
+	if aliveSet.GetRand() != nil {
+		t.Fatal("dialer should remain unavailable after skip checks")
+	}
+	if got := d.MustGetLatencies10(networkType).Len(); got != 1 {
+		t.Fatalf("skip checks should not append extra samples after failure, got %d", got)
+	}
+
+}
+
+func TestDialerCheck_MixedDialersNoCascadeOnSkip(t *testing.T) {
+	networkType := newTestNetworkType()
+	d1 := newNamedTestDialer(t, "test-dialer-1")
+	d2 := newNamedTestDialer(t, "test-dialer-2")
+
+	aliveSet := NewAliveDialerSet(
+		d1.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_Random,
+		[]*Dialer{d1, d2},
+		[]*Annotation{{}, {}},
+		func(bool) {},
+		true,
+	)
+	d1.RegisterAliveDialerSet(aliveSet)
+	d2.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d1.UnregisterAliveDialerSet(aliveSet)
+		d2.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	// Fail d1 to mark unavailable.
+	_, err := d1.Check(&CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated health check failure")
+		},
+	})
+	if err == nil {
+		t.Fatal("expected failure from d1")
+	}
+
+	for i := range 128 {
+		ok, skipErr := d2.Check(&CheckOption{
+			networkType: networkType,
+			CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+				return false, nil
+			},
+		})
+		if skipErr != nil || ok {
+			t.Fatalf("unexpected skip result at round %d: ok=%v err=%v", i, ok, skipErr)
+		}
+	}
+
+	if d1.MustGetAlive(networkType) {
+		t.Fatal("failed dialer should be unavailable")
+	}
+	if !d2.MustGetAlive(networkType) {
+		t.Fatal("skipped dialer should remain available")
+	}
+	selected := aliveSet.GetRand()
+	if selected == nil {
+		t.Fatal("alive set should still have an available dialer")
+	}
+	if selected != d2 {
+		t.Fatalf("expected alive dialer to be d2, got %s", selected.Property().Name)
+	}
+}
+
+func TestDialerCheck_ConcurrentStateAccess(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := newTestNetworkType()
+
+	aliveSet := NewAliveDialerSet(
+		d.Log,
+		"test-group",
+		networkType,
+		0,
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		[]*Dialer{d},
+		[]*Annotation{{}},
+		func(bool) {},
+		true,
+	)
+	d.RegisterAliveDialerSet(aliveSet)
+	t.Cleanup(func() {
+		d.UnregisterAliveDialerSet(aliveSet)
+	})
+
+	successOpt := &CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return true, nil
+		},
+	}
+	failureOpt := &CheckOption{
+		networkType: networkType,
+		CheckFunc: func(context.Context, *NetworkType) (bool, error) {
+			return false, errors.New("simulated concurrent health check failure")
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := range 4 {
+		opt := successOpt
+		if i%2 == 1 {
+			opt = failureOpt
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				_, _ = d.Check(opt)
+			}
+		}()
+	}
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				alive := d.MustGetAlive(networkType)
+				aliveSet.NotifyLatencyChange(d, alive)
+				_, _ = d.snapshotLatencyForPolicy(networkType, consts.DialerSelectionPolicy_MinMovingAverageLatencies)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestDialerReportAvailableTraffic_ResetsFailureCounter(t *testing.T) {
+	d := newTestDialer(t)
+	networkType := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     false,
+	}
+
+	for i := 0; i < 2; i++ {
+		d.ReportUnavailable(networkType, errors.New("simulated udp traffic failure"))
+	}
+	if !d.MustGetAlive(networkType) {
+		t.Fatal("dialer should remain alive before reaching UDP failure threshold")
+	}
+
+	d.ReportAvailableTraffic(networkType)
+	d.ReportUnavailable(networkType, errors.New("simulated udp traffic failure after success"))
+	if !d.MustGetAlive(networkType) {
+		t.Fatal("traffic success should reset failure streak; first failure must not mark unavailable")
+	}
+}
+
+func TestNetworkTypeIndex_SplitsDnsAndDataUdpDomains(t *testing.T) {
+	dnsType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}
+	dataType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	}
+
+	if got := dnsType.Index(); got != IdxDnsUdp4 {
+		t.Fatalf("dnsType.Index() = %d, want %d", got, IdxDnsUdp4)
+	}
+	if got := dataType.Index(); got != IdxUdp4 {
+		t.Fatalf("dataType.Index() = %d, want %d", got, IdxUdp4)
+	}
+}
+
+func TestNetworkTypeIndex_UdpDoesNotInferDnsFromLegacyFlag(t *testing.T) {
+	legacyDnsFlagOnly := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     true,
+	}
+
+	if got := legacyDnsFlagOnly.Index(); got != IdxUdp4 {
+		t.Fatalf("legacyDnsFlagOnly.Index() = %d, want %d", got, IdxUdp4)
+	}
+}
+
+func TestDialerUdpHealthDomainsRemainIndependent(t *testing.T) {
+	d := newTestDialer(t)
+	dnsType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}
+	dataType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	}
+
+	d.ReportUnavailableForced(dnsType, errors.New("simulated dns udp failure"))
+	if d.MustGetAlive(dataType) != true {
+		t.Fatal("DNS UDP failure should not poison data UDP health")
+	}
+	if d.MustGetAlive(dnsType) != false {
+		t.Fatal("DNS UDP failure should mark only DNS UDP domain unavailable")
+	}
+
+	d.ReportUnavailableForced(dataType, errors.New("simulated data udp failure"))
+	if d.MustGetAlive(dataType) != false {
+		t.Fatal("data UDP failure should mark data UDP domain unavailable")
+	}
+	if d.MustGetAlive(dnsType) != false {
+		t.Fatal("data UDP failure should not revive DNS UDP domain")
+	}
+}
+
+func TestDialerReportAvailableTraffic_RevivesOnlyDataUdpDomain(t *testing.T) {
+	d := newTestDialer(t)
+	dnsType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		IsDns:           true,
+		UdpHealthDomain: UdpHealthDomainDns,
+	}
+	dataType := &NetworkType{
+		L4Proto:         consts.L4ProtoStr_UDP,
+		IpVersion:       consts.IpVersionStr_4,
+		UdpHealthDomain: UdpHealthDomainData,
+	}
+
+	d.ReportUnavailableForced(dnsType, errors.New("simulated dns udp failure"))
+	d.ReportUnavailableForced(dataType, errors.New("simulated data udp failure"))
+
+	d.ReportAvailableTraffic(dataType)
+
+	if !d.MustGetAlive(dataType) {
+		t.Fatal("data UDP traffic success should revive the data UDP domain")
+	}
+	if d.MustGetAlive(dnsType) {
+		t.Fatal("data UDP traffic success should not revive the DNS UDP domain")
+	}
+}
+
+func TestTcpCheckOptionRawResetForcesReparse(t *testing.T) {
+	raw := &TcpCheckOptionRaw{
+		Raw:    []string{"http://cp.cloudflare.com", "1.1.1.1"},
+		Method: "HEAD",
+	}
+
+	first, err := raw.Option()
+	if err != nil {
+		t.Fatalf("first Option() error = %v", err)
+	}
+
+	raw.Raw = []string{"http://example.com", "8.8.8.8"}
+	cached, err := raw.Option()
+	if err != nil {
+		t.Fatalf("cached Option() error = %v", err)
+	}
+	if cached.Url.Hostname() != first.Url.Hostname() {
+		t.Fatal("Option() unexpectedly reparsed without Reset")
+	}
+
+	raw.Reset()
+	refreshed, err := raw.Option()
+	if err != nil {
+		t.Fatalf("refreshed Option() error = %v", err)
+	}
+	if refreshed == first {
+		t.Fatal("Reset() should drop cached tcp check option")
+	}
+	if got := refreshed.Url.Hostname(); got != "example.com" {
+		t.Fatalf("tcp check hostname = %q, want %q", got, "example.com")
+	}
+	if got := refreshed.Ip4; got != netip.MustParseAddr("8.8.8.8") {
+		t.Fatalf("tcp check IPv4 = %v, want %v", got, netip.MustParseAddr("8.8.8.8"))
+	}
+}
+
+func TestCheckDnsOptionRawResetForcesReparse(t *testing.T) {
+	raw := &CheckDnsOptionRaw{
+		Raw: []string{"dns.google:53", "8.8.8.8"},
+	}
+
+	first, err := raw.Option()
+	if err != nil {
+		t.Fatalf("first Option() error = %v", err)
+	}
+
+	raw.Raw = []string{"one.one.one.one:853", "1.1.1.1"}
+	cached, err := raw.Option()
+	if err != nil {
+		t.Fatalf("cached Option() error = %v", err)
+	}
+	if cached.DnsHost != first.DnsHost {
+		t.Fatal("Option() unexpectedly reparsed without Reset")
+	}
+
+	raw.Reset()
+	refreshed, err := raw.Option()
+	if err != nil {
+		t.Fatalf("refreshed Option() error = %v", err)
+	}
+	if refreshed == first {
+		t.Fatal("Reset() should drop cached dns check option")
+	}
+	if got := refreshed.DnsHost; got != "one.one.one.one" {
+		t.Fatalf("dns host = %q, want %q", got, "one.one.one.one")
+	}
+	if got := refreshed.DnsPort; got != 853 {
+		t.Fatalf("dns port = %d, want %d", got, 853)
+	}
+	if got := refreshed.Ip4; got != netip.MustParseAddr("1.1.1.1") {
+		t.Fatalf("dns IPv4 = %v, want %v", got, netip.MustParseAddr("1.1.1.1"))
+	}
+}
+
+func TestInitialConnectivityCheckJitterWindow(t *testing.T) {
+	if got := initialConnectivityCheckJitterWindow(300*time.Second, 20); got != time.Second {
+		t.Fatalf("small active set jitter window = %v, want 1s", got)
+	}
+	if got := initialConnectivityCheckJitterWindow(4*time.Second, 1000); got != time.Second {
+		t.Fatalf("jitter window should be capped by cycle/4; got %v, want 1s", got)
+	}
+	if got := initialConnectivityCheckJitterWindow(300*time.Second, 2000); got != 75*time.Second {
+		t.Fatalf("large active set jitter window = %v, want 75s", got)
+	}
+}
+
+func TestSetQuicDcidCacheClearFuncConcurrentNotify(t *testing.T) {
+	var calls atomic.Int32
+	d := &Dialer{property: &Property{}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			SetQuicDcidCacheClearFunc(func() {
+				calls.Add(int32(i + 1))
+			})
+		}(i)
+		go func() {
+			defer wg.Done()
+			d.NotifyHealthCheckResult(nil, true, false)
+		}()
+	}
+	wg.Wait()
+
+	if calls.Load() == 0 {
+		t.Fatal("expected NotifyHealthCheckResult to invoke a configured callback")
+	}
+}

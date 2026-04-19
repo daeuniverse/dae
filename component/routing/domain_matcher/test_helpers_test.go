@@ -7,13 +7,9 @@ package domain_matcher
 
 import (
 	"fmt"
-	"hash/fnv"
-	"math/rand"
 	"reflect"
-	"testing"
 
 	"github.com/daeuniverse/dae/common/assets"
-
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
@@ -98,20 +94,12 @@ var TestSample = []string{
 	"ipv4.master.test-ipv6.com",
 }
 
-type RoutingMatcherBuilder struct {
+type testRoutingMatcherBuilder struct {
 	simulatedDomainSet []routing.DomainSet
-	Fallback           string
-
-	err error
+	err                error
 }
 
-func (b *RoutingMatcherBuilder) OutboundToId(outbound string) uint8 {
-	h := fnv.New64()
-	h.Write([]byte(outbound))
-	return uint8(h.Sum64() & 0xFF)
-}
-
-func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound *routing.Outbound) {
+func (b *testRoutingMatcherBuilder) addDomain(_ *config_parser.Function, key string, values []string, outbound *routing.Outbound) {
 	if b.err != nil {
 		return
 	}
@@ -131,116 +119,44 @@ func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string,
 	})
 }
 
-func getDomain() (simulatedDomainSet []routing.DomainSet, err error) {
-	var rules []*config_parser.RoutingRule
+func getDomain() ([]routing.DomainSet, error) {
 	sections, err := config_parser.Parse(`
 routing {
 	domain(suffix: test-ipv6.com)->direct
 	domain(geosite:bing)->us
 	domain(_https._tcp.mirrors.ustc.edu.cn)->us
-    domain(full:dns.google) -> direct
+	domain(full:dns.google) -> direct
 	domain(geosite:category-ads-all) -> block
-    domain(geosite:cn) -> direct
+	domain(geosite:cn) -> direct
 }`)
 	if err != nil {
 		return nil, err
 	}
+
 	var r config.Routing
-	if err = config.SectionParser(reflect.ValueOf(&r), sections[0]); err != nil {
+	if err := config.SectionParser(reflect.ValueOf(&r), sections[0]); err != nil {
 		return nil, err
 	}
-	if rules, err = routing.ApplyRulesOptimizers(r.Rules,
+
+	rules, err := routing.ApplyRulesOptimizers(
+		r.Rules,
 		&routing.AliasOptimizer{},
 		&routing.DatReaderOptimizer{Logger: logrus.StandardLogger(), LocationFinder: assets.NewLocationFinder(nil)},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
+	)
+	if err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
-	builder := RoutingMatcherBuilder{}
+
+	builder := testRoutingMatcherBuilder{}
 	rb := routing.NewRulesBuilder(logrus.StandardLogger())
-	rb.RegisterFunctionParser("domain", func(log *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) (err error) {
-		builder.AddDomain(f, key, paramValueGroup, overrideOutbound)
+	rb.RegisterFunctionParser("domain", func(_ *logrus.Logger, f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) error {
+		builder.addDomain(f, key, paramValueGroup, overrideOutbound)
 		return nil
 	})
-	if err = rb.Apply(rules); err != nil {
+	if err := rb.Apply(rules); err != nil {
 		return nil, fmt.Errorf("Apply: %w", err)
 	}
-	return builder.simulatedDomainSet, nil
-}
-
-func BenchmarkBruteforce(b *testing.B) {
-	b.StopTimer()
-	logrus.SetLevel(logrus.WarnLevel)
-	simulatedDomainSet, err := getDomain()
-	if err != nil {
-		b.Fatal(err)
-	}
-	bf := NewBruteforce(consts.MaxMatchSetLen)
-	for _, domains := range simulatedDomainSet {
-		bf.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = bf.Build(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-	runBenchmark(b, bf)
-}
-
-func BenchmarkGoRegexpNfa(b *testing.B) {
-	b.StopTimer()
-	logrus.SetLevel(logrus.WarnLevel)
-	simulatedDomainSet, err := getDomain()
-	if err != nil {
-		b.Fatal(err)
-	}
-	nfa := NewGoRegexpNfa(consts.MaxMatchSetLen)
-	for _, domains := range simulatedDomainSet {
-		nfa.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = nfa.Build(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-	runBenchmark(b, nfa)
-}
-
-func BenchmarkAhocorasickSlimtrie(b *testing.B) {
-	b.StopTimer()
-	logrus.SetLevel(logrus.WarnLevel)
-	simulatedDomainSet, err := getDomain()
-	if err != nil {
-		b.Fatal(err)
-	}
-	ahocorasick := NewAhocorasickSlimtrie(logrus.StandardLogger(), consts.MaxMatchSetLen)
-	for _, domains := range simulatedDomainSet {
-		ahocorasick.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = ahocorasick.Build(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-	runBenchmark(b, ahocorasick)
-}
-
-func runBenchmark(b *testing.B, matcher routing.DomainMatcher) {
-	rand.Seed(100)
-	for i := 0; i < b.N; i++ {
-		sample := TestSample[rand.Intn(len(TestSample))]
-		choice := rand.Intn(10)
-		switch {
-		case choice < 4:
-			addN := rand.Intn(5)
-			buf := make([]byte, addN)
-			for i := range buf {
-				buf[i] = 'a' + byte(rand.Intn('z'-'a'))
-			}
-			sample = string(buf) + "." + sample
-		case choice >= 4 && choice < 6:
-			k := rand.Intn(len(sample))
-			sample = sample[k:]
-		default:
-		}
-		matcher.MatchDomainBitmap(sample)
-	}
+	return builder.simulatedDomainSet, builder.err
 }

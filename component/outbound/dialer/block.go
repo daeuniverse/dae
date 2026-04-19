@@ -15,6 +15,5 @@ func NewBlockDialer(option *GlobalOption, dialCallback func()) (netproxy.Dialer,
 	return d, &Property{
 		Property:        *_p,
 		SubscriptionTag: "",
-		Link:            "",
 	}
 }

@@ -6,7 +6,6 @@
 package sniffing
 
 import (
-	"bytes"
 	"encoding/binary"
 	"strings"
 
@@ -22,11 +21,6 @@ const (
 	AssumedTlsClientHelloMaxLength = 4096
 )
 
-var (
-	Version_Tls1_0 = []byte{0x03, 0x01}
-	Version_Tls1_2 = []byte{0x03, 0x03}
-)
-
 // SniffTls only supports tls1.2, tls1.3
 func (s *Sniffer) SniffTls() (d string, err error) {
 	// The Transport Layer Security (TLS) Protocol Version 1.3
@@ -36,7 +30,7 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 		return "", ErrNotApplicable
 	}
 
-	if s.buf.Bytes()[0] != ContentType_HandShake || (!bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_0) && !bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_2)) {
+	if s.buf.Bytes()[0] != ContentType_HandShake || s.buf.Bytes()[1] != 0x03 {
 		return "", ErrNotApplicable
 	}
 
@@ -64,12 +58,9 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	}
 
 	// Three bytes length.
-	length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
-	if search.Len() > length2+4 {
-		return "", ErrNotApplicable
-	}
+	// length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
 
-	if !bytes.Equal(b[4:], Version_Tls1_2) {
+	if b[4] != 0x03 || b[5] < 0x01 || b[5] > 0x03 {
 		return "", ErrNotApplicable
 	}
 
@@ -80,7 +71,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	boundary += int(sessionIdLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary || search.Len() < boundary {
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -89,8 +80,8 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	cipherSuiteLength := int(binary.BigEndian.Uint16(b))
-	boundary += int(cipherSuiteLength) + 1 // +1 because the next field has 1B length
-	if search.Len() < boundary || search.Len() < boundary {
+	boundary += cipherSuiteLength + 1 // +1 because the next field has 1B length
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -99,7 +90,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	boundary += int(compressMethodsLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary || search.Len() < boundary {
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -109,7 +100,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	}
 	extensionsLength := int(binary.BigEndian.Uint16(b))
 	boundary += extensionsLength + 0 // +0 because our search ends
-	if search.Len() < boundary || search.Len() < boundary {
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 	// Search SNI
@@ -148,7 +139,7 @@ func findSniExtension(search quicutils.Locator) (d string, err error) {
 				return "", ErrNotApplicable
 			}
 			// Search HostName type SNI.
-			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += indicatorLen {
+			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += 3 + indicatorLen {
 				b, err = search.Range(j, j+3)
 				if err != nil {
 					return "", err

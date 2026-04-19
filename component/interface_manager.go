@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package component
 
@@ -9,6 +9,7 @@ import (
 	"context"
 	"path"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -44,7 +45,12 @@ func NewInterfaceManager(log *logrus.Logger) *InterfaceManager {
 	done := make(chan struct{})
 	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
-			log.Debug("LinkSubscribe:", err)
+			select {
+			case <-closed.Done():
+				return
+			default:
+				log.Debug("LinkSubscribe:", err)
+			}
 		},
 		ListExisting: true,
 	}); e != nil {
@@ -55,11 +61,76 @@ func NewInterfaceManager(log *logrus.Logger) *InterfaceManager {
 	return mgr
 }
 
+type job struct {
+	ifName string
+	fn     func()
+}
+
 func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struct{}) {
+	jobChan := make(chan job, 128)
+	go func() {
+		// Per-interface queues to preserve order
+		queues := make(map[string]chan func())
+		timers := make(map[string]*time.Timer)
+		stopTimers := func() {
+			for _, t := range timers {
+				t.Stop()
+			}
+		}
+		defer stopTimers()
+
+		for {
+			select {
+			case <-m.closed.Done():
+				return
+			case j, ok := <-jobChan:
+				if !ok {
+					return
+				}
+				ifQ, exists := queues[j.ifName]
+				if !exists {
+					ifQ = make(chan func(), 32)
+					queues[j.ifName] = ifQ
+					go func(q chan func()) {
+						for {
+							select {
+							case <-m.closed.Done():
+								return
+							case f, ok := <-q:
+								if !ok {
+									return
+								}
+								f()
+							}
+						}
+					}(ifQ)
+				}
+
+				// Debounce logic: if a new event for the same interface arrives,
+				// reset the timer to delay execution.
+				fn := j.fn
+				if t, ok := timers[j.ifName]; ok {
+					t.Stop()
+				}
+				ifName := j.ifName
+				timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
+					select {
+					case <-m.closed.Done():
+						return
+					case ifQ <- fn:
+					default:
+						m.log.Warnf("Interface callback queue full for %s, skipping", ifName)
+					}
+				})
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-m.closed.Done():
 			close(done)
+			close(jobChan)
 			return
 		case update := <-ch:
 			ifName := update.Link.Attrs().Name
@@ -79,7 +150,9 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 						continue
 					}
 					if callback.newCallback != nil {
-						callback.newCallback(update.Link)
+						cb := callback.newCallback
+						link := update.Link
+						jobChan <- job{ifName: ifName, fn: func() { cb(link) }}
 					}
 				}
 				m.mu.Unlock()
@@ -93,7 +166,9 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 						continue
 					}
 					if callback.delCallback != nil {
-						callback.delCallback(update.Link)
+						cb := callback.delCallback
+						link := update.Link
+						jobChan <- job{ifName: ifName, fn: func() { cb(link) }}
 					}
 				}
 				m.mu.Unlock()
@@ -109,12 +184,13 @@ func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func
 	links, err := netlink.LinkList()
 	if err == nil {
 		for _, link := range links {
-			ifname := link.Attrs().Name
-			if matched, err := path.Match(pattern, ifname); err == nil && matched {
-				m.upLinks[ifname] = true
+			ifName := link.Attrs().Name
+			if matched, err := path.Match(pattern, ifName); err == nil && matched {
+				m.upLinks[ifName] = true
 
 				if initCallback != nil {
-					initCallback(link)
+					link := link
+					go initCallback(link)
 				}
 			}
 		}
@@ -138,7 +214,7 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 		m.upLinks[ifname] = true
 
 		if initCallback != nil {
-			initCallback(link)
+			go initCallback(link)
 		}
 	}
 

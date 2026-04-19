@@ -51,3 +51,22 @@ func TestSniffer_SniffTls(t *testing.T) {
 		t.Log(d)
 	}
 }
+
+func TestSniffer_SniffTls_AcceptsLegacyMinorVersions(t *testing.T) {
+	payload := append([]byte(nil), tlsStreamWindowsOdinGame...)
+	// Record version: TLS 1.1 style 0x0302.
+	payload[1] = 0x03
+	payload[2] = 0x02
+	// ClientHello legacy_version: TLS 1.1 style 0x0302.
+	payload[9] = 0x03
+	payload[10] = 0x02
+
+	sniffer := NewStreamSniffer(bytes.NewReader(payload), 300*time.Millisecond)
+	d, err := sniffer.SniffTcp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != "odin.game.daum.net" {
+		t.Fatalf("domain = %q, want %q", d, "odin.game.daum.net")
+	}
+}

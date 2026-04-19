@@ -45,8 +45,8 @@ func TproxyControl(c syscall.RawConn) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
 		// - https://www.kernel.org/doc/Documentation/networking/tproxy.txt
-		if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); err != nil {
-			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		if err := setTransparentSocketOptions(int(fd)); err != nil {
+			sockOptErr = err
 			return
 		}
 
@@ -55,14 +55,17 @@ func TproxyControl(c syscall.RawConn) error {
 			return
 		}
 
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting SO_REUSEPORT socket option: %w", err)
+			return
+		}
+
 		e4 := unix.SetsockoptInt(int(fd), syscall.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
 		e6 := unix.SetsockoptInt(int(fd), syscall.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
 		if e4 != nil && e6 != nil {
-			if e4 != nil {
-				sockOptErr = fmt.Errorf("error setting IP_RECVORIGDSTADDR socket option: %w", e4)
-			} else {
-				sockOptErr = fmt.Errorf("error setting IPV6_RECVORIGDSTADDR socket option: %w", e6)
-			}
+			// Both IPv4 and IPv6 original destination retrieval failed.
+			// Surface e4 as the primary error (IPv4 is the more common path).
+			sockOptErr = fmt.Errorf("error setting IP_RECVORIGDSTADDR socket option: %w", e4)
 			return
 		}
 	})
@@ -72,11 +75,29 @@ func TproxyControl(c syscall.RawConn) error {
 	return sockOptErr
 }
 
+func setTransparentSocketOptions(fd int) error {
+	e4 := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1)
+	e6 := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1)
+	if e4 != nil && e6 != nil {
+		return fmt.Errorf("error setting transparent socket options: ipv4=%v, ipv6=%v", e4, e6)
+	}
+	return nil
+}
+
 func TransparentControl(c syscall.RawConn) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
-			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		if err := setTransparentSocketOptions(int(fd)); err != nil {
+			sockOptErr = err
+			return
+		}
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting SO_REUSEADDR socket option: %w", err)
+			return
+		}
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+			sockOptErr = fmt.Errorf("error setting SO_REUSEPORT socket option: %w", err)
+			return
 		}
 	})
 	if controlErr != nil {
@@ -88,11 +109,13 @@ func TransparentControl(c syscall.RawConn) error {
 func BindControl(c syscall.RawConn, lAddrPort netip.AddrPort) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
-			sockOptErr = fmt.Errorf("error setting IP_TRANSPARENT socket option: %w", err)
+		if err := setTransparentSocketOptions(int(fd)); err != nil {
+			sockOptErr = err
+			return
 		}
 		if err := bindAddr(fd, lAddrPort); err != nil {
 			sockOptErr = fmt.Errorf("error bindAddr %v: %w", lAddrPort.String(), err)
+			return
 		}
 	})
 	if controlErr != nil {
@@ -126,9 +149,9 @@ func bindAddr(fd uintptr, addrPort netip.AddrPort) error {
 		}
 		zone := addrPort.Addr().Zone()
 		if zone != "" {
-			//if link, e := netlink.LinkByName(zone); e == nil {
-			//	a6.ZoneId = uint32(link.Attrs().Index)
-			//}
+			// if link, e := netlink.LinkByName(zone); e == nil {
+			// 	a6.ZoneId = uint32(link.Attrs().Index)
+			// }
 			return fmt.Errorf("unsupported ipv6 zone")
 		}
 		a6.Addr = addr.As16()
