@@ -1,3 +1,5 @@
+//go:build trace
+
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
@@ -15,6 +17,7 @@ import (
 	"os"
 	"slices"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -26,11 +29,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "trace && !dae_stub_ebpf" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
 
 var nativeEndian binary.ByteOrder
 
 func init() {
+	// Detect native endianness by writing a known uint16 value and examining the bytes.
+	// This uses unsafe.Pointer to access the raw byte representation, which is necessary
+	// for endianness detection. The pattern is well-established and safe.
 	buf := [2]byte{}
 	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
 
@@ -58,7 +64,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	if err != nil {
 		return
 	}
-	defer objs.Close()
+	defer func() { _ = objs.Close() }()
 
 	targets, kfreeSkbReasons, err := searchAvailableTargets()
 	if err != nil {
@@ -72,10 +78,13 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	defer func() {
 		i := 0
 		fmt.Printf("\n")
-		for _, link := range links {
+		for _, l := range links {
 			i++
 			fmt.Printf("detaching kprobes: %04d/%04d\r", i, len(links))
-			link.Close()
+			// v0.20.0 best practice: Detach() before Close() for cleaner cleanup
+			// Detach explicitly breaks the link from the attachment point
+			_ = l.Detach()
+			_ = l.Close()
 		}
 		fmt.Printf("\n")
 	}()
@@ -90,26 +99,23 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects, err error) {
 	spec, err := loadBpf()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load BPF: %+v\n", err)
+		return nil, fmt.Errorf("failed to load BPF: %+v", err)
 	}
-	if err := spec.RewriteConstants(map[string]interface{}{
-		"tracing_cfg": struct {
-			port      uint16
-			l4Proto   uint16
-			ipVersion uint8
-			pad       uint8
-		}{
-			port:      Htons(uint16(port)),
-			l4Proto:   uint16(l4ProtoNo),
-			ipVersion: uint8(ipVersion),
-			pad:       0,
-		},
+	if err := spec.Variables["tracing_cfg"].Set(struct {
+		port      uint16
+		l4Proto   uint16
+		ipVersion uint8
+		pad       uint8
+	}{
+		port:      Htons(uint16(port)),
+		l4Proto:   l4ProtoNo,
+		ipVersion: uint8(ipVersion),
+		pad:       0,
 	}); err != nil {
-		return nil, fmt.Errorf("failed to rewrite constants: %+v\n", err)
+		return nil, fmt.Errorf("failed to rewrite constants: %+v", err)
 	}
 	var opts ebpf.CollectionOptions
 	opts.Programs.LogLevel = ebpf.LogLevelInstruction
-	opts.Programs.LogSize = ebpf.DefaultVerifierLogSize * 100
 	objs := bpfObjects{}
 	if err := spec.LoadAndAssign(&objs, &opts); err != nil {
 		var (
@@ -130,22 +136,22 @@ func searchAvailableTargets() (targets map[string]int, kfreeSkbReasons map[uint6
 
 	btfSpec, err := btf.LoadKernelSpec()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load kernel BTF: %+v\n", err)
+		return nil, nil, fmt.Errorf("failed to load kernel BTF: %+v", err)
 	}
 
 	if kfreeSkbReasons, err = getKFreeSKBReasons(btfSpec); err != nil {
 		return
 	}
 
-	iter := btfSpec.Iterate()
-	for iter.Next() {
-		typ := iter.Type
+	for typ, iterErr := range btfSpec.All() {
+		_ = iterErr // v0.20.0: iterErr is always nil for All()
+		typ := typ
 		fn, ok := typ.(*btf.Func)
 		if !ok {
 			continue
 		}
 
-		fnName := string(fn.Name)
+		fnName := fn.Name
 
 		fnProto := fn.Type.(*btf.FuncProto)
 		i := 1
@@ -179,7 +185,7 @@ func getKFreeSKBReasons(spec *btf.Spec) (map[uint64]string, error) {
 
 	ret := map[uint64]string{}
 	for _, val := range dropReasonsEnum.Values {
-		ret[uint64(val.Value)] = val.Name
+		ret[val.Value] = val.Name
 
 	}
 
@@ -216,7 +222,7 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 		links = append(links, kp)
 	}
 	if len(links) == 0 {
-		err = fmt.Errorf("failed to attach kprobes to any target")
+		return nil, fmt.Errorf("failed to attach kprobes to any target")
 	}
 	links = append(links, kp)
 	return links, nil
@@ -230,13 +236,17 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 
 	eventsReader, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
-		return fmt.Errorf("failed to create ringbuf reader: %+v\n", err)
+		return fmt.Errorf("failed to create ringbuf reader: %+v", err)
 	}
-	defer eventsReader.Close()
+	defer func() { _ = eventsReader.Close() }()
 
+	// v0.20.0 best practice: use SetDeadline for responsive context cancellation
+	// This allows Read() to return within 100ms when context is cancelled,
+	// instead of blocking indefinitely until the next event arrives.
 	go func() {
 		<-ctx.Done()
-		eventsReader.Close()
+		// Set a short deadline to unblock any pending Read()
+		eventsReader.SetDeadline(time.Now().Add(100 * time.Millisecond))
 	}()
 
 	type bpfEvent struct {
@@ -294,22 +304,22 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 			if !dropOnly || slices.Contains(skb2symNames[event.Skb], "kfree_skb_reason") {
 				// trace dropOnly with drop reason or all skb
 				for _, skb_ev := range skb2events[event.Skb] {
-					fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
+					_, _ = fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
 					if event.L3Proto == syscall.ETH_P_IP {
-						fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
+						_, _ = fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
 					} else {
-						fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
+						_, _ = fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
 					}
 					if event.L4Proto == syscall.IPPROTO_TCP {
-						fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
+						_, _ = fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
 					}
-					fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
+					_, _ = fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
 					sym := NearestSymbol(skb_ev.Pc)
-					fmt.Fprintf(writer, "%s", sym.Name)
+					_, _ = fmt.Fprintf(writer, "%s", sym.Name)
 					if sym.Name == "kfree_skb_reason" {
-						fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
+						_, _ = fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
 					}
-					fmt.Fprintf(writer, "\n")
+					_, _ = fmt.Fprintf(writer, "\n")
 				}
 				delete(skb2events, event.Skb)
 				delete(skb2symNames, event.Skb)

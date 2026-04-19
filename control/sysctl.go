@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -27,6 +27,12 @@ type SysctlManager struct {
 }
 
 func InitSysctlManager(log *logrus.Logger) (err error) {
+	if sysctl != nil {
+		sysctl.mux.Lock()
+		sysctl.log = log
+		sysctl.mux.Unlock()
+		return nil
+	}
 	sysctl, err = NewSysctlManager(log)
 	return err
 }

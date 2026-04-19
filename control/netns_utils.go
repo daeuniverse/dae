@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -22,10 +23,17 @@ import (
 )
 
 const (
-	NsName       = "daens"
-	HostVethName = "dae0"
-	NsVethName   = "dae0peer"
+	NsName        = "daens"
+	HostVethName  = "dae0"
+	NsVethName    = "dae0peer"
+	DaeVethTxQLen = 1000
 )
+
+// ptrToUint32 returns a pointer to the given uint32 value.
+// Used for netlink Rule.Mask field which requires *uint32.
+func ptrToUint32(v uint32) *uint32 {
+	return &v
+}
 
 var (
 	daeNetns *DaeNetns
@@ -33,7 +41,9 @@ var (
 )
 
 type DaeNetns struct {
-	log *logrus.Logger
+	log           *logrus.Logger
+	kernelVersion *internal.Version
+	useNetkit     bool // Whether Netkit device is being used
 
 	setupDone atomic.Bool
 	mu        sync.Mutex
@@ -47,6 +57,13 @@ func InitDaeNetns(log *logrus.Logger) {
 		daeNetns = &DaeNetns{}
 	})
 	daeNetns.log = log
+	// Initialize kernel version for Netkit support detection
+	kernelVersion, err := internal.KernelVersion()
+	if err != nil {
+		log.WithError(err).Warn("Failed to get kernel version, Netkit support disabled")
+		kernelVersion = internal.Version{0, 0, 0}
+	}
+	daeNetns.kernelVersion = &kernelVersion
 }
 
 func GetDaeNetns() *DaeNetns {
@@ -63,6 +80,19 @@ func (ns *DaeNetns) Dae0() netlink.Link {
 
 func (ns *DaeNetns) Dae0Peer() netlink.Link {
 	return ns.dae0peer
+}
+
+// DeviceType returns the type of the dae0 device ("netkit" or "veth").
+func (ns *DaeNetns) DeviceType() string {
+	if ns.useNetkit {
+		return "netkit"
+	}
+	return "veth"
+}
+
+// IsUsingNetkit returns true if Netkit device is being used.
+func (ns *DaeNetns) IsUsingNetkit() bool {
+	return ns.useNetkit
 }
 
 func (ns *DaeNetns) Setup() (err error) {
@@ -83,13 +113,16 @@ func (ns *DaeNetns) Setup() (err error) {
 }
 
 func (ns *DaeNetns) Close() (err error) {
-	DeleteNamedNetns(NsName)
-	DeleteLink(HostVethName)
+	if ns == nil {
+		return nil
+	}
+	_ = DeleteNamedNetns(NsName)
+	_ = DeleteLink(HostVethName)
 	return
 }
 
 func (ns *DaeNetns) With(f func() error) (err error) {
-	if err = daeNetns.Setup(); err != nil {
+	if err = ns.Setup(); err != nil {
 		return fmt.Errorf("failed to setup dae netns: %v", err)
 	}
 
@@ -99,12 +132,123 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	if err = f(); err != nil {
 		return fmt.Errorf("failed to run func in dae netns: %v", err)
 	}
 	return
+}
+
+// WithRequired runs f in dae netns and wraps the error with operation context.
+func (ns *DaeNetns) WithRequired(op string, f func() error) error {
+	if err := ns.With(f); err != nil {
+		if op == "" {
+			return err
+		}
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
+}
+
+// WithBestEffort runs f in dae netns and only logs debug info on failure.
+func (ns *DaeNetns) WithBestEffort(op string, f func() error) {
+	if err := ns.With(f); err != nil && ns.log != nil {
+		if op == "" {
+			ns.log.WithError(err).Debug("best-effort dae netns operation failed")
+			return
+		}
+		ns.log.WithError(err).Debugf("best-effort dae netns operation failed: %s", op)
+	}
+}
+
+// supportsNetkit checks if the kernel supports Netkit devices (requires 6.7+).
+func (ns *DaeNetns) supportsNetkit() bool {
+	if ns.kernelVersion == nil {
+		return false
+	}
+	return !ns.kernelVersion.Less(consts.NetkitFeatureVersion)
+}
+
+// setupVethOrNetkit creates a veth or Netkit device pair based on kernel support.
+// It tries Netkit first (kernel 6.7+) and falls back to veth if Netkit fails.
+func (ns *DaeNetns) setupVethOrNetkit() (err error) {
+	// Try Netkit first if kernel supports it
+	if ns.supportsNetkit() {
+		ns.log.Infof("Kernel %s supports Netkit, attempting to create Netkit device pair",
+			ns.kernelVersion.String())
+		err := ns.tryCreateNetkit()
+		if err == nil {
+			ns.useNetkit = true
+			ns.log.Infof("Successfully created Netkit device pair (performance mode)")
+			return nil
+		}
+		// Netkit failed, fall back to veth
+		ns.log.WithFields(logrus.Fields{
+			"error":  err.Error(),
+			"kernel": ns.kernelVersion.String(),
+		}).Warn("Failed to create Netkit device, falling back to veth")
+	}
+
+	// Fall back to veth
+	ns.log.Info("Falling back to veth device creation")
+	ns.useNetkit = false
+	if err := ns.setupVeth(); err != nil {
+		return fmt.Errorf("failed to create veth device: %w", err)
+	}
+
+	if ns.supportsNetkit() {
+		ns.log.Infof("Created veth device pair (compatibility mode; Netkit was attempted but failed)")
+	} else {
+		ns.log.Infof("Created veth device pair (kernel %s does not support Netkit)",
+			ns.kernelVersion.String())
+	}
+	return nil
+}
+
+// tryCreateNetkit attempts to create a Netkit device pair.
+// It uses the ip command which has Netkit support in iproute2 6.7.0+.
+func (ns *DaeNetns) tryCreateNetkit() (err error) {
+	ns.log.Debug("Starting Netkit device creation")
+
+	// Delete existing link if present
+	ns.log.Debugf("Deleting existing link %s if present", HostVethName)
+	_ = DeleteLink(HostVethName)
+
+	// Try to create Netkit device
+	// Configure scrub=NONE to preserve skb->mark across netkit boundary (safe optimization).
+	// Note: bpf_redirect_peer() is intentionally disabled in C code to avoid CVE-2025-37959.
+	ns.log.Debugf("Creating Netkit device pair: %s <-> %s", HostVethName, NsVethName)
+	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen, true); err != nil {
+		ns.log.Infof("createNetkitDevice failed: %v", err)
+		return fmt.Errorf("failed to create Netkit device: %w", err)
+	}
+	ns.log.Debug("Netkit device created successfully")
+
+	// Get link references
+	ns.log.Debugf("Getting link reference for %s", HostVethName)
+	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
+		ns.log.Errorf("Failed to get link %s: %v", HostVethName, err)
+		return fmt.Errorf("failed to get link dae0: %v", err)
+	}
+	ns.log.Debug("Got link reference for dae0")
+
+	ns.log.Debugf("Getting link reference for %s", NsVethName)
+	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
+		ns.log.Errorf("Failed to get link %s: %v", NsVethName, err)
+		return fmt.Errorf("failed to get link dae0peer: %v", err)
+	}
+	ns.log.Debug("Got link reference for dae0peer")
+
+	// Set link up
+	ns.log.Debug("Setting link dae0 up")
+	if err = netlink.LinkSetUp(ns.dae0); err != nil {
+		ns.log.Errorf("Failed to set link dae0 up: %v", err)
+		return fmt.Errorf("failed to set link dae0 up: %v", err)
+	}
+	ns.log.Debug("Netkit device setup completed successfully")
+
+	return nil
 }
 
 func (ns *DaeNetns) setup() (err error) {
@@ -116,9 +260,9 @@ func (ns *DaeNetns) setup() (err error) {
 	if ns.hostNs, err = netns.Get(); err != nil {
 		return fmt.Errorf("failed to get host netns: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
-	if err = ns.setupVeth(); err != nil {
+	if err = ns.setupVethOrNetkit(); err != nil {
 		return
 	}
 	if err = ns.setupNetns(); err != nil {
@@ -143,7 +287,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	/// Insert ip rule / ip route.
 	var table = 2023
@@ -194,8 +338,8 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Flow:              -1,
 		Family:            unix.AF_INET,
 		Table:             table,
-		Mark:              int(consts.TproxyMark),
-		Mask:              int(consts.TproxyMark),
+		Mark:              consts.TproxyMark,
+		Mask:              ptrToUint32(consts.TproxyMark),
 	}, {
 		SuppressIfgroup:   -1,
 		SuppressPrefixlen: -1,
@@ -204,8 +348,8 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Flow:              -1,
 		Family:            unix.AF_INET6,
 		Table:             table,
-		Mark:              int(consts.TproxyMark),
-		Mask:              int(consts.TproxyMark),
+		Mark:              consts.TproxyMark,
+		Mask:              ptrToUint32(consts.TproxyMark),
 	}}
 
 	for _, rule := range rules {
@@ -222,13 +366,14 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 }
 func (ns *DaeNetns) setupVeth() (err error) {
 	// ip l a dae0 type veth peer name dae0peer
-	DeleteLink(HostVethName)
+	_ = DeleteLink(HostVethName)
 	if err = netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:   HostVethName,
-			TxQLen: 1000,
+			TxQLen: DaeVethTxQLen,
 		},
-		PeerName: NsVethName,
+		PeerName:   NsVethName,
+		PeerTxQLen: DaeVethTxQLen,
 	}); err != nil {
 		return fmt.Errorf("failed to add veth pair: %v", err)
 	}
@@ -247,7 +392,7 @@ func (ns *DaeNetns) setupVeth() (err error) {
 
 func (ns *DaeNetns) setupNetns() (err error) {
 	// ip netns a daens
-	DeleteNamedNetns(NsName)
+	_ = DeleteNamedNetns(NsName)
 	ns.daeNs, err = netns.NewNamed(NsName)
 	if err != nil {
 		return fmt.Errorf("failed to create netns: %v", err)
@@ -264,7 +409,7 @@ func (ns *DaeNetns) setupNetns() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 	// (ip net e daens) ip l s dae0peer up
 	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
 		return fmt.Errorf("failed to set link dae0peer up: %v", err)
@@ -297,11 +442,11 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
-	sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
-	sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
+	_ = sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
+	_ = sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
 
 	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
 	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
@@ -315,7 +460,7 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	// (ip net e daens) ip a a 169.254.0.11 dev dae0peer
 	// Although transparent UDP socket doesn't use this IP, it's still needed to make proper L3 header
@@ -372,7 +517,7 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %v", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(ns.hostNs) }()
 
 	// (ip net e daens) ip -6 r a default via fe80::ecee:eeff:feee:eeee dev dae0peer
 	if err = netlink.RouteAdd(&netlink.Route{
@@ -396,7 +541,7 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 
 func DeleteNamedNetns(name string) error {
 	namedPath := path.Join("/run/netns", name)
-	unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
+	_ = unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
 	return os.Remove(namedPath)
 }
 

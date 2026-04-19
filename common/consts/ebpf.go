@@ -5,6 +5,8 @@
 
 package consts
 
+//go:generate go run ../../cmd/generators/gen_ebpf_sync
+
 import (
 	"strconv"
 	"strings"
@@ -30,6 +32,7 @@ const (
 	ControlPlaneDnsRoutingKey
 
 	OneKey ParamKey = 1
+	TwoKey ParamKey = 2
 )
 
 type DisableL4ChecksumPolicy uint32
@@ -38,43 +41,6 @@ const (
 	DisableL4ChecksumPolicy_EnableL4Checksum DisableL4ChecksumPolicy = iota
 	DisableL4ChecksumPolicy_Restore
 	DisableL4ChecksumPolicy_SetZero
-)
-
-type MatchType uint8
-
-const (
-	MatchType_DomainSet MatchType = iota
-	MatchType_IpSet
-	MatchType_SourceIpSet
-	MatchType_Port
-	MatchType_SourcePort
-	MatchType_L4Proto
-	MatchType_IpVersion
-	MatchType_Mac
-	MatchType_ProcessName
-	MatchType_Dscp
-	MatchType_Fallback
-	MatchType_MustRules
-
-	MatchType_Upstream
-	MatchType_QType
-)
-
-type OutboundIndex uint8
-
-const (
-	OutboundDirect OutboundIndex = iota
-	OutboundBlock
-
-	OutboundUserDefinedMin
-
-	OutboundMustRules           OutboundIndex = 0xFC
-	OutboundControlPlaneRouting OutboundIndex = 0xFD
-	OutboundLogicalOr           OutboundIndex = 0xFE
-	OutboundLogicalAnd          OutboundIndex = 0xFF
-	OutboundLogicalMask         OutboundIndex = 0xFE
-
-	OutboundUserDefinedMax = OutboundMustRules - 1
 )
 
 func (i OutboundIndex) String() string {
@@ -118,22 +84,6 @@ func init() {
 	}
 }
 
-type L4ProtoType uint8
-
-const (
-	L4ProtoType_TCP     L4ProtoType = 1
-	L4ProtoType_UDP     L4ProtoType = 2
-	L4ProtoType_TCP_UDP L4ProtoType = 3
-)
-
-type IpVersionType uint8
-
-const (
-	IpVersion_4 IpVersionType = 1
-	IpVersion_6 IpVersionType = 2
-	IpVersion_X IpVersionType = 3
-)
-
 func (v IpVersionType) ToIpVersionStr() IpVersionStr {
 	switch v {
 	case IpVersion_4:
@@ -158,6 +108,9 @@ var (
 	BpfTimerFeatureVersion                    = internal.Version{5, 15, 0}
 	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
 	BpfLoopFeatureVersion                     = internal.Version{5, 17, 0}
+	TcxFeatureVersion                         = internal.Version{6, 6, 0}
+	NetkitFeatureVersion                      = internal.Version{6, 7, 0}
+	RedirectPeerSafeVersion                   = internal.Version{6, 8, 0}
 )
 
 const (
