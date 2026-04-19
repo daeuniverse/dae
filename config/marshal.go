@@ -80,7 +80,7 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 		case reflect.String:
 			keyable := false
 			switch elemType {
-			case reflect.TypeOf(KeyableString("")):
+			case reflect.TypeFor[KeyableString]():
 				keyable = true
 			default:
 			}
@@ -132,8 +132,6 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 		goto unsupported
 	}
 
-	panic("code should not reach here")
-
 unsupported:
 	return fmt.Errorf("unsupported section type %v", from.Type())
 }
@@ -148,9 +146,26 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		if from.Len() == 0 {
 			return nil
 		}
+		if from.Type().Elem().Kind() == reflect.Slice && from.Type().Elem().Elem() == reflect.TypeFor[*config_parser.Function]() {
+			for i := 0; i < from.Len(); i++ {
+				andFuncs := from.Index(i)
+				if andFuncs.Len() == 0 {
+					continue
+				}
+				vals := make([]string, 0, andFuncs.Len())
+				for j := 0; j < andFuncs.Len(); j++ {
+					v := andFuncs.Index(j).Interface().(*config_parser.Function)
+					vals = append(vals, v.String(true, true, false))
+				}
+				m.writeLine(depth, key+":"+strings.Join(vals, "&&"))
+			}
+			return nil
+		}
 		switch from.Index(0).Interface().(type) {
 		case fmt.Stringer, string,
+			uint,
 			uint8, uint16, uint32, uint64,
+			int,
 			int8, int16, int32, int64,
 			float32, float64,
 			bool:
@@ -178,7 +193,9 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 	default:
 		switch val := from.Interface().(type) {
 		case fmt.Stringer, string,
+			uint,
 			uint8, uint16, uint32, uint64,
+			int,
 			int8, int16, int32, int64,
 			float32, float64,
 			bool:
@@ -207,9 +224,12 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 			return fmt.Errorf("tag mapstructure is required")
 		}
 		// Reserved field.
-		if key == "_" {
+		if key == "_" || key == "so_mark_from_dae_set" {
 			switch structField.Name {
 			case "Name":
+			case "FilterAnnotation":
+			case "SoMarkFromDaeSet":
+				continue
 			case "Rules":
 				// Expand.
 				rules, ok := field.Interface().([]*config_parser.RoutingRule)

@@ -33,8 +33,15 @@
   - [x] AEAD Ciphers
   - [x] Stream Ciphers
   - [x] simple-obfs
+  - [x] shadow-tls (SIP003 plugin)
   - [ ] v2ray-plugin
     - [x] Websocket (+TLS)
+
+  ShadowTLS v3 links can also be used directly with `shadowtls://`.
+  For nodes that require a browser-like TLS fingerprint, set `global.tls_implementation: utls`
+  and keep `global.utls_imitate` at the default `chrome_auto`, or append
+  `tlsImplementation=utls&utlsImitate=chrome` in the link query.
+  If the provider expects no custom SNI, omit `sni` or keep it explicitly empty.
 
   [SIP002](https://shadowsocks.org/doc/sip002.html)
 

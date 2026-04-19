@@ -31,7 +31,7 @@ func vdsoVersion() (uint32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("opening auxv: %w", err)
 	}
-	defer av.Close()
+	defer func() { _ = av.Close() }()
 
 	vdsoAddr, err := vdsoMemoryAddress(av)
 	if err != nil {
@@ -43,7 +43,7 @@ func vdsoVersion() (uint32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("opening mem: %w", err)
 	}
-	defer mem.Close()
+	defer func() { _ = mem.Close() }()
 
 	// Open ELF at provided memory address, as offset into /proc/self/mem.
 	c, err := vdsoLinuxVersionCode(io.NewSectionReader(mem, int64(vdsoAddr), math.MaxInt64))

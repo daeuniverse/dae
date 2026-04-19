@@ -99,28 +99,28 @@ func TestTrie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(trie.HasPrefix("nc.tset^") == true) {
+	if trie.HasPrefix("nc.tset^") != true {
 		t.Fatal("^test.cn")
 	}
-	if !(trie.HasPrefix("nc^") == false) {
+	if trie.HasPrefix("nc^") != false {
 		t.Fatal("^cn")
 	}
-	if !(trie.HasPrefix("nc.") == true) {
+	if trie.HasPrefix("nc.") != true {
 		t.Fatal(".cn")
 	}
-	if !(trie.HasPrefix("nc.^") == true) {
+	if trie.HasPrefix("nc.^") != true {
 		t.Fatal("^.cn")
 	}
-	if !(trie.HasPrefix("nc._") == true) {
+	if trie.HasPrefix("nc._") != true {
 		t.Fatal("_.cn")
 	}
-	if !(trie.HasPrefix("n") == false) {
+	if trie.HasPrefix("n") != false {
 		t.Fatal("n")
 	}
-	if !(trie.HasPrefix("n^") == false) {
+	if trie.HasPrefix("n^") != false {
 		t.Fatal("^n")
 	}
-	if !(trie.HasPrefix("moc.cbatnetnoc^") == true) {
+	if trie.HasPrefix("moc.cbatnetnoc^") != true {
 		t.Fatal("contentabc.com")
 	}
 }

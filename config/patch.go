@@ -17,9 +17,15 @@ import (
 type patch func(params *Config) error
 
 var patches = []patch{
+	patchBootstrapResolver,
 	patchTcpCheckHttpMethod,
 	patchEmptyDns,
 	patchMustOutbound,
+}
+
+func patchBootstrapResolver(params *Config) error {
+	_, err := BootstrapResolvers(&params.Global)
+	return err
 }
 
 func patchTcpCheckHttpMethod(params *Config) error {

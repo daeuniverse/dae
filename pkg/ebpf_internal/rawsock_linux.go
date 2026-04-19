@@ -5,14 +5,16 @@ package internal
 import (
 	"encoding/binary"
 	"syscall"
-	"unsafe"
 )
 
-// Htons converts the unsigned short integer hostshort from host byte order to network byte order.
+// Htons converts the unsigned short integer from host byte order to network byte order (big-endian).
+// This is used for socket protocol numbers which are expected in network byte order.
 func Htons(i uint16) uint16 {
+	// Convert from native-endian host value to big-endian network value.
+	// Example on little-endian host: 0x0003 -> 0x0300.
 	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, i)
-	return *(*uint16)(unsafe.Pointer(&b[0]))
+	NativeEndian.PutUint16(b, i)
+	return binary.BigEndian.Uint16(b)
 }
 
 func OpenRawSock(index int) (int, error) {
@@ -25,6 +27,7 @@ func OpenRawSock(index int) (int, error) {
 		Protocol: Htons(syscall.ETH_P_ALL),
 	}
 	if err := syscall.Bind(sock, &sll); err != nil {
+		syscall.Close(sock) //nolint:errcheck
 		return 0, err
 	}
 	return sock, nil

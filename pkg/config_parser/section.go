@@ -48,14 +48,14 @@ func NewParamItem(param *Param) *Item {
 
 func NewSectionItem(section *Section) *Item {
 	return &Item{
-		Type:  ItemType_Param,
+		Type:  ItemType_Section,
 		Value: section,
 	}
 }
 
 type Item struct {
 	Type  ItemType
-	Value interface{}
+	Value any
 }
 
 func (i *Item) String(compact bool, quoteVal bool) string {
@@ -149,7 +149,7 @@ func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
 		builder.WriteString("!")
 	}
 	builder.WriteString(f.Name)
-	if !(omitEmpty && len(f.Params) == 0) {
+	if !omitEmpty || len(f.Params) != 0 {
 		builder.WriteString("(")
 		var strParamList []string
 		for i, p := range f.Params {
@@ -229,7 +229,7 @@ func (r *RoutingRule) String(replaceParamWithN bool, compact bool, quoteVal bool
 		if f.Not {
 			symNot = "!"
 		}
-		builder.WriteString(fmt.Sprintf("%v%v(%v)", symNot, f.Name, paramBuilder.String()))
+		fmt.Fprintf(&builder, "%v%v(%v)", symNot, f.Name, paramBuilder.String())
 	}
 	if compact {
 		builder.WriteString("->" + r.Outbound.String(compact, quoteVal, true))

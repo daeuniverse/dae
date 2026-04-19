@@ -32,6 +32,13 @@ var (
 	FallbackDns netip.AddrPort
 )
 
+const maxDNSMessageSize = 65535
+
+type dnsResolveResult struct {
+	ans []dnsmessage.RR
+	err error
+}
+
 func TryUpdateSystemDns() (err error) {
 	systemDnsMu.Lock()
 	err = tryUpdateSystemDns()
@@ -159,7 +166,10 @@ func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host
 	return records, nil
 }
 
-func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
+func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) ([]dnsmessage.RR, error) {
+	if d == nil {
+		return nil, fmt.Errorf("nil dialer")
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	fqdn := dnsmessage.CanonicalName(host)
@@ -230,68 +240,96 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
-	_, err = c.Write(b)
+	defer func() { _ = c.Close() }()
+	if magicNetwork.Network == "udp" {
+		_, err = WriteUDPConn(c, dns.String(), b)
+	} else {
+		_, err = c.Write(b)
+	}
 	if err != nil {
 		return nil, err
 	}
-	ch := make(chan error, 2)
+	ch := make(chan dnsResolveResult, 2)
 	if magicNetwork.Network == "udp" {
 		go func() {
 			// Resend every 3 seconds for UDP.
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				default:
-					time.Sleep(3 * time.Second)
-				}
-				_, err := c.Write(b)
-				if err != nil {
-					ch <- err
-					return
+				case <-ticker.C:
+					_, err := WriteUDPConn(c, dns.String(), b)
+					if err != nil {
+						ch <- dnsResolveResult{err: err}
+						return
+					}
 				}
 			}
 		}()
 	}
 	go func() {
+		if magicNetwork.Network == "tcp" {
+			var header [2]byte
+			// Read DNS response length
+			if _, err := io.ReadFull(c, header[:]); err != nil {
+				ch <- dnsResolveResult{err: err}
+				return
+			}
+			msgLen := int(binary.BigEndian.Uint16(header[:]))
+			if msgLen <= 0 || msgLen > maxDNSMessageSize {
+				ch <- dnsResolveResult{err: fmt.Errorf("invalid dns resp size: %d", msgLen)}
+				return
+			}
+			buf := pool.GetFullCap(msgLen)
+			defer buf.Put()
+			if _, err := io.ReadFull(c, buf[:msgLen]); err != nil {
+				ch <- dnsResolveResult{err: err}
+				return
+			}
+			ch <- decodeResolvedAnswer(buf[:msgLen], builder.Id)
+			return
+		}
+
 		buf := pool.GetFullCap(consts.EthernetMtu)
 		defer buf.Put()
-		if magicNetwork.Network == "tcp" {
-			// Read DNS response length
-			_, err := io.ReadFull(c, buf[:2])
-			if err != nil {
-				ch <- err
-				return
-			}
-			n := binary.BigEndian.Uint16(buf)
-			if int(n) > cap(buf) {
-				ch <- fmt.Errorf("too big dns resp")
-				return
-			}
-			buf = buf[:n]
-		}
-		n, err := c.Read(buf)
+		n, err := ReadUDPConn(c, buf)
 		if err != nil {
-			ch <- err
+			ch <- dnsResolveResult{err: err}
 			return
 		}
-		// Resolve DNS response and extract A/AAAA record.
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(buf[:n]); err != nil {
-			ch <- err
-			return
-		}
-		ans = msg.Answer
-		ch <- nil
+		ch <- decodeResolvedAnswer(buf[:n], builder.Id)
 	}()
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("timeout")
-	case err = <-ch:
-		if err != nil {
-			return nil, err
+	case res := <-ch:
+		if res.err != nil {
+			return nil, res.err
 		}
-		return ans, nil
+		return res.ans, nil
 	}
+}
+
+func decodeResolvedAnswer(payload []byte, expectedID uint16) dnsResolveResult {
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(payload); err != nil {
+		return dnsResolveResult{err: err}
+	}
+
+	if msg.Id != expectedID {
+		return dnsResolveResult{err: fmt.Errorf("id mismatch: expect %v, got %v", expectedID, msg.Id)}
+	}
+
+	// Copy RRs before returning so callers don't retain pooled memory indirectly.
+	var ans []dnsmessage.RR
+	if len(msg.Answer) > 0 {
+		ans = make([]dnsmessage.RR, len(msg.Answer))
+		for i, rr := range msg.Answer {
+			ans[i] = dnsmessage.Copy(rr)
+		}
+	}
+	return dnsResolveResult{ans: ans}
 }

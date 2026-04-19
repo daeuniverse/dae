@@ -8,6 +8,7 @@ package dns
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -24,7 +25,6 @@ type ResponseMatcherBuilder struct {
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
 	ipSet              []*trie.Trie
-	fallback           *routing.Outbound
 	rules              []responseMatchSet
 }
 
@@ -148,7 +148,7 @@ func (b *ResponseMatcherBuilder) addQType(f *config_parser.Function, values []ui
 		}
 		b.rules = append(b.rules, responseMatchSet{
 			Type:     consts.MatchType_QType,
-			Value:    uint16(value),
+			Value:    value,
 			Not:      f.Not,
 			Upstream: uint8(upstreamId),
 		})
@@ -242,15 +242,11 @@ func (m *ResponseMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_IpSet:
-			for _, bin128 := range bin128 {
-				// Check if any of IP hit the rule.
-				if m.ipSet[match.Value].HasPrefix(bin128) {
-					goodSubrule = true
-					break
-				}
+			if slices.ContainsFunc(bin128, m.ipSet[match.Value].HasPrefix) {
+				goodSubrule = true
 			}
 		case consts.MatchType_QType:
-			if qType == uint16(match.Value) {
+			if qType == match.Value {
 				goodSubrule = true
 			}
 		case consts.MatchType_Upstream:

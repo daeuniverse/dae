@@ -8,8 +8,6 @@ package common
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +20,7 @@ import (
 	"time"
 	"unsafe"
 
+	obcommon "github.com/daeuniverse/outbound/common"
 	"github.com/daeuniverse/outbound/netproxy"
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
@@ -47,7 +46,7 @@ func CloneStrings(slice []string) []string {
 
 func ARangeU32(n uint32) []uint32 {
 	ret := make([]uint32, n)
-	for i := uint32(0); i < n; i++ {
+	for i := range n {
 		ret[i] = i
 	}
 	return ret
@@ -67,60 +66,23 @@ func Ipv6ByteSliceToUint8Array(_ip []byte) (ip [16]uint8) {
 
 func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
 	ip = make([]byte, 16)
-	for j := 0; j < 4; j++ {
+	for j := range 4 {
 		internal.NativeEndian.PutUint32(ip[j*4:], _ip[j])
 	}
 	return ip
 }
 
-func Deduplicate(list []string) []string {
-	if list == nil {
-		return nil
-	}
-	res := make([]string, 0, len(list))
-	m := make(map[string]struct{})
-	for _, v := range list {
-		if _, ok := m[v]; ok {
-			continue
-		}
-		m[v] = struct{}{}
-		res = append(res, v)
-	}
-	return res
-}
+// Deduplicate re-exports from outbound/common to eliminate duplication.
+var Deduplicate = obcommon.Deduplicate
 
-func Base64UrlDecode(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	saver := s
-	if len(s)%4 > 0 {
-		s += strings.Repeat("=", 4-len(s)%4)
-	}
-	raw, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return saver, err
-	}
-	return string(raw), nil
-}
+// Base64UrlDecode re-exports from outbound/common to eliminate duplication.
+var Base64UrlDecode = obcommon.Base64UrlDecode
 
-func Base64StdDecode(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	saver := s
-	if len(s)%4 > 0 {
-		s += strings.Repeat("=", 4-len(s)%4)
-	}
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return saver, err
-	}
-	return string(raw), nil
-}
+// Base64StdDecode re-exports from outbound/common to eliminate duplication.
+var Base64StdDecode = obcommon.Base64StdDecode
 
-func SetValue(values *url.Values, key string, value string) {
-	if value == "" {
-		return
-	}
-	values.Set(key, value)
-}
+// SetValue re-exports from outbound/common to eliminate duplication.
+var SetValue = obcommon.SetValue
 
 func ParseMac(mac string) (addr [6]byte, err error) {
 	fields := strings.SplitN(mac, ":", 6)
@@ -161,21 +123,21 @@ func ParsePortRange(pr string) (portRange [2]uint16, err error) {
 	return portRange, nil
 }
 
-func SetValueHierarchicalMap(m map[string]interface{}, key string, val interface{}) error {
+func SetValueHierarchicalMap(m map[string]any, key string, val any) error {
 	keys := strings.Split(key, ".")
 	lastKey := keys[len(keys)-1]
 	keys = keys[:len(keys)-1]
 	p := &m
 	for _, key := range keys {
 		if v, ok := (*p)[key]; ok {
-			vv, ok := v.(map[string]interface{})
+			vv, ok := v.(map[string]any)
 			if !ok {
 				return ErrOverlayHierarchicalKey
 			}
 			p = &vv
 		} else {
-			(*p)[key] = make(map[string]interface{})
-			vv := (*p)[key].(map[string]interface{})
+			(*p)[key] = make(map[string]any)
+			vv := (*p)[key].(map[string]any)
 			p = &vv
 		}
 	}
@@ -183,7 +145,7 @@ func SetValueHierarchicalMap(m map[string]interface{}, key string, val interface
 	return nil
 }
 
-func SetValueHierarchicalStruct(m interface{}, key string, val string) error {
+func SetValueHierarchicalStruct(m any, key string, val string) error {
 	ifv, err := GetValueHierarchicalStruct(m, key)
 	if err != nil {
 		return err
@@ -194,7 +156,7 @@ func SetValueHierarchicalStruct(m interface{}, key string, val string) error {
 	return nil
 }
 
-func GetValueHierarchicalStruct(m interface{}, key string) (reflect.Value, error) {
+func GetValueHierarchicalStruct(m any, key string) (reflect.Value, error) {
 	keys := strings.Split(key, ".")
 	ifv := reflect.Indirect(reflect.ValueOf(m))
 	ift := ifv.Type()
@@ -220,7 +182,7 @@ func GetValueHierarchicalStruct(m interface{}, key string) (reflect.Value, error
 	return ifv, nil
 }
 
-func FuzzyDecode(to interface{}, val string) bool {
+func FuzzyDecode(to any, val string) bool {
 	v := reflect.Indirect(reflect.ValueOf(to))
 	switch v.Kind() {
 	case reflect.Int:
@@ -360,7 +322,7 @@ func EnsureFileInSubDir(filePath string, dir string) (err error) {
 	return nil
 }
 
-func MapKeys(m interface{}) (keys []string, err error) {
+func MapKeys(m any) (keys []string, err error) {
 	v := reflect.ValueOf(m)
 	if v.Kind() != reflect.Map {
 		return nil, fmt.Errorf("MapKeys requires map[string]*")
@@ -376,26 +338,11 @@ func MapKeys(m interface{}) (keys []string, err error) {
 	return keys, nil
 }
 
-func GetTagFromLinkLikePlaintext(link string) (tag string, afterTag string) {
-	iColon := strings.Index(link, ":")
-	if iColon == -1 {
-		return "", link
-	}
-	// If first colon is like "://" in "scheme://linkbody", no tag is present.
-	if strings.HasPrefix(link[iColon:], "://") {
-		return "", link
-	}
-	// Else tag is the part before colon.
-	return link[:iColon], link[iColon+1:]
-}
+// GetTagFromLinkLikePlaintext re-exports from outbound/common to eliminate duplication.
+var GetTagFromLinkLikePlaintext = obcommon.GetTagFromLinkLikePlaintext
 
-func BoolToString(b bool) string {
-	if b {
-		return "1"
-	} else {
-		return "0"
-	}
-}
+// BoolToString re-exports from outbound/common to eliminate duplication.
+var BoolToString = obcommon.BoolToString
 
 func ConvergeAddr(addr netip.Addr) netip.Addr {
 	if addr.Is4In6() {
@@ -427,17 +374,20 @@ func AddrToDnsType(addr netip.Addr) uint16 {
 	}
 }
 
-// Htons converts the unsigned short integer hostshort from host byte order to network byte order.
+// Htons converts the unsigned short integer from host byte order to network byte order (big-endian).
+// This is used when communicating with eBPF programs which expect network byte order.
 func Htons(i uint16) uint16 {
 	b := make([]byte, 2)
 	binary.BigEndian.PutUint16(b, i)
 	return *(*uint16)(unsafe.Pointer(&b[0]))
 }
 
-// Ntohs converts the unsigned short integer hostshort from host byte order to network byte order.
+// Ntohs converts the unsigned short integer from network byte order (big-endian) to host byte order.
+// This is used when reading values from eBPF programs which are in network byte order.
 func Ntohs(i uint16) uint16 {
-	bytes := *(*[2]byte)(unsafe.Pointer(&i))
-	return binary.BigEndian.Uint16(bytes[:])
+	b := make([]byte, 2)
+	internal.NativeEndian.PutUint16(b, i)
+	return binary.BigEndian.Uint16(b)
 }
 
 func GetDefaultIfnames() (defaultIfs []string, err error) {
@@ -457,12 +407,26 @@ nextLink:
 				return nil, err
 			}
 			for _, route := range rs {
-				if route.Dst != nil {
-					continue
+
+				// In netlink v1.3.1+, default routes have Dst as 0.0.0.0/0 or ::/0
+				// instead of nil (behavior change from v1.1.0).
+				isDefault := false
+				if route.Dst == nil {
+					// Old behavior: nil Dst means default route
+					isDefault = true
+				} else if route.Dst.IP.IsUnspecified() && route.Dst.Mask != nil {
+					// New behavior: 0.0.0.0/0 or ::/0 means default route
+
+					ones, _ := route.Dst.Mask.Size()
+					if ones == 0 {
+						isDefault = true
+					}
 				}
-				// Have no dst, it is a default route.
-				defaultIfs = append(defaultIfs, link.Attrs().Name)
-				continue nextLink
+
+				if isDefault {
+					defaultIfs = append(defaultIfs, link.Attrs().Name)
+					continue nextLink
+				}
 			}
 		}
 	}
@@ -470,15 +434,42 @@ nextLink:
 }
 
 func MagicNetwork(network string, mark uint32, mptcp bool) string {
-	if mark == 0 && !mptcp {
+	return MagicNetworkWithIPVersion(network, mark, mptcp, "")
+}
+
+func MagicNetworkWithIPVersion(network string, mark uint32, mptcp bool, ipVersion string) string {
+	if mark == 0 && !mptcp && ipVersion == "" {
 		return network
-	} else {
-		return netproxy.MagicNetwork{
-			Network: network,
-			Mark:    mark,
-			Mptcp:   mptcp,
-		}.Encode()
 	}
+	return netproxy.MagicNetwork{
+		Network:   network,
+		Mark:      mark,
+		Mptcp:     mptcp,
+		IPVersion: ipVersion,
+	}.Encode()
+}
+
+const InternalSoMarkFromDae uint32 = 0x100
+
+// EffectiveSoMarkFromDae returns the socket mark dae should use for its own
+// outbound sockets. When the user leaves so_mark_from_dae unset, dae still
+// needs a private mark to prevent wan_egress from re-capturing control-plane
+// UDP traffic and recursively feeding it back into userspace.
+func EffectiveSoMarkFromDae(mark uint32) uint32 {
+	if mark != 0 {
+		return mark
+	}
+	return InternalSoMarkFromDae
+}
+
+// ResolveSoMarkFromDae returns the effective socket mark and whether dae had
+// to auto-select an internal mark because the user left so_mark_from_dae
+// unspecified.
+func ResolveSoMarkFromDae(mark uint32, explicitlyConfigured bool) (effective uint32, autoSelected bool) {
+	if mark != 0 {
+		return mark, false
+	}
+	return InternalSoMarkFromDae, !explicitlyConfigured
 }
 
 func IsValidHttpMethod(method string) bool {
@@ -498,15 +489,5 @@ func StringSet(list []string) map[string]struct{} {
 	return m
 }
 
-func GenerateCertChainHash(rawCerts [][]byte) (chainHash []byte) {
-	for _, cert := range rawCerts {
-		certHash := sha256.Sum256(cert)
-		if chainHash == nil {
-			chainHash = certHash[:]
-		} else {
-			newHash := sha256.Sum256(append(chainHash, certHash[:]...))
-			chainHash = newHash[:]
-		}
-	}
-	return chainHash
-}
+// GenerateCertChainHash re-exports from outbound/common to eliminate duplication.
+var GenerateCertChainHash = obcommon.GenerateCertChainHash

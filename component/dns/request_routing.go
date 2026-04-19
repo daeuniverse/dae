@@ -21,7 +21,6 @@ type RequestMatcherBuilder struct {
 	log                *logrus.Logger
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
-	fallback           *routing.Outbound
 	rules              []requestMatchSet
 }
 
@@ -99,7 +98,7 @@ func (b *RequestMatcherBuilder) addQType(f *config_parser.Function, values []uin
 		}
 		b.rules = append(b.rules, requestMatchSet{
 			Type:     consts.MatchType_QType,
-			Value:    uint16(value),
+			Value:    value,
 			Not:      f.Not,
 			Upstream: uint8(upstreamId),
 		})
