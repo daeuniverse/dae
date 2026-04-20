@@ -178,9 +178,13 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae curl 1.1.1.1:443
-            cat /host/dae.log | grep -F -- '-> 1.1.1.1:443'
-            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.1.1.1:443'
+            for i in {1..10}; do
+              docker exec dae curl 1.1.1.1:443
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> 1.1.1.1:443')
+            ((count == 10))
+            count=\$(cat /host/v2ray.access.log | grep -c -F -- 'accepted tcp:1.1.1.1:443')
+            ((count == 10))
 
       - name: Check WAN IPv4 UDP
         uses: cilium/little-vm-helper@v0.0.28
@@ -189,9 +193,13 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @1.1.1.1 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
-            cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
+            for i in {1..10}; do
+              docker exec dae dig @1.1.1.1 one.one.one.one
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> 1.1.1.1:53')
+            ((count == 10))
+            count=\$(cat /host/v2ray.access.log | grep -c -F -- 'accepted udp:1.1.1.1:53')
+            ((count == 10))
 
       - name: Check WAN IPv6 TCP
         uses: cilium/little-vm-helper@v0.0.28
@@ -200,9 +208,11 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
-            cat /host/nc.log | grep -q 'succeeded!'
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
+            for i in {1..10}; do
+              docker exec dae nc -v -w1 2606:4700:4700::1111 443
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> [2606:4700:4700::1111]:443')
+            ((count == 10))
 
       - name: Check WAN IPv6 UDP
         uses: cilium/little-vm-helper@v0.0.28
@@ -245,8 +255,11 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+            for i in {1..10}; do
+              docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> [2606:4700:4700::1111]:53')
+            ((count == 10))
 
       - name: Setup LAN
         uses: cilium/little-vm-helper@v0.0.28
@@ -331,9 +344,13 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae curl 1.0.0.1
-            cat /host/dae.log | grep -F -- '-> 1.0.0.1:80'
-            cat /host/v2ray.access.log | grep -q 'accepted tcp:1.0.0.1:80'
+            for i in {1..10}; do
+              docker exec dae ip net e dae curl 1.0.0.1
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> 1.0.0.1:80')
+            ((count == 10))
+            count=\$(cat /host/v2ray.access.log | grep -c -F -- 'accepted tcp:1.0.0.1:80')
+            ((count == 10))
 
       - name: Check LAN IPv4 UDP
         uses: cilium/little-vm-helper@v0.0.28
@@ -342,9 +359,13 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @8.8.4.4 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
-            cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
+            for i in {1..10}; do
+              docker exec dae ip net e dae dig @8.8.4.4 one.one.one.one
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> 8.8.4.4:53')
+            ((count == 10))
+            count=\$(cat /host/v2ray.access.log | grep -c -F -- 'accepted udp:8.8.4.4:53')
+            ((count == 10))
 
       - name: Check LAN IPv6 TCP
         uses: cilium/little-vm-helper@v0.0.28
@@ -353,9 +374,11 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80 &> /host/nc.log
-            cat /host/nc.log | grep -q 'succeeded!'
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1001]:80'
+            for i in {1..10}; do
+              docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> [2606:4700:4700::1001]:80')
+            ((count == 10))
 
       - name: Check LAN IPv6 UDP
         uses: cilium/little-vm-helper@v0.0.28
@@ -404,5 +427,8 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+            for i in {1..10}; do
+              docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            done
+            count=\$(cat /host/dae.log | grep -c -F -- '-> [2001:4860:4860::8844]:53')
+            ((count == 10))
