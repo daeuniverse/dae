@@ -122,6 +122,7 @@ type collection struct {
 	AliveDialerSetSet AliveDialerSetSet
 	Latencies10       *LatenciesN
 	MovingAverage     time.Duration
+	LastProbe         DialerProbeObservationSnapshot
 	Alive             atomic.Bool
 }
 
@@ -140,6 +141,19 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
 	return d.mustGetCollection(typ).Alive.Load()
+}
+
+func (d *Dialer) SnapshotLastProbe(typ *NetworkType) DialerProbeObservationSnapshot {
+	if d == nil || typ == nil {
+		return DialerProbeObservationSnapshot{}
+	}
+	d.collectionFineMu.RLock()
+	defer d.collectionFineMu.RUnlock()
+	collection := d.mustGetCollection(typ)
+	if collection == nil {
+		return DialerProbeObservationSnapshot{}
+	}
+	return collection.LastProbe
 }
 
 type collectionUpdate struct {
@@ -1093,12 +1107,14 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResult) (ok bool, err error) {
 	const maxAttempts = 2
 	var bestLatency time.Duration
+	checkedAt := time.Now()
 
 	for i := 0; i < maxAttempts; i++ {
 		ctx, cancel := context.WithTimeout(d.ctx, Timeout)
 		start := time.Now()
 		ok, err = opts.CheckFunc(ctx, opts.networkType)
 		latency := time.Since(start)
+		checkedAt = time.Now()
 		cancel()
 
 		if ok && err == nil {
@@ -1115,6 +1131,17 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 		// Retry on actual error.
 	}
 	if ok && err == nil {
+		d.collectionFineMu.Lock()
+		collection := d.mustGetCollection(opts.networkType)
+		collection.LastProbe = DialerProbeObservationSnapshot{
+			CheckedAt:  checkedAt,
+			Alive:      true,
+			Latency:    bestLatency,
+			HasLatency: true,
+			Message:    FormatLatencyMessage(&LatencyProbeResult{Alive: true, Latency: bestLatency}),
+		}
+		d.collectionFineMu.Unlock()
+
 		// Success: update latency and mark alive.
 		update, avg := d.markAvailable(opts.networkType, bestLatency)
 
@@ -1142,6 +1169,15 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 		}
 		d.informDialerGroupUpdate(update)
 	} else if err != nil && !stderrors.Is(err, context.Canceled) {
+		d.collectionFineMu.Lock()
+		collection := d.mustGetCollection(opts.networkType)
+		collection.LastProbe = DialerProbeObservationSnapshot{
+			CheckedAt: checkedAt,
+			Alive:     false,
+			Message:   err.Error(),
+		}
+		d.collectionFineMu.Unlock()
+
 		// Failure: mark unavailable only if there's an actual error.
 		d.logUnavailable(opts.networkType, err)
 		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))

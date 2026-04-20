@@ -1162,6 +1162,20 @@ func NewUdpEndpointPool() *UdpEndpointPool {
 	return p
 }
 
+func (p *UdpEndpointPool) Len() int {
+	if p == nil {
+		return 0
+	}
+	total := 0
+	for i := range p.shards {
+		shard := &p.shards[i]
+		shard.mu.RLock()
+		total += len(shard.pool)
+		shard.mu.RUnlock()
+	}
+	return total
+}
+
 func normalizeUdpEndpointPoolNetworkType(networkType dialer.NetworkType) dialer.NetworkType {
 	if networkType.L4Proto == "" {
 		networkType.L4Proto = consts.L4ProtoStr_UDP

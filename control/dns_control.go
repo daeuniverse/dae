@@ -1715,11 +1715,27 @@ func (c *DnsController) UpdateDnsCacheTtlWithKey(cacheKey string, host string, d
 }
 
 type udpRequest struct {
-	realSrc       netip.AddrPort
-	realDst       netip.AddrPort
-	src           netip.AddrPort
-	lConn         *net.UDPConn
-	routingResult *bpfRoutingResult
+	realSrc        netip.AddrPort
+	realDst        netip.AddrPort
+	src            netip.AddrPort
+	lConn          *net.UDPConn
+	routingResult  *bpfRoutingResult
+	uploadRecord   func(int64)
+	downloadRecord func(int64)
+}
+
+func (r *udpRequest) uploadRecorder() func(int64) {
+	if r == nil {
+		return RecordUploadTraffic
+	}
+	return normalizeTrafficRecord(r.uploadRecord)
+}
+
+func (r *udpRequest) downloadRecorder() func(int64) {
+	if r == nil {
+		return RecordDownloadTraffic
+	}
+	return normalizeTrafficRecord(r.downloadRecord)
 }
 
 type dialArgument struct {
@@ -2283,7 +2299,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendPktFresh(c.log, data, req.realDst, req.realSrc); err != nil {
+		if err = sendRuntimeTrackedPktFresh(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return err
 		}
 		return nil
@@ -2494,12 +2510,12 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		dstAddr := req.realDst.Addr()
 		if dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast() {
 			// Local DNS (0.0.0.0) - use lConn directly
-			if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
+			if err := writeRuntimeTrackedUDPAddrPort(req.lConn, patchedResp, req.realSrc, req.downloadRecorder()); err != nil {
 				return fmt.Errorf("failed to write local DNS resp: %w", err)
 			}
 			return nil
 		}
-		if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
+		if err := sendRuntimeTrackedPkt(c.log, patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return fmt.Errorf("failed to write remote DNS resp: %w", err)
 		}
 		return nil
@@ -2516,14 +2532,14 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	isLocalDNS := dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast()
 
 	if isLocalDNS {
-		if _, err := req.lConn.WriteToUDPAddrPort(patchedResp, req.realSrc); err != nil {
+		if err := writeRuntimeTrackedUDPAddrPort(req.lConn, patchedResp, req.realSrc, req.downloadRecorder()); err != nil {
 			return fmt.Errorf("failed to write oversized local DNS resp: %w", err)
 		}
 		return nil
 	}
 
 	// For remote DNS with oversized response, use sendPkt
-	if err := sendPkt(c.log, patchedResp, req.realDst, req.realSrc, nil); err != nil {
+	if err := sendRuntimeTrackedPkt(c.log, patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 		return fmt.Errorf("failed to write oversized DNS resp: %w", err)
 	}
 	return nil
@@ -2560,7 +2576,7 @@ func (c *DnsController) sendDnsErrorResponse_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+	if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 		return err
 	}
 	return nil
@@ -2593,7 +2609,7 @@ func (c *DnsController) sendDnsTruncatedResponse_(dnsMessage *dnsmessage.Msg, re
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendPkt(c.log, data, req.realDst, req.realSrc, nil); err != nil {
+	if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 		return err
 	}
 	return nil
@@ -2842,7 +2858,7 @@ func (c *DnsController) dialSend(
 			return err
 		}
 		if req != nil && req.lConn != nil {
-			if err = sendPktViaListener(req.lConn, data, req.realDst, req.realSrc); err == nil {
+			if err = sendRuntimeTrackedPktViaListener(req.lConn, data, req.realDst, req.realSrc, req.downloadRecorder()); err == nil {
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -2859,7 +2875,7 @@ func (c *DnsController) dialSend(
 				c.log.WithError(err).Debug("DNS reply via listener socket failed; fallback to Anyfrom sender")
 			}
 		}
-		if err = sendPktFresh(c.log, data, req.realDst, req.realSrc); err != nil {
+		if err = sendRuntimeTrackedPktFresh(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return err
 		}
 

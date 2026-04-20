@@ -178,7 +178,7 @@ func TestDnsController_ReuseForReloadUpdatesBehaviorConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reused)
 
-	require.Equal(t, uint16(dnsmessage.TypeAAAA), reused.currentQtypePrefer())
+	require.Equal(t, dnsmessage.TypeAAAA, reused.currentQtypePrefer())
 	enabled, ttl, maxCacheSize := reused.currentOptimisticCacheConfig()
 	require.True(t, enabled)
 	require.Equal(t, 45, ttl)

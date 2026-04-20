@@ -264,7 +264,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		return nil
 	}
 
-	if err = RelayTCPContext(ctx, lRelayConn, rConn); err != nil {
+	if err = RelayTCPContextWithRecords(ctx, lRelayConn, rConn, c.runtimeDownloadRecorder(), c.runtimeUploadRecorder()); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}
@@ -326,7 +326,11 @@ func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 // the given context. The context can be used to cancel the relay operation
 // or set a deadline. A nil context is treated as context.Background().
 func RelayTCPContext(ctx context.Context, lConn, rConn netproxy.Conn) (err error) {
-	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{})
+	return RelayTCPContextWithRecords(ctx, lConn, rConn, RecordDownloadTraffic, RecordUploadTraffic)
+}
+
+func RelayTCPContextWithRecords(ctx context.Context, lConn, rConn netproxy.Conn, leftRecord func(int64), rightRecord func(int64)) (err error) {
+	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{}, leftRecord, rightRecord)
 	return core.run(ctx)
 }
 
@@ -354,7 +358,8 @@ var tcpDnsBufPool = sync.Pool{
 // tcpDnsResponseWriter implements dnsmessage.ResponseWriter for TCP DNS.
 // It handles the 2-byte length prefix required by the DNS-over-TCP protocol.
 type tcpDnsResponseWriter struct {
-	conn net.Conn
+	conn   net.Conn
+	record func(int64)
 }
 
 func (w *tcpDnsResponseWriter) Close() error {
@@ -384,7 +389,10 @@ func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 		buf := (*bufPtr)[:totalLen]
 		binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
 		copy(buf[2:], data)
-		_, err = w.conn.Write(buf)
+		n, err := w.conn.Write(buf)
+		if n > 0 {
+			w.record(int64(n))
+		}
 		return err
 	}
 
@@ -392,7 +400,10 @@ func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 	buf := make([]byte, totalLen)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
 	copy(buf[2:], data)
-	_, err = w.conn.Write(buf)
+	n, err := w.conn.Write(buf)
+	if n > 0 {
+		w.record(int64(n))
+	}
 	return err
 }
 
@@ -407,14 +418,20 @@ func (w *tcpDnsResponseWriter) Write(b []byte) (int, error) {
 		buf := (*bufPtr)[:totalLen]
 		binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
 		copy(buf[2:], b)
-		_, err := w.conn.Write(buf)
+		n, err := w.conn.Write(buf)
+		if n > 0 {
+			w.record(int64(n))
+		}
 		return len(b), err
 	}
 
 	buf := make([]byte, totalLen)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
 	copy(buf[2:], b)
-	_, err := w.conn.Write(buf)
+	n, err := w.conn.Write(buf)
+	if n > 0 {
+		w.record(int64(n))
+	}
 	return len(b), err
 }
 
@@ -428,50 +445,51 @@ func (w *tcpDnsResponseWriter) Hijack() {}
 
 // readDnsMsgFromBufio reads a single DNS message from a buffered reader.
 // DNS-over-TCP messages are prefixed with a 2-byte length field.
-// Returns the message or error. Does not consume data on parse failure.
-func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.Conn) (*dnsmessage.Msg, error) {
+// Returns the message, framed byte length, or error. Does not consume data on
+// parse failure.
+func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.Conn) (*dnsmessage.Msg, int, error) {
 	// Set read deadline
 	if timeout > 0 {
 		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
 	// Peek 2-byte length prefix first (don't consume)
 	lenBuf, err := reader.Peek(2)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	length := binary.BigEndian.Uint16(lenBuf)
 
 	// Validate message size
 	if length > TCPDNSMaxMessageSize {
-		return nil, fmt.Errorf("DNS message too large: %d bytes (max %d)", length, TCPDNSMaxMessageSize)
+		return nil, 0, fmt.Errorf("DNS message too large: %d bytes (max %d)", length, TCPDNSMaxMessageSize)
 	}
 	if length < 12 {
-		return nil, fmt.Errorf("DNS message too small: %d bytes (min 12)", length)
+		return nil, 0, fmt.Errorf("DNS message too small: %d bytes (min 12)", length)
 	}
 
 	// Now read and consume the full message (length prefix + data)
 	fullData, err := reader.Peek(int(2 + length))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	data := fullData[2:]
 
 	// Parse DNS message before consuming
 	var msg dnsmessage.Msg
 	if err := msg.Unpack(data); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Consume the data by discarding it
 	_, err = reader.Discard(int(2 + length))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return &msg, nil
+	return &msg, int(2 + length), nil
 }
 
 // bufioConn wraps a net.Conn with a bufio.Reader, allowing buffered data
@@ -518,12 +536,12 @@ func (c *bufioConn) TakeRelayPrefix() []byte {
 	return prefix
 }
 
-func (c *bufioConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+func (c *bufioConn) CopyRelayRemainder(dst io.Writer, buf []byte, record func(int64)) (int64, error) {
 	if c == nil {
 		return 0, nil
 	}
 	if c.reader == nil {
-		return relayCopyDirect(dst, c.Conn, buf)
+		return relayCopyDirect(dst, c.Conn, buf, record)
 	}
 
 	// Once buffered bytes are drained we can resume directly on the underlying
@@ -532,14 +550,17 @@ func (c *bufioConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error)
 		if dstConn, ok := dst.(netproxy.Conn); ok {
 			if dstTCP, ok := unwrapRelayTCPConn(dstConn); ok {
 				if srcTCP, ok := unwrapRelayTCPConn(c.Conn); ok {
+					if record != nil {
+						return relaySpliceCopyExact(context.Background(), dstTCP, srcTCP, record)
+					}
 					return io.Copy(dstTCP, srcTCP)
 				}
 			}
 		}
-		return relayCopyDirect(dst, c.Conn, buf)
+		return relayCopyDirect(dst, c.Conn, buf, record)
 	}
 
-	return relayCopyDirect(dst, c.reader, buf)
+	return relayCopyDirect(dst, c.reader, buf, record)
 }
 
 func (c *bufioConn) Read(b []byte) (int, error) {
@@ -581,7 +602,7 @@ func (c *bufioConn) SetWriteDeadline(t time.Time) error {
 // allowing proper fallback to normal TCP handling if this isn't DNS traffic.
 func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn, bufReader *bufio.Reader, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (handled bool, err error) {
 	// Try to read the first DNS query to verify this is actually DNS traffic
-	msg, err := readDnsMsgFromBufio(bufReader, TCPDNSFirstReadTimeout, lConn)
+	msg, frameLen, err := readDnsMsgFromBufio(bufReader, TCPDNSFirstReadTimeout, lConn)
 	if err != nil {
 		// Not a valid DNS query - not DNS traffic, fall through to normal TCP handling
 		// The bufio.Reader has buffered but not consumed the data, so the caller
@@ -594,19 +615,24 @@ func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn,
 		// Received a response instead of a query - not DNS client traffic
 		return false, nil
 	}
-
 	// This is DNS-over-TCP traffic - handle all queries on this connection
 	if routingResult.Mark == 0 {
 		routingResult.Mark = c.soMarkFromDae
 	}
 
-	writer := &tcpDnsResponseWriter{conn: lConn}
+	writer := &tcpDnsResponseWriter{conn: lConn, record: c.runtimeDownloadRecorder()}
 	req := &udpRequest{
-		realSrc:       src,
-		realDst:       dst,
-		src:           src,
-		lConn:         nil,
-		routingResult: routingResult,
+		realSrc:        src,
+		realDst:        dst,
+		src:            src,
+		lConn:          nil,
+		routingResult:  routingResult,
+		uploadRecord:   c.runtimeUploadRecorder(),
+		downloadRecord: c.runtimeDownloadRecorder(),
+	}
+	recordUpload := req.uploadRecorder()
+	if frameLen > 0 {
+		recordUpload(int64(frameLen))
 	}
 
 	// Handle DNS queries in a loop (TCP connections can be persistent)
@@ -633,7 +659,7 @@ func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn,
 		}
 
 		// Try to read next query
-		msg, err = readDnsMsgFromBufio(bufReader, TCPDNSNextReadTimeout, lConn)
+		msg, frameLen, err = readDnsMsgFromBufio(bufReader, TCPDNSNextReadTimeout, lConn)
 		if err != nil {
 			// Connection closed or timeout - normal termination
 			if daerrors.IsIgnorableConnectionError(err) || err == io.EOF {
@@ -644,6 +670,9 @@ func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn,
 				c.log.WithError(err).Debug("TCP DNS connection read error")
 			}
 			return true, nil
+		}
+		if frameLen > 0 {
+			recordUpload(int64(frameLen))
 		}
 
 		if msg.Response {

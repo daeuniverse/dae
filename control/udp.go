@@ -492,7 +492,8 @@ func sendPktViaListener(conn *net.UDPConn, data []byte, from netip.AddrPort, rea
 	return err
 }
 
-func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) error {
+func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender, recordDownload func(int64)) error {
+	recordDownload = normalizeTrafficRecord(recordDownload)
 	var cacheSlot udpEndpointResponseConnSlot
 	var cacheProvider udpEndpointResponseConnCache
 	if ue != nil {
@@ -514,6 +515,7 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 			}
 			return nil
 		}
+		recordDownload(int64(len(data)))
 		return nil
 	}
 	if err := send(log, data, from, clientAddr, cacheSlot); err != nil {
@@ -527,6 +529,7 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 		}
 		return nil
 	}
+	recordDownload(int64(len(data)))
 	return nil
 }
 
@@ -557,12 +560,15 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			if routingResult.Mark == 0 {
 				routingResult.Mark = c.soMarkFromDae
 			}
+			c.recordUploadTraffic(int64(len(data)))
 			req := &udpRequest{
-				realSrc:       realSrc,
-				realDst:       realDst,
-				src:           src,
-				lConn:         lConn,
-				routingResult: routingResult,
+				realSrc:        realSrc,
+				realDst:        realDst,
+				src:            src,
+				lConn:          lConn,
+				routingResult:  routingResult,
+				uploadRecord:   c.runtimeUploadRecorder(),
+				downloadRecord: c.runtimeDownloadRecorder(),
 			}
 			dnsController := c.ActiveDnsController()
 			if dnsController == nil {
@@ -717,6 +723,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 				ue.TrackUdpConnStateTuplePair(realSrc, realDst)
 				_, err = ue.WriteTo(data, dialTarget)
 				if err == nil {
+					c.recordUploadTraffic(int64(len(data)))
 					if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
 						lifecycle.reportTrafficSuccess()
 					}
@@ -971,7 +978,7 @@ getNew:
 			Ctx: c.ctx,
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
-				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil)
+				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil, c.runtimeDownloadRecorder())
 			},
 			NatTimeout:     natTimeout,
 			ConnStateOwner: c.core,
@@ -1093,6 +1100,7 @@ getNew:
 			retry++
 			goto getNew
 		}
+		c.recordUploadTraffic(int64(len(payloads[packetIndex])))
 		packetIndex++
 	}
 	if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {

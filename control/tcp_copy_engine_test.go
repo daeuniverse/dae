@@ -59,7 +59,7 @@ func TestDefaultRelayCopyEngine_UsesStableCopyLoopForNonWhitelistedConn(t *testi
 	src := newCopyEngineMockConnFromBytes(srcPayload)
 	dst := &copyEngineMockConn{}
 
-	n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dst, src)
+	n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dst, src, nil)
 	if err != nil {
 		t.Fatalf("copy failed: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRelayCopyLoop_HonorsCanceledContextBeforeRead(t *testing.T) {
 	cancel()
 
 	buf := make([]byte, relayCopyBufferSize)
-	n, err := relayCopyLoop(ctx, dst, src, buf)
+	n, err := relayCopyLoop(ctx, dst, src, buf, nil)
 	if err == nil || err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got n=%d err=%v", n, err)
 	}

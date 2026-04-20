@@ -22,12 +22,15 @@ type relayCore struct {
 
 	copyEngine       relayCopyEngine
 	halfCloseTimeout time.Duration
+	leftRecord       func(int64)
+	rightRecord      func(int64)
 }
 
 type relayDirection struct {
-	name string
-	src  netproxy.Conn
-	dst  netproxy.Conn
+	name   string
+	src    netproxy.Conn
+	dst    netproxy.Conn
+	record func(int64)
 }
 
 type relayResult struct {
@@ -35,12 +38,14 @@ type relayResult struct {
 	err error
 }
 
-func newRelayCore(lConn, rConn netproxy.Conn, engine relayCopyEngine) *relayCore {
+func newRelayCore(lConn, rConn netproxy.Conn, engine relayCopyEngine, leftRecord func(int64), rightRecord func(int64)) *relayCore {
 	return &relayCore{
 		left:             lConn,
 		right:            rConn,
 		copyEngine:       engine,
 		halfCloseTimeout: relayHalfCloseTimeout,
+		leftRecord:       leftRecord,
+		rightRecord:      rightRecord,
 	}
 }
 
@@ -77,7 +82,7 @@ func (c *relayCore) run(ctx context.Context) error {
 	}()
 
 	runDirection := func(dir relayDirection) {
-		_, err := c.copyEngine.Copy(ctx, dir.dst, dir.src)
+		_, err := c.copyEngine.Copy(ctx, dir.dst, dir.src, dir.record)
 
 		if wc, ok := dir.dst.(WriteCloser); ok {
 			_ = wc.CloseWrite()
@@ -102,14 +107,16 @@ func (c *relayCore) run(ctx context.Context) error {
 	}
 
 	go runDirection(relayDirection{
-		name: "l2r",
-		src:  c.left,
-		dst:  c.right,
+		name:   "l2r",
+		src:    c.left,
+		dst:    c.right,
+		record: c.rightRecord,
 	})
 	go runDirection(relayDirection{
-		name: "r2l",
-		src:  c.right,
-		dst:  c.left,
+		name:   "r2l",
+		src:    c.right,
+		dst:    c.left,
+		record: c.leftRecord,
 	})
 
 	first := <-results

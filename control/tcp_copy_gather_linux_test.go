@@ -58,9 +58,9 @@ func (c *trackedPrefixedWriterToConn) WriteTo(w io.Writer) (int64, error) {
 	return io.Copy(w, c.Conn)
 }
 
-func (c *trackedPrefixedWriterToConn) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+func (c *trackedPrefixedWriterToConn) CopyRelayRemainder(dst io.Writer, buf []byte, record func(int64)) (int64, error) {
 	c.writeToCalled = true
-	return io.CopyBuffer(dst, c.Conn, buf)
+	return relayCopyDirect(dst, c.Conn, buf, record)
 }
 
 func (c *multiSegmentRelaySource) UnderlyingConn() net.Conn {
@@ -84,9 +84,9 @@ func (c *multiSegmentRelaySource) WriteTo(w io.Writer) (int64, error) {
 	return io.Copy(w, c.Conn)
 }
 
-func (c *multiSegmentRelaySource) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
+func (c *multiSegmentRelaySource) CopyRelayRemainder(dst io.Writer, buf []byte, record func(int64)) (int64, error) {
 	c.writeToCalled = true
-	return io.CopyBuffer(dst, c.Conn, buf)
+	return relayCopyDirect(dst, c.Conn, buf, record)
 }
 
 func (c *writerToOnlyRelaySource) UnderlyingConn() net.Conn {
@@ -205,7 +205,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForPrefixedConn(t *testing.T) {
 		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, &prefixedConn{
 			Conn:   srcServer,
 			prefix: append([]byte(nil), prefix...),
-		})
+		}, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -388,6 +388,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForUnderlyingWrappedDestination(t
 			context.Background(),
 			underlyingTCPWrapper{Conn: dstServer, inner: dstServer},
 			&prefixedConn{Conn: srcServer, prefix: append([]byte(nil), prefix...)},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
@@ -495,7 +496,7 @@ func TestDefaultRelayCopyEngine_PrefersGatherWriteBeforeFastPathForConnSniffer(t
 			t.Fatal("expected prefetched bytes from ConnSniffer")
 		}
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, snifferConn)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, snifferConn, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -602,7 +603,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufferedConnSource(t *testing.
 			t.Fatalf("expected at least %d buffered bytes, got %d", len(prefix), prefixLen)
 		}
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -709,7 +710,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForBufioConnSource(t *testing.T) 
 			t.Fatalf("expected at least %d buffered bytes, got %d", len(prefix), prefixLen)
 		}
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), netproxy.Conn(dstServer), buffered, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -814,7 +815,7 @@ func TestDefaultRelayCopyEngine_GatherWriteContinuesWithFastPath(t *testing.T) {
 			t.Fatalf("unexpected prefix len: got %d want %d", prefixLen, len(prefix))
 		}
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -923,7 +924,7 @@ func TestDefaultRelayCopyEngine_GatherWriteAvoidsWriterToFastPathAfterPrefix(t *
 		}
 		_ = bodyLen
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -1032,7 +1033,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForWrappedWriterDestination(t *te
 		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), wrappedDst, &prefixedConn{
 			Conn:   srcServer,
 			prefix: append([]byte(nil), prefix...),
-		})
+		}, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -1142,7 +1143,7 @@ func TestDefaultRelayCopyEngine_GatherWriteUsesContinuationForWrappedDestination
 		}
 		_ = bodyLen
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), wrappedDst, trackedSrc)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), wrappedDst, trackedSrc, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}
@@ -1255,7 +1256,7 @@ func TestDefaultRelayCopyEngine_UsesGatherWriteForMultiSegmentSource(t *testing.
 		}
 		_ = bodyLen
 	}, func() {
-		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc)
+		n, err := (defaultRelayCopyEngine{}).Copy(context.Background(), dstServer, trackedSrc, nil)
 		if err != nil {
 			t.Fatalf("copy failed: %v", err)
 		}

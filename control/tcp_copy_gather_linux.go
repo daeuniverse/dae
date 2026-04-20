@@ -82,7 +82,8 @@ func relaySegmentsLen(segs [][]byte) int {
 	return total
 }
 
-func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Conn) (written int64, err error, ok bool) {
+func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, record func(int64)) (written int64, err error, ok bool) {
+	record = normalizeTrafficRecord(record)
 	if !relayGatherWriteEnabled {
 		return 0, nil, false
 	}
@@ -131,6 +132,9 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 
 	nw, err := relayGatherWriteTo(dst, writeSegs)
 	written += int64(nw)
+	if nw > 0 {
+		record(int64(nw))
+	}
 	if err != nil {
 		return written, err, true
 	}
@@ -147,11 +151,11 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		if cerr := ctx.Err(); cerr != nil {
 			return written, cerr, true
 		}
-		n, err := continuationSource.CopyRelayRemainder(dst, buf)
+		n, err := continuationSource.CopyRelayRemainder(dst, buf, record)
 		return written + n, err, true
 	}
 
-	n, err := relayCopyLoop(ctx, dst, src, buf)
+	n, err := relayCopyLoop(ctx, dst, src, buf, record)
 	return written + n, err, true
 }
 

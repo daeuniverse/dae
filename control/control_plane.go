@@ -50,6 +50,8 @@ import (
 type ControlPlane struct {
 	log *logrus.Logger
 
+	runtimeStats *runtimeStats
+
 	core       *controlPlaneCore
 	deferFuncs []func() error
 	listenIp   string
@@ -697,10 +699,11 @@ func newControlPlaneWithContextOptions(
 	// New control plane.
 	cctx, cancel := context.WithCancel(context.Background())
 	plane = &ControlPlane{
-		log:        log,
-		core:       core,
-		deferFuncs: deferFuncs,
-		listenIp:   "0.0.0.0",
+		log:          log,
+		runtimeStats: newRuntimeStats(),
+		core:         core,
+		deferFuncs:   deferFuncs,
+		listenIp:     "0.0.0.0",
 		controlPlaneGenerationState: controlPlaneGenerationState{
 			outbounds:           outbounds,
 			referencedOutbounds: referencedOutbounds,
@@ -737,6 +740,7 @@ func newControlPlaneWithContextOptions(
 	}
 	SetFailedQuicDcidCache(plane.failedQuicDcidCache)
 	SetAnyfromSoMark(global.SoMarkFromDae)
+	plane.runtimeStats.startRoller(cctx)
 	plane.deferFuncs = append(plane.deferFuncs, plane.closePublishedListenerFiles)
 	plane.startRealDomainNegJanitor()
 	if !buildOpts.delayDatapathCommit {
@@ -970,14 +974,14 @@ func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.cloneDnsCache()
+	return c.cloneDnsCache()
 }
 
 func (c *ControlPlane) ActiveDnsController() *DnsController {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.activeController(&c.dnsHandoffController)
+	return c.activeController(&c.dnsHandoffController)
 }
 
 func (c *ControlPlane) dnsRequestContext(ctx context.Context, controller *DnsController) context.Context {
@@ -1007,7 +1011,7 @@ func (c *ControlPlane) DetachDnsController() *DnsController {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.detachController()
+	return c.detachController()
 }
 
 func (c *ControlPlane) replaceDNSHandoffController(controller *DnsController, owned bool) (*DnsController, bool) {
@@ -1182,7 +1186,7 @@ func (c *ControlPlane) registerDNSListenerStop() {
 	if c == nil {
 		return
 	}
-	c.controlPlaneDNSRuntime.registerListenerStop(&c.deferFuncs, c.stopOwnedDNSListener)
+	c.registerListenerStop(&c.deferFuncs, c.stopOwnedDNSListener)
 }
 
 func (c *ControlPlane) stopOwnedDNSListener() error {
@@ -1474,7 +1478,7 @@ func (c *ControlPlane) RebuildReloadDatapath() error {
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
 	if c != nil {
-		c.controlPlaneDNSRuntime.noteDNSUpstreamAvailable()
+		c.noteDNSUpstreamAvailable()
 	}
 	// Waiting for ready.
 	select {
@@ -2657,7 +2661,7 @@ func (c *ControlPlane) connStateJanitorScratch() *connStateJanitorScratch {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDatapathJanitor.scratch()
+	return c.scratch()
 }
 
 // checkBpfMapHealth monitors map usage and overflow counters for robustness.
@@ -3728,21 +3732,21 @@ func (c *ControlPlane) RestartDNSListener() error {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.restartDNSListener(&c.deferFuncs, c.stopOwnedDNSListener)
+	return c.restartDNSListener(&c.deferFuncs, c.stopOwnedDNSListener)
 }
 
 func (c *ControlPlane) ReuseDNSListenerFrom(previous *ControlPlane) bool {
 	if c == nil || previous == nil {
 		return false
 	}
-	return c.controlPlaneDNSRuntime.reuseDNSListenerFrom(&previous.controlPlaneDNSRuntime, c, &c.deferFuncs, c.stopOwnedDNSListener)
+	return c.reuseDNSListenerFrom(&previous.controlPlaneDNSRuntime, c, &c.deferFuncs, c.stopOwnedDNSListener)
 }
 
 func (c *ControlPlane) ReuseDNSControllerFrom(previous *ControlPlane) bool {
 	if c == nil || previous == nil {
 		return false
 	}
-	return c.controlPlaneDNSRuntime.reuseDNSControllerFrom(
+	return c.reuseDNSControllerFrom(
 		&previous.controlPlaneDNSRuntime,
 		c.dnsControllerOption(),
 		c.dnsRouting,
@@ -3755,33 +3759,33 @@ func (c *ControlPlane) SetPreparedDNSStartHook(hook func() error) {
 	if c == nil {
 		return
 	}
-	c.controlPlaneDNSRuntime.setPreparedDNSStartHook(hook)
+	c.setPreparedDNSStartHook(hook)
 }
 
 func (c *ControlPlane) SetPreparedDNSReuseHook(hook func() error) {
 	if c == nil {
 		return
 	}
-	c.controlPlaneDNSRuntime.setPreparedDNSReuseHook(hook)
+	c.setPreparedDNSReuseHook(hook)
 }
 
 func (c *ControlPlane) WaitDNSUpstreamsReady(timeout time.Duration) error {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.waitDNSUpstreamsReady(c.ctx, timeout)
+	return c.waitDNSUpstreamsReady(c.ctx, timeout)
 }
 
 func (c *ControlPlane) WaitDNSUpstreamAvailable(timeout time.Duration) error {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.waitDNSUpstreamAvailable(c.ctx, timeout)
+	return c.waitDNSUpstreamAvailable(c.ctx, timeout)
 }
 
 func (c *ControlPlane) StartPreparedDNSListener() error {
 	if c == nil {
 		return nil
 	}
-	return c.controlPlaneDNSRuntime.startPreparedDNSListener(c.ctx, c.log, &c.deferFuncs, c.stopOwnedDNSListener)
+	return c.startPreparedDNSListener(c.ctx, c.log, &c.deferFuncs, c.stopOwnedDNSListener)
 }

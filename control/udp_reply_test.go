@@ -46,6 +46,7 @@ func TestForwardUdpEndpointReplyToClient_IgnoresLocalSendErrors(t *testing.T) {
 			calls++
 			return io.ErrClosedPipe
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("forwardUdpEndpointReplyToClient() err = %v, want nil", err)
@@ -77,6 +78,7 @@ func TestUdpEndpointStart_LocalReplySendErrorDoesNotRetireConn(t *testing.T) {
 				func(_ *logrus.Logger, _ []byte, _ netip.AddrPort, _ netip.AddrPort, _ udpEndpointResponseConnSlot) error {
 					return io.ErrClosedPipe
 				},
+				nil,
 			)
 			handled <- struct{}{}
 			return err
@@ -251,7 +253,7 @@ func TestForwardUdpEndpointReplyToClient_FullConeCacheTracksReplySourceAddr(t *t
 	}
 
 	payloadA1 := []byte("reply-a-1")
-	if err := forwardUdpEndpointReplyToClient(nil, ue, payloadA1, replyAddrA, clientAddr, nil); err != nil {
+	if err := forwardUdpEndpointReplyToClient(nil, ue, payloadA1, replyAddrA, clientAddr, nil, nil); err != nil {
 		t.Fatalf("forward first reply from A: %v", err)
 	}
 	gotData, gotFrom := readUdpReplyPacket(t, clientConn)
@@ -263,7 +265,7 @@ func TestForwardUdpEndpointReplyToClient_FullConeCacheTracksReplySourceAddr(t *t
 	}
 
 	payloadB := []byte("reply-b")
-	if err := forwardUdpEndpointReplyToClient(nil, ue, payloadB, replyAddrB, clientAddr, nil); err != nil {
+	if err := forwardUdpEndpointReplyToClient(nil, ue, payloadB, replyAddrB, clientAddr, nil, nil); err != nil {
 		t.Fatalf("forward reply from B: %v", err)
 	}
 	gotData, gotFrom = readUdpReplyPacket(t, clientConn)
@@ -278,7 +280,7 @@ func TestForwardUdpEndpointReplyToClient_FullConeCacheTracksReplySourceAddr(t *t
 	}
 
 	payloadA2 := []byte("reply-a-2")
-	if err := forwardUdpEndpointReplyToClient(nil, ue, payloadA2, replyAddrA, clientAddr, nil); err != nil {
+	if err := forwardUdpEndpointReplyToClient(nil, ue, payloadA2, replyAddrA, clientAddr, nil, nil); err != nil {
 		t.Fatalf("forward second reply from A: %v", err)
 	}
 	gotData, gotFrom = readUdpReplyPacket(t, clientConn)

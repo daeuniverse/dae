@@ -145,8 +145,17 @@ type DialerCollectionHealthSnapshot struct {
 	Alive            bool
 	MovingAverage    time.Duration
 	Latencies        LatenciesNSnapshot
+	LastProbe        DialerProbeObservationSnapshot
 	FailCount        int
 	TrafficFailCount int32
+}
+
+type DialerProbeObservationSnapshot struct {
+	CheckedAt  time.Time
+	Alive      bool
+	Latency    time.Duration
+	HasLatency bool
+	Message    string
 }
 
 type DialerRecoveryHealthSnapshot struct {
@@ -466,6 +475,7 @@ func (d *Dialer) HealthSnapshot() DialerHealthSnapshot {
 			Alive:            collection.Alive.Load(),
 			MovingAverage:    collection.MovingAverage,
 			Latencies:        collection.Latencies10.Snapshot(),
+			LastProbe:        collection.LastProbe,
 			FailCount:        d.failCount[idx],
 			TrafficFailCount: d.trafficFailCount[idx].Load(),
 		}
@@ -514,6 +524,7 @@ func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
 		collection.Alive.Store(s.Alive)
 		collection.MovingAverage = s.MovingAverage
 		collection.Latencies10.Restore(s.Latencies)
+		collection.LastProbe = s.LastProbe
 		d.failCount[idx] = s.FailCount
 		d.trafficFailCount[idx].Store(s.TrafficFailCount)
 		if !s.Alive {
@@ -695,10 +706,6 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 // This is called when health check succeeds, to verify the dialer is truly stable before marking it healthy.
 func (d *Dialer) triggerRecoveryDetection(typ *NetworkType) {
 	d.ensureRecoveryManager().trigger(typ)
-}
-
-func (d *Dialer) armRecoveryConfirmationFromSnapshot(protoIdx int, target *NetworkType, delay time.Duration) {
-	d.ensureRecoveryManager().armRecoveryConfirmationFromSnapshot(protoIdx, target, delay)
 }
 
 // confirmRecovery confirms recovery after backoff period.

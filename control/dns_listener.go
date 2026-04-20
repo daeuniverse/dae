@@ -285,6 +285,15 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	if w == nil || r == nil {
 		return
 	}
+	controller := h.listener.Controller()
+	uploadRecord := RecordUploadTraffic
+	downloadRecord := RecordDownloadTraffic
+	if controller != nil {
+		uploadRecord = controller.runtimeUploadRecorder()
+		downloadRecord = controller.runtimeDownloadRecorder()
+	}
+	w = wrapRuntimeTrackedDNSResponseWriter(w, downloadRecord)
+	recordDNSListenerRequest(w, r, uploadRecord)
 
 	// Create a fake udpRequest to pass to the DNS controller
 	clientAddr := w.RemoteAddr()
@@ -331,8 +340,6 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 
 	clientIPPort = netip.AddrPortFrom(clientIP, uint16(port))
 	preferV6 := clientIP.Is6() && !clientIP.Is4In6()
-	controller := h.listener.Controller()
-
 	listenerAddr := ":53"
 	if controller != nil && controller.dnsListener != nil && controller.dnsListener.Addr() != "" {
 		listenerAddr = controller.dnsListener.Addr()
@@ -356,11 +363,13 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 
 	// Handle the DNS request using the existing DNS controller
 	udpReq := &udpRequest{
-		realSrc:       clientIPPort,
-		realDst:       realDst,
-		src:           clientIPPort,
-		lConn:         nil, // Not used in this context
-		routingResult: routingResult,
+		realSrc:        clientIPPort,
+		realDst:        realDst,
+		src:            clientIPPort,
+		lConn:          nil, // Not used in this context
+		routingResult:  routingResult,
+		uploadRecord:   uploadRecord,
+		downloadRecord: downloadRecord,
 	}
 
 	ctx := context.Background()

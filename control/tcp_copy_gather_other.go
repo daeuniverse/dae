@@ -8,6 +8,6 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-func tryRelayGatherWrite(_ context.Context, _ netproxy.Conn, _ netproxy.Conn) (written int64, err error, ok bool) {
+func tryRelayGatherWrite(_ context.Context, _ netproxy.Conn, _ netproxy.Conn, _ func(int64)) (written int64, err error, ok bool) {
 	return 0, nil, false
 }
