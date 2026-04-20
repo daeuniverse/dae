@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
 )
@@ -380,20 +381,24 @@ func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
 		t.Fatal("expected reloadPending to remain set before retirement completes")
 	}
 	close(retirementDone)
-	time.Sleep(10 * time.Millisecond)
-	if reloadPending.Load() {
-		t.Fatal("expected reloadPending to clear after retirement completes")
-	}
-
-	code, content, err := readSignalProgressFile(progressPath)
-	if err != nil {
-		t.Fatalf("readSignalProgressFile() error = %v", err)
-	}
-	if code != consts.ReloadDone {
-		t.Fatalf("code = %q, want ReloadDone", code)
-	}
-	if content != "" {
-		t.Fatalf("content = %q, want empty after retirement completes", content)
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !reloadPending.Load() {
+			code, content, err := readSignalProgressFile(progressPath)
+			if err != nil {
+				t.Fatalf("readSignalProgressFile() error = %v", err)
+			}
+			if code == consts.ReloadDone && content == "" {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expected reloadPending and progress file to settle after retirement completes")
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -428,6 +433,186 @@ func TestBeginReloadHandoffSetsReloadingBeforeNotification(t *testing.T) {
 
 	if !reloading.Load() {
 		t.Fatal("expected reload handoff to remain latched until the consumer clears it")
+	}
+}
+
+func TestReloadManagerBuildShutdownHandoffUsesPendingStagedHandoff(t *testing.T) {
+	oldListener := &control.Listener{}
+	newListener := &control.Listener{}
+	oldPlane := &control.ControlPlane{}
+	newPlane := &control.ControlPlane{}
+
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager.setPendingStagedHandoff(&stagedReloadHandoff{
+		oldControlPlane: oldPlane,
+		oldListener:     oldListener,
+		newControlPlane: newPlane,
+		newListener:     newListener,
+	}, time.Now(), 123)
+
+	handoff := manager.buildShutdownHandoff()
+	if handoff == nil {
+		t.Fatal("buildShutdownHandoff() = nil, want non-nil handoff")
+	}
+	if handoff.oldControlPlane != oldPlane || handoff.newControlPlane != newPlane {
+		t.Fatal("expected shutdown handoff to preserve control plane ownership")
+	}
+	if handoff.oldListener != oldListener || handoff.newListener != newListener {
+		t.Fatal("expected shutdown handoff to preserve listener ownership")
+	}
+}
+
+func TestReloadManagerCoalesceReloadRequestKeepsLatestQueuedRequest(t *testing.T) {
+	reloadReqs := make(chan reloadRequest, 2)
+	manager := newReloadManager(reloadReqs, make(chan struct{}, 1), make(chan os.Signal, 1))
+
+	now := time.Now()
+	latest := reloadRequest{
+		isSuspend:       true,
+		requestedAt:     now.Add(time.Second),
+		requestedAtMono: 99,
+	}
+	reloadReqs <- latest
+
+	got := manager.coalesceReloadRequest(reloadRequest{
+		isSuspend:       false,
+		requestedAt:     now,
+		requestedAtMono: 11,
+	})
+
+	if got != latest {
+		t.Fatalf("coalesceReloadRequest() = %+v, want latest queued %+v", got, latest)
+	}
+}
+
+func TestDNSConfigEqualUsesStableFingerprint(t *testing.T) {
+	oldConf := &config.Config{
+		Dns: config.Dns{
+			Bind:               "127.0.0.1:53",
+			IpVersionPrefer:    4,
+			Upstream:           []config.KeyableString{"google:udp://8.8.8.8:53"},
+			OptimisticCache:    true,
+			OptimisticCacheTtl: 60,
+		},
+	}
+	newConf := &config.Config{Dns: oldConf.Dns}
+	if !dnsConfigEqual(oldConf, newConf) {
+		t.Fatal("expected identical DNS configs to compare equal")
+	}
+
+	newConf.Dns.Bind = "127.0.0.1:5353"
+	if dnsConfigEqual(oldConf, newConf) {
+		t.Fatal("expected changed DNS config to compare unequal")
+	}
+}
+
+func TestDNSConfigFingerprintCoversAllDnsFields(t *testing.T) {
+	covered := map[string]struct{}{
+		"IpVersionPrefer":    {},
+		"FixedDomainTtl":     {},
+		"Upstream":           {},
+		"Routing":            {},
+		"Bind":               {},
+		"OptimisticCache":    {},
+		"OptimisticCacheTtl": {},
+		"MaxCacheSize":       {},
+	}
+
+	dnsType := reflect.TypeOf(config.Dns{})
+	for i := 0; i < dnsType.NumField(); i++ {
+		name := dnsType.Field(i).Name
+		if _, ok := covered[name]; !ok {
+			t.Fatalf("dnsConfigFingerprint does not cover config.Dns.%s", name)
+		}
+		delete(covered, name)
+	}
+	for name := range covered {
+		t.Fatalf("dnsConfigFingerprint coverage references missing config.Dns.%s", name)
+	}
+}
+
+func TestBuildPreparedDNSHandoffHooksReuseHookReusesControllerAndListener(t *testing.T) {
+	var reuseControllerCalls int
+	var reuseListenerCalls int
+	hooks := buildPreparedDNSHandoffHooks(newDiscardLogger(), true, preparedDNSHandoffHookCallbacks{
+		reuseController: func() bool {
+			reuseControllerCalls++
+			return true
+		},
+		reuseListener: func() bool {
+			reuseListenerCalls++
+			return true
+		},
+	})
+	if hooks.reuseHook == nil {
+		t.Fatal("reuseHook = nil, want non-nil")
+	}
+	if err := hooks.reuseHook(); err != nil {
+		t.Fatalf("reuseHook() error = %v", err)
+	}
+	if reuseControllerCalls != 1 {
+		t.Fatalf("reuseControllerCalls = %d, want 1", reuseControllerCalls)
+	}
+	if reuseListenerCalls != 1 {
+		t.Fatalf("reuseListenerCalls = %d, want 1", reuseListenerCalls)
+	}
+}
+
+func TestBuildPreparedDNSHandoffHooksStartHookStopsOldListenerWhenReuseFails(t *testing.T) {
+	var stopCalls int
+	hooks := buildPreparedDNSHandoffHooks(newDiscardLogger(), false, preparedDNSHandoffHookCallbacks{
+		reuseListener: func() bool { return false },
+		stopOldListener: func() error {
+			stopCalls++
+			return nil
+		},
+	})
+	if hooks.startHook == nil {
+		t.Fatal("startHook = nil, want non-nil")
+	}
+	if err := hooks.startHook(); err != nil {
+		t.Fatalf("startHook() error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls = %d, want 1", stopCalls)
+	}
+}
+
+func TestBuildPreparedDNSHandoffHooksStartHookPropagatesStopError(t *testing.T) {
+	wantErr := errors.New("stop failed")
+	hooks := buildPreparedDNSHandoffHooks(newDiscardLogger(), false, preparedDNSHandoffHookCallbacks{
+		reuseListener:   func() bool { return false },
+		stopOldListener: func() error { return wantErr },
+	})
+	if err := hooks.startHook(); !errors.Is(err, wantErr) {
+		t.Fatalf("startHook() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestReloadManagerStartControlPlaneRetirementCompletesAndCancelsOldContext(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager.setPendingReloadMetadata(time.Now(), 0)
+
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	manager.startControlPlaneRetirement(newDiscardLogger(), &control.ControlPlane{}, nil, oldCancel, false, false)
+
+	manager.mu.Lock()
+	retirementDone := manager.pendingRetirementDone
+	manager.mu.Unlock()
+	if retirementDone == nil {
+		t.Fatal("pendingRetirementDone = nil, want retirement completion channel")
+	}
+
+	select {
+	case <-retirementDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retirement goroutine to finish")
+	}
+
+	select {
+	case <-oldCtx.Done():
+	default:
+		t.Fatal("expected old generation cancel function to be called")
 	}
 }
 

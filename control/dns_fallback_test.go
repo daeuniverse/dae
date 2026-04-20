@@ -63,7 +63,9 @@ func TestDnsForwarder_TcpUdpFallback_UdpFailThenTcp(t *testing.T) {
 
 	ctrl := &DnsController{
 		log: logrus.New(),
-		bestDialerChooser: func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error) {
+	}
+	setTestDnsControllerRuntime(ctrl, func(rt *dnsControllerRuntimeState) {
+		rt.bestDialerChooser = func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error) {
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_TCP_UDP:
 				return &dialArgument{l4proto: consts.L4ProtoStr_UDP}, nil
@@ -72,11 +74,11 @@ func TestDnsForwarder_TcpUdpFallback_UdpFailThenTcp(t *testing.T) {
 			default:
 				return nil, errors.New("unexpected scheme")
 			}
-		},
-		timeoutExceedCallback: func(dialArg *dialArgument, err error) {
+		}
+		rt.timeoutExceedCallback = func(dialArg *dialArgument, err error) {
 			unavailableCalls.Add(1)
-		},
-	}
+		}
+	})
 
 	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_TCP_UDP, Hostname: "dns.example", Port: 53}
 	primary := &dialArgument{l4proto: consts.L4ProtoStr_UDP}
@@ -104,11 +106,11 @@ func TestDnsForwarder_ReportUnavailable_IgnoresCanceled(t *testing.T) {
 		}}, nil
 	}
 
-	ctrl := &DnsController{
-		timeoutExceedCallback: func(dialArg *dialArgument, err error) {
+	ctrl := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.timeoutExceedCallback = func(dialArg *dialArgument, err error) {
 			unavailableCalls.Add(1)
-		},
-	}
+		}
+	})
 
 	_, err := ctrl.forwardWithDialArg(context.Background(), &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "dns.example", Port: 53}, &dialArgument{l4proto: consts.L4ProtoStr_UDP}, []byte{0, 1})
 	require.ErrorIs(t, err, context.Canceled)
@@ -130,11 +132,11 @@ func TestDnsForwarder_ReportUnavailable_IgnoresOperationCanceled(t *testing.T) {
 		}}, nil
 	}
 
-	ctrl := &DnsController{
-		timeoutExceedCallback: func(dialArg *dialArgument, err error) {
+	ctrl := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.timeoutExceedCallback = func(dialArg *dialArgument, err error) {
 			unavailableCalls.Add(1)
-		},
-	}
+		}
+	})
 
 	_, err := ctrl.forwardWithDialArg(context.Background(), &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "dns.example", Port: 53}, &dialArgument{l4proto: consts.L4ProtoStr_UDP}, []byte{0, 1})
 	require.ErrorIs(t, err, operationCanceled)

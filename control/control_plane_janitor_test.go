@@ -219,9 +219,11 @@ func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	}
 	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{UdpConnStateMap: udpMap}}}
 	plane := &ControlPlane{
-		log:                  logrus.New(),
-		core:                 core,
-		connStateJanitorStop: make(chan struct{}),
+		log:  logrus.New(),
+		core: core,
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	stats := plane.cleanupUdpConnStateMap(false)
@@ -282,9 +284,11 @@ func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	}
 	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{TcpConnStateMap: tcpMap}}}
 	plane := &ControlPlane{
-		log:                  logrus.New(),
-		core:                 core,
-		connStateJanitorStop: make(chan struct{}),
+		log:  logrus.New(),
+		core: core,
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	stats := plane.cleanupTcpConnStateMap(false)
@@ -333,9 +337,11 @@ func TestCleanupTcpConnStateMapRemovesClosingStateByClosingTimeout(t *testing.T)
 
 	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{TcpConnStateMap: tcpMap}}}
 	plane := &ControlPlane{
-		log:                  logrus.New(),
-		core:                 core,
-		connStateJanitorStop: make(chan struct{}),
+		log:  logrus.New(),
+		core: core,
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	stats := plane.cleanupTcpConnStateMap(false)
@@ -386,7 +392,9 @@ func TestCleanupRedirectTrackMapUsesIndependentTTL(t *testing.T) {
 		core: &controlPlaneCore{
 			bpf: &bpfObjects{bpfMaps: bpfMaps{RedirectTrack: redirectMap}},
 		},
-		connStateJanitorStop: make(chan struct{}),
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	plane.cleanupRedirectTrackMap()
@@ -433,7 +441,9 @@ func TestCleanupCookiePidMapRemovesExpiredEntries(t *testing.T) {
 		core: &controlPlaneCore{
 			bpf: &bpfObjects{bpfMaps: bpfMaps{CookiePidMap: cookieMap}},
 		},
-		connStateJanitorStop: make(chan struct{}),
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	plane.cleanupCookiePidMap()
@@ -603,7 +613,9 @@ func TestCleanupRoutingHandoffMapRemovesExpiredEntries(t *testing.T) {
 		core: &controlPlaneCore{
 			bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
 		},
-		connStateJanitorStop: make(chan struct{}),
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	plane.cleanupRoutingHandoffMap()
@@ -728,7 +740,9 @@ func TestRunReloadRetirementCleanupRemovesOnlyEntriesUntouchedSinceCutover(t *te
 				RoutingHandoffMap: handoffMap,
 			}},
 		},
-		connStateJanitorStop: make(chan struct{}),
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+		},
 	}
 
 	plane.RunReloadRetirementCleanup(cutoff)

@@ -82,8 +82,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
 	}
-	// Optimize routings.
-	requestRules, err := routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
+	requestProgram, err := NewNormalizedRequestRoutingProgram(dns.Routing.Request.Rules, dns.Routing.Request.Fallback,
 		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
@@ -92,7 +91,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		return nil, err
 	}
 
-	responseRules, err := routing.ApplyRulesOptimizers(dns.Routing.Response.Rules,
+	responseProgram, err := routing.NewNormalizedProgram(dns.Routing.Response.Rules, dns.Routing.Response.Fallback,
 		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
@@ -100,12 +99,8 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	if err != nil {
 		return nil, err
 	}
-	requestRules, _, _, _, err = SplitRequestRules(requestRules)
-	if err != nil {
-		return nil, err
-	}
 	// Parse request routing.
-	reqMatcherBuilder, err := NewRequestMatcherBuilder(opt.Logger, requestRules, upstreamName2Id, dns.Routing.Request.Fallback)
+	reqMatcherBuilder, err := NewRequestMatcherBuilderFromProgram(opt.Logger, requestProgram, upstreamName2Id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
@@ -114,7 +109,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
 	// Parse response routing.
-	respMatcherBuilder, err := NewResponseMatcherBuilder(opt.Logger, responseRules, upstreamName2Id, dns.Routing.Response.Fallback)
+	respMatcherBuilder, err := NewResponseMatcherBuilderFromProgram(opt.Logger, responseProgram, upstreamName2Id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS response routing: %w", err)
 	}

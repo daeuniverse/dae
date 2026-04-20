@@ -123,9 +123,11 @@ func TestControlPlaneReleaseRetainedStateClosesDnsHandoffController(t *testing.T
 	close(evictorDone)
 
 	controller := &DnsController{
-		janitorStop: janitorStop,
-		janitorDone: janitorDone,
-		evictorDone: evictorDone,
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: janitorStop,
+			janitorDone: janitorDone,
+			evictorDone: evictorDone,
+		},
 	}
 	cp := &ControlPlane{
 		ctx: ctx,
@@ -154,20 +156,26 @@ func TestControlPlaneReleaseRetainedStateKeepsSharedDnsHandoffControllerAlive(t 
 	close(evictorDone)
 
 	oldController := &DnsController{
-		janitorStop: janitorStop,
-		janitorDone: janitorDone,
-		evictorDone: evictorDone,
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: janitorStop,
+			janitorDone: janitorDone,
+			evictorDone: evictorDone,
+		},
 	}
 	oldCP := &ControlPlane{
-		log:           logger,
-		ctx:           context.Background(),
-		dnsController: oldController,
+		log: logger,
+		ctx: context.Background(),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsController: oldController,
+		},
 	}
 	newCP := &ControlPlane{
-		log:           logger,
-		ctx:           context.Background(),
-		dnsController: &DnsController{},
-		dnsRouting:    &dns.Dns{},
+		log: logger,
+		ctx: context.Background(),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsController: &DnsController{},
+			dnsRouting:    &dns.Dns{},
+		},
 	}
 
 	if !newCP.ReuseDNSControllerFrom(oldCP) {
@@ -206,8 +214,10 @@ func TestCommitPreparedDatapathStartsConnStateJanitor(t *testing.T) {
 		log:                    logger,
 		ctx:                    ctx,
 		preparedDatapathCommit: true,
-		connStateJanitorStop:   make(chan struct{}),
-		connStateJanitorDone:   make(chan struct{}),
+		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
+			connStateJanitorStop: make(chan struct{}),
+			connStateJanitorDone: make(chan struct{}),
+		},
 	}
 
 	if cp.connStateJanitorStarted.Load() {
@@ -233,8 +243,10 @@ func TestStartPreparedDNSListenerOnlyRunsWhenDeferred(t *testing.T) {
 
 	cp := &ControlPlane{
 		log: logger,
-		dnsListener: &DNSListener{
-			log: logger,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsListener: &DNSListener{
+				log: logger,
+			},
 		},
 	}
 
@@ -264,13 +276,15 @@ func TestStartPreparedDNSListenerRunsCutoverHook(t *testing.T) {
 	var hookCalls atomic.Int32
 	cp := &ControlPlane{
 		log: logger,
-		dnsListener: &DNSListener{
-			log: logger,
-		},
-		delayDNSListenerStart: true,
-		preparedDNSStartHook: func() error {
-			hookCalls.Add(1)
-			return nil
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsListener: &DNSListener{
+				log: logger,
+			},
+			delayDNSListenerStart: true,
+			preparedDNSStartHook: func() error {
+				hookCalls.Add(1)
+				return nil
+			},
 		},
 	}
 
@@ -291,13 +305,15 @@ func TestStartPreparedDNSListenerWaitsForDNSAvailabilityBeforeReuseHook(t *testi
 
 	reuseCalled := make(chan struct{})
 	cp := &ControlPlane{
-		log:                   logger,
-		ctx:                   context.Background(),
-		dnsUpstreamAvailable:  make(chan struct{}),
-		delayDNSListenerStart: true,
-		preparedDNSReuseHook: func() error {
-			close(reuseCalled)
-			return nil
+		log: logger,
+		ctx: context.Background(),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsUpstreamAvailable:  make(chan struct{}),
+			delayDNSListenerStart: true,
+			preparedDNSReuseHook: func() error {
+				close(reuseCalled)
+				return nil
+			},
 		},
 	}
 
@@ -336,9 +352,11 @@ func TestReuseDNSListenerFromTransfersOwnership(t *testing.T) {
 
 	oldCP := &ControlPlane{log: logger}
 	newCP := &ControlPlane{
-		log:                   logger,
-		dnsListener:           &DNSListener{log: logger, endpoint: Endpoint{UDP: true, Addr: "0.0.0.0:53"}},
-		delayDNSListenerStart: true,
+		log: logger,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsListener:           &DNSListener{log: logger, endpoint: Endpoint{UDP: true, Addr: "0.0.0.0:53"}},
+			delayDNSListenerStart: true,
+		},
 	}
 	listener := &DNSListener{log: logger, endpoint: Endpoint{UDP: true, Addr: "0.0.0.0:53"}}
 	listener.SwapController(oldCP)
@@ -366,13 +384,17 @@ func TestReuseDNSListenerFromRejectsProtocolMismatch(t *testing.T) {
 	logger.SetOutput(io.Discard)
 
 	oldCP := &ControlPlane{
-		log:         logger,
-		dnsListener: &DNSListener{log: logger, endpoint: Endpoint{UDP: true, Addr: "0.0.0.0:53"}},
+		log: logger,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsListener: &DNSListener{log: logger, endpoint: Endpoint{UDP: true, Addr: "0.0.0.0:53"}},
+		},
 	}
 	newCP := &ControlPlane{
-		log:                   logger,
-		dnsListener:           &DNSListener{log: logger, endpoint: Endpoint{TCP: true, UDP: true, Addr: "0.0.0.0:53"}},
-		delayDNSListenerStart: true,
+		log: logger,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsListener:           &DNSListener{log: logger, endpoint: Endpoint{TCP: true, UDP: true, Addr: "0.0.0.0:53"}},
+			delayDNSListenerStart: true,
+		},
 	}
 
 	if newCP.ReuseDNSListenerFrom(oldCP) {
@@ -389,20 +411,24 @@ func TestReuseDNSControllerFromUpdatesRuntime(t *testing.T) {
 
 	oldController := &DnsController{}
 	oldCP := &ControlPlane{
-		log:           logger,
-		ctx:           context.Background(),
-		dnsController: oldController,
+		log: logger,
+		ctx: context.Background(),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsController: oldController,
+		},
 	}
 	newCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	newRouting := &dns.Dns{}
 	newCP := &ControlPlane{
-		log:           logger,
-		ctx:           newCtx,
-		dnsController: &DnsController{},
-		dnsRouting:    newRouting,
-		dnsFixedDomainTtl: map[string]int{
-			"example.com": 60,
+		log: logger,
+		ctx: newCtx,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsController: &DnsController{},
+			dnsRouting:    newRouting,
+			dnsFixedDomainTtl: map[string]int{
+				"example.com": 60,
+			},
 		},
 	}
 
@@ -412,14 +438,17 @@ func TestReuseDNSControllerFromUpdatesRuntime(t *testing.T) {
 	if oldCP.dnsController != nil {
 		t.Fatal("expected previous control plane to detach DNS controller")
 	}
-	if newCP.dnsController != oldController {
-		t.Fatal("expected new control plane to own reused DNS controller")
+	if newCP.dnsController == oldController {
+		t.Fatal("expected new control plane to bind a fresh DNS facade instead of reusing the same controller object")
 	}
-	if oldCP.ActiveDnsController() != oldController {
+	if oldCP.ActiveDnsController() != newCP.dnsController {
 		t.Fatal("expected previous control plane to hand off active DNS controller without a nil gap")
 	}
 	if !oldCP.SharesActiveDnsControllerWith(newCP) {
 		t.Fatal("expected old and new control planes to share the active DNS controller after reuse")
+	}
+	if newCP.dnsController.dnsControllerStore != oldController.dnsControllerStore {
+		t.Fatal("expected reused DNS controller facade to share the original DNS store")
 	}
 
 	rt := newCP.dnsController.runtime()
@@ -439,6 +468,10 @@ func TestReuseDNSControllerFromUpdatesRuntime(t *testing.T) {
 	if rt.fixedDomainTtl["example.com"] != 60 {
 		t.Fatal("expected reused DNS controller runtime to use new fixedDomainTtl")
 	}
+	oldRT := oldController.runtime()
+	if oldRT == nil || oldRT.lifecycleCtx != newCtx {
+		t.Fatal("expected original DNS controller facade runtime to be refreshed before handoff")
+	}
 }
 
 func TestDnsRequestContextUsesNewLifecycleDuringDNSHandoff(t *testing.T) {
@@ -449,13 +482,17 @@ func TestDnsRequestContextUsesNewLifecycleDuringDNSHandoff(t *testing.T) {
 
 	oldController := &DnsController{}
 	oldCP := &ControlPlane{
-		ctx:           oldCtx,
-		dnsController: oldController,
+		ctx: oldCtx,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsController: oldController,
+		},
 	}
 	newCP := &ControlPlane{
-		ctx:           newCtx,
-		dnsController: &DnsController{},
-		dnsRouting:    &dns.Dns{},
+		ctx: newCtx,
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsController: &DnsController{},
+			dnsRouting:    &dns.Dns{},
+		},
 	}
 
 	if !newCP.ReuseDNSControllerFrom(oldCP) {
@@ -538,8 +575,8 @@ func TestInheritDialerHealthFromUsesReloadSafeSnapshot(t *testing.T) {
 		t.Fatal("expected source dialer to be unavailable before inheritance")
 	}
 
-	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
-	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
+	oldCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{oldGroup}}}
+	newCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{newGroup}}}
 
 	if got := newCP.InheritDialerHealthFrom(oldCP); !got {
 		t.Fatal("expected InheritDialerHealthFrom to return true when dialers overlap")
@@ -618,8 +655,8 @@ func TestInheritDialerHealthFromDoesNotReviveDeadDialerWhenGroupHasCandidate(t *
 		t.Fatal("expected source dialer B to remain available before inheritance")
 	}
 
-	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
-	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
+	oldCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{oldGroup}}}
+	newCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{newGroup}}}
 
 	if got := newCP.InheritDialerHealthFrom(oldCP); !got {
 		t.Fatal("expected InheritDialerHealthFrom to return true when dialers overlap")
@@ -684,8 +721,8 @@ func TestInheritDialerHealthFromReturnsFalseWhenNoOverlap(t *testing.T) {
 	)
 	defer func() { _ = newGroup.Close() }()
 
-	oldCP := &ControlPlane{outbounds: []*outbound.DialerGroup{oldGroup}}
-	newCP := &ControlPlane{outbounds: []*outbound.DialerGroup{newGroup}}
+	oldCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{oldGroup}}}
+	newCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{newGroup}}}
 
 	if got := newCP.InheritDialerHealthFrom(oldCP); got {
 		t.Fatal("expected InheritDialerHealthFrom to return false when no dialers overlap")
@@ -694,9 +731,11 @@ func TestInheritDialerHealthFromReturnsFalseWhenNoOverlap(t *testing.T) {
 
 func TestWaitDNSUpstreamsReadyReturnsWhenChannelCloses(t *testing.T) {
 	cp := &ControlPlane{
-		ctx:                  context.Background(),
-		ready:                make(chan struct{}),
-		dnsUpstreamAvailable: make(chan struct{}),
+		ctx:   context.Background(),
+		ready: make(chan struct{}),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			dnsUpstreamAvailable: make(chan struct{}),
+		},
 	}
 	done := make(chan struct{})
 	go func() {

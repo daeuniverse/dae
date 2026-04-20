@@ -444,14 +444,7 @@ func (g *DialerGroup) buildSelectionState(policy DialerSelectionPolicy, setAlive
 	}
 
 	specs := standardSelectionNetworkTypes()
-	setIdx := [6]int{
-		dialer.IdxDnsUdp4,
-		dialer.IdxDnsUdp6,
-		dialer.IdxTcp4,
-		dialer.IdxTcp6,
-		dialer.IdxUdp4,
-		dialer.IdxUdp6,
-	}
+	keys := dialer.StandardHealthKeys()
 
 	for i, nt := range specs {
 		networkType := *nt
@@ -468,7 +461,7 @@ func (g *DialerGroup) buildSelectionState(policy DialerSelectionPolicy, setAlive
 				set.NotifyLatencyChange(d, d.MustGetAlive(&networkType))
 			}
 		}
-		state.aliveDialerSets[setIdx[i]] = set
+		state.aliveDialerSets[keys[i].CollectionIndex()] = set
 		if networkType.L4Proto == consts.L4ProtoStr_TCP {
 			if networkType.IpVersion == consts.IpVersionStr_4 {
 				state.aliveDialerSets[dialer.IdxDnsTcp4] = set
@@ -527,40 +520,12 @@ func uniqueAliveDialerSets(aliveDialerSets [8]*dialer.AliveDialerSet) []*dialer.
 }
 
 func standardSelectionNetworkTypes() [6]*dialer.NetworkType {
-	return [6]*dialer.NetworkType{
-		{
-			L4Proto:         consts.L4ProtoStr_UDP,
-			IpVersion:       consts.IpVersionStr_4,
-			IsDns:           true,
-			UdpHealthDomain: dialer.UdpHealthDomainDns,
-		},
-		{
-			L4Proto:         consts.L4ProtoStr_UDP,
-			IpVersion:       consts.IpVersionStr_6,
-			IsDns:           true,
-			UdpHealthDomain: dialer.UdpHealthDomainDns,
-		},
-		{
-			L4Proto:         consts.L4ProtoStr_TCP,
-			IpVersion:       consts.IpVersionStr_4,
-			UdpHealthDomain: dialer.UdpHealthDomainUnset,
-		},
-		{
-			L4Proto:         consts.L4ProtoStr_TCP,
-			IpVersion:       consts.IpVersionStr_6,
-			UdpHealthDomain: dialer.UdpHealthDomainUnset,
-		},
-		{
-			L4Proto:         consts.L4ProtoStr_UDP,
-			IpVersion:       consts.IpVersionStr_4,
-			UdpHealthDomain: dialer.UdpHealthDomainData,
-		},
-		{
-			L4Proto:         consts.L4ProtoStr_UDP,
-			IpVersion:       consts.IpVersionStr_6,
-			UdpHealthDomain: dialer.UdpHealthDomainData,
-		},
+	keys := dialer.StandardHealthKeys()
+	var networkTypes [6]*dialer.NetworkType
+	for i, key := range keys {
+		networkTypes[i] = key.NetworkType()
 	}
+	return networkTypes
 }
 
 func preferAlternateSelectionNetworkType(d *dialer.Dialer, networkType *dialer.NetworkType) *dialer.NetworkType {

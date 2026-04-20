@@ -51,7 +51,7 @@ func newTestControlPlaneWithDscpRule(t *testing.T, literal string) *ControlPlane
 		t.Fatalf("BuildUserspace(%q): %v", literal, err)
 	}
 
-	return &ControlPlane{routingMatcher: matcher}
+	return &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{routingMatcher: matcher}}
 }
 
 func routeWithDscp(t *testing.T, plane *ControlPlane, dscp uint8, l4proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool, error) {

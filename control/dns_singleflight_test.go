@@ -49,7 +49,9 @@ func TestMsgCapturer_NilWhenNotWritten(t *testing.T) {
 
 func TestDnsController_NewWorkContext_HonorsLifecycleContext(t *testing.T) {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	ctrl := &DnsController{lifecycleCtx: lifecycleCtx}
+	ctrl := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.lifecycleCtx = lifecycleCtx
+	})
 
 	workCtx, workCancel := ctrl.newWorkContext(time.Second)
 	defer workCancel()

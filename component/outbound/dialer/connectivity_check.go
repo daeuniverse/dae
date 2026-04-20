@@ -114,30 +114,7 @@ func (t *NetworkType) IsDnsSemantic() bool {
 // data UDP traffic such as QUIC and games, while still allowing shared transport
 // failures to fan out into both domains when appropriate.
 func (t *NetworkType) Index() int {
-	switch t.L4Proto {
-	case consts.L4ProtoStr_TCP:
-		switch t.IpVersion {
-		case consts.IpVersionStr_4:
-			return IdxTcp4
-		case consts.IpVersionStr_6:
-			return IdxTcp6
-		}
-	case consts.L4ProtoStr_UDP:
-		domain := t.EffectiveUdpHealthDomain()
-		switch t.IpVersion {
-		case consts.IpVersionStr_4:
-			if domain == UdpHealthDomainDns {
-				return IdxDnsUdp4
-			}
-			return IdxUdp4
-		case consts.IpVersionStr_6:
-			if domain == UdpHealthDomainDns {
-				return IdxDnsUdp6
-			}
-			return IdxUdp6
-		}
-	}
-	panic("invalid network type")
+	return t.HealthKey().CollectionIndex()
 }
 
 type collection struct {

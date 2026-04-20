@@ -111,15 +111,11 @@ func NewWithOption(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns
 		return nil, nil
 	}
 
-	dnsRules, subRules, nodeRules, subNodeRules, err := componentdns.SplitRequestRules(dnsCfg.Routing.Request.Rules)
-	if err != nil {
-		return nil, err
-	}
 	locationFinder := assets.NewLocationFinder(nil)
 	if opt != nil && opt.LocationFinder != nil {
 		locationFinder = opt.LocationFinder
 	}
-	dnsRules, err = routing.ApplyRulesOptimizers(dnsRules,
+	requestProgram, err := componentdns.NewNormalizedRequestRoutingProgram(dnsCfg.Routing.Request.Rules, dnsCfg.Routing.Request.Fallback,
 		&routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
@@ -127,7 +123,10 @@ func NewWithOption(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns
 	if err != nil {
 		return nil, err
 	}
-	if len(dnsRules) == 0 && len(subRules) == 0 && len(nodeRules) == 0 && len(subNodeRules) == 0 {
+	if len(requestProgram.Rules) == 0 &&
+		len(requestProgram.SubscriptionRules) == 0 &&
+		len(requestProgram.NodeRules) == 0 &&
+		len(requestProgram.SubNodeRules) == 0 {
 		return nil, nil
 	}
 
@@ -153,7 +152,7 @@ func NewWithOption(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns
 		}
 		upstreamName2Id[tag] = uint8(i)
 	}
-	requestMatcherBuilder, err := componentdns.NewRequestMatcherBuilder(log, dnsRules, upstreamName2Id, dnsCfg.Routing.Request.Fallback)
+	requestMatcherBuilder, err := componentdns.NewRequestMatcherBuilderFromProgram(log, requestProgram, upstreamName2Id)
 	if err != nil {
 		return nil, err
 	}
@@ -162,15 +161,15 @@ func NewWithOption(log *logrus.Logger, global *config.Global, dnsCfg *config.Dns
 		return nil, err
 	}
 
-	router.subMatcher, err = router.compileSubscriptionMatcher(subRules)
+	router.subMatcher, err = router.compileSubscriptionMatcher(requestProgram.SubscriptionRules)
 	if err != nil {
 		return nil, err
 	}
-	router.nodeMatcher, err = router.compileNodeMatcher(nodeRules)
+	router.nodeMatcher, err = router.compileNodeMatcher(requestProgram.NodeRules)
 	if err != nil {
 		return nil, err
 	}
-	router.subNodeMatcher, err = router.compileSubNodeMatcher(subNodeRules)
+	router.subNodeMatcher, err = router.compileSubNodeMatcher(requestProgram.SubNodeRules)
 	if err != nil {
 		return nil, err
 	}

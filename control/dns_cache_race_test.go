@@ -6,6 +6,7 @@
 package control
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,16 +27,15 @@ func TestAsyncCacheRaceCondition(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.WarnLevel)
 
-	controller := &DnsController{
-		log:                    log,
-		optimisticCacheEnabled: false,
-	}
-	controller.dnsCache = sync.Map{}
+	controller := newTestDnsController()
+	controller.log = log
+	controller.optimisticCacheEnabled.Store(false)
 
 	// Simulate the async caching behavior from dialSend
 	var upstreamCallCount atomic.Int32
 	var wg sync.WaitGroup
 	concurrency := 1000
+	var cacheWrite sync.WaitGroup
 
 	// Simulate concurrent requests all missing cache and hitting singleflight
 	// In real code, singleflight ensures only ONE upstream request
@@ -43,6 +43,7 @@ func TestAsyncCacheRaceCondition(t *testing.T) {
 
 	var sf singleflight.Group
 	cacheKey := "example.com1"
+	startGate := make(chan struct{})
 
 	start := time.Now()
 
@@ -50,6 +51,7 @@ func TestAsyncCacheRaceCondition(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			<-startGate
 
 			// First check cache (simulating cache miss for all)
 			if _, ok := controller.dnsCache.Load(cacheKey); ok {
@@ -88,7 +90,9 @@ func TestAsyncCacheRaceCondition(t *testing.T) {
 				}
 
 				// Simulate async caching (from dialSend)
+				cacheWrite.Add(1)
 				go func() {
+					defer cacheWrite.Done()
 					defer func() {
 						if r := recover(); r != nil {
 							log.Errorf("panic in async cache: %v", r)
@@ -119,7 +123,9 @@ func TestAsyncCacheRaceCondition(t *testing.T) {
 		}(i)
 	}
 
+	close(startGate)
 	wg.Wait()
+	cacheWrite.Wait()
 	elapsed := time.Since(start)
 
 	// Verify only ONE upstream request was made
@@ -145,8 +151,10 @@ func TestAsyncCacheStampedeWithoutSingleflight(t *testing.T) {
 	log.SetLevel(logrus.WarnLevel)
 
 	controller := &DnsController{
-		log:      log,
-		dnsCache: sync.Map{},
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+		log: log,
 	}
 
 	var upstreamCallCount atomic.Int32
@@ -213,11 +221,12 @@ func TestAsyncCacheTimingWithSingleflight(t *testing.T) {
 	log.SetLevel(logrus.WarnLevel)
 
 	controller := &DnsController{
-		log:      log,
-		dnsCache: sync.Map{},
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+		log: log,
 	}
 
-	var sf singleflight.Group
 	var upstreamCallCount atomic.Int32
 	var wg sync.WaitGroup
 
@@ -231,11 +240,29 @@ func TestAsyncCacheTimingWithSingleflight(t *testing.T) {
 	}
 
 	for _, scenario := range scenarios {
+		var sf singleflight.Group
 		upstreamCallCount.Store(0)
 		start := time.Now()
+		expectedAttempts := int32(scenario.concurrent)
+		startGate := make(chan struct{})
+		barrierReady := make(chan struct{})
+		var attempted atomic.Int32
+		var barrierOnce sync.Once
+		var cacheWrite sync.WaitGroup
+
+		maybeReleaseBarrier := func() {
+			if attempted.Load() == expectedAttempts {
+				barrierOnce.Do(func() {
+					close(barrierReady)
+				})
+			}
+		}
 
 		for i := 0; i < scenario.concurrent; i++ {
 			wg.Go(func() {
+				<-startGate
+				attempted.Add(1)
+				maybeReleaseBarrier()
 
 				cacheKey := "test.com1"
 
@@ -246,11 +273,18 @@ func TestAsyncCacheTimingWithSingleflight(t *testing.T) {
 
 				// Use singleflight
 				_, _, _ = sf.Do(cacheKey, func() (any, error) {
+					select {
+					case <-barrierReady:
+					case <-time.After(2 * time.Second):
+						return nil, fmt.Errorf("timed out waiting for %d goroutines to reach the singleflight barrier (got %d)", scenario.concurrent, attempted.Load())
+					}
 					upstreamCallCount.Add(1)
 					time.Sleep(10 * time.Millisecond)
 
 					// Async cache
+					cacheWrite.Add(1)
 					go func() {
+						defer cacheWrite.Done()
 						cache := &DnsCache{
 							Deadline: time.Now().Add(300 * time.Second),
 						}
@@ -262,7 +296,9 @@ func TestAsyncCacheTimingWithSingleflight(t *testing.T) {
 			})
 		}
 
+		close(startGate)
 		wg.Wait()
+		cacheWrite.Wait()
 		elapsed := time.Since(start)
 
 		calls := upstreamCallCount.Load()
@@ -284,8 +320,10 @@ func TestAsyncCacheDoesNotBlock(t *testing.T) {
 	log.SetLevel(logrus.WarnLevel)
 
 	controller := &DnsController{
-		log:      log,
-		dnsCache: sync.Map{},
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+		log: log,
 	}
 
 	// Simulate a slow cache operation (e.g., BPF update)

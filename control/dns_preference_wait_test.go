@@ -14,10 +14,12 @@ import (
 
 func TestApplyPreferenceWaitPreservesOriginalQType(t *testing.T) {
 	c := &DnsController{
-		log:              logrus.New(),
-		qtypePrefer:      dnsmessage.TypeAAAA,
-		prefWaitRegistry: newPreferenceWaitRegistry(),
+		dnsControllerStore: &dnsControllerStore{
+			prefWaitRegistry: newPreferenceWaitRegistry(),
+		},
+		log: logrus.New(),
 	}
+	c.qtypePrefer.Store(uint32(dnsmessage.TypeAAAA))
 
 	original := new(dnsmessage.Msg)
 	original.SetQuestion("example.com.", dnsmessage.TypeA)

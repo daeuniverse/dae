@@ -59,10 +59,9 @@ func TestDnsController_EvictIdleDnsForwarders(t *testing.T) {
 		l4proto:  consts.L4ProtoStr_UDP,
 	}
 
-	c := &DnsController{
-		log:                 logrus.New(),
-		dnsForwarderIdleTTL: testTTL,
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
+	c.dnsForwarderIdleTTL = testTTL
 	c.dnsForwarderCache.Store(key, entry)
 
 	c.evictIdleDnsForwarders(time.Now())
@@ -84,10 +83,9 @@ func TestDnsController_EvictIdleDnsForwarders_SkipInFlight(t *testing.T) {
 		l4proto:  consts.L4ProtoStr_TCP,
 	}
 
-	c := &DnsController{
-		log:                 logrus.New(),
-		dnsForwarderIdleTTL: testTTL,
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
+	c.dnsForwarderIdleTTL = testTTL
 	c.dnsForwarderCache.Store(key, entry)
 
 	c.evictIdleDnsForwarders(time.Now())
@@ -107,9 +105,8 @@ func TestDnsController_ForwardWithDialArg_RetiresProxyUdpForwarderOnError(t *tes
 		dnsForwarderFactory = oldFactory
 	}()
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	upstream := &dns.Upstream{
 		Scheme:   "udp",
 		Hostname: "dns.example",
@@ -142,9 +139,8 @@ func TestDnsController_ForwardWithDialArg_RetiresDirectUdpForwarderOnError(t *te
 		dnsForwarderFactory = oldFactory
 	}()
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	upstream := &dns.Upstream{
 		Scheme:   "udp",
 		Hostname: "dns.example",
@@ -177,9 +173,8 @@ func TestDnsController_ResetDnsForwardersDrainsInFlightForwarders(t *testing.T) 
 		l4proto:  consts.L4ProtoStr_UDP,
 	}
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	c.dnsForwarderCache.Store(key, entry)
 
 	require.NoError(t, c.ResetDnsForwarders())
@@ -222,11 +217,13 @@ func TestNewDnsForwarderKeyIsStableAcrossReloadGenerations(t *testing.T) {
 
 func TestDnsControllerClose_ReleasesRetainedBuffers(t *testing.T) {
 	c := &DnsController{
-		log:         logrus.New(),
-		evictorBuf:  make([]*DnsCache, 0, 32),
-		lruScratch:  make([]cacheEntry, 16),
-		evictorWake: make(chan struct{}, 1),
-		evictorQ:    make(chan *DnsCache, 4),
+		dnsControllerStore: &dnsControllerStore{
+			evictorBuf:  make([]*DnsCache, 0, 32),
+			lruScratch:  make([]cacheEntry, 16),
+			evictorWake: make(chan struct{}, 1),
+			evictorQ:    make(chan *DnsCache, 4),
+		},
+		log: logrus.New(),
 	}
 	c.dnsCache.Store("example.com.1", &DnsCache{})
 	c.dnsKnowledge.Store("example.com", time.Now().UnixNano())
@@ -256,9 +253,8 @@ func TestDnsController_ForwardWithDialArg_KeepsProxyTcpForwarderOnTimeout(t *tes
 		dnsForwarderFactory = oldFactory
 	}()
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	upstream := &dns.Upstream{
 		Scheme:   "tcp",
 		Hostname: "dns.example",
@@ -293,9 +289,8 @@ func TestDnsController_ForwardWithDialArg_KeepsDirectTcpForwarderOnError(t *test
 		dnsForwarderFactory = oldFactory
 	}()
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	upstream := &dns.Upstream{
 		Scheme:   "tcp",
 		Hostname: "dns.example",
@@ -330,9 +325,8 @@ func TestDnsController_ForwardWithDialArg_KeepsProxyTcpFallbackForwarderOnTimeou
 		dnsForwarderFactory = oldFactory
 	}()
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	upstream := &dns.Upstream{
 		Scheme:   "tcp+udp",
 		Hostname: "dns.example",
@@ -367,9 +361,8 @@ func TestDnsController_ForwardWithDialArg_TruncatedDoesNotRetireForwarder(t *tes
 		dnsForwarderFactory = oldFactory
 	}()
 
-	c := &DnsController{
-		log: logrus.New(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
 	upstream := &dns.Upstream{
 		Scheme:   "udp",
 		Hostname: "dns.example",

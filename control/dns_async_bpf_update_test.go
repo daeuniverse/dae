@@ -25,14 +25,18 @@ func init() {
 // processes tasks, and shuts down cleanly without leaking goroutines.
 func TestBpfUpdateWorker_Lifecycle(t *testing.T) {
 	controller := &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
 		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			// Simulate BPF update work
 			time.Sleep(10 * time.Millisecond)
 			return nil
-		},
-		dnsCache: sync.Map{},
-	}
+		}
+	})
 
 	// Worker should not be started initially
 	assert.Nil(t, controller.bpfUpdateCh)
@@ -74,14 +78,18 @@ func TestBpfUpdateWorker_NonBlockingSend(t *testing.T) {
 	blockChan := make(chan struct{})
 
 	controller := &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
 		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			updateCallCount.Add(1)
 			<-blockChan // Block until test releases
 			return nil
-		},
-		dnsCache: sync.Map{},
-	}
+		}
+	})
 
 	// Start the worker
 	controller.startBpfUpdateWorker()
@@ -130,13 +138,17 @@ func TestBpfUpdateWorker_ErrorHandling(t *testing.T) {
 	callCount := atomic.Int32{}
 
 	controller := &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
 		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			callCount.Add(1)
 			return expectedErr
-		},
-		dnsCache: sync.Map{},
-	}
+		}
+	})
 
 	controller.startBpfUpdateWorker()
 
@@ -165,15 +177,19 @@ func TestBpfUpdateWorker_SemanticsPreserved(t *testing.T) {
 	var mu sync.Mutex
 
 	controller := &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
 		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			mu.Lock()
 			defer mu.Unlock()
 			updateTimes = append(updateTimes, time.Now())
 			return nil
-		},
-		dnsCache: sync.Map{},
-	}
+		}
+	})
 
 	// Create a cache and trigger update
 	cache := &DnsCache{}
@@ -208,13 +224,17 @@ func TestBpfUpdateWorker_ConcurrentAccess(t *testing.T) {
 
 	updateCount := atomic.Int32{}
 	controller := &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
 		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			updateCount.Add(1)
 			return nil
-		},
-		dnsCache: sync.Map{},
-	}
+		}
+	})
 
 	var wg sync.WaitGroup
 	now := time.Now()
@@ -249,8 +269,10 @@ func TestBpfUpdateWorker_ConcurrentAccess(t *testing.T) {
 // when actually needed.
 func TestBpfUpdateWorker_LazyStart(t *testing.T) {
 	controller := &DnsController{
-		log:      testLogger,
-		dnsCache: sync.Map{},
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+		log: testLogger,
 	}
 
 	// Worker should not be started initially
@@ -261,7 +283,9 @@ func TestBpfUpdateWorker_LazyStart(t *testing.T) {
 	assert.Nil(t, controller.bpfUpdateCh, "Worker should not start without callback")
 
 	// Add callback but don't trigger update
-	controller.cacheAccessCallback = func(cache *DnsCache) error { return nil }
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error { return nil }
+	})
 	// Cache doesn't exist, so no update triggered
 	controller.LookupDnsRespCache("test", false)
 	// Worker might or might not start depending on whether cache exists
@@ -270,12 +294,16 @@ func TestBpfUpdateWorker_LazyStart(t *testing.T) {
 
 func TestBpfUpdateWorker_DoesNotStartAfterClose(t *testing.T) {
 	controller := &DnsController{
-		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
-			return nil
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
 		},
-		dnsCache: sync.Map{},
+		log: testLogger,
 	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
+			return nil
+		}
+	})
 
 	assert.NoError(t, controller.Close())
 
@@ -293,14 +321,18 @@ func TestBpfUpdateWorker_QueueFull(t *testing.T) {
 	updateCount := atomic.Int32{}
 
 	controller := &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
 		log: testLogger,
-		cacheAccessCallback: func(cache *DnsCache) error {
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			updateCount.Add(1)
 			<-busy // Block to keep worker busy
 			return nil
-		},
-		dnsCache: sync.Map{},
-	}
+		}
+	})
 
 	controller.startBpfUpdateWorker()
 

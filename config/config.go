@@ -7,7 +7,6 @@ package config
 
 import (
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -61,36 +60,62 @@ type Utls struct {
 
 type FunctionOrString any
 
-func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function) {
+// ParseFunctionOrString converts a config value that may be either a string or
+// a function into a single function without panicking on invalid input.
+func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error) {
 	switch fs := fs.(type) {
 	case string:
-		return &config_parser.Function{Name: fs}
+		return &config_parser.Function{Name: fs}, nil
 	case *config_parser.Function:
-		return fs
+		return fs, nil
 	case []*config_parser.Function:
 		if len(fs) == 1 {
-			return fs[0]
-		} else {
-			panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+			return fs[0], nil
 		}
+		return nil, fmt.Errorf("expected exactly 1 function in fallback, got %d", len(fs))
 	default:
-		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+		return nil, fmt.Errorf("unsupported function-or-string value type: %T", fs)
 	}
+}
+
+// FunctionOrStringToFunction converts a function-or-string config value into a
+// function. It preserves the historical panic-on-invalid-input API for external
+// callers; new internal call sites should use ParseFunctionOrString.
+func FunctionOrStringToFunction(fs FunctionOrString) *config_parser.Function {
+	f, err := ParseFunctionOrString(fs)
+	if err != nil {
+		panic(err)
+	}
+	return f
 }
 
 type FunctionListOrString any
 
-func FunctionListOrStringToFunctionList(fs FunctionListOrString) (f []*config_parser.Function) {
+// ParseFunctionListOrString converts a config value that may be either a string
+// or functions into a function list without panicking on invalid input.
+func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Function, error) {
 	switch fs := fs.(type) {
 	case string:
-		return []*config_parser.Function{{Name: fs}}
+		return []*config_parser.Function{{Name: fs}}, nil
 	case *config_parser.Function:
-		return []*config_parser.Function{fs}
+		return []*config_parser.Function{fs}, nil
 	case []*config_parser.Function:
-		return fs
+		return fs, nil
 	default:
-		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+		return nil, fmt.Errorf("unsupported function-list-or-string value type: %T", fs)
 	}
+}
+
+// FunctionListOrStringToFunctionList converts a function-list-or-string config
+// value into a function list. It preserves the historical panic-on-invalid-input
+// API for external callers; new internal call sites should use
+// ParseFunctionListOrString.
+func FunctionListOrStringToFunctionList(fs FunctionListOrString) []*config_parser.Function {
+	f, err := ParseFunctionListOrString(fs)
+	if err != nil {
+		panic(err)
+	}
+	return f
 }
 
 type Group struct {
@@ -120,6 +145,10 @@ type DnsRouting struct {
 	Response DnsResponseRouting `mapstructure:"response"`
 }
 type KeyableString string
+
+// Dns is intentionally mirrored by cmd.dnsConfigFingerprint for staged reload
+// DNS reuse decisions. Keep that fingerprint in sync with any new top-level
+// fields; TestDNSConfigFingerprintCoversAllDnsFields guards the contract.
 type Dns struct {
 	IpVersionPrefer    int             `mapstructure:"ipversion_prefer"`
 	FixedDomainTtl     []KeyableString `mapstructure:"fixed_domain_ttl"`
@@ -171,34 +200,21 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	conf = &Config{}
-	// Use specified parser to parse corresponding section.
-	_val := reflect.ValueOf(conf)
-	val := _val.Elem()
-	typ := val.Type()
-	for i := 0; i < val.NumField(); i++ {
-		field := val.Field(i)
-		structField := typ.Field(i)
-
-		// Find corresponding section from sections.
-		sectionName, ok := structField.Tag.Lookup("mapstructure")
-		if !ok {
-			return nil, fmt.Errorf("no mapstructure is specified in field %v", structField.Name)
-		}
-		section, ok := nameToSection[sectionName]
-		if !ok {
-			if _, required := structField.Tag.Lookup("required"); required {
-				return nil, fmt.Errorf("section %v is required but not provided", sectionName)
-			} else {
-				continue
+	for _, spec := range configSectionSpecs {
+		if spec.required {
+			if _, ok := nameToSection[spec.name]; !ok {
+				return nil, fmt.Errorf("section %v is required but not provided", spec.name)
 			}
 		}
+	}
 
-		// Parse section and unmarshal to field.
-		if err := SectionParser(field.Addr(), section.Val); err != nil {
-			return nil, fmt.Errorf("failed to parse \"%v\": %w", sectionName, err)
+	for _, spec := range configSectionSpecs {
+		section, ok := nameToSection[spec.name]
+		if !ok {
+			continue
 		}
-		if sectionName == "global" {
-			conf.Global.SoMarkFromDaeSet = sectionHasParam(section.Val, "so_mark_from_dae")
+		if err := decodeConfigSection(conf, spec.name, section.Val); err != nil {
+			return nil, fmt.Errorf("failed to parse \"%v\": %w", spec.name, err)
 		}
 		section.Parsed = true
 	}

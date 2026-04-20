@@ -25,19 +25,30 @@ type RequestMatcherBuilder struct {
 }
 
 func NewRequestMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *RequestMatcherBuilder, err error) {
+	program, err := NewNormalizedRequestRoutingProgram(rules, fallback)
+	if err != nil {
+		return nil, err
+	}
+	if len(program.SubscriptionRules) > 0 || len(program.NodeRules) > 0 || len(program.SubNodeRules) > 0 {
+		return nil, fmt.Errorf("internal dae DNS selectors require explicit request-rule splitting before request matcher construction")
+	}
+	return NewRequestMatcherBuilderFromProgram(log, program, upstreamName2Id)
+}
+
+func NewRequestMatcherBuilderFromProgram(log *logrus.Logger, program *NormalizedRequestRoutingProgram, upstreamName2Id map[string]uint8) (b *RequestMatcherBuilder, err error) {
+	if program == nil {
+		return nil, fmt.Errorf("request routing program is nil")
+	}
 	b = &RequestMatcherBuilder{log: log, upstreamName2Id: upstreamName2Id}
-	rulesBuilder := routing.NewRulesBuilder(log)
+	if err = program.Lower(log, b.registerProgramParsers, b.addFallback); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (b *RequestMatcherBuilder) registerProgramParsers(rulesBuilder *routing.RulesBuilder) {
 	rulesBuilder.RegisterFunctionParser(consts.Function_QName, routing.PlainParserFactory(b.addQName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
-	if err = rulesBuilder.Apply(rules); err != nil {
-		return nil, err
-	}
-
-	if err = b.addFallback(fallback); err != nil {
-		return nil, err
-	}
-
-	return b, nil
 }
 
 func (b *RequestMatcherBuilder) upstreamToId(upstream string) (upstreamId consts.DnsRequestOutboundIndex, err error) {
@@ -107,7 +118,11 @@ func (b *RequestMatcherBuilder) addQType(f *config_parser.Function, values []uin
 }
 
 func (b *RequestMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {
-	upstream, err := routing.ParseOutbound(config.FunctionOrStringToFunction(fallbackOutbound))
+	fallbackFunc, err := config.ParseFunctionOrString(fallbackOutbound)
+	if err != nil {
+		return err
+	}
+	upstream, err := routing.ParseOutbound(fallbackFunc)
 	if err != nil {
 		return err
 	}

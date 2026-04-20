@@ -280,11 +280,11 @@ func TestConnPool_GetNotBlockedBySlowDial(t *testing.T) {
 
 func TestDnsControllerReportDnsForwardFailureIgnoresLocalPoolExhaustion(t *testing.T) {
 	var callbackCalls atomic.Int32
-	controller := &DnsController{
-		timeoutExceedCallback: func(*dialArgument, error) {
+	controller := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.timeoutExceedCallback = func(*dialArgument, error) {
 			callbackCalls.Add(1)
-		},
-	}
+		}
+	})
 
 	controller.reportDnsForwardFailure(&dialArgument{}, ErrDNSUDPConnPoolExhausted)
 	require.Zero(t, callbackCalls.Load())

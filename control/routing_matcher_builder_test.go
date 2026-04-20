@@ -12,6 +12,8 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReserveLpmRingSlotsReturnsCurrentIndexForZeroCount(t *testing.T) {
@@ -113,4 +115,10 @@ func TestRoutingMatcherBuilderAddIpCanonicalizesPrefixOrder(t *testing.T) {
 	if got := builder.compiledRules[0].lpmIndex; got != builder.compiledRules[1].lpmIndex {
 		t.Fatalf("lpmIndex mismatch after canonical dedup: %d vs %d", got, builder.compiledRules[1].lpmIndex)
 	}
+}
+
+func TestRoutingMatcherBuilderRejectsInvalidFallbackType(t *testing.T) {
+	_, err := NewRoutingMatcherBuilder(logrus.New(), nil, map[string]uint8{}, nil, 123)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported function-or-string value type")
 }

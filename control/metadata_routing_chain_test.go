@@ -54,7 +54,7 @@ func newTestControlPlaneWithSingleMetadataRule(t *testing.T, functionName, liter
 		t.Fatalf("BuildUserspace(%q=%q): %v", functionName, literal, err)
 	}
 
-	return &ControlPlane{routingMatcher: matcher}
+	return &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{routingMatcher: matcher}}
 }
 
 func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp uint8, mac [6]uint8, pname string) (*bpfRoutingResult, netip.AddrPort, netip.AddrPort) {

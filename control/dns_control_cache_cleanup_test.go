@@ -23,15 +23,19 @@ import (
 
 func TestDnsController_LookupExpiredCacheNonBlockingWithSlowRemoveCallback(t *testing.T) {
 	c := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: make(chan struct{}),
+			janitorDone: make(chan struct{}),
+			evictorDone: make(chan struct{}),
+			evictorQ:    make(chan *DnsCache, 8),
+		},
+	}
+	setTestDnsControllerRuntime(c, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			time.Sleep(250 * time.Millisecond)
 			return nil
-		},
-		janitorStop: make(chan struct{}),
-		janitorDone: make(chan struct{}),
-		evictorDone: make(chan struct{}),
-		evictorQ:    make(chan *DnsCache, 8),
-	}
+		}
+	})
 	c.startCacheEvictor()
 	defer func() {
 		close(c.janitorStop)
@@ -50,12 +54,12 @@ func TestDnsController_LookupExpiredCacheNonBlockingWithSlowRemoveCallback(t *te
 
 func TestDnsController_EvictExpiredDnsCache(t *testing.T) {
 	var removed atomic.Int32
-	c := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+	c := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			removed.Add(1)
 			return nil
-		},
-	}
+		}
+	})
 
 	now := time.Now()
 	expired := &DnsCache{Deadline: now.Add(-time.Second), OriginalDeadline: now.Add(-time.Second)}
@@ -77,12 +81,12 @@ func TestDnsController_EvictExpiredDnsCache(t *testing.T) {
 
 func TestDnsController_LookupExpiredCacheEvictsEntry(t *testing.T) {
 	var removed atomic.Int32
-	c := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+	c := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			removed.Add(1)
 			return nil
-		},
-	}
+		}
+	})
 
 	cacheKey := "lookup-expired"
 	now := time.Now()
@@ -97,12 +101,12 @@ func TestDnsController_LookupExpiredCacheEvictsEntry(t *testing.T) {
 
 func TestDnsController_RemoveDnsRespCacheTriggersCallback(t *testing.T) {
 	var removed atomic.Int32
-	c := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+	c := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			removed.Add(1)
 			return nil
-		},
-	}
+		}
+	})
 
 	cacheKey := "remove-key"
 	c.dnsCache.Store(cacheKey, &DnsCache{Deadline: time.Now().Add(time.Minute)})
@@ -121,14 +125,15 @@ func newDnsControllerForRemovalTracking(t *testing.T) (*DnsController, func() []
 		mu      sync.Mutex
 		removed []string
 	)
-	controller := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+	controller := &DnsController{}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			mu.Lock()
 			defer mu.Unlock()
 			removed = append(removed, dnsCacheAnswerIPs(cache)...)
 			return nil
-		},
-		newCache: func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
+		}
+		rt.newCache = func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
 			return &DnsCache{
 				Answer:           answers,
 				NS:               ns,
@@ -136,8 +141,8 @@ func newDnsControllerForRemovalTracking(t *testing.T) (*DnsController, func() []
 				Deadline:         deadline,
 				OriginalDeadline: originalDeadline,
 			}, nil
-		},
-	}
+		}
+	})
 	snapshot := func() []string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -248,7 +253,7 @@ func TestDnsController_EvictExpiredDnsCache_RemovesKnowledgeForLastScopedEntry(t
 
 func TestDnsController_EvictLRUIfFull_RemovesKnowledgeForEvictedBaseKey(t *testing.T) {
 	ctrl := newScopedDnsController(t)
-	ctrl.maxCacheSize = 1
+	ctrl.maxCacheSize.Store(1)
 
 	baseKey1 := ctrl.cacheKey("knowledge-lru-old.test.", dnsmessage.TypeA)
 	req1 := &udpRequest{realDst: netip.MustParseAddrPort("8.8.4.4:53")}
@@ -283,16 +288,20 @@ func TestDnsController_EvictLRUIfFull_RemovesKnowledgeForEvictedBaseKey(t *testi
 func TestDnsController_CloseNoPanicDuringBpfUpdate(t *testing.T) {
 	var callbackCount atomic.Int32
 	c := &DnsController{
-		cacheAccessCallback: func(cache *DnsCache) error {
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: make(chan struct{}),
+			janitorDone: make(chan struct{}),
+			evictorDone: make(chan struct{}),
+			evictorQ:    nil,
+		},
+		log: nil,
+	}
+	setTestDnsControllerRuntime(c, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			callbackCount.Add(1)
 			return nil
-		},
-		janitorStop: make(chan struct{}),
-		janitorDone: make(chan struct{}),
-		evictorDone: make(chan struct{}),
-		evictorQ:    nil,
-		log:         nil,
-	}
+		}
+	})
 
 	c.startDnsCacheJanitor()
 	c.startCacheEvictor()
@@ -350,11 +359,13 @@ func TestDnsController_CloseWaitsForShutdownTasksConcurrently(t *testing.T) {
 	logger.SetOutput(io.Discard)
 
 	c := &DnsController{
-		janitorStop:   make(chan struct{}),
-		janitorDone:   make(chan struct{}),
-		evictorDone:   make(chan struct{}),
-		bpfUpdateStop: make(chan struct{}),
-		log:           logger,
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop:   make(chan struct{}),
+			janitorDone:   make(chan struct{}),
+			evictorDone:   make(chan struct{}),
+			bpfUpdateStop: make(chan struct{}),
+		},
+		log: logger,
 	}
 	c.bpfUpdateWg.Add(1)
 
@@ -375,13 +386,17 @@ func TestDnsController_OnDnsCacheEvictedConcurrentClose(t *testing.T) {
 	close(evictorDone)
 
 	controller := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error { return nil },
-		janitorStop:         make(chan struct{}),
-		janitorDone:         janitorDone,
-		evictorDone:         evictorDone,
-		evictorQ:            make(chan *DnsCache, 1),
-		evictorWake:         make(chan struct{}, 1),
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: make(chan struct{}),
+			janitorDone: janitorDone,
+			evictorDone: evictorDone,
+			evictorQ:    make(chan *DnsCache, 1),
+			evictorWake: make(chan struct{}, 1),
+		},
 	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error { return nil }
+	})
 
 	const (
 		goroutines = 8
@@ -421,20 +436,21 @@ func TestDnsController_UpdateDnsCacheTtlRemovesOnlyStaleIpsOnReplacement(t *test
 		removed   []ipSet
 	)
 
-	controller := &DnsController{
-		cacheAccessCallback: func(cache *DnsCache) error {
+	controller := &DnsController{}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheAccessCallback = func(cache *DnsCache) error {
 			addedMu.Lock()
 			defer addedMu.Unlock()
 			added = append(added, dnsCacheAnswerIPs(cache))
 			return nil
-		},
-		cacheRemoveCallback: func(cache *DnsCache) error {
+		}
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			removedMu.Lock()
 			defer removedMu.Unlock()
 			removed = append(removed, dnsCacheAnswerIPs(cache))
 			return nil
-		},
-		newCache: func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
+		}
+		rt.newCache = func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (*DnsCache, error) {
 			return &DnsCache{
 				Answer:           answers,
 				NS:               ns,
@@ -442,8 +458,8 @@ func TestDnsController_UpdateDnsCacheTtlRemovesOnlyStaleIpsOnReplacement(t *test
 				Deadline:         deadline,
 				OriginalDeadline: originalDeadline,
 			}, nil
-		},
-	}
+		}
+	})
 
 	require.NoError(t, controller.UpdateDnsCacheTtl("example.com.", dnsmessage.TypeA, []dnsmessage.RR{
 		newTestARecord("example.com.", "1.1.1.1"),
@@ -512,19 +528,23 @@ func TestDnsController_EvictorSpillAvoidsGoroutineBurst(t *testing.T) {
 	releaseFirst := make(chan struct{})
 
 	controller := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: make(chan struct{}),
+			janitorDone: make(chan struct{}),
+			evictorDone: make(chan struct{}),
+			evictorQ:    make(chan *DnsCache, 1),
+			evictorWake: make(chan struct{}, 1),
+		},
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			if processed.Add(1) == 1 {
 				close(firstStarted)
 				<-releaseFirst
 			}
 			return nil
-		},
-		janitorStop: make(chan struct{}),
-		janitorDone: make(chan struct{}),
-		evictorDone: make(chan struct{}),
-		evictorQ:    make(chan *DnsCache, 1),
-		evictorWake: make(chan struct{}, 1),
-	}
+		}
+	})
 	controller.startCacheEvictor()
 	defer func() {
 		close(controller.janitorStop)
@@ -556,19 +576,23 @@ func TestDnsController_EvictorShutdownDrainsSpill(t *testing.T) {
 	releaseFirst := make(chan struct{})
 
 	controller := &DnsController{
-		cacheRemoveCallback: func(cache *DnsCache) error {
+		dnsControllerStore: &dnsControllerStore{
+			janitorStop: make(chan struct{}),
+			janitorDone: make(chan struct{}),
+			evictorDone: make(chan struct{}),
+			evictorQ:    make(chan *DnsCache, 1),
+			evictorWake: make(chan struct{}, 1),
+		},
+	}
+	setTestDnsControllerRuntime(controller, func(rt *dnsControllerRuntimeState) {
+		rt.cacheRemoveCallback = func(cache *DnsCache) error {
 			if processed.Add(1) == 1 {
 				close(firstStarted)
 				<-releaseFirst
 			}
 			return nil
-		},
-		janitorStop: make(chan struct{}),
-		janitorDone: make(chan struct{}),
-		evictorDone: make(chan struct{}),
-		evictorQ:    make(chan *DnsCache, 1),
-		evictorWake: make(chan struct{}, 1),
-	}
+		}
+	})
 	controller.startCacheEvictor()
 
 	const total = 32

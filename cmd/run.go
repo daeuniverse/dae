@@ -16,10 +16,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -311,6 +309,14 @@ var (
 )
 
 func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (err error) {
+	return newRunner(log, conf, externGeoDataDirs).Run()
+}
+
+func (r *Runner) Run() (err error) {
+	log := r.log
+	conf := r.conf
+	externGeoDataDirs := r.externGeoDataDirs
+
 	var currCancel context.CancelFunc
 
 	// Remove AbortFile at beginning.
@@ -374,44 +380,15 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	}()
 
 	reloadReqs := make(chan reloadRequest, 1)
-
-	var reloading atomic.Bool
-	var reloadActive atomic.Bool
-	var reloadPending atomic.Bool
-	reloadingErr := error(nil)
-	var lastRetirementCancel context.CancelFunc
-	var lastRetirementMu sync.Mutex
-	var pendingStagedHandoff *stagedReloadHandoff
-	var pendingRetirementDone <-chan struct{}
-	var pendingReloadRequestedAt time.Time
-	var pendingReloadRequestedAtMono uint64
+	reloadManager := newReloadManager(reloadReqs, runStateChanges, sigs)
 	fastExit := false
 
 	go func() {
-		for req := range reloadReqs {
-			reloadActive.Store(true)
+		for req := range reloadManager.reloadReqs {
+			reloadManager.reloadActive.Store(true)
+			req = reloadManager.coalesceReloadRequest(req)
 			reloadStartedAt := req.requestedAt
 			reloadStartedAtMono := req.requestedAtMono
-			if reloadStartedAt.IsZero() {
-				reloadStartedAt = time.Now()
-			}
-			// Coalesce rapid reload requests: skip intermediate requests if multiple are queued
-			// while we were building the previous one. Only the latest state matters.
-		coalesce:
-			for {
-				select {
-				case nextReq := <-reloadReqs:
-					req = nextReq
-					reloadStartedAt = req.requestedAt
-					reloadStartedAtMono = req.requestedAtMono
-					if reloadStartedAt.IsZero() {
-						reloadStartedAt = time.Now()
-					}
-					continue
-				default:
-					break coalesce
-				}
-			}
 
 			if req.isSuspend {
 				log.Warnln("[Reload] Received suspend signal; prepare to suspend")
@@ -420,7 +397,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			}
 			_ = sdnotify.Reloading()
 			_ = setRunSignalProgress(consts.ReloadProcessing, "")
-			reloadingErr = nil
+			reloadManager.setReloadError(nil)
 			resetReloadProxyRuntimeState()
 
 			// Load new config.
@@ -435,8 +412,8 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					}).Errorln("[Reload] Failed to reload")
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, err.Error())
-					reloadActive.Store(false)
-					clearReloadPending(&reloadPending)
+					reloadManager.reloadActive.Store(false)
+					clearReloadPending(&reloadManager.reloadPending)
 					continue
 				}
 				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
@@ -452,8 +429,8 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					}).Errorln("[Reload] Failed to reload")
 					_ = sdnotify.Ready()
 					_ = setRunSignalProgress(consts.ReloadError, err.Error())
-					reloadActive.Store(false)
-					clearReloadPending(&reloadPending)
+					reloadManager.reloadActive.Store(false)
+					clearReloadPending(&reloadManager.reloadPending)
 					continue
 				}
 				log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
@@ -494,28 +471,30 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				newC, prepareErr := newPreparedControlPlane(ctx, log, obj, dnsCache, newConf, externGeoDataDirs)
 				dnsCache = nil
 				if prepareErr != nil {
-					reloadingErr = wrapReloadTimeoutError("prepare staged reload", prepareErr, reloadPrepareTimeout)
+					reloadErr := wrapReloadTimeoutError("prepare staged reload", prepareErr, reloadPrepareTimeout)
+					reloadManager.setReloadError(reloadErr)
 					cancel()
-					log.WithError(reloadingErr).Errorln("[Reload] Failed to prepare staged reload; keeping current generation active")
+					log.WithError(reloadErr).Errorln("[Reload] Failed to prepare staged reload; keeping current generation active")
 					_ = sdnotify.Ready()
-					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
-					reloadActive.Store(false)
-					clearReloadPending(&reloadPending)
+					_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+					reloadManager.reloadActive.Store(false)
+					clearReloadPending(&reloadManager.reloadPending)
 					continue
 				}
 
 				stagedListener, listenErr := listener.Clone()
 				if listenErr != nil {
-					reloadingErr = fmt.Errorf("clone listener: %w", listenErr)
+					reloadErr := fmt.Errorf("clone listener: %w", listenErr)
+					reloadManager.setReloadError(reloadErr)
 					cancel()
 					if closeErr := newC.Close(); closeErr != nil {
 						log.WithError(closeErr).Warnln("[Reload] Failed to close prepared staged generation")
 					}
-					log.WithError(reloadingErr).Errorln("[Reload] Failed to stage listener; keeping current generation active")
+					log.WithError(reloadErr).Errorln("[Reload] Failed to stage listener; keeping current generation active")
 					_ = sdnotify.Ready()
-					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
-					reloadActive.Store(false)
-					clearReloadPending(&reloadPending)
+					_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+					reloadManager.reloadActive.Store(false)
+					clearReloadPending(&reloadManager.reloadPending)
 					continue
 				}
 
@@ -529,7 +508,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				currCancel = cancel
 				conf = newConf
 				listener = stagedListener
-				pendingStagedHandoff = &stagedReloadHandoff{
+				reloadManager.setPendingStagedHandoff(&stagedReloadHandoff{
 					oldControlPlane:  oldC,
 					oldCancel:        oldCancel,
 					oldConf:          oldConf,
@@ -539,10 +518,8 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					newListener:      stagedListener,
 					abortConnections: abortConnections,
 					hasOverlap:       hasOverlap,
-				}
-				pendingReloadRequestedAt = reloadStartedAt
-				pendingReloadRequestedAtMono = reloadStartedAtMono
-				beginReloadHandoff(&reloading, runStateChanges)
+				}, reloadStartedAt, reloadStartedAtMono)
+				reloadManager.beginHandoff()
 				notifyRunStateChange(runStateChanges)
 				continue
 			}
@@ -559,7 +536,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 
 			var newCancel context.CancelFunc
 			if err != nil {
-				reloadingErr = wrapReloadTimeoutError("build new control plane", err, reloadPrepareTimeout)
+				reloadManager.setReloadError(wrapReloadTimeoutError("build new control plane", err, reloadPrepareTimeout))
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
@@ -595,7 +572,8 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			if stagedListener == nil {
 				stagedListener, err = newC.Listen(newConf.Global.TproxyPort)
 				if err != nil {
-					reloadingErr = fmt.Errorf("prepare new listener: %w", err)
+					reloadErr := fmt.Errorf("prepare new listener: %w", err)
+					reloadManager.setReloadError(reloadErr)
 					if newCancel != nil {
 						newCancel()
 					}
@@ -608,11 +586,11 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					if restartErr := c.RestartDNSListener(); restartErr != nil {
 						log.WithError(restartErr).Warnln("[Reload] Failed to restart previous DNS listener after reload preparation error")
 					}
-					log.WithError(reloadingErr).Errorln("[Reload] Failed to prepare listener; keeping current generation active")
+					log.WithError(reloadErr).Errorln("[Reload] Failed to prepare listener; keeping current generation active")
 					_ = sdnotify.Ready()
-					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
-					reloadActive.Store(false)
-					clearReloadPending(&reloadPending)
+					_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+					reloadManager.reloadActive.Store(false)
+					clearReloadPending(&reloadManager.reloadPending)
 					continue
 				}
 			}
@@ -642,7 +620,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			conf = newConf
 			listener = stagedListener
 			if stagedHotHandoff {
-				pendingStagedHandoff = &stagedReloadHandoff{
+				reloadManager.setPendingStagedHandoff(&stagedReloadHandoff{
 					oldControlPlane:  oldC,
 					oldCancel:        oldCancel,
 					oldConf:          oldConf,
@@ -652,84 +630,25 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 					newListener:      stagedListener,
 					abortConnections: abortConnections,
 					hasOverlap:       hasOverlap,
-				}
+				}, reloadStartedAt, reloadStartedAtMono)
 			} else {
-				pendingStagedHandoff = nil
+				reloadManager.clearPendingStagedHandoff()
 			}
-			pendingRetirementDone = nil
-			pendingReloadRequestedAt = reloadStartedAt
-			pendingReloadRequestedAtMono = reloadStartedAtMono
-			beginReloadHandoff(&reloading, runStateChanges)
+			reloadManager.clearPendingRetirement()
+			reloadManager.setPendingReloadMetadata(reloadStartedAt, reloadStartedAtMono)
+			reloadManager.beginHandoff()
 
 			// Ready to close.
-			if oldC != nil && pendingStagedHandoff == nil {
+			if oldC != nil && reloadManager.currentPendingStagedHandoff() == nil {
 				if oldListener != nil {
 					if err := oldListener.Close(); err != nil {
 						log.WithError(err).Warnln("[Reload] Failed to close previous listener generation")
 					}
 				}
-				// Generational Coalescing: If there is already a generation waiting for retirement,
-				// cancel its grace period and force it to close immediately to prevent heap stacking.
-				lastRetirementMu.Lock()
-				if lastRetirementCancel != nil {
-					lastRetirementCancel()
-				}
-				retireCtx, retireCancel := context.WithCancel(context.Background())
-				lastRetirementCancel = retireCancel
-				lastRetirementMu.Unlock()
-
-				log.Warnln("[Reload] Retiring old control plane")
-				retirementDone := make(chan struct{})
-				pendingRetirementDone = retirementDone
-				drainBudget := remainingReloadRetirementBudget(pendingReloadRequestedAt, reloadTotalSwitchBudget)
-				staleBeforeNs := pendingReloadRequestedAtMono
-				successor := newC
-				go func(
-					ctx context.Context,
-					c *control.ControlPlane,
-					successor *control.ControlPlane,
-					cancel context.CancelFunc,
-					abort bool,
-					hasOverlap bool,
-					maxDrain time.Duration,
-					staleBeforeNs uint64,
-					done chan struct{},
-				) {
-					defer close(done)
-
-					// Mark the old generation as retired before draining so that
-					// stale health check callbacks stop writing to the shared
-					// OutboundConnectivityMap BPF map immediately.
-					c.MarkRetired()
-
-					retireControlPlaneConnections(log, ctx, c, abort, hasOverlap, maxDrain)
-
-					// Crucial: Cancel the generation's workers before closing structural resources.
-					if cancel != nil {
-						cancel()
-					}
-
-					if closeErr := c.Close(); closeErr != nil {
-						log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
-					}
-					if successor != nil {
-						successor.RunReloadRetirementCleanup(staleBeforeNs)
-					}
-					log.Warnln("[Reload] Retired old control plane")
-				}(retireCtx, oldC, successor, oldCancel, abortConnections, hasOverlap, drainBudget, staleBeforeNs, retirementDone)
+				reloadManager.startControlPlaneRetirement(log, oldC, newC, oldCancel, abortConnections, hasOverlap)
 			}
 
-			if pprofServer != nil {
-				pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_ = pprofServer.Shutdown(pprofCtx)
-				pprofCancel()
-				pprofServer = nil
-			}
-			if newConf.Global.PprofPort != 0 {
-				pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-				pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-				go func() { _ = pprofServer.ListenAndServe() }()
-			}
+			reloadManager.refreshPprofServer(log, &pprofServer, newConf.Global.PprofPort)
 
 			notifyRunStateChange(runStateChanges)
 
@@ -746,13 +665,13 @@ loop:
 				fastExit = true
 				break loop
 			case syscall.SIGUSR2:
-				tryQueueReloadRequest(log, reloadReqs, &reloadActive, &reloadPending, reloadRequest{
+				reloadManager.queueReloadRequest(log, reloadRequest{
 					isSuspend:       true,
 					requestedAt:     time.Now(),
 					requestedAtMono: monotonicNowNano(),
 				})
 			case syscall.SIGUSR1:
-				tryQueueReloadRequest(log, reloadReqs, &reloadActive, &reloadPending, reloadRequest{
+				reloadManager.queueReloadRequest(log, reloadRequest{
 					isSuspend:       false,
 					requestedAt:     time.Now(),
 					requestedAtMono: monotonicNowNano(),
@@ -764,7 +683,7 @@ loop:
 				log.Infof("Received signal: %v", sig.String())
 			}
 		case <-runStateChanges:
-			if reloading.Load() {
+			if reloadManager.reloading.Load() {
 				if listener == nil {
 					log.Warnln("[Reload] Re-listening after reload")
 					readyChan := make(chan bool, 1)
@@ -796,55 +715,33 @@ loop:
 						break loop
 					}
 					if waitResult != reloadReadyWaitReady {
-						reloadingErr = fmt.Errorf("reload listener failed before becoming ready")
+						reloadErr := fmt.Errorf("reload listener failed before becoming ready")
 						if waitResult == reloadReadyWaitTimeout {
-							reloadingErr = fmt.Errorf("reload listener timed out after %v", reloadReadyTimeout)
+							reloadErr = fmt.Errorf("reload listener timed out after %v", reloadReadyTimeout)
 						}
+						reloadManager.setReloadError(reloadErr)
 						_ = sdnotify.Ready()
-						_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
-						log.WithError(reloadingErr).Errorln("[Reload] Reload listener failed before becoming ready")
-						reloading.Store(false)
-						reloadActive.Store(false)
-						clearReloadPending(&reloadPending)
+						_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+						log.WithError(reloadErr).Errorln("[Reload] Reload listener failed before becoming ready")
+						reloadManager.reloading.Store(false)
+						reloadManager.reloadActive.Store(false)
+						clearReloadPending(&reloadManager.reloadPending)
 						continue
 					}
 					_ = sdnotify.Ready()
-					if reloadingErr == nil {
+					if reloadErr := reloadManager.reloadError(); reloadErr == nil {
 						_ = setRunSignalProgress(consts.ReloadDone, "OK")
 					} else {
-						_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
+						_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
 					}
 					log.Warnln("[Reload] Finished")
-					reloading.Store(false)
-					reloadActive.Store(false)
-					releaseReloadPendingAfterRetirement(&reloadPending, pendingRetirementDone)
-					pendingRetirementDone = nil
+					reloadManager.finishReloadSuccess()
 					continue
 				}
 				// Serve.
-				reloading.Store(false)
+				reloadManager.reloading.Store(false)
 				log.Warnln("[Reload] Serve")
-				if pendingStagedHandoff != nil {
-					if reflect.DeepEqual(pendingStagedHandoff.oldConf.Dns, conf.Dns) {
-						c.SetPreparedDNSReuseHook(func() error {
-							_ = c.ReuseDNSControllerFrom(pendingStagedHandoff.oldControlPlane)
-							if c.ReuseDNSListenerFrom(pendingStagedHandoff.oldControlPlane) {
-								return nil
-							}
-							return nil
-						})
-					}
-					c.SetPreparedDNSStartHook(func() error {
-						if c.ReuseDNSListenerFrom(pendingStagedHandoff.oldControlPlane) {
-							return nil
-						}
-						if err := pendingStagedHandoff.oldControlPlane.StopDNSListener(); err != nil {
-							log.WithError(err).Warnln("[Reload] Failed to stop previous DNS listener before staged cutover")
-							return err
-						}
-						return nil
-					})
-				}
+				reloadManager.installPreparedDNSHandoffHooks(log, c, conf)
 				readyChan := make(chan bool, 1)
 				go func() {
 					defer func() {
@@ -865,51 +762,48 @@ loop:
 					break loop
 				}
 				if waitResult != reloadReadyWaitReady {
-					reloadingErr = fmt.Errorf("reload serve failed before becoming ready")
+					reloadErr := fmt.Errorf("reload serve failed before becoming ready")
 					if waitResult == reloadReadyWaitTimeout {
-						reloadingErr = fmt.Errorf("reload serve timed out after %v", reloadReadyTimeout)
+						reloadErr = fmt.Errorf("reload serve timed out after %v", reloadReadyTimeout)
 					}
+					reloadManager.setReloadError(reloadErr)
 					_ = sdnotify.Ready()
-					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
-					log.WithError(reloadingErr).Errorln("[Reload] Reload serve failed before becoming ready")
-					if pendingStagedHandoff != nil {
-						rollbackStagedReloadHandoff(log, pendingStagedHandoff)
-						if republishErr := pendingStagedHandoff.oldControlPlane.PublishListenerSockets(pendingStagedHandoff.oldListener); republishErr != nil {
+					_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+					log.WithError(reloadErr).Errorln("[Reload] Reload serve failed before becoming ready")
+					if handoff := reloadManager.currentPendingStagedHandoff(); handoff != nil {
+						rollbackStagedReloadHandoff(log, handoff)
+						if republishErr := handoff.oldControlPlane.PublishListenerSockets(handoff.oldListener); republishErr != nil {
 							log.WithError(republishErr).Errorln("[Reload] Failed to republish previous listeners after staged handoff failure")
 						}
-						if rebuildErr := pendingStagedHandoff.oldControlPlane.RebuildReloadDatapath(); rebuildErr != nil {
+						if rebuildErr := handoff.oldControlPlane.RebuildReloadDatapath(); rebuildErr != nil {
 							log.WithError(rebuildErr).Errorln("[Reload] Failed to rebuild previous datapath after staged handoff failure")
 						}
-						c = pendingStagedHandoff.oldControlPlane
-						currCancel = pendingStagedHandoff.oldCancel
-						conf = pendingStagedHandoff.oldConf
-						listener = pendingStagedHandoff.oldListener
+						c = handoff.oldControlPlane
+						currCancel = handoff.oldCancel
+						conf = handoff.oldConf
+						listener = handoff.oldListener
 						if restartErr := c.RestartDNSListener(); restartErr != nil {
 							log.WithError(restartErr).Warnln("[Reload] Failed to restart previous DNS listener after staged handoff rollback")
 						}
-						pendingStagedHandoff = nil
+						reloadManager.clearPendingStagedHandoff()
 						log.Warnln("[Reload] Restored previous listener generation after staged handoff failure")
 					}
-					reloading.Store(false)
-					reloadActive.Store(false)
-					clearReloadPending(&reloadPending)
+					reloadManager.finishReloadFailure()
 					continue
 				}
-				dnsHandoffActive := pendingStagedHandoff != nil &&
-					pendingStagedHandoff.oldControlPlane != nil &&
-					pendingStagedHandoff.oldControlPlane.SharesActiveDnsControllerWith(c)
-				if pendingStagedHandoff != nil {
-					oldListener := pendingStagedHandoff.oldListener
-					oldC := pendingStagedHandoff.oldControlPlane
-					oldCancel := pendingStagedHandoff.oldCancel
-					abortConnections := pendingStagedHandoff.abortConnections
-					hasOverlap := pendingStagedHandoff.hasOverlap
+				dnsHandoffActive := reloadManager.pendingDNSHandoffActive(c)
+				if handoff := reloadManager.currentPendingStagedHandoff(); handoff != nil {
+					oldListener := handoff.oldListener
+					oldC := handoff.oldControlPlane
+					oldCancel := handoff.oldCancel
+					abortConnections := handoff.abortConnections
+					hasOverlap := handoff.hasOverlap
 					if oldC != nil {
 						bpf := oldC.EjectBpf()
 						c.InjectBpf(bpf)
 						c.InheritLpmIndices(oldC.EjectLpmIndices())
 					}
-					pendingStagedHandoff = nil
+					reloadManager.clearPendingStagedHandoff()
 
 					if oldListener != nil {
 						if err := oldListener.Close(); err != nil {
@@ -918,62 +812,20 @@ loop:
 					}
 
 					if oldC != nil {
-						lastRetirementMu.Lock()
-						if lastRetirementCancel != nil {
-							lastRetirementCancel()
-						}
-						retireCtx, retireCancel := context.WithCancel(context.Background())
-						lastRetirementCancel = retireCancel
-						lastRetirementMu.Unlock()
-
-						log.Warnln("[Reload] Retiring old control plane")
-						retirementDone := make(chan struct{})
-						pendingRetirementDone = retirementDone
-						drainBudget := remainingReloadRetirementBudget(pendingReloadRequestedAt, reloadTotalSwitchBudget)
-						staleBeforeNs := pendingReloadRequestedAtMono
-						successor := c
-						go func(
-							ctx context.Context,
-							c *control.ControlPlane,
-							successor *control.ControlPlane,
-							cancel context.CancelFunc,
-							abort bool,
-							hasOverlap bool,
-							maxDrain time.Duration,
-							staleBeforeNs uint64,
-							done chan struct{},
-						) {
-							defer close(done)
-
-							c.MarkRetired()
-
-							retireControlPlaneConnections(log, ctx, c, abort, hasOverlap, maxDrain)
-							if cancel != nil {
-								cancel()
-							}
-							if closeErr := c.Close(); closeErr != nil {
-								log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
-							}
-							if successor != nil {
-								successor.RunReloadRetirementCleanup(staleBeforeNs)
-							}
-							log.Warnln("[Reload] Retired old control plane")
-						}(retireCtx, oldC, successor, oldCancel, abortConnections, hasOverlap, drainBudget, staleBeforeNs, retirementDone)
+						reloadManager.startControlPlaneRetirement(log, oldC, c, oldCancel, abortConnections, hasOverlap)
 					}
 				}
 				_ = sdnotify.Ready()
-				if reloadingErr == nil {
+				if reloadErr := reloadManager.reloadError(); reloadErr == nil {
 					_ = setRunSignalProgress(consts.ReloadDone, "OK")
 				} else {
-					_ = setRunSignalProgress(consts.ReloadError, reloadingErr.Error())
+					_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
 				}
 				log.Warnln("[Reload] Finished")
-				reloadActive.Store(false)
+				reloadManager.finishReloadSuccess()
 				if dnsHandoffActive && log.IsLevelEnabled(logrus.DebugLevel) {
 					log.Debugln("[Reload] Shared DNS controller handoff remains available while old generation drains")
 				}
-				releaseReloadPendingAfterRetirement(&reloadPending, pendingRetirementDone)
-				pendingRetirementDone = nil
 			} else if listener == nil {
 				// Listening error.
 				log.Errorln("[Critical] Listener failed; exiting")
@@ -995,16 +847,7 @@ loop:
 
 	// Stop accepting new ingress immediately so shutdown does not continue to
 	// create fresh UDP/TCP work while the control plane is being torn down.
-	var shutdownHandoff *signalShutdownStagedHandoff
-	if pendingStagedHandoff != nil {
-		shutdownHandoff = &signalShutdownStagedHandoff{
-			oldListener:     pendingStagedHandoff.oldListener,
-			oldControlPlane: pendingStagedHandoff.oldControlPlane,
-			newListener:     pendingStagedHandoff.newListener,
-			newControlPlane: pendingStagedHandoff.newControlPlane,
-		}
-	}
-	return shutdownAfterSignalWithHandoff(log, listener, c, control.GetDaeNetns(), fastExit, shutdownHandoff)
+	return shutdownAfterSignalWithHandoff(log, listener, c, control.GetDaeNetns(), fastExit, reloadManager.buildShutdownHandoff())
 }
 
 func notifyRunStateChange(runStateChanges chan<- struct{}) {

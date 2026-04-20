@@ -59,7 +59,11 @@ func patchMustOutbound(params *Config) error {
 			})
 		}
 	}
-	if f := FunctionOrStringToFunction(params.Routing.Fallback); strings.HasPrefix(f.Name, "must_") {
+	f, err := ParseFunctionOrString(params.Routing.Fallback)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(f.Name, "must_") {
 		f.Name = strings.TrimPrefix(f.Name, "must_")
 		f.Params = append(f.Params, &config_parser.Param{
 			Val: "must",

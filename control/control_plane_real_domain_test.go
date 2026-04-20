@@ -26,13 +26,15 @@ func newTestControlPlaneForRealDomainProbe() *ControlPlane {
 	log.SetOutput(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ControlPlane{
-		realDomainSet:      bloom.NewWithEstimates(2048, 0.001),
-		log:                log,
-		soMarkFromDae:      0,
-		mptcp:              false,
-		bootstrapResolvers: []netip.AddrPort{netip.MustParseAddrPort("1.1.1.1:53")},
-		ctx:                ctx,
-		cancel:             cancel,
+		realDomainSet: bloom.NewWithEstimates(2048, 0.001),
+		log:           log,
+		soMarkFromDae: 0,
+		mptcp:         false,
+		controlPlaneGenerationState: controlPlaneGenerationState{
+			bootstrapResolvers: []netip.AddrPort{netip.MustParseAddrPort("1.1.1.1:53")},
+		},
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -291,7 +293,11 @@ func TestChooseDialTarget_DomainMode_IPLikeSkipsProbe(t *testing.T) {
 
 	cp := newTestControlPlaneForRealDomainProbe()
 	cp.dialMode = consts.DialMode_Domain
-	cp.dnsController = &DnsController{dnsCache: sync.Map{}}
+	cp.dnsController = &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+	}
 
 	dst := netip.MustParseAddrPort("8.8.8.8:443")
 	_, _, _ = cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "1.2.3.4")
@@ -326,7 +332,11 @@ func TestChooseDialTarget_DomainMode_UnknownDomainDoesNotBlock(t *testing.T) {
 
 	cp := newTestControlPlaneForRealDomainProbe()
 	cp.dialMode = consts.DialMode_Domain
-	cp.dnsController = &DnsController{dnsCache: sync.Map{}}
+	cp.dnsController = &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+	}
 
 	dst := netip.MustParseAddrPort("8.8.8.8:443")
 
@@ -365,7 +375,11 @@ func TestChooseDialTarget_DomainMode_WarmupEnablesReroute(t *testing.T) {
 
 	cp := newTestControlPlaneForRealDomainProbe()
 	cp.dialMode = consts.DialMode_Domain
-	cp.dnsController = &DnsController{dnsCache: sync.Map{}}
+	cp.dnsController = &DnsController{
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache: sync.Map{},
+		},
+	}
 
 	dst := netip.MustParseAddrPort("8.8.8.8:443")
 	_, reroute1, _ := cp.ChooseDialTarget(consts.OutboundUserDefinedMin, dst, "youtube.com")

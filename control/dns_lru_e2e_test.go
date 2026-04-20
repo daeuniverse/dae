@@ -18,17 +18,19 @@ import (
 // This simulates real-world usage where cache entries are accessed via LookupDnsRespCache_
 func TestDnsController_LRUE2E(t *testing.T) {
 	controller := &DnsController{
-		optimisticCacheEnabled: true,
-		optimisticCacheTtl:     0, // never expire
-		maxCacheSize:           5, // only 5 entries allowed
-		dnsCache:               sync.Map{},
-		dnsForwarderCache:      sync.Map{},
-		log:                    nil,
-		janitorStop:            make(chan struct{}),
-		janitorDone:            make(chan struct{}),
-		evictorDone:            make(chan struct{}),
-		evictorQ:               make(chan *DnsCache, 512),
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache:          sync.Map{},
+			dnsForwarderCache: sync.Map{},
+			janitorStop:       make(chan struct{}),
+			janitorDone:       make(chan struct{}),
+			evictorDone:       make(chan struct{}),
+			evictorQ:          make(chan *DnsCache, 512),
+		},
+		log: nil,
 	}
+	controller.optimisticCacheEnabled.Store(true)
+	controller.optimisticCacheTtl.Store(0) // never expire
+	controller.maxCacheSize.Store(5)       // only 5 entries allowed
 	defer close(controller.janitorStop)
 
 	// Create 5 expired cache entries
@@ -148,17 +150,19 @@ func TestDnsController_LRUE2E(t *testing.T) {
 // TestDnsController_LRUMultipleEvictions tests multiple LRU evictions
 func TestDnsController_LRUMultipleEvictions(t *testing.T) {
 	controller := &DnsController{
-		optimisticCacheEnabled: true,
-		optimisticCacheTtl:     0, // never expire
-		maxCacheSize:           3, // only 3 entries allowed
-		dnsCache:               sync.Map{},
-		dnsForwarderCache:      sync.Map{},
-		log:                    nil,
-		janitorStop:            make(chan struct{}),
-		janitorDone:            make(chan struct{}),
-		evictorDone:            make(chan struct{}),
-		evictorQ:               make(chan *DnsCache, 512),
+		dnsControllerStore: &dnsControllerStore{
+			dnsCache:          sync.Map{},
+			dnsForwarderCache: sync.Map{},
+			janitorStop:       make(chan struct{}),
+			janitorDone:       make(chan struct{}),
+			evictorDone:       make(chan struct{}),
+			evictorQ:          make(chan *DnsCache, 512),
+		},
+		log: nil,
 	}
+	controller.optimisticCacheEnabled.Store(true)
+	controller.optimisticCacheTtl.Store(0) // never expire
+	controller.maxCacheSize.Store(3)       // only 3 entries allowed
 	defer close(controller.janitorStop)
 
 	now := time.Now()

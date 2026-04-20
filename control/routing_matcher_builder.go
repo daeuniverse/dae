@@ -127,6 +127,17 @@ func prefixesEqual(a, b []netip.Prefix) bool {
 }
 
 func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
+	program, err := routing.NewNormalizedProgram(rules, fallback)
+	if err != nil {
+		return nil, err
+	}
+	return NewRoutingMatcherBuilderFromProgram(log, program, outboundName2Id, bpf)
+}
+
+func NewRoutingMatcherBuilderFromProgram(log *logrus.Logger, program *routing.NormalizedProgram, outboundName2Id map[string]uint8, bpf *bpfObjects) (b *RoutingMatcherBuilder, err error) {
+	if program == nil {
+		return nil, fmt.Errorf("routing program is nil")
+	}
 	b = &RoutingMatcherBuilder{
 		log:                 log,
 		outboundName2Id:     outboundName2Id,
@@ -134,7 +145,13 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 		lpmDedup:            make(map[uint64]lpmDedupEntry),
 		referencedOutbounds: make(map[string]struct{}),
 	}
-	rulesBuilder := routing.NewRulesBuilder(log)
+	if err = program.Lower(log, b.registerProgramParsers, b.addFallback); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (b *RoutingMatcherBuilder) registerProgramParsers(rulesBuilder *routing.RulesBuilder) {
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_SourceIp, routing.IpParserFactory(b.addSourceIp))
@@ -145,15 +162,6 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
-	if err = rulesBuilder.Apply(rules); err != nil {
-		return nil, err
-	}
-
-	if err = b.addFallback(fallback); err != nil {
-		return nil, err
-	}
-
-	return b, nil
 }
 
 func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
@@ -495,7 +503,11 @@ func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint
 }
 
 func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {
-	outbound, err := routing.ParseOutbound(config.FunctionOrStringToFunction(fallbackOutbound))
+	fallbackFunc, err := config.ParseFunctionOrString(fallbackOutbound)
+	if err != nil {
+		return err
+	}
+	outbound, err := routing.ParseOutbound(fallbackFunc)
 	if err != nil {
 		return err
 	}

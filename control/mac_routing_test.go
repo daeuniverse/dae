@@ -53,7 +53,7 @@ func newTestControlPlaneWithMacRule(t *testing.T, literal string, not bool) *Con
 		t.Fatalf("BuildUserspace(%q, not=%v): %v", literal, not, err)
 	}
 
-	return &ControlPlane{routingMatcher: matcher}
+	return &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{routingMatcher: matcher}}
 }
 
 func routeWithMac(t *testing.T, plane *ControlPlane, mac [6]uint8) (consts.OutboundIndex, uint32, bool, error) {

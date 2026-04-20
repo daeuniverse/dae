@@ -44,7 +44,9 @@ func newTestDialControlPlane(outbound *ob.DialerGroup) *ControlPlane {
 	outbounds := make([]*ob.DialerGroup, int(consts.OutboundUserDefinedMin)+1)
 	outbounds[consts.OutboundUserDefinedMin] = outbound
 	return &ControlPlane{
-		outbounds:     outbounds,
+		controlPlaneGenerationState: controlPlaneGenerationState{
+			outbounds: outbounds,
+		},
 		soMarkFromDae: 0x100,
 	}
 }

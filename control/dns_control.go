@@ -96,29 +96,7 @@ type dnsControllerRuntimeState struct {
 	fixedDomainTtl        map[string]int
 }
 
-type DnsController struct {
-	concurrencyLimiter chan struct{}
-
-	// Legacy runtime fields are kept only as a fallback for tests or other
-	// manually-constructed controllers that never call updateRuntime.
-	// Production code should treat runtimeState as the single source of truth.
-	routing     *dns.Dns
-	qtypePrefer uint16
-
-	optimisticCacheEnabled bool
-	optimisticCacheTtl     int           // seconds, 0 means never expire
-	maxCacheSize           int           // maximum number of cache entries (0 = unlimited)
-	dnsForwarderIdleTTL    time.Duration // TTL for idle DNS forwarders
-	lifecycleCtx           context.Context
-	log                    *logrus.Logger
-	cacheAccessCallback    func(cache *DnsCache) (err error)
-	cacheRemoveCallback    func(cache *DnsCache) (err error)
-	cacheDeleteCallback    func(cacheKey string, cache *DnsCache) (err error)
-	newCache               func(fqdn string, answers, ns, extra []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error)
-	bestDialerChooser      func(ctx context.Context, req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
-	timeoutExceedCallback  func(dialArgument *dialArgument, err error)
-	fixedDomainTtl         map[string]int
-	runtimeState           atomic.Pointer[dnsControllerRuntimeState]
+type dnsControllerStore struct {
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache          sync.Map // map[string]*DnsCache
 	dnsKnowledge      sync.Map // map[string]int64 (base cache key -> original deadline unix nano)
@@ -153,6 +131,179 @@ type DnsController struct {
 	prefWaitRegistry *preferenceWaitRegistry
 }
 
+// DnsController is a lightweight generation-local facade over a shared
+// dnsControllerStore. The zero value is not ready for production use; construct
+// controllers with NewDnsController, ReuseForReload, or dedicated test helpers
+// so the shared store invariant is established before business methods run.
+type DnsController struct {
+	*dnsControllerStore
+
+	concurrencyLimiter chan struct{}
+
+	qtypePrefer            atomic.Uint32
+	optimisticCacheEnabled atomic.Bool
+	optimisticCacheTtl     atomic.Int64 // seconds, 0 means never expire
+	maxCacheSize           atomic.Int64 // maximum number of cache entries (0 = unlimited)
+	dnsForwarderIdleTTL    time.Duration
+	log                    *logrus.Logger
+	runtimeState           atomic.Pointer[dnsControllerRuntimeState]
+}
+
+func newDnsControllerStore() *dnsControllerStore {
+	return &dnsControllerStore{
+		dnsCache:          sync.Map{},
+		dnsForwarderCache: sync.Map{},
+		janitorStop:       make(chan struct{}),
+		janitorDone:       make(chan struct{}),
+		evictorDone:       make(chan struct{}),
+		evictorQ:          make(chan *DnsCache, 512),
+		evictorWake:       make(chan struct{}, 1),
+		prefWaitRegistry:  newPreferenceWaitRegistry(),
+	}
+}
+
+func normalizeDnsRuntimeBehavior(option *DnsControllerOption) (qtypePrefer uint16, optimisticCacheEnabled bool, optimisticCacheTtl int, maxCacheSize int, err error) {
+	if option == nil {
+		option = &DnsControllerOption{}
+	}
+	qtypePrefer, err = parseIpVersionPreference(option.IpVersionPrefer)
+	if err != nil {
+		return 0, false, 0, 0, err
+	}
+	optimisticCacheTtl = option.OptimisticCacheTtl
+	maxCacheSize = option.MaxCacheSize
+	if optimisticCacheTtl == 0 && maxCacheSize == 0 {
+		optimisticCacheTtl = 60
+	}
+	return qtypePrefer, option.OptimisticCache, optimisticCacheTtl, maxCacheSize, nil
+}
+
+func (c *DnsController) requireStore() *dnsControllerStore {
+	if c == nil {
+		return nil
+	}
+	if c.dnsControllerStore == nil {
+		// Business-path DNS methods require the shared store invariant to have
+		// been established by NewDnsController, ReuseForReload, or test helpers.
+		// Panic here so misuse fails fast instead of silently constructing an
+		// empty store and masking initialization bugs.
+		panic("DnsController.dnsControllerStore is nil; construct controllers with NewDnsController or test helpers")
+	}
+	return c.dnsControllerStore
+}
+
+func (c *DnsController) ensureStoreForReload() *dnsControllerStore {
+	if c == nil {
+		return nil
+	}
+	if c.dnsControllerStore == nil {
+		c.dnsControllerStore = newDnsControllerStore()
+	}
+	return c.dnsControllerStore
+}
+
+func (c *DnsController) copyBehaviorConfigTo(dst *DnsController) {
+	if c == nil || dst == nil {
+		return
+	}
+	dst.qtypePrefer.Store(c.qtypePrefer.Load())
+	dst.optimisticCacheEnabled.Store(c.optimisticCacheEnabled.Load())
+	dst.optimisticCacheTtl.Store(c.optimisticCacheTtl.Load())
+	dst.maxCacheSize.Store(c.maxCacheSize.Load())
+}
+
+func (c *DnsController) sharedStoreFacade() *DnsController {
+	if c == nil {
+		return nil
+	}
+	store := c.requireStore()
+	facade := &DnsController{
+		dnsControllerStore:  store,
+		concurrencyLimiter:  c.concurrencyLimiter,
+		dnsForwarderIdleTTL: c.dnsForwarderIdleTTL,
+		log:                 c.log,
+	}
+	c.copyBehaviorConfigTo(facade)
+	if rt := c.runtime(); rt != nil {
+		facade.runtimeState.Store(rt)
+	}
+	return facade
+}
+
+func (c *DnsController) currentQtypePrefer() uint16 {
+	if c == nil {
+		return 0
+	}
+	return uint16(c.qtypePrefer.Load())
+}
+
+func (c *DnsController) currentOptimisticCacheConfig() (enabled bool, ttl int, maxCacheSize int) {
+	if c == nil {
+		return false, 0, 0
+	}
+	return c.optimisticCacheEnabled.Load(), int(c.optimisticCacheTtl.Load()), int(c.maxCacheSize.Load())
+}
+
+// ReuseForReload updates the current facade to the replacement generation's
+// runtime and returns a fresh facade that shares the same long-lived store.
+// The shared store carries DNS cache, forwarders, janitors, and async BPF
+// update workers across reloads, while each facade owns its generation-local
+// runtime pointer and behavior config. The old control plane publishes the new
+// facade as a handoff bridge so ActiveDnsController observes the replacement
+// runtime without a nil window during reload retirement.
+func (c *DnsController) ReuseForReload(option *DnsControllerOption, routing *dns.Dns) (*DnsController, error) {
+	if c == nil {
+		return nil, nil
+	}
+	c.ensureStoreForReload()
+	if err := c.TryUpdateRuntime(option, routing); err != nil {
+		return nil, err
+	}
+	if err := c.ResetDnsForwarders(); err != nil && c.log != nil {
+		c.log.WithError(err).Warn("failed to retire stale DNS forwarders during reload reuse")
+	}
+	return c.sharedStoreFacade(), nil
+}
+
+func (c *DnsController) CloneCacheForReload() map[string]*DnsCache {
+	if c == nil || c.dnsControllerStore == nil {
+		return nil
+	}
+	result := make(map[string]*DnsCache)
+	c.dnsCache.Range(func(key, value any) bool {
+		k, ok1 := key.(string)
+		v, ok2 := value.(*DnsCache)
+		if ok1 && ok2 {
+			result[k] = v.CloneForReload()
+		} else if c.log != nil {
+			c.log.Errorf("CloneCacheForReload: invalid type found in sync.Map: key=%T, value=%T", key, value)
+		}
+		return true
+	})
+	return result
+}
+
+func (c *DnsController) RestoreReloadCache(entries map[string]*DnsCache, matchDomainBitmap func(string) []uint32, now time.Time) int {
+	if c == nil || len(entries) == 0 {
+		return 0
+	}
+	c.requireStore()
+	count := 0
+	for k, v := range entries {
+		if v == nil {
+			continue
+		}
+		if matchDomainBitmap != nil {
+			v.DomainBitmap = matchDomainBitmap(v.GetFqdn())
+		}
+		c.dnsCache.Store(k, v)
+		c.rememberDnsKnowledge(dnsCacheBaseKey(k), v.OriginalDeadline)
+		c.triggerBpfUpdateIfNeeded(v, now)
+		count++
+	}
+	return count
+}
+
 // bpfUpdateTask represents a BPF map update request.
 type bpfUpdateTask struct {
 	cache *DnsCache
@@ -183,8 +334,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		option = &DnsControllerOption{}
 	}
 
-	// Parse ip version preference.
-	prefer, err := parseIpVersionPreference(option.IpVersionPrefer)
+	prefer, optimisticCacheEnabled, optimisticCacheTtl, maxCacheSize, err := normalizeDnsRuntimeBehavior(option)
 	if err != nil {
 		return nil, err
 	}
@@ -223,52 +373,41 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		limit = defaultConcurrencyLimit
 	}
 
-	// Backward compatibility: if both optimistic_cache_ttl and maxCacheSize are 0,
-	// use optimistic_cache_ttl=60 (old default behavior)
-	// This ensures existing code continues to work without configuration changes
-	optimisticCacheTtl := option.OptimisticCacheTtl
-	maxCacheSize := option.MaxCacheSize
-	if optimisticCacheTtl == 0 && maxCacheSize == 0 {
-		optimisticCacheTtl = 60 // Old default
-	}
 	controller := &DnsController{
-		qtypePrefer:        prefer,
-		concurrencyLimiter: make(chan struct{}, limit), // 0 means no limit (unbuffered channel, always non-blocking)
-
-		optimisticCacheEnabled: option.OptimisticCache,
-		optimisticCacheTtl:     optimisticCacheTtl,
-		maxCacheSize:           maxCacheSize,
-
+		dnsControllerStore:  newDnsControllerStore(),
+		concurrencyLimiter:  make(chan struct{}, limit), // 0 means no limit (unbuffered channel, always non-blocking)
 		log:                 option.Log,
 		dnsForwarderIdleTTL: dnsForwarderIdleTTL, // Use package-level default
-		dnsCache:            sync.Map{},
-		dnsForwarderCache:   sync.Map{},
-
-		janitorStop: make(chan struct{}),
-		janitorDone: make(chan struct{}),
-		evictorDone: make(chan struct{}),
-		evictorQ:    make(chan *DnsCache, 512),
-		evictorWake: make(chan struct{}, 1),
-
-		// Async BPF update: lazy initialization in startBpfUpdateWorker
-		bpfUpdateCh:   nil,
-		bpfUpdateStop: nil,
-
-		prefWaitRegistry: newPreferenceWaitRegistry(),
 	}
-	controller.updateRuntime(option, routing)
+	controller.qtypePrefer.Store(uint32(prefer))
+	controller.optimisticCacheEnabled.Store(optimisticCacheEnabled)
+	controller.optimisticCacheTtl.Store(int64(optimisticCacheTtl))
+	controller.maxCacheSize.Store(int64(maxCacheSize))
+	if err := controller.TryUpdateRuntime(option, routing); err != nil {
+		return nil, err
+	}
 	controller.startDnsCacheJanitor()
 	controller.startCacheEvictor()
 	return controller, nil
 }
 
-func (c *DnsController) updateRuntime(option *DnsControllerOption, routing *dns.Dns) {
+func (c *DnsController) updateRuntime(option *DnsControllerOption, routing *dns.Dns) error {
 	if c == nil {
-		return
+		return nil
 	}
+	c.requireStore()
 	if option == nil {
 		option = &DnsControllerOption{}
 	}
+	qtypePrefer, optimisticCacheEnabled, optimisticCacheTtl, maxCacheSize, err := normalizeDnsRuntimeBehavior(option)
+	if err != nil {
+		return err
+	}
+	c.qtypePrefer.Store(uint32(qtypePrefer))
+	c.optimisticCacheEnabled.Store(optimisticCacheEnabled)
+	c.optimisticCacheTtl.Store(int64(optimisticCacheTtl))
+	c.maxCacheSize.Store(int64(maxCacheSize))
+	c.log = option.Log
 	lifecycleCtx := option.LifecycleContext
 	if lifecycleCtx == nil {
 		lifecycleCtx = context.Background()
@@ -284,38 +423,28 @@ func (c *DnsController) updateRuntime(option *DnsControllerOption, routing *dns.
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 		fixedDomainTtl:        option.FixedDomainTtl,
 	})
-}
-
-func (c *DnsController) legacyRuntimeState() *dnsControllerRuntimeState {
-	if c == nil {
-		return nil
-	}
-	return &dnsControllerRuntimeState{
-		routing:               c.routing,
-		lifecycleCtx:          c.lifecycleCtx,
-		cacheAccessCallback:   c.cacheAccessCallback,
-		cacheRemoveCallback:   c.cacheRemoveCallback,
-		cacheDeleteCallback:   c.cacheDeleteCallback,
-		newCache:              c.newCache,
-		bestDialerChooser:     c.bestDialerChooser,
-		timeoutExceedCallback: c.timeoutExceedCallback,
-		fixedDomainTtl:        c.fixedDomainTtl,
-	}
+	return nil
 }
 
 func (c *DnsController) runtime() *dnsControllerRuntimeState {
 	if c == nil {
 		return nil
 	}
-	rt := c.runtimeState.Load()
-	if rt == nil {
-		return c.legacyRuntimeState()
-	}
-	return rt
+	return c.runtimeState.Load()
 }
 
+// TryUpdateRuntime updates generation-local DNS runtime state and reports
+// invalid behavior config via error.
+func (c *DnsController) TryUpdateRuntime(option *DnsControllerOption, routing *dns.Dns) error {
+	return c.updateRuntime(option, routing)
+}
+
+// UpdateRuntime preserves the historical panic-on-invalid-input API for
+// external callers. New internal code should use TryUpdateRuntime.
 func (c *DnsController) UpdateRuntime(option *DnsControllerOption, routing *dns.Dns) {
-	c.updateRuntime(option, routing)
+	if err := c.TryUpdateRuntime(option, routing); err != nil {
+		panic(err)
+	}
 }
 
 func (c *DnsController) baseContext() context.Context {
@@ -330,6 +459,9 @@ func (c *DnsController) newWorkContext(timeout time.Duration) (context.Context, 
 }
 
 func (c *DnsController) Close() error {
+	if c == nil || c.dnsControllerStore == nil {
+		return nil
+	}
 	var (
 		bpfWorkerDone <-chan struct{}
 		janitorDone   <-chan struct{}
@@ -491,6 +623,9 @@ func (c *DnsController) retireAllDnsForwarders() []error {
 }
 
 func (c *DnsController) ResetDnsForwarders() error {
+	if c == nil || c.dnsControllerStore == nil {
+		return nil
+	}
 	// Retire cached forwarders so new requests redial using the replacement
 	// generation's runtime, while in-flight upstream exchanges finish cleanly.
 	return errors.Join(c.retireAllDnsForwarders()...)
@@ -672,6 +807,7 @@ func (c *DnsController) onBaseKeySideEffectsEvicted(baseKey string, candidate *D
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
+	c.requireStore()
 	if removed, ok := c.dnsCache.LoadAndDelete(cacheKey); ok {
 		if cache, ok := removed.(*DnsCache); ok {
 			baseKey := dnsCacheBaseKey(cacheKey)
@@ -683,6 +819,7 @@ func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 }
 
 func (c *DnsController) RemoveDnsRespCacheFamily(baseKey string) {
+	c.requireStore()
 	if baseKey == "" {
 		return
 	}
@@ -791,6 +928,7 @@ func (c *DnsController) syncDnsKnowledgeLocked(baseKey string) {
 }
 
 func (c *DnsController) HasDnsKnowledge(baseKey string) bool {
+	c.requireStore()
 	if baseKey == "" {
 		return false
 	}
@@ -813,6 +951,7 @@ func (c *DnsController) HasDnsKnowledge(baseKey string) bool {
 // startBpfUpdateWorker lazily starts the BPF update worker goroutine.
 // This is called on-demand when the first BPF update is needed.
 func (c *DnsController) startBpfUpdateWorker() {
+	c.requireStore()
 	c.bpfUpdateOnce.Do(func() {
 		c.bpfUpdateStopMu.Lock()
 		if c.bpfUpdateClosed.Load() {
@@ -888,6 +1027,7 @@ func (c *DnsController) bpfUpdateWorker() {
 // This is non-blocking: if the queue is full, the update is skipped
 // (CAS in NeedsBpfUpdate ensures it will be retried next time).
 func (c *DnsController) triggerBpfUpdateIfNeeded(cache *DnsCache, now time.Time) {
+	c.requireStore()
 	rt := c.runtime()
 	if rt == nil || rt.cacheAccessCallback == nil {
 		return
@@ -1054,11 +1194,12 @@ func (c *DnsController) evictDnsRespCacheIfSame(cacheKey string, cache *DnsCache
 }
 
 func (c *DnsController) evictExpiredDnsCache(now time.Time) {
+	optimisticCacheEnabled, optimisticCacheTtl, maxCacheSize := c.currentOptimisticCacheConfig()
 	// Step 1: Time-based eviction
 	// - When optimistic_cache_ttl > 0: evict entries older than (deadline + stale_window)
 	// - When optimistic_cache_ttl == 0 AND maxCacheSize > 0: skip time-based eviction (rely on LRU)
 	// - When both are 0 (backward compat / direct struct creation): use deadline-based eviction
-	useTimeBasedEviction := c.optimisticCacheTtl > 0 || (c.optimisticCacheTtl == 0 && c.maxCacheSize == 0)
+	useTimeBasedEviction := optimisticCacheTtl > 0 || (optimisticCacheTtl == 0 && maxCacheSize == 0)
 
 	if useTimeBasedEviction {
 		c.dnsCache.Range(func(key, value any) bool {
@@ -1077,8 +1218,8 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 			// - If optimistic cache is enabled and ttl > 0: use (deadline + optimisticCacheTtl)
 			// - Otherwise: use deadline directly
 			effectiveDeadline := cache.Deadline
-			if c.optimisticCacheEnabled && c.optimisticCacheTtl > 0 {
-				effectiveDeadline = cache.Deadline.Add(time.Duration(c.optimisticCacheTtl) * time.Second)
+			if optimisticCacheEnabled && optimisticCacheTtl > 0 {
+				effectiveDeadline = cache.Deadline.Add(time.Duration(optimisticCacheTtl) * time.Second)
 			}
 
 			if effectiveDeadline.After(now) {
@@ -1093,7 +1234,7 @@ func (c *DnsController) evictExpiredDnsCache(now time.Time) {
 
 	// Step 2: LRU eviction if cache size exceeds limit
 	// This is important when optimistic_cache_ttl=0 (never expire)
-	if c.maxCacheSize > 0 {
+	if maxCacheSize > 0 {
 		c.evictLRUIfFull()
 	}
 }
@@ -1132,6 +1273,7 @@ func (c *DnsController) putLRUScratch(entries []cacheEntry) {
 // with large caches. For typical cache sizes (<1000), the overhead is negligible.
 // For large caches (>5000), this is 10-100x faster than insertion sort.
 func (c *DnsController) evictLRUIfFull() {
+	_, _, maxCacheSize := c.currentOptimisticCacheConfig()
 	// Count current cache size
 	var count int
 	c.dnsCache.Range(func(_, _ any) bool {
@@ -1139,13 +1281,13 @@ func (c *DnsController) evictLRUIfFull() {
 		return true
 	})
 
-	if count <= c.maxCacheSize {
+	if count <= maxCacheSize {
 		return
 	}
 
 	// Find and evict oldest entries
 	// Need to evict (count - maxCacheSize) entries
-	numToEvict := count - c.maxCacheSize
+	numToEvict := count - maxCacheSize
 
 	// Collect all cache entries with their access times
 	// Reuse a scratch buffer to avoid allocating a new slice on every janitor run.
@@ -1216,6 +1358,7 @@ func (c *DnsController) evictLRUIfFull() {
 // See bpfUpdateWorker comment for the rationale — the same stale-context problem
 // applies here when the DnsController is reused across reload generations.
 func (c *DnsController) startDnsCacheJanitor() {
+	c.requireStore()
 	go func() {
 		ticker := time.NewTicker(dnsCacheJanitorInterval)
 		defer ticker.Stop()
@@ -1240,6 +1383,7 @@ func (c *DnsController) startDnsCacheJanitor() {
 // See bpfUpdateWorker comment for the rationale — the same stale-context problem
 // applies here when the DnsController is reused across reload generations.
 func (c *DnsController) startCacheEvictor() {
+	c.requireStore()
 	go func() {
 		defer close(c.evictorDone)
 		if c.evictorQ == nil {
@@ -1272,6 +1416,7 @@ func (c *DnsController) startCacheEvictor() {
 }
 
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
+	c.requireStore()
 	val, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
 		return nil
@@ -1304,6 +1449,7 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 // OPTIMISTIC CACHE (RFC 8767): Returns stale response while background refresh is in progress.
 // Falls back to an owned in-place TTL-aware pack if pre-packed response is not available.
 func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte, needRefresh bool) {
+	c.requireStore()
 	// Load cache directly without expiry check (to support optimistic cache)
 	val, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
@@ -1352,10 +1498,11 @@ func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string
 	}
 
 	// Cache expired - check if optimistic cache is enabled
-	if c.optimisticCacheEnabled {
+	optimisticCacheEnabled, optimisticCacheTtl, _ := c.currentOptimisticCacheConfig()
+	if optimisticCacheEnabled {
 		// Try stale response (RFC 8767)
 		// Use optimisticCacheTtl (0 means never expire)
-		if resp = cache.GetStaleResponse(now, c.optimisticCacheTtl); resp != nil {
+		if resp = cache.GetStaleResponse(now, optimisticCacheTtl); resp != nil {
 			// Within stale window - return stale response and trigger background refresh
 			// Use CAS to ensure only one goroutine triggers refresh
 			if cache.refreshing.CompareAndSwap(false, true) {
@@ -1542,6 +1689,7 @@ func (c *DnsController) __updateDnsCacheDeadline(cacheKey string, host string, d
 }
 
 func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
+	c.requireStore()
 	return c.__updateDnsCacheDeadline("", host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
 		if rt := c.runtime(); rt != nil {
@@ -1554,6 +1702,7 @@ func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers, n
 }
 
 func (c *DnsController) UpdateDnsCacheTtlWithKey(cacheKey string, host string, dnsTyp uint16, answers, ns, extra []dnsmessage.RR, ttl int) (err error) {
+	c.requireStore()
 	return c.__updateDnsCacheDeadline(cacheKey, host, dnsTyp, answers, ns, extra, func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
 		if rt := c.runtime(); rt != nil {
@@ -1905,6 +2054,7 @@ func (c *DnsController) getOrCreateDnsForwarder(upstream *dns.Upstream, dialArg 
 }
 
 func (c *DnsController) forwardWithDialArg(ctx context.Context, upstream *dns.Upstream, dialArg *dialArgument, data []byte) (*dnsmessage.Msg, error) {
+	c.requireStore()
 	key := newDnsForwarderKey(upstream, dialArg)
 	for range 2 {
 		entry, err := c.getOrCreateDnsForwarder(upstream, dialArg)
@@ -2003,6 +2153,7 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 }
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
+	c.requireStore()
 	var upstreamIndex consts.DnsRequestOutboundIndex
 	var upstream *dns.Upstream
 
@@ -2198,7 +2349,7 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 	}
 
 	// Fast path: no ip_version_prefer set, bypass all preference logic
-	if c.qtypePrefer == 0 {
+	if c.currentQtypePrefer() == 0 {
 		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 	}
 
@@ -2463,8 +2614,9 @@ func (c *DnsController) sendRejectWithResponseWriter_(dnsMessage *dnsmessage.Msg
 //
 // The function returns the response to use (preferred if arrived during wait, otherwise original).
 func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage.Msg {
+	c.requireStore()
 	// Fast path: preference not enabled
-	if c.qtypePrefer == 0 {
+	if c.currentQtypePrefer() == 0 {
 		return respMsg
 	}
 
@@ -2481,9 +2633,10 @@ func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage
 	qname := dnsmessage.CanonicalName(q.Name)
 
 	// Case 1: This is the preferred response type - notify waiting requests
-	if isPreferredType(q.Qtype, c.qtypePrefer) {
+	qtypePrefer := c.currentQtypePrefer()
+	if isPreferredType(q.Qtype, qtypePrefer) {
 		// Notify any waiting requests for this domain
-		if c.prefWaitRegistry.notifyPreferred(qname, q.Qtype, c.qtypePrefer) {
+		if c.prefWaitRegistry.notifyPreferred(qname, q.Qtype, qtypePrefer) {
 			if c.log.IsLevelEnabled(logrus.TraceLevel) {
 				c.log.Tracef("Preferred %v response for %v notified waiting request", QtypeToString(q.Qtype), qname)
 			}
@@ -2492,11 +2645,11 @@ func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage
 	}
 
 	// Case 2: This is a non-preferred response - register wait and wait for preferred
-	if wait := c.prefWaitRegistry.registerWait(qname, q.Qtype, c.qtypePrefer); wait != nil {
+	if wait := c.prefWaitRegistry.registerWait(qname, q.Qtype, qtypePrefer); wait != nil {
 		// Non-preferred response arrived before preferred - wait briefly for preferred
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.Tracef("Non-preferred %v response for %v, waiting %v for preferred %v",
-				QtypeToString(q.Qtype), qname, PreferenceResolutionDelay, QtypeToString(c.qtypePrefer))
+				QtypeToString(q.Qtype), qname, PreferenceResolutionDelay, QtypeToString(qtypePrefer))
 		}
 
 		// Wait for preferred response or timeout
@@ -2508,11 +2661,11 @@ func (c *DnsController) applyPreferenceWait(respMsg *dnsmessage.Msg) *dnsmessage
 		if preferred {
 			if c.log.IsLevelEnabled(logrus.TraceLevel) {
 				c.log.Tracef("Preferred %v response arrived for %v during wait for %v",
-					QtypeToString(c.qtypePrefer), qname, QtypeToString(q.Qtype))
+					QtypeToString(qtypePrefer), qname, QtypeToString(q.Qtype))
 			}
 		} else if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.Tracef("Preferred %v response not arrived for %v within %v, using %v response",
-				QtypeToString(c.qtypePrefer), qname, PreferenceResolutionDelay, QtypeToString(q.Qtype))
+				QtypeToString(qtypePrefer), qname, PreferenceResolutionDelay, QtypeToString(q.Qtype))
 		}
 
 		// Always return the original response. The wait only changes when we

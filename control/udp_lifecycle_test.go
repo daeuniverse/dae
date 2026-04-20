@@ -17,11 +17,12 @@ import (
 
 func TestDnsControllerReportDnsForwardFailure_PenalizesOnlyDnsUdpDomain(t *testing.T) {
 	d := newTestProxyEndpointDialer("hysteria2", "proxy.example:443")
-	ctrl := &DnsController{}
 	var callbackCalls atomic.Int32
-	ctrl.timeoutExceedCallback = func(dialArg *dialArgument, err error) {
-		callbackCalls.Add(1)
-	}
+	ctrl := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.timeoutExceedCallback = func(dialArg *dialArgument, err error) {
+			callbackCalls.Add(1)
+		}
+	})
 
 	dialArg := &dialArgument{
 		l4proto:    consts.L4ProtoStr_UDP,

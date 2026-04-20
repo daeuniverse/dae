@@ -25,6 +25,9 @@ type RulesOptimizer interface {
 }
 
 func DeepCloneRules(rules []*config_parser.RoutingRule) (newRules []*config_parser.RoutingRule) {
+	if rules == nil {
+		return nil
+	}
 	return deepcopy.Copy(rules).([]*config_parser.RoutingRule)
 }
 
