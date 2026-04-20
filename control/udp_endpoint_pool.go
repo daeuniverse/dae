@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -38,7 +39,7 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) start() {
-	buf := pool.GetFullCap(consts.EthernetMtu)
+	buf := pool.GetFullCap(netutils.GetEthernetMtu())
 	defer pool.Put(buf)
 	for {
 		n, from, err := ue.conn.ReadFrom(buf[:])
