@@ -343,15 +343,16 @@ func (p *bpfPrograms) Close() error {
 }
 
 func _BpfClose(closers ...io.Closer) error {
+	errs := make([]error, 0, len(closers))
 	for _, closer := range closers {
 		if closer == nil {
 			continue
 		}
 		if err := closer.Close(); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Additional type and function stubs for stub build

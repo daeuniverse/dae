@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -375,7 +376,8 @@ func dnsConfigFingerprint(dns config.Dns) string {
 				writeFunction(f)
 			}
 		default:
-			b.WriteString("unsupported")
+			b.WriteString("unsupported:")
+			b.WriteString(fmt.Sprintf("%T", value))
 		}
 		b.WriteByte(';')
 	}

@@ -49,6 +49,12 @@ var responseSlotPool = sync.Pool{
 	},
 }
 
+// sendHttpDNSFunc and sendStreamDNSFunc are indirections for testing only.
+// Production code always uses the default sendHttpDNS / sendStreamDNS values.
+// Tests may replace them to mock HTTP or stream DNS transport without real I/O.
+var sendHttpDNSFunc = sendHttpDNS
+var sendStreamDNSFunc = sendStreamDNS
+
 func newResponseSlot() *responseSlot {
 	return responseSlotPool.Get().(*responseSlot)
 }
@@ -190,26 +196,76 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument, log *log
 type DoH struct {
 	dns.Upstream
 	netproxy.Dialer
-	dialArgument dialArgument
-	http3        bool
-	client       *http.Client
+	dialArgument  dialArgument
+	http3         bool
+	mu            sync.Mutex
+	closed        bool
+	client        *http.Client
+	clientFactory func() *http.Client
 }
 
 func (d *DoH) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	if d.client == nil {
-		d.client = d.getClient()
+	client := d.getOrCreateClient()
+	if client == nil {
+		return nil, net.ErrClosed
 	}
-	msg, err := sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
-	if err != nil {
-		// If failed to send DNS request, we should try to create a new client.
-		d.client = d.getClient()
-		msg, err = sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
-		if err != nil {
-			return nil, err
-		}
+	msg, err := sendHttpDNSFunc(client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+	if err == nil {
 		return msg, nil
 	}
+	if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+		return nil, err
+	}
+
+	client = d.replaceClient(client)
+	if client == nil {
+		return nil, net.ErrClosed
+	}
+	msg, err = sendHttpDNSFunc(client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+	if err != nil {
+		return nil, err
+	}
 	return msg, nil
+}
+
+func (d *DoH) getOrCreateClient() *http.Client {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	if d.client == nil {
+		d.client = d.newClient()
+	}
+	return d.client
+}
+
+func (d *DoH) replaceClient(previous *http.Client) *http.Client {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil
+	}
+	if d.client != nil && d.client != previous {
+		client := d.client
+		d.mu.Unlock()
+		return client
+	}
+	oldClient := d.client
+	nextClient := d.newClient()
+	d.client = nextClient
+	d.mu.Unlock()
+	if oldClient != nil {
+		oldClient.CloseIdleConnections()
+	}
+	return nextClient
+}
+
+func (d *DoH) newClient() *http.Client {
+	if d.clientFactory != nil {
+		return d.clientFactory()
+	}
+	return d.getClient()
 }
 
 func (d *DoH) getClient() *http.Client {
@@ -222,6 +278,10 @@ func (d *DoH) getClient() *http.Client {
 
 	return &http.Client{
 		Transport: roundTripper,
+		// Disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return fmt.Errorf("do not use a server that will redirect, upstream: %v", d.String())
+		},
 	}
 }
 
@@ -279,8 +339,12 @@ func (d *DoH) getHttp3RoundTripper() *http3.Transport {
 }
 
 func (d *DoH) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = true
 	if d.client != nil {
 		d.client.CloseIdleConnections()
+		d.client = nil
 	}
 	return nil
 }
@@ -288,28 +352,30 @@ func (d *DoH) Close() error {
 type DoQ struct {
 	dns.Upstream
 	netproxy.Dialer
-	dialArgument dialArgument
-	connection   quic.EarlyConnection
+	dialArgument      dialArgument
+	mu                sync.Mutex
+	connection        quic.EarlyConnection
+	closed            bool
+	connectionFactory func(context.Context) (quic.EarlyConnection, error)
 }
 
 func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	if d.connection == nil {
-		qc, err := d.createConnection(ctx)
-		if err != nil {
-			return nil, err
-		}
-		d.connection = qc
+	connection, err := d.getOrCreateConnection(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	stream, err := d.connection.OpenStreamSync(ctx)
+	stream, err := connection.OpenStreamSync(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
 		// If failed to open stream, we should try to create a new connection.
-		qc, err := d.createConnection(ctx)
+		connection, err = d.replaceConnection(ctx, connection)
 		if err != nil {
 			return nil, err
 		}
-		d.connection = qc
-		stream, err = d.connection.OpenStreamSync(ctx)
+		stream, err = connection.OpenStreamSync(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -324,13 +390,78 @@ func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, err
 	// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
 	binary.BigEndian.PutUint16(data[0:2], 0)
 
-	msg, err := sendStreamDNS(stream, data)
+	msg, err := sendStreamDNSFunc(stream, data)
 	if err != nil {
 		return nil, err
 	}
 	return msg, nil
 }
+
+func (d *DoQ) getOrCreateConnection(ctx context.Context) (quic.EarlyConnection, error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if d.connection != nil {
+		c := d.connection
+		d.mu.Unlock()
+		return c, nil
+	}
+	d.mu.Unlock()
+
+	qc, err := d.createConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.installConnection(qc)
+}
+
+func (d *DoQ) replaceConnection(ctx context.Context, previous quic.EarlyConnection) (quic.EarlyConnection, error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if d.connection != nil && d.connection != previous {
+		c := d.connection
+		d.mu.Unlock()
+		return c, nil
+	}
+	if d.connection != nil {
+		_ = d.connection.CloseWithError(0, "")
+		d.connection = nil
+	}
+	d.mu.Unlock()
+
+	qc, err := d.createConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.installConnection(qc)
+}
+
+func (d *DoQ) installConnection(qc quic.EarlyConnection) (quic.EarlyConnection, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		_ = qc.CloseWithError(0, "")
+		return nil, net.ErrClosed
+	}
+	if d.connection != nil {
+		_ = qc.CloseWithError(0, "")
+		return d.connection, nil
+	}
+	d.connection = qc
+	return qc, nil
+}
+
 func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
+	if d.connectionFactory != nil {
+		return d.connectionFactory(ctx)
+	}
 	udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
 	conn, err := d.dialArgument.bestDialer.DialContext(
 		ctx,
@@ -357,8 +488,13 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 }
 
 func (d *DoQ) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = true
 	if d.connection != nil {
-		return d.connection.CloseWithError(0, "")
+		err := d.connection.CloseWithError(0, "")
+		d.connection = nil
+		return err
 	}
 	return nil
 }
@@ -1057,10 +1193,6 @@ func (d *DoUDP) Close() error {
 }
 
 func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, data []byte) (respMsg *dnsmessage.Msg, err error) {
-	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return fmt.Errorf("do not use a server that will redirect, upstream: %v", upstream.String())
-	}
 	serverURL := url.URL{
 		Scheme: "https",
 		Host:   target,
@@ -1196,8 +1328,9 @@ func (pc *pipelinedConn) closeWithErr(err error) {
 func (pc *pipelinedConn) readLoop() {
 	defer pc.closeWithErr(io.ErrUnexpectedEOF)
 
+	const dnsPipelineMaxResponseSize = 65535
+
 	for {
-		// Read 2-byte length
 		var header [2]byte
 		if _, err := io.ReadFull(pc.conn, header[:]); err != nil {
 			pc.closeWithErr(err)
@@ -1205,12 +1338,11 @@ func (pc *pipelinedConn) readLoop() {
 		}
 		l := binary.BigEndian.Uint16(header[:])
 
-		if l == 0 {
+		if l == 0 || int(l) > dnsPipelineMaxResponseSize {
 			pc.closeWithErr(fmt.Errorf("invalid DNS payload length: %d", l))
 			return
 		}
 
-		// Read payload
 		buf := pool.Get(int(l))
 		if _, err := io.ReadFull(pc.conn, buf); err != nil {
 			pool.Put(buf)
@@ -1220,7 +1352,6 @@ func (pc *pipelinedConn) readLoop() {
 
 		respMsg := new(dnsmessage.Msg)
 		if err := respMsg.Unpack(buf); err != nil {
-			// Protocol error, close connection
 			pool.Put(buf)
 			pc.closeWithErr(fmt.Errorf("bad DNS packet: %w", err))
 			return

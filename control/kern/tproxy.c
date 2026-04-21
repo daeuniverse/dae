@@ -621,9 +621,11 @@ tcp_listener_l4proto(const struct tcphdr *tcph)
 // 1. Use bpf_skb_pull_data to ensure header data is in linear region
 // 2. Use pointer arithmetic on skb->data to get header pointers
 // 3. Always check (ptr + 1) <= data_end before dereferencing
-// 4. Boundary check failures are bad packets, return error (not fallback)
+// 4. Boundary check failures return -1 to fall back to slow path;
+//    malformed packets (e.g. ihl < 5) return -EFAULT to drop immediately.
 //
-// Returns: 0 on success, -1 to fall back to slow path, positive on error
+// Returns: 0 on success, -1 to fall back to slow path, positive on error,
+//          -EFAULT for unrecoverable malformed packets.
 //
 // Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
 // boundaries on older verifiers.
@@ -669,9 +671,8 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	if (link_h_len == ETH_HLEN) {
 		struct ethhdr *eth_ptr = data;
 
-		// Simple boundary check - no fallback, just error
 		if ((void *)(eth_ptr + 1) > data_end)
-			return -EFAULT;
+			return -1;
 
 		ethh->h_proto = eth_ptr->h_proto;
 		// Direct assignment is more efficient than memcpy for small arrays
@@ -696,9 +697,9 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
 		struct iphdr *iph_ptr = data + offset;
 
-		// Simple boundary checks - errors are dropped, no fallback
 		if ((void *)(iph_ptr + 1) > data_end)
-			return -EFAULT;
+			return -1;
+		// Malformed IP header: ihl < 5 is invalid, no point falling back
 		if (iph_ptr->ihl < 5)
 			return -EFAULT;
 
@@ -731,7 +732,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct tcphdr *tcph_ptr = data + l4_offset;
 
 			if ((void *)(tcph_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			tcph->source = tcph_ptr->source;
 			tcph->dest = tcph_ptr->dest;
 			tcph->seq = tcph_ptr->seq;
@@ -748,7 +749,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct udphdr *udph_ptr = data + l4_offset;
 
 			if ((void *)(udph_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			udph->source = udph_ptr->source;
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
@@ -764,9 +765,8 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
 		struct ipv6hdr *ipv6h_ptr = data + offset;
 
-		// Boundary check for IPv6 header
 		if ((void *)(ipv6h_ptr + 1) > data_end)
-			return -EFAULT;
+			return -1;
 
 		ipv6h->version = ipv6h_ptr->version;
 		ipv6h->nexthdr = ipv6h_ptr->nexthdr;
@@ -807,7 +807,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 				struct frag_hdr *fragh = data + offset;
 
 				if ((void *)(fragh + 1) > data_end)
-					return -EFAULT;
+					return -1;
 				__u16 frag_off = bpf_ntohs(fragh->frag_off);
 
 				nexthdr = fragh->nexthdr;
@@ -822,7 +822,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 
 			ext_hdr = data + offset;
 			if ((void *)(ext_hdr + 2) > data_end)
-				return -EFAULT;
+				return -1;
 
 			nexthdr = ext_hdr[0];
 			offset += ipv6_optlen(ext_hdr[1]);
@@ -838,7 +838,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct tcphdr *tcph_ptr = data + offset;
 
 			if ((void *)(tcph_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			tcph->source = tcph_ptr->source;
 			tcph->dest = tcph_ptr->dest;
 			tcph->seq = tcph_ptr->seq;
@@ -855,7 +855,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct udphdr *udph_ptr = data + offset;
 
 			if ((void *)(udph_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			udph->source = udph_ptr->source;
 			udph->dest = udph_ptr->dest;
 			udph->len = udph_ptr->len;
@@ -867,7 +867,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			struct icmp6hdr *icmp6h_ptr = data + offset;
 
 			if ((void *)(icmp6h_ptr + 1) > data_end)
-				return -EFAULT;
+				return -1;
 			icmp6h->icmp6_type = icmp6h_ptr->icmp6_type;
 			icmp6h->icmp6_code = icmp6h_ptr->icmp6_code;
 			return 0;

@@ -28,16 +28,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var UdpRoutingResultCacheTtl = 300 * time.Millisecond
-var ErrEndpointFailed = fmt.Errorf("endpoint creation recently failed (negative cache)")
+var (
+	UdpRoutingResultCacheTtl = 300 * time.Millisecond
+	ErrEndpointFailed        = fmt.Errorf("endpoint creation recently failed (negative cache)")
+)
 
 // udpEndpointCreateShardCount is the number of sharded mutexes that guard
 // concurrent endpoint creation. 64 shards provide near-zero contention even
 // under high concurrent-create rates.
-const udpEndpointCreateShardCount = 64
-const udpEndpointJanitorInterval = 250 * time.Millisecond
-const udpEndpointPendingReplyPeerLimit = 8
-const udpEndpointReplyCacheSlots = 4
+const (
+	udpEndpointCreateShardCount      = 64
+	udpEndpointJanitorInterval       = 250 * time.Millisecond
+	udpEndpointPendingReplyPeerLimit = 8
+	udpEndpointReplyCacheSlots       = 4
+)
 
 type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
 
