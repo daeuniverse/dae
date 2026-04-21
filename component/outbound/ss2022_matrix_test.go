@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,15 @@ func makeBase64Key(length int, fill byte) string {
 func buildSSLinkUserInfo(cipher, password, name string) string {
 	userinfo := base64.RawURLEncoding.EncodeToString([]byte(cipher + ":" + password))
 	return fmt.Sprintf("ss://%s@127.0.0.1:443#%s", userinfo, name)
+}
+
+func buildSSLinkURLUserInfo(cipher, password, name string) string {
+	return (&url.URL{
+		Scheme:   "ss",
+		User:     url.UserPassword(cipher, password),
+		Host:     "127.0.0.1:443",
+		Fragment: name,
+	}).String()
 }
 
 func buildSSLinkWholeBase64(cipher, password, name string) string {
@@ -90,6 +100,12 @@ func TestSS2022_NewFromLink_Matrix(t *testing.T) {
 			name: "aes_256_single_psk_valid_whole_link_base64",
 			buildLink: func() string {
 				return buildSSLinkWholeBase64("2022-blake3-aes-256-gcm", psk32A, "n5")
+			},
+		},
+		{
+			name: "aes_256_single_psk_valid_percent_encoded_password",
+			buildLink: func() string {
+				return buildSSLinkURLUserInfo("2022-blake3-aes-256-gcm", psk32A, "n5b")
 			},
 		},
 		{
