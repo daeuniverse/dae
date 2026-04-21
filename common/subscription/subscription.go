@@ -8,6 +8,7 @@ package subscription
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,9 +80,10 @@ func ResolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 		return nil, fmt.Errorf("does not seems like a standard sip008 subscription")
 	}
 	for _, server := range sip.Servers {
+		userinfo := base64.RawURLEncoding.EncodeToString([]byte(server.Method + ":" + server.Password))
 		u := url.URL{
 			Scheme:   "ss",
-			User:     url.UserPassword(server.Method, server.Password),
+			User:     url.User(userinfo),
 			Host:     net.JoinHostPort(server.Server, strconv.Itoa(server.ServerPort)),
 			RawQuery: url.Values{"plugin": []string{server.PluginOpts}}.Encode(),
 			Fragment: server.Remarks,
