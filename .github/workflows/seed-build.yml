@@ -66,7 +66,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -96,13 +96,10 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Go 1.26
+        uses: actions/setup-go@v6
         with:
-          cache-dependency-path: |
-            go.mod
-            go.sum          
-          go-version: '1.24'
+          go-version: 1.26
 
       - name: Install Dependencies
         run: |
@@ -120,6 +117,8 @@ jobs:
         run: |
           mkdir -p ./build/
           export GOFLAGS="-trimpath -modcacherw"
+          # Go 1.26 optimization: newinliner, simd, heapminimum512kib, and randomizedheapbase64.
+          export GOEXPERIMENT="newinliner,simd,heapminimum512kib,randomizedheapbase64"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export CLANG=clang-15
@@ -135,9 +134,9 @@ jobs:
         run: ./build/dae-$ASSET_NAME --version
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
+          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
 
       - name: Report result

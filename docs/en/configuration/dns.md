@@ -114,7 +114,17 @@ dns {
             # Built-in outbounds in 'request': asis, reject.
             # You can also use user-defined upstreams.
 
-            # Available functions: qname, qtype.
+            # Available functions for ordinary DNS requests: qname, qtype.
+            # Additional internal dae selectors in the same block: sub, node, subnode.
+            # - sub(): subscription fetch requests
+            # - node(): node host resolution requests
+            # - subnode(): node host resolution requests for subscription-derived nodes
+            #   and it is checked before node()
+            # Internal selectors:
+            # - only affect dae's own DNS lookups
+            # - must target names defined in dns.upstream
+            # - do not use fallback
+            # - cannot be mixed with qname/qtype in the same rule
 
             # DNS request name (omit suffix dot '.').
             qname(geosite:category-ads-all) -> reject
@@ -126,6 +136,14 @@ dns {
             qtype(cname) -> googledns
             # disable ECH to avoid affecting traffic split
             qtype(https) -> reject
+
+            # Route dae's own subscription fetch DNS to googledns.
+            # sub(my_sub) -> googledns
+            # Route all nodes with "hk" in their name to googledns.
+            # node(name_keyword: hk) -> googledns
+            # Use alidns for nodes from subscription "my_sub" before node() rules are checked.
+            # subnode(subtag: my_sub) -> alidns
+
             # If no match, fallback to this upstream.
             fallback: asis
         }

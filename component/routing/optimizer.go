@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
@@ -24,6 +25,9 @@ type RulesOptimizer interface {
 }
 
 func DeepCloneRules(rules []*config_parser.RoutingRule) (newRules []*config_parser.RoutingRule) {
+	if rules == nil {
+		return nil
+	}
 	return deepcopy.Copy(rules).([]*config_parser.RoutingRule)
 }
 
@@ -51,8 +55,7 @@ func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config
 				function.Name = consts.Function_Ip
 			}
 			for _, param := range function.Params {
-				switch function.Name {
-				case consts.Function_Domain:
+				if function.Name == consts.Function_Domain {
 					// Rewrite to authoritative key name.
 					switch param.Key {
 					case "", "domain":
@@ -157,12 +160,46 @@ func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule
 type DatReaderOptimizer struct {
 	LocationFinder *assets.LocationFinder
 	Logger         *logrus.Logger
+	mu             sync.Mutex
+	// Cached params are immutable by contract once stored.
+	// cloneParams only copies the slice container while sharing *Param objects.
+	// Downstream optimizers must not mutate Param fields.
+	geoSiteCache map[string][]*config_parser.Param
+	geoIpCache   map[string][]*config_parser.Param
+}
+
+func cloneParams(params []*config_parser.Param) []*config_parser.Param {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make([]*config_parser.Param, len(params))
+	copy(out, params)
+	return out
+}
+
+func (o *DatReaderOptimizer) initCacheLocked() {
+	if o.geoSiteCache == nil {
+		o.geoSiteCache = make(map[string][]*config_parser.Param)
+	}
+	if o.geoIpCache == nil {
+		o.geoIpCache = make(map[string][]*config_parser.Param)
+	}
 }
 
 func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params []*config_parser.Param, err error) {
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
+
+	cacheKey := strings.ToLower(filename + ":" + code)
+	o.mu.Lock()
+	o.initCacheLocked()
+	if cached, ok := o.geoSiteCache[cacheKey]; ok {
+		o.mu.Unlock()
+		return cloneParams(cached), nil
+	}
+	o.mu.Unlock()
+
 	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
@@ -216,6 +253,12 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 			})
 		}
 	}
+
+	o.mu.Lock()
+	o.initCacheLocked()
+	o.geoSiteCache[cacheKey] = cloneParams(params)
+	o.mu.Unlock()
+
 	return params, nil
 }
 
@@ -223,6 +266,16 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
+
+	cacheKey := strings.ToLower(filename + ":" + code)
+	o.mu.Lock()
+	o.initCacheLocked()
+	if cached, ok := o.geoIpCache[cacheKey]; ok {
+		o.mu.Unlock()
+		return cloneParams(cached), nil
+	}
+	o.mu.Unlock()
+
 	filePath, err := o.LocationFinder.GetLocationAsset(o.Logger, filename)
 	if err != nil {
 		o.Logger.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
@@ -249,43 +302,89 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 			Val: netip.PrefixFrom(ip, int(item.Prefix)).String(),
 		})
 	}
+
+	o.mu.Lock()
+	o.initCacheLocked()
+	o.geoIpCache[cacheKey] = cloneParams(params)
+	o.mu.Unlock()
+
 	return params, nil
 }
 
 func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
-	var err error
-	for _, rule := range rules {
-		for _, f := range rule.AndFunctions {
-			var newParams []*config_parser.Param
-			for _, param := range f.Params {
-				// Parse this param and replace it with more.
-				var params []*config_parser.Param
-				switch param.Key {
-				case "geosite":
-					params, err = o.loadGeoSite("geosite", param.Val)
-				case "geoip":
-					params, err = o.loadGeoIp("geoip", param.Val)
-				case "ext":
-					fields := strings.SplitN(param.Val, ":", 2)
-					switch f.Name {
-					case consts.Function_Domain, consts.Function_QName:
-						params, err = o.loadGeoSite(fields[0], fields[1])
-					case consts.Function_Ip:
-						params, err = o.loadGeoIp(fields[0], fields[1])
+	// Process rules in parallel for better performance.
+	// Limit concurrency to avoid overwhelming the system.
+	type ruleResult struct {
+		index int
+		rule  *config_parser.RoutingRule
+		err   error
+	}
+
+	numWorkers := min(len(rules), 4)
+
+	sem := make(chan struct{}, numWorkers)
+	results := make(chan ruleResult, len(rules))
+	var wg sync.WaitGroup
+
+	for i, rule := range rules {
+		wg.Add(1)
+		go func(idx int, r *config_parser.RoutingRule) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Process this rule's functions
+			for _, f := range r.AndFunctions {
+				var newParams []*config_parser.Param
+				var loadErr error
+				for _, param := range f.Params {
+					// Parse this param and replace it with more.
+					var params []*config_parser.Param
+					switch param.Key {
+					case "geosite":
+						params, loadErr = o.loadGeoSite("geosite", param.Val)
+					case "geoip":
+						params, loadErr = o.loadGeoIp("geoip", param.Val)
+					case "ext":
+						fields := strings.SplitN(param.Val, ":", 2)
+						switch f.Name {
+						case consts.Function_Domain, consts.Function_QName:
+							params, loadErr = o.loadGeoSite(fields[0], fields[1])
+						case consts.Function_Ip:
+							params, loadErr = o.loadGeoIp(fields[0], fields[1])
+						default:
+							loadErr = fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
+						}
 					default:
-						return nil, fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
+						// Keep this param.
+						params = []*config_parser.Param{param}
 					}
-				default:
-					// Keep this param.
-					params = []*config_parser.Param{param}
+					if loadErr != nil {
+						results <- ruleResult{idx, nil, loadErr}
+						return
+					}
+					newParams = append(newParams, params...)
 				}
-				if err != nil {
-					return nil, err
-				}
-				newParams = append(newParams, params...)
 				f.Params = newParams
 			}
-		}
+			results <- ruleResult{idx, r, nil}
+		}(i, rule)
 	}
-	return rules, nil
+
+	// Wait for all goroutines to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	newRules := make([]*config_parser.RoutingRule, len(rules))
+	for result := range results {
+		if result.err != nil {
+			return nil, result.err
+		}
+		newRules[result.index] = result.rule
+	}
+
+	return newRules, nil
 }

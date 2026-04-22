@@ -8,6 +8,16 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/bpf-test.yml"
+  push:
+    branches:
+      - main
+      - kdae
+    paths:
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/bpf-test.yml"
 
 permissions: read-all
 
@@ -43,4 +53,3 @@ jobs:
         run: |
           git submodule update --init
           sudo CLANG=clang-$VERSION make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
-

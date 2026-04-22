@@ -19,8 +19,8 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
 	to = to.Elem()
-	if to.Type() != reflect.TypeOf([]string{}) &&
-		!(to.Kind() == reflect.Slice && to.Type().Elem().Kind() == reflect.String) {
+	if to.Type() != reflect.TypeFor[[]string]() &&
+		(to.Kind() != reflect.Slice || to.Type().Elem().Kind() != reflect.String) {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
 	for _, item := range section.Items {
@@ -61,7 +61,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		if !ok {
 			return fmt.Errorf("field \"%v\" has no mapstructure tag", structField.Name)
 		}
-		if key == "_" {
+		if key == "_" || key == "so_mark_from_dae_set" {
 			// omit
 			continue
 		}
@@ -78,7 +78,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		if ok {
 			// Can we assign?
 			if field.Kind() == reflect.Interface ||
-				field.Type() == reflect.TypeOf(defaultValue) {
+				field.Type() == reflect.TypeFor[string]() {
 				field.Set(reflect.ValueOf(defaultValue))
 
 				// Can we fuzzy decode?
@@ -108,28 +108,29 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			if itemVal.AndFunctions != nil {
 				// AndFunctions.
 				// If field is interface{} or types equal, we can assign.
-				if field.Val.Kind() == reflect.Interface ||
-					field.Val.Type() == reflect.TypeOf(itemVal.AndFunctions) {
+				switch {
+				case field.Val.Kind() == reflect.Interface ||
+					field.Val.Type() == reflect.TypeFor[[]*config_parser.Function]():
 					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
 
 					if field.Annotation.IsValid() {
-						if field.Annotation.Type() != reflect.TypeOf(itemVal.Annotation) {
+						if field.Annotation.Type() != reflect.TypeFor[[]*config_parser.Param]() {
 							return fmt.Errorf("[CODE BUG]: unmatched annotation type")
 						}
 						field.Annotation.Set(reflect.ValueOf(itemVal.Annotation))
 					}
-				} else if field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeOf(itemVal.AndFunctions)) {
+				case field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeFor[[]*config_parser.Function]()):
 					// If field is slice and repeatable, and slice element types match, we can append.
 					field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal.AndFunctions)))
 
 					if field.Annotation.IsValid() {
-						if field.Annotation.Type() != reflect.SliceOf(reflect.TypeOf(itemVal.Annotation)) {
+						if field.Annotation.Type() != reflect.SliceOf(reflect.TypeFor[[]*config_parser.Param]()) {
 							return fmt.Errorf("[CODE BUG]: unmatched annotation type")
 						}
 						// We also append if `itemVal.Annotation == nil` because we want the same annotation length with the field's.
 						field.Annotation.Set(reflect.Append(field.Annotation, reflect.ValueOf(itemVal.Annotation)))
 					}
-				} else {
+				default:
 					return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 				}
 			} else {
@@ -173,7 +174,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		case *config_parser.RoutingRule:
 			// Assign. "to" should have field "Rules".
 			structField, ok := to.Type().FieldByName("Rules")
-			if !ok || structField.Type != reflect.TypeOf([]*config_parser.RoutingRule{}) {
+			if !ok || structField.Type != reflect.TypeFor[[]*config_parser.RoutingRule]() {
 				return fmt.Errorf("cannot use routing rule in this context: %v", itemVal.String(true, false, false))
 			}
 			if structField.Tag.Get("mapstructure") != "_" {
@@ -259,8 +260,6 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 	default:
 		goto unsupported
 	}
-
-	panic("code should not reach here")
 
 unsupported:
 	return fmt.Errorf("unsupported section type %v", to.Type())

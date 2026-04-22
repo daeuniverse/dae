@@ -17,9 +17,15 @@ import (
 type patch func(params *Config) error
 
 var patches = []patch{
+	patchBootstrapResolver,
 	patchTcpCheckHttpMethod,
 	patchEmptyDns,
 	patchMustOutbound,
+}
+
+func patchBootstrapResolver(params *Config) error {
+	_, err := BootstrapResolvers(&params.Global)
+	return err
 }
 
 func patchTcpCheckHttpMethod(params *Config) error {
@@ -53,7 +59,11 @@ func patchMustOutbound(params *Config) error {
 			})
 		}
 	}
-	if f := FunctionOrStringToFunction(params.Routing.Fallback); strings.HasPrefix(f.Name, "must_") {
+	f, err := ParseFunctionOrString(params.Routing.Fallback)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(f.Name, "must_") {
 		f.Name = strings.TrimPrefix(f.Name, "must_")
 		f.Params = append(f.Params, &config_parser.Param{
 			Val: "must",

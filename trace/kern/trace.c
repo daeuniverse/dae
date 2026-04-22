@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+
 #include "headers/if_ether_defs.h"
 #include "headers/vmlinux.h"
 
@@ -77,7 +80,8 @@ get_netns(struct sk_buff *skb)
 	// if skb->dev is not initialized, try to get ns from sk->__sk_common.skc_net.net->ns.inum
 	if (netns == 0)	{
 		struct sock *sk = BPF_CORE_READ(skb, sk);
-		if (sk != NULL)
+
+		if (sk)
 			netns = BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum);
 	}
 
@@ -93,15 +97,19 @@ filter_l3_and_l4(struct sk_buff *skb)
 
 	struct iphdr *l3_hdr = (struct iphdr *) (skb_head + l3_off);
 	u8 ip_vsn = BPF_CORE_READ_BITFIELD_PROBED(l3_hdr, version);
+
 	if (ip_vsn != tracing_cfg.ip_vsn)
 		return false;
 
 	u16 l4_proto;
+
 	if (ip_vsn == 4) {
 		struct iphdr *ip4 = (struct iphdr *) l3_hdr;
+
 		l4_proto = BPF_CORE_READ(ip4, protocol);
 	} else if (ip_vsn == 6) {
 		struct ipv6hdr *ip6 = (struct ipv6hdr *) l3_hdr;
+
 		l4_proto = BPF_CORE_READ(ip6, nexthdr);
 	} else {
 		return false;
@@ -111,12 +119,15 @@ filter_l3_and_l4(struct sk_buff *skb)
 		return false;
 
 	u16 sport, dport;
+
 	if (l4_proto == IPPROTO_TCP) {
 		struct tcphdr *tcp = (struct tcphdr *) (skb_head + l4_off);
+
 		sport = BPF_CORE_READ(tcp, source);
 		dport = BPF_CORE_READ(tcp, dest);
 	} else if (l4_proto == IPPROTO_UDP) {
 		struct udphdr *udp = (struct udphdr *) (skb_head + l4_off);
+
 		sport = BPF_CORE_READ(udp, source);
 		dport = BPF_CORE_READ(udp, dest);
 	} else {
@@ -141,8 +152,10 @@ set_meta(struct meta *meta, struct sk_buff *skb, struct pt_regs *ctx)
 	BPF_CORE_READ_STR_INTO(&meta->ifname, skb, dev, name);
 
 	struct task_struct *current = (void *)bpf_get_current_task();
+
 	meta->pid = BPF_CORE_READ(current, pid);
 	u64 arg_start = BPF_CORE_READ(current, mm, arg_start);
+
 	bpf_probe_read_user_str(&meta->pname, PNAME_LEN, (void *)arg_start);
 }
 
@@ -157,8 +170,10 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 	u8 ip_vsn = BPF_CORE_READ_BITFIELD_PROBED(l3_hdr, version);
 
 	u16 l3_total_len;
+
 	if (ip_vsn == 4) {
 		struct iphdr *ip4 = (struct iphdr *) l3_hdr;
+
 		BPF_CORE_READ_INTO(&tpl->saddr, ip4, saddr);
 		BPF_CORE_READ_INTO(&tpl->daddr, ip4, daddr);
 		tpl->l4_proto = BPF_CORE_READ(ip4, protocol);
@@ -166,6 +181,7 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 		l3_total_len = bpf_ntohs(BPF_CORE_READ(ip4, tot_len));
 	} else if (ip_vsn == 6) {
 		struct ipv6hdr *ip6 = (struct ipv6hdr *) l3_hdr;
+
 		BPF_CORE_READ_INTO(&tpl->saddr, ip6, saddr);
 		BPF_CORE_READ_INTO(&tpl->daddr, ip6, daddr);
 		tpl->l4_proto = BPF_CORE_READ(ip6, nexthdr);
@@ -175,16 +191,19 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 	u16 l3_hdr_len = l4_off - l3_off;
 
 	u16 l4_hdr_len;
+
 	if (tpl->l4_proto == IPPROTO_TCP) {
 		struct tcphdr *tcp = (struct tcphdr *) (skb_head + l4_off);
+
 		tpl->sport= BPF_CORE_READ(tcp, source);
 		tpl->dport= BPF_CORE_READ(tcp, dest);
 		bpf_probe_read_kernel(&tpl->tcp_flags, sizeof(tpl->tcp_flags),
-				    (void *)tcp + offsetof(struct tcphdr, ack_seq) + 5);
+				      (void *)tcp + offsetof(struct tcphdr, ack_seq) + 5);
 		l4_hdr_len = BPF_CORE_READ_BITFIELD_PROBED(tcp, doff) * 4;
 		tpl->payload_len = l3_total_len - l3_hdr_len - l4_hdr_len;
 	} else if (tpl->l4_proto == IPPROTO_UDP) {
 		struct udphdr *udp = (struct udphdr *) (skb_head + l4_off);
+
 		tpl->sport= BPF_CORE_READ(udp, source);
 		tpl->dport= BPF_CORE_READ(udp, dest);
 		tpl->payload_len = bpf_ntohs(BPF_CORE_READ(udp, len)) - sizeof(struct udphdr);
@@ -197,6 +216,7 @@ handle_skb(struct sk_buff *skb, struct pt_regs *ctx)
 	bool tracked = false;
 	u64 skb_addr = (u64) skb;
 	struct event ev = {};
+
 	if (bpf_map_lookup_elem(&skb_addresses, &skb_addr)) {
 		tracked = true;
 		goto cont;
@@ -234,6 +254,7 @@ SEC("kprobe/skb_lifetime_termination")
 int kprobe_skb_lifetime_termination(struct pt_regs *ctx)
 {
 	u64 skb = (u64) PT_REGS_PARM1(ctx);
+
 	bpf_map_delete_elem(&skb_addresses, &skb);
 	return 0;
 }

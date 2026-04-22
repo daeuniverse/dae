@@ -22,7 +22,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -42,7 +41,6 @@ type dnsConfig struct {
 	lookup        []string      // OpenBSD top-level database "lookup" order
 	err           error         // any error that occurs during open of resolv.conf
 	mtime         time.Time     // time of resolv.conf modification
-	soffset       uint32        // used by serverOffset
 	singleRequest bool          // use sequential A and AAAA queries instead of parallel queries
 	useTCP        bool          // force usage of TCP for DNS resolutions
 }
@@ -61,7 +59,7 @@ func dnsReadConfig(filename string) *dnsConfig {
 		conf.err = err
 		return conf
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if fi, err := file.Stat(); err == nil {
 		conf.mtime = fi.ModTime()
 	} else {
@@ -164,17 +162,6 @@ func dnsReadConfig(filename string) *dnsConfig {
 		conf.search = dnsDefaultSearch()
 	}
 	return conf
-}
-
-// serverOffset returns an offset that can be used to determine
-// indices of servers in c.servers when making queries.
-// When the rotate option is enabled, this offset increases.
-// Otherwise it is always 0.
-func (c *dnsConfig) serverOffset() uint32 {
-	if c.rotate {
-		return atomic.AddUint32(&c.soffset, 1) - 1 // return 0 to start
-	}
-	return 0
 }
 
 func dnsDefaultSearch() []string {

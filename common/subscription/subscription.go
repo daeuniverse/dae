@@ -8,6 +8,7 @@ package subscription
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,8 +53,8 @@ func ResolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) 
 	}
 
 	// Simply check and preprocess.
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(raw, "\n")
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -79,9 +80,10 @@ func ResolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 		return nil, fmt.Errorf("does not seems like a standard sip008 subscription")
 	}
 	for _, server := range sip.Servers {
+		userinfo := base64.RawURLEncoding.EncodeToString([]byte(server.Method + ":" + server.Password))
 		u := url.URL{
 			Scheme:   "ss",
-			User:     url.UserPassword(server.Method, server.Password),
+			User:     url.User(userinfo),
 			Host:     net.JoinHostPort(server.Server, strconv.Itoa(server.ServerPort)),
 			RawQuery: url.Values{"plugin": []string{server.PluginOpts}}.Encode(),
 			Fragment: server.Remarks,
@@ -106,7 +108,7 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// Check file access.
 	fi, err := f.Stat()
 	if err != nil {
@@ -170,7 +172,6 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		}
 		persistToFile = true
 		subscription = strings.Replace(subscription, "-file", "", 1)
-		break
 	default:
 	}
 	req, err = http.NewRequest("GET", subscription, nil)
@@ -194,8 +195,8 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 
 		return "", nil, err
 	}
-	defer resp.Body.Close()
-	b, err = io.ReadAll(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	b, err = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max subscription size
 	if err != nil {
 		return "", nil, err
 	}
@@ -214,7 +215,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		if err != nil {
 			return "", nil, err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		_, err = file.Write(b)
 		if err != nil {

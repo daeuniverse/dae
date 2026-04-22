@@ -55,7 +55,7 @@ global {
     dial_mode: domain
     disable_waiting_network: false
     auto_config_kernel_parameter: true
-    sniffing_timeout: 100ms
+    sniffing_timeout: 30ms
 }
 ```
 

@@ -14,6 +14,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [Unreleased](#unreleased)
 - [v1.1.0rc1 (Pre-release)](#v110rc1-pre-release)
 - [v1.0.0 (Latest)](#v100-latest)
 - [v0.9.0)](#v090)
@@ -47,6 +48,21 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### Unreleased
+
+#### Features
+
+- feat(dns): add robust DNS forward fallback path for `tcp+udp` upstream (UDP-first with TCP fallback on request failure).
+
+#### Bug Fixes
+
+- fix(dns): report DNS forward failures to dialer health feedback path to improve failover quality.
+- fix(control): harden DNS/UDP connection lifecycle handling in high-concurrency paths.
+
+#### Others
+
+- test(control): add regression tests for DNS fallback, timeout cleanup, and pool concurrency safety.
 
 ### v1.1.0rc1 (Pre-release)
 
@@ -366,7 +382,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - docs(protocols): delete redundant line in [#452](https://github.com/daeuniverse/dae/pull/452) by (@bradfordzhang)
 - ci(Makefile): enable trace module by default in [#455](https://github.com/daeuniverse/dae/pull/455) by (@hero-intelligent)
-- ci: update actions/checkout@v3 to actions/checkout@v4 in [#461](https://github.com/daeuniverse/dae/pull/461) by (@MarksonHon)
+- ci: update actions/checkout@v3 to actions/checkout@v6 in [#461](https://github.com/daeuniverse/dae/pull/461) by (@MarksonHon)
 - ci: update ci modules using nodejs to latest in [#465](https://github.com/daeuniverse/dae/pull/465) by (@MarksonHon)
 - style: format bpf c code using kernel checkpatch.pl in [#477](https://github.com/daeuniverse/dae/pull/477) by (@jschwinger233)
 - chore: bump submodule dae_bpf_headers in [#487](https://github.com/daeuniverse/dae/pull/487) by (@jschwinger233)

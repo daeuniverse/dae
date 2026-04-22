@@ -15,6 +15,7 @@ on:
   push:
     branches:
       - main
+      - kdae
     paths:
       - "**/*.go"
       - "**/*.c"
@@ -36,7 +37,8 @@ jobs:
     secrets: inherit
 
   build:
-    uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
+    # uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
+    uses: ./.github/workflows/seed-build.yml
     with:
       ref: ${{ github.sha }}
       build-type: main-build

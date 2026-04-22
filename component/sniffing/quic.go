@@ -14,33 +14,53 @@ import (
 )
 
 const (
-	QuicFlag_PacketNumberLength = iota
-	QuicFlag_PacketNumberLength1
-	QuicFlag_Reserved
-	QuicFlag_Reserved1
-	QuicFlag_LongPacketType
-	QuicFlag_LongPacketType1
-	QuicFlag_FixedBit
-	QuicFlag_HeaderForm
+	QuicFlag_PacketNumberLength = 0
+	QuicFlag_Reserved           = 2
+	QuicFlag_LongPacketType     = 4
+	QuicFlag_FixedBit           = 6
+	QuicFlag_HeaderForm         = 7
 )
 const (
 	QuicFlag_HeaderForm_LongHeader  = 1
 	QuicFlag_LongPacketType_Initial = 0
 )
 
-type QuicReassemblePolicy int
-
 const (
-	QuicReassemblePolicy_ReassembleCryptoToBytesFromPool QuicReassemblePolicy = iota
-	QuicReassemblePolicy_LinearLocator
-	QuicReassemblePolicy_Slow
+	QuicVersion1 = 0x00000001
 )
+
+// IsLikelyQuicInitialPacket checks if the buffer appears to be a QUIC Initial packet.
+// It validates the Long Header format and Initial packet type.
+//
+// Version and FixedBit are NOT strictly checked to maintain compatibility with
+// various QUIC implementations (e.g., Nginx, Cloudflare) and versions (v1, v2, drafts).
+// This follows the principle of being liberal in what we accept for sniffing purposes.
+func IsLikelyQuicInitialPacket(buf []byte) bool {
+	const minQuicInitialHeaderLen = 7
+	if len(buf) < minQuicInitialHeaderLen {
+		return false
+	}
+	protectedFlag := buf[0]
+
+	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b1) != QuicFlag_HeaderForm_LongHeader {
+		return false
+	}
+	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != QuicFlag_LongPacketType_Initial {
+		return false
+	}
+
+	// Note: Version and FixedBit checks intentionally omitted to support all QUIC versions.
+	// The header form and packet type checks are sufficient for identifying likely
+	// QUIC Initial packets for sniffing purposes.
+
+	return true
+}
 
 func (s *Sniffer) SniffQuic() (d string, err error) {
 	nextBlock := s.buf.Bytes()[s.quicNextRead:]
 	isQuic := false
 	for {
-		s.quicCryptos, nextBlock, err = sniffQuicBlock(s.quicCryptos, nextBlock)
+		s.quicCryptos, nextBlock, err = sniffQuicBlock(s, s.quicCryptos, nextBlock)
 		if err != nil {
 			// If block is not a quic block, return it.
 			if errors.Is(err, ErrNotApplicable) {
@@ -74,7 +94,7 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 	return sni, nil
 }
 
-func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*quicutils.CryptoFrameOffset, next []byte, err error) {
+func sniffQuicBlock(s *Sniffer, cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*quicutils.CryptoFrameOffset, next []byte, err error) {
 	// QUIC: A UDP-Based Multiplexed and Secure Transport
 	// https://datatracker.ietf.org/doc/html/rfc9000#name-initial-packet
 	const dstConnIdPos = 6
@@ -144,10 +164,11 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 		copy(header[boundary-quicutils.MaxPacketNumberLength:], rawPacketNumber)
 		pool.Put(rawPacketNumber)
 	}()
-	plaintext, err := quicutils.DecryptQuic_(header, blockEnd, destConnId)
+	plaintext, err := quicutils.DecryptQuic_(buf, boundary-quicutils.MaxPacketNumberLength, blockEnd, destConnId)
 	if err != nil {
 		return cryptos, nil, ErrNotApplicable
 	}
+	s.quicPlaintexts = append(s.quicPlaintexts, plaintext)
 	// Now, we confirm it is exact a quic frame.
 	// After here, we should not return NotApplicableError.
 	// And we should return nextFrame.

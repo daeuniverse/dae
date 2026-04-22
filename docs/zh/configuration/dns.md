@@ -113,7 +113,16 @@ dns {
             # asis 即向收到的 DNS 请求中的目标服务器查询，请勿将其他局域网设备 DNS 服务器设为 dae:53（小心回环）。
             # 你可以使用在 upstream 中配置的 DNS 上游。
 
-            # 可以使用: qname, qtype。
+            # 普通 DNS 请求可使用: qname, qtype。
+            # 同一个块里还支持 dae 自身使用的内部选择器: sub, node, subnode。
+            # - sub(): 订阅拉取时的解析请求
+            # - node(): 节点地址解析请求
+            # - subnode(): 订阅节点的地址解析请求，并且优先级高于 node()
+            # 这些内部选择器:
+            # - 只影响 dae 自身发起的解析
+            # - 目标只能是 dns.upstream 中定义的名称
+            # - 不使用 fallback
+            # - 不能和 qname/qtype 混写在同一条规则里
 
             # DNS 查询域名（省略后缀点 '.'）。
             qname(geosite:category-ads-all) -> reject
@@ -125,6 +134,14 @@ dns {
             qtype(cname) -> googledns
             # 禁用 ECH 避免影响分流
             qtype(https) -> reject
+
+            # 将 dae 自身拉取订阅时的 DNS 查询发到 googledns。
+            # sub(my_sub) -> googledns
+            # 名称里包含 "hk" 的节点解析走 googledns。
+            # node(name_keyword: hk) -> googledns
+            # 来自订阅 "my_sub" 的节点优先走 alidns，再考虑 node()。
+            # subnode(subtag: my_sub) -> alidns
+
             # fallback 意为 default。
             # 如果上面的都不匹配，使用这个 upstream。
             fallback: asis

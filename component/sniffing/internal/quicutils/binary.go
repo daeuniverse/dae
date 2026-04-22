@@ -14,7 +14,7 @@ func BigEndianUvarint(buf []byte) (uint64, int, error) {
 		return 0, 0, io.ErrUnexpectedEOF
 	}
 	length := 1 << (buf[0] >> 6)
-	if length == 0 {
+	if len(buf) < length {
 		return 0, 0, io.ErrUnexpectedEOF
 	}
 	x := uint64(buf[0] & 0x3f)

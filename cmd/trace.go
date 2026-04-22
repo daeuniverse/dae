@@ -1,5 +1,4 @@
 //go:build trace
-// +build trace
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only

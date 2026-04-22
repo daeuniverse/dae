@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -14,8 +15,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	daerrors "github.com/daeuniverse/dae/common/errors"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -64,13 +68,16 @@ func ParseEndpoint(raw string) (endpoint Endpoint, err error) {
 }
 
 type DNSListener struct {
-	log        *logrus.Logger
-	tcpServer  *dnsmessage.Server
-	udpServer  *dnsmessage.Server
-	endpoint   Endpoint
-	controller *ControlPlane
-	mu         sync.Mutex
+	log       *logrus.Logger
+	tcpServer *dnsmessage.Server
+	udpServer *dnsmessage.Server
+	endpoint  Endpoint
+	mu        sync.Mutex
+
+	controller atomic.Pointer[ControlPlane]
 }
+
+const dnsListenerShutdownTimeout = 5 * time.Second
 
 // NewDNSListener creates a new DNS listener
 func NewDNSListener(log *logrus.Logger, endpoint string, controller *ControlPlane) (*DNSListener, error) {
@@ -80,16 +87,30 @@ func NewDNSListener(log *logrus.Logger, endpoint string, controller *ControlPlan
 	}
 
 	ret := &DNSListener{
-		log:        log,
-		controller: controller,
-		endpoint:   e,
+		log:      log,
+		endpoint: e,
 	}
+	ret.controller.Store(controller)
 
 	return ret, nil
 }
 
 func (d *DNSListener) Addr() string {
 	return d.endpoint.Addr
+}
+
+func (d *DNSListener) Controller() *ControlPlane {
+	if d == nil {
+		return nil
+	}
+	return d.controller.Load()
+}
+
+func (d *DNSListener) SwapController(controller *ControlPlane) {
+	if d == nil {
+		return
+	}
+	d.controller.Store(controller)
 }
 
 // Start starts the DNS listener
@@ -106,8 +127,8 @@ func (d *DNSListener) Start() error {
 
 	// Create DNS handler
 	handler := &dnsHandler{
-		controller: d.controller,
-		log:        d.log,
+		listener: d,
+		log:      d.log,
 	}
 
 	if d.endpoint.UDP {
@@ -139,9 +160,7 @@ func (d *DNSListener) Start() error {
 		go func() {
 			d.log.Infof("Starting DNS TCP listener on %s", d.tcpServer.Addr)
 			if err := d.tcpServer.ListenAndServe(); err != nil {
-				if err := d.tcpServer.ListenAndServe(); err != nil {
-					d.log.Errorf("Failed to start DNS TCP listener: %v", err)
-				}
+				d.log.Errorf("Failed to start DNS TCP listener: %v", err)
 			}
 		}()
 	}
@@ -158,17 +177,21 @@ func (d *DNSListener) Stop() error {
 
 	// Stop UDP server
 	if d.udpServer != nil {
-		if err := d.udpServer.Shutdown(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsListenerShutdownTimeout)
+		if err := d.udpServer.ShutdownContext(ctx); err != nil {
 			errs = append(errs, err)
 		}
+		cancel()
 		d.udpServer = nil
 	}
 
 	// Stop TCP server
 	if d.tcpServer != nil {
-		if err := d.tcpServer.Shutdown(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsListenerShutdownTimeout)
+		if err := d.tcpServer.ShutdownContext(ctx); err != nil {
 			errs = append(errs, err)
 		}
+		cancel()
 		d.tcpServer = nil
 	}
 
@@ -178,38 +201,154 @@ func (d *DNSListener) Stop() error {
 	return nil
 }
 
+func dnsFallbackAddr(preferV6 bool) netip.Addr {
+	if preferV6 {
+		return UnspecifiedAddressAAAA
+	}
+	return UnspecifiedAddressA
+}
+
+// parseDNSListenerAddrPort parses listener bind address to AddrPort for request metadata.
+// It is tolerant to wildcard/hostname forms (e.g. ":53", "localhost:53").
+func parseDNSListenerAddrPort(raw string, preferV6 bool) (netip.AddrPort, error) {
+	if addrPort, err := netip.ParseAddrPort(raw); err == nil {
+		return addrPort, nil
+	}
+
+	host, portStr, err := net.SplitHostPort(raw)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	if i := strings.LastIndex(host, "%"); i >= 0 {
+		// Strip IPv6 zone suffix, netip.ParseAddr does not accept zones.
+		host = host[:i]
+	}
+
+	if host == "" || host == "*" {
+		return netip.AddrPortFrom(dnsFallbackAddr(preferV6), uint16(port)), nil
+	}
+
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return netip.AddrPortFrom(ip, uint16(port)), nil
+	}
+
+	// Hostname or unknown format: keep port and fallback to unspecified address.
+	return netip.AddrPortFrom(dnsFallbackAddr(preferV6), uint16(port)), nil
+}
+
 // dnsHandler implements the dns.Handler interface
 type dnsHandler struct {
-	controller *ControlPlane
-	log        *logrus.Logger
+	listener *DNSListener
+	log      *logrus.Logger
+}
+
+func isDNSClientWriteGoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "write" {
+		return daerrors.IsIgnorableConnectionError(err) || daerrors.IsClosedConnection(err)
+	}
+	// Fallback for wrapped errors where net.OpError is lost.
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "write") && daerrors.ContainsIgnorableErrorPattern(errStr)
+}
+
+func isDNSTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // ServeDNS handles DNS requests
 func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			h.log.Errorf("Panic in DNS listener handler: %v", rec)
+			if w != nil && r != nil {
+				m := new(dnsmessage.Msg)
+				m.SetRcode(r, dnsmessage.RcodeServerFailure)
+				_ = w.WriteMsg(m)
+			}
+		}
+	}()
+
+	if w == nil || r == nil {
+		return
+	}
+	controller := h.listener.Controller()
+	uploadRecord := RecordUploadTraffic
+	downloadRecord := RecordDownloadTraffic
+	if controller != nil {
+		uploadRecord = controller.runtimeUploadRecorder()
+		downloadRecord = controller.runtimeDownloadRecorder()
+	}
+	w = wrapRuntimeTrackedDNSResponseWriter(w, downloadRecord)
+	recordDNSListenerRequest(w, r, uploadRecord)
+
 	// Create a fake udpRequest to pass to the DNS controller
 	clientAddr := w.RemoteAddr()
+	if clientAddr == nil {
+		h.log.Errorf("Failed to parse client address: nil RemoteAddr")
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+		return
+	}
 	var clientIPPort netip.AddrPort
 
 	// Parse client address
 	host, portStr, err := net.SplitHostPort(clientAddr.String())
 	if err != nil {
 		h.log.Errorf("Failed to parse client address: %v", err)
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
 		return
 	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		h.log.Errorf("Failed to parse client port: %v", err)
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
 		return
+	}
+
+	if i := strings.LastIndex(host, "%"); i >= 0 {
+		host = host[:i]
 	}
 
 	clientIP, err := netip.ParseAddr(host)
 	if err != nil {
 		h.log.Errorf("Failed to parse client IP: %v", err)
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
 		return
 	}
 
 	clientIPPort = netip.AddrPortFrom(clientIP, uint16(port))
+	preferV6 := clientIP.Is6() && !clientIP.Is4In6()
+	listenerAddr := ":53"
+	if controller != nil && controller.dnsListener != nil && controller.dnsListener.Addr() != "" {
+		listenerAddr = controller.dnsListener.Addr()
+	}
+	realDst, err := parseDNSListenerAddrPort(listenerAddr, preferV6)
+	if err != nil {
+		h.log.WithError(err).Warnf("Failed to parse local DNS bind address %q, fallback to unspecified address", listenerAddr)
+		realDst = netip.AddrPortFrom(dnsFallbackAddr(preferV6), 53)
+	}
 
 	// Create routing result (fake)
 	routingResult := &bpfRoutingResult{
@@ -224,20 +363,57 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 
 	// Handle the DNS request using the existing DNS controller
 	udpReq := &udpRequest{
-		realSrc:       clientIPPort,
-		realDst:       netip.MustParseAddrPort(h.controller.dnsListener.Addr()),
-		src:           clientIPPort,
-		lConn:         nil, // Not used in this context
-		routingResult: routingResult,
+		realSrc:        clientIPPort,
+		realDst:        realDst,
+		src:            clientIPPort,
+		lConn:          nil, // Not used in this context
+		routingResult:  routingResult,
+		uploadRecord:   uploadRecord,
+		downloadRecord: downloadRecord,
 	}
 
-	err = h.controller.dnsController.HandleWithResponseWriter_(r, udpReq, w)
-	if err != nil {
-		h.log.Errorf("Failed to handle DNS request: %v", err)
-		// Send error response
+	ctx := context.Background()
+	if controller != nil && controller.ctx != nil {
+		ctx = controller.ctx
+	}
+	if controller == nil {
 		m := new(dnsmessage.Msg)
 		m.SetRcode(r, dnsmessage.RcodeServerFailure)
 		_ = w.WriteMsg(m)
+		return
+	}
+	dnsController := controller.ActiveDnsController()
+	if dnsController == nil {
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+		return
+	}
+	err = dnsController.HandleWithResponseWriter_(controller.dnsRequestContext(ctx, dnsController), r, udpReq, w)
+	if err != nil {
+		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+			// REFUSED response has been written by DNS controller.
+			return
+		}
+		if isDNSClientWriteGoneError(err) {
+			if h.log.IsLevelEnabled(logrus.DebugLevel) {
+				h.log.WithError(err).Debug("Drop DNS response because client connection is already gone")
+			}
+			return
+		}
+		if isDNSTimeoutError(err) {
+			h.log.WithError(err).Debug("DNS request handling timed out")
+		} else {
+			h.log.WithError(err).Error("Failed to handle DNS request")
+		}
+		// Send error response
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		if writeErr := w.WriteMsg(m); writeErr != nil && !isDNSClientWriteGoneError(writeErr) {
+			if h.log.IsLevelEnabled(logrus.DebugLevel) {
+				h.log.WithError(writeErr).Debug("Failed to write DNS SERVFAIL response")
+			}
+		}
 		return
 	}
 }

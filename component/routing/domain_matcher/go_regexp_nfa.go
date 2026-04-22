@@ -40,9 +40,7 @@ func (n *GoRegexpNfa) AddSet(bitIndex int, patterns []string, typ consts.Routing
 			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "^"+d+"$")
 		}
 	case consts.RoutingDomainKey_Keyword:
-		for _, d := range patterns {
-			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], d)
-		}
+		n.toBuild[bitIndex] = append(n.toBuild[bitIndex], patterns...)
 	case consts.RoutingDomainKey_Regex:
 		for _, d := range patterns {
 			// Check if it is a valid regexp.

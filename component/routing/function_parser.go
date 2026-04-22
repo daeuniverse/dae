@@ -125,7 +125,11 @@ func parsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
 	for _, value := range values {
 		toParse := value
 		if strings.LastIndexByte(value, '/') == -1 {
-			toParse += "/32"
+			if strings.Contains(value, ":") {
+				toParse += "/128"
+			} else {
+				toParse += "/32"
+			}
 		}
 		prefix, err := netip.ParsePrefix(toParse)
 		if err != nil {

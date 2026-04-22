@@ -9,29 +9,57 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/kernel-test.yml"
+  push:
+    branches:
+      - main
+      - kdae
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/kernel-test.yml"
 
 jobs:
 
   build:
     runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
+    - name: Set up Go 1.26
+      uses: actions/setup-go@v6
       with:
-        cache-dependency-path: |
-          go.mod
-          go.sum
-        go-version: '1.24'
+        go-version: 1.26
+
+    - name: Go cache
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
 
     - name: Generate and build
       run: |
         git submodule update --init
+        # Go 1.26 optimization: newinliner, simd, heapminimum512kib, and randomizedheapbase64.
+        export GOEXPERIMENT="newinliner,simd,heapminimum512kib,randomizedheapbase64"
         make GOFLAGS="-buildvcs=false" CC=clang
 
+    - name: Verify built binary is real eBPF (not stub)
+      run: |
+        set -euo pipefail
+        if strings ./dae | grep -Fq "eBPF objects are unavailable in this build"; then
+          echo "stub eBPF build detected in ./dae; expected real eBPF artifact"
+          exit 1
+        fi
+
     - name: Store executable
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: dae
         path: dae
@@ -43,7 +71,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: [ '6.1-20250527.055456', '6.6-20250527.055456', '6.12-20250527.055456' ]
+        # Only support 6.6 and 6.12 kernels
+        # 6.1 support has been dropped due to BPF verifier limitations
+        kernel: [ '6.6-20250527.055456', '6.12-20250527.055456' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
@@ -60,7 +90,6 @@ jobs:
           test-name: dae-test
           image-version: ${{ matrix.kernel }}
           host-mount: ./
-          dns-resolver: '1.1.1.1'
           install-dependencies: 'true'
           cmd: |
             chmod +x /host/dae/dae
@@ -168,7 +197,17 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             cat dae.log
 
       - name: Check WAN IPv4 TCP
@@ -211,7 +250,10 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae dig @2606:4700:4700::1111 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup WAN UDP port conflict
@@ -224,7 +266,17 @@ jobs:
             docker restart -t0 dae v2ray
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check WAN IPv4 UDP with port conflict
@@ -245,7 +297,10 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae dig @2606:4700:4700::1111 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup LAN
@@ -321,7 +376,17 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             cat dae.log
 
       - name: Check LAN IPv4 TCP
@@ -364,7 +429,10 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
 
       - name: Setup LAN UDP port conflict
@@ -383,8 +451,22 @@ jobs:
 
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             nohup docker exec dae nc -lu 53 &> nc.log &
+
+            # Wait for IPv6 connectivity to converge after namespace rebuild
+            sleep 3
+            docker exec dae ping -c1 fd00:ffff::1
 
       - name: Check LAN IPv4 UDP with port conflict
         uses: cilium/little-vm-helper@v0.0.28
@@ -404,5 +486,8 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            for i in 1 2 3; do
+              docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one && break
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'

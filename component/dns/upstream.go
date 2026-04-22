@@ -9,19 +9,23 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
-	"sync"
-	"time"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
 var (
 	ErrFormat = fmt.Errorf("format error")
 )
+
+// newUpstreamFunc is a test seam for deterministic UpstreamResolver contract tests.
+var newUpstreamFunc = NewUpstream
+
+type resolveUpstreamIp46Func func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
 
 type UpstreamScheme string
 
@@ -96,23 +100,32 @@ type Upstream struct {
 	*netutils.Ip46
 }
 
-func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
+func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string, resolveIp46 resolveUpstreamIp46Func) (up *Upstream, err error) {
 	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	systemDns, err := netutils.SystemDns()
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
+	ip46 := &netutils.Ip46{}
+	if addr, parseErr := netip.ParseAddr(hostname); parseErr == nil {
+		if addr.Is4() || addr.Is4In6() {
+			ip46.Ip4 = addr.Unmap()
+		} else {
+			ip46.Ip6 = addr
 		}
-	}()
-
-	ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
+	} else {
+		if resolveIp46 == nil {
+			return nil, fmt.Errorf("dns_upstream %v requires global.bootstrap_resolver because hostname is not an IP address", upstream.String())
+		}
+		var err4, err6 error
+		ip46, err4, err6 = resolveIp46(ctx, hostname, resolverNetwork)
+		if ip46 == nil {
+			ip46 = &netutils.Ip46{}
+		}
+		if err4 != nil && err6 != nil {
+			return nil, fmt.Errorf("resolve dns_upstream %v: A(%v) AAAA(%v)", upstream.String(), err4, err6)
+		}
+	}
 	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
 	}
@@ -153,33 +166,79 @@ func (u *Upstream) String() string {
 }
 
 type UpstreamResolver struct {
-	Raw     *url.URL
-	Network string
+	Raw         *url.URL
+	Network     string
+	ResolveIp46 resolveUpstreamIp46Func
 	// FinishInitCallback may be invoked again if err is not nil
 	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
-	mu                 sync.Mutex
-	upstream           *Upstream
-	init               bool
+
+	// OPTIMIZATION: Use atomic pointer for lock-free concurrent access with retry support.
+	// - nil: not initialized yet
+	// - &errorSentinel: initialization failed, should retry
+	// - *Upstream: successfully initialized
+	//
+	// This approach:
+	// 1. Avoids mutex contention on hot path (cache hits)
+	// 2. Allows retry on transient failures (important for proxy chains)
+	// 3. Uses CAS to prevent thundering herd on initialization
+	state atomic.Pointer[upstreamState]
 }
 
-func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if !u.init {
-		defer func() {
-			if err == nil {
-				if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
-					u.upstream = nil
-					return
-				}
-				u.init = true
-			}
-		}()
-		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
-		defer cancel()
-		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
-			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
+// upstreamState holds the result of initialization.
+type upstreamState struct {
+	upstream *Upstream
+	err      error
+}
+
+// errorSentinel is a marker to indicate initialization failed and should retry.
+// We use a pointer instead of a special value to avoid allocations on each failure.
+var errorSentinel upstreamState
+
+// GetUpstream returns the upstream resolver, initializing it if necessary.
+// OPTIMIZATION: Uses atomic pointer for lock-free reads after successful initialization.
+// Retries on transient failures (important for unstable proxy connections).
+//
+// State machine:
+//   - nil: not initialized yet
+//   - &errorSentinel: initialization failed, should retry
+//   - *upstreamState: successfully initialized (or permanently failed)
+//
+// Retry behavior:
+//   - On transient failure (e.g., proxy timeout), stores errorSentinel to allow retry
+//   - On retry, attempts initialization again
+//   - Once initialized successfully, returns cached result without blocking
+func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
+	// Fast path: check if already initialized (lock-free read)
+	state := u.state.Load()
+	if state != nil && state != &errorSentinel {
+		return state.upstream, state.err
+	}
+
+	// Slow path: initialize
+	// Note: Multiple goroutines may reach here concurrently, which is OK.
+	// Each will attempt initialization, and the last one to Store wins.
+	// This is acceptable because:
+	// 1. Initialization is idempotent (same URL always produces same result)
+	// 2. The cost of duplicate initialization is outweighed by avoiding lock contention
+
+	upstream, err := newUpstreamFunc(ctx, u.Raw, u.Network, u.ResolveIp46)
+	if err != nil {
+		// Mark as failed, allow retry on next call
+		u.state.Store(&errorSentinel)
+		return nil, fmt.Errorf("failed to init dns upstream: %w", err)
+	}
+
+	// Call finish callback if set
+	if u.FinishInitCallback != nil {
+		if err = u.FinishInitCallback(u.Raw, upstream); err != nil {
+			// Mark as failed, allow retry on next call
+			u.state.Store(&errorSentinel)
+			return nil, err
 		}
 	}
-	return u.upstream, nil
+
+	// Success: atomically store the result
+	newState := &upstreamState{upstream: upstream}
+	u.state.Store(newState)
+	return upstream, nil
 }

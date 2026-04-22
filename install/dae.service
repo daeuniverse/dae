@@ -7,13 +7,36 @@ Wants=network-online.target
 [Service]
 Type=notify
 User=root
-LimitNPROC=512
+
+# Resource limits
+# MemoryHigh triggers GC but doesn't kill the process - safer than MemoryMax
+MemoryHigh=512M
+# No hard memory limit - let dae manage its own memory
+# Increase process limit for parallel operations
+LimitNPROC=4096
 LimitNOFILE=1048576
+
+# OOM score adjustment: -1000 (never kill) to 1000 (always kill first)
+# -100 means dae is less likely to be killed than normal processes
+OOMScoreAdjust=-100
+
+# Go runtime environment (optional, remove to use system defaults)
+# Uncomment these if you want to limit CPU usage or tune GC
+# Environment=GOMAXPROCS=4
+# Environment=GOGC=100
+
+# Startup and reload commands
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
 ExecReload=/usr/bin/dae reload $MAINPID
-Restart=on-abnormal
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+
+# Timeout configuration
 TimeoutStartSec=120
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

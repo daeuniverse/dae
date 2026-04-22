@@ -1,0 +1,355 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ */
+
+package control
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/daeuniverse/outbound/netproxy"
+	dnsmessage "github.com/miekg/dns"
+	"github.com/stretchr/testify/require"
+)
+
+type trackedTestConn struct {
+	closeOnce  sync.Once
+	closeCalls atomic.Int32
+	closeCh    chan struct{}
+}
+
+func (c *trackedTestConn) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *trackedTestConn) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (c *trackedTestConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeCalls.Add(1)
+		if c.closeCh != nil {
+			close(c.closeCh)
+		}
+	})
+	return nil
+}
+
+func (c *trackedTestConn) SetDeadline(_ time.Time) error {
+	return nil
+}
+
+func (c *trackedTestConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (c *trackedTestConn) SetWriteDeadline(_ time.Time) error {
+	return nil
+}
+
+func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {
+	p := newUdpConnPool(8, 8, func(ctx context.Context) (netproxy.Conn, error) {
+		return newTestPipeConn(), nil
+	})
+
+	const workers = 8
+	stop := make(chan struct{})
+	start := make(chan struct{})
+	panicCh := make(chan any, workers)
+	var wg sync.WaitGroup
+
+	for range workers {
+		wg.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					panicCh <- r
+				}
+			}()
+
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					p.put(newTestPipeConn())
+				}
+			}
+		})
+	}
+
+	close(start)
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, p.close())
+	close(stop)
+	wg.Wait()
+
+	select {
+	case r := <-panicCh:
+		t.Fatalf("unexpected panic from concurrent put/close: %v", r)
+	default:
+	}
+}
+
+func TestUdpConnPool_GetFailsFastWhenSaturated(t *testing.T) {
+	var dialCalls atomic.Int32
+	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
+		dialCalls.Add(1)
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = p.close() }()
+
+	conn, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	type result struct {
+		conn netproxy.Conn
+		err  error
+	}
+	waiterDone := make(chan result, 1)
+	go func() {
+		reused, err := p.get(ctx)
+		waiterDone <- result{conn: reused, err: err}
+	}()
+
+	select {
+	case res := <-waiterDone:
+		require.Nil(t, res.conn)
+		require.ErrorIs(t, res.err, ErrDNSUDPConnPoolExhausted)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for saturated get() to fail fast")
+	}
+
+	p.put(conn)
+
+	reused, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, conn, reused)
+	require.EqualValues(t, 1, dialCalls.Load())
+	p.put(reused)
+}
+
+func TestUdpConnPool_CloseClosesBorrowedLiveConnImmediately(t *testing.T) {
+	tracked := &trackedTestConn{closeCh: make(chan struct{})}
+	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
+		return tracked, nil
+	})
+
+	conn, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, tracked, conn)
+
+	require.NoError(t, p.close())
+
+	select {
+	case <-tracked.closeCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for borrowed live conn to close during pool shutdown")
+	}
+
+	require.EqualValues(t, 1, tracked.closeCalls.Load())
+	require.Zero(t, p.activeCount.Load())
+
+	_, err = p.get(context.Background())
+	require.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+func TestUdpConnPool_ConcurrentBurstFailsFastAndCapsDialsAtMaxActive(t *testing.T) {
+	var dialCalls atomic.Int32
+	p := newUdpConnPool(2, 2, func(ctx context.Context) (netproxy.Conn, error) {
+		dialCalls.Add(1)
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = p.close() }()
+
+	conn1, err := p.get(context.Background())
+	require.NoError(t, err)
+	conn2, err := p.get(context.Background())
+	require.NoError(t, err)
+
+	const burst = 16
+	start := make(chan struct{})
+	errCh := make(chan error, burst)
+	var wg sync.WaitGroup
+
+	for range burst {
+		wg.Go(func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+			defer cancel()
+			_, err := p.get(ctx)
+			errCh <- err
+		})
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		require.ErrorIs(t, err, ErrDNSUDPConnPoolExhausted)
+	}
+	require.EqualValues(t, 2, dialCalls.Load())
+
+	p.put(conn1)
+	p.put(conn2)
+
+	reused, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, reused)
+	p.put(reused)
+}
+
+func newTestPipeConn() netproxy.Conn {
+	client, server := net.Pipe()
+	go func() {
+		_, _ = io.Copy(io.Discard, server)
+		_ = server.Close()
+	}()
+	return client
+}
+
+func TestConnPool_GetNotBlockedBySlowDial(t *testing.T) {
+	var dialCalls atomic.Int32
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+
+	pool := newConnPool(2, func(ctx context.Context) (netproxy.Conn, error) {
+		call := dialCalls.Add(1)
+		if call == 1 {
+			return newTestPipeConn(), nil
+		}
+		close(dialStarted)
+		select {
+		case <-releaseDial:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = pool.close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn1, err := pool.get(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, conn1)
+
+	// Force next get() to enter scale-up path and start slow dial.
+	conn1.pendingCount.Store(connPoolScaleUpPendingThreshold)
+
+	done := make(chan error, 1)
+	go func() {
+		_, e := pool.get(ctx)
+		done <- e
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow dial was not started")
+	}
+
+	// Lower load so another get() should quickly reuse existing conn.
+	conn1.pendingCount.Store(0)
+
+	start := time.Now()
+	conn2, err := pool.get(ctx)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	require.NotNil(t, conn2)
+	require.Less(t, elapsed, 80*time.Millisecond, "get() should not be blocked by another goroutine's slow dial")
+
+	close(releaseDial)
+	require.NoError(t, <-done)
+}
+
+func TestDnsControllerReportDnsForwardFailureIgnoresLocalPoolExhaustion(t *testing.T) {
+	var callbackCalls atomic.Int32
+	controller := setTestDnsControllerRuntime(&DnsController{}, func(rt *dnsControllerRuntimeState) {
+		rt.timeoutExceedCallback = func(*dialArgument, error) {
+			callbackCalls.Add(1)
+		}
+	})
+
+	controller.reportDnsForwardFailure(&dialArgument{}, ErrDNSUDPConnPoolExhausted)
+	require.Zero(t, callbackCalls.Load())
+
+	controller.reportDnsForwardFailure(&dialArgument{}, context.Canceled)
+	require.Zero(t, callbackCalls.Load())
+
+	controller.reportDnsForwardFailure(&dialArgument{}, errors.New("upstream timeout"))
+	require.EqualValues(t, 1, callbackCalls.Load())
+}
+
+func TestResponseSlot_ReuseHasNoStaleData(t *testing.T) {
+	slot := newResponseSlot()
+	msg := &dnsmessage.Msg{}
+	slot.set(msg)
+
+	got, err := slot.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, msg, got)
+
+	putResponseSlot(slot)
+
+	slot2 := newResponseSlot()
+	defer putResponseSlot(slot2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	got, err = slot2.get(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Nil(t, got)
+}
+
+func TestResponseSlot_NilMeansUnexpectedEOF(t *testing.T) {
+	slot := newResponseSlot()
+	defer putResponseSlot(slot)
+
+	slot.set(nil)
+	got, err := slot.get(context.Background())
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Nil(t, got)
+}
+
+func TestConnPool_GetSkipsLocallyClosedConnection(t *testing.T) {
+	var dialCalls atomic.Int32
+	p := newConnPool(1, func(ctx context.Context) (netproxy.Conn, error) {
+		dialCalls.Add(1)
+		return newTestPipeConn(), nil
+	})
+	defer func() { _ = p.close() }()
+
+	first, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, first)
+
+	first.Close()
+	select {
+	case <-first.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pipelined connection to close")
+	}
+
+	second, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.NotSame(t, first, second, "pool should not reuse a connection closed by the caller")
+	require.EqualValues(t, 2, dialCalls.Load())
+}
