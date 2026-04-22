@@ -62,6 +62,7 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - feat(bpf): update verifier-safe tproxy datapath by @olicesx.
 - feat(control): introduce datapath janitor and DNS runtime management by @olicesx.
 - feat(control): add runtime DNS accounting and statistics tracking by @olicesx.
+- feat(workflows): update CI configurations for `kdae` branch support by @olicesx.
 
 #### Bug Fixes
 
@@ -75,7 +76,6 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 - chore(ci): refresh workflows and eBPF tooling by @olicesx.
 - chore(outbound): bump SS2022 parser fix by @olicesx.
-- feat(workflows): update CI configurations for `kdae` branch support by @olicesx.
 - test(control): add regression tests for DNS fallback, timeout cleanup, and pool concurrency safety by @olicesx.
 - test: add benchmarks and fuzz tests for DNS cache, QUIC, and sniffing components by @olicesx.
 
