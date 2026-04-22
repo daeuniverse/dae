@@ -3005,6 +3005,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	}
 
 	c.markReady()
+	c.publishRuntimeStats()
 	sentReady = true
 	select {
 	case readyChan <- true:
@@ -3679,6 +3680,7 @@ func (c *ControlPlane) Close() (err error) {
 	}
 
 	c.closeOnce.Do(func() {
+		c.unpublishRuntimeStats()
 		if c.cancel != nil {
 			c.cancel()
 		}

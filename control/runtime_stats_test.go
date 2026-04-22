@@ -101,9 +101,12 @@ func (c *stagedRuntimeConn) WrittenBytes() []byte {
 func resetRuntimeStatsForTest(t *testing.T) {
 	t.Helper()
 	previous := globalRuntimeStats
+	previousActive := activeRuntimeStats.Load()
 	globalRuntimeStats = newRuntimeStats()
+	activeRuntimeStats.Store(nil)
 	t.Cleanup(func() {
 		globalRuntimeStats = previous
+		activeRuntimeStats.Store(previousActive)
 	})
 }
 
@@ -139,6 +142,80 @@ func TestSnapshotRuntimeStatsPreservesPublicFields(t *testing.T) {
 	}
 	if snapshot.UpdatedAt.IsZero() {
 		t.Fatal("UpdatedAt should be set")
+	}
+}
+
+func TestGlobalRuntimeStatsPreferPublishedActiveStore(t *testing.T) {
+	resetRuntimeStatsForTest(t)
+
+	active := newRuntimeStats()
+	publishRuntimeStatsStore(active)
+
+	RecordUploadTraffic(123)
+	RecordDownloadTraffic(45)
+
+	snapshot := SnapshotRuntimeStats(7, 9, 60, 10)
+	if snapshot.UploadTotal != 123 {
+		t.Fatalf("UploadTotal = %d, want 123", snapshot.UploadTotal)
+	}
+	if snapshot.DownloadTotal != 45 {
+		t.Fatalf("DownloadTotal = %d, want 45", snapshot.DownloadTotal)
+	}
+	if snapshot.ActiveConnections != 7 {
+		t.Fatalf("ActiveConnections = %d, want 7", snapshot.ActiveConnections)
+	}
+	if snapshot.UDPSessions != 9 {
+		t.Fatalf("UDPSessions = %d, want 9", snapshot.UDPSessions)
+	}
+	if globalRuntimeStats.uploadTotal.Load() != 0 {
+		t.Fatalf("global upload total = %d, want 0", globalRuntimeStats.uploadTotal.Load())
+	}
+	if globalRuntimeStats.downloadTotal.Load() != 0 {
+		t.Fatalf("global download total = %d, want 0", globalRuntimeStats.downloadTotal.Load())
+	}
+}
+
+func TestGlobalRuntimeStatsFallbackAfterUnpublish(t *testing.T) {
+	resetRuntimeStatsForTest(t)
+
+	active := newRuntimeStats()
+	publishRuntimeStatsStore(active)
+	unpublishRuntimeStatsStore(active)
+
+	RecordUploadTraffic(11)
+	RecordDownloadTraffic(13)
+
+	snapshot := SnapshotRuntimeStats(1, 2, 60, 10)
+	if snapshot.UploadTotal != 11 {
+		t.Fatalf("UploadTotal = %d, want 11", snapshot.UploadTotal)
+	}
+	if snapshot.DownloadTotal != 13 {
+		t.Fatalf("DownloadTotal = %d, want 13", snapshot.DownloadTotal)
+	}
+	if active.uploadTotal.Load() != 0 {
+		t.Fatalf("active upload total = %d, want 0", active.uploadTotal.Load())
+	}
+	if active.downloadTotal.Load() != 0 {
+		t.Fatalf("active download total = %d, want 0", active.downloadTotal.Load())
+	}
+}
+
+func TestUnpublishRuntimeStatsStoreDoesNotClearNewerActiveStore(t *testing.T) {
+	resetRuntimeStatsForTest(t)
+
+	oldActive := newRuntimeStats()
+	newActive := newRuntimeStats()
+	publishRuntimeStatsStore(oldActive)
+	publishRuntimeStatsStore(newActive)
+	unpublishRuntimeStatsStore(oldActive)
+
+	RecordUploadTraffic(19)
+
+	if newActive.uploadTotal.Load() != 19 {
+		t.Fatalf("new active upload total = %d, want 19", newActive.uploadTotal.Load())
+	}
+	if activeRuntimeStats.Load() != newActive {
+		t.Fatal("active runtime stats store changed, want newer active store to remain published")
 	}
 }
 
