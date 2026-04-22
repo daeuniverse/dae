@@ -6,6 +6,7 @@
 package outbound
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -39,6 +40,14 @@ func newDirectDialer(option *dialer.GlobalOption, fullcone bool) *dialer.Dialer 
 	return d
 }
 
+func emptyAnnotations(n int) []*dialer.Annotation {
+	annotations := make([]*dialer.Annotation, n)
+	for i := range annotations {
+		annotations[i] = &dialer.Annotation{}
+	}
+	return annotations
+}
+
 func TestDialerGroup_Select_Fixed(t *testing.T) {
 	option := &dialer.GlobalOption{
 		Log:               log,
@@ -53,7 +62,7 @@ func TestDialerGroup_Select_Fixed(t *testing.T) {
 		newDirectDialer(option, false),
 	}
 	fixedIndex := 1
-	g := NewDialerGroup(option, "test-group", dialers, []*dialer.Annotation{{}},
+	g := NewDialerGroup(option, "test-group", dialers, emptyAnnotations(len(dialers)),
 		DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy_Fixed,
 			FixedIndex: fixedIndex,
@@ -101,7 +110,7 @@ func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 		newDirectDialer(option, false),
 		newDirectDialer(option, false),
 	}
-	g := NewDialerGroup(option, "test-group", dialers, []*dialer.Annotation{{}},
+	g := NewDialerGroup(option, "test-group", dialers, emptyAnnotations(len(dialers)),
 		DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_MinLastLatency,
 		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
@@ -166,7 +175,7 @@ func TestDialerGroup_Select_Random(t *testing.T) {
 		newDirectDialer(option, false),
 		newDirectDialer(option, false),
 	}
-	g := NewDialerGroup(option, "test-group", dialers, []*dialer.Annotation{{}},
+	g := NewDialerGroup(option, "test-group", dialers, emptyAnnotations(len(dialers)),
 		DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_Random,
 		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
@@ -206,7 +215,7 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 		newDirectDialer(option, false),
 		newDirectDialer(option, false),
 	}
-	g := NewDialerGroup(option, "test-group", dialers, []*dialer.Annotation{{}},
+	g := NewDialerGroup(option, "test-group", dialers, emptyAnnotations(len(dialers)),
 		DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_Random,
 		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
@@ -233,5 +242,118 @@ func TestDialerGroup_SetAlive(t *testing.T) {
 	}
 	if count[zeroTarget] != 0 {
 		t.Fail()
+	}
+}
+
+func TestDialerGroup_Select_Random_WithAddWeight(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	annotations := []*dialer.Annotation{
+		{},
+		{AddWeight: 9},
+		{},
+	}
+	g := NewDialerGroup(option, "test-group", dialers, annotations,
+		DialerSelectionPolicy{
+			Policy: consts.DialerSelectionPolicy_Random,
+		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+	count := make([]int, len(dialers))
+	for i := 0; i < 1200; i++ {
+		d, _, err := g.Select(TestNetworkType, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for j, dd := range dialers {
+			if d == dd {
+				count[j]++
+				break
+			}
+		}
+	}
+	if count[1] <= count[0] || count[1] <= count[2] {
+		t.Fatalf("weighted dialer was not preferred enough: counts=%v", count)
+	}
+}
+
+func TestDialerGroup_Select_Random_WithAddWeight_IgnoreDeadDialer(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	annotations := []*dialer.Annotation{
+		{},
+		{AddWeight: 20},
+		{},
+	}
+	g := NewDialerGroup(option, "test-group", dialers, annotations,
+		DialerSelectionPolicy{
+			Policy: consts.DialerSelectionPolicy_Random,
+		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[1], false)
+	for i := 0; i < 300; i++ {
+		d, _, err := g.Select(TestNetworkType, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d == dialers[1] {
+			t.Fatal("dead weighted dialer should never be selected")
+		}
+	}
+}
+
+func TestDialerGroup_Select_Random_WithLargeAddWeight(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+	}
+	dialers := []*dialer.Dialer{
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+		newDirectDialer(option, false),
+	}
+	annotations := []*dialer.Annotation{
+		{AddWeight: math.MaxInt64 - 1},
+		{AddWeight: math.MaxInt64 - 1},
+		{AddWeight: math.MaxInt64 - 1},
+	}
+	g := NewDialerGroup(option, "test-group", dialers, annotations,
+		DialerSelectionPolicy{
+			Policy: consts.DialerSelectionPolicy_Random,
+		}, func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
+	count := make([]int, len(dialers))
+	for i := 0; i < 300; i++ {
+		d, _, err := g.Select(TestNetworkType, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for j, dd := range dialers {
+			if d == dd {
+				count[j]++
+				break
+			}
+		}
+	}
+	for i, c := range count {
+		if c == 0 {
+			t.Fatalf("dialer %d was never selected: counts=%v", i, count)
+		}
 	}
 }
