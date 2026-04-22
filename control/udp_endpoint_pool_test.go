@@ -263,6 +263,37 @@ func newTestFixedOutboundGroup(dialers ...*componentdialer.Dialer) *ob.DialerGro
 	)
 }
 
+func TestUdpEndpointPoolCount_AliasesLenAndHandlesNil(t *testing.T) {
+	var nilPool *UdpEndpointPool
+	if got := nilPool.Count(); got != 0 {
+		t.Fatalf("nil Count() = %d, want 0", got)
+	}
+	if got := nilPool.Len(); got != 0 {
+		t.Fatalf("nil Len() = %d, want 0", got)
+	}
+
+	pool := NewUdpEndpointPool()
+	defer pool.Close()
+
+	keys := []UdpEndpointKey{
+		{Src: netip.MustParseAddrPort("192.0.2.10:1000")},
+		{Src: netip.MustParseAddrPort("192.0.2.11:1001")},
+	}
+	for _, key := range keys {
+		shard := pool.shardFor(key)
+		shard.mu.Lock()
+		shard.pool[key] = &UdpEndpoint{}
+		shard.mu.Unlock()
+	}
+
+	if got, want := pool.Count(), len(keys); got != want {
+		t.Fatalf("Count() = %d, want %d", got, want)
+	}
+	if got, want := pool.Count(), pool.Len(); got != want {
+		t.Fatalf("Count() = %d, want Len() = %d", got, want)
+	}
+}
+
 func TestUdpEndpointRefreshTtlWithTime_UsesConfiguredLifetimeBeforeReply(t *testing.T) {
 	now := time.Unix(123, 0)
 	ue := &UdpEndpoint{

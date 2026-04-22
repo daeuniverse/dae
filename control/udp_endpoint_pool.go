@@ -1180,6 +1180,12 @@ func (p *UdpEndpointPool) Len() int {
 	return total
 }
 
+// Count returns the number of active UDP endpoints in the pool.
+// It is an alias for Len() and is provided for backward compatibility.
+func (p *UdpEndpointPool) Count() int {
+	return p.Len()
+}
+
 func normalizeUdpEndpointPoolNetworkType(networkType dialer.NetworkType) dialer.NetworkType {
 	if networkType.L4Proto == "" {
 		networkType.L4Proto = consts.L4ProtoStr_UDP
