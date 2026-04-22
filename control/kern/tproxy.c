@@ -353,6 +353,14 @@ build_routing_meta(__u8 outbound, __u32 mark, __u8 must, __u8 dscp)
 	return meta;
 }
 
+static __always_inline void
+publish_routing_meta(union routing_meta *dst, union routing_meta meta)
+{
+	/* Publish routing only after side fields (mac/pname/pid) are ready. */
+	barrier();
+	*(volatile __u64 *)&dst->raw = meta.raw;
+}
+
 static __always_inline bool bpf_sock_is_dae_socket(const struct bpf_sock *sk)
 {
 	if (!sk || !PARAM.dae_socket_mark)
@@ -1862,37 +1870,33 @@ __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 		// Update routing if provided (e.g., routing decision changed)
 		if (args->flags & CT_ARGS_HAS_ROUTING) {
-			state->meta.data.outbound = args->outbound;
-			state->meta.data.mark = args->mark;
-			state->meta.data.must = args->must;
+			union routing_meta meta =
+				build_routing_meta(args->outbound, args->mark,
+						   args->must, args->dscp);
+
 			if (args->flags & CT_ARGS_HAS_MAC)
 				__builtin_memcpy(state->mac, args->mac, 6);
-			state->meta.data.dscp = args->dscp;
 			if (args->flags & CT_ARGS_HAS_PNAME)
 				__builtin_memcpy(state->pname, args->pname,
 						 TASK_COMM_LEN);
 			state->pid = args->pid;
-			/* Publish has_routing after the payload fields are ready. */
-			barrier();
-			state->meta.data.has_routing = 1;
+			publish_routing_meta(&state->meta, meta);
 		}
 		return state;
 	}
 
 	// Slow path: create new entry (either no entry or expired one was deleted)
 	bool has_rt = !!(args->flags & CT_ARGS_HAS_ROUTING);
-	struct udp_conn_state new_state = {
-		.is_wan_ingress_direction = is_wan_ingress_direction,
-		.last_seen_ns = now,
-		.meta = { .data = { .has_routing = has_rt ? 1 : 0,
-				     .dscp = args->dscp } },
-		.pid = args->pid,
-	};
+	struct udp_conn_state new_state = {};
+
+	new_state.is_wan_ingress_direction = is_wan_ingress_direction;
+	new_state.last_seen_ns = now;
+	new_state.meta.data.dscp = args->dscp;
+	new_state.pid = args->pid;
 
 	if (has_rt) {
-		new_state.meta.data.outbound = args->outbound;
-		new_state.meta.data.mark = args->mark;
-		new_state.meta.data.must = args->must;
+		new_state.meta = build_routing_meta(args->outbound, args->mark,
+						    args->must, args->dscp);
 		if (args->flags & CT_ARGS_HAS_MAC)
 			__builtin_memcpy(new_state.mac, args->mac, 6);
 		if (args->flags & CT_ARGS_HAS_PNAME)
@@ -2014,18 +2018,17 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 		// Update routing if provided (rare: routing decision changed)
 		if (args->flags & CT_ARGS_HAS_ROUTING) {
-			state->meta.data.outbound = args->outbound;
-			state->meta.data.mark = args->mark;
-			state->meta.data.must = args->must;
+			union routing_meta meta =
+				build_routing_meta(args->outbound, args->mark,
+						   args->must, args->dscp);
+
 			if (args->flags & CT_ARGS_HAS_MAC)
 				__builtin_memcpy(state->mac, args->mac, 6);
-			state->meta.data.dscp = args->dscp;
 			if (args->flags & CT_ARGS_HAS_PNAME)
 				__builtin_memcpy(state->pname, args->pname,
 						 TASK_COMM_LEN);
 			state->pid = args->pid;
-			barrier();
-			state->meta.data.has_routing = 1;
+			publish_routing_meta(&state->meta, meta);
 		}
 
 		return state;
@@ -2034,19 +2037,19 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	// Only create new entry on SYN (new connection)
 	if (new_conn_syn) {
 		bool has_rt = !!(args->flags & CT_ARGS_HAS_ROUTING);
-		struct tcp_conn_state new_state = {
-			.is_wan_ingress_direction = is_wan_ingress_direction,
-			.state = TCP_STATE_ACTIVE,
-			.last_seen_ns = now,
-			.meta = { .data = { .has_routing = has_rt ? 1 : 0,
-					     .dscp = args->dscp } },
-			.pid = args->pid,
-		};
+		struct tcp_conn_state new_state = {};
+
+		new_state.is_wan_ingress_direction = is_wan_ingress_direction;
+		new_state.state = TCP_STATE_ACTIVE;
+		new_state.last_seen_ns = now;
+		new_state.meta.data.dscp = args->dscp;
+		new_state.pid = args->pid;
 
 		if (has_rt) {
-			new_state.meta.data.outbound = args->outbound;
-			new_state.meta.data.mark = args->mark;
-			new_state.meta.data.must = args->must;
+			new_state.meta = build_routing_meta(args->outbound,
+							    args->mark,
+							    args->must,
+							    args->dscp);
 			if (args->flags & CT_ARGS_HAS_MAC)
 				__builtin_memcpy(new_state.mac, args->mac, 6);
 			if (args->flags & CT_ARGS_HAS_PNAME)
@@ -2488,13 +2491,13 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		__builtin_memcpy(tcp_state->mac, pkt->ethh.h_source, 6);
 		union routing_meta _m = build_routing_meta(outbound, mark, must,
 							    pkt->tuples.dscp);
-		*(volatile __u64 *)&tcp_state->meta.raw = _m.raw;
+		publish_routing_meta(&tcp_state->meta, _m);
 	} else if (pkt->l4proto == IPPROTO_UDP && udp_state) {
 		// Directly update the UDP conn state we already looked up
 		__builtin_memcpy(udp_state->mac, pkt->ethh.h_source, 6);
 		union routing_meta _m = build_routing_meta(outbound, mark, must,
 							    pkt->tuples.dscp);
-		*(volatile __u64 *)&udp_state->meta.raw = _m.raw;
+		publish_routing_meta(&udp_state->meta, _m);
 	}
 
 	// SECURITY: Fail-Closed for TCP connections requiring proxy when conn state map is full.
@@ -2984,21 +2987,21 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	must = (s64_ret >> 40) & 1;
 
 fast_path_skip_routing:
-	if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
-		if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
-			__builtin_memcpy(udp_conn_state->mac, mac, 6);
-			if (pid_pname) {
-				__builtin_memcpy(udp_conn_state->pname,
-						 pid_pname->pname,
-						 TASK_COMM_LEN);
-				udp_conn_state->pid = pid_pname->pid;
-			}
-			union routing_meta _m = build_routing_meta(outbound,
+		if (udp_conn_state && tuples->five.dport != bpf_htons(53)) {
+			if (outbound != OUTBOUND_DIRECT || mark != 0 || must) {
+				__builtin_memcpy(udp_conn_state->mac, mac, 6);
+				if (pid_pname) {
+					__builtin_memcpy(udp_conn_state->pname,
+							 pid_pname->pname,
+							 TASK_COMM_LEN);
+					udp_conn_state->pid = pid_pname->pid;
+				}
+				union routing_meta _m = build_routing_meta(outbound,
 								   mark,
 								   must,
 								   tuples->dscp);
-			*(volatile __u64 *)&udp_conn_state->meta.raw = _m.raw;
-		}
+				publish_routing_meta(&udp_conn_state->meta, _m);
+			}
 		udp_conn_state->last_seen_ns = bpf_ktime_get_ns();
 	}
 

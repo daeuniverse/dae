@@ -9,6 +9,17 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/kernel-test.yml"
+  push:
+    branches:
+      - main
+      - kdae
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/kernel-test.yml"
 
 jobs:
 

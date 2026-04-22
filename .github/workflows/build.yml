@@ -15,6 +15,7 @@ on:
   push:
     branches:
       - main
+      - kdae
     paths:
       - "**/*.go"
       - "**/*.c"

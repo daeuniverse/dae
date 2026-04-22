@@ -12,6 +12,19 @@ on:
       - "Makefile"
       - "scripts/ebpf-audit.sh"
       - ".github/workflows/ebpf-audit.yml"
+  push:
+    branches:
+      - main
+      - kdae
+    paths:
+      - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - "scripts/ebpf-audit.sh"
+      - ".github/workflows/ebpf-audit.yml"
 
 permissions: read-all
 
