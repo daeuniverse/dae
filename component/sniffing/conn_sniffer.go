@@ -68,8 +68,8 @@ func (s *ConnSniffer) TakeRelayPrefix() []byte {
 	}
 	<-s.dataReady
 
-	s.readMu.RLock()
-	defer s.readMu.RUnlock()
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 
 	if s.buf == nil || s.buf.Len() == 0 {
 		return nil

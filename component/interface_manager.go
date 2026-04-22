@@ -66,6 +66,14 @@ type job struct {
 	fn     func()
 }
 
+func (m *InterfaceManager) enqueueJob(jobChan chan<- job, j job) {
+	select {
+	case <-m.closed.Done():
+		return
+	case jobChan <- j:
+	}
+}
+
 func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struct{}) {
 	jobChan := make(chan job, 128)
 	go func() {
@@ -112,14 +120,11 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 				if t, ok := timers[j.ifName]; ok {
 					t.Stop()
 				}
-				ifName := j.ifName
 				timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
 					select {
 					case <-m.closed.Done():
 						return
 					case ifQ <- fn:
-					default:
-						m.log.Warnf("Interface callback queue full for %s, skipping", ifName)
 					}
 				})
 			}
@@ -132,11 +137,21 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 			close(done)
 			close(jobChan)
 			return
-		case update := <-ch:
+		case update, ok := <-ch:
+			if !ok {
+				close(done)
+				close(jobChan)
+				return
+			}
+			if update.Link == nil {
+				m.log.Debug("Ignore netlink update without link")
+				continue
+			}
 			ifName := update.Link.Attrs().Name
 
 			switch update.Header.Type {
 			case unix.RTM_NEWLINK:
+				var jobs []job
 				m.mu.Lock()
 				_, exists := m.upLinks[ifName]
 				if exists {
@@ -152,12 +167,16 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 					if callback.newCallback != nil {
 						cb := callback.newCallback
 						link := update.Link
-						jobChan <- job{ifName: ifName, fn: func() { cb(link) }}
+						jobs = append(jobs, job{ifName: ifName, fn: func() { cb(link) }})
 					}
 				}
 				m.mu.Unlock()
+				for _, j := range jobs {
+					m.enqueueJob(jobChan, j)
+				}
 
 			case unix.RTM_DELLINK:
+				var jobs []job
 				m.mu.Lock()
 				delete(m.upLinks, ifName)
 				for _, callback := range m.callbacks {
@@ -168,10 +187,13 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 					if callback.delCallback != nil {
 						cb := callback.delCallback
 						link := update.Link
-						jobChan <- job{ifName: ifName, fn: func() { cb(link) }}
+						jobs = append(jobs, job{ifName: ifName, fn: func() { cb(link) }})
 					}
 				}
 				m.mu.Unlock()
+				for _, j := range jobs {
+					m.enqueueJob(jobChan, j)
+				}
 			}
 		}
 	}
