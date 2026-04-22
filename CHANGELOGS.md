@@ -53,31 +53,31 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 #### Features
 
-- feat(dns): add robust DNS forward fallback path for `tcp+udp` upstream (UDP-first with TCP fallback on request failure).
-- feat(shared): upgrade DNS, config and common foundations.
-- feat(component): rework outbound dialer, routing and sniffing.
-- feat(runtime): harden staged reload and control-plane lifecycle.
-- feat(control/dns): redesign DNS controller and routing cache.
-- feat(control): rework TCP, UDP and packet relay datapath.
-- feat(bpf): update verifier-safe tproxy datapath.
-- feat(control): introduce datapath janitor and DNS runtime management.
-- feat(control): add runtime DNS accounting and statistics tracking.
+- feat(dns): add robust DNS forward fallback path for `tcp+udp` upstream (UDP-first with TCP fallback on request failure) by @olicesx.
+- feat(shared): upgrade DNS, config and common foundations by @olicesx.
+- feat(component): rework outbound dialer, routing and sniffing by @olicesx.
+- feat(runtime): harden staged reload and control-plane lifecycle by @olicesx.
+- feat(control/dns): redesign DNS controller and routing cache by @olicesx.
+- feat(control): rework TCP, UDP and packet relay datapath by @olicesx.
+- feat(bpf): update verifier-safe tproxy datapath by @olicesx.
+- feat(control): introduce datapath janitor and DNS runtime management by @olicesx.
+- feat(control): add runtime DNS accounting and statistics tracking by @olicesx.
 
 #### Bug Fixes
 
-- fix(dns): report DNS forward failures to dialer health feedback path to improve failover quality.
-- fix(control): harden DNS/UDP connection lifecycle handling in high-concurrency paths.
-- fix(subscription): emit canonical SIP008 Shadowsocks links.
-- fix(control): add UDP endpoint pool count compatibility alias.
-- fix(reload_manager): improve string formatting in `dnsConfigFingerprint`.
+- fix(dns): report DNS forward failures to dialer health feedback path to improve failover quality by @olicesx.
+- fix(control): harden DNS/UDP connection lifecycle handling in high-concurrency paths by @olicesx.
+- fix(subscription): emit canonical SIP008 Shadowsocks links by @olicesx.
+- fix(control): add UDP endpoint pool count compatibility alias by @olicesx.
+- fix(reload_manager): improve string formatting in `dnsConfigFingerprint` by @olicesx.
 
 #### Others
 
-- chore(ci): refresh workflows and eBPF tooling.
-- chore(outbound): bump SS2022 parser fix.
-- feat(workflows): update CI configurations for `kdae` branch support.
-- test(control): add regression tests for DNS fallback, timeout cleanup, and pool concurrency safety.
-- test: add benchmarks and fuzz tests for DNS cache, QUIC, and sniffing components.
+- chore(ci): refresh workflows and eBPF tooling by @olicesx.
+- chore(outbound): bump SS2022 parser fix by @olicesx.
+- feat(workflows): update CI configurations for `kdae` branch support by @olicesx.
+- test(control): add regression tests for DNS fallback, timeout cleanup, and pool concurrency safety by @olicesx.
+- test: add benchmarks and fuzz tests for DNS cache, QUIC, and sniffing components by @olicesx.
 
 ### v1.1.0rc1 (Pre-release)
 
