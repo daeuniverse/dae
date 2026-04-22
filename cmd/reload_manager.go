@@ -377,7 +377,7 @@ func dnsConfigFingerprint(dns config.Dns) string {
 			}
 		default:
 			b.WriteString("unsupported:")
-			b.WriteString(fmt.Sprintf("%T", value))
+			fmt.Fprintf(&b, "%T", value)
 		}
 		b.WriteByte(';')
 	}
