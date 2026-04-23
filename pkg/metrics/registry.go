@@ -15,6 +15,7 @@ func NewRegistry(state *State) *prometheus.Registry {
 		NewDialerCollector(state),
 		NewDnsCollector(state),
 		NewConnCollector(state),
+		NewRuntimeCollector(),
 	)
 	return reg
 }

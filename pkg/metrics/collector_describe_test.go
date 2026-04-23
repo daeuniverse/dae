@@ -7,9 +7,11 @@ package metrics
 
 import (
 	"regexp"
+	"sort"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 var descNamePattern = regexp.MustCompile(`fqName: "([^"]+)"`)
@@ -41,6 +43,44 @@ func requireDescriptors(t *testing.T, names map[string]struct{}, expected []stri
 	for _, name := range expected {
 		requireDescriptor(t, names, name)
 	}
+}
+
+func gatherMetricFamilyNames(t *testing.T, reg *prometheus.Registry) []string {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	names := make([]string, 0, len(families))
+	for _, family := range families {
+		if family.GetName() != "" {
+			names = append(names, family.GetName())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func requireMetricFamilyNames(t *testing.T, families []string, expected []string) {
+	t.Helper()
+	seen := make(map[string]struct{}, len(families))
+	for _, family := range families {
+		seen[family] = struct{}{}
+	}
+	for _, name := range expected {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("missing metric family %q in gathered registry", name)
+		}
+	}
+}
+
+func metricFamilyByName(families []*dto.MetricFamily, name string) *dto.MetricFamily {
+	for _, family := range families {
+		if family.GetName() == name {
+			return family
+		}
+	}
+	return nil
 }
 
 func TestDnsCollectorDescribeIncludesPhase2Descriptors(t *testing.T) {
@@ -85,5 +125,25 @@ func TestConnCollectorDescribeIncludesPhase2Descriptors(t *testing.T) {
 		"dae_udp_task_queues_active",
 		"dae_tcp_connections_total",
 		"dae_udp_connections_total",
+	})
+}
+
+func TestRuntimeCollectorDescribeIncludesDescriptors(t *testing.T) {
+	names := descriptorNames(NewRuntimeCollector())
+	requireDescriptors(t, names, []string{
+		"dae_runtime_upload_bytes_total",
+		"dae_runtime_download_bytes_total",
+		"dae_runtime_upload_rate_bytes_per_second",
+		"dae_runtime_download_rate_bytes_per_second",
+	})
+}
+
+func TestRegistryGatherIncludesRuntimeMetrics(t *testing.T) {
+	names := gatherMetricFamilyNames(t, NewRegistry(nil))
+	requireMetricFamilyNames(t, names, []string{
+		"dae_runtime_upload_bytes_total",
+		"dae_runtime_download_bytes_total",
+		"dae_runtime_upload_rate_bytes_per_second",
+		"dae_runtime_download_rate_bytes_per_second",
 	})
 }
