@@ -131,8 +131,15 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 				if t, ok := timers[j.ifName]; ok {
 					t.Stop()
 				}
+				ifName := j.ifName
 				timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
-					tryEnqueueInterfaceCallback(m.closed, ifQ, fn)
+					if !tryEnqueueInterfaceCallback(m.closed, ifQ, fn) {
+						select {
+						case <-m.closed.Done():
+						default:
+							m.log.Warnf("Interface callback queue full for %s, skipping", ifName)
+						}
+					}
 				})
 			}
 		}

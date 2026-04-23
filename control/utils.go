@@ -259,7 +259,7 @@ func (c *controlPlaneCore) PublishRedirectTrack(src, dst netip.AddrPort, entry *
 func (c *controlPlaneCore) ensureEgressReturnRoutePublished(src, dst netip.AddrPort, l4proto uint8) error {
 	entry, err := c.RetrieveEgressReturnHandoff(src, dst, l4proto)
 	if err != nil {
-		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		if stderrors.Is(err, ebpf.ErrKeyNotExist) || stderrors.Is(err, errEgressReturnHandoffExpired) {
 			return nil
 		}
 		return err

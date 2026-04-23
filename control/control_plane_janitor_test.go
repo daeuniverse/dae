@@ -731,6 +731,45 @@ func TestEnsureEgressReturnRoutePublishedPublishesRedirectTrackAndDeletesHandoff
 	}
 }
 
+func TestEnsureEgressReturnRoutePublishedIgnoresExpiredHandoff(t *testing.T) {
+	handoffMap := newJanitorTestMap(t, "egress_return_handoff_map")
+	redirectMap := newJanitorTestMap(t, "redirect_track")
+	now := monotonicNowNs(t)
+
+	src := common.ConvergeAddrPort(netip.MustParseAddrPort("10.10.0.4:34570"))
+	dst := common.ConvergeAddrPort(netip.MustParseAddrPort("9.9.9.12:443"))
+	tuples := tuplesKeyFromAddrPorts(src, dst, unix.IPPROTO_UDP)
+	entry := newEgressReturnHandoffEntryForTest(
+		staleTimestampNs(now, egressReturnHandoffTimeout+time.Second),
+		20, 1, [6]uint8{1, 1, 2, 2, 3, 3}, [6]uint8{4, 4, 5, 5, 6, 6},
+	)
+	if err := handoffMap.Update(tuples, &entry, ebpf.UpdateAny); err != nil {
+		t.Fatalf("update expired egress_return_handoff_map: %v", err)
+	}
+
+	core := &controlPlaneCore{
+		bpf: &bpfObjects{bpfMaps: bpfMaps{
+			EgressReturnHandoffMap: handoffMap,
+			RedirectTrack:          redirectMap,
+		}},
+	}
+
+	if err := core.ensureEgressReturnRoutePublished(src, dst, unix.IPPROTO_UDP); err != nil {
+		t.Fatalf("ensureEgressReturnRoutePublished expired handoff: %v", err)
+	}
+
+	var stale bpfEgressReturnHandoffEntry
+	if err := handoffMap.Lookup(tuples, &stale); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("egress_return_handoff_map lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+
+	var redirectEntry bpfRedirectEntry
+	redirectKey := redirectTupleFromAddrs(src.Addr(), dst.Addr())
+	if err := redirectMap.Lookup(redirectKey, &redirectEntry); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("redirect_track lookup err = %v, want %v", err, ebpf.ErrKeyNotExist)
+	}
+}
+
 func TestCleanupEgressReturnHandoffMapRemovesExpiredEntries(t *testing.T) {
 	handoffMap := newJanitorTestMap(t, "egress_return_handoff_map")
 	now := monotonicNowNs(t)

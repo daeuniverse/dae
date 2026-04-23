@@ -24,7 +24,7 @@ func TestSendUDPv4RawDirect(t *testing.T) {
 		t.Skip("raw IPv4 socket test requires root")
 	}
 
-	clientConn, err := net.ListenPacket("udp4", "10.255.255.254:0")
+	clientConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen client UDP4 socket: %v", err)
 	}
@@ -55,12 +55,12 @@ func TestSendUDPv4RawDirect(t *testing.T) {
 		if got := string(buf[:n]); got != "hello" {
 			t.Errorf("unexpected payload: %q", got)
 		}
-		if addr.String() != "1.1.1.1:"+strconv.Itoa(conflictPort) {
+		if addr.String() != "127.0.0.2:"+strconv.Itoa(conflictPort) {
 			t.Errorf("unexpected source addr: %v", addr)
 		}
 	}()
 
-	from := netip.MustParseAddrPort("1.1.1.1:" + strconv.Itoa(conflictPort))
+	from := netip.MustParseAddrPort("127.0.0.2:" + strconv.Itoa(conflictPort))
 	realTo := netip.MustParseAddrPort(clientAddr.String())
 	if err := sendUDPv4RawDirect([]byte("hello"), from, realTo); err != nil {
 		t.Fatalf("sendUDPv4RawDirect: %v", err)
@@ -127,7 +127,7 @@ func TestSendPktFallsBackToRawIPv4AfterAnyfromNegativeCache(t *testing.T) {
 	DefaultAnyfromPool.Reset()
 	defer DefaultAnyfromPool.Reset()
 
-	clientConn, err := net.ListenPacket("udp4", "10.255.255.254:0")
+	clientConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen client UDP4 socket: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestSendPktFallsBackToRawIPv4AfterAnyfromNegativeCache(t *testing.T) {
 
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
-	from := netip.MustParseAddrPort("1.1.1.1:53")
+	from := netip.MustParseAddrPort("127.0.0.2:53")
 	realTo := netip.MustParseAddrPort(clientAddr.String())
 
 	readPacket := func(want string) {
