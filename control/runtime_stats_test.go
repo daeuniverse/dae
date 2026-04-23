@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -216,6 +217,77 @@ func TestUnpublishRuntimeStatsStoreDoesNotClearNewerActiveStore(t *testing.T) {
 	}
 	if activeRuntimeStats.Load() != newActive {
 		t.Fatal("active runtime stats store changed, want newer active store to remain published")
+	}
+}
+
+func TestActivatePreparedRuntimePublishesStatsBeforeDNSStart(t *testing.T) {
+	resetRuntimeStatsForTest(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cp := &ControlPlane{
+		ctx:          ctx,
+		runtimeStats: newRuntimeStats(),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			delayDNSListenerStart: true,
+		},
+	}
+	cp.SetPreparedDNSStartHook(func() error {
+		if activeRuntimeStats.Load() != cp.runtimeStats {
+			return errors.New("runtime stats not published before DNS start hook")
+		}
+		RecordUploadTraffic(11)
+		RecordDownloadTraffic(13)
+		return nil
+	})
+	defer cp.unpublishRuntimeStats()
+
+	if err := cp.activatePreparedRuntime(); err != nil {
+		t.Fatalf("activatePreparedRuntime() error = %v", err)
+	}
+
+	snapshot := cp.SnapshotRuntimeStats(60, 10)
+	if snapshot.UploadTotal != 11 {
+		t.Fatalf("UploadTotal = %d, want 11", snapshot.UploadTotal)
+	}
+	if snapshot.DownloadTotal != 13 {
+		t.Fatalf("DownloadTotal = %d, want 13", snapshot.DownloadTotal)
+	}
+	if activeRuntimeStats.Load() != cp.runtimeStats {
+		t.Fatal("active runtime stats store not published to control-plane runtime stats")
+	}
+}
+
+func TestActivatePreparedRuntimeUnpublishesOnDNSStartError(t *testing.T) {
+	resetRuntimeStatsForTest(t)
+
+	wantErr := errors.New("boom")
+	cp := &ControlPlane{
+		ctx:          context.Background(),
+		runtimeStats: newRuntimeStats(),
+		controlPlaneDNSRuntime: controlPlaneDNSRuntime{
+			delayDNSListenerStart: true,
+		},
+	}
+	cp.SetPreparedDNSStartHook(func() error {
+		return wantErr
+	})
+
+	err := cp.activatePreparedRuntime()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("activatePreparedRuntime() error = %v, want %v", err, wantErr)
+	}
+	if activeRuntimeStats.Load() != nil {
+		t.Fatal("active runtime stats store should be unpublished after DNS start failure")
+	}
+
+	RecordUploadTraffic(7)
+	if got := cp.runtimeStats.uploadTotal.Load(); got != 0 {
+		t.Fatalf("control-plane upload total = %d, want 0 after failed activation", got)
+	}
+	if got := globalRuntimeStats.uploadTotal.Load(); got != 7 {
+		t.Fatalf("global upload total = %d, want 7 after failed activation fallback", got)
 	}
 }
 

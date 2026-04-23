@@ -92,3 +92,33 @@ func TestInterfaceManagerEnqueueJobReturnsWhenClosed(t *testing.T) {
 		t.Fatal("enqueueJob did not return after manager closed")
 	}
 }
+
+func TestTryEnqueueInterfaceCallbackEnqueuesWhenQueueHasCapacity(t *testing.T) {
+	ifQ := make(chan func(), 1)
+
+	if ok := tryEnqueueInterfaceCallback(context.Background(), ifQ, func() {}); !ok {
+		t.Fatal("tryEnqueueInterfaceCallback() = false, want true with available queue capacity")
+	}
+	if len(ifQ) != 1 {
+		t.Fatalf("queue length = %d, want 1", len(ifQ))
+	}
+}
+
+func TestTryEnqueueInterfaceCallbackDropsWhenQueueFull(t *testing.T) {
+	ifQ := make(chan func(), 1)
+	ifQ <- func() {}
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		if ok := tryEnqueueInterfaceCallback(context.Background(), ifQ, func() {}); ok {
+			t.Error("tryEnqueueInterfaceCallback() = true, want false when queue is full")
+		}
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("tryEnqueueInterfaceCallback blocked on a full queue")
+	}
+}

@@ -66,6 +66,17 @@ type job struct {
 	fn     func()
 }
 
+func tryEnqueueInterfaceCallback(ctx context.Context, ifQ chan<- func(), fn func()) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case ifQ <- fn:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *InterfaceManager) enqueueJob(jobChan chan<- job, j job) {
 	select {
 	case <-m.closed.Done():
@@ -121,11 +132,7 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 					t.Stop()
 				}
 				timers[j.ifName] = time.AfterFunc(200*time.Millisecond, func() {
-					select {
-					case <-m.closed.Done():
-						return
-					case ifQ <- fn:
-					}
+					tryEnqueueInterfaceCallback(m.closed, ifQ, fn)
 				})
 			}
 		}
