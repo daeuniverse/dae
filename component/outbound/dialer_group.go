@@ -147,14 +147,17 @@ func (g *DialerGroup) MinCheckInterval() time.Duration {
 }
 
 func (g *DialerGroup) AliveDialerSets() [6]*dialer.AliveDialerSet {
-	return g.aliveDialerSets
+	state := g.currentSelectionState()
+	var sets [6]*dialer.AliveDialerSet
+	for i, nt := range standardSelectionNetworkTypes() {
+		sets[i] = state.aliveDialerSets[nt.Index()]
+	}
+	return sets
 }
 
 func (g *DialerGroup) SelectionPolicyName() string {
-	if g.selectionPolicy == nil {
-		return ""
-	}
-	return string(g.selectionPolicy.Policy)
+	state := g.currentSelectionState()
+	return string(state.policy.Policy)
 }
 
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {

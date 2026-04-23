@@ -26,7 +26,7 @@ on:
 
 jobs:
   pre-actions:
-    if: ${{ github.event.pull_request.draft == false }}
+    if: ${{ github.event.pull_request.draft == false && secrets.GH_APP_ID != '' && secrets.GH_APP_PRIVATE_KEY != '' }}
     uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@master
     with:
       repository: ${{ github.repository }}
@@ -37,7 +37,7 @@ jobs:
 
   build:
     needs: [pre-actions]
-    if: ${{ github.event.pull_request.draft == false }}
+    if: ${{ github.event.pull_request.draft == false && secrets.GH_APP_ID != '' && secrets.GH_APP_PRIVATE_KEY != '' }}
     # uses: daeuniverse/dae/.github/workflows/seed-build.yml@main
     uses: ./.github/workflows/seed-build.yml
     with:
@@ -47,7 +47,7 @@ jobs:
     secrets: inherit
 
   post-actions:
-    if: always()
+    if: ${{ always() && github.event.pull_request.draft == false && secrets.GH_APP_ID != '' && secrets.GH_APP_PRIVATE_KEY != '' }}
     needs: [build]
     uses: daeuniverse/ci-seed-jobs/.github/workflows/dae-post-actions.yml@master
     with:

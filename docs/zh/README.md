@@ -73,8 +73,7 @@ begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end |
 ```
 
 > **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
-
-> `Arch Linux ARM` 用户可以使用支持 dae 的 [linux-aarch64-7ji](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
+> `Arch Linux ARM` 用户可以使用支持 dae 的 [Linux-aarch64-7ji](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
 
 ## 安装
 
@@ -116,7 +115,7 @@ sudo pacman -S dae-avx2-bin
 sudo pacman -S dae
 ```
 
-##### 最新 Git 版 
+##### 最新 Git 版
 
 ```shell
 sudo pacman -S dae-git
@@ -275,6 +274,7 @@ dns {
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
 
 ## PPPoE
+
 如果希望代理 pppoe 接口, 请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口, 对于 wan 接口是 pppoe 的情况, 使用 auto 即可。
 
 ## 热重载和暂停

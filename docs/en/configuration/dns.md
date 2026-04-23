@@ -2,7 +2,7 @@
 
 dae will intercept all UDP traffic to port 53 and sniff DNS. Here gives some examples and templates for DNS configuration.
 
-# Schema
+## Schema
 
 DoH3
 
@@ -40,7 +40,7 @@ default port: 853
 ```
 
 UDP
-  
+
 ```
 udp://<host>:<port>
 

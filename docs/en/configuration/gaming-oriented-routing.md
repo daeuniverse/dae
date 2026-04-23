@@ -57,11 +57,11 @@ config nat
         option src 'vpn'         
         option src_ip '[Gaming PC IPv4 Address]'
         option target 'SNAT'         
-        option snat_ip '10.7.0.2'    
-        option family 'ipv4'         
-        list proto 'all'    
+        option snat_ip '10.7.0.2'
+        option family 'ipv4'
+        list proto 'all'
 
-config nat                     
+config nat
         option src 'vpn'
          option src_ip '[Gaming PC IPv6 Address]'
         option target 'SNAT'

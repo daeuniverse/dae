@@ -142,8 +142,8 @@ func (a *AliveDialerSet) Len() int {
 }
 
 func (a *AliveDialerSet) AliveCount() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return len(a.aliveEntries)
 }
 

@@ -35,7 +35,7 @@ func gaugeMetricValue(t *testing.T, family *dto.MetricFamily) float64 {
 	return family.Metric[0].Gauge.GetValue()
 }
 
-func TestRegistryGatherReportsRuntimeTrafficMetrics(t *testing.T) {
+func TestRegistryRuntimeCountersReflectRecordedTraffic(t *testing.T) {
 	reg := NewRegistry(nil)
 
 	before, err := reg.Gather()
@@ -55,6 +55,7 @@ func TestRegistryGatherReportsRuntimeTrafficMetrics(t *testing.T) {
 
 	afterUpload := counterMetricValue(t, metricFamilyByName(after, "dae_runtime_upload_bytes_total"))
 	afterDownload := counterMetricValue(t, metricFamilyByName(after, "dae_runtime_download_bytes_total"))
+	// runtime stats are process-global, so assert deltas rather than absolute values.
 	if afterUpload-beforeUpload < 1234 {
 		t.Fatalf("upload counter delta = %v, want >= 1234", afterUpload-beforeUpload)
 	}

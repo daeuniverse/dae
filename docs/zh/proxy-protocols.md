@@ -3,9 +3,11 @@
 > **Note**: dae 目前支持以下代理协议
 
 - [x] HTTP(S), naiveproxy
+
   ```
   https://[[user:]pass@]hostname:port/
   ```
+
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
@@ -53,7 +55,7 @@
   - [x] Trojan-gfw
   - [x] Trojan-go
 
-  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url/)
+  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url)
 
 - [x] Tuic (v5)
 

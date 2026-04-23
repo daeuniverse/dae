@@ -2,7 +2,7 @@
 
 dae 拦截目标端口为 53 的 UDP 流量并嗅探 DNS，以下为 DNS 配置的示例和模板。
 
-# Schema
+## Schema
 
 DoH3
 
@@ -40,7 +40,7 @@ quic://<host>:<port>
 ```
 
 UDP
-  
+
 ```
 udp://<host>:<port>
 

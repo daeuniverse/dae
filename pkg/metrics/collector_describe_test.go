@@ -138,7 +138,7 @@ func TestRuntimeCollectorDescribeIncludesDescriptors(t *testing.T) {
 	})
 }
 
-func TestRegistryGatherIncludesRuntimeMetrics(t *testing.T) {
+func TestRegistryRuntimeFamiliesAreRegistered(t *testing.T) {
 	names := gatherMetricFamilyNames(t, NewRegistry(nil))
 	requireMetricFamilyNames(t, names, []string{
 		"dae_runtime_upload_bytes_total",
