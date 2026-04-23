@@ -8,9 +8,7 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -310,23 +308,6 @@ func (m *reloadManager) startControlPlaneRetirement(
 			log.Warnln("[Reload] Retired old control plane")
 		}
 	}(retirementDone)
-}
-
-func (m *reloadManager) refreshPprofServer(log *logrus.Logger, server **http.Server, port uint16) {
-	if server == nil {
-		return
-	}
-	if *server != nil {
-		pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = (*server).Shutdown(pprofCtx)
-		pprofCancel()
-		*server = nil
-	}
-	if port != 0 {
-		pprofAddr := "localhost:" + strconv.Itoa(int(port))
-		*server = &http.Server{Addr: pprofAddr, Handler: nil}
-		go func() { _ = (*server).ListenAndServe() }()
-	}
 }
 
 func dnsConfigEqual(oldConf *config.Config, newConf *config.Config) bool {

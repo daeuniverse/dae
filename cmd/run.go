@@ -1163,7 +1163,9 @@ func validateEndpointTLSFiles(cfg metrics.EndpointConfig) error {
 		return fmt.Errorf("cannot open endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
 	}
 	certFi, err := certFile.Stat()
-	certFile.Close()
+	if closeErr := certFile.Close(); closeErr != nil {
+		return fmt.Errorf("cannot close endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, closeErr)
+	}
 	if err != nil {
 		return fmt.Errorf("cannot stat endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
 	}
@@ -1176,7 +1178,9 @@ func validateEndpointTLSFiles(cfg metrics.EndpointConfig) error {
 		return fmt.Errorf("cannot open endpoint_tls_key '%s': %w", cfg.TlsKey, err)
 	}
 	keyFi, err := keyFile.Stat()
-	keyFile.Close()
+	if closeErr := keyFile.Close(); closeErr != nil {
+		return fmt.Errorf("cannot close endpoint_tls_key '%s': %w", cfg.TlsKey, closeErr)
+	}
 	if err != nil {
 		return fmt.Errorf("cannot stat endpoint_tls_key '%s': %w", cfg.TlsKey, err)
 	}

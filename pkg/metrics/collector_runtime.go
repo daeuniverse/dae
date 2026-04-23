@@ -54,6 +54,7 @@ func (c *RuntimeCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *RuntimeCollector) Collect(ch chan<- prometheus.Metric) {
+	//nolint:staticcheck // metrics collector intentionally consumes the exported process-wide runtime snapshot API.
 	snap := control.SnapshotRuntimeStats(0, 0, 0, 0)
 	ch <- prometheus.MustNewConstMetric(c.uploadBytesTotal, prometheus.CounterValue, float64(snap.UploadTotal))
 	ch <- prometheus.MustNewConstMetric(c.downloadBytesTotal, prometheus.CounterValue, float64(snap.DownloadTotal))
