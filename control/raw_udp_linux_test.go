@@ -8,12 +8,15 @@
 package control
 
 import (
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 func TestSendUDPv4RawDirect(t *testing.T) {
@@ -114,4 +117,65 @@ func TestSendUDPv6RawDirect(t *testing.T) {
 	}
 
 	<-done
+}
+
+func TestSendPktFallsBackToRawIPv4AfterAnyfromNegativeCache(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("raw IPv4 socket test requires root")
+	}
+
+	DefaultAnyfromPool.Reset()
+	defer DefaultAnyfromPool.Reset()
+
+	clientConn, err := net.ListenPacket("udp4", "10.255.255.254:0")
+	if err != nil {
+		t.Fatalf("listen client UDP4 socket: %v", err)
+	}
+	defer func() { _ = clientConn.Close() }()
+
+	clientAddr, ok := clientConn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("unexpected client local addr type: %T", clientConn.LocalAddr())
+	}
+
+	conflictConn, err := net.ListenPacket("udp4", "0.0.0.0:53")
+	if err != nil {
+		t.Skipf("listen wildcard UDP4 conflict socket on :53: %v", err)
+	}
+	defer func() { _ = conflictConn.Close() }()
+
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	from := netip.MustParseAddrPort("1.1.1.1:53")
+	realTo := netip.MustParseAddrPort(clientAddr.String())
+
+	readPacket := func(want string) {
+		t.Helper()
+		buf := make([]byte, 64)
+		_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+		n, addr, readErr := clientConn.ReadFrom(buf)
+		if readErr != nil {
+			t.Fatalf("read fallback packet: %v", readErr)
+		}
+		if got := string(buf[:n]); got != want {
+			t.Fatalf("unexpected payload: %q, want %q", got, want)
+		}
+		if addr.String() != from.String() {
+			t.Fatalf("unexpected source addr: %v, want %v", addr, from)
+		}
+	}
+
+	if err := sendPkt(logger, []byte("first"), from, realTo, nil); err != nil {
+		t.Fatalf("first sendPkt: %v", err)
+	}
+	readPacket("first")
+
+	if _, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout); err == nil || err != ErrAnyfromBindFailed {
+		t.Fatalf("GetOrCreate err = %v, want %v", err, ErrAnyfromBindFailed)
+	}
+
+	if err := sendPkt(logger, []byte("second"), from, realTo, nil); err != nil {
+		t.Fatalf("second sendPkt with negative cache: %v", err)
+	}
+	readPacket("second")
 }

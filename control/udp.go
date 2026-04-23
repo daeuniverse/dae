@@ -377,13 +377,13 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 
 	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
+		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
+			return nil
+		}
 		if stderrors.Is(err, ErrAnyfromBindFailed) {
 			// Return the error instead of silently dropping. The caller decides
 			// whether the packet loss is acceptable (reply path) or must be retried.
 			return err
-		}
-		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
-			return nil
 		}
 		if errorEnabled {
 			log.WithFields(logrus.Fields{
