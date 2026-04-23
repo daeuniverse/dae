@@ -14,6 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v1.1.0 (Latest)](#v110-latest)
+
 - [Unreleased](#unreleased)
 - [v1.1.0rc1 (Pre-release)](#v110rc1-pre-release)
 - [v1.0.0 (Latest)](#v100-latest)
@@ -48,6 +50,54 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v1.1.0 (Latest)
+
+> Release date: 2026/04/23
+
+#### Features
+
+- optimize(bpf): Load separate programs for L2/L3 netdev in [#822](https://github.com/daeuniverse/dae/pull/822) by (@jschwinger233)
+- feat(anytls): support anytls tcp&&udp in [#852](https://github.com/daeuniverse/dae/pull/852) by (@cubatic45)
+- feat(outbound): support udphop for hysteria2 in [#786](https://github.com/daeuniverse/dae/pull/786) by (@LostAttractor)
+- feat: add TLS fragmentation in [#825](https://github.com/daeuniverse/dae/pull/825) by (@null)
+- feat(dns): support dns bind to local port in [#878](https://github.com/daeuniverse/dae/pull/878) by (@bradfordzhang)
+- feat(dns): support tcp+udp schema for dns local bind in [#885](https://github.com/daeuniverse/dae/pull/885) by (@tomaegg)
+- feat(control): add runtime traffic metrics and node latency probing in [#968](https://github.com/daeuniverse/dae/pull/968) by (@ksong008)
+
+#### Bug Fixes
+
+- fix(tproxy): refactor parse_transport and fix wrong ipv6 extension header offset calc in [#844](https://github.com/daeuniverse/dae/pull/844) by (@LostAttractor)
+- fix(bpf): Fix bpf timer in [#845](https://github.com/daeuniverse/dae/pull/845) by (@jschwinger233)
+- fix(outbound): Fix anytls dialer. in [#865](https://github.com/daeuniverse/dae/pull/865) by (@ppdragon16)
+- fix(dns): fix dns bind issue when reload in [#884](https://github.com/daeuniverse/dae/pull/884) by (@bradfordzhang)
+- fix: support absolute paths in include directive in [#908](https://github.com/daeuniverse/dae/pull/908) by (@tsx8)
+- fix: Remove sockmap fast tcp redirect in [#912](https://github.com/daeuniverse/dae/pull/912) by (@jschwinger233)
+- fix(tproxy): avoid conflicts with LAN ingress by filtering direct rou… in [#925](https://github.com/daeuniverse/dae/pull/925) by (@olicesx)
+- fix(tproxy): re-apply fwmark on non-SYN TCP packets in LAN ingress in [#939](https://github.com/daeuniverse/dae/pull/939) by (@luhengsw)
+
+#### Others
+
+- ci(release): draft release v1.0.0 in [#832](https://github.com/daeuniverse/dae/pull/832) by (@dae-prow)
+- chore(bpf): Cleanup dead bpf code in [#842](https://github.com/daeuniverse/dae/pull/842) by (@jschwinger233)
+- docs(config): clarify domain rule comment in [#834](https://github.com/daeuniverse/dae/pull/834) by (@akiooo45)
+- docs(AnyTLS): add AnyTLS doc in [#856](https://github.com/daeuniverse/dae/pull/856) by (@cubatic45)
+- docs(user-guide): fix missing `chmod` after downloaded the sample config file and fix the link of release page in [#860](https://github.com/daeuniverse/dae/pull/860) by (@mozillazg)
+- ci(release): draft release v1.1.0rc1 in [#898](https://github.com/daeuniverse/dae/pull/898) by (@dae-prow)
+- ci: Bump little-vm-helper: 0.0.23 -> 0.0.28 in [#913](https://github.com/daeuniverse/dae/pull/913) by (@jschwinger233)
+- ci: use go 1.24 branch because go 1.25's issue#77217 in [#931](https://github.com/daeuniverse/dae/pull/931) by (@MarksonHon)
+- chore: upgrade utls to 1.8.2 in [#962](https://github.com/daeuniverse/dae/pull/962) by (@Integral-Tech)
+- ci/docs/optimize/feature: Enhance control plane features and improve CI workflows by olicesx in [#970](https://github.com/daeuniverse/dae/pull/970) by (@MarksonHon)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v1.1.0/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v1.0.0...v1.1.0
+
+#### New Contributors
+
+- @ppdragon16 made their first contribution in [#865](https://github.com/daeuniverse/dae/pull/865)
+- @olicesx made their first contribution in [#925](https://github.com/daeuniverse/dae/pull/925)
+- @ksong008 made their first contribution in [#968](https://github.com/daeuniverse/dae/pull/968)
 
 ### Unreleased
 
