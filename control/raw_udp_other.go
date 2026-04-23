@@ -15,3 +15,7 @@ import (
 func sendUDPv6RawInDaeNetns(_ []byte, from, realTo netip.AddrPort) error {
 	return fmt.Errorf("raw IPv6 UDP fallback unsupported on this platform: from=%v to=%v", from, realTo)
 }
+
+func sendUDPv4RawInDaeNetns(_ []byte, from, realTo netip.AddrPort) error {
+	return fmt.Errorf("raw IPv4 UDP fallback unsupported on this platform: from=%v to=%v", from, realTo)
+}

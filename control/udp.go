@@ -27,11 +27,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func shouldTryRawUDPv6Fallback(err error, from, realTo netip.AddrPort) bool {
+func shouldTryRawUDPFallback(err error, from, realTo netip.AddrPort) bool {
 	if err == nil {
 		return false
 	}
-	if !from.Addr().Is6() || from.Addr().Is4In6() || !realTo.Addr().Is6() || realTo.Addr().Is4In6() {
+	fromAddr := from.Addr()
+	toAddr := realTo.Addr()
+	if (fromAddr.Is4() || fromAddr.Is4In6()) != (toAddr.Is4() || toAddr.Is4In6()) {
 		return false
 	}
 	// Keep fallback scope narrow: only DNS responses (source port 53).
@@ -48,18 +50,23 @@ func shouldTryRawUDPv6Fallback(err error, from, realTo netip.AddrPort) bool {
 		strings.Contains(errStr, "cannot assign requested address")
 }
 
-func tryRawUDPv6Fallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, debugEnabled, errorEnabled bool, reason string, err error) bool {
-	if !shouldTryRawUDPv6Fallback(err, from, realTo) {
+func tryRawUDPFallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, debugEnabled, errorEnabled bool, reason string, err error) bool {
+	if !shouldTryRawUDPFallback(err, from, realTo) {
 		return false
 	}
-	fallbackErr := sendUDPv6RawInDaeNetns(data, from, realTo)
+	var fallbackErr error
+	if from.Addr().Is4() || from.Addr().Is4In6() {
+		fallbackErr = sendUDPv4RawInDaeNetns(data, from, realTo)
+	} else {
+		fallbackErr = sendUDPv6RawInDaeNetns(data, from, realTo)
+	}
 	if fallbackErr == nil {
 		if debugEnabled {
 			log.WithFields(logrus.Fields{
 				"from":   from.String(),
 				"to":     realTo.String(),
 				"reason": reason,
-			}).Debug("sendPkt: used raw IPv6 UDP fallback")
+			}).Debug("sendPkt: used raw UDP fallback")
 		}
 		return true
 	}
@@ -70,7 +77,7 @@ func tryRawUDPv6Fallback(log *logrus.Logger, data []byte, from, realTo netip.Add
 			"reason":   reason,
 			"trigger":  err.Error(),
 			"fallback": fallbackErr.Error(),
-		}).Error("sendPkt: raw IPv6 UDP fallback failed")
+		}).Error("sendPkt: raw UDP fallback failed")
 	}
 	return false
 }
@@ -375,7 +382,7 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 			// whether the packet loss is acceptable (reply path) or must be retried.
 			return err
 		}
-		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
+		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
 			return nil
 		}
 		if errorEnabled {
@@ -395,7 +402,7 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 
 	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
 	if err != nil {
-		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "write-to-udp", err) {
+		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "write-to-udp", err) {
 			return nil
 		}
 		if errorEnabled {

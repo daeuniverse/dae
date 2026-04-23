@@ -15,6 +15,57 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func sendUDPv4RawDirect(data []byte, from, realTo netip.AddrPort) error {
+	if !from.IsValid() || !realTo.IsValid() {
+		return fmt.Errorf("invalid addr: from=%v to=%v", from, realTo)
+	}
+	if (!from.Addr().Is4() && !from.Addr().Is4In6()) || (!realTo.Addr().Is4() && !realTo.Addr().Is4In6()) {
+		return fmt.Errorf("raw UDPv4 fallback requires IPv4 endpoints: from=%v to=%v", from, realTo)
+	}
+
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_UDP)
+	if err != nil {
+		return fmt.Errorf("create raw IPv4 UDP socket: %w", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); err != nil {
+		return fmt.Errorf("enable IP_TRANSPARENT on raw socket: %w", err)
+	}
+	if soMarkFromDae != 0 {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(soMarkFromDae)); err != nil {
+			return fmt.Errorf("set SO_MARK on raw socket: %w", err)
+		}
+	}
+
+	var bindAddr unix.SockaddrInet4
+	fromIP := from.Addr().Unmap().As4()
+	copy(bindAddr.Addr[:], fromIP[:])
+	if err := unix.Bind(fd, &bindAddr); err != nil {
+		return fmt.Errorf("bind raw IPv4 UDP socket to %v: %w", from.Addr(), err)
+	}
+
+	udp := make([]byte, 8+len(data))
+	binary.BigEndian.PutUint16(udp[0:2], from.Port())
+	binary.BigEndian.PutUint16(udp[2:4], realTo.Port())
+	binary.BigEndian.PutUint16(udp[4:6], uint16(len(udp)))
+	copy(udp[8:], data)
+	binary.BigEndian.PutUint16(udp[6:8], udp4Checksum(from.Addr().Unmap(), realTo.Addr().Unmap(), udp))
+
+	var dstAddr unix.SockaddrInet4
+	toIP := realTo.Addr().Unmap().As4()
+	copy(dstAddr.Addr[:], toIP[:])
+	dstAddr.Port = int(realTo.Port())
+	if err := unix.Sendto(fd, udp, 0, &dstAddr); err != nil {
+		return fmt.Errorf("send raw IPv4 UDP packet from %v to %v: %w", from, realTo, err)
+	}
+	return nil
+}
+
+func sendUDPv4RawInDaeNetns(data []byte, from, realTo netip.AddrPort) error {
+	return sendUDPv4RawDirect(data, from, realTo)
+}
+
 func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	if !from.IsValid() || !realTo.IsValid() {
 		return fmt.Errorf("invalid addr: from=%v to=%v", from, realTo)
@@ -67,6 +118,18 @@ func sendUDPv6RawInDaeNetns(data []byte, from, realTo netip.AddrPort) error {
 	// re-entering WithRequired here can temporarily flip thread netns and break
 	// packet handling continuity under concurrent traffic.
 	return sendUDPv6RawDirect(data, from, realTo)
+}
+
+func udp4Checksum(src, dst netip.Addr, udp []byte) uint16 {
+	pseudo := make([]byte, 12+len(udp))
+	srcIP := src.As4()
+	dstIP := dst.As4()
+	copy(pseudo[0:4], srcIP[:])
+	copy(pseudo[4:8], dstIP[:])
+	pseudo[9] = unix.IPPROTO_UDP
+	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(udp)))
+	copy(pseudo[12:], udp)
+	return internetChecksum(pseudo)
 }
 
 func udp6Checksum(src, dst netip.Addr, udp []byte) uint16 {

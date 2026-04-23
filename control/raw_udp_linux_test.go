@@ -16,6 +16,56 @@ import (
 	"time"
 )
 
+func TestSendUDPv4RawDirect(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("raw IPv4 socket test requires root")
+	}
+
+	clientConn, err := net.ListenPacket("udp4", "10.255.255.254:0")
+	if err != nil {
+		t.Fatalf("listen client UDP4 socket: %v", err)
+	}
+	defer func() { _ = clientConn.Close() }()
+
+	clientAddr, ok := clientConn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("unexpected client local addr type: %T", clientConn.LocalAddr())
+	}
+
+	const conflictPort = 5357
+	conflictConn, err := net.ListenPacket("udp4", "0.0.0.0:"+strconv.Itoa(conflictPort))
+	if err != nil {
+		t.Fatalf("listen wildcard UDP4 conflict socket: %v", err)
+	}
+	defer func() { _ = conflictConn.Close() }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+		n, addr, readErr := clientConn.ReadFrom(buf)
+		if readErr != nil {
+			t.Errorf("read fallback packet: %v", readErr)
+			return
+		}
+		if got := string(buf[:n]); got != "hello" {
+			t.Errorf("unexpected payload: %q", got)
+		}
+		if addr.String() != "1.1.1.1:"+strconv.Itoa(conflictPort) {
+			t.Errorf("unexpected source addr: %v", addr)
+		}
+	}()
+
+	from := netip.MustParseAddrPort("1.1.1.1:" + strconv.Itoa(conflictPort))
+	realTo := netip.MustParseAddrPort(clientAddr.String())
+	if err := sendUDPv4RawDirect([]byte("hello"), from, realTo); err != nil {
+		t.Fatalf("sendUDPv4RawDirect: %v", err)
+	}
+
+	<-done
+}
+
 func TestSendUDPv6RawDirect(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("raw IPv6 socket test requires root")
