@@ -84,7 +84,15 @@ begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end |
 
 ### Arch Linux / Manjaro
 
-dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae).
+You can install dae directly from the official repository.
+
+Alternatively, get the latest AVX2-optimized binary package or the latest git version from [AUR](https://aur.archlinux.org) or [archlinuxcn](https://github.com/archlinuxcn/repo).
+
+#### Official Repository
+
+```shell
+sudo pacman -S dae
+```
 
 #### AUR
 
@@ -92,12 +100,6 @@ dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [arch
 
 ```shell
 [yay/paru] -S dae-avx2-bin
-```
-
-##### Latest Release (General x86-64 or aarch64)
-
-```shell
-[yay/paru] -S dae
 ```
 
 ##### Latest Git Version
@@ -112,12 +114,6 @@ dae has been released on [AUR](https://aur.archlinux.org/packages/dae) and [arch
 
 ```shell
 sudo pacman -S dae-avx2-bin
-```
-
-##### Latest Release (General x86-64 or aarch64)
-
-```shell
-sudo pacman -S dae
 ```
 
 ##### Latest Git Version

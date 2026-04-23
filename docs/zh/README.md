@@ -80,7 +80,15 @@ begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end |
 
 ### Arch Linux / Manjaro
 
-dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/dae)，使用下述命令安装：
+直接从官方仓库安装 dae 即可。
+
+除此之外，针对 AVX2 优化的最新二进制包和最新 Git 版可从 [AUR](https://aur.archlinux.org) 或 [archlinuxcn](https://github.com/archlinuxcn/repo) 获取。
+
+#### 官方仓库
+
+```shell
+sudo pacman -S dae
+```
 
 #### AUR
 
@@ -88,12 +96,6 @@ dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn]
 
 ```shell
 [yay/paru] -S dae-avx2-bin
-```
-
-##### 最新稳定版 (x86-64 或 aarch64 通用版)
-
-```shell
-[yay/paru] -S dae
 ```
 
 ##### 最新 Git 版
@@ -108,12 +110,6 @@ dae 已发布于 [AUR](https://aur.archlinux.org/packages/dae) 和 [archlinuxcn]
 
 ```shell
 sudo pacman -S dae-avx2-bin
-```
-
-##### 最新稳定版 (x86-64 或 aarch64 通用版)
-
-```shell
-sudo pacman -S dae
 ```
 
 ##### 最新 Git 版 
