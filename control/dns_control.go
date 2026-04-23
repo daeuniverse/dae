@@ -816,9 +816,13 @@ func (c *DnsController) onBaseKeySideEffectsEvicted(baseKey string, candidate *D
 }
 
 func (c *DnsController) CacheSize() int {
-	c.dnsCacheMu.Lock()
-	defer c.dnsCacheMu.Unlock()
-	return len(c.dnsCache)
+	c.requireStore()
+	count := 0
+	c.dnsCache.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 func (c *DnsController) ConcurrencyInfo() (inUse, limit int) {
@@ -827,10 +831,21 @@ func (c *DnsController) ConcurrencyInfo() (inUse, limit int) {
 }
 
 func (c *DnsController) ForwarderCacheInfo() (count int, inFlightByUpstream map[string]int32) {
+	c.requireStore()
 	inFlightByUpstream = make(map[string]int32)
-	c.dnsForwarderCacheMu.Lock()
-	defer c.dnsForwarderCacheMu.Unlock()
-	count = len(c.dnsForwarderCache)
+	c.dnsForwarderCache.Range(func(key, value any) bool {
+		forwarderKey, ok := key.(dnsForwarderKey)
+		if !ok {
+			return true
+		}
+		entry, ok := value.(*cachedDnsForwarder)
+		if !ok {
+			return true
+		}
+		count++
+		inFlightByUpstream[forwarderKey.upstream] += entry.inFlight.Load()
+		return true
+	})
 	return
 }
 
