@@ -2674,11 +2674,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 	/* TCP has embedded conn-state routing metadata; handoff is best-effort. */
 	publish_routing_handoff(&tuples->five, &routing_result);
 
-	if (publish_egress_return_handoff(skb, link_h_len, &tuples->five,
-					  ethh, 1))
-		return TC_ACT_SHOT;
-
-	if (rewrite_packet_for_control_plane(skb, link_h_len, 1))
+	/* TCP needs redirect_track before the kernel-side handshake completes.
+	 * Publishing it later from userspace is too late for the first SYN path.
+	 */
+	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
+					   ethh, 1))
 		return TC_ACT_SHOT;
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = tcp_listener_l4proto(tcph);

@@ -261,6 +261,79 @@ check_redirect_with_listener_l4proto(struct __sk_buff *skb,
 }
 
 static __always_inline int
+check_redirect_with_listener_l4proto_and_track_ipv4(struct __sk_buff *skb,
+						    __u8 expected_listener_l4proto,
+						    __u8 expected_from_wan)
+{
+	__u32 *status_code;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+
+	if (data + sizeof(*status_code) > data_end) {
+		bpf_printk("data + sizeof(*status_code) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	status_code = data;
+	if (*status_code != TC_ACT_REDIRECT) {
+		bpf_printk("status_code(%d) != TC_ACT_REDIRECT\n", *status_code);
+		return TC_ACT_SHOT;
+	}
+
+	if (skb->cb[0] != TPROXY_MARK) {
+		bpf_printk("skb->cb[0] != TPROXY_MARK\n");
+		return TC_ACT_SHOT;
+	}
+
+	if (skb->cb[1] != expected_listener_l4proto) {
+		bpf_printk("skb->cb[1](%d) != %d\n", skb->cb[1],
+			   expected_listener_l4proto);
+		return TC_ACT_SHOT;
+	}
+
+	struct ethhdr *eth = data + sizeof(*status_code);
+	if ((void *)(eth + 1) > data_end) {
+		bpf_printk("data + sizeof(*eth) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+	if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+		bpf_printk("eth->h_proto != ETH_P_IP\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct iphdr *ip = (void *)eth + ETH_HLEN;
+	if ((void *)(ip + 1) > data_end) {
+		bpf_printk("data + sizeof(*ip) > data_end\n");
+		return TC_ACT_SHOT;
+	}
+
+	struct redirect_tuple tuple = {};
+	tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+	tuple.sip.u6_addr32[3] = ip->saddr;
+	tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+	tuple.dip.u6_addr32[3] = ip->daddr;
+
+	struct redirect_entry *entry =
+		bpf_map_lookup_elem(&redirect_track, &tuple);
+	if (!entry) {
+		bpf_printk("redirect_track entry missing\n");
+		return TC_ACT_SHOT;
+	}
+	if (entry->from_wan != expected_from_wan) {
+		bpf_printk("entry->from_wan(%d) != %d\n", entry->from_wan,
+			   expected_from_wan);
+		return TC_ACT_SHOT;
+	}
+	if (entry->last_seen_ns == 0) {
+		bpf_printk("entry->last_seen_ns == 0\n");
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 check_tcp_conn_state_ipv4_tcp(struct __sk_buff *skb,
 			      __u32 expected_status_code,
 			      __u32 saddr, __u32 daddr,

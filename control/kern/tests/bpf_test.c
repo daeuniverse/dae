@@ -552,6 +552,30 @@ int testcheck_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb
 	return check_status_and_mark(skb, TC_ACT_OK, 0);
 }
 
+SEC("tc/pktgen/wan_egress_tcp_syn_redirect_track")
+int testpktgen_wan_egress_tcp_syn_redirect_track(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb,
+			    IPV4(192,168,10,3), IPV4(9,9,9,11),
+			    34569, 443);
+}
+
+SEC("tc/setup/wan_egress_tcp_syn_redirect_track")
+int testsetup_wan_egress_tcp_syn_redirect_track(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/wan_egress_tcp_syn_redirect_track")
+int testcheck_wan_egress_tcp_syn_redirect_track(struct __sk_buff *skb)
+{
+	return check_redirect_with_listener_l4proto_and_track_ipv4(skb,
+								   IPPROTO_TCP,
+								   1);
+}
+
 SEC("tc/pktgen/lan_ingress_udp_first_fragment_listener")
 int testpktgen_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
 {

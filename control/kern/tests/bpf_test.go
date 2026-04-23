@@ -426,6 +426,10 @@ func TestWanEgressTcpNonSynStatelessPassthrough(t *testing.T) {
 	runProgramSetByID(t, "WanEgressTcpNonSynStatelessPassthrough")
 }
 
+func TestWanEgressTcpSynRedirectTrack(t *testing.T) {
+	runProgramSetByID(t, "WanEgressTcpSynRedirectTrack")
+}
+
 func TestConntrackArgsScratchReset(t *testing.T) {
 	runProgramSetByID(t, "ConntrackArgsScratchReset")
 }
