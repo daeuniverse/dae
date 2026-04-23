@@ -1100,10 +1100,6 @@ func shutdownAfterSignalWithHandoff(
 		return nil
 	}
 
-	if endpointServer != nil {
-		_ = endpointServer.Shutdown(context.Background())
-	}
-
 	if netns != nil {
 		if e := netns.Close(); e != nil {
 			log.Warnf("close dae netns: %v", e)

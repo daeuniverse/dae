@@ -58,10 +58,9 @@ func TestDnsLatencyHistogramSnapshotMonotonic(t *testing.T) {
 }
 
 func TestDnsController_RejectCounter(t *testing.T) {
-	c := &DnsController{
-		log:                logrus.New(),
-		dnsResponseLatency: newDnsLatencyHistogram(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
+	c.dnsResponseLatency = newDnsLatencyHistogram()
 	writer := &noopDNSResponseWriter{}
 
 	rejectMsg := new(dnsmessage.Msg)
@@ -80,7 +79,8 @@ func TestDnsController_RejectCounter(t *testing.T) {
 }
 
 func TestDnsController_UpstreamSnapshot(t *testing.T) {
-	c := &DnsController{dnsResponseLatency: newDnsLatencyHistogram()}
+	c := newTestDnsController()
+	c.dnsResponseLatency = newDnsLatencyHistogram()
 	metric := c.getOrCreateDnsUpstreamMetric("udp://1.1.1.1:53")
 	metric.queryTotal.Add(2)
 	metric.errTotal.Add(1)
@@ -104,10 +104,9 @@ func TestDnsController_UpstreamSnapshot(t *testing.T) {
 }
 
 func TestDnsController_HandleWithResponseWriterCountsQuery(t *testing.T) {
-	c := &DnsController{
-		log:                logrus.New(),
-		dnsResponseLatency: newDnsLatencyHistogram(),
-	}
+	c := newTestDnsController()
+	c.log = logrus.New()
+	c.dnsResponseLatency = newDnsLatencyHistogram()
 	msg := new(dnsmessage.Msg)
 	msg.SetQuestion("query.example.", dnsmessage.TypeA)
 
@@ -126,7 +125,7 @@ func TestDnsController_HandleWithResponseWriterCountsQuery(t *testing.T) {
 }
 
 func TestDnsController_ConcurrencyInfo(t *testing.T) {
-	c := &DnsController{}
+	c := newTestDnsController()
 
 	inUse, limit := c.ConcurrencyInfo()
 	if limit != 0 || inUse != 0 {
