@@ -14,6 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
+- [v2.0.0rc1 (Pre-release)](#v200rc1-pre-release)
+
 - [Unreleased](#unreleased)
 - [v1.1.0rc1 (Pre-release)](#v110rc1-pre-release)
 - [v1.0.0 (Latest)](#v100-latest)
@@ -48,6 +50,21 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
+
+### v2.0.0rc1 (Pre-release)
+
+> Release date: 2026/04/23
+
+#### Features
+
+> [!WARNING]
+> Release Candidate Notice: This release candidate is intended for users to try new features and provide feedback. It may include experimental functionality and breaking changes, so it is not recommended for production use.
+
+- ci/docs/optimize/feature: Enhance control plane features and improve CI workflows by olicesx in [#970](https://github.com/daeuniverse/dae/pull/970) by (@MarksonHon)
+
+**Example Config**: https://github.com/daeuniverse/dae/blob/v2.0.0rc1/example.dae
+
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v1.1.0...v2.0.0rc1
 
 ### Unreleased
 
