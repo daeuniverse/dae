@@ -489,6 +489,69 @@ int testcheck_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
 	return check_status_and_mark(skb, TC_ACT_OK, 0);
 }
 
+SEC("tc/pktgen/wan_egress_tcp_non_syn_cached_proxy_redirect")
+int testpktgen_wan_egress_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_with_flags(skb,
+				       IPV4(192,168,10,1), IPV4(9,9,9,9),
+				       34567, 443,
+				       false, true, false);
+}
+
+SEC("tc/setup/wan_egress_tcp_non_syn_cached_proxy_redirect")
+int testsetup_wan_egress_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
+{
+	int ret = setup_cached_routing_result(IPV4(192,168,10,1), IPV4(9,9,9,9),
+					      34567, 443,
+					      OUTBOUND_USER_DEFINED_MIN,
+					      TPROXY_MARK);
+
+	if (ret)
+		return TC_ACT_SHOT;
+
+	return do_tproxy_wan_egress(skb, 14);
+}
+
+SEC("tc/check/wan_egress_tcp_non_syn_cached_proxy_redirect")
+int testcheck_wan_egress_tcp_non_syn_cached_proxy_redirect(struct __sk_buff *skb)
+{
+	return check_redirect_non_syn_tcp(skb);
+}
+
+SEC("tc/pktgen/wan_egress_tcp_non_syn_stateless_passthrough")
+int testpktgen_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_with_flags(skb,
+				       IPV4(192,168,10,2), IPV4(9,9,9,10),
+				       34568, 443,
+				       false, true, true);
+}
+
+SEC("tc/setup/wan_egress_tcp_non_syn_stateless_passthrough")
+int testsetup_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	struct match_set ms = {};
+	struct port_range pr = {443, 443};
+
+	ms.port_range = pr;
+	ms.not = false;
+	ms.type = MatchType_Port;
+	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
+	ms.must = false;
+	ms.mark = 0;
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+
+	return do_tproxy_wan_egress(skb, 14);
+}
+
+SEC("tc/check/wan_egress_tcp_non_syn_stateless_passthrough")
+int testcheck_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	return check_status_and_mark(skb, TC_ACT_OK, 0);
+}
+
 SEC("tc/pktgen/lan_ingress_udp_first_fragment_listener")
 int testpktgen_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
 {

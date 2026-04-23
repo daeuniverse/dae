@@ -47,10 +47,10 @@ type bpfDomainRouting struct {
 type bpfMatchSet struct {
 	_        structs.HostLayout
 	Value    [16]uint8
-	Not      bool
+	Not      uint8
 	Type     uint8
 	Outbound uint8
-	Must     bool
+	Must     uint8
 	Mark     uint32
 }
 
@@ -233,7 +233,7 @@ type bpfMapSpecs struct {
 	TcpConnStateMap         *ebpf.MapSpec `ebpf:"tcp_conn_state_map"`
 	UdpConnStateMap         *ebpf.MapSpec `ebpf:"udp_conn_state_map"`
 	UnusedLpmType           *ebpf.MapSpec `ebpf:"unused_lpm_type"`
-	WanEgressScratchMap     *ebpf.MapSpec `ebpf:"wan_egress_scratch_map"`
+	PktScratchMap           *ebpf.MapSpec `ebpf:"pkt_scratch_map"`
 }
 
 type bpfVariableSpecs struct {
@@ -269,7 +269,7 @@ type bpfMaps struct {
 	TcpConnStateMap         *ebpf.Map `ebpf:"tcp_conn_state_map"`
 	UdpConnStateMap         *ebpf.Map `ebpf:"udp_conn_state_map"`
 	UnusedLpmType           *ebpf.Map `ebpf:"unused_lpm_type"`
-	WanEgressScratchMap     *ebpf.Map `ebpf:"wan_egress_scratch_map"`
+	PktScratchMap           *ebpf.Map `ebpf:"pkt_scratch_map"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -289,7 +289,7 @@ func (m *bpfMaps) Close() error {
 		m.TcpConnStateMap,
 		m.UdpConnStateMap,
 		m.UnusedLpmType,
-		m.WanEgressScratchMap,
+		m.PktScratchMap,
 	)
 }
 

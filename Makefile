@@ -79,11 +79,13 @@ submodule submodules: $(submodule_paths)
 ## Begin Ebpf
 clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
-		rm -f control/bpf_bpf*.o
+			rm -f control/bpf_bpf*.o
+	@rm -f control/bpftest_bpf*.go && \
+			rm -f control/bpftest_bpf*.o
 	@rm -f trace/bpf_bpf*.go && \
-		rm -f trace/bpf_bpf*.o
+			rm -f trace/bpf_bpf*.o
 	@rm -f control/kern/tests/bpftest_bpf*.go && \
-		rm -f control/kern/tests/bpftest_bpf*.o
+			rm -f control/kern/tests/bpftest_bpf*.o
 fmt:
 	go fmt ./...
 
@@ -128,9 +130,10 @@ ebpf-test: ebpf-sync submodule clean-ebpf
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
+    go generate ./control/bpf_bug_verification_test.go && \
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
-    go test -v ./control/kern/tests/...
+    go test -v -tags dae_bpf_tests ./control/kern/tests/...
 
 ebpf-test-tagged: export BPF_CLANG := $(CLANG)
 ebpf-test-tagged: export BPF_STRIP_FLAG := $(STRIP_FLAG)
@@ -142,6 +145,7 @@ ebpf-test-tagged: ebpf-sync submodule clean-ebpf
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
+    go generate ./control/bpf_bug_verification_test.go && \
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
     go test -v -tags dae_bpf_tests ./control/kern/tests/...
@@ -156,9 +160,10 @@ ebpf-test-debug: ebpf-sync submodule clean-ebpf
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
+    go generate ./control/bpf_bug_verification_test.go && \
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
-    go test -v ./control/kern/tests/...
+    go test -v -tags dae_bpf_tests ./control/kern/tests/...
 
 ebpf-test-debug-tagged: export BPF_CLANG := $(CLANG)
 ebpf-test-debug-tagged: export BPF_STRIP_FLAG := $(STRIP_FLAG)
@@ -170,6 +175,7 @@ ebpf-test-debug-tagged: ebpf-sync submodule clean-ebpf
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
+    go generate ./control/bpf_bug_verification_test.go && \
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
     go test -v -tags dae_bpf_tests ./control/kern/tests/...
