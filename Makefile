@@ -82,8 +82,8 @@ clean-ebpf:
 			rm -f control/bpf_bpf*.o
 	@rm -f control/bpftest_bpf*.go && \
 			rm -f control/bpftest_bpf*.o
-	@rm -f trace/bpf_bpf*.go && \
-			rm -f trace/bpf_bpf*.o
+	@rm -f trace/bpf_*_bpf*.go && \
+			rm -f trace/bpf_*_bpf*.o
 	@rm -f control/kern/tests/bpftest_bpf*.go && \
 			rm -f control/kern/tests/bpftest_bpf*.o
 fmt:

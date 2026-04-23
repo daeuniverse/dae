@@ -14,6 +14,18 @@
 
 static const bool TRUE = true;
 
+enum trace_stat {
+	TRACE_STAT_HANDLE_SKB,
+	TRACE_STAT_FILTER_FAIL,
+	TRACE_STAT_MATCH,
+	TRACE_STAT_RINGBUF_FAIL,
+	TRACE_STAT_DELETE,
+	TRACE_STAT_IP_VERSION_FAIL,
+	TRACE_STAT_L4_PROTO_FAIL,
+	TRACE_STAT_PORT_FAIL,
+	TRACE_STAT_MAX,
+};
+
 union addr {
 	u32 v4addr;
 	struct {
@@ -58,7 +70,7 @@ struct tracing_config {
 	u8 ip_vsn;
 };
 
-static volatile const struct tracing_config tracing_cfg;
+const volatile struct tracing_config tracing_cfg = {};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -69,8 +81,24 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1<<29);
+	__uint(max_entries, 1 << 24);
 } events SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, TRACE_STAT_MAX);
+} trace_stats SEC(".maps");
+
+static __always_inline void
+inc_trace_stat(__u32 key)
+{
+	__u64 *value = bpf_map_lookup_elem(&trace_stats, &key);
+
+	if (value)
+		__sync_fetch_and_add(value, 1);
+}
 
 static __always_inline u32
 get_netns(struct sk_buff *skb)
@@ -98,8 +126,10 @@ filter_l3_and_l4(struct sk_buff *skb)
 	struct iphdr *l3_hdr = (struct iphdr *) (skb_head + l3_off);
 	u8 ip_vsn = BPF_CORE_READ_BITFIELD_PROBED(l3_hdr, version);
 
-	if (ip_vsn != tracing_cfg.ip_vsn)
+	if (ip_vsn != tracing_cfg.ip_vsn) {
+		inc_trace_stat(TRACE_STAT_IP_VERSION_FAIL);
 		return false;
+	}
 
 	u16 l4_proto;
 
@@ -115,8 +145,10 @@ filter_l3_and_l4(struct sk_buff *skb)
 		return false;
 	}
 
-	if (l4_proto != tracing_cfg.l4_proto)
+	if (l4_proto != tracing_cfg.l4_proto) {
+		inc_trace_stat(TRACE_STAT_L4_PROTO_FAIL);
 		return false;
+	}
 
 	u16 sport, dport;
 
@@ -134,8 +166,10 @@ filter_l3_and_l4(struct sk_buff *skb)
 		return false;
 	}
 
-	if (dport != tracing_cfg.port && sport != tracing_cfg.port)
+	if (dport != tracing_cfg.port && sport != tracing_cfg.port) {
+		inc_trace_stat(TRACE_STAT_PORT_FAIL);
 		return false;
+	}
 
 	return true;
 }
@@ -217,22 +251,29 @@ handle_skb(struct sk_buff *skb, struct pt_regs *ctx)
 	u64 skb_addr = (u64) skb;
 	struct event ev = {};
 
+	inc_trace_stat(TRACE_STAT_HANDLE_SKB);
+
 	if (bpf_map_lookup_elem(&skb_addresses, &skb_addr)) {
 		tracked = true;
 		goto cont;
 	}
 
-	if (!filter_l3_and_l4(skb))
+	if (!filter_l3_and_l4(skb)) {
+		inc_trace_stat(TRACE_STAT_FILTER_FAIL);
 		return 0;
+	}
 
-	if (!tracked)
+	if (!tracked) {
 		bpf_map_update_elem(&skb_addresses, &skb_addr, &TRUE, BPF_ANY);
+		inc_trace_stat(TRACE_STAT_MATCH);
+	}
 
 cont:
 	set_meta(&ev.meta, skb, ctx);
 	set_tuple(&ev.tuple, skb);
 
-	bpf_ringbuf_output(&events, &ev, sizeof(ev), 0);
+	if (bpf_ringbuf_output(&events, &ev, sizeof(ev), 0))
+		inc_trace_stat(TRACE_STAT_RINGBUF_FAIL);
 	return 0;
 }
 
@@ -256,6 +297,7 @@ int kprobe_skb_lifetime_termination(struct pt_regs *ctx)
 	u64 skb = (u64) PT_REGS_PARM1(ctx);
 
 	bpf_map_delete_elem(&skb_addresses, &skb);
+	inc_trace_stat(TRACE_STAT_DELETE);
 	return 0;
 }
 
