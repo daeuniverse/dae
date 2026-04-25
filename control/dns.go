@@ -975,6 +975,9 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 		return
 	}
 
+	// Clear request deadlines before making the socket idle again.
+	_ = conn.SetDeadline(time.Time{})
+
 	// Wrap connection with current timestamp
 	connWithTime := &udpConnWithTimestamp{
 		conn:     conn,
