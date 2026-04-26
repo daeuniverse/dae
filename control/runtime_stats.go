@@ -62,7 +62,10 @@ type runtimeStats struct {
 	historyLen    int
 }
 
-var globalRuntimeStats = newRuntimeStats()
+var (
+	globalRuntimeStats = newRuntimeStats()
+	activeRuntimeStats atomic.Pointer[runtimeStats]
+)
 
 func newRuntimeStats() *runtimeStats {
 	return &runtimeStats{}
@@ -72,13 +75,34 @@ func maxRuntimeHistoryBuckets() int {
 	return int((time.Duration(maxRuntimeHistorySeconds) * time.Second) / runtimeBucketDuration)
 }
 
+func currentRuntimeStatsStore() *runtimeStats {
+	if active := activeRuntimeStats.Load(); active != nil {
+		return active
+	}
+	return globalRuntimeStats
+}
+
+func publishRuntimeStatsStore(s *runtimeStats) {
+	if s == nil {
+		return
+	}
+	activeRuntimeStats.Store(s)
+}
+
+func unpublishRuntimeStatsStore(s *runtimeStats) {
+	if s == nil {
+		return
+	}
+	activeRuntimeStats.CompareAndSwap(s, nil)
+}
+
 // RecordUploadTraffic records upload bytes into the global runtime history.
 func RecordUploadTraffic(n int64) {
 	if n <= 0 {
 		return
 	}
-	if globalRuntimeStats != nil {
-		globalRuntimeStats.record(uint64(n), 0)
+	if store := currentRuntimeStatsStore(); store != nil {
+		store.record(uint64(n), 0)
 	}
 }
 
@@ -87,22 +111,37 @@ func RecordDownloadTraffic(n int64) {
 	if n <= 0 {
 		return
 	}
-	if globalRuntimeStats != nil {
-		globalRuntimeStats.record(0, uint64(n))
+	if store := currentRuntimeStatsStore(); store != nil {
+		store.record(0, uint64(n))
 	}
 }
 
 // Deprecated: prefer (*ControlPlane).SnapshotRuntimeStats for per-instance stats.
 // SnapshotRuntimeStats returns the current runtime traffic snapshot.
 func SnapshotRuntimeStats(activeConnections int, udpSessions int, windowSec int, maxPoints int) RuntimeStatsSnapshot {
-	if globalRuntimeStats == nil {
-		return RuntimeStatsSnapshot{
-			UpdatedAt:         time.Now(),
-			ActiveConnections: activeConnections,
-			UDPSessions:       udpSessions,
-		}
+	now := time.Now()
+	if store := currentRuntimeStatsStore(); store != nil {
+		return store.snapshot(activeConnections, udpSessions, windowSec, maxPoints, now)
 	}
-	return globalRuntimeStats.snapshot(activeConnections, udpSessions, windowSec, maxPoints, time.Now())
+	return RuntimeStatsSnapshot{
+		UpdatedAt:         now,
+		ActiveConnections: activeConnections,
+		UDPSessions:       udpSessions,
+	}
+}
+
+func (c *ControlPlane) publishRuntimeStats() {
+	if c == nil {
+		return
+	}
+	publishRuntimeStatsStore(c.runtimeStats)
+}
+
+func (c *ControlPlane) unpublishRuntimeStats() {
+	if c == nil {
+		return
+	}
+	unpublishRuntimeStatsStore(c.runtimeStats)
 }
 
 func (s *runtimeStats) record(upload uint64, download uint64) {

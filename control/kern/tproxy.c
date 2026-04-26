@@ -12,7 +12,6 @@
 #include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
-// bpf_timer removed: using timestamp-based lazy deletion instead
 #include "ebpf_sync_defs.h"
 
 // #define __DEBUG_ROUTING
@@ -48,11 +47,14 @@
 #endif
 #define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
-#define MAX_DST_MAPPING_NUM (65536 * 2)
-#define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
+#define MAX_CONN_STATE_NUM 65535
+#define MAX_REDIRECT_TRACK_NUM 65536
+#define MAX_ROUTING_HANDOFF_NUM 65536
+#define MAX_EGRESS_RETURN_HANDOFF_NUM 65536
+#define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
-#define IPV6_MAX_EXTENSIONS 8  // Increased from 4 to allow legitimate extension header chains while preventing abuse
+#define IPV6_MAX_EXTENSIONS 8
 
 #define ipv6_optlen(p) (((p)+1) << 3)
 
@@ -67,10 +69,8 @@ static const __u32 two_key = 2;
 
 // Outbound Connectivity Map:
 
-// outbound_connectivity_query is deprecated. Using direct index calculation for
-// ARRAY map to achieve O(1) lookup performance.
 // Key format: outbound_id * 6 + domain * 2 + ipversion
-// where: domain (0=TCP, 1=DNS UDP, 2=data UDP), ipversion (0=IPv4, 1=IPv6)
+// domain: 0=TCP, 1=DNS UDP, 2=data UDP; ipversion: 0=IPv4, 1=IPv6
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -105,27 +105,15 @@ struct redirect_entry {
 	__u8 dmac[6];
 	__u8 from_wan;
 	__u8 padding[3];
-	__u64 last_seen_ns;  // Timestamp for userspace janitor cleanup
+	__u64 last_seen_ns;
 };
 
-// redirect_track: Track redirect entries for reply traffic routing.
-//
-// Design rationale:
-// - Uses HASH with timestamp-based cleanup by userspace janitor.
-// - Key is {sip, dip} only (no ports), shared by all connections between same IP pair.
-// - last_seen_ns is updated on each access (lookup and update) for accurate TTL.
-// - Userspace janitor removes entries older than REDIRECT_TRACK_TTL.
-//
-// Note: Previously used LRU_HASH, but LRU is unsuitable because:
-// - LRU tracks "last access time" not "entry age"
-// - Long-lived connections (e.g., SSH) cause their entries to never be evicted
-// - This prevents cleanup of other IP pairs' entries
-// - HASH + TTL provides predictable expiration behavior.
+// redirect_track: reply traffic routing; HASH with timestamp-based cleanup.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct redirect_tuple);
 	__type(value, struct redirect_entry);
-	__uint(max_entries, 65536);
+	__uint(max_entries, MAX_REDIRECT_TRACK_NUM);
 } redirect_track SEC(".maps");
 
 struct ip_port {
@@ -133,9 +121,7 @@ struct ip_port {
 	__be16 port;
 };
 
-// routing_result: Routing decision result structure.
-// NOTE: This struct is used by userspace caches and the first-packet routing
-// fallback handoff map. Conn-state maps remain the authoritative datapath cache.
+// routing_result: routing decision for userspace cache and first-packet handoff.
 struct routing_result {
 	__u32 mark;
 	__u8 must;
@@ -162,6 +148,15 @@ struct tuples {
 struct routing_handoff_entry {
 	__u64 last_seen_ns;
 	struct routing_result result;
+};
+
+struct egress_return_handoff_entry {
+	__u32 ifindex;
+	__u8 smac[6];
+	__u8 dmac[6];
+	__u8 from_wan;
+	__u8 padding[3];
+	__u64 last_seen_ns;
 };
 
 struct dae_param {
@@ -202,8 +197,15 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct tuples_key);
 	__type(value, struct routing_handoff_entry);
-	__uint(max_entries, 65536);
+	__uint(max_entries, MAX_ROUTING_HANDOFF_NUM);
 } routing_handoff_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct tuples_key);
+	__type(value, struct egress_return_handoff_entry);
+	__uint(max_entries, MAX_EGRESS_RETURN_HANDOFF_NUM);
+} egress_return_handoff_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -256,10 +258,10 @@ struct match_set {
 		__u32 pname[TASK_COMM_LEN / 4];
 		__u8 dscp;
 	};
-	bool not ; // A subrule flag (this is not a match_set flag).
+	__u8 not; // Subrule inversion flag.
 	enum MatchType type;
 	__u8 outbound; // User-defined value range is [0, 252].
-	bool must;
+	__u8 must;
 	__u32 mark;
 };
 
@@ -271,10 +273,7 @@ struct {
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_map SEC(".maps");
 
-// Runtime routing metadata.
-// key=0 => active routing rules length in routing_map.
-// Userspace updates this after rebuilding routing rules so route() can avoid
-// scanning up to MAX_MATCH_SET_LEN on every packet.
+// key=0: active routing rules length in routing_map.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, __u32);
@@ -286,13 +285,7 @@ struct domain_routing {
 	__u32 bitmap[MAX_MATCH_SET_LEN / 32];
 };
 
-// domain_routing_map: Cache domain → routing bitmap mappings.
-//
-// Design rationale:
-// - Changed from LRU_HASH to HASH.
-// - 128-byte value size makes LRU operations extremely expensive (copies on every access).
-// - Domain cache should be TTL-based or explicitly managed, not access-time-based eviction.
-// - Userspace manages cleanup via TTL/explicit deletion for semantic correctness.
+// domain_routing_map: domain → routing bitmap cache (HASH, no LRU).
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
@@ -320,15 +313,7 @@ struct {
 	__uint(max_entries, MAX_COOKIE_PID_PNAME_MAPPING_NUM);
 } cookie_pid_map SEC(".maps");
 
-// udp_conn_state: Track UDP connection state and cached routing decision.
-//
-// Design rationale (Scheme3 - Embedded Design):
-// - Routing result is embedded directly in conn state to ensure consistency.
-// - Single source of truth: no separate routing_tuples_map to sync.
-// - This eliminates orphaned entries and simplifies cascade cleanup.
-// - Preserved across in-process reload via userspace BPF object handoff.
-// - Userspace loaders may disable bpffs pinning on cold start to avoid inheriting
-//   stale conn-state from a previous process.
+// conn_state: shared TCP/UDP connection state with embedded routing.
 union routing_meta {
 	struct {
 		__u32 mark;
@@ -371,53 +356,17 @@ static __always_inline bool bpf_sock_is_dae_socket(const struct bpf_sock *sk)
 	return fullsock && fullsock->mark == PARAM.dae_socket_mark;
 }
 
-struct udp_conn_state {
+struct conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
 	// For traffic from lan that go through wan ingress, dae parse them in lan egress
 	bool is_wan_ingress_direction;
 
-	// Last seen timestamp in nanoseconds (bpf_ktime_get_ns()).
-	// Userspace janitor periodically cleans up expired entries.
-	__u64 last_seen_ns;
-
-	// Embedded routing decision result for this flow.
-	// This avoids a separate routing_tuples_map lookup and ensures consistency.
-	union routing_meta meta;
-	__u8 mac[6];               // Next hop MAC for redirected packets
-	__u8 padding[2];           // Alignment
-	__u8 pname[TASK_COMM_LEN]; // Process name (for WAN egress; empty for LAN)
-	__u32 pid;                 // Process ID (for WAN egress; 0 for LAN)
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, MAX_DST_MAPPING_NUM);
-	__type(key, struct tuples_key);
-	__type(value, struct udp_conn_state);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Loader may override pinning on cold start.
-} udp_conn_state_map SEC(".maps");
-
-// tcp_conn_state: Track TCP connection state and cached routing decision.
-//
-// Design rationale (Scheme3 - Embedded Design):
-// - Routing result is embedded directly in conn state to ensure consistency.
-// - Single source of truth: no separate routing_tuples_map to sync.
-// - This eliminates orphaned entries and simplifies cascade cleanup.
-// - Preserved across in-process reload via userspace BPF object handoff.
-// - Userspace loaders may disable bpffs pinning on cold start to avoid inheriting
-//   stale conn-state from a previous process.
-struct tcp_conn_state {
-	// For each flow (echo symmetric path), note the original flow direction.
-	// Mark as true if traffic go through wan ingress.
-	bool is_wan_ingress_direction;
-
-	// Connection state: 0 = active, 1 = closing (FIN/RST seen)
-	// When in closing state, userspace janitor will clean up this entry.
+	// TCP state. UDP entries leave this as TCP_STATE_ACTIVE.
 	__u8 state;
 
 	// Last seen timestamp in nanoseconds (bpf_ktime_get_ns()).
-	// Userspace janitor periodically cleans up expired entries.
+	// Userspace janitor periodically cleans up expired entries by protocol.
 	__u64 last_seen_ns;
 
 	// Embedded routing decision result for this flow.
@@ -431,16 +380,13 @@ struct tcp_conn_state {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, MAX_DST_MAPPING_NUM);
+	__uint(max_entries, MAX_CONN_STATE_NUM);
 	__type(key, struct tuples_key);
-	__type(value, struct tcp_conn_state);
+	__type(value, struct conn_state);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Loader may override pinning on cold start.
-} tcp_conn_state_map SEC(".maps");
+} conn_state_map SEC(".maps");
 
-// bpf_stats: Map statistics for monitoring and robustness.
-// key=0: udp_conn_state_map overflow count (when bpf_map_update_elem fails with -E2BIG)
-// key=1: tcp_conn_state_map overflow count
-// Userspace reads these counters to detect map pressure and trigger alerts.
+// key=0: UDP conn overflow count; key=1: TCP conn overflow count.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, __u32);
@@ -453,8 +399,7 @@ enum bpf_stats_key {
 	BPF_STATS_TCP_CONN_OVERFLOW = 1,
 };
 
-// DAE event system: Structured events for monitoring and observability.
-// Events are delivered to userspace via ring buffer for efficient processing.
+// Events delivered to userspace via ring buffer.
 enum dae_event_type {
 	DAE_EVENT_BLOCKED = 0,       // Connection blocked (OUTBOUND_BLOCK)
 	DAE_EVENT_UDP_CONN_OVERFLOW = 1, // UDP conn state map overflow
@@ -462,17 +407,17 @@ enum dae_event_type {
 };
 
 struct dae_event {
-	__u64 timestamp;    // Event timestamp (nanoseconds since boot)
-	__u32 type;         // Event type (enum dae_event_type)
-	__u32 pid;          // Process ID (0 if not available)
-	__u8 pname[16];     // Process name (empty if not available)
-	__u8 outbound;       // Outbound ID (for routing/block events)
-	__u8 l4proto;       // Layer 4 protocol
+	__u64 timestamp;
+	__u32 type;
+	__u32 pid;
+	__u8 pname[16];
+	__u8 outbound;
+	__u8 l4proto;
 	__u8 pad[2];
-	__u32 sip[4];       // Source IP (IPv4-mapped IPv6 format)
-	__u32 dip[4];       // Destination IP (IPv4-mapped IPv6 format)
-	__u16 sport;        // Source port
-	__u16 dport;        // Destination port
+	__u32 sip[4];
+	__u32 dip[4];
+	__u16 sport;
+	__u16 dport;
 };
 
 struct {
@@ -486,8 +431,7 @@ enum tcp_state {
 	TCP_STATE_CLOSING = 1,  // FIN or RST seen
 };
 
-// parse_transport_ctx stores header pointers for parsing.
-// This struct is designed to be used with scratch maps to avoid stack pressure.
+// Parsed header state; lives in per-CPU scratch map to stay under 512-byte stack.
 struct parse_transport_ctx {
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -510,8 +454,6 @@ struct {
 
 // Functions:
 
-// send_dae_event sends a structured event to the userspace via ring buffer.
-// Returns: 0 on success, negative error code on failure.
 static __always_inline int
 send_dae_event(__u32 type, __u32 pid, const char *pname, __u8 outbound,
 	       __u8 l4proto, const __u32 *sip, const __u32 *dip,
@@ -548,12 +490,7 @@ static __always_inline __u8 ipv6_get_dscp(const struct ipv6hdr *ipv6h)
 {
 	const __u8 *version_and_tc = (const __u8 *)ipv6h;
 
-	/* Extract DSCP from the raw IPv6 version / traffic-class bytes instead of
-	 * relying on bitfields. This keeps the result stable across kernels/BTF
-	 * layouts and matches the on-wire header layout directly:
-	 *   byte0 low nibble  = traffic class bits [7:4]
-	 *   byte1 high 2 bits = traffic class bits [3:2]
-	 */
+	/* Read DSCP from raw bytes to avoid bitfield layout variability. */
 	return ((version_and_tc[0] & 0x0f) << 2) | (version_and_tc[1] >> 6);
 }
 
@@ -565,9 +502,7 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 	__builtin_memset(tuples, 0, sizeof(*tuples));
 	tuples->five.l4proto = l4proto;
 
-	// Check IP version by examining the protocol headers.
-	// Since both iph and ipv6h are stack-allocated (non-NULL pointers),
-	// we must check the version field rather than pointer validity.
+	// Both iph and ipv6h are stack-allocated; check version field.
 	if (iph->version == 4) {
 		tuples->five.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
 		tuples->five.sip.u6_addr32[3] = iph->saddr;
@@ -622,21 +557,8 @@ tcp_listener_l4proto(const struct tcphdr *tcph)
 	return tcph && tcph->syn && !tcph->ack ? IPPROTO_TCP : 0;
 }
 
-// parse_transport_fast implements direct packet access using bpf_skb_pull_data
-// to linearize non-linear data regions, then accesses headers via pointer arithmetic.
-//
-// Key principles for BPF direct access:
-// 1. Use bpf_skb_pull_data to ensure header data is in linear region
-// 2. Use pointer arithmetic on skb->data to get header pointers
-// 3. Always check (ptr + 1) <= data_end before dereferencing
-// 4. Boundary check failures return -1 to fall back to slow path;
-//    malformed packets (e.g. ihl < 5) return -EFAULT to drop immediately.
-//
-// Returns: 0 on success, -1 to fall back to slow path, positive on error,
-//          -EFAULT for unrecoverable malformed packets.
-//
-// Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
-// boundaries on older verifiers.
+// Fast-path packet parsing via bpf_skb_pull_data + direct access.
+// Returns 0 on success, -1 for slow-path fallback, -EFAULT for malformed.
 static __always_inline int
 parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		     struct parse_transport_ctx *ctx)
@@ -664,10 +586,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	__builtin_memset(tcph, 0, sizeof(struct tcphdr));
 	__builtin_memset(udph, 0, sizeof(struct udphdr));
 
-	// Optimized pull strategy: pull minimal headers upfront.
-	// 128 bytes covers: ethhdr(14) + IPv4 hdr(20) + TCP hdr(20) + options.
-	// This is a compromise between performance and verifier complexity.
-	// Larger pull sizes cause verifier instruction explosion on 6.12+.
+	// Pull 128 bytes: eth(14)+IP(20)+TCP(20)+options. Larger sizes hurt verifier.
 #define HEADER_PULL_SIZE 128
 	if (bpf_skb_pull_data(skb, HEADER_PULL_SIZE))
 		return -1;
@@ -683,7 +602,6 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			return -1;
 
 		ethh->h_proto = eth_ptr->h_proto;
-		// Direct assignment is more efficient than memcpy for small arrays
 		ethh->h_dest[0] = eth_ptr->h_dest[0];
 		ethh->h_dest[1] = eth_ptr->h_dest[1];
 		ethh->h_dest[2] = eth_ptr->h_dest[2];
@@ -711,9 +629,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		if (iph_ptr->ihl < 5)
 			return -EFAULT;
 
-		// Copy base IP fields first: saddr/daddr must be valid in ctx->iph
-		// so that get_tuples() works correctly even when we return
-		// PARSE_FRAGMENT below (before the normal copy path).
+		// Copy saddr/daddr early so get_tuples() works for PARSE_FRAGMENT.
 		iph->version = iph_ptr->version;
 		iph->ihl = iph_ptr->ihl;
 		iph->protocol = iph_ptr->protocol;
@@ -725,16 +641,12 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		__u32 ip_hdr_len = iph_ptr->ihl * 4;
 		__u32 l4_offset = offset + ip_hdr_len;
 
-		// Preserve the historical behavior for the first fragment, which still
-		// carries the transport header and can participate in normal routing.
-		// Only non-initial fragments lack the L4 header and must fall back to
-		// the kernel stack for reassembly.
+		// First fragment carries L4 header; non-initial fragments fall back.
 		__u16 frag_off = bpf_ntohs(iph_ptr->frag_off);
 
 		if ((frag_off & 0x1FFF) != 0)
 			return PARSE_FRAGMENT;
 
-		// L4 parsing: simplified with single boundary check
 		switch (iph->protocol) {
 		case IPPROTO_TCP: {
 			struct tcphdr *tcph_ptr = data + l4_offset;
@@ -779,7 +691,6 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		ipv6h->version = ipv6h_ptr->version;
 		ipv6h->nexthdr = ipv6h_ptr->nexthdr;
 		ipv6h->payload_len = ipv6h_ptr->payload_len;
-		// Copy IPv6 addresses - use loop for 128-bit addresses
 		__u32 *saddr_dst = (__u32 *)ipv6h->saddr.in6_u.u6_addr32;
 		const __u32 *saddr_src = (const __u32 *)ipv6h_ptr->saddr.in6_u.u6_addr32;
 
@@ -799,19 +710,14 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		*ihl = sizeof(struct ipv6hdr) / 4;
 		offset += sizeof(struct ipv6hdr);
 
-		// Simplified IPv6 extension header handling
-		// Unroll loop to reduce verifier complexity
 		__u8 nexthdr = ipv6h_ptr->nexthdr;
 		const __u8 *ext_hdr;
 
-		// Extension header iteration (unrolled for verifier)
 		for (int i = 0; i < IPV6_MAX_EXTENSIONS; i++) {
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
 			if (nexthdr == IPPROTO_FRAGMENT) {
-				// Mirror the stable pre-c0a0f1 behavior: keep parsing the first
-				// fragment, which still carries the transport header, but pass
-				// non-initial fragments back to the kernel stack.
+				// First fragment still has L4; non-initial falls back.
 				struct frag_hdr *fragh = data + offset;
 
 				if ((void *)(fragh + 1) > data_end)
@@ -888,13 +794,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 	return 1;
 }
 
-// Slow path using bpf_skb_load_bytes for extreme cases:
-// - Packets with large IPv6 extension headers (> 512 bytes)
-// - Memory allocation failure in fast path
-// - Non-linear data that couldn't be pulled
-//
-// Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
-// boundaries on older verifiers.
+// Slow-path fallback using bpf_skb_load_bytes.
 static __always_inline int
 parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		     struct parse_transport_ctx *ctx)
@@ -942,9 +842,7 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 		*ihl = iph->ihl;
 		*l4proto = iph->protocol;
 
-		// Preserve the stable routing behavior for the first fragment, which
-		// still exposes the transport header. Only non-initial fragments need
-		// to fall back to the kernel for reassembly.
+		// First fragment carries L4; non-initial falls back.
 		__u16 frag_off = bpf_ntohs(iph->frag_off);
 
 		if ((frag_off & 0x1FFF) != 0)
@@ -988,8 +886,7 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			if (nexthdr == IPPROTO_NONE)
 				return -EFAULT;
 			if (nexthdr == IPPROTO_FRAGMENT) {
-				// Preserve the stable first-fragment behavior while letting
-				// non-initial fragments pass through for kernel reassembly.
+				// First fragment still has L4; non-initial falls back.
 				struct frag_hdr fragh = {};
 
 				ret = bpf_skb_load_bytes(skb, offset, &fragh,
@@ -1007,7 +904,6 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 			if (!is_extension_header(nexthdr))
 				break;
 
-			// Read next header and extension header length
 			ret = bpf_skb_load_bytes(skb, offset, &nexthdr, 1);
 			if (ret)
 				return -EFAULT;
@@ -1021,17 +917,11 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 
 			__u32 ext_len = ipv6_optlen(hdr_ext_len);
 
-			// Skip the direct access boundary check for extension headers.
-			// bpf_skb_load_bytes (used below) can handle non-linear data and
-			// will return an error if the data truly doesn't exist.
-			// The check using data_end (linear region only) would incorrectly
-			// reject valid packets with extension headers in non-linear regions.
-
 			offset += ext_len;
 		}
 
 		if (is_extension_header(nexthdr))
-			return -EFAULT;  // Too many extension headers - drop as suspicious
+			return -EFAULT;
 
 		*l4proto = nexthdr;
 		switch (nexthdr) {
@@ -1064,27 +954,19 @@ parse_transport_slow(struct __sk_buff *skb, __u32 link_h_len,
 	return 1;
 }
 
-// Main entry point - tries fast path first, falls back to slow path.
-// Returns: 0 on success, positive on error.
-//
-// Keep this inline so scratch-map pointers don't cross BPF-to-BPF subprogram
-// boundaries on older verifiers. parse_transport_ctx itself already lives in a
-// scratch map, so inlining does not reintroduce the old large stack object.
+// Try fast path first; fall back to slow path on -1.
 static __always_inline int
 parse_transport(struct __sk_buff *skb, __u32 link_h_len,
 		struct parse_transport_ctx *ctx)
 {
 	int ret = parse_transport_fast(skb, link_h_len, ctx);
 
-	if (ret == -1) {
-		// Fast path failed (pull failed or headers too large),
-		// fall back to slow path using bpf_skb_load_bytes.
+	if (ret == -1)
 		return parse_transport_slow(skb, link_h_len, ctx);
-	}
 	return ret;
 }
 
-struct lan_ingress_parsed {
+struct parsed_packet {
 	struct ethhdr ethh;
 	struct tuples tuples;
 	struct tcphdr tcph;
@@ -1096,13 +978,13 @@ struct lan_ingress_parsed {
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
-	__type(value, struct lan_ingress_parsed);
+	__type(value, struct parsed_packet);
 	__uint(max_entries, 1);
-} lan_ingress_scratch_map SEC(".maps");
+} pkt_scratch_map SEC(".maps");
 
 static __always_inline int
-parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
-			 struct lan_ingress_parsed *out)
+parse_packet(struct __sk_buff *skb, __u32 link_h_len,
+	     struct parsed_packet *out)
 {
 	__u32 scratch_key = 0;
 	struct parse_transport_ctx *ctx =
@@ -1113,62 +995,12 @@ parse_lan_ingress_packet(struct __sk_buff *skb, u32 link_h_len,
 
 	int ret = parse_transport(skb, link_h_len, ctx);
 
-	// Fatal error: drop immediately, no context to copy.
 	if (ret < 0)
 		return ret;
 	if (ctx->l4proto == IPPROTO_ICMPV6)
 		return 1;
 
-	// Always populate out with whatever IP context was parsed.
-	// PARSE_FRAGMENT still leaves a valid IP tuple behind, which keeps callers
-	// and diagnostics aligned without forcing a control-plane redirect.
-	__builtin_memset(out, 0, sizeof(*out));
-	out->ethh = ctx->ethh;
-	out->tcph = ctx->tcph;
-	out->udph = ctx->udph;
-	out->l4proto = ctx->l4proto;
-	out->listener_l4proto = ctx->listener_l4proto;
-	get_tuples(skb, &out->tuples, &ctx->iph, &ctx->ipv6h, &ctx->tcph, &ctx->udph, ctx->l4proto);
-	return ret;
-}
-
-struct wan_egress_parsed {
-	struct ethhdr ethh;
-	struct tuples tuples;
-	struct tcphdr tcph;
-	struct udphdr udph;
-	__u8 l4proto;
-	__u8 listener_l4proto;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct wan_egress_parsed);
-	__uint(max_entries, 1);
-} wan_egress_scratch_map SEC(".maps");
-
-static __always_inline int
-parse_wan_egress_packet(struct __sk_buff *skb, u32 link_h_len,
-			struct wan_egress_parsed *out)
-{
-	__u32 scratch_key = 0;
-	struct parse_transport_ctx *ctx =
-		bpf_map_lookup_elem(&parse_ctx_scratch_map, &scratch_key);
-
-	if (!ctx)
-		return -EFAULT;
-
-	int ret = parse_transport(skb, link_h_len, ctx);
-
-	// Fatal error: drop immediately, no context to copy.
-	if (ret < 0)
-		return ret;
-	if (ctx->l4proto == IPPROTO_ICMPV6)
-		return 1;
-
-	// Always populate out with whatever IP context was parsed so PARSE_FRAGMENT
-	// still preserves the source/destination tuple for callers and diagnostics.
+	// PARSE_FRAGMENT still populates the IP tuple for callers.
 	__builtin_memset(out, 0, sizeof(*out));
 	out->ethh = ctx->ethh;
 	out->tcph = ctx->tcph;
@@ -1190,7 +1022,7 @@ struct route_ctx {
 	__u32 domain_word_idx;
 	__u32 domain_word_bits;
 	bool domain_word_cached;
-	volatile __u8 route_state;
+	__u8 route_state;
 };
 
 struct route_loop_ctx {
@@ -1226,13 +1058,7 @@ struct {
 	__uint(max_entries, 1);
 } wan_egress_route_scratch_map SEC(".maps");
 
-// Conntrack argument passing: per-CPU scratch for mark_*_seen wrappers.
-// This avoids exceeding the BPF subprogram 5-argument limit while keeping the
-// public mark_*_seen() signatures unchanged for all callers. The wrapper does a
-// single PERCPU_ARRAY lookup, populates the scratch, and then threads the map
-// value pointer into the noinline core to avoid a second helper call on the hot
-// path. Older kernels may be stricter about BPF-to-BPF pointer propagation, so
-// BPF tests should be kept enabled when touching this boundary.
+// Per-CPU scratch to tunnel conntrack args past the BPF 5-argument limit.
 #define CT_ARGS_HAS_ROUTING  BIT(0)
 #define CT_ARGS_HAS_MAC      BIT(1)
 #define CT_ARGS_HAS_PNAME    BIT(2)
@@ -1256,10 +1082,6 @@ struct {
 	__uint(max_entries, 1);
 } conntrack_args_map SEC(".maps");
 
-// conntrack_args_set fully overwrites the per-CPU scratch so omitted optional
-// fields never leak stale data from a previous packet processed on the same
-// CPU. When called with compile-time NULL pointers the compiler can still
-// dead-code-eliminate the corresponding branches.
 static __always_inline void
 conntrack_args_set(struct conntrack_args *a,
 		   __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
@@ -1299,45 +1121,6 @@ conntrack_args_pname_or_null(const struct conntrack_args *a)
 	return a->flags & CT_ARGS_HAS_PNAME ? (const char *)a->pname : NULL;
 }
 
-/*
- * Helper functions to simplify route_loop_cb switch-case.
- * These inline functions reduce code duplication and improve maintainability.
- */
-
-// Check if a port falls within a range [port_start, port_end]
-static __always_inline bool check_port_range(__u16 port, __u16 port_start, __u16 port_end)
-{
-	return port_start <= port && port <= port_end;
-}
-
-// Check if any bits in value match the mask (bitwise AND)
-static __always_inline bool check_bitmask(__u8 value, __u8 mask)
-{
-	return (value & mask) != 0;
-}
-
-static __always_inline bool route_state_has(const struct route_ctx *ctx,
-					    __u8 flags)
-{
-	return (ctx->route_state & flags) != 0;
-}
-
-static __always_inline void route_state_set(struct route_ctx *ctx, __u8 flags)
-{
-	ctx->route_state |= flags;
-}
-
-static __always_inline void route_state_clear(struct route_ctx *ctx, __u8 flags)
-{
-	ctx->route_state &= ~flags;
-}
-
-// Mark the current match_set as matched
-static __always_inline void mark_matched(struct route_ctx *ctx)
-{
-	route_state_set(ctx, ROUTE_STATE_GOOD_SUBRULE);
-}
-
 static __always_inline int
 route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 		struct lpm_key *lpm_key)
@@ -1352,7 +1135,7 @@ route_match_lpm(struct route_ctx *ctx, const struct match_set *match_set,
 
 	if (bpf_map_lookup_elem(lpm, lpm_key)) {
 		// match_set hits.
-		mark_matched(ctx);
+		ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 	}
 	return 0;
 }
@@ -1394,7 +1177,7 @@ static __always_inline int route_match_domain_set(struct route_ctx *ctx,
 	}
 
 	if ((ctx->domain_word_bits >> (index % 32)) & 1)
-		mark_matched(ctx);
+		ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 	return 0;
 }
 
@@ -1435,9 +1218,9 @@ route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
 			   match_set->port_range.port_start,
 			   match_set->port_range.port_end);
 #endif
-		if (check_port_range(check_port, match_set->port_range.port_start,
-				     match_set->port_range.port_end))
-			mark_matched(ctx);
+		if (check_port >= match_set->port_range.port_start &&
+		    check_port <= match_set->port_range.port_end)
+			ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 		break;
 	}
 	case MatchType_L4Proto:
@@ -1461,8 +1244,8 @@ route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
 				match_set->outbound);
 		}
 #endif
-		if (check_bitmask(value, mask))
-			mark_matched(ctx);
+		if (value & mask)
+			ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 		break;
 	}
 	case MatchType_DomainSet:
@@ -1481,7 +1264,7 @@ route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
 			match_type, match_set->not, match_set->outbound);
 #endif
 		if (is_wan && equal16(match_set->pname, pname))
-			mark_matched(ctx);
+			ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 		break;
 	case MatchType_Dscp:
 #ifdef __DEBUG_ROUTING
@@ -1490,13 +1273,13 @@ route_eval_match(struct route_ctx *ctx, const struct match_set *match_set,
 			match_type, match_set->not, match_set->outbound);
 #endif
 		if (dscp == match_set->dscp)
-			mark_matched(ctx);
+			ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 		break;
 	case MatchType_Fallback:
 #ifdef __DEBUG_ROUTING
 		bpf_printk("CHECK: hit fallback");
 #endif
-		mark_matched(ctx);
+		ctx->route_state |= ROUTE_STATE_GOOD_SUBRULE;
 		break;
 	default:
 #ifdef __DEBUG_ROUTING
@@ -1519,27 +1302,27 @@ route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
 
 #ifdef __DEBUG_ROUTING
 	bpf_printk("good_subrule: %d, bad_rule: %d",
-		   route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE),
-		   route_state_has(ctx, ROUTE_STATE_BAD_RULE));
+		   !!(ctx->route_state & ROUTE_STATE_GOOD_SUBRULE),
+		   !!(ctx->route_state & ROUTE_STATE_BAD_RULE));
 #endif
 	if (match_outbound != OUTBOUND_LOGICAL_OR) {
 		// This match_set reaches the end of subrule.
 		// We are now at end of rule, or next match_set belongs to another
 		// subrule.
-		if (route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE) == match_not)
+		if (!!(ctx->route_state & ROUTE_STATE_GOOD_SUBRULE) == match_not)
 			// This subrule does not hit.
-			route_state_set(ctx, ROUTE_STATE_BAD_RULE);
+			ctx->route_state |= ROUTE_STATE_BAD_RULE;
 
 		// Reset good_subrule.
-		route_state_clear(ctx, ROUTE_STATE_GOOD_SUBRULE);
+		ctx->route_state &= ~ROUTE_STATE_GOOD_SUBRULE;
 	}
 #ifdef __DEBUG_ROUTING
-	bpf_printk("_bad_rule: %d", route_state_has(ctx, ROUTE_STATE_BAD_RULE));
+	bpf_printk("_bad_rule: %d", !!(ctx->route_state & ROUTE_STATE_BAD_RULE));
 #endif
 	if ((match_outbound & OUTBOUND_LOGICAL_MASK) != OUTBOUND_LOGICAL_MASK) {
 		// Tail of a rule (line).
 		// Decide whether to hit.
-		if (!route_state_has(ctx, ROUTE_STATE_BAD_RULE)) {
+		if (!(ctx->route_state & ROUTE_STATE_BAD_RULE)) {
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
 				"MATCHED: match_set->type: %u, match_set->not: %d",
@@ -1548,13 +1331,13 @@ route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
 			// DNS requests should routed by control plane if outbound is not
 			// must_direct.
 			if (unlikely(match_outbound == OUTBOUND_MUST_RULES)) {
-				route_state_set(ctx, ROUTE_STATE_MUST);
+				ctx->route_state |= ROUTE_STATE_MUST;
 			} else {
-				bool must = route_state_has(ctx, ROUTE_STATE_MUST) ||
+				bool must = !!(ctx->route_state & ROUTE_STATE_MUST) ||
 					    match_set->must;
 
 				if (!must &&
-				    route_state_has(ctx, ROUTE_STATE_DNS_QUERY)) {
+				    (ctx->route_state & ROUTE_STATE_DNS_QUERY)) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
@@ -1576,7 +1359,7 @@ route_finalize_match(struct route_ctx *ctx, const struct match_set *match_set)
 				return 1;
 			}
 		}
-		route_state_clear(ctx, ROUTE_STATE_BAD_RULE);
+		ctx->route_state &= ~ROUTE_STATE_BAD_RULE;
 	}
 	return 0;
 }
@@ -1608,8 +1391,8 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 		return 1;
 	}
 
-	if (!route_state_has(
-		    ctx, ROUTE_STATE_BAD_RULE | ROUTE_STATE_GOOD_SUBRULE)) {
+	if (!(ctx->route_state &
+	      (ROUTE_STATE_BAD_RULE | ROUTE_STATE_GOOD_SUBRULE))) {
 		if (route_eval_match(ctx, match_set, k, l4proto_type,
 				     ipversion_type, pname, is_wan, dscp))
 			return 1;
@@ -1617,8 +1400,8 @@ static __noinline int route_loop_cb(__u32 index, void *data)
 #ifdef __DEBUG_ROUTING
 		bpf_printk("key(match_set->type): %llu", match_set->type);
 		bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
-			   route_state_has(ctx, ROUTE_STATE_GOOD_SUBRULE),
-			   route_state_has(ctx, ROUTE_STATE_BAD_RULE));
+			   !!(ctx->route_state & ROUTE_STATE_GOOD_SUBRULE),
+			   !!(ctx->route_state & ROUTE_STATE_BAD_RULE));
 #endif
 	}
 
@@ -1727,9 +1510,7 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 
 static __always_inline int redirect_to_control_plane_ingress(void)
 {
-	// bpf_redirect_peer() is only safe when explicitly enabled by userspace after
-	// verifying: netkit+scrub=NONE + kernel >= 6.8 (CVE-2025-37959 fix).
-	// Provides ~50% throughput improvement by bypassing CPU backlog.
+	// bpf_redirect_peer requires kernel >= 6.8 (CVE-2025-37959 fix).
 	if (PARAM.use_redirect_peer)
 		return bpf_redirect_peer(PARAM.dae0_ifindex, 0);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
@@ -1742,64 +1523,169 @@ static __always_inline int redirect_to_control_plane_egress(void)
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 }
 
-static __noinline int prep_redirect_to_control_plane(
-	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
-	struct ethhdr *ethh, __u8 from_wan)
+static __always_inline bool
+wan_egress_needs_control_plane(__u8 outbound, __u32 mark)
+{
+	return !(outbound == OUTBOUND_DIRECT && mark == 0);
+}
+
+static __always_inline void
+fill_routing_result(struct routing_result *dst,
+		    __u32 mark, __u8 must, __u8 outbound,
+		    const __u8 mac[6], __u8 dscp,
+		    const char *pname, __u32 pid)
+{
+	__builtin_memset(dst, 0, sizeof(*dst));
+	dst->mark = mark;
+	dst->must = must;
+	dst->outbound = outbound;
+	dst->pid = pid;
+	dst->dscp = dscp;
+	if (mac)
+		__builtin_memcpy(dst->mac, mac, sizeof(dst->mac));
+	if (pname)
+		__builtin_memcpy(dst->pname, pname, TASK_COMM_LEN);
+}
+
+static __always_inline int
+publish_routing_handoff(const struct tuples_key *tuples,
+			const struct routing_result *result)
+{
+	struct routing_handoff_entry handoff = {};
+	long ret;
+
+	handoff.last_seen_ns = bpf_ktime_get_ns();
+	handoff.result = *result;
+	ret = bpf_map_update_elem(&routing_handoff_map, tuples, &handoff, BPF_ANY);
+	if (ret)
+		bpf_printk("routing_handoff update failed: %d", (int)ret);
+	return (int)ret;
+}
+
+static __always_inline void
+fill_redirect_tuple_from_forward_packet(const struct __sk_buff *skb,
+					const struct tuples *tuples,
+					struct redirect_tuple *redirect_tuple)
+{
+	__builtin_memset(redirect_tuple, 0, sizeof(*redirect_tuple));
+	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		redirect_tuple->sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		redirect_tuple->sip.u6_addr32[3] = tuples->five.sip.u6_addr32[3];
+		redirect_tuple->dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
+		redirect_tuple->dip.u6_addr32[3] = tuples->five.dip.u6_addr32[3];
+	} else {
+		__builtin_memcpy(&redirect_tuple->sip, &tuples->five.sip,
+				 IPV6_BYTE_LENGTH);
+		__builtin_memcpy(&redirect_tuple->dip, &tuples->five.dip,
+				 IPV6_BYTE_LENGTH);
+	}
+}
+
+static __always_inline void
+fill_redirect_entry_from_forward_packet(__u32 ifindex, __u32 link_h_len,
+					const struct ethhdr *ethh, __u8 from_wan,
+					struct redirect_entry *redirect_entry)
+{
+	__builtin_memset(redirect_entry, 0, sizeof(*redirect_entry));
+	redirect_entry->ifindex = ifindex;
+	redirect_entry->from_wan = from_wan;
+	redirect_entry->last_seen_ns = bpf_ktime_get_ns();
+	if (link_h_len == ETH_HLEN && ethh) {
+		__builtin_memcpy(redirect_entry->smac, ethh->h_source, 6);
+		__builtin_memcpy(redirect_entry->dmac, ethh->h_dest, 6);
+	}
+}
+
+static __always_inline int
+publish_redirect_track_for_packet(struct __sk_buff *skb, __u32 link_h_len,
+				  const struct tuples *tuples,
+				  const struct ethhdr *ethh, __u8 from_wan)
 {
 	struct redirect_tuple redirect_tuple = {};
 	struct redirect_entry redirect_entry = {};
-	__u32 local_link_h_len = link_h_len;
-	struct ethhdr *local_ethh = ethh;
-	__u8 local_from_wan = from_wan;
-	bool use_redirect_peer = PARAM.use_redirect_peer && !local_from_wan;
+	long map_ret;
+
+	fill_redirect_tuple_from_forward_packet(skb, tuples, &redirect_tuple);
+	fill_redirect_entry_from_forward_packet(skb->ifindex, link_h_len, ethh,
+						from_wan, &redirect_entry);
+
+	map_ret = bpf_map_update_elem(&redirect_track, &redirect_tuple,
+				      &redirect_entry, BPF_ANY);
+	if (map_ret) {
+		bpf_printk("redirect_track update failed: %d", (int)map_ret);
+		return (int)map_ret;
+	}
+	return 0;
+}
+
+static __always_inline int
+publish_egress_return_handoff(struct __sk_buff *skb, __u32 link_h_len,
+			      const struct tuples_key *tuples,
+			      const struct ethhdr *ethh, __u8 from_wan)
+{
+	struct egress_return_handoff_entry entry = {};
+	long ret;
+
+	entry.ifindex = skb->ifindex;
+	entry.from_wan = from_wan;
+	entry.last_seen_ns = bpf_ktime_get_ns();
+	if (link_h_len == ETH_HLEN && ethh) {
+		__builtin_memcpy(entry.smac, ethh->h_source, 6);
+		__builtin_memcpy(entry.dmac, ethh->h_dest, 6);
+	}
+	ret = bpf_map_update_elem(&egress_return_handoff_map, tuples, &entry,
+				  BPF_ANY);
+	if (ret)
+		bpf_printk("egress_return_handoff update failed: %d", (int)ret);
+	return (int)ret;
+}
+
+static __always_inline int
+rewrite_packet_for_control_plane(struct __sk_buff *skb, __u32 link_h_len,
+				 __u8 from_wan)
+{
+	bool use_redirect_peer = PARAM.use_redirect_peer && !from_wan;
+	int ret;
 
 	if (!use_redirect_peer) {
-		if (!local_link_h_len) {
+		if (!link_h_len) {
 			__u16 l3proto = skb->protocol;
 			__u8 zero_mac[6] = {0};
-			int ret;
 
 			ret = bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
 			if (ret) {
 				bpf_printk("prep_redirect: bpf_skb_change_head failed: %d", ret);
 				return ret;
 			}
-			bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
-					    &l3proto, sizeof(l3proto), 0);
-			bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-					    zero_mac, sizeof(zero_mac), 0);
+			ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
+						  &l3proto, sizeof(l3proto), 0);
+			if (ret)
+				return ret;
+			ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+						  zero_mac, sizeof(zero_mac), 0);
+			if (ret)
+				return ret;
 		}
 
-		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-				    (void *)&PARAM.dae0peer_mac, 6, 0);
+		ret = bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+					  (void *)&PARAM.dae0peer_mac, 6, 0);
+		if (ret)
+			return ret;
 	}
-
-	if (skb->protocol == bpf_htons(ETH_P_IP)) {
-		redirect_tuple.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-		redirect_tuple.sip.u6_addr32[3] = tuples->five.sip.u6_addr32[3];
-		redirect_tuple.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-		redirect_tuple.dip.u6_addr32[3] = tuples->five.dip.u6_addr32[3];
-	} else {
-		__builtin_memcpy(&redirect_tuple.sip, &tuples->five.sip, IPV6_BYTE_LENGTH);
-		__builtin_memcpy(&redirect_tuple.dip, &tuples->five.dip, IPV6_BYTE_LENGTH);
-	}
-
-	redirect_entry.ifindex = skb->ifindex;
-	redirect_entry.from_wan = local_from_wan;
-	redirect_entry.last_seen_ns = bpf_ktime_get_ns();
-	if (local_link_h_len == ETH_HLEN) {
-		__builtin_memcpy(redirect_entry.smac, local_ethh->h_source, 6);
-		__builtin_memcpy(redirect_entry.dmac, local_ethh->h_dest, 6);
-	} else {
-		__builtin_memset(redirect_entry.smac, 0, 6);
-		__builtin_memset(redirect_entry.dmac, 0, 6);
-	}
-	bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry, BPF_ANY);
-
 	return 0;
 }
 
-// copy_reversed_tuples moved below, timer callback removed (using userspace janitor)
+static __noinline int prep_redirect_to_control_plane(
+	struct __sk_buff *skb, __u32 link_h_len, struct tuples *tuples,
+	struct ethhdr *ethh, __u8 from_wan)
+{
+	int ret = rewrite_packet_for_control_plane(skb, link_h_len, from_wan);
+
+	if (ret)
+		return ret;
+	return publish_redirect_track_for_packet(skb, link_h_len, tuples, ethh,
+						 from_wan);
+}
 
 static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 						 struct tuples_key *dst)
@@ -1812,42 +1698,32 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
-// DNS queries/replies are short-lived; skipping conntrack/cache for them
-// reduces unnecessary UDP state churn.
 static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 {
 	return key->l4proto == IPPROTO_UDP &&
 	       (key->dport == bpf_htons(53) || key->sport == bpf_htons(53));
 }
 
-// mark_udp_seen updates the last_seen_ns timestamp for UDP connection tracking.
-// Uses datapath lazy expiry with userspace janitor as a backstop under pressure.
-//
-// Design choice: Kernel path deletes clearly expired entries on lookup so stale
-// state stops affecting routing without waiting for the next userspace sweep.
-// Userspace still performs periodic cleanup to recover space from cold entries
-// that are never touched again.
-//
-// Scheme3: Routing is embedded in conn state for single source of truth.
-// When routing params are provided (outbound != NULL), they're stored in conn state.
-//
-// Robustness: If map is full (E2BIG), we increment overflow counter and return NULL.
-// Callers should gracefully degrade: continue processing without conntrack state
-// rather than dropping packets.
-//
-// Performance: The heavy body (__mark_udp_seen) is __noinline so it is emitted
-// once in the BPF object instead of being duplicated at every call-site.
-// Routing args are passed via conntrack_args_map (PERCPU_ARRAY, ~0 cost).
+static __always_inline bool
+udp_wan_egress_handoff_mandatory(const struct tuples *tuples,
+				 const struct conn_state *udp_conn_state)
+{
+	return is_short_lived_udp_traffic((struct tuples_key *)&tuples->five) ||
+	       !udp_conn_state;
+}
+
+// mark_udp_seen: update/create UDP conn state with optional routing metadata.
+// Expired entries are pruned on lookup. Map overflow increments bpf_stats_map.
 #define UDP_CONN_STATE_TIMEOUT_NS 120000000000ULL        // 120-second backstop; userspace endpoint teardown is the primary owner
 #define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 
 static __always_inline bool
-udp_conn_state_expired(const struct udp_conn_state *state, __u64 now)
+udp_conn_state_expired(const struct conn_state *state, __u64 now)
 {
 	return state && now - state->last_seen_ns > UDP_CONN_STATE_TIMEOUT_NS;
 }
 
-static __noinline struct udp_conn_state *
+static __noinline struct conn_state *
 __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		const struct conntrack_args *args)
 {
@@ -1855,11 +1731,11 @@ __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		return NULL;
 
 	__u64 now = bpf_ktime_get_ns();
-	struct udp_conn_state *state =
-		bpf_map_lookup_elem(&udp_conn_state_map, key);
+	struct conn_state *state =
+		bpf_map_lookup_elem(&conn_state_map, key);
 
 	if (udp_conn_state_expired(state, now)) {
-		bpf_map_delete_elem(&udp_conn_state_map, key);
+		bpf_map_delete_elem(&conn_state_map, key);
 		state = NULL;
 	}
 
@@ -1887,7 +1763,7 @@ __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 	// Slow path: create new entry (either no entry or expired one was deleted)
 	bool has_rt = !!(args->flags & CT_ARGS_HAS_ROUTING);
-	struct udp_conn_state new_state = {};
+	struct conn_state new_state = {};
 
 	new_state.is_wan_ingress_direction = is_wan_ingress_direction;
 	new_state.last_seen_ns = now;
@@ -1904,7 +1780,7 @@ __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 					 TASK_COMM_LEN);
 	}
 
-	int ret = bpf_map_update_elem(&udp_conn_state_map, key,
+	int ret = bpf_map_update_elem(&conn_state_map, key,
 				      &new_state, BPF_ANY);
 
 	if (unlikely(ret)) {
@@ -1922,12 +1798,12 @@ __mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		return NULL;
 	}
 
-	return bpf_map_lookup_elem(&udp_conn_state_map, key);
+	return bpf_map_lookup_elem(&conn_state_map, key);
 }
 
 // mark_udp_seen: thin inline wrapper that populates per-CPU scratch args once
 // and then delegates to the single-copy __mark_udp_seen body.
-static __always_inline struct udp_conn_state *
+static __always_inline struct conn_state *
 mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
 	      __u8 dscp, const char *pname, __u32 pid)
@@ -1942,32 +1818,14 @@ mark_udp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	return __mark_udp_seen(key, is_wan_ingress_direction, args);
 }
 
-// mark_tcp_seen updates TCP connection state for lifecycle tracking.
-// Uses datapath lazy expiry with userspace janitor as a backstop under pressure.
-//
-// Design choice: Kernel path deletes clearly expired entries on lookup so stale
-// state stops affecting routing without waiting for the next userspace sweep.
-// Userspace still performs periodic cleanup to recover space from cold entries
-// that are never touched again.
-//
-// State transitions:
-// - SYN -> TCP_STATE_ACTIVE
-// - FIN/RST -> TCP_STATE_CLOSING
-//
-// Scheme3: Routing is embedded in conn state for single source of truth.
-// When routing params are provided (outbound != NULL), they're stored in
-// conn state. Only SYN path should provide routing params.
-//
-// Returns state pointer on success, or NULL if allocation failed or a non-SYN
-// packet has no cached state (caller should preserve passthrough behavior).
-// Performance: The heavy body (__mark_tcp_seen) is __noinline so it is emitted
-// once in the BPF object instead of being duplicated at every call-site.
+// mark_tcp_seen: update/create TCP conn state with optional routing metadata.
+// SYN starts new lifecycle; FIN/RST transitions to CLOSING.
 #define TCP_CONN_STATE_ESTABLISHED_TIMEOUT_NS 120000000000ULL  // 120 seconds
 #define TCP_CONN_STATE_CLOSING_TIMEOUT_NS 10000000000ULL       // 10 seconds
 #define TCP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 
 static __always_inline bool
-tcp_conn_state_expired(const struct tcp_conn_state *state, __u64 now)
+tcp_conn_state_expired(const struct conn_state *state, __u64 now)
 {
 	__u64 timeout = TCP_CONN_STATE_ESTABLISHED_TIMEOUT_NS;
 
@@ -1980,7 +1838,7 @@ tcp_conn_state_expired(const struct tcp_conn_state *state, __u64 now)
 
 // __mark_tcp_seen: noinline core. tcp_flags: bit 0 = SYN && !ACK (new
 // connection), bit 1 = FIN || RST.
-static __noinline struct tcp_conn_state *
+static __noinline struct conn_state *
 __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		__u8 tcp_flags, const struct conntrack_args *args)
 {
@@ -1988,8 +1846,8 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		return NULL;
 
 	__u64 now = bpf_ktime_get_ns();
-	struct tcp_conn_state *state =
-		bpf_map_lookup_elem(&tcp_conn_state_map, key);
+	struct conn_state *state =
+		bpf_map_lookup_elem(&conn_state_map, key);
 	bool new_conn_syn = tcp_flags & 1;
 	bool is_fin_rst   = tcp_flags & 2;
 
@@ -2000,10 +1858,10 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	 * not inherit stale routing metadata.
 	 */
 	if (state && new_conn_syn) {
-		bpf_map_delete_elem(&tcp_conn_state_map, key);
+		bpf_map_delete_elem(&conn_state_map, key);
 		state = NULL;
 	} else if (tcp_conn_state_expired(state, now)) {
-		bpf_map_delete_elem(&tcp_conn_state_map, key);
+		bpf_map_delete_elem(&conn_state_map, key);
 		state = NULL;
 	}
 
@@ -2037,7 +1895,7 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	// Only create new entry on SYN (new connection)
 	if (new_conn_syn) {
 		bool has_rt = !!(args->flags & CT_ARGS_HAS_ROUTING);
-		struct tcp_conn_state new_state = {};
+		struct conn_state new_state = {};
 
 		new_state.is_wan_ingress_direction = is_wan_ingress_direction;
 		new_state.state = TCP_STATE_ACTIVE;
@@ -2057,7 +1915,7 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 						 TASK_COMM_LEN);
 		}
 
-		int ret = bpf_map_update_elem(&tcp_conn_state_map, key,
+		int ret = bpf_map_update_elem(&conn_state_map, key,
 					      &new_state, BPF_ANY);
 
 		if (unlikely(ret)) {
@@ -2075,7 +1933,7 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 			return NULL;
 		}
 
-		return bpf_map_lookup_elem(&tcp_conn_state_map, key);
+		return bpf_map_lookup_elem(&conn_state_map, key);
 	}
 
 	// Non-SYN packets without existing state must never allocate new state.
@@ -2084,7 +1942,7 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 
 // mark_tcp_seen: thin inline wrapper that populates per-CPU scratch args once
 // and then delegates to the single-copy __mark_tcp_seen body.
-static __always_inline struct tcp_conn_state *
+static __always_inline struct conn_state *
 mark_tcp_seen(struct tuples_key *key, const struct tcphdr *tcph,
 	      bool is_wan_ingress_direction,
 	      __u8 *outbound, __u32 *mark, __u8 *must, __u8 *mac,
@@ -2112,12 +1970,8 @@ static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 	return tcph->syn && !tcph->ack;
 }
 
-// Unified non-syn TCP handling entry for WAN egress.
-// Scheme3: Load routing from embedded conn state.
-// Keep main-equivalent behavior:
-// - Reuse cached routing result for established connections.
-// - If no cache, do not affect pre-existing/server-side flows.
-static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len)
+// Reverse-direction conntrack refresh for LAN egress.
+static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, __u32 link_h_len)
 {
 	__u32 scratch_key = 0;
 	struct parse_transport_ctx *ctx =
@@ -2158,8 +2012,6 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 			      NULL, NULL, NULL, NULL,
 			      0, NULL, 0);
 	} else if (ctx->l4proto == IPPROTO_UDP) {
-		// DNS traffic is short-lived and stateless in our fast path.
-		// Skip tuple build + conntrack update to reduce state churn.
 		if (ctx->udph.source == bpf_htons(53) || ctx->udph.dest == bpf_htons(53))
 			return TC_ACT_PIPE;
 
@@ -2169,9 +2021,6 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 		get_tuples(skb, &tuples, &ctx->iph, &ctx->ipv6h,
 			   &ctx->tcph, &ctx->udph, ctx->l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-		// Robustness: If conntrack map is full, gracefully degrade by continuing
-		// without state tracking. This is acceptable as the packet will be processed
-		// normally; we just lose connection tracking optimization.
 		mark_udp_seen(&reversed_tuples_key, true,
 			      NULL, NULL, NULL, NULL,
 			      0, NULL, 0);
@@ -2198,7 +2047,7 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 
 static __noinline int
 redirect_lan_packet_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
-				     struct lan_ingress_parsed *pkt,
+				     struct parsed_packet *pkt,
 				     __u64 routing_meta_raw)
 {
 	union routing_meta routing_meta = {
@@ -2208,9 +2057,7 @@ redirect_lan_packet_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
 
 	if (prep_redirect_to_control_plane(skb, link_h_len, &pkt->tuples,
 					   &pkt->ethh, 0)) {
-		// Failed to prepare packet (e.g., bpf_skb_change_head failed under memory pressure)
-		// Fall back to direct pass to avoid packet corruption
-		return TC_ACT_OK;
+		return TC_ACT_SHOT;
 	}
 
 	skb->cb[0] = TPROXY_MARK;
@@ -2227,14 +2074,12 @@ redirect_lan_packet_to_control_plane(struct __sk_buff *skb, __u32 link_h_len,
 	return redirect_to_control_plane_ingress();
 }
 
-static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_len)
+static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, __u32 link_h_len)
 {
-	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
-	// The call chain lan_ingress -> parse_lan_ingress_packet -> parse_transport
-	// would otherwise exceed the stack limit.
+	// Per-CPU scratch to stay under 512-byte stack limit.
 	__u32 scratch_key = 0;
-	struct lan_ingress_parsed *pkt =
-		bpf_map_lookup_elem(&lan_ingress_scratch_map, &scratch_key);
+	struct parsed_packet *pkt =
+		bpf_map_lookup_elem(&pkt_scratch_map, &scratch_key);
 
 	if (!pkt)
 		return TC_ACT_SHOT;
@@ -2242,16 +2087,14 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	/* Ensure scratch bytes are initialized even if verifier can't precisely
 	 * track writes done through callee pointer arguments. */
 	__builtin_memset(pkt, 0, sizeof(*pkt));
-	int ret = parse_lan_ingress_packet(skb, link_h_len, pkt);
+	int ret = parse_packet(skb, link_h_len, pkt);
 
 	if (ret) {
-		// Negative return: parsing error (malformed packet, too many extension headers, etc.)
-		// Positive return: unsupported protocol or non-initial fragment - pass through
 		if (ret < 0) {
 			bpf_printk("parse_transport error: %d, dropping", ret);
-			return TC_ACT_SHOT;  // Drop malformed/suspicious packets
+			return TC_ACT_SHOT;
 		}
-		return TC_ACT_OK;  // Pass through unsupported protocols
+		return TC_ACT_OK;
 	}
 
 	/*
@@ -2269,10 +2112,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	    !is_new_tcp_connection(&pkt->tcph)) {
 		__u8 outbound;
 		__u32 mark;
-		struct tcp_conn_state *tcp_state;
+		struct conn_state *tcp_state;
 
-		// Track TCP connection state (update timestamp, detect FIN/RST).
-		// PERFORMANCE: Use the returned conn_state pointer to avoid a second map lookup.
+		// Track TCP connection state; reuse returned pointer.
 		tcp_state = mark_tcp_seen(&pkt->tuples.five, &pkt->tcph, false,
 					  NULL, NULL, NULL, NULL,
 					  0, NULL, 0);
@@ -2281,11 +2123,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		if (!tcp_state)
 			return TC_ACT_OK;
 
-		/*
-		 * Compatibility restore for 030902f behavior and align with WAN
+		/* Compatibility restore for 030902f behavior and align with WAN
 		 * non-SYN session handling: reuse cached routing result for
 		 * established TCP packets.
-		 * Scheme3: Load routing directly from the conn_state we already looked up.
 		 */
 		if (!tcp_state->meta.data.has_routing) {
 			/* No cache: keep historical direct-pass semantics (e.g.
@@ -2313,8 +2153,8 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 
 	// Routing for new connection.
 	__u32 route_flag[8] = {};
-	struct tcp_conn_state *tcp_state = NULL;
-	struct udp_conn_state *udp_state = NULL;
+	struct conn_state *tcp_state = NULL;
+	struct conn_state *udp_state = NULL;
 
 	if (pkt->l4proto == IPPROTO_TCP) {
 		// Track TCP connection state for new connections from LAN.
@@ -2330,10 +2170,6 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			udp_state = mark_udp_seen(&pkt->tuples.five, false,
 						  NULL, NULL, NULL, NULL,
 						  pkt->tuples.dscp, NULL, 0);
-			// Robustness: If conntrack map is full (conn_state == NULL),
-			// gracefully degrade by continuing with normal routing instead of
-			// dropping the packet. We lose the "direct return path" optimization
-			// for reply packets, but service continues.
 			if (udp_state && udp_state->is_wan_ingress_direction) {
 				// Replay (outbound) of an inbound flow => direct.
 				return TC_ACT_OK;
@@ -2378,20 +2214,9 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 			  (__u32)pkt->ethh.h_source[5]),
 	};
 
-	// Socket lookup BEFORE routing to detect local services (NAT loopback).
-	// This must happen before route() because routing rules might incorrectly
-	// send local-service traffic to a proxy.
-	//
-	// For TCP: Only LISTEN sockets indicate local services.
-	// For UDP: Any matching socket indicates a local service (UDP has no LISTEN state).
-	// Note: UDP socket lookup is safe here because dae's own outbound UDP sockets
-	// have completely different tuples (different source/dest IP:port combinations),
-	// so they won't match the NAT loopback packet tuple.
-	//
-	// IMPORTANT: For TCP, skip socket lookup on SYN packets. This is critical for
-	// compatibility with CF back-to-source and NAT loopback scenarios. Performing
-	// socket lookup on SYN packets can interfere with legitimate new connections
-	// to local services that should be routed through dae.
+	// Socket lookup before routing to detect local services (NAT loopback).
+	// TCP: only LISTEN sockets; skip SYN for CF back-to-source compat.
+	// UDP: any matching socket indicates local service.
 	if (pkt->l4proto == IPPROTO_TCP || pkt->l4proto == IPPROTO_UDP) {
 		struct bpf_sock_tuple tuple = { 0 };
 		__u32 tuple_size;
@@ -2416,34 +2241,22 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		}
 
 		if (pkt->l4proto == IPPROTO_TCP) {
-			// Perform socket lookup ONLY for established TCP connections.
-			// Skip socket lookup for SYN packets (new connections).
-			// This ensures compatibility with CF back-to-source and NAT
-			// loopback scenarios where new connections to local services
-			// should be routed through dae first.
 			if (!(pkt->tcph.syn && !pkt->tcph.ack)) {
-				// Established TCP connection - perform socket lookup
 				sk = bpf_skc_lookup_tcp(skb, &tuple, tuple_size,
 							PARAM.dae_netns_id, 0);
 				if (sk) {
 					if (!bpf_sock_is_dae_socket(sk) &&
 					    sk->state == BPF_TCP_LISTEN) {
-						// Found LISTEN socket - local service (NAT loopback).
-						// Pass through to kernel stack directly, bypassing dae.
 						bpf_sk_release(sk);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 						bpf_printk("tcp(lan): local LISTEN socket found, pass through");
 #endif
 						return TC_ACT_OK;
 					}
-					// Not a LISTEN socket - established connection or dae's own socket.
-					// Continue with routing to determine how to handle this packet.
 					bpf_sk_release(sk);
 				}
 			}
-			// For SYN packets (new connections), skip socket lookup and continue to routing
 		} else {
-			// UDP: Any non-dae socket matching the destination tuple is a local service.
 			sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
 					       PARAM.dae_netns_id, 0);
 			if (sk) {
@@ -2457,10 +2270,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 				bpf_sk_release(sk);
 			}
 		}
-		// No socket found - continue to routing
 	}
-	// For UDP replies to WAN ingress traffic, we also use is_wan_ingress_direction
-	// flag in conn_state (set in wan_ingress path) as a secondary detection method.
 
 	__s64 s64_ret;
 
@@ -2479,10 +2289,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	__u32 mark = s64_ret >> 8;
 	__u8 must = (s64_ret >> 40) & 1;
 
-	// Scheme3: Embed routing in conn state for single source of truth.
-	// Update conn state with routing decision (skip DNS for optimization).
-	// PERFORMANCE: Use the conn_state pointer from first call to avoid
-	// a second map lookup. This is critical for high-throughput traffic.
+	// Cache routing in conn state (skip DNS to avoid map churn).
 	if (pkt->l4proto == IPPROTO_UDP &&
 	    is_short_lived_udp_traffic(&pkt->tuples.five)) {
 		// Skip cache for short-lived DNS to avoid map churn.
@@ -2500,22 +2307,15 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 		publish_routing_meta(&udp_state->meta, _m);
 	}
 
-	// SECURITY: Fail-Closed for TCP connections requiring proxy when conn state map is full.
-	// If we couldn't store conn state for a TCP packet that needs proxying,
-	// we MUST drop it to prevent traffic leakage on subsequent packets.
+	// Fail-closed: TCP without conn state must drop to prevent traffic leakage.
 	if (pkt->l4proto == IPPROTO_TCP && !tcp_state) {
 		if (outbound == OUTBOUND_DIRECT && mark == 0) {
-			// Direct connection with default routing - no state needed
 			skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 			bpf_printk("tcp(lan): GO OUTBOUND_DIRECT (MAP FULL)");
 #endif
 			goto direct;
 		}
-		// Either proxied connection, or direct connection with policy routing mark.
-		// State is REQUIRED. Without state, subsequent packets won't have the
-		// mark applied (direct) or will bypass proxy (proxied), causing either
-		// asymmetric routing failure or traffic leakage.
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		if (outbound == OUTBOUND_DIRECT)
 			bpf_printk("tcp(lan): SHOT - MAP FULL, DIRECT WITH NON-ZERO MARK DROPPED");
@@ -2537,9 +2337,7 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 	}
 #endif
 
-	// Handle routing result: DIRECT, BLOCK, or proxy
 	if (outbound == OUTBOUND_DIRECT) {
-		// Direct connection - pass through to kernel stack
 		skb->mark = mark;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
@@ -2549,7 +2347,6 @@ static __noinline int do_tproxy_lan_ingress(struct __sk_buff *skb, u32 link_h_le
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK");
 #endif
-		// Send DAE_EVENT_BLOCKED event
 		send_dae_event(DAE_EVENT_BLOCKED, 0, NULL, outbound,
 			       pkt->l4proto, pkt->tuples.five.sip.u6_addr32,
 			       pkt->tuples.five.dip.u6_addr32,
@@ -2617,7 +2414,7 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return false;
 }
 
-static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
+static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, __u32 link_h_len)
 {
 	__u32 scratch_key = 0;
 	struct parse_transport_ctx *ctx =
@@ -2637,8 +2434,7 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 		return TC_ACT_OK;
 	}
 
-	// Update reverse-direction conntrack state so server/local FIN/RST keeps
-	// the original client-side lifecycle in sync.
+	// Reverse-direction conntrack refresh.
 	if (ctx->l4proto == IPPROTO_TCP) {
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
@@ -2650,8 +2446,6 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 			      NULL, NULL, NULL, NULL,
 			      0, NULL, 0);
 	} else if (ctx->l4proto == IPPROTO_UDP) {
-		// DNS traffic is short-lived and stateless in our fast path.
-		// Skip tuple build + conntrack update to reduce state churn.
 		if (ctx->udph.source == bpf_htons(53) || ctx->udph.dest == bpf_htons(53))
 			return TC_ACT_PIPE;
 
@@ -2661,9 +2455,6 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 		get_tuples(skb, &tuples, &ctx->iph, &ctx->ipv6h,
 			   &ctx->tcph, &ctx->udph, ctx->l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-		// Robustness: If conntrack map is full, gracefully degrade by continuing
-		// without state tracking. This is acceptable as the packet will be processed
-		// normally; we just lose connection tracking optimization.
 		mark_udp_seen(&reversed_tuples_key, true,
 			      NULL, NULL, NULL, NULL,
 			      0, NULL, 0);
@@ -2690,12 +2481,8 @@ static __noinline bool
 wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 		      __be16 dport)
 {
-	/* DNS queries must always reach the control plane. User-space DNS
-	 * routing is responsible for fallback, rejection and SERVFAIL
-	 * synthesis; dropping UDP/53 here turns upstream health noise into
-	 * client-visible timeouts.
-	 */
-	if (l4proto == IPPROTO_UDP && dport == bpf_htons(53))
+	/* DNS must always reach control plane; userspace handles fallback. */
+	if (dport == bpf_htons(53))
 		return true;
 
 	// ARRAY map key: outbound_id * 6 + domain * 2 + ipversion
@@ -2719,7 +2506,7 @@ wan_outbound_is_alive(struct __sk_buff *skb, __u8 outbound, __u8 l4proto,
 }
 
 static __noinline int
-do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
+do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct tcphdr *tcph)
 {
@@ -2799,7 +2586,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			must_ptr = NULL;
 		}
 
-		struct tcp_conn_state *tcp_conn = mark_tcp_seen(
+		struct conn_state *tcp_conn = mark_tcp_seen(
 			&tuples->five, tcph, false, outbound_ptr, mark_ptr,
 			must_ptr, scratch->mac, dscp, pname_str, pid_val);
 
@@ -2820,48 +2607,25 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 			   bpf_ntohs(tuples->five.dport));
 #endif
 	} else {
-		// Established TCP connection (not SYN).
-		// Fast-path optimization for WAN egress:
-		// - Direct connections don't need state lookup (no state was saved for them)
-		// - Proxied connections have cached routing that must be used
-		//
-		// To avoid unnecessary map lookups for direct traffic (the majority in many cases),
-		// we don't call mark_tcp_seen here. Instead, we rely on a simple heuristic:
-		// - Most direct connections are not cached (outbound==DIRECT, mark==0, !must)
-		// - Proxied connections always have cached state
-		//
-		// Trade-off: Proxied connections will do a map lookup here. This is acceptable
-		// because: (1) Proxy traffic is typically less frequent than direct traffic,
-		// (2) Map lookup is required anyway to get the routing decision.
-		//
-		// Look up cached routing state (only for proxied connections).
-		struct tcp_conn_state *tcp_conn = mark_tcp_seen(
+		// Established TCP: only proxied connections have cached state.
+		struct conn_state *tcp_conn = mark_tcp_seen(
 			&tuples->five, tcph, false,
 			NULL, NULL, NULL, NULL,
 			0, NULL, 0);
 
-		if (tcp_conn && tcp_conn->meta.data.has_routing) {
-			// Proxied connection with cached routing.
-			// Use cache to ensure all packets go through proxy.
-			outbound = tcp_conn->meta.data.outbound;
-			mark = tcp_conn->meta.data.mark;
-			must = tcp_conn->meta.data.must;
-			__builtin_memcpy(handoff_mac, tcp_conn->mac, 6);
-			__builtin_memcpy(scratch->mac, tcp_conn->mac, 6);
-			handoff_pname = (const char *)tcp_conn->pname;
-			handoff_pid = tcp_conn->pid;
-		} else {
-			// No cached routing state.
-			// This must be a direct connection (we don't save state for direct+mark==0)
-			// or a pre-dae connection.
-			// Fast-path: pass through without further processing.
+		if (!tcp_conn || !tcp_conn->meta.data.has_routing)
 			return TC_ACT_OK;
-		}
+
+		outbound = tcp_conn->meta.data.outbound;
+		mark = tcp_conn->meta.data.mark;
+		must = tcp_conn->meta.data.must;
+		__builtin_memcpy(handoff_mac, tcp_conn->mac, 6);
+		__builtin_memcpy(scratch->mac, tcp_conn->mac, 6);
+		handoff_pname = (const char *)tcp_conn->pname;
+		handoff_pid = tcp_conn->pid;
 	}
 
-	if (outbound == OUTBOUND_DIRECT &&
-	    mark == 0 // If mark is not zero, we should re-route it.
-	) {
+	if (!wan_egress_needs_control_plane(outbound, mark)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND_DIRECT");
 #endif
@@ -2878,35 +2642,26 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, u32 link_h_len,
 				   tuples->five.dport))
 		return TC_ACT_SHOT;
 
+	struct routing_result routing_result = {};
+
+	fill_routing_result(&routing_result, mark, must, outbound, handoff_mac,
+			    tuples->dscp, handoff_pname, handoff_pid);
+	/* TCP has embedded conn-state routing metadata; handoff is best-effort. */
+	publish_routing_handoff(&tuples->five, &routing_result);
+
+	/* TCP needs redirect_track before the kernel-side handshake completes.
+	 * Publishing it later from userspace is too late for the first SYN path.
+	 */
 	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
-					   ethh, 1)) {
-		// Failed to prepare packet (e.g., bpf_skb_change_head failed)
-		// Fall back to direct pass to avoid packet corruption
-		return TC_ACT_OK;
-	}
+					   ethh, 1))
+		return TC_ACT_SHOT;
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = tcp_listener_l4proto(tcph);
-	{
-		struct routing_handoff_entry handoff = {};
-
-		handoff.last_seen_ns = bpf_ktime_get_ns();
-		handoff.result.mark = mark;
-		handoff.result.must = must;
-		handoff.result.outbound = outbound;
-		handoff.result.pid = handoff_pid;
-		handoff.result.dscp = tuples->dscp;
-		__builtin_memcpy(handoff.result.mac, handoff_mac, 6);
-		if (handoff_pname)
-			__builtin_memcpy(handoff.result.pname, handoff_pname,
-					 TASK_COMM_LEN);
-		bpf_map_update_elem(&routing_handoff_map, &tuples->five,
-				    &handoff, BPF_ANY);
-	}
 	return redirect_to_control_plane_egress();
 }
 
 static __noinline int
-do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
+do_tproxy_wan_egress_udp(struct __sk_buff *skb, __u32 link_h_len,
 			 struct tuples *tuples, struct ethhdr *ethh,
 			 struct udphdr *udph)
 {
@@ -2914,7 +2669,7 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, u32 link_h_len,
 	__u8 outbound;
 	__u32 mark;
 	bool must;
-	struct udp_conn_state *udp_conn_state = NULL;
+	struct conn_state *udp_conn_state = NULL;
 	__u8 mac[6] = {};
 	const char *handoff_pname = NULL;
 	__u32 handoff_pid = 0;
@@ -3014,7 +2769,7 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (outbound == OUTBOUND_DIRECT && mark == 0)
+	if (!wan_egress_needs_control_plane(outbound, mark))
 		return TC_ACT_OK;
 	else if (unlikely(outbound == OUTBOUND_BLOCK))
 		return TC_ACT_SHOT;
@@ -3023,62 +2778,45 @@ fast_path_skip_routing:
 				   tuples->five.dport))
 		return TC_ACT_SHOT;
 
-	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
-					   ethh, 1)) {
-		return TC_ACT_OK;
-	}
+	struct routing_result routing_result = {};
+	bool handoff_mandatory = udp_wan_egress_handoff_mandatory(tuples,
+							      udp_conn_state);
+
+	fill_routing_result(&routing_result, mark, must, outbound, mac,
+			    tuples->dscp, handoff_pname, handoff_pid);
+	if (publish_routing_handoff(&tuples->five, &routing_result) &&
+	    handoff_mandatory)
+		return TC_ACT_SHOT;
+
+	if (publish_egress_return_handoff(skb, link_h_len, &tuples->five,
+					  ethh, 1))
+		return TC_ACT_SHOT;
+
+	if (rewrite_packet_for_control_plane(skb, link_h_len, 1))
+		return TC_ACT_SHOT;
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = IPPROTO_UDP;
-	{
-		struct routing_handoff_entry handoff = {};
-
-		handoff.last_seen_ns = bpf_ktime_get_ns();
-		handoff.result.mark = mark;
-		handoff.result.must = must;
-		handoff.result.outbound = outbound;
-		handoff.result.pid = handoff_pid;
-		handoff.result.dscp = tuples->dscp;
-		__builtin_memcpy(handoff.result.mac, mac, 6);
-		if (handoff_pname)
-			__builtin_memcpy(handoff.result.pname, handoff_pname,
-					 TASK_COMM_LEN);
-		bpf_map_update_elem(&routing_handoff_map, &tuples->five,
-				    &handoff, BPF_ANY);
-	}
 	return redirect_to_control_plane_egress();
 }
 
-/*
- * Keep wan_egress as a BPF subprogram to avoid verifier state explosion on
- * newer kernels (e.g. Debian 6.12), while preserving routing semantics.
- *
- * Note: We use per-CPU scratch map instead of stack allocation to avoid
- * exceeding the 512-byte stack limit. The call chain is:
- *   tproxy_wan_egress_* -> do_tproxy_wan_egress -> parse_wan_egress_packet -> parse_transport
- * which would otherwise use >512 bytes of combined stack.
- */
-static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len)
+// Per-CPU scratch to stay under 512-byte stack limit across the call chain.
+static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, __u32 link_h_len)
 {
-	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
 		return TC_ACT_OK;
 
-	// Use per-CPU scratch map to avoid stack overflow (512-byte limit).
 	__u32 scratch_key = 0;
-	struct wan_egress_parsed *pkt =
-		bpf_map_lookup_elem(&wan_egress_scratch_map, &scratch_key);
+	struct parsed_packet *pkt =
+		bpf_map_lookup_elem(&pkt_scratch_map, &scratch_key);
 
 	if (!pkt)
 		return TC_ACT_SHOT;
 
-	/* Initialize scratch bytes for verifier friendliness across subprogram
-	 * pointer writes. */
+	/* Zero-init for verifier. */
 	__builtin_memset(pkt, 0, sizeof(*pkt));
-	int ret = parse_wan_egress_packet(skb, link_h_len, pkt);
+	int ret = parse_packet(skb, link_h_len, pkt);
 
 	if (ret) {
-		// Negative return: parsing error - drop
-		// Positive return: unsupported protocol or non-initial fragment - pass through
 		if (ret < 0) {
 			bpf_printk("wan_egress parse error: %d, dropping", ret);
 			return TC_ACT_SHOT;
@@ -3240,7 +2978,6 @@ load_redirect_tuple(struct __sk_buff *skb,
 SEC("tc/dae0_ingress")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
-	// reverse the tuple!
 	struct redirect_tuple redirect_tuple = {};
 	int ret;
 
@@ -3253,7 +2990,6 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	if (!redirect_entry)
 		return TC_ACT_OK;
 
-	// Update last_seen_ns on each access for accurate TTL tracking
 	redirect_entry->last_seen_ns = bpf_ktime_get_ns();
 
 	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
@@ -3270,7 +3006,7 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	return bpf_redirect(redirect_entry->ifindex, flags);
 }
 
-/// Parse command line arguments to get the real command name and tgid.
+/* Get pid and command name from current task. */
 static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();

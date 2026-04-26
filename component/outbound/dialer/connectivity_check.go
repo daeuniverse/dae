@@ -915,9 +915,6 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 		}
 		return update
 	}
-	collection.Latencies10.AppendLatency(Timeout)
-	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
-
 	// UDP/TCP robustness: only mark unavailable after consecutive failures.
 	// This protects against transient network interference.
 	threshold := 1

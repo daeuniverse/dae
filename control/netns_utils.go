@@ -430,6 +430,26 @@ func (ns *DaeNetns) setupNetns() (err error) {
 }
 
 func (ns *DaeNetns) setupSysctl() (err error) {
+	// Restore the host-side IPv4 sysctls from the original UDP port-conflict
+	// workaround. Replies injected from dae netns re-enter the host via dae0
+	// with a remote source address, so host routing and ARP validation must not
+	// treat them as martian or filter them back to the wrong interface.
+	if err = sysctl.Keyf("net.ipv4.conf.%s.rp_filter", HostVethName).Set("0", true); err != nil {
+		return fmt.Errorf("failed to set rp_filter for dae0: %v", err)
+	}
+	if err = sysctl.Keyf("net.ipv4.conf.all.rp_filter").Set("0", true); err != nil {
+		return fmt.Errorf("failed to set rp_filter for all: %v", err)
+	}
+	if err = sysctl.Keyf("net.ipv4.conf.%s.arp_filter", HostVethName).Set("0", true); err != nil {
+		return fmt.Errorf("failed to set arp_filter for dae0: %v", err)
+	}
+	if err = sysctl.Keyf("net.ipv4.conf.all.arp_filter").Set("0", true); err != nil {
+		return fmt.Errorf("failed to set arp_filter for all: %v", err)
+	}
+	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", HostVethName).Set("1", true); err != nil {
+		return fmt.Errorf("failed to set accept_local for dae0: %v", err)
+	}
+
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
 	if err = sysctl.Keyf("net.ipv6.conf.%s.disable_ipv6", HostVethName).Set("0", true); err != nil {
 		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)

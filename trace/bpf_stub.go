@@ -23,6 +23,7 @@ type bpfObjects struct {
 	KprobeSkb5                   *ebpf.Program
 	KprobeSkbLifetimeTermination *ebpf.Program
 	Events                       *ebpf.Map
+	TraceStats                   *ebpf.Map
 }
 
 func (o *bpfObjects) Close() error {

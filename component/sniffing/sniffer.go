@@ -312,8 +312,8 @@ func (s *Sniffer) CompactPacketState() {
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
 
-	s.readMu.RLock()
-	defer s.readMu.RUnlock()
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 
 	if s.dataError != nil {
 		n, _ = s.buf.Read(p)

@@ -22,6 +22,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errEgressReturnHandoffExpired = stderrors.New("egress return handoff expired")
+
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	var ipVersion consts.IpVersionType
 	if dst.Addr().Is4() || dst.Addr().Is4In6() {
@@ -61,6 +63,16 @@ func bpfTuplesKeyFromAddrPorts(src, dst netip.AddrPort, l4proto uint8) bpfTuples
 	return key
 }
 
+func redirectTupleFromAddrPorts(src, dst netip.AddrPort) bpfRedirectTuple {
+	src = common.ConvergeAddrPort(src)
+	dst = common.ConvergeAddrPort(dst)
+
+	var key bpfRedirectTuple
+	key.Sip.U6Addr8 = src.Addr().As16()
+	key.Dip.U6Addr8 = dst.Addr().As16()
+	return key
+}
+
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
 
@@ -83,15 +95,15 @@ func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l
 
 	switch l4proto {
 	case unix.IPPROTO_TCP:
-		if c.bpf.TcpConnStateMap == nil {
+		if c.bpf.ConnStateMap == nil {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		var connState bpfTcpConnState
-		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
+		var connState bpfConnState
+		if err := c.bpf.ConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
-			return nil, fmt.Errorf("reading tcp_conn_state_map: %w", err)
+			return nil, fmt.Errorf("reading conn_state_map: %w", err)
 		}
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
@@ -106,15 +118,15 @@ func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l
 			connState.Pid,
 		)
 	case unix.IPPROTO_UDP:
-		if c.bpf.UdpConnStateMap == nil {
+		if c.bpf.ConnStateMap == nil {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		var connState bpfUdpConnState
-		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
+		var connState bpfConnState
+		if err := c.bpf.ConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
-			return nil, fmt.Errorf("reading udp_conn_state_map: %w", err)
+			return nil, fmt.Errorf("reading conn_state_map: %w", err)
 		}
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
@@ -189,6 +201,93 @@ func routingHandoffExpired(nowNano, lastSeenNs uint64) bool {
 		return true
 	}
 	timeoutNano := uint64(routingHandoffTimeout.Nanoseconds())
+	if nowNano <= lastSeenNs {
+		return false
+	}
+	return nowNano-lastSeenNs > timeoutNano
+}
+
+func (c *controlPlaneCore) RetrieveEgressReturnHandoff(src, dst netip.AddrPort, l4proto uint8) (*bpfEgressReturnHandoffEntry, error) {
+	if c == nil || c.bpf == nil || c.bpf.EgressReturnHandoffMap == nil {
+		return nil, ebpf.ErrKeyNotExist
+	}
+
+	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
+	var entry bpfEgressReturnHandoffEntry
+	if err := c.bpf.EgressReturnHandoffMap.Lookup(&tuples, &entry); err != nil {
+		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil, ebpf.ErrKeyNotExist
+		}
+		return nil, fmt.Errorf("reading egress_return_handoff_map: %w", err)
+	}
+
+	now, err := monotonicNowNano()
+	if err != nil {
+		return nil, fmt.Errorf("reading monotonic clock for egress return handoff: %w", err)
+	}
+	if egressReturnHandoffExpired(now, entry.LastSeenNs) {
+		if deleteErr := c.bpf.EgressReturnHandoffMap.Delete(&tuples); deleteErr != nil &&
+			!stderrors.Is(deleteErr, ebpf.ErrKeyNotExist) {
+			return nil, fmt.Errorf("deleting expired egress_return_handoff_map entry: %w", deleteErr)
+		}
+		return nil, errEgressReturnHandoffExpired
+	}
+	return &entry, nil
+}
+
+func (c *controlPlaneCore) PublishRedirectTrack(src, dst netip.AddrPort, entry *bpfRedirectEntry) error {
+	if c == nil || c.bpf == nil || c.bpf.RedirectTrack == nil {
+		return ebpf.ErrKeyNotExist
+	}
+	if entry == nil {
+		return fmt.Errorf("nil redirect track entry")
+	}
+
+	trackKey := redirectTupleFromAddrPorts(src, dst)
+	entryCopy := *entry
+	now, err := monotonicNowNano()
+	if err != nil {
+		return fmt.Errorf("reading monotonic clock for redirect_track publish: %w", err)
+	}
+	entryCopy.LastSeenNs = now
+	if err := c.bpf.RedirectTrack.Update(&trackKey, &entryCopy, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("updating redirect_track: %w", err)
+	}
+	return nil
+}
+
+func (c *controlPlaneCore) ensureEgressReturnRoutePublished(src, dst netip.AddrPort, l4proto uint8) error {
+	entry, err := c.RetrieveEgressReturnHandoff(src, dst, l4proto)
+	if err != nil {
+		if stderrors.Is(err, ebpf.ErrKeyNotExist) || stderrors.Is(err, errEgressReturnHandoffExpired) {
+			return nil
+		}
+		return err
+	}
+
+	redirectEntry := &bpfRedirectEntry{
+		Ifindex: entry.Ifindex,
+		Smac:    entry.Smac,
+		Dmac:    entry.Dmac,
+		FromWan: entry.FromWan,
+	}
+	if err := c.PublishRedirectTrack(src, dst, redirectEntry); err != nil {
+		return err
+	}
+
+	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
+	if deleteErr := c.bpf.EgressReturnHandoffMap.Delete(&tuples); deleteErr != nil &&
+		!stderrors.Is(deleteErr, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("deleting egress_return_handoff_map entry: %w", deleteErr)
+	}
+	return nil
+}
+
+func egressReturnHandoffExpired(nowNano, lastSeenNs uint64) bool {
+	if lastSeenNs == 0 {
+		return true
+	}
+	timeoutNano := uint64(egressReturnHandoffTimeout.Nanoseconds())
 	if nowNano <= lastSeenNs {
 		return false
 	}

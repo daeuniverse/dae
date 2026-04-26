@@ -29,16 +29,20 @@ type connStateJanitorScratch struct {
 	cookiePidDelete []uint64
 
 	udpKeys   []bpfTuplesKey
-	udpValues []bpfUdpConnState
+	udpValues []bpfConnState
 	udpDelete []bpfTuplesKey
 
 	tcpKeys   []bpfTuplesKey
-	tcpValues []bpfTcpConnState
+	tcpValues []bpfConnState
 	tcpDelete []bpfTuplesKey
 
 	routingHandoffKeys   []bpfTuplesKey
 	routingHandoffValues []bpfRoutingHandoffEntry
 	routingHandoffDelete []bpfTuplesKey
+
+	egressReturnHandoffKeys   []bpfTuplesKey
+	egressReturnHandoffValues []bpfEgressReturnHandoffEntry
+	egressReturnHandoffDelete []bpfTuplesKey
 }
 
 func (s *connStateJanitorScratch) release() {

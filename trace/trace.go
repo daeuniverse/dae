@@ -13,11 +13,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"slices"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -29,7 +29,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "trace && !dae_stub_ebpf" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "trace,!dae_stub_ebpf" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
 
 var nativeEndian binary.ByteOrder
 
@@ -101,7 +101,11 @@ func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects
 	if err != nil {
 		return nil, fmt.Errorf("failed to load BPF: %+v", err)
 	}
-	if err := spec.Variables["tracing_cfg"].Set(struct {
+	tracingCfg := spec.Variables["tracing_cfg"]
+	if tracingCfg == nil {
+		return nil, fmt.Errorf("failed to rewrite constants: missing tracing_cfg in BPF object; run make ebpf to regenerate trace objects")
+	}
+	if err := tracingCfg.Set(struct {
 		port      uint16
 		l4Proto   uint16
 		ipVersion uint8
@@ -196,6 +200,8 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 	kp, err := link.Kprobe("kfree_skbmem", objs.KprobeSkbLifetimeTermination, nil)
 	if err != nil {
 		logrus.Warnf("failed to attach kprobe to kfree_skbmem: %+v\n", err)
+	} else {
+		links = append(links, kp)
 	}
 
 	i := 0
@@ -224,8 +230,39 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 	if len(links) == 0 {
 		return nil, fmt.Errorf("failed to attach kprobes to any target")
 	}
-	links = append(links, kp)
 	return links, nil
+}
+
+type traceStats struct {
+	handleSkb     uint64
+	filterFail    uint64
+	match         uint64
+	ringbufFail   uint64
+	delete        uint64
+	ipVersionFail uint64
+	l4ProtoFail   uint64
+	portFail      uint64
+}
+
+func readTraceStats(objs *bpfObjects) (traceStats, error) {
+	var stats traceStats
+	values := []*uint64{
+		&stats.handleSkb,
+		&stats.filterFail,
+		&stats.match,
+		&stats.ringbufFail,
+		&stats.delete,
+		&stats.ipVersionFail,
+		&stats.l4ProtoFail,
+		&stats.portFail,
+	}
+	for key, value := range values {
+		k := uint32(key)
+		if err := objs.TraceStats.Lookup(&k, value); err != nil {
+			return traceStats{}, err
+		}
+	}
+	return stats, nil
 }
 
 func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfreeSkbReasons map[uint64]string, dropOnly bool) (err error) {
@@ -233,6 +270,7 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 	if err != nil {
 		return
 	}
+	defer func() { _ = writer.Close() }()
 
 	eventsReader, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
@@ -240,13 +278,9 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 	}
 	defer func() { _ = eventsReader.Close() }()
 
-	// v0.20.0 best practice: use SetDeadline for responsive context cancellation
-	// This allows Read() to return within 100ms when context is cancelled,
-	// instead of blocking indefinitely until the next event arrives.
 	go func() {
 		<-ctx.Done()
-		// Set a short deadline to unblock any pending Read()
-		eventsReader.SetDeadline(time.Now().Add(100 * time.Millisecond))
+		_ = eventsReader.Close()
 	}()
 
 	type bpfEvent struct {
@@ -273,10 +307,81 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 	// a map to save slices of bpfEvent of the Skb
 	skb2symNames := make(map[uint64][]string)
 	// a map to save slices of function name called with the Skb
+	var readEvents uint64
+	writeEvents := func(writer io.Writer, events []bpfEvent, complete bool) {
+		for _, skbEv := range events {
+			_, _ = fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skbEv.Skb, skbEv.Mark, skbEv.Netns, skbEv.Ifindex, TrimNull(string(skbEv.Ifname[:])), skbEv.Pid, TrimNull(string(skbEv.Pname[:])))
+			if skbEv.L3Proto == syscall.ETH_P_IP {
+				_, _ = fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skbEv.Saddr[:4]).String(), Ntohs(skbEv.Sport), net.IP(skbEv.Daddr[:4]).String(), Ntohs(skbEv.Dport))
+			} else {
+				_, _ = fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skbEv.Saddr[:]).String(), Ntohs(skbEv.Sport), net.IP(skbEv.Daddr[:]).String(), Ntohs(skbEv.Dport))
+			}
+			if skbEv.L4Proto == syscall.IPPROTO_TCP {
+				_, _ = fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skbEv.TcpFlags))
+			}
+			_, _ = fmt.Fprintf(writer, "payload_len=%d ", skbEv.PayloadLen)
+			sym := NearestSymbol(skbEv.Pc)
+			_, _ = fmt.Fprintf(writer, "%s", sym.Name)
+			if sym.Name == "kfree_skb_reason" {
+				_, _ = fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skbEv.SecondParam])
+			}
+			if !complete {
+				_, _ = fmt.Fprintf(writer, " incomplete")
+			}
+			_, _ = fmt.Fprintf(writer, "\n")
+		}
+	}
+	flushPendingEvents := func() {
+		if dropOnly {
+			return
+		}
+		for skb := range skb2events {
+			writeEvents(writer, skb2events[skb], false)
+		}
+	}
+	reportStats := func() {
+		stats, err := readTraceStats(objs)
+		if err != nil {
+			logrus.Debugf("failed to read trace stats: %+v", err)
+			return
+		}
+		_, _ = fmt.Fprintf(writer, "# trace_stats read_events=%d pending_skb=%d handle_skb=%d filter_fail=%d match=%d ringbuf_fail=%d delete=%d ip_version_fail=%d l4_proto_fail=%d port_fail=%d\n",
+			readEvents,
+			len(skb2events),
+			stats.handleSkb,
+			stats.filterFail,
+			stats.match,
+			stats.ringbufFail,
+			stats.delete,
+			stats.ipVersionFail,
+			stats.l4ProtoFail,
+			stats.portFail,
+		)
+		if readEvents != 0 {
+			return
+		}
+		logrus.Warnf("no trace events were received; bpf_stats: handle_skb=%d filter_fail=%d match=%d ringbuf_fail=%d delete=%d ip_version_fail=%d l4_proto_fail=%d port_fail=%d",
+			stats.handleSkb,
+			stats.filterFail,
+			stats.match,
+			stats.ringbufFail,
+			stats.delete,
+			stats.ipVersionFail,
+			stats.l4ProtoFail,
+			stats.portFail,
+		)
+	}
 	for {
 		rec, err := eventsReader.Read()
 		if err != nil {
 			if errors.Is(err, ringbuf.ErrClosed) {
+				flushPendingEvents()
+				reportStats()
+				return nil
+			}
+			if ctx.Err() != nil {
+				flushPendingEvents()
+				reportStats()
 				return nil
 			}
 			logrus.Debugf("failed to read ringbuf: %+v", err)
@@ -288,6 +393,7 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 			logrus.Debugf("failed to parse ringbuf event: %+v", err)
 			continue
 		}
+		readEvents++
 		if skb2events[event.Skb] == nil {
 			skb2events[event.Skb] = []bpfEvent{}
 		}
@@ -303,24 +409,7 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 			// most skb end in the call of kfree_skbmem
 			if !dropOnly || slices.Contains(skb2symNames[event.Skb], "kfree_skb_reason") {
 				// trace dropOnly with drop reason or all skb
-				for _, skb_ev := range skb2events[event.Skb] {
-					_, _ = fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
-					if event.L3Proto == syscall.ETH_P_IP {
-						_, _ = fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
-					} else {
-						_, _ = fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
-					}
-					if event.L4Proto == syscall.IPPROTO_TCP {
-						_, _ = fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
-					}
-					_, _ = fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
-					sym := NearestSymbol(skb_ev.Pc)
-					_, _ = fmt.Fprintf(writer, "%s", sym.Name)
-					if sym.Name == "kfree_skb_reason" {
-						_, _ = fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
-					}
-					_, _ = fmt.Fprintf(writer, "\n")
-				}
+				writeEvents(writer, skb2events[event.Skb], true)
 				delete(skb2events, event.Skb)
 				delete(skb2symNames, event.Skb)
 			}

@@ -44,13 +44,23 @@ type bpfDomainRouting struct {
 	Bitmap [32]uint32
 }
 
+type bpfEgressReturnHandoffEntry struct {
+	_          structs.HostLayout
+	Ifindex    uint32
+	Smac       [6]uint8
+	Dmac       [6]uint8
+	FromWan    uint8
+	Padding    [3]uint8
+	LastSeenNs uint64
+}
+
 type bpfMatchSet struct {
 	_        structs.HostLayout
 	Value    [16]uint8
-	Not      bool
+	Not      uint8
 	Type     uint8
 	Outbound uint8
-	Must     bool
+	Must     uint8
 	Mark     uint32
 }
 
@@ -121,29 +131,7 @@ type bpfTuplesKey struct {
 	_       [3]uint8
 }
 
-type bpfUdpConnState struct {
-	_                     structs.HostLayout
-	IsWanIngressDirection bool
-	_                     [7]byte
-	LastSeenNs            uint64
-	Meta                  struct {
-		_    structs.HostLayout
-		Data struct {
-			_          structs.HostLayout
-			Mark       uint32
-			Outbound   uint8
-			Must       uint8
-			Dscp       uint8
-			HasRouting uint8
-		}
-	}
-	Mac   [6]uint8
-	_     [2]byte
-	Pname [16]uint8
-	Pid   uint32
-}
-
-type bpfTcpConnState struct {
+type bpfConnState struct {
 	_                     structs.HostLayout
 	IsWanIngressDirection bool
 	State                 uint8
@@ -221,6 +209,7 @@ type bpfMapSpecs struct {
 	BpfStatsMap             *ebpf.MapSpec `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.MapSpec `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.MapSpec `ebpf:"domain_routing_map"`
+	EgressReturnHandoffMap  *ebpf.MapSpec `ebpf:"egress_return_handoff_map"`
 	EventRingbuf            *ebpf.MapSpec `ebpf:"event_ringbuf"`
 	FastSock                *ebpf.MapSpec `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.MapSpec `ebpf:"listen_socket_map"`
@@ -230,10 +219,9 @@ type bpfMapSpecs struct {
 	RoutingHandoffMap       *ebpf.MapSpec `ebpf:"routing_handoff_map"`
 	RoutingMap              *ebpf.MapSpec `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.MapSpec `ebpf:"routing_meta_map"`
-	TcpConnStateMap         *ebpf.MapSpec `ebpf:"tcp_conn_state_map"`
-	UdpConnStateMap         *ebpf.MapSpec `ebpf:"udp_conn_state_map"`
+	ConnStateMap            *ebpf.MapSpec `ebpf:"conn_state_map"`
 	UnusedLpmType           *ebpf.MapSpec `ebpf:"unused_lpm_type"`
-	WanEgressScratchMap     *ebpf.MapSpec `ebpf:"wan_egress_scratch_map"`
+	PktScratchMap           *ebpf.MapSpec `ebpf:"pkt_scratch_map"`
 }
 
 type bpfVariableSpecs struct {
@@ -257,6 +245,7 @@ type bpfMaps struct {
 	BpfStatsMap             *ebpf.Map `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.Map `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.Map `ebpf:"domain_routing_map"`
+	EgressReturnHandoffMap  *ebpf.Map `ebpf:"egress_return_handoff_map"`
 	EventRingbuf            *ebpf.Map `ebpf:"event_ringbuf"`
 	FastSock                *ebpf.Map `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.Map `ebpf:"listen_socket_map"`
@@ -266,10 +255,9 @@ type bpfMaps struct {
 	RoutingHandoffMap       *ebpf.Map `ebpf:"routing_handoff_map"`
 	RoutingMap              *ebpf.Map `ebpf:"routing_map"`
 	RoutingMetaMap          *ebpf.Map `ebpf:"routing_meta_map"`
-	TcpConnStateMap         *ebpf.Map `ebpf:"tcp_conn_state_map"`
-	UdpConnStateMap         *ebpf.Map `ebpf:"udp_conn_state_map"`
+	ConnStateMap            *ebpf.Map `ebpf:"conn_state_map"`
 	UnusedLpmType           *ebpf.Map `ebpf:"unused_lpm_type"`
-	WanEgressScratchMap     *ebpf.Map `ebpf:"wan_egress_scratch_map"`
+	PktScratchMap           *ebpf.Map `ebpf:"pkt_scratch_map"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -277,6 +265,7 @@ func (m *bpfMaps) Close() error {
 		m.BpfStatsMap,
 		m.CookiePidMap,
 		m.DomainRoutingMap,
+		m.EgressReturnHandoffMap,
 		m.EventRingbuf,
 		m.FastSock,
 		m.ListenSocketMap,
@@ -286,10 +275,9 @@ func (m *bpfMaps) Close() error {
 		m.RoutingHandoffMap,
 		m.RoutingMap,
 		m.RoutingMetaMap,
-		m.TcpConnStateMap,
-		m.UdpConnStateMap,
+		m.ConnStateMap,
 		m.UnusedLpmType,
-		m.WanEgressScratchMap,
+		m.PktScratchMap,
 	)
 }
 
@@ -370,12 +358,16 @@ type bpfIfParams struct {
 }
 
 type loadBpfOptions struct {
-	PinPath             string
-	BigEndianTproxyPort uint32
-	CollectionOptions   *ebpf.CollectionOptions
+	PinPath                string
+	BigEndianTproxyPort    uint32
+	CollectionOptions      *ebpf.CollectionOptions
+	ConnStateMapMaxEntries uint32
 }
 
-const fastSockPlaceholderMaxEntries = 1
+const (
+	defaultConnStateMapMaxEntries = 65535
+	fastSockPlaceholderMaxEntries = 1
+)
 
 func fullLoadBpfObjects(
 	log *logrus.Logger,
@@ -426,13 +418,26 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 	if spec == nil {
 		return fmt.Errorf("nil collection spec")
 	}
-	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
-		m, ok := spec.Maps[mapName]
-		if !ok || m == nil {
-			return fmt.Errorf("missing map spec %q", mapName)
-		}
-		m.Pinning = ebpf.PinNone
+	m, ok := spec.Maps["conn_state_map"]
+	if !ok || m == nil {
+		return fmt.Errorf("missing map spec %q", "conn_state_map")
 	}
+	m.Pinning = ebpf.PinNone
+	return nil
+}
+
+func tuneConnStateBpfMap(spec *ebpf.CollectionSpec, maxEntries uint32) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+	if maxEntries == 0 {
+		maxEntries = defaultConnStateMapMaxEntries
+	}
+	connState, ok := spec.Maps["conn_state_map"]
+	if !ok || connState == nil {
+		return fmt.Errorf("missing map spec %q", "conn_state_map")
+	}
+	connState.MaxEntries = maxEntries
 	return nil
 }
 
@@ -449,8 +454,11 @@ func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
-func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
+func customizeBpfMapSpecs(spec *ebpf.CollectionSpec, connStateMapMaxEntries uint32) error {
 	if err := disablePinnedConnStateMaps(spec); err != nil {
+		return err
+	}
+	if err := tuneConnStateBpfMap(spec, connStateMapMaxEntries); err != nil {
 		return err
 	}
 	if err := tunePlaceholderBpfMaps(spec); err != nil {
@@ -465,7 +473,7 @@ func cleanupPinnedConnStateMapFiles(log *logrus.Logger, pinPath string) int {
 	}
 
 	removed := 0
-	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+	for _, mapName := range []string{"conn_state_map", "tcp_conn_state_map", "udp_conn_state_map"} {
 		path := filepath.Join(pinPath, mapName)
 		if err := os.Remove(path); err != nil {
 			if !os.IsNotExist(err) && log != nil {

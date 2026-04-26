@@ -279,12 +279,16 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 }
 
 type loadBpfOptions struct {
-	PinPath             string
-	BigEndianTproxyPort uint32
-	CollectionOptions   *ebpf.CollectionOptions
+	PinPath                string
+	BigEndianTproxyPort    uint32
+	CollectionOptions      *ebpf.CollectionOptions
+	ConnStateMapMaxEntries uint32
 }
 
-const fastSockPlaceholderMaxEntries = 1
+const (
+	defaultConnStateMapMaxEntries = 65535
+	fastSockPlaceholderMaxEntries = 1
+)
 
 func loadBpfObjectsWithConstantsAndCustomizer(
 	obj interface{},
@@ -313,13 +317,26 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 	if spec == nil {
 		return fmt.Errorf("nil collection spec")
 	}
-	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
-		m, ok := spec.Maps[mapName]
-		if !ok || m == nil {
-			return fmt.Errorf("missing map spec %q", mapName)
-		}
-		m.Pinning = ebpf.PinNone
+	m, ok := spec.Maps["conn_state_map"]
+	if !ok || m == nil {
+		return fmt.Errorf("missing map spec %q", "conn_state_map")
 	}
+	m.Pinning = ebpf.PinNone
+	return nil
+}
+
+func tuneConnStateBpfMap(spec *ebpf.CollectionSpec, maxEntries uint32) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+	if maxEntries == 0 {
+		maxEntries = defaultConnStateMapMaxEntries
+	}
+	connState, ok := spec.Maps["conn_state_map"]
+	if !ok || connState == nil {
+		return fmt.Errorf("missing map spec %q", "conn_state_map")
+	}
+	connState.MaxEntries = maxEntries
 	return nil
 }
 
@@ -339,8 +356,11 @@ func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
-func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
+func customizeBpfMapSpecs(spec *ebpf.CollectionSpec, connStateMapMaxEntries uint32) error {
 	if err := disablePinnedConnStateMaps(spec); err != nil {
+		return err
+	}
+	if err := tuneConnStateBpfMap(spec, connStateMapMaxEntries); err != nil {
 		return err
 	}
 	if err := tunePlaceholderBpfMaps(spec); err != nil {
@@ -355,7 +375,7 @@ func cleanupPinnedConnStateMapFiles(log *logrus.Logger, pinPath string) int {
 	}
 
 	removed := 0
-	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+	for _, mapName := range []string{"conn_state_map", "tcp_conn_state_map", "udp_conn_state_map"} {
 		path := filepath.Join(pinPath, mapName)
 		if err := os.Remove(path); err != nil {
 			if !os.IsNotExist(err) && log != nil {
@@ -405,13 +425,13 @@ retryLoadBpf:
 		}
 	}
 
-	// Get peer MAC address. For L3 netkit devices, HardwareAddr may be empty.
-	// Use zero MAC in that case since L3 mode doesn't use MAC addresses.
+	// Get peer MAC address. Netkit is created in L2 mode so this should be
+	// populated, but keep the zero-MAC fallback for older or unusual kernels.
 	peerMac := [6]byte{}
 	hwAddr := GetDaeNetns().Dae0Peer().Attrs().HardwareAddr
 	if len(hwAddr) == 6 {
 		peerMac = [6]byte(hwAddr)
-	} // else: keep zero MAC for L3 netkit
+	}
 
 	constants := map[string]interface{}{
 		"PARAM": struct {
@@ -442,7 +462,9 @@ retryLoadBpf:
 		bpf,
 		opts.CollectionOptions,
 		constants,
-		customizeBpfMapSpecs,
+		func(spec *ebpf.CollectionSpec) error {
+			return customizeBpfMapSpecs(spec, opts.ConnStateMapMaxEntries)
+		},
 	); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.

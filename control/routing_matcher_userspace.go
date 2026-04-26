@@ -42,9 +42,9 @@ func compileRoutingMatch(match bpfMatchSet) (compiledRoutingMatch, error) {
 	compiled := compiledRoutingMatch{
 		matchType: consts.MatchType(match.Type),
 		outbound:  consts.OutboundIndex(match.Outbound),
-		not:       match.Not,
+		not:       match.Not != 0,
 		mark:      match.Mark,
-		must:      match.Must,
+		must:      match.Must != 0,
 	}
 
 	switch compiled.matchType {

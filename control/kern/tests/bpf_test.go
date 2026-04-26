@@ -109,12 +109,27 @@ func collectPrograms(t *testing.T) (obj *bpftestObjects, progset []programSet, e
 	return
 }
 
+func markAllOutboundsAlive(t *testing.T, obj *bpftestObjects) {
+	aliveVal := uint32(1)
+
+	for i := uint32(0); i < 256; i++ {
+		for j := uint32(0); j < 6; j++ {
+			ck := i*6 + j
+			if err := obj.OutboundConnectivityMap.Update(ck, aliveVal, ebpf.UpdateAny); err != nil {
+				t.Fatalf("failed to initialize outbound_connectivity_map[%d]: %v", ck, err)
+			}
+		}
+	}
+}
+
 func runProgramSetByID(t *testing.T, id string) {
 	obj, progsets, err := collectPrograms(t)
 	if err != nil {
 		t.Fatalf("error while collecting programs: %s", err)
 	}
 	defer obj.Close()
+
+	markAllOutboundsAlive(t, obj)
 
 	var target *programSet
 	for i := range progsets {
@@ -222,6 +237,8 @@ func TestBpfBugsVerification(t *testing.T) {
 	key := uint32(0)
 	activeRulesLen := uint32(testMaxMatchSetLen)
 	var zeroEntry []byte
+
+	markAllOutboundsAlive(t, obj)
 
 	// Track bug detection results
 	bugResults := make(map[string]bool)
@@ -332,14 +349,8 @@ func Test(t *testing.T) {
 	// Mark all user-defined outbounds as alive so wan_outbound_is_alive()
 	// never blocks test traffic.  The BPF ARRAY map defaults to 0 ("not
 	// alive"); without this, any test that routes to a non-DIRECT outbound
-	// via bpf_tail_call would get TC_ACT_SHOT.
-	aliveVal := uint32(1)
-	for i := uint32(0); i < 256; i++ {
-		for j := uint32(0); j < 6; j++ {
-			ck := i*6 + j
-			obj.OutboundConnectivityMap.Update(ck, aliveVal, ebpf.UpdateAny)
-		}
-	}
+	// would get TC_ACT_SHOT before exercising the target logic.
+	markAllOutboundsAlive(t, obj)
 
 	// zeroEntry is used to clear routing_map slots between tests.
 	// Stale entries from a previous test (e.g. and_match writes to slots 0–4)
@@ -405,6 +416,18 @@ func Test(t *testing.T) {
 
 func TestWanEgressDirectMarkReroute(t *testing.T) {
 	runProgramSetByID(t, "WanEgressDirectMarkReroute")
+}
+
+func TestWanEgressTcpNonSynCachedProxyRedirect(t *testing.T) {
+	runProgramSetByID(t, "WanEgressTcpNonSynCachedProxyRedirect")
+}
+
+func TestWanEgressTcpNonSynStatelessPassthrough(t *testing.T) {
+	runProgramSetByID(t, "WanEgressTcpNonSynStatelessPassthrough")
+}
+
+func TestWanEgressTcpSynRedirectTrack(t *testing.T) {
+	runProgramSetByID(t, "WanEgressTcpSynRedirectTrack")
 }
 
 func TestConntrackArgsScratchReset(t *testing.T) {

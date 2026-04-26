@@ -204,6 +204,9 @@ var (
 	// and userspace. Keep it short so the handoff map does not become a second
 	// long-lived conn-state cache.
 	routingHandoffTimeout = 10 * time.Second
+	// egressReturnHandoffTimeout bounds how long WAN egress reply-route metadata
+	// waits for userspace to publish redirect_track before aging out.
+	egressReturnHandoffTimeout = 30 * time.Second
 	// routingHandoffPressureInterval lets the janitor react quickly when the
 	// handoff map is churning under repeated tuple misses.
 	routingHandoffPressureInterval = 1 * time.Second
@@ -228,6 +231,7 @@ type mapCleanupStats struct {
 	entries      int
 	deleted      int
 	usagePercent int
+	maxEntries   int
 }
 
 type connStateJanitorPressureState struct {
@@ -479,8 +483,9 @@ func newControlPlaneWithContextOptions(
 	} else {
 		bpf = new(bpfObjects)
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
-			PinPath:           pinPath,
-			CollectionOptions: collectionOpts,
+			PinPath:                pinPath,
+			CollectionOptions:      collectionOpts,
+			ConnStateMapMaxEntries: global.BpfConnStateMapSize,
 		}, global.SoMarkFromDae); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)
@@ -890,7 +895,8 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		m    *ebpf.Map
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
-		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
+		{name: "egress_return_handoff_map", m: bpf.EgressReturnHandoffMap},
+		{name: "conn_state_map", m: bpf.ConnStateMap},
 		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
@@ -2074,6 +2080,7 @@ func (c *ControlPlane) startConnStateJanitor() {
 				}
 				if lastRoutingHandoff.IsZero() || now.Sub(lastRoutingHandoff) >= routingHandoffInterval {
 					c.cleanupRoutingHandoffMap()
+					c.cleanupEgressReturnHandoffMap()
 					lastRoutingHandoff = now
 				}
 
@@ -2081,9 +2088,9 @@ func (c *ControlPlane) startConnStateJanitor() {
 					udpStats := c.cleanupUdpConnStateMap(pressureState.active)
 					tcpStats := c.cleanupTcpConnStateMap(pressureState.active)
 
-					maxUsagePercent := udpStats.usagePercent
-					if tcpStats.usagePercent > maxUsagePercent {
-						maxUsagePercent = tcpStats.usagePercent
+					maxUsagePercent := 0
+					if udpStats.maxEntries > 0 {
+						maxUsagePercent = (udpStats.entries + tcpStats.entries) * 100 / udpStats.maxEntries
 					}
 					pressureState = updateConnStateJanitorPressure(pressureState, overflowDelta, maxUsagePercent)
 					lastConnCleanup = now
@@ -2107,6 +2114,7 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 	redirectDeleted := c.cleanupRedirectTrackMapBeforeLocked(staleBeforeNs)
 	cookieDeleted := c.cleanupCookiePidMapBeforeLocked(staleBeforeNs)
 	routingHandoffDeleted := c.cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs)
+	egressReturnHandoffDeleted := c.cleanupEgressReturnHandoffMapBeforeLocked(staleBeforeNs)
 	udpStats := c.cleanupUdpConnStateMapBeforeLocked(true, staleBeforeNs)
 	tcpStats := c.cleanupTcpConnStateMapBeforeLocked(true, staleBeforeNs)
 	c.connStateCleanupMu.Unlock()
@@ -2115,6 +2123,7 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 		return
 	}
 	if redirectDeleted == 0 && cookieDeleted == 0 && routingHandoffDeleted == 0 &&
+		egressReturnHandoffDeleted == 0 &&
 		udpStats.deleted == 0 && tcpStats.deleted == 0 {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			c.log.Debugln("[Reload] No stale datapath state remained after generation retirement")
@@ -2125,6 +2134,7 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 		"redirect_deleted":        redirectDeleted,
 		"cookie_pid_deleted":      cookieDeleted,
 		"routing_handoff_deleted": routingHandoffDeleted,
+		"egress_return_deleted":   egressReturnHandoffDeleted,
 		"udp_conn_deleted":        udpStats.deleted,
 		"tcp_conn_deleted":        tcpStats.deleted,
 	}).Infoln("[Reload] Cleaned stale datapath state after generation retirement")
@@ -2413,6 +2423,81 @@ func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64
 	return len(keysToDelete)
 }
 
+func (c *ControlPlane) cleanupEgressReturnHandoffMap() int {
+	c.connStateCleanupMu.Lock()
+	defer c.connStateCleanupMu.Unlock()
+	return c.cleanupEgressReturnHandoffMapBeforeLocked(0)
+}
+
+func (c *ControlPlane) cleanupEgressReturnHandoffMapBeforeLocked(staleBeforeNs uint64) int {
+	select {
+	case <-c.connStateJanitorStop:
+		return 0
+	default:
+	}
+
+	bpf := c.currentBpf()
+	if bpf == nil || bpf.EgressReturnHandoffMap == nil {
+		return 0
+	}
+
+	nowNano, err := monotonicNowNano()
+	if err != nil {
+		c.log.Errorf("cleanupEgressReturnHandoffMap: failed to get monotonic time: %v", err)
+		return 0
+	}
+
+	scratch := c.connStateJanitorScratch()
+	keysToDelete := takeJanitorDeleteScratch(scratch.egressReturnHandoffDelete)
+	keysOut := ensureJanitorLookupScratch(scratch.egressReturnHandoffKeys)
+	valuesOut := ensureJanitorLookupScratch(scratch.egressReturnHandoffValues)
+	totalEntries := 0
+	defer func() {
+		scratch.egressReturnHandoffDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.egressReturnHandoffKeys = keysOut
+		scratch.egressReturnHandoffValues = valuesOut
+	}()
+
+	var cursor ebpf.MapBatchCursor
+	for {
+		count, batchErr := bpf.EgressReturnHandoffMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		if count > 0 {
+			for i := range count {
+				totalEntries++
+				if egressReturnHandoffExpired(nowNano, valuesOut[i].LastSeenNs) ||
+					(staleBeforeNs > 0 && (valuesOut[i].LastSeenNs == 0 || valuesOut[i].LastSeenNs < staleBeforeNs)) {
+					keysToDelete = append(keysToDelete, keysOut[i])
+				}
+			}
+		}
+		if batchErr != nil {
+			if !strings.Contains(batchErr.Error(), "bad file descriptor") &&
+				!strings.Contains(batchErr.Error(), "file descriptor") &&
+				!strings.Contains(batchErr.Error(), "closed") &&
+				!strings.Contains(batchErr.Error(), "key does not exist") {
+				c.log.Errorf("cleanupEgressReturnHandoffMap: BatchLookup error: %v", batchErr)
+			}
+			break
+		}
+	}
+
+	if len(keysToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.EgressReturnHandoffMap, keysToDelete); err != nil {
+			c.log.Debugf("cleanupEgressReturnHandoffMap: batch delete error: %v", err)
+		}
+		c.log.Debugf("cleanupEgressReturnHandoffMap: removed %d entries", len(keysToDelete))
+	}
+
+	maxEntries := bpf.EgressReturnHandoffMap.MaxEntries()
+	if totalEntries > 0 && maxEntries > 0 {
+		usagePercent := float64(totalEntries) / float64(maxEntries) * 100
+		if usagePercent > 90 {
+			c.log.Warnf("cleanupEgressReturnHandoffMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
+		}
+	}
+	return len(keysToDelete)
+}
+
 // cleanupUdpConnStateMap iterates through the UDP conn state map and removes
 // cold entries that escaped endpoint-owned teardown.
 // DNS entries use a shorter timeout (17s) while non-DNS UDP keeps a longer
@@ -2436,7 +2521,7 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 	}
 
 	bpf := c.currentBpf()
-	if bpf == nil || bpf.UdpConnStateMap == nil {
+	if bpf == nil || bpf.ConnStateMap == nil {
 		return stats
 	}
 
@@ -2467,11 +2552,14 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 	aggressiveDnsTimeout := dnsTimeoutNano / 2
 
 	for {
-		count, err := bpf.UdpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		count, err := bpf.ConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := range count {
-				stats.entries++
 				key := keysOut[i]
+				if key.L4proto != unix.IPPROTO_UDP {
+					continue
+				}
+				stats.entries++
 				value := valuesOut[i]
 				// Check if this entry is a DNS connection (port 53)
 				isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
@@ -2506,14 +2594,15 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 		}
 	}
 
-	maxEntries := bpf.UdpConnStateMap.MaxEntries()
+	maxEntries := bpf.ConnStateMap.MaxEntries()
 	if maxEntries > 0 {
+		stats.maxEntries = int(maxEntries)
 		stats.usagePercent = stats.entries * 100 / int(maxEntries)
 	}
 
 	// Batch delete from UDP conn state map
 	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keysToDelete); err != nil {
+		if _, err := BpfMapBatchDelete(bpf.ConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupUdpConnStateMap: batch delete error: %v", err)
 		}
 	}
@@ -2552,7 +2641,7 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 	}
 
 	bpf := c.currentBpf()
-	if bpf == nil || bpf.TcpConnStateMap == nil {
+	if bpf == nil || bpf.ConnStateMap == nil {
 		return stats
 	}
 
@@ -2582,11 +2671,14 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 	aggressiveClosingTimeout := closingTimeoutNano / 2
 
 	for {
-		count, err := bpf.TcpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		count, err := bpf.ConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := range count {
-				stats.entries++
 				key := keysOut[i]
+				if key.L4proto != unix.IPPROTO_TCP {
+					continue
+				}
+				stats.entries++
 				value := valuesOut[i]
 				// Apply dynamic timeout based on map pressure
 				establishedTimeout := establishedTimeoutNano
@@ -2631,14 +2723,15 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 		}
 	}
 
-	maxEntries := bpf.TcpConnStateMap.MaxEntries()
+	maxEntries := bpf.ConnStateMap.MaxEntries()
 	if maxEntries > 0 {
+		stats.maxEntries = int(maxEntries)
 		stats.usagePercent = stats.entries * 100 / int(maxEntries)
 	}
 
 	// Batch delete expired TCP conn state entries
 	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.TcpConnStateMap, keysToDelete); err != nil {
+		if _, err := BpfMapBatchDelete(bpf.ConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupTcpConnStateMap: batch delete error: %v", err)
 		}
 	}
@@ -2705,8 +2798,8 @@ func (c *ControlPlane) checkBpfMapHealth() {
 	}
 
 	// Estimate map usage by sampling (full iteration is expensive)
-	if bpf.UdpConnStateMap != nil {
-		maxEntries := bpf.UdpConnStateMap.MaxEntries()
+	if bpf.ConnStateMap != nil {
+		maxEntries := bpf.ConnStateMap.MaxEntries()
 		// If overflow is happening, map is under pressure.
 		if udpOverflow > 100 && maxEntries > 0 {
 			nowNano := now.UnixNano()
@@ -2714,21 +2807,21 @@ func (c *ControlPlane) checkBpfMapHealth() {
 			if last == 0 || last+int64(alertCooldown) < nowNano {
 				if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
 					c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing udp_conn_state_map capacity or reducing UDP connection timeout.",
+						"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing UDP connection timeout.",
 						udpOverflow, maxEntries)
 				}
 			}
 		}
 	}
-	if bpf.TcpConnStateMap != nil {
-		maxEntries := bpf.TcpConnStateMap.MaxEntries()
+	if bpf.ConnStateMap != nil {
+		maxEntries := bpf.ConnStateMap.MaxEntries()
 		if tcpOverflow > 100 && maxEntries > 0 {
 			nowNano := now.UnixNano()
 			last := c.lastTcpPressureAlertTime.Load()
 			if last == 0 || last+int64(alertCooldown) < nowNano {
 				if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
 					c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing tcp_conn_state_map capacity or reducing TCP connection timeout.",
+						"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing TCP connection timeout.",
 						tcpOverflow, maxEntries)
 				}
 			}
@@ -2983,6 +3076,19 @@ func dupRawConnFile(rawConn syscall.RawConn, name string) (*os.File, error) {
 	return os.NewFile(uintptr(dupFD), name), nil
 }
 
+func (c *ControlPlane) activatePreparedRuntime() error {
+	if c == nil {
+		return nil
+	}
+
+	c.publishRuntimeStats()
+	if err := c.StartPreparedDNSListener(); err != nil {
+		c.unpublishRuntimeStats()
+		return err
+	}
+	return nil
+}
+
 func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	sentReady := false
 	defer func() {
@@ -3000,7 +3106,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	if err := c.publishListenerSockets(listener); err != nil {
 		return err
 	}
-	if err := c.StartPreparedDNSListener(); err != nil {
+	if err := c.activatePreparedRuntime(); err != nil {
 		return err
 	}
 
@@ -3679,6 +3785,7 @@ func (c *ControlPlane) Close() (err error) {
 	}
 
 	c.closeOnce.Do(func() {
+		c.unpublishRuntimeStats()
 		if c.cancel != nil {
 			c.cancel()
 		}

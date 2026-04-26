@@ -135,7 +135,6 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
 		}
 	}
-
 	// DNS Fast Path: Check for DNS-over-TCP traffic (port 53).
 	// DNS is a stateless protocol and doesn't need the connection tracking
 	// features that TCP relay provides. This optimization handles DNS queries
