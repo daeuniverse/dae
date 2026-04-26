@@ -29,6 +29,11 @@ global {
     # Set non-zero value to enable pprof.
     pprof_port: 0
 
+    # Maximum entries for the shared TCP/UDP eBPF connection-state map.
+    # Lower values reduce locked kernel memory but lower the maximum tracked concurrent flows.
+    # Takes effect on fresh eBPF load or restart; same-port reload keeps the live map.
+    bpf_conn_state_map_size: 65535
+
     # Socket mark for dae-originated traffic.
     # If omitted, dae auto-selects an internal mark to prevent UDP self-capture.
     # Set a non-zero value to override that mark.
@@ -40,6 +45,10 @@ global {
 
     # Disable waiting for network before pulling subscriptions.
     disable_waiting_network: false
+
+    # Disable transparent huge pages for dae userspace memory.
+    # This is enabled by default to keep RSS stable on systems with THP=always.
+    disable_thp: true
 
     ##### Interface and kernel options.
 

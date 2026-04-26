@@ -53,11 +53,11 @@ func TestUdpConnStateTrackerRetainWaitsForFinalize(t *testing.T) {
 }
 
 func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testing.T) {
-	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	udpMap := newJanitorTestMap(t, "conn_state_map")
 	core := &controlPlaneCore{
 		bpf: &bpfObjects{
 			bpfMaps: bpfMaps{
-				UdpConnStateMap: udpMap,
+				ConnStateMap: udpMap,
 			},
 		},
 	}
@@ -68,7 +68,7 @@ func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testin
 	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
 
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		state := bpfUdpConnState{LastSeenNs: 1}
+		state := bpfConnState{LastSeenNs: 1}
 		if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
 			t.Fatalf("update udp conn-state %v: %v", key, err)
 		}
@@ -90,7 +90,7 @@ func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testin
 		t.Fatalf("ue1.Close(): %v", err)
 	}
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		var state bpfUdpConnState
+		var state bpfConnState
 		if err := udpMap.Lookup(&key, &state); err != nil {
 			t.Fatalf("Lookup(%v) after first close err = %v, want tuple to remain", key, err)
 		}
@@ -100,7 +100,7 @@ func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testin
 		t.Fatalf("ue2.Close(): %v", err)
 	}
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		var state bpfUdpConnState
+		var state bpfConnState
 		if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			t.Fatalf("Lookup(%v) after second close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
 		}
@@ -149,18 +149,18 @@ func TestAcquireSharedUdpConnStateTrackerSharesByBpfObject(t *testing.T) {
 }
 
 func TestUdpEndpointAdoptGenerationTransfersTrackedTupleOwnership(t *testing.T) {
-	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	udpMap := newJanitorTestMap(t, "conn_state_map")
 	oldCore := &controlPlaneCore{
 		bpf: &bpfObjects{
 			bpfMaps: bpfMaps{
-				UdpConnStateMap: udpMap,
+				ConnStateMap: udpMap,
 			},
 		},
 	}
 	newCore := &controlPlaneCore{
 		bpf: &bpfObjects{
 			bpfMaps: bpfMaps{
-				UdpConnStateMap: udpMap,
+				ConnStateMap: udpMap,
 			},
 		},
 	}
@@ -171,7 +171,7 @@ func TestUdpEndpointAdoptGenerationTransfersTrackedTupleOwnership(t *testing.T) 
 	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
 
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		state := bpfUdpConnState{LastSeenNs: 1}
+		state := bpfConnState{LastSeenNs: 1}
 		if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
 			t.Fatalf("update udp conn-state %v: %v", key, err)
 		}
@@ -212,7 +212,7 @@ func TestUdpEndpointAdoptGenerationTransfersTrackedTupleOwnership(t *testing.T) 
 		t.Fatalf("ue.Close(): %v", err)
 	}
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		var state bpfUdpConnState
+		var state bpfConnState
 		if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			t.Fatalf("Lookup(%v) after close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
 		}
@@ -223,10 +223,10 @@ func TestUdpEndpointAdoptGenerationKeepsSharedTupleUntilLastEndpointCloses(t *te
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 
-	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
+	udpMap := newJanitorTestMap(t, "conn_state_map")
 	sharedBpf := &bpfObjects{
 		bpfMaps: bpfMaps{
-			UdpConnStateMap: udpMap,
+			ConnStateMap: udpMap,
 		},
 	}
 	tracker := acquireSharedUdpConnStateTracker(sharedBpf)
@@ -249,7 +249,7 @@ func TestUdpEndpointAdoptGenerationKeepsSharedTupleUntilLastEndpointCloses(t *te
 	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
 
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		state := bpfUdpConnState{LastSeenNs: 1}
+		state := bpfConnState{LastSeenNs: 1}
 		if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
 			t.Fatalf("update udp conn-state %v: %v", key, err)
 		}
@@ -272,7 +272,7 @@ func TestUdpEndpointAdoptGenerationKeepsSharedTupleUntilLastEndpointCloses(t *te
 		t.Fatalf("ueOld.Close(): %v", err)
 	}
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		var state bpfUdpConnState
+		var state bpfConnState
 		if err := udpMap.Lookup(&key, &state); err != nil {
 			t.Fatalf("Lookup(%v) after old endpoint close err = %v, want tuple to remain", key, err)
 		}
@@ -282,7 +282,7 @@ func TestUdpEndpointAdoptGenerationKeepsSharedTupleUntilLastEndpointCloses(t *te
 		t.Fatalf("ueAdopted.Close(): %v", err)
 	}
 	for _, key := range []bpfTuplesKey{forward, reverse} {
-		var state bpfUdpConnState
+		var state bpfConnState
 		if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			t.Fatalf("Lookup(%v) after adopted endpoint close err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
 		}

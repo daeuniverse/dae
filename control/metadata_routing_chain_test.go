@@ -67,8 +67,8 @@ func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp 
 	var core *controlPlaneCore
 	switch l4proto {
 	case unix.IPPROTO_TCP:
-		tcpMap := newJanitorTestMap(t, "tcp_conn_state_map")
-		state := bpfTcpConnState{}
+		tcpMap := newJanitorTestMap(t, "conn_state_map")
+		state := bpfConnState{}
 		state.LastSeenNs = 1
 		state.Meta.Data.Outbound = uint8(consts.OutboundDirect)
 		state.Meta.Data.Dscp = dscp
@@ -80,11 +80,11 @@ func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp 
 			t.Fatalf("update tcp conn-state: %v", err)
 		}
 		core = &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{TcpConnStateMap: tcpMap}},
+			bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}},
 		}
 	case unix.IPPROTO_UDP:
-		udpMap := newJanitorTestMap(t, "udp_conn_state_map")
-		state := bpfUdpConnState{}
+		udpMap := newJanitorTestMap(t, "conn_state_map")
+		state := bpfConnState{}
 		state.LastSeenNs = 1
 		state.Meta.Data.Outbound = uint8(consts.OutboundDirect)
 		state.Meta.Data.Dscp = dscp
@@ -96,7 +96,7 @@ func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp 
 			t.Fatalf("update udp conn-state: %v", err)
 		}
 		core = &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{UdpConnStateMap: udpMap}},
+			bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: udpMap}},
 		}
 	default:
 		t.Fatalf("unsupported l4proto %d", l4proto)

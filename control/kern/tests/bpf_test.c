@@ -61,8 +61,8 @@ setup_cached_routing_result(__u32 saddr, __u32 daddr,
 	ctx->result.outbound = outbound;
 	ctx->result.mark = mark;
 
-	// Scheme3: Store routing result in tcp_conn_state_map instead of routing_tuples_map
-	struct tcp_conn_state conn_state = {};
+	// Scheme3: Store routing result in conn_state_map instead of routing_tuples_map
+	struct conn_state conn_state = {};
 
 	conn_state.is_wan_ingress_direction = false;
 	conn_state.state = 0; // TCP_STATE_ACTIVE
@@ -72,7 +72,7 @@ setup_cached_routing_result(__u32 saddr, __u32 daddr,
 	conn_state.meta.data.mark = mark;
 	conn_state.meta.data.must = 0;
 
-	return bpf_map_update_elem(&tcp_conn_state_map, &ctx->key, &conn_state, BPF_ANY);
+	return bpf_map_update_elem(&conn_state_map, &ctx->key, &conn_state, BPF_ANY);
 }
 
 SEC("tc/pktgen/dport_match")

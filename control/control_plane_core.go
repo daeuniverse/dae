@@ -928,10 +928,10 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 	tracker := c.getUdpConnStateTracker()
 	if tracker == nil {
 		bpf := c.PeekBpf()
-		if bpf == nil || bpf.UdpConnStateMap == nil {
+		if bpf == nil || bpf.ConnStateMap == nil {
 			return nil
 		}
-		_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keys)
+		_, err := BpfMapBatchDelete(bpf.ConnStateMap, keys)
 		return err
 	}
 	releases := tracker.BeginRelease(keys)
@@ -940,14 +940,14 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 		return nil
 	}
 	bpf := c.PeekBpf()
-	if bpf == nil || bpf.UdpConnStateMap == nil {
+	if bpf == nil || bpf.ConnStateMap == nil {
 		return nil
 	}
 	deleteKeys := make([]bpfTuplesKey, 0, len(releases))
 	for _, release := range releases {
 		deleteKeys = append(deleteKeys, release.key)
 	}
-	_, err := BpfMapBatchDelete(bpf.UdpConnStateMap, deleteKeys)
+	_, err := BpfMapBatchDelete(bpf.ConnStateMap, deleteKeys)
 	return err
 }
 

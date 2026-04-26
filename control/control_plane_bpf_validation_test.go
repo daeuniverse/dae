@@ -30,7 +30,7 @@ func TestValidateRequiredBpfMapsLoaded(t *testing.T) {
 			bpfMaps: bpfMaps{
 				DomainRoutingMap:       &ebpf.Map{},
 				EgressReturnHandoffMap: &ebpf.Map{},
-				UdpConnStateMap:        &ebpf.Map{},
+				ConnStateMap:           &ebpf.Map{},
 				RoutingHandoffMap:      &ebpf.Map{},
 				RoutingMap:             &ebpf.Map{},
 				RoutingMetaMap:         &ebpf.Map{},

@@ -399,8 +399,8 @@ check_tcp_conn_state_ipv4_tcp(struct __sk_buff *skb,
 	tuples.five.dport = tcp->dest;
 	tuples.five.l4proto = ip->protocol;
 
-	struct tcp_conn_state *conn_state;
-	conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+	struct conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 	if (!conn_state) {
 		bpf_printk("conn_state == NULL\n");
 		return TC_ACT_SHOT;
@@ -493,8 +493,8 @@ check_tcp_conn_state_ipv4_tcp_dscp(struct __sk_buff *skb,
 	tuples.five.dport = tcp->dest;
 	tuples.five.l4proto = ip->protocol;
 
-	struct tcp_conn_state *conn_state;
-	conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+	struct conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 	if (!conn_state) {
 		bpf_printk("conn_state == NULL\n");
 		return TC_ACT_SHOT;
@@ -607,8 +607,8 @@ check_tcp_conn_state_ipv6_tcp_dscp(struct __sk_buff *skb,
 	tuples.five.dport = tcp->dest;
 	tuples.five.l4proto = ip6->nexthdr;
 
-	struct tcp_conn_state *conn_state;
-	conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+	struct conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 	if (!conn_state) {
 		bpf_printk("conn_state == NULL\n");
 		return TC_ACT_SHOT;
@@ -736,9 +736,9 @@ check_routing_ipv4_tcp_state(struct __sk_buff *skb,
 		tuples.five.dport = tcp->dest;
 		tuples.five.l4proto = ip->protocol;
 
-		// Scheme3: Read routing result from tcp_conn_state_map instead of routing_tuples_map
-		struct tcp_conn_state *conn_state;
-		conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+		// Scheme3: Read routing result from conn_state_map instead of routing_tuples_map
+		struct conn_state *conn_state;
+		conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 		if (!conn_state) {
 			bpf_printk("conn_state == NULL\n");
 			return TC_ACT_SHOT;
@@ -832,8 +832,8 @@ check_udp_conn_state_ipv4_udp_dscp(struct __sk_buff *skb,
 	tuples.five.dport = udp->dest;
 	tuples.five.l4proto = ip->protocol;
 
-	struct udp_conn_state *conn_state;
-	conn_state = bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five);
+	struct conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 	if (!conn_state) {
 		bpf_printk("conn_state == NULL\n");
 		return TC_ACT_SHOT;
@@ -965,8 +965,8 @@ check_routing_ipv6_tcp_state(struct __sk_buff *skb,
 		tuples.five.dport = tcp->dest;
 		tuples.five.l4proto = ip6->nexthdr;
 
-		struct tcp_conn_state *conn_state;
-		conn_state = bpf_map_lookup_elem(&tcp_conn_state_map, &tuples.five);
+		struct conn_state *conn_state;
+		conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 		if (!conn_state) {
 			bpf_printk("conn_state == NULL\n");
 			return TC_ACT_SHOT;
@@ -1249,8 +1249,8 @@ check_udp_conn_state_ipv6_udp_dscp(struct __sk_buff *skb,
 	tuples.five.dport = udp->dest;
 	tuples.five.l4proto = ip6->nexthdr;
 
-	struct udp_conn_state *conn_state;
-	conn_state = bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five);
+	struct conn_state *conn_state;
+	conn_state = bpf_map_lookup_elem(&conn_state_map, &tuples.five);
 	if (!conn_state) {
 		bpf_printk("conn_state == NULL\n");
 		return TC_ACT_SHOT;

@@ -70,6 +70,21 @@ dns {
 	require.NotNil(t, conf.Dns.Routing.Response.Fallback)
 }
 
+func TestGlobalMemoryDefaults(t *testing.T) {
+	sections, err := config_parser.Parse(`
+global {}
+routing {
+  fallback: direct
+}
+`)
+	require.NoError(t, err)
+
+	conf, err := New(sections)
+	require.NoError(t, err)
+	require.True(t, conf.Global.DisableTHP)
+	require.EqualValues(t, 65535, conf.Global.BpfConnStateMapSize)
+}
+
 func TestDecodeConfigSectionRejectsUnknownSection(t *testing.T) {
 	conf := &Config{}
 	err := decodeConfigSection(conf, "unknown", &config_parser.Section{Name: "unknown"})

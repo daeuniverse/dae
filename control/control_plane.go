@@ -231,6 +231,7 @@ type mapCleanupStats struct {
 	entries      int
 	deleted      int
 	usagePercent int
+	maxEntries   int
 }
 
 type connStateJanitorPressureState struct {
@@ -482,8 +483,9 @@ func newControlPlaneWithContextOptions(
 	} else {
 		bpf = new(bpfObjects)
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
-			PinPath:           pinPath,
-			CollectionOptions: collectionOpts,
+			PinPath:                pinPath,
+			CollectionOptions:      collectionOpts,
+			ConnStateMapMaxEntries: global.BpfConnStateMapSize,
 		}, global.SoMarkFromDae); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)
@@ -894,7 +896,7 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
 		{name: "egress_return_handoff_map", m: bpf.EgressReturnHandoffMap},
-		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
+		{name: "conn_state_map", m: bpf.ConnStateMap},
 		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
@@ -2086,9 +2088,9 @@ func (c *ControlPlane) startConnStateJanitor() {
 					udpStats := c.cleanupUdpConnStateMap(pressureState.active)
 					tcpStats := c.cleanupTcpConnStateMap(pressureState.active)
 
-					maxUsagePercent := udpStats.usagePercent
-					if tcpStats.usagePercent > maxUsagePercent {
-						maxUsagePercent = tcpStats.usagePercent
+					maxUsagePercent := 0
+					if udpStats.maxEntries > 0 {
+						maxUsagePercent = (udpStats.entries + tcpStats.entries) * 100 / udpStats.maxEntries
 					}
 					pressureState = updateConnStateJanitorPressure(pressureState, overflowDelta, maxUsagePercent)
 					lastConnCleanup = now
@@ -2519,7 +2521,7 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 	}
 
 	bpf := c.currentBpf()
-	if bpf == nil || bpf.UdpConnStateMap == nil {
+	if bpf == nil || bpf.ConnStateMap == nil {
 		return stats
 	}
 
@@ -2550,11 +2552,14 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 	aggressiveDnsTimeout := dnsTimeoutNano / 2
 
 	for {
-		count, err := bpf.UdpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		count, err := bpf.ConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := range count {
-				stats.entries++
 				key := keysOut[i]
+				if key.L4proto != unix.IPPROTO_UDP {
+					continue
+				}
+				stats.entries++
 				value := valuesOut[i]
 				// Check if this entry is a DNS connection (port 53)
 				isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
@@ -2589,14 +2594,15 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 		}
 	}
 
-	maxEntries := bpf.UdpConnStateMap.MaxEntries()
+	maxEntries := bpf.ConnStateMap.MaxEntries()
 	if maxEntries > 0 {
+		stats.maxEntries = int(maxEntries)
 		stats.usagePercent = stats.entries * 100 / int(maxEntries)
 	}
 
 	// Batch delete from UDP conn state map
 	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keysToDelete); err != nil {
+		if _, err := BpfMapBatchDelete(bpf.ConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupUdpConnStateMap: batch delete error: %v", err)
 		}
 	}
@@ -2635,7 +2641,7 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 	}
 
 	bpf := c.currentBpf()
-	if bpf == nil || bpf.TcpConnStateMap == nil {
+	if bpf == nil || bpf.ConnStateMap == nil {
 		return stats
 	}
 
@@ -2665,11 +2671,14 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 	aggressiveClosingTimeout := closingTimeoutNano / 2
 
 	for {
-		count, err := bpf.TcpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		count, err := bpf.ConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := range count {
-				stats.entries++
 				key := keysOut[i]
+				if key.L4proto != unix.IPPROTO_TCP {
+					continue
+				}
+				stats.entries++
 				value := valuesOut[i]
 				// Apply dynamic timeout based on map pressure
 				establishedTimeout := establishedTimeoutNano
@@ -2714,14 +2723,15 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 		}
 	}
 
-	maxEntries := bpf.TcpConnStateMap.MaxEntries()
+	maxEntries := bpf.ConnStateMap.MaxEntries()
 	if maxEntries > 0 {
+		stats.maxEntries = int(maxEntries)
 		stats.usagePercent = stats.entries * 100 / int(maxEntries)
 	}
 
 	// Batch delete expired TCP conn state entries
 	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.TcpConnStateMap, keysToDelete); err != nil {
+		if _, err := BpfMapBatchDelete(bpf.ConnStateMap, keysToDelete); err != nil {
 			c.log.Debugf("cleanupTcpConnStateMap: batch delete error: %v", err)
 		}
 	}
@@ -2788,8 +2798,8 @@ func (c *ControlPlane) checkBpfMapHealth() {
 	}
 
 	// Estimate map usage by sampling (full iteration is expensive)
-	if bpf.UdpConnStateMap != nil {
-		maxEntries := bpf.UdpConnStateMap.MaxEntries()
+	if bpf.ConnStateMap != nil {
+		maxEntries := bpf.ConnStateMap.MaxEntries()
 		// If overflow is happening, map is under pressure.
 		if udpOverflow > 100 && maxEntries > 0 {
 			nowNano := now.UnixNano()
@@ -2797,21 +2807,21 @@ func (c *ControlPlane) checkBpfMapHealth() {
 			if last == 0 || last+int64(alertCooldown) < nowNano {
 				if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
 					c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing udp_conn_state_map capacity or reducing UDP connection timeout.",
+						"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing UDP connection timeout.",
 						udpOverflow, maxEntries)
 				}
 			}
 		}
 	}
-	if bpf.TcpConnStateMap != nil {
-		maxEntries := bpf.TcpConnStateMap.MaxEntries()
+	if bpf.ConnStateMap != nil {
+		maxEntries := bpf.ConnStateMap.MaxEntries()
 		if tcpOverflow > 100 && maxEntries > 0 {
 			nowNano := now.UnixNano()
 			last := c.lastTcpPressureAlertTime.Load()
 			if last == 0 || last+int64(alertCooldown) < nowNano {
 				if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
 					c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing tcp_conn_state_map capacity or reducing TCP connection timeout.",
+						"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing TCP connection timeout.",
 						tcpOverflow, maxEntries)
 				}
 			}
