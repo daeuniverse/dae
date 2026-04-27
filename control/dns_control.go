@@ -2299,7 +2299,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendRuntimeTrackedPktFresh(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+		if err = sendRuntimeTrackedPktLegacyAnyfrom(data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return err
 		}
 		return nil
@@ -2504,19 +2504,8 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
-		// For remote DNS, use sendPkt with transparent socket to ensure
-		// the response source address matches the DNS server IP.
-		// This is important for clients that validate source address.
-		dstAddr := req.realDst.Addr()
-		if dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast() {
-			// Local DNS (0.0.0.0) - use lConn directly
-			if err := writeRuntimeTrackedUDPAddrPort(req.lConn, patchedResp, req.realSrc, req.downloadRecorder()); err != nil {
-				return fmt.Errorf("failed to write local DNS resp: %w", err)
-			}
-			return nil
-		}
-		if err := sendRuntimeTrackedPkt(c.log, patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
-			return fmt.Errorf("failed to write remote DNS resp: %w", err)
+		if err := sendRuntimeTrackedPktLegacyAnyfrom(patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
 		return nil
 	}
@@ -2528,19 +2517,8 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
 
-	dstAddr := req.realDst.Addr()
-	isLocalDNS := dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast()
-
-	if isLocalDNS {
-		if err := writeRuntimeTrackedUDPAddrPort(req.lConn, patchedResp, req.realSrc, req.downloadRecorder()); err != nil {
-			return fmt.Errorf("failed to write oversized local DNS resp: %w", err)
-		}
-		return nil
-	}
-
-	// For remote DNS with oversized response, use sendPkt
-	if err := sendRuntimeTrackedPkt(c.log, patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
-		return fmt.Errorf("failed to write oversized DNS resp: %w", err)
+	if err := sendRuntimeTrackedPktLegacyAnyfrom(patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+		return fmt.Errorf("failed to write oversized cached DNS resp: %w", err)
 	}
 	return nil
 }
@@ -2576,7 +2554,7 @@ func (c *DnsController) sendDnsErrorResponse_(
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+	if err = sendRuntimeTrackedPktLegacyAnyfrom(data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 		return err
 	}
 	return nil
@@ -2609,7 +2587,7 @@ func (c *DnsController) sendDnsTruncatedResponse_(dnsMessage *dnsmessage.Msg, re
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
-	if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+	if err = sendRuntimeTrackedPktLegacyAnyfrom(data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 		return err
 	}
 	return nil
@@ -2857,25 +2835,10 @@ func (c *DnsController) dialSend(
 		if err != nil {
 			return err
 		}
-		if req != nil && req.lConn != nil {
-			if err = sendRuntimeTrackedPktViaListener(req.lConn, data, req.realDst, req.realSrc, req.downloadRecorder()); err == nil {
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							c.log.Errorf("panic in async DNS cache: %v", r)
-						}
-					}()
-					if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
-						c.log.Debugf("failed to cache DNS response (async): %v", err)
-					}
-				}()
-				return nil
-			}
-			if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithError(err).Debug("DNS reply via listener socket failed; fallback to Anyfrom sender")
-			}
-		}
-		if err = sendRuntimeTrackedPktFresh(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+		// Use Anyfrom sender for DNS UDP replies. Reply injection through the
+		// listener socket can appear successful while still failing to reach
+		// host-local clients, which surfaces as client-side DNS timeouts.
+		if err = sendRuntimeTrackedPktLegacyAnyfrom(data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return err
 		}
 

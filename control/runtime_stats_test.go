@@ -594,6 +594,61 @@ func TestWriteRuntimeTrackedUDPAddrPortRecordsDownloadTraffic(t *testing.T) {
 	}
 }
 
+func TestSendRuntimeTrackedPktLegacyAnyfromRecordsDownloadTrafficAndPreservesSource(t *testing.T) {
+	resetRuntimeStatsForTest(t)
+
+	oldAnyfromPool := DefaultAnyfromPool
+	DefaultAnyfromPool = newTestAnyfromPoolWithoutJanitor()
+	defer func() {
+		DefaultAnyfromPool.Reset()
+		DefaultAnyfromPool = oldAnyfromPool
+	}()
+
+	replyConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP(reply) error = %v", err)
+	}
+	defer func() { _ = replyConn.Close() }()
+
+	clientConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP(client) error = %v", err)
+	}
+	defer func() { _ = clientConn.Close() }()
+
+	replyAddr := replyConn.LocalAddr().(*net.UDPAddr).AddrPort()
+	clientAddr := clientConn.LocalAddr().(*net.UDPAddr).AddrPort()
+	af := &Anyfrom{UDPConn: replyConn, ttl: AnyfromTimeout}
+	af.RefreshTtl()
+
+	shard := DefaultAnyfromPool.shardFor(replyAddr)
+	shard.mu.Lock()
+	shard.pool[replyAddr] = af
+	shard.mu.Unlock()
+
+	payload := []byte("dns-response")
+	if err := sendRuntimeTrackedPktLegacyAnyfrom(payload, replyAddr, clientAddr, RecordDownloadTraffic); err != nil {
+		t.Fatalf("sendRuntimeTrackedPktLegacyAnyfrom() error = %v", err)
+	}
+
+	buf := make([]byte, 64)
+	n, from, err := clientConn.ReadFromUDPAddrPort(buf)
+	if err != nil {
+		t.Fatalf("ReadFromUDPAddrPort() error = %v", err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("received payload = %q, want %q", buf[:n], payload)
+	}
+	if from != replyAddr {
+		t.Fatalf("response source = %v, want %v", from, replyAddr)
+	}
+
+	snapshot := SnapshotRuntimeStats(0, 0, 60, 10)
+	if got, want := snapshot.DownloadTotal, uint64(len(payload)); got != want {
+		t.Fatalf("DownloadTotal = %d, want %d", got, want)
+	}
+}
+
 func TestServeDNSRecordsRuntimeTrafficForListenerPath(t *testing.T) {
 	resetRuntimeStatsForTest(t)
 

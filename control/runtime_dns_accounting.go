@@ -53,6 +53,23 @@ func sendRuntimeTrackedPktFresh(log *logrus.Logger, data []byte, from netip.Addr
 	return nil
 }
 
+// sendRuntimeTrackedPktLegacyAnyfrom preserves the pre-85a1fc3c DNS reply
+// injection behavior: bind exactly to the upstream address/port and send the
+// packet back to the client through the pooled Anyfrom socket, without the
+// newer listener-socket or address-family normalization paths.
+func sendRuntimeTrackedPktLegacyAnyfrom(data []byte, from netip.AddrPort, to netip.AddrPort, recordDownload func(int64)) error {
+	recordDownload = normalizeTrafficRecord(recordDownload)
+	af, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
+	if err != nil {
+		return err
+	}
+	if _, err := af.WriteToUDPAddrPort(data, to); err != nil {
+		return err
+	}
+	recordDownload(int64(len(data)))
+	return nil
+}
+
 func sendRuntimeTrackedPktViaListener(conn *net.UDPConn, data []byte, from netip.AddrPort, to netip.AddrPort, recordDownload func(int64)) error {
 	recordDownload = normalizeTrafficRecord(recordDownload)
 	if err := sendPktViaListener(conn, data, from, to); err != nil {
