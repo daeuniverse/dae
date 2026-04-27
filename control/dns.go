@@ -938,6 +938,12 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 	}
 
 	if conn, err, ok := p.takeIdleConn(); ok {
+		if err == nil && conn != nil {
+			// Deadlines belong to the current borrower, not the idle pool entry.
+			// Clear any leftover request deadline right before handing the socket
+			// to a new DNS exchange.
+			_ = conn.SetDeadline(time.Time{})
+		}
 		return conn, err
 	}
 
@@ -974,9 +980,6 @@ func (p *udpConnPool) put(conn netproxy.Conn) {
 		p.discard(conn)
 		return
 	}
-
-	// Clear request deadlines before making the socket idle again.
-	_ = conn.SetDeadline(time.Time{})
 
 	// Wrap connection with current timestamp
 	connWithTime := &udpConnWithTimestamp{

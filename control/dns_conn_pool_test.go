@@ -68,7 +68,7 @@ func (c *trackedTestConn) deadlineSnapshot() []time.Time {
 	return append([]time.Time(nil), c.deadlines...)
 }
 
-func TestUdpConnPool_PutClearsDeadlineBeforeReuse(t *testing.T) {
+func TestUdpConnPool_GetClearsDeadlineBeforeReuse(t *testing.T) {
 	tracked := &trackedTestConn{}
 	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
 		return tracked, nil
@@ -84,13 +84,18 @@ func TestUdpConnPool_PutClearsDeadlineBeforeReuse(t *testing.T) {
 	p.put(conn)
 
 	deadlines := tracked.deadlineSnapshot()
-	require.Len(t, deadlines, 2)
+	require.Len(t, deadlines, 1)
 	require.False(t, deadlines[0].IsZero())
-	require.True(t, deadlines[1].IsZero())
 
 	reused, err := p.get(context.Background())
 	require.NoError(t, err)
 	require.Same(t, tracked, reused)
+
+	deadlines = tracked.deadlineSnapshot()
+	require.Len(t, deadlines, 2)
+	require.False(t, deadlines[0].IsZero())
+	require.True(t, deadlines[1].IsZero())
+
 	p.put(reused)
 }
 
