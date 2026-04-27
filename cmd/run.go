@@ -929,9 +929,11 @@ func retireControlPlaneConnections(
 			log.Infoln("[Reload] Old control plane drained active sessions; retiring immediately")
 		case controlPlaneDrainCanceled:
 			log.Warnln("[Reload] New generation ready; accelerating old generation retirement")
+			_ = c.AbortConnections()
 		case controlPlaneDrainTimeout:
 			log.WithField("active_sessions", c.ActiveSessionCount()).
 				Warnln("[Reload] Old control plane drain timed out; forcing retirement")
+			_ = c.AbortConnections()
 		}
 	}
 }

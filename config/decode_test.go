@@ -82,7 +82,7 @@ routing {
 	conf, err := New(sections)
 	require.NoError(t, err)
 	require.True(t, conf.Global.DisableTHP)
-	require.EqualValues(t, 65535, conf.Global.BpfConnStateMapSize)
+	require.EqualValues(t, 262144, conf.Global.BpfConnStateMapSize)
 }
 
 func TestDecodeConfigSectionRejectsUnknownSection(t *testing.T) {

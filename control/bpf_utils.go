@@ -286,7 +286,7 @@ type loadBpfOptions struct {
 }
 
 const (
-	defaultConnStateMapMaxEntries = 65535
+	defaultConnStateMapMaxEntries = 65536 * 4
 	fastSockPlaceholderMaxEntries = 1
 )
 
