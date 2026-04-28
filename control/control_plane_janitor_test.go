@@ -212,12 +212,12 @@ func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 		},
 	}
 
-	stats := plane.cleanupUdpConnStateMap(false)
-	if stats.entries != 2 {
-		t.Fatalf("cleanupUdpConnStateMap entries = %d, want 2", stats.entries)
+	udpStats, _ := plane.cleanupConnStateMap(false)
+	if udpStats.entries != 2 {
+		t.Fatalf("cleanupConnStateMap UDP entries = %d, want 2", udpStats.entries)
 	}
-	if stats.deleted != 1 {
-		t.Fatalf("cleanupUdpConnStateMap deleted = %d, want 1", stats.deleted)
+	if udpStats.deleted != 1 {
+		t.Fatalf("cleanupConnStateMap UDP deleted = %d, want 1", udpStats.deleted)
 	}
 
 	freshResult, err := core.RetrieveRoutingResult(freshSrc, freshDst, unix.IPPROTO_UDP)
@@ -277,12 +277,12 @@ func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 		},
 	}
 
-	stats := plane.cleanupTcpConnStateMap(false)
-	if stats.entries != 2 {
-		t.Fatalf("cleanupTcpConnStateMap entries = %d, want 2", stats.entries)
+	_, tcpStats := plane.cleanupConnStateMap(false)
+	if tcpStats.entries != 2 {
+		t.Fatalf("cleanupConnStateMap TCP entries = %d, want 2", tcpStats.entries)
 	}
-	if stats.deleted != 1 {
-		t.Fatalf("cleanupTcpConnStateMap deleted = %d, want 1", stats.deleted)
+	if tcpStats.deleted != 1 {
+		t.Fatalf("cleanupConnStateMap TCP deleted = %d, want 1", tcpStats.deleted)
 	}
 
 	freshResult, err := core.RetrieveRoutingResult(freshSrc, freshDst, unix.IPPROTO_TCP)
@@ -330,12 +330,12 @@ func TestCleanupTcpConnStateMapRemovesClosingStateByClosingTimeout(t *testing.T)
 		},
 	}
 
-	stats := plane.cleanupTcpConnStateMap(false)
-	if stats.entries != 1 {
-		t.Fatalf("cleanupTcpConnStateMap entries = %d, want 1", stats.entries)
+	_, tcpStats := plane.cleanupConnStateMap(false)
+	if tcpStats.entries != 1 {
+		t.Fatalf("cleanupConnStateMap TCP entries = %d, want 1", tcpStats.entries)
 	}
-	if stats.deleted != 1 {
-		t.Fatalf("cleanupTcpConnStateMap deleted = %d, want 1", stats.deleted)
+	if tcpStats.deleted != 1 {
+		t.Fatalf("cleanupConnStateMap TCP deleted = %d, want 1", tcpStats.deleted)
 	}
 
 	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)

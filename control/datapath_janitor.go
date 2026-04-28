@@ -32,8 +32,6 @@ type connStateJanitorScratch struct {
 	udpValues []bpfConnState
 	udpDelete []bpfTuplesKey
 
-	tcpKeys   []bpfTuplesKey
-	tcpValues []bpfConnState
 	tcpDelete []bpfTuplesKey
 
 	routingHandoffKeys   []bpfTuplesKey

@@ -25,6 +25,7 @@ import (
 	daerrors "github.com/daeuniverse/dae/common/errors"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 // ============================================================================
@@ -119,7 +120,43 @@ var (
 
 	CheckBatchDeleteFeatureOnce sync.Once
 	SimulateBatchDelete         bool
+
+	bpfMapBatchLookup = func(m *ebpf.Map, cursor *ebpf.MapBatchCursor, keysOut interface{}, valuesOut interface{}) (int, error) {
+		return m.BatchLookup(cursor, keysOut, valuesOut, nil)
+	}
 )
+
+const (
+	bpfMapBatchDeleteAllLookupSize = 256
+	bpfMapBatchDeleteAllChunkSize  = 1024
+)
+
+func initBatchDeleteFeatureFlags() {
+	CheckBatchDeleteFeatureOnce.Do(func() {
+		version, e := internal.KernelVersion()
+		if e != nil {
+			SimulateBatchDelete = true
+			return
+		}
+		// BatchDelete requires kernel 5.6+ for BPF_MAP_TYPE_BATCH operations.
+		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
+			SimulateBatchDelete = true
+		}
+	})
+}
+
+func isBatchLookupUnsupportedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, unix.ENOTSUP) ||
+		errors.Is(err, unix.EOPNOTSUPP) ||
+		errors.Is(err, unix.ENOSYS) {
+		return true
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "map batch api") && strings.Contains(errStr, "not supported")
+}
 
 func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	CheckBatchUpdateFeatureOnce.Do(func() {
@@ -174,17 +211,7 @@ func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *
 // BpfMapBatchDelete deletes keys and ignores ErrKeyNotExist.
 // Uses kernel batch delete API when available (5.6+), otherwise falls back to loop.
 func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
-	CheckBatchDeleteFeatureOnce.Do(func() {
-		version, e := internal.KernelVersion()
-		if e != nil {
-			SimulateBatchDelete = true
-			return
-		}
-		// BatchDelete requires kernel 5.6+ for BPF_MAP_TYPE_BATCH operations
-		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
-			SimulateBatchDelete = true
-		}
-	})
+	initBatchDeleteFeatureFlags()
 
 	if !SimulateBatchDelete {
 		// Use kernel BatchDelete API - much faster for large batches
@@ -233,6 +260,64 @@ func BpfMapDeleteAll[K any, V any](m *ebpf.Map) error {
 	}
 	if err := iter.Err(); err != nil {
 		return fmt.Errorf("iterate map %s: %w", m.String(), err)
+	}
+	return nil
+}
+
+// BpfMapBatchDeleteAll deletes all entries in a map using batch operations.
+// It degrades safely to BpfMapDeleteAll on kernels without batch-map support.
+// To avoid large temporary allocations, keys are deleted in fixed-size chunks.
+func BpfMapBatchDeleteAll[K any, V any](m *ebpf.Map) error {
+	if m == nil {
+		return fmt.Errorf("nil map")
+	}
+
+	initBatchDeleteFeatureFlags()
+	if SimulateBatchDelete {
+		return BpfMapDeleteAll[K, V](m)
+	}
+
+	lookupKeys := make([]K, bpfMapBatchDeleteAllLookupSize)
+	lookupValues := make([]V, bpfMapBatchDeleteAllLookupSize)
+	keysToDelete := make([]K, 0, bpfMapBatchDeleteAllChunkSize)
+
+	flushDeleteChunk := func() error {
+		if len(keysToDelete) == 0 {
+			return nil
+		}
+		if _, delErr := BpfMapBatchDelete(m, keysToDelete); delErr != nil {
+			return fmt.Errorf("batch delete all in map %s: %w", m.String(), delErr)
+		}
+		keysToDelete = keysToDelete[:0]
+		return nil
+	}
+
+	var cursor ebpf.MapBatchCursor
+	for {
+		count, err := bpfMapBatchLookup(m, &cursor, lookupKeys, lookupValues)
+		if count > 0 {
+			for i := range count {
+				keysToDelete = append(keysToDelete, lookupKeys[i])
+				if len(keysToDelete) >= bpfMapBatchDeleteAllChunkSize {
+					if flushErr := flushDeleteChunk(); flushErr != nil {
+						return flushErr
+					}
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, ebpf.ErrKeyNotExist) {
+				break
+			}
+			if isBatchLookupUnsupportedErr(err) {
+				return BpfMapDeleteAll[K, V](m)
+			}
+			return fmt.Errorf("batch lookup map %s: %w", m.String(), err)
+		}
+	}
+
+	if flushErr := flushDeleteChunk(); flushErr != nil {
+		return flushErr
 	}
 	return nil
 }

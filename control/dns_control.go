@@ -1007,18 +1007,24 @@ func (c *DnsController) bpfUpdateWorker() {
 		select {
 		case task := <-c.bpfUpdateCh:
 			c.processBpfUpdateTask(task, false)
+			c.drainBpfUpdateTasks(false)
 		case <-c.bpfUpdateStop:
-			// Stop signal received - drain queue first before exiting
-			// This ensures all pending updates are processed
-			for {
-				select {
-				case task := <-c.bpfUpdateCh:
-					c.processBpfUpdateTask(task, true)
-				default:
-					// Queue is empty, safe to exit
-					return
-				}
-			}
+			c.drainBpfUpdateTasks(true)
+			return
+		}
+	}
+}
+
+// drainBpfUpdateTasks processes all pending tasks from bpfUpdateCh in a tight loop.
+// This reduces per-task scheduling overhead and allows the worker to catch up quickly
+// during bursts of DNS cache BPF updates.
+func (c *DnsController) drainBpfUpdateTasks(draining bool) {
+	for {
+		select {
+		case task := <-c.bpfUpdateCh:
+			c.processBpfUpdateTask(task, draining)
+		default:
+			return
 		}
 	}
 }

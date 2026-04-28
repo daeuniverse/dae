@@ -369,6 +369,10 @@ func BpfMapDeleteAll[K any, V any](m *ebpf.Map) error {
 	return errBpfObjectsUnavailable
 }
 
+func BpfMapBatchDeleteAll[K any, V any](m *ebpf.Map) error {
+	return errBpfObjectsUnavailable
+}
+
 func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
 	return 0, errBpfObjectsUnavailable
 }
