@@ -112,11 +112,11 @@ require (
 	google.golang.org/grpc v1.79.1 // indirect
 )
 
-// Use optimized quic-go with B-tree node pooling to reduce memory pressure.
-replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260428155259-8eb420a907b2
+// Use optimized quic-go with B-tree node pooling on enhanced-with-fixes baseline (includes UDP GSO fix).
+replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260428160046-254bec0d8918
 
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use the pushed perf/complete-optimizations fork head with QUIC window tuning.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260428155423-046ca7a4850b
+// Use the pushed perf/complete-optimizations fork head with QUIC window tuning + corrected quic-go baseline.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260428160200-3dd8f9510d97
