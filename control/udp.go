@@ -12,9 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/errors"
@@ -450,53 +448,6 @@ func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPo
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
 	return sendPktWithCacheProvider(log, data, from, realTo, afp, nil)
-}
-
-func sendPktFresh(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort) error {
-	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
-	uConn, err := DefaultAnyfromPool.createAnyfromSocket(bindAddr, 0)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = uConn.Close() }()
-	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
-	return err
-}
-
-func buildPktInfoOOB(from netip.AddrPort) []byte {
-	if !from.IsValid() {
-		return nil
-	}
-	if from.Addr().Is4() || from.Addr().Is4In6() {
-		oob := make([]byte, unix.CmsgSpace(syscall.SizeofInet4Pktinfo))
-		h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
-		h.Level = syscall.IPPROTO_IP
-		h.Type = syscall.IP_PKTINFO
-		h.SetLen(unix.CmsgLen(syscall.SizeofInet4Pktinfo))
-		data := oob[unix.CmsgSpace(0) : unix.CmsgSpace(0)+syscall.SizeofInet4Pktinfo]
-		pktinfo := (*syscall.Inet4Pktinfo)(unsafe.Pointer(&data[0]))
-		addr := from.Addr().Unmap().As4()
-		pktinfo.Spec_dst = addr
-		return oob
-	}
-
-	oob := make([]byte, unix.CmsgSpace(syscall.SizeofInet6Pktinfo))
-	h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
-	h.Level = syscall.IPPROTO_IPV6
-	h.Type = syscall.IPV6_PKTINFO
-	h.SetLen(unix.CmsgLen(syscall.SizeofInet6Pktinfo))
-	data := oob[unix.CmsgSpace(0) : unix.CmsgSpace(0)+syscall.SizeofInet6Pktinfo]
-	pktinfo := (*syscall.Inet6Pktinfo)(unsafe.Pointer(&data[0]))
-	pktinfo.Addr = from.Addr().As16()
-	return oob
-}
-
-func sendPktViaListener(conn *net.UDPConn, data []byte, from netip.AddrPort, realTo netip.AddrPort) error {
-	if conn == nil {
-		return fmt.Errorf("nil udp listener")
-	}
-	_, _, err := conn.WriteMsgUDPAddrPort(data, buildPktInfoOOB(from), realTo)
-	return err
 }
 
 func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender, recordDownload func(int64)) error {
