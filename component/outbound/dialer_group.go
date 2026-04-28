@@ -261,24 +261,6 @@ func (g *DialerGroup) resuscitate(networkType *dialer.NetworkType) {
 	}
 }
 
-// LogNoAliveDialer logs a warning when no alive dialer is found for selection.
-// It is rate-limited per network type to prevent log spam.
-func (g *DialerGroup) LogNoAliveDialer(
-	origNetworkType string,
-	selectionNetworkType *dialer.NetworkType,
-	src netip.AddrPort,
-	dst netip.AddrPort,
-	domain string,
-	strictIpVersion bool,
-) {
-	idx := selectionNetworkType.Index()
-	interval := max(g.cachedMinCheckInterval*5, 10*time.Second)
-
-	if g.tryDoRateLimitedAction(&g.noAliveLogLastTimes[idx], interval) {
-		g.logNoAlive(origNetworkType, selectionNetworkType, src, dst, domain, strictIpVersion, interval)
-	}
-}
-
 func (g *DialerGroup) logNoAlive(
 	origNetworkType string,
 	selectionNetworkType *dialer.NetworkType,

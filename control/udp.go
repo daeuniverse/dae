@@ -518,11 +518,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			if routingResult.Mark == 0 {
 				routingResult.Mark = c.soMarkFromDae
 			}
-			if c != nil && c.core != nil {
-				if err := c.core.ensureEgressReturnRoutePublished(realSrc, realDst, consts.IPPROTO_UDP); err != nil {
-					return fmt.Errorf("publish DNS egress return route for %v: %w", realDst, err)
-				}
-			}
 			c.recordUploadTraffic(int64(len(data)))
 			req := &udpRequest{
 				realSrc:        realSrc,
@@ -867,12 +862,6 @@ afterSniffing:
 	if routingResult.Mark == 0 {
 		routingResult.Mark = c.soMarkFromDae
 	}
-	if c != nil && c.core != nil {
-		if err := c.core.ensureEgressReturnRoutePublished(realSrc, realDst, consts.IPPROTO_UDP); err != nil {
-			return fmt.Errorf("publish UDP egress return route for %v: %w", realDst, err)
-		}
-	}
-
 	// Dial and send.
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.

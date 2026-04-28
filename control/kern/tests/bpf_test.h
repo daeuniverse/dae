@@ -7,6 +7,7 @@
 #define IP6_HLEN sizeof(struct ipv6hdr)
 #define TCP_HLEN sizeof(struct tcphdr)
 #define IPV4_MF_FLAG 0x2000
+#define FAST_PATH_PACKET_SIZE 160
 
 #define OUTBOUND_USER_DEFINED_MIN 2
 
@@ -100,6 +101,31 @@ set_ipv4_tcp_with_dscp(struct __sk_buff *skb,
 	return TC_ACT_OK;
 }
 
+static __always_inline int
+set_ipv4_tcp_fastpath_with_dscp(struct __sk_buff *skb,
+			       __u32 saddr, __u32 daddr,
+			       __u16 sport, __u16 dport,
+			       __u8 dscp)
+{
+	if (set_ipv4_tcp_with_dscp(skb, saddr, daddr, sport, dport, dscp))
+		return TC_ACT_SHOT;
+	if (bpf_skb_change_tail(skb, FAST_PATH_PACKET_SIZE, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct iphdr *ip = data + ETH_HLEN;
+	struct tcphdr *tcp = data + ETH_HLEN + IP4_HLEN;
+
+	if (data + FAST_PATH_PACKET_SIZE > data_end ||
+	    (void *)(tcp + 1) > data_end)
+		return TC_ACT_SHOT;
+
+	ip->tot_len = bpf_htons(FAST_PATH_PACKET_SIZE - ETH_HLEN);
+	tcp->doff = 5;
+	return TC_ACT_OK;
+}
+
 static __always_inline void
 set_ipv6_header_dscp(struct ipv6hdr *ip6, __u8 dscp)
 {
@@ -161,6 +187,35 @@ set_ipv6_tcp_with_dscp(struct __sk_buff *skb,
 	tcp->doff = 5;
 	tcp->syn = 1;
 
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+set_ipv6_tcp_fastpath_with_dscp(struct __sk_buff *skb,
+			       __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+			       __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+			       __u16 sport, __u16 dport,
+			       __u8 dscp)
+{
+	if (set_ipv6_tcp_with_dscp(skb,
+				       saddr0, saddr1, saddr2, saddr3,
+				       daddr0, daddr1, daddr2, daddr3,
+				       sport, dport, dscp))
+		return TC_ACT_SHOT;
+	if (bpf_skb_change_tail(skb, FAST_PATH_PACKET_SIZE, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct ipv6hdr *ip6 = data + ETH_HLEN;
+	struct tcphdr *tcp = data + ETH_HLEN + IP6_HLEN;
+
+	if (data + FAST_PATH_PACKET_SIZE > data_end ||
+	    (void *)(tcp + 1) > data_end)
+		return TC_ACT_SHOT;
+
+	ip6->payload_len = bpf_htons(FAST_PATH_PACKET_SIZE - ETH_HLEN - IP6_HLEN);
+	tcp->doff = 5;
 	return TC_ACT_OK;
 }
 
@@ -1115,6 +1170,31 @@ set_minimal_ipv4_udp_with_dscp(struct __sk_buff *skb,
 }
 
 static __always_inline int
+set_ipv4_udp_fastpath_with_dscp(struct __sk_buff *skb,
+			       __u32 saddr, __u32 daddr,
+			       __u16 sport, __u16 dport,
+			       __u8 dscp)
+{
+	if (set_minimal_ipv4_udp_with_dscp(skb, saddr, daddr, sport, dport, dscp))
+		return TC_ACT_SHOT;
+	if (bpf_skb_change_tail(skb, FAST_PATH_PACKET_SIZE, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct iphdr *ip = data + ETH_HLEN;
+	struct udphdr *udp = data + ETH_HLEN + IP4_HLEN;
+
+	if (data + FAST_PATH_PACKET_SIZE > data_end ||
+	    (void *)(udp + 1) > data_end)
+		return TC_ACT_SHOT;
+
+	ip->tot_len = bpf_htons(FAST_PATH_PACKET_SIZE - ETH_HLEN);
+	udp->len = bpf_htons(FAST_PATH_PACKET_SIZE - ETH_HLEN - IP4_HLEN);
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 set_minimal_ipv6_udp_with_dscp(struct __sk_buff *skb,
 			       __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
 			       __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
@@ -1165,6 +1245,35 @@ set_minimal_ipv6_udp_with_dscp(struct __sk_buff *skb,
 	udp->len = bpf_htons(sizeof(struct udphdr));
 	udp->check = 0;
 
+	return TC_ACT_OK;
+}
+
+static __always_inline int
+set_ipv6_udp_fastpath_with_dscp(struct __sk_buff *skb,
+			       __u32 saddr0, __u32 saddr1, __u32 saddr2, __u32 saddr3,
+			       __u32 daddr0, __u32 daddr1, __u32 daddr2, __u32 daddr3,
+			       __u16 sport, __u16 dport,
+			       __u8 dscp)
+{
+	if (set_minimal_ipv6_udp_with_dscp(skb,
+				       saddr0, saddr1, saddr2, saddr3,
+				       daddr0, daddr1, daddr2, daddr3,
+				       sport, dport, dscp))
+		return TC_ACT_SHOT;
+	if (bpf_skb_change_tail(skb, FAST_PATH_PACKET_SIZE, 0))
+		return TC_ACT_SHOT;
+
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	struct ipv6hdr *ip6 = data + ETH_HLEN;
+	struct udphdr *udp = data + ETH_HLEN + IP6_HLEN;
+
+	if (data + FAST_PATH_PACKET_SIZE > data_end ||
+	    (void *)(udp + 1) > data_end)
+		return TC_ACT_SHOT;
+
+	ip6->payload_len = bpf_htons(FAST_PATH_PACKET_SIZE - ETH_HLEN - IP6_HLEN);
+	udp->len = bpf_htons(FAST_PATH_PACKET_SIZE - ETH_HLEN - IP6_HLEN);
 	return TC_ACT_OK;
 }
 

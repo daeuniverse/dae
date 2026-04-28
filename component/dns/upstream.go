@@ -41,16 +41,6 @@ const (
 	UpstreamScheme_H3            UpstreamScheme = "h3"
 )
 
-func (s UpstreamScheme) ContainsTcp() bool {
-	switch s {
-	case UpstreamScheme_TCP,
-		UpstreamScheme_TCP_UDP:
-		return true
-	default:
-		return false
-	}
-}
-
 func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, path string, err error) {
 	var __port string
 	var __path string

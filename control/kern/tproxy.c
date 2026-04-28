@@ -54,7 +54,6 @@
 #define MAX_CONN_STATE_NUM (65536 * 4)
 #define MAX_REDIRECT_TRACK_NUM 65536
 #define MAX_ROUTING_HANDOFF_NUM 65536
-#define MAX_EGRESS_RETURN_HANDOFF_NUM 65536
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
@@ -154,15 +153,6 @@ struct routing_handoff_entry {
 	struct routing_result result;
 };
 
-struct egress_return_handoff_entry {
-	__u32 ifindex;
-	__u8 smac[6];
-	__u8 dmac[6];
-	__u8 from_wan;
-	__u8 padding[3];
-	__u64 last_seen_ns;
-};
-
 struct dae_param {
 	__u32 tproxy_port;
 	__u32 control_plane_pid;
@@ -203,13 +193,6 @@ struct {
 	__type(value, struct routing_handoff_entry);
 	__uint(max_entries, MAX_ROUTING_HANDOFF_NUM);
 } routing_handoff_map SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct tuples_key);
-	__type(value, struct egress_return_handoff_entry);
-	__uint(max_entries, MAX_EGRESS_RETURN_HANDOFF_NUM);
-} egress_return_handoff_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -636,6 +619,7 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		// Copy saddr/daddr early so get_tuples() works for PARSE_FRAGMENT.
 		iph->version = iph_ptr->version;
 		iph->ihl = iph_ptr->ihl;
+		iph->tos = iph_ptr->tos;
 		iph->protocol = iph_ptr->protocol;
 		iph->saddr = iph_ptr->saddr;
 		iph->daddr = iph_ptr->daddr;
@@ -692,7 +676,8 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		if ((void *)(ipv6h_ptr + 1) > data_end)
 			return -1;
 
-		ipv6h->version = ipv6h_ptr->version;
+		/* Preserve version, traffic class, and flow label for DSCP extraction. */
+		__builtin_memcpy(ipv6h, ipv6h_ptr, 4);
 		ipv6h->nexthdr = ipv6h_ptr->nexthdr;
 		ipv6h->payload_len = ipv6h_ptr->payload_len;
 		__u32 *saddr_dst = (__u32 *)ipv6h->saddr.in6_u.u6_addr32;
@@ -1620,28 +1605,6 @@ publish_redirect_track_for_packet(struct __sk_buff *skb, __u32 link_h_len,
 		return (int)map_ret;
 	}
 	return 0;
-}
-
-static __always_inline int
-publish_egress_return_handoff(struct __sk_buff *skb, __u32 link_h_len,
-			      const struct tuples_key *tuples,
-			      const struct ethhdr *ethh, __u8 from_wan)
-{
-	struct egress_return_handoff_entry entry = {};
-	long ret;
-
-	entry.ifindex = skb->ifindex;
-	entry.from_wan = from_wan;
-	entry.last_seen_ns = bpf_ktime_get_ns();
-	if (link_h_len == ETH_HLEN && ethh) {
-		__builtin_memcpy(entry.smac, ethh->h_source, 6);
-		__builtin_memcpy(entry.dmac, ethh->h_dest, 6);
-	}
-	ret = bpf_map_update_elem(&egress_return_handoff_map, tuples, &entry,
-				  BPF_ANY);
-	if (ret)
-		bpf_printk("egress_return_handoff update failed: %d", (int)ret);
-	return (int)ret;
 }
 
 static __always_inline int
@@ -2792,11 +2755,8 @@ fast_path_skip_routing:
 	    handoff_mandatory)
 		return TC_ACT_SHOT;
 
-	if (publish_egress_return_handoff(skb, link_h_len, &tuples->five,
-					  ethh, 1))
-		return TC_ACT_SHOT;
-
-	if (rewrite_packet_for_control_plane(skb, link_h_len, 1))
+	if (prep_redirect_to_control_plane(skb, link_h_len, tuples,
+					   ethh, 1))
 		return TC_ACT_SHOT;
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = IPPROTO_UDP;

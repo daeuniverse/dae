@@ -128,44 +128,6 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 	return addrs, nil
 }
 
-func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
-	typ := dnsmessage.TypeNS
-	resources, err := resolve(ctx, d, dns, host, typ, network)
-	if err != nil {
-		return nil, err
-	}
-	for _, ans := range resources {
-		if ans.Header().Rrtype != typ {
-			continue
-		}
-		ns, ok := ans.(*dnsmessage.NS)
-		if !ok {
-			return nil, ErrBadDnsAns
-		}
-		records = append(records, ns.Ns)
-	}
-	return records, nil
-}
-
-func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
-	typ := dnsmessage.TypeSOA
-	resources, err := resolve(ctx, d, dns, host, typ, network)
-	if err != nil {
-		return nil, err
-	}
-	for _, ans := range resources {
-		if ans.Header().Rrtype != typ {
-			continue
-		}
-		ns, ok := ans.(*dnsmessage.SOA)
-		if !ok {
-			return nil, ErrBadDnsAns
-		}
-		records = append(records, ns.Ns)
-	}
-	return records, nil
-}
-
 func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) ([]dnsmessage.RR, error) {
 	if d == nil {
 		return nil, fmt.Errorf("nil dialer")

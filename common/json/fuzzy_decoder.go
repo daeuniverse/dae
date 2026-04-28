@@ -29,20 +29,6 @@ func (decoder *FuzzyBoolDecoder) Decode(ptr unsafe.Pointer, iter *jsoniter.Itera
 		}
 	case jsoniter.BoolValue:
 		*((*bool)(ptr)) = iter.ReadBool()
-	// In order to stay consistent with the other decoders here, leaving arrays and objects out for now.
-	// case jsoniter.ObjectValue:
-	// 	iter.Skip()
-	// 	*((*bool)(ptr)) = true
-	// case jsoniter.ArrayValue:
-	// 	var nonEmptyArray bool
-	// 	iter.ReadArrayCB(
-	// 		func(*jsoniter.Iterator) bool {
-	// 			iter.Skip()
-	// 			nonEmptyArray = true
-	// 			return true
-	// 		},
-	// 	)
-	// 	*((*bool)(ptr)) = nonEmptyArray
 	case jsoniter.NilValue:
 		iter.Skip()
 		*((*bool)(ptr)) = false

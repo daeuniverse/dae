@@ -39,10 +39,6 @@ type connStateJanitorScratch struct {
 	routingHandoffKeys   []bpfTuplesKey
 	routingHandoffValues []bpfRoutingHandoffEntry
 	routingHandoffDelete []bpfTuplesKey
-
-	egressReturnHandoffKeys   []bpfTuplesKey
-	egressReturnHandoffValues []bpfEgressReturnHandoffEntry
-	egressReturnHandoffDelete []bpfTuplesKey
 }
 
 func (s *connStateJanitorScratch) release() {

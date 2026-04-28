@@ -204,9 +204,6 @@ var (
 	// and userspace. Keep it short so the handoff map does not become a second
 	// long-lived conn-state cache.
 	routingHandoffTimeout = 10 * time.Second
-	// egressReturnHandoffTimeout bounds how long WAN egress reply-route metadata
-	// waits for userspace to publish redirect_track before aging out.
-	egressReturnHandoffTimeout = 30 * time.Second
 	// routingHandoffPressureInterval lets the janitor react quickly when the
 	// handoff map is churning under repeated tuple misses.
 	routingHandoffPressureInterval = 1 * time.Second
@@ -895,7 +892,6 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		m    *ebpf.Map
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
-		{name: "egress_return_handoff_map", m: bpf.EgressReturnHandoffMap},
 		{name: "conn_state_map", m: bpf.ConnStateMap},
 		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "routing_map", m: bpf.RoutingMap},
@@ -2098,7 +2094,6 @@ func (c *ControlPlane) startConnStateJanitor() {
 				}
 				if lastRoutingHandoff.IsZero() || now.Sub(lastRoutingHandoff) >= routingHandoffInterval {
 					c.cleanupRoutingHandoffMap()
-					c.cleanupEgressReturnHandoffMap()
 					lastRoutingHandoff = now
 				}
 
@@ -2132,7 +2127,6 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 	redirectDeleted := c.cleanupRedirectTrackMapBeforeLocked(staleBeforeNs)
 	cookieDeleted := c.cleanupCookiePidMapBeforeLocked(staleBeforeNs)
 	routingHandoffDeleted := c.cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs)
-	egressReturnHandoffDeleted := c.cleanupEgressReturnHandoffMapBeforeLocked(staleBeforeNs)
 	udpStats := c.cleanupUdpConnStateMapBeforeLocked(true, staleBeforeNs)
 	tcpStats := c.cleanupTcpConnStateMapBeforeLocked(true, staleBeforeNs)
 	c.connStateCleanupMu.Unlock()
@@ -2141,7 +2135,6 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 		return
 	}
 	if redirectDeleted == 0 && cookieDeleted == 0 && routingHandoffDeleted == 0 &&
-		egressReturnHandoffDeleted == 0 &&
 		udpStats.deleted == 0 && tcpStats.deleted == 0 {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			c.log.Debugln("[Reload] No stale datapath state remained after generation retirement")
@@ -2152,7 +2145,6 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 		"redirect_deleted":        redirectDeleted,
 		"cookie_pid_deleted":      cookieDeleted,
 		"routing_handoff_deleted": routingHandoffDeleted,
-		"egress_return_deleted":   egressReturnHandoffDeleted,
 		"udp_conn_deleted":        udpStats.deleted,
 		"tcp_conn_deleted":        tcpStats.deleted,
 	}).Infoln("[Reload] Cleaned stale datapath state after generation retirement")
@@ -2429,78 +2421,6 @@ func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64
 		usagePercent := float64(totalEntries) / float64(maxEntries) * 100
 		if usagePercent > 90 {
 			c.log.Warnf("cleanupRoutingHandoffMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
-		}
-	}
-	return len(keysToDelete)
-}
-
-func (c *ControlPlane) cleanupEgressReturnHandoffMap() int {
-	c.connStateCleanupMu.Lock()
-	defer c.connStateCleanupMu.Unlock()
-	return c.cleanupEgressReturnHandoffMapBeforeLocked(0)
-}
-
-func (c *ControlPlane) cleanupEgressReturnHandoffMapBeforeLocked(staleBeforeNs uint64) int {
-	select {
-	case <-c.connStateJanitorStop:
-		return 0
-	default:
-	}
-
-	bpf := c.currentBpf()
-	if bpf == nil || bpf.EgressReturnHandoffMap == nil {
-		return 0
-	}
-
-	nowNano, err := monotonicNowNano()
-	if err != nil {
-		c.log.Errorf("cleanupEgressReturnHandoffMap: failed to get monotonic time: %v", err)
-		return 0
-	}
-
-	scratch := c.connStateJanitorScratch()
-	keysToDelete := takeJanitorDeleteScratch(scratch.egressReturnHandoffDelete)
-	keysOut := ensureJanitorLookupScratch(scratch.egressReturnHandoffKeys)
-	valuesOut := ensureJanitorLookupScratch(scratch.egressReturnHandoffValues)
-	totalEntries := 0
-	defer func() {
-		scratch.egressReturnHandoffDelete = keepJanitorDeleteScratch(keysToDelete)
-		scratch.egressReturnHandoffKeys = keysOut
-		scratch.egressReturnHandoffValues = valuesOut
-	}()
-
-	var cursor ebpf.MapBatchCursor
-	for {
-		count, batchErr := bpf.EgressReturnHandoffMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
-		if count > 0 {
-			for i := range count {
-				totalEntries++
-				if egressReturnHandoffExpired(nowNano, valuesOut[i].LastSeenNs) ||
-					(staleBeforeNs > 0 && (valuesOut[i].LastSeenNs == 0 || valuesOut[i].LastSeenNs < staleBeforeNs)) {
-					keysToDelete = append(keysToDelete, keysOut[i])
-				}
-			}
-		}
-		if batchErr != nil {
-			if !isIgnorableBatchLookupErr(batchErr) {
-				c.log.Errorf("cleanupEgressReturnHandoffMap: BatchLookup error: %v", batchErr)
-			}
-			break
-		}
-	}
-
-	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.EgressReturnHandoffMap, keysToDelete); err != nil {
-			c.log.Debugf("cleanupEgressReturnHandoffMap: batch delete error: %v", err)
-		}
-		c.log.Debugf("cleanupEgressReturnHandoffMap: removed %d entries", len(keysToDelete))
-	}
-
-	maxEntries := bpf.EgressReturnHandoffMap.MaxEntries()
-	if totalEntries > 0 && maxEntries > 0 {
-		usagePercent := float64(totalEntries) / float64(maxEntries) * 100
-		if usagePercent > 90 {
-			c.log.Warnf("cleanupEgressReturnHandoffMap: map at %.1f%% capacity (%d entries)", usagePercent, totalEntries)
 		}
 	}
 	return len(keysToDelete)

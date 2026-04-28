@@ -44,16 +44,6 @@ type bpfDomainRouting struct {
 	Bitmap [32]uint32
 }
 
-type bpfEgressReturnHandoffEntry struct {
-	_          structs.HostLayout
-	Ifindex    uint32
-	Smac       [6]uint8
-	Dmac       [6]uint8
-	FromWan    uint8
-	Padding    [3]uint8
-	LastSeenNs uint64
-}
-
 type bpfMatchSet struct {
 	_        structs.HostLayout
 	Value    [16]uint8
@@ -209,7 +199,6 @@ type bpfMapSpecs struct {
 	BpfStatsMap             *ebpf.MapSpec `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.MapSpec `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.MapSpec `ebpf:"domain_routing_map"`
-	EgressReturnHandoffMap  *ebpf.MapSpec `ebpf:"egress_return_handoff_map"`
 	EventRingbuf            *ebpf.MapSpec `ebpf:"event_ringbuf"`
 	FastSock                *ebpf.MapSpec `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.MapSpec `ebpf:"listen_socket_map"`
@@ -245,7 +234,6 @@ type bpfMaps struct {
 	BpfStatsMap             *ebpf.Map `ebpf:"bpf_stats_map"`
 	CookiePidMap            *ebpf.Map `ebpf:"cookie_pid_map"`
 	DomainRoutingMap        *ebpf.Map `ebpf:"domain_routing_map"`
-	EgressReturnHandoffMap  *ebpf.Map `ebpf:"egress_return_handoff_map"`
 	EventRingbuf            *ebpf.Map `ebpf:"event_ringbuf"`
 	FastSock                *ebpf.Map `ebpf:"fast_sock"`
 	ListenSocketMap         *ebpf.Map `ebpf:"listen_socket_map"`
@@ -265,7 +253,6 @@ func (m *bpfMaps) Close() error {
 		m.BpfStatsMap,
 		m.CookiePidMap,
 		m.DomainRoutingMap,
-		m.EgressReturnHandoffMap,
 		m.EventRingbuf,
 		m.FastSock,
 		m.ListenSocketMap,

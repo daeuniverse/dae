@@ -576,6 +576,30 @@ int testcheck_wan_egress_tcp_syn_redirect_track(struct __sk_buff *skb)
 								   1);
 }
 
+SEC("tc/pktgen/wan_egress_udp_redirect_track")
+int testpktgen_wan_egress_udp_redirect_track(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb,
+					   IPV4(192,168,10,3), IPV4(9,9,9,11),
+					   34569, 443, 0);
+}
+
+SEC("tc/setup/wan_egress_udp_redirect_track")
+int testsetup_wan_egress_udp_redirect_track(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/wan_egress_udp_redirect_track")
+int testcheck_wan_egress_udp_redirect_track(struct __sk_buff *skb)
+{
+	return check_redirect_with_listener_l4proto_and_track_ipv4(skb,
+								   IPPROTO_UDP,
+								   1);
+}
+
 SEC("tc/pktgen/lan_ingress_udp_first_fragment_listener")
 int testpktgen_lan_ingress_udp_first_fragment_listener(struct __sk_buff *skb)
 {
@@ -622,9 +646,9 @@ int testcheck_lan_ingress_tcp_syn_first_fragment_listener(struct __sk_buff *skb)
 SEC("tc/pktgen/lan_ingress_tcp_dscp_conn_state")
 int testpktgen_lan_ingress_tcp_dscp_conn_state(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp_with_dscp(skb,
-				      IPV4(192,168,0,1), IPV4(1,1,1,1),
-				      19233, 443, 10);
+	return set_ipv4_tcp_fastpath_with_dscp(skb,
+					   IPV4(192,168,0,1), IPV4(1,1,1,1),
+					   19233, 443, 10);
 }
 
 SEC("tc/setup/lan_ingress_tcp_dscp_conn_state")
@@ -660,10 +684,10 @@ int testcheck_lan_ingress_tcp_dscp_conn_state(struct __sk_buff *skb)
 SEC("tc/pktgen/lan_ingress_tcp_ipv6_dscp_conn_state")
 int testpktgen_lan_ingress_tcp_ipv6_dscp_conn_state(struct __sk_buff *skb)
 {
-	return set_ipv6_tcp_with_dscp(skb,
-				      0x20010db8, 0, 0, 0x10,
-				      0x26064700, 0, 0, 0x1111,
-				      19233, 443, 10);
+	return set_ipv6_tcp_fastpath_with_dscp(skb,
+					   0x20010db8, 0, 0, 0x10,
+					   0x26064700, 0, 0, 0x1111,
+					   19233, 443, 10);
 }
 
 SEC("tc/setup/lan_ingress_tcp_ipv6_dscp_conn_state")
@@ -700,9 +724,9 @@ int testcheck_lan_ingress_tcp_ipv6_dscp_conn_state(struct __sk_buff *skb)
 SEC("tc/pktgen/lan_ingress_udp_dscp_conn_state")
 int testpktgen_lan_ingress_udp_dscp_conn_state(struct __sk_buff *skb)
 {
-	return set_minimal_ipv4_udp_with_dscp(skb,
-					      IPV4(192,168,0,1), IPV4(1,1,1,1),
-					      24567, 443, 10);
+	return set_ipv4_udp_fastpath_with_dscp(skb,
+					   IPV4(192,168,0,1), IPV4(1,1,1,1),
+					   24567, 443, 10);
 }
 
 SEC("tc/setup/lan_ingress_udp_dscp_conn_state")
@@ -738,10 +762,10 @@ int testcheck_lan_ingress_udp_dscp_conn_state(struct __sk_buff *skb)
 SEC("tc/pktgen/lan_ingress_udp_ipv6_dscp_conn_state")
 int testpktgen_lan_ingress_udp_ipv6_dscp_conn_state(struct __sk_buff *skb)
 {
-	return set_minimal_ipv6_udp_with_dscp(skb,
-					      0x20010db8, 0, 0, 0x10,
-					      0x26064700, 0, 0, 0x1111,
-					      24567, 443, 10);
+	return set_ipv6_udp_fastpath_with_dscp(skb,
+					   0x20010db8, 0, 0, 0x10,
+					   0x26064700, 0, 0, 0x1111,
+					   24567, 443, 10);
 }
 
 SEC("tc/setup/lan_ingress_udp_ipv6_dscp_conn_state")
@@ -1199,7 +1223,9 @@ int testcheck_mac_mismatch(struct __sk_buff *skb)
 SEC("tc/pktgen/dscp_match")
 int testpktgen_dscp_match(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
+	return set_ipv4_tcp_fastpath_with_dscp(skb,
+					   IPV4(192,168,0,1), IPV4(1,1,1,1),
+					   19233, 79, 4);
 }
 
 SEC("tc/setup/dscp_match")
@@ -1235,10 +1261,10 @@ int testcheck_dscp_match(struct __sk_buff *skb)
 SEC("tc/pktgen/dscp_ipv6_match")
 int testpktgen_dscp_ipv6_match(struct __sk_buff *skb)
 {
-	return set_ipv6_tcp_with_dscp(skb,
-				      0x20010db8, 0, 0, 0x10,
-				      0x26064700, 0, 0, 0x1111,
-				      19233, 79, 4);
+	return set_ipv6_tcp_fastpath_with_dscp(skb,
+					   0x20010db8, 0, 0, 0x10,
+					   0x26064700, 0, 0, 0x1111,
+					   19233, 79, 4);
 }
 
 SEC("tc/setup/dscp_ipv6_match")
@@ -1273,7 +1299,9 @@ int testcheck_dscp_ipv6_match(struct __sk_buff *skb)
 SEC("tc/pktgen/dscp_mismatch")
 int testpktgen_dscp_mismatch(struct __sk_buff *skb)
 {
-	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 79);
+	return set_ipv4_tcp_fastpath_with_dscp(skb,
+					   IPV4(192,168,0,1), IPV4(1,1,1,1),
+					   19233, 79, 4);
 }
 
 SEC("tc/setup/dscp_mismatch")
@@ -1309,10 +1337,10 @@ int testcheck_dscp_mismatch(struct __sk_buff *skb)
 SEC("tc/pktgen/dscp_ipv6_mismatch")
 int testpktgen_dscp_ipv6_mismatch(struct __sk_buff *skb)
 {
-	return set_ipv6_tcp_with_dscp(skb,
-				      0x20010db8, 0, 0, 0x10,
-				      0x26064700, 0, 0, 0x1111,
-				      19233, 79, 4);
+	return set_ipv6_tcp_fastpath_with_dscp(skb,
+					   0x20010db8, 0, 0, 0x10,
+					   0x26064700, 0, 0, 0x1111,
+					   19233, 79, 4);
 }
 
 SEC("tc/setup/dscp_ipv6_mismatch")

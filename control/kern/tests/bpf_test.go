@@ -430,6 +430,10 @@ func TestWanEgressTcpSynRedirectTrack(t *testing.T) {
 	runProgramSetByID(t, "WanEgressTcpSynRedirectTrack")
 }
 
+func TestWanEgressUdpRedirectTrack(t *testing.T) {
+	runProgramSetByID(t, "WanEgressUdpRedirectTrack")
+}
+
 func TestConntrackArgsScratchReset(t *testing.T) {
 	runProgramSetByID(t, "ConntrackArgsScratchReset")
 }
