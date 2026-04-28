@@ -1179,6 +1179,24 @@ func updateConnStateJanitorPressure(
 	return state
 }
 
+func isIgnorableBatchLookupErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if stderrors.Is(err, ebpf.ErrKeyNotExist) ||
+		stderrors.Is(err, os.ErrClosed) ||
+		stderrors.Is(err, unix.EBADF) {
+		return true
+	}
+
+	// Keep a compact string fallback for wrapped kernel/libbpf errors.
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "bad file descriptor") ||
+		strings.Contains(errStr, "file descriptor") ||
+		strings.Contains(errStr, "closed") ||
+		strings.Contains(errStr, "key does not exist")
+}
+
 func (c *ControlPlane) markReady() {
 	if c == nil {
 		return
@@ -2234,9 +2252,7 @@ func (c *ControlPlane) cleanupRedirectTrackMapBeforeLocked(staleBeforeNs uint64)
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(err) {
 				c.log.Errorf("cleanupRedirectTrackMap: BatchLookup error: %v", err)
 			}
 			break
@@ -2319,9 +2335,7 @@ func (c *ControlPlane) cleanupCookiePidMapBeforeLocked(staleBeforeNs uint64) int
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(err) {
 				c.log.Errorf("cleanupCookiePidMap: BatchLookup error: %v", err)
 			}
 			break
@@ -2396,10 +2410,7 @@ func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64
 			}
 		}
 		if batchErr != nil {
-			if !strings.Contains(batchErr.Error(), "bad file descriptor") &&
-				!strings.Contains(batchErr.Error(), "file descriptor") &&
-				!strings.Contains(batchErr.Error(), "closed") &&
-				!strings.Contains(batchErr.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(batchErr) {
 				c.log.Errorf("cleanupRoutingHandoffMap: BatchLookup error: %v", batchErr)
 			}
 			break
@@ -2471,10 +2482,7 @@ func (c *ControlPlane) cleanupEgressReturnHandoffMapBeforeLocked(staleBeforeNs u
 			}
 		}
 		if batchErr != nil {
-			if !strings.Contains(batchErr.Error(), "bad file descriptor") &&
-				!strings.Contains(batchErr.Error(), "file descriptor") &&
-				!strings.Contains(batchErr.Error(), "closed") &&
-				!strings.Contains(batchErr.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(batchErr) {
 				c.log.Errorf("cleanupEgressReturnHandoffMap: BatchLookup error: %v", batchErr)
 			}
 			break
@@ -2585,9 +2593,7 @@ func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(err) {
 				c.log.Errorf("cleanupUdpConnStateMap: BatchLookup error: %v", err)
 			}
 			break
@@ -2714,9 +2720,7 @@ func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(err) {
 				c.log.Errorf("cleanupTcpConnStateMap: BatchLookup error: %v", err)
 			}
 			break
@@ -2798,32 +2802,35 @@ func (c *ControlPlane) checkBpfMapHealth() {
 	}
 
 	// Estimate map usage by sampling (full iteration is expensive)
-	if bpf.ConnStateMap != nil {
-		maxEntries := bpf.ConnStateMap.MaxEntries()
-		// If overflow is happening, map is under pressure.
-		if udpOverflow > 100 && maxEntries > 0 {
-			nowNano := now.UnixNano()
-			last := c.lastUdpPressureAlertTime.Load()
-			if last == 0 || last+int64(alertCooldown) < nowNano {
-				if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
-					c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing UDP connection timeout.",
-						udpOverflow, maxEntries)
-				}
+	if bpf.ConnStateMap == nil {
+		return
+	}
+
+	maxEntries := bpf.ConnStateMap.MaxEntries()
+	if maxEntries == 0 {
+		return
+	}
+
+	// If overflow is happening, map is under pressure.
+	if udpOverflow > 100 {
+		nowNano := now.UnixNano()
+		last := c.lastUdpPressureAlertTime.Load()
+		if last == 0 || last+int64(alertCooldown) < nowNano {
+			if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
+				c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
+					"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing UDP connection timeout.",
+					udpOverflow, maxEntries)
 			}
 		}
 	}
-	if bpf.ConnStateMap != nil {
-		maxEntries := bpf.ConnStateMap.MaxEntries()
-		if tcpOverflow > 100 && maxEntries > 0 {
-			nowNano := now.UnixNano()
-			last := c.lastTcpPressureAlertTime.Load()
-			if last == 0 || last+int64(alertCooldown) < nowNano {
-				if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
-					c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing TCP connection timeout.",
-						tcpOverflow, maxEntries)
-				}
+	if tcpOverflow > 100 {
+		nowNano := now.UnixNano()
+		last := c.lastTcpPressureAlertTime.Load()
+		if last == 0 || last+int64(alertCooldown) < nowNano {
+			if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
+				c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
+					"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing TCP connection timeout.",
+					tcpOverflow, maxEntries)
 			}
 		}
 	}
