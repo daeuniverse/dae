@@ -2,6 +2,10 @@
 // Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
 
 // +build ignore
+
+// Disable implicit CO-RE from vmlinux.h to bypass bad relocation caused by GCC 15 DTE stripping UAPI structs.
+#define BPF_NO_PRESERVE_ACCESS_INDEX 1
+
 #include "headers/errno-base.h"
 #include "headers/if_ether_defs.h"
 #include "headers/pkt_cls_defs.h"
