@@ -341,3 +341,58 @@ func TestDnsController_Handle_LoopbackReplyInjectionDeliversMissAndCacheHit(t *t
 	require.Equal(t, "198.51.100.53", dnsAnswerIPv4(t, secondResp))
 	require.EqualValues(t, 1, forwardCalls.Load(), "warm cache hit should not resolve upstream again")
 }
+
+func TestDnsController_OptimisticCacheBackgroundRefreshBypassesStaleCache(t *testing.T) {
+	originalFactory := dnsForwarderFactory
+	t.Cleanup(func() {
+		dnsForwarderFactory = originalFactory
+	})
+
+	ctrl := newScopedDnsController(t)
+	ctrl.optimisticCacheEnabled.Store(true)
+	ctrl.optimisticCacheTtl.Store(60)
+	setScopedBestDialerChooser(ctrl, func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
+		return &dialArgument{
+			l4proto:    consts.L4ProtoStr_UDP,
+			ipversion:  consts.IpVersionStr_4,
+			bestTarget: req.realDst,
+		}, nil
+	})
+
+	var forwardCalls atomic.Int32
+	dnsForwarderFactory = func(upstream *componentdns.Upstream, dialArg dialArgument, _ *logrus.Logger) (DnsForwarder, error) {
+		return &stubDnsForwarder{forward: func(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+			forwardCalls.Add(1)
+			return dnsAResponseMsg("stale.test.", "198.51.100.2"), nil
+		}}, nil
+	}
+
+	req := &udpRequest{
+		realSrc:       netip.MustParseAddrPort("127.0.0.1:53000"),
+		realDst:       netip.MustParseAddrPort("8.8.8.8:53"),
+		routingResult: &bpfRoutingResult{},
+	}
+	now := time.Now()
+	baseCacheKey := ctrl.cacheKey("stale.test.", dnsmessage.TypeA)
+	cacheKey := ctrl.responseCacheKey(baseCacheKey, req, consts.DnsRequestOutboundIndex_AsIs, nil)
+	require.NoError(t, ctrl.UpdateDnsCacheTtlWithKey(cacheKey, "stale.test.", dnsmessage.TypeA, dnsAResponseMsg("stale.test.", "198.51.100.1").Answer, nil, nil, 1))
+	cache := ctrl.LookupDnsRespCache(cacheKey, true)
+	require.NotNil(t, cache)
+	cache.Deadline = now.Add(-time.Second)
+	cache.deadlineNano.Store(cache.Deadline.UnixNano())
+	query := new(dnsmessage.Msg)
+	query.Id = 0x7070
+	query.SetQuestion("stale.test.", dnsmessage.TypeA)
+	writer := &captureResponseWriter{}
+
+	require.NoError(t, ctrl.HandleWithResponseWriter_(context.Background(), query, req, writer))
+	require.Equal(t, "198.51.100.1", dnsAnswerIPv4(t, writer.Message()))
+
+	require.Eventually(t, func() bool {
+		return forwardCalls.Load() == 1
+	}, time.Second, 10*time.Millisecond, "background refresh should query upstream once")
+	require.Eventually(t, func() bool {
+		cache := ctrl.LookupDnsRespCache(cacheKey, true)
+		return cache != nil && cache.IncludeIp(netip.MustParseAddr("198.51.100.2"))
+	}, time.Second, 10*time.Millisecond, "background refresh should replace stale cache")
+}
