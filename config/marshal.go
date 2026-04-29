@@ -42,6 +42,10 @@ type Marshaller struct {
 	buf         bytes.Buffer
 }
 
+func (m *Marshaller) Bytes() []byte {
+	return m.buf.Bytes()
+}
+
 func (m *Marshaller) writeLine(depth int, line string) {
 	if depth < 0 {
 		depth = 0
