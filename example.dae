@@ -323,12 +323,23 @@ group {
         #filter: name(node1, node2)
 
         # Filter nodes and give a fixed latency offset to archive latency-based failover.
+        # Filter lines are checked in order. If one node matches multiple filter lines,
+        # only the first matching line applies; later annotations are ignored.
+        # For example, if one node matches both `name(US_node) [add_latency: -500ms]`
+        # and `name(premium) [add_latency: 1000ms]`, only the first matching line applies.
         # In this example, there is bigger possibility to choose US node even if original latency of US node is higher.
         filter: name(HK_node)
         filter: name(US_node) [add_latency: -500ms]
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
+    }
+
+    weighted_random {
+        # add_weight biases the random policy on top of the default weight 1.
+        filter: name(HK_node)
+        filter: name(US_node) [add_weight: 4]
+        policy: random
     }
 
     steam {
