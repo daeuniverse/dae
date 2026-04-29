@@ -119,4 +119,4 @@ replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260428
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
 // Use the pushed perf/complete-optimizations fork head with QUIC window tuning + upstream cherry-picks.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260428161730-d6c7f020a6be
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260429144608-851ae5dceeb9
