@@ -295,10 +295,10 @@ type AnyfromPool struct {
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
-var soMarkFromDae uint32
+var soMarkFromDae atomic.Uint32
 
 func SetAnyfromSoMark(mark uint32) {
-	soMarkFromDae = mark
+	soMarkFromDae.Store(mark)
 }
 
 func NewAnyfromPool() *AnyfromPool {
@@ -430,8 +430,9 @@ func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, ttl time.Duratio
 			if err := dialer.TransparentControl(c); err != nil {
 				return err
 			}
-			if soMarkFromDae != 0 {
-				if err := dialer.SoMarkControl(c, int(soMarkFromDae)); err != nil {
+			mark := soMarkFromDae.Load()
+			if mark != 0 {
+				if err := dialer.SoMarkControl(c, int(mark)); err != nil {
 					return err
 				}
 			}

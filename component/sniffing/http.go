@@ -40,7 +40,11 @@ func sniffHTTPHostHeader(data []byte) (string, error) {
 			continue
 		}
 		if bytes.EqualFold(bytes.TrimSpace(key), httpHeaderHost) {
-			return string(bytes.TrimSpace(value)), nil
+			host := string(bytes.TrimSpace(value))
+			if host == "" {
+				return "", ErrNotFound
+			}
+			return host, nil
 		}
 	}
 	return "", ErrNotFound

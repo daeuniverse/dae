@@ -17,7 +17,10 @@ import (
 
 const SysctlPrefixPath = "/proc/sys/"
 
-var sysctl *SysctlManager
+var (
+	sysctl   *SysctlManager
+	sysctlMu sync.Mutex
+)
 
 type SysctlManager struct {
 	log          *logrus.Logger
@@ -27,6 +30,9 @@ type SysctlManager struct {
 }
 
 func InitSysctlManager(log *logrus.Logger) (err error) {
+	sysctlMu.Lock()
+	defer sysctlMu.Unlock()
+
 	if sysctl != nil {
 		sysctl.mux.Lock()
 		sysctl.log = log

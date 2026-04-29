@@ -32,8 +32,9 @@ func sendUDPv4RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); err != nil {
 		return fmt.Errorf("enable IP_TRANSPARENT on raw socket: %w", err)
 	}
-	if soMarkFromDae != 0 {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(soMarkFromDae)); err != nil {
+	mark := soMarkFromDae.Load()
+	if mark != 0 {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(mark)); err != nil {
 			return fmt.Errorf("set SO_MARK on raw socket: %w", err)
 		}
 	}
@@ -83,8 +84,9 @@ func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1); err != nil {
 		return fmt.Errorf("enable IPV6_TRANSPARENT on raw socket: %w", err)
 	}
-	if soMarkFromDae != 0 {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(soMarkFromDae)); err != nil {
+	mark := soMarkFromDae.Load()
+	if mark != 0 {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(mark)); err != nil {
 			return fmt.Errorf("set SO_MARK on raw socket: %w", err)
 		}
 	}
