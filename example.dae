@@ -322,7 +322,7 @@ group {
         # Filter nodes from the global node pool defined by tag.
         #filter: name(node1, node2)
 
-        # Filter nodes and give a fixed latency offset to archive latency-based failover.
+        # Filter nodes and give a fixed latency offset to achieve latency-based failover.
         # Filter lines are checked in order. If one node matches multiple filter lines,
         # only the first matching line applies; later annotations are ignored.
         # For example, if one node matches both `name(US_node) [add_latency: -500ms]`
