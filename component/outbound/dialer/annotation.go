@@ -46,10 +46,10 @@ func NewAnnotation(annotation []*config_parser.Param) (*Annotation, error) {
 				return nil, fmt.Errorf("incorrect weight format: %w", err)
 			}
 			if weight < 0 {
-				return nil, fmt.Errorf("incorrect weight value: effective weight must be positive")
+				return nil, fmt.Errorf("incorrect weight value: add_weight must be >= 0 (effective weight is 1 + add_weight, so it must be positive)")
 			}
 			if weight > maxAddWeight {
-				return nil, fmt.Errorf("incorrect weight value: effective weight overflows int64")
+				return nil, fmt.Errorf("incorrect weight value: add_weight must be <= %d (effective weight is 1 + add_weight, so larger values overflow int64)", maxAddWeight)
 			}
 			// Only the first setting is valid.
 			if !addWeightSet {
