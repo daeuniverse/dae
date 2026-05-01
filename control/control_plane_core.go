@@ -311,11 +311,16 @@ func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
 	// Get link offload features.
 	et, err := ethtool.NewEthtool()
 	if err != nil {
+		// ethtool may be unavailable in restricted environments (e.g. containers
+		// without CAP_NET_ADMIN). Silently degrade to defaults.
 		return bpfIfParams{}, nil
 	}
 	defer et.Close()
 	features, err := et.Features(link.Attrs().Name)
 	if err != nil {
+		// Virtual interfaces (TUN/TAP, WireGuard, etc.) or older kernels
+		// may not support ETHTOOL_GFEATURES.  Silently degrade to defaults
+		// (all offload flags = false) rather than blocking interface binding.
 		return bpfIfParams{}, nil
 	}
 	if features["tx-checksum-ip-generic"] {
@@ -953,6 +958,8 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.bpfEjected {
 		return c.bpf
 	}
@@ -1028,6 +1035,8 @@ func (c *controlPlaneCore) ReplaceLpmIndices(indices []uint32) {
 
 // InjectBpf will inject bpf back.
 func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if bpf != nil {
 		c.bpf = bpf
 	}
@@ -1039,5 +1048,7 @@ func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 // Background maintenance paths such as janitors and health checks should use
 // this accessor instead of EjectBpf to avoid disturbing reload lifecycle.
 func (c *controlPlaneCore) PeekBpf() *bpfObjects {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.bpf
 }

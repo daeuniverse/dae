@@ -191,7 +191,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	defer s.readMu.Unlock()
 	var oerr error
 	defer func() {
-		if err != nil {
+		if err != nil && oerr != nil {
 			err = fmt.Errorf("%w: %w", oerr, err)
 		}
 	}()

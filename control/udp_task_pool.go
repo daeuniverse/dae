@@ -151,6 +151,7 @@ func (q *UdpTaskQueue) convoy() {
 				// Log or handle panic as needed. For now, ensure queue is removed from pool
 				// so a new one can be created if traffic continues.
 				q.p.queues.Delete(q.key)
+				q.p.queueChPool.Put(q.ch) // return channel to pool to prevent leak
 			}
 		}
 	}()
@@ -167,6 +168,10 @@ func (q *UdpTaskQueue) convoy() {
 		case task := <-q.ch:
 			q.executeTask(task, timer)
 		case <-q.wake:
+			// Check if pool is shutting down
+			if q.refs.Load() < 0 {
+				return
+			}
 		case <-timer.C:
 			// Idle GC: only remove queue when no in-flight EmitTask and no pending tasks.
 			// Use atomic checks first to avoid lock contention.
@@ -203,6 +208,7 @@ func (q *UdpTaskQueue) convoy() {
 type UdpTaskPool struct {
 	queueChPool sync.Pool
 	queues      sync.Map // map[UdpFlowKey]*UdpTaskQueue
+	closed      atomic.Bool
 }
 
 func NewUdpTaskPool() *UdpTaskPool {
@@ -221,6 +227,10 @@ func (p *UdpTaskPool) EmitTask(key UdpFlowKey, task UdpTask) {
 }
 
 func (p *UdpTaskPool) acquireQueue(key UdpFlowKey) *UdpTaskQueue {
+	// Reject new queue creation after Close
+	if p.closed.Load() {
+		return nil
+	}
 	// Fast path: check if queue exists without any lock contention
 	if v, ok := p.queues.Load(key); ok {
 		q := v.(*UdpTaskQueue)
@@ -283,6 +293,33 @@ func (p *UdpTaskPool) Reset() {
 		p.queues.Delete(key)
 		return true
 	})
+}
+
+// Close stops all convoy goroutines and releases resources.
+// After Close, the pool must not be reused (shutdown-only path).
+func (p *UdpTaskPool) Close() {
+	if p.closed.Swap(true) {
+		return
+	}
+	p.queues.Range(func(key, value any) bool {
+		if q, ok := p.queues.LoadAndDelete(key); ok {
+			queue := q.(*UdpTaskQueue)
+			queue.close()
+			p.queueChPool.Put(queue.ch)
+		}
+		return true
+	})
+}
+
+// close signals the convoy goroutine to exit by setting refs to a sentinel value
+// and waking it. The convoy goroutine will detect this and return.
+func (q *UdpTaskQueue) close() {
+	q.refs.Store(-1000000)
+	// Non-blocking wake to unblock convoy from timer wait
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
 }
 
 // tryDeleteQueue attempts to delete the queue if it's still the same instance.

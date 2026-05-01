@@ -208,7 +208,7 @@ func (l *LinearLocator) Range(i, j int) ([]byte, error) {
 		n := copy(b[k:], l.baseData[i-l.baseStart:])
 		k += n
 		i += n
-		if l.iOuter+1 >= len(l.o) || l.o[l.iOuter].UpperAppOffset+len(l.o[l.iOuter+1].Data) != l.o[l.iOuter].UpperAppOffset {
+		if l.iOuter+1 >= len(l.o) || l.o[l.iOuter].UpperAppOffset+len(l.o[l.iOuter].Data) != l.o[l.iOuter+1].UpperAppOffset {
 			// Some crypto is missing.
 			return nil, ErrMissingCrypto
 		}

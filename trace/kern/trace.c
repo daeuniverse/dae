@@ -116,6 +116,58 @@ get_netns(struct sk_buff *skb)
 	return netns;
 }
 
+// skip_ipv6_exthdr walks through IPv6 extension headers (Hop-by-Hop, Routing,
+// Dest Options, Fragment) and returns the final L4 protocol number.
+// *off is updated to point past all extension headers.
+// Bounded to 4 iterations to stay within BPF stack limits.
+// NOTE: Uses bpf_probe_read_kernel + BPF_CORE_READ(skb, head) because this
+// runs in kprobe context (struct sk_buff*), not TC/XDP (struct __sk_buff*).
+static __always_inline __u8
+skip_ipv6_exthdr(struct sk_buff *skb, __u32 *off, __u8 nexthdr)
+{
+	void *skb_head = BPF_CORE_READ(skb, head);
+
+#pragma unroll
+	for (int i = 0; i < 4; i++) {
+		switch (nexthdr) {
+		case 0:   // Hop-by-Hop
+		case 43:  // Routing
+		case 60:  // Destination Options
+			{
+				__u8 hdrlen;
+
+				// Next Header field is at byte 0 of the current header;
+				// must be read BEFORE advancing *off.
+				if (bpf_probe_read_kernel(&nexthdr, 1, skb_head + *off) < 0)
+					return nexthdr;
+				if (bpf_probe_read_kernel(&hdrlen, 1, skb_head + *off + 1) < 0)
+					return nexthdr;
+				*off += (__u32)(hdrlen + 1) * 8;
+			}
+			break;
+		case 44:  // Fragment
+			{
+				__be16 frag_off;
+
+				// Next Header field is at byte 0 of the Fragment header;
+				// must be read BEFORE advancing *off.
+				if (bpf_probe_read_kernel(&nexthdr, 1, skb_head + *off) < 0)
+					return nexthdr;
+				if (bpf_probe_read_kernel(&frag_off, 2, skb_head + *off + 2) < 0)
+					return nexthdr;
+				*off += 8;
+				// bits 15-3 are fragment offset (13 bits); 0xFFF8 covers all of them.
+				if (frag_off & bpf_htons(0xFFF8))  // offset != 0
+					return 0;  // non-first fragment, cannot parse
+			}
+			break;
+		default:
+			return nexthdr;
+		}
+	}
+	return nexthdr;
+}
+
 static __always_inline bool
 filter_l3_and_l4(struct sk_buff *skb)
 {
@@ -140,7 +192,9 @@ filter_l3_and_l4(struct sk_buff *skb)
 	} else if (ip_vsn == 6) {
 		struct ipv6hdr *ip6 = (struct ipv6hdr *) l3_hdr;
 
-		l4_proto = BPF_CORE_READ(ip6, nexthdr);
+		__u32 exthdr_off = l3_off + sizeof(struct ipv6hdr);
+
+		l4_proto = skip_ipv6_exthdr(skb, &exthdr_off, BPF_CORE_READ(ip6, nexthdr));
 	} else {
 		return false;
 	}
@@ -218,7 +272,9 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 
 		BPF_CORE_READ_INTO(&tpl->saddr, ip6, saddr);
 		BPF_CORE_READ_INTO(&tpl->daddr, ip6, daddr);
-		tpl->l4_proto = BPF_CORE_READ(ip6, nexthdr);
+		__u32 exthdr_off2 = l3_off + sizeof(struct ipv6hdr);
+
+		tpl->l4_proto = skip_ipv6_exthdr(skb, &exthdr_off2, BPF_CORE_READ(ip6, nexthdr));
 		tpl->l3_proto = ETH_P_IPV6;
 		l3_total_len = bpf_ntohs(BPF_CORE_READ(ip6, payload_len));
 	}

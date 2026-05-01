@@ -286,9 +286,6 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if err != nil {
 		return nil, err
 	}
-	if err != nil {
-		return nil, err
-	}
 	if geoIp.InverseMatch {
 		return nil, fmt.Errorf("not support inverse match yet")
 	}

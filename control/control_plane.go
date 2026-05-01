@@ -3526,14 +3526,13 @@ func (c *ControlPlane) MarkRetired() {
 	c.core.retired.Store(true)
 }
 
-// ResetGlobalUdpState clears all global UDP-related pools (endpoints and sniffers).
-// This is used during reload to ensure no stale connections from the previous
-// generation leak into the new one.
+// ResetGlobalUdpState clears all global UDP-related pools.
+// Called during process shutdown to stop background goroutines (janitors).
 func ResetGlobalUdpState() {
 	DefaultUdpEndpointPool.Reset()
 	DefaultAnyfromPool.Reset()
 	DefaultUdpTaskPool.Reset()
-	DefaultPacketSnifferSessionMgr.Reset()
+	DefaultPacketSnifferSessionMgr.Close() // Close() stops janitor goroutines; safe for shutdown path
 	ResetUdpLogLimiters()
 }
 
@@ -3576,6 +3575,8 @@ func (c *ControlPlane) closeTail() error {
 			errs = append(errs, coreErr)
 		}
 	}
+
+	ResetGlobalUdpState() // process shutdown: stop global UDP janitors
 
 	c.releaseRetainedState()
 
