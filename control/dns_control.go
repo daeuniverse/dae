@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -1007,18 +1007,24 @@ func (c *DnsController) bpfUpdateWorker() {
 		select {
 		case task := <-c.bpfUpdateCh:
 			c.processBpfUpdateTask(task, false)
+			c.drainBpfUpdateTasks(false)
 		case <-c.bpfUpdateStop:
-			// Stop signal received - drain queue first before exiting
-			// This ensures all pending updates are processed
-			for {
-				select {
-				case task := <-c.bpfUpdateCh:
-					c.processBpfUpdateTask(task, true)
-				default:
-					// Queue is empty, safe to exit
-					return
-				}
-			}
+			c.drainBpfUpdateTasks(true)
+			return
+		}
+	}
+}
+
+// drainBpfUpdateTasks processes all pending tasks from bpfUpdateCh in a tight loop.
+// This reduces per-task scheduling overhead and allows the worker to catch up quickly
+// during bursts of DNS cache BPF updates.
+func (c *DnsController) drainBpfUpdateTasks(draining bool) {
+	for {
+		select {
+		case task := <-c.bpfUpdateCh:
+			c.processBpfUpdateTask(task, draining)
+		default:
+			return
 		}
 	}
 }
@@ -2299,7 +2305,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if req == nil || req.lConn == nil {
 			return fmt.Errorf("dns request connection is nil for singleflight response")
 		}
-		if err = sendRuntimeTrackedPktFresh(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+		if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return err
 		}
 		return nil
@@ -2358,23 +2364,22 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 		return fmt.Errorf("DNS request expected but DNS response received")
 	}
 
-	// Get qtype for preference check.
+	// Get qtype for future preference check (RFC 8305 Happy Eyeballs).
 	var qtype uint16
 	if len(dnsMessage.Question) != 0 {
 		qtype = dnsMessage.Question[0].Qtype
 	}
+	_ = qtype // used when ip_version_prefer is implemented
 
 	// Fast path: no ip_version_prefer set, bypass all preference logic
 	if c.currentQtypePrefer() == 0 {
 		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 	}
 
-	// Only A and AAAA queries are subject to preference handling
-	if qtype != dnsmessage.TypeA && qtype != dnsmessage.TypeAAAA {
-		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
-	}
-
-	// Handle with preference waiting logic in response phase
+	// TODO: implement RFC 8305 Happy Eyeballs preference logic for A/AAAA queries.
+	// All three branches currently call the same function with identical parameters.
+	// When ip_version_prefer is set, the response should be delayed to prefer the
+	// preferred address family result, but this is not yet implemented.
 	return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 }
 
@@ -2504,19 +2509,11 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		copy(patchedResp, resp)
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 
-		// For remote DNS, use sendPkt with transparent socket to ensure
-		// the response source address matches the DNS server IP.
-		// This is important for clients that validate source address.
-		dstAddr := req.realDst.Addr()
-		if dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast() {
-			// Local DNS (0.0.0.0) - use lConn directly
-			if err := writeRuntimeTrackedUDPAddrPort(req.lConn, patchedResp, req.realSrc, req.downloadRecorder()); err != nil {
-				return fmt.Errorf("failed to write local DNS resp: %w", err)
-			}
-			return nil
-		}
+		// Transparent DNS replies must preserve the original DNS server tuple.
+		// sendPkt also carries the DNS port-conflict raw fallback for host-local
+		// clients where binding the source address may fail transiently.
 		if err := sendRuntimeTrackedPkt(c.log, patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
-			return fmt.Errorf("failed to write remote DNS resp: %w", err)
+			return fmt.Errorf("failed to write cached DNS resp: %w", err)
 		}
 		return nil
 	}
@@ -2528,19 +2525,8 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 		binary.BigEndian.PutUint16(patchedResp[0:2], reqId)
 	}
 
-	dstAddr := req.realDst.Addr()
-	isLocalDNS := dstAddr.IsUnspecified() || dstAddr.IsLoopback() || dstAddr.IsLinkLocalUnicast()
-
-	if isLocalDNS {
-		if err := writeRuntimeTrackedUDPAddrPort(req.lConn, patchedResp, req.realSrc, req.downloadRecorder()); err != nil {
-			return fmt.Errorf("failed to write oversized local DNS resp: %w", err)
-		}
-		return nil
-	}
-
-	// For remote DNS with oversized response, use sendPkt
 	if err := sendRuntimeTrackedPkt(c.log, patchedResp, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
-		return fmt.Errorf("failed to write oversized DNS resp: %w", err)
+		return fmt.Errorf("failed to write oversized cached DNS resp: %w", err)
 	}
 	return nil
 }
@@ -2704,6 +2690,7 @@ func (c *DnsController) dialSend(
 	responseCacheKey string,
 	baseCacheKey string,
 ) (err error) {
+	data = append([]byte(nil), data...) // defensive copy: callers may reuse the slice across recursive retries
 	if invokingDepth >= MaxDnsLookupDepth {
 		return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 	}
@@ -2857,25 +2844,7 @@ func (c *DnsController) dialSend(
 		if err != nil {
 			return err
 		}
-		if req != nil && req.lConn != nil {
-			if err = sendRuntimeTrackedPktViaListener(req.lConn, data, req.realDst, req.realSrc, req.downloadRecorder()); err == nil {
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							c.log.Errorf("panic in async DNS cache: %v", r)
-						}
-					}()
-					if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
-						c.log.Debugf("failed to cache DNS response (async): %v", err)
-					}
-				}()
-				return nil
-			}
-			if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithError(err).Debug("DNS reply via listener socket failed; fallback to Anyfrom sender")
-			}
-		}
-		if err = sendRuntimeTrackedPktFresh(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
+		if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.downloadRecorder()); err != nil {
 			return err
 		}
 

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dns
@@ -40,16 +40,6 @@ const (
 	upstreamScheme_H3_Alias      UpstreamScheme = "http3"
 	UpstreamScheme_H3            UpstreamScheme = "h3"
 )
-
-func (s UpstreamScheme) ContainsTcp() bool {
-	switch s {
-	case UpstreamScheme_TCP,
-		UpstreamScheme_TCP_UDP:
-		return true
-	default:
-		return false
-	}
-}
 
 func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, path string, err error) {
 	var __port string

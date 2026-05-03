@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -83,15 +83,15 @@ func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l
 
 	switch l4proto {
 	case unix.IPPROTO_TCP:
-		if c.bpf.TcpConnStateMap == nil {
+		if c.bpf.ConnStateMap == nil {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		var connState bpfTcpConnState
-		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
+		var connState bpfConnState
+		if err := c.bpf.ConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
-			return nil, fmt.Errorf("reading tcp_conn_state_map: %w", err)
+			return nil, fmt.Errorf("reading conn_state_map: %w", err)
 		}
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
@@ -106,15 +106,15 @@ func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l
 			connState.Pid,
 		)
 	case unix.IPPROTO_UDP:
-		if c.bpf.UdpConnStateMap == nil {
+		if c.bpf.ConnStateMap == nil {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		var connState bpfUdpConnState
-		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
+		var connState bpfConnState
+		if err := c.bpf.ConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
-			return nil, fmt.Errorf("reading udp_conn_state_map: %w", err)
+			return nil, fmt.Errorf("reading conn_state_map: %w", err)
 		}
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist

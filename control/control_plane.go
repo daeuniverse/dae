@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -228,6 +228,7 @@ type mapCleanupStats struct {
 	entries      int
 	deleted      int
 	usagePercent int
+	maxEntries   int
 }
 
 type connStateJanitorPressureState struct {
@@ -479,8 +480,9 @@ func newControlPlaneWithContextOptions(
 	} else {
 		bpf = new(bpfObjects)
 		if err = fullLoadBpfObjects(log, bpf, &loadBpfOptions{
-			PinPath:           pinPath,
-			CollectionOptions: collectionOpts,
+			PinPath:                pinPath,
+			CollectionOptions:      collectionOpts,
+			ConnStateMapMaxEntries: global.BpfConnStateMapSize,
 		}, global.SoMarkFromDae); err != nil {
 			if log.Level == logrus.PanicLevel {
 				log.Panicln(err)
@@ -875,7 +877,7 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 // reload by handing the live BPF objects to the new control plane. Do NOT clear
 // them here, otherwise established flows may lose cached state and get rerouted.
 func clearReloadDomainRoutingMap(bpf *bpfObjects) error {
-	return BpfMapDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
+	return BpfMapBatchDeleteAll[[4]uint32, bpfDomainRouting](bpf.DomainRoutingMap)
 }
 
 // validateRequiredBpfMapsLoaded checks maps that are required by both DNS and
@@ -890,7 +892,7 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		m    *ebpf.Map
 	}{
 		{name: "domain_routing_map", m: bpf.DomainRoutingMap},
-		{name: "udp_conn_state_map", m: bpf.UdpConnStateMap},
+		{name: "conn_state_map", m: bpf.ConnStateMap},
 		{name: "routing_handoff_map", m: bpf.RoutingHandoffMap},
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
@@ -1171,6 +1173,24 @@ func updateConnStateJanitorPressure(
 	}
 	state.belowThresholdRounds = 0
 	return state
+}
+
+func isIgnorableBatchLookupErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if stderrors.Is(err, ebpf.ErrKeyNotExist) ||
+		stderrors.Is(err, os.ErrClosed) ||
+		stderrors.Is(err, unix.EBADF) {
+		return true
+	}
+
+	// Keep a compact string fallback for wrapped kernel/libbpf errors.
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "bad file descriptor") ||
+		strings.Contains(errStr, "file descriptor") ||
+		strings.Contains(errStr, "closed") ||
+		strings.Contains(errStr, "key does not exist")
 }
 
 func (c *ControlPlane) markReady() {
@@ -2040,9 +2060,10 @@ func (c *ControlPlane) startConnStateJanitor() {
 			case now := <-ticker.C:
 				bpf := c.currentBpf()
 
+				var udpOverflow, tcpOverflow uint64
 				overflowDelta := false
 				if bpf != nil && bpf.BpfStatsMap != nil {
-					udpOverflow, tcpOverflow := c.readMapOverflowCounters(bpf.BpfStatsMap)
+					udpOverflow, tcpOverflow = c.readMapOverflowCounters(bpf.BpfStatsMap)
 					overflowDelta = udpOverflow > pressureState.lastUdpOverflow ||
 						tcpOverflow > pressureState.lastTcpOverflow
 					pressureState.lastUdpOverflow = udpOverflow
@@ -2078,19 +2099,18 @@ func (c *ControlPlane) startConnStateJanitor() {
 				}
 
 				if lastConnCleanup.IsZero() || now.Sub(lastConnCleanup) >= connCleanupInterval {
-					udpStats := c.cleanupUdpConnStateMap(pressureState.active)
-					tcpStats := c.cleanupTcpConnStateMap(pressureState.active)
+					udpStats, tcpStats := c.cleanupConnStateMap(pressureState.active)
 
-					maxUsagePercent := udpStats.usagePercent
-					if tcpStats.usagePercent > maxUsagePercent {
-						maxUsagePercent = tcpStats.usagePercent
+					maxUsagePercent := 0
+					if udpStats.maxEntries > 0 {
+						maxUsagePercent = (udpStats.entries + tcpStats.entries) * 100 / udpStats.maxEntries
 					}
 					pressureState = updateConnStateJanitorPressure(pressureState, overflowDelta, maxUsagePercent)
 					lastConnCleanup = now
 				}
 
 				if lastHealthCheck.IsZero() || now.Sub(lastHealthCheck) >= 5*time.Second {
-					c.checkBpfMapHealth()
+					c.checkBpfMapHealth(udpOverflow, tcpOverflow)
 					lastHealthCheck = now
 				}
 			}
@@ -2107,8 +2127,7 @@ func (c *ControlPlane) RunReloadRetirementCleanup(staleBeforeNs uint64) {
 	redirectDeleted := c.cleanupRedirectTrackMapBeforeLocked(staleBeforeNs)
 	cookieDeleted := c.cleanupCookiePidMapBeforeLocked(staleBeforeNs)
 	routingHandoffDeleted := c.cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs)
-	udpStats := c.cleanupUdpConnStateMapBeforeLocked(true, staleBeforeNs)
-	tcpStats := c.cleanupTcpConnStateMapBeforeLocked(true, staleBeforeNs)
+	udpStats, tcpStats := c.cleanupConnStateMapBeforeLocked(true, staleBeforeNs)
 	c.connStateCleanupMu.Unlock()
 
 	if c.log == nil {
@@ -2224,9 +2243,7 @@ func (c *ControlPlane) cleanupRedirectTrackMapBeforeLocked(staleBeforeNs uint64)
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(err) {
 				c.log.Errorf("cleanupRedirectTrackMap: BatchLookup error: %v", err)
 			}
 			break
@@ -2309,9 +2326,7 @@ func (c *ControlPlane) cleanupCookiePidMapBeforeLocked(staleBeforeNs uint64) int
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(err) {
 				c.log.Errorf("cleanupCookiePidMap: BatchLookup error: %v", err)
 			}
 			break
@@ -2386,10 +2401,7 @@ func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64
 			}
 		}
 		if batchErr != nil {
-			if !strings.Contains(batchErr.Error(), "bad file descriptor") &&
-				!strings.Contains(batchErr.Error(), "file descriptor") &&
-				!strings.Contains(batchErr.Error(), "closed") &&
-				!strings.Contains(batchErr.Error(), "key does not exist") {
+			if !isIgnorableBatchLookupErr(batchErr) {
 				c.log.Errorf("cleanupRoutingHandoffMap: BatchLookup error: %v", batchErr)
 			}
 			break
@@ -2413,248 +2425,163 @@ func (c *ControlPlane) cleanupRoutingHandoffMapBeforeLocked(staleBeforeNs uint64
 	return len(keysToDelete)
 }
 
-// cleanupUdpConnStateMap iterates through the UDP conn state map and removes
-// cold entries that escaped endpoint-owned teardown.
-// DNS entries use a shorter timeout (17s) while non-DNS UDP keeps a longer
-// backstop timeout so datapath-only tuples still age out after crashes/reload races.
-// When map is under pressure (high usage), timeouts are dynamically reduced
-// to free up space more aggressively in a single pass.
-func (c *ControlPlane) cleanupUdpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
+// cleanupConnStateMap performs a single-pass scan of ConnStateMap, classifying
+// entries by L4 protocol and applying protocol-specific timeout/expiry logic.
+// This replaces the former separate cleanupUdpConnStateMap + cleanupTcpConnStateMap
+// pair, halving the BatchLookup syscalls and ClockGettime overhead per tick.
+func (c *ControlPlane) cleanupConnStateMap(aggressiveCleanup bool) (udpStats, tcpStats mapCleanupStats) {
 	c.connStateCleanupMu.Lock()
 	defer c.connStateCleanupMu.Unlock()
-	return c.cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup, 0)
+	return c.cleanupConnStateMapBeforeLocked(aggressiveCleanup, 0)
 }
 
-func (c *ControlPlane) cleanupUdpConnStateMapBeforeLocked(aggressiveCleanup bool, staleBeforeNs uint64) mapCleanupStats {
-	stats := mapCleanupStats{}
-
-	// Check if we're shutting down - if stop signal is sent, skip cleanup
+func (c *ControlPlane) cleanupConnStateMapBeforeLocked(aggressiveCleanup bool, staleBeforeNs uint64) (udpStats, tcpStats mapCleanupStats) {
 	select {
 	case <-c.connStateJanitorStop:
-		return stats
+		return
 	default:
 	}
 
 	bpf := c.currentBpf()
-	if bpf == nil || bpf.UdpConnStateMap == nil {
-		return stats
+	if bpf == nil || bpf.ConnStateMap == nil {
+		return
 	}
 
-	// Use CLOCK_MONOTONIC to match bpf_ktime_get_ns() time base.
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		c.log.Errorf("cleanupUdpConnStateMap: failed to get monotonic time: %v", err)
-		return stats
+		c.log.Errorf("cleanupConnStateMap: failed to get monotonic time: %v", err)
+		return
 	}
 	nowNano := ts.Nano()
 
-	// Default timeouts
 	dnsTimeoutNano := udpConnStateTimeoutDNS.Nanoseconds()
-	normalTimeoutNano := QuicNatTimeout.Nanoseconds() // Align eBPF state with Userspace proxy QuicNatTimeout
+	normalTimeoutNano := QuicNatTimeout.Nanoseconds()
+	aggressiveTimeout := normalTimeoutNano / 2
+	aggressiveDnsTimeout := dnsTimeoutNano / 2
+
+	establishedTimeoutNano := tcpConnStateTimeoutEstablished.Nanoseconds()
+	closingTimeoutNano := tcpConnStateTimeoutClosing.Nanoseconds()
+	aggressiveEstablishedTimeout := establishedTimeoutNano / 2
+	aggressiveClosingTimeout := closingTimeoutNano / 2
 
 	scratch := c.connStateJanitorScratch()
-	keysToDelete := takeJanitorDeleteScratch(scratch.udpDelete)
+	udpKeysToDelete := takeJanitorDeleteScratch(scratch.udpDelete)
+	tcpKeysToDelete := takeJanitorDeleteScratch(scratch.tcpDelete)
 	keysOut := ensureJanitorLookupScratch(scratch.udpKeys)
 	valuesOut := ensureJanitorLookupScratch(scratch.udpValues)
 	defer func() {
-		scratch.udpDelete = keepJanitorDeleteScratch(keysToDelete)
+		scratch.udpDelete = keepJanitorDeleteScratch(udpKeysToDelete)
+		scratch.tcpDelete = keepJanitorDeleteScratch(tcpKeysToDelete)
 		scratch.udpKeys = keysOut
 		scratch.udpValues = valuesOut
 	}()
 
 	var cursor ebpf.MapBatchCursor
-	aggressiveTimeout := normalTimeoutNano / 2
-	aggressiveDnsTimeout := dnsTimeoutNano / 2
 
 	for {
-		count, err := bpf.UdpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
+		count, err := bpf.ConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
 		if count > 0 {
 			for i := range count {
-				stats.entries++
 				key := keysOut[i]
 				value := valuesOut[i]
-				// Check if this entry is a DNS connection (port 53)
-				isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
-
-				// Apply dynamic timeout based on map pressure
-				timeout := normalTimeoutNano
-				if isDNS {
-					timeout = dnsTimeoutNano
-				}
-				if aggressiveCleanup {
+				switch key.L4proto {
+				case unix.IPPROTO_UDP:
+					udpStats.entries++
+					isDNS := key.Sport == dnsPortNetworkOrder || key.Dport == dnsPortNetworkOrder
+					timeout := normalTimeoutNano
 					if isDNS {
-						timeout = aggressiveDnsTimeout
+						timeout = dnsTimeoutNano
+					}
+					if aggressiveCleanup {
+						if isDNS {
+							timeout = aggressiveDnsTimeout
+						} else {
+							timeout = aggressiveTimeout
+						}
+					}
+					age := nowNano - int64(value.LastSeenNs)
+					if age > timeout ||
+						(staleBeforeNs > 0 && (value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs)) {
+						udpKeysToDelete = append(udpKeysToDelete, key)
+					}
+				case unix.IPPROTO_TCP:
+					tcpStats.entries++
+					establishedTimeout := establishedTimeoutNano
+					closingTimeout := closingTimeoutNano
+					if aggressiveCleanup {
+						establishedTimeout = aggressiveEstablishedTimeout
+						closingTimeout = aggressiveClosingTimeout
+					}
+					shouldDelete := false
+					if value.State == 1 {
+						age := nowNano - int64(value.LastSeenNs)
+						if age > closingTimeout {
+							shouldDelete = true
+						}
 					} else {
-						timeout = aggressiveTimeout
+						age := nowNano - int64(value.LastSeenNs)
+						if age > establishedTimeout {
+							shouldDelete = true
+						}
 					}
-				}
-
-				age := nowNano - int64(value.LastSeenNs)
-				if age > timeout ||
-					(staleBeforeNs > 0 && (value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs)) {
-					keysToDelete = append(keysToDelete, key)
+					if !shouldDelete && staleBeforeNs > 0 &&
+						(value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs) {
+						shouldDelete = true
+					}
+					if shouldDelete {
+						tcpKeysToDelete = append(tcpKeysToDelete, key)
+					}
 				}
 			}
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
-				c.log.Errorf("cleanupUdpConnStateMap: BatchLookup error: %v", err)
+			if !isIgnorableBatchLookupErr(err) {
+				c.log.Errorf("cleanupConnStateMap: BatchLookup error: %v", err)
 			}
 			break
 		}
 	}
 
-	maxEntries := bpf.UdpConnStateMap.MaxEntries()
+	maxEntries := bpf.ConnStateMap.MaxEntries()
 	if maxEntries > 0 {
-		stats.usagePercent = stats.entries * 100 / int(maxEntries)
+		udpStats.maxEntries = int(maxEntries)
+		tcpStats.maxEntries = int(maxEntries)
+		udpStats.usagePercent = udpStats.entries * 100 / int(maxEntries)
+		tcpStats.usagePercent = tcpStats.entries * 100 / int(maxEntries)
 	}
 
-	// Batch delete from UDP conn state map
-	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.UdpConnStateMap, keysToDelete); err != nil {
-			c.log.Debugf("cleanupUdpConnStateMap: batch delete error: %v", err)
+	if len(udpKeysToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.ConnStateMap, udpKeysToDelete); err != nil {
+			c.log.Debugf("cleanupConnStateMap: UDP batch delete error: %v", err)
 		}
 	}
-	stats.deleted = len(keysToDelete)
+	udpStats.deleted = len(udpKeysToDelete)
 
-	// Log cleanup stats
-	if len(keysToDelete) > 0 {
+	if len(tcpKeysToDelete) > 0 {
+		if _, err := BpfMapBatchDelete(bpf.ConnStateMap, tcpKeysToDelete); err != nil {
+			c.log.Debugf("cleanupConnStateMap: TCP batch delete error: %v", err)
+		}
+	}
+	tcpStats.deleted = len(tcpKeysToDelete)
+
+	if len(udpKeysToDelete) > 0 {
 		if aggressiveCleanup {
-			c.log.Debugf("cleanupUdpConnStateMap: aggressive cleanup removed %d entries (%d%% usage)",
-				len(keysToDelete), stats.usagePercent)
+			c.log.Debugf("cleanupConnStateMap: aggressive cleanup removed %d UDP entries (%d%% usage)",
+				len(udpKeysToDelete), udpStats.usagePercent)
 		} else {
-			c.log.Debugf("cleanupUdpConnStateMap: removed %d expired entries", len(keysToDelete))
+			c.log.Debugf("cleanupConnStateMap: removed %d expired UDP entries", len(udpKeysToDelete))
 		}
 	}
-
-	return stats
-}
-
-// cleanupTcpConnStateMap iterates through the TCP conn state map and removes
-// entries that haven't been seen within their timeout period or are in CLOSING state.
-// When map is under pressure, aggressive cleanup applies with shorter timeouts.
-func (c *ControlPlane) cleanupTcpConnStateMap(aggressiveCleanup bool) mapCleanupStats {
-	c.connStateCleanupMu.Lock()
-	defer c.connStateCleanupMu.Unlock()
-	return c.cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup, 0)
-}
-
-func (c *ControlPlane) cleanupTcpConnStateMapBeforeLocked(aggressiveCleanup bool, staleBeforeNs uint64) mapCleanupStats {
-	stats := mapCleanupStats{}
-
-	// Check if we're shutting down - if stop signal is sent, skip cleanup
-	select {
-	case <-c.connStateJanitorStop:
-		return stats
-	default:
-	}
-
-	bpf := c.currentBpf()
-	if bpf == nil || bpf.TcpConnStateMap == nil {
-		return stats
-	}
-
-	// Use CLOCK_MONOTONIC to match bpf_ktime_get_ns() time base.
-	var ts unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		c.log.Errorf("cleanupTcpConnStateMap: failed to get monotonic time: %v", err)
-		return stats
-	}
-	nowNano := ts.Nano()
-
-	establishedTimeoutNano := tcpConnStateTimeoutEstablished.Nanoseconds()
-	closingTimeoutNano := tcpConnStateTimeoutClosing.Nanoseconds()
-
-	scratch := c.connStateJanitorScratch()
-	keysToDelete := takeJanitorDeleteScratch(scratch.tcpDelete)
-	keysOut := ensureJanitorLookupScratch(scratch.tcpKeys)
-	valuesOut := ensureJanitorLookupScratch(scratch.tcpValues)
-	defer func() {
-		scratch.tcpDelete = keepJanitorDeleteScratch(keysToDelete)
-		scratch.tcpKeys = keysOut
-		scratch.tcpValues = valuesOut
-	}()
-
-	var cursor ebpf.MapBatchCursor
-	aggressiveEstablishedTimeout := establishedTimeoutNano / 2
-	aggressiveClosingTimeout := closingTimeoutNano / 2
-
-	for {
-		count, err := bpf.TcpConnStateMap.BatchLookup(&cursor, keysOut, valuesOut, nil)
-		if count > 0 {
-			for i := range count {
-				stats.entries++
-				key := keysOut[i]
-				value := valuesOut[i]
-				// Apply dynamic timeout based on map pressure
-				establishedTimeout := establishedTimeoutNano
-				closingTimeout := closingTimeoutNano
-				if aggressiveCleanup {
-					establishedTimeout = aggressiveEstablishedTimeout
-					closingTimeout = aggressiveClosingTimeout
-				}
-
-				// Check if entry should be cleaned up
-				shouldDelete := false
-				if value.State == 1 { // TCP_STATE_CLOSING
-					// CLOSING state: quick cleanup (FIN/RST seen)
-					age := nowNano - int64(value.LastSeenNs)
-					if age > closingTimeout {
-						shouldDelete = true
-					}
-				} else {
-					// ACTIVE state: normal timeout for established connections
-					age := nowNano - int64(value.LastSeenNs)
-					if age > establishedTimeout {
-						shouldDelete = true
-					}
-				}
-				if !shouldDelete && staleBeforeNs > 0 &&
-					(value.LastSeenNs == 0 || value.LastSeenNs < staleBeforeNs) {
-					shouldDelete = true
-				}
-
-				if shouldDelete {
-					keysToDelete = append(keysToDelete, key)
-				}
-			}
-		}
-		if err != nil {
-			if !strings.Contains(err.Error(), "bad file descriptor") &&
-				!strings.Contains(err.Error(), "file descriptor") &&
-				!strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "key does not exist") {
-				c.log.Errorf("cleanupTcpConnStateMap: BatchLookup error: %v", err)
-			}
-			break
-		}
-	}
-
-	maxEntries := bpf.TcpConnStateMap.MaxEntries()
-	if maxEntries > 0 {
-		stats.usagePercent = stats.entries * 100 / int(maxEntries)
-	}
-
-	// Batch delete expired TCP conn state entries
-	if len(keysToDelete) > 0 {
-		if _, err := BpfMapBatchDelete(bpf.TcpConnStateMap, keysToDelete); err != nil {
-			c.log.Debugf("cleanupTcpConnStateMap: batch delete error: %v", err)
-		}
-	}
-	stats.deleted = len(keysToDelete)
-
-	// Log cleanup stats
-	if len(keysToDelete) > 0 {
+	if len(tcpKeysToDelete) > 0 {
 		if aggressiveCleanup {
-			c.log.Debugf("cleanupTcpConnStateMap: aggressive cleanup removed %d TCP entries (%d%% usage)",
-				len(keysToDelete), stats.usagePercent)
+			c.log.Debugf("cleanupConnStateMap: aggressive cleanup removed %d TCP entries (%d%% usage)",
+				len(tcpKeysToDelete), tcpStats.usagePercent)
 		} else {
-			c.log.Debugf("cleanupTcpConnStateMap: removed %d expired TCP entries", len(keysToDelete))
+			c.log.Debugf("cleanupConnStateMap: removed %d expired TCP entries", len(tcpKeysToDelete))
 		}
 	}
 
-	return stats
+	return udpStats, tcpStats
 }
 
 func (c *ControlPlane) connStateJanitorScratch() *connStateJanitorScratch {
@@ -2666,9 +2593,10 @@ func (c *ControlPlane) connStateJanitorScratch() *connStateJanitorScratch {
 
 // checkBpfMapHealth monitors map usage and overflow counters for robustness.
 // Alerts when maps are approaching capacity or experiencing high overflow rates.
-func (c *ControlPlane) checkBpfMapHealth() {
+// Accepts pre-read overflow counters to avoid redundant BPF map lookups.
+func (c *ControlPlane) checkBpfMapHealth(udpOverflow, tcpOverflow uint64) {
 	bpf := c.currentBpf()
-	if bpf == nil || bpf.BpfStatsMap == nil {
+	if bpf == nil {
 		return
 	}
 
@@ -2680,14 +2608,6 @@ func (c *ControlPlane) checkBpfMapHealth() {
 	)
 
 	now := time.Now()
-
-	// Read and log overflow counters from BPF stats map
-	var (
-		udpOverflow uint64
-		tcpOverflow uint64
-	)
-
-	udpOverflow, tcpOverflow = c.readMapOverflowCounters(bpf.BpfStatsMap)
 
 	// Alert on significant overflow counts
 	if udpOverflow > 0 || tcpOverflow > 0 {
@@ -2705,32 +2625,35 @@ func (c *ControlPlane) checkBpfMapHealth() {
 	}
 
 	// Estimate map usage by sampling (full iteration is expensive)
-	if bpf.UdpConnStateMap != nil {
-		maxEntries := bpf.UdpConnStateMap.MaxEntries()
-		// If overflow is happening, map is under pressure.
-		if udpOverflow > 100 && maxEntries > 0 {
-			nowNano := now.UnixNano()
-			last := c.lastUdpPressureAlertTime.Load()
-			if last == 0 || last+int64(alertCooldown) < nowNano {
-				if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
-					c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing udp_conn_state_map capacity or reducing UDP connection timeout.",
-						udpOverflow, maxEntries)
-				}
+	if bpf.ConnStateMap == nil {
+		return
+	}
+
+	maxEntries := bpf.ConnStateMap.MaxEntries()
+	if maxEntries == 0 {
+		return
+	}
+
+	// If overflow is happening, map is under pressure.
+	if udpOverflow > 100 {
+		nowNano := now.UnixNano()
+		last := c.lastUdpPressureAlertTime.Load()
+		if last == 0 || last+int64(alertCooldown) < nowNano {
+			if c.lastUdpPressureAlertTime.CompareAndSwap(last, nowNano) {
+				c.log.Errorf("CRITICAL: UDP conn state map is under heavy pressure (overflow=%d). "+
+					"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing UDP connection timeout.",
+					udpOverflow, maxEntries)
 			}
 		}
 	}
-	if bpf.TcpConnStateMap != nil {
-		maxEntries := bpf.TcpConnStateMap.MaxEntries()
-		if tcpOverflow > 100 && maxEntries > 0 {
-			nowNano := now.UnixNano()
-			last := c.lastTcpPressureAlertTime.Load()
-			if last == 0 || last+int64(alertCooldown) < nowNano {
-				if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
-					c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
-						"Configured capacity=%d. Consider increasing tcp_conn_state_map capacity or reducing TCP connection timeout.",
-						tcpOverflow, maxEntries)
-				}
+	if tcpOverflow > 100 {
+		nowNano := now.UnixNano()
+		last := c.lastTcpPressureAlertTime.Load()
+		if last == 0 || last+int64(alertCooldown) < nowNano {
+			if c.lastTcpPressureAlertTime.CompareAndSwap(last, nowNano) {
+				c.log.Errorf("CRITICAL: TCP conn state map is under heavy pressure (overflow=%d). "+
+					"Configured capacity=%d. Consider increasing conn_state_map capacity or reducing TCP connection timeout.",
+					tcpOverflow, maxEntries)
 			}
 		}
 	}
@@ -2983,6 +2906,19 @@ func dupRawConnFile(rawConn syscall.RawConn, name string) (*os.File, error) {
 	return os.NewFile(uintptr(dupFD), name), nil
 }
 
+func (c *ControlPlane) activatePreparedRuntime() error {
+	if c == nil {
+		return nil
+	}
+
+	c.publishRuntimeStats()
+	if err := c.StartPreparedDNSListener(); err != nil {
+		c.unpublishRuntimeStats()
+		return err
+	}
+	return nil
+}
+
 func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	sentReady := false
 	defer func() {
@@ -3000,7 +2936,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	if err := c.publishListenerSockets(listener); err != nil {
 		return err
 	}
-	if err := c.StartPreparedDNSListener(); err != nil {
+	if err := c.activatePreparedRuntime(); err != nil {
 		return err
 	}
 
@@ -3590,14 +3526,13 @@ func (c *ControlPlane) MarkRetired() {
 	c.core.retired.Store(true)
 }
 
-// ResetGlobalUdpState clears all global UDP-related pools (endpoints and sniffers).
-// This is used during reload to ensure no stale connections from the previous
-// generation leak into the new one.
+// ResetGlobalUdpState clears all global UDP-related pools.
+// Called during process shutdown to stop background goroutines (janitors).
 func ResetGlobalUdpState() {
 	DefaultUdpEndpointPool.Reset()
 	DefaultAnyfromPool.Reset()
 	DefaultUdpTaskPool.Reset()
-	DefaultPacketSnifferSessionMgr.Reset()
+	DefaultPacketSnifferSessionMgr.Close() // Close() stops janitor goroutines; safe for shutdown path
 	ResetUdpLogLimiters()
 }
 
@@ -3641,6 +3576,8 @@ func (c *ControlPlane) closeTail() error {
 		}
 	}
 
+	ResetGlobalUdpState() // process shutdown: stop global UDP janitors
+
 	c.releaseRetainedState()
 
 	return stderrors.Join(errs...)
@@ -3679,6 +3616,7 @@ func (c *ControlPlane) Close() (err error) {
 	}
 
 	c.closeOnce.Do(func() {
+		c.unpublishRuntimeStats()
 		if c.cancel != nil {
 			c.cancel()
 		}

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package sniffing
@@ -40,7 +40,11 @@ func sniffHTTPHostHeader(data []byte) (string, error) {
 			continue
 		}
 		if bytes.EqualFold(bytes.TrimSpace(key), httpHeaderHost) {
-			return string(bytes.TrimSpace(value)), nil
+			host := string(bytes.TrimSpace(value))
+			if host == "" {
+				return "", ErrNotFound
+			}
+			return host, nil
 		}
 	}
 	return "", ErrNotFound

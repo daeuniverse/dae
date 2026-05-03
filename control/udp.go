@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -12,9 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/errors"
@@ -27,11 +25,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func shouldTryRawUDPv6Fallback(err error, from, realTo netip.AddrPort) bool {
+func shouldTryRawUDPFallback(err error, from, realTo netip.AddrPort) bool {
 	if err == nil {
 		return false
 	}
-	if !from.Addr().Is6() || from.Addr().Is4In6() || !realTo.Addr().Is6() || realTo.Addr().Is4In6() {
+	fromAddr := from.Addr()
+	toAddr := realTo.Addr()
+	if (fromAddr.Is4() || fromAddr.Is4In6()) != (toAddr.Is4() || toAddr.Is4In6()) {
 		return false
 	}
 	// Keep fallback scope narrow: only DNS responses (source port 53).
@@ -48,18 +48,23 @@ func shouldTryRawUDPv6Fallback(err error, from, realTo netip.AddrPort) bool {
 		strings.Contains(errStr, "cannot assign requested address")
 }
 
-func tryRawUDPv6Fallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, debugEnabled, errorEnabled bool, reason string, err error) bool {
-	if !shouldTryRawUDPv6Fallback(err, from, realTo) {
+func tryRawUDPFallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, debugEnabled, errorEnabled bool, reason string, err error) bool {
+	if !shouldTryRawUDPFallback(err, from, realTo) {
 		return false
 	}
-	fallbackErr := sendUDPv6RawInDaeNetns(data, from, realTo)
+	var fallbackErr error
+	if from.Addr().Is4() || from.Addr().Is4In6() {
+		fallbackErr = sendUDPv4RawInDaeNetns(data, from, realTo)
+	} else {
+		fallbackErr = sendUDPv6RawInDaeNetns(data, from, realTo)
+	}
 	if fallbackErr == nil {
 		if debugEnabled {
 			log.WithFields(logrus.Fields{
 				"from":   from.String(),
 				"to":     realTo.String(),
 				"reason": reason,
-			}).Debug("sendPkt: used raw IPv6 UDP fallback")
+			}).Debug("sendPkt: used raw UDP fallback")
 		}
 		return true
 	}
@@ -70,7 +75,7 @@ func tryRawUDPv6Fallback(log *logrus.Logger, data []byte, from, realTo netip.Add
 			"reason":   reason,
 			"trigger":  err.Error(),
 			"fallback": fallbackErr.Error(),
-		}).Error("sendPkt: raw IPv6 UDP fallback failed")
+		}).Error("sendPkt: raw UDP fallback failed")
 	}
 	return false
 }
@@ -370,13 +375,13 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 
 	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
 	if err != nil {
+		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
+			return nil
+		}
 		if stderrors.Is(err, ErrAnyfromBindFailed) {
 			// Return the error instead of silently dropping. The caller decides
 			// whether the packet loss is acceptable (reply path) or must be retried.
 			return err
-		}
-		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
-			return nil
 		}
 		if errorEnabled {
 			log.WithFields(logrus.Fields{
@@ -395,7 +400,7 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 
 	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
 	if err != nil {
-		if tryRawUDPv6Fallback(log, data, from, realTo, debugEnabled, errorEnabled, "write-to-udp", err) {
+		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "write-to-udp", err) {
 			return nil
 		}
 		if errorEnabled {
@@ -443,53 +448,6 @@ func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPo
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
 	return sendPktWithCacheProvider(log, data, from, realTo, afp, nil)
-}
-
-func sendPktFresh(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort) error {
-	bindAddr, writeAddr := normalizeSendPktAddrFamily(from, realTo)
-	uConn, err := DefaultAnyfromPool.createAnyfromSocket(bindAddr, 0)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = uConn.Close() }()
-	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
-	return err
-}
-
-func buildPktInfoOOB(from netip.AddrPort) []byte {
-	if !from.IsValid() {
-		return nil
-	}
-	if from.Addr().Is4() || from.Addr().Is4In6() {
-		oob := make([]byte, unix.CmsgSpace(syscall.SizeofInet4Pktinfo))
-		h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
-		h.Level = syscall.IPPROTO_IP
-		h.Type = syscall.IP_PKTINFO
-		h.SetLen(unix.CmsgLen(syscall.SizeofInet4Pktinfo))
-		data := oob[unix.CmsgSpace(0) : unix.CmsgSpace(0)+syscall.SizeofInet4Pktinfo]
-		pktinfo := (*syscall.Inet4Pktinfo)(unsafe.Pointer(&data[0]))
-		addr := from.Addr().Unmap().As4()
-		pktinfo.Spec_dst = addr
-		return oob
-	}
-
-	oob := make([]byte, unix.CmsgSpace(syscall.SizeofInet6Pktinfo))
-	h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
-	h.Level = syscall.IPPROTO_IPV6
-	h.Type = syscall.IPV6_PKTINFO
-	h.SetLen(unix.CmsgLen(syscall.SizeofInet6Pktinfo))
-	data := oob[unix.CmsgSpace(0) : unix.CmsgSpace(0)+syscall.SizeofInet6Pktinfo]
-	pktinfo := (*syscall.Inet6Pktinfo)(unsafe.Pointer(&data[0]))
-	pktinfo.Addr = from.Addr().As16()
-	return oob
-}
-
-func sendPktViaListener(conn *net.UDPConn, data []byte, from netip.AddrPort, realTo netip.AddrPort) error {
-	if conn == nil {
-		return fmt.Errorf("nil udp listener")
-	}
-	_, _, err := conn.WriteMsgUDPAddrPort(data, buildPktInfoOOB(from), realTo)
-	return err
 }
 
 func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender, recordDownload func(int64)) error {
@@ -904,7 +862,6 @@ afterSniffing:
 	if routingResult.Mark == 0 {
 		routingResult.Mark = c.soMarkFromDae
 	}
-
 	// Dial and send.
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.

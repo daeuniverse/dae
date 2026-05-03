@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -915,9 +915,6 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 		}
 		return update
 	}
-	collection.Latencies10.AppendLatency(Timeout)
-	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
-
 	// UDP/TCP robustness: only mark unavailable after consecutive failures.
 	// This protects against transient network interference.
 	threshold := 1

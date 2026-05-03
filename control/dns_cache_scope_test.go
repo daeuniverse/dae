@@ -115,6 +115,19 @@ func dnsAnswerIPv4(t *testing.T, msg *dnsmessage.Msg) string {
 	return netip.MustParseAddr(a.A.String()).String()
 }
 
+func readUDPDNSResponse(t *testing.T, conn *net.UDPConn) (*dnsmessage.Msg, netip.AddrPort) {
+	t.Helper()
+
+	buf := make([]byte, 2048)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	n, from, err := conn.ReadFromUDPAddrPort(buf)
+	require.NoError(t, err)
+
+	var msg dnsmessage.Msg
+	require.NoError(t, msg.Unpack(buf[:n]))
+	return &msg, from
+}
+
 func setScopedBestDialerChooser(ctrl *DnsController, chooser func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error)) {
 	rt := ctrl.runtime()
 	if rt == nil {
@@ -233,4 +246,153 @@ func TestDnsController_AsIsSingleflightIsScopedByResolver(t *testing.T) {
 	require.NoError(t, <-errCh)
 	require.Equal(t, "8.8.8.8", dnsAnswerIPv4(t, writer1.Message()))
 	require.Equal(t, "1.1.1.1", dnsAnswerIPv4(t, writer2.Message()))
+}
+
+func TestDnsController_Handle_LoopbackReplyInjectionDeliversMissAndCacheHit(t *testing.T) {
+	originalFactory := dnsForwarderFactory
+	oldAnyfromPool := DefaultAnyfromPool
+	DefaultAnyfromPool = newTestAnyfromPoolWithoutJanitor()
+	t.Cleanup(func() {
+		dnsForwarderFactory = originalFactory
+		DefaultAnyfromPool.Reset()
+		DefaultAnyfromPool = oldAnyfromPool
+	})
+
+	ctrl := newScopedDnsController(t)
+	setScopedBestDialerChooser(ctrl, func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
+		return &dialArgument{
+			l4proto:    consts.L4ProtoStr_UDP,
+			ipversion:  consts.IpVersionStr_4,
+			bestTarget: req.realDst,
+		}, nil
+	})
+
+	var forwardCalls atomic.Int32
+	dnsForwarderFactory = func(upstream *componentdns.Upstream, dialArg dialArgument, _ *logrus.Logger) (DnsForwarder, error) {
+		return &stubDnsForwarder{forward: func(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+			forwardCalls.Add(1)
+			return dnsAResponseMsg("loopback.test.", "198.51.100.53"), nil
+		}}, nil
+	}
+
+	replyConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = replyConn.Close()
+	})
+
+	clientConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+	})
+
+	listenerConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = listenerConn.Close()
+	})
+
+	replyAddr := replyConn.LocalAddr().(*net.UDPAddr).AddrPort()
+	clientAddr := clientConn.LocalAddr().(*net.UDPAddr).AddrPort()
+	af := &Anyfrom{UDPConn: replyConn, ttl: AnyfromTimeout}
+	af.RefreshTtl()
+
+	shard := DefaultAnyfromPool.shardFor(replyAddr)
+	shard.mu.Lock()
+	shard.pool[replyAddr] = af
+	shard.mu.Unlock()
+
+	req := &udpRequest{
+		realSrc:       clientAddr,
+		realDst:       replyAddr,
+		src:           clientAddr,
+		lConn:         listenerConn,
+		routingResult: &bpfRoutingResult{},
+	}
+
+	firstQuery := new(dnsmessage.Msg)
+	firstQuery.Id = 0x4242
+	firstQuery.SetQuestion("loopback.test.", dnsmessage.TypeA)
+	require.NoError(t, ctrl.Handle_(context.Background(), firstQuery, req))
+
+	firstResp, firstFrom := readUDPDNSResponse(t, clientConn)
+	require.Equal(t, replyAddr, firstFrom)
+	require.Equal(t, firstQuery.Id, firstResp.Id)
+	require.True(t, firstResp.Response)
+	require.Equal(t, "198.51.100.53", dnsAnswerIPv4(t, firstResp))
+	require.EqualValues(t, 1, forwardCalls.Load(), "cold miss should resolve upstream once")
+
+	cacheKey := ctrl.responseCacheKey(ctrl.cacheKey("loopback.test.", dnsmessage.TypeA), req, consts.DnsRequestOutboundIndex_AsIs, nil)
+	require.Eventually(t, func() bool {
+		resp, _ := ctrl.LookupDnsRespCache_(firstQuery, cacheKey, false)
+		return len(resp) > 0
+	}, time.Second, 10*time.Millisecond, "expected async DNS cache population after the first reply")
+
+	secondQuery := new(dnsmessage.Msg)
+	secondQuery.Id = 0x5353
+	secondQuery.SetQuestion("loopback.test.", dnsmessage.TypeA)
+	require.NoError(t, ctrl.Handle_(context.Background(), secondQuery, req))
+
+	secondResp, secondFrom := readUDPDNSResponse(t, clientConn)
+	require.Equal(t, replyAddr, secondFrom)
+	require.Equal(t, secondQuery.Id, secondResp.Id)
+	require.True(t, secondResp.Response)
+	require.Equal(t, "198.51.100.53", dnsAnswerIPv4(t, secondResp))
+	require.EqualValues(t, 1, forwardCalls.Load(), "warm cache hit should not resolve upstream again")
+}
+
+func TestDnsController_OptimisticCacheBackgroundRefreshBypassesStaleCache(t *testing.T) {
+	originalFactory := dnsForwarderFactory
+	t.Cleanup(func() {
+		dnsForwarderFactory = originalFactory
+	})
+
+	ctrl := newScopedDnsController(t)
+	ctrl.optimisticCacheEnabled.Store(true)
+	ctrl.optimisticCacheTtl.Store(60)
+	setScopedBestDialerChooser(ctrl, func(ctx context.Context, req *udpRequest, upstream *componentdns.Upstream) (*dialArgument, error) {
+		return &dialArgument{
+			l4proto:    consts.L4ProtoStr_UDP,
+			ipversion:  consts.IpVersionStr_4,
+			bestTarget: req.realDst,
+		}, nil
+	})
+
+	var forwardCalls atomic.Int32
+	dnsForwarderFactory = func(upstream *componentdns.Upstream, dialArg dialArgument, _ *logrus.Logger) (DnsForwarder, error) {
+		return &stubDnsForwarder{forward: func(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+			forwardCalls.Add(1)
+			return dnsAResponseMsg("stale.test.", "198.51.100.2"), nil
+		}}, nil
+	}
+
+	req := &udpRequest{
+		realSrc:       netip.MustParseAddrPort("127.0.0.1:53000"),
+		realDst:       netip.MustParseAddrPort("8.8.8.8:53"),
+		routingResult: &bpfRoutingResult{},
+	}
+	now := time.Now()
+	baseCacheKey := ctrl.cacheKey("stale.test.", dnsmessage.TypeA)
+	cacheKey := ctrl.responseCacheKey(baseCacheKey, req, consts.DnsRequestOutboundIndex_AsIs, nil)
+	require.NoError(t, ctrl.UpdateDnsCacheTtlWithKey(cacheKey, "stale.test.", dnsmessage.TypeA, dnsAResponseMsg("stale.test.", "198.51.100.1").Answer, nil, nil, 1))
+	cache := ctrl.LookupDnsRespCache(cacheKey, true)
+	require.NotNil(t, cache)
+	cache.Deadline = now.Add(-time.Second)
+	cache.deadlineNano.Store(cache.Deadline.UnixNano())
+	query := new(dnsmessage.Msg)
+	query.Id = 0x7070
+	query.SetQuestion("stale.test.", dnsmessage.TypeA)
+	writer := &captureResponseWriter{}
+
+	require.NoError(t, ctrl.HandleWithResponseWriter_(context.Background(), query, req, writer))
+	require.Equal(t, "198.51.100.1", dnsAnswerIPv4(t, writer.Message()))
+
+	require.Eventually(t, func() bool {
+		return forwardCalls.Load() == 1
+	}, time.Second, 10*time.Millisecond, "background refresh should query upstream once")
+	require.Eventually(t, func() bool {
+		cache := ctrl.LookupDnsRespCache(cacheKey, true)
+		return cache != nil && cache.IncludeIp(netip.MustParseAddr("198.51.100.2"))
+	}, time.Second, 10*time.Millisecond, "background refresh should replace stale cache")
 }

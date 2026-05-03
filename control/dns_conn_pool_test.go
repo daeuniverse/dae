@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -24,6 +24,8 @@ type trackedTestConn struct {
 	closeOnce  sync.Once
 	closeCalls atomic.Int32
 	closeCh    chan struct{}
+	deadlineMu sync.Mutex
+	deadlines  []time.Time
 }
 
 func (c *trackedTestConn) Read(_ []byte) (int, error) {
@@ -44,7 +46,10 @@ func (c *trackedTestConn) Close() error {
 	return nil
 }
 
-func (c *trackedTestConn) SetDeadline(_ time.Time) error {
+func (c *trackedTestConn) SetDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	c.deadlines = append(c.deadlines, t)
+	c.deadlineMu.Unlock()
 	return nil
 }
 
@@ -54,6 +59,44 @@ func (c *trackedTestConn) SetReadDeadline(_ time.Time) error {
 
 func (c *trackedTestConn) SetWriteDeadline(_ time.Time) error {
 	return nil
+}
+
+func (c *trackedTestConn) deadlineSnapshot() []time.Time {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+
+	return append([]time.Time(nil), c.deadlines...)
+}
+
+func TestUdpConnPool_GetClearsDeadlineBeforeReuse(t *testing.T) {
+	tracked := &trackedTestConn{}
+	p := newUdpConnPool(1, 1, func(ctx context.Context) (netproxy.Conn, error) {
+		return tracked, nil
+	})
+	defer func() { _ = p.close() }()
+
+	conn, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, tracked, conn)
+
+	futureDeadline := time.Now().Add(time.Second)
+	require.NoError(t, conn.SetDeadline(futureDeadline))
+	p.put(conn)
+
+	deadlines := tracked.deadlineSnapshot()
+	require.Len(t, deadlines, 1)
+	require.False(t, deadlines[0].IsZero())
+
+	reused, err := p.get(context.Background())
+	require.NoError(t, err)
+	require.Same(t, tracked, reused)
+
+	deadlines = tracked.deadlineSnapshot()
+	require.Len(t, deadlines, 2)
+	require.False(t, deadlines[0].IsZero())
+	require.True(t, deadlines[1].IsZero())
+
+	p.put(reused)
 }
 
 func TestUdpConnPool_CloseWhilePut_NoPanic(t *testing.T) {

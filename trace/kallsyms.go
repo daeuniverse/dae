@@ -2,7 +2,7 @@
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package trace
@@ -33,6 +33,7 @@ func ReadKallsyms() {
 	if err != nil {
 		logrus.Fatalf("failed to open /proc/kallsyms: %v", err)
 	}
+	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -48,6 +49,9 @@ func ReadKallsyms() {
 		kallsyms = append(kallsyms, Symbol{typ, name, addr})
 		kallsymsByName[name] = Symbol{typ, name, addr}
 		kallsymsByAddr[addr] = Symbol{typ, name, addr}
+	}
+	if err := scanner.Err(); err != nil {
+		logrus.Fatalf("failed to read /proc/kallsyms: %v", err)
 	}
 	sort.Slice(kallsyms, func(i, j int) bool {
 		return kallsyms[i].Addr < kallsyms[j].Addr

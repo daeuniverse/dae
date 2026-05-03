@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -81,7 +81,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		// ARRAY map key: outbound_id * 6 + domain * 2 + ipversion
 		// domain: 0=TCP, 1=DNS UDP, 2=data UDP; ipversion: 0=IPv4, 1=IPv6
 		key := outboundConnectivityMapKey(outbound, networkType)
-		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+		if err := c.PeekBpf().OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
 			c.log.WithFields(logrus.Fields{
 				"alive":    alive,
 				"network":  networkType.StringWithoutDns(),

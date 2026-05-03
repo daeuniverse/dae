@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package routing
@@ -283,9 +283,6 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	}
 	o.Logger.Debugf("Read geoip \"%v:%v\" from %v", filename, code, filePath)
 	geoIp, err := geodata.UnmarshalGeoIp(o.Logger, filePath, code)
-	if err != nil {
-		return nil, err
-	}
 	if err != nil {
 		return nil, err
 	}

@@ -2,7 +2,7 @@
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -45,13 +45,14 @@ func createNetkitDeviceViaNetlink(log *logrus.Logger, cfg *NetkitConfig) error {
 		TxQLen: cfg.TxQLen,
 	}
 
-	// Create Netkit device configuration
-	// Mode: L3 (layer 3) - required for dae's use case
+	// Create Netkit device configuration.
+	// Mode: L2 keeps Ethernet header/MAC semantics aligned with dae's
+	// existing veth datapath and IPv6 neighbor setup.
 	// Policy: FORWARD (pass traffic normally)
 	// PeerPolicy: FORWARD (pass traffic on peer side)
 	netkit := &netlink.Netkit{
 		LinkAttrs:  attrs,
-		Mode:       netlink.NETKIT_MODE_L3,
+		Mode:       netlink.NETKIT_MODE_L2,
 		Policy:     netlink.NETKIT_POLICY_FORWARD,
 		PeerPolicy: netlink.NETKIT_POLICY_FORWARD,
 	}

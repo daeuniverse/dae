@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -38,28 +38,6 @@ func sendRuntimeTrackedPkt(log *logrus.Logger, data []byte, from netip.AddrPort,
 	}
 	// UDP datagrams are treated as all-or-nothing here: sendPkt returns nil only
 	// after a full packet send, so len(data) is the correct accounted size.
-	recordDownload(int64(len(data)))
-	return nil
-}
-
-func sendRuntimeTrackedPktFresh(log *logrus.Logger, data []byte, from netip.AddrPort, to netip.AddrPort, recordDownload func(int64)) error {
-	recordDownload = normalizeTrafficRecord(recordDownload)
-	if err := sendPktFresh(log, data, from, to); err != nil {
-		return err
-	}
-	// UDP datagrams are treated as all-or-nothing here: sendPktFresh returns nil
-	// only after a full packet send, so len(data) is the correct accounted size.
-	recordDownload(int64(len(data)))
-	return nil
-}
-
-func sendRuntimeTrackedPktViaListener(conn *net.UDPConn, data []byte, from netip.AddrPort, to netip.AddrPort, recordDownload func(int64)) error {
-	recordDownload = normalizeTrafficRecord(recordDownload)
-	if err := sendPktViaListener(conn, data, from, to); err != nil {
-		return err
-	}
-	// UDP datagrams are treated as all-or-nothing here: sendPktViaListener
-	// returns nil only after a full packet send, so len(data) is safe to record.
 	recordDownload(int64(len(data)))
 	return nil
 }

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@daeuniverse.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@daeuniverse.org>
  */
 
 package control
@@ -39,11 +39,34 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 		}
 	}()
 
-	// Perform the actual DNS resolution
-	// This will update the cache with fresh data
-	baseCacheKey := dnsCacheBaseKey(cacheKey)
-	_, err := c.resolveForSingleflight(ctx, dnsMessage, req, upstreamIndex, upstream, cacheKey, baseCacheKey)
+	if upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
+		return
+	}
+
+	refreshMsg := dnsMessage.Copy()
+	if refreshMsg == nil || len(refreshMsg.Question) == 0 {
+		return
+	}
+	refreshMsg.Response = false
+	refreshMsg.Answer = nil
+	refreshMsg.Ns = nil
+	data, err := refreshMsg.Pack()
 	if err != nil {
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"cacheKey": cacheKey,
+				"error":    err,
+			}).Debugf("background refresh failed to pack query")
+		}
+		return
+	}
+
+	// Perform the actual DNS resolution and bypass the stale cache entry that
+	// triggered this refresh. Re-entering handleWithResponseWriter_ here would
+	// hit the same stale cache and mark the refresh complete without contacting
+	// upstream.
+	baseCacheKey := dnsCacheBaseKey(cacheKey)
+	if err := c.dialSend(ctx, 0, req, data, refreshMsg.Id, upstream, false, nil, cacheKey, baseCacheKey); err != nil {
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			c.log.WithFields(logrus.Fields{
 				"cacheKey": cacheKey,

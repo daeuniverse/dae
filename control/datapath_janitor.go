@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -29,11 +29,9 @@ type connStateJanitorScratch struct {
 	cookiePidDelete []uint64
 
 	udpKeys   []bpfTuplesKey
-	udpValues []bpfUdpConnState
+	udpValues []bpfConnState
 	udpDelete []bpfTuplesKey
 
-	tcpKeys   []bpfTuplesKey
-	tcpValues []bpfTcpConnState
 	tcpDelete []bpfTuplesKey
 
 	routingHandoffKeys   []bpfTuplesKey

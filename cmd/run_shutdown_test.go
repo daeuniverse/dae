@@ -786,3 +786,29 @@ func TestReloadRetirementBehavior(t *testing.T) {
 		})
 	}
 }
+
+func TestReloadRetirementAbortsAfterDrainTimeout(t *testing.T) {
+	plane := &retirementBehaviorPlane{
+		fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
+	}
+
+	retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, false, true, 10*time.Millisecond)
+
+	if !plane.abortCalled.Load() {
+		t.Fatal("expected AbortConnections to be called after drain timeout")
+	}
+}
+
+func TestReloadRetirementAbortsAfterDrainCancel(t *testing.T) {
+	plane := &retirementBehaviorPlane{
+		fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	retireControlPlaneConnections(newDiscardLogger(), ctx, plane, false, true, time.Second)
+
+	if !plane.abortCalled.Load() {
+		t.Fatal("expected AbortConnections to be called after drain cancellation")
+	}
+}

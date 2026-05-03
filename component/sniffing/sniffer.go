@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package sniffing
@@ -191,7 +191,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	defer s.readMu.Unlock()
 	var oerr error
 	defer func() {
-		if err != nil {
+		if err != nil && oerr != nil {
 			err = fmt.Errorf("%w: %w", oerr, err)
 		}
 	}()
@@ -312,8 +312,8 @@ func (s *Sniffer) CompactPacketState() {
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
 
-	s.readMu.RLock()
-	defer s.readMu.RUnlock()
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 
 	if s.dataError != nil {
 		n, _ = s.buf.Read(p)

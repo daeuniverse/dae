@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package domain_matcher
@@ -32,15 +32,18 @@ func (n *GoRegexpNfa) AddSet(bitIndex int, patterns []string, typ consts.Routing
 	switch typ {
 	case consts.RoutingDomainKey_Full:
 		for _, d := range patterns {
-			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "^"+d+"$")
+			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "^"+regexp.QuoteMeta(d)+"$")
 		}
 	case consts.RoutingDomainKey_Suffix:
 		for _, d := range patterns {
-			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "."+strings.TrimPrefix(d, ".")+"$")
-			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "^"+d+"$")
+			quoted := regexp.QuoteMeta(strings.TrimPrefix(d, "."))
+			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "\\."+quoted+"$")
+			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], "^"+regexp.QuoteMeta(d)+"$")
 		}
 	case consts.RoutingDomainKey_Keyword:
-		n.toBuild[bitIndex] = append(n.toBuild[bitIndex], patterns...)
+		for _, d := range patterns {
+			n.toBuild[bitIndex] = append(n.toBuild[bitIndex], regexp.QuoteMeta(d))
+		}
 	case consts.RoutingDomainKey_Regex:
 		for _, d := range patterns {
 			// Check if it is a valid regexp.

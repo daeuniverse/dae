@@ -1,6 +1,6 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
-*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+*  Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -17,7 +17,10 @@ import (
 
 const SysctlPrefixPath = "/proc/sys/"
 
-var sysctl *SysctlManager
+var (
+	sysctl   *SysctlManager
+	sysctlMu sync.Mutex
+)
 
 type SysctlManager struct {
 	log          *logrus.Logger
@@ -27,6 +30,9 @@ type SysctlManager struct {
 }
 
 func InitSysctlManager(log *logrus.Logger) (err error) {
+	sysctlMu.Lock()
+	defer sysctlMu.Unlock()
+
 	if sysctl != nil {
 		sysctl.mux.Lock()
 		sysctl.log = log

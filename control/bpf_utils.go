@@ -2,7 +2,7 @@
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -25,6 +25,7 @@ import (
 	daerrors "github.com/daeuniverse/dae/common/errors"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 // ============================================================================
@@ -119,7 +120,43 @@ var (
 
 	CheckBatchDeleteFeatureOnce sync.Once
 	SimulateBatchDelete         bool
+
+	bpfMapBatchLookup = func(m *ebpf.Map, cursor *ebpf.MapBatchCursor, keysOut interface{}, valuesOut interface{}) (int, error) {
+		return m.BatchLookup(cursor, keysOut, valuesOut, nil)
+	}
 )
+
+const (
+	bpfMapBatchDeleteAllLookupSize = 256
+	bpfMapBatchDeleteAllChunkSize  = 1024
+)
+
+func initBatchDeleteFeatureFlags() {
+	CheckBatchDeleteFeatureOnce.Do(func() {
+		version, e := internal.KernelVersion()
+		if e != nil {
+			SimulateBatchDelete = true
+			return
+		}
+		// BatchDelete requires kernel 5.6+ for BPF_MAP_TYPE_BATCH operations.
+		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
+			SimulateBatchDelete = true
+		}
+	})
+}
+
+func isBatchLookupUnsupportedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, unix.ENOTSUP) ||
+		errors.Is(err, unix.EOPNOTSUPP) ||
+		errors.Is(err, unix.ENOSYS) {
+		return true
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "map batch api") && strings.Contains(errStr, "not supported")
+}
 
 func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
 	CheckBatchUpdateFeatureOnce.Do(func() {
@@ -174,17 +211,7 @@ func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *
 // BpfMapBatchDelete deletes keys and ignores ErrKeyNotExist.
 // Uses kernel batch delete API when available (5.6+), otherwise falls back to loop.
 func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
-	CheckBatchDeleteFeatureOnce.Do(func() {
-		version, e := internal.KernelVersion()
-		if e != nil {
-			SimulateBatchDelete = true
-			return
-		}
-		// BatchDelete requires kernel 5.6+ for BPF_MAP_TYPE_BATCH operations
-		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
-			SimulateBatchDelete = true
-		}
-	})
+	initBatchDeleteFeatureFlags()
 
 	if !SimulateBatchDelete {
 		// Use kernel BatchDelete API - much faster for large batches
@@ -237,6 +264,64 @@ func BpfMapDeleteAll[K any, V any](m *ebpf.Map) error {
 	return nil
 }
 
+// BpfMapBatchDeleteAll deletes all entries in a map using batch operations.
+// It degrades safely to BpfMapDeleteAll on kernels without batch-map support.
+// To avoid large temporary allocations, keys are deleted in fixed-size chunks.
+func BpfMapBatchDeleteAll[K any, V any](m *ebpf.Map) error {
+	if m == nil {
+		return fmt.Errorf("nil map")
+	}
+
+	initBatchDeleteFeatureFlags()
+	if SimulateBatchDelete {
+		return BpfMapDeleteAll[K, V](m)
+	}
+
+	lookupKeys := make([]K, bpfMapBatchDeleteAllLookupSize)
+	lookupValues := make([]V, bpfMapBatchDeleteAllLookupSize)
+	keysToDelete := make([]K, 0, bpfMapBatchDeleteAllChunkSize)
+
+	flushDeleteChunk := func() error {
+		if len(keysToDelete) == 0 {
+			return nil
+		}
+		if _, delErr := BpfMapBatchDelete(m, keysToDelete); delErr != nil {
+			return fmt.Errorf("batch delete all in map %s: %w", m.String(), delErr)
+		}
+		keysToDelete = keysToDelete[:0]
+		return nil
+	}
+
+	var cursor ebpf.MapBatchCursor
+	for {
+		count, err := bpfMapBatchLookup(m, &cursor, lookupKeys, lookupValues)
+		if count > 0 {
+			for i := range count {
+				keysToDelete = append(keysToDelete, lookupKeys[i])
+				if len(keysToDelete) >= bpfMapBatchDeleteAllChunkSize {
+					if flushErr := flushDeleteChunk(); flushErr != nil {
+						return flushErr
+					}
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, ebpf.ErrKeyNotExist) {
+				break
+			}
+			if isBatchLookupUnsupportedErr(err) {
+				return BpfMapDeleteAll[K, V](m)
+			}
+			return fmt.Errorf("batch lookup map %s: %w", m.String(), err)
+		}
+	}
+
+	if flushErr := flushDeleteChunk(); flushErr != nil {
+		return flushErr
+	}
+	return nil
+}
+
 // detectCgroupPath returns the first-found mount point of type cgroup2
 // and stores it in the cgroupPath global variable.
 // Copied from https://github.com/cilium/ebpf/blob/v0.10.0/examples/cgroup_skb/main.go
@@ -250,10 +335,13 @@ func detectCgroupPath() (string, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		// example fields: cgroup2 /sys/fs/cgroup/unified cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
-		fields := strings.Split(scanner.Text(), " ")
+		fields := strings.Fields(scanner.Text())
 		if len(fields) >= 3 && fields[2] == "cgroup2" {
 			return fields[1], nil
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read /proc/mounts: %w", err)
 	}
 
 	return "", errors.New("cgroup2 not mounted")
@@ -279,12 +367,16 @@ func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err err
 }
 
 type loadBpfOptions struct {
-	PinPath             string
-	BigEndianTproxyPort uint32
-	CollectionOptions   *ebpf.CollectionOptions
+	PinPath                string
+	BigEndianTproxyPort    uint32
+	CollectionOptions      *ebpf.CollectionOptions
+	ConnStateMapMaxEntries uint32
 }
 
-const fastSockPlaceholderMaxEntries = 1
+const (
+	defaultConnStateMapMaxEntries = 65536 * 4
+	fastSockPlaceholderMaxEntries = 1
+)
 
 func loadBpfObjectsWithConstantsAndCustomizer(
 	obj interface{},
@@ -313,13 +405,26 @@ func disablePinnedConnStateMaps(spec *ebpf.CollectionSpec) error {
 	if spec == nil {
 		return fmt.Errorf("nil collection spec")
 	}
-	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
-		m, ok := spec.Maps[mapName]
-		if !ok || m == nil {
-			return fmt.Errorf("missing map spec %q", mapName)
-		}
-		m.Pinning = ebpf.PinNone
+	m, ok := spec.Maps["conn_state_map"]
+	if !ok || m == nil {
+		return fmt.Errorf("missing map spec %q", "conn_state_map")
 	}
+	m.Pinning = ebpf.PinNone
+	return nil
+}
+
+func tuneConnStateBpfMap(spec *ebpf.CollectionSpec, maxEntries uint32) error {
+	if spec == nil {
+		return fmt.Errorf("nil collection spec")
+	}
+	if maxEntries == 0 {
+		maxEntries = defaultConnStateMapMaxEntries
+	}
+	connState, ok := spec.Maps["conn_state_map"]
+	if !ok || connState == nil {
+		return fmt.Errorf("missing map spec %q", "conn_state_map")
+	}
+	connState.MaxEntries = maxEntries
 	return nil
 }
 
@@ -339,8 +444,11 @@ func tunePlaceholderBpfMaps(spec *ebpf.CollectionSpec) error {
 	return nil
 }
 
-func customizeBpfMapSpecs(spec *ebpf.CollectionSpec) error {
+func customizeBpfMapSpecs(spec *ebpf.CollectionSpec, connStateMapMaxEntries uint32) error {
 	if err := disablePinnedConnStateMaps(spec); err != nil {
+		return err
+	}
+	if err := tuneConnStateBpfMap(spec, connStateMapMaxEntries); err != nil {
 		return err
 	}
 	if err := tunePlaceholderBpfMaps(spec); err != nil {
@@ -355,7 +463,7 @@ func cleanupPinnedConnStateMapFiles(log *logrus.Logger, pinPath string) int {
 	}
 
 	removed := 0
-	for _, mapName := range []string{"tcp_conn_state_map", "udp_conn_state_map"} {
+	for _, mapName := range []string{"conn_state_map", "tcp_conn_state_map", "udp_conn_state_map"} {
 		path := filepath.Join(pinPath, mapName)
 		if err := os.Remove(path); err != nil {
 			if !os.IsNotExist(err) && log != nil {
@@ -405,13 +513,13 @@ retryLoadBpf:
 		}
 	}
 
-	// Get peer MAC address. For L3 netkit devices, HardwareAddr may be empty.
-	// Use zero MAC in that case since L3 mode doesn't use MAC addresses.
+	// Get peer MAC address. Netkit is created in L2 mode so this should be
+	// populated, but keep the zero-MAC fallback for older or unusual kernels.
 	peerMac := [6]byte{}
 	hwAddr := GetDaeNetns().Dae0Peer().Attrs().HardwareAddr
 	if len(hwAddr) == 6 {
 		peerMac = [6]byte(hwAddr)
-	} // else: keep zero MAC for L3 netkit
+	}
 
 	constants := map[string]interface{}{
 		"PARAM": struct {
@@ -442,7 +550,9 @@ retryLoadBpf:
 		bpf,
 		opts.CollectionOptions,
 		constants,
-		customizeBpfMapSpecs,
+		func(spec *ebpf.CollectionSpec) error {
+			return customizeBpfMapSpecs(spec, opts.ConnStateMapMaxEntries)
+		},
 	); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.

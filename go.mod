@@ -47,6 +47,7 @@ require (
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dgryski/go-rc2 v0.0.0-20150621095337-8a9021637152 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
@@ -90,7 +91,6 @@ require (
 	github.com/dgryski/go-camellia v0.0.0-20191119043421-69a8a13fb23d // indirect
 	github.com/dgryski/go-idea v0.0.0-20170306091226-d2fb45a411fb // indirect
 	github.com/dgryski/go-metro v0.0.0-20250106013310-edb8663e5e33 // indirect
-	github.com/dgryski/go-rc2 v0.0.0-20150621095337-8a9021637152 // indirect
 	github.com/dlclark/regexp2 v1.11.5
 	github.com/eknkc/basex v1.0.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
@@ -112,11 +112,11 @@ require (
 	google.golang.org/grpc v1.79.1 // indirect
 )
 
-// Uncomment to use local dependencies for development:
-// replace github.com/olicesx/quic-go => ../daeuniverse-quic-go
+// Use optimized quic-go with B-tree node pooling + upstream cherry-picks on enhanced-with-fixes baseline.
+replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260428161614-e0d255ff807c
 
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use the pushed perf/complete-optimizations fork head with timeout and failover fixes applied.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260421051008-8de5a31bdbe1
+// Use the pushed perf/complete-optimizations fork head with QUIC window tuning + upstream cherry-picks.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-20260430013626-d7f10a0d1903
