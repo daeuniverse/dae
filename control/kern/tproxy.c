@@ -117,7 +117,6 @@ struct {
 	__type(key, struct redirect_tuple);
 	__type(value, struct redirect_entry);
 	__uint(max_entries, MAX_REDIRECT_TRACK_NUM);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
 } redirect_track SEC(".maps");
 
 struct ip_port {
@@ -193,7 +192,6 @@ struct {
 	__type(key, struct tuples_key);
 	__type(value, struct routing_handoff_entry);
 	__uint(max_entries, MAX_ROUTING_HANDOFF_NUM);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
 } routing_handoff_map SEC(".maps");
 
 // Array of LPM tries:
@@ -300,7 +298,6 @@ struct {
 	__type(key, __u64);
 	__type(value, struct pid_pname);
 	__uint(max_entries, MAX_COOKIE_PID_PNAME_MAPPING_NUM);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
 } cookie_pid_map SEC(".maps");
 
 // conn_state: shared TCP/UDP connection state with embedded routing.
@@ -374,7 +371,6 @@ struct {
 	__type(key, struct tuples_key);
 	__type(value, struct conn_state);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);  // Loader may override pinning on cold start.
-	__uint(map_flags, BPF_F_NO_PREALLOC);
 } conn_state_map SEC(".maps");
 
 // key=0: UDP conn overflow count; key=1: TCP conn overflow count.
