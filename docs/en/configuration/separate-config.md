@@ -103,6 +103,14 @@ group {
         filter: name(node1, node2)
         policy: fixed(0)
     }
+
+    weighted_random {
+        # add_weight biases random selection on top of the default weight 1.
+        # Here node2 has effective weight 5 while node1 keeps weight 1.
+        filter: name(node1)
+        filter: name(node2) [add_weight: 4]
+        policy: random
+    }
 }
 ```
 
