@@ -37,6 +37,17 @@ jobs:
             goarch: amd64
             goamd64: v3
           # END Linux AMD64 v1 v2 v3
+          # BEGIN Linux RISCV64 rva20u64 rva22u64 rva23u64
+          - goos: linux
+            goarch: riscv64
+            goriscv64: rva20u64
+          - goos: linux
+            goarch: riscv64
+            goriscv64: rva22u64
+          - goos: linux
+            goarch: riscv64
+            goriscv64: rva23u64
+          # END Linux RISCV64 rva20u64 rva22u64 rva23u64
       fail-fast: false
 
     runs-on: ubuntu-22.04
@@ -45,6 +56,7 @@ jobs:
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
+      GORISCV64: ${{ matrix.goriscv64 }}
       CGO_ENABLED: 0
 
     steps:
