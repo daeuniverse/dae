@@ -20,6 +20,8 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/features"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	daerrors "github.com/daeuniverse/dae/common/errors"
@@ -413,29 +415,37 @@ retryLoadBpf:
 		peerMac = [6]byte(hwAddr)
 	} // else: keep zero MAC for L3 netkit
 
+	hasBpfGetCurrentTask := uint8(0)
+	if err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask); err == nil {
+		hasBpfGetCurrentTask = 1
+		log.Debugf("bpf_get_current_task is supported")
+	} else {
+		log.Warnf("Kernel does not support bpf_get_current_task helper: %v; process names may be truncated or less accurate (degraded to bpf_get_current_comm)", err)
+	}
+
 	constants := map[string]interface{}{
 		"PARAM": struct {
-			tproxyPort      uint32
-			controlPlanePid uint32
-			dae0Ifindex     uint32
-			daeNetnsId      uint32
-			dae0peerMac     [6]byte
-			paddingAfterMac [2]uint8
-			useRedirectPeer uint8
-			padding1        uint8
-			padding2        uint16
-			daeSocketMark   uint32
+			tproxyPort           uint32
+			controlPlanePid      uint32
+			dae0Ifindex          uint32
+			daeNetnsId           uint32
+			dae0peerMac          [6]byte
+			paddingAfterMac      [2]uint8
+			useRedirectPeer      uint8
+			hasBpfGetCurrentTask uint8
+			padding2             uint16
+			daeSocketMark        uint32
 		}{
-			tproxyPort:      opts.BigEndianTproxyPort,
-			controlPlanePid: uint32(os.Getpid()),
-			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
-			daeNetnsId:      uint32(netnsID),
-			dae0peerMac:     peerMac,
-			paddingAfterMac: [2]uint8{0, 0},
-			useRedirectPeer: useRedirectPeer,
-			padding1:        0,
-			padding2:        0,
-			daeSocketMark:   soMarkFromDae,
+			tproxyPort:           opts.BigEndianTproxyPort,
+			controlPlanePid:      uint32(os.Getpid()),
+			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
+			daeNetnsId:           uint32(netnsID),
+			dae0peerMac:          peerMac,
+			paddingAfterMac:      [2]uint8{0, 0},
+			useRedirectPeer:      useRedirectPeer,
+			hasBpfGetCurrentTask: hasBpfGetCurrentTask,
+			padding2:             0,
+			daeSocketMark:        soMarkFromDae,
 		},
 	}
 	if err = loadBpfObjectsWithConstantsAndCustomizer(

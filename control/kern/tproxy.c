@@ -176,7 +176,7 @@ struct dae_param {
 	__u8 dae0peer_mac[6];
 	__u8 padding_after_mac[2]; // pad to align use_redirect_peer
 	__u8 use_redirect_peer;
-	__u8 padding1;
+	__u8 has_bpf_get_current_task;
 	__u16 padding2;
 	// dae_socket_mark is set on dae's own sockets (Anyfrom pool) to identify them.
 	// When bpf_sk_lookup_* finds a socket, we check this mark to skip dae's own sockets.
@@ -3304,6 +3304,17 @@ static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
 static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 {
 	int ret;
+
+	// Populate tgid and timestamp first
+	pid_pname->last_seen_ns = bpf_ktime_get_ns();
+	pid_pname->pid = bpf_get_current_pid_tgid() >> 32;
+
+	if (!PARAM.has_bpf_get_current_task) {
+		if (bpf_get_current_comm(&pid_pname->pname, sizeof(pid_pname->pname)))
+			pid_pname->pname[0] = '\0';
+		return 0;
+	}
+
 	// Get pointer to args string.
 	struct task_struct *task = (void *)bpf_get_current_task();
 	char *args = (void *)BPF_CORE_READ(task, mm, arg_start);
@@ -3337,9 +3348,6 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 		}
 	}
 
-	// Populate tgid
-	pid_pname->last_seen_ns = bpf_ktime_get_ns();
-	pid_pname->pid = bpf_get_current_pid_tgid() >> 32;
 	return 0;
 }
 
