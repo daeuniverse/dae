@@ -162,7 +162,7 @@ struct dae_param {
 	__u8 dae0peer_mac[6];
 	__u8 padding_after_mac[2]; // pad to align use_redirect_peer
 	__u8 use_redirect_peer;
-	__u8 padding1;
+	__u8 has_bpf_get_current_task;
 	__u16 padding2;
 	// dae_socket_mark is set on dae's own sockets (Anyfrom pool) to identify them.
 	// When bpf_sk_lookup_* finds a socket, we check this mark to skip dae's own sockets.
@@ -2974,15 +2974,80 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	return bpf_redirect(redirect_entry->ifindex, flags);
 }
 
-/* Get pid and command name from current task. */
+struct get_real_comm_ctx {
+	char *arg_buf;
+	u8 l;
+};
+
+static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
+{
+	/*
+	* For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
+	* We extract "sddm-helper" from it.
+	*/
+	struct get_real_comm_ctx *ctx = (struct get_real_comm_ctx *)data;
+
+	if (index >= MAX_ARG_LEN) // always false, just to make verifier happy
+		return 1;
+	if (unlikely(ctx->arg_buf[index] == '/'))
+		ctx->l = index + 1;
+	if (unlikely(ctx->arg_buf[index] == ' ' ||
+		     ctx->arg_buf[index] == '\0')) {
+		// Write to dst.
+		ctx->arg_buf[index] = '\0';
+		return 1;
+	}
+	return 0;
+}
+
+/// Parse command line arguments to get the real command name and tgid.
 static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 {
-	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	int ret;
 
+	// Populate tgid and timestamp first
 	pid_pname->last_seen_ns = bpf_ktime_get_ns();
-	pid_pname->pid = pid_tgid >> 32;
-	if (bpf_get_current_comm(&pid_pname->pname, sizeof(pid_pname->pname)))
-		pid_pname->pname[0] = '\0';
+	pid_pname->pid = bpf_get_current_pid_tgid() >> 32;
+
+	if (!PARAM.has_bpf_get_current_task) {
+		if (bpf_get_current_comm(&pid_pname->pname, sizeof(pid_pname->pname)))
+			pid_pname->pname[0] = '\0';
+		return 0;
+	}
+
+	// Get pointer to args string.
+	struct task_struct *task = (void *)bpf_get_current_task();
+	char *args = (void *)BPF_CORE_READ(task, mm, arg_start);
+
+	// Read args to buffer.
+	char arg_buf[MAX_ARG_LEN]; // Allocate it out of ctx to pass CO-RE
+	struct get_real_comm_ctx ctx = {};
+
+	ctx.arg_buf = arg_buf;
+	ret = bpf_core_read_user_str(arg_buf, MAX_ARG_LEN, args);
+	if (unlikely(ret < 0)) {
+		bpf_printk(
+			"failed to read process name: bpf_core_read_user_str: %d",
+			ret);
+		return ret;
+	}
+
+	// Find range of command name.
+	ret = bpf_loop(MAX_ARG_LEN, get_real_comm_loop_cb, &ctx, 0);
+	if (unlikely(ret < 0))
+		return ret;
+
+	u8 offset = ctx.l;
+
+	for (u8 i = 0; i < TASK_COMM_LEN; i++) {
+		if (offset + i < MAX_ARG_LEN && arg_buf[offset + i] != '\0') {
+			pid_pname->pname[i] = arg_buf[offset + i];
+		} else {
+			pid_pname->pname[i] = '\0';
+			break;
+		}
+	}
+
 	return 0;
 }
 
