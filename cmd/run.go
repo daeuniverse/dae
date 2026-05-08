@@ -1096,6 +1096,11 @@ func shutdownAfterSignalWithHandoff(
 			}
 		}
 	}
+	// After all control planes are closed, reset global UDP state to stop
+	// background janitors and release pooled sockets. This must only run during
+	// process shutdown; hot reload must never reset shared global pools.
+	control.ResetGlobalUdpState()
+
 	if len(closeErrs) > 0 {
 		return fmt.Errorf("close control plane: %w", errors.Join(closeErrs...))
 	}

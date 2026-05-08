@@ -3576,7 +3576,13 @@ func (c *ControlPlane) closeTail() error {
 		}
 	}
 
-	ResetGlobalUdpState() // process shutdown: stop global UDP janitors
+	// Note: ResetGlobalUdpState() is intentionally NOT called here.
+	// Global UDP pools (DefaultUdpEndpointPool, DefaultUdpTaskPool, etc.)
+	// are shared across reload generations. Calling ResetGlobalUdpState()
+	// during closeTail would corrupt the new generation's live UDP state.
+	// The caller (shutdownAfterSignalWithHandoff in cmd/run.go) calls
+	// ResetGlobalUdpState() after all control planes have been closed
+	// during process termination.
 
 	c.releaseRetainedState()
 
