@@ -3531,7 +3531,7 @@ func (c *ControlPlane) MarkRetired() {
 func ResetGlobalUdpState() {
 	DefaultUdpEndpointPool.Reset()
 	DefaultAnyfromPool.Reset()
-	DefaultUdpTaskPool.Reset()
+	DefaultUdpTaskPool.Close()
 	DefaultPacketSnifferSessionMgr.Close() // Close() stops janitor goroutines; safe for shutdown path
 	ResetUdpLogLimiters()
 }

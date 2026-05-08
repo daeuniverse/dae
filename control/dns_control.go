@@ -2364,22 +2364,24 @@ func (c *DnsController) handleWithResponseWriterInternal(ctx context.Context, dn
 		return fmt.Errorf("DNS request expected but DNS response received")
 	}
 
-	// Get qtype for future preference check (RFC 8305 Happy Eyeballs).
+	// Get qtype for preference handling (RFC 8305 Happy Eyeballs).
 	var qtype uint16
 	if len(dnsMessage.Question) != 0 {
 		qtype = dnsMessage.Question[0].Qtype
 	}
-	_ = qtype // used when ip_version_prefer is implemented
 
 	// Fast path: no ip_version_prefer set, bypass all preference logic
 	if c.currentQtypePrefer() == 0 {
 		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 	}
 
-	// TODO: implement RFC 8305 Happy Eyeballs preference logic for A/AAAA queries.
-	// All three branches currently call the same function with identical parameters.
-	// When ip_version_prefer is set, the response should be delayed to prefer the
-	// preferred address family result, but this is not yet implemented.
+	// Only A and AAAA responses participate in preference waiting. The wait is
+	// applied after upstream resolution so cached/direct non-address responses
+	// keep the fast path.
+	if qtype != dnsmessage.TypeA && qtype != dnsmessage.TypeAAAA {
+		return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
+	}
+
 	return c.handleWithResponseWriter_(ctx, dnsMessage, req, true, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
 }
 

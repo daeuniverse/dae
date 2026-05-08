@@ -127,6 +127,9 @@ func TestControlPlaneClose_DoesNotResetGlobalUdpPools(t *testing.T) {
 	ResetGlobalUdpState()
 	waitForCloseSignal(t, endpointConn.closeCh, "explicit global reset closes udp endpoint")
 
+	if !DefaultUdpTaskPool.closed.Load() {
+		t.Fatal("expected explicit global reset to close the UDP task pool")
+	}
 	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 0 {
 		t.Fatalf("pooled udp endpoint count after explicit reset = %d, want 0", got)
 	}
