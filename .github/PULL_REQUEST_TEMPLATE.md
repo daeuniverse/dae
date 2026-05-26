@@ -1,4 +1,4 @@
-<!-- NOTE: Please read the CONTRIBUTING.md guidelines before submitting your patch, and ensure you followed them all: https://github.com/daeuniverse/dae/blob/master/CONTRIBUTING.md -->
+<!-- NOTE: Please read the contribution guidelines before submitting your patch, and ensure you followed them all: https://github.com/daeuniverse/dae/blob/main/docs/en/development/contribute.md -->
 
 ### Background
 
