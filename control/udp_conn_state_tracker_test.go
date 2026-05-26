@@ -54,13 +54,12 @@ func TestUdpConnStateTrackerRetainWaitsForFinalize(t *testing.T) {
 
 func TestUdpConnStateTrackerSharedTupleSurvivesUntilLastEndpointCloses(t *testing.T) {
 	udpMap := newJanitorTestMap(t, "conn_state_map")
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				ConnStateMap: udpMap,
-			},
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			ConnStateMap: udpMap,
 		},
-	}
+	})
 
 	src := netip.MustParseAddrPort("192.0.2.10:40000")
 	dst := netip.MustParseAddrPort("198.51.100.20:443")
@@ -150,20 +149,18 @@ func TestAcquireSharedUdpConnStateTrackerSharesByBpfObject(t *testing.T) {
 
 func TestUdpEndpointAdoptGenerationTransfersTrackedTupleOwnership(t *testing.T) {
 	udpMap := newJanitorTestMap(t, "conn_state_map")
-	oldCore := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				ConnStateMap: udpMap,
-			},
+	oldCore := &controlPlaneCore{}
+	oldCore.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			ConnStateMap: udpMap,
 		},
-	}
-	newCore := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				ConnStateMap: udpMap,
-			},
+	})
+	newCore := &controlPlaneCore{}
+	newCore.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			ConnStateMap: udpMap,
 		},
-	}
+	})
 
 	src := netip.MustParseAddrPort("192.0.2.40:40040")
 	dst := netip.MustParseAddrPort("198.51.100.50:443")
@@ -234,13 +231,13 @@ func TestUdpEndpointAdoptGenerationKeepsSharedTupleUntilLastEndpointCloses(t *te
 
 	oldCore := &controlPlaneCore{
 		log: logger,
-		bpf: sharedBpf,
 	}
+	oldCore.bpf.Store(sharedBpf)
 	oldCore.udpConnStateTracker.Store(tracker)
 	newCore := &controlPlaneCore{
 		log: logger,
-		bpf: sharedBpf,
 	}
+	newCore.bpf.Store(sharedBpf)
 	newCore.udpConnStateTracker.Store(tracker)
 
 	src := netip.MustParseAddrPort("192.0.2.60:40060")

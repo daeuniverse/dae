@@ -203,7 +203,8 @@ func TestCleanupUdpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	if err := udpMap.Update(staleKey, &staleState, ebpf.UpdateAny); err != nil {
 		t.Fatalf("update stale udp conn-state: %v", err)
 	}
-	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: udpMap}}}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{ConnStateMap: udpMap}})
 	plane := &ControlPlane{
 		log:  logrus.New(),
 		core: core,
@@ -268,7 +269,8 @@ func TestCleanupTcpConnStateMapRemovesExpiredRoutingResult(t *testing.T) {
 	if err := tcpMap.Update(staleKey, &staleState, ebpf.UpdateAny); err != nil {
 		t.Fatalf("update stale tcp conn-state: %v", err)
 	}
-	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}}}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}})
 	plane := &ControlPlane{
 		log:  logrus.New(),
 		core: core,
@@ -321,7 +323,8 @@ func TestCleanupTcpConnStateMapRemovesClosingStateByClosingTimeout(t *testing.T)
 		t.Fatalf("update closing tcp conn-state: %v", err)
 	}
 
-	core := &controlPlaneCore{bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}}}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}})
 	plane := &ControlPlane{
 		log:  logrus.New(),
 		core: core,
@@ -373,11 +376,11 @@ func TestCleanupRedirectTrackMapUsesIndependentTTL(t *testing.T) {
 		t.Fatalf("update stale redirect_track: %v", err)
 	}
 
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{RedirectTrack: redirectMap}})
 	plane := &ControlPlane{
-		log: logrus.New(),
-		core: &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{RedirectTrack: redirectMap}},
-		},
+		log:  logrus.New(),
+		core: core,
 		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
 			connStateJanitorStop: make(chan struct{}),
 		},
@@ -422,11 +425,11 @@ func TestCleanupCookiePidMapRemovesExpiredEntries(t *testing.T) {
 		t.Fatalf("update stale cookie_pid_map: %v", err)
 	}
 
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{CookiePidMap: cookieMap}})
 	plane := &ControlPlane{
-		log: logrus.New(),
-		core: &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{CookiePidMap: cookieMap}},
-		},
+		log:  logrus.New(),
+		core: core,
 		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
 			connStateJanitorStop: make(chan struct{}),
 		},
@@ -467,9 +470,8 @@ func TestRetrieveRoutingResultReturnsEmbeddedMetadata(t *testing.T) {
 		t.Fatalf("update tcp conn-state: %v", err)
 	}
 
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}},
-	}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}})
 
 	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
@@ -513,9 +515,8 @@ func TestRetrieveRoutingResultFallsBackToRoutingHandoffMap(t *testing.T) {
 		t.Fatalf("update routing_handoff_map: %v", err)
 	}
 
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
-	}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}})
 
 	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 	if err != nil {
@@ -552,9 +553,8 @@ func TestRetrieveRoutingResultRejectsExpiredRoutingHandoffMapEntry(t *testing.T)
 		t.Fatalf("update expired routing_handoff_map: %v", err)
 	}
 
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
-	}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}})
 
 	result, err := core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if !stderrors.Is(err, ebpf.ErrKeyNotExist) {
@@ -594,11 +594,11 @@ func TestCleanupRoutingHandoffMapRemovesExpiredEntries(t *testing.T) {
 		t.Fatalf("update stale routing_handoff_map: %v", err)
 	}
 
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}})
 	plane := &ControlPlane{
-		log: logrus.New(),
-		core: &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
-		},
+		log:  logrus.New(),
+		core: core,
 		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
 			connStateJanitorStop: make(chan struct{}),
 		},
@@ -714,16 +714,16 @@ func TestRunReloadRetirementCleanupRemovesOnlyEntriesUntouchedSinceCutover(t *te
 		t.Fatalf("update fresh routing_handoff_map: %v", err)
 	}
 
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{
+		RedirectTrack:     redirectMap,
+		CookiePidMap:      cookieMap,
+		ConnStateMap:      connMap,
+		RoutingHandoffMap: handoffMap,
+	}})
 	plane := &ControlPlane{
-		log: logrus.New(),
-		core: &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{
-				RedirectTrack:     redirectMap,
-				CookiePidMap:      cookieMap,
-				ConnStateMap:      connMap,
-				RoutingHandoffMap: handoffMap,
-			}},
-		},
+		log:  logrus.New(),
+		core: core,
 		controlPlaneDatapathJanitor: controlPlaneDatapathJanitor{
 			connStateJanitorStop: make(chan struct{}),
 		},

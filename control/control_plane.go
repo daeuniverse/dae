@@ -652,7 +652,7 @@ func newControlPlaneWithContextOptions(
 	}
 	// Parse rules and build.
 	log.Infoln("Building routing matcher...")
-	builder, err := NewRoutingMatcherBuilderFromProgram(log, routingProgram, outboundName2Id, core.bpf)
+	builder, err := NewRoutingMatcherBuilderFromProgram(log, routingProgram, outboundName2Id, core.bpf.Load())
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
@@ -660,7 +660,7 @@ func newControlPlaneWithContextOptions(
 	if !buildOpts.delayDatapathCommit {
 		log.Infoln("Loading routing rules into kernel space (BPF)...")
 		var lpmIndices []uint32
-		if lpmIndices, err = kernspaceSnapshot.BuildKernspace(log, core.bpf); err != nil {
+		if lpmIndices, err = kernspaceSnapshot.BuildKernspace(log, core.bpf.Load()); err != nil {
 			return nil, fmt.Errorf("routing kernspace snapshot: %w", err)
 		}
 		core.lpmTrieIndices = lpmIndices
@@ -816,7 +816,7 @@ func newControlPlaneWithContextOptions(
 			return nil, err
 		}
 		if plane.sharedBpfReload {
-			if err = clearReloadDomainRoutingMap(core.bpf); err != nil {
+			if err = clearReloadDomainRoutingMap(core.bpf.Load()); err != nil {
 				return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 			}
 		}
@@ -1319,7 +1319,7 @@ func (c *ControlPlane) publishListenerSockets(listener *Listener) error {
 			return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv4 listener file")
 		}
 		newFiles = append(newFiles, tcp4File)
-		if err = c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcp4File.Fd()), ebpf.UpdateAny); err != nil {
+		if err = c.core.bpf.Load().ListenSocketMap.Update(consts.ZeroKey, uint64(tcp4File.Fd()), ebpf.UpdateAny); err != nil {
 			closeNewFiles()
 			return err
 		}
@@ -1331,7 +1331,7 @@ func (c *ControlPlane) publishListenerSockets(listener *Listener) error {
 			return fmt.Errorf("failed to retrieve copy of the underlying TCP IPv6 listener file")
 		}
 		newFiles = append(newFiles, tcp6File)
-		if err = c.core.bpf.ListenSocketMap.Update(consts.TwoKey, uint64(tcp6File.Fd()), ebpf.UpdateAny); err != nil {
+		if err = c.core.bpf.Load().ListenSocketMap.Update(consts.TwoKey, uint64(tcp6File.Fd()), ebpf.UpdateAny); err != nil {
 			closeNewFiles()
 			return err
 		}
@@ -1343,7 +1343,7 @@ func (c *ControlPlane) publishListenerSockets(listener *Listener) error {
 			return fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
 		}
 		newFiles = append(newFiles, udpFile)
-		if err = c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+		if err = c.core.bpf.Load().ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
 			closeNewFiles()
 			return err
 		}
@@ -1458,14 +1458,14 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 	}
 	if c.routingKernspaceSnapshot != nil {
 		c.log.Infoln("Loading routing rules into kernel space (BPF)...")
-		lpmIndices, err := c.routingKernspaceSnapshot.BuildKernspace(c.log, c.core.bpf)
+		lpmIndices, err := c.routingKernspaceSnapshot.BuildKernspace(c.log, c.core.bpf.Load())
 		if err != nil {
 			return fmt.Errorf("routing kernspace snapshot: %w", err)
 		}
 		c.core.lpmTrieIndices = lpmIndices
 	}
 	if c.sharedBpfReload {
-		if err := clearReloadDomainRoutingMap(c.core.bpf); err != nil {
+		if err := clearReloadDomainRoutingMap(c.core.bpf.Load()); err != nil {
 			return fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 		}
 	}
@@ -1482,12 +1482,12 @@ func (c *ControlPlane) RebuildReloadDatapath() error {
 		return nil
 	}
 	c.log.Warnln("[Reload] Rebuilding previous generation datapath after staged handoff failure")
-	lpmIndices, err := c.routingKernspaceSnapshot.BuildKernspace(c.log, c.core.bpf)
+	lpmIndices, err := c.routingKernspaceSnapshot.BuildKernspace(c.log, c.core.bpf.Load())
 	if err != nil {
 		return fmt.Errorf("rebuild routing kernspace: %w", err)
 	}
 	c.ReplaceLpmIndices(lpmIndices)
-	if err := clearReloadDomainRoutingMap(c.core.bpf); err != nil {
+	if err := clearReloadDomainRoutingMap(c.core.bpf.Load()); err != nil {
 		return fmt.Errorf("rebuild clearReloadDomainRoutingMap: %w", err)
 	}
 	cache := c.CloneDnsCache()

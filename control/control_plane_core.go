@@ -101,7 +101,7 @@ type controlPlaneCore struct {
 	// Protected by bpfHookMu to avoid deadlock with c.mu in _bindLan/_bindWan.
 	bpfHookDetachFuncs []func() error
 	bpfHookMu          sync.Mutex
-	bpf                *bpfObjects
+	bpf                atomic.Pointer[bpfObjects]
 	outboundId2Name    map[uint8]string
 	// tcpRelayOffload is permanently disabled due to kernel panic issues.
 	// See: https://github.com/daeuniverse/dae/pull/912
@@ -147,7 +147,6 @@ func newControlPlaneCore(log *logrus.Logger,
 		log:                log,
 		deferFuncs:         deferFuncs,
 		bpfHookDetachFuncs: make([]func() error, 0),
-		bpf:                bpf,
 		outboundId2Name:    outboundId2Name,
 		kernelVersion:      kernelVersion,
 		flip:               flip,
@@ -160,6 +159,7 @@ func newControlPlaneCore(log *logrus.Logger,
 		domainRouting:      newDomainRoutingTracker(),
 		bpfOwned:           bpfOwned,
 	}
+	core.bpf.Store(bpf)
 	core.udpConnStateTracker.Store(acquireSharedUdpConnStateTracker(bpf))
 	return core
 }
@@ -171,11 +171,11 @@ func (c *controlPlaneCore) getUdpConnStateTracker() *udpConnStateTracker {
 	if tracker := c.udpConnStateTracker.Load(); tracker != nil {
 		return tracker
 	}
-	tracker := acquireSharedUdpConnStateTracker(c.bpf)
+	tracker := acquireSharedUdpConnStateTracker(c.bpf.Load())
 	if c.udpConnStateTracker.CompareAndSwap(nil, tracker) {
 		return tracker
 	}
-	releaseSharedUdpConnStateTracker(c.bpf, tracker)
+	releaseSharedUdpConnStateTracker(c.bpf.Load(), tracker)
 	return c.udpConnStateTracker.Load()
 }
 
@@ -262,6 +262,7 @@ func (c *controlPlaneCore) DetachBpfHooks() error {
 func (c *controlPlaneCore) Close() (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bpf := c.bpf.Load()
 	select {
 	case <-c.closed.Done():
 		return nil
@@ -273,9 +274,9 @@ func (c *controlPlaneCore) Close() (err error) {
 	// Clear LPM slots still owned by this generation. Retired generations hand
 	// their slots to the next generation before draining so they cannot delete a
 	// slot that has already been reused by a later reload.
-	if c.bpf != nil && c.bpf.LpmArrayMap != nil && len(c.lpmTrieIndices) > 0 {
+	if bpf != nil && bpf.LpmArrayMap != nil && len(c.lpmTrieIndices) > 0 {
 		for _, idx := range c.lpmTrieIndices {
-			if e := c.bpf.LpmArrayMap.Delete(idx); e != nil && !errors.Is(e, ebpf.ErrKeyNotExist) {
+			if e := bpf.LpmArrayMap.Delete(idx); e != nil && !errors.Is(e, ebpf.ErrKeyNotExist) {
 				c.log.Errorf("Failed to clear BPF LPM slot %d: %v", idx, e)
 			}
 		}
@@ -292,13 +293,13 @@ func (c *controlPlaneCore) Close() (err error) {
 		}
 	}
 
-	if c.bpfOwned && c.bpf != nil {
-		if e := c.bpf.Close(); e != nil {
+	if c.bpfOwned && bpf != nil {
+		if e := bpf.Close(); e != nil {
 			errs = append(errs, e)
 		}
 	}
 	if tracker := c.udpConnStateTracker.Swap(nil); tracker != nil {
-		releaseSharedUdpConnStateTracker(c.bpf, tracker)
+		releaseSharedUdpConnStateTracker(bpf, tracker)
 	}
 
 	if len(errs) > 0 {
@@ -429,6 +430,10 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 func (c *controlPlaneCore) _bindLan(ifname string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bpf := c.bpf.Load()
+	if bpf == nil {
+		return nil
+	}
 	select {
 	case <-c.closed.Done():
 		return nil
@@ -475,10 +480,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.TproxyLanIngressL2.FD()
+		filterIngress.Fd = bpf.TproxyLanIngressL2.FD()
 		filterIngress.Name += "_l2"
 	} else {
-		filterIngress.Fd = c.bpf.TproxyLanIngressL3.FD()
+		filterIngress.Fd = bpf.TproxyLanIngressL3.FD()
 		filterIngress.Name += "_l3"
 	}
 	// Remove and add.
@@ -511,10 +516,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.TproxyLanEgressL2.FD()
+		filterEgress.Fd = bpf.TproxyLanEgressL2.FD()
 		filterEgress.Name += "_l2"
 	} else {
-		filterEgress.Fd = c.bpf.TproxyLanEgressL3.FD()
+		filterEgress.Fd = bpf.TproxyLanEgressL3.FD()
 		filterEgress.Name += "_l3"
 	}
 	// Remove and add.
@@ -556,13 +561,14 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		Prog   *ebpf.Program
 		Attach ebpf.AttachType
 	}
+	bpf := c.bpf.Load()
 	cgProgs := []cgProg{
-		{Prog: c.bpf.TproxyWanCgSockCreate, Attach: ebpf.AttachCGroupInetSockCreate},
-		{Prog: c.bpf.TproxyWanCgSockRelease, Attach: ebpf.AttachCgroupInetSockRelease},
-		{Prog: c.bpf.TproxyWanCgConnect4, Attach: ebpf.AttachCGroupInet4Connect},
-		{Prog: c.bpf.TproxyWanCgConnect6, Attach: ebpf.AttachCGroupInet6Connect},
-		{Prog: c.bpf.TproxyWanCgSendmsg4, Attach: ebpf.AttachCGroupUDP4Sendmsg},
-		{Prog: c.bpf.TproxyWanCgSendmsg6, Attach: ebpf.AttachCGroupUDP6Sendmsg},
+		{Prog: bpf.TproxyWanCgSockCreate, Attach: ebpf.AttachCGroupInetSockCreate},
+		{Prog: bpf.TproxyWanCgSockRelease, Attach: ebpf.AttachCgroupInetSockRelease},
+		{Prog: bpf.TproxyWanCgConnect4, Attach: ebpf.AttachCGroupInet4Connect},
+		{Prog: bpf.TproxyWanCgConnect6, Attach: ebpf.AttachCGroupInet6Connect},
+		{Prog: bpf.TproxyWanCgSendmsg4, Attach: ebpf.AttachCGroupUDP4Sendmsg},
+		{Prog: bpf.TproxyWanCgSendmsg6, Attach: ebpf.AttachCGroupUDP6Sendmsg},
 	}
 	attachedLinks := make([]cgroupAttachment, 0, len(cgProgs))
 	detachFuncs := make([]func() error, 0, len(cgProgs))
@@ -640,6 +646,10 @@ func (c *controlPlaneCore) bindWan(ifname string) {
 func (c *controlPlaneCore) _bindWan(ifname string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bpf := c.bpf.Load()
+	if bpf == nil {
+		return nil
+	}
 	select {
 	case <-c.closed.Done():
 		return nil
@@ -683,10 +693,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.TproxyWanEgressL2.FD()
+		filterEgress.Fd = bpf.TproxyWanEgressL2.FD()
 		filterEgress.Name += "_l2"
 	} else {
-		filterEgress.Fd = c.bpf.TproxyWanEgressL3.FD()
+		filterEgress.Fd = bpf.TproxyWanEgressL3.FD()
 		filterEgress.Name += "_l3"
 	}
 	// Best effort to remove old filter; it may not exist.
@@ -717,10 +727,10 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.TproxyWanIngressL2.FD()
+		filterIngress.Fd = bpf.TproxyWanIngressL2.FD()
 		filterIngress.Name += "_l2"
 	} else {
-		filterIngress.Fd = c.bpf.TproxyWanIngressL3.FD()
+		filterIngress.Fd = bpf.TproxyWanIngressL3.FD()
 		filterIngress.Name += "_l3"
 	}
 	// Best effort to remove old filter; it may not exist.
@@ -743,6 +753,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 }
 
 func (c *controlPlaneCore) bindDaens() (err error) {
+	bpf := c.bpf.Load()
 	daens := GetDaeNetns()
 
 	// tproxy_dae0peer_ingress@eth0 at dae netns
@@ -762,7 +773,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  0,
 		},
-		Fd:           c.bpf.TproxyDae0peerIngress.FD(),
+		Fd:           bpf.TproxyDae0peerIngress.FD(),
 		Name:         consts.AppName + "_dae0peer_ingress",
 		DirectAction: true,
 	}
@@ -816,7 +827,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 			Protocol:  unix.ETH_P_ALL,
 			Priority:  0,
 		},
-		Fd:           c.bpf.TproxyDae0Ingress.FD(),
+		Fd:           bpf.TproxyDae0Ingress.FD(),
 		Name:         consts.AppName + "_dae0_ingress",
 		DirectAction: true,
 	}
@@ -960,8 +971,9 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bpf := c.bpf.Load()
 	if c.bpfEjected {
-		return c.bpf
+		return bpf
 	}
 
 	// Transfer ownership: this generation is no longer responsible for closing BPF.
@@ -972,7 +984,7 @@ func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	// between old and new control planes reacting to link events (e.g. PPPoE flapping).
 	_ = c.ifmgr.Close()
 
-	return c.bpf
+	return bpf
 }
 
 func (c *controlPlaneCore) EjectLpmIndices() []uint32 {
@@ -994,6 +1006,7 @@ func (c *controlPlaneCore) InheritLpmIndices(indices []uint32) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bpf := c.bpf.Load()
 
 	current := make(map[uint32]struct{}, len(c.lpmTrieIndices))
 	for _, idx := range c.lpmTrieIndices {
@@ -1005,12 +1018,12 @@ func (c *controlPlaneCore) InheritLpmIndices(indices []uint32) {
 		if _, reused := current[idx]; reused {
 			continue
 		}
-		if c.bpf == nil || c.bpf.LpmArrayMap == nil {
+		if bpf == nil || bpf.LpmArrayMap == nil {
 			pending = append(pending, idx)
 			current[idx] = struct{}{}
 			continue
 		}
-		if err := c.bpf.LpmArrayMap.Delete(idx); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		if err := bpf.LpmArrayMap.Delete(idx); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			c.log.Errorf("Failed to clear inherited BPF LPM slot %d: %v", idx, err)
 			pending = append(pending, idx)
 			current[idx] = struct{}{}
@@ -1023,9 +1036,10 @@ func (c *controlPlaneCore) InheritLpmIndices(indices []uint32) {
 // and eagerly reclaims the superseded indices when possible.
 func (c *controlPlaneCore) ReplaceLpmIndices(indices []uint32) {
 	c.mu.Lock()
+	bpf := c.bpf.Load()
 	old := c.lpmTrieIndices
 	c.lpmTrieIndices = append([]uint32(nil), indices...)
-	shouldCleanupOld := c.bpf != nil && c.bpf.LpmArrayMap != nil
+	shouldCleanupOld := bpf != nil && bpf.LpmArrayMap != nil
 	c.mu.Unlock()
 
 	if shouldCleanupOld {
@@ -1038,7 +1052,7 @@ func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if bpf != nil {
-		c.bpf = bpf
+		c.bpf.Store(bpf)
 	}
 	c.bpfEjected = false
 	c.bpfOwned = true
@@ -1048,7 +1062,5 @@ func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 // Background maintenance paths such as janitors and health checks should use
 // this accessor instead of EjectBpf to avoid disturbing reload lifecycle.
 func (c *controlPlaneCore) PeekBpf() *bpfObjects {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.bpf
+	return c.bpf.Load()
 }

@@ -490,13 +490,12 @@ func TestUdpEndpointClose_ReleasesCachedResponseConnPins(t *testing.T) {
 
 func TestUdpEndpointClose_ReleasesTrackedUdpConnStateTuples(t *testing.T) {
 	udpMap := newJanitorTestMap(t, "conn_state_map")
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				ConnStateMap: udpMap,
-			},
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			ConnStateMap: udpMap,
 		},
-	}
+	})
 	ue := &UdpEndpoint{
 		poolKey: UdpEndpointKey{
 			Src: netip.MustParseAddrPort("192.0.2.10:40000"),

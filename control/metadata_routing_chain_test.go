@@ -79,9 +79,8 @@ func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp 
 		if err := tcpMap.Update(key, &state, ebpf.UpdateAny); err != nil {
 			t.Fatalf("update tcp conn-state: %v", err)
 		}
-		core = &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}},
-		}
+		core = &controlPlaneCore{}
+		core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{ConnStateMap: tcpMap}})
 	case unix.IPPROTO_UDP:
 		udpMap := newJanitorTestMap(t, "conn_state_map")
 		state := bpfConnState{}
@@ -95,9 +94,8 @@ func retrieveRoutingResultForMetadataRuleTest(t *testing.T, l4proto uint8, dscp 
 		if err := udpMap.Update(key, &state, ebpf.UpdateAny); err != nil {
 			t.Fatalf("update udp conn-state: %v", err)
 		}
-		core = &controlPlaneCore{
-			bpf: &bpfObjects{bpfMaps: bpfMaps{ConnStateMap: udpMap}},
-		}
+		core = &controlPlaneCore{}
+		core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{ConnStateMap: udpMap}})
 	default:
 		t.Fatalf("unsupported l4proto %d", l4proto)
 	}
@@ -131,9 +129,8 @@ func retrieveRoutingHandoffResultForMetadataRuleTest(t *testing.T, l4proto uint8
 		t.Fatalf("update routing_handoff_map: %v", err)
 	}
 
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}},
-	}
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{bpfMaps: bpfMaps{RoutingHandoffMap: handoffMap}})
 
 	rr, err := core.RetrieveRoutingResult(src, dst, l4proto)
 	if err != nil {
