@@ -585,10 +585,9 @@ func newControlPlaneWithContextOptions(
 				log.Debugln("\t<Empty>")
 			}
 		}
-		groupOption, err := ParseGroupOverrideOption(group, *global, log)
+		groupOption, err := ParseGroupOverrideOption(group, *global, log, option)
 		finalOption := option
 		if err == nil && groupOption != nil {
-			groupOption.TransportCacheNamespace = option.TransportCacheNamespace
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
 				newDialer := d.CloneWithGlobalOptionContext(context.Background(), groupOption)
@@ -837,7 +836,7 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 	return m, nil
 }
 
-func ParseGroupOverrideOption(group config.Group, global config.Global, log *logrus.Logger) (*dialer.GlobalOption, error) {
+func ParseGroupOverrideOption(group config.Group, global config.Global, log *logrus.Logger, baseOption *dialer.GlobalOption) (*dialer.GlobalOption, error) {
 	result := global
 	changed := false
 	if group.TcpCheckUrl != nil {
@@ -862,6 +861,10 @@ func ParseGroupOverrideOption(group config.Group, global config.Global, log *log
 	}
 	if changed {
 		option := dialer.NewGlobalOption(&result, log)
+		if baseOption != nil {
+			option.DaeDNS = baseOption.DaeDNS
+			option.TransportCacheNamespace = baseOption.TransportCacheNamespace
+		}
 		return option, nil
 	}
 	return nil, nil
