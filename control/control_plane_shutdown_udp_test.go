@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -48,7 +48,7 @@ func newShutdownTestControlPlane() *ControlPlane {
 	}
 }
 
-func TestControlPlaneClose_ResetsGlobalUdpPoolsAndClosesSockets(t *testing.T) {
+func TestControlPlaneClose_DoesNotResetGlobalUdpPools(t *testing.T) {
 	oldEndpointPool := DefaultUdpEndpointPool
 	oldAnyfromPool := DefaultAnyfromPool
 	oldTaskPool := DefaultUdpTaskPool
@@ -107,18 +107,29 @@ func TestControlPlaneClose_ResetsGlobalUdpPoolsAndClosesSockets(t *testing.T) {
 		t.Fatalf("ControlPlane.Close() error = %v", err)
 	}
 
-	// Note: ControlPlane.Close() no longer resets global UDP pools (ResetGlobalUdpState)
-	// to prevent inter-generational interference during hot reloads.
-	// Instead, we verify that the generation's own context and core are cleaned up.
+	// Verify: Close() must NOT reset global UDP pools.
+	// These pools are shared across reload generations; resetting them
+	// during Close() would corrupt the new generation's live UDP state.
+	// Only process-level shutdown (via explicit ResetGlobalUdpState()) may
+	// reset them.
+	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got == 0 {
+		t.Fatalf("pooled udp endpoint count after Close() = 0; wanted > 0 because Close() must NOT reset global pools")
+	}
+	if got := countPooledAnyfromConns(DefaultAnyfromPool); got == 0 {
+		t.Fatalf("pooled anyfrom conn count after Close() = 0; wanted > 0 because Close() must NOT reset global pools")
+	}
 
 	if plane.ctx.Err() == nil {
 		t.Fatal("expected control plane context to be canceled on close")
 	}
 
-	// Verify that global state can still be reset explicitly (manual cleanup or full stop)
+	// Verify that global state can still be reset explicitly (process shutdown path).
 	ResetGlobalUdpState()
 	waitForCloseSignal(t, endpointConn.closeCh, "explicit global reset closes udp endpoint")
 
+	if !DefaultUdpTaskPool.closed.Load() {
+		t.Fatal("expected explicit global reset to close the UDP task pool")
+	}
 	if got := countPooledUdpEndpoints(DefaultUdpEndpointPool); got != 0 {
 		t.Fatalf("pooled udp endpoint count after explicit reset = %d, want 0", got)
 	}

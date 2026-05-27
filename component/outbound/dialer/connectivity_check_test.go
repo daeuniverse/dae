@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -150,12 +150,8 @@ func TestDialerCheck_ErrorStillMarksUnavailable(t *testing.T) {
 	if aliveSet.GetRand() != nil {
 		t.Fatal("alive dialer set should remove unavailable dialer")
 	}
-	last, has := d.MustGetLatencies10(networkType).LastLatency()
-	if !has {
-		t.Fatal("expected timeout latency to be appended for failures")
-	}
-	if last != Timeout {
-		t.Fatalf("expected timeout latency %v, got %v", Timeout, last)
+	if _, has := d.MustGetLatencies10(networkType).LastLatency(); has {
+		t.Fatal("health check failures must not append latency samples")
 	}
 }
 
@@ -208,8 +204,8 @@ func TestDialerCheck_SkipPreservesUnavailableState(t *testing.T) {
 	if aliveSet.GetRand() != nil {
 		t.Fatal("dialer should remain unavailable after skip checks")
 	}
-	if got := d.MustGetLatencies10(networkType).Len(); got != 1 {
-		t.Fatalf("skip checks should not append extra samples after failure, got %d", got)
+	if got := d.MustGetLatencies10(networkType).Len(); got != 0 {
+		t.Fatalf("failure and skip checks should not append latency samples, got %d", got)
 	}
 
 }

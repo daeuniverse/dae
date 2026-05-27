@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package config
@@ -34,6 +34,7 @@ type Global struct {
 	AllowInsecure         bool          `mapstructure:"allow_insecure" default:"false"`
 	DialMode              string        `mapstructure:"dial_mode" default:"domain"`
 	DisableWaitingNetwork bool          `mapstructure:"disable_waiting_network" default:"false"`
+	DisableTHP            bool          `mapstructure:"disable_thp" default:"true"`
 	// Deprecated: not used as of https://github.com/daeuniverse/dae/pull/912.
 	EnableLocalTcpFastRedirect bool `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
 	AutoConfigKernelParameter  bool `mapstructure:"auto_config_kernel_parameter" default:"false"`
@@ -52,6 +53,7 @@ type Global struct {
 	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
 	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
 	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	BpfConnStateMapSize    uint32        `mapstructure:"bpf_conn_state_map_size" default:"262144"`
 }
 
 type Utls struct {

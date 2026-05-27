@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -319,6 +319,10 @@ func (c *DnsCache) Clone() *DnsCache {
 }
 
 // CloneForReload creates a new generation-local cache wrapper for reload.
+//
+// WARNING: Answer, NS, and Extra slices share memory with the original cache.
+// DO NOT mutate any RR after it has been inserted into the cache.
+// Violating this contract will cause data corruption across generations.
 //
 // Immutable payload such as RR slices and the current packed response are reused
 // to avoid the reload-time deep-copy spike. Per-generation routing metadata is

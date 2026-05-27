@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@daeuniverse.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@daeuniverse.org>
  */
 
 package dns

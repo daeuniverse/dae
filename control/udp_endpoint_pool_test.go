@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@daeuniverse.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@daeuniverse.org>
  */
 
 package control
@@ -489,14 +489,13 @@ func TestUdpEndpointClose_ReleasesCachedResponseConnPins(t *testing.T) {
 }
 
 func TestUdpEndpointClose_ReleasesTrackedUdpConnStateTuples(t *testing.T) {
-	udpMap := newJanitorTestMap(t, "udp_conn_state_map")
-	core := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				UdpConnStateMap: udpMap,
-			},
+	udpMap := newJanitorTestMap(t, "conn_state_map")
+	core := &controlPlaneCore{}
+	core.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			ConnStateMap: udpMap,
 		},
-	}
+	})
 	ue := &UdpEndpoint{
 		poolKey: UdpEndpointKey{
 			Src: netip.MustParseAddrPort("192.0.2.10:40000"),
@@ -517,7 +516,7 @@ func TestUdpEndpointClose_ReleasesTrackedUdpConnStateTuples(t *testing.T) {
 			bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP)),
 			bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP)),
 		} {
-			state := bpfUdpConnState{LastSeenNs: 1}
+			state := bpfConnState{LastSeenNs: 1}
 			if err := udpMap.Update(&key, &state, ebpf.UpdateAny); err != nil {
 				t.Fatalf("update udp conn-state %v: %v", key, err)
 			}
@@ -533,7 +532,7 @@ func TestUdpEndpointClose_ReleasesTrackedUdpConnStateTuples(t *testing.T) {
 			bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP)),
 			bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP)),
 		} {
-			var state bpfUdpConnState
+			var state bpfConnState
 			if err := udpMap.Lookup(&key, &state); !stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				t.Fatalf("Lookup(%v) err = %v, want %v", key, err, ebpf.ErrKeyNotExist)
 			}

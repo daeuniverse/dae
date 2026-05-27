@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package sniffing
@@ -68,8 +68,8 @@ func (s *ConnSniffer) TakeRelayPrefix() []byte {
 	}
 	<-s.dataReady
 
-	s.readMu.RLock()
-	defer s.readMu.RUnlock()
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 
 	if s.buf == nil || s.buf.Len() == 0 {
 		return nil

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -135,7 +135,6 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 			return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
 		}
 	}
-
 	// DNS Fast Path: Check for DNS-over-TCP traffic (port 53).
 	// DNS is a stateless protocol and doesn't need the connection tracking
 	// features that TCP relay provides. This optimization handles DNS queries
