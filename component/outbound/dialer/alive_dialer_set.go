@@ -7,6 +7,8 @@ package dialer
 
 import (
 	"fmt"
+	"math"
+	randv2 "math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +44,7 @@ type AliveDialerSet struct {
 	dialerGroupName string
 	CheckTyp        *NetworkType
 	tolerance       time.Duration
+	uniformWeight   bool
 
 	aliveChangeCallback func(alive bool)
 
@@ -49,6 +52,7 @@ type AliveDialerSet struct {
 	dialerToIndex         map[*Dialer]int // *Dialer -> index in aliveEntries, -Init, or -NotAlive
 	dialerToLatency       map[*Dialer]time.Duration
 	dialerToLatencyOffset map[*Dialer]time.Duration
+	dialerToWeight        map[*Dialer]int64
 
 	// aliveEntries stores all alive dialers with their precomputed sorting latency.
 	// This is the primary data structure for hot path operations (GetMinLatency, GetRandExcluded).
@@ -74,19 +78,31 @@ func NewAliveDialerSet(
 		panic(fmt.Sprintf("unmatched annotations length: %v dialers and %v annotations", len(dialers), len(dialersAnnotations)))
 	}
 	dialerToLatencyOffset := make(map[*Dialer]time.Duration)
+	dialerToWeight := make(map[*Dialer]int64)
+	uniformWeight := true
+	var firstWeight int64
 	for i := range dialers {
 		d, a := dialers[i], dialersAnnotations[i]
 		dialerToLatencyOffset[d] = a.AddLatency
+		weight := 1 + a.AddWeight
+		dialerToWeight[d] = weight
+		if i == 0 {
+			firstWeight = weight
+		} else if weight != firstWeight {
+			uniformWeight = false
+		}
 	}
 	a := &AliveDialerSet{
 		log:                   log,
 		dialerGroupName:       dialerGroupName,
 		CheckTyp:              networkType,
 		tolerance:             tolerance,
+		uniformWeight:         uniformWeight,
 		aliveChangeCallback:   aliveChangeCallback,
 		dialerToIndex:         make(map[*Dialer]int),
 		dialerToLatency:       make(map[*Dialer]time.Duration),
 		dialerToLatencyOffset: dialerToLatencyOffset,
+		dialerToWeight:        dialerToWeight,
 		aliveEntries:          make([]aliveEntry, 0, len(dialers)),
 		selectionPolicy:       selectionPolicy,
 		minLatency: minLatency{
@@ -114,10 +130,16 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 	if len(a.aliveEntries) == 0 {
 		return nil
 	}
-	if excluded == nil {
+	if a.uniformWeight && excluded == nil {
 		return a.aliveEntries[fastrand.Intn(len(a.aliveEntries))].dialer
 	}
+	if a.uniformWeight {
+		return a.getUniformRandExcludedLocked(excluded)
+	}
+	return a.getWeightedRandExcludedLocked(excluded)
+}
 
+func (a *AliveDialerSet) getUniformRandExcludedLocked(excluded *Dialer) *Dialer {
 	var chosen *Dialer
 	var candidateCount int
 	for i := range a.aliveEntries {
@@ -133,6 +155,67 @@ func (a *AliveDialerSet) GetRandExcluded(excluded *Dialer) *Dialer {
 	}
 
 	return chosen
+}
+
+func (a *AliveDialerSet) getWeightedRandExcludedLocked(excluded *Dialer) *Dialer {
+	var totalWeight uint64
+	for i := range a.aliveEntries {
+		d := a.aliveEntries[i].dialer
+		if d == excluded {
+			continue
+		}
+		weight := a.dialerToWeight[d]
+		if weight <= 0 {
+			continue
+		}
+		if totalWeight > math.MaxUint64-uint64(weight) {
+			return a.getRandExponentialRaceLocked(excluded)
+		}
+		totalWeight += uint64(weight)
+	}
+	if totalWeight == 0 {
+		return nil
+	}
+
+	ticket := randv2.Uint64N(totalWeight)
+	var cumulative uint64
+	for i := range a.aliveEntries {
+		d := a.aliveEntries[i].dialer
+		if d == excluded {
+			continue
+		}
+		weight := a.dialerToWeight[d]
+		if weight <= 0 {
+			continue
+		}
+		cumulative += uint64(weight)
+		if ticket < cumulative {
+			return d
+		}
+	}
+	return a.getRandExponentialRaceLocked(excluded)
+}
+
+func (a *AliveDialerSet) getRandExponentialRaceLocked(excluded *Dialer) *Dialer {
+	var selected *Dialer
+	bestScore := math.Inf(1)
+	for i := range a.aliveEntries {
+		d := a.aliveEntries[i].dialer
+		if d == excluded {
+			continue
+		}
+		weight := a.dialerToWeight[d]
+		if weight <= 0 {
+			continue
+		}
+		u := 1 - randv2.Float64()
+		score := -math.Log(u) / float64(weight)
+		if score < bestScore {
+			bestScore = score
+			selected = d
+		}
+	}
+	return selected
 }
 
 func (a *AliveDialerSet) Len() int {
