@@ -2919,6 +2919,35 @@ func (c *ControlPlane) activatePreparedRuntime() error {
 	return nil
 }
 
+// shouldSkipDNSFastPathForLocalListenerTraffic returns true only for packets
+// that are both addressed to the control plane's own DNS listener and likely
+// sourced from the local host itself. External LAN clients querying a
+// LAN-bound DNS listener are intercepted via the ingress/TProxy path and must
+// continue into the DNS fast path instead of being dropped here.
+func shouldSkipDNSFastPathForLocalListenerTraffic(listenAddr string, src, dst netip.AddrPort) bool {
+	if listenAddr == "" || dst.Port() != 53 {
+		return false
+	}
+
+	if dst.Addr().IsLoopback() || dst.Addr().IsUnspecified() {
+		_, portStr, err := net.SplitHostPort(listenAddr)
+		if err != nil {
+			return false
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return false
+		}
+		return uint16(port) == dst.Port()
+	}
+
+	if listenAddr == dst.String() {
+		return src.Addr().IsLoopback() || src.Addr().IsUnspecified() || src.Addr() == dst.Addr()
+	}
+
+	return false
+}
+
 func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	sentReady := false
 	defer func() {
@@ -3008,41 +3037,21 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				// reduce hot-path overhead, but best-effort preserve tuple metadata
 				// for rules matching (pname/mac/dscp).
 				if realDst.Port() == 53 {
-					// IMPORTANT: Check if this is destined for our own DNS listener.
-					// If so, skip fast path processing to avoid double-handling.
-					// Traffic to 127.0.0.1:53 (or our configured listen address) should be
-					// handled only by the DNS listener, not by UDP ingress fast path.
+					// Only self-directed traffic to the local DNS listener should be
+					// short-circuited here. External LAN clients targeting a LAN-bound
+					// listener have already entered the ingress/TProxy userspace path
+					// and still need fast-path DNS handling.
 					if c.dnsListener != nil {
 						listenAddr := c.dnsListener.Addr()
-						// Match both exact address and wildcard port 53 to our listener
-						if listenAddr != "" && listenAddr == realDst.String() {
-							// This is destined for our own DNS listener - let it handle normally
+						if shouldSkipDNSFastPathForLocalListenerTraffic(listenAddr, convergeSrc, realDst) {
 							if c.log.IsLevelEnabled(logrus.TraceLevel) {
 								c.log.WithFields(logrus.Fields{
 									"src":        convergeSrc.String(),
 									"dst":        realDst.String(),
 									"listenAddr": listenAddr,
-								}).Trace("Skipping DNS fast path for traffic to our own DNS listener")
+								}).Trace("Skipping DNS fast path for local traffic to our own DNS listener")
 							}
-							// Fall through to normal UDP processing (will be dropped/ignored)
 							return
-						}
-						// Also check for common local addresses
-						if realDst.Addr().IsLoopback() || realDst.Addr().IsUnspecified() {
-							// For local addresses, verify we have a DNS listener on port 53
-							if _, portStr, err := net.SplitHostPort(listenAddr); err == nil {
-								if port, err := strconv.Atoi(portStr); err == nil && port == 53 {
-									// We have a DNS listener on port 53, skip fast path
-									if c.log.IsLevelEnabled(logrus.TraceLevel) {
-										c.log.WithFields(logrus.Fields{
-											"src":        convergeSrc.String(),
-											"dst":        realDst.String(),
-											"listenAddr": listenAddr,
-										}).Trace("Skipping DNS fast path for local loopback DNS listener traffic")
-									}
-									return
-								}
-							}
 						}
 					}
 
