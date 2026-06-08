@@ -31,15 +31,15 @@ pre-commit install
 - Clone the fork on your local machine. Your remote repo on GitHub is called `origin`.
 - Add the original repository as a remote called `upstream`.
 - If you created your fork a while ago be sure to pull upstream changes into your local repository.
-- Create a new branch to work on! Branch from `develop` if it exists, else from `master`.
+- Create a new branch to work on! Branch from `main`.
 - Implement/fix your feature, comment your code.
 - Follow the code style of the project, including indentation.
-- If the project has tests run them!
+- If the project has tests run them! For routine unit tests, use `go test -tags dae_stub_ebpf ./...`. For eBPF tests, use `make ebpf-test`.
 - Write or adapt tests as needed.
 - Add or change the documentation as needed.
 - Squash your commits into a single commit with Git's [interactive rebase](https://help.github.com/articles/interactive-rebase). Create a new branch if necessary.
 - Push your branch to your fork on GitHub, the remote `origin`.
-- From your fork open a pull request in the correct branch. Target the project's `develop` branch if there is one, else go for `master`!
+- From your fork open a pull request in the correct branch. Target the project's `main` branch.
 - Once the pull request is approved and merged you can pull the changes from `upstream` to your local repo and delete
   your extra branch(es).
 
