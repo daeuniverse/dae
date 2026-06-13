@@ -40,7 +40,7 @@ my_group {
 check_tolerance: 60ms
 ```
 
-含义：优先使用组内第 2 个节点（索引 1，从 0 开始）。如果连接失败，每次超时 5 秒、最多重试 3 次 → 全部失败后自动切到最佳存活节点。固定节点恢复后自动切回。60ms 容差防止来回抖动。
+含义：优先使用组内第 2 个节点（索引 1，从 0 开始）。如果连接失败，每次超时 5 秒、最多重试 3 次 → 全部失败后自动切到最佳存活节点。固定节点一旦恢复立刻无条件切回。60ms 容差防止灾备期间 s2/s5 之间来回抖动。
 
 ---
 
@@ -67,12 +67,14 @@ fixed_fallback(<索引>, <超时>, <重试次数>[, <fallback策略>])
 
 ##### check_tolerance 与 fixed_fallback 的配合
 
-`check_tolerance` 配置项（位于 `[global]` 下）与 fallback 策略协同工作，防止节点来回切换（抖动）。当固定节点恢复后，如果其延迟与当前 fallback 节点相比差距在 `check_tolerance` 范围内，dae 不会立即切回 — 避免了流量在两个节点间振荡。
+`check_tolerance` 配置项（位于 `[global]` 下）与 fallback 策略协同工作，**只作用于灾备期间备用节点之间的选择**，防止 s2/s5 因微小延迟波动来回切换（抖动）。
 
 ```ini
 [global]
-check_tolerance: 60ms   # 仅当固定节点延迟比 fallback 节点好 ≥60ms 时才切回
+check_tolerance: 60ms   # 灾备期间 s2↔s5 延迟差 <60ms 不切换，≥60ms 才切换
 ```
+
+> **重要**：s4 的恢复机制完全独立于 `check_tolerance`。一旦 s4 通过存活性检测，流量会**立即无条件切回** — 不做延迟比较，不经过容差门槛。`check_tolerance` 管的是"两个备胎谁更好"，不管"正主回来没"。
 
 ---
 
@@ -93,9 +95,8 @@ check_tolerance: 60ms   # 仅当固定节点延迟比 fallback 节点好 ≥60ms
 │        → INFO 日志: "falling back to <node>"               │
 │                                                             │
 │  3. Connectivity Checker 周期性探测固定节点                  │
-│     └─ 固定节点恢复了？                                      │
-│        ├─ 延迟在 check_tolerance 范围内？→ 保持 fallback     │
-│        └─ 延迟明显更好？→ 自动切回 🔄                      │
+│     └─ 固定节点恢复了？→ 立即无条件切回 🔄                   │
+│        （不经过 check_tolerance 比较，存活即切）              │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
