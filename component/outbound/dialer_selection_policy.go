@@ -125,7 +125,8 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 }
 
 // parsePolicyName maps a policy name string to the corresponding DialerSelectionPolicy constant.
-// Supported fallback policies: random, min_moving_avg, min_last_latency, min_avg10.
+// Names must match the official dae policy names defined in common/consts/dialer.go.
+// Supported: random, min_moving_avg, min (last latency), min_avg10.
 // Fixed and fixed_fallback are not supported as fallback policies (would cause infinite recursion).
 func parsePolicyName(s string) (consts.DialerSelectionPolicy, error) {
 	s = strings.TrimSpace(s)
@@ -134,12 +135,12 @@ func parsePolicyName(s string) (consts.DialerSelectionPolicy, error) {
 		return consts.DialerSelectionPolicy_Random, nil
 	case "min_moving_avg":
 		return consts.DialerSelectionPolicy_MinMovingAverageLatencies, nil
-	case "min_last_latency":
+	case "min":
 		return consts.DialerSelectionPolicy_MinLastLatency, nil
 	case "min_avg10":
 		return consts.DialerSelectionPolicy_MinAverage10Latencies, nil
 	default:
-		return consts.DialerSelectionPolicy(0), fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
+		return consts.DialerSelectionPolicy(0), fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min, min_avg10)", s)
 	}
 }
 // Supported: "ms" (milliseconds), "s" (seconds), "m" (minutes).

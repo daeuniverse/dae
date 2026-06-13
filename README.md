@@ -61,8 +61,9 @@ fixed_fallback(<index>, <timeout>, <retries>[, <fallback_policy>])
 
 | Policy | Behavior | Best For |
 |--------|----------|----------|
-| `min_moving_avg` ⭐ *(default)* | Selects the node with the lowest moving-average latency. Works with `check_tolerance` to prevent unnecessary switches. | General use — latency-sensitive traffic |
-| `min_last_latency` | Selects the node with the lowest most-recent measured latency. | Environments with rapidly changing network conditions |
+| `min_moving_avg` ⭐*(default)* | Selects the node with the lowest moving-average latency. Works with `check_tolerance` to prevent unnecessary switches. | General use — latency-sensitive traffic |
+| `min` | Selects the node with the lowest most-recent measured latency (official name). | Environments with rapidly changing network conditions |
+| `min_avg10` | Selects the node with the lowest average latency over the last 10 checks. | Environments with high latency variance |
 | `random` | Randomly picks an alive node from the fallback pool. | Load balancing — when you want to distribute traffic across the fallback pool |
 
 ##### How `check_tolerance` Works with fixed_fallback
@@ -138,7 +139,7 @@ my_group {
 
 **Example D: Aggressive timeout** — fail fast, retry only once:
 ```ini
-policy: fixed_fallback(0, 500ms, 1, min_last_latency)
+policy: fixed_fallback(0, 500ms, 1, min)
 ```
 
 ---
