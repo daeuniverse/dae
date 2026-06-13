@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	_ "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/sirupsen/logrus"
 )
 
@@ -476,19 +477,37 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 				policy.FixedFallbackRetries, policy.FixedFallbackRetries, policy.FallbackPolicy)
 		}
 		// Fixed dialer is out of range or retries exhausted. Fall back to configured policy.
-		networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
-			Policy: policy.FallbackPolicy,
-		})
-		for i := range count {
-			a := state.aliveDialerSets[networkTypes[i].Index()]
-			if a == nil {
-				continue
+		switch policy.FallbackPolicy {
+		case consts.DialerSelectionPolicy_Random:
+			// Random: collect all alive dialers and pick one at random.
+			var aliveList []*dialer.Dialer
+			for _, d := range g.Dialers {
+				if d.MustGetAlive(networkType) {
+					aliveList = append(aliveList, d)
+				}
 			}
-			d, latency := a.GetMinLatency(nil)
-			if d != nil {
-				selected := preferAlternateSelectionNetworkType(d, &networkTypes[i])
-				return d, latency, selected, nil
+			if len(aliveList) > 0 {
+				chosen := aliveList[int(fastrand.Int63n(int64(len(aliveList))))]
+				selected := preferAlternateSelectionNetworkType(chosen, networkType)
+				return chosen, 0, selected, nil
 			}
+		default:
+			// min_* policies: use AliveDialerSet for latency-based selection.
+			networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
+				Policy: policy.FallbackPolicy,
+			})
+			for i := range count {
+				a := state.aliveDialerSets[networkTypes[i].Index()]
+				if a == nil {
+					continue
+				}
+				d, latency := a.GetMinLatency(nil)
+				if d != nil {
+					selected := preferAlternateSelectionNetworkType(d, &networkTypes[i])
+					return d, latency, selected, nil
+				}
+			}
+		}
 		}
 		return nil, time.Hour, nil, ErrNoAliveDialer
 
@@ -560,8 +579,16 @@ func (g *DialerGroup) buildSelectionState(policy DialerSelectionPolicy, setAlive
 
 	for i, nt := range specs {
 		networkType := *nt
+		// For FixedWithFallback, build the AliveDialerSet using FallbackPolicy
+		// so that latency data is properly tracked for the fallback path.
+		// The main (fixed) path bypasses the set entirely, so using FallbackPolicy
+		// here has no adverse effect on fixed-node selection.
+		setPolicy := policy.Policy
+		if policy.Policy == consts.DialerSelectionPolicy_FixedWithFallback {
+			setPolicy = policy.FallbackPolicy
+		}
 		set := dialer.NewAliveDialerSet(
-			g.log, g.Name, &networkType, g.checkTolerance, policy.Policy,
+			g.log, g.Name, &networkType, g.checkTolerance, setPolicy,
 			g.Dialers, g.dialersAnnotations,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				return func(alive bool) { g.aliveChangeCallback(alive, networkType, false) }
