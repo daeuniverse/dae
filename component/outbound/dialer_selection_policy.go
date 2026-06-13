@@ -8,6 +8,7 @@ package outbound
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -72,17 +73,16 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		if err != nil {
 			return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
 		}
-		// Parse timeout (optional, second param, in seconds)
+		// Parse timeout (optional, second param, with unit suffix: ms/s/m)
 		timeout := 3 * time.Second // default
 		if len(f.Params) >= 2 {
 			if f.Params[1].Key != "" {
-				return nil, fmt.Errorf(`invalid "%v" param format: second param must be timeout seconds (no key)`, f.Name)
+				return nil, fmt.Errorf(`invalid "%v" param format: second param must be timeout (no key)`, f.Name)
 			}
-			timeoutSec, err := strconv.ParseFloat(f.Params[1].Val, 64)
+			timeout, err = parseDurationWithUnit(f.Params[1].Val)
 			if err != nil {
-				return nil, fmt.Errorf(`invalid "%v" param format: timeout must be a number: %w`, f.Name, err)
+				return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
 			}
-			timeout = time.Duration(timeoutSec * float64(time.Second))
 		}
 		// Parse retries (optional, third param)
 		retries := 3 // default
@@ -108,4 +108,49 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 	default:
 		return nil, fmt.Errorf("unexpected policy: %v", f.Name)
 	}
+}
+
+// parseDurationWithUnit parses a duration string with optional unit suffix.
+// Supported: "ms" (milliseconds), "s" (seconds), "m" (minutes).
+// No suffix defaults to seconds for backward compatibility.
+// Examples: "500ms", "5s", "2m", "10".
+func parseDurationWithUnit(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration string")
+	}
+
+	// Check "ms" first (must precede "s" check)
+	if strings.HasSuffix(s, "ms") {
+		val, err := strconv.ParseFloat(strings.TrimSuffix(s, "ms"), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		return time.Duration(val * float64(time.Millisecond)), nil
+	}
+
+	// "s" suffix
+	if strings.HasSuffix(s, "s") {
+		val, err := strconv.ParseFloat(strings.TrimSuffix(s, "s"), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		return time.Duration(val * float64(time.Second)), nil
+	}
+
+	// "m" suffix
+	if strings.HasSuffix(s, "m") {
+		val, err := strconv.ParseFloat(strings.TrimSuffix(s, "m"), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		return time.Duration(val * float64(time.Minute)), nil
+	}
+
+	// No suffix: treat as seconds (backward compatible)
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	return time.Duration(val * float64(time.Second)), nil
 }
