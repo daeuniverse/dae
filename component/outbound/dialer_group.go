@@ -560,8 +560,16 @@ func (g *DialerGroup) buildSelectionState(policy DialerSelectionPolicy, setAlive
 
 	for i, nt := range specs {
 		networkType := *nt
+		// For FixedWithFallback, build the AliveDialerSet using FallbackPolicy
+		// so that latency data is properly tracked for the fallback path.
+		// The main (fixed) path bypasses the set entirely, so using FallbackPolicy
+		// here has no adverse effect on fixed-node selection.
+		setPolicy := policy.Policy
+		if policy.Policy == consts.DialerSelectionPolicy_FixedWithFallback {
+			setPolicy = policy.FallbackPolicy
+		}
 		set := dialer.NewAliveDialerSet(
-			g.log, g.Name, &networkType, g.checkTolerance, policy.Policy,
+			g.log, g.Name, &networkType, g.checkTolerance, setPolicy,
 			g.Dialers, g.dialersAnnotations,
 			func(networkType *dialer.NetworkType) func(alive bool) {
 				return func(alive bool) { g.aliveChangeCallback(alive, networkType, false) }
