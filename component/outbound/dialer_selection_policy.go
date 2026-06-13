@@ -139,7 +139,7 @@ func parsePolicyName(s string) (consts.DialerSelectionPolicy, error) {
 	case "min_avg10":
 		return consts.DialerSelectionPolicy_MinAverage10Latencies, nil
 	default:
-		return 0, fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
+		return consts.DialerSelectionPolicy(0), fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
 	}
 }
 // Supported: "ms" (milliseconds), "s" (seconds), "m" (minutes).
