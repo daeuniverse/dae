@@ -40,6 +40,14 @@ type DialerGroup struct {
 	resuscitateLastTime atomic.Int64
 	noAliveLogLastTimes [8]atomic.Int64
 
+	// fixed_fallback retry state
+	fixedFallbackDeadSince  atomic.Int64
+	fixedFallbackRetryCount atomic.Int64
+
+	// fixed_fallback log rate limit
+	fixedFallbackLastLogMark atomic.Int64 // 0=alive, 1=dead_detected, 2+=retry_step, -1=fallen_back
+	fixedFallbackLastLogTime atomic.Int64
+
 	cachedMinCheckInterval time.Duration
 }
 
@@ -289,6 +297,47 @@ func (g *DialerGroup) logNoAlive(
 	}).Warn("no alive dialer for selection (rate-limited)")
 }
 
+// logFixedFallback logs fixed_fallback events in a rate-limited, state-aware manner.
+// mark is used to deduplicate: same mark → skipped, different mark → logged.
+// Special marks: 0=alive/recovery, 1=dead_detected, 2+N=retry_step, -1=fallen_back.
+func (g *DialerGroup) logFixedFallback(level logrus.Level, mark int64, dialerName, format string, args ...interface{}) {
+	const logInterval = 10 * time.Second
+
+	// Deduplicate by mark: skip if we already logged this state
+	if g.fixedFallbackLastLogMark.Load() == mark {
+		return
+	}
+
+	// Rate limit: max one log per interval
+	if !g.tryDoRateLimitedAction(&g.fixedFallbackLastLogTime, logInterval) {
+		return
+	}
+
+	g.fixedFallbackLastLogMark.Store(mark)
+
+	if g.log == nil {
+		return
+	}
+	if !g.log.IsLevelEnabled(level) {
+		return
+	}
+
+	entry := g.log.WithFields(logrus.Fields{
+		"group":  g.Name,
+		"dialer": dialerName,
+	})
+	switch level {
+	case logrus.InfoLevel:
+		entry.Infof(format, args...)
+	case logrus.WarnLevel:
+		entry.Warnf(format, args...)
+	case logrus.ErrorLevel:
+		entry.Errorf(format, args...)
+	default:
+		entry.Infof(format, args...)
+	}
+}
+
 // Select is a backward-compatible wrapper for SelectWithExclusion.
 func (g *DialerGroup) Select(networkType *dialer.NetworkType, strictIpVersion bool) (d *dialer.Dialer, latency time.Duration, err error) {
 	d, latency, _, err = g.SelectWithExclusionResult(networkType, strictIpVersion, nil)
@@ -364,18 +413,69 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 
 	case consts.DialerSelectionPolicy_FixedWithFallback:
 		// FixedWithFallback always prefers the configured dialer when alive.
-		// When the fixed dialer is backoff/dead, it falls back to
-		// min_moving_avg selection among all alive dialers.
-		// When the fixed dialer revives (periodic health check restores it),
-		// traffic automatically returns to it.
+		// When the fixed dialer is backoff/dead, it will retry with configurable
+		// timeout and max retries before falling back to min_moving_avg.
+		// When the fixed dialer revives, traffic automatically returns to it.
 		if policy.FixedIndex >= 0 && policy.FixedIndex < len(g.Dialers) {
 			fixedDialer := g.Dialers[policy.FixedIndex]
+			fixedName := ""
+			if p := fixedDialer.Property(); p != nil {
+				fixedName = p.Name
+			}
+
 			if fixedDialer.MustGetAlive(networkType) {
+				// Node is alive → reset retry state and use it
+				wasDead := g.fixedFallbackDeadSince.Swap(0) != 0
+				g.fixedFallbackRetryCount.Store(0)
+				if wasDead {
+					// Recovery log (rate-limited)
+					g.logFixedFallback(logrus.InfoLevel, 0, fixedName,
+						"fixed dialer recovered, traffic returned")
+				}
 				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
 				return fixedDialer, 0, selected, nil
 			}
+			// Fixed dialer is dead. Apply retry logic with timeout.
+			nowUnix := time.Now().Unix()
+			deadSince := g.fixedFallbackDeadSince.Load()
+			retries := g.fixedFallbackRetryCount.Load()
+
+			if deadSince == 0 {
+				// First time detecting dead → record time
+				g.fixedFallbackDeadSince.Store(nowUnix)
+				g.logFixedFallback(logrus.WarnLevel, 1, fixedName,
+					"fixed dialer dead, starting retry (timeout=%v, max_retries=%d)",
+					policy.FixedFallbackTimeout, policy.FixedFallbackRetries)
+				// Keep using fixed node (will fail, but user explicitly configured it)
+				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+				return fixedDialer, 0, selected, nil
+			}
+
+			elapsed := time.Duration(nowUnix-deadSince) * time.Second
+			if elapsed < policy.FixedFallbackTimeout {
+				// Still within current timeout window → keep trying fixed node
+				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+				return fixedDialer, 0, selected, nil
+			}
+
+			// Timeout passed → this counts as one retry
+			newRetries := retries + 1
+			if int(newRetries) < policy.FixedFallbackRetries {
+				// Still have retries left → reset timer, keep trying
+				g.fixedFallbackRetryCount.Store(newRetries)
+				g.fixedFallbackDeadSince.Store(nowUnix)
+				g.logFixedFallback(logrus.InfoLevel, 2+newRetries, fixedName,
+					"fixed dialer retry %d/%d", newRetries, policy.FixedFallbackRetries)
+				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+				return fixedDialer, 0, selected, nil
+			}
+			// Max retries reached → fallback (but keep state so we don't
+			// reset until the node revives)
+			g.logFixedFallback(logrus.WarnLevel, -1, fixedName,
+				"fixed dialer retries exhausted (%d/%d), falling back to min_moving_avg",
+				policy.FixedFallbackRetries, policy.FixedFallbackRetries)
 		}
-		// Fixed dialer is out of range or not alive. Fall back to min_moving_avg.
+		// Fixed dialer is out of range or retries exhausted. Fall back to min_moving_avg.
 		networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies,
 		})
