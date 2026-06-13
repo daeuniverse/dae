@@ -10,6 +10,37 @@
     <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
 
+> **This is an enhanced fork** with disaster-recovery capabilities for the `fixed` dialer mode.
+> See [Releases](https://github.com/itoywh/dae/releases) for pre-built binaries.
+
+## Fork Enhancements
+
+### 1. Disaster-Recovery Fixed Fallback
+
+The original `fixed` dialer mode has a critical weakness: if the fixed node goes down, traffic stops entirely.
+This fork introduces `fixed_fallback` with full disaster-recovery semantics:
+
+```ini
+dial_mode: fixed_fallback(1, 5s, 3, min_moving_avg)
+```
+
+- **Automatic fallback**: When the fixed node fails (after configurable timeout + retries), traffic automatically switches to the best alive node
+- **Auto switchback**: When the fixed node recovers (detected by dae's connectivity checker), traffic returns automatically
+- **Configurable timeout**: Supports `ms`/`s`/`m` unit suffixes, e.g. `5s`, `500ms`, `2m`
+- **Configurable fallback policy**: `min_moving_avg` (default), `random`, `min_last_latency`
+- **Rate-limited logging**: WARN/INFO level logs for fallback events with 10s rate limiting
+
+### 2. Improved Log Format
+
+Log timestamps now use human-readable format: `[2026-01-02 15:04:05] INFO ...`
+
+### Upstream PRs
+
+- [PR #1009](https://github.com/daeuniverse/dae/pull/1009) — fixed_fallback disaster-recovery enhancement
+- [PR #1010](https://github.com/daeuniverse/dae/pull/1010) — log timestamp format improvement
+
+---
+
 **_dae_**, means goose, is a high-performance transparent proxy solution.
 
 To enhance traffic split performance as much as possible, dae employs the transparent proxy and traffic split suite within the Linux kernel using eBPF. As a result, dae can enable direct traffic to bypass the proxy application's forwarding, facilitating genuine direct traffic passage. Through this remarkable feat, there is minimal performance loss and negligible additional resource consumption for direct traffic. 
