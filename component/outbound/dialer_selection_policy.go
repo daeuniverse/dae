@@ -63,7 +63,7 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		if f.Not {
 			return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)
 		}
-		if len(f.Params) < 1 || len(f.Params) > 3 {
+		if len(f.Params) < 1 || len(f.Params) > 4 {
 			return nil, fmt.Errorf(`invalid "%v" param format: expected 1-3 params, got %v`, f.Name, len(f.Params))
 		}
 		// Parse index (required, first param)
@@ -139,7 +139,7 @@ func parsePolicyName(s string) (consts.DialerSelectionPolicy, error) {
 	case "min_avg10":
 		return consts.DialerSelectionPolicy_MinAverage10Latencies, nil
 	default:
-		return 0, fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
+		return consts.DialerSelectionPolicy(0), fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
 	}
 }
 // Supported: "ms" (milliseconds), "s" (seconds), "m" (minutes).
