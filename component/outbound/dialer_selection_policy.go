@@ -35,7 +35,8 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		return &DialerSelectionPolicy{
 			Policy: fName,
 		}, nil
-	case consts.DialerSelectionPolicy_Fixed:
+	case consts.DialerSelectionPolicy_Fixed,
+		consts.DialerSelectionPolicy_FixedWithFallback:
 
 		if f.Not {
 			return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)

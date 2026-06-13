@@ -315,6 +315,11 @@ group {
         # Select the first node from the group for every connection.
         #policy: fixed(0)
 
+        # Select the first node when alive, fall back to min_moving_avg when dead.
+        # When the fixed node revives (periodic health check restores it),
+        # traffic automatically returns to it.
+        #policy: fixed_fallback(0)
+
         # Select the node with min last latency from the group for every connection.
         #policy: min
 
