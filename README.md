@@ -29,7 +29,7 @@ This fork introduces `fixed_fallback`, transforming `fixed` from a fragile stand
 # In your dae config (e.g., /etc/dae/config.dae):
 [group]
 my_group {
-    dial_mode: fixed_fallback(1, 5s, 3)
+    policy: fixed_fallback(1, 5s, 3)
 }
 
 [global]
@@ -105,7 +105,7 @@ check_tolerance: 60ms   # Only switch back if fixed node is ≥60ms better than 
 [group]
 my_group {
     nodes: s4, s2, s5
-    dial_mode: fixed_fallback(0, 5s, 3)
+    policy: fixed_fallback(0, 5s, 3)
 }
 ```
 
@@ -114,7 +114,7 @@ my_group {
 [group]
 my_group {
     nodes: s4, s2, s5
-    dial_mode: fixed_fallback(0, 3s, 2, random)
+    policy: fixed_fallback(0, 3s, 2, random)
 }
 ```
 
@@ -126,13 +126,13 @@ check_tolerance: 80ms
 [group]
 my_group {
     nodes: s_hk, s_jp, s_sg
-    dial_mode: fixed_fallback(0, 5s, 3)        # min_moving_avg (default)
+    policy: fixed_fallback(0, 5s, 3)        # min_moving_avg (default)
 }
 ```
 
 **Example D: Aggressive timeout** — fail fast, retry only once:
 ```ini
-dial_mode: fixed_fallback(0, 500ms, 1, min_last_latency)
+policy: fixed_fallback(0, 500ms, 1, min_last_latency)
 ```
 
 ---
