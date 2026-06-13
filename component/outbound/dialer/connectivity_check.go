@@ -464,6 +464,56 @@ func getActiveDialerCount() int {
 	return poolActiveCount
 }
 
+// shouldSkipIpv6Probes returns true when both tcp_check_url and udp_check_dns
+// explicitly list only IPv4 addresses (no explicit IPv6 entries).
+// This avoids unnecessary IPv6 probes when the user's network doesn't support IPv6.
+// Returns false (keep IPv6 probes) when:
+//   - Explicit IPv6 addresses are found in config
+//   - No explicit IPs are given (DNS resolution might return IPv6)
+func shouldSkipIpv6Probes(tcpRaw, dnsRaw []string) bool {
+	hasIpv6 := false
+	hasExplicitIpv4 := false
+
+	// Check tcp_check_url explicit IPs (element 1+)
+	for i := 1; i < len(tcpRaw); i++ {
+		addr, err := netip.ParseAddr(tcpRaw[i])
+		if err != nil {
+			continue
+		}
+		if addr.Is6() {
+			hasIpv6 = true
+		} else {
+			hasExplicitIpv4 = true
+		}
+	}
+
+	// Check udp_check_dns explicit IPs (element 1+)
+	for i := 1; i < len(dnsRaw); i++ {
+		addr, err := netip.ParseAddr(dnsRaw[i])
+		if err != nil {
+			continue
+		}
+		if addr.Is6() {
+			hasIpv6 = true
+		} else {
+			hasExplicitIpv4 = true
+		}
+	}
+
+	// If explicit IPv6 found → don't skip
+	if hasIpv6 {
+		return false
+	}
+	// If explicit IPv4 found but no explicit IPv6 → skip IPv6 probes
+	// If no explicit IPs at all → don't skip (DNS might resolve IPv6)
+	return hasExplicitIpv4
+}
+
+// hasUdpDnsConfig returns true if udp_check_dns is configured.
+func hasUdpDnsConfig(raw []string) bool {
+	return len(raw) > 0
+}
+
 func (d *Dialer) aliveBackground() {
 	cycle := d.CheckInterval
 	var tcpSomark uint32
@@ -563,7 +613,33 @@ func (d *Dialer) aliveBackground() {
 		},
 		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &udpNetwork),
 	}
-	var CheckOpts = []*CheckOption{tcp4CheckOpt, tcp6CheckOpt, udp4CheckDnsOpt, udp6CheckDnsOpt}
+	// Build CheckOpts dynamically based on configuration:
+	//   - Skip IPv6 probes when config explicitly lists only IPv4 addresses
+	//   - Skip UDP DNS probes when udp_check_dns is not configured
+	skipIpv6 := shouldSkipIpv6Probes(d.TcpCheckOptionRaw.Raw, d.CheckDnsOptionRaw.Raw)
+	useUdpDns := hasUdpDnsConfig(d.CheckDnsOptionRaw.Raw)
+
+	var CheckOpts []*CheckOption
+	CheckOpts = append(CheckOpts, tcp4CheckOpt)
+	if !skipIpv6 {
+		CheckOpts = append(CheckOpts, tcp6CheckOpt)
+	}
+	if useUdpDns {
+		CheckOpts = append(CheckOpts, udp4CheckDnsOpt)
+		if !skipIpv6 {
+			CheckOpts = append(CheckOpts, udp6CheckDnsOpt)
+		}
+	}
+
+	if d.Log.IsLevelEnabled(logrus.DebugLevel) {
+		d.Log.WithFields(logrus.Fields{
+			"dialer":   d.property.Name,
+			"tcp4":     true,
+			"tcp6":     !skipIpv6,
+			"udp4_dns": useUdpDns,
+			"udp6_dns": useUdpDns && !skipIpv6,
+		}).Debugln("Connectivity check probes configured")
+	}
 
 	var unusedOnce bool
 	checkUnused := func() bool {
@@ -683,7 +759,9 @@ func (d *Dialer) aliveBackground() {
 			// WITHOUT any successes in this cycle. This allows partially-working dual-stack
 			// nodes (e.g. V4 OK, V6 broken) to eventually wash white their penalty.
 			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure && !cycleRes.tcpSuccess)
-			d.NotifyPeriodicCheckResultForType(udp4CheckDnsOpt.networkType, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
+			if useUdpDns {
+				d.NotifyPeriodicCheckResultForType(udp4CheckDnsOpt.networkType, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
+			}
 		}
 
 		// Targeted checks don't disturb the periodic timer — only full checks do.
