@@ -10,6 +10,10 @@
     <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
 
+<p align="right">
+  <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
+</p>
+
 > **这是一个增强版 Fork**，为 `fixed` 拨号模式增加了完整的灾备能力。
 > 预编译二进制请见 [Releases](https://github.com/itoywh/dae/releases)。
 

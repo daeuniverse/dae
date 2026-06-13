@@ -10,6 +10,10 @@
     <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
 
+<p align="right">
+  <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
+</p>
+
 > **This is an enhanced fork** with disaster-recovery capabilities for the `fixed` dialer mode.
 > See [Releases](https://github.com/itoywh/dae/releases) for pre-built binaries.
 
