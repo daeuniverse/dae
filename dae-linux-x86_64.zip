@@ -1,0 +1,345 @@
+{
+  "total_count": 17,
+  "artifacts": [
+    {
+      "id": 7609703317,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAzMzE3",
+      "name": "dae-linux-mips32.zip",
+      "size_in_bytes": 16713467,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609703317",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609703317/zip",
+      "expired": false,
+      "digest": "sha256:3e68e83c58149e63f51036349dcd0a5fc2f8caa0c03fde26381105195420b351",
+      "created_at": "2026-06-13T09:56:12Z",
+      "updated_at": "2026-06-13T09:56:12Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609703027,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAzMDI3",
+      "name": "dae-linux-arm64.zip",
+      "size_in_bytes": 16860785,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609703027",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609703027/zip",
+      "expired": false,
+      "digest": "sha256:ae54af13136e16541472754f06e4e58191f5579629262782e9f7ad721a982dc1",
+      "created_at": "2026-06-13T09:56:09Z",
+      "updated_at": "2026-06-13T09:56:09Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609702588,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAyNTg4",
+      "name": "dae-linux-powerpc64.zip",
+      "size_in_bytes": 16966795,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702588",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702588/zip",
+      "expired": false,
+      "digest": "sha256:a398df6608631c99f002f99655197a000fa9e1fcd0fb821ca30db0ff82a4cc8d",
+      "created_at": "2026-06-13T09:56:05Z",
+      "updated_at": "2026-06-13T09:56:05Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609702337,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAyMzM3",
+      "name": "dae-linux-riscv64.zip",
+      "size_in_bytes": 17196636,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702337",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702337/zip",
+      "expired": false,
+      "digest": "sha256:a69b0c916af1be63bbe4ec44b77238041f7e38641ee65cce47974d6aaf76d2bd",
+      "created_at": "2026-06-13T09:56:03Z",
+      "updated_at": "2026-06-13T09:56:03Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609702230,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAyMjMw",
+      "name": "dae-linux-x86_64_v2_sse.zip",
+      "size_in_bytes": 18055439,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702230",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702230/zip",
+      "expired": false,
+      "digest": "sha256:3f632e0ee42f61a50243001ac84d42c680fb17f96fae9f8ad57503278e10fa2b",
+      "created_at": "2026-06-13T09:56:02Z",
+      "updated_at": "2026-06-13T09:56:02Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609702110,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAyMTEw",
+      "name": "dae-linux-mips32le.zip",
+      "size_in_bytes": 16612565,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702110",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702110/zip",
+      "expired": false,
+      "digest": "sha256:835a2800390a43c14c2ace67c17c5d6ab756921b0122dae475cbdf76f7036945",
+      "created_at": "2026-06-13T09:56:01Z",
+      "updated_at": "2026-06-13T09:56:01Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609702031,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAyMDMx",
+      "name": "dae-linux-x86_32.zip",
+      "size_in_bytes": 17468443,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702031",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609702031/zip",
+      "expired": false,
+      "digest": "sha256:f49a7cc7c8ff6faf714747db333606642b88f7e9b0549b7311796e7c924ac3df",
+      "created_at": "2026-06-13T09:56:00Z",
+      "updated_at": "2026-06-13T09:56:00Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701985,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxOTg1",
+      "name": "dae-linux-mips64.zip",
+      "size_in_bytes": 16396403,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701985",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701985/zip",
+      "expired": false,
+      "digest": "sha256:7bd4f7724caf87c1de92e9c4a02ad823ef082df99c4bb60f9d55e5942510c810",
+      "created_at": "2026-06-13T09:56:00Z",
+      "updated_at": "2026-06-13T09:56:00Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701920,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxOTIw",
+      "name": "dae-linux-powerpc64le.zip",
+      "size_in_bytes": 16914723,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701920",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701920/zip",
+      "expired": false,
+      "digest": "sha256:61529af9d68e88784ca97a28ca842bf7cd2991c328dc65d566a058b1104cd0c1",
+      "created_at": "2026-06-13T09:55:59Z",
+      "updated_at": "2026-06-13T09:55:59Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701693,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxNjkz",
+      "name": "dae-linux-x86_64_v3_avx2.zip",
+      "size_in_bytes": 18043862,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701693",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701693/zip",
+      "expired": false,
+      "digest": "sha256:973f0e1fba5a884d9cc4ed976275c0df687753052d2bbfb5f845bc63c3ec57c1",
+      "created_at": "2026-06-13T09:55:57Z",
+      "updated_at": "2026-06-13T09:55:57Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701530,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxNTMw",
+      "name": "dae-linux-armv7.zip",
+      "size_in_bytes": 17245478,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701530",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701530/zip",
+      "expired": false,
+      "digest": "sha256:cd2bf7e7def58161a480b43d12792dc6be6ff9bd827e511d4c94e99aa94fd107",
+      "created_at": "2026-06-13T09:55:55Z",
+      "updated_at": "2026-06-13T09:55:55Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701502,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxNTAy",
+      "name": "dae-linux-mips64le.zip",
+      "size_in_bytes": 16267548,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701502",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701502/zip",
+      "expired": false,
+      "digest": "sha256:d436e37be77ef80ec80cc6b943c28bb5e21edac4ffe719e3b3685770e5bd4163",
+      "created_at": "2026-06-13T09:55:55Z",
+      "updated_at": "2026-06-13T09:55:55Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701066,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxMDY2",
+      "name": "dae-linux-loongarch64.zip",
+      "size_in_bytes": 17467119,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701066",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701066/zip",
+      "expired": false,
+      "digest": "sha256:3481ade51ead19a6ffdcd4c55c364d228f9e7c1c3691f578a03a7281937cac23",
+      "created_at": "2026-06-13T09:55:51Z",
+      "updated_at": "2026-06-13T09:55:51Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609701043,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAxMDQz",
+      "name": "dae-linux-s390x.zip",
+      "size_in_bytes": 17590781,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701043",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609701043/zip",
+      "expired": false,
+      "digest": "sha256:09bdcc191943b9a54ee7c2da7d8723d471785506ae7d2494313ca133ab213428",
+      "created_at": "2026-06-13T09:55:51Z",
+      "updated_at": "2026-06-13T09:55:51Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609700160,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5NzAwMTYw",
+      "name": "dae-linux-armv6.zip",
+      "size_in_bytes": 17263369,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609700160",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609700160/zip",
+      "expired": false,
+      "digest": "sha256:e8063145848469aeae9cb5dca93a00dd02a133518b3a57267afbe49f71e17314",
+      "created_at": "2026-06-13T09:55:42Z",
+      "updated_at": "2026-06-13T09:55:42Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609699075,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5Njk5MDc1",
+      "name": "dae-linux-armv5.zip",
+      "size_in_bytes": 17277034,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609699075",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609699075/zip",
+      "expired": false,
+      "digest": "sha256:ed0e86130b8536730ac7bfd6c304aa82a6ffff5886f859b37aecf934619ee20a",
+      "created_at": "2026-06-13T09:55:32Z",
+      "updated_at": "2026-06-13T09:55:32Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    },
+    {
+      "id": 7609698047,
+      "node_id": "MDg6QXJ0aWZhY3Q3NjA5Njk4MDQ3",
+      "name": "dae-linux-x86_64.zip",
+      "size_in_bytes": 18057540,
+      "url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609698047",
+      "archive_download_url": "https://api.github.com/repos/itoywh/dae/actions/artifacts/7609698047/zip",
+      "expired": false,
+      "digest": "sha256:2548865ed0c5c2ec29f9f3ad231df52fb9c2018e07de6edd316a13dbc95aed2a",
+      "created_at": "2026-06-13T09:55:23Z",
+      "updated_at": "2026-06-13T09:55:23Z",
+      "expires_at": "2026-09-11T09:54:32Z",
+      "workflow_run": {
+        "id": 27463459944,
+        "repository_id": 1268200500,
+        "head_repository_id": 1268200500,
+        "head_branch": "main",
+        "head_sha": "758ac8d37cd0f2863dca3b6f3b4c1c5822947b4e"
+      }
+    }
+  ]
+}
