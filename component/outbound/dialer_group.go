@@ -380,6 +380,37 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 		selected := preferAlternateSelectionNetworkType(g.Dialers[policy.FixedIndex], networkType)
 		return g.Dialers[policy.FixedIndex], 0, selected, nil
 
+	case consts.DialerSelectionPolicy_FixedWithFallback:
+		// FixedWithFallback always prefers the configured dialer when alive.
+		// When the fixed dialer is backoff/dead, it falls back to
+		// min_moving_avg selection among all alive dialers.
+		// When the fixed dialer revives (periodic health check restores it),
+		// traffic automatically returns to it.
+		if policy.FixedIndex < 0 || policy.FixedIndex >= len(g.Dialers) {
+			return nil, 0, nil, fmt.Errorf("selected dialer index is out of range")
+		}
+		fixedDialer := g.Dialers[policy.FixedIndex]
+		if fixedDialer.MustGetAlive(networkType) {
+			selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+			return fixedDialer, 0, selected, nil
+		}
+		// Fixed dialer is not alive. Fall back to min_moving_avg.
+		networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
+			Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		})
+		for i := range count {
+			a := state.aliveDialerSets[networkTypes[i].Index()]
+			if a == nil {
+				continue
+			}
+			d, latency := a.GetMinLatency(nil)
+			if d != nil {
+				selected := preferAlternateSelectionNetworkType(d, &networkTypes[i])
+				return d, latency, selected, nil
+			}
+		}
+		return nil, time.Hour, nil, ErrNoAliveDialer
+
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
@@ -494,7 +525,8 @@ func policyNeedsAliveState(policy consts.DialerSelectionPolicy) bool {
 	case consts.DialerSelectionPolicy_Random,
 		consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
-		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		consts.DialerSelectionPolicy_FixedWithFallback:
 		return true
 	case consts.DialerSelectionPolicy_Fixed:
 		return false
