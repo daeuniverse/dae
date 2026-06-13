@@ -368,15 +368,16 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 		// min_moving_avg selection among all alive dialers.
 		// When the fixed dialer revives (periodic health check restores it),
 		// traffic automatically returns to it.
-		if policy.FixedIndex < 0 || policy.FixedIndex >= len(g.Dialers) {
-			return nil, 0, nil, fmt.Errorf("selected dialer index is out of range")
+		var fixedAlive bool
+		if policy.FixedIndex >= 0 && policy.FixedIndex < len(g.Dialers) {
+			fixedDialer := g.Dialers[policy.FixedIndex]
+			if fixedDialer.MustGetAlive(networkType) {
+				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+				return fixedDialer, 0, selected, nil
+			}
+			fixedAlive = false
 		}
-		fixedDialer := g.Dialers[policy.FixedIndex]
-		if fixedDialer.MustGetAlive(networkType) {
-			selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
-			return fixedDialer, 0, selected, nil
-		}
-		// Fixed dialer is not alive. Fall back to min_moving_avg.
+		// Fixed dialer is out of range or not alive. Fall back to min_moving_avg.
 		networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies,
 		})
