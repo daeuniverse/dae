@@ -10,7 +10,7 @@
     <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
 
-<p align="right">
+<p align="left">
   <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
 </p>
 
