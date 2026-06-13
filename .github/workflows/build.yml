@@ -12,6 +12,7 @@
 name: Build (Main)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
