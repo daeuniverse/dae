@@ -40,7 +40,7 @@ my_group {
 check_tolerance: 60ms
 ```
 
-This means: prefer the 2nd node in the group (index 1, 0-based). If it fails after 3 connection attempts with 5 seconds timeout each → automatically switch to the best available node. When the fixed node recovers → automatically switch back. The 60ms tolerance prevents flapping.
+This means: prefer the 2nd node in the group (index 1, 0-based). If it fails after 3 connection attempts with 5 seconds timeout each → automatically switch to the best available node. When the fixed node recovers → immediately and unconditionally switch back. The 60ms tolerance prevents flapping between fallback nodes (s2 ↔ s5) during failover.
 
 ---
 
@@ -67,12 +67,15 @@ fixed_fallback(<index>, <timeout>, <retries>[, <fallback_policy>])
 
 ##### How `check_tolerance` Works with fixed_fallback
 
-The `check_tolerance` setting (under `[global]`) works alongside the fallback policy to prevent node flapping. When the fixed node recovers and its latency is within `check_tolerance` of the current fallback node's latency, dae will **not** switch back immediately — avoiding the "bounce" effect where traffic oscillates between nodes.
+The `check_tolerance` setting (under `[global]`) works alongside the fallback policy, **but only affects selection between fallback nodes** (e.g., s2 ↔ s5). It prevents unnecessary switching caused by minor latency fluctuations during failover.
 
 ```ini
 [global]
-check_tolerance: 60ms   # Only switch back if fixed node is ≥60ms better than fallback
+check_tolerance: 60ms   # During failover: don't switch between fallback nodes
+                        # unless latency difference exceeds 60ms
 ```
+
+> **Important**: s4 recovery is completely independent of `check_tolerance`. Once s4 passes the health check, traffic returns **immediately and unconditionally** — no latency comparison, no tolerance threshold. `check_tolerance` governs "which backup to use," not "whether to take the primary back."
 
 ---
 
@@ -93,9 +96,8 @@ check_tolerance: 60ms   # Only switch back if fixed node is ≥60ms better than 
 │        → INFO log: "falling back to <node>"                │
 │                                                             │
 │  3. Connectivity Checker probes fixed node periodically     │
-│     └─ Fixed node recovered?                                │
-│        ├─ Latency within check_tolerance? → Stay on fallback│
-│        └─ Latency significantly better? → Switch back 🔄   │
+│     └─ Fixed node recovered? → Switch back immediately! 🔄  │
+│        (No check_tolerance or latency comparison — alive=go) │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
