@@ -40,6 +40,10 @@ type DialerGroup struct {
 	resuscitateLastTime atomic.Int64
 	noAliveLogLastTimes [8]atomic.Int64
 
+	// fixed_fallback retry state
+	fixedFallbackDeadSince  atomic.Int64
+	fixedFallbackRetryCount atomic.Int64
+
 	cachedMinCheckInterval time.Duration
 }
 
@@ -382,18 +386,49 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 
 	case consts.DialerSelectionPolicy_FixedWithFallback:
 		// FixedWithFallback always prefers the configured dialer when alive.
-		// When the fixed dialer is backoff/dead, it falls back to
-		// min_moving_avg selection among all alive dialers.
-		// When the fixed dialer revives (periodic health check restores it),
-		// traffic automatically returns to it.
+		// When the fixed dialer is backoff/dead, it will retry with configurable
+		// timeout and max retries before falling back to min_moving_avg.
+		// When the fixed dialer revives, traffic automatically returns to it.
 		if policy.FixedIndex >= 0 && policy.FixedIndex < len(g.Dialers) {
 			fixedDialer := g.Dialers[policy.FixedIndex]
 			if fixedDialer.MustGetAlive(networkType) {
+				// Node is alive → reset retry state and use it
+				g.fixedFallbackDeadSince.Store(0)
+				g.fixedFallbackRetryCount.Store(0)
 				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
 				return fixedDialer, 0, selected, nil
 			}
+			// Fixed dialer is dead. Apply retry logic with timeout.
+			nowUnix := time.Now().Unix()
+			deadSince := g.fixedFallbackDeadSince.Load()
+			retries := g.fixedFallbackRetryCount.Load()
+
+			if deadSince == 0 {
+				// First time detecting dead → record time
+				g.fixedFallbackDeadSince.Store(nowUnix)
+				deadSince = nowUnix
+			}
+
+			elapsed := time.Duration(nowUnix-deadSince) * time.Second
+			if elapsed < policy.FixedFallbackTimeout {
+				// Still within current timeout window → keep trying fixed node
+				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+				return fixedDialer, 0, selected, nil
+			}
+
+			// Timeout passed → this counts as one retry
+			newRetries := retries + 1
+			if int(newRetries) < policy.FixedFallbackRetries {
+				// Still have retries left → reset timer, keep trying
+				g.fixedFallbackRetryCount.Store(newRetries)
+				g.fixedFallbackDeadSince.Store(nowUnix)
+				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+				return fixedDialer, 0, selected, nil
+			}
+			// Max retries reached → fallback (but keep state so we don't
+			// reset until the node revives)
 		}
-		// Fixed dialer is out of range or not alive. Fall back to min_moving_avg.
+		// Fixed dialer is out of range or retries exhausted. Fall back to min_moving_avg.
 		networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies,
 		})
