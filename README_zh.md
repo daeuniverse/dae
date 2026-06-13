@@ -61,8 +61,9 @@ fixed_fallback(<索引>, <超时>, <重试次数>[, <fallback策略>])
 
 | 策略 | 行为 | 适用场景 |
 |------|------|----------|
-| `min_moving_avg` ⭐ *(默认)* | 选择移动平均延迟最低的节点。配合 `check_tolerance` 防抖动。 | 通用场景 — 延迟敏感流量 |
-| `min_last_latency` | 选择最近一次实测延迟最低的节点。 | 网络条件快速变化的环境 |
+| `min_moving_avg` ⭐*(默认)* | 选择移动平均延迟最低的节点。配合 `check_tolerance` 防抖动。 | 通用场景 — 延迟敏感流量 |
+| `min` | 选择最近一次实测延迟最低的节点（官方名，同 `min_last_latency`）。 | 网络条件快速变化的环境 |
+| `min_avg10` | 选择最近 10 次延迟平均值最低的节点。 | 延迟波动较大的环境 |
 | `random` | 从存活的 fallback 节点池中随机选一个。 | 负载均衡 — 希望分散流量到备用节点池 |
 
 ##### check_tolerance 与 fixed_fallback 的配合
@@ -137,7 +138,7 @@ my_group {
 
 **示例 D：激进超时** — 快失败，只重试一次：
 ```ini
-policy: fixed_fallback(0, 500ms, 1, min_last_latency)
+policy: fixed_fallback(0, 500ms, 1, min)
 ```
 
 ---
