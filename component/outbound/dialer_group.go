@@ -527,7 +527,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 			}
 		}
 		return nil, time.Hour, nil, ErrNoAliveDialer
-		}
+	}
 
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
