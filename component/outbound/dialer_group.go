@@ -414,7 +414,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 	case consts.DialerSelectionPolicy_FixedWithFallback:
 		// FixedWithFallback always prefers the configured dialer when alive.
 		// When the fixed dialer is backoff/dead, it will retry with configurable
-		// timeout and max retries before falling back to min_moving_avg.
+		// timeout and max retries before falling back to the configured fallback policy.
 		// When the fixed dialer revives, traffic automatically returns to it.
 		if policy.FixedIndex >= 0 && policy.FixedIndex < len(g.Dialers) {
 			fixedDialer := g.Dialers[policy.FixedIndex]
@@ -472,12 +472,12 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 			// Max retries reached → fallback (but keep state so we don't
 			// reset until the node revives)
 			g.logFixedFallback(logrus.WarnLevel, -1, fixedName,
-				"fixed dialer retries exhausted (%d/%d), falling back to min_moving_avg",
-				policy.FixedFallbackRetries, policy.FixedFallbackRetries)
+				"fixed dialer retries exhausted (%d/%d), falling back to %v",
+				policy.FixedFallbackRetries, policy.FixedFallbackRetries, policy.FallbackPolicy)
 		}
-		// Fixed dialer is out of range or retries exhausted. Fall back to min_moving_avg.
+		// Fixed dialer is out of range or retries exhausted. Fall back to configured policy.
 		networkTypes, count := g.selectionNetworkTypes(networkType, DialerSelectionPolicy{
-			Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+			Policy: policy.FallbackPolicy,
 		})
 		for i := range count {
 			a := state.aliveDialerSets[networkTypes[i].Index()]
