@@ -15,24 +15,148 @@
 
 ## Fork Enhancements
 
-### 1. Disaster-Recovery Fixed Fallback
+### 1. fixed_fallback — Disaster-Recovery Dialer Strategy
 
-The original `fixed` dialer mode has a critical weakness: if the fixed node goes down, traffic stops entirely.
-This fork introduces `fixed_fallback` with full disaster-recovery semantics:
+The original `fixed` dialer mode has a critical weakness: **if the fixed node goes down, traffic stops entirely**. There is no failover mechanism — it's a single point of failure.
+
+This fork introduces `fixed_fallback`, transforming `fixed` from a fragile standalone mode into a **production-grade high-availability strategy** with full disaster-recovery semantics.
+
+---
+
+#### Quick Start
 
 ```ini
-dial_mode: fixed_fallback(1, 5s, 3, min_moving_avg)
+# In your dae config (e.g., /etc/dae/config.dae):
+[group]
+my_group {
+    dial_mode: fixed_fallback(1, 5s, 3)
+}
+
+[global]
+check_tolerance: 60ms
 ```
 
-- **Automatic fallback**: When the fixed node fails (after configurable timeout + retries), traffic automatically switches to the best alive node
-- **Auto switchback**: When the fixed node recovers (detected by dae's connectivity checker), traffic returns automatically
-- **Configurable timeout**: Supports `ms`/`s`/`m` unit suffixes, e.g. `5s`, `500ms`, `2m`
-- **Configurable fallback policy**: `min_moving_avg` (default), `random`, `min_last_latency`
-- **Rate-limited logging**: WARN/INFO level logs for fallback events with 10s rate limiting
+This means: prefer the 2nd node in the group (index 1, 0-based). If it fails after 3 connection attempts with 5 seconds timeout each → automatically switch to the best available node. When the fixed node recovers → automatically switch back. The 60ms tolerance prevents flapping.
+
+---
+
+#### Parameter Reference
+
+```
+fixed_fallback(<index>, <timeout>, <retries>[, <fallback_policy>])
+```
+
+| # | Parameter | Required | Description | Example |
+|---|-----------|----------|-------------|---------|
+| 1 | **`index`** | ✅ | 0-based index of the fixed dialer in the group's node list. The first node is `0`, second is `1`, etc. Must point to a valid node — if out of range, falls through to fallback pool. | `1` → use the 2nd node |
+| 2 | **`timeout`** | ✅ | Connection timeout per attempt. Supports unit suffixes: `ms` (milliseconds), `s` (seconds), `m` (minutes). Without suffix, treated as seconds (backward compatible). | `5s`, `500ms`, `2m`, `10` (10s) |
+| 3 | **`retries`** | ✅ | Maximum connection retries before declaring the fixed node dead and triggering fallback. After all retries are exhausted, a WARN-level log is emitted. | `3` → retry 3 times |
+| 4 | **`fallback_policy`** | ❌ | Fallback node selection strategy when the fixed node is down. If omitted, defaults to `min_moving_avg`. | See table below |
+
+##### Fallback Strategy Options
+
+| Policy | Behavior | Best For |
+|--------|----------|----------|
+| `min_moving_avg` ⭐ *(default)* | Selects the node with the lowest moving-average latency. Works with `check_tolerance` to prevent unnecessary switches. | General use — latency-sensitive traffic |
+| `min_last_latency` | Selects the node with the lowest most-recent measured latency. | Environments with rapidly changing network conditions |
+| `random` | Randomly picks an alive node from the fallback pool. | Load balancing — when you want to distribute traffic across the fallback pool |
+
+##### How `check_tolerance` Works with fixed_fallback
+
+The `check_tolerance` setting (under `[global]`) works alongside the fallback policy to prevent node flapping. When the fixed node recovers and its latency is within `check_tolerance` of the current fallback node's latency, dae will **not** switch back immediately — avoiding the "bounce" effect where traffic oscillates between nodes.
+
+```ini
+[global]
+check_tolerance: 60ms   # Only switch back if fixed node is ≥60ms better than fallback
+```
+
+---
+
+#### How It Works
+
+```
+┌─ Normal operation ─────────────────────────────────────────┐
+│                                                             │
+│  fixed_fallback(1, 5s, 3, min_moving_avg)                  │
+│                                                             │
+│  1. Try fixed node (index 1 = 2nd node)                    │
+│     ├─ Alive? → Use it. Done. ✅                            │
+│     └─ Down/Timeout? → Retry (up to 3 times)               │
+│                                                             │
+│  2. All 3 retries exhausted?                                │
+│     └─ WARN log: "fixed dialer retries exhausted (3/3)"    │
+│        → Fall back to min_moving_avg among alive nodes     │
+│        → INFO log: "falling back to <node>"                │
+│                                                             │
+│  3. Connectivity Checker probes fixed node periodically     │
+│     └─ Fixed node recovered?                                │
+│        ├─ Latency within check_tolerance? → Stay on fallback│
+│        └─ Latency significantly better? → Switch back 🔄   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Configuration Examples
+
+**Example A: Simple failover** — prefer node `s4`, fall back to any alive node when unavailable:
+```ini
+[group]
+my_group {
+    nodes: s4, s2, s5
+    dial_mode: fixed_fallback(0, 5s, 3)
+}
+```
+
+**Example B: with random fallback** — distribute fallback traffic across all backup nodes:
+```ini
+[group]
+my_group {
+    nodes: s4, s2, s5
+    dial_mode: fixed_fallback(0, 3s, 2, random)
+}
+```
+
+**Example C: with check_tolerance** — prevent flapping when latencies are close:
+```ini
+[global]
+check_tolerance: 80ms
+
+[group]
+my_group {
+    nodes: s_hk, s_jp, s_sg
+    dial_mode: fixed_fallback(0, 5s, 3)        # min_moving_avg (default)
+}
+```
+
+**Example D: Aggressive timeout** — fail fast, retry only once:
+```ini
+dial_mode: fixed_fallback(0, 500ms, 1, min_last_latency)
+```
+
+---
+
+#### Compatibility
+
+- **Backward compatible**: existing `fixed_fallback(1, 5s, 3)` configs work without changes
+- **Time unit backward compatibility**: `fixed_fallback(1, 5, 3)` (no suffix) still works — treated as seconds
+- **Works with all existing dialer strategies**: `fixed_fallback` is an additional strategy, all other strategies (`random`, `min_moving_avg`, etc.) continue to work as-is
+
+---
 
 ### 2. Improved Log Format
 
-Log timestamps now use human-readable format: `[2026-01-02 15:04:05] INFO ...`
+Log timestamps now use human-readable format with `ForceFormatting` enabled:
+
+```
+Before:  INFO selected dialer: s4 ...
+After:  [2026-06-13 15:04:05] INFO selected dialer: s4 ...
+```
+
+The format `[YYYY-MM-DD HH:MM:SS]` prefix makes logs easier to read and parse with standard tools (e.g., `grep`, `awk`, log viewers).
+
+---
 
 ### Upstream PRs
 
