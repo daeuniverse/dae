@@ -18,8 +18,9 @@ import (
 type DialerSelectionPolicy struct {
 	Policy               consts.DialerSelectionPolicy
 	FixedIndex           int
-	FixedFallbackTimeout time.Duration // 节点超时时间
-	FixedFallbackRetries int           // 超时重试次数
+	FixedFallbackTimeout time.Duration     // 节点超时时间
+	FixedFallbackRetries int              // 超时重试次数
+	FallbackPolicy       consts.DialerSelectionPolicy // 重试耗尽后的回退策略，默认 min_moving_avg
 }
 
 func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *DialerSelectionPolicy, err error) {
@@ -98,11 +99,24 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 				return nil, fmt.Errorf(`invalid "%v" param format: retries must be >= 1`, f.Name)
 			}
 		}
+		// Parse fallback policy (optional, fourth param)
+		fallbackPolicy := consts.DialerSelectionPolicy_MinMovingAverageLatencies // default
+		if len(f.Params) >= 4 {
+			if f.Params[3].Key != "" {
+				return nil, fmt.Errorf(`invalid "%v" param format: fourth param must be fallback policy name (no key)`, f.Name)
+			}
+			fp, err := parsePolicyName(f.Params[3].Val)
+			if err != nil {
+				return nil, fmt.Errorf(`invalid "%v" param format: fallback policy: %w`, f.Name, err)
+			}
+			fallbackPolicy = fp
+		}
 		return &DialerSelectionPolicy{
 			Policy:               consts.DialerSelectionPolicy_FixedWithFallback,
 			FixedIndex:           index,
 			FixedFallbackTimeout: timeout,
 			FixedFallbackRetries: retries,
+			FallbackPolicy:       fallbackPolicy,
 		}, nil
 
 	default:
@@ -110,7 +124,24 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 	}
 }
 
-// parseDurationWithUnit parses a duration string with optional unit suffix.
+// parsePolicyName maps a policy name string to the corresponding DialerSelectionPolicy constant.
+// Supported fallback policies: random, min_moving_avg, min_last_latency, min_avg10.
+// Fixed and fixed_fallback are not supported as fallback policies (would cause infinite recursion).
+func parsePolicyName(s string) (consts.DialerSelectionPolicy, error) {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "random":
+		return consts.DialerSelectionPolicy_Random, nil
+	case "min_moving_avg":
+		return consts.DialerSelectionPolicy_MinMovingAverageLatencies, nil
+	case "min_last_latency":
+		return consts.DialerSelectionPolicy_MinLastLatency, nil
+	case "min_avg10":
+		return consts.DialerSelectionPolicy_MinAverage10Latencies, nil
+	default:
+		return 0, fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
+	}
+}
 // Supported: "ms" (milliseconds), "s" (seconds), "m" (minutes).
 // No suffix defaults to seconds for backward compatibility.
 // Examples: "500ms", "5s", "2m", "10".
