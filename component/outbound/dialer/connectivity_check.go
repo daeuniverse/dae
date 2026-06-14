@@ -1063,6 +1063,25 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 	wasAlive := collection.Alive.Load()
 	collection.Alive.Store(alive)
 
+	// Log alive/dead transitions for operational visibility.
+	if d.Log != nil {
+		nodeName := ""
+		if d.property != nil {
+			nodeName = d.property.Name
+		}
+		if wasAlive && !alive {
+			d.Log.WithFields(logrus.Fields{
+				"dialer":  nodeName,
+				"network": typ.String(),
+			}).Warnln("Node became DEAD")
+		} else if !wasAlive && alive {
+			d.Log.WithFields(logrus.Fields{
+				"dialer":  nodeName,
+				"network": typ.String(),
+			}).Infoln("Node became ALIVE")
+		}
+	}
+
 	update := collectionUpdate{
 		alive:             alive,
 		movingAverage:     collection.MovingAverage,
@@ -1111,6 +1130,18 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 	isRevival := !wasAlive
 	d.NotifyHealthCheckResult(typ, true, isRevival)
 	if isRevival {
+		// Log node revival for operational visibility.
+		if d.Log != nil {
+			nodeName := ""
+			if d.property != nil {
+				nodeName = d.property.Name
+			}
+			d.Log.WithFields(logrus.Fields{
+				"dialer":  nodeName,
+				"network": typ.String(),
+				"latency":  latency.String(),
+			}).Infoln("Node became ALIVE")
+		}
 		d.notifyAliveTransition(typ, true)
 	}
 
