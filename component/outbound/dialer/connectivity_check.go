@@ -626,6 +626,14 @@ func (d *Dialer) aliveBackground() {
 	//   - Skip all UDP DNS probes when udp_check_dns is not configured
 	skipTcp6 := shouldSkipTcp6Probes(d.TcpCheckOptionRaw.Raw)
 	skipUdp6 := shouldSkipUdp6Probes(d.CheckDnsOptionRaw.Raw)
+	// DEBUG: print CheckDnsOptionRaw.Raw to diagnose why UDP checks are still running
+	if d.Log.IsLevelEnabled(logrus.DebugLevel) {
+		d.Log.WithFields(logrus.Fields{
+			"dialer":              d.property.Name,
+			"CheckDnsOptionRaw.Raw": d.CheckDnsOptionRaw.Raw,
+			"len(Raw)":             len(d.CheckDnsOptionRaw.Raw),
+		}).Debugln("aliveBackground: CheckDnsOptionRaw before hasUdpDnsConfig")
+	}
 	useUdpDns := hasUdpDnsConfig(d.CheckDnsOptionRaw.Raw)
 
 	var CheckOpts []*CheckOption
