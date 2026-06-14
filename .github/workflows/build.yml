@@ -59,6 +59,8 @@ jobs:
     if: needs.build.result == 'success'
     needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required for release asset upload/delete
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v6
