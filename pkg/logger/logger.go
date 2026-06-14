@@ -6,10 +6,22 @@
 package logger
 
 import (
+	"time"
+
 	"github.com/sirupsen/logrus"
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+func init() {
+	// Always use CST (UTC+8) for log timestamps.
+	// On minimal OpenWrt/ImmortalWrt without tzdata, fall back to fixed offset.
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		time.Local = loc
+	} else {
+		time.Local = time.FixedZone("CST", 8*3600)
+	}
+}
 
 func SetLogger(log *logrus.Logger, logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
 	level, err := logrus.ParseLevel(logLevel)
