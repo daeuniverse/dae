@@ -14,23 +14,23 @@
   <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
 </p>
 
-> **This is an enhanced fork** with disaster-recovery capabilities for the `fixed` dialer mode.
-> See [Releases](https://github.com/itoywh/dae/releases) for pre-built binaries.
+> **This is an enhanced Fork** that adds full disaster recovery to the `fixed` dialing mode.
+> Pre-built binaries are available at [Releases](https://github.com/itoywh/dae/releases).
 
 ## Fork Enhancements
 
-### 1. fixed_fallback — Disaster-Recovery Dialer Strategy
+### 1. fixed_fallback — Disaster-Recoverable Dialing Strategy
 
-The original `fixed` dialer mode has a critical weakness: **if the fixed node goes down, traffic stops entirely**. There is no failover mechanism — it's a single point of failure.
+The stock `fixed` mode has a critical flaw: **if the fixed node fails, traffic is cut off immediately** — no failover mechanism, a single point of failure.
 
-This fork introduces `fixed_fallback`, transforming `fixed` from a fragile standalone mode into a **production-grade high-availability strategy** with full disaster-recovery semantics.
+This Fork introduces `fixed_fallback`, upgrading `fixed` from a fragile single-node mode to a **production-grade high-availability strategy** with full disaster recovery semantics.
 
 ---
 
 #### Quick Start
 
 ```ini
-# In your dae config (e.g., /etc/dae/config.dae):
+# In dae config file (e.g. /etc/dae/config.dae):
 [group]
 my_group {
     policy: fixed_fallback(1, 5s, 3)
@@ -40,7 +40,7 @@ my_group {
 check_tolerance: 60ms
 ```
 
-This means: prefer the 2nd node in the group (index 1, 0-based). If it fails after 3 connection attempts with 5 seconds timeout each → automatically switch to the best available node. When the fixed node recovers → immediately and unconditionally switch back. The 60ms tolerance prevents flapping between fallback nodes (s2 ↔ s5) during failover.
+Meaning: prefer the 2nd node in the group (index 1, 0-based). On failure, timeout 5s per attempt, retry up to 3 times → on total failure, auto-switch to the best alive node. When the fixed node recovers, switch back immediately. 60ms tolerance prevents flapping between s2/s5 during failover.
 
 ---
 
@@ -52,53 +52,52 @@ fixed_fallback(<index>, <timeout>, <retries>[, <fallback_policy>])
 
 | # | Parameter | Required | Description | Example |
 |---|-----------|----------|-------------|---------|
-| 1 | **`index`** | ✅ | 0-based index of the fixed dialer in the group's node list. The first node is `0`, second is `1`, etc. Must point to a valid node — if out of range, falls through to fallback pool. | `1` → use the 2nd node |
-| 2 | **`timeout`** | ✅ | Connection timeout per attempt. Supports unit suffixes: `ms` (milliseconds), `s` (seconds), `m` (minutes). Without suffix, treated as seconds (backward compatible). | `5s`, `500ms`, `2m`, `10` (10s) |
-| 3 | **`retries`** | ✅ | Maximum connection retries before declaring the fixed node dead and triggering fallback. After all retries are exhausted, a WARN-level log is emitted. | `3` → retry 3 times |
-| 4 | **`fallback_policy`** | ❌ | Fallback node selection strategy when the fixed node is down. If omitted, defaults to `min_moving_avg`. | See table below |
+| 1 | **`index`** | ✅ | 0-based index of the fixed node in the group's node list. | `1` → use 2nd node |
+| 2 | **`timeout`** | ✅ | Timeout per connection attempt. Supports unit suffixes: `ms`, `s`, `m`. No suffix = seconds (backward compatible). | `5s`, `500ms`, `2m`, `10` |
+| 3 | **`retries`** | ✅ | Max retries before declaring the fixed node dead and triggering fallback. WARN-level log on exhaustion. | `3` |
+| 4 | **`fallback_policy`** | ❌ | Policy for selecting fallback node after fixed node failure. Defaults to `min_moving_avg`. | See below |
 
-##### Fallback Strategy Options
+##### Fallback Policy Options
 
-| Policy | Behavior | Best For |
-|--------|----------|----------|
-| `min_moving_avg` ⭐*(default)* | Selects the node with the lowest moving-average latency. Works with `check_tolerance` to prevent unnecessary switches. | General use — latency-sensitive traffic |
-| `min` | Selects the node with the lowest most-recent measured latency (official name). | Environments with rapidly changing network conditions |
-| `min_avg10` | Selects the node with the lowest average latency over the last 10 checks. | Environments with high latency variance |
-| `random` | Randomly picks an alive node from the fallback pool. | Load balancing — when you want to distribute traffic across the fallback pool |
+| Policy | Behavior | Use Case |
+|--------|-----------|----------|
+| `min_moving_avg` ⭐ *(default)* | Select node with lowest moving average latency. Works with `check_tolerance` to prevent flapping. | General — latency-sensitive traffic |
+| `min` | Select node with lowest last measured latency (official name, same as `min_last_latency`). | Environments with rapidly changing network conditions |
+| `min_avg10` | Select node with lowest average latency over last 10 checks. | Environments with high latency variance |
+| `random` | Randomly select from alive fallback nodes. | Load balancing — spread traffic across fallback pool |
 
-##### How `check_tolerance` Works with fixed_fallback
+##### `check_tolerance` with `fixed_fallback`
 
-The `check_tolerance` setting (under `[global]`) works alongside the fallback policy, **but only affects selection between fallback nodes** (e.g., s2 ↔ s5). It prevents unnecessary switching caused by minor latency fluctuations during failover.
+The `check_tolerance` config (under `[global]`) works with the fallback policy, **only affecting fallback node selection during disaster recovery**, preventing s2/s5 from flapping due to minor latency fluctuations.
 
 ```ini
 [global]
-check_tolerance: 60ms   # During failover: don't switch between fallback nodes
-                        # unless latency difference exceeds 60ms
+check_tolerance: 60ms   # During failover: s2↔s5 switch only if latency diff ≥60ms
 ```
 
-> **Important**: s4 recovery is completely independent of `check_tolerance`. Once s4 passes the health check, traffic returns **immediately and unconditionally** — no latency comparison, no tolerance threshold. `check_tolerance` governs "which backup to use," not "whether to take the primary back."
+> **Important**: s4 recovery is completely independent of `check_tolerance`. Once s4 passes the liveness check, traffic switches back **immediately unconditionally** — no latency comparison, no tolerance threshold. `check_tolerance` governs "which backup is better", not "has the primary recovered".
 
 ---
 
 #### How It Works
 
 ```
-┌─ Normal operation ─────────────────────────────────────────┐
+┌─ Normal Flow ────────────────────────────────────────────┐
 │                                                             │
-│  fixed_fallback(1, 5s, 3, min_moving_avg)                  │
+│  fixed_fallback(1, 5s, 3, min_moving_avg)             │
 │                                                             │
-│  1. Try fixed node (index 1 = 2nd node)                    │
-│     ├─ Alive? → Use it. Done. ✅                            │
-│     └─ Down/Timeout? → Retry (up to 3 times)               │
+│  1. Try fixed node (index 1 = 2nd node)                 │
+│     ├─ Alive? → Use it. Done ✅                         │
+│     └─ Dead/timeout? → Retry (max 3 times)             │
 │                                                             │
-│  2. All 3 retries exhausted?                                │
-│     └─ WARN log: "fixed dialer retries exhausted (3/3)"    │
-│        → Fall back to min_moving_avg among alive nodes     │
-│        → INFO log: "falling back to <node>"                │
+│  2. All 3 retries exhausted?                               │
+│     └─ WARN log: "fixed dialer retries exhausted (3/3)"  │
+│        → Select best node by min_moving_avg                 │
+│        → INFO log: "falling back to <node>"               │
 │                                                             │
-│  3. Connectivity Checker probes fixed node periodically     │
-│     └─ Fixed node recovered? → Switch back immediately! 🔄  │
-│        (No check_tolerance or latency comparison — alive=go) │
+│  3. Connectivity Checker periodically probes fixed node     │
+│     └─ Fixed node recovered? → Switch back immediately 🔄 │
+│        (no check_tolerance comparison, alive = switch)      │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -107,7 +106,7 @@ check_tolerance: 60ms   # During failover: don't switch between fallback nodes
 
 #### Configuration Examples
 
-**Example A: Simple failover** — prefer node `s4`, fall back to any alive node when unavailable:
+**Example A: Simple failover** — prefer s4, fall back to other alive nodes on failure:
 ```ini
 [group]
 my_group {
@@ -116,7 +115,7 @@ my_group {
 }
 ```
 
-**Example B: with random fallback** — distribute fallback traffic across all backup nodes:
+**Example B: Random fallback (load balancing)** — spread fallback traffic across backup nodes:
 ```ini
 [group]
 my_group {
@@ -125,7 +124,7 @@ my_group {
 }
 ```
 
-**Example C: with check_tolerance** — prevent flapping when latencies are close:
+**Example C: With `check_tolerance`** — prevent oscillation when latencies are close:
 ```ini
 [global]
 check_tolerance: 80ms
@@ -137,7 +136,7 @@ my_group {
 }
 ```
 
-**Example D: Aggressive timeout** — fail fast, retry only once:
+**Example D: Aggressive timeout** — fast failure, single retry:
 ```ini
 policy: fixed_fallback(0, 500ms, 1, min)
 ```
@@ -146,29 +145,100 @@ policy: fixed_fallback(0, 500ms, 1, min)
 
 #### Compatibility
 
-- **Backward compatible**: existing `fixed_fallback(1, 5s, 3)` configs work without changes
-- **Time unit backward compatibility**: `fixed_fallback(1, 5, 3)` (no suffix) still works — treated as seconds
-- **Works with all existing dialer strategies**: `fixed_fallback` is an additional strategy, all other strategies (`random`, `min_moving_avg`, etc.) continue to work as-is
+- **Backward compatible**: existing `fixed_fallback(1, 5s, 3)` config works without changes
+- **Timeout unit backward compatible**: `fixed_fallback(1, 5, 3)` (no unit) still works — treated as seconds
+- **Coexists with all existing policies**: `fixed_fallback` is a new policy; others (`random`, `min_moving_avg`, etc.) unchanged
 
 ---
 
-### 2. Improved Log Format
+### 2. Log Timestamp Format Optimization
 
 Log timestamps now use human-readable format with `ForceFormatting` enabled:
 
 ```
-Before:  INFO selected dialer: s4 ...
+Before: INFO selected dialer: s4 ...
 After:  [2026-06-13 15:04:05] INFO selected dialer: s4 ...
 ```
 
-The format `[YYYY-MM-DD HH:MM:SS]` prefix makes logs easier to read and parse with standard tools (e.g., `grep`, `awk`, log viewers).
+The `[YYYY-MM-DD HH:MM:SS]` prefix aids readability and is compatible with standard log parsing tools (`grep`, `awk`, log viewers).
+
+---
+
+### 3. Dynamic CheckOpts — Streamlined Health Check Probes
+
+> Corresponding upstream PR: [daeuniverse/dae#1011](https://github.com/daeuniverse/dae/pull/1011)
+
+Stock dae hardcodes 4 health check probes (tcp4/tcp6/udp4_dns/udp6_dns), even when the user's network doesn't support IPv6 or UDP DNS checks are not needed, causing unnecessary network probes and log noise.
+
+This Fork changes the logic to **dynamically decide probe types based on configuration**:
+
+#### Core Rule
+
+> **Only check addresses that are explicitly written in the config. If not written, don't check by default.**
+
+| Config | tcp4 | tcp6 | udp4_dns | udp6_dns |
+|---|---|---|---|---|
+| `tcp_check_url` has IPv4 only | ✅ | ❌ Skip | — | — |
+| `tcp_check_url` has IPv6 address | ✅ | ✅ | — | — |
+| `udp_check_dns` has IPv4 only | — | — | ✅ | ❌ Skip |
+| `udp_check_dns` has IPv6 address | — | — | ✅ | ✅ |
+| `udp_check_dns` not configured | — | — | ❌ Skip all | ❌ Skip all |
+| Default config (IPv4+IPv6) | ✅ | ✅ | ✅ | ✅ | (backward compatible) |
+
+#### tcp and udp are independently evaluated
+
+Whether `tcp_check_url` has IPv6 **does NOT affect** the probe decision for `udp_check_dns`, and vice versa. They are completely independent:
+
+```ini
+global {
+    # tcp has IPv6 → only tcp6 probe enabled, udp unaffected
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
+    # udp has IPv4 only → udp6 probe NOT enabled
+    udp_check_dns: 'dns.google:53,8.8.8.8'
+}
+# Actual probes: tcp4 + tcp6 + udp4_dns (3 probes, not 4)
+```
+
+#### Recommended Config (IPv4-only environment)
+
+```ini
+global {
+    log_level: debug
+    # Explicitly specify IPv4 addresses → auto-skip IPv6 TCP probes
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    # Explicitly specify IPv4 addresses → auto-skip IPv6 UDP DNS probes
+    udp_check_dns: 'dns.google:53,8.8.8.8'
+    check_tolerance: 60ms
+    check_interval: 30s
+}
+# Actual probes: tcp4 + udp4_dns (only 2 probes, minimal)
+```
+
+#### Skip UDP DNS probes entirely
+
+```ini
+global {
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    # udp_check_dns not set → skip all UDP DNS probes entirely
+    # Actual probes: only tcp4 (1 probe, most minimal)
+}
+```
+
+#### Debug: View current probe configuration
+
+With `log_level: debug`, dae outputs the probe configuration for each dialer on startup:
+
+```
+DEBUG Connectivity check probes configured  dialer=my-node  tcp4=true tcp6=false udp4_dns=true udp6_dns=false
+```
 
 ---
 
 ### Upstream PRs
 
-- [PR #1009](https://github.com/daeuniverse/dae/pull/1009) — fixed_fallback disaster-recovery enhancement
-- [PR #1010](https://github.com/daeuniverse/dae/pull/1010) — log timestamp format improvement
+- [PR #1009](https://github.com/daeuniverse/dae/pull/1009) — fixed_fallback disaster recovery enhancement
+- [PR #1010](https://github.com/daeuniverse/dae/pull/1010) — Log timestamp format optimization
+- [PR #1011](https://github.com/daeuniverse/dae/pull/1011) — Dynamic CheckOpts: streamline health check probes by config
 
 ---
 
