@@ -71,11 +71,10 @@ jobs:
           name: dae-linux-x86_64.zip
           path: /tmp/dae_artifact/
 
-      - name: Extract dae binary
+      - name: Verify dae binary (auto-extracted by download-artifact)
         run: |
-          unzip -o /tmp/dae_artifact/dae-linux-x86_64.zip -d /tmp/dae_artifact/
-          ls -lh /tmp/dae_artifact/build/dae-linux-x86_64
-          mv /tmp/dae_artifact/build/dae-linux-x86_64 /tmp/dae_artifact/dae-linux-x86_64
+          ls -lh /tmp/dae_artifact/dae-linux-x86_64
+          chmod +x /tmp/dae_artifact/dae-linux-x86_64
 
       - name: Update GitHub Release (delete old + upload new + update body)
         env:
