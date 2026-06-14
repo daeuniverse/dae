@@ -16,4 +16,5 @@ node_modules/
 venv
 CLAUDE.md
 AGENTS.md
-.sisyphusdae-linux-*
+.sisyphus
+dae-linux-*
