@@ -241,11 +241,51 @@ DEBUG Connectivity check disabled (check_interval=0)  dialer=my-node
 
 ---
 
+### 4. Node Status Operational Logging
+
+To enable fine-grained operational analysis without enabling debug mode, this Fork adds WARN/INFO-level logs for node state transitions:
+
+#### Node-Level Events
+
+| Event | Level | Trigger |
+|---|---|---|
+| `Node became DEAD` | **WARN** | Node transitions from ALIVE → DEAD (shows `network` type) |
+| `Node became ALIVE` | **INFO** | Node recovers from DEAD → ALIVE (shows `latency` + `network`) |
+
+#### Fixed-Fallback Events (existing)
+
+| Event | Level | Trigger |
+|---|---|---|
+| `fixed dialer dead, starting retry` | **WARN** | Fixed node detected DEAD, entering retry phase |
+| `fixed dialer retry N/M` | **INFO** | Per-retry attempt count |
+| `fixed dialer retries exhausted, falling back` | **WARN** | All retries exhausted, switching to fallback pool |
+| `fixed dialer recovered, traffic returned` | **INFO** | Fixed node revived, traffic unconditionally switched back |
+
+#### Log Level Guide
+
+| `log_level` | What You See |
+|---|---|
+| `info` | All WARN/INFO operational events above — ideal for production monitoring |
+| `debug` | Everything above + per-check latency data + probe configuration — for deep analysis |
+
+#### Example Log Output
+
+```
+[2026-06-14 02:02:36]  WARN Node became DEAD dialer=s4 network=tcp4
+[2026-06-14 02:02:45]  WARN fixed dialer dead, starting retry (timeout=3s, max_retries=3)
+[2026-06-14 02:03:19]  INFO fixed dialer retry 1/3
+[2026-06-14 02:03:36]  WARN fixed dialer retries exhausted (3/3), falling back to min_moving_avg
+[2026-06-14 02:15:00]  INFO Node became ALIVE dialer=s4 network=tcp4 latency=156ms
+[2026-06-14 02:15:00]  INFO fixed dialer recovered, traffic returned
+```
+
+---
+
 ### Upstream PRs
 
 - [PR #1009](https://github.com/daeuniverse/dae/pull/1009) — fixed_fallback disaster recovery enhancement
 - [PR #1010](https://github.com/daeuniverse/dae/pull/1010) — Log timestamp format optimization
-- [PR #1011](https://github.com/daeuniverse/dae/pull/1011) — Dynamic CheckOpts: streamline health check probes by config
+- [PR #1011](https://github.com/daeuniverse/dae/pull/1011) — Fully configurable health checks (opt-in)
 
 ---
 

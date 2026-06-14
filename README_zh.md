@@ -241,11 +241,51 @@ DEBUG Connectivity check disabled (check_interval=0)  dialer=my-node
 
 ---
 
+### 4. 节点状态运营日志
+
+为了在不开启 debug 模式的情况下也能进行精细化运营分析，本 Fork 为节点状态变化增加了 WARN/INFO 级别日志：
+
+#### 节点级事件
+
+| 事件 | 级别 | 触发条件 |
+|---|---|---|
+| `Node became DEAD` | **WARN** | 节点从 ALIVE 变为 DEAD（显示 `network` 类型） |
+| `Node became ALIVE` | **INFO** | 节点从 DEAD 恢复为 ALIVE（显示 `latency` + `network`） |
+
+#### Fixed-Fallback 事件（已有）
+
+| 事件 | 级别 | 触发条件 |
+|---|---|---|
+| `fixed dialer dead, starting retry` | **WARN** | 固定节点变 DEAD，进入重试阶段 |
+| `fixed dialer retry N/M` | **INFO** | 每次重试计数 |
+| `fixed dialer retries exhausted, falling back` | **WARN** | 重试耗尽，切到 fallback 池 |
+| `fixed dialer recovered, traffic returned` | **INFO** | 固定节点复活，无条件切回 |
+
+#### 日志等级指南
+
+| `log_level` | 可见内容 |
+|---|---|
+| `info` | 以上所有 WARN/INFO 运营事件 — 适合生产监控 |
+| `debug` | 以上全部 + 每次检查的延迟数据 + 探测配置 — 适合深度分析 |
+
+#### 日志样例
+
+```
+[2026-06-14 02:02:36]  WARN Node became DEAD dialer=s4 network=tcp4
+[2026-06-14 02:02:45]  WARN fixed dialer dead, starting retry (timeout=3s, max_retries=3)
+[2026-06-14 02:03:19]  INFO fixed dialer retry 1/3
+[2026-06-14 02:03:36]  WARN fixed dialer retries exhausted (3/3), falling back to min_moving_avg
+[2026-06-14 02:15:00]  INFO Node became ALIVE dialer=s4 network=tcp4 latency=156ms
+[2026-06-14 02:15:00]  INFO fixed dialer recovered, traffic returned
+```
+
+---
+
 ### 上游 PR
 
 - [PR #1009](https://github.com/daeuniverse/dae/pull/1009) — fixed_fallback 灾备增强
 - [PR #1010](https://github.com/daeuniverse/dae/pull/1010) — 日志时间戳格式优化
-- [PR #1011](https://github.com/daeuniverse/dae/pull/1011) — 动态 CheckOpts：按配置精简健康检查探测
+- [PR #1011](https://github.com/daeuniverse/dae/pull/1011) — 完全配置化健康检查（opt-in）
 
 ---
 
