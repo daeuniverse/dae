@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package common
@@ -29,19 +29,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var (
-	ErrOverlayHierarchicalKey = fmt.Errorf("overlay hierarchical key")
-)
-
 type UrlOrEmpty struct {
 	Url   *url.URL
 	Empty bool
-}
-
-func CloneStrings(slice []string) []string {
-	c := make([]string, len(slice))
-	copy(c, slice)
-	return c
 }
 
 func ARangeU32(n uint32) []uint32 {
@@ -55,19 +45,6 @@ func ARangeU32(n uint32) []uint32 {
 func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 	for j := 0; j < 16; j += 4 {
 		ip[j/4] = internal.NativeEndian.Uint32(_ip[j : j+4])
-	}
-	return ip
-}
-
-func Ipv6ByteSliceToUint8Array(_ip []byte) (ip [16]uint8) {
-	copy(ip[:], _ip)
-	return ip
-}
-
-func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
-	ip = make([]byte, 16)
-	for j := range 4 {
-		internal.NativeEndian.PutUint32(ip[j*4:], _ip[j])
 	}
 	return ip
 }
@@ -121,65 +98,6 @@ func ParsePortRange(pr string) (portRange [2]uint16, err error) {
 		portRange[1] = portRange[0]
 	}
 	return portRange, nil
-}
-
-func SetValueHierarchicalMap(m map[string]any, key string, val any) error {
-	keys := strings.Split(key, ".")
-	lastKey := keys[len(keys)-1]
-	keys = keys[:len(keys)-1]
-	p := &m
-	for _, key := range keys {
-		if v, ok := (*p)[key]; ok {
-			vv, ok := v.(map[string]any)
-			if !ok {
-				return ErrOverlayHierarchicalKey
-			}
-			p = &vv
-		} else {
-			(*p)[key] = make(map[string]any)
-			vv := (*p)[key].(map[string]any)
-			p = &vv
-		}
-	}
-	(*p)[lastKey] = val
-	return nil
-}
-
-func SetValueHierarchicalStruct(m any, key string, val string) error {
-	ifv, err := GetValueHierarchicalStruct(m, key)
-	if err != nil {
-		return err
-	}
-	if !FuzzyDecode(ifv.Addr().Interface(), val) {
-		return fmt.Errorf("type does not match: type \"%v\" and value \"%v\"", ifv.Kind(), val)
-	}
-	return nil
-}
-
-func GetValueHierarchicalStruct(m any, key string) (reflect.Value, error) {
-	keys := strings.Split(key, ".")
-	ifv := reflect.Indirect(reflect.ValueOf(m))
-	ift := ifv.Type()
-	lastK := ""
-	for _, k := range keys {
-		found := false
-		if ift.Kind() == reflect.Struct {
-			for i := 0; i < ifv.NumField(); i++ {
-				name, ok := ift.Field(i).Tag.Lookup("mapstructure")
-				if ok && name == k {
-					found = true
-					ifv = ifv.Field(i)
-					ift = ifv.Type()
-					lastK = k
-					break
-				}
-			}
-		}
-		if !found {
-			return reflect.Value{}, fmt.Errorf(`unexpected key "%v": "%v" (%v type) has no member "%v"`, key, lastK, ift.Kind().String(), k)
-		}
-	}
-	return ifv, nil
 }
 
 func FuzzyDecode(to any, val string) bool {
@@ -380,14 +298,6 @@ func Htons(i uint16) uint16 {
 	b := make([]byte, 2)
 	binary.BigEndian.PutUint16(b, i)
 	return *(*uint16)(unsafe.Pointer(&b[0]))
-}
-
-// Ntohs converts the unsigned short integer from network byte order (big-endian) to host byte order.
-// This is used when reading values from eBPF programs which are in network byte order.
-func Ntohs(i uint16) uint16 {
-	b := make([]byte, 2)
-	internal.NativeEndian.PutUint16(b, i)
-	return binary.BigEndian.Uint16(b)
 }
 
 func GetDefaultIfnames() (defaultIfs []string, err error) {

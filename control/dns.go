@@ -1,6 +1,6 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
-*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+*  Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -938,6 +938,12 @@ func (p *udpConnPool) get(ctx context.Context) (netproxy.Conn, error) {
 	}
 
 	if conn, err, ok := p.takeIdleConn(); ok {
+		if err == nil && conn != nil {
+			// Deadlines belong to the current borrower, not the idle pool entry.
+			// Clear any leftover request deadline right before handing the socket
+			// to a new DNS exchange.
+			_ = conn.SetDeadline(time.Time{})
+		}
 		return conn, err
 	}
 

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -260,6 +260,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	} else {
 		index := a.dialerToIndex[dialer]
 		if index >= 0 {
+			removedBestWithoutLatency := minPolicy && !hasLatency && a.minLatency.dialer == dialer
 			// Dialer: alive -> not alive.
 			if a.log.IsLevelEnabled(logrus.InfoLevel) {
 				a.log.WithFields(logrus.Fields{
@@ -286,6 +287,22 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			}
 			// Pop the last element.
 			a.aliveEntries = a.aliveEntries[:len(a.aliveEntries)-1]
+			if removedBestWithoutLatency {
+				a.minLatency.dialer = nil
+				a.minLatency.sortingLatency = time.Hour
+				a.calcMinLatency()
+				if a.minLatency.dialer == nil {
+					a.mu.Unlock()
+					a.aliveChangeCallback(false)
+					a.mu.Lock()
+					if a.log.IsLevelEnabled(logrus.InfoLevel) {
+						a.log.WithFields(logrus.Fields{
+							"group":   a.dialerGroupName,
+							"network": a.CheckTyp.String(),
+						}).Infof("Group has no dialer alive")
+					}
+				}
+			}
 		}
 	}
 
