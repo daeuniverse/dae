@@ -25,6 +25,7 @@ on:
       - "go.sum"
       - ".github/workflows/build.yml"
       - ".github/workflows/seed-build.yml"
+      - "scripts/**"
       - "Makefile"
 
 jobs:
