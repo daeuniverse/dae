@@ -164,73 +164,80 @@ The `[YYYY-MM-DD HH:MM:SS]` prefix aids readability and is compatible with stand
 
 ---
 
-### 3. Dynamic CheckOpts — Streamlined Health Check Probes
+### 3. Fully Configuration-Driven Health Checks
 
 > Corresponding upstream PR: [daeuniverse/dae#1011](https://github.com/daeuniverse/dae/pull/1011)
 
-Stock dae hardcodes 4 health check probes (tcp4/tcp6/udp4_dns/udp6_dns), even when the user's network doesn't support IPv6 or UDP DNS checks are not needed, causing unnecessary network probes and log noise.
-
-This Fork changes the logic to **dynamically decide probe types based on configuration**:
+Stock dae hardcodes default values for `tcp_check_url`, `udp_check_dns`, and `check_interval`, so health checks always run even when the user didn't explicitly configure them. This Fork makes all health check options **fully optional** — if you don't write it, it won't check.
 
 #### Core Rule
 
-> **Only check addresses that are explicitly written in the config. If not written, don't check by default.**
+> **Health checks are now completely opt-in. Nothing runs unless you explicitly configure it.**
 
-| Config | tcp4 | tcp6 | udp4_dns | udp6_dns |
-|---|---|---|---|---|
-| `tcp_check_url` has IPv4 only | ✅ | ❌ Skip | — | — |
-| `tcp_check_url` has IPv6 address | ✅ | ✅ | — | — |
-| `udp_check_dns` has IPv4 only | — | — | ✅ | ❌ Skip |
-| `udp_check_dns` has IPv6 address | — | — | ✅ | ✅ |
-| `udp_check_dns` not configured | — | — | ❌ Skip all | ❌ Skip all |
-| Default config (IPv4+IPv6) | ✅ | ✅ | ✅ | ✅ | (backward compatible) |
+| Config | Behavior |
+|---|---|
+| `check_interval` not set or `0s` | **All health checks disabled**. Zero network probes. |
+| `tcp_check_url` not set | No TCP connectivity checks at all. |
+| `tcp_check_url` set (IPv4 only) | TCP IPv4 check only. IPv6 TCP probe auto-skipped. |
+| `tcp_check_url` set (with IPv6) | TCP IPv4 + IPv6 checks both run. |
+| `udp_check_dns` not set | No UDP DNS connectivity checks at all. |
+| `udp_check_dns` set (IPv4 only) | UDP IPv4 DNS check only. IPv6 UDP probe auto-skipped. |
+| `udp_check_dns` set (with IPv6) | UDP IPv4 + IPv6 DNS checks both run. |
 
-#### tcp and udp are independently evaluated
-
-Whether `tcp_check_url` has IPv6 **does NOT affect** the probe decision for `udp_check_dns`, and vice versa. They are completely independent:
+#### Zero-Check Config (Maximum Performance)
 
 ```ini
 global {
-    # tcp has IPv6 → only tcp6 probe enabled, udp unaffected
+    # No tcp_check_url, no udp_check_dns, no check_interval
+    # → Zero connectivity checks. Zero network probes. Maximum performance.
+    log_level: info
+}
+```
+
+#### TCP Check Only
+
+```ini
+global {
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    check_interval: 60s
+    # udp_check_dns not set → no UDP checks
+}
+# Actual probes: tcp4 only (1 probe)
+```
+
+#### TCP + UDP, IPv4 Only (No IPv6)
+
+```ini
+global {
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    udp_check_dns: 'dns.google:53,8.8.8.8'
+    check_interval: 60s
+    check_tolerance: 50ms
+}
+# Actual probes: tcp4 + udp4_dns (2 probes, no IPv6)
+```
+
+#### Full Checks (IPv4 + IPv6)
+
+```ini
+global {
     tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
-    # udp has IPv4 only → udp6 probe NOT enabled
-    udp_check_dns: 'dns.google:53,8.8.8.8'
+    udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
+    check_interval: 60s
 }
-# Actual probes: tcp4 + tcp6 + udp4_dns (3 probes, not 4)
+# Actual probes: tcp4 + tcp6 + udp4_dns + udp6_dns (4 probes)
 ```
 
-#### Recommended Config (IPv4-only environment)
-
-```ini
-global {
-    log_level: debug
-    # Explicitly specify IPv4 addresses → auto-skip IPv6 TCP probes
-    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
-    # Explicitly specify IPv4 addresses → auto-skip IPv6 UDP DNS probes
-    udp_check_dns: 'dns.google:53,8.8.8.8'
-    check_tolerance: 60ms
-    check_interval: 30s
-}
-# Actual probes: tcp4 + udp4_dns (only 2 probes, minimal)
-```
-
-#### Skip UDP DNS probes entirely
-
-```ini
-global {
-    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
-    # udp_check_dns not set → skip all UDP DNS probes entirely
-    # Actual probes: only tcp4 (1 probe, most minimal)
-}
-```
-
-#### Debug: View current probe configuration
+#### Debug: View Current Probe Configuration
 
 With `log_level: debug`, dae outputs the probe configuration for each dialer on startup:
 
 ```
-DEBUG Connectivity check probes configured  dialer=my-node  tcp4=true tcp6=false udp4_dns=true udp6_dns=false
+DEBUG Connectivity check probes configured  dialer=my-node  tcp4=true tcp6=false udp4_dns=false udp6_dns=false
+DEBUG Connectivity check disabled (check_interval=0)  dialer=my-node
 ```
+
+> **Migration note**: If you upgrade from stock dae and want health checks, you must now explicitly add `tcp_check_url`, `udp_check_dns`, and `check_interval` to your config. They no longer have defaults.
 
 ---
 

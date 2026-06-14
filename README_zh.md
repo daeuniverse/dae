@@ -164,64 +164,68 @@ policy: fixed_fallback(0, 500ms, 1, min)
 
 ---
 
-### 3. 动态 CheckOpts — 精简健康检查探测
+### 3. 完全配置驱动的健康检查
 
 > 对应上游 PR：[daeuniverse/dae#1011](https://github.com/daeuniverse/dae/pull/1011)
 
-原生 dae 硬编码了 4 路健康检查探测（tcp4/tcp6/udp4_dns/udp6_dns），即使用户的网络环境不需要 IPv6 或没有配置 UDP DNS 检查，也会无条件发起全部探测，造成不必要的网络请求和日志噪音。
-
-本 Fork 将该逻辑改为**按配置动态决定探测类型**：
+原生 dae 为 `tcp_check_url`、`udp_check_dns`、`check_interval` 都设置了默认值，即使用户没有明确配置，健康检查也会无条件运行。本 Fork 将这些选项改为**完全可选**——不写就不检查。
 
 #### 核心规则
 
-> **只有配置里显式写了需要去 check 的地址时才去 check，没有写就默认不去 check。**
+> **健康检查现在是完全选配的。除非你显式配置，否则什么都不会运行。**
 
-| 配置情况 | tcp4 | tcp6 | udp4_dns | udp6_dns |
-|---|---|---|---|---|
-| `tcp_check_url` 只配了 IPv4 地址 | ✅ | ❌ 跳过 | — | — |
-| `tcp_check_url` 含 IPv6 地址 | ✅ | ✅ | — | — |
-| `udp_check_dns` 只配了 IPv4 地址 | — | — | ✅ | ❌ 跳过 |
-| `udp_check_dns` 含 IPv6 地址 | — | — | ✅ | ✅ |
-| `udp_check_dns` 未配置 | — | — | ❌ 完全跳过 | ❌ 完全跳过 |
-| 默认配置（含 IPv4+IPv6） | ✅ | ✅ | ✅ | ✅ |（向后兼容）
+| 配置情况 | 行为 |
+|---|---|
+| `check_interval` 未设置或设为 `0s` | **全部健康检查禁用**。零网络探测。 |
+| `tcp_check_url` 未设置 | 不进行任何 TCP 连通性检查。 |
+| `tcp_check_url` 已设置（仅 IPv4） | 只进行 TCP IPv4 检查。自动跳过 IPv6 TCP 探测。 |
+| `tcp_check_url` 已设置（含 IPv6） | TCP IPv4 + IPv6 检查均运行。 |
+| `udp_check_dns` 未设置 | 不进行任何 UDP DNS 连通性检查。 |
+| `udp_check_dns` 已设置（仅 IPv4） | 只进行 UDP IPv4 DNS 检查。自动跳过 IPv6 UDP 探测。 |
+| `udp_check_dns` 已设置（含 IPv6） | UDP IPv4 + IPv6 DNS 检查均运行。 |
 
-#### tcp 和 udp 独立判断
-
-`tcp_check_url` 里有没有 IPv6 **不会影响** `udp_check_dns` 的探测决策，反之亦然。两者完全独立：
+#### 零检查配置（最高性能）
 
 ```ini
 global {
-    # tcp 有 IPv6 → 只启用 tcp6 探测，udp 不受影响
+    # 不写 tcp_check_url、udp_check_dns、check_interval
+    # → 零健康检查。零网络探测。最高性能。
+    log_level: info
+}
+```
+
+#### 只开 TCP 检查
+
+```ini
+global {
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    check_interval: 60s
+    # udp_check_dns 不写 → 无 UDP 检查
+}
+# 实际探测：仅 tcp4（1 路）
+```
+
+#### TCP + UDP，仅 IPv4（无 IPv6）
+
+```ini
+global {
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    udp_check_dns: 'dns.google:53,8.8.8.8'
+    check_interval: 60s
+    check_tolerance: 50ms
+}
+# 实际探测：tcp4 + udp4_dns（2 路，无 IPv6）
+```
+
+#### 全部检查（IPv4 + IPv6）
+
+```ini
+global {
     tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
-    # udp 只有 IPv4 → 不启用 udp6 探测
-    udp_check_dns: 'dns.google:53,8.8.8.8'
+    udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
+    check_interval: 60s
 }
-# 实际探测：tcp4 + tcp6 + udp4_dns（3 路，非 4 路）
-```
-
-#### 推荐配置（IPv4 单栈环境）
-
-```ini
-global {
-    log_level: debug
-    # 显式指定 IPv4 地址，自动跳过 IPv6 TCP 探测
-    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
-    # 显式指定 IPv4 地址，自动跳过 IPv6 UDP DNS 探测
-    udp_check_dns: 'dns.google:53,8.8.8.8'
-    check_tolerance: 60ms
-    check_interval: 30s
-}
-# 实际探测：tcp4 + udp4_dns（仅 2 路，最精简）
-```
-
-#### 完全跳过 UDP DNS 探测
-
-```ini
-global {
-    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
-    # udp_check_dns 不写 → 完全跳过 UDP DNS 探测
-    # 实际探测：仅 tcp4（1 路，最最精简）
-}
+# 实际探测：tcp4 + tcp6 + udp4_dns + udp6_dns（4 路）
 ```
 
 #### 调试：查看当前探测配置
@@ -229,8 +233,11 @@ global {
 启用 `log_level: debug` 后，dae 启动时会输出每条拨号的探测配置：
 
 ```
-DEBUG Connectivity check probes configured  dialer=my-node  tcp4=true tcp6=false udp4_dns=true udp6_dns=false
+DEBUG Connectivity check probes configured  dialer=my-node  tcp4=true tcp6=false udp4_dns=false udp6_dns=false
+DEBUG Connectivity check disabled (check_interval=0)  dialer=my-node
 ```
+
+> **迁移提示**：如果从原生 dae 升级并希望保留健康检查，现在需要在配置中显式添加 `tcp_check_url`、`udp_check_dns` 和 `check_interval`，它们不再有默认值。
 
 ---
 
