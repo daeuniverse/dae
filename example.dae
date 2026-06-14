@@ -57,6 +57,13 @@ global {
 
     ##### Node connectivity check.
     # These options, as defaults, are effective when no definition is given in the group.
+    #
+    # NOTE: All connectivity check options are now fully configuration-driven:
+    #   - If tcp_check_url is NOT configured (commented out or omitted), NO TCP check will be performed.
+    #   - If udp_check_dns is NOT configured (commented out or omitted), NO UDP DNS check will be performed.
+    #   - If check_interval is 0 or NOT configured, NO connectivity check will be performed at all.
+    #   - Only the protocols/addresses explicitly written in config will be checked.
+    #   - This allows users to completely disable health checks for maximum performance.
 
     # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
     # First is URL, others are IP addresses if given.
@@ -75,6 +82,7 @@ global {
     #udp_check_dns: 'dns.google:53'
     udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
 
+    # Interval between connectivity checks. Set to 0 or omit to completely disable health checks.
     check_interval: 30s
 
     # Group will switch node only when new_latency <= old_latency - tolerance.
