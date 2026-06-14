@@ -53,3 +53,32 @@ jobs:
       check-run-id: "dae-bot[bot]/main-build-passed"
       check-run-conclusion: ${{ needs.build.result }}
     secrets: inherit
+
+  update-release:
+    if: needs.build.result == 'success'
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dae-linux-x86_64.zip
+          path: /tmp/dae_artifact/
+
+      - name: Extract dae binary
+        run: |
+          unzip -o /tmp/dae_artifact/dae-linux-x86_64.zip -d /tmp/dae_artifact/
+          ls -lh /tmp/dae_artifact/dae-linux-x86_64
+
+      - name: Update GitHub Release (delete old + upload new + update body)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/update-release.py "338955206" "/tmp/dae_artifact/dae-linux-x86_64"
