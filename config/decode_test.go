@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package config
@@ -68,6 +68,21 @@ dns {
 	require.NotNil(t, conf.Routing.Fallback)
 	require.NotNil(t, conf.Dns.Routing.Request.Fallback)
 	require.NotNil(t, conf.Dns.Routing.Response.Fallback)
+}
+
+func TestGlobalMemoryDefaults(t *testing.T) {
+	sections, err := config_parser.Parse(`
+global {}
+routing {
+  fallback: direct
+}
+`)
+	require.NoError(t, err)
+
+	conf, err := New(sections)
+	require.NoError(t, err)
+	require.True(t, conf.Global.DisableTHP)
+	require.EqualValues(t, 262144, conf.Global.BpfConnStateMapSize)
 }
 
 func TestDecodeConfigSectionRejectsUnknownSection(t *testing.T) {

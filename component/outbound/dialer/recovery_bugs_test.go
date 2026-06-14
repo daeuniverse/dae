@@ -450,8 +450,8 @@ func TestReloadHealthSnapshotPreservesAvailabilityAndClearsPunishment(t *testing
 	if snapshot.Collections[tcp4.Index()].TrafficFailCount != 0 {
 		t.Fatalf("reload snapshot trafficFailCount = %d, want 0", snapshot.Collections[tcp4.Index()].TrafficFailCount)
 	}
-	if len(snapshot.Collections[tcp4.Index()].Latencies.Latencies) == 0 {
-		t.Fatal("expected reload snapshot to preserve latency history")
+	if len(snapshot.Collections[tcp4.Index()].Latencies.Latencies) != 0 {
+		t.Fatal("expected reload snapshot to avoid synthetic failure latency history")
 	}
 	if snapshot.Recovery[idxTcp].BackoffLevel != 0 {
 		t.Fatalf("reload snapshot backoff level = %d, want 0", snapshot.Recovery[idxTcp].BackoffLevel)
@@ -474,9 +474,8 @@ func TestReloadHealthSnapshotPreservesAvailabilityAndClearsPunishment(t *testing
 	if got := dst.GetBackoffLevel(consts.L4ProtoStr_TCP); got != 0 {
 		t.Fatalf("restored backoff level = %d, want 0", got)
 	}
-	last, ok := dst.MustGetLatencies10(tcp4).LastLatency()
-	if !ok || last != Timeout {
-		t.Fatalf("restored last latency = %v, %v, want %v, true", last, ok, Timeout)
+	if last, ok := dst.MustGetLatencies10(tcp4).LastLatency(); ok {
+		t.Fatalf("restored last latency = %v, %v, want no synthetic failure latency", last, ok)
 	}
 }
 

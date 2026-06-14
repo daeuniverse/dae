@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -64,7 +64,7 @@ func bpfTuplesKeyFromAddrPorts(src, dst netip.AddrPort, l4proto uint8) bpfTuples
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
 	tuples := bpfTuplesKeyFromAddrPorts(src, dst, l4proto)
 
-	if c == nil || c.bpf == nil {
+	if c == nil || c.bpf.Load() == nil {
 		return nil, ebpf.ErrKeyNotExist
 	}
 
@@ -79,19 +79,20 @@ func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4prot
 }
 
 func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l4proto uint8) (*bpfRoutingResult, error) {
+	bpf := c.bpf.Load()
 	var routingResult bpfRoutingResult
 
 	switch l4proto {
 	case unix.IPPROTO_TCP:
-		if c.bpf.TcpConnStateMap == nil {
+		if bpf.ConnStateMap == nil {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		var connState bpfTcpConnState
-		if err := c.bpf.TcpConnStateMap.Lookup(tuples, &connState); err != nil {
+		var connState bpfConnState
+		if err := bpf.ConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
-			return nil, fmt.Errorf("reading tcp_conn_state_map: %w", err)
+			return nil, fmt.Errorf("reading conn_state_map: %w", err)
 		}
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
@@ -106,15 +107,15 @@ func (c *controlPlaneCore) retrieveEmbeddedRoutingResult(tuples *bpfTuplesKey, l
 			connState.Pid,
 		)
 	case unix.IPPROTO_UDP:
-		if c.bpf.UdpConnStateMap == nil {
+		if bpf.ConnStateMap == nil {
 			return nil, ebpf.ErrKeyNotExist
 		}
-		var connState bpfUdpConnState
-		if err := c.bpf.UdpConnStateMap.Lookup(tuples, &connState); err != nil {
+		var connState bpfConnState
+		if err := bpf.ConnStateMap.Lookup(tuples, &connState); err != nil {
 			if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil, ebpf.ErrKeyNotExist
 			}
-			return nil, fmt.Errorf("reading udp_conn_state_map: %w", err)
+			return nil, fmt.Errorf("reading conn_state_map: %w", err)
 		}
 		if connState.Meta.Data.HasRouting == 0 {
 			return nil, ebpf.ErrKeyNotExist
@@ -148,12 +149,16 @@ func routingResultFromConnState(mark uint32, must uint8, outbound uint8, mac [6]
 }
 
 func (c *controlPlaneCore) retrieveRoutingHandoffResult(tuples *bpfTuplesKey) (*bpfRoutingResult, error) {
-	if c == nil || c.bpf == nil || c.bpf.RoutingHandoffMap == nil {
+	if c == nil {
+		return nil, ebpf.ErrKeyNotExist
+	}
+	bpf := c.bpf.Load()
+	if bpf == nil || bpf.RoutingHandoffMap == nil {
 		return nil, ebpf.ErrKeyNotExist
 	}
 
 	var entry bpfRoutingHandoffEntry
-	if err := c.bpf.RoutingHandoffMap.Lookup(tuples, &entry); err != nil {
+	if err := bpf.RoutingHandoffMap.Lookup(tuples, &entry); err != nil {
 		if stderrors.Is(err, ebpf.ErrKeyNotExist) {
 			return nil, ebpf.ErrKeyNotExist
 		}
@@ -165,7 +170,7 @@ func (c *controlPlaneCore) retrieveRoutingHandoffResult(tuples *bpfTuplesKey) (*
 		return nil, fmt.Errorf("reading monotonic clock for routing handoff: %w", err)
 	}
 	if routingHandoffExpired(now, entry.LastSeenNs) {
-		if deleteErr := c.bpf.RoutingHandoffMap.Delete(tuples); deleteErr != nil &&
+		if deleteErr := bpf.RoutingHandoffMap.Delete(tuples); deleteErr != nil &&
 			!stderrors.Is(deleteErr, ebpf.ErrKeyNotExist) {
 			return nil, fmt.Errorf("deleting expired routing_handoff_map entry: %w", deleteErr)
 		}

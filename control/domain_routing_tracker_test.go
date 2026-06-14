@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -43,13 +43,13 @@ func domainRoutingACache(ownerKey string, ip string, bitmap []uint32) *DnsCache 
 func TestDomainRoutingTrackerMergesSharedIPAcrossOwners(t *testing.T) {
 	domainMap := newJanitorTestMap(t, "domain_routing_map")
 	core := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				DomainRoutingMap: domainMap,
-			},
-		},
 		domainRouting: newDomainRoutingTracker(),
 	}
+	core.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			DomainRoutingMap: domainMap,
+		},
+	})
 
 	cacheA := domainRoutingACache("cache-a", "203.0.113.10", domainRoutingBitmap(0x1))
 	cacheB := domainRoutingACache("cache-b", "203.0.113.10", domainRoutingBitmap(0x2))
@@ -93,13 +93,13 @@ func TestDomainRoutingTrackerMergesSharedIPAcrossOwners(t *testing.T) {
 func TestDomainRoutingTrackerReplacesOwnerSnapshotWithoutLeakingRefs(t *testing.T) {
 	domainMap := newJanitorTestMap(t, "domain_routing_map")
 	core := &controlPlaneCore{
-		bpf: &bpfObjects{
-			bpfMaps: bpfMaps{
-				DomainRoutingMap: domainMap,
-			},
-		},
 		domainRouting: newDomainRoutingTracker(),
 	}
+	core.bpf.Store(&bpfObjects{
+		bpfMaps: bpfMaps{
+			DomainRoutingMap: domainMap,
+		},
+	})
 
 	first := &DnsCache{
 		RouteOwnerKey: "cache-owner",

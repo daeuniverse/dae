@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+// Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
 
 #include "headers/if_ether_defs.h"
 #include "headers/vmlinux.h"
@@ -13,6 +13,18 @@
 #define PNAME_LEN 32
 
 static const bool TRUE = true;
+
+enum trace_stat {
+	TRACE_STAT_HANDLE_SKB,
+	TRACE_STAT_FILTER_FAIL,
+	TRACE_STAT_MATCH,
+	TRACE_STAT_RINGBUF_FAIL,
+	TRACE_STAT_DELETE,
+	TRACE_STAT_IP_VERSION_FAIL,
+	TRACE_STAT_L4_PROTO_FAIL,
+	TRACE_STAT_PORT_FAIL,
+	TRACE_STAT_MAX,
+};
 
 union addr {
 	u32 v4addr;
@@ -58,7 +70,7 @@ struct tracing_config {
 	u8 ip_vsn;
 };
 
-static volatile const struct tracing_config tracing_cfg;
+const volatile struct tracing_config tracing_cfg = {};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -69,8 +81,24 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1<<29);
+	__uint(max_entries, 1 << 24);
 } events SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, TRACE_STAT_MAX);
+} trace_stats SEC(".maps");
+
+static __always_inline void
+inc_trace_stat(__u32 key)
+{
+	__u64 *value = bpf_map_lookup_elem(&trace_stats, &key);
+
+	if (value)
+		__sync_fetch_and_add(value, 1);
+}
 
 static __always_inline u32
 get_netns(struct sk_buff *skb)
@@ -88,6 +116,58 @@ get_netns(struct sk_buff *skb)
 	return netns;
 }
 
+// skip_ipv6_exthdr walks through IPv6 extension headers (Hop-by-Hop, Routing,
+// Dest Options, Fragment) and returns the final L4 protocol number.
+// *off is updated to point past all extension headers.
+// Bounded to 4 iterations to stay within BPF stack limits.
+// NOTE: Uses bpf_probe_read_kernel + BPF_CORE_READ(skb, head) because this
+// runs in kprobe context (struct sk_buff*), not TC/XDP (struct __sk_buff*).
+static __always_inline __u8
+skip_ipv6_exthdr(struct sk_buff *skb, __u32 *off, __u8 nexthdr)
+{
+	void *skb_head = BPF_CORE_READ(skb, head);
+
+#pragma unroll
+	for (int i = 0; i < 4; i++) {
+		switch (nexthdr) {
+		case 0:   // Hop-by-Hop
+		case 43:  // Routing
+		case 60:  // Destination Options
+			{
+				__u8 hdrlen;
+
+				// Next Header field is at byte 0 of the current header;
+				// must be read BEFORE advancing *off.
+				if (bpf_probe_read_kernel(&nexthdr, 1, skb_head + *off) < 0)
+					return nexthdr;
+				if (bpf_probe_read_kernel(&hdrlen, 1, skb_head + *off + 1) < 0)
+					return nexthdr;
+				*off += (__u32)(hdrlen + 1) * 8;
+			}
+			break;
+		case 44:  // Fragment
+			{
+				__be16 frag_off;
+
+				// Next Header field is at byte 0 of the Fragment header;
+				// must be read BEFORE advancing *off.
+				if (bpf_probe_read_kernel(&nexthdr, 1, skb_head + *off) < 0)
+					return nexthdr;
+				if (bpf_probe_read_kernel(&frag_off, 2, skb_head + *off + 2) < 0)
+					return nexthdr;
+				*off += 8;
+				// bits 15-3 are fragment offset (13 bits); 0xFFF8 covers all of them.
+				if (frag_off & bpf_htons(0xFFF8))  // offset != 0
+					return 0;  // non-first fragment, cannot parse
+			}
+			break;
+		default:
+			return nexthdr;
+		}
+	}
+	return nexthdr;
+}
+
 static __always_inline bool
 filter_l3_and_l4(struct sk_buff *skb)
 {
@@ -98,8 +178,10 @@ filter_l3_and_l4(struct sk_buff *skb)
 	struct iphdr *l3_hdr = (struct iphdr *) (skb_head + l3_off);
 	u8 ip_vsn = BPF_CORE_READ_BITFIELD_PROBED(l3_hdr, version);
 
-	if (ip_vsn != tracing_cfg.ip_vsn)
+	if (ip_vsn != tracing_cfg.ip_vsn) {
+		inc_trace_stat(TRACE_STAT_IP_VERSION_FAIL);
 		return false;
+	}
 
 	u16 l4_proto;
 
@@ -110,13 +192,17 @@ filter_l3_and_l4(struct sk_buff *skb)
 	} else if (ip_vsn == 6) {
 		struct ipv6hdr *ip6 = (struct ipv6hdr *) l3_hdr;
 
-		l4_proto = BPF_CORE_READ(ip6, nexthdr);
+		__u32 exthdr_off = l3_off + sizeof(struct ipv6hdr);
+
+		l4_proto = skip_ipv6_exthdr(skb, &exthdr_off, BPF_CORE_READ(ip6, nexthdr));
 	} else {
 		return false;
 	}
 
-	if (l4_proto != tracing_cfg.l4_proto)
+	if (l4_proto != tracing_cfg.l4_proto) {
+		inc_trace_stat(TRACE_STAT_L4_PROTO_FAIL);
 		return false;
+	}
 
 	u16 sport, dport;
 
@@ -134,8 +220,10 @@ filter_l3_and_l4(struct sk_buff *skb)
 		return false;
 	}
 
-	if (dport != tracing_cfg.port && sport != tracing_cfg.port)
+	if (dport != tracing_cfg.port && sport != tracing_cfg.port) {
+		inc_trace_stat(TRACE_STAT_PORT_FAIL);
 		return false;
+	}
 
 	return true;
 }
@@ -184,7 +272,9 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 
 		BPF_CORE_READ_INTO(&tpl->saddr, ip6, saddr);
 		BPF_CORE_READ_INTO(&tpl->daddr, ip6, daddr);
-		tpl->l4_proto = BPF_CORE_READ(ip6, nexthdr);
+		__u32 exthdr_off2 = l3_off + sizeof(struct ipv6hdr);
+
+		tpl->l4_proto = skip_ipv6_exthdr(skb, &exthdr_off2, BPF_CORE_READ(ip6, nexthdr));
 		tpl->l3_proto = ETH_P_IPV6;
 		l3_total_len = bpf_ntohs(BPF_CORE_READ(ip6, payload_len));
 	}
@@ -217,22 +307,29 @@ handle_skb(struct sk_buff *skb, struct pt_regs *ctx)
 	u64 skb_addr = (u64) skb;
 	struct event ev = {};
 
+	inc_trace_stat(TRACE_STAT_HANDLE_SKB);
+
 	if (bpf_map_lookup_elem(&skb_addresses, &skb_addr)) {
 		tracked = true;
 		goto cont;
 	}
 
-	if (!filter_l3_and_l4(skb))
+	if (!filter_l3_and_l4(skb)) {
+		inc_trace_stat(TRACE_STAT_FILTER_FAIL);
 		return 0;
+	}
 
-	if (!tracked)
+	if (!tracked) {
 		bpf_map_update_elem(&skb_addresses, &skb_addr, &TRUE, BPF_ANY);
+		inc_trace_stat(TRACE_STAT_MATCH);
+	}
 
 cont:
 	set_meta(&ev.meta, skb, ctx);
 	set_tuple(&ev.tuple, skb);
 
-	bpf_ringbuf_output(&events, &ev, sizeof(ev), 0);
+	if (bpf_ringbuf_output(&events, &ev, sizeof(ev), 0))
+		inc_trace_stat(TRACE_STAT_RINGBUF_FAIL);
 	return 0;
 }
 
@@ -256,6 +353,7 @@ int kprobe_skb_lifetime_termination(struct pt_regs *ctx)
 	u64 skb = (u64) PT_REGS_PARM1(ctx);
 
 	bpf_map_delete_elem(&skb_addresses, &skb);
+	inc_trace_stat(TRACE_STAT_DELETE);
 	return 0;
 }
 

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -41,7 +41,7 @@ func TestDNSFastPath_ExcludeLocalListener(t *testing.T) {
 				isLocal := dst.Addr().IsLoopback() || dst.Addr().IsUnspecified()
 				assert.Equal(t, tc.isLocal, isLocal, "Local address detection should match")
 
-				// Local addresses should be skipped when we have a DNS listener on port 53
+				// Local addresses should be skipped when we have a DNS listener on port 53.
 				if isLocal {
 					assert.True(t, tc.shouldSkip, "Local DNS should be skipped from fast path")
 				}
@@ -69,12 +69,81 @@ func TestDNSFastPath_RemoteDNSHandling(t *testing.T) {
 			dst, err := netip.ParseAddrPort(tc.dst)
 			require.NoError(t, err)
 
-			// Remote DNS should go through fast path
+			// Remote DNS should go through fast path.
 			if tc.shouldFastPath {
 				assert.False(t, dst.Addr().IsLoopback(), "Should not be loopback address")
 				assert.False(t, dst.Addr().IsUnspecified(), "Should not be unspecified address")
 				assert.Equal(t, uint16(53), dst.Port(), "Should be port 53")
 			}
+		})
+	}
+}
+
+func TestShouldSkipDNSFastPathForLocalListenerTraffic_LANBoundExternalClientRegression(t *testing.T) {
+	listenAddr := "192.168.3.2:53"
+	src := netip.MustParseAddrPort("192.168.3.50:53530")
+	dst := netip.MustParseAddrPort(listenAddr)
+
+	require.False(t, shouldSkipDNSFastPathForLocalListenerTraffic(listenAddr, src, dst),
+		"external LAN client querying a LAN-bound DNS listener must stay on the userspace DNS fast path")
+}
+
+func TestShouldSkipDNSFastPathForLocalListenerTraffic(t *testing.T) {
+	tests := []struct {
+		name       string
+		listenAddr string
+		src        netip.AddrPort
+		dst        netip.AddrPort
+		want       bool
+	}{
+		{
+			name:       "same host LAN-address query skips fast path",
+			listenAddr: "192.168.3.2:53",
+			src:        netip.MustParseAddrPort("192.168.3.2:54000"),
+			dst:        netip.MustParseAddrPort("192.168.3.2:53"),
+			want:       true,
+		},
+		{
+			name:       "loopback listener skips local loopback query",
+			listenAddr: "127.0.0.1:53",
+			src:        netip.MustParseAddrPort("127.0.0.1:54000"),
+			dst:        netip.MustParseAddrPort("127.0.0.1:53"),
+			want:       true,
+		},
+		{
+			name:       "wildcard listener still skips loopback destination",
+			listenAddr: ":53",
+			src:        netip.MustParseAddrPort("127.0.0.1:54000"),
+			dst:        netip.MustParseAddrPort("127.0.0.1:53"),
+			want:       true,
+		},
+		{
+			name:       "wildcard listener skips unspecified destination",
+			listenAddr: "0.0.0.0:53",
+			src:        netip.MustParseAddrPort("192.168.3.50:54000"),
+			dst:        netip.MustParseAddrPort("0.0.0.0:53"),
+			want:       true,
+		},
+		{
+			name:       "non-local remote DNS server does not skip fast path",
+			listenAddr: "192.168.3.2:53",
+			src:        netip.MustParseAddrPort("192.168.3.50:54000"),
+			dst:        netip.MustParseAddrPort("8.8.8.8:53"),
+			want:       false,
+		},
+		{
+			name:       "empty listener address never skips",
+			listenAddr: "",
+			src:        netip.MustParseAddrPort("127.0.0.1:54000"),
+			dst:        netip.MustParseAddrPort("127.0.0.1:53"),
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldSkipDNSFastPathForLocalListenerTraffic(tt.listenAddr, tt.src, tt.dst)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -94,7 +163,7 @@ func TestDNSMessage_ValidDNSDetection(t *testing.T) {
 		{
 			name:    "Valid DNS response",
 			data:    createDNSResponse("example.com.", []string{"1.2.3.4"}),
-			isValid: false, // Responses are not queries
+			isValid: false,
 		},
 		{
 			name:    "Invalid DNS packet",
@@ -116,14 +185,12 @@ func TestDNSMessage_ValidDNSDetection(t *testing.T) {
 				assert.NotNil(t, msg, "Should detect valid DNS message")
 				assert.False(t, msg.Response, "Should be a query, not response")
 			} else if msg != nil {
-				// Either nil or a response
 				assert.True(t, msg.Response || len(tc.data) < 12, "Should be invalid (response or too short)")
 			}
 		})
 	}
 }
 
-// Helper function to create a DNS query message
 func createDNSQuery(domain string, qtype uint16) []byte {
 	msg := new(dnsmessage.Msg)
 	msg.SetQuestion(domain, qtype)
@@ -134,7 +201,6 @@ func createDNSQuery(domain string, qtype uint16) []byte {
 	return data
 }
 
-// Helper function to create a DNS response message
 func createDNSResponse(domain string, ips []string) []byte {
 	msg := new(dnsmessage.Msg)
 	msg.SetQuestion(domain, dnsmessage.TypeA)

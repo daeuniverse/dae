@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,6 +46,7 @@ type fakeShutdownControlPlane struct {
 	detachErr   error
 	abortErr    error
 	closeErr    error
+	onClose     func()
 }
 
 func (f *fakeShutdownControlPlane) DetachBpfHooks() error {
@@ -67,6 +69,9 @@ func (f *fakeShutdownControlPlane) Close() error {
 	f.closeCalls++
 	if f.recorder != nil {
 		f.recorder.add("control.Close")
+	}
+	if f.onClose != nil {
+		f.onClose()
 	}
 	return f.closeErr
 }
@@ -115,6 +120,54 @@ func newDiscardLogger() *logrus.Logger {
 	return log
 }
 
+func isolateGlobalUdpState(t *testing.T) {
+	t.Helper()
+
+	oldEndpointPool := control.DefaultUdpEndpointPool
+	oldAnyfromPool := control.DefaultAnyfromPool
+	oldTaskPool := control.DefaultUdpTaskPool
+	oldSnifferPool := control.DefaultPacketSnifferSessionMgr
+
+	endpointPool := control.NewUdpEndpointPool()
+	anyfromPool := control.NewAnyfromPool()
+	taskPool := control.NewUdpTaskPool()
+	snifferPool := control.NewPacketSnifferPool()
+
+	control.DefaultUdpEndpointPool = endpointPool
+	control.DefaultAnyfromPool = anyfromPool
+	control.DefaultUdpTaskPool = taskPool
+	control.DefaultPacketSnifferSessionMgr = snifferPool
+
+	t.Cleanup(func() {
+		endpointPool.Close()
+		anyfromPool.Close()
+		taskPool.Close()
+		snifferPool.Close()
+
+		control.DefaultUdpEndpointPool = oldEndpointPool
+		control.DefaultAnyfromPool = oldAnyfromPool
+		control.DefaultUdpTaskPool = oldTaskPool
+		control.DefaultPacketSnifferSessionMgr = oldSnifferPool
+	})
+}
+
+func seedPacketSnifferSession(t *testing.T) control.PacketSnifferKey {
+	t.Helper()
+
+	key := control.NewPacketSnifferKey(
+		netip.MustParseAddrPort("192.0.2.10:40000"),
+		netip.MustParseAddrPort("198.51.100.20:443"),
+		[]byte{0x01, 0x02, 0x03},
+	)
+	if _, isNew := control.DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil); !isNew {
+		t.Fatal("expected test packet sniffer session to be newly created")
+	}
+	if got := control.DefaultPacketSnifferSessionMgr.Get(key); got == nil {
+		t.Fatal("expected seeded packet sniffer session to be present")
+	}
+	return key
+}
+
 func TestShutdownAfterSignalFastExitSkipsGracefulTeardown(t *testing.T) {
 	recorder := &shutdownCallRecorder{}
 	listener := &fakeShutdownListener{recorder: recorder}
@@ -148,6 +201,8 @@ func TestShutdownAfterSignalFastExitSkipsGracefulTeardown(t *testing.T) {
 }
 
 func TestShutdownAfterSignalGracefulExitRunsFullTeardown(t *testing.T) {
+	isolateGlobalUdpState(t)
+
 	recorder := &shutdownCallRecorder{}
 	listener := &fakeShutdownListener{recorder: recorder}
 	plane := &fakeShutdownControlPlane{
@@ -183,6 +238,44 @@ func TestShutdownAfterSignalGracefulExitRunsFullTeardown(t *testing.T) {
 	}
 	if !reflect.DeepEqual(recorder.order, wantOrder) {
 		t.Fatalf("call order = %v, want %v", recorder.order, wantOrder)
+	}
+}
+
+func TestShutdownAfterSignalGracefulExitResetsGlobalUdpStateAfterClose(t *testing.T) {
+	isolateGlobalUdpState(t)
+
+	key := seedPacketSnifferSession(t)
+	plane := &fakeShutdownControlPlane{
+		onClose: func() {
+			if got := control.DefaultPacketSnifferSessionMgr.Get(key); got == nil {
+				t.Fatal("global UDP state was reset before control plane close")
+			}
+		},
+	}
+
+	if err := shutdownAfterSignal(newDiscardLogger(), &fakeShutdownListener{}, plane, &fakeShutdownNetns{}, false); err != nil {
+		t.Fatalf("shutdownAfterSignal() error = %v", err)
+	}
+
+	if plane.closeCalls != 1 {
+		t.Fatalf("Close calls = %d, want 1", plane.closeCalls)
+	}
+	if got := control.DefaultPacketSnifferSessionMgr.Get(key); got != nil {
+		t.Fatal("expected graceful shutdown to reset global UDP packet sniffer state")
+	}
+}
+
+func TestShutdownAfterSignalFastExitDoesNotResetGlobalUdpState(t *testing.T) {
+	isolateGlobalUdpState(t)
+
+	key := seedPacketSnifferSession(t)
+
+	if err := shutdownAfterSignal(newDiscardLogger(), &fakeShutdownListener{}, &fakeShutdownControlPlane{}, &fakeShutdownNetns{}, true); err != nil {
+		t.Fatalf("shutdownAfterSignal() error = %v", err)
+	}
+
+	if got := control.DefaultPacketSnifferSessionMgr.Get(key); got == nil {
+		t.Fatal("expected fast shutdown to leave global UDP packet sniffer state intact")
 	}
 }
 
@@ -784,5 +877,31 @@ func TestReloadRetirementBehavior(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReloadRetirementAbortsAfterDrainTimeout(t *testing.T) {
+	plane := &retirementBehaviorPlane{
+		fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
+	}
+
+	retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, false, true, 10*time.Millisecond)
+
+	if !plane.abortCalled.Load() {
+		t.Fatal("expected AbortConnections to be called after drain timeout")
+	}
+}
+
+func TestReloadRetirementAbortsAfterDrainCancel(t *testing.T) {
+	plane := &retirementBehaviorPlane{
+		fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	retireControlPlaneConnections(newDiscardLogger(), ctx, plane, false, true, time.Second)
+
+	if !plane.abortCalled.Load() {
+		t.Fatal("expected AbortConnections to be called after drain cancellation")
 	}
 }

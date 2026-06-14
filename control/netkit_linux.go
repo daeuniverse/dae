@@ -2,7 +2,7 @@
 
 /*
 * SPDX-License-Identifier: AGPL-3.0-only
-* Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+* Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
  */
 
 package control
@@ -41,8 +41,8 @@ func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int, scrubNone boo
 	// Build base command arguments
 	args := []string{"link", "add", name, "type", "netkit", "peer", peerName}
 
-	// Add mode
-	args = append(args, "mode", "L3")
+	// Add mode. L2 keeps netkit compatible with dae's Ethernet-based datapath.
+	args = append(args, "mode", "L2")
 
 	// Add scrub configuration if requested
 	// scrub=0 means NETKIT_SCRUB_NONE (don't clear skb->mark)
