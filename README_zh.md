@@ -164,10 +164,81 @@ policy: fixed_fallback(0, 500ms, 1, min)
 
 ---
 
+### 3. 动态 CheckOpts — 精简健康检查探测
+
+> 对应上游 PR：[daeuniverse/dae#1011](https://github.com/daeuniverse/dae/pull/1011)
+
+原生 dae 硬编码了 4 路健康检查探测（tcp4/tcp6/udp4_dns/udp6_dns），即使用户的网络环境不需要 IPv6 或没有配置 UDP DNS 检查，也会无条件发起全部探测，造成不必要的网络请求和日志噪音。
+
+本 Fork 将该逻辑改为**按配置动态决定探测类型**：
+
+#### 核心规则
+
+> **只有配置里显式写了需要去 check 的地址时才去 check，没有写就默认不去 check。**
+
+| 配置情况 | tcp4 | tcp6 | udp4_dns | udp6_dns |
+|---|---|---|---|---|
+| `tcp_check_url` 只配了 IPv4 地址 | ✅ | ❌ 跳过 | — | — |
+| `tcp_check_url` 含 IPv6 地址 | ✅ | ✅ | — | — |
+| `udp_check_dns` 只配了 IPv4 地址 | — | — | ✅ | ❌ 跳过 |
+| `udp_check_dns` 含 IPv6 地址 | — | — | ✅ | ✅ |
+| `udp_check_dns` 未配置 | — | — | ❌ 完全跳过 | ❌ 完全跳过 |
+| 默认配置（含 IPv4+IPv6） | ✅ | ✅ | ✅ | ✅ |（向后兼容）
+
+#### tcp 和 udp 独立判断
+
+`tcp_check_url` 里有没有 IPv6 **不会影响** `udp_check_dns` 的探测决策，反之亦然。两者完全独立：
+
+```ini
+global {
+    # tcp 有 IPv6 → 只启用 tcp6 探测，udp 不受影响
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
+    # udp 只有 IPv4 → 不启用 udp6 探测
+    udp_check_dns: 'dns.google:53,8.8.8.8'
+}
+# 实际探测：tcp4 + tcp6 + udp4_dns（3 路，非 4 路）
+```
+
+#### 推荐配置（IPv4 单栈环境）
+
+```ini
+global {
+    log_level: debug
+    # 显式指定 IPv4 地址，自动跳过 IPv6 TCP 探测
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    # 显式指定 IPv4 地址，自动跳过 IPv6 UDP DNS 探测
+    udp_check_dns: 'dns.google:53,8.8.8.8'
+    check_tolerance: 60ms
+    check_interval: 30s
+}
+# 实际探测：tcp4 + udp4_dns（仅 2 路，最精简）
+```
+
+#### 完全跳过 UDP DNS 探测
+
+```ini
+global {
+    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1'
+    # udp_check_dns 不写 → 完全跳过 UDP DNS 探测
+    # 实际探测：仅 tcp4（1 路，最最精简）
+}
+```
+
+#### 调试：查看当前探测配置
+
+启用 `log_level: debug` 后，dae 启动时会输出每条拨号的探测配置：
+
+```
+DEBUG Connectivity check probes configured  dialer=my-node  tcp4=true tcp6=false udp4_dns=true udp6_dns=false
+```
+
+---
+
 ### 上游 PR
 
 - [PR #1009](https://github.com/daeuniverse/dae/pull/1009) — fixed_fallback 灾备增强
 - [PR #1010](https://github.com/daeuniverse/dae/pull/1010) — 日志时间戳格式优化
+- [PR #1011](https://github.com/daeuniverse/dae/pull/1011) — 动态 CheckOpts：按配置精简健康检查探测
 
 ---
 
