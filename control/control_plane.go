@@ -3072,44 +3072,11 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				// reduce hot-path overhead, but best-effort preserve tuple metadata
 				// for rules matching (pname/mac/dscp).
 				if realDst.Port() == 53 {
-					// IMPORTANT: Check if this is destined for our own DNS listener.
-					// If so, skip fast path processing to avoid double-handling.
-					// Traffic to 127.0.0.1:53 (or our configured listen address) should be
-					// handled only by the DNS listener, not by UDP ingress fast path.
-					if c.dnsListener != nil {
-						listenAddr := c.dnsListener.Addr()
-						// Match both exact address and wildcard port 53 to our listener
-						if listenAddr != "" && listenAddr == realDst.String() {
-							// This is destined for our own DNS listener - let it handle normally
-							if c.log.IsLevelEnabled(logrus.TraceLevel) {
-								c.log.WithFields(logrus.Fields{
-									"src":        convergeSrc.String(),
-									"dst":        realDst.String(),
-									"listenAddr": listenAddr,
-								}).Trace("Skipping DNS fast path for traffic to our own DNS listener")
-							}
-							// Fall through to normal UDP processing (will be dropped/ignored)
-							return
-						}
-						// Also check for common local addresses
-						if realDst.Addr().IsLoopback() || realDst.Addr().IsUnspecified() {
-							// For local addresses, verify we have a DNS listener on port 53
-							if _, portStr, err := net.SplitHostPort(listenAddr); err == nil {
-								if port, err := strconv.Atoi(portStr); err == nil && port == 53 {
-									// We have a DNS listener on port 53, skip fast path
-									if c.log.IsLevelEnabled(logrus.TraceLevel) {
-										c.log.WithFields(logrus.Fields{
-											"src":        convergeSrc.String(),
-											"dst":        realDst.String(),
-											"listenAddr": listenAddr,
-										}).Trace("Skipping DNS fast path for local loopback DNS listener traffic")
-									}
-									return
-								}
-							}
-						}
-					}
-
+					// LAN-intercepted DNS (including queries to our own bind address like
+					// 192.168.1.15:53) must be handled by the DNS controller here.
+					// The DNSListener (miekg/dns server) only serves host-local traffic
+					// that reaches it via loopback; eBPF has already consumed LAN-client
+					// packets so they never arrive at the root-namespace socket.
 					if dnsMessage, _ := ChooseNatTimeout(data, true); dnsMessage != nil {
 						dnsRoutingResult := &bpfRoutingResult{
 							Outbound: uint8(consts.OutboundControlPlaneRouting),
