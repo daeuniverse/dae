@@ -124,6 +124,7 @@ type ControlPlane struct {
 type controlPlaneBuildOptions struct {
 	delayDatapathCommit   bool
 	delayDNSListenerStart bool
+	dnsRoutingUnchanged   bool
 }
 
 const (
@@ -302,6 +303,7 @@ func NewControlPlaneWithContext(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+	dnsRoutingUnchanged bool,
 ) (plane *ControlPlane, err error) {
 	return newControlPlaneWithContextOptions(
 		ctx,
@@ -314,7 +316,9 @@ func NewControlPlaneWithContext(
 		global,
 		dnsConfig,
 		externGeoDataDirs,
-		controlPlaneBuildOptions{},
+		controlPlaneBuildOptions{
+			dnsRoutingUnchanged: dnsRoutingUnchanged,
+		},
 	)
 }
 
@@ -331,6 +335,7 @@ func NewPreparedControlPlaneWithContext(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+	dnsRoutingUnchanged bool,
 ) (plane *ControlPlane, err error) {
 	return newControlPlaneWithContextOptions(
 		ctx,
@@ -346,6 +351,7 @@ func NewPreparedControlPlaneWithContext(
 		controlPlaneBuildOptions{
 			delayDatapathCommit:   true,
 			delayDNSListenerStart: true,
+			dnsRoutingUnchanged:   dnsRoutingUnchanged,
 		},
 	)
 }
@@ -731,6 +737,7 @@ func newControlPlaneWithContextOptions(
 		preparedDatapathCommit:      buildOpts.delayDatapathCommit,
 		sharedBpfReload:             _bpf != nil,
 		pendingDnsReloadCache:       dnsCache,
+		dnsRoutingUnchanged:         buildOpts.dnsRoutingUnchanged,
 		muRealDomainSet:             sync.RWMutex{},
 		realDomainSet:               bloom.NewWithEstimates(2048, 0.001),
 		tcpSniffNegSet:              make(map[tcpSniffNegKey]tcpSniffNegEntry),
@@ -3730,16 +3737,6 @@ func (c *ControlPlane) SetPreparedDNSReuseHook(hook func() error) {
 		return
 	}
 	c.setPreparedDNSReuseHook(hook)
-}
-
-// SetDNSRoutingUnchanged marks whether DNS routing configuration (excluding
-// runtime-tunable parameters) is identical to the previous generation. When
-// true, CommitPreparedDatapath skips domain_routing_map clear+replay.
-func (c *ControlPlane) SetDNSRoutingUnchanged(v bool) {
-	if c == nil {
-		return
-	}
-	c.dnsRoutingUnchanged = v
 }
 
 func (c *ControlPlane) WaitDNSUpstreamsReady(timeout time.Duration) error {

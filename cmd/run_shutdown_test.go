@@ -695,12 +695,29 @@ func TestBpfDatapathChanged_SafeFieldsOnly(t *testing.T) {
 	// These are all pure userspace fields that do not affect BPF maps.
 	new.Global.LogLevel = "debug"
 	new.Global.TcpCheckUrl = []string{"http://example.com"}
+	new.Global.TcpCheckHttpMethod = "GET"
+	new.Global.UdpCheckDns = []string{"9.9.9.9"}
+	new.Global.CheckInterval = 60 * time.Second
+	new.Global.CheckTolerance = 5 * time.Second
 	new.Global.DialMode = "domain++"
+	new.Global.DisableWaitingNetwork = true
+	new.Global.DisableTHP = false
 	new.Global.SniffingTimeout = 50 * time.Millisecond
+	new.Global.TlsImplementation = "utls"
+	new.Global.UtlsImitate = "firefox"
+	new.Global.TlsFragment = true
+	new.Global.TlsFragmentLength = "100-200"
+	new.Global.TlsFragmentInterval = "20-40"
 	new.Global.AllowInsecure = true
 	new.Global.Mptcp = true
 	new.Global.PprofPort = 6060
+	new.Global.BootstrapResolver = "1.0.0.1:53"
+	new.Global.FallbackResolver = "9.9.9.9:53"
 	new.Global.BandwidthMaxTx = "100M"
+	new.Global.BandwidthMaxRx = "200M"
+	new.Global.UDPHopInterval = 60 * time.Second
+	new.Global.AutoConfigKernelParameter = true
+	new.Global.TproxyPortProtect = false
 	// DNS runtime params (excluded by fingerprint).
 	new.Dns.OptimisticCache = false
 	new.Dns.OptimisticCacheTtl = 120
