@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,9 +337,69 @@ func dnsConfigEqual(oldConf *config.Config, newConf *config.Config) bool {
 	return dnsConfigFingerprint(oldConf.Dns) == dnsConfigFingerprint(newConf.Dns)
 }
 
-// dnsConfigFingerprint must be kept in sync with config.Dns. The companion
-// TestDNSConfigFingerprintCoversAllDnsFields fails when new top-level DNS
-// fields are added without updating this fingerprint.
+// bpfDatapathChanged returns true when the config diff affects BPF maps or
+// program attachment that are unsafe to update in-place during staged handoff.
+//
+// B-class maps (routing_map, routing_meta_map, lpm_array_map,
+// domain_routing_map) hold global policy state. If their content changes while
+// the old control plane is still processing packets on the shared BPF object,
+// transient routing failures can occur (dae#1013). When this function returns
+// true, callers must perform a full reload (fresh BPF objects) instead of a
+// staged same-port handoff.
+//
+// Safe (runtime-tunable) fields — log_level, check URLs, dial_mode,
+// sniffing_timeout, TLS settings, bandwidth limits, etc. — are intentionally
+// excluded because they are pure userspace and do not affect BPF map state.
+func bpfDatapathChanged(oldConf, newConf *config.Config) bool {
+	if oldConf == nil || newConf == nil {
+		return true
+	}
+	// DNS routing → domain_routing_map (selective fingerprint excludes
+	// runtime params like optimistic_cache; see dnsConfigFingerprint).
+	if !dnsConfigEqual(oldConf, newConf) {
+		return true
+	}
+	// Routing rules → routing_map, routing_meta_map, lpm_array_map.
+	if !reflect.DeepEqual(oldConf.Routing.Rules, newConf.Routing.Rules) {
+		return true
+	}
+	if !reflect.DeepEqual(oldConf.Routing.Fallback, newConf.Routing.Fallback) {
+		return true
+	}
+	// Group definitions → routing_map (group index resolution).
+	if !reflect.DeepEqual(oldConf.Group, newConf.Group) {
+		return true
+	}
+	// Interface bindings → lpm_array_map + program attachment.
+	if !reflect.DeepEqual(oldConf.Global.LanInterface, newConf.Global.LanInterface) {
+		return true
+	}
+	if !reflect.DeepEqual(oldConf.Global.WanInterface, newConf.Global.WanInterface) {
+		return true
+	}
+	// Conn-state map size → requires map recreation.
+	if oldConf.Global.BpfConnStateMapSize != newConf.Global.BpfConnStateMapSize {
+		return true
+	}
+	// Socket mark → stored in BPF param map; changing it on a shared object
+	// would affect the old generation's packet marking.
+	if oldConf.Global.SoMarkFromDae != newConf.Global.SoMarkFromDae ||
+		oldConf.Global.SoMarkFromDaeSet != newConf.Global.SoMarkFromDaeSet {
+		return true
+	}
+	return false
+}
+
+// dnsConfigFingerprint captures only the DNS fields that affect BPF datapath
+// state (domain_routing_map, routing rules, upstream resolution). Runtime-tunable
+// parameters (OptimisticCache, OptimisticCacheTtl, MaxCacheSize) are intentionally
+// excluded because they are atomic-tunable via DnsController.UpdateRuntime and do
+// not require BPF map changes. Including them would cause unnecessary
+// domain_routing_map clear+replay during staged handoff, creating a race window
+// where the old control plane loses domain routing (see dae#1013).
+//
+// Must be kept in sync with config.Dns routing-affecting fields.
+// TestDNSConfigFingerprintCoversAllDnsFields guards the contract.
 func dnsConfigFingerprint(dns config.Dns) string {
 	var b strings.Builder
 	writeKeyableStrings := func(name string, values []config.KeyableString) {
@@ -413,15 +474,6 @@ func dnsConfigFingerprint(dns config.Dns) string {
 	writeRouting("routing", dns.Routing)
 	b.WriteString("bind=")
 	b.WriteString(strconv.Quote(dns.Bind))
-	b.WriteByte(';')
-	b.WriteString("optimistic_cache=")
-	b.WriteString(strconv.FormatBool(dns.OptimisticCache))
-	b.WriteByte(';')
-	b.WriteString("optimistic_cache_ttl=")
-	b.WriteString(strconv.Itoa(dns.OptimisticCacheTtl))
-	b.WriteByte(';')
-	b.WriteString("max_cache_size=")
-	b.WriteString(strconv.Itoa(dns.MaxCacheSize))
 	b.WriteByte(';')
 	return b.String()
 }

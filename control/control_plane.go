@@ -111,8 +111,14 @@ type ControlPlane struct {
 	routingKernspaceSnapshot       *routingKernspaceSnapshot
 	pendingDnsReloadCache          map[string]*DnsCache
 	sharedBpfReload                bool
-	closeOnce                      sync.Once
-	closeErr                       error
+	// dnsRoutingUnchanged indicates that DNS routing configuration (excluding
+	// runtime-tunable parameters like OptimisticCache) did not change from the
+	// previous generation. When true, CommitPreparedDatapath skips clearing
+	// and replaying domain_routing_map to avoid a race window where the old
+	// control plane loses domain routing on the shared BPF map (dae#1013).
+	dnsRoutingUnchanged bool
+	closeOnce           sync.Once
+	closeErr            error
 }
 
 type controlPlaneBuildOptions struct {
@@ -815,12 +821,14 @@ func newControlPlaneWithContextOptions(
 		if err = plane.commitInterfaceBindings(); err != nil {
 			return nil, err
 		}
-		if plane.sharedBpfReload {
+		if plane.sharedBpfReload && !plane.dnsRoutingUnchanged {
 			if err = clearReloadDomainRoutingMap(core.bpf.Load()); err != nil {
 				return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 			}
 		}
-		plane.replayDnsReloadCache()
+		if !plane.dnsRoutingUnchanged {
+			plane.replayDnsReloadCache()
+		}
 		plane.markReady()
 	}
 	return plane, nil
@@ -1464,12 +1472,14 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 		}
 		c.core.lpmTrieIndices = lpmIndices
 	}
-	if c.sharedBpfReload {
+	if c.sharedBpfReload && !c.dnsRoutingUnchanged {
 		if err := clearReloadDomainRoutingMap(c.core.bpf.Load()); err != nil {
 			return fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 		}
 	}
-	c.replayDnsReloadCache()
+	if !c.dnsRoutingUnchanged {
+		c.replayDnsReloadCache()
+	}
 	c.startConnStateJanitor()
 	c.preparedDatapathCommit = false
 	return nil
@@ -3720,6 +3730,16 @@ func (c *ControlPlane) SetPreparedDNSReuseHook(hook func() error) {
 		return
 	}
 	c.setPreparedDNSReuseHook(hook)
+}
+
+// SetDNSRoutingUnchanged marks whether DNS routing configuration (excluding
+// runtime-tunable parameters) is identical to the previous generation. When
+// true, CommitPreparedDatapath skips domain_routing_map clear+replay.
+func (c *ControlPlane) SetDNSRoutingUnchanged(v bool) {
+	if c == nil {
+		return
+	}
+	c.dnsRoutingUnchanged = v
 }
 
 func (c *ControlPlane) WaitDNSUpstreamsReady(timeout time.Duration) error {
