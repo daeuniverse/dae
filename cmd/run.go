@@ -40,6 +40,8 @@ import (
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/logger"
+	"github.com/daeuniverse/dae/pkg/metrics"
+	"github.com/daeuniverse/dae/pkg/metricshttp"
 	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
@@ -322,6 +324,11 @@ func (r *Runner) Run() (err error) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
+	endpointCfg := endpointConfigFromGlobal(conf, log)
+	if err = validateEndpointTLSFiles(endpointCfg); err != nil {
+		return fmt.Errorf("invalid endpoint tls config: %w", err)
+	}
+
 	// New ControlPlane.
 	ctx, cancel := context.WithCancel(context.Background())
 	currCancel = cancel
@@ -338,6 +345,25 @@ func (r *Runner) Run() (err error) {
 		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
 		go func() { _ = pprofServer.ListenAndServe() }()
 	}
+
+	metricsState := metrics.NewState()
+	metricsState.SetControlPlane(c)
+	metricsRegistry := metrics.NewRegistry(metricsState)
+
+	var endpointServer *http.Server
+	startEndpointServer := func(cfg metricshttp.EndpointConfig) {
+		if cfg.ListenAddress == "" {
+			endpointServer = nil
+			return
+		}
+		endpointServer = metricshttp.NewEndpointServer(cfg, metricsRegistry)
+		go func(server *http.Server, endpointCfg metricshttp.EndpointConfig) {
+			if e := metricshttp.StartEndpointServer(server, endpointCfg); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				log.WithError(e).Errorln("Endpoint server stopped with error")
+			}
+		}(endpointServer, cfg)
+	}
+	startEndpointServer(endpointCfg)
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
@@ -446,6 +472,16 @@ func (r *Runner) Run() (err error) {
 
 			portChanged := conf.Global.TproxyPort != newConf.Global.TproxyPort
 			stagedHotHandoff := !portChanged && listener != nil
+
+			newEndpointCfg := endpointConfigFromGlobal(newConf, log)
+			if err = validateEndpointTLSFiles(newEndpointCfg); err != nil {
+				log.WithFields(logrus.Fields{
+					"err": err,
+				}).Errorln("[Reload] Failed to reload")
+				_ = sdnotify.Ready()
+				_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+				continue
+			}
 
 			// New control plane.
 			obj := c.PeekBpf()
@@ -640,6 +676,7 @@ func (r *Runner) Run() (err error) {
 			reloadManager.clearPendingRetirement()
 			reloadManager.setPendingReloadMetadata(reloadStartedAt, reloadStartedAtMono)
 			reloadManager.beginHandoff()
+			metricsState.SetControlPlane(newC)
 
 			// Ready to close.
 			if oldC != nil && reloadManager.currentPendingStagedHandoff() == nil {
@@ -652,6 +689,14 @@ func (r *Runner) Run() (err error) {
 			}
 
 			reloadManager.refreshPprofServer(log, &pprofServer, newConf.Global.PprofPort)
+
+			if endpointConfigChanged(endpointCfg, newEndpointCfg) {
+				if endpointServer != nil {
+					_ = endpointServer.Shutdown(context.Background())
+				}
+				endpointCfg = newEndpointCfg
+				startEndpointServer(endpointCfg)
+			}
 
 			notifyRunStateChange(runStateChanges)
 
@@ -833,6 +878,7 @@ loop:
 				// Listening error.
 				log.Errorln("[Critical] Listener failed; exiting")
 				break loop
+
 			}
 		}
 	}
@@ -844,6 +890,9 @@ loop:
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = pprofServer.Shutdown(ctx)
 			cancel()
+		}
+		if endpointServer != nil {
+			_ = endpointServer.Shutdown(context.Background())
 		}
 		_ = os.Remove(PidFilePath)
 	}()
