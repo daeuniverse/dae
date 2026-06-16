@@ -15,6 +15,8 @@ import (
 // NodeLatencySnapshot describes the latest observable latency status for one node link.
 type NodeLatencySnapshot struct {
 	Link      string
+	Name      string // human-readable dialer name, e.g. "香港标准 IEPL 专线 1"
+	Group     string // outbound group name, e.g. "FC_HK"
 	LatencyMs *int32
 	Alive     bool
 	Message   string
@@ -68,6 +70,8 @@ func (c *ControlPlane) SnapshotNodeLatencies() []NodeLatencySnapshot {
 			}
 
 			snapshot := bestNodeLatencySnapshotForDialer(d)
+			snapshot.Name = d.Property().Name
+			snapshot.Group = group.Name
 			if existing, ok := latenciesByLink[snapshot.Link]; !ok || preferNodeLatencySnapshot(snapshot, existing) {
 				latenciesByLink[snapshot.Link] = snapshot
 			}
