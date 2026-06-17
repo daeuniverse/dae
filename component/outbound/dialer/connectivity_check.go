@@ -1063,6 +1063,17 @@ func (d *Dialer) markAvailableTraffic(typ *NetworkType) collectionUpdate {
 	d.NotifyHealthCheckResult(typ, true, isRevival)
 	if isRevival {
 		d.notifyAliveTransition(typ, true)
+		// Log dead→alive transitions for operational visibility.
+		if d.Log != nil {
+			nodeName := ""
+			if d.property != nil {
+				nodeName = d.property.Name
+			}
+			d.Log.WithFields(logrus.Fields{
+				"dialer":  nodeName,
+				"network": typ.String(),
+			}).Infoln("Node became ALIVE (traffic)")
+		}
 	}
 	return update
 }
