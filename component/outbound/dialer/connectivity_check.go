@@ -470,9 +470,11 @@ func getActiveDialerCount() int {
 // Returns false (keep IPv6 probes) when:
 //   - Explicit IPv6 addresses are found in config
 //   - No explicit IPs are given (DNS resolution might return IPv6)
-func shouldSkipIpFamily6(raw []string) bool {
+// shouldSkipIpFamily returns which IP family to skip based on configured addresses.
+// Returns "" (skip none), "4" (skip IPv4), or "6" (skip IPv6).
+func shouldSkipIpFamily(raw []string) string {
 	hasIpv6 := false
-	hasExplicitIpv4 := false
+	hasIpv4 := false
 
 	for i := 1; i < len(raw); i++ {
 		addr, err := netip.ParseAddr(raw[i])
@@ -482,11 +484,17 @@ func shouldSkipIpFamily6(raw []string) bool {
 		if addr.Is6() {
 			hasIpv6 = true
 		} else {
-			hasExplicitIpv4 = true
+			hasIpv4 = true
 		}
 	}
 
-	return hasExplicitIpv4 && !hasIpv6
+	if hasIpv4 && !hasIpv6 {
+		return "6"
+	}
+	if hasIpv6 && !hasIpv4 {
+		return "4"
+	}
+	return ""
 }
 
 // hasUdpDnsConfig returns true if udp_check_dns is configured.
@@ -606,18 +614,24 @@ func (d *Dialer) aliveBackground() {
 	//   - Skip IPv6 probes when only IPv4 addresses are explicitly configured
 	useTcpCheck := len(d.TcpCheckOptionRaw.Raw) > 0
 	useUdpDns := len(d.CheckDnsOptionRaw.Raw) > 0
-	skipTcp6 := useTcpCheck && shouldSkipIpFamily6(d.TcpCheckOptionRaw.Raw)
-	skipUdp6 := useUdpDns && shouldSkipIpFamily6(d.CheckDnsOptionRaw.Raw)
+	skipTcp4 := useTcpCheck && shouldSkipIpFamily(d.TcpCheckOptionRaw.Raw) == "4"
+	skipTcp6 := useTcpCheck && shouldSkipIpFamily(d.TcpCheckOptionRaw.Raw) == "6"
+	skipUdp4 := useUdpDns && shouldSkipIpFamily(d.CheckDnsOptionRaw.Raw) == "4"
+	skipUdp6 := useUdpDns && shouldSkipIpFamily(d.CheckDnsOptionRaw.Raw) == "6"
 
 	var CheckOpts []*CheckOption
 	if useTcpCheck {
-		CheckOpts = append(CheckOpts, tcp4CheckOpt)
+		if !skipTcp4 {
+			CheckOpts = append(CheckOpts, tcp4CheckOpt)
+		}
 		if !skipTcp6 {
 			CheckOpts = append(CheckOpts, tcp6CheckOpt)
 		}
 	}
 	if useUdpDns {
-		CheckOpts = append(CheckOpts, udp4CheckDnsOpt)
+		if !skipUdp4 {
+			CheckOpts = append(CheckOpts, udp4CheckDnsOpt)
+		}
 		if !skipUdp6 {
 			CheckOpts = append(CheckOpts, udp6CheckDnsOpt)
 		}
@@ -633,9 +647,9 @@ func (d *Dialer) aliveBackground() {
 	if d.Log.IsLevelEnabled(logrus.DebugLevel) {
 		d.Log.WithFields(logrus.Fields{
 			"dialer":   d.property.Name,
-			"tcp4":     useTcpCheck,
+			"tcp4":     useTcpCheck && !skipTcp4,
 			"tcp6":     useTcpCheck && !skipTcp6,
-			"udp4_dns": useUdpDns,
+			"udp4_dns": useUdpDns && !skipUdp4,
 			"udp6_dns": useUdpDns && !skipUdp6,
 		}).Debugln("Connectivity check probes configured")
 	}
