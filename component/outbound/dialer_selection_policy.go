@@ -18,8 +18,8 @@ import (
 type DialerSelectionPolicy struct {
 	Policy               consts.DialerSelectionPolicy
 	FixedIndex           int
-	FixedFallbackTimeout time.Duration     // 节点超时时间
-	FixedFallbackRetries int              // 超时重试次数
+	FixedFallbackTimeout time.Duration                // 节点超时时间
+	FixedFallbackRetries int                          // 超时重试次数
 	FallbackPolicy       consts.DialerSelectionPolicy // 重试耗尽后的回退策略，默认 min_moving_avg
 }
 
@@ -142,6 +142,7 @@ func parsePolicyName(s string) (consts.DialerSelectionPolicy, error) {
 		return consts.DialerSelectionPolicy(0), fmt.Errorf("unsupported fallback policy %q (supported: random, min_moving_avg, min_last_latency, min_avg10)", s)
 	}
 }
+
 // Supported: "ms" (milliseconds), "s" (seconds), "m" (minutes).
 // No suffix defaults to seconds for backward compatibility.
 // Examples: "500ms", "5s", "2m", "10".
