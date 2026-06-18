@@ -464,13 +464,13 @@ func getActiveDialerCount() int {
 	return poolActiveCount
 }
 
-// shouldSkipTcp6Probes returns true when tcp_check_url explicitly lists only IPv4
-// addresses (no explicit IPv6 entries).
-// This avoids unnecessary IPv6 TCP probes when the user's network doesn't support IPv6.
+// shouldSkipIpFamily6 returns true when raw explicitly lists only IPv4 addresses
+// (no explicit IPv6 entries). This avoids unnecessary IPv6 probes when the user's
+// network doesn't support IPv6.
 // Returns false (keep IPv6 probes) when:
 //   - Explicit IPv6 addresses are found in config
 //   - No explicit IPs are given (DNS resolution might return IPv6)
-func shouldSkipTcp6Probes(raw []string) bool {
+func shouldSkipIpFamily6(raw []string) bool {
 	hasIpv6 := false
 	hasExplicitIpv4 := false
 
@@ -486,34 +486,7 @@ func shouldSkipTcp6Probes(raw []string) bool {
 		}
 	}
 
-	if hasIpv6 {
-		return false
-	}
-	return hasExplicitIpv4
-}
-
-// shouldSkipUdp6Probes returns true when udp_check_dns explicitly lists only IPv4
-// addresses (no explicit IPv6 entries).
-func shouldSkipUdp6Probes(raw []string) bool {
-	hasIpv6 := false
-	hasExplicitIpv4 := false
-
-	for i := 1; i < len(raw); i++ {
-		addr, err := netip.ParseAddr(raw[i])
-		if err != nil {
-			continue
-		}
-		if addr.Is6() {
-			hasIpv6 = true
-		} else {
-			hasExplicitIpv4 = true
-		}
-	}
-
-	if hasIpv6 {
-		return false
-	}
-	return hasExplicitIpv4
+	return hasExplicitIpv4 && !hasIpv6
 }
 
 // hasUdpDnsConfig returns true if udp_check_dns is configured.
@@ -633,8 +606,8 @@ func (d *Dialer) aliveBackground() {
 	//   - Skip IPv6 probes when only IPv4 addresses are explicitly configured
 	useTcpCheck := len(d.TcpCheckOptionRaw.Raw) > 0
 	useUdpDns := len(d.CheckDnsOptionRaw.Raw) > 0
-	skipTcp6 := useTcpCheck && shouldSkipTcp6Probes(d.TcpCheckOptionRaw.Raw)
-	skipUdp6 := useUdpDns && shouldSkipUdp6Probes(d.CheckDnsOptionRaw.Raw)
+	skipTcp6 := useTcpCheck && shouldSkipIpFamily6(d.TcpCheckOptionRaw.Raw)
+	skipUdp6 := useUdpDns && shouldSkipIpFamily6(d.CheckDnsOptionRaw.Raw)
 
 	var CheckOpts []*CheckOption
 	if useTcpCheck {
@@ -1139,7 +1112,7 @@ func (d *Dialer) markAvailable(typ *NetworkType, latency time.Duration) (collect
 			d.Log.WithFields(logrus.Fields{
 				"dialer":  nodeName,
 				"network": typ.String(),
-				"latency":  latency.String(),
+				"latency": latency.String(),
 			}).Infoln("Node became ALIVE")
 		}
 		d.notifyAliveTransition(typ, true)
