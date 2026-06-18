@@ -516,7 +516,7 @@ func (d *Dialer) aliveBackground() {
 	// If check_interval is 0 or not configured, skip connectivity check entirely
 	if d.CheckInterval == 0 {
 		d.Log.WithField("dialer", d.Property().Name).
-			Debugln("Connectivity check disabled (check_interval=0)")
+			Warnln("Connectivity check disabled (check_interval=0)")
 		return
 	}
 
@@ -644,7 +644,7 @@ func (d *Dialer) aliveBackground() {
 	// If neither TCP nor UDP checks are configured, return early
 	if len(CheckOpts) == 0 {
 		d.Log.WithField("dialer", d.Property().Name).
-			Debugln("No connectivity checks configured, skipping")
+			Warnln("No connectivity checks configured, skipping")
 		return
 	}
 
