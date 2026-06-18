@@ -499,12 +499,8 @@ func shouldSkipIp6Probes(raw []string) bool {
 func (d *Dialer) aliveBackground() {
 	// If check_interval is 0 or not configured, skip connectivity check entirely
 	if d.CheckInterval == 0 {
-		if d.Log != nil {
-			d.Log.WithField("dialer", d.Property().Name).
-				Warnln("Connectivity check disabled: check_interval not configured. " +
-					"Nodes will not be health-checked. " +
-					"Add check_interval, tcp_check_url, and udp_check_dns to enable.")
-		}
+		d.Log.WithField("dialer", d.Property().Name).
+			Warnln("Connectivity check disabled (check_interval=0)")
 		return
 	}
 	cycle := d.CheckInterval
@@ -626,11 +622,8 @@ func (d *Dialer) aliveBackground() {
 
 	// If neither TCP nor UDP checks are configured, return early
 	if len(CheckOpts) == 0 {
-		if d.Log != nil {
-			d.Log.WithField("dialer", d.Property().Name).
-				Warnln("Connectivity check disabled: neither tcp_check_url nor udp_check_dns configured. " +
-					"Nodes will not be health-checked.")
-		}
+		d.Log.WithField("dialer", d.Property().Name).
+			Warnln("No connectivity checks configured, skipping")
 		return
 	}
 
