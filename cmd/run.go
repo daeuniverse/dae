@@ -445,8 +445,7 @@ func (r *Runner) Run() (err error) {
 			logrus.SetOutput(oldLogOutput)
 
 			portChanged := conf.Global.TproxyPort != newConf.Global.TproxyPort
-			datapathChanged := bpfDatapathChanged(conf, newConf)
-			stagedHotHandoff := !portChanged && !datapathChanged && listener != nil
+			stagedHotHandoff := !portChanged && listener != nil
 
 			// New control plane.
 			obj := c.PeekBpf()
@@ -455,10 +454,6 @@ func (r *Runner) Run() (err error) {
 			}
 			if portChanged {
 				log.Warnf("[Reload] Tproxy port changed from %d to %d; will perform a full reload of eBPF programs", conf.Global.TproxyPort, newConf.Global.TproxyPort)
-				_ = obj.Close()
-				obj = nil
-			} else if datapathChanged {
-				log.Warnln("[Reload] BPF datapath config changed (routing/group/dns/iface); will perform a full reload of eBPF programs")
 				_ = obj.Close()
 				obj = nil
 			}
@@ -550,7 +545,7 @@ func (r *Runner) Run() (err error) {
 				cancel()
 
 				// Load last config back.
-				if portChanged || datapathChanged {
+				if portChanged {
 					log.Warnln("[Reload] BPF objects already replaced; attempting rollback with fresh eBPF objects")
 					obj = nil
 				}

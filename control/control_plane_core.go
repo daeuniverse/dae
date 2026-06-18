@@ -967,6 +967,16 @@ func (c *controlPlaneCore) ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error 
 	return err
 }
 
+// IsBpfEjected reports whether BPF ownership has been transferred to another
+// generation via EjectBpf. When true, core.Close() is purely cleanup (TC
+// filter detach, UDP tracker release) and can run asynchronously without
+// risking the closeTail timeout.
+func (c *controlPlaneCore) IsBpfEjected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bpfEjected
+}
+
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	c.mu.Lock()

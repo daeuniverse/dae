@@ -938,6 +938,16 @@ func (c *ControlPlane) PeekBpf() *bpfObjects {
 	return c.core.PeekBpf()
 }
 
+// isBpfEjected reports whether BPF ownership has been transferred to another
+// generation via EjectBpf. Callers use this to decide whether core.Close()
+// can run asynchronously (it is pure cleanup when BPF has been ejected).
+func (c *ControlPlane) isBpfEjected() bool {
+	if c == nil || c.core == nil {
+		return false
+	}
+	return c.core.IsBpfEjected()
+}
+
 func (c *ControlPlane) ActiveSessionCount() int {
 	if c == nil || c.drainTracker == nil {
 		return 0
@@ -3595,10 +3605,31 @@ func (c *ControlPlane) closeTail() error {
 
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
-	// Combine defer errors with core.Close error
+	// Core cleanup.
+	//
+	// When BPF has been ejected to the new generation (staged handoff),
+	// core.Close() only needs to detach TC filters (netlink.FilterDel) and
+	// release the UDP conn-state tracker — none of which are time-critical
+	// because the new generation already has its own TC filters attached.
+	// Run it asynchronously to avoid the 5 s closeTail timeout that fires
+	// during staged handoff retirement (dae#1013).
+	//
+	// We check isBpfEjected() rather than sharedBpfReload because the
+	// initial control plane (P0) has sharedBpfReload=false even though
+	// EjectBpf() has been called during the first staged handoff.
 	if c.core != nil {
-		if coreErr := c.core.Close(); coreErr != nil {
-			errs = append(errs, coreErr)
+		if c.isBpfEjected() {
+			core := c.core
+			log := c.log
+			go func() {
+				if err := core.Close(); err != nil && log != nil {
+					log.WithError(err).Warn("[Reload] Async core cleanup after staged handoff")
+				}
+			}()
+		} else {
+			if coreErr := c.core.Close(); coreErr != nil {
+				errs = append(errs, coreErr)
+			}
 		}
 	}
 
