@@ -3290,13 +3290,13 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(dae_dialer_latency_last_seconds{network!~\".*DNS.*\"}, network)",
+        "definition": "label_values(dae_dialer_alive{network!~\".*DNS.*\"}, network)",
         "includeAll": false,
         "label": "Network",
         "name": "network",
         "options": [],
         "query": {
-          "query": "label_values(dae_dialer_latency_last_seconds{network!~\".*DNS.*\"}, network)",
+          "query": "label_values(dae_dialer_alive{network!~\".*DNS.*\"}, network)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
