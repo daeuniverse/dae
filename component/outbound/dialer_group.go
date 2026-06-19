@@ -42,8 +42,9 @@ type DialerGroup struct {
 	noAliveLogLastTimes [8]atomic.Int64
 
 	// fixed_fallback retry state
-	fixedFallbackDeadSince  atomic.Int64
-	fixedFallbackRetryCount atomic.Int64
+	fixedFallbackDeadSince      atomic.Int64
+	fixedFallbackRetryCount     atomic.Int64
+	fixedFallbackLastRetryNano  atomic.Int64
 
 	// fixed_fallback log rate limit
 	fixedFallbackLastLogMark atomic.Int64 // 0=alive, 1=dead_detected, 2+=retry_step, -1=fallen_back
@@ -298,19 +299,12 @@ func (g *DialerGroup) logNoAlive(
 	}).Warn("no alive dialer for selection (rate-limited)")
 }
 
-// logFixedFallback logs fixed_fallback events in a rate-limited, state-aware manner.
+// logFixedFallback logs fixed_fallback events in a state-aware manner.
 // mark is used to deduplicate: same mark → skipped, different mark → logged.
 // Special marks: 0=alive/recovery, 1=dead_detected, 2+N=retry_step, -1=fallen_back.
 func (g *DialerGroup) logFixedFallback(level logrus.Level, mark int64, dialerName, format string, args ...interface{}) {
-	const logInterval = 10 * time.Second
-
 	// Deduplicate by mark: skip if we already logged this state
 	if g.fixedFallbackLastLogMark.Load() == mark {
-		return
-	}
-
-	// Rate limit: max one log per interval
-	if !g.tryDoRateLimitedAction(&g.fixedFallbackLastLogTime, logInterval) {
 		return
 	}
 
@@ -459,17 +453,36 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 				return fixedDialer, 0, selected, nil
 			}
 
-			// Timeout passed → this counts as one retry
-			newRetries := retries + 1
-			if int(newRetries) < policy.FixedFallbackRetries {
-				// Still have retries left → reset timer, keep trying
+			// Timeout passed → dedup-protected retry count increment.
+			// Multiple networkTypes may trigger concurrently and share
+			// the same retry state; requiring FixedFallbackTimeout/2
+			// between increments prevents batch-advance of the counter.
+			nowNano := time.Now().UnixNano()
+			lastRetryNano := g.fixedFallbackLastRetryNano.Load()
+			shouldIncrement := nowNano-lastRetryNano > int64(policy.FixedFallbackTimeout)/2
+			if shouldIncrement {
+				newRetries := retries + 1
+				g.fixedFallbackLastRetryNano.Store(nowNano)
 				g.fixedFallbackRetryCount.Store(newRetries)
 				g.fixedFallbackDeadSince.Store(nowUnix)
+
+				// Log every retry, including the last one before fallback.
 				g.logFixedFallback(logrus.InfoLevel, 2+newRetries, fixedName,
 					"fixed dialer retry %d/%d", newRetries, policy.FixedFallbackRetries)
-				selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
-				return fixedDialer, 0, selected, nil
+
+				if int(newRetries) < policy.FixedFallbackRetries {
+					// Still have retries left → keep trying fixed node
+					selected := preferAlternateSelectionNetworkType(fixedDialer, networkType)
+					return fixedDialer, 0, selected, nil
+				}
+
+				// Fire emergency probes on the last timeout so the node gets
+				// a resuscitation chance before we fully fallback.
+				fixedDialer.NotifyCheckTcp()
+				fixedDialer.NotifyCheckDnsUdp()
 			}
+			// else: dedup blocks → fall through to fallback
+
 			// Max retries reached → fallback (but keep state so we don't
 			// reset until the node revives)
 			g.logFixedFallback(logrus.WarnLevel, -1, fixedName,
