@@ -39,21 +39,28 @@ type Global struct {
 	EnableLocalTcpFastRedirect bool `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
 	AutoConfigKernelParameter  bool `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	// Deprecated: not used as of https://github.com/daeuniverse/dae/pull/458.
-	AutoConfigFirewallRule bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
-	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"30ms"`
-	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
-	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
-	TlsFragment            bool          `mapstructure:"tls_fragment" default:"false"`
-	TlsFragmentLength      string        `mapstructure:"tls_fragment_length" default:"50-100"`
-	TlsFragmentInterval    string        `mapstructure:"tls_fragment_interval" default:"10-20"`
-	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
-	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
-	BootstrapResolver      string        `mapstructure:"bootstrap_resolver"`
-	FallbackResolver       string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
-	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
-	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
-	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
-	BpfConnStateMapSize    uint32        `mapstructure:"bpf_conn_state_map_size" default:"262144"`
+	AutoConfigFirewallRule    bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
+	SniffingTimeout           time.Duration `mapstructure:"sniffing_timeout" default:"30ms"`
+	TlsImplementation         string        `mapstructure:"tls_implementation" default:"tls"`
+	UtlsImitate               string        `mapstructure:"utls_imitate" default:"chrome_auto"`
+	TlsFragment               bool          `mapstructure:"tls_fragment" default:"false"`
+	TlsFragmentLength         string        `mapstructure:"tls_fragment_length" default:"50-100"`
+	TlsFragmentInterval       string        `mapstructure:"tls_fragment_interval" default:"10-20"`
+	PprofPort                 uint16        `mapstructure:"pprof_port" default:"0"`
+	Mptcp                     bool          `mapstructure:"mptcp" default:"false"`
+	BootstrapResolver         string        `mapstructure:"bootstrap_resolver"`
+	FallbackResolver          string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
+	BandwidthMaxTx            string        `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx            string        `mapstructure:"bandwidth_max_rx" default:"0"`
+	UDPHopInterval            time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	BpfConnStateMapSize       uint32        `mapstructure:"bpf_conn_state_map_size" default:"262144"`
+	EndpointListenAddress     string        `mapstructure:"endpoint_listen_address" default:""`
+	EndpointUsername          string        `mapstructure:"endpoint_username" default:""`
+	EndpointPassword          string        `mapstructure:"endpoint_password" default:""`
+	EndpointTlsCertificate    string        `mapstructure:"endpoint_tls_certificate" default:""`
+	EndpointTlsKey            string        `mapstructure:"endpoint_tls_key" default:""`
+	EndpointPrometheusEnabled bool          `mapstructure:"endpoint_prometheus_enabled" default:"false"`
+	EndpointPrometheusPath    string        `mapstructure:"endpoint_prometheus_path" default:"/metrics"`
 }
 
 type Utls struct {

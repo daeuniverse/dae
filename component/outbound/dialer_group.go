@@ -146,6 +146,10 @@ func (g *DialerGroup) MinCheckInterval() time.Duration {
 	return min
 }
 
+func (g *DialerGroup) AliveDialerSets() [8]*dialer.AliveDialerSet {
+	return g.currentSelectionState().aliveDialerSets
+}
+
 func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
 	return d.currentSelectionState().aliveDialerSets[typ.Index()]
 }

@@ -60,6 +60,9 @@ type ControlPlane struct {
 	inConnections        sync.Map
 	rejectNewConnections atomic.Bool
 	drainTracker         *controlPlaneDrainTracker
+	// key: ConnMetricKey, value: *atomic.Uint64
+	tcpConnectionTotals sync.Map
+	udpConnectionTotals sync.Map
 
 	controlPlaneDNSRuntime
 	dnsHandoffMu         sync.Mutex
@@ -3669,6 +3672,18 @@ func (c *ControlPlane) Close() (err error) {
 	})
 
 	return c.closeErr
+}
+
+func (c *ControlPlane) Outbounds() []*outbound.DialerGroup {
+	return c.outbounds
+}
+
+func (c *ControlPlane) GetDnsController() *DnsController {
+	return c.dnsHandoffController.Load()
+}
+
+func (c *ControlPlane) CountTcpConnections() int {
+	return c.ActiveTCPConnections()
 }
 
 // StopDNSListener stops the DNS listener if it's running

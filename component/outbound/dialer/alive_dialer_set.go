@@ -141,6 +141,12 @@ func (a *AliveDialerSet) Len() int {
 	return len(a.aliveEntries)
 }
 
+func (a *AliveDialerSet) AliveCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.aliveEntries)
+}
+
 func (a *AliveDialerSet) SortingLatency(d *Dialer) time.Duration {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
