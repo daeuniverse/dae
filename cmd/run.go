@@ -852,6 +852,7 @@ loop:
 						c.InheritLpmIndices(oldC.EjectLpmIndices())
 					}
 					reloadManager.clearPendingStagedHandoff()
+					metricsState.SetControlPlane(c)
 
 					if oldListener != nil {
 						if err := oldListener.Close(); err != nil {
