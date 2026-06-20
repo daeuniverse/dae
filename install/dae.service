@@ -27,7 +27,7 @@ OOMScoreAdjust=-100
 
 # Startup and reload commands
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
-ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
+ExecStart=/usr/bin/dae run -c /etc/dae/config.dae
 ExecReload=/usr/bin/dae reload $MAINPID
 
 # Restart policy
