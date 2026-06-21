@@ -111,13 +111,20 @@ type ControlPlane struct {
 	routingKernspaceSnapshot       *routingKernspaceSnapshot
 	pendingDnsReloadCache          map[string]*DnsCache
 	sharedBpfReload                bool
-	closeOnce                      sync.Once
-	closeErr                       error
+	// dnsRoutingUnchanged indicates that DNS routing configuration (excluding
+	// runtime-tunable parameters like OptimisticCache) did not change from the
+	// previous generation. When true, CommitPreparedDatapath skips clearing
+	// and replaying domain_routing_map to avoid a race window where the old
+	// control plane loses domain routing on the shared BPF map (dae#1013).
+	dnsRoutingUnchanged bool
+	closeOnce           sync.Once
+	closeErr            error
 }
 
 type controlPlaneBuildOptions struct {
 	delayDatapathCommit   bool
 	delayDNSListenerStart bool
+	dnsRoutingUnchanged   bool
 }
 
 const (
@@ -296,6 +303,7 @@ func NewControlPlaneWithContext(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+	dnsRoutingUnchanged bool,
 ) (plane *ControlPlane, err error) {
 	return newControlPlaneWithContextOptions(
 		ctx,
@@ -308,7 +316,9 @@ func NewControlPlaneWithContext(
 		global,
 		dnsConfig,
 		externGeoDataDirs,
-		controlPlaneBuildOptions{},
+		controlPlaneBuildOptions{
+			dnsRoutingUnchanged: dnsRoutingUnchanged,
+		},
 	)
 }
 
@@ -325,6 +335,7 @@ func NewPreparedControlPlaneWithContext(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+	dnsRoutingUnchanged bool,
 ) (plane *ControlPlane, err error) {
 	return newControlPlaneWithContextOptions(
 		ctx,
@@ -340,6 +351,7 @@ func NewPreparedControlPlaneWithContext(
 		controlPlaneBuildOptions{
 			delayDatapathCommit:   true,
 			delayDNSListenerStart: true,
+			dnsRoutingUnchanged:   dnsRoutingUnchanged,
 		},
 	)
 }
@@ -725,6 +737,7 @@ func newControlPlaneWithContextOptions(
 		preparedDatapathCommit:      buildOpts.delayDatapathCommit,
 		sharedBpfReload:             _bpf != nil,
 		pendingDnsReloadCache:       dnsCache,
+		dnsRoutingUnchanged:         buildOpts.dnsRoutingUnchanged,
 		muRealDomainSet:             sync.RWMutex{},
 		realDomainSet:               bloom.NewWithEstimates(2048, 0.001),
 		tcpSniffNegSet:              make(map[tcpSniffNegKey]tcpSniffNegEntry),
@@ -815,12 +828,14 @@ func newControlPlaneWithContextOptions(
 		if err = plane.commitInterfaceBindings(); err != nil {
 			return nil, err
 		}
-		if plane.sharedBpfReload {
+		if plane.sharedBpfReload && !plane.dnsRoutingUnchanged {
 			if err = clearReloadDomainRoutingMap(core.bpf.Load()); err != nil {
 				return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 			}
 		}
-		plane.replayDnsReloadCache()
+		if !plane.dnsRoutingUnchanged {
+			plane.replayDnsReloadCache()
+		}
 		plane.markReady()
 	}
 	return plane, nil
@@ -921,6 +936,16 @@ func (c *ControlPlane) PeekBpf() *bpfObjects {
 		return nil
 	}
 	return c.core.PeekBpf()
+}
+
+// isBpfEjected reports whether BPF ownership has been transferred to another
+// generation via EjectBpf. Callers use this to decide whether core.Close()
+// can run asynchronously (it is pure cleanup when BPF has been ejected).
+func (c *ControlPlane) isBpfEjected() bool {
+	if c == nil || c.core == nil {
+		return false
+	}
+	return c.core.IsBpfEjected()
 }
 
 func (c *ControlPlane) ActiveSessionCount() int {
@@ -1464,12 +1489,14 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 		}
 		c.core.lpmTrieIndices = lpmIndices
 	}
-	if c.sharedBpfReload {
+	if c.sharedBpfReload && !c.dnsRoutingUnchanged {
 		if err := clearReloadDomainRoutingMap(c.core.bpf.Load()); err != nil {
 			return fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
 		}
 	}
-	c.replayDnsReloadCache()
+	if !c.dnsRoutingUnchanged {
+		c.replayDnsReloadCache()
+	}
 	c.startConnStateJanitor()
 	c.preparedDatapathCommit = false
 	return nil
@@ -3578,10 +3605,31 @@ func (c *ControlPlane) closeTail() error {
 
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
-	// Combine defer errors with core.Close error
+	// Core cleanup.
+	//
+	// When BPF has been ejected to the new generation (staged handoff),
+	// core.Close() only needs to detach TC filters (netlink.FilterDel) and
+	// release the UDP conn-state tracker — none of which are time-critical
+	// because the new generation already has its own TC filters attached.
+	// Run it asynchronously to avoid the 5 s closeTail timeout that fires
+	// during staged handoff retirement (dae#1013).
+	//
+	// We check isBpfEjected() rather than sharedBpfReload because the
+	// initial control plane (P0) has sharedBpfReload=false even though
+	// EjectBpf() has been called during the first staged handoff.
 	if c.core != nil {
-		if coreErr := c.core.Close(); coreErr != nil {
-			errs = append(errs, coreErr)
+		if c.isBpfEjected() {
+			core := c.core
+			log := c.log
+			go func() {
+				if err := core.Close(); err != nil && log != nil {
+					log.WithError(err).Warn("[Reload] Async core cleanup after staged handoff")
+				}
+			}()
+		} else {
+			if coreErr := c.core.Close(); coreErr != nil {
+				errs = append(errs, coreErr)
+			}
 		}
 	}
 

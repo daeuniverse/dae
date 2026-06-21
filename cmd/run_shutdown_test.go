@@ -600,12 +600,22 @@ func TestDNSConfigEqualUsesStableFingerprint(t *testing.T) {
 }
 
 func TestDNSConfigFingerprintCoversAllDnsFields(t *testing.T) {
+	// Fields that MUST be covered by dnsConfigFingerprint because they
+	// affect BPF datapath state (domain_routing_map, routing rules, upstream).
 	covered := map[string]struct{}{
-		"IpVersionPrefer":    {},
-		"FixedDomainTtl":     {},
-		"Upstream":           {},
-		"Routing":            {},
-		"Bind":               {},
+		"IpVersionPrefer": {},
+		"FixedDomainTtl":  {},
+		"Upstream":        {},
+		"Routing":         {},
+		"Bind":            {},
+	}
+
+	// Fields that are intentionally EXCLUDED from dnsConfigFingerprint
+	// because they are runtime-tunable via DnsController.UpdateRuntime
+	// (atomic stores) and do not affect BPF map state. Including them
+	// would cause unnecessary domain_routing_map clear+replay during
+	// staged handoff (dae#1013).
+	excluded := map[string]struct{}{
 		"OptimisticCache":    {},
 		"OptimisticCacheTtl": {},
 		"MaxCacheSize":       {},
@@ -614,6 +624,9 @@ func TestDNSConfigFingerprintCoversAllDnsFields(t *testing.T) {
 	dnsType := reflect.TypeOf(config.Dns{})
 	for i := 0; i < dnsType.NumField(); i++ {
 		name := dnsType.Field(i).Name
+		if _, isExcluded := excluded[name]; isExcluded {
+			continue
+		}
 		if _, ok := covered[name]; !ok {
 			t.Fatalf("dnsConfigFingerprint does not cover config.Dns.%s", name)
 		}
