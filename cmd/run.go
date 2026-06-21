@@ -445,7 +445,14 @@ func (r *Runner) Run() (err error) {
 			logrus.SetOutput(oldLogOutput)
 
 			portChanged := conf.Global.TproxyPort != newConf.Global.TproxyPort
-			stagedHotHandoff := !portChanged && listener != nil
+			// When DNS routing config changes (upstream, routing rules, etc.),
+			// domain_routing_map must be cleared and replayed. On a shared BPF
+			// object this creates a race window where the old generation loses
+			// domain routing entries (dae#1013). Fall back to non-staged reload
+			// so the old generation is ejected and retired immediately, shrinking
+			// the race window to the synchronous clear+replay in the new plane's
+			// constructor rather than the full drain period of staged handoff.
+			stagedHotHandoff := !portChanged && listener != nil && dnsConfigEqual(conf, newConf)
 
 			// New control plane.
 			obj := c.PeekBpf()
