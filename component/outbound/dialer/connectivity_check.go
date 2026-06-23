@@ -767,6 +767,14 @@ func (d *Dialer) aliveBackground() {
 		case <-waitDone:
 		case <-d.ctx.Done():
 			return
+		case <-time.After(cycle + 5*time.Second):
+			// Probe(s) appear stuck — log diagnostic and continue.
+			// The stuck probe will eventually resolve, but we don't block
+			// the entire check cycle waiting for it.
+			if d.Log != nil {
+				d.Log.WithField("dialer", d.Property().Name).
+					Warnln("Health check probe appears stuck; continuing cycle")
+			}
 		}
 		if checkFamily == "" {
 			// Stability-based wash white: only reset stability if a protocol family had failures
@@ -824,6 +832,12 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
 		if !d.hasAliveDialerSets(opt.networkType) {
+			if d.Log != nil && d.Log.IsLevelEnabled(logrus.DebugLevel) {
+				d.Log.WithFields(logrus.Fields{
+					"dialer":  d.Property().Name,
+					"network": opt.networkType.String(),
+				}).Debugln("Skipping probe: no AliveDialerSet for network type")
+			}
 			continue
 		}
 
