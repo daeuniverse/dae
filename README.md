@@ -40,6 +40,53 @@ Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` ri
 
 See [How it works](./docs/en/how-it-works.md).
 
+## Connectivity Check
+
+dae supports configurable health checks for proxy nodes. The check behavior adapts to your configuration dynamically.
+
+### Parameters
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `tcp_check_url` | (not set) | URL for TCP connectivity check. Not set = skip TCP probes |
+| `udp_check_dns` | (not set) | DNS server for UDP check. Not set = skip UDP probes |
+| `check_interval` | 0 | Interval between checks. **0 = disabled** (no probes sent). Below **2s** clamped with WARN log |
+
+### Dynamic Probe Selection
+
+- **Protocol-independent IPv6 detection**: TCP and UDP IPv6 checks are evaluated independently based on their own address lists
+- **Unconfigured = No probe**: If you only set `tcp_check_url`, UDP probes are skipped entirely
+- **check_interval=0**: All checks disabled, WARN log confirms the user'\''s intention
+- **Minimum 2s**: Values below 2s are clamped with a WARN log to prevent probe storms
+
+### Examples
+
+**Minimal (no health check):**
+```
+group {
+    check_interval: 0
+    tcp_check_url: '\''http://cp.cloudflare.com'\''  # ← ignored, check_interval=0 takes precedence
+}
+```
+
+**TCP only (UDP skipped):**
+```
+group {
+    tcp_check_url: '\''http://cp.cloudflare.com'\''
+    # udp_check_dns not set → no UDP probes
+    check_interval: 30s
+}
+```
+
+**Full check:**
+```
+group {
+    tcp_check_url: '\''http://cp.cloudflare.com'\''
+    udp_check_dns: '\''dns.google:53'\''
+    check_interval: 60s
+}
+```
+
 ## TODO
 
 - [ ] Automatically check dns upstream and source loop (whether upstream is also a client of us) and remind the user to add sip rule.
