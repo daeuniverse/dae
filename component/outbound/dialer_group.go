@@ -49,12 +49,10 @@ type DialerGroup struct {
 	// Background retry goroutine for fixed_fallback.
 	// Started when the fixed node is first detected dead.
 	// Stopped when the node recovers (MustGetAlive=true).
-	fixedFallbackStopCh  chan struct{}
 	fixedFallbackRunning atomic.Bool
 
 	// fixed_fallback log rate limit
 	fixedFallbackLastLogMark atomic.Int64
-	fixedFallbackLastLogTime atomic.Int64
 
 	cachedMinCheckInterval time.Duration
 }
@@ -103,8 +101,7 @@ func NewDialerGroup(
 					return
 				}
 				if group.fixedFallbackRunning.CompareAndSwap(false, true) {
-					group.fixedFallbackStopCh = make(chan struct{})
-					group.fixedFallbackMu.Lock()
+				group.fixedFallbackMu.Lock()
 					group.fixedFallbackDeadSince = time.Now().UnixNano()
 					group.fixedFallbackRetryCount = 0
 					group.fixedFallbackMu.Unlock()
@@ -539,8 +536,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 				// Start background retry goroutine if not already running
 				// (may have been started by aliveTransitionCallback already).
 				if g.fixedFallbackRunning.CompareAndSwap(false, true) {
-					g.fixedFallbackStopCh = make(chan struct{})
-					go g.runFixedFallbackRetry(fixed, policy, nt)
+				go g.runFixedFallbackRetry(fixed, policy, nt)
 				}
 
 				// Background goroutine handles retries separately.
@@ -811,8 +807,6 @@ func (g *DialerGroup) runFixedFallbackRetry(fixed *dialer.Dialer, policy DialerS
 
 	for {
 		select {
-		case <-g.fixedFallbackStopCh:
-			return
 		case <-ticker.C:
 		}
 
