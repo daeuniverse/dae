@@ -45,6 +45,7 @@ type DialerGroup struct {
 	fixedFallbackDeadSince     int64
 	fixedFallbackRetryCount    int64
 	fixedFallbackLastRetryNano int64
+	fixedFallbackDone          bool
 	// Background retry goroutine for fixed_fallback.
 	// Started when the fixed node is first detected dead.
 	// Stopped when the node recovers (MustGetAlive=true).
@@ -498,6 +499,8 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 				wasDead := g.fixedFallbackDeadSince != 0
 				g.fixedFallbackDeadSince = 0
 				g.fixedFallbackRetryCount = 0
+				g.fixedFallbackLastRetryNano = 0
+				g.fixedFallbackDone = false
 				g.fixedFallbackMu.Unlock()
 				if wasDead {
 					g.logFixedFallback(0, fixed, nt)
@@ -516,16 +519,25 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 			g.fixedFallbackMu.Lock()
 			nowNano = time.Now().UnixNano()
 			deadSinceNano = g.fixedFallbackDeadSince
+			done := g.fixedFallbackDone
+
+			if done {
+				// Retries exhausted by background goroutine.
+				// Fallback until health check recovers the node.
+				g.fixedFallbackMu.Unlock()
+				g.logFixedFallback(-1, fixed, nt)
+				goto doFallback
+			}
 
 			if deadSinceNano == 0 {
 				// First Select() finding this node dead.
-				// Start background retry goroutine if not already running
-				// (may have been started by aliveTransitionCallback already).
 				g.fixedFallbackDeadSince = nowNano
 				g.fixedFallbackRetryCount = 0
 				g.fixedFallbackMu.Unlock()
 				g.logFixedFallback(1, fixed, nt)
 
+				// Start background retry goroutine if not already running
+				// (may have been started by aliveTransitionCallback already).
 				if g.fixedFallbackRunning.CompareAndSwap(false, true) {
 					g.fixedFallbackStopCh = make(chan struct{})
 					go g.runFixedFallbackRetry(fixed, policy, nt)
@@ -755,12 +767,33 @@ func alternateNetworkType(networkType *dialer.NetworkType) *dialer.NetworkType {
 	}
 }
 
+// resetFixedFallback clears all fixed_fallback retry state.
+func (g *DialerGroup) resetFixedFallback() {
+	g.fixedFallbackMu.Lock()
+	g.fixedFallbackDeadSince = 0
+	g.fixedFallbackRetryCount = 0
+	g.fixedFallbackLastRetryNano = 0
+	g.fixedFallbackDone = false
+	g.fixedFallbackMu.Unlock()
+}
+
 // runFixedFallbackRetry is a background goroutine that drives the
 // timeout × retries cycle for the fixed_fallback policy independently
 // of traffic. It fires probes at each FixedFallbackTimeout interval,
 // and after maxRetries, marks the node for fallback.
 func (g *DialerGroup) runFixedFallbackRetry(fixed *dialer.Dialer, policy DialerSelectionPolicy, nt *dialer.NetworkType) {
 	defer g.fixedFallbackRunning.Store(false)
+
+	// retries <= 0: give up immediately, no ticker needed.
+	// Node stays marked as done until health check recovers it.
+	if policy.FixedFallbackRetries <= 0 {
+		g.fixedFallbackMu.Lock()
+		g.fixedFallbackDone = true
+		g.fixedFallbackDeadSince = time.Now().UnixNano() - 1
+		g.fixedFallbackMu.Unlock()
+		g.logFixedFallback(-1, fixed, nt)
+		return
+	}
 
 	actualTimeout := policy.FixedFallbackTimeout
 	if actualTimeout < 2*time.Second {
@@ -785,10 +818,7 @@ func (g *DialerGroup) runFixedFallbackRetry(fixed *dialer.Dialer, policy DialerS
 
 		// Check if node has recovered
 		if fixed.MustGetAlive(nt) {
-			g.fixedFallbackMu.Lock()
-			g.fixedFallbackDeadSince = 0
-			g.fixedFallbackRetryCount = 0
-			g.fixedFallbackMu.Unlock()
+			g.resetFixedFallback()
 			return
 		}
 
@@ -799,10 +829,8 @@ func (g *DialerGroup) runFixedFallbackRetry(fixed *dialer.Dialer, policy DialerS
 
 		shouldFallback := g.fixedFallbackRetryCount >= int64(policy.FixedFallbackRetries)
 		if shouldFallback {
-			// Make deadSince far in the past so any Select() immediately
-			// sees elapsed >> timeout and falls back.
-			g.fixedFallbackDeadSince = time.Now().UnixNano() -
-				int64(policy.FixedFallbackTimeout)*int64(policy.FixedFallbackRetries) - 1
+			g.fixedFallbackDone = true
+			g.fixedFallbackDeadSince = time.Now().UnixNano() - 1
 		} else {
 			g.fixedFallbackDeadSince = time.Now().UnixNano()
 		}
