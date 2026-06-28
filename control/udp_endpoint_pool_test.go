@@ -1978,3 +1978,56 @@ func TestUdpEndpointPoolGetOrCreate_NoReplyTimeoutReleasesPrewarmedAnyfrom(t *te
 		return countPooledAnyfromConns(DefaultAnyfromPool) == 0
 	})
 }
+
+// #1029: a proxy WriteTo may return the on-wire byte count (payload plus the
+// protocol's encapsulation overhead, e.g. shadowsocks AES-128-GCM + IPv4 = +39),
+// which is strictly greater than len(b). That is a SUCCESSFUL write, not a short
+// write, and must not retire the endpoint.
+func TestUdpEndpointWriteTo_AcceptsProxyOverheadBytes(t *testing.T) {
+	const shadowsocksIPv4Overhead = 39 // SaltLen 16 + ATYP/IPv4/port 7 + TagLen 16
+	payload := make([]byte, 1250)
+	conn := &scriptedPacketConn{
+		closeCh:     make(chan struct{}),
+		forceWriteN: true,
+		writeN:      len(payload) + shadowsocksIPv4Overhead,
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+	}
+
+	n, err := ue.WriteTo(payload, "104.18.32.47:443")
+	if err != nil {
+		t.Fatalf("WriteTo returned error for wire-byte overhead write: %v", err)
+	}
+	if n != len(payload)+shadowsocksIPv4Overhead {
+		t.Fatalf("WriteTo n = %d, want %d", n, len(payload)+shadowsocksIPv4Overhead)
+	}
+	if ue.IsDead() {
+		t.Fatal("endpoint retired on a successful (overhead) write; expected it to stay alive")
+	}
+}
+
+// #1029 regression guard: a genuine partial write (n < len(b)) must still retire
+// the endpoint and report io.ErrShortWrite, so the loosened check does not hide
+// real transport failures.
+func TestUdpEndpointWriteTo_StillRetiresOnTruePartialWrite(t *testing.T) {
+	payload := make([]byte, 1250)
+	conn := &scriptedPacketConn{
+		closeCh:     make(chan struct{}),
+		forceWriteN: true,
+		writeN:      len(payload) - 1,
+	}
+	ue := &UdpEndpoint{
+		conn:       conn,
+		NatTimeout: QuicNatTimeout,
+	}
+
+	_, err := ue.WriteTo(payload, "104.18.32.47:443")
+	if !stderrors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteTo error = %v, want io.ErrShortWrite on true partial write", err)
+	}
+	if !ue.IsDead() {
+		t.Fatal("endpoint not retired after a genuine partial write")
+	}
+}
