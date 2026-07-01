@@ -23,6 +23,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support to split traffic by MAC address in LAN.
 - [x] Support to split traffic with invert match rules.
 - [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
+- [x] **`fixed_fallback` policy**: Prefer a specific node with automatic retry, grace period, and latency-aware fallback on failure. Recovers automatically when the preferred node comes back online.
 - [x] Support advanced DNS resolution process.
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 - [x] Support various trending proxy protocols, seen in [proxy-protocols.md](./docs/en/proxy-protocols.md).
@@ -30,6 +31,66 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 ## Getting Started
 
 Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` right away!
+
+## Dialer Selection Policies
+
+dae supports several dialer (node) selection policies for `group` blocks:
+
+| Policy | Description |
+|--------|-------------|
+| `fixed(index)` | Always use the node at the given index. No fallback |
+| `min_moving_avg` | Pick the node with the lowest moving-average latency |
+| `min_avg10` | Pick the node with the lowest average latency over the last 10 probes |
+| `min_last_latency` | Pick the node with the lowest most-recent latency |
+| `random` | Pick a random alive node |
+| **`fixed_fallback(index, timeout, retries, fallback_policy)`** | **Fixed node with disaster-recovery fallback** |
+
+### `fixed_fallback` — Fixed Node with Graceful Degradation
+
+The `fixed_fallback` policy always prefers a specific node but gracefully degrades to a backup policy when that node dies, and **automatically returns** when it recovers.
+
+**Syntax:** `fixed_fallback(index, timeout, retries, fallback_policy)`
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `index` | — (required) | Dialer index in group (0-based) |
+| `timeout` | `3s` | Retry interval. Clamped to minimum 2s with WARN log |
+| `retries` | `3` | Max retries before fallback. `0` = immediate fallback |
+| `fallback_policy` | `min_moving_avg` | Policy after retries exhausted |
+
+**How it works (two-layer architecture):**
+
+```
+                    ┌─ MustGetAlive=true  ── Use fixed node
+                    │
+  Select() ─────────┤
+                    │                              Natural Traffic
+                    │                                    ↓
+                    └─ MustGetAlive=false ── → Fallback to backup node
+                                               │
+                                               ├─ Background goroutine drives
+                                               │  retry probes independently
+                                               │  (ticker every `timeout`)
+                                               │
+                                               └─ Node recovers → auto switch back
+```
+
+- **Natural traffic** falls back **immediately** on dead node — zero timeout window wasted
+- **Background goroutine** independently drives the retry cycle, not dependent on traffic
+- **Health check** dead detection also starts the goroutine (via `aliveTransitionCallback`)
+- **Node recovery** is detected in next health check cycle or goroutine probe — traffic returns instantly
+
+**Example:**
+```
+group {
+    name 'my-group'
+    policy 'fixed_fallback(0, 3s, 3, random)'
+    node 'jp-tokyo-premium'   # index 0 — preferred
+    node 'us-west-cheap'      # index 1 — fallback candidate
+    node 'sg-singapore'       # index 2 — fallback candidate
+}
+```
+Behavior: Always use `jp-tokyo-premium`. If it dies, **immediately** use a random alive fallback. Background goroutine retries every 3s for 3 attempts. If node recovers during that time, traffic switches back immediately.
 
 ## Notes
 

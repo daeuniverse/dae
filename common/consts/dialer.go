@@ -26,6 +26,10 @@ const (
 	DialerSelectionPolicy_Random DialerSelectionPolicy = "random"
 	// DialerSelectionPolicy_Fixed always selects the first dialer.
 	DialerSelectionPolicy_Fixed DialerSelectionPolicy = "fixed"
+	// DialerSelectionPolicy_FixedWithFallback always selects the n-th dialer when alive;
+	// falls back to min_moving_avg among other alive dialers when dead.
+	// When the fixed dialer revives, traffic will automatically return to it.
+	DialerSelectionPolicy_FixedWithFallback DialerSelectionPolicy = "fixed_fallback"
 	// DialerSelectionPolicy_MinAverage10Latencies selects the dialer with minimum average latency of last 10 checks.
 	DialerSelectionPolicy_MinAverage10Latencies DialerSelectionPolicy = "min_avg10"
 	// DialerSelectionPolicy_MinMovingAverageLatencies selects the dialer with minimum moving average latency.

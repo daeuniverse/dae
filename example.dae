@@ -315,6 +315,16 @@ group {
         # Select the first node from the group for every connection.
         #policy: fixed(0)
 
+        # Select the n-th node when alive, fall back to a configurable policy when dead.
+        # When the fixed node revives (periodic health check restores it),
+        # traffic automatically returns to it.
+        # Optional params: timeout (default 3s), retries (default 3), fallback_policy (default min_moving_avg):
+        #   fixed_fallback(n, timeout, max_retries, fallback_policy)
+        #   timeout supports unit suffix: 500ms, 5s, 2m, or bare number (seconds)
+        #   fallback_policy: random, min_moving_avg (default), min_last_latency, min_avg10
+        #   Example: fixed_fallback(0, 5s, 3, random) — fallback to random after retries exhausted
+        #policy: fixed_fallback(0)
+
         # Select the node with min last latency from the group for every connection.
         #policy: min
 
