@@ -54,6 +54,9 @@ type DialerGroup struct {
 	// fixed_fallback log rate limit
 	fixedFallbackLastLogMark atomic.Int64
 
+	// fixed_fallback detail log rate limit (timestamp-based, 10s cooldown)
+	fixedFallbackDetailLog atomic.Int64
+
 	cachedMinCheckInterval time.Duration
 }
 
@@ -401,8 +404,18 @@ func (g *DialerGroup) logFixedFallback(state int64, fixed *dialer.Dialer, nt *di
 }
 
 // logFixedFallbackDetail logs the actual fallback target after selection.
+// Rate-limited to once per 10 seconds to prevent log spam under high traffic.
 func (g *DialerGroup) logFixedFallbackDetail(fixed, fallbackDialer *dialer.Dialer, nt *dialer.NetworkType, latency time.Duration) {
 	if g.log == nil {
+		return
+	}
+	// Rate limit: allow one log per 10 seconds.
+	now := time.Now().UnixNano()
+	last := g.fixedFallbackDetailLog.Load()
+	if now-last < 10*int64(time.Second) {
+		return
+	}
+	if !g.fixedFallbackDetailLog.CompareAndSwap(last, now) {
 		return
 	}
 	fixedName := ""
