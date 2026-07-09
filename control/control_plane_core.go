@@ -850,6 +850,68 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	return
 }
 
+// validateDatapathBindings verifies that TC filters are actually attached on
+// the expected interfaces after commitInterfaceBindings.  This catches silent
+// failures where bindLan/bindWan/bindDaens partially succeed (e.g. qdisc
+// missing → FilterAdd silently fails, or the interface disappeared between
+// lookup and attach).  Returns nil when all required filters are present;
+// returns an error listing every missing binding so callers can decide to
+// rollback (reload) or abort (startup).
+// linkByName looks up a network interface by name. It is a package-level
+// variable (defaulting to netlink.LinkByName) so tests can substitute a mock.
+var linkByName = func(name string) (netlink.Link, error) {
+	return netlink.LinkByName(name)
+}
+
+func (c *controlPlaneCore) validateDatapathBindings(lanIfaces, wanIfaces []string) []string {
+	var missing []string
+	check := func(ifname string, label string, major uint16) {
+		link, err := linkByName(ifname)
+		if err != nil {
+			missing = append(missing, fmt.Sprintf("%s (%s, link not found)", ifname, label))
+			return
+		}
+		if !hasDaeTcFilter(link, major) {
+			missing = append(missing, fmt.Sprintf("%s (%s, handle 0x%x missing)", ifname, label, major))
+		}
+	}
+
+	check(HostVethName, "dae0", 0x2022)
+	for _, iface := range lanIfaces {
+		check(iface, "LAN", 0x2023)
+	}
+	for _, iface := range wanIfaces {
+		check(iface, "WAN", 0x2023)
+	}
+	return missing
+}
+
+// filterLister lists TC filters attached to link on the given parent. It is a
+// package-level variable (defaulting to netlink.FilterList) so tests can swap
+// in a mock without touching the real netlink stack.
+var filterLister = func(link netlink.Link, parent uint32) ([]netlink.Filter, error) {
+	return netlink.FilterList(link, parent)
+}
+
+// hasDaeTcFilter reports whether any TC filter with the given major handle
+// (e.g. 0x2022 for dae0, 0x2023 for LAN/WAN) exists on link in either the
+// ingress or egress parent.  Mirrors the detection logic in bpf_purge.go.
+func hasDaeTcFilter(link netlink.Link, major uint16) bool {
+	for _, parent := range []uint32{netlink.HANDLE_MIN_INGRESS, netlink.HANDLE_MIN_EGRESS} {
+		filters, err := filterLister(link, parent)
+		if err != nil {
+			continue // no clsact qdisc attached
+		}
+		for _, f := range filters {
+			if uint16(f.Attrs().Handle >> 16) == major {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+
 // tryDeleteFlippedFilter deletes the TC filter obtained by flipping the
 // low bit of the handle. Used during non-reload startup to remove any
 // stale filter from a previous run that used the opposite flip value.
