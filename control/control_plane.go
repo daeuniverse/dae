@@ -818,8 +818,10 @@ func newControlPlaneWithContextOptions(
 		// Validate that TC filters are actually attached.  A silent bind
 		// failure (e.g. missing clsact qdisc, interface disappeared) would
 		// otherwise cause traffic to bypass the proxy with no error.
-		if missing := core.validateDatapathBindings(); len(missing) > 0 {
-			return nil, fmt.Errorf("datapath validation failed after interface binding: %v", missing)
+		if core != nil {
+			if missing := core.validateDatapathBindings(); len(missing) > 0 {
+				return nil, fmt.Errorf("datapath validation failed after interface binding: %v", missing)
+			}
 		}
 		if plane.sharedBpfReload {
 			if err = clearReloadDomainRoutingMap(core.bpf.Load()); err != nil {
@@ -1469,8 +1471,10 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 	// Validate that TC filters are actually attached.  Catches silent failures
 	// in bindLan/bindWan/bindDaens that would otherwise cause traffic to bypass
 	// the proxy with no error logged.
-	if missing := c.core.validateDatapathBindings(); len(missing) > 0 {
-		return fmt.Errorf("datapath validation failed after interface binding: %v", missing)
+	if c.core != nil {
+		if missing := c.core.validateDatapathBindings(); len(missing) > 0 {
+			return fmt.Errorf("datapath validation failed after interface binding: %v", missing)
+		}
 	}
 	if c.routingKernspaceSnapshot != nil {
 		c.log.Infoln("Loading routing rules into kernel space (BPF)...")

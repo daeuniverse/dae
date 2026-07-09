@@ -888,9 +888,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 // rollback (reload) or abort (startup).
 // linkByName looks up a network interface by name. It is a package-level
 // variable (defaulting to netlink.LinkByName) so tests can substitute a mock.
-var linkByName = func(name string) (netlink.Link, error) {
-	return netlink.LinkByName(name)
-}
+var linkByName = netlink.LinkByName
 
 // recordBoundIface records a successfully bound interface so that a later
 // validateDatapathBindings call can confirm its TC filter is attached.
@@ -940,9 +938,7 @@ func (c *controlPlaneCore) validateDatapathBindings() []string {
 // filterLister lists TC filters attached to link on the given parent. It is a
 // package-level variable (defaulting to netlink.FilterList) so tests can swap
 // in a mock without touching the real netlink stack.
-var filterLister = func(link netlink.Link, parent uint32) ([]netlink.Filter, error) {
-	return netlink.FilterList(link, parent)
-}
+var filterLister = netlink.FilterList
 
 // hasDaeTcFilter reports whether any TC filter with the given major handle
 // (e.g. 0x2022 for dae0, 0x2023 for LAN/WAN) exists on link in either the
