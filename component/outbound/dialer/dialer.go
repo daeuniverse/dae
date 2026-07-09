@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -497,6 +498,46 @@ func (d *Dialer) ReloadHealthSnapshot() DialerHealthSnapshot {
 		collection.TrafficFailCount = 0
 	}
 	snapshot.Recovery = [3]DialerRecoveryHealthSnapshot{}
+// CheckConfigEqual reports whether the health-check configuration of this dialer
+// equals other's. It is used during a warm reload (ControlPlane.
+// InheritDialerHealthFrom) to decide whether the inherited health snapshot from
+// the previous generation is still valid. If the configuration changed, the
+// snapshot must NOT be restored so the new dialer re-probes its (possibly
+// changed) targets immediately instead of deferring the first probe by one
+// check_interval cycle. See daeuniverse/dae#1037.
+//
+// TcpCheckOptionRaw and CheckDnsOptionRaw contain mutexes and parsed-option
+// caches, so they are not comparable with ==. We compare the raw configured
+// values and the scalar knobs instead. The Log field of those options is
+// intentionally excluded because it is not part of the health-check
+// configuration.
+func (d *Dialer) CheckConfigEqual(other *Dialer) bool {
+	if d == nil || other == nil {
+		return false
+	}
+	if !slices.Equal(d.TcpCheckOptionRaw.Raw, other.TcpCheckOptionRaw.Raw) {
+		return false
+	}
+	if d.TcpCheckOptionRaw.ResolverNetwork != other.TcpCheckOptionRaw.ResolverNetwork ||
+		d.TcpCheckOptionRaw.Method != other.TcpCheckOptionRaw.Method {
+		return false
+	}
+	if !slices.Equal(d.CheckDnsOptionRaw.Raw, other.CheckDnsOptionRaw.Raw) {
+		return false
+	}
+	if d.CheckDnsOptionRaw.ResolverNetwork != other.CheckDnsOptionRaw.ResolverNetwork ||
+		d.CheckDnsOptionRaw.Somark != other.CheckDnsOptionRaw.Somark {
+		return false
+	}
+	// InstanceOption is comparable today (only DisableCheck bool). If future
+	// fields break == comparability, fall back to per-field comparison:
+	//   d.InstanceOption.DisableCheck == other.InstanceOption.DisableCheck
+	return d.CheckInterval == other.CheckInterval &&
+		d.CheckTolerance == other.CheckTolerance &&
+		d.CheckDnsTcp == other.CheckDnsTcp &&
+		d.InstanceOption == other.InstanceOption
+}
+
 	return snapshot
 }
 
