@@ -819,8 +819,12 @@ func newControlPlaneWithContextOptions(
 		// failure (e.g. missing clsact qdisc, interface disappeared) would
 		// otherwise cause traffic to bypass the proxy with no error.
 		if core != nil {
-			if missing := core.validateDatapathBindings(); len(missing) > 0 {
-				return nil, fmt.Errorf("datapath validation failed after interface binding: %v", missing)
+			if missing, fatal := core.validateDatapathBindings(); len(missing) > 0 {
+				msg := fmt.Sprintf("datapath validation failed after interface binding: %v", missing)
+				if fatal {
+					return nil, fmt.Errorf("%s", msg)
+				}
+				core.log.Warnf("%s", msg)
 			}
 		}
 		if plane.sharedBpfReload {
@@ -1472,8 +1476,12 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 	// in bindLan/bindWan/bindDaens that would otherwise cause traffic to bypass
 	// the proxy with no error logged.
 	if c.core != nil {
-		if missing := c.core.validateDatapathBindings(); len(missing) > 0 {
-			return fmt.Errorf("datapath validation failed after interface binding: %v", missing)
+		if missing, fatal := c.core.validateDatapathBindings(); len(missing) > 0 {
+			msg := fmt.Sprintf("datapath validation failed after interface binding: %v", missing)
+			if fatal {
+				return fmt.Errorf("%s", msg)
+			}
+			c.log.Warnf("%s", msg)
 		}
 	}
 	if c.routingKernspaceSnapshot != nil {

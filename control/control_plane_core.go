@@ -879,13 +879,6 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	return
 }
 
-// validateDatapathBindings verifies that TC filters are actually attached on
-// the expected interfaces after commitInterfaceBindings.  This catches silent
-// failures where bindLan/bindWan/bindDaens partially succeed (e.g. qdisc
-// missing → FilterAdd silently fails, or the interface disappeared between
-// lookup and attach).  Returns nil when all required filters are present;
-// returns an error listing every missing binding so callers can decide to
-// rollback (reload) or abort (startup).
 // linkByName looks up a network interface by name. It is a package-level
 // variable (defaulting to netlink.LinkByName) so tests can substitute a mock.
 var linkByName = netlink.LinkByName
@@ -914,25 +907,39 @@ func (c *controlPlaneCore) resetBoundIfaces() {
 // interface names recorded by the bind functions (so a configured "auto" LAN
 // is expanded to the real NIC, and dae0 is only checked when it was actually
 // created), which keeps it correct in both unit-test and production settings.
-// Returns an empty slice when all required filters are present.
-func (c *controlPlaneCore) validateDatapathBindings() []string {
+//
+// The returned bool reports whether a *fatal* binding is missing — currently
+// only the dae0 host veth, which dae itself creates and fully controls. A
+// missing dae0 filter means the transparent proxy cannot function at all, so
+// it aborts startup/reload. LAN/WAN filters depend on the host environment
+// (e.g. clsact availability on user interfaces, which can be unavailable when
+// dae runs inside a container), so a missing LAN/WAN filter is reported but
+// does not abort — it is surfaced as a warning so operators still get
+// visibility into silent datapath breakage without breaking environments
+// where such filters legitimately cannot be attached.
+func (c *controlPlaneCore) validateDatapathBindings() (missing []string, fatal bool) {
 	c.datapathMu.Lock()
 	ifaces := make([]boundIface, len(c.datapathIfaces))
 	copy(ifaces, c.datapathIfaces)
 	c.datapathMu.Unlock()
 
-	var missing []string
 	for _, bi := range ifaces {
 		link, err := linkByName(bi.name)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s (%s, link not found)", bi.name, bi.label))
+			if bi.label == "dae0" {
+				fatal = true
+			}
 			continue
 		}
 		if !hasDaeTcFilter(link, bi.major) {
 			missing = append(missing, fmt.Sprintf("%s (%s, handle 0x%x missing)", bi.name, bi.label, bi.major))
+			if bi.label == "dae0" {
+				fatal = true
+			}
 		}
 	}
-	return missing
+	return missing, fatal
 }
 
 // filterLister lists TC filters attached to link on the given parent. It is a

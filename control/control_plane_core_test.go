@@ -118,7 +118,7 @@ func TestValidateDatapathBindings(t *testing.T) {
 			}
 
 			c := &controlPlaneCore{datapathIfaces: tt.bound}
-			missing := c.validateDatapathBindings()
+			missing, _ := c.validateDatapathBindings()
 
 			if tt.wantEmpty {
 				if len(missing) != 0 {
