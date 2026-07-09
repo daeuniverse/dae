@@ -34,12 +34,16 @@ func TestValidateDatapathBindings(t *testing.T) {
 	eth0 := mkLink("eth0")
 	eth1 := mkLink("eth1")
 
+	// boundIfaces mimics what bindDaens/_bindLan/_bindWan record after a
+	// successful bind: the *resolved* interface name plus the expected handle.
+	// A configured "auto" LAN/WAN is expanded to the real NIC here, and dae0 is
+	// only present when bindDaens actually created it — which is exactly why the
+	// production validation no longer hard-codes dae0 or the raw "auto" name.
 	tests := []struct {
 		name         string
 		known        map[string]netlink.Link
 		filters      map[string][]netlink.Filter
-		lan          []string
-		wan          []string
+		bound        []boundIface
 		wantEmpty    bool
 		wantContains []string
 	}{
@@ -47,16 +51,14 @@ func TestValidateDatapathBindings(t *testing.T) {
 			name:      "all bindings present",
 			known:     map[string]netlink.Link{"dae0": dae0, "eth0": eth0},
 			filters:   map[string][]netlink.Filter{"dae0": mkFilters(0x2022), "eth0": mkFilters(0x2023)},
-			lan:       []string{"eth0"},
-			wan:       nil,
+			bound:     []boundIface{{"dae0", "dae0", 0x2022}, {"eth0", "LAN", 0x2023}},
 			wantEmpty: true,
 		},
 		{
 			name:         "dae0 filter missing",
 			known:        map[string]netlink.Link{"dae0": dae0, "eth0": eth0},
 			filters:      map[string][]netlink.Filter{"eth0": mkFilters(0x2023)},
-			lan:          []string{"eth0"},
-			wan:          nil,
+			bound:        []boundIface{{"dae0", "dae0", 0x2022}, {"eth0", "LAN", 0x2023}},
 			wantEmpty:    false,
 			wantContains: []string{"dae0 (dae0, handle 0x2022 missing)"},
 		},
@@ -64,8 +66,7 @@ func TestValidateDatapathBindings(t *testing.T) {
 			name:         "lan filter missing",
 			known:        map[string]netlink.Link{"dae0": dae0, "eth0": eth0},
 			filters:      map[string][]netlink.Filter{"dae0": mkFilters(0x2022)},
-			lan:          []string{"eth0"},
-			wan:          nil,
+			bound:        []boundIface{{"dae0", "dae0", 0x2022}, {"eth0", "LAN", 0x2023}},
 			wantEmpty:    false,
 			wantContains: []string{"eth0 (LAN, handle 0x2023 missing)"},
 		},
@@ -73,8 +74,7 @@ func TestValidateDatapathBindings(t *testing.T) {
 			name:         "wan filter missing",
 			known:        map[string]netlink.Link{"dae0": dae0, "eth1": eth1},
 			filters:      map[string][]netlink.Filter{"dae0": mkFilters(0x2022)},
-			lan:          nil,
-			wan:          []string{"eth1"},
+			bound:        []boundIface{{"dae0", "dae0", 0x2022}, {"eth1", "WAN", 0x2023}},
 			wantEmpty:    false,
 			wantContains: []string{"eth1 (WAN, handle 0x2023 missing)"},
 		},
@@ -82,17 +82,22 @@ func TestValidateDatapathBindings(t *testing.T) {
 			name:         "interface not found",
 			known:        map[string]netlink.Link{"dae0": dae0},
 			filters:      map[string][]netlink.Filter{"dae0": mkFilters(0x2022)},
-			lan:          []string{"eth0"},
-			wan:          nil,
+			bound:        []boundIface{{"dae0", "dae0", 0x2022}, {"eth0", "LAN", 0x2023}},
 			wantEmpty:    false,
 			wantContains: []string{"eth0 (LAN, link not found)"},
 		},
 		{
-			name:      "handles from egress parent only",
+			name:      "auto-resolved lan (resolved name only)",
 			known:     map[string]netlink.Link{"dae0": dae0, "eth0": eth0},
 			filters:   map[string][]netlink.Filter{"dae0": mkFilters(0x2022), "eth0": mkFilters(0x2023)},
-			lan:       []string{"eth0"},
-			wan:       nil,
+			bound:     []boundIface{{"dae0", "dae0", 0x2022}, {"eth0", "LAN", 0x2023}},
+			wantEmpty: true,
+		},
+		{
+			name:      "no bindings recorded (e.g. unit test without a real bind)",
+			known:     map[string]netlink.Link{},
+			filters:   map[string][]netlink.Filter{},
+			bound:     nil,
 			wantEmpty: true,
 		},
 	}
@@ -112,8 +117,8 @@ func TestValidateDatapathBindings(t *testing.T) {
 				return nil, nil
 			}
 
-			c := &controlPlaneCore{}
-			missing := c.validateDatapathBindings(tt.lan, tt.wan)
+			c := &controlPlaneCore{datapathIfaces: tt.bound}
+			missing := c.validateDatapathBindings()
 
 			if tt.wantEmpty {
 				if len(missing) != 0 {

@@ -123,6 +123,25 @@ type controlPlaneCore struct {
 	domainRouting       *domainRoutingTracker
 	lpmTrieIndices      []uint32
 	bpfOwned            bool
+
+	// datapathIfaces records the interfaces that were successfully bound,
+	// together with the expected TC filter major handle, so that
+	// validateDatapathBindings can verify the filters are actually attached
+	// after commitInterfaceBindings. It is populated by bindDaens (dae0 host
+	// side, 0x2022) and _bindLan/_bindWan (LAN/WAN, 0x2023) using the *resolved*
+	// interface name. A configured "auto" LAN/WAN is therefore expanded to the
+	// real NIC, and dae0 is only checked when it was actually created — which
+	// keeps validation correct in both unit-test and production settings.
+	datapathIfaces []boundIface
+	datapathMu     sync.Mutex
+}
+
+// boundIface is an interface that was successfully bound, paired with the TC
+// filter major handle (0x2022 for dae0, 0x2023 for LAN/WAN) we expect on it.
+type boundIface struct {
+	name  string
+	label string
+	major uint16
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -440,6 +459,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	default:
 	}
 	c.log.Infof("Bind to LAN: %v", ifname)
+	// Record the intended binding up-front so validation still catches a
+	// swallowed bind failure (e.g. FilterAdd error logged but not propagated by
+	// the interface-manager callback).
+	c.recordBoundIface(ifname, "LAN", 0x2023)
 
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -656,6 +679,11 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	default:
 	}
 	c.log.Infof("Bind to WAN: %v", ifname)
+	// Record the intended binding up-front so validation still catches a
+	// swallowed bind failure (e.g. FilterAdd error logged but not propagated by
+	// the interface-manager callback).
+	c.recordBoundIface(ifname, "WAN", 0x2023)
+
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
@@ -840,6 +868,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	if err := netlink.FilterAdd(filterDae0Ingress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
+	c.recordBoundIface(daens.Dae0().Attrs().Name, "dae0", 0x2022)
 	dae0DetachFunc := func() error {
 		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
@@ -863,25 +892,47 @@ var linkByName = func(name string) (netlink.Link, error) {
 	return netlink.LinkByName(name)
 }
 
-func (c *controlPlaneCore) validateDatapathBindings(lanIfaces, wanIfaces []string) []string {
-	var missing []string
-	check := func(ifname string, label string, major uint16) {
-		link, err := linkByName(ifname)
-		if err != nil {
-			missing = append(missing, fmt.Sprintf("%s (%s, link not found)", ifname, label))
-			return
-		}
-		if !hasDaeTcFilter(link, major) {
-			missing = append(missing, fmt.Sprintf("%s (%s, handle 0x%x missing)", ifname, label, major))
-		}
-	}
+// recordBoundIface records a successfully bound interface so that a later
+// validateDatapathBindings call can confirm its TC filter is attached.
+func (c *controlPlaneCore) recordBoundIface(name, label string, major uint16) {
+	c.datapathMu.Lock()
+	c.datapathIfaces = append(c.datapathIfaces, boundIface{name: name, label: label, major: major})
+	c.datapathMu.Unlock()
+}
 
-	check(HostVethName, "dae0", 0x2022)
-	for _, iface := range lanIfaces {
-		check(iface, "LAN", 0x2023)
-	}
-	for _, iface := range wanIfaces {
-		check(iface, "WAN", 0x2023)
+// resetBoundIfaces clears the recorded bindings so each commitInterfaceBindings
+// run validates only the interfaces bound during that run.
+func (c *controlPlaneCore) resetBoundIfaces() {
+	c.datapathMu.Lock()
+	c.datapathIfaces = nil
+	c.datapathMu.Unlock()
+}
+
+// validateDatapathBindings verifies that TC filters are actually attached on
+// every interface that was successfully bound during commitInterfaceBindings.
+// This catches silent failures where bindLan/bindWan/bindDaens partially
+// succeed (e.g. qdisc missing → FilterAdd silently fails, or the interface
+// disappeared between lookup and attach). It validates only the *resolved*
+// interface names recorded by the bind functions (so a configured "auto" LAN
+// is expanded to the real NIC, and dae0 is only checked when it was actually
+// created), which keeps it correct in both unit-test and production settings.
+// Returns an empty slice when all required filters are present.
+func (c *controlPlaneCore) validateDatapathBindings() []string {
+	c.datapathMu.Lock()
+	ifaces := make([]boundIface, len(c.datapathIfaces))
+	copy(ifaces, c.datapathIfaces)
+	c.datapathMu.Unlock()
+
+	var missing []string
+	for _, bi := range ifaces {
+		link, err := linkByName(bi.name)
+		if err != nil {
+			missing = append(missing, fmt.Sprintf("%s (%s, link not found)", bi.name, bi.label))
+			continue
+		}
+		if !hasDaeTcFilter(link, bi.major) {
+			missing = append(missing, fmt.Sprintf("%s (%s, handle 0x%x missing)", bi.name, bi.label, bi.major))
+		}
 	}
 	return missing
 }
@@ -903,14 +954,13 @@ func hasDaeTcFilter(link netlink.Link, major uint16) bool {
 			continue // no clsact qdisc attached
 		}
 		for _, f := range filters {
-			if uint16(f.Attrs().Handle >> 16) == major {
+			if uint16(f.Attrs().Handle>>16) == major {
 				return true
 			}
 		}
 	}
 	return false
 }
-
 
 // tryDeleteFlippedFilter deletes the TC filter obtained by flipping the
 // low bit of the handle. Used during non-reload startup to remove any

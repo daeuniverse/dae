@@ -818,7 +818,7 @@ func newControlPlaneWithContextOptions(
 		// Validate that TC filters are actually attached.  A silent bind
 		// failure (e.g. missing clsact qdisc, interface disappeared) would
 		// otherwise cause traffic to bypass the proxy with no error.
-		if missing := core.validateDatapathBindings(plane.lanInterface, plane.wanInterface); len(missing) > 0 {
+		if missing := core.validateDatapathBindings(); len(missing) > 0 {
 			return nil, fmt.Errorf("datapath validation failed after interface binding: %v", missing)
 		}
 		if plane.sharedBpfReload {
@@ -1375,6 +1375,10 @@ func (c *ControlPlane) commitInterfaceBindings() error {
 	if c == nil || c.core == nil {
 		return nil
 	}
+	// Start each commit with a clean slate so validation only checks the
+	// interfaces bound during this run (e.g. after a reload with a changed
+	// LAN/WAN set).
+	c.core.resetBoundIfaces()
 
 	if len(c.lanInterface) > 0 {
 		if c.autoConfigKernelParameter {
@@ -1465,7 +1469,7 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 	// Validate that TC filters are actually attached.  Catches silent failures
 	// in bindLan/bindWan/bindDaens that would otherwise cause traffic to bypass
 	// the proxy with no error logged.
-	if missing := c.core.validateDatapathBindings(c.lanInterface, c.wanInterface); len(missing) > 0 {
+	if missing := c.core.validateDatapathBindings(); len(missing) > 0 {
 		return fmt.Errorf("datapath validation failed after interface binding: %v", missing)
 	}
 	if c.routingKernspaceSnapshot != nil {
