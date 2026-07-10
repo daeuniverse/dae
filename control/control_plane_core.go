@@ -984,7 +984,7 @@ var rebindWanFn = func(c *controlPlaneCore, name string) error { return c._bindW
 // attempt, plus fatal (true only when dae0 is among the still-missing), so
 // callers keep the existing fatal/warning policy unchanged:
 //   - dae0 missing  -> fatal -> caller aborts startup/reload
-//   - LAN/WAN missing but re-attached -> silently recovered (Infof)
+//   - LAN/WAN missing but re-attached -> silently recovered (Debugf)
 //   - LAN/WAN missing and re-attach failed -> warning, proxy keeps running
 func (c *controlPlaneCore) repairDatapathBindings() (stillMissing []string, fatal bool) {
 	bad, _ := c.missingBindings()
@@ -1016,7 +1016,7 @@ func (c *controlPlaneCore) repairDatapathBindings() (stillMissing []string, fata
 		stillMissing = append(stillMissing, reason)
 	}
 	if repaired && len(stillMissing) == 0 {
-		c.log.Infof("datapath self-heal: re-attached missing LAN/WAN TC filters")
+		c.log.Debugf("datapath self-heal: re-attached missing LAN/WAN TC filters")
 	}
 	return stillMissing, fatal
 }
