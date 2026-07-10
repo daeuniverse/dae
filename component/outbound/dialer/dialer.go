@@ -498,6 +498,9 @@ func (d *Dialer) ReloadHealthSnapshot() DialerHealthSnapshot {
 		collection.TrafficFailCount = 0
 	}
 	snapshot.Recovery = [3]DialerRecoveryHealthSnapshot{}
+	return snapshot
+}
+
 // CheckConfigEqual reports whether the health-check configuration of this dialer
 // equals other's. It is used during a warm reload (ControlPlane.
 // InheritDialerHealthFrom) to decide whether the inherited health snapshot from
@@ -536,9 +539,6 @@ func (d *Dialer) CheckConfigEqual(other *Dialer) bool {
 		d.CheckTolerance == other.CheckTolerance &&
 		d.CheckDnsTcp == other.CheckDnsTcp &&
 		d.InstanceOption == other.InstanceOption
-}
-
-	return snapshot
 }
 
 func (d *Dialer) RestoreHealthSnapshot(snapshot DialerHealthSnapshot) {
