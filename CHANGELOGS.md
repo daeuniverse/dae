@@ -14,8 +14,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 <!-- BEGIN NEW TOC ENTRY -->
 
-- [v2.0.0rc1 (Pre-release)](#v200rc1-pre-release)
-- [v1.1.0 (Latest)](#v110-latest)
+- [v2.0.0 (Latest)](#v200-latest)
+- [v1.1.0](#v110)
 - [v1.0.0](#v100)
 - [v0.9.0)](#v090)
 - [v0.8.0](#v080)
@@ -49,22 +49,36 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
-### v2.0.0rc1 (Pre-release)
+### v2.0.0 (Latest)
 
-> Release date: 2026/04/23
+> Release date: 2026/07/08
 
 #### Features
 
-> [!WARNING]
-> Release Candidate Notice: This release candidate is intended for users to try new features and provide feedback. It may include experimental functionality and breaking changes, so it is not recommended for production use.
+- feat: improve log timestamp format with ForceFormatting in [#1010](https://github.com/daeuniverse/dae/pull/1010) by (@itoywh)
+
+#### Bug Fixes
+
+- fix(ebpf): fix "bad CO-RE relocation" on GCC 15 by disabling unnecessary UAPI CO-RE in [#986](https://github.com/daeuniverse/dae/pull/986) by (@KongQBin)
+- fix(docker): update Go version to 1.26 in Dockerfile in [#989](https://github.com/daeuniverse/dae/pull/989) by (@KagurazakaNyaa)
+- fix(bpf): restore cmdline parsing for accurate process name in [#991](https://github.com/daeuniverse/dae/pull/991) by (@TnZzZHlp)
+- fix(bpf): fallback to bpf_get_current_comm when bpf_get_current_task is unavailable in [#995](https://github.com/daeuniverse/dae/pull/995) by (@QiuSimons)
+- fix: carry ipv4 udp fallback, outbound, trace and conn-state follow-ups in [#980](https://github.com/daeuniverse/dae/pull/980) by (@olicesx)
+
+#### Others
 
 - ci/docs/optimize/feature: Enhance control plane features and improve CI workflows by olicesx in [#970](https://github.com/daeuniverse/dae/pull/970) by (@MarksonHon)
+- ci(release): draft release v1.1.0 in [#976](https://github.com/daeuniverse/dae/pull/976) by (@sumire88)
+- ci(release): draft release v2.0.0rc1 in [#978](https://github.com/daeuniverse/dae/pull/978) by (@dae-prow)
+- docs: add official repository installation guide for Arch Linux in [#981](https://github.com/daeuniverse/dae/pull/981) by (@Integral-Tech)
+- ci: build for GORISCV64 variants in [#994](https://github.com/daeuniverse/dae/pull/994) by (@Xeonacid)
+- docs: fix stale contribution instructions in [#1002](https://github.com/daeuniverse/dae/pull/1002) by (@immanuwell)
 
-**Example Config**: https://github.com/daeuniverse/dae/blob/v2.0.0rc1/example.dae
+**Example Config**: https://github.com/daeuniverse/dae/blob/v2.0.0/example.dae
 
-**Full Changelog**: https://github.com/daeuniverse/dae/compare/v1.1.0...v2.0.0rc1
+**Full Changelog**: https://github.com/daeuniverse/dae/compare/v1.1.0...v2.0.0
 
-### v1.1.0 (Latest)
+### v1.1.0
 
 > Release date: 2026/04/23
 
