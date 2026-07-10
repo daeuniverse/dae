@@ -248,23 +248,14 @@ func NewDialerContext(ctx context.Context, dialer netproxy.Dialer, option *Globa
 	}
 	collections[IdxDnsTcp4] = collections[IdxTcp4]
 	collections[IdxDnsTcp6] = collections[IdxTcp6]
-	// When udp_check_dns is not configured, the DNS-UDP collections
-	// (IdxDnsUdp4/6) are never probed by the health-check loop, so their Alive
-	// flag stays true forever (its initial value). That false-positive "alive"
-	// breaks the fixed_fallback retry state machine: DNS resolution calls
-	// Select(udp4) first -> MustGetAlive=true -> resets the fixed-fallback retry
-	// timer on every DNS cycle, so fallback never triggers (see commit 2ef37d72).
-	//
-	// Fix: alias the DNS-UDP collection to the same IP version's TCP collection
-	// so they share one (correctly probed) Alive value. Aliasing the pointer here
-	// keeps read/write consistency — both ReportUnavailable and MustGetAlive hit
-	// the same struct — unlike redirecting only the read path in mustGetCollection
-	// (which left writes going to the distinct DNS-UDP collection). Data-UDP
-	// (IdxUdp4/6) remains a separate, independent collection.
-	if len(option.CheckDnsOptionRaw.Raw) == 0 {
-		collections[IdxDnsUdp4] = collections[IdxTcp4]
-		collections[IdxDnsUdp6] = collections[IdxTcp6]
-	}
+	// DNS-UDP collections (IdxDnsUdp4/6) stay independent from the TCP
+	// collections so UDP health-domain independence and snapshot/restore
+	// semantics are preserved. When udp_check_dns is not configured the
+	// DNS-UDP collection is never probed and stays alive forever; on branches
+	// that carry the fixed_fallback retry state machine this is handled at the
+	// retry-decision site via Dialer.AliveForRetry, which mirrors DNS-UDP
+	// liveness to the same IP family's TCP collection without coupling the
+	// collections themselves.
 
 	ctx, cancel := context.WithCancel(ctx)
 	d := &Dialer{
