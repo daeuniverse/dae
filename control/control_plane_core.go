@@ -885,10 +885,17 @@ var linkByName = netlink.LinkByName
 
 // recordBoundIface records a successfully bound interface so that a later
 // validateDatapathBindings call can confirm its TC filter is attached.
+// Duplicate (name+label+major) entries are ignored, which keeps the recorded
+// set stable when an interface is re-bound during self-heal.
 func (c *controlPlaneCore) recordBoundIface(name, label string, major uint16) {
 	c.datapathMu.Lock()
+	defer c.datapathMu.Unlock()
+	for _, b := range c.datapathIfaces {
+		if b.name == name && b.label == label && b.major == major {
+			return
+		}
+	}
 	c.datapathIfaces = append(c.datapathIfaces, boundIface{name: name, label: label, major: major})
-	c.datapathMu.Unlock()
 }
 
 // resetBoundIfaces clears the recorded bindings so each commitInterfaceBindings
@@ -917,29 +924,101 @@ func (c *controlPlaneCore) resetBoundIfaces() {
 // does not abort — it is surfaced as a warning so operators still get
 // visibility into silent datapath breakage without breaking environments
 // where such filters legitimately cannot be attached.
-func (c *controlPlaneCore) validateDatapathBindings() (missing []string, fatal bool) {
+// checkBinding reports whether the TC filter for bi is actually attached,
+// returning a human-readable reason when it is not.
+func (c *controlPlaneCore) checkBinding(bi boundIface) (ok bool, reason string) {
+	link, err := linkByName(bi.name)
+	if err != nil {
+		return false, fmt.Sprintf("%s (%s, link not found)", bi.name, bi.label)
+	}
+	if !hasDaeTcFilter(link, bi.major) {
+		return false, fmt.Sprintf("%s (%s, handle 0x%x missing)", bi.name, bi.label, bi.major)
+	}
+	return true, ""
+}
+
+// missingBindings returns the recorded interfaces whose TC filter is not
+// actually attached, plus whether a *fatal* binding (dae0) is among them.
+// dae0 is created and fully controlled by dae, so a missing dae0 filter means
+// the transparent proxy cannot function at all; LAN/WAN depend on the host
+// environment (e.g. clsact availability) and are not fatal.
+func (c *controlPlaneCore) missingBindings() (missing []boundIface, fatal bool) {
 	c.datapathMu.Lock()
 	ifaces := make([]boundIface, len(c.datapathIfaces))
 	copy(ifaces, c.datapathIfaces)
 	c.datapathMu.Unlock()
 
 	for _, bi := range ifaces {
-		link, err := linkByName(bi.name)
-		if err != nil {
-			missing = append(missing, fmt.Sprintf("%s (%s, link not found)", bi.name, bi.label))
-			if bi.label == "dae0" {
-				fatal = true
-			}
-			continue
-		}
-		if !hasDaeTcFilter(link, bi.major) {
-			missing = append(missing, fmt.Sprintf("%s (%s, handle 0x%x missing)", bi.name, bi.label, bi.major))
+		if ok, _ := c.checkBinding(bi); !ok {
+			missing = append(missing, bi)
 			if bi.label == "dae0" {
 				fatal = true
 			}
 		}
 	}
 	return missing, fatal
+}
+
+func (c *controlPlaneCore) validateDatapathBindings() (missing []string, fatal bool) {
+	bad, fatal := c.missingBindings()
+	for _, bi := range bad {
+		_, reason := c.checkBinding(bi)
+		missing = append(missing, reason)
+	}
+	return missing, fatal
+}
+
+// rebindLanFn / rebindWanFn are package-level indirection over the actual bind
+// functions so unit tests can substitute stubs without touching the real
+// netlink stack. In production they call _bindLan / _bindWan directly (which
+// ensure the clsact qdisc and re-attach the filter, both idempotent).
+var rebindLanFn = func(c *controlPlaneCore, name string) error { return c._bindLan(name) }
+var rebindWanFn = func(c *controlPlaneCore, name string) error { return c._bindWan(name) }
+
+// repairDatapathBindings detects missing TC filters and attempts to re-attach
+// them automatically (self-heal) for LAN/WAN interfaces, then re-validates
+// once. dae0 is intentionally never self-healed: a missing dae0 filter is a
+// fatal, deep failure and is reported so the caller can abort.
+//
+// It returns the interfaces that are *still* missing after the re-attach
+// attempt, plus fatal (true only when dae0 is among the still-missing), so
+// callers keep the existing fatal/warning policy unchanged:
+//   - dae0 missing  -> fatal -> caller aborts startup/reload
+//   - LAN/WAN missing but re-attached -> silently recovered (Infof)
+//   - LAN/WAN missing and re-attach failed -> warning, proxy keeps running
+func (c *controlPlaneCore) repairDatapathBindings() (stillMissing []string, fatal bool) {
+	bad, _ := c.missingBindings()
+	if len(bad) == 0 {
+		return nil, false
+	}
+	repaired := false
+	for _, bi := range bad {
+		switch bi.label {
+		case "LAN":
+			if err := rebindLanFn(c, bi.name); err != nil {
+				c.log.Warnf("datapath self-heal: failed to re-bind LAN %s: %v", bi.name, err)
+			} else {
+				repaired = true
+			}
+		case "WAN":
+			if err := rebindWanFn(c, bi.name); err != nil {
+				c.log.Warnf("datapath self-heal: failed to re-bind WAN %s: %v", bi.name, err)
+			} else {
+				repaired = true
+			}
+		}
+		// dae0: not self-healed.
+	}
+	// Re-check once (single pass, no retry loop to avoid livelock).
+	stillBad, fatal := c.missingBindings()
+	for _, bi := range stillBad {
+		_, reason := c.checkBinding(bi)
+		stillMissing = append(stillMissing, reason)
+	}
+	if repaired && len(stillMissing) == 0 {
+		c.log.Infof("datapath self-heal: re-attached missing LAN/WAN TC filters")
+	}
+	return stillMissing, fatal
 }
 
 // filterLister lists TC filters attached to link on the given parent. It is a
