@@ -136,22 +136,7 @@ func newCollection() *collection {
 }
 
 func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
-	idx := typ.Index()
-	// When udp_check_dns is not configured, DNS-UDP collections (IdxDnsUdp4/6)
-	// are never probed and their Alive flag stays true forever (initial value).
-	// This false-positive "alive" breaks the fixed_fallback retry state machine
-	// because DNS UDP always resets the retry timer before TCP can advance it.
-	// Solution: redirect DNS-UDP lookups to the corresponding TCP collection
-	// (same IP version) so they share the same (correct) Alive value.
-	if len(d.CheckDnsOptionRaw.Raw) == 0 {
-		switch idx {
-		case IdxDnsUdp4:
-			idx = IdxTcp4
-		case IdxDnsUdp6:
-			idx = IdxTcp6
-		}
-	}
-	return d.collections[idx]
+	return d.collections[typ.Index()]
 }
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
@@ -1030,9 +1015,6 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 		}
 		return update
 	}
-	collection.Latencies10.AppendLatency(Timeout)
-	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
-
 	// UDP/TCP robustness: only mark unavailable after consecutive failures.
 	// This protects against transient network interference.
 	threshold := 1
