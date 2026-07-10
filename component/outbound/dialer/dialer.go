@@ -248,6 +248,13 @@ func NewDialerContext(ctx context.Context, dialer netproxy.Dialer, option *Globa
 	}
 	collections[IdxDnsTcp4] = collections[IdxTcp4]
 	collections[IdxDnsTcp6] = collections[IdxTcp6]
+	// DNS-UDP collections (IdxDnsUdp4/6) stay independent from the TCP
+	// collections so UDP health-domain independence and snapshot/restore
+	// semantics are preserved. When udp_check_dns is not configured the
+	// DNS-UDP collection is never probed and stays alive forever; the
+	// fixed_fallback retry logic accounts for that via Dialer.AliveForRetry,
+	// which mirrors DNS-UDP liveness to the same IP family's TCP collection at
+	// the retry-decision site only.
 
 	ctx, cancel := context.WithCancel(ctx)
 	d := &Dialer{

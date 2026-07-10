@@ -621,7 +621,7 @@ func TestDialerGroup_Select_FixedWithFallback_Recovery(t *testing.T) {
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[1], false)
 
 	// Exhaust retries so we're in fallback.
-	g.Select(TestNetworkType, false)
+	_, _, _ = g.Select(TestNetworkType, false)
 
 	// Now fixed dialer revives.
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[1], true)
