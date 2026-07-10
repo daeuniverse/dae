@@ -1189,7 +1189,14 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 			cycle.Unlock()
 		}
 	}
-	// Skip update when (ok=false, err=nil): preserve existing alive state.
+	// (ok=false, err=nil) means there is no applicable IP for this network type
+	// (e.g. an IPv6 check against a node that resolves to no AAAA record). The
+	// collection defaults to Alive=true, so silently returning here would leave
+	// the node falsely "alive" for a network it can never actually serve. Mark it
+	// unavailable explicitly so selection never routes that traffic to it.
+	if !ok && err == nil {
+		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))
+	}
 	return ok, err
 }
 
