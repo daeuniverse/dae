@@ -108,7 +108,7 @@ func NewDialerGroup(
 					group.fixedFallbackDeadSince = time.Now().UnixNano()
 					group.fixedFallbackRetryCount = 0
 					group.fixedFallbackMu.Unlock()
-					go group.runFixedFallbackRetry(fixed, p, nt)
+					go group.runFixedFallbackRetry(fixed, group.currentSelectionState().policy, nt)
 				}
 			})
 		}
