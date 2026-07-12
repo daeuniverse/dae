@@ -52,8 +52,13 @@ var GlobalDesc = Desc{
 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing. That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
 3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not go through dae, dae cannot split traffic by domain.
 4. "domain++". Based on domain+ mode but force to re-route traffic using sniffed domain to partially recover domain based traffic split ability. It doesn't work for direct traffic and consumes more CPU resources.`,
-	"disable_waiting_network":      "Disable waiting for network before pulling subscriptions.",
-	"disable_thp":                  "Disable transparent huge pages for the dae process. This reduces RSS inflation for dae userspace memory without changing system-wide THP settings.",
+	"disable_waiting_network": "Disable waiting for network before pulling subscriptions.",
+	"disable_thp":             "Disable transparent huge pages for the dae process. This reduces RSS inflation for dae userspace memory without changing system-wide THP settings.",
+	"netkit_mode": `Capture device mode for the dae0<->dae0peer pair. Optional values:
+1. "auto" (default). Use Netkit on kernels 6.7+ (preserves skb->mark across the device boundary for better firewall-mark handling) and fall back to veth on older kernels or when Netkit creation fails.
+2. "netkit". Force Netkit (performance mode). dae fails to start if the kernel does not support Netkit (requires 6.7+ with CONFIG_NETKIT).
+3. "veth". Force veth (compatibility mode). Use this to work around Netkit issues such as #1024 (interface index drift causing silent redirect failures).
+You can also set the DAE_DISABLE_NETKIT=1 environment variable to force veth in "auto" mode, which is handy for container/immutable deployments where editing the config file is inconvenient.`,
 	"auto_config_kernel_parameter": "Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md to see what will dae do.",
 	"sniffing_timeout":             "Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Default 30ms is suitable for most networks. Increase to 100-300ms for high-latency networks.",
 	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",

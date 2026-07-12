@@ -431,7 +431,7 @@ func newControlPlaneWithContextOptions(
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 
-	InitDaeNetns(log)
+	InitDaeNetns(log, global.NetkitMode)
 	if err = InitSysctlManager(log); err != nil {
 		return nil, err
 	}

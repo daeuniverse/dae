@@ -43,7 +43,8 @@ var (
 type DaeNetns struct {
 	log           *logrus.Logger
 	kernelVersion *internal.Version
-	useNetkit     bool // Whether Netkit device is being used
+	useNetkit     bool   // Whether Netkit device is being used
+	netkitMode    string // Capture device mode from global.netkit_mode: auto, netkit, veth
 
 	setupDone atomic.Bool
 	mu        sync.Mutex
@@ -52,11 +53,12 @@ type DaeNetns struct {
 	hostNs, daeNs  netns.NsHandle
 }
 
-func InitDaeNetns(log *logrus.Logger) {
+func InitDaeNetns(log *logrus.Logger, netkitMode string) {
 	once.Do(func() {
 		daeNetns = &DaeNetns{}
 	})
 	daeNetns.log = log
+	daeNetns.netkitMode = netkitMode
 	// Initialize kernel version for Netkit support detection
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
@@ -170,40 +172,66 @@ func (ns *DaeNetns) supportsNetkit() bool {
 	return !ns.kernelVersion.Less(consts.NetkitFeatureVersion)
 }
 
-// setupVethOrNetkit creates a veth or Netkit device pair based on kernel support.
-// It tries Netkit first (kernel 6.7+) and falls back to veth if Netkit fails.
+// setupVethOrNetkit creates a veth or Netkit device pair according to global.netkit_mode.
+//
+//   - "veth":   force veth (compatibility mode).
+//   - "netkit": force Netkit; fails to start if the kernel does not support it.
+//   - "auto" (or empty): try Netkit on kernels 6.7+ and fall back to veth on
+//     failure. DAE_DISABLE_NETKIT=1 forces veth in auto mode (handy for
+//     container/immutable deployments).
 func (ns *DaeNetns) setupVethOrNetkit() (err error) {
-	// Try Netkit first if kernel supports it
-	if ns.supportsNetkit() {
-		ns.log.Infof("Kernel %s supports Netkit, attempting to create Netkit device pair",
-			ns.kernelVersion.String())
-		err := ns.tryCreateNetkit()
-		if err == nil {
-			ns.useNetkit = true
-			ns.log.Infof("Successfully created Netkit device pair (performance mode)")
-			return nil
+	switch ns.netkitMode {
+	case "veth":
+		ns.log.Info("netkit_mode=veth: forcing veth device creation (compatibility mode)")
+		ns.useNetkit = false
+		if err = ns.setupVeth(); err != nil {
+			return fmt.Errorf("failed to create veth device: %w", err)
 		}
-		// Netkit failed, fall back to veth
-		ns.log.WithFields(logrus.Fields{
-			"error":  err.Error(),
-			"kernel": ns.kernelVersion.String(),
-		}).Warn("Failed to create Netkit device, falling back to veth")
+		ns.log.Info("Created veth device pair (compatibility mode)")
+		return nil
+	case "netkit":
+		if !ns.supportsNetkit() {
+			return fmt.Errorf("netkit_mode=netkit requires kernel %s+ with CONFIG_NETKIT, but current kernel is %s; use netkit_mode=veth or upgrade the kernel",
+				consts.NetkitFeatureVersion.String(), ns.kernelVersion.String())
+		}
+		ns.useNetkit = true
+		if err = ns.tryCreateNetkit(); err != nil {
+			return fmt.Errorf("netkit_mode=netkit: failed to create Netkit device: %w", err)
+		}
+		ns.log.Info("Successfully created Netkit device pair (performance mode)")
+		return nil
+	case "auto", "":
+		// Default: try Netkit on supported kernels, fall back to veth.
+		if os.Getenv("DAE_DISABLE_NETKIT") == "1" {
+			ns.log.Warn("Netkit disabled (DAE_DISABLE_NETKIT=1 set); falling back to veth")
+		} else if ns.supportsNetkit() {
+			ns.log.Infof("Kernel %s supports Netkit, attempting to create Netkit device pair",
+				ns.kernelVersion.String())
+			if err = ns.tryCreateNetkit(); err == nil {
+				ns.useNetkit = true
+				ns.log.Info("Successfully created Netkit device pair (performance mode)")
+				return nil
+			}
+			ns.log.WithFields(logrus.Fields{
+				"error":  err.Error(),
+				"kernel": ns.kernelVersion.String(),
+			}).Warn("Failed to create Netkit device, falling back to veth")
+		}
+		ns.log.Info("Falling back to veth device creation")
+		ns.useNetkit = false
+		if err = ns.setupVeth(); err != nil {
+			return fmt.Errorf("failed to create veth device: %w", err)
+		}
+		if ns.supportsNetkit() {
+			ns.log.Info("Created veth device pair (compatibility mode; Netkit was attempted but failed)")
+		} else {
+			ns.log.Infof("Created veth device pair (kernel %s does not support Netkit)",
+				ns.kernelVersion.String())
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid global.netkit_mode %q: want auto, netkit or veth", ns.netkitMode)
 	}
-
-	// Fall back to veth
-	ns.log.Info("Falling back to veth device creation")
-	ns.useNetkit = false
-	if err := ns.setupVeth(); err != nil {
-		return fmt.Errorf("failed to create veth device: %w", err)
-	}
-
-	if ns.supportsNetkit() {
-		ns.log.Infof("Created veth device pair (compatibility mode; Netkit was attempted but failed)")
-	} else {
-		ns.log.Infof("Created veth device pair (kernel %s does not support Netkit)",
-			ns.kernelVersion.String())
-	}
-	return nil
 }
 
 // tryCreateNetkit attempts to create a Netkit device pair.
