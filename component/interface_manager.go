@@ -29,16 +29,23 @@ type InterfaceManager struct {
 	mu        sync.Mutex
 	callbacks []callbackSet
 	upLinks   map[string]bool
+	// operStates records the last observed operational state per interface so
+	// that we can detect a link coming back up after an admin/carrier flap and
+	// re-trigger the binding. The kernel removes the ingress qdisc and the
+	// attached TC filters when a link goes down, and they are not re-added
+	// automatically on re-up, which would silently break traffic steering.
+	operStates map[string]netlink.LinkOperState
 }
 
 func NewInterfaceManager(log *logrus.Logger) *InterfaceManager {
 	closed, toClose := context.WithCancel(context.Background())
 	mgr := &InterfaceManager{
-		log:       log,
-		callbacks: make([]callbackSet, 0),
-		closed:    closed,
-		close:     toClose,
-		upLinks:   make(map[string]bool),
+		log:        log,
+		callbacks:  make([]callbackSet, 0),
+		closed:     closed,
+		close:      toClose,
+		upLinks:    make(map[string]bool),
+		operStates: make(map[string]netlink.LinkOperState),
 	}
 
 	ch := make(chan netlink.LinkUpdate)
@@ -167,12 +174,32 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struc
 			case unix.RTM_NEWLINK:
 				var jobs []job
 				m.mu.Lock()
+				newOperState := update.Link.Attrs().OperState
+				prevOperState, known := m.operStates[ifName]
 				_, exists := m.upLinks[ifName]
-				if exists {
+
+				// Re-bind in two situations:
+				//   1. The interface is newly seen (first appearance) — the
+				//      existing behaviour.
+				//   2. The interface was already known but its operational state
+				//      transitioned back to Up. The kernel removes the ingress
+				//      qdisc and the attached TC filters when a link goes down
+				//      (admin down or carrier loss); on re-up they are not
+				//      re-added automatically, so without re-binding here the
+				//      dataplane silently loses all traffic steering on that
+				//      interface until the next full restart.
+				rebind := false
+				if !exists {
+					rebind = true
+					m.upLinks[ifName] = true
+				} else if known && prevOperState != newOperState && newOperState == netlink.OperUp {
+					rebind = true
+				}
+				m.operStates[ifName] = newOperState
+				if !rebind {
 					m.mu.Unlock()
 					continue
 				}
-				m.upLinks[ifName] = true
 				for _, callback := range m.callbacks {
 					matched, err := path.Match(callback.pattern, ifName)
 					if err != nil || !matched {
