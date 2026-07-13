@@ -815,6 +815,19 @@ func newControlPlaneWithContextOptions(
 		if err = plane.commitInterfaceBindings(); err != nil {
 			return nil, err
 		}
+		// Confirm TC filters are actually attached. A silent bind failure
+		// (e.g. missing clsact qdisc, interface disappeared) would otherwise
+		// cause traffic to bypass the proxy with no error. Missing LAN/WAN
+		// filters are auto re-attached (self-heal); a missing dae0 aborts.
+		if plane.core != nil {
+			if missing, fatal := plane.core.repairDatapathBindings(); len(missing) > 0 {
+				msg := fmt.Sprintf("datapath validation failed after interface binding (self-heal could not recover): %v", missing)
+				if fatal {
+					return nil, fmt.Errorf("%s", msg)
+				}
+				plane.log.Warnf("%s", msg)
+			}
+		}
 		if plane.sharedBpfReload {
 			if err = clearReloadDomainRoutingMap(core.bpf.Load()); err != nil {
 				return nil, fmt.Errorf("clearReloadDomainRoutingMap: %w", err)
@@ -1369,6 +1382,10 @@ func (c *ControlPlane) commitInterfaceBindings() error {
 	if c == nil || c.core == nil {
 		return nil
 	}
+	// Start each commit with a clean slate so validation only checks the
+	// interfaces bound during this run (e.g. after a reload with a changed
+	// LAN/WAN set).
+	c.core.resetBoundIfaces()
 
 	if len(c.lanInterface) > 0 {
 		if c.autoConfigKernelParameter {
@@ -1455,6 +1472,19 @@ func (c *ControlPlane) CommitPreparedDatapath() error {
 	}
 	if err := c.commitInterfaceBindings(); err != nil {
 		return err
+	}
+	// Confirm TC filters are actually attached (mirrors NewControlPlane). A
+	// silent bind failure would let traffic bypass the proxy with no error.
+	// Missing LAN/WAN filters are auto re-attached (self-heal); a missing dae0
+	// aborts.
+	if c.core != nil {
+		if missing, fatal := c.core.repairDatapathBindings(); len(missing) > 0 {
+			msg := fmt.Sprintf("datapath validation failed after interface binding (self-heal could not recover): %v", missing)
+			if fatal {
+				return fmt.Errorf("%s", msg)
+			}
+			c.log.Warnf("%s", msg)
+		}
 	}
 	if c.routingKernspaceSnapshot != nil {
 		c.log.Infoln("Loading routing rules into kernel space (BPF)...")
