@@ -1310,6 +1310,18 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		}
 	}
 
+	if bpf != nil && resolvingfailed && len(tagToNodeList) == 0 {
+		// On reload, if every subscription failed to resolve and we ended up
+		// with no nodes, refuse to switch to a dead generation. The caller's
+		// rollback path then keeps the currently working generation (which
+		// still has its nodes) active instead of silently cutting all proxied
+		// traffic. A transient upstream/network failure should never take down
+		// an otherwise-healthy running config; the persisted cache in persist.d
+		// normally shields us, but when it is missing/empty this guard is the
+		// last line of defense.
+		return nil, fmt.Errorf("refusing reload with 0 nodes: all subscription resolving failed; keeping the current generation")
+	}
+
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
 		log.Warnln("No interface to bind.")
 	}
