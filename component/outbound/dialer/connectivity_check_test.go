@@ -19,6 +19,7 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestDialer(t *testing.T) *Dialer {
@@ -557,4 +558,78 @@ func TestSetQuicDcidCacheClearFuncConcurrentNotify(t *testing.T) {
 	if calls.Load() == 0 {
 		t.Fatal("expected NotifyHealthCheckResult to invoke a configured callback")
 	}
+}
+
+// TestDialer_AliveForRetry_DnsUdpMirrorsToTcp locks in the fixed_fallback fix:
+// when udp_check_dns is NOT configured, the DNS-UDP collection is never probed
+// by the health-check loop and keeps its initial "alive" value forever. Trusting
+// it would reset the fixed_fallback retry counter on every DNS resolution cycle
+// and prevent fallback. AliveForRetry must mirror the liveness decision to the
+// same-family TCP collection instead.
+func TestDialer_AliveForRetry_DnsUdpMirrorsToTcp(t *testing.T) {
+	d := newTestDialer(t)
+
+	dnsUdp4 := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     true,
+	}
+	require.Equal(t, IdxDnsUdp4, dnsUdp4.Index(),
+		"DNS-UDP-4 must map to IdxDnsUdp4")
+
+	tcp4 := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionStr_4,
+	}
+
+	// Default: no udp_check_dns configured, so CheckDnsOptionRaw.Raw is empty.
+	require.Empty(t, d.CheckDnsOptionRaw.Raw,
+		"test dialer should have no udp_check_dns configured")
+
+	// Mirror path: DNS-UDP reports alive (stale initial), but the node's TCP is
+	// dead. AliveForRetry must mirror to TCP and report dead.
+	d.collections[IdxDnsUdp4].Alive.Store(true)
+	d.collections[IdxTcp4].Alive.Store(false)
+	require.False(t, d.AliveForRetry(dnsUdp4),
+		"AliveForRetry must mirror DNS-UDP liveness to TCP and report dead when TCP is dead")
+
+	// When TCP recovers, AliveForRetry must report alive again.
+	d.collections[IdxTcp4].Alive.Store(true)
+	require.True(t, d.AliveForRetry(dnsUdp4),
+		"AliveForRetry must report alive once the mirrored TCP collection is alive")
+
+	// Control: a plain TCP-4 query is read directly and unaffected by the
+	// DNS-UDP flag.
+	d.collections[IdxTcp4].Alive.Store(false)
+	require.False(t, d.AliveForRetry(tcp4),
+		"plain TCP-4 AliveForRetry must reflect the TCP collection directly")
+}
+
+// TestDialer_AliveForRetry_DnsUdpNoMirrorWhenConfigured covers the other branch:
+// when udp_check_dns IS configured, the DNS-UDP collection is genuinely probed,
+// so AliveForRetry must read it directly (no TCP mirror).
+func TestDialer_AliveForRetry_DnsUdpNoMirrorWhenConfigured(t *testing.T) {
+	d := newTestDialer(t)
+
+	dnsUdp4 := &NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStr_4,
+		IsDns:     true,
+	}
+
+	// Configure udp_check_dns so the mirror branch is skipped.
+	d.CheckDnsOptionRaw.Raw = []string{"1.1.1.1"}
+
+	// DNS-UDP alive, TCP dead: must report alive (reads DNS-UDP directly,
+	// does NOT fall back to the dead TCP collection).
+	d.collections[IdxDnsUdp4].Alive.Store(true)
+	d.collections[IdxTcp4].Alive.Store(false)
+	require.True(t, d.AliveForRetry(dnsUdp4),
+		"with udp_check_dns configured, AliveForRetry must read DNS-UDP directly and ignore TCP")
+
+	// DNS-UDP dead: must report dead regardless of TCP.
+	d.collections[IdxDnsUdp4].Alive.Store(false)
+	d.collections[IdxTcp4].Alive.Store(true)
+	require.False(t, d.AliveForRetry(dnsUdp4),
+		"with udp_check_dns configured, a dead DNS-UDP collection must report dead even if TCP is alive")
 }

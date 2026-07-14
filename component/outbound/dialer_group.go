@@ -95,6 +95,14 @@ func NewDialerGroup(
 	// Register a callback on the fixed dialer so the background retry
 	// goroutine starts when the health check marks the node as dead,
 	// not only when traffic flows through Select().
+	//
+	// NOTE: RegisterAliveTransitionCallback only appends and is never
+	// unregistered (see dialer.go). This is currently safe because a
+	// config reload builds a fresh DialerGroup via Clone(), discarding
+	// the old dialer instances and their callbacks, so no callback
+	// leak accumulates across reloads. If DialerGroup ever gains an
+	// in-place update path that reuses dialers, an Unregister (or a
+	// one-shot guard) will be required to avoid duplicate goroutines.
 	if p.Policy == consts.DialerSelectionPolicy_FixedWithFallback &&
 		p.FixedIndex >= 0 && p.FixedIndex < len(dialers) {
 		fixed := dialers[p.FixedIndex]
@@ -831,11 +839,15 @@ func (g *DialerGroup) runFixedFallbackRetry(fixed *dialer.Dialer, policy DialerS
 	actualTimeout := policy.FixedFallbackTimeout
 	if actualTimeout < 2*time.Second {
 		actualTimeout = 2 * time.Second
+		nodeName := ""
+		if fixed != nil && fixed.Property() != nil {
+			nodeName = fixed.Property().Name
+		}
 		g.log.WithFields(logrus.Fields{
 			"group":        g.Name,
 			"configured":   policy.FixedFallbackTimeout.String(),
 			"actual":       actualTimeout.String(),
-			"node":         fixed.Property().Name,
+			"node":         nodeName,
 			"network_type": nt.String(),
 		}).Warnln("fixed_fallback timeout too low, clamped to minimum 2s to prevent probe storm")
 	}

@@ -50,3 +50,11 @@ jobs:
         run: |
           git submodule update --init --recursive
           go test -tags dae_stub_ebpf ./...
+
+      # The outbound package holds the fixed_fallback background goroutine and
+      # its alive-transition callbacks, which are concurrency-sensitive. Run it
+      # under the race detector to catch data races the plain run may miss.
+      - name: Run tests with race detector (outbound)
+        run: |
+          git submodule update --init --recursive
+          go test -race -tags dae_stub_ebpf ./component/outbound/...

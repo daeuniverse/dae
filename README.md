@@ -79,6 +79,7 @@ The `fixed_fallback` policy always prefers a specific node but gracefully degrad
 - **Background goroutine** independently drives the retry cycle, not dependent on traffic
 - **Health check** dead detection also starts the goroutine (via `aliveTransitionCallback`)
 - **Node recovery** is detected in next health check cycle or goroutine probe — traffic returns instantly
+- **`retries = 0`**: there is **no** background retry goroutine (the node is marked `done` immediately). Recovery from that point relies entirely on the **global health check** (`check_interval` + configured probe URLs) re-marking the node alive — it will **not** be probed by the fallback's own loop. Make sure `check_interval > 0` and a probe target is configured, otherwise a dead fixed node stays fallen back indefinitely.
 
 **Example:**
 ```
