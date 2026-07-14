@@ -636,39 +636,80 @@ func TestDialerGroup_Select_FixedWithFallback_Recovery(t *testing.T) {
 	}
 }
 
-func TestDialerGroup_Select_FixedWithFallback_RetryTimeoutBehavior(t *testing.T) {
-	g, dialers := newTestGroupForSelection(DialerSelectionPolicy{
+// TestDialerGroup_Select_FixedWithFallback_ImmediateFallback verifies the
+// core fixed_fallback requirement: when the fixed node is dead, Select() must
+// fall back to a live node IMMEDIATELY on the very first call — it must never
+// return the dead fixed node while it is down. A background retry goroutine
+// probes the dead node independently (timeout × retries), but that must not
+// delay or block the fallback.
+//
+// The dialers are created with DisableCheck so the test is hermetic: the retry
+// goroutine still fires emergency probes, but with checks disabled those probes
+// cannot revive a node over the network. Aliveness is controlled deterministically
+// via NotifyLatencyChange, so the test does not depend on outbound connectivity.
+func TestDialerGroup_Select_FixedWithFallback_ImmediateFallback(t *testing.T) {
+	option := &dialer.GlobalOption{
+		Log:               log,
+		TcpCheckOptionRaw: dialer.TcpCheckOptionRaw{Raw: []string{testTcpCheckUrl}},
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{testUdpCheckDns}},
+		CheckInterval:     15 * time.Second,
+		CheckTolerance:    0,
+	}
+	dialers := []*dialer.Dialer{
+		newNoopDialer(option),
+		newNoopDialer(option),
+	}
+	policy := DialerSelectionPolicy{
 		Policy:               consts.DialerSelectionPolicy_FixedWithFallback,
 		FixedIndex:           1,
 		FixedFallbackTimeout: 2 * time.Second,
 		FixedFallbackRetries: 3,
 		FallbackPolicy:       consts.DialerSelectionPolicy_MinMovingAverageLatencies,
-	})
+	}
+	g := NewDialerGroup(option, "test-group", dialers, newEmptyAnnotations(len(dialers)), policy,
+		func(alive bool, networkType *dialer.NetworkType, isInit bool) {})
 
-	// Fixed dialer dead; others alive for fallback.
+	// Fixed dialer dead; the other dialer alive so fallback has a target.
 	dialers[0].MustGetLatencies10(TestNetworkType).AppendLatency(50 * time.Millisecond)
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[0], true)
 	g.MustGetAliveDialerSet(TestNetworkType).NotifyLatencyChange(dialers[1], false)
 
-	// First call: deadSince set, retry 0. Fixed dialer returned.
-	d, _, _ := g.Select(TestNetworkType, false)
-	if d != dialers[1] {
-		t.Fatalf("first select: expected fixed (dead detected), got %v", d)
+	// Requirement: first Select on a dead fixed node must immediately fall back.
+	d, _, err := g.Select(TestNetworkType, false)
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
 	}
-
-	// Call within timeout window: still return fixed.
-	time.Sleep(500 * time.Millisecond)
-	d, _, _ = g.Select(TestNetworkType, false)
-	if d != dialers[1] {
-		t.Fatalf("select within timeout: expected fixed, got %v", d)
-	}
-
-	// After timeout + retries exhausted, fallback to dialers[0].
-	// retries=1 at first timeout, retries=2 at second, retries=3 at third → exhausted.
-	// Wait long enough for 3 timeouts to pass.
-	time.Sleep(7 * time.Second)
-	d, _, _ = g.Select(TestNetworkType, false)
 	if d == dialers[1] {
-		t.Fatalf("after retries exhausted: expected fallback, still got fixed dialer")
+		t.Fatalf("first select: expected immediate fallback, got dead fixed dialer %v", d)
+	}
+
+	// Repeated selects while the fixed node stays dead keep falling back.
+	for i := 0; i < 5; i++ {
+		d, _, err = g.Select(TestNetworkType, false)
+		if err != nil {
+			t.Fatalf("select #%d error = %v", i, err)
+		}
+		if d == dialers[1] {
+			t.Fatalf("select #%d: expected fallback, got dead fixed dialer %v", i, d)
+		}
+	}
+
+	// The background retry goroutine must drive the timeout×retries cycle
+	// without crashing, and the dead fixed node must NOT be returned. With
+	// checks disabled it cannot be revived by probes, so after the retry window
+	// the node stays dead and fixedFallbackDone is set.
+	time.Sleep(7 * time.Second)
+	g.fixedFallbackMu.Lock()
+	done := g.fixedFallbackDone
+	g.fixedFallbackMu.Unlock()
+	if !done {
+		t.Fatalf("expected fixedFallbackDone after retry window; retry goroutine may not have run")
+	}
+	d, _, err = g.Select(TestNetworkType, false)
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
+	}
+	if d == dialers[1] {
+		t.Fatalf("after retry window: fixed still dead, expected fallback, got dead fixed dialer %v", d)
 	}
 }
