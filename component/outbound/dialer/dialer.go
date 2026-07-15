@@ -294,6 +294,14 @@ func (d *Dialer) CloneWithGlobalOption(option *GlobalOption) *Dialer {
 	return d.CloneWithGlobalOptionContext(d.ctx, option)
 }
 
+// Done returns the dialer's context Done channel. It lets callers (e.g. the
+// fixed_fallback background retry goroutine) stop waiting when the dialer is
+// torn down on shutdown or config reload. The underlying ctx field is
+// unexported, so this accessor is the only safe cross-package handle.
+func (d *Dialer) Done() <-chan struct{} {
+	return d.ctx.Done()
+}
+
 // CloneWithGlobalOptionContext returns a new dialer instance initialized with option.
 func (d *Dialer) CloneWithGlobalOptionContext(ctx context.Context, option *GlobalOption) *Dialer {
 	if d.property != nil && d.property.Link != "" {

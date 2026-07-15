@@ -85,7 +85,9 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 				return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
 			}
 		}
-		// Parse retries (optional, third param)
+		// Parse retries (optional, third param). Default 3. 0 means the node
+		// falls back immediately on first failure with no background retry
+		// (matches the canonical "retries<=0 = do not retry" semantics).
 		retries := 3 // default
 		if len(f.Params) >= 3 {
 			if f.Params[2].Key != "" {
@@ -95,8 +97,8 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 			if err != nil {
 				return nil, fmt.Errorf(`invalid "%v" param format: retries must be an integer: %w`, f.Name, err)
 			}
-			if retries < 1 {
-				return nil, fmt.Errorf(`invalid "%v" param format: retries must be >= 1`, f.Name)
+			if retries < 0 {
+				return nil, fmt.Errorf(`invalid "%v" param format: retries must be >= 0`, f.Name)
 			}
 		}
 		// Parse fallback policy (optional, fourth param)
