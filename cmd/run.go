@@ -143,9 +143,13 @@ func tryQueueReloadRequest(
 	reloadReqs chan<- reloadRequest,
 	reloadActive *atomic.Bool,
 	reloadPending *atomic.Bool,
+	reloadMissed *atomic.Bool,
 	req reloadRequest,
 ) bool {
 	if reloadPending != nil && !reloadPending.CompareAndSwap(false, true) {
+		if reloadMissed != nil {
+			reloadMissed.Store(true)
+		}
 		if log != nil {
 			log.Warnln("[Reload] Reload already in progress or handoff pending; ignoring this signal")
 		}
@@ -381,7 +385,7 @@ func (r *Runner) Run() (err error) {
 	}()
 
 	reloadReqs := make(chan reloadRequest, 1)
-	reloadManager := newReloadManager(reloadReqs, runStateChanges, sigs)
+	reloadManager := newReloadManager(log, reloadReqs, runStateChanges, sigs)
 	fastExit := false
 
 	go func() {
