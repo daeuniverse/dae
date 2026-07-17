@@ -839,7 +839,11 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 		return n, err
 	}
 	ue.hasSent.Store(true)
-	if n != len(b) {
+	// A proxy WriteTo may report the on-wire byte count, which includes the
+	// protocol's encapsulation overhead (e.g. shadowsocks AES-128-GCM + IPv4 adds
+	// 39 bytes), so n can legitimately exceed len(b). UDP datagrams are atomic, so
+	// only n < len(b) is a genuine short write worth retiring the endpoint over.
+	if n < len(b) {
 		ue.retire()
 		return n, fmt.Errorf("%w: udp endpoint wrote %d/%d bytes to %s", io.ErrShortWrite, n, len(b), addr)
 	}
