@@ -3,7 +3,13 @@
 
 // +build ignore
 
-// Disable implicit CO-RE from vmlinux.h to bypass bad relocation caused by GCC 15 DTE stripping UAPI structs.
+// Disable implicit CO-RE from vmlinux.h to bypass bad relocation.
+// Note: Previously misattributed to GCC 15 DTE. The actual root cause is that
+// pahole fails to parse DWARF5 debug info correctly, which strips UAPI structs
+// from the generated BTF.
+// Workaround for implicit CO-RE: compile kernel with CONFIG_DEBUG_INFO_DWARF4=y.
+// However, it is highly recommended to keep this macro defined, as it still
+// significantly improves overall compatibility across different environments.
 #define BPF_NO_PRESERVE_ACCESS_INDEX 1
 
 #include "headers/errno-base.h"
