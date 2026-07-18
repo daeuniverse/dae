@@ -495,6 +495,16 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
+	if c.isReload {
+		// make-before-break: the new generation's filter is attached above;
+		// because reload reuses the same BPF program, both flip handles point
+		// at the same program, so deleting the previous generation's flipped
+		// filter now leaves no datapath gap. Doing it eagerly (instead of
+		// waiting for the retiring generation's async teardown) prevents a
+		// stale TC handle from lingering on the interface and black-holing
+		// the datapath.
+		tryDeleteFlippedFilter(filterIngress)
+	}
 	detachFunc := func() error {
 		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
@@ -530,6 +540,16 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	}
 	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
+	}
+	if c.isReload {
+		// make-before-break: the new generation's filter is attached above;
+		// because reload reuses the same BPF program, both flip handles point
+		// at the same program, so deleting the previous generation's flipped
+		// filter now leaves no datapath gap. Doing it eagerly (instead of
+		// waiting for the retiring generation's async teardown) prevents a
+		// stale TC handle from lingering on the interface and black-holing
+		// the datapath.
+		tryDeleteFlippedFilter(filterEgress)
 	}
 	egressDetachFunc := func() error {
 		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
@@ -707,6 +727,16 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := netlink.FilterAdd(filterEgress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
+	if c.isReload {
+		// make-before-break: the new generation's filter is attached above;
+		// because reload reuses the same BPF program, both flip handles point
+		// at the same program, so deleting the previous generation's flipped
+		// filter now leaves no datapath gap. Doing it eagerly (instead of
+		// waiting for the retiring generation's async teardown) prevents a
+		// stale TC handle from lingering on the interface and black-holing
+		// the datapath.
+		tryDeleteFlippedFilter(filterEgress)
+	}
 	egressDetachFunc := func() error {
 		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
@@ -740,6 +770,16 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 	if err := netlink.FilterAdd(filterIngress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	if c.isReload {
+		// make-before-break: the new generation's filter is attached above;
+		// because reload reuses the same BPF program, both flip handles point
+		// at the same program, so deleting the previous generation's flipped
+		// filter now leaves no datapath gap. Doing it eagerly (instead of
+		// waiting for the retiring generation's async teardown) prevents a
+		// stale TC handle from lingering on the interface and black-holing
+		// the datapath.
+		tryDeleteFlippedFilter(filterIngress)
 	}
 	ingressDetachFunc := func() error {
 		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
@@ -806,6 +846,21 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	}); err != nil {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
+	if c.isReload {
+		// make-before-break: delete the previous generation's flipped filter
+		// now that the new one is attached (reload shares the BPF program, so
+		// there is no datapath gap). Prevents a stale TC handle from
+		// black-holing the datapath. Mirrors the non-reload branch above.
+		filterIngressFlippedReload := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
+		filterIngressFlippedReload.Handle ^= 1
+		daens.WithBestEffort("delete flipped dae0peer ingress filter (reload)", func() error {
+			err := netlink.FilterDel(filterIngressFlippedReload)
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+				return nil
+			}
+			return err
+		})
+	}
 	detachFunc := func() error {
 		return daens.WithRequired("delete dae0peer ingress filter", func() error {
 			if err := netlink.FilterDel(filterDae0peerIngress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
@@ -839,6 +894,16 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	}
 	if err := netlink.FilterAdd(filterDae0Ingress); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+	}
+	if c.isReload {
+		// make-before-break: the new generation's filter is attached above;
+		// because reload reuses the same BPF program, both flip handles point
+		// at the same program, so deleting the previous generation's flipped
+		// filter now leaves no datapath gap. Doing it eagerly (instead of
+		// waiting for the retiring generation's async teardown) prevents a
+		// stale TC handle from lingering on the interface and black-holing
+		// the datapath.
+		tryDeleteFlippedFilter(filterDae0Ingress)
 	}
 	dae0DetachFunc := func() error {
 		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENODEV) {
