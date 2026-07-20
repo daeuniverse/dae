@@ -1140,10 +1140,20 @@ func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) bool {
 			if d == nil || d.Property() == nil {
 				continue
 			}
-			if oldDialer := oldDialers[d.Property().Name]; oldDialer != nil {
-				d.RestoreHealthSnapshot(oldDialer.ReloadHealthSnapshot())
-				hasOverlap = true
+			oldDialer := oldDialers[d.Property().Name]
+			if oldDialer == nil {
+				continue
 			}
+			hasOverlap = true // Both generations have this dialer; keep connections.
+			// If the health-check configuration changed, do not restore the
+			// inherited snapshot so the new dialer probes its (possibly changed)
+			// targets immediately, instead of deferring by one check_interval
+			// cycle (daeuniverse/dae#1037). Unchanged dialers keep the
+			// deferred-first-probe behavior.
+			if !d.CheckConfigEqual(oldDialer) {
+				continue
+			}
+			d.RestoreHealthSnapshot(oldDialer.ReloadHealthSnapshot())
 		}
 		group.EnsureReloadSelectionFloor(fallback)
 	}
