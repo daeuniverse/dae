@@ -124,6 +124,8 @@ type collection struct {
 	MovingAverage     time.Duration
 	LastProbe         DialerProbeObservationSnapshot
 	Alive             atomic.Bool
+	CheckTotal        atomic.Uint64
+	CheckFailureTotal atomic.Uint64
 }
 
 func newCollection() *collection {
@@ -845,6 +847,29 @@ func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
 	return d.mustGetCollection(typ).Latencies10
 }
 
+func (d *Dialer) GetCollectionState(typ *NetworkType) (alive bool, lastLatency, avg10, movingAvg time.Duration, hasLastLatency bool) {
+	d.collectionFineMu.Lock()
+	col := d.mustGetCollection(typ)
+	alive = col.Alive.Load()
+	movingAvg = col.MovingAverage
+	lastProbe := col.LastProbe
+	d.collectionFineMu.Unlock()
+	// Use LastProbe.Latency rather than Latencies10.LastLatency() so that
+	// timeout-penalty values (10 s injected on failure) are never surfaced
+	// as a real "last latency" reading.
+	if lastProbe.HasLatency {
+		lastLatency = lastProbe.Latency
+		hasLastLatency = true
+	}
+	avg10, _ = col.Latencies10.AvgLatency()
+	return
+}
+
+func (d *Dialer) GetCollectionCounters(typ *NetworkType) (checkTotal, checkFailureTotal uint64) {
+	col := d.mustGetCollection(typ)
+	return col.CheckTotal.Load(), col.CheckFailureTotal.Load()
+}
+
 // RegisterAliveDialerSet is thread-safe.
 func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
 	if a == nil {
@@ -1105,6 +1130,7 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 	const maxAttempts = 2
 	var bestLatency time.Duration
 	checkedAt := time.Now()
+	d.mustGetCollection(opts.networkType).CheckTotal.Add(1)
 
 	for i := 0; i < maxAttempts; i++ {
 		ctx, cancel := context.WithTimeout(d.ctx, Timeout)
@@ -1173,6 +1199,7 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 			Alive:     false,
 			Message:   err.Error(),
 		}
+		collection.CheckFailureTotal.Add(1)
 		d.collectionFineMu.Unlock()
 
 		// Failure: mark unavailable only if there's an actual error.

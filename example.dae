@@ -34,6 +34,17 @@ global {
     # Takes effect on fresh eBPF load or restart; same-port reload keeps the live map.
     bpf_conn_state_map_size: 262144
 
+    # Endpoint configuration for metrics and diagnostics.
+    # Set a listen address to enable the endpoint server (disabled by default).
+    #endpoint_listen_address: '0.0.0.0:5556'
+    #endpoint_username: ''
+    #endpoint_password: ''
+    # TLS permission policy: certificate must be 0640 or 0644; private key must be 0600.
+    #endpoint_tls_certificate: ''
+    #endpoint_tls_key: ''
+    #endpoint_prometheus_enabled: true
+    #endpoint_prometheus_path: /metrics
+
     # Socket mark for dae-originated traffic.
     # If omitted, dae auto-selects an internal mark to prevent UDP self-capture.
     # Set a non-zero value to override that mark.
