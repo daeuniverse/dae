@@ -3578,11 +3578,26 @@ func (c *ControlPlane) closeTail() error {
 
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
 
-	// Combine defer errors with core.Close error
+	// Combine defer errors with core.Close error.
+	//
+	// Guard core.Close() with recover(): it performs netlink/BPF teardown and
+	// can panic on rare kernel/state edge cases. closeTail() is invoked from an
+	// async goroutine (see the `go func() { done <- c.closeTail() }()` caller
+	// with a 5s timeout), so an unrecovered panic there would crash that
+	// goroutine and surface only as an opaque timeout — losing the root cause.
+	// Recovering here keeps the shutdown/cleanup path best-effort and logs the
+	// actual panic for diagnosis.
 	if c.core != nil {
-		if coreErr := c.core.Close(); coreErr != nil {
-			errs = append(errs, coreErr)
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil && c.log != nil {
+					c.log.Errorf("[Close] core.Close panicked (recovered): %v", r)
+				}
+			}()
+			if coreErr := c.core.Close(); coreErr != nil {
+				errs = append(errs, coreErr)
+			}
+		}()
 	}
 
 	// Note: ResetGlobalUdpState() is intentionally NOT called here.
