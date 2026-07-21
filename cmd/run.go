@@ -1134,6 +1134,35 @@ func configureTransparentHugePages(log *logrus.Logger, disable bool) {
 	}
 }
 
+func configuredPersistSubscriptionTags(subscriptions []config.KeyableString) map[string]struct{} {
+	tags := make(map[string]struct{})
+	for _, sub := range subscriptions {
+		tag, link := common.GetTagFromLinkLikePlaintext(string(sub))
+		link = strings.TrimSpace(link)
+		if tag != "" && (strings.HasPrefix(link, "http-file://") || strings.HasPrefix(link, "https-file://")) {
+			tags[tag] = struct{}{}
+		}
+	}
+	return tags
+}
+
+func removeStalePersistedSubscriptions(configDir string, configuredTags map[string]struct{}) error {
+	files, err := os.ReadDir(filepath.Join(configDir, "persist.d"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, file := range files {
+		tag := strings.TrimSuffix(file.Name(), ".sub")
+		if _, ok := configuredTags[tag]; ok {
+			continue
+		}
+		if err := os.Remove(filepath.Join(configDir, "persist.d", file.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string, prepareOnly bool) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
@@ -1229,13 +1258,13 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	if len(conf.Subscription) > 0 {
 		log.Infoln("Fetching subscriptions...")
 	}
+	configuredPersistTags := configuredPersistSubscriptionTags(conf.Subscription)
 	// Parallelize subscription resolution to improve startup performance.
 	// Use a semaphore to limit concurrency and avoid overwhelming the network.
 	type subscriptionResult struct {
 		tag   string
 		nodes []string
 		err   error
-		sub   config.KeyableString
 	}
 	numSubscriptions := len(conf.Subscription)
 	if numSubscriptions > 0 {
@@ -1249,13 +1278,14 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 				sem <- struct{}{}        // Acquire semaphore
 				defer func() { <-sem }() // Release semaphore
 
+				configuredTag, _ := common.GetTagFromLinkLikePlaintext(string(s))
 				subDialer := direct.SymmetricDirect
 				if daeDNSRouter != nil {
 					wrappedDialer, wrapErr := daeDNSRouter.WrapSubscriptionDialer(subDialer, string(s))
 					if wrapErr != nil {
 						results <- subscriptionResult{
+							tag: configuredTag,
 							err: wrapErr,
-							sub: s,
 						}
 						return
 					}
@@ -1267,7 +1297,6 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 					tag:   tag,
 					nodes: nodes,
 					err:   err,
-					sub:   s,
 				}
 			}(sub)
 		}
@@ -1276,7 +1305,11 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		for range numSubscriptions {
 			result := <-results
 			if result.err != nil {
-				log.Warnf(`failed to resolve subscription "%v": %v`, result.sub, result.err)
+				tag := result.tag
+				if tag == "" {
+					tag = "<untagged>"
+				}
+				log.WithField("subscription", tag).Error("failed to resolve subscription")
 				resolvingfailed = true
 			}
 			if len(result.nodes) > 0 {
@@ -1287,19 +1320,9 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		log.Infof("Subscriptions fetched in %v", time.Since(stageStart))
 	}
 
-	// Delete all files in persist.d that are not in tagToNodeList
-	files, err := os.ReadDir(filepath.Join(filepath.Dir(cfgFile), "persist.d"))
-	if err != nil && !os.IsNotExist(err) {
+	// Delete caches only when their persistent subscription was removed from config.
+	if err := removeStalePersistedSubscriptions(filepath.Dir(cfgFile), configuredPersistTags); err != nil {
 		return nil, err
-	}
-	for _, file := range files {
-		tag := strings.TrimSuffix(file.Name(), ".sub")
-		if _, ok := tagToNodeList[tag]; !ok {
-			err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name()))
-			if err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	if len(tagToNodeList) == 0 {

@@ -181,7 +181,12 @@ node {
     mylink: 'ss://LINK'
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
-    chains: 'tuic://LINK -> vmess://LINK'
+    # Proxy chains follow traffic direction: entry node -> exit node.
+    # Only two-node chains are supported. The destination sees the exit node's IP.
+    chains: 'tuic://ENTRY_LINK -> vmess://EXIT_LINK'
+    # A group entry chain supports exactly one group followed by one concrete exit node.
+    # The entry group cannot contain chain nodes.
+    group_entry_chain: 'group(group2) -> vmess://US_EXIT_LINK'
     hysteria2: 'hysteria2://password@server-ip:port/?sni=domain'
 }
 
