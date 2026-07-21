@@ -559,14 +559,43 @@ func newControlPlaneWithContextOptions(
 			}, core.outboundAliveChangeCallback(1, disableKernelAliveCallback)),
 	}
 
-	// Filter out groups.
-	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList)
+	// Group-entry chains depend on a group selector, so defer only those nodes
+	// until their entry groups have been built. Ordinary nodes and node chains
+	// keep the existing construction path.
+	baseNodes := make(map[string][]string, len(tagToNodeList))
+	var groupChains []common.GroupChain
+	for subscriptionTag, nodes := range tagToNodeList {
+		for _, node := range nodes {
+			chain, matched, parseErr := common.ParseGroupChain(node)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if matched {
+				groupChains = append(groupChains, *chain)
+				continue
+			}
+			baseNodes[subscriptionTag] = append(baseNodes[subscriptionTag], node)
+		}
+	}
+	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, baseNodes)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	deferFuncs = append(deferFuncs, func() error {
 		dialer.CleanupTransportCacheNamespace(option.TransportCacheNamespace)
 		return nil
 	})
-	for _, group := range groups {
+	groupIndex := make(map[string]int, len(groups))
+	for i := range groups {
+		if _, exists := groupIndex[groups[i].Name]; exists {
+			return nil, fmt.Errorf("duplicated outbound name: %v", groups[i].Name)
+		}
+		groupIndex[groups[i].Name] = i
+	}
+	builtGroups := make([]*outbound.DialerGroup, len(groups))
+	buildGroup := func(i int) (*outbound.DialerGroup, error) {
+		if builtGroups[i] != nil {
+			return builtGroups[i], nil
+		}
+		group := groups[i]
 		// Parse policy.
 		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group)
 		if err != nil {
@@ -603,8 +632,57 @@ func newControlPlaneWithContextOptions(
 		}
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
-			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
-		outbounds = append(outbounds, dialerGroup)
+			core.outboundAliveChangeCallback(uint8(i+int(consts.OutboundUserDefinedMin)), disableKernelAliveCallback))
+		builtGroups[i] = dialerGroup
+		return dialerGroup, nil
+	}
+
+	entryGroups := make(map[string]*outbound.DialerGroup, len(groupChains))
+	for _, chain := range groupChains {
+		i, ok := groupIndex[chain.EntryGroup]
+		if !ok {
+			return nil, fmt.Errorf("group chain %q references unknown group %q", chain.Name, chain.EntryGroup)
+		}
+		entryGroup, err := buildGroup(i)
+		if err != nil {
+			return nil, err
+		}
+		for _, entryDialer := range entryGroup.Dialers {
+			_, linklike := common.GetTagFromLinkLikePlaintext(entryDialer.Property().Link)
+			if strings.Contains(linklike, "->") {
+				return nil, fmt.Errorf("group chain %q entry group %q contains chained node %q", chain.Name, chain.EntryGroup, entryDialer.Property().Name)
+			}
+		}
+		entryGroups[chain.EntryGroup] = entryGroup
+	}
+	for _, chain := range groupChains {
+		chainDialer, err := outbound.NewGroupChainDialer(context.Background(), option, entryGroups[chain.EntryGroup], chain)
+		if err != nil {
+			return nil, err
+		}
+		dialerSet.Add(chainDialer, "")
+	}
+	// Re-evaluate referenced entry filters after chain nodes exist. If an entry
+	// group would select any chain (including itself), reject the generation.
+	for name := range entryGroups {
+		i := groupIndex[name]
+		dialers, _, err := dialerSet.FilterAndAnnotate(groups[i].Filter, groups[i].FilterAnnotation)
+		if err != nil {
+			return nil, fmt.Errorf(`failed to validate group "%v": %w`, name, err)
+		}
+		for _, entryDialer := range dialers {
+			_, linklike := common.GetTagFromLinkLikePlaintext(entryDialer.Property().Link)
+			if strings.Contains(linklike, "->") {
+				return nil, fmt.Errorf("group chain entry group %q contains chained node %q", name, entryDialer.Property().Name)
+			}
+		}
+	}
+	for i := range groups {
+		group, err := buildGroup(i)
+		if err != nil {
+			return nil, err
+		}
+		outbounds = append(outbounds, group)
 	}
 
 	registeredDialerCallbacks := make(map[*dialer.Dialer]struct{})
@@ -675,6 +753,18 @@ func newControlPlaneWithContextOptions(
 
 	// Get referenced outbounds to limit health checks.
 	referencedOutbounds := builder.GetReferencedOutbounds()
+	// A group used as a chain entry is a health dependency of the routed outer
+	// group even though routing rules do not name it directly.
+	for _, group := range outbounds {
+		if _, referenced := referencedOutbounds[group.Name]; !referenced {
+			continue
+		}
+		for _, d := range group.Dialers {
+			if dependency, ok := d.Dialer.(interface{ ReferencedGroupName() string }); ok {
+				referencedOutbounds[dependency.ReferencedGroupName()] = struct{}{}
+			}
+		}
+	}
 	if len(referencedOutbounds) > 0 {
 		var names []string
 		for name := range referencedOutbounds {
@@ -1141,7 +1231,12 @@ func (c *ControlPlane) InheritDialerHealthFrom(previous *ControlPlane) bool {
 				continue
 			}
 			if oldDialer := oldDialers[d.Property().Name]; oldDialer != nil {
+				if _, isChain, _ := common.ParseProxyChain(d.Property().Link); isChain &&
+					d.Property().Link != oldDialer.Property().Link {
+					continue
+				}
 				d.RestoreHealthSnapshot(oldDialer.ReloadHealthSnapshot())
+				outbound.RestoreGroupChainSelection(d.Dialer, oldDialer.Dialer)
 				hasOverlap = true
 			}
 		}

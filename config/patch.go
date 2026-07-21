@@ -6,12 +6,13 @@
 package config
 
 import (
-	"github.com/daeuniverse/dae/common"
-	"github.com/sirupsen/logrus"
+	"fmt"
 	"strings"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/sirupsen/logrus"
 )
 
 type patch func(params *Config) error
@@ -19,6 +20,7 @@ type patch func(params *Config) error
 var patches = []patch{
 	patchBootstrapResolver,
 	patchTcpCheckHttpMethod,
+	patchProxyChains,
 	patchEmptyDns,
 	patchMustOutbound,
 }
@@ -32,6 +34,30 @@ func patchTcpCheckHttpMethod(params *Config) error {
 	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
 		logrus.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
 		params.Global.TcpCheckHttpMethod = "CONNECT"
+	}
+	return nil
+}
+
+func patchProxyChains(params *Config) error {
+	groups := make(map[string]struct{}, len(params.Group))
+	for _, group := range params.Group {
+		groups[group.Name] = struct{}{}
+	}
+	for _, node := range params.Node {
+		name, _ := common.GetTagFromLinkLikePlaintext(string(node))
+		if _, _, err := common.ParseProxyChain(string(node)); err != nil {
+			return fmt.Errorf("proxy chain %q: %w", name, err)
+		}
+		chain, matched, err := common.ParseGroupChain(string(node))
+		if err != nil {
+			return fmt.Errorf("proxy chain %q: %w", name, err)
+		}
+		if !matched {
+			continue
+		}
+		if _, ok := groups[chain.EntryGroup]; !ok {
+			return fmt.Errorf("group chain %q references unknown group %q", chain.Name, chain.EntryGroup)
+		}
 	}
 	return nil
 }

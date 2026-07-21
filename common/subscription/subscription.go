@@ -141,6 +141,79 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
+func validateSubscriptionNodes(log *logrus.Logger, tag string, nodes []string) []string {
+	valid := make([]string, 0, len(nodes))
+	for i, node := range nodes {
+		_, matched, err := common.ParseProxyChain(node)
+		if err == nil && matched {
+			_, groupChain, groupErr := common.ParseGroupChain(node)
+			if groupChain {
+				if groupErr != nil {
+					err = groupErr
+				} else {
+					err = fmt.Errorf("group entry chains are not allowed in subscriptions")
+				}
+			}
+		}
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"subscription": tag,
+				"node_index":   i,
+				"reason":       err.Error(),
+			}).Error("skip invalid subscription node")
+			continue
+		}
+		valid = append(valid, node)
+	}
+	return valid
+}
+
+func resolveSubscriptionContent(log *logrus.Logger, tag string, b []byte) []string {
+	nodes, err := ResolveSubscriptionAsSIP008(log, b)
+	if err != nil {
+		log.Debugln(err)
+		nodes = ResolveSubscriptionAsBase64(log, b)
+	}
+	return validateSubscriptionNodes(log, tag, nodes)
+}
+
+func readPersistedSubscription(configDir, tag string) ([]byte, error) {
+	return ResolveFile(&url.URL{Host: "persist.d/" + tag + ".sub"}, configDir)
+}
+
+func writePersistedSubscription(configDir, tag string, b []byte) (err error) {
+	dir := filepath.Join(configDir, "persist.d")
+	path := filepath.Join(dir, tag+".sub")
+	if err := common.EnsureFileInSubDir(path, dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".dae-sub-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if err = tmp.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err = tmp.Write(b); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
 	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
@@ -150,7 +223,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	if err != nil {
 		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
 	}
-	log.Debugf("ResolveSubscription: %v", subscription)
+	log.WithField("subscription", tag).Debug("ResolveSubscription")
 	var (
 		b    []byte
 		req  *http.Request
@@ -158,14 +231,15 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	)
 
 	persistToFile := false
+	fetchedRemote := false
 
 	switch u.Scheme {
 	case "file":
 		b, err = ResolveFile(u, configDir)
 		if err != nil {
-			return "", nil, err
+			return tag, nil, err
 		}
-		goto resolve
+		goto validate
 	case "http-file", "https-file":
 		if len(tag) == 0 {
 			return "", nil, fmt.Errorf("tag is required for http-file/https-file subscription")
@@ -176,57 +250,48 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	}
 	req, err = http.NewRequest("GET", subscription, nil)
 	if err != nil {
-		return "", nil, err
+		return tag, nil, err
 	}
 	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
 	resp, err = client.Do(req)
 	if err != nil {
 		if persistToFile {
 			log.Warnln("failed to fetch subscription, try to read from file")
-			u.Host = "persist.d/" + tag + ".sub"
-			u.Path = ""
-			b, err = ResolveFile(u, configDir)
+			b, err = readPersistedSubscription(configDir, tag)
 
 			if err != nil {
-				return "", nil, err
+				return tag, nil, err
 			}
-			goto resolve
+			goto validate
 		}
 
-		return "", nil, err
+		return tag, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max subscription size
 	if err != nil {
-		return "", nil, err
+		return tag, nil, err
 	}
+	fetchedRemote = true
 
-	if persistToFile {
-		path := filepath.Join(configDir, "persist.d")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			err := os.MkdirAll(path, 0700)
-			if err != nil {
-				return "", nil, err
+validate:
+	nodes = resolveSubscriptionContent(log, tag, b)
+	if len(nodes) == 0 {
+		if persistToFile && fetchedRemote {
+			log.WithField("subscription", tag).Error("subscription contains no valid nodes; use last valid cache")
+			cached, cacheErr := readPersistedSubscription(configDir, tag)
+			if cacheErr == nil {
+				if cachedNodes := resolveSubscriptionContent(log, tag, cached); len(cachedNodes) > 0 {
+					return tag, cachedNodes, nil
+				}
 			}
 		}
-
-		path = filepath.Join(path, tag+".sub")
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			return "", nil, err
-		}
-		defer func() { _ = file.Close() }()
-
-		_, err = file.Write(b)
-		if err != nil {
-			return "", nil, err
+		return tag, nil, fmt.Errorf("subscription %q contains no valid nodes", tag)
+	}
+	if persistToFile && fetchedRemote {
+		if err := writePersistedSubscription(configDir, tag, b); err != nil {
+			return tag, nil, err
 		}
 	}
-resolve:
-	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
-		return tag, nodes, nil
-	} else {
-		log.Debugln(err)
-	}
-	return tag, ResolveSubscriptionAsBase64(log, b), nil
+	return tag, nodes, nil
 }

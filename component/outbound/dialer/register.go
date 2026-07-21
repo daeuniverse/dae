@@ -8,13 +8,16 @@ package dialer
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/daedns"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/dialer/stickyip"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/sirupsen/logrus"
 )
@@ -37,7 +40,7 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 	scopedBaseDialer := scopeTransportCacheDialer(baseDialer, gOption.TransportCacheNamespace)
 
 	// First, create the protocol dialer with direct dialer to get the property
-	d, _p, err := D.NewNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
+	d, _p, err := newNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +61,7 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 			return nil, err
 		}
 		scopedBaseDialer = scopeTransportCacheDialer(baseDialer, gOption.TransportCacheNamespace)
-		d, _p, err = D.NewNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
+		d, _p, err = newNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +93,7 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 		scopedStickyWrapper := scopeTransportCacheDialer(stickyWrapper, gOption.TransportCacheNamespace)
 
 		// Re-create the protocol dialer with sticky wrapper as base
-		d, _p, err = D.NewNetproxyDialerFromLink(scopedStickyWrapper, &gOption.ExtraOption, normalizedLink)
+		d, _p, err = newNetproxyDialerFromLink(scopedStickyWrapper, &gOption.ExtraOption, normalizedLink)
 		if err != nil {
 			return nil, err
 		}
@@ -115,6 +118,37 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 	}
 
 	return daeDialer, nil
+}
+
+func newNetproxyDialerFromLink(base netproxy.Dialer, option *D.ExtraOption, link string) (netproxy.Dialer, *D.Property, error) {
+	chain, matched, err := common.ParseProxyChain(link)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !matched {
+		return D.NewNetproxyDialerFromLink(base, option, link)
+	}
+	if _, isGroupChain, _ := common.ParseGroupChain(link); isGroupChain {
+		return nil, nil, fmt.Errorf("group entry chains must be built by the control plane")
+	}
+	entry, entryProperty, err := D.NewNetproxyDialerFromLink(base, option, chain.EntryLink)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create entry node: %w", err)
+	}
+	exit, exitProperty, err := D.NewNetproxyDialerFromLink(EnsureNetConn(entry), option, chain.ExitLink)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create exit node: %w", err)
+	}
+	property := &D.Property{
+		Name:     entryProperty.Name + "->" + exitProperty.Name,
+		Address:  entryProperty.Address + "->" + exitProperty.Address,
+		Protocol: entryProperty.Protocol + "->" + exitProperty.Protocol,
+		Link:     chain.Link,
+	}
+	if chain.Name != "" {
+		property.Name = chain.Name
+	}
+	return exit, property, nil
 }
 
 // needsStickyIpCaching checks if the given address needs sticky IP caching.

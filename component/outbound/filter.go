@@ -38,6 +38,14 @@ type DialerSet struct {
 	nodeToTagMap map[*dialer.Dialer]string
 }
 
+func (s *DialerSet) Add(d *dialer.Dialer, subscriptionTag string) {
+	if d == nil {
+		return
+	}
+	s.dialers = append(s.dialers, d)
+	s.nodeToTagMap[d] = subscriptionTag
+}
+
 func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
 	return NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList)
 }
@@ -49,10 +57,13 @@ func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOpti
 		nodeToTagMap: make(map[*dialer.Dialer]string),
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
-		for _, node := range nodes {
+		for nodeIndex, node := range nodes {
 			d, err := dialer.NewFromLinkContext(ctx, option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
-				s.log.Infof("failed to parse node: %v", err)
+				s.log.WithFields(logrus.Fields{
+					"subscription": subscriptionTag,
+					"node_index":   nodeIndex,
+				}).Error("failed to parse node")
 				continue
 			}
 			s.dialers = append(s.dialers, d)
