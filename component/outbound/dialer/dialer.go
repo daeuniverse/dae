@@ -289,6 +289,18 @@ func (d *Dialer) CloneWithGlobalOption(option *GlobalOption) *Dialer {
 
 // CloneWithGlobalOptionContext returns a new dialer instance initialized with option.
 func (d *Dialer) CloneWithGlobalOptionContext(ctx context.Context, option *GlobalOption) *Dialer {
+	if cloner, ok := d.Dialer.(interface {
+		CloneWithGlobalOption(context.Context, *GlobalOption) (netproxy.Dialer, error)
+	}); ok {
+		cloneDialer, err := cloner.CloneWithGlobalOption(ctx, option)
+		if err == nil {
+			return NewDialerContext(ctx, cloneDialer, option, d.InstanceOption, cloneProperty(d.property))
+		}
+		if option != nil && option.Log != nil {
+			option.Log.WithError(err).WithField("dialer", d.Property().Name).
+				Warnln("Failed to clone custom dialer; falling back to shared dialer instance")
+		}
+	}
 	if d.property != nil && d.property.Link != "" {
 		clone, err := NewFromLinkWithProxyCacheContext(ctx, option, d.InstanceOption, d.property.Link, d.property.SubscriptionTag, NewProxyIpCache())
 		if err == nil {

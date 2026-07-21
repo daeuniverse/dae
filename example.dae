@@ -181,7 +181,12 @@ node {
     mylink: 'ss://LINK'
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
-    chains: 'tuic://LINK -> vmess://LINK'
+    # Proxy chains keep endpoint -> relay order. The destination sees the endpoint's IP.
+    chains: 'vmess://ENDPOINT_LINK -> tuic://RELAY_LINK'
+    # A group entry chain uses one concrete endpoint followed by one entry group.
+    # The entry group cannot contain chain nodes.
+    # Chain nodes are selected by name(), not subtag().
+    group_entry_chain: 'vmess://US_ENDPOINT_LINK -> group(group2)'
     hysteria2: 'hysteria2://password@server-ip:port/?sni=domain'
 }
 

@@ -729,6 +729,42 @@ func TestInheritDialerHealthFromReturnsFalseWhenNoOverlap(t *testing.T) {
 	}
 }
 
+func TestInheritDialerHealthFromSkipsChangedChainLink(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	option := &dialer.GlobalOption{Log: logger, CheckInterval: 30 * time.Second}
+	newTestDialer := func(link string) *dialer.Dialer {
+		return dialer.NewDialer(direct.SymmetricDirect, option, dialer.InstanceOption{}, &dialer.Property{
+			Property: D.Property{Name: "chain", Link: link},
+		})
+	}
+	oldDialer := newTestDialer("vmess://hk -> vmess://us")
+	defer func() { _ = oldDialer.Close() }()
+	newDialer := newTestDialer("vmess://sg -> vmess://jp")
+	defer func() { _ = newDialer.Close() }()
+	newGroup := func(d *dialer.Dialer) *outbound.DialerGroup {
+		return outbound.NewDialerGroup(option, "proxy", []*dialer.Dialer{d}, []*dialer.Annotation{{}},
+			outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+			func(bool, *dialer.NetworkType, bool) {})
+	}
+	oldGroup := newGroup(oldDialer)
+	defer func() { _ = oldGroup.Close() }()
+	newGroupValue := newGroup(newDialer)
+	defer func() { _ = newGroupValue.Close() }()
+	tcp4 := &dialer.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	oldDialer.ReportUnavailableForced(tcp4, nil)
+	oldDialer.NotifyHealthCheckResult(tcp4, false, false)
+
+	oldCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{oldGroup}}}
+	newCP := &ControlPlane{controlPlaneGenerationState: controlPlaneGenerationState{outbounds: []*outbound.DialerGroup{newGroupValue}}}
+	if newCP.InheritDialerHealthFrom(oldCP) {
+		t.Fatal("changed chain link must not inherit old health")
+	}
+	if !newDialer.MustGetAlive(tcp4) {
+		t.Fatal("changed chain unexpectedly inherited unavailable health")
+	}
+}
+
 func TestWaitDNSUpstreamsReadyReturnsWhenChannelCloses(t *testing.T) {
 	cp := &ControlPlane{
 		ctx:   context.Background(),
