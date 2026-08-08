@@ -3104,6 +3104,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 							routingResult: dnsRoutingResult,
 						}
 
+						// Honor must_rules: if routing marked this flow as must, bypass the
+						// DNS controller and fall through to normal UDP forwarding.
+						// This restores the v1.x semantics where Must>0 forces isDns=false.
+						if dnsRoutingResult.Must > 0 {
+							goto skipDnsFastPath
+						}
+
 						dnsController := c.ActiveDnsController()
 						if dnsController == nil {
 							return
@@ -3165,6 +3172,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 				}
 
+			skipDnsFastPath:
 				if !c.udpRouteScopeSensitive {
 					if ue, ok := DefaultUdpEndpointPool.Get(flowDecision.CachedRoutingEndpointKey()); ok {
 						if cached, cacheHit := ue.GetCachedRoutingResult(realDst, unix.IPPROTO_UDP); cacheHit {
