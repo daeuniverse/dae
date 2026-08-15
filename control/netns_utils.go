@@ -468,6 +468,16 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	_ = sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
 	_ = sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
 
+	// Reverse-path filtering in daens can reject locally generated proxied IPv4
+	// traffic before the TProxy socket receives it. Linux uses the stricter of
+	// conf/all and conf/<interface>, so both values must be disabled here.
+	if err = sysctl.Keyf("net.ipv4.conf.all.rp_filter").Set("0", false); err != nil {
+		return fmt.Errorf("failed to set rp_filter for all in daens: %v", err)
+	}
+	if err = sysctl.Keyf("net.ipv4.conf.%s.rp_filter", NsVethName).Set("0", false); err != nil {
+		return fmt.Errorf("failed to set rp_filter for dae0peer: %v", err)
+	}
+
 	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
 	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
 	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", NsVethName).Set("1", false); err != nil {
