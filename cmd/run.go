@@ -1069,15 +1069,19 @@ func shutdownAfterSignalWithHandoff(
 		}
 	}
 
-	if fastExit {
-		log.Infoln("[Shutdown] Fast exit enabled; skipping in-process netns and control-plane teardown. Residual kernel state will be purged on next startup.")
-		return nil
-	}
-
+	// Always tear down the dae netns first, even on fast exit. Closing the
+	// netns removes the dae0/dae0peer netkit (or veth) pair and the named
+	// netns /run/netns/daens, and is cheap. Leaving it behind leaks kernel
+	// state after every stop and can break a subsequent restart.
 	if netns != nil {
 		if e := netns.Close(); e != nil {
 			log.Warnf("close dae netns: %v", e)
 		}
+	}
+
+	if fastExit {
+		log.Infoln("[Shutdown] Fast exit enabled; skipping in-process control-plane teardown. Residual connection state will be purged on next startup.")
+		return nil
 	}
 
 	var closeErrs []error
