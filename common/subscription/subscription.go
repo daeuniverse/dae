@@ -141,14 +141,71 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
+func resolveSubscriptionForPersist(log *logrus.Logger, b []byte) ([]string, error) {
+	nodes, err := ResolveSubscriptionAsSIP008(log, b)
+	if err == nil {
+		if len(nodes) == 0 {
+			return nil, fmt.Errorf("subscription contains no nodes")
+		}
+		return nodes, nil
+	}
+	log.Debugln(err)
+
+	nodes = ResolveSubscriptionAsBase64(log, b)
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("subscription contains no valid nodes")
+	}
+	return nodes, nil
+}
+
+func resolvePersistedSubscription(u *url.URL, configDir, tag string) ([]byte, error) {
+	persisted := *u
+	persisted.Host = "persist.d/" + tag + ".sub"
+	persisted.Path = ""
+	return ResolveFile(&persisted, configDir)
+}
+
+func writeSubscriptionAtomically(path string, b []byte) (err error) {
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := file.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err = file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err = file.Write(b); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
+}
+
 func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
-	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
-	/// Parse url.
 	u, err := url.Parse(subscription)
 	if err != nil {
-		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
+		return tag, nil, fmt.Errorf("failed to parse subscription %q: %w", subscription, err)
 	}
 	log.Debugf("ResolveSubscription: %v", subscription)
 	var (
@@ -183,45 +240,61 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	if err != nil {
 		if persistToFile {
 			log.Warnln("failed to fetch subscription, try to read from file")
-			u.Host = "persist.d/" + tag + ".sub"
-			u.Path = ""
-			b, err = ResolveFile(u, configDir)
-
+			b, err = resolvePersistedSubscription(u, configDir, tag)
 			if err != nil {
 				return "", nil, err
 			}
 			goto resolve
 		}
-
 		return "", nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, err = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max subscription size
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		statusErr := fmt.Errorf("subscription request returned HTTP status %s", resp.Status)
+		if persistToFile {
+			log.Warnf("%v, try to read from file", statusErr)
+			b, err = resolvePersistedSubscription(u, configDir, tag)
+			if err != nil {
+				return "", nil, fmt.Errorf("%v; failed to read persisted subscription: %w", statusErr, err)
+			}
+			goto resolve
+		}
+		return "", nil, statusErr
+	}
+
+	b, err = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return "", nil, err
 	}
 
 	if persistToFile {
-		path := filepath.Join(configDir, "persist.d")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			err := os.MkdirAll(path, 0700)
+		resolvedNodes, resolveErr := resolveSubscriptionForPersist(log, b)
+		if resolveErr != nil {
+			log.Warnf("fetched subscription is invalid (%v), try to read from file", resolveErr)
+			b, err = resolvePersistedSubscription(u, configDir, tag)
 			if err != nil {
+				return "", nil, fmt.Errorf("fetched subscription is invalid: %v; failed to read persisted subscription: %w", resolveErr, err)
+			}
+			goto resolve
+		}
+
+		persistDir := filepath.Join(configDir, "persist.d")
+		if _, statErr := os.Stat(persistDir); os.IsNotExist(statErr) {
+			if err := os.MkdirAll(persistDir, 0700); err != nil {
 				return "", nil, err
 			}
+		} else if statErr != nil {
+			return "", nil, statErr
 		}
 
-		path = filepath.Join(path, tag+".sub")
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
+		persistPath := filepath.Join(persistDir, tag+".sub")
+		if err = writeSubscriptionAtomically(persistPath, b); err != nil {
 			return "", nil, err
 		}
-		defer func() { _ = file.Close() }()
-
-		_, err = file.Write(b)
-		if err != nil {
-			return "", nil, err
-		}
+		return tag, resolvedNodes, nil
 	}
+
 resolve:
 	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
 		return tag, nodes, nil
