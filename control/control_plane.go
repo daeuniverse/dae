@@ -1617,7 +1617,8 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			if isIPLikeDomain(domain) {
 				break
 			}
-			if c.dnsController.HasDnsKnowledge(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr()))) {
+			dnsController := c.ActiveDnsController()
+			if dnsController != nil && dnsController.HasDnsKnowledge(dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr()))) {
 				// Has A/AAAA records. It is a real domain.
 				dialMode = consts.DialMode_Domain
 				shouldReroute = true
