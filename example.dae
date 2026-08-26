@@ -312,7 +312,8 @@ group {
         # Randomly select a node from the group for every connection.
         #policy: random
 
-        # Select the first node from the group for every connection.
+        # Always select the first node from the group, regardless of alive state.
+        # No alive check or automatic fallback is performed if that node is unavailable.
         #policy: fixed(0)
 
         # Select the node with min last latency from the group for every connection.
