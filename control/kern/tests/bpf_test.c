@@ -144,7 +144,7 @@ SEC("tc/check/dport_mismatch")
 int testcheck_dport_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -188,7 +188,7 @@ SEC("tc/check/ipset_match")
 int testcheck_ipset_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(100,64,0,2),
 				      19233, 80);
 }
@@ -276,7 +276,7 @@ SEC("tc/check/source_ipset_match")
 int testcheck_source_ipset_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,50,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
@@ -394,7 +394,7 @@ SEC("tc/check/sport_mismatch")
 int testcheck_sport_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -549,7 +549,7 @@ int testsetup_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb
 SEC("tc/check/wan_egress_tcp_non_syn_stateless_passthrough")
 int testcheck_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
 {
-	return check_status_and_mark(skb, TC_ACT_OK, 0);
+	return check_status_and_mark(skb, TC_ACT_PIPE, 0);
 }
 
 SEC("tc/pktgen/wan_egress_tcp_syn_redirect_track")
@@ -857,7 +857,7 @@ int testsetup_wan_egress_udp_non_initial_fragment_passthrough(struct __sk_buff *
 SEC("tc/check/wan_egress_udp_non_initial_fragment_passthrough")
 int testcheck_wan_egress_udp_non_initial_fragment_passthrough(struct __sk_buff *skb)
 {
-	return check_status_and_mark(skb, TC_ACT_OK, 0);
+	return check_status_and_mark(skb, TC_ACT_PIPE, 0);
 }
 
 SEC("tc/pktgen/wan_egress_direct_mark_reroute")
@@ -1030,7 +1030,7 @@ SEC("tc/check/l4proto_mismatch")
 int testcheck_l4proto_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -1102,7 +1102,7 @@ SEC("tc/check/ipversion_mismatch")
 int testcheck_ipversion_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -1215,7 +1215,7 @@ SEC("tc/check/mac_mismatch")
 int testcheck_mac_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -1329,7 +1329,7 @@ SEC("tc/check/dscp_mismatch")
 int testcheck_dscp_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -1366,7 +1366,7 @@ SEC("tc/check/dscp_ipv6_mismatch")
 int testcheck_dscp_ipv6_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv6_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      0x20010db8, 0, 0, 0x10,
 				      0x26064700, 0, 0, 0x1111,
 				      19233, 79);
@@ -1607,7 +1607,7 @@ SEC("tc/check/and_mismatch")
 int testcheck_and_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 2333);
 }
@@ -1644,7 +1644,7 @@ SEC("tc/check/not_match")
 int testcheck_not_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_OK,
+				      TC_ACT_PIPE,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }

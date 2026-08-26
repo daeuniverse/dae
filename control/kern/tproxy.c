@@ -2511,7 +2511,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			scratch->flag[1] = IpVersionType_6;
 		scratch->flag[6] = tuples->dscp;
 		if (pid_is_control_plane(skb, &pid_pname))
-			return TC_ACT_OK;
+			return TC_ACT_PIPE;
 		if (pid_pname)
 			__builtin_memcpy(&scratch->flag[2], pid_pname->pname,
 					 TASK_COMM_LEN);
@@ -2569,7 +2569,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 
 		if (!tcp_conn) {
 			if (outbound == OUTBOUND_DIRECT && mark == 0)
-				return TC_ACT_OK;
+				return TC_ACT_PIPE;
 			return TC_ACT_SHOT;
 		}
 
@@ -2591,7 +2591,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			0, NULL, 0);
 
 		if (!tcp_conn || !tcp_conn->meta.data.has_routing)
-			return TC_ACT_OK;
+			return TC_ACT_PIPE;
 
 		outbound = tcp_conn->meta.data.outbound;
 		mark = tcp_conn->meta.data.mark;
@@ -2607,7 +2607,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 		bpf_printk("GO OUTBOUND_DIRECT");
 #endif
 		skb->mark = mark;
-		return TC_ACT_OK;
+		return TC_ACT_PIPE;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK");
@@ -2666,14 +2666,14 @@ do_tproxy_wan_egress_udp(struct __sk_buff *skb, __u32 link_h_len,
 	scratch->flag[6] = tuples->dscp;
 
 	if (pid_is_control_plane(skb, &pid_pname))
-		return TC_ACT_OK;
+		return TC_ACT_PIPE;
 
 	if (!is_short_lived_udp_traffic(&tuples->five)) {
 		udp_conn_state = mark_udp_seen(&tuples->five, false,
 					       NULL, NULL, NULL, NULL,
 					       0, NULL, 0);
 		if (udp_conn_state && udp_conn_state->is_wan_ingress_direction)
-			return TC_ACT_OK;
+			return TC_ACT_PIPE;
 
 		if (udp_conn_state && udp_conn_state->meta.data.has_routing) {
 			outbound = udp_conn_state->meta.data.outbound;
@@ -2747,7 +2747,7 @@ fast_path_skip_routing:
 #endif
 
 	if (!wan_egress_needs_control_plane(outbound, mark))
-		return TC_ACT_OK;
+		return TC_ACT_PIPE;
 	else if (unlikely(outbound == OUTBOUND_BLOCK))
 		return TC_ACT_SHOT;
 
@@ -2774,10 +2774,16 @@ fast_path_skip_routing:
 }
 
 // Per-CPU scratch to stay under 512-byte stack limit across the call chain.
+//
+// Pass-through paths return TC_ACT_PIPE, not TC_ACT_OK, so that other filters
+// attached to the same clsact qdisc still get to see the packet: cls_bpf maps
+// TC_ACT_PIPE to TC_ACT_UNSPEC, which is the only return value that lets
+// __tcf_classify() continue down the filter chain. This matches what
+// wan_ingress and lan_egress already do.
 static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, __u32 link_h_len)
 {
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
-		return TC_ACT_OK;
+		return TC_ACT_PIPE;
 
 	__u32 scratch_key = 0;
 	struct parsed_packet *pkt =
@@ -2795,7 +2801,7 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, __u32 link_h_l
 			bpf_printk("wan_egress parse error: %d, dropping", ret);
 			return TC_ACT_SHOT;
 		}
-		return TC_ACT_OK;
+		return TC_ACT_PIPE;
 	}
 
 	if (pkt->l4proto == IPPROTO_TCP)
@@ -2804,7 +2810,7 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, __u32 link_h_l
 	if (pkt->l4proto == IPPROTO_UDP)
 		return do_tproxy_wan_egress_udp(skb, link_h_len, &pkt->tuples,
 						&pkt->ethh, &pkt->udph);
-	return TC_ACT_OK;
+	return TC_ACT_PIPE;
 }
 
 SEC("tc/wan_egress_l2")
