@@ -528,25 +528,30 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 				uploadRecord:   c.runtimeUploadRecorder(),
 				downloadRecord: c.runtimeDownloadRecorder(),
 			}
-			dnsController := c.ActiveDnsController()
-			if dnsController == nil {
-				return fmt.Errorf("dns controller is not available")
-			}
-			if err := dnsController.Handle_(c.dnsRequestContext(c.ctx, dnsController), dnsMessage, req); err != nil {
-				if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+			// Honor must_rules: if routing marked this flow as must, bypass the
+			// DNS controller and fall through to normal UDP forwarding.
+			// This restores the v1.x semantics where Must>0 forces isDns=false.
+			if routingResult.Must == 0 {
+				dnsController := c.ActiveDnsController()
+				if dnsController == nil {
+					return fmt.Errorf("dns controller is not available")
+				}
+				if err := dnsController.Handle_(c.dnsRequestContext(c.ctx, dnsController), dnsMessage, req); err != nil {
+					if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
+						return nil
+					}
+					// For DNS fast path, never leave client waiting on internal errors.
+					// Respond with SERVFAIL so resolver can retry/fallback promptly.
+					if sendErr := dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns fast path)", req, nil); sendErr != nil {
+						return stderrors.Join(err, sendErr)
+					}
+					if c.log.IsLevelEnabled(logrus.DebugLevel) {
+						c.log.WithError(err).Debug("DNS fast path failed; SERVFAIL sent")
+					}
 					return nil
-				}
-				// For DNS fast path, never leave client waiting on internal errors.
-				// Respond with SERVFAIL so resolver can retry/fallback promptly.
-				if sendErr := dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns fast path)", req, nil); sendErr != nil {
-					return stderrors.Join(err, sendErr)
-				}
-				if c.log.IsLevelEnabled(logrus.DebugLevel) {
-					c.log.WithError(err).Debug("DNS fast path failed; SERVFAIL sent")
 				}
 				return nil
 			}
-			return nil
 		}
 		// Not a valid DNS packet (port 53 but not DNS format) - fall through to normal UDP path
 	}

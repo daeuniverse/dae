@@ -142,15 +142,20 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	// Uses bufio.Reader to peek at data without consuming it,
 	// allowing proper fallback if this isn't DNS traffic.
 	if dst.Port() == 53 {
-		bufReader := bufio.NewReader(lConn)
-		handled, dnsErr := c.handleTCPDnsFastPath(ctx, lConn, bufReader, src, dst, routingResult)
-		if handled {
-			// Connection was handled as DNS - any errors are already logged
-			return dnsErr
+		// Honor must_rules: if routing marked this flow as must, bypass the
+		// DNS controller and fall through to normal TCP forwarding.
+		// This restores the v1.x semantics where Must>0 forces isDns=false.
+		if routingResult.Must == 0 {
+			bufReader := bufio.NewReader(lConn)
+			handled, dnsErr := c.handleTCPDnsFastPath(ctx, lConn, bufReader, src, dst, routingResult)
+			if handled {
+				// Connection was handled as DNS - any errors are already logged
+				return dnsErr
+			}
+			// Not DNS traffic (or failed to read as DNS) - fall through to normal TCP handling
+			// Wrap the connection to include buffered data that was peeked but not consumed
+			lConn = &bufioConn{Conn: lConn, reader: bufReader}
 		}
-		// Not DNS traffic (or failed to read as DNS) - fall through to normal TCP handling
-		// Wrap the connection to include buffered data that was peeked but not consumed
-		lConn = &bufioConn{Conn: lConn, reader: bufReader}
 	}
 
 	var (
