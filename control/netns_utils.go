@@ -561,7 +561,13 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 
 func DeleteNamedNetns(name string) error {
 	namedPath := path.Join("/run/netns", name)
-	_ = unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
+	// Try a synchronous unmount first; MNT_DETACH alone is lazy and may leave
+	// the mount point behind (os.Remove then fails with EBUSY), which leaks
+	// /run/netns/<name> and breaks a subsequent restart. Fall back to lazy
+	// unmount only if the synchronous one fails (e.g. device busy).
+	if err := unix.Unmount(namedPath, 0); err != nil {
+		_ = unix.Unmount(namedPath, unix.MNT_DETACH)
+	}
 	return os.Remove(namedPath)
 }
 
