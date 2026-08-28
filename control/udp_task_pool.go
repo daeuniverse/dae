@@ -219,6 +219,15 @@ func NewUdpTaskPool() *UdpTaskPool {
 	}
 }
 
+func (p *UdpTaskPool) Count() int {
+	n := 0
+	p.queues.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
 // EmitTask makes sure packets with the same UDP flow key are sent in order.
 func (p *UdpTaskPool) EmitTask(key UdpFlowKey, task UdpTask) {
 	q := p.acquireQueue(key)
