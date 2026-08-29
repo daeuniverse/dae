@@ -252,10 +252,10 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				}
 			}
 			a.dialerToIndex[dialer] = len(a.aliveEntries)
-			a.aliveEntries = append(a.aliveEntries, aliveEntry{
-				dialer:         dialer,
-				sortingLatency: 0, // Will be updated below if hasLatency
-			})
+		a.aliveEntries = append(a.aliveEntries, aliveEntry{
+			dialer:         dialer,
+			sortingLatency: rawLatency + a.dialerToLatencyOffset[dialer],
+		})
 		}
 	} else {
 		index := a.dialerToIndex[dialer]
@@ -376,14 +376,24 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				}
 			}
 		}
-	} else if alive && minPolicy && a.minLatency.dialer == nil {
-		// Use first dialer if no dialer has alive state (usually happen at the very beginning).
-		a.minLatency.dialer = dialer
+	} else if alive && minPolicy {
+		// No active latency probe for this network type (e.g. data-UDP), so
+		// hasLatency is always false here. Honor add_latency as a manual
+		// weight by incorporating the offset and letting it override the
+		// optimistic first-dialer selection (see issue #1072).
+		sortingLatency = rawLatency + a.dialerToLatencyOffset[dialer]
+		if index := a.dialerToIndex[dialer]; index >= 0 {
+			a.aliveEntries[index].sortingLatency = sortingLatency
+		}
+		if a.minLatency.dialer == nil || sortingLatency < a.minLatency.sortingLatency {
+			a.minLatency.dialer = dialer
+			a.minLatency.sortingLatency = sortingLatency
+		}
 		if a.log.IsLevelEnabled(logrus.InfoLevel) {
 			a.log.WithFields(logrus.Fields{
 				"group":   a.dialerGroupName,
 				"network": a.CheckTyp.String(),
-				"dialer":  a.minLatency.dialer.property.Name,
+				"dialer":  dialer.property.Name,
 			}).Infof("Group selects dialer")
 		}
 	}
@@ -435,11 +445,11 @@ func (a *AliveDialerSet) recomputeSelectionStateLocked() {
 		rawLatency, hasLatency := entry.dialer.snapshotLatencyForPolicy(a.CheckTyp, a.selectionPolicy)
 		if hasLatency {
 			a.dialerToLatency[entry.dialer] = rawLatency
-			entry.sortingLatency = rawLatency + a.dialerToLatencyOffset[entry.dialer]
-			continue
 		}
-		// Keep optimistic startup semantics for alive dialers without latency data yet.
-		entry.sortingLatency = 0
+		// Always apply the manual latency offset. For network types without
+		// an active latency probe (e.g. data-UDP) the offset is the only
+		// ranking signal, so add_latency acts as a true manual weight.
+		entry.sortingLatency = rawLatency + a.dialerToLatencyOffset[entry.dialer]
 	}
 
 	a.calcMinLatency()

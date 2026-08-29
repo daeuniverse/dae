@@ -174,7 +174,31 @@ func (d *Dialer) snapshotLatencyForPolicy(
 	policy consts.DialerSelectionPolicy,
 ) (rawLatency time.Duration, hasLatency bool) {
 	d.collectionFineMu.RLock()
-	collection := d.mustGetCollection(typ)
+	// Data-UDP has no latency probe of its own: real proxied UDP traffic only
+	// flips the alive flag and never records a delay. As a result, data-UDP
+	// always reported hasLatency=false and relied solely on configuration order
+	// / add_latency for node selection, which (a) made add_latency a no-op (see
+	// issue #1072) and (b) let TCP and data-UDP pick divergent nodes.
+	//
+	// We reuse the measured latency of the DNS-UDP health domain of the same
+	// dialer as a proxy signal. In typical deployments the DNS-UDP probe and
+	// data-UDP traffic traverse the very same upstream proxy channel (only the
+	// final destination differs by a few milliseconds), so the DNS-UDP delay is
+	// a faithful representation of the channel quality seen by data-UDP.
+	//
+	// Only the latency value is borrowed. The data-UDP alive state remains
+	// driven exclusively by real UDP traffic, preserving the deliberate
+	// isolation between the DNS and data UDP health domains.
+	latencyType := typ
+	if typ.L4Proto == consts.L4ProtoStr_UDP && typ.EffectiveUdpHealthDomain() == UdpHealthDomainData {
+		latencyType = &NetworkType{
+			L4Proto:         consts.L4ProtoStr_UDP,
+			IpVersion:       typ.IpVersion,
+			IsDns:           true,
+			UdpHealthDomain: UdpHealthDomainDns,
+		}
+	}
+	collection := d.mustGetCollection(latencyType)
 	switch policy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
 		rawLatency, hasLatency = collection.Latencies10.LastLatency()
