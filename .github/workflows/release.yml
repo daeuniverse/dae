@@ -171,7 +171,7 @@ jobs:
                 case $pkg_mgr in
                   'deb') pkg_arch='i386' ;;
                   'rpm') pkg_arch='x86' ;;
-                  'pacman') pkg_arch'i486' ;;
+                  'pacman') pkg_arch='i486' ;;
                 esac ;;
               'arm64')
                 if [ $pkg_mgr == 'deb' ]; then
