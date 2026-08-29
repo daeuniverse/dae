@@ -336,9 +336,16 @@ func dnsConfigEqual(oldConf *config.Config, newConf *config.Config) bool {
 	return dnsConfigFingerprint(oldConf.Dns) == dnsConfigFingerprint(newConf.Dns)
 }
 
-// dnsConfigFingerprint must be kept in sync with config.Dns. The companion
-// TestDNSConfigFingerprintCoversAllDnsFields fails when new top-level DNS
-// fields are added without updating this fingerprint.
+// dnsConfigFingerprint captures only the DNS fields that affect BPF datapath
+// state (domain_routing_map, routing rules, upstream resolution). Runtime-tunable
+// parameters (OptimisticCache, OptimisticCacheTtl, MaxCacheSize) are intentionally
+// excluded because they are atomic-tunable via DnsController.UpdateRuntime and do
+// not require BPF map changes. Including them would cause unnecessary
+// domain_routing_map clear+replay during staged handoff, creating a race window
+// where the old control plane loses domain routing (see dae#1013).
+//
+// Must be kept in sync with config.Dns routing-affecting fields.
+// TestDNSConfigFingerprintCoversAllDnsFields guards the contract.
 func dnsConfigFingerprint(dns config.Dns) string {
 	var b strings.Builder
 	writeKeyableStrings := func(name string, values []config.KeyableString) {
@@ -413,15 +420,6 @@ func dnsConfigFingerprint(dns config.Dns) string {
 	writeRouting("routing", dns.Routing)
 	b.WriteString("bind=")
 	b.WriteString(strconv.Quote(dns.Bind))
-	b.WriteByte(';')
-	b.WriteString("optimistic_cache=")
-	b.WriteString(strconv.FormatBool(dns.OptimisticCache))
-	b.WriteByte(';')
-	b.WriteString("optimistic_cache_ttl=")
-	b.WriteString(strconv.Itoa(dns.OptimisticCacheTtl))
-	b.WriteByte(';')
-	b.WriteString("max_cache_size=")
-	b.WriteString(strconv.Itoa(dns.MaxCacheSize))
 	b.WriteByte(';')
 	return b.String()
 }

@@ -149,8 +149,12 @@ type DnsRouting struct {
 type KeyableString string
 
 // Dns is intentionally mirrored by cmd.dnsConfigFingerprint for staged reload
-// DNS reuse decisions. Keep that fingerprint in sync with any new top-level
-// fields; TestDNSConfigFingerprintCoversAllDnsFields guards the contract.
+// DNS reuse decisions. Only routing-affecting fields are covered by the
+// fingerprint; runtime-tunable parameters (OptimisticCache, OptimisticCacheTtl,
+// MaxCacheSize) are excluded because they are hot-updated via
+// DnsController.UpdateRuntime. Keep the fingerprint in sync with any new
+// routing-affecting top-level fields; TestDNSConfigFingerprintCoversAllDnsFields
+// guards the contract.
 type Dns struct {
 	IpVersionPrefer    int             `mapstructure:"ipversion_prefer"`
 	FixedDomainTtl     []KeyableString `mapstructure:"fixed_domain_ttl"`
