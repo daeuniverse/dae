@@ -37,6 +37,13 @@ import (
 
 const Timeout = 10 * time.Second
 
+// ErrNoApplicableIP is a sentinel error returned by CheckFunc when the target
+// has no DNS record for the requested IP version (e.g. no AAAA for IPv6).
+// It is distinguished from a plain (false, nil) skip so that check() can
+// mark the node unavailable for that network type without affecting the
+// general (ok=false, err=nil) "preserve alive state" contract used by tests.
+var ErrNoApplicableIP = stderrors.New("no applicable IP for this network type")
+
 type UdpHealthDomain uint8
 
 const (
@@ -489,7 +496,7 @@ func (d *Dialer) aliveBackground() {
 					"dialer":  d.property.Name,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
+				return false, ErrNoApplicableIP
 			}
 			return d.HttpCheck(ctx, IdxTcp4, opt.Url, opt.Ip4, opt.Method, tcpSomark, mptcp)
 		},
@@ -511,7 +518,7 @@ func (d *Dialer) aliveBackground() {
 					"dialer":  d.property.Name,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
+				return false, ErrNoApplicableIP
 			}
 			return d.HttpCheck(ctx, IdxTcp6, opt.Url, opt.Ip6, opt.Method, tcpSomark, mptcp)
 		},
@@ -539,7 +546,7 @@ func (d *Dialer) aliveBackground() {
 					"link":    d.CheckDnsOptionRaw.Raw,
 					"network": typ.String(),
 				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
+				return false, ErrNoApplicableIP
 			}
 			return d.DnsCheck(ctx, netip.AddrPortFrom(addr, opt.DnsPort), *network)
 		}
@@ -1121,8 +1128,8 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 		if stderrors.Is(err, context.Canceled) {
 			break
 		}
-		if err == nil {
-			// No applicable IP; skip.
+		if err == nil || err == ErrNoApplicableIP {
+			// No applicable IP; skip further attempts.
 			break
 		}
 		// Retry on actual error.
@@ -1189,7 +1196,13 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 			cycle.Unlock()
 		}
 	}
-	// Skip update when (ok=false, err=nil): preserve existing alive state.
+	// When CheckFunc returns ErrNoApplicableIP (no DNS record for this IP version),
+	// mark unavailable so traffic is never routed to a dead path. Plain (ok=false,
+	// err=nil) skips (e.g. test mocks) preserve existing alive state per the
+	// SkipDoesNotCascadeToUnavailable contract.
+	if !ok && err == ErrNoApplicableIP {
+		d.informDialerGroupUpdate(d.markUnavailable(opts.networkType))
+	}
 	return ok, err
 }
 
