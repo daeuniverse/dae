@@ -75,6 +75,8 @@ global {
 
     # The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass
     # accounting for this kind of traffic.
+    # Available methods (choose one only): HEAD, GET, POST, PUT, PATCH, DELETE, COPY, OPTIONS, LINK, UNLINK, PURGE,
+    # LOCK, UNLOCK, PROPFIND, CONNECT, TRACE.
     tcp_check_http_method: HEAD
 
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
