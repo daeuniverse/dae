@@ -466,6 +466,16 @@ func getActiveDialerCount() int {
 
 func (d *Dialer) aliveBackground() {
 	cycle := d.CheckInterval
+	if cycle > 0 && cycle < 2*time.Second {
+		cycle = 2 * time.Second
+		if d.Log != nil {
+			d.Log.WithFields(logrus.Fields{
+				"dialer":   d.Property().Name,
+				"interval": d.CheckInterval.String(),
+				"actual":   cycle.String(),
+			}).Warnln("check_interval too low, clamped to minimum 2s to prevent probe storm")
+		}
+	}
 	var tcpSomark uint32
 	var mptcp bool
 	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
