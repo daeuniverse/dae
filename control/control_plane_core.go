@@ -123,6 +123,17 @@ type controlPlaneCore struct {
 	domainRouting       *domainRoutingTracker
 	lpmTrieIndices      []uint32
 	bpfOwned            bool
+
+	// datapathIfaces records the interfaces successfully bound during the last
+	// commitInterfaceBindings run, paired with the full TC filter handle(s) and
+	// the BPF program each filter is expected to attach. validateDatapathBindings
+	// / repairDatapathBindings use it to confirm the dataplane is actually
+	// attached and healthy after startup/reload, catching silent bind failures
+	// (e.g. a missing clsact qdisc) that would otherwise let traffic bypass the
+	// proxy with no error.
+	datapathIfaces []boundIface
+	// datapathMu protects datapathIfaces from concurrent reads during validation.
+	datapathMu sync.Mutex
 }
 
 func newControlPlaneCore(log *logrus.Logger,
@@ -539,6 +550,22 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	}
 	c.addManagedBpfHookCleanup(egressDetachFunc)
 
+	// Record the LAN binding (ingress + egress) with the expected BPF program
+	// so validateDatapathBindings / repairDatapathBindings can confirm the
+	// dataplane is actually attached and points to the live program.
+	var lanIngressProg, lanEgressProg *ebpf.Program
+	if linkHdrLen > 0 {
+		lanIngressProg = bpf.TproxyLanIngressL2
+		lanEgressProg = bpf.TproxyLanEgressL2
+	} else {
+		lanIngressProg = bpf.TproxyLanIngressL3
+		lanEgressProg = bpf.TproxyLanEgressL3
+	}
+	c.recordBoundIface(ifname, "LAN",
+		boundFilter{handle: netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)), prog: lanIngressProg},
+		boundFilter{handle: netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)), prog: lanEgressProg},
+	)
+
 	return nil
 }
 
@@ -749,6 +776,20 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 	c.addManagedBpfHookCleanup(ingressDetachFunc)
 
+	// Record the WAN binding (egress + ingress) with the expected BPF program.
+	var wanEgressProg, wanIngressProg *ebpf.Program
+	if linkHdrLen > 0 {
+		wanEgressProg = bpf.TproxyWanEgressL2
+		wanIngressProg = bpf.TproxyWanIngressL2
+	} else {
+		wanEgressProg = bpf.TproxyWanEgressL3
+		wanIngressProg = bpf.TproxyWanIngressL3
+	}
+	c.recordBoundIface(ifname, "WAN",
+		boundFilter{handle: netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)), prog: wanEgressProg},
+		boundFilter{handle: netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)), prog: wanIngressProg},
+	)
+
 	return nil
 }
 
@@ -847,6 +888,14 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		return nil
 	}
 	c.addManagedBpfHookCleanup(dae0DetachFunc)
+
+	// Record the dae0 peer (in the dae netns) and dae0 (host netns) bindings
+	// with the expected BPF program so validateDatapathBindings can confirm
+	// they are actually attached and healthy.
+	c.recordBoundIface(daens.Dae0Peer().Attrs().Name, "dae0peer",
+		boundFilter{handle: netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)), prog: bpf.TproxyDae0peerIngress})
+	c.recordBoundIface(daens.Dae0().Attrs().Name, "dae0",
+		boundFilter{handle: netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)), prog: bpf.TproxyDae0Ingress})
 	return
 }
 
@@ -857,6 +906,294 @@ func tryDeleteFlippedFilter(f *netlink.BpfFilter) {
 	flipped := deepcopy.Copy(f).(*netlink.BpfFilter)
 	flipped.Handle ^= 1
 	_ = netlink.FilterDel(flipped)
+}
+
+// boundFilter pairs a TC filter handle with the BPF program that filter is
+// expected to attach. Recording the program lets validation detect "zombie"
+// filters — a filter whose handle is present but which points to a different /
+// stale / unloaded BPF program (e.g. after a BPF reload swapped the program
+// under a persistently-attached handle), which a handle-only check would miss.
+type boundFilter struct {
+	handle uint32
+	prog   *ebpf.Program
+}
+
+// boundIface is an interface that was successfully bound, paired with the full
+// TC filter handle(s) and the expected BPF program(s) for each. LAN/WAN carry
+// two filters (ingress + egress) under the same major but different minor, so
+// filters is a slice: every listed filter must be present AND point to the
+// expected program for the binding to be considered healthy.
+type boundIface struct {
+	name    string
+	label   string
+	filters []boundFilter
+}
+
+// linkByName looks up a network interface by name. It is a package-level
+// variable (defaulting to netlink.LinkByName) so tests can substitute a mock.
+var linkByName = netlink.LinkByName
+
+// recordBoundIface records a successfully bound interface so that a later
+// validateDatapathBindings call can confirm its TC filter(s) are attached and
+// point to the expected program. Duplicate (name+label+filters) entries are
+// ignored, which keeps the recorded set stable when an interface is re-bound
+// during self-heal.
+func (c *controlPlaneCore) recordBoundIface(name, label string, filters ...boundFilter) {
+	c.datapathMu.Lock()
+	defer c.datapathMu.Unlock()
+	for _, b := range c.datapathIfaces {
+		if b.name == name && b.label == label && equalBoundFilters(b.filters, filters) {
+			return
+		}
+	}
+	c.datapathIfaces = append(c.datapathIfaces, boundIface{name: name, label: label, filters: filters})
+}
+
+// equalBoundFilters reports whether two boundFilter slices contain the same
+// handle+program pairs in the same order.
+func equalBoundFilters(a, b []boundFilter) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].handle != b[i].handle || a[i].prog != b[i].prog {
+			return false
+		}
+	}
+	return true
+}
+
+// resetBoundIfaces clears the recorded bindings so each commitInterfaceBindings
+// run validates only the interfaces bound during that run.
+func (c *controlPlaneCore) resetBoundIfaces() {
+	c.datapathMu.Lock()
+	c.datapathIfaces = nil
+	c.datapathMu.Unlock()
+}
+
+// checkBindingInNetns performs the actual link lookup and TC-filter check for
+// bi in whatever network namespace the caller is currently executing in. Every
+// filter recorded for bi must be attached AND (when a program is expected) must
+// point to that program; the first one that fails is reported. It is separated
+// from checkBinding so the dae0peer case can run it inside the dae netns (via
+// GetDaeNetns().WithRequired), while all host-netns interfaces run it directly.
+func (c *controlPlaneCore) checkBindingInNetns(bi boundIface) (ok bool, reason string) {
+	link, err := linkByName(bi.name)
+	if err != nil {
+		return false, fmt.Sprintf("%s (%s, link not found)", bi.name, bi.label)
+	}
+	// dae0/dae0peer attach only an ingress filter; LAN/WAN attach both ingress
+	// and egress. Scope the enumeration accordingly to skip a wasted FilterList.
+	parents := []uint32{netlink.HANDLE_MIN_INGRESS, netlink.HANDLE_MIN_EGRESS}
+	if bi.label == "dae0" || bi.label == "dae0peer" {
+		parents = []uint32{netlink.HANDLE_MIN_INGRESS}
+	}
+	for _, f := range bi.filters {
+		if !hasDaeTcFilter(link, f.handle, parents, f.prog) {
+			return false, fmt.Sprintf("%s (%s, handle 0x%x missing or program mismatch)", bi.name, bi.label, f.handle)
+		}
+	}
+	return true, ""
+}
+
+// checkBinding reports whether the TC filter(s) for bi are actually attached
+// and healthy, returning a human-readable reason when not. dae0peer lives
+// inside the dae netns (host-netns linkByName cannot see it), so its check is
+// executed there; all other interfaces are resolved in the host netns.
+func (c *controlPlaneCore) checkBinding(bi boundIface) (ok bool, reason string) {
+	if bi.label == "dae0peer" {
+		ns := GetDaeNetns()
+		if ns == nil {
+			// Defensive: the dae netns must exist by the time bindings are
+			// validated, but a nil receiver here would panic the whole check.
+			return false, fmt.Sprintf("%s (%s): dae netns not yet initialised", bi.name, bi.label)
+		}
+		var innerOk bool
+		var innerReason string
+		if err := ns.WithRequired("check dae0peer binding", func() error {
+			innerOk, innerReason = c.checkBindingInNetns(bi)
+			return nil
+		}); err != nil {
+			return false, fmt.Sprintf("%s (%s, dae netns error: %v)", bi.name, bi.label, err)
+		}
+		return innerOk, innerReason
+	}
+	return c.checkBindingInNetns(bi)
+}
+
+// missingBindings returns the recorded interfaces whose TC filter is not
+// actually attached/healthy, plus whether a *fatal* binding (dae0) is among
+// them. dae0 is created and fully controlled by dae, so a missing or zombie
+// dae0 filter means the transparent proxy cannot function at all; LAN/WAN
+// depend on the host environment (e.g. clsact availability) and are not fatal.
+func (c *controlPlaneCore) missingBindings() (missing []boundIface, fatal bool) {
+	c.datapathMu.Lock()
+	ifaces := make([]boundIface, len(c.datapathIfaces))
+	copy(ifaces, c.datapathIfaces)
+	c.datapathMu.Unlock()
+
+	for _, bi := range ifaces {
+		if ok, _ := c.checkBinding(bi); !ok {
+			missing = append(missing, bi)
+			if bi.label == "dae0" {
+				fatal = true
+			}
+		}
+	}
+	return missing, fatal
+}
+
+// validateDatapathBindings is a diagnostic entry point used by unit tests to
+// assert that all recorded TC filters are attached and healthy. In production
+// the bind path uses missingBindings()/repairDatapathBindings() instead; this
+// helper is intentionally not part of the live startup/reload flow.
+func (c *controlPlaneCore) validateDatapathBindings() (missing []string, fatal bool) {
+	bad, fatal := c.missingBindings()
+	for _, bi := range bad {
+		_, reason := c.checkBinding(bi)
+		missing = append(missing, reason)
+	}
+	return missing, fatal
+}
+
+// rebindLanFn / rebindWanFn are package-level indirection over the actual bind
+// functions so unit tests can substitute stubs without touching the real
+// netlink stack. In production they call _bindLan / _bindWan directly (which
+// ensure the clsact qdisc and re-attach the filter, both idempotent).
+var rebindLanFn = func(c *controlPlaneCore, name string) error { return c._bindLan(name) }
+var rebindWanFn = func(c *controlPlaneCore, name string) error { return c._bindWan(name) }
+
+// repairDatapathBindings detects missing/unhealthy TC filters and attempts to
+// re-attach them automatically (self-heal) for LAN/WAN interfaces, then
+// re-validates once. dae0/dae0peer are intentionally never self-healed: a
+// missing or zombie dae0 filter is a fatal, deep failure and is reported so the
+// caller can abort; dae0peer is surfaced as a (non-fatal) warning so operators
+// keep visibility.
+//
+// It returns the interfaces that are *still* missing/unhealthy after the
+// re-attach attempt, plus fatal (true only when dae0 is among the
+// still-missing), so callers keep the existing fatal/warning policy unchanged:
+//   - dae0 missing/zombie -> fatal -> caller aborts startup/reload
+//   - LAN/WAN missing but re-attached -> silently recovered
+//   - LAN/WAN missing and re-attach failed -> warning, proxy keeps running
+func (c *controlPlaneCore) repairDatapathBindings() (stillMissing []string, fatal bool) {
+	bad, _ := c.missingBindings()
+	if len(bad) == 0 {
+		return nil, false
+	}
+	repairedCount := 0
+	for _, bi := range bad {
+		switch bi.label {
+		case "LAN":
+			if err := rebindLanFn(c, bi.name); err != nil {
+				c.log.Warnf("datapath self-heal: failed to re-bind LAN %s: %v", bi.name, err)
+			} else {
+				repairedCount++
+			}
+		case "WAN":
+			if err := rebindWanFn(c, bi.name); err != nil {
+				c.log.Warnf("datapath self-heal: failed to re-bind WAN %s: %v", bi.name, err)
+			} else {
+				repairedCount++
+			}
+		case "dae0peer":
+			// dae0peer lives in the dae netns and is created/controlled by dae,
+			// like dae0. It is not self-healed here; a missing/zombie dae0peer
+			// filter is surfaced as a (non-fatal) warning so operators keep
+			// visibility.
+		}
+		// dae0: not self-healed.
+	}
+	// Re-check once (single pass, no retry loop to avoid livelock).
+	stillBad, fatal := c.missingBindings()
+	for _, bi := range stillBad {
+		_, reason := c.checkBinding(bi)
+		stillMissing = append(stillMissing, reason)
+	}
+	if len(stillMissing) == 0 {
+		if repairedCount > 0 {
+			c.log.Infof("datapath self-heal: recovered %d missing TC filter(s)", repairedCount)
+		}
+	} else {
+		c.log.Warnf("datapath self-heal: %d filter(s) still missing after self-heal: %v", len(stillMissing), stillMissing)
+	}
+	return stillMissing, fatal
+}
+
+// filterLister lists TC filters attached to link on the given parent. It is a
+// package-level variable (defaulting to netlink.FilterList) so tests can swap
+// in a mock without touching the real netlink stack.
+var filterLister = netlink.FilterList
+
+// hasDaeTcFilter reports whether a TC filter with the exact given full handle
+// (major<<16 | minor, e.g. 0x20220002 for dae0, 0x20230004/0x20230002 for the
+// LAN/WAN ingress/egress pair) is attached on link within the given parents,
+// and — when expectProg is non-nil — that the filter's attached BPF program
+// matches expectProg.
+//
+// Comparing the full handle (not just the major) lets validateDatapathBindings
+// distinguish the two filters LAN/WAN carry under the same major. The program
+// check catches "zombie" filters: a handle that is present but points to a
+// different/stale/unloaded BPF program (e.g. after a BPF reload swapped the
+// program under a persistently-attached handle). If the expected program's id
+// cannot be resolved (prog Info unavailable) or the kernel does not report the
+// attached program id, we degrade to a handle-only check so validation never
+// regresses into a false negative.
+//
+// parents scopes the netlink enumeration: dae0/dae0peer carry only an ingress
+// filter, so callers pass [HANDLE_MIN_INGRESS] for them; LAN/WAN carry both an
+// ingress and an egress filter, so callers pass both. This avoids one wasted
+// FilterList call per binding on interfaces that never have an egress filter.
+func hasDaeTcFilter(link netlink.Link, handle uint32, parents []uint32, expectProg *ebpf.Program) bool {
+	wantID, wantOK := expectedProgID(expectProg)
+	for _, parent := range parents {
+		filters, err := filterLister(link, parent)
+		if err != nil {
+			continue // no clsact qdisc attached
+		}
+		for _, f := range filters {
+			if f.Attrs().Handle != handle {
+				continue
+			}
+			// Handle matches. If we cannot resolve the expected program id,
+			// accept on handle alone (graceful degradation).
+			if !wantOK {
+				return true
+			}
+			bf, isBpf := f.(*netlink.BpfFilter)
+			if !isBpf {
+				// Not a BPF filter (unexpected); treat handle match as enough.
+				return true
+			}
+			if bf.Id == 0 {
+				// Kernel did not report the attached program id; accept on
+				// handle alone rather than risk a false negative.
+				return true
+			}
+			if uint32(bf.Id) == wantID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// expectedProgID returns the kernel program id for prog, and whether it could
+// be resolved. A nil prog yields (0, false) so callers degrade to a handle-only
+// check. A zero id (which the kernel never assigns) is treated as unresolvable.
+func expectedProgID(prog *ebpf.Program) (uint32, bool) {
+	if prog == nil {
+		return 0, false
+	}
+	info, err := prog.Info()
+	if err != nil {
+		return 0, false
+	}
+	id, ok := info.ID()
+	if !ok || id == 0 {
+		return 0, false
+	}
+	return uint32(id), true
 }
 
 // extractIpsFromDnsCache returns the unique, valid non-unspecified IP addresses
