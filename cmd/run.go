@@ -1206,23 +1206,29 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 					// Do not sleep.
 					continue
 				}
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(epo):
-				}
-				continue
+		timer := time.NewTimer(epo)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+			timer.Stop()
+		}
+		continue
 			}
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 				break
 			}
 			log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(epo):
-			}
+			timer := time.NewTimer(epo)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+			timer.Stop()
+		}
 		}
 		log.Infoln("Network online.")
 	}
