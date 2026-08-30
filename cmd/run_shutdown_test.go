@@ -364,15 +364,19 @@ func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
 	reqs := make(chan reloadRequest, 1)
 	var reloadActive atomic.Bool
 	var reloadPending atomic.Bool
+	var reloadMissed atomic.Bool
 
-	if !tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadActive, &reloadPending, reloadRequest{isSuspend: false}) {
+	if !tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadActive, &reloadPending, &reloadMissed, reloadRequest{isSuspend: false}) {
 		t.Fatal("expected first reload request to be queued")
 	}
 	if !reloadPending.Load() {
 		t.Fatal("expected reloadPending to remain set after queuing reload")
 	}
-	if tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadActive, &reloadPending, reloadRequest{isSuspend: true}) {
+	if tryQueueReloadRequest(newDiscardLogger(), reqs, &reloadActive, &reloadPending, &reloadMissed, reloadRequest{isSuspend: true}) {
 		t.Fatal("expected concurrent reload request to be rejected")
+	}
+	if !reloadMissed.Load() {
+		t.Fatal("expected reloadMissed to be set after a concurrent request is dropped")
 	}
 
 	select {
@@ -382,6 +386,37 @@ func TestTryQueueReloadRequestRejectsConcurrentReload(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected queued reload request")
+	}
+}
+
+func TestReloadManagerRequeuesMissedRequest(t *testing.T) {
+	reqs := make(chan reloadRequest, 1)
+	m := &reloadManager{
+		reloadReqs: reqs,
+		log:        newDiscardLogger(),
+	}
+	// Simulate an in-flight reload that drops an incoming request.
+	m.reloadPending.Store(true)
+	if tryQueueReloadRequest(m.log, reqs, &m.reloadActive, &m.reloadPending, &m.reloadMissed, reloadRequest{isSuspend: false}) {
+		t.Fatal("expected concurrent request to be rejected while reload in progress")
+	}
+	if !m.reloadMissed.Load() {
+		t.Fatal("expected reloadMissed to be set after a dropped request")
+	}
+	// The in-flight reload finishes: pending is cleared, then the missed
+	// request is re-queued so the latest configuration is not lost.
+	m.reloadPending.Store(false)
+	m.maybeRequeueMissedReload()
+	if m.reloadMissed.Load() {
+		t.Fatal("expected reloadMissed to be cleared after re-queue")
+	}
+	select {
+	case req := <-reqs:
+		if req.isSuspend {
+			t.Fatal("expected re-queued request to be a normal reload")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a reload request to be re-queued after a missed drop")
 	}
 }
 
@@ -535,7 +570,7 @@ func TestReloadManagerBuildShutdownHandoffUsesPendingStagedHandoff(t *testing.T)
 	oldPlane := &control.ControlPlane{}
 	newPlane := &control.ControlPlane{}
 
-	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager := newReloadManager(newDiscardLogger(), make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
 	manager.setPendingStagedHandoff(&stagedReloadHandoff{
 		oldControlPlane: oldPlane,
 		oldListener:     oldListener,
@@ -557,7 +592,7 @@ func TestReloadManagerBuildShutdownHandoffUsesPendingStagedHandoff(t *testing.T)
 
 func TestReloadManagerCoalesceReloadRequestKeepsLatestQueuedRequest(t *testing.T) {
 	reloadReqs := make(chan reloadRequest, 2)
-	manager := newReloadManager(reloadReqs, make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager := newReloadManager(newDiscardLogger(), reloadReqs, make(chan struct{}, 1), make(chan os.Signal, 1))
 
 	now := time.Now()
 	latest := reloadRequest{
@@ -683,7 +718,7 @@ func TestBuildPreparedDNSHandoffHooksStartHookPropagatesStopError(t *testing.T) 
 }
 
 func TestReloadManagerStartControlPlaneRetirementCompletesAndCancelsOldContext(t *testing.T) {
-	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager := newReloadManager(newDiscardLogger(), make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
 	manager.setPendingReloadMetadata(time.Now(), 0)
 
 	oldCtx, oldCancel := context.WithCancel(context.Background())

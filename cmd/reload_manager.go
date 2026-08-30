@@ -29,6 +29,8 @@ type reloadManager struct {
 	reloading                    atomic.Bool
 	reloadActive                 atomic.Bool
 	reloadPending                atomic.Bool
+	reloadMissed                 atomic.Bool
+	log                          *logrus.Logger
 	mu                           sync.Mutex
 	reloadingErr                 error
 	lastRetirementMu             sync.Mutex
@@ -39,16 +41,17 @@ type reloadManager struct {
 	pendingReloadRequestedAtMono uint64
 }
 
-func newReloadManager(reloadReqs chan reloadRequest, runStateChanges chan struct{}, sigs <-chan os.Signal) *reloadManager {
+func newReloadManager(log *logrus.Logger, reloadReqs chan reloadRequest, runStateChanges chan struct{}, sigs <-chan os.Signal) *reloadManager {
 	return &reloadManager{
 		reloadReqs:      reloadReqs,
 		runStateChanges: runStateChanges,
 		sigs:            sigs,
+		log:             log,
 	}
 }
 
 func (m *reloadManager) queueReloadRequest(log *logrus.Logger, req reloadRequest) bool {
-	return tryQueueReloadRequest(log, m.reloadReqs, &m.reloadActive, &m.reloadPending, req)
+	return tryQueueReloadRequest(log, m.reloadReqs, &m.reloadActive, &m.reloadPending, &m.reloadMissed, req)
 }
 
 func (m *reloadManager) beginHandoff() {
@@ -250,12 +253,49 @@ func (m *reloadManager) finishReloadFailure() {
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
 	clearReloadPending(&m.reloadPending)
+	m.maybeRequeueMissedReload()
 }
 
 func (m *reloadManager) finishReloadSuccess() {
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
-	releaseReloadPendingAfterRetirement(&m.reloadPending, m.takePendingRetirementDone())
+	done := m.takePendingRetirementDone()
+	if done == nil {
+		clearReloadPending(&m.reloadPending)
+		m.maybeRequeueMissedReload()
+		return
+	}
+	go func() {
+		<-done
+		clearReloadPending(&m.reloadPending)
+		m.maybeRequeueMissedReload()
+	}()
+}
+
+// maybeRequeueMissedReload re-queues a single reload if a request was dropped
+// while another reload was already in progress. tryQueueReloadRequest silently
+// ignores (drops) a reload signal whose CAS on reloadPending loses because a
+// reload is already queued or running; without this compensation the latest
+// configuration change would be lost until the next manual reload. The
+// re-queued request reads the current configuration, so a burst of dropped
+// requests collapses into exactly one follow-up reload (further signals
+// arriving during that follow-up are themselves coalesced by the worker's
+// coalesceReloadRequest), keeping the system eventually consistent without an
+// unbounded reload storm.
+func (m *reloadManager) maybeRequeueMissedReload() {
+	if m == nil || m.reloadMissed.Swap(false) == false {
+		return
+	}
+	req := reloadRequest{
+		isSuspend:       false,
+		requestedAt:     time.Now(),
+		requestedAtMono: monotonicNowNano(),
+	}
+	if m.queueReloadRequest(m.log, req) {
+		if m.log != nil {
+			m.log.Warnln("[Reload] A reload request was dropped while another reload was in progress; re-queuing one reload to apply the latest configuration")
+		}
+	}
 }
 
 func (m *reloadManager) startControlPlaneRetirement(
