@@ -524,6 +524,12 @@ func newControlPlaneWithContextOptions(
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
 	}
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
+
+	// Warn if health check is implicitly disabled (no explicit config).
+	if global.CheckInterval == 0 && len(global.TcpCheckUrl) == 0 && len(global.UdpCheckDns) == 0 {
+		log.Warnln("Health check is DISABLED: check_interval, tcp_check_url, and udp_check_dns are all not explicitly configured. " +
+			"Nodes will not be probed. Set check_interval and configure tcp_check_url/udp_check_dns to enable.")
+	}
 	option := dialer.NewGlobalOption(global, log)
 	option.DaeDNS, err = daedns.NewWithOption(log, global, dnsConfig, &daedns.NewOption{LocationFinder: locationFinder})
 	if err != nil {

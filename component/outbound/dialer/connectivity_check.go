@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -464,8 +464,56 @@ func getActiveDialerCount() int {
 	return poolActiveCount
 }
 
+// shouldSkipTcp6Probes returns true when tcp_check_url explicitly lists only IPv4
+// addresses (no explicit IPv6 entries).
+func shouldSkipTcp6Probes(raw []string) bool {
+	return shouldSkipIp6Probes(raw)
+}
+
+// shouldSkipUdp6Probes returns true when udp_check_dns explicitly lists only IPv4
+// addresses (no explicit IPv6 entries).
+func shouldSkipUdp6Probes(raw []string) bool {
+	return shouldSkipIp6Probes(raw)
+}
+
+func shouldSkipIp6Probes(raw []string) bool {
+	hasIpv6 := false
+	hasExplicitIpv4 := false
+	for i := 1; i < len(raw); i++ {
+		addr, err := netip.ParseAddr(raw[i])
+		if err != nil {
+			continue
+		}
+		if addr.Is6() {
+			hasIpv6 = true
+		} else {
+			hasExplicitIpv4 = true
+		}
+	}
+	if hasIpv6 {
+		return false
+	}
+	return hasExplicitIpv4
+}
+
 func (d *Dialer) aliveBackground() {
+	// If check_interval is 0 or not configured, skip connectivity check entirely
+	if d.CheckInterval == 0 {
+		d.Log.WithField("dialer", d.Property().Name).
+			Warnln("Connectivity check disabled (check_interval=0)")
+		return
+	}
 	cycle := d.CheckInterval
+	if cycle < 2*time.Second {
+		cycle = 2 * time.Second
+		if d.Log != nil {
+			d.Log.WithFields(logrus.Fields{
+				"dialer":   d.Property().Name,
+				"interval": d.CheckInterval.String(),
+				"actual":   cycle.String(),
+			}).Warnln("check_interval too low, clamped to minimum 2s to prevent probe storm")
+		}
+	}
 	var tcpSomark uint32
 	var mptcp bool
 	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
@@ -563,7 +611,41 @@ func (d *Dialer) aliveBackground() {
 		},
 		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &udpNetwork),
 	}
-	var CheckOpts = []*CheckOption{tcp4CheckOpt, tcp6CheckOpt, udp4CheckDnsOpt, udp6CheckDnsOpt}
+	var CheckOpts []*CheckOption
+	useTcpCheck := len(d.TcpCheckOptionRaw.Raw) > 0
+	useUdpDns := len(d.CheckDnsOptionRaw.Raw) > 0
+	skipTcp6 := useTcpCheck && shouldSkipTcp6Probes(d.TcpCheckOptionRaw.Raw)
+	skipUdp6 := useUdpDns && shouldSkipUdp6Probes(d.CheckDnsOptionRaw.Raw)
+
+	if useTcpCheck {
+		CheckOpts = append(CheckOpts, tcp4CheckOpt)
+		if !skipTcp6 {
+			CheckOpts = append(CheckOpts, tcp6CheckOpt)
+		}
+	}
+	if useUdpDns {
+		CheckOpts = append(CheckOpts, udp4CheckDnsOpt)
+		if !skipUdp6 {
+			CheckOpts = append(CheckOpts, udp6CheckDnsOpt)
+		}
+	}
+
+	// If neither TCP nor UDP checks are configured, return early
+	if len(CheckOpts) == 0 {
+		d.Log.WithField("dialer", d.Property().Name).
+			Warnln("No connectivity checks configured, skipping")
+		return
+	}
+
+	if d.Log != nil && d.Log.IsLevelEnabled(logrus.DebugLevel) {
+		d.Log.WithFields(logrus.Fields{
+			"dialer":   d.property.Name,
+			"tcp4":     useTcpCheck,
+			"tcp6":     useTcpCheck && !skipTcp6,
+			"udp4_dns": useUdpDns,
+			"udp6_dns": useUdpDns && !skipUdp6,
+		}).Debugln("Connectivity check probes configured")
+	}
 
 	var unusedOnce bool
 	checkUnused := func() bool {
@@ -677,13 +759,25 @@ func (d *Dialer) aliveBackground() {
 		case <-waitDone:
 		case <-d.ctx.Done():
 			return
+		case <-time.After(cycle + 5*time.Second):
+			// Probe(s) appear stuck — log diagnostic and continue.
+			// The stuck probe will eventually resolve, but we don't block
+			// the entire check cycle waiting for it.
+			if d.Log != nil {
+				d.Log.WithField("dialer", d.Property().Name).
+					Warnln("Health check probe appears stuck; continuing cycle")
+			}
 		}
 		if checkFamily == "" {
 			// Stability-based wash white: only reset stability if a protocol family had failures
 			// WITHOUT any successes in this cycle. This allows partially-working dual-stack
 			// nodes (e.g. V4 OK, V6 broken) to eventually wash white their penalty.
-			d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure && !cycleRes.tcpSuccess)
-			d.NotifyPeriodicCheckResultForType(udp4CheckDnsOpt.networkType, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
+			if useTcpCheck {
+				d.NotifyPeriodicCheckResult(consts.L4ProtoStr_TCP, cycleRes.tcpSuccess, cycleRes.tcpFailure && !cycleRes.tcpSuccess)
+			}
+			if useUdpDns {
+				d.NotifyPeriodicCheckResultForType(udp4CheckDnsOpt.networkType, cycleRes.udpSuccess, cycleRes.udpFailure && !cycleRes.udpSuccess)
+			}
 		}
 
 		// Targeted checks don't disturb the periodic timer — only full checks do.
@@ -732,6 +826,12 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
 		if !d.hasAliveDialerSets(opt.networkType) {
+			if d.Log != nil && d.Log.IsLevelEnabled(logrus.DebugLevel) {
+				d.Log.WithFields(logrus.Fields{
+					"dialer":  d.Property().Name,
+					"network": opt.networkType.String(),
+				}).Debugln("Skipping probe: no AliveDialerSet for network type")
+			}
 			continue
 		}
 
