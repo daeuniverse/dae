@@ -53,7 +53,7 @@ var GlobalDesc = Desc{
 3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not go through dae, dae cannot split traffic by domain.
 4. "domain++". Based on domain+ mode but force to re-route traffic using sniffed domain to partially recover domain based traffic split ability. It doesn't work for direct traffic and consumes more CPU resources.`,
 	"disable_waiting_network":      "Disable waiting for network before pulling subscriptions.",
-	"disable_thp":                  "Disable transparent huge pages for the dae process. This reduces RSS inflation for dae userspace memory without changing system-wide THP settings.",
+	"disable_thp":                  "Opt the dae process out of transparent huge pages. Off by default so dae leaves kernel memory policy untouched; enable it if you observe RSS inflation from THP-backed matcher memory. It does not change system-wide THP settings.",
 	"auto_config_kernel_parameter": "Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md to see what will dae do.",
 	"sniffing_timeout":             "Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Default 30ms is suitable for most networks. Increase to 100-300ms for high-latency networks.",
 	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",
