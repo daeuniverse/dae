@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,11 +65,6 @@ const (
 	idxDataUdp = 2
 )
 
-var (
-	ErrUnexpectedField  = fmt.Errorf("unexpected field")
-	ErrInvalidParameter = fmt.Errorf("invalid parameters")
-)
-
 var cachedTimeNano atomic.Int64
 
 func init() {
@@ -110,6 +106,7 @@ type Dialer struct {
 	httpClients  map[string]*http.Client
 	httpClientMu sync.Mutex
 
+	// failCount is guarded by collectionFineMu (markUnavailableInternal/markAvailable/RestoreHealthSnapshot).
 	failCount        [8]int
 	trafficFailCount [8]atomic.Int32
 
@@ -132,13 +129,27 @@ type Dialer struct {
 	//   0: TCP
 	//   1: DNS UDP
 	//   2: Data UDP
-	recoveryState [3]dialerRecoveryState
-	lastNotifyUdp atomic.Int64
-	lastNotifyTcp atomic.Int64
-	lastPunish    [3]atomic.Int64
+	recoveryState   [3]dialerRecoveryState
+	lastNotifyUdp   atomic.Int64
+	lastNotifyTcp   atomic.Int64
+	lastNotifyCheck atomic.Int64
+	lastPunish      [3]atomic.Int64
+	// lastCheckOptionWarn throttles the warn log for persistent
+	// errCheckOptionUnavailable failures (see check()).
+	lastCheckOptionWarn atomic.Int64
+
+	// proxyFailurePromotions counts how many times the persistent-proxy-IP
+	// failure path promoted this dialer to unavailable. The promotion is only
+	// announced when it actually changes a collection's alive state, so this
+	// counter is what keeps the magnitude of repeated promotions visible.
+	proxyFailurePromotions atomic.Uint64
 
 	recoveryManagerMu sync.Mutex
 	recoveryManager   *dialerRecoveryManager
+
+	metadataRetirer establishedFlowMetadataRetirer
+	retireOnce      sync.Once
+	closeOnce       sync.Once
 }
 
 type DialerCollectionHealthSnapshot struct {
@@ -171,21 +182,51 @@ type DialerHealthSnapshot struct {
 	Recovery    [3]DialerRecoveryHealthSnapshot
 }
 
+// SystemDNSResolver provides generation-scoped bootstrap DNS state.
+type SystemDNSResolver interface {
+	SystemDNS() (netip.AddrPort, error)
+	TryUpdateElapse(time.Duration) error
+}
+
 type GlobalOption struct {
 	D.ExtraOption
-	Log               *logrus.Logger
-	DaeDNS            *daedns.Router
-	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
-	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
-	CheckInterval     time.Duration
-	CheckTolerance    time.Duration
-	CheckDnsTcp       bool
-	SoMarkFromDae     uint32
-	Mptcp             bool
+	Log *logrus.Logger
+	// DaeDNS optionally wraps node dialers for dae-DNS-backed resolution.
+	// It is nulled by retireForEstablishedFlows (under metadataMu) when the
+	// owning generation retires. Readers such as the dialer registration path
+	// access it without metadataMu; that is safe because retirement strictly
+	// post-dates dialer construction, so a reader either sees the live router
+	// or has already finished constructing against it.
+	DaeDNS               *daedns.Router
+	DirectDialer         netproxy.Dialer
+	FullconeDirectDialer netproxy.Dialer
+	SystemDNSResolver    SystemDNSResolver
+	TcpCheckOptionRaw    TcpCheckOptionRaw // Lazy parse
+	CheckDnsOptionRaw    CheckDnsOptionRaw // Lazy parse
+	CheckInterval        time.Duration
+	CheckTolerance       time.Duration
+	CheckDnsTcp          bool
+	SoMarkFromDae        uint32
+	Mptcp                bool
 	// TransportCacheNamespace isolates process-global transport caches
 	// across reload generations so a replacement control plane never reuses
 	// transports bound to the previous generation's dialer lifecycle.
 	TransportCacheNamespace string
+
+	metadataMu sync.Mutex
+}
+
+type establishedFlowMetadataRetirer interface {
+	RetireForEstablishedFlows()
+}
+
+func (o *GlobalOption) retireForEstablishedFlows() {
+	if o == nil {
+		return
+	}
+	o.metadataMu.Lock()
+	o.DaeDNS = nil
+	o.metadataMu.Unlock()
 }
 
 type InstanceOption struct {
@@ -235,9 +276,15 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 	}
 }
 
-// NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
-	return NewDialerContext(context.Background(), dialer, option, iOption, property)
+// SetRuntimeDependencies installs generation-scoped direct and DNS dependencies.
+func (o *GlobalOption) SetRuntimeDependencies(directDialer, fullconeDirectDialer netproxy.Dialer, systemDNSResolver SystemDNSResolver) {
+	o.DirectDialer = directDialer
+	o.FullconeDirectDialer = fullconeDirectDialer
+	o.SystemDNSResolver = systemDNSResolver
+	o.TcpCheckOptionRaw.DirectDialer = directDialer
+	o.TcpCheckOptionRaw.SystemDNSResolver = systemDNSResolver
+	o.CheckDnsOptionRaw.DirectDialer = directDialer
+	o.CheckDnsOptionRaw.SystemDNSResolver = systemDNSResolver
 }
 
 // NewDialerContext is for internal use with lifecycle management.
@@ -305,54 +352,85 @@ func (d *Dialer) CloneWithGlobalOptionContext(ctx context.Context, option *Globa
 	clone := NewDialerContext(ctx, d.Dialer, option, d.InstanceOption, cloneProperty(d.property))
 	clone.stickyIpDialer = d.stickyIpDialer
 	clone.proxyIpCache = d.proxyIpCache
+	// The fallback clone shares the original's sticky-IP cache, so it must
+	// also hold a registry reference: RetireForEstablishedFlows unregisters
+	// unconditionally, and one unbalanced unregister would strip cache
+	// invalidation from a still-live sibling sharing this cache.
+	if clone.property != nil {
+		registerProxyCache(clone.property.Address, clone.proxyIpCache)
+	}
 	return clone
 }
 
-func (d *Dialer) Close() error {
-	d.cancel()
-	if d.property != nil {
-		unregisterProxyCache(d.property.Address, d.proxyIpCache)
+// RetireForEstablishedFlows releases control-plane health state while keeping
+// the underlying transport available to already-established connections.
+func (d *Dialer) RetireForEstablishedFlows() {
+	if d == nil {
+		return
 	}
+	d.retireOnce.Do(func() {
+		d.cancel()
+		d.retireForEstablishedFlows()
+		if d.metadataRetirer != nil {
+			d.metadataRetirer.RetireForEstablishedFlows()
+		}
+		if d.property != nil {
+			unregisterProxyCache(d.property.Address, d.proxyIpCache)
+		}
 
-	// Cancel any pending recovery confirmation to prevent timer leaks
-	d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_TCP)
-	d.cancelPendingRecoveryConfirmationForType(&NetworkType{
-		L4Proto:         consts.L4ProtoStr_UDP,
-		IpVersion:       consts.IpVersionStr_4,
-		IsDns:           true,
-		UdpHealthDomain: UdpHealthDomainDns,
-	})
-	d.cancelPendingRecoveryConfirmationForType(&NetworkType{
-		L4Proto:         consts.L4ProtoStr_UDP,
-		IpVersion:       consts.IpVersionStr_4,
-		UdpHealthDomain: UdpHealthDomainData,
-	})
+		// Cancel pending recovery work owned by the retired control plane.
+		d.cancelPendingRecoveryConfirmation(consts.L4ProtoStr_TCP)
+		d.cancelPendingRecoveryConfirmationForType(&NetworkType{
+			L4Proto:         consts.L4ProtoStr_UDP,
+			IpVersion:       consts.IpVersionStr_4,
+			IsDns:           true,
+			UdpHealthDomain: UdpHealthDomainDns,
+		})
+		d.cancelPendingRecoveryConfirmationForType(&NetworkType{
+			L4Proto:         consts.L4ProtoStr_UDP,
+			IpVersion:       consts.IpVersionStr_4,
+			UdpHealthDomain: UdpHealthDomainData,
+		})
 
-	d.tickerMu.Lock()
-	if d.ticker != nil {
-		d.ticker.Stop()
-	}
-	d.tickerMu.Unlock()
+		d.tickerMu.Lock()
+		if d.ticker != nil {
+			d.ticker.Stop()
+			d.ticker = nil
+		}
+		d.tickerMu.Unlock()
 
-	d.httpClientMu.Lock()
-	for k, cli := range d.httpClients {
-		if cli != nil {
-			cli.CloseIdleConnections()
-			// Further help the Go GC by clearing the pool reference.
-			if t, ok := cli.Transport.(*http.Transport); ok {
-				t.CloseIdleConnections()
+		d.httpClientMu.Lock()
+		for k, cli := range d.httpClients {
+			if cli != nil {
+				cli.CloseIdleConnections()
+				if t, ok := cli.Transport.(*http.Transport); ok {
+					t.CloseIdleConnections()
+				}
 			}
 			delete(d.httpClients, k)
 		}
-	}
-	d.httpClientMu.Unlock()
+		d.httpClientMu.Unlock()
 
-	// If the underlying dialer supports explicit closure (common for QUIC/Hysteria2),
-	// call it to retire background workers immediately.
-	if closer, ok := d.Dialer.(interface{ Close() error }); ok {
-		_ = closer.Close()
-	}
+		// Generation callbacks retain the retired control plane and its BPF maps.
+		d.aliveTransitionMu.Lock()
+		d.aliveTransitionCallbacks = nil
+		d.aliveTransitionMu.Unlock()
+	})
+}
 
+func (d *Dialer) Close() error {
+	if d == nil {
+		return nil
+	}
+	d.closeOnce.Do(func() {
+		d.RetireForEstablishedFlows()
+
+		// Multiplexed transports must remain open until the last established flow
+		// releases this concrete dialer.
+		if closer, ok := d.Dialer.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
 	return nil
 }
 
@@ -657,10 +735,6 @@ func (d *Dialer) recoveryIdxForType(typ *NetworkType) int {
 	return d.ensureRecoveryManager().indexForType(typ)
 }
 
-func (d *Dialer) protoIdx(proto consts.L4ProtoStr) int {
-	return d.ensureRecoveryManager().indexForProto(proto)
-}
-
 // NotifyProxyFailure is called when a proxy server connection fails (e.g., connection refused).
 // It immediately invalidates the cached IP for the failed protocol and address family so that
 // the next connection can try a different IP without discarding healthy families.
@@ -708,16 +782,10 @@ func (d *Dialer) triggerRecoveryDetection(typ *NetworkType) {
 	d.ensureRecoveryManager().trigger(typ)
 }
 
-// confirmRecovery confirms recovery after backoff period.
-// It checks if the dialer is still healthy before confirming.
-func (d *Dialer) confirmRecovery(networkType *NetworkType, confirmSequence uint64) {
-	d.ensureRecoveryManager().confirm(networkType, confirmSequence)
-}
-
 // cancelPendingRecoveryConfirmation cancels any pending recovery confirmation timer for a specific protocol.
 // This is called when the dialer fails again during recovery observation period.
 func (d *Dialer) cancelPendingRecoveryConfirmation(proto consts.L4ProtoStr) {
-	protoIdx := d.protoIdx(proto)
+	protoIdx := idxTcp
 	d.cancelPendingRecoveryConfirmationByIndex(protoIdx, proto)
 }
 
@@ -733,16 +801,12 @@ func (d *Dialer) cancelPendingRecoveryConfirmationByIndex(protoIdx int, proto co
 	d.ensureRecoveryManager().cancelPendingConfirmationByIndex(protoIdx, proto)
 }
 
-func (d *Dialer) getRecoveryBackoffDurationByIndex(protoIdx int) time.Duration {
-	return d.ensureRecoveryManager().getRecoveryBackoffDurationByIndex(protoIdx)
-}
-
 // calculateBackoffDurationLocked calculates the backoff duration without acquiring a lock.
 // The caller must hold recoveryState.Lock() when calling this method.
 func (d *Dialer) calculateBackoffDurationLocked(level int, maxBackoff time.Duration) time.Duration {
 	// Calculate backoff: minBackoff * (2 ^ level)
 	duration := minRecoveryBackoff
-	for i := 0; i < level; i++ {
+	for range level {
 		duration *= time.Duration(backoffMultiplier)
 		if duration >= maxBackoff {
 			return maxBackoff
@@ -781,23 +845,6 @@ func (d *Dialer) incrementBackoffLevelByIndex(protoIdx int) {
 	d.ensureRecoveryManager().incrementBackoffLevelByIndex(protoIdx)
 }
 
-func (d *Dialer) GetBackoffLevel(proto consts.L4ProtoStr) int {
-	protoIdx := d.protoIdx(proto)
-	return d.getBackoffLevelByIndex(protoIdx)
-}
-
-func (d *Dialer) getBackoffLevelByIndex(protoIdx int) int {
-	return d.ensureRecoveryManager().getBackoffLevelByIndex(protoIdx)
-}
-
-// GetBackoffPenalty returns a latency penalty for nodes in recovery for a specific protocol.
-// Penalty = current backoff duration / 20.
-// This ensures recently recovered nodes are deprioritized until stable.
-func (d *Dialer) GetBackoffPenalty(proto consts.L4ProtoStr) time.Duration {
-	protoIdx := d.protoIdx(proto)
-	return d.getBackoffPenaltyByIndex(protoIdx)
-}
-
 func (d *Dialer) getBackoffPenaltyForType(typ *NetworkType) time.Duration {
 	if typ == nil {
 		return 0
@@ -812,7 +859,7 @@ func (d *Dialer) getBackoffPenaltyByIndex(protoIdx int) time.Duration {
 // NotifyPeriodicCheckResult handles stability-based "wash white" logic for a protocol.
 // Any failure resets the counter. A single success (with no failures) increments the stability counter.
 func (d *Dialer) NotifyPeriodicCheckResult(proto consts.L4ProtoStr, success bool, failure bool) {
-	protoIdx := d.protoIdx(proto)
+	protoIdx := idxTcp
 	d.notifyPeriodicCheckResultByIndex(protoIdx, proto, success, failure)
 }
 
@@ -829,21 +876,60 @@ func (d *Dialer) notifyPeriodicCheckResultByIndex(protoIdx int, proto consts.L4P
 
 // markUnavailableFromProxyFailure immediately marks the dialer as unavailable.
 // This is called when all proxy IPs have failed after retries, bypassing the health check cycle.
+//
+// Caller trace (why this is guarded rather than unconditional): the only
+// caller is NotifyHealthCheckResult, which promotes when
+// recordProxyFailure reports the consecutive-failure threshold
+// (maxConsecutiveFailures, sticky_cache.go). That threshold is per proxy
+// address and the counter is reset when it fires, so a dead proxy keeps
+// reaching this function on every later failure cycle while it stays dead.
+// Marking six collections unavailable on each of those cycles is what used to
+// print one "Marking dialer as unavailable..." line per cycle with no state
+// change behind it.
 func (d *Dialer) markUnavailableFromProxyFailure() {
-	d.Log.WithFields(logrus.Fields{
-		"dialer": d.Property().Name,
-	}).Warnln("Marking dialer as unavailable due to persistent proxy IP failures")
-
 	// Use existing markUnavailable logic from connectivity_check.go.
 	// Shared proxy transport failures must fan out into all transport domains.
-	for _, networkType := range []*NetworkType{
+	networkTypes := []*NetworkType{
 		{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
 		{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6},
 		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: UdpHealthDomainDns, IsDns: true},
 		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, UdpHealthDomain: UdpHealthDomainDns, IsDns: true},
 		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, UdpHealthDomain: UdpHealthDomainData},
 		{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, UdpHealthDomain: UdpHealthDomainData},
-	} {
+	}
+	// ReportUnavailableForced marks a collection unavailable unconditionally,
+	// so a repeated promotion is a no-op on the dialer state. Capture which
+	// collections were alive first; the line is emitted only when the
+	// promotion really changed at least one of them.
+	changed := make([]*NetworkType, 0, len(networkTypes))
+	for _, networkType := range networkTypes {
+		if d.MustGetAlive(networkType) {
+			changed = append(changed, networkType)
+		}
+	}
+	promotions := d.proxyFailurePromotions.Add(1)
+	switch {
+	case d.Log == nil:
+		// The state change below still has to happen; only the report is
+		// impossible without a logger.
+	case len(changed) > 0:
+		fields := logrus.Fields{
+			"dialer":     d.Property().Name,
+			"network":    describeNetworkTypes(changed),
+			"promotions": promotions,
+		}
+		d.Log.WithFields(fields).Warnln("Marking dialer as unavailable due to persistent proxy IP failures")
+	case d.Log.IsLevelEnabled(logrus.DebugLevel):
+		// No state change: an already-unavailable dialer was promoted again.
+		// Keep it visible at debug with the running count so a repeated
+		// promotion is never indistinguishable from a single one.
+		d.Log.WithFields(logrus.Fields{
+			"dialer":     d.Property().Name,
+			"promotions": promotions,
+		}).Debugln("Dialer was already unavailable; persistent proxy IP failures repeated")
+	}
+
+	for _, networkType := range networkTypes {
 		d.ReportUnavailableForced(networkType, nil)
 	}
 
@@ -860,6 +946,25 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 		d.resetStabilityCountByIndex(recovery.idx)
 		d.cancelPendingRecoveryConfirmationByIndex(recovery.idx, recovery.proto)
 	}
+}
+
+// describeNetworkTypes renders the network types a promotion actually changed.
+func describeNetworkTypes(networkTypes []*NetworkType) string {
+	names := make([]string, 0, len(networkTypes))
+	for _, networkType := range networkTypes {
+		names = append(names, networkType.String())
+	}
+	return strings.Join(names, ",")
+}
+
+// ProxyFailurePromotionCount reports how many times the persistent-proxy-IP
+// failure path promoted this dialer to unavailable, including the promotions
+// that changed no state and are only visible at debug.
+func (d *Dialer) ProxyFailurePromotionCount() uint64 {
+	if d == nil {
+		return 0
+	}
+	return d.proxyFailurePromotions.Load()
 }
 
 // isRecoveryTypeAlive returns true if any IP version of the specified health

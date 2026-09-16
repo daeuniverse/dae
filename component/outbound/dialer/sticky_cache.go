@@ -19,9 +19,14 @@ type ProxyIpCache = stickyip.ProxyIpCache
 
 var NewProxyIpCache = stickyip.NewProxyIpCache
 
-// globalProxyIpCache is the global cache for proxy server sticky IP entries.
-// It ensures that the same proxy domain resolves to the same IP across all dialers.
-var globalProxyIpCache = NewProxyIpCache()
+// Per-dialer proxy IP caches.
+//
+// A process-global shared cache was removed deliberately: cache entries are
+// keyed by proxy address but labeled with a per-dialer health-check cycle, so
+// two dialers sharing one address (the same server listed twice) thrashed
+// each other's cycle labels and every lookup missed — silently disabling
+// stickiness for both. Independent caches keep each dialer self-consistent;
+// cross-dialer invalidation still fans out through the registry below.
 
 type proxyIpCacheRegistry struct {
 	sync.Mutex
@@ -33,7 +38,7 @@ var globalProxyIpCacheRegistry = &proxyIpCacheRegistry{
 }
 
 func registerProxyCache(proxyAddr string, cache *ProxyIpCache) {
-	if proxyAddr == "" || cache == nil || cache == globalProxyIpCache {
+	if proxyAddr == "" || cache == nil {
 		return
 	}
 	globalProxyIpCacheRegistry.Lock()
@@ -47,7 +52,7 @@ func registerProxyCache(proxyAddr string, cache *ProxyIpCache) {
 }
 
 func unregisterProxyCache(proxyAddr string, cache *ProxyIpCache) {
-	if proxyAddr == "" || cache == nil || cache == globalProxyIpCache {
+	if proxyAddr == "" || cache == nil {
 		return
 	}
 	globalProxyIpCacheRegistry.Lock()
@@ -68,8 +73,6 @@ func unregisterProxyCache(proxyAddr string, cache *ProxyIpCache) {
 // invalidateProxyCache removes the cached IP for a proxy address.
 // This should be called when consecutive failures are detected.
 func invalidateProxyCache(proxyAddr string) {
-	globalProxyIpCache.Invalidate(proxyAddr)
-
 	globalProxyIpCacheRegistry.Lock()
 	cacheSet := globalProxyIpCacheRegistry.caches[proxyAddr]
 	caches := make([]*ProxyIpCache, 0, len(cacheSet))
@@ -122,8 +125,6 @@ func (t *proxyIpHealthTracker) maybeCleanupLocked(now time.Time) {
 }
 
 func resetGlobalProxyState() {
-	globalProxyIpCache = NewProxyIpCache()
-
 	globalProxyIpCacheRegistry.Lock()
 	globalProxyIpCacheRegistry.caches = make(map[string]map[*ProxyIpCache]int)
 	globalProxyIpCacheRegistry.Unlock()
