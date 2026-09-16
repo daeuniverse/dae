@@ -213,9 +213,13 @@ wait_for_reload_count() {
 	local log_file=$1
 	local expected=$2
 	local attempt finished retired
+	# The prefixed log formatter renders "[Reload] Finished" as
+	# "Reload: Finished" once ForceFormatting is enabled, which applies to a log
+	# file as well as to a terminal. Accept both renderings so this gate tracks
+	# reload progress instead of the logger configuration.
 	for attempt in {1..45}; do
-		finished=$(grep -F -c "[Reload] Finished" "$log_file" || true)
-		retired=$(grep -F -c "[Reload] Retired old control plane" "$log_file" || true)
+		finished=$(grep -F -c -e "[Reload] Finished" -e "Reload: Finished" "$log_file" || true)
+		retired=$(grep -F -c -e "[Reload] Retired old control plane" -e "Reload: Retired old control plane" "$log_file" || true)
 		if [ "$finished" -ge "$expected" ] && [ "$retired" -ge "$expected" ]; then
 			return 0
 		fi
