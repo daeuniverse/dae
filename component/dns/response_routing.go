@@ -28,14 +28,6 @@ type ResponseMatcherBuilder struct {
 	rules              []responseMatchSet
 }
 
-func NewResponseMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *ResponseMatcherBuilder, err error) {
-	program, err := routing.NewNormalizedProgram(rules, fallback)
-	if err != nil {
-		return nil, err
-	}
-	return NewResponseMatcherBuilderFromProgram(log, program, upstreamName2Id)
-}
-
 func NewResponseMatcherBuilderFromProgram(log *logrus.Logger, program *routing.NormalizedProgram, upstreamName2Id map[string]uint8) (b *ResponseMatcherBuilder, err error) {
 	if program == nil {
 		return nil, fmt.Errorf("response routing program is nil")

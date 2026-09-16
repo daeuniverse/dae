@@ -12,7 +12,9 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -75,7 +77,7 @@ func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, por
 	}
 	_port, err := strconv.ParseUint(__port, 10, 16)
 	if err != nil {
-		return "", "", 0, "", fmt.Errorf("failed to parse dns_upstream port: %v", err)
+		return "", "", 0, "", fmt.Errorf("failed to parse dns_upstream port: %w", err)
 	}
 	port = uint16(_port)
 	hostname = raw.Hostname()
@@ -93,7 +95,7 @@ type Upstream struct {
 func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string, resolveIp46 resolveUpstreamIp46Func) (up *Upstream, err error) {
 	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
+		return nil, fmt.Errorf("%w: %w", ErrFormat, err)
 	}
 
 	ip46 := &netutils.Ip46{}
@@ -162,17 +164,28 @@ type UpstreamResolver struct {
 	// FinishInitCallback may be invoked again if err is not nil
 	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
 
-	// OPTIMIZATION: Use atomic pointer for lock-free concurrent access with retry support.
-	// - nil: not initialized yet
-	// - &errorSentinel: initialization failed, should retry
-	// - *Upstream: successfully initialized
-	//
-	// This approach:
-	// 1. Avoids mutex contention on hot path (cache hits)
-	// 2. Allows retry on transient failures (important for proxy chains)
-	// 3. Uses CAS to prevent thundering herd on initialization
+	// state caches the initialization result for lock-free reads after a
+	// successful initialization:
+	//   - nil: not initialized yet
+	//   - &errorSentinel: initialization failed; retry is allowed, rate
+	//     limited by lastInitAttemptNano
+	//   - *upstreamState: successfully initialized
 	state atomic.Pointer[upstreamState]
+
+	// initMu serializes the slow path so concurrent callers cannot each run
+	// newUpstreamFunc (a bootstrap DNS resolution). During a bootstrap outage
+	// every in-flight DNS query funnels through GetUpstream; without the
+	// mutex each of them would fan out its own resolution attempt.
+	initMu sync.Mutex
+	// lastInitAttemptNano (UnixNano) is the negative-cache timestamp for
+	// failed initialization: within upstreamInitRetryInterval, callers fail
+	// fast instead of re-running the network-bound initialization.
+	lastInitAttemptNano atomic.Int64
 }
+
+// upstreamInitRetryInterval is the minimum spacing between upstream
+// initialization attempts after a failure.
+const upstreamInitRetryInterval = 2 * time.Second
 
 // upstreamState holds the result of initialization.
 type upstreamState struct {
@@ -185,35 +198,41 @@ type upstreamState struct {
 var errorSentinel upstreamState
 
 // GetUpstream returns the upstream resolver, initializing it if necessary.
-// OPTIMIZATION: Uses atomic pointer for lock-free reads after successful initialization.
-// Retries on transient failures (important for unstable proxy connections).
+// Reads after a successful initialization are lock-free; the slow path is
+// serialized by initMu and rate limited after failures, so a bootstrap outage
+// neither fans out one resolution per DNS query nor retries at query rate.
 //
 // State machine:
 //   - nil: not initialized yet
-//   - &errorSentinel: initialization failed, should retry
-//   - *upstreamState: successfully initialized (or permanently failed)
-//
-// Retry behavior:
-//   - On transient failure (e.g., proxy timeout), stores errorSentinel to allow retry
-//   - On retry, attempts initialization again
-//   - Once initialized successfully, returns cached result without blocking
+//   - &errorSentinel: initialization failed; retry allowed after the
+//     negative-cache window
+//   - *upstreamState: successfully initialized
 func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
 	// Fast path: check if already initialized (lock-free read)
 	state := u.state.Load()
 	if state != nil && state != &errorSentinel {
 		return state.upstream, state.err
 	}
+	return u.initUpstream(ctx)
+}
 
-	// Slow path: initialize
-	// Note: Multiple goroutines may reach here concurrently, which is OK.
-	// Each will attempt initialization, and the last one to Store wins.
-	// This is acceptable because:
-	// 1. Initialization is idempotent (same URL always produces same result)
-	// 2. The cost of duplicate initialization is outweighed by avoiding lock contention
+func (u *UpstreamResolver) initUpstream(ctx context.Context) (*Upstream, error) {
+	u.initMu.Lock()
+	defer u.initMu.Unlock()
+	// Re-read under the mutex: a concurrent initializer may have finished
+	// (or re-attempted) while this caller waited.
+	state := u.state.Load()
+	if state != nil && state != &errorSentinel {
+		return state.upstream, state.err
+	}
+	if now := time.Now(); now.UnixNano()-u.lastInitAttemptNano.Load() < int64(upstreamInitRetryInterval) {
+		return nil, fmt.Errorf("dns upstream init backed off after a recent failure; retry in <= %v", upstreamInitRetryInterval)
+	}
+	u.lastInitAttemptNano.Store(time.Now().UnixNano())
 
 	upstream, err := newUpstreamFunc(ctx, u.Raw, u.Network, u.ResolveIp46)
 	if err != nil {
-		// Mark as failed, allow retry on next call
+		// Mark as failed; the negative-cache window above spaces out retries.
 		u.state.Store(&errorSentinel)
 		return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 	}
@@ -221,7 +240,7 @@ func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err er
 	// Call finish callback if set
 	if u.FinishInitCallback != nil {
 		if err = u.FinishInitCallback(u.Raw, upstream); err != nil {
-			// Mark as failed, allow retry on next call
+			// Mark as failed; the negative-cache window above spaces out retries.
 			u.state.Store(&errorSentinel)
 			return nil, err
 		}

@@ -24,17 +24,6 @@ type RequestMatcherBuilder struct {
 	rules              []requestMatchSet
 }
 
-func NewRequestMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *RequestMatcherBuilder, err error) {
-	program, err := NewNormalizedRequestRoutingProgram(rules, fallback)
-	if err != nil {
-		return nil, err
-	}
-	if len(program.SubscriptionRules) > 0 || len(program.NodeRules) > 0 || len(program.SubNodeRules) > 0 {
-		return nil, fmt.Errorf("internal dae DNS selectors require explicit request-rule splitting before request matcher construction")
-	}
-	return NewRequestMatcherBuilderFromProgram(log, program, upstreamName2Id)
-}
-
 func NewRequestMatcherBuilderFromProgram(log *logrus.Logger, program *NormalizedRequestRoutingProgram, upstreamName2Id map[string]uint8) (b *RequestMatcherBuilder, err error) {
 	if program == nil {
 		return nil, fmt.Errorf("request routing program is nil")
