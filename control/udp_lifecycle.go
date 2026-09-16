@@ -123,8 +123,8 @@ func (c udpLifecycleContext) shouldDiscardPooledConnOnTimeout(err error) bool {
 	if c.profile.Kind == 0 || !c.profile.DiscardPooledConnOnTimeout || err == nil {
 		return false
 	}
-	var netErr net.Error
-	return stderrors.As(err, &netErr) && netErr.Timeout()
+	netErr, ok := stderrors.AsType[net.Error](err)
+	return ok && netErr.Timeout()
 }
 
 func (c udpLifecycleContext) shouldRetireOnNormalClose(err error) bool {

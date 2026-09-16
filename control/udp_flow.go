@@ -33,10 +33,6 @@ func NewUdpFlowKey(src, dst netip.AddrPort) UdpFlowKey {
 	return UdpFlowKey{Src: src, Dst: dst}
 }
 
-func NewUdpSrcOnlyFlowKey(src netip.AddrPort) UdpFlowKey {
-	return UdpFlowKey{Src: src}
-}
-
 func (k UdpFlowKey) PacketSnifferKey() PacketSnifferKey {
 	return PacketSnifferKey{LAddr: k.Src, RAddr: k.Dst}
 }
@@ -233,10 +229,6 @@ func (d UdpFlowDecision) EnsureSnifferSession() UdpFlowDecision {
 	return d
 }
 
-func (d UdpFlowDecision) ShouldAttemptSniff() bool {
-	return d.HasSnifferSession || d.IsQuicInitial
-}
-
 func (d UdpFlowDecision) ShouldUseOrderedIngress() bool {
 	// Preserve ingress order for every session-oriented UDP flow once dae has
 	// accepted the packet. Without this, ordinary UDP/game traffic can reach
@@ -294,8 +286,17 @@ func (d UdpFlowDecision) DispatchStrategy() UdpDispatchStrategy {
 type UdpDispatchStrategy int
 
 const (
-	// StrategyDirectGoroutine uses direct goroutine spawn.
-	// Lowest latency, no drops, but no concurrency control.
+	// udpDirectDispatchConcurrency caps concurrently running direct-dispatch
+	// tasks per control-plane generation. See controlPlaneUDPRuntime for the
+	// rationale; each task is short-lived, so the cap is sized far above any
+	// legitimate low-latency workload.
+	udpDirectDispatchConcurrency = 4096
+	// StrategyDirectGoroutine spawns one goroutine per packet, bounded by the
+	// udpDirectDispatchConcurrency semaphore (see controlPlaneUDPRuntime).
+	// It skips per-flow queue handoff for the lowest latency, but when the
+	// semaphore is saturated the packet is discarded inline: dispatch relies
+	// on ordinary UDP loss semantics (senders retransmit), so there is no
+	// strict no-drop guarantee despite the latency-sensitive classification.
 	StrategyDirectGoroutine UdpDispatchStrategy = iota
 
 	// StrategyOrderedIngress uses ordered task pool.

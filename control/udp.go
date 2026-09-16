@@ -9,9 +9,9 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -38,6 +38,9 @@ func shouldTryRawUDPFallback(err error, from, realTo netip.AddrPort) bool {
 	if from.Port() != 53 {
 		return false
 	}
+	if stderrors.Is(err, ErrAnyfromBindFailed) {
+		return true
+	}
 	if stderrors.Is(err, unix.EADDRINUSE) || stderrors.Is(err, unix.EADDRNOTAVAIL) {
 		return true
 	}
@@ -48,15 +51,15 @@ func shouldTryRawUDPFallback(err error, from, realTo netip.AddrPort) bool {
 		strings.Contains(errStr, "cannot assign requested address")
 }
 
-func tryRawUDPFallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, debugEnabled, errorEnabled bool, reason string, err error) bool {
+func tryRawUDPFallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, soMark uint32, debugEnabled, errorEnabled bool, reason string, err error) bool {
 	if !shouldTryRawUDPFallback(err, from, realTo) {
 		return false
 	}
 	var fallbackErr error
 	if from.Addr().Is4() || from.Addr().Is4In6() {
-		fallbackErr = sendUDPv4RawInDaeNetns(data, from, realTo)
+		fallbackErr = sendUDPv4RawInDaeNetns(data, from, realTo, soMark)
 	} else {
-		fallbackErr = sendUDPv6RawInDaeNetns(data, from, realTo)
+		fallbackErr = sendUDPv6RawInDaeNetns(data, from, realTo, soMark)
 	}
 	if fallbackErr == nil {
 		if debugEnabled {
@@ -86,8 +89,12 @@ var (
 	// Most DNS queries complete within seconds, and long-lived connections
 	// (like QUIC) can use longer timeouts via QuicNatTimeout.
 	DefaultNatTimeout = 30 * time.Second
-	// QuicNatTimeout is 2 minutes for QUIC long-lived connections.
-	QuicNatTimeout = 2 * time.Minute
+	// QuicNatTimeout bounds long-lived UDP sessions (QUIC, proxy-backed game
+	// flows). 5 minutes absorbs loading screens and menu phases that exceed
+	// the 2-minute value; sessions still idle longer are reaped by the pool
+	// janitor, and the eBPF conn-state backstop (UDP_CONN_STATE_TIMEOUT_NS)
+	// must stay aligned with this constant.
+	QuicNatTimeout = 5 * time.Minute
 )
 
 const (
@@ -97,11 +104,6 @@ const (
 
 	connectionErrorLogInterval = 5 * time.Second
 )
-
-// ResetUdpLogLimiters clears all rate limiters for UDP logging.
-// Called on reload to allow fresh logging after configuration changes.
-func ResetUdpLogLimiters() {
-}
 
 func udpEndpointNetworkType(ue *UdpEndpoint) dialer.NetworkType {
 	if ue != nil && ue.endpointNetworkType.L4Proto != "" {
@@ -142,14 +144,14 @@ func shouldRejectNewUdpDialSelection(res *proxyDialResult) bool {
 	return !res.Dialer.MustGetAlive(networkType)
 }
 
-func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpointKey, isFastPath bool) bool {
-	if ue == nil || ue.Dialer == nil {
+func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, isFastPath bool) bool {
+	if ue == nil || ue.Dialer == nil || ue.IsDead() {
 		return false
 	}
 	if ue.Outbound != nil && ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
 		return true
 	}
-	if ue.hasSent.Load() || ue.hasReply.Load() {
+	if ue.survivesDialerHealthInvalidation() {
 		// Once an endpoint has forwarded real traffic, treat it as a live session.
 		// Control-plane health should gate only new dial selection; existing UDP
 		// sessions must be retired by actual data-plane failures or timeout, not
@@ -161,6 +163,9 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 	// Only endpoints that have never forwarded a packet are safe to cull based
 	// on health probes alone.
 	if !ue.Dialer.MustGetAlive(&networkType) {
+		if !ue.retireIfUnforwardedForDialerHealth() {
+			return !ue.IsDead()
+		}
 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
 			path := "UDP"
 			if isFastPath {
@@ -171,7 +176,6 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, ueKey UdpEndpoint
 				"alive":  ue.Dialer.MustGetAlive(&networkType),
 			}).Debugf("Re-selecting outbound for existing %s endpoint due to dialer health.", path)
 		}
-		_ = DefaultUdpEndpointPool.Remove(ueKey, ue)
 		return false
 	}
 	return true
@@ -197,9 +201,11 @@ type DialOption struct {
 	Network       string
 	NetworkType   *dialer.NetworkType
 	SniffedDomain string
+	IsDialIp      bool
 	Excluded      *dialer.Dialer
-	// NowNano is an optional pre-calculated timestamp to avoid calling time.Now()
-	// in the hot path. If 0, time.Now() will be used.
+	Binding       UdpFlowBinding
+	// NowNano is an optional pre-calculated timestamp to avoid calling time.Now
+	// in the hot path. If 0, time.Now will be used.
 	NowNano int64
 }
 
@@ -268,24 +274,6 @@ func normalizeSendPktAddrFamily(from, realTo netip.AddrPort) (bindAddr, writeAdd
 
 type udpEndpointReplySender func(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, slot udpEndpointResponseConnSlot) error
 
-type anyfromPtrSlot struct {
-	ptr **Anyfrom
-}
-
-func (s anyfromPtrSlot) Load() *Anyfrom {
-	if s.ptr == nil {
-		return nil
-	}
-	return *s.ptr
-}
-
-func (s anyfromPtrSlot) Swap(next *Anyfrom) {
-	if s.ptr == nil {
-		return
-	}
-	swapPinnedAnyfrom(s.ptr, next)
-}
-
 func swapPinnedAnyfrom(slot **Anyfrom, next *Anyfrom) {
 	if slot == nil {
 		return
@@ -303,7 +291,7 @@ func swapPinnedAnyfrom(slot **Anyfrom, next *Anyfrom) {
 	}
 }
 
-func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, slot udpEndpointResponseConnSlot, cache udpEndpointResponseConnCache) (err error) {
+func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, soMark uint32, slot udpEndpointResponseConnSlot, cache udpEndpointResponseConnCache) (err error) {
 	// Proxy chain support: Use original 'from' address as bindAddr to ensure
 	// each server response gets its own UDP socket. This prevents response mixing
 	// when multiple IPv6 servers would otherwise share [::]:port (wildcard binding).
@@ -329,53 +317,74 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 	// Try cached socket first (for Symmetric NAT sessions)
 	if slot != nil {
 		if cached := slot.Load(); cached != nil {
-			if _, err = cached.WriteToUDPAddrPort(data, writeAddr); err == nil {
-				if traceEnabled {
+			if cached.soMark != soMark {
+				slot.CompareAndSwap(cached, nil)
+				if debugEnabled {
 					log.WithFields(logrus.Fields{
-						"to":         realTo.String(),
-						"write_addr": writeAddr.String(),
-						"cached":     true,
-					}).Trace("sendPkt: sent via cached socket")
+						"cached_mark": cached.soMark,
+						"reply_mark":  soMark,
+					}).Debug("sendPkt: discarded cached socket with mismatched mark")
 				}
-				return nil
-			}
-			// Cached socket is stale or broken; clear the cache slot immediately
-			// so the next call doesn't waste time retrying a dead socket.
-			slot.Swap(nil)
-			if debugEnabled {
-				log.WithFields(logrus.Fields{
-					"error": err.Error(),
-				}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+			} else {
+				if _, err = cached.WriteToUDPAddrPort(data, writeAddr); err == nil {
+					if traceEnabled {
+						log.WithFields(logrus.Fields{
+							"to":         realTo.String(),
+							"write_addr": writeAddr.String(),
+							"cached":     true,
+						}).Trace("sendPkt: sent via cached socket")
+					}
+					return nil
+				}
+				// Cached socket is stale or broken; clear the cache slot immediately
+				// so the next call doesn't waste time retrying a dead socket.
+				slot.CompareAndSwap(cached, nil)
+				if debugEnabled {
+					log.WithFields(logrus.Fields{
+						"error": err.Error(),
+					}).Debug("sendPkt: cached socket failed, getting new socket from pool")
+				}
 			}
 		}
 	}
 
 	if cache != nil {
 		if cached := cache.CachedResponseConn(bindAddr); cached != nil {
-			if _, err = cached.WriteToUDPAddrPort(data, writeAddr); err == nil {
-				if traceEnabled {
+			if cached.soMark != soMark {
+				cache.ClearCachedResponseConn(bindAddr, cached)
+				if debugEnabled {
 					log.WithFields(logrus.Fields{
-						"to":         realTo.String(),
-						"write_addr": writeAddr.String(),
-						"cached":     true,
-						"cache_kind": "bind_addr",
-					}).Trace("sendPkt: sent via bind-address cached socket")
+						"bind_addr":   bindAddr.String(),
+						"cached_mark": cached.soMark,
+						"reply_mark":  soMark,
+					}).Debug("sendPkt: discarded bind-address cached socket with mismatched mark")
 				}
-				return nil
-			}
-			cache.ClearCachedResponseConn(bindAddr, cached)
-			if debugEnabled {
-				log.WithFields(logrus.Fields{
-					"bind_addr": bindAddr.String(),
-					"error":     err.Error(),
-				}).Debug("sendPkt: bind-address cached socket failed, getting new socket from pool")
+			} else {
+				if _, err = cached.WriteToUDPAddrPort(data, writeAddr); err == nil {
+					if traceEnabled {
+						log.WithFields(logrus.Fields{
+							"to":         realTo.String(),
+							"write_addr": writeAddr.String(),
+							"cached":     true,
+							"cache_kind": "bind_addr",
+						}).Trace("sendPkt: sent via bind-address cached socket")
+					}
+					return nil
+				}
+				cache.ClearCachedResponseConn(bindAddr, cached)
+				if debugEnabled {
+					log.WithFields(logrus.Fields{
+						"bind_addr": bindAddr.String(),
+						"error":     err.Error(),
+					}).Debug("sendPkt: bind-address cached socket failed, getting new socket from pool")
+				}
 			}
 		}
 	}
 
-	uConn, isNew, err := DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
+	uConn, isNew, err := DefaultAnyfromPool.getOrCreateWithMark(bindAddr, soMark)
 	if err != nil {
-		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "get-or-create", err) {
+		if tryRawUDPFallback(log, data, from, realTo, soMark, debugEnabled, errorEnabled, "get-or-create", err) {
 			return nil
 		}
 		if stderrors.Is(err, ErrAnyfromBindFailed) {
@@ -400,7 +409,7 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 
 	_, err = uConn.WriteToUDPAddrPort(data, writeAddr)
 	if err != nil {
-		if tryRawUDPFallback(log, data, from, realTo, debugEnabled, errorEnabled, "write-to-udp", err) {
+		if tryRawUDPFallback(log, data, from, realTo, soMark, debugEnabled, errorEnabled, "write-to-udp", err) {
 			return nil
 		}
 		if errorEnabled {
@@ -431,14 +440,6 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 	return err
 }
 
-func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom, cache udpEndpointResponseConnCache) (err error) {
-	var slot udpEndpointResponseConnSlot
-	if afp != nil {
-		slot = anyfromPtrSlot{ptr: afp}
-	}
-	return sendPktWithResponseConnSlot(log, data, from, realTo, slot, cache)
-}
-
 // sendPkt sends a UDP packet to the destination.
 // Parameters:
 //   - log: logger to use
@@ -446,14 +447,17 @@ func sendPktWithCacheProvider(log *logrus.Logger, data []byte, from netip.AddrPo
 //   - from: source address of the packet (for logging/metadata only)
 //   - realTo: destination address where the packet should be sent
 //   - afp: optional cached Anyfrom socket for Symmetric NAT sessions
-func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.AddrPort, afp **Anyfrom) (err error) {
-	return sendPktWithCacheProvider(log, data, from, realTo, afp, nil)
-}
+//
+// udpReplyReinjectionDrops counts reply packets dropped by local reinjection
+// failures. Dropping is deliberate (the endpoint stays alive to avoid rebuild
+// storms), but the drop rate is otherwise invisible to operators.
+var udpReplyReinjectionDrops atomic.Uint64
 
 func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender, recordDownload func(int64)) error {
 	recordDownload = normalizeTrafficRecord(recordDownload)
 	var cacheSlot udpEndpointResponseConnSlot
 	var cacheProvider udpEndpointResponseConnCache
+	replySoMark := ue.replySoMark()
 	if ue != nil {
 		cacheSlot = ue.responseConnSlot()
 		cacheProvider = ue
@@ -462,7 +466,8 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 	// broken. Keeping the endpoint alive avoids recreating a fresh UDP session
 	// for every subsequent client packet after a transient local send failure.
 	if send == nil {
-		if err := sendPktWithResponseConnSlot(log, data, from, clientAddr, cacheSlot, cacheProvider); err != nil {
+		if err := sendPktWithResponseConnSlot(log, data, from, clientAddr, replySoMark, cacheSlot, cacheProvider); err != nil {
+			udpReplyReinjectionDrops.Add(1)
 			if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
 				log.WithFields(logrus.Fields{
 					"from":      from.String(),
@@ -477,6 +482,7 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 		return nil
 	}
 	if err := send(log, data, from, clientAddr, cacheSlot); err != nil {
+		udpReplyReinjectionDrops.Add(1)
 		if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
 			log.WithFields(logrus.Fields{
 				"from":      from.String(),
@@ -491,7 +497,110 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 	return nil
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
+func (c *ControlPlane) handleRetainedUDPEndpoint(data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision) bool {
+	manager, _ := c.controlPlaneSessionManager()
+	if manager == nil {
+		return false
+	}
+	ue, ok := manager.retainedUDPEndpoint(src, realDst, routingResult, c.PolicyEpoch())
+	if !ok {
+		return false
+	}
+	if !c.checkUdpEndpointHealth(ue, true) {
+		ue.retire()
+		return true
+	}
+	if flowDecision.HasConfirmedQuicState() || ue.SniffedDomain != "" {
+		ue.UpdateNatTimeout(QuicNatTimeout)
+	}
+	ue.TrackUdpConnStateTuplePair(src, realDst)
+	_, err := ue.WriteTo(data, ue.dialTargetForWrite(realDst))
+	if err != nil {
+		if isUdpEndpointWriteTolerated(err) {
+			// Transient write failure: drop the datagram, keep the session.
+			return true
+		}
+		if lifecycle, lifecycleOK := newUdpSessionLifecycleContext(ue, ""); lifecycleOK && c.shouldPenalizeUdpEndpointWriteError(err) {
+			lifecycle.reportUnavailable(fmt.Errorf("retained UDP endpoint write failed: %w", err))
+		}
+		ue.retire()
+		if c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"from": src.String(),
+				"to":   realDst.String(),
+			}).WithError(err).Debug("Retired process-owned UDP endpoint after write failure")
+		}
+		return true
+	}
+	// The retained endpoint still belongs to this plane's connection, so
+	// meter it through the plane-bound recorder like every other egress
+	// write: the global recorder would attribute bytes of a retiring
+	// generation to whichever store is published mid-reload.
+	c.recordUploadTraffic(int64(len(data)))
+	if lifecycle, lifecycleOK := newUdpSessionLifecycleContext(ue, ""); lifecycleOK {
+		lifecycle.reportTrafficSuccess()
+	}
+	return true
+}
+
+func currentPolicyUDPRoutingResult(stale *bpfRoutingResult) *bpfRoutingResult {
+	result := &bpfRoutingResult{
+		Outbound:         uint8(consts.OutboundControlPlaneRouting),
+		RoutingEpochSlot: bpfRoutingEpochSlotUnknown,
+	}
+	if stale == nil {
+		return result
+	}
+	result.Mac = stale.Mac
+	result.Pname = stale.Pname
+	result.Pid = stale.Pid
+	result.Dscp = stale.Dscp
+	return result
+}
+
+func (c *ControlPlane) prepareUnownedUDPCurrentPolicyFallback(src, dst netip.AddrPort, stale *bpfRoutingResult) (*bpfRoutingResult, bool, error) {
+	// Any generation that still admits work may re-route stale-attribution
+	// packets. During a staged reload the retiring listener's in-flight
+	// packets would otherwise be dropped once the cut-over moves the active
+	// epoch away, even though this generation's outbound runtime is still
+	// alive until Close. Closed generations keep the conservative drop path.
+	if c == nil || !c.acceptsRoutingEpochExecution() {
+		return nil, false, nil
+	}
+	manager, _ := c.controlPlaneSessionManager()
+	retired, err := manager.retireUnpinnedUDPConnState(src, dst)
+	if !retired {
+		return nil, false, err
+	}
+	return currentPolicyUDPRoutingResult(stale), true, err
+}
+
+func (c *ControlPlane) handlePktWithPrefetch(data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, prefetched *UdpEndpoint, prefetchKey UdpEndpointKey, prefetchOK bool) (err error) {
+	if c.handleRetainedUDPEndpoint(data, src, realDst, routingResult, flowDecision) {
+		return nil
+	}
+	owner, release, ownerErr := c.acquireRoutingEpochExecutionOwner(routingResult)
+	if ownerErr != nil {
+		if stderrors.Is(ownerErr, errRoutingEpochOwnerUnavailable) {
+			if fallbackResult, fallback, retireErr := c.prepareUnownedUDPCurrentPolicyFallback(src, realDst, routingResult); fallback {
+				if retireErr != nil && c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
+					c.log.WithError(retireErr).Debug("Failed to remove unowned stale UDP conn-state before current-policy fallback")
+				}
+				return c.handlePktOwned(data, src, realDst, fallbackResult, flowDecision, nil, UdpEndpointKey{}, false)
+			}
+		}
+		return fmt.Errorf("select UDP routing epoch owner: %w", ownerErr)
+	}
+	if release != nil {
+		defer release()
+	}
+	if owner != c {
+		return owner.handlePktOwned(data, src, realDst, routingResult, flowDecision, prefetched, prefetchKey, prefetchOK)
+	}
+	return c.handlePktOwned(data, src, realDst, routingResult, flowDecision, prefetched, prefetchKey, prefetchOK)
+}
+
+func (c *ControlPlane) handlePktOwned(data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, prefetched *UdpEndpoint, prefetchKey UdpEndpointKey, prefetchOK bool) (err error) {
 	var realSrc netip.AddrPort
 	var domain string
 	var ueKey UdpEndpointKey
@@ -506,50 +615,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		forceSymmetricKey = udpRouteScopeNeedsDestinationAffinity(routingResult)
 	}
 
-	// DNS Fast Path: Skip UdpEndpoint lookup for DNS traffic (port 53).
-	// DNS is a stateless protocol and doesn't need the connection tracking
-	// features that UdpEndpoint provides (designed for QUIC and other long-lived UDP).
-	// This optimization eliminates a sync.Map.Load() operation for every DNS query.
-	if realDst.Port() == 53 {
-		// Potential DNS query - verify with DNS message parsing
-		dnsMessage, _ := ChooseNatTimeout(data, true)
-		if dnsMessage != nil {
-			// Confirmed DNS request - take fast path
-			if routingResult.Mark == 0 {
-				routingResult.Mark = c.soMarkFromDae
-			}
-			c.recordUploadTraffic(int64(len(data)))
-			req := &udpRequest{
-				realSrc:        realSrc,
-				realDst:        realDst,
-				src:            src,
-				lConn:          lConn,
-				routingResult:  routingResult,
-				uploadRecord:   c.runtimeUploadRecorder(),
-				downloadRecord: c.runtimeDownloadRecorder(),
-			}
-			dnsController := c.ActiveDnsController()
-			if dnsController == nil {
-				return fmt.Errorf("dns controller is not available")
-			}
-			if err := dnsController.Handle_(c.dnsRequestContext(c.ctx, dnsController), dnsMessage, req); err != nil {
-				if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
-					return nil
-				}
-				// For DNS fast path, never leave client waiting on internal errors.
-				// Respond with SERVFAIL so resolver can retry/fallback promptly.
-				if sendErr := dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns fast path)", req, nil); sendErr != nil {
-					return stderrors.Join(err, sendErr)
-				}
-				if c.log.IsLevelEnabled(logrus.DebugLevel) {
-					c.log.WithError(err).Debug("DNS fast path failed; SERVFAIL sent")
-				}
-				return nil
-			}
-			return nil
-		}
-		// Not a valid DNS packet (port 53 but not DNS format) - fall through to normal UDP path
-	}
+	// DNS to port 53 never reaches this point in production: the ingress
+	// task intercepts valid DNS messages and answers them before calling
+	// into the handlePkt chain (see udp_ingress_task.go). Port-53 packets
+	// that are not valid DNS simply take the normal UDP path below.
 
 	var ue *UdpEndpoint
 	var ueExists bool
@@ -572,7 +641,14 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 		failedQuicDcidKnown = IsQuicDcidFailedAt(quicSnifferKey, now)
 	}
 	ueKey = flowDecision.EndpointKeyForInitialLookupWithScope(routeScope, forceSymmetricKey)
-	ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
+	if prefetchOK && prefetched != nil && prefetchKey == ueKey {
+		// Same-packet reuse of the routing-cache Get. Lifetime is this
+		// packet only; a binding miss never sets prefetchOK, so NAT
+		// cross-probe still runs when the live key may differ.
+		ue, ueExists = prefetched, true
+	} else {
+		ue, ueExists = DefaultUdpEndpointPool.Get(ueKey)
+	}
 	if !ueExists && !forceSymmetricKey {
 		if ueKey.Dst.Port() != 0 {
 			// Sniff-eligible UDP can re-enter here with a symmetric lookup even
@@ -582,7 +658,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			// same 4-tuple and start another read loop.
 			srcOnlyKey := flowDecision.FullConeNatEndpointKeyWithScope(routeScope)
 			if srcOnlyKey != ueKey {
-				if candidate, ok := DefaultUdpEndpointPool.Get(srcOnlyKey); ok && candidate.DialTarget == realDst.String() {
+				if candidate, ok := DefaultUdpEndpointPool.Get(srcOnlyKey); ok &&
+					candidate.DialTarget == realDst.String() {
 					ueKey = srcOnlyKey
 					ue = candidate
 					ueExists = true
@@ -596,7 +673,8 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			// single-instanced.
 			symmetricKey := flowDecision.SymmetricNatEndpointKeyWithScope(routeScope)
 			if symmetricKey != ueKey {
-				if candidate, ok := DefaultUdpEndpointPool.Get(symmetricKey); ok && candidate.DialTarget == realDst.String() {
+				if candidate, ok := DefaultUdpEndpointPool.Get(symmetricKey); ok &&
+					candidate.DialTarget == realDst.String() {
 					ueKey = symmetricKey
 					ue = candidate
 					ueExists = true
@@ -644,7 +722,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 				ueExists = false
 				break
 			}
-			if !c.checkUdpEndpointHealth(ue, ueKey, false) {
+			if !c.checkUdpEndpointHealth(ue, false) {
 				ue = nil
 				ueExists = false
 			}
@@ -652,9 +730,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			// It is quic ...
 			// Fast path.
 			domain = ue.SniffedDomain
-			dialTarget := realDst.String()
+			dialTarget := ue.dialTargetForWrite(realDst)
 
-			if !c.checkUdpEndpointHealth(ue, ueKey, true) {
+			if !c.checkUdpEndpointHealth(ue, true) {
 				ue = nil
 				ueExists = false
 			} else {
@@ -687,6 +765,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 					}
 					return nil
 				}
+				if isUdpEndpointWriteTolerated(err) {
+					// Transient write failure: drop the datagram, keep the session.
+					return nil
+				}
 				if c.log.IsLevelEnabled(logrus.DebugLevel) {
 					c.log.WithFields(logrus.Fields{
 						"to":      realDst.String(),
@@ -712,7 +794,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 			}
 		default:
 			// Non-fast-path existing endpoint. Check health.
-			if !c.checkUdpEndpointHealth(ue, ueKey, false) {
+			if !c.checkUdpEndpointHealth(ue, false) {
 				ue = nil
 				ueExists = false
 			}
@@ -721,7 +803,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 
 	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 	var natTimeout time.Duration
-	if domain == "" && !skipSniffing && !ueExists {
+	if domain == "" && !ueExists {
 		// Fast path: only sniff-eligible QUIC Initial packets should enter sniffing.
 		// All other UDP traffic should be forwarded immediately without blocking.
 		if !isQuicInitial {
@@ -758,7 +840,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 				goto afterSniffing
 			}
 
-			// Safe sniffing: wrap in a function to allow recover() from potential
+			// Safe sniffing: wrap in a function to allow recover from potential
 			// sniffer panics (e.g., malformed packets or internal logic errors).
 			func() {
 				defer func() {
@@ -863,9 +945,10 @@ afterSniffing:
 		routingResult.Mark = c.soMarkFromDae
 	}
 	// Dial and send.
-	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
-	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
-	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
+	// Rewritten domains already avoid full-cone endpoints (see
+	// UdpFlowDecision.EndpointKeyForDial). Still open: a mapping of
+	// Dialer + Target Domain => remotely resolved IP so flows whose target is
+	// only known by domain could reuse one endpoint even without QUIC.
 
 	// Get udp endpoint.
 	// foundUeKey captures the endpoint key that the initial Get succeeded with.
@@ -873,9 +956,17 @@ afterSniffing:
 	// and skip the redundant GetOrCreate sync.Map lookup (common path: non-QUIC
 	// existing endpoint, zero domain upgrade).
 	foundUeKey := ueKey
-	payloads := make([][]byte, 0, len(replayPackets)+1)
-	for _, pkt := range replayPackets {
-		payloads = append(payloads, pkt)
+	// The steady state (no sniff-replay packets) is a single payload: keep
+	// it on the stack and only build a heap slice when replays exist.
+	var payloadsHeap [][]byte
+	var inline [1][]byte
+	payloads := inline[:0]
+	if len(replayPackets) > 0 {
+		payloadsHeap = make([][]byte, 0, len(replayPackets)+1)
+		for _, pkt := range replayPackets {
+			payloadsHeap = append(payloadsHeap, pkt)
+		}
+		payloads = payloadsHeap
 	}
 	payloads = append(payloads, data)
 	packetIndex := 0
@@ -888,7 +979,7 @@ afterSniffing:
 		UdpHealthDomain: dialer.UdpHealthDomainData,
 	}
 	// Keep UDP target pinned to original destination IP to avoid QUIC session issues.
-	dialTarget := realDst.String()
+	dialTarget := ue.dialTargetForWrite(realDst)
 getNew:
 	if retry > MaxRetry {
 		c.log.WithFields(logrus.Fields{
@@ -926,25 +1017,54 @@ getNew:
 	// target key is unchanged (non-QUIC existing flow, no domain upgrade).
 	// On any retry the endpoint was removed, so we always call GetOrCreate.
 	if retry == 0 && ueExists && ueKey == foundUeKey {
-		// Update NAT timeout based on current forwarding state
-		// This allows the timeout to adapt to changes (e.g., domain sniffed, policy change)
-		ue.UpdateNatTimeout(natTimeout)
+		// Update NAT timeout based on current forwarding state.
+		// Keep the proxy-backed floor: without it every fast-path packet
+		// would shrink a hy2 endpoint to DefaultNatTimeout (30s), expiring
+		// long-lived game sessions during brief quiet phases.
+		ue.UpdateNatTimeout(effectiveUdpEndpointNatTimeout(ue.Dialer, natTimeout))
 		isNew = false
 	} else {
+		connStateOwner := udpConnStateOwner(c.core)
+		endpointDrainTracker := c.drainTracker
+		sessionManager, _ := c.controlPlaneSessionManager()
+		if sessionManager != nil {
+			connStateOwner = sessionManager
+			endpointDrainTracker = nil
+		}
+		replyLog := c.log
 		ue, isNew, err = DefaultUdpEndpointPool.GetOrCreate(ueKey, &UdpEndpointOptions{
 			Ctx: c.ctx,
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
-				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil, c.runtimeDownloadRecorder())
+				return forwardUdpEndpointReplyToClient(replyLog, ue, data, from, realSrc, nil, RecordDownloadTraffic)
 			},
 			NatTimeout:     natTimeout,
-			ConnStateOwner: c.core,
-			DrainTracker:   c.drainTracker,
+			ConnStateOwner: connStateOwner,
+			DrainTracker:   endpointDrainTracker,
+			admissionGate:  &c.udpEndpointAdmission,
 			Log:            c.log,
 			NowNano:        nowNano,
+			sessionManager: sessionManager,
+			egressRuntime:  c.egressRuntime,
+			// The batch aggregator is the only component that knows how many
+			// datagrams really left the socket, so it owns the upload meter
+			// and the health report for batched endpoints. The plain
+			// (non-batched) path keeps the inline accounting below.
+			SentReporter: func(sent *UdpEndpoint, datagrams, bytes int) {
+				if bytes > 0 {
+					c.recordUploadTraffic(int64(bytes))
+				}
+				if datagrams <= 0 {
+					return
+				}
+				if lifecycle, ok := newUdpSessionLifecycleContext(sent, ""); ok {
+					lifecycle.reportTrafficSuccess()
+				}
+			},
 			GetDialOption: func(ctx context.Context) (option *DialOption, err error) {
 				dialParam := &proxyDialParam{
 					Outbound:    consts.OutboundIndex(routingResult.Outbound),
+					Must:        routingResult.Must != 0,
 					Domain:      domain,
 					Mac:         routingResult.Mac,
 					Dscp:        routingResult.Dscp,
@@ -956,7 +1076,7 @@ getNew:
 					Excluded:    excludedDialer,
 				}
 
-				res, err := c.chooseProxyDialer(ctx, dialParam)
+				res, err := c.chooseProxyDialer(dialParam)
 				if err != nil {
 					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 						res.Outbound.HandleNoAliveDialer(
@@ -985,7 +1105,7 @@ getNew:
 					return nil, ob.ErrNoAliveDialer
 				}
 
-				return &DialOption{
+				option = &DialOption{
 					// Keep fixed-IP target even if chooseProxyDialer selected a domain target.
 					Target:        dialTarget,
 					Dialer:        res.Dialer,
@@ -993,13 +1113,17 @@ getNew:
 					Network:       res.Network,
 					NetworkType:   res.SelectionNetworkTypeObj,
 					SniffedDomain: res.SniffedDomain,
+					IsDialIp:      res.IsDialIp,
 					Excluded:      excludedDialer,
 					NowNano:       nowNano,
-				}, nil
+				}
+				option.Binding = newUdpFlowBinding(c.PolicyEpoch(), res.OutboundIndex, res.Mark, res.Must, option)
+				return option, nil
 			},
 		})
 		if err != nil {
-			if stderrors.Is(err, ob.ErrNoAliveDialer) || stderrors.Is(err, ErrEndpointFailed) {
+			if stderrors.Is(err, ob.ErrNoAliveDialer) || stderrors.Is(err, ErrEndpointFailed) ||
+				stderrors.Is(err, errUdpEndpointAdmissionClosed) {
 				// Already emitted a rate-limited diagnostic log above, or hit negative cache.
 				return nil
 			}
@@ -1013,7 +1137,7 @@ getNew:
 	// If GetOrCreate reused an existing endpoint on the slow path, re-check the
 	// exact endpoint network type before writing. This keeps the slow path aligned
 	// with the fast-path health checks and exact per-family invalidation.
-	if !isNew && !c.checkUdpEndpointHealth(ue, ueKey, false) {
+	if !isNew && !c.checkUdpEndpointHealth(ue, false) {
 		// Exclude the dead dialer to force selection of a different one on retry.
 		excludedDialer = ue.Dialer
 		retry++
@@ -1025,9 +1149,20 @@ getNew:
 	}
 	ue.TrackUdpConnStateTuplePair(realSrc, realDst)
 
+	// A batched endpoint only queues the datagram inside WriteTo; the flush
+	// reports the real bytes and the health signal from the aggregator's
+	// reportFlushed. Counting here would meter datagrams that a later failed or
+	// never-run flush dropped, and mark the dialer healthy for them.
+	batchOwnsAccounting := ue.sentReporter != nil
+
 	for packetIndex < len(payloads) {
 		_, err = ue.WriteTo(payloads[packetIndex], dialTarget)
 		if err != nil {
+			if isUdpEndpointWriteTolerated(err) {
+				// Transient write failure: drop this datagram, keep the session.
+				packetIndex++
+				continue
+			}
 			if c.log.IsLevelEnabled(logrus.DebugLevel) {
 				c.log.WithFields(logrus.Fields{
 					"to":      realDst.String(),
@@ -1057,17 +1192,22 @@ getNew:
 			retry++
 			goto getNew
 		}
-		c.recordUploadTraffic(int64(len(payloads[packetIndex])))
+		if !batchOwnsAccounting {
+			c.recordUploadTraffic(int64(len(payloads[packetIndex])))
+		}
 		packetIndex++
 	}
-	if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
-		lifecycle.reportTrafficSuccess()
+	if !batchOwnsAccounting {
+		if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+			lifecycle.reportTrafficSuccess()
+		}
 	}
 
-	// Print log.
-	// Only print routing for new connection to avoid the log exploded (Quic and BT).
-	if (isNew && c.log.IsLevelEnabled(logrus.InfoLevel)) || c.log.IsLevelEnabled(logrus.DebugLevel) {
-		entry := c.log.WithFields(logrus.Fields{
+	// Per-flow routing traces are Debug, and only for new endpoints.
+	// Reused endpoints (QUIC/BT) stay silent even at Debug to avoid
+	// exploding logs. Raise log_level to debug to restore new-flow traces.
+	if isNew && c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(logrus.Fields{
 			"network":  networkType.StringWithoutDns(),
 			"outbound": ue.Outbound.Name,
 			"policy":   ue.Outbound.GetSelectionPolicy(),
@@ -1078,13 +1218,7 @@ getNew:
 			"dscp":     routingResult.Dscp,
 			"pname":    ProcessName2String(routingResult.Pname[:]),
 			"mac":      Mac2String(routingResult.Mac[:]),
-		})
-		// Build entry once; select level without a second WithFields allocation.
-		logger := entry.Infof
-		if !isNew && c.log.IsLevelEnabled(logrus.DebugLevel) {
-			logger = entry.Debugf
-		}
-		logger("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+		}).Debugf("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
 	}
 
 	return nil

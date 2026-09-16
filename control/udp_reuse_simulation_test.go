@@ -116,16 +116,6 @@ func (d *packetConnFactoryDialer) DialContext(context.Context, string, string) (
 	return d.factory(), nil
 }
 
-type failingPacketDialer struct {
-	err   error
-	calls atomic.Int32
-}
-
-func (d *failingPacketDialer) DialContext(context.Context, string, string) (netproxy.Conn, error) {
-	d.calls.Add(1)
-	return nil, d.err
-}
-
 type scriptedDialResult struct {
 	conn netproxy.Conn
 	err  error
@@ -149,7 +139,7 @@ func newCountingProxyEndpointDialer(protocol, address string, conn netproxy.Conn
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	underlay := &countingPacketDialer{conn: conn}
-	return componentdialer.NewDialer(
+	return componentdialer.NewDialerContext(context.Background(),
 		underlay,
 		&componentdialer.GlobalOption{
 			Log:           logger,
@@ -170,28 +160,7 @@ func newFactoryProxyEndpointDialer(protocol, address string, factory func() netp
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	underlay := &packetConnFactoryDialer{factory: factory}
-	return componentdialer.NewDialer(
-		underlay,
-		&componentdialer.GlobalOption{
-			Log:           logger,
-			CheckInterval: time.Second,
-		},
-		componentdialer.InstanceOption{DisableCheck: true},
-		&componentdialer.Property{
-			Property: D.Property{
-				Name:     protocol,
-				Address:  address,
-				Protocol: protocol,
-			},
-		},
-	), underlay
-}
-
-func newFailingProxyEndpointDialer(protocol, address string, err error) (*componentdialer.Dialer, *failingPacketDialer) {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
-	underlay := &failingPacketDialer{err: err}
-	return componentdialer.NewDialer(
+	return componentdialer.NewDialerContext(context.Background(),
 		underlay,
 		&componentdialer.GlobalOption{
 			Log:           logger,
@@ -212,7 +181,7 @@ func newSequenceProxyEndpointDialer(protocol, address string, results ...scripte
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	underlay := &sequencePacketDialer{results: results}
-	return componentdialer.NewDialer(
+	return componentdialer.NewDialerContext(context.Background(),
 		underlay,
 		&componentdialer.GlobalOption{
 			Log:           logger,
@@ -246,7 +215,7 @@ func newUdpReuseSimulationControlPlane(outbound *ob.DialerGroup) *ControlPlane {
 func newTestAnyfromPoolWithoutJanitor() *AnyfromPool {
 	p := &AnyfromPool{}
 	for i := range anyfromPoolShardCount {
-		p.shards[i].pool = make(map[netip.AddrPort]*Anyfrom, 16)
+		p.shards[i].pool = make(map[anyfromPoolKey]*Anyfrom, 16)
 	}
 	return p
 }
@@ -286,8 +255,8 @@ func TestHandlePkt_RepeatedSameIngressReusesSingleUdpEndpoint(t *testing.T) {
 	flowDecision := ClassifyUdpFlow(src, dst, payload)
 	key := flowDecision.FullConeNatEndpointKey()
 
-	for i := 0; i < 5; i++ {
-		if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+	for i := range 5 {
+		if err := cp.handlePktWithPrefetch(payload, src, dst, routingResult, flowDecision, nil, UdpEndpointKey{}, false); err != nil {
 			t.Fatalf("handlePkt call %d: %v", i+1, err)
 		}
 	}
@@ -348,7 +317,7 @@ func TestHandlePkt_ProxyBackedSoftReadLoopExitRedialsFreshEndpoint(t *testing.T)
 	flowDecision := ClassifyUdpFlow(src, dst, payload)
 	key := flowDecision.FullConeNatEndpointKey()
 
-	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+	if err := cp.handlePktWithPrefetch(payload, src, dst, routingResult, flowDecision, nil, UdpEndpointKey{}, false); err != nil {
 		t.Fatalf("first handlePkt: %v", err)
 	}
 
@@ -368,7 +337,7 @@ func TestHandlePkt_ProxyBackedSoftReadLoopExitRedialsFreshEndpoint(t *testing.T)
 		t.Fatal("timed out waiting for simulated soft read exit")
 	}
 
-	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+	if err := cp.handlePktWithPrefetch(payload, src, dst, routingResult, flowDecision, nil, UdpEndpointKey{}, false); err != nil {
 		t.Fatalf("second handlePkt after soft read exit: %v", err)
 	}
 
@@ -434,7 +403,7 @@ func TestHandlePkt_TransportLifecycleShutdownRedialsFreshProxyEndpoint(t *testin
 	flowDecision := ClassifyUdpFlow(src, dst, payload)
 	key := flowDecision.FullConeNatEndpointKey()
 
-	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+	if err := cp.handlePktWithPrefetch(payload, src, dst, routingResult, flowDecision, nil, UdpEndpointKey{}, false); err != nil {
 		t.Fatalf("first handlePkt: %v", err)
 	}
 
@@ -450,7 +419,7 @@ func TestHandlePkt_TransportLifecycleShutdownRedialsFreshProxyEndpoint(t *testin
 		t.Fatal("expected transport lifecycle shutdown to remove the endpoint from the pool")
 	}
 
-	if err := cp.handlePkt(nil, payload, src, dst, routingResult, flowDecision, false); err != nil {
+	if err := cp.handlePktWithPrefetch(payload, src, dst, routingResult, flowDecision, nil, UdpEndpointKey{}, false); err != nil {
 		t.Fatalf("second handlePkt after transport shutdown: %v", err)
 	}
 
@@ -486,9 +455,9 @@ func TestAnyfromPool_ConcurrentExistingSocketReusesCachedBind(t *testing.T) {
 	}
 	af.expiresAtNano.Store(time.Now().Add(AnyfromTimeout).UnixNano())
 
-	shard := pool.shardFor(lAddr)
+	shard := pool.shardForKey(anyfromPoolKey{lAddr: lAddr})
 	shard.mu.Lock()
-	shard.pool[lAddr] = af
+	shard.pool[anyfromPoolKey{lAddr: lAddr}] = af
 	shard.mu.Unlock()
 
 	const callers = 128
@@ -498,11 +467,9 @@ func TestAnyfromPool_ConcurrentExistingSocketReusesCachedBind(t *testing.T) {
 	connCh := make(chan *Anyfrom, callers)
 	var wg sync.WaitGroup
 	for range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
-			conn, isNew, err := pool.GetOrCreate(lAddr, AnyfromTimeout)
+			conn, isNew, err := pool.getOrCreateWithMark(lAddr, 0)
 			if err != nil {
 				errCh <- err
 				return
@@ -512,7 +479,7 @@ func TestAnyfromPool_ConcurrentExistingSocketReusesCachedBind(t *testing.T) {
 				return
 			}
 			connCh <- conn
-		}()
+		})
 	}
 
 	close(start)
@@ -541,9 +508,9 @@ func TestAnyfromPool_ConcurrentFailedBindEntrySuppressesRetryStorm(t *testing.T)
 	failed.failed.Store(true)
 	failed.expiresAtNano.Store(time.Now().Add(2 * time.Second).UnixNano())
 
-	shard := pool.shardFor(lAddr)
+	shard := pool.shardForKey(anyfromPoolKey{lAddr: lAddr})
 	shard.mu.Lock()
-	shard.pool[lAddr] = failed
+	shard.pool[anyfromPoolKey{lAddr: lAddr}] = failed
 	shard.mu.Unlock()
 
 	const callers = 128
@@ -552,11 +519,9 @@ func TestAnyfromPool_ConcurrentFailedBindEntrySuppressesRetryStorm(t *testing.T)
 	errCh := make(chan error, callers)
 	var wg sync.WaitGroup
 	for range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
-			conn, isNew, err := pool.GetOrCreate(lAddr, AnyfromTimeout)
+			conn, isNew, err := pool.getOrCreateWithMark(lAddr, 0)
 			if !stderrors.Is(err, ErrAnyfromBindFailed) {
 				errCh <- fmt.Errorf("GetOrCreate err = %v, want %v", err, ErrAnyfromBindFailed)
 				return
@@ -568,7 +533,7 @@ func TestAnyfromPool_ConcurrentFailedBindEntrySuppressesRetryStorm(t *testing.T)
 			if isNew {
 				errCh <- fmt.Errorf("GetOrCreate reported isNew for failed bind hot path")
 			}
-		}()
+		})
 	}
 
 	close(start)
@@ -582,7 +547,7 @@ func TestAnyfromPool_ConcurrentFailedBindEntrySuppressesRetryStorm(t *testing.T)
 	}
 
 	shard.mu.RLock()
-	current := shard.pool[lAddr]
+	current := shard.pool[anyfromPoolKey{lAddr: lAddr}]
 	shard.mu.RUnlock()
 	if current != failed {
 		t.Fatal("expected failed bind cache entry to remain unchanged during retry storm suppression")
@@ -600,15 +565,15 @@ func TestAnyfromPool_JanitorKeepsPinnedConnUntilReleased(t *testing.T) {
 	af.RefreshTtl()
 	af.Pin()
 
-	shard := pool.shardFor(lAddr)
+	shard := pool.shardForKey(anyfromPoolKey{lAddr: lAddr})
 	shard.mu.Lock()
-	shard.pool[lAddr] = af
+	shard.pool[anyfromPoolKey{lAddr: lAddr}] = af
 	shard.mu.Unlock()
 
 	time.Sleep(anyfromJanitorPeriod + 100*time.Millisecond)
 
 	shard.mu.RLock()
-	_, ok := shard.pool[lAddr]
+	_, ok := shard.pool[anyfromPoolKey{lAddr: lAddr}]
 	shard.mu.RUnlock()
 	if !ok {
 		t.Fatal("expected pinned anyfrom conn to survive janitor sweep")
@@ -618,7 +583,7 @@ func TestAnyfromPool_JanitorKeepsPinnedConnUntilReleased(t *testing.T) {
 	time.Sleep(anyfromJanitorPeriod + 100*time.Millisecond)
 
 	shard.mu.RLock()
-	_, ok = shard.pool[lAddr]
+	_, ok = shard.pool[anyfromPoolKey{lAddr: lAddr}]
 	shard.mu.RUnlock()
 	if ok {
 		t.Fatal("expected released anyfrom conn to be reclaimed by janitor")
