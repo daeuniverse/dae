@@ -29,7 +29,7 @@ func TestResolveNetipLargeTCPResponse(t *testing.T) {
 	serverAddr := startTCPDNSServer(t, func(req *dnsmessage.Msg, conn net.Conn) error {
 		resp := new(dnsmessage.Msg)
 		resp.SetReply(req)
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			resp.Answer = append(resp.Answer, &dnsmessage.A{
 				Hdr: dnsmessage.RR_Header{
 					Name:   req.Question[0].Name,

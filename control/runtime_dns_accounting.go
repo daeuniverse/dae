@@ -7,8 +7,6 @@ package control
 
 import (
 	"crypto/tls"
-	"io"
-	"net"
 	"net/netip"
 	"strings"
 
@@ -16,30 +14,22 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func writeRuntimeTrackedUDPAddrPort(conn *net.UDPConn, data []byte, addr netip.AddrPort, recordDownload func(int64)) error {
+func sendRuntimeTrackedPkt(log *logrus.Logger, data []byte, from netip.AddrPort, to netip.AddrPort, soMark uint32, recordDownload func(int64)) error {
 	recordDownload = normalizeTrafficRecord(recordDownload)
-	n, err := conn.WriteToUDPAddrPort(data, addr)
-	if n > 0 {
-		recordDownload(int64(n))
-	}
-	if err != nil {
-		return err
-	}
-	if n != len(data) {
-		return io.ErrShortWrite
-	}
-	return nil
-}
-
-func sendRuntimeTrackedPkt(log *logrus.Logger, data []byte, from netip.AddrPort, to netip.AddrPort, recordDownload func(int64)) error {
-	recordDownload = normalizeTrafficRecord(recordDownload)
-	if err := sendPkt(log, data, from, to, nil); err != nil {
+	if err := sendPktWithResponseConnSlot(log, data, from, to, soMark, nil, nil); err != nil {
 		return err
 	}
 	// UDP datagrams are treated as all-or-nothing here: sendPkt returns nil only
 	// after a full packet send, so len(data) is the correct accounted size.
 	recordDownload(int64(len(data)))
 	return nil
+}
+
+func (r *udpRequest) replySoMark() uint32 {
+	if r != nil && r.routingResult != nil {
+		return r.routingResult.Mark
+	}
+	return soMarkFromDae.Load()
 }
 
 type runtimeTrackedDNSResponseWriter struct {

@@ -44,6 +44,9 @@ func (c *ControlPlane) ActiveTCPConnections() (n int) {
 	if c == nil {
 		return 0
 	}
+	if manager, _ := c.controlPlaneSessionManager(); manager != nil {
+		n = manager.ActiveTCPConnections()
+	}
 	c.inConnections.Range(func(_, _ any) bool {
 		n++
 		return true

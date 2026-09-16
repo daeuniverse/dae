@@ -13,8 +13,44 @@
 
 #define IPV4(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 
+/* ABI-independent L2 address comparison and packet writing used by the probes
+ * below to put a packet on the wire as a specific LAN host. */
+static __always_inline bool ab_mac6_equal(const __u8 *a, const __u8 *b)
+{
+	for (int i = 0; i < 6; i++)
+		if (a[i] != b[i])
+			return false;
+	return true;
+}
+
+/* Writes the packet's L2 addresses. Raw `skb->data` stores are rejected by the
+ * verifier for a packet that was never pulled, so use the helper the datapath
+ * itself uses to rewrite the header. */
+static __always_inline int ab_store_l2_addrs(struct __sk_buff *skb, __u8 smac,
+					     __u8 dmac)
+{
+	__u8 source[6] = { 0, 0, 0, 0, 0, smac };
+	__u8 dest[6] = { 0, 0, 0, 0, 0, dmac };
+
+	if (bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source), source,
+				sizeof(source), 0))
+		return 1;
+	return bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest), dest,
+				   sizeof(dest), 0) ? 2 : 0;
+}
+
 static const __u32 three_key = 3;
 static const __u32 four_key = 4;
+
+/* Reads a bpf_stats_map counter. Callers compare deltas because all test
+ * programs of an object share one map. ~0ULL marks a missing key so a failed
+ * read can never look like a zero counter. */
+static __always_inline __u64 ab_read_stat(__u32 key)
+{
+	__u64 *value = bpf_map_lookup_elem(&bpf_stats_map, &key);
+
+	return value ? *value : ~0ULL;
+}
 
 static __always_inline int
 set_ipv4_tcp_with_flags(struct __sk_buff *skb,

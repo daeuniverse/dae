@@ -113,28 +113,43 @@ type Param struct {
 }
 
 func (p *Param) String(compact bool, quoteVal bool) string {
-	// FIXME: annotation
 	var quote func(string) string
 	if quoteVal {
 		quote = strconv.Quote
 	} else {
 		quote = func(s string) string { return s }
 	}
-	if p.Key == "" {
-		return quote(p.Val)
-	}
-	if p.AndFunctions != nil {
+	var s string
+	switch {
+	case p.Key == "":
+		s = quote(p.Val)
+	case p.AndFunctions != nil:
 		a := paramAndFunctions{
 			Key:          p.Key,
 			AndFunctions: p.AndFunctions,
 		}
-		return a.String(compact, quoteVal)
+		s = a.String(compact, quoteVal)
+	case compact:
+		s = p.Key + ":" + quote(p.Val)
+	default:
+		s = p.Key + ": " + quote(p.Val)
 	}
+	return s + formatAnnotation(p.Annotation, compact, quoteVal)
+}
+
+func formatAnnotation(ann []*Param, compact bool, quoteVal bool) string {
+	if len(ann) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(ann))
+	for _, a := range ann {
+		parts = append(parts, a.String(compact, quoteVal))
+	}
+	sep := ", "
 	if compact {
-		return p.Key + ":" + quote(p.Val)
-	} else {
-		return p.Key + ": " + quote(p.Val)
+		sep = ","
 	}
+	return " [" + strings.Join(parts, sep) + "]"
 }
 
 type Function struct {
@@ -144,6 +159,16 @@ type Function struct {
 }
 
 func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
+	return f.format(compact, quoteVal, omitEmpty, false)
+}
+
+// MarshalString is the lossless form of String: every param is emitted.
+// String remains truncated at 5 params for log/debug display.
+func (f *Function) MarshalString(compact bool, quoteVal bool, omitEmpty bool) string {
+	return f.format(compact, quoteVal, omitEmpty, true)
+}
+
+func (f *Function) format(compact bool, quoteVal bool, omitEmpty bool, unlimited bool) string {
 	var builder strings.Builder
 	if f.Not {
 		builder.WriteString("!")
@@ -153,7 +178,7 @@ func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
 		builder.WriteString("(")
 		var strParamList []string
 		for i, p := range f.Params {
-			if i >= 5 {
+			if !unlimited && i >= 5 {
 				strParamList = append(strParamList, "...")
 				break
 			}
@@ -183,7 +208,7 @@ func (p *paramAndFunctions) String(compact bool, quoteVal bool) string {
 	}
 	var strFunctionList []string
 	for _, f := range p.AndFunctions {
-		strFunctionList = append(strFunctionList, f.String(compact, quoteVal, false))
+		strFunctionList = append(strFunctionList, f.MarshalString(compact, quoteVal, false))
 	}
 	if compact {
 		builder.WriteString(strings.Join(strFunctionList, "&&"))
@@ -232,9 +257,9 @@ func (r *RoutingRule) String(replaceParamWithN bool, compact bool, quoteVal bool
 		fmt.Fprintf(&builder, "%v%v(%v)", symNot, f.Name, paramBuilder.String())
 	}
 	if compact {
-		builder.WriteString("->" + r.Outbound.String(compact, quoteVal, true))
+		builder.WriteString("->" + r.Outbound.MarshalString(compact, quoteVal, true))
 	} else {
-		builder.WriteString(" -> " + r.Outbound.String(compact, quoteVal, true))
+		builder.WriteString(" -> " + r.Outbound.MarshalString(compact, quoteVal, true))
 	}
 	return builder.String()
 }

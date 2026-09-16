@@ -15,12 +15,27 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func sendUDPv4RawDirect(data []byte, from, realTo netip.AddrPort) error {
+// maxUDPRawPayloadLength bounds the UDP payload of the raw fallback path:
+// 65535 (max IPv4 total length) - 20 (IPv4 header) - 8 (UDP header) = 65507.
+// The 16-bit UDP length field would wrap for larger payloads.
+const maxUDPRawPayloadLength = 65507
+
+func validateUDPRawPayloadLength(n int) error {
+	if n > maxUDPRawPayloadLength {
+		return fmt.Errorf("raw UDP fallback payload too large: %d bytes (max %d)", n, maxUDPRawPayloadLength)
+	}
+	return nil
+}
+
+func sendUDPv4RawDirect(data []byte, from, realTo netip.AddrPort, soMark uint32) error {
 	if !from.IsValid() || !realTo.IsValid() {
 		return fmt.Errorf("invalid addr: from=%v to=%v", from, realTo)
 	}
 	if (!from.Addr().Is4() && !from.Addr().Is4In6()) || (!realTo.Addr().Is4() && !realTo.Addr().Is4In6()) {
 		return fmt.Errorf("raw UDPv4 fallback requires IPv4 endpoints: from=%v to=%v", from, realTo)
+	}
+	if err := validateUDPRawPayloadLength(len(data)); err != nil {
+		return err
 	}
 
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_UDP)
@@ -32,9 +47,8 @@ func sendUDPv4RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); err != nil {
 		return fmt.Errorf("enable IP_TRANSPARENT on raw socket: %w", err)
 	}
-	mark := soMarkFromDae.Load()
-	if mark != 0 {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(mark)); err != nil {
+	if soMark != 0 {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(soMark)); err != nil {
 			return fmt.Errorf("set SO_MARK on raw socket: %w", err)
 		}
 	}
@@ -63,16 +77,19 @@ func sendUDPv4RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	return nil
 }
 
-func sendUDPv4RawInDaeNetns(data []byte, from, realTo netip.AddrPort) error {
-	return sendUDPv4RawDirect(data, from, realTo)
+func sendUDPv4RawInDaeNetns(data []byte, from, realTo netip.AddrPort, soMark uint32) error {
+	return sendUDPv4RawDirect(data, from, realTo, soMark)
 }
 
-func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
+func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort, soMark uint32) error {
 	if !from.IsValid() || !realTo.IsValid() {
 		return fmt.Errorf("invalid addr: from=%v to=%v", from, realTo)
 	}
 	if !from.Addr().Is6() || from.Addr().Is4In6() || !realTo.Addr().Is6() || realTo.Addr().Is4In6() {
 		return fmt.Errorf("raw UDPv6 fallback requires pure IPv6 endpoints: from=%v to=%v", from, realTo)
+	}
+	if err := validateUDPRawPayloadLength(len(data)); err != nil {
+		return err
 	}
 
 	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_UDP)
@@ -84,9 +101,8 @@ func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1); err != nil {
 		return fmt.Errorf("enable IPV6_TRANSPARENT on raw socket: %w", err)
 	}
-	mark := soMarkFromDae.Load()
-	if mark != 0 {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(mark)); err != nil {
+	if soMark != 0 {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(soMark)); err != nil {
 			return fmt.Errorf("set SO_MARK on raw socket: %w", err)
 		}
 	}
@@ -114,12 +130,12 @@ func sendUDPv6RawDirect(data []byte, from, realTo netip.AddrPort) error {
 	return nil
 }
 
-func sendUDPv6RawInDaeNetns(data []byte, from, realTo netip.AddrPort) error {
+func sendUDPv6RawInDaeNetns(data []byte, from, realTo netip.AddrPort, soMark uint32) error {
 	// This path is called from the dataplane hot path where caller is already
 	// in dae netns (see run loop in cmd/run.go). Avoid nested netns switching:
 	// re-entering WithRequired here can temporarily flip thread netns and break
 	// packet handling continuity under concurrent traffic.
-	return sendUDPv6RawDirect(data, from, realTo)
+	return sendUDPv6RawDirect(data, from, realTo, soMark)
 }
 
 func udp4Checksum(src, dst netip.Addr, udp []byte) uint16 {

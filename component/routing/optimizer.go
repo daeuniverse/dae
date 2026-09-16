@@ -85,14 +85,20 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 		})
 	}
 	// Merge singleton rules with the same outbound.
+	// NOTE: Only positive (non-inverted) functions can be safely merged.
+	// For inverted rules, De Morgan's law breaks the equivalence:
+	//   !f(a)->X OR !f(b)->X  !=  !f(a,b)->X
+	// because sequential rule matching is OR while params within one
+	// function are OR'd first and then inverted as a whole.
 	var newRules []*config_parser.RoutingRule
 	mergingRule := rules[0]
 	for i := 1; i < len(rules); i++ {
 		if len(mergingRule.AndFunctions) == 1 &&
 			len(rules[i].AndFunctions) == 1 &&
+			!mergingRule.AndFunctions[0].Not &&
+			!rules[i].AndFunctions[0].Not &&
 			mergingRule.AndFunctions[0].Name == rules[i].AndFunctions[0].Name &&
-			mergingRule.AndFunctions[0].Not == rules[i].AndFunctions[0].Not &&
-			rules[i].Outbound.String(true, false, true) == mergingRule.Outbound.String(true, false, true) {
+			rules[i].Outbound.MarshalString(true, false, true) == mergingRule.Outbound.MarshalString(true, false, true) {
 			mergingRule.AndFunctions[0].Params = append(mergingRule.AndFunctions[0].Params, rules[i].AndFunctions[0].Params...)
 		} else {
 			newRules = append(newRules, mergingRule)
@@ -211,6 +217,7 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	if err != nil {
 		return nil, err
 	}
+	params = make([]*config_parser.Param, 0, len(geoSite.Domain))
 	for _, item := range geoSite.Domain {
 		if attr != "" {
 			// Filter by attr.

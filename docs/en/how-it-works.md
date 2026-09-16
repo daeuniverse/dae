@@ -25,6 +25,16 @@ Despite these challenges, this approach is already an optimal solution compared 
 
 Hence, if DNS requests cannot pass through dae, domain-based splitting will not succeed.
 
+Sniffing is time-boxed. dae waits `sniffing_timeout` (30ms by default) for the domain
+to appear in the client's first packet and falls back to IP-based splitting when it
+does not; after three consecutive sniff failures on the same flow signature, that
+signature is left alone for ten minutes (the negative cache), so a flow that never
+carries a domain at its start stops being domain-matched instead of being retried on
+every connection. For the shape where one device's domain whitelist meets that
+device's own encrypted DNS, dae inserts a kernel-space sniff fallback of its own
+(`auto_sniff_punt`, see [routing](configuration/routing.md)) so the whitelist keeps
+applying even though the device's DNS never reaches dae.
+
 > To mitigate DNS pollution and achieve improved CDN connection speeds, dae employs domain sniffing in user space. When `dial_mode` is set to "domain" or its variants and proxied traffic needs to be processed, dae sends the sniffed domain to the proxy server instead of sending the IP address. Consequently, the proxy server re-resolves the domain and connects using the optimal IP. This approach addresses DNS pollution and enhances CDN connection speed.
 >
 > Additionally, advanced users who have used alternative splitting solutions and don't wish to route DNS requests through dae but still want certain traffic to be split based on domain (e.g., splitting traffic to Netflix nodes and download nodes based on the target domain, with some directly connecting via the core) can enforce the use of sniffed domains for splitting by setting `dial_mode: domain++`.

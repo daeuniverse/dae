@@ -5,16 +5,27 @@ on:
     paths:
       - "**/*.c"
       - "**/*.h"
+      - "control/**/*.go"
+      - "pkg/ebpf_internal/**"
+      - "trace/**"
+      - "scripts/ebpf-audit.sh"
+      - "scripts/check-trace-arch-matrix.sh"
+      - "Makefile"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/bpf-test.yml"
   push:
     branches:
       - main
-      - kdae
     paths:
       - "**/*.c"
       - "**/*.h"
+      - "control/**/*.go"
+      - "pkg/ebpf_internal/**"
+      - "trace/**"
+      - "scripts/ebpf-audit.sh"
+      - "scripts/check-trace-arch-matrix.sh"
+      - "Makefile"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/bpf-test.yml"
@@ -25,7 +36,8 @@ jobs:
   bpf_tests:
     name: BPF Unit Test
     runs-on: ubuntu-latest
-    continue-on-error: true
+    env:
+      CGO_ENABLED: 0
     strategy:
       matrix:
         env:
@@ -42,14 +54,134 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Set up Go 1.26
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26
+
+      - name: Apply the canonical build experiments
+        run: make -s print-goexperiment-env >> "$GITHUB_ENV"
+
       - name: Install Dependencies
         env: ${{ matrix.env }}
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang-$VERSION llvm-$VERSION
+          sudo apt-get install -y clang-$VERSION llvm-$VERSION iproute2 iputils-ping
 
       - name: Run BPF tests
         env: ${{ matrix.env }}
         run: |
           git submodule update --init
-          sudo CLANG=clang-$VERSION make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
+          sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED CLANG=clang-$VERSION make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
+          if [ "$VERSION" = 19 ]; then
+            set -euo pipefail
+            sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED CLANG=clang-$VERSION make ebpf
+            # Whitelist of the test cases that must actually RUN from the
+            # !dae_stub_ebpf test files. Before this step only one case
+            # (TestTCHookSetKernelUpdateAndRollback) ran while eight real
+            # datapath cases were merely compiled.
+            #
+            # Direction 1 below rejects any func Test* in a !dae_stub_ebpf file
+            # that is not listed here, so a new case in such a file must be
+            # added below even when it needs no datapath: the point is that it
+            # runs in the real (non-stub) build rather than only compiling.
+            whitelist=(
+              TestTCHookSetKernelUpdateAndRollback
+              TestOffloadObjectsInSpec
+              TestDataplaneProgramsAndMapsComplete
+              TestAssignDataplaneToBpfCopiesMandatoryObjects
+              TestBatchDeleteIgnoringMissingResumesSuffix
+              TestBatchDeleteIgnoringMissingAllAbsent
+              TestBatchDeleteIgnoringMissingPreservesPartialCountOnError
+              TestBatchDeleteIgnoringMissingRejectsSilentPartialProgress
+              TestBpfMapBatchDeleteRealMapResumesAfterMissingKey
+              # Log-level contracts for the real loader (they exercise the
+              # production helper and its source contract; no BPF map needed).
+              TestRemovedIncompatiblePinnedMapWarnsWithConsequence
+              TestIncompatiblePinRemovalIsNotAnInfoStep
+              # Cgroup2 mount-point probe cache (concurrent consistency of the
+              # sync.OnceValues singleton; reads /proc/mounts, no BPF map needed).
+              TestDetectCgroupPathCaching
+            )
+            printf '%s\n' "${whitelist[@]}" | sort -u > /tmp/datapath-whitelist.txt
+
+            # Direction 1: every func Test* in a !dae_stub_ebpf test file must be
+            # whitelisted, so a new/renamed case cannot silently stop running.
+            mapfile -t tagged_files < <(git grep -l 'go:build !dae_stub_ebpf' -- '*_test.go')
+            declared="$(grep -hE '^func (Test[A-Za-z0-9_]*)\(' "${tagged_files[@]}" \
+              | sed -E 's/^func (Test[A-Za-z0-9_]*)\(.*/\1/' \
+              | grep -v '^TestMain$' | sort -u)"
+            missing="$(comm -23 <(printf '%s\n' "$declared") /tmp/datapath-whitelist.txt)"
+            if [ -n "$missing" ]; then
+              echo "::error::!dae_stub_ebpf test case(s) missing from the -test.run whitelist in bpf-test.yml: $(echo $missing | tr '\n' ' ')"
+              exit 1
+            fi
+
+            # Direction 2: every whitelisted case must actually pass.
+            # The compile step runs under sudo too: the earlier root-owned
+            # `make ebpf-test` creates root-owned directories inside the
+            # shared GOMODCACHE, so an unprivileged `go test -c` fails with
+            # "mkdir ... permission denied" whenever the dependency set needs
+            # a module directory the root run did not create. Keeping the
+            # whole direction root-side avoids the mixed-ownership cache.
+            run_regex="^($(paste -sd'|' /tmp/datapath-whitelist.txt))$"
+            sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED go test -c ./control -o /tmp/dae-control-datapath.test
+            sudo /tmp/dae-control-datapath.test -test.run "$run_regex" -test.count=1 -test.v | tee /tmp/datapath.log
+            failed=0
+            while IFS= read -r name; do
+              if ! grep -qE -- "--- PASS: ${name}([[:space:]]|$)" /tmp/datapath.log; then
+                echo "::error::whitelisted test '${name}' did not report '--- PASS' (renamed, removed or skipped?)"
+                failed=1
+              fi
+            done < /tmp/datapath-whitelist.txt
+            [ "$failed" -eq 0 ] || exit 1
+          fi
+
+      # TRACE_UNSUPPORTED_GOARCH is a machine-checked claim, not a
+      # comment. Every listed architecture must really fail to generate trace
+      # (and a control architecture must really succeed, so a missing compiler
+      # cannot make the gate pass vacuously). Guarded to one matrix leg: it
+      # compiles trace once per checked architecture.
+      - name: Trace architecture ledger
+        if: matrix.env.VERSION == 19
+        env: ${{ matrix.env }}
+        run: |
+          git submodule update --init
+          # The step above runs the kernel tests through sudo, so the generated
+          # trace objects under trace/ are owned by root and a plain user cannot
+          # regenerate them ("unable to open output file ... Operation not
+          # permitted"). Run the ledger with the same privileges and keep the Go
+          # environment, which is the form scripts/ebpf-audit.sh already uses.
+          sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED \
+            CLANG=clang-$VERSION STRIP=llvm-strip-$VERSION \
+            ./scripts/check-trace-arch-matrix.sh
+
+  bpf_abi_big_endian:
+    name: BPF ABI (s390x)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26
+
+      - name: Apply the canonical build experiments
+        run: make -s print-goexperiment-env >> "$GITHUB_ENV"
+
+      - name: Install s390x emulator
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y qemu-user-static
+
+      - name: Run BPF ABI tests on big-endian target
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=s390x go test -tags dae_stub_ebpf -c ./control -o /tmp/dae-control-s390x.test
+          qemu-s390x-static /tmp/dae-control-s390x.test -test.run 'Test(NativeBpfABI|BpfHostABI|ParseDaeEvent)' -test.count=1

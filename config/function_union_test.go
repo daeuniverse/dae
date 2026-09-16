@@ -49,13 +49,6 @@ func TestParseFunctionOrString(t *testing.T) {
 	})
 }
 
-func TestFunctionOrStringToFunctionPreservesLegacyPanicAPI(t *testing.T) {
-	require.Equal(t, "direct", FunctionOrStringToFunction("direct").Name)
-	require.Panics(t, func() {
-		FunctionOrStringToFunction(123)
-	})
-}
-
 func TestParseFunctionListOrString(t *testing.T) {
 	t.Run("string", func(t *testing.T) {
 		fs, err := ParseFunctionListOrString("random")
@@ -83,13 +76,6 @@ func TestParseFunctionListOrString(t *testing.T) {
 		_, err := ParseFunctionListOrString(true)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unsupported function-list-or-string value type")
-	})
-}
-
-func TestFunctionListOrStringToFunctionListPreservesLegacyPanicAPI(t *testing.T) {
-	require.Equal(t, "random", FunctionListOrStringToFunctionList("random")[0].Name)
-	require.Panics(t, func() {
-		FunctionListOrStringToFunctionList(true)
 	})
 }
 

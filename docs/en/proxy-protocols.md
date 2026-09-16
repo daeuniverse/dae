@@ -3,9 +3,11 @@
 > **Note**: dae currently supports the following proxy protocols
 
 - [x] HTTP(S), naiveproxy
+
   ```
   https://[[user:]pass@]hostname:port/
   ```
+
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
@@ -53,7 +55,7 @@
   - [x] Trojan-gfw
   - [x] Trojan-go
 
-  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url/)
+  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url)
 
 - [x] Tuic (v5)
 
@@ -98,3 +100,46 @@ Although dae and other proxy programs support the HTTPS protocol, using them doe
    Here, `pname` refers to the process name. You can determine the process name of naiveproxy by examining the command used to start it, running the `ps -ef` command at runtime, or observing the dae logs. The meaning of `must_direct` is to allow all traffic, including DNS queries, to pass through directly without redirecting to dae.
 
    Users who only bind the LAN interface do not need to perform this step.
+
+## Compatibility notes
+
+### VLESS with XTLS Vision and malformed ServerHello
+
+XTLS Vision can only be enabled once the client has read the cipher suite out
+of the server's `ServerHello`: the Vision padding strategy is derived from it,
+so guessing the suite would corrupt the stream. The VLESS implementation in the outbound layer therefore parses the cipher
+suite only when the handshake message
+is well formed, in particular when `legacy_session_id` is inside the RFC 8446
+section 4.1.2 bound of 0..32 bytes and the message is long enough to contain
+the field.
+
+On a malformed `ServerHello` (session ID longer than 32 bytes, truncated or
+oversized handshake) the cipher suite is left unset, **XTLS Vision is not
+enabled for that connection and the session falls back to a plain VLESS
+relay**: no Vision padding is applied and no protocol error is raised. The
+fail-safe direction is deliberate, because inferring a cipher suite from a
+malformed message would produce wrong padding and break the stream.
+
+This behavior lives in the outbound library that dae depends on; dae itself
+never parses the handshake.
+
+### Congestion control override on QUIC-based protocols
+
+The `tuic`, `juicity` and `hysteria2` node links accept a client-local
+`cc_override` query parameter that selects which congestion controller the
+client installs. It is never sent to the server, and it takes precedence over
+whatever controller the server reports:
+
+```
+tuic://<uuid>:<password>@<server>:<port>?congestion_control=bbr&cc_override=bbr3
+juicity://<uuid>:<password>@<server>:<port>?congestion_control=bbr&cc_override=bbr3
+hysteria2://<auth>:<password>@<server>:443?upmbps=20&downmbps=100&cc_override=bbr3
+```
+
+`tuic` and `juicity` accept `bbr`, `cubic`, `new_reno`, `brutal` and `bbr3`;
+`hysteria2` accepts `bbr`, `brutal` and `bbr3`. The value is lowercased and
+trimmed before it is matched, and an unsupported value fails the node when the
+dialer is constructed instead of silently falling back.
+
+With no `cc_override`, these three protocols install `bbr3`; write
+`cc_override=bbr` on a link to restore the previous stable default for that node.

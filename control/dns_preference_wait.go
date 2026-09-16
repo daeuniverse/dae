@@ -30,10 +30,17 @@ const (
 // When a non-preferred response arrives (e.g., A when prefer=6), we wait briefly
 // to see if the preferred response (e.g., AAAA) arrives before responding.
 type preferenceWait struct {
-	qtype     uint16        // Original query type (A or AAAA)
-	preferred bool          // Whether the preferred response arrived in time
-	done      chan struct{} // Closed when wait is complete (timeout or preferred arrived)
-	deadline  time.Time     // Wait deadline
+	qname string // Key this wait is registered under (identity for removal)
+	qtype uint16 // Original query type (A or AAAA)
+	// preferred records whether the preferred response arrived in time;
+	// preferredHasRecords additionally records whether that response carried
+	// address records of the preferred family. Only a preferred family that
+	// really has records may suppress the non-preferred answer, so the two
+	// conditions are tracked separately.
+	preferred           bool
+	preferredHasRecords bool
+	done                chan struct{} // Closed when wait is complete (timeout or preferred arrived)
+	deadline            time.Time     // Wait deadline
 }
 
 // preferenceWaitRegistry manages concurrent DNS queries waiting for preferred response types.
@@ -79,6 +86,7 @@ func (r *preferenceWaitRegistry) registerWait(qname string, qtype uint16, qtypeP
 
 	// Create new wait
 	w := &preferenceWait{
+		qname:    qname,
 		qtype:    qtype,
 		done:     make(chan struct{}),
 		deadline: time.Now().Add(PreferenceResolutionDelay),
@@ -88,8 +96,9 @@ func (r *preferenceWaitRegistry) registerWait(qname string, qtype uint16, qtypeP
 }
 
 // notifyPreferred notifies a waiting query that the preferred response has arrived.
+// hasRecords tells whether that response carried records of the preferred family.
 // Returns true if a waiter was found and notified.
-func (r *preferenceWaitRegistry) notifyPreferred(qname string, qtype uint16, qtypePrefer uint16) bool {
+func (r *preferenceWaitRegistry) notifyPreferred(qname string, qtype uint16, qtypePrefer uint16, hasRecords bool) bool {
 	// Fast path: preference not enabled
 	if qtypePrefer == 0 {
 		return false
@@ -109,26 +118,39 @@ func (r *preferenceWaitRegistry) notifyPreferred(qname string, qtype uint16, qty
 	w, ok := r.waits[qname]
 	if ok {
 		// Mark the preferred response as observed before releasing the waiter.
+		// A newer waiter may already have replaced this entry for the same
+		// qname — notify it but only remove the identity we found.
 		w.preferred = true
+		w.preferredHasRecords = hasRecords
 		close(w.done)
-		delete(r.waits, qname)
+		if r.waits[qname] == w {
+			delete(r.waits, qname)
+		}
 	}
 	r.mu.Unlock()
 	return ok
 }
 
-// remove removes a wait from the registry.
-func (r *preferenceWaitRegistry) remove(qname string) {
+// remove removes a specific wait from the registry by identity. Removing by
+// bare qname could delete a newer query's wait that reused the key after this
+// one was replaced via registerWait's existing-wait return path.
+func (r *preferenceWaitRegistry) remove(w *preferenceWait) {
+	if w == nil {
+		return
+	}
 	r.mu.Lock()
-	delete(r.waits, qname)
+	if cur := r.waits[w.qname]; cur == w {
+		delete(r.waits, w.qname)
+	}
 	r.mu.Unlock()
 }
 
 // waitFor waits for the preferred response or timeout.
-// Returns true if the preferred response arrived before the timeout.
-func (w *preferenceWait) waitFor() (preferred bool) {
+// It returns whether the preferred response arrived before the timeout and, if
+// it did, whether that response carried records of the preferred family.
+func (w *preferenceWait) waitFor() (preferred bool, preferredHasRecords bool) {
 	if w == nil {
-		return false
+		return false, false
 	}
 
 	deadline := w.deadline
@@ -142,14 +164,29 @@ func (w *preferenceWait) waitFor() (preferred bool) {
 		select {
 		case <-w.done:
 			// Preferred response arrived
-			return w.preferred
+			return w.preferred, w.preferredHasRecords
 		case <-timeout.C:
 			// Timeout, use original response
-			return false
+			return false, false
 		}
 	}
 
 	// Already past deadline
+	return false, false
+}
+
+// hasAddressRecords reports whether msg carries at least one answer record of
+// the given address family. CNAME and other linkage records do not count: the
+// caller uses this to decide whether a family really has an address to offer.
+func hasAddressRecords(msg *dnsmessage.Msg, qtype uint16) bool {
+	if msg == nil || (qtype != dnsmessage.TypeA && qtype != dnsmessage.TypeAAAA) {
+		return false
+	}
+	for _, rr := range msg.Answer {
+		if rr != nil && rr.Header().Rrtype == qtype {
+			return true
+		}
+	}
 	return false
 }
 

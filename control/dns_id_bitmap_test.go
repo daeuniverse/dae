@@ -23,7 +23,6 @@ func TestIdBitmap_ConcurrentUniqueAllocation(t *testing.T) {
 	wg.Add(n)
 
 	for i := range n {
-		i := i
 		go func() {
 			defer wg.Done()
 			<-start

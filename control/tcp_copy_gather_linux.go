@@ -1,5 +1,10 @@
 //go:build linux
 
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package control
 
 import (
@@ -7,7 +12,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"sync"
 	"syscall"
 
 	"github.com/daeuniverse/outbound/netproxy"
@@ -15,9 +19,7 @@ import (
 )
 
 var (
-	relayGatherWriteTestHookMu sync.Mutex
-	relayGatherWriteTestHook   func(prefixLen, bodyLen int)
-	relayWritevFunc            = unix.Writev
+	relayWritevFunc = unix.Writev
 )
 
 const relayGatherInlineSegmentCap = 8
@@ -74,16 +76,9 @@ func relayBuildWriteSegments(prefixSegs [][]byte, body []byte, scratch *[relayGa
 	return writeSegs
 }
 
-func relaySegmentsLen(segs [][]byte) int {
-	total := 0
-	for _, seg := range segs {
-		total += len(seg)
-	}
-	return total
-}
-
-func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, record func(int64)) (written int64, err error, ok bool) {
+func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, record func(int64), onActive func(int64)) (written int64, err error, ok bool) {
 	record = normalizeTrafficRecord(record)
+	onActive = normalizeTrafficRecord(onActive)
 	if !relayGatherWriteEnabled {
 		return 0, nil, false
 	}
@@ -92,8 +87,6 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 	if len(segments) == 0 {
 		return 0, nil, false
 	}
-	prefixLen := relaySegmentsLen(segments)
-
 	bufPtr := relayCopyBufferPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer relayCopyBufferPool.Put(bufPtr)
@@ -117,21 +110,14 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		}
 	}
 
-	// Fast path: check nil without lock to avoid overhead in production
-	if relayGatherWriteTestHook != nil {
-		relayGatherWriteTestHookMu.Lock()
-		hook := relayGatherWriteTestHook
-		relayGatherWriteTestHookMu.Unlock()
-		if hook != nil {
-			hook(prefixLen, len(body))
-		}
-	}
-
 	var writeSegScratch [relayGatherInlineSegmentCap + 1][]byte
 	writeSegs := relayBuildWriteSegments(segments, body, &writeSegScratch)
 
 	nw, err := relayGatherWriteTo(dst, writeSegs)
 	written += int64(nw)
+	if nw > 0 {
+		onActive(int64(nw))
+	}
 	if nw > 0 {
 		record(int64(nw))
 	}
@@ -151,11 +137,11 @@ func tryRelayGatherWrite(ctx context.Context, dst netproxy.Conn, src netproxy.Co
 		if cerr := ctx.Err(); cerr != nil {
 			return written, cerr, true
 		}
-		n, err := continuationSource.CopyRelayRemainder(dst, buf, record)
+		n, err := continuationSource.CopyRelayRemainder(ctx, dst, buf, record, onActive)
 		return written + n, err, true
 	}
 
-	n, err := relayCopyLoop(ctx, dst, src, buf, record)
+	n, err := relayCopyLoop(ctx, dst, src, buf, record, onActive)
 	return written + n, err, true
 }
 
@@ -246,22 +232,9 @@ func relayAdvanceSegments(segs [][]byte, n int) [][]byte {
 	return segs
 }
 func tcpConnHasPendingReadData(conn *net.TCPConn) (bool, error) {
-	rawConn, err := conn.SyscallConn()
+	pending, err := tcpConnPendingBytes(conn)
 	if err != nil {
 		return false, err
-	}
-
-	var (
-		pending int
-		ctrlErr error
-	)
-	if err := rawConn.Control(func(fd uintptr) {
-		pending, ctrlErr = unix.IoctlGetInt(int(fd), unix.TIOCINQ)
-	}); err != nil {
-		return false, err
-	}
-	if ctrlErr != nil {
-		return false, ctrlErr
 	}
 	return pending > 0, nil
 }

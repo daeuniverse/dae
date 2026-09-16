@@ -3,15 +3,19 @@ Description=dae Service
 Documentation=https://github.com/daeuniverse/dae
 After=network-online.target docker.service systemd-sysctl.service
 Wants=network-online.target
+# Bound crash loops: give up after 5 restarts within 5 minutes.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
 User=root
 
 # Resource limits
-# MemoryHigh triggers GC but doesn't kill the process - safer than MemoryMax
-MemoryHigh=512M
-# No hard memory limit - let dae manage its own memory
+# No memory limit by default: dae sizes its rule matchers from the user's
+# geosite/geoip set, so any fixed ceiling here is a guess. Setting MemoryMax=
+# makes dae derive GOMEMLIMIT from it automatically.
+# MemoryMax=512M
 # Increase process limit for parallel operations
 LimitNPROC=4096
 LimitNOFILE=1048576
@@ -26,12 +30,20 @@ OOMScoreAdjust=-100
 # Environment=GOGC=100
 
 # Startup and reload commands
+# `validate` runs the same rule pipeline as `run` (alias resolution, geosite/
+# geoip expansion, rule lowering) but touches no BPF and performs no network
+# I/O: it only resolves geo assets from the local search path
+# (common/assets.LocationFinder), never downloads them. Measured on a cold
+# page cache: ~0.08s for a config with three geo rules and ~0.5s for one with
+# 28 of them; a fully cold read of both installed .dat files (23.1 MiB) is
+# ~0.01s. TimeoutStartSec below keeps a wide margin over that.
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
 ExecReload=/usr/bin/dae reload $MAINPID
 
-# Restart policy
-Restart=on-failure
+# Restart policy. on-abnormal keeps a rejected config (non-zero exit from
+# ExecStartPre) from looping forever; the burst limit bounds crash loops.
+Restart=on-abnormal
 RestartSec=5s
 
 # Timeout configuration

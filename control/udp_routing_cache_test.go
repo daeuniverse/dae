@@ -8,45 +8,47 @@ package control
 import (
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestUdpEndpointRoutingCache_HitAndExpire(t *testing.T) {
-	oldTTL := UdpRoutingResultCacheTtl
-	UdpRoutingResultCacheTtl = 20 * time.Millisecond
-	defer func() { UdpRoutingResultCacheTtl = oldTTL }()
-
+// TestUdpEndpointRouteBindingLifecycle covers the lifetime-bound routing
+// result: it must answer only for the bound destination and L4 protocol and
+// be replaced by a later update.
+func TestUdpEndpointRouteBindingLifecycle(t *testing.T) {
 	ue := &UdpEndpoint{}
 	dst := netip.MustParseAddrPort("1.1.1.1:443")
 	otherDst := netip.MustParseAddrPort("8.8.8.8:53")
-	l4proto := uint8(17)
+	const l4proto = uint8(17)
+	const otherL4proto = uint8(6)
 
-	if got, ok := ue.GetCachedRoutingResult(dst, l4proto); ok || got != nil {
-		t.Fatalf("expected empty cache")
+	if bound, ok := ue.GetBoundRoutingResult(dst, l4proto); ok || bound != nil {
+		t.Fatal("expected empty route binding")
 	}
 
-	rr := &bpfRoutingResult{
-		Mark:     123,
-		Outbound: 2,
-		Dscp:     10,
-	}
-	ue.UpdateCachedRoutingResult(dst, l4proto, rr)
+	routingResult := &bpfRoutingResult{Mark: 123, Outbound: 2, Dscp: 10}
+	ue.UpdateCachedRoutingResult(dst, l4proto, routingResult)
 
-	got, ok := ue.GetCachedRoutingResult(dst, l4proto)
+	bound, ok := ue.GetBoundRoutingResult(dst, l4proto)
 	require.True(t, ok)
-	require.NotNil(t, got)
-	require.Equal(t, rr.Mark, got.Mark)
-	require.Equal(t, rr.Outbound, got.Outbound)
-	require.Equal(t, rr.Dscp, got.Dscp)
+	require.NotNil(t, bound)
+	require.Equal(t, routingResult.Mark, bound.Mark)
+	require.Equal(t, routingResult.Outbound, bound.Outbound)
+	require.Equal(t, routingResult.Dscp, bound.Dscp)
 
-	got, ok = ue.GetCachedRoutingResult(otherDst, l4proto)
-	require.False(t, ok)
-	require.Nil(t, got)
+	if other, ok := ue.GetBoundRoutingResult(otherDst, l4proto); ok || other != nil {
+		t.Fatal("route binding matched a different original destination")
+	}
+	if other, ok := ue.GetBoundRoutingResult(dst, otherL4proto); ok || other != nil {
+		t.Fatal("route binding matched a different L4 protocol")
+	}
 
-	time.Sleep(2 * UdpRoutingResultCacheTtl)
-	got, ok = ue.GetCachedRoutingResult(dst, l4proto)
-	require.False(t, ok)
-	require.Nil(t, got)
+	updated := &bpfRoutingResult{Mark: 77, Outbound: 3, Dscp: 12}
+	ue.UpdateCachedRoutingResult(otherDst, l4proto, updated)
+	if stale, ok := ue.GetBoundRoutingResult(dst, l4proto); ok || stale != nil {
+		t.Fatal("route binding survived being superseded by a new destination")
+	}
+	bound, ok = ue.GetBoundRoutingResult(otherDst, l4proto)
+	require.True(t, ok)
+	require.Equal(t, updated.Mark, bound.Mark)
 }

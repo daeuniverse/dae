@@ -62,6 +62,25 @@ sudo systemctl enable dae --now
 sudo systemctl status dae
 ```
 
+## Memory and transparent huge pages
+
+`GOMEMLIMIT` is derived from the process's cgroup ceiling, not from a unit
+setting: only `memory.max` participates (the bundled unit no longer sets
+`MemoryHigh`, which the runtime cannot observe as a bound), the derived soft
+limit is 90% of that ceiling, and an explicit `GOMEMLIMIT` environment variable
+always wins.
+
+On a host with transparent huge pages set to `always`, the kernel can inflate
+dae's resident set without the live Go heap growing. `disable_thp: true` opts
+the process out with `prctl(PR_SET_THP_DISABLE)`; the default (`false`) leaves
+the kernel's policy untouched:
+
+```shell
+global {
+  disable_thp: true
+}
+```
+
 ## Check System Logs
 
 ```bash

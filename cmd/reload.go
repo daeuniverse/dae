@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	stderrors "errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,40 +147,39 @@ var (
 	reloadCmd = &cobra.Command{
 		Use:   "reload [pid]",
 		Short: "To reload config file without interrupt connections.",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			internal.AutoSu()
 			if len(args) == 0 {
 				_pid, err := os.ReadFile(PidFilePath)
 				if err != nil {
-					fmt.Println("Failed to read pid file:", err)
-					os.Exit(1)
+					return fmt.Errorf("failed to read pid file: %w", err)
 				}
 				args = []string{strings.TrimSpace(string(_pid))}
 			}
 			pid, err := strconv.Atoi(args[0])
 			if err != nil {
 				_ = cmd.Help()
-				os.Exit(1)
-			}
-			if abort {
-				if f, err := os.Create(AbortFile); err == nil {
-					_ = f.Close()
-				}
+				return fmt.Errorf("invalid pid %q: %w", args[0], err)
 			}
 			// Read the first line of SignalProgressFilePath.
 			code, content, err := readSignalProgressFile(SignalProgressFilePath)
 			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
 				if content != "" {
-					fmt.Println(content)
-				} else {
-					fmt.Printf("%v shows another reload operation is in progress.\n", SignalProgressFilePath)
+					return fmt.Errorf("reload not started: %s", content)
 				}
-				return
+				return fmt.Errorf("reload not started: %v shows another reload operation is in progress", SignalProgressFilePath)
+			}
+			abortMarkerCreated := false
+			if abort {
+				if err := createReloadAbortMarker(AbortFile); err != nil {
+					return err
+				}
+				abortMarkerCreated = true
 			}
 			// Set the progress as ReloadSend and roll it back if signaling fails.
 			if err = writeReloadSendAndSignal(SignalProgressFilePath, pid, syscall.Kill); err != nil {
-				fmt.Printf("failed to request reload: %v\n", err)
-				os.Exit(1)
+				requestErr := fmt.Errorf("failed to request reload: %w", err)
+				return cleanupReloadAbortMarker(AbortFile, abortMarkerCreated, requestErr)
 			}
 			code, content, err = waitReloadCompletion(
 				SignalProgressFilePath,
@@ -188,17 +188,72 @@ var (
 				reloadProgressWaitTimeout,
 			)
 			if err != nil {
-				fmt.Printf("failed to wait reload result: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("failed to wait reload result: %w", err)
 			}
-			if code == consts.ReloadDone || code == consts.ReloadError || code == consts.ReloadBusy {
-				fmt.Println(content)
-				return
+			result, err := reloadCommandResult(code, content)
+			if err != nil {
+				if code == consts.ReloadBusy {
+					return cleanupReloadAbortMarker(AbortFile, abortMarkerCreated, err)
+				}
+				return err
 			}
-			fmt.Println("OK")
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), result); err != nil {
+				return fmt.Errorf("write reload result: %w", err)
+			}
+			return nil
 		},
 	}
 )
+
+func createReloadAbortMarker(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create reload abort marker: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		removeErr := os.Remove(path)
+		if os.IsNotExist(removeErr) {
+			removeErr = nil
+		}
+		return stderrors.Join(
+			fmt.Errorf("close reload abort marker: %w", err),
+			removeErr,
+		)
+	}
+	return nil
+}
+
+func cleanupReloadAbortMarker(path string, created bool, cause error) error {
+	if !created {
+		return cause
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return stderrors.Join(cause, fmt.Errorf("remove reload abort marker: %w", err))
+	}
+	return cause
+}
+
+func reloadCommandResult(code byte, content string) (string, error) {
+	switch code {
+	case consts.ReloadDone:
+		if content == "" {
+			content = "OK"
+		}
+		return content, nil
+	case consts.ReloadError:
+		if content == "" {
+			content = "reload failed"
+		}
+		return "", fmt.Errorf("reload failed: %s", content)
+	case consts.ReloadBusy:
+		if content == "" {
+			content = "another reload is in progress"
+		}
+		return "", fmt.Errorf("reload not started: %s", content)
+	default:
+		return "", fmt.Errorf("unexpected reload result code %d", code)
+	}
+}
 
 func init() {
 	rootCmd.AddCommand(reloadCmd)

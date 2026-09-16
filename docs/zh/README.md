@@ -27,7 +27,7 @@
 
 `使用 trace 命令`
 
-如果你想用 `dae trace` 命令来诊断网络连通性问题，所在的设备内核版本要求 >= 5.15 。
+如果你想用 `dae trace` 命令来诊断网络连通性问题，所在的设备内核版本要求 >= 5.15。`arm`、`mips`、`mips64`、`mips64le`、`mipsle`、`s390x` 六种架构不提供 `trace` 构建标签，这些架构的二进制没有 `dae trace` 命令。
 
 ## 内核配置选项
 
@@ -60,7 +60,7 @@ CONFIG_BPF_EVENTS=y
 
 你可以通过以下命令检查他们：
 
-bash和其他POSIX兼容的shell:
+bash 和其他 POSIX 兼容的 shell:
 
 ```shell
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
@@ -73,8 +73,8 @@ begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end |
 ```
 
 > **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
-
-> `Arch Linux ARM` 用户可以使用支持 dae 的 [linux-aarch64-7ji](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
+>
+> `Arch Linux ARM` 用户可以使用支持 dae 的 [`linux-aarch64-7ji`](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
 
 ## 安装
 
@@ -112,7 +112,7 @@ sudo pacman -S dae
 sudo pacman -S dae-avx2-bin
 ```
 
-##### 最新 Git 版 
+##### 最新 Git 版
 
 ```shell
 sudo pacman -S dae-git
@@ -271,7 +271,8 @@ dns {
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
 
 ## PPPoE
-如果希望代理 pppoe 接口, 请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口, 对于 wan 接口是 pppoe 的情况, 使用 auto 即可。
+
+如果希望代理 pppoe 接口，请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口，对于 wan 接口是 pppoe 的情况，使用 auto 即可。
 
 ## 热重载和暂停
 

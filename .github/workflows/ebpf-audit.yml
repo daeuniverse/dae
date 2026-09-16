@@ -32,8 +32,6 @@ jobs:
   ebpf_audit:
     name: Load, Verifier, and Dump Audit
     runs-on: ubuntu-22.04
-    env:
-      GOEXPERIMENT: heapminimum512kib,randomizedheapbase64
 
     steps:
       - name: Checkout code
@@ -41,6 +39,15 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: "Apply the canonical build experiments (single owner: Makefile)"
+        # The audit builds the same objects as the release, so it must take the
+        # experiment set from the Makefile instead of restating it;
+        # scripts/check-build-env.sh rejects a literal assignment under .github/.
+        run: |
+          set -euo pipefail
+          target="${GITHUB_ENV:?GITHUB_ENV is only set inside GitHub Actions}"
+          make -s print-goexperiment-env | tee -a "$target"
 
       - name: Set up Go 1.26
         uses: actions/setup-go@v6

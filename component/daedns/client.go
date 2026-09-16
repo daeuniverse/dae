@@ -8,15 +8,12 @@ package daedns
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"sync"
 	"time"
 
@@ -24,13 +21,12 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	componentdns "github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/dnstransport"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
-	"github.com/daeuniverse/outbound/protocol/direct"
 	tc "github.com/daeuniverse/outbound/protocol/tuic/common"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/olicesx/quic-go"
-	"github.com/olicesx/quic-go/http3"
 )
 
 var errInternalDNSTruncated = fmt.Errorf("internal dns response truncated")
@@ -39,18 +35,18 @@ var errPassthroughToBaseResolver = errors.New("dns request routing selected pass
 var udpDNSBufPool = sync.Pool{
 	// Keep the full UDP DNS payload budget so oversized replies still unpack
 	// correctly instead of failing before TCP fallback decisions are made.
-	New: func() any { return make([]byte, 65535) },
+	// Buffers are stored as *[]byte so Put hands the pool a pointer instead
+	// of boxing the slice header on every Put (SA6002).
+	New: func() any {
+		buf := make([]byte, 65535)
+		return &buf
+	},
 }
 
 const lookupSharedTimeout = 10 * time.Second
 
-var (
-	// Test seams for queryHTTPS path validation without live network dependencies.
-	sendHTTPDNSFunc      = sendHTTPDNS
-	newHTTPTransportFunc = func(r *Router, upstream *componentdns.Upstream, target netip.AddrPort, http3Mode bool) http.RoundTripper {
-		return r.newHTTPTransport(upstream, target, http3Mode)
-	}
-)
+type httpDNSQueryFunc func(context.Context, *http.Client, string, *componentdns.Upstream, []byte) (*dnsmessage.Msg, error)
+type httpTransportFactoryFunc func(*Router, *componentdns.Upstream, netip.AddrPort, bool) http.RoundTripper
 
 func (r *Router) selectUpstream(ctx context.Context, upstreamName, host string, qtype uint16) (*componentdns.Upstream, error) {
 	if upstreamName != "" {
@@ -250,7 +246,13 @@ func (r *Router) lookupType(ctx context.Context, upstream *componentdns.Upstream
 		},
 	}
 	msg.SetQuestion(dnsmessage.CanonicalName(host), qtype)
-	data, err := msg.Pack()
+	// Pack into the pooled buffer instead of allocating per query.
+	// r.exchange consumes data synchronously across every scheme
+	// (queryUDP writes inline; queryTCP/TLS/QUIC/HTTPS copy data before use),
+	// so recycling buf after exchange returns is safe.
+	poolBuf := udpDNSBufPool.Get().(*[]byte)
+	defer udpDNSBufPool.Put(poolBuf)
+	data, err := msg.PackBuffer((*poolBuf)[:cap(*poolBuf)])
 	if err != nil {
 		return nil, err
 	}
@@ -333,8 +335,61 @@ func (r *Router) exchangeTarget(ctx context.Context, upstream *componentdns.Upst
 	}
 }
 
+// dnsQuestionOfWire extracts the first question of a packed DNS message.
+func dnsQuestionOfWire(data []byte) (dnsmessage.Question, bool) {
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(data); err != nil || len(msg.Question) == 0 {
+		return dnsmessage.Question{}, false
+	}
+	return msg.Question[0], true
+}
+
+// dnsQuestionEchoMatches reports whether a reply echoes the request question.
+// The transaction ID is only 16 bits, so a matching ID does not prove the reply
+// belongs to this request (RFC 5452); the echoed question is the second factor.
+func dnsQuestionEchoMatches(req dnsmessage.Question, resp *dnsmessage.Msg) bool {
+	if resp == nil || len(resp.Question) == 0 {
+		return false
+	}
+	echo := resp.Question[0]
+	return req.Qtype == echo.Qtype && req.Qclass == echo.Qclass &&
+		dnsmessage.CanonicalName(req.Name) == dnsmessage.CanonicalName(echo.Name)
+}
+
+// udpQuestionEchoMismatchLogInterval rate-limits the echo-mismatch warning: an
+// upstream that never echoes the question would otherwise log per query.
+const udpQuestionEchoMismatchLogInterval = time.Minute
+
+// noteUDPQuestionEchoMismatch records a reply whose transaction ID matched but
+// whose question section does not echo the request. The reply is still returned
+// (observe-only), so the mismatch only needs to be visible: it is counted
+// unconditionally and reported at most once per interval.
+func (r *Router) noteUDPQuestionEchoMismatch(target netip.AddrPort, req dnsmessage.Question, resp *dnsmessage.Msg) {
+	r.udpQuestionEchoMismatches.Add(1)
+	if r.log == nil {
+		return
+	}
+	nowNano := time.Now().UnixNano()
+	for {
+		last := r.lastUDPQuestionEchoMismatchAt.Load()
+		if nowNano-last < int64(udpQuestionEchoMismatchLogInterval) {
+			return
+		}
+		if r.lastUDPQuestionEchoMismatchAt.CompareAndSwap(last, nowNano) {
+			break
+		}
+	}
+	var echo string
+	if len(resp.Question) > 0 {
+		echo = resp.Question[0].String()
+	}
+	r.log.Warnf("UDP DNS reply from %v does not echo the request question (asked %v, got %q); "+
+		"the reply is still accepted (observe-only question echo validation, mismatches=%d)",
+		target, req.String(), echo, r.udpQuestionEchoMismatches.Load())
+}
+
 func (r *Router) queryUDP(ctx context.Context, target netip.AddrPort, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("udp", r.soMark, r.mptcp), target.String())
+	conn, err := r.directDialer.DialContext(ctx, common.MagicNetwork("udp", r.soMark, r.mptcp), target.String())
 	if err != nil {
 		return nil, err
 	}
@@ -345,22 +400,35 @@ func (r *Router) queryUDP(ctx context.Context, target netip.AddrPort, data []byt
 		_ = conn.SetDeadline(deadline)
 	}
 	originalID := binary.BigEndian.Uint16(data[:2])
+	reqQuestion, hasReqQuestion := dnsQuestionOfWire(data)
 	if _, err = netutils.WriteUDPConn(conn, target.String(), data); err != nil {
 		return nil, err
 	}
-	buf := udpDNSBufPool.Get().([]byte)
-	defer udpDNSBufPool.Put(buf) //nolint:staticcheck
+	bufPtr := udpDNSBufPool.Get().(*[]byte)
+	defer udpDNSBufPool.Put(bufPtr)
+	buf := *bufPtr
 	for range 8 {
 		n, readErr := netutils.ReadUDPConn(conn, buf)
 		if readErr != nil {
 			return nil, readErr
 		}
 		if n < 2 || binary.BigEndian.Uint16(buf[:2]) != originalID {
+			// Stale datagram from an earlier query on this socket, or a
+			// malformed reply. Counting keeps the drop visible without logging
+			// per datagram.
+			r.udpStaleResponses.Add(1)
 			continue
 		}
 		var msg dnsmessage.Msg
 		if err = msg.Unpack(buf[:n]); err != nil {
 			return nil, err
+		}
+		if hasReqQuestion && !dnsQuestionEchoMatches(reqQuestion, &msg) {
+			// Observe-only for now: the ID matched, and the reply is still
+			// accepted so no currently working upstream regresses, but a reply
+			// that does not echo the question is counted and reported because
+			// it can only come from a spoofed or cross-talked datagram.
+			r.noteUDPQuestionEchoMismatch(target, reqQuestion, &msg)
 		}
 		if msg.Truncated {
 			return nil, errInternalDNSTruncated
@@ -371,7 +439,7 @@ func (r *Router) queryUDP(ctx context.Context, target netip.AddrPort, data []byt
 }
 
 func (r *Router) queryTCP(ctx context.Context, target netip.AddrPort, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", r.soMark, r.mptcp), target.String())
+	conn, err := r.directDialer.DialContext(ctx, common.MagicNetwork("tcp", r.soMark, r.mptcp), target.String())
 	if err != nil {
 		return nil, err
 	}
@@ -380,11 +448,11 @@ func (r *Router) queryTCP(ctx context.Context, target netip.AddrPort, data []byt
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
-	return sendStreamDNS(conn, data)
+	return dnstransport.SendStreamDNS(conn, data)
 }
 
 func (r *Router) queryTLS(ctx context.Context, upstream *componentdns.Upstream, target netip.AddrPort, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", r.soMark, r.mptcp), target.String())
+	conn, err := r.directDialer.DialContext(ctx, common.MagicNetwork("tcp", r.soMark, r.mptcp), target.String())
 	if err != nil {
 		return nil, err
 	}
@@ -401,61 +469,91 @@ func (r *Router) queryTLS(ctx context.Context, upstream *componentdns.Upstream, 
 	if err = tlsConn.Handshake(); err != nil {
 		return nil, err
 	}
-	return sendStreamDNS(tlsConn, data)
+	return dnstransport.SendStreamDNS(tlsConn, data)
+}
+
+func (r *Router) sendHTTPQuery(ctx context.Context, client *http.Client, target string, upstream *componentdns.Upstream, data []byte) (*dnsmessage.Msg, error) {
+	if r.httpSendFunc != nil {
+		return r.httpSendFunc(ctx, client, target, upstream, data)
+	}
+	return dnstransport.SendHTTPDNS(ctx, client, target, upstream, data)
 }
 
 func (r *Router) queryHTTPS(ctx context.Context, upstream *componentdns.Upstream, target netip.AddrPort, data []byte, http3Mode bool) (*dnsmessage.Msg, error) {
-	transport := newHTTPTransportFunc(r, upstream, target, http3Mode)
-	client := &http.Client{
-		Transport: transport,
+	generation := r.getOrCreateHTTPClient(upstream, target, http3Mode)
+	if generation == nil {
+		return nil, net.ErrClosed
 	}
-	defer client.CloseIdleConnections()
-	return sendHTTPDNSFunc(ctx, client, target.String(), upstream, data)
+	defer func() { r.releaseHTTPClient(generation) }()
+
+	msg, err := r.sendHTTPQuery(ctx, generation.Client, target.String(), upstream, data)
+	if err == nil || ctx.Err() != nil || !dnstransport.ShouldReplaceHTTPClient(err) {
+		return msg, err
+	}
+
+	next := r.replaceHTTPClient(generation, upstream, target, http3Mode)
+	previous := generation
+	generation = next
+	r.releaseHTTPClient(previous)
+	if generation == nil {
+		return nil, net.ErrClosed
+	}
+	return r.sendHTTPQuery(ctx, generation.Client, target.String(), upstream, data)
 }
 
 func (r *Router) newHTTPTransport(upstream *componentdns.Upstream, target netip.AddrPort, http3Mode bool) http.RoundTripper {
 	if http3Mode {
-		return &http3.Transport{
-			TLSClientConfig: &tls.Config{
-				ServerName:         upstream.Hostname,
-				NextProtos:         []string{"h3"},
-				InsecureSkipVerify: false,
-			},
-			QUICConfig: &quic.Config{},
-			Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
-				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("udp", r.soMark, r.mptcp), target.String())
-				if err != nil {
-					return nil, err
-				}
-				udpAddr := net.UDPAddrFromAddrPort(target)
-				fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
-				return quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
-			},
-		}
+		return dnstransport.NewHTTP3Transport(upstream.Hostname, func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+			return dnstransport.DialEarlyOwned(ctx, func(ctx context.Context) (netproxy.Conn, error) {
+				return r.directDialer.DialContext(ctx, common.MagicNetwork("udp", r.soMark, r.mptcp), target.String())
+			}, target, tlsCfg, cfg)
+		})
 	}
 
-	return &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		TLSClientConfig: &tls.Config{
-			ServerName:         upstream.Hostname,
-			InsecureSkipVerify: false,
-		},
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", r.soMark, r.mptcp), target.String())
-			if err != nil {
-				return nil, err
-			}
-			return &netproxy.FakeNetConn{Conn: conn}, nil
-		},
+	return dnstransport.NewHTTPTransport(upstream.Hostname, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		conn, err := r.directDialer.DialContext(ctx, common.MagicNetwork("tcp", r.soMark, r.mptcp), target.String())
+		if err != nil {
+			return nil, err
+		}
+		return &netproxy.FakeNetConn{Conn: conn}, nil
+	})
+}
+
+// exchangeDoQQuery performs one DoQ exchange on an already open stream: write
+// the length-prefixed query, close the send half (FIN), then read the
+// length-prefixed response.
+//
+// RFC 9250 §4.2 requires the client to send the query with the FIN bit set
+// before it reads, and §4.3.3 lists a missing expected FIN as a protocol error,
+// so a compliant server may legitimately never answer a query whose send half
+// is still open. The deferred close only fires when the FIN was never sent;
+// once it was, the receive half is read to completion normally.
+func exchangeDoQQuery(stream quic.Stream, wire []byte) (*dnsmessage.Msg, error) {
+	finSent := false
+	defer func() {
+		if !finSent {
+			// Best effort cleanup; the stream may already be closed by the
+			// QUIC implementation.
+			_ = stream.Close()
+		}
+	}()
+
+	if err := dnstransport.WriteFramedDNSQuery(stream, wire); err != nil {
+		return nil, err
 	}
+	if err := stream.Close(); err != nil {
+		// FIN could not be delivered: the peer will not answer a query whose
+		// send half never closed, so report the failure instead of reading a
+		// response that cannot arrive.
+		return nil, err
+	}
+	finSent = true
+
+	return dnstransport.ReadFramedDNSResponse(stream)
 }
 
 func (r *Router) queryQUIC(ctx context.Context, upstream *componentdns.Upstream, target netip.AddrPort, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("udp", r.soMark, r.mptcp), target.String())
+	conn, err := r.directDialer.DialContext(ctx, common.MagicNetwork("udp", r.soMark, r.mptcp), target.String())
 	if err != nil {
 		return nil, err
 	}
@@ -479,11 +577,10 @@ func (r *Router) queryQUIC(ctx context.Context, upstream *componentdns.Upstream,
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = stream.Close() }()
 
 	wire := append([]byte(nil), data...)
 	binary.BigEndian.PutUint16(wire[:2], 0)
-	return sendStreamDNS(stream, wire)
+	return exchangeDoQQuery(stream, wire)
 }
 
 func upstreamTargets(upstream *componentdns.Upstream) []netip.AddrPort {
@@ -510,71 +607,4 @@ func requestedIPVersion(network string) string {
 	default:
 		return ""
 	}
-}
-
-func sendHTTPDNS(ctx context.Context, client *http.Client, target string, upstream *componentdns.Upstream, data []byte) (*dnsmessage.Msg, error) {
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return fmt.Errorf("do not use a server that will redirect, upstream: %v", upstream.String())
-	}
-	serverURL := url.URL{
-		Scheme: "https",
-		Host:   target,
-		Path:   upstream.Path,
-	}
-	wire := append([]byte(nil), data...)
-	binary.BigEndian.PutUint16(wire[0:2], 0)
-	q := serverURL.Query()
-	q.Set("dns", base64.RawURLEncoding.EncodeToString(wire))
-	serverURL.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/dns-message")
-	req.Host = upstream.Hostname
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http status code: %v", resp.StatusCode)
-	}
-	if contentType := resp.Header.Get("Content-Type"); contentType != "application/dns-message" {
-		return nil, fmt.Errorf("unexpected content-type: %v", contentType)
-	}
-	buf, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
-	if err != nil {
-		return nil, err
-	}
-	var msg dnsmessage.Msg
-	if err = msg.Unpack(buf); err != nil {
-		return nil, err
-	}
-	return &msg, nil
-}
-
-func sendStreamDNS(stream io.ReadWriter, data []byte) (*dnsmessage.Msg, error) {
-	req := make([]byte, 2+len(data))
-	binary.BigEndian.PutUint16(req[:2], uint16(len(data)))
-	copy(req[2:], data)
-	if _, err := stream.Write(req); err != nil {
-		return nil, fmt.Errorf("failed to write DNS request: %w", err)
-	}
-
-	lengthBuf := make([]byte, 2)
-	if _, err := io.ReadFull(stream, lengthBuf); err != nil {
-		return nil, fmt.Errorf("failed to read DNS response length: %w", err)
-	}
-	respLen := int(binary.BigEndian.Uint16(lengthBuf))
-	respBuf := make([]byte, respLen)
-	if _, err := io.ReadFull(stream, respBuf); err != nil {
-		return nil, fmt.Errorf("failed to read DNS response payload: %w", err)
-	}
-	var msg dnsmessage.Msg
-	if err := msg.Unpack(respBuf); err != nil {
-		return nil, err
-	}
-	return &msg, nil
 }

@@ -72,17 +72,7 @@ func (s *SysctlManager) startWatch() {
 				expected, ok := s.expectations[event.Name]
 				s.mux.Unlock()
 				if ok {
-					raw, err := os.ReadFile(event.Name)
-					if err != nil {
-						s.log.Errorf("failed to read sysctl file %s: %v", event.Name, err)
-					}
-					value := strings.TrimSpace(string(raw))
-					if value != expected {
-						s.log.Infof("sysctl %s has unexpected value %s, expected %s", event.Name, value, expected)
-						if err := os.WriteFile(event.Name, []byte(expected), 0644); err != nil {
-							s.log.Errorf("failed to write sysctl file %s: %v", event.Name, err)
-						}
-					}
+					s.handleWatchEvent(event.Name, expected)
 				}
 			}
 		case err, ok := <-s.watcher.Errors:
@@ -92,6 +82,36 @@ func (s *SysctlManager) startWatch() {
 			s.log.Errorf("sysctl watcher error: %v", err)
 		}
 	}
+}
+
+// handleWatchEvent handles one write event on a watched sysctl path.
+//
+// One failed observation produces exactly one line: if the read fails there is
+// no observed value at all, so the "unexpected value" line and the corrective
+// write are both skipped. Printing them anyway reported an observed value of
+// "" (which the operator reads as "the kernel has it empty") and rewrote a
+// file whose current contents were never observed.
+func (s *SysctlManager) handleWatchEvent(path, expected string) {
+	value, err := s.readSysctlForRewrite(path)
+	if err != nil {
+		s.log.Errorf("failed to read sysctl file %s: %v", path, err)
+		return
+	}
+	if value != expected {
+		s.log.Infof("sysctl %s has unexpected value %s, expected %s", path, value, expected)
+		if err := os.WriteFile(path, []byte(expected), 0644); err != nil {
+			s.log.Errorf("failed to write sysctl file %s: %v", path, err)
+		}
+	}
+}
+
+// readSysctlForRewrite reads the current value of a watched sysctl path.
+func (s *SysctlManager) readSysctlForRewrite(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 type SysctlKey string

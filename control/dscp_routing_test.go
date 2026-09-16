@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
@@ -32,18 +33,21 @@ func newTestControlPlaneWithDscpRule(t *testing.T, literal string) *ControlPlane
 		},
 	}
 
-	builder, err := NewRoutingMatcherBuilder(
+	program, err := routing.NewNormalizedProgram(rules, config.FunctionOrString("direct"))
+	if err != nil {
+		t.Fatalf("NewNormalizedProgram(%q): %v", literal, err)
+	}
+	builder, err := NewRoutingMatcherBuilderFromProgram(
 		logrus.New(),
-		rules,
+		program,
 		map[string]uint8{
 			"direct": uint8(consts.OutboundDirect),
 			"proxy":  uint8(consts.OutboundUserDefinedMin),
 		},
 		nil,
-		config.FunctionOrString("direct"),
 	)
 	if err != nil {
-		t.Fatalf("NewRoutingMatcherBuilder(%q): %v", literal, err)
+		t.Fatalf("NewRoutingMatcherBuilderFromProgram(%q): %v", literal, err)
 	}
 
 	matcher, err := builder.BuildUserspace()
@@ -129,18 +133,21 @@ func TestNewRoutingMatcherBuilder_DscpKeepsLegacyLiteralCompatibility(t *testing
 				},
 			}
 
-			builder, err := NewRoutingMatcherBuilder(
+			program, err := routing.NewNormalizedProgram(rules, config.FunctionOrString("direct"))
+			if err != nil {
+				t.Fatalf("NewNormalizedProgram(%q): %v", literal, err)
+			}
+			builder, err := NewRoutingMatcherBuilderFromProgram(
 				logrus.New(),
-				rules,
+				program,
 				map[string]uint8{
 					"direct": uint8(consts.OutboundDirect),
 					"proxy":  uint8(consts.OutboundUserDefinedMin),
 				},
 				nil,
-				config.FunctionOrString("direct"),
 			)
 			if err != nil {
-				t.Fatalf("NewRoutingMatcherBuilder(%q): %v", literal, err)
+				t.Fatalf("NewRoutingMatcherBuilderFromProgram(%q): %v", literal, err)
 			}
 
 			if _, err := builder.BuildUserspace(); err != nil {

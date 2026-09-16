@@ -1,5 +1,10 @@
 //go:build linux
 
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package control
 
 import (
@@ -30,7 +35,7 @@ type relaySplicePipe struct {
 
 var relaySplicePipePool = make(chan *relaySplicePipe, relaySplicePipePoolLimit)
 
-func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, record func(int64)) (int64, error) {
+func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, record func(int64), onActive func(int64)) (int64, error) {
 	// shouldUseRelayFastPath guarantees both sides resolve to a *net.TCPConn.
 	// Bypass outer wrapper interfaces (*ConnSniffer, *prefixedConn) and operate
 	// on the raw socket pair directly: io.Copy on two *net.TCPConn invokes
@@ -82,22 +87,25 @@ func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, re
 		// use an explicit splice loop so we can account exact bytes written while
 		// staying in the kernel zero-copy path. relayCore.forceClose() will
 		// unblock blocked splice calls via SetReadDeadline(past).
-		if record == nil {
+		// The bare io.Copy shortcut is legal only when neither record nor
+		// onActive is set: io.Copy cannot refresh lastActiveNano, and the
+		// idle watchdog is armed unconditionally by relayCore.run.
+		if record == nil && onActive == nil {
 			return io.Copy(dstTCP, srcTCP)
 		}
-		return relaySpliceCopyExact(ctx, dstTCP, srcTCP, record)
+		return relaySpliceCopyExact(ctx, dstTCP, srcTCP, record, onActive)
 	}
 
 	// Fallback: use WriterTo if available, or buffered copy
 	if dstOk {
 		if _, ok := src.(io.WriterTo); ok {
-			if record == nil {
+			if record == nil && onActive == nil {
 				return io.Copy(dstTCP, src)
 			}
 			bufPtr := relayCopyBufferPool.Get().(*[]byte)
 			buf := *bufPtr
 			defer relayCopyBufferPool.Put(bufPtr)
-			return relayCopyLoop(ctx, dst, src, buf, record)
+			return relayCopyLoop(ctx, dst, src, buf, record, onActive)
 		}
 	}
 
@@ -105,24 +113,25 @@ func relayFastCopy(ctx context.Context, dst netproxy.Conn, src netproxy.Conn, re
 	bufPtr := relayCopyBufferPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer relayCopyBufferPool.Put(bufPtr)
-	return relayCopyLoop(ctx, dst, src, buf, record)
+	return relayCopyLoop(ctx, dst, src, buf, record, onActive)
 }
 
-func relaySpliceCopyExact(ctx context.Context, dst, src *net.TCPConn, record func(int64)) (int64, error) {
+func relaySpliceCopyExact(ctx context.Context, dst, src *net.TCPConn, record func(int64), onActive func(int64)) (int64, error) {
 	record = normalizeTrafficRecord(record)
+	onActive = normalizeTrafficRecord(onActive)
 
 	srcRaw, err := src.SyscallConn()
 	if err != nil {
-		return relayChunkedSpliceCopy(ctx, dst, src, record)
+		return relayChunkedSpliceCopy(ctx, dst, src, record, onActive)
 	}
 	dstRaw, err := dst.SyscallConn()
 	if err != nil {
-		return relayChunkedSpliceCopy(ctx, dst, src, record)
+		return relayChunkedSpliceCopy(ctx, dst, src, record, onActive)
 	}
 
 	pipe, err := getRelaySplicePipe()
 	if err != nil {
-		return relayChunkedSpliceCopy(ctx, dst, src, record)
+		return relayChunkedSpliceCopy(ctx, dst, src, record, onActive)
 	}
 	defer putRelaySplicePipe(pipe)
 
@@ -160,6 +169,7 @@ func relaySpliceCopyExact(ctx context.Context, dst, src *net.TCPConn, record fun
 			pipe.data -= n
 			written += int64(n)
 			record(int64(n))
+			onActive(int64(n))
 		}
 		if err != nil {
 			return written, err
@@ -222,9 +232,12 @@ func (p *relaySplicePipe) close() {
 	p.data = 0
 }
 
-func relayChunkedSpliceCopy(ctx context.Context, dst, src *net.TCPConn, record func(int64)) (int64, error) {
+func relayChunkedSpliceCopy(ctx context.Context, dst, src *net.TCPConn, record func(int64), onActive func(int64)) (int64, error) {
 	record = normalizeTrafficRecord(record)
+	onActive = normalizeTrafficRecord(onActive)
 	var written int64
+	// One reader reused across chunks: R never changes, only N resets.
+	lr := &io.LimitedReader{R: src}
 	for {
 		if ctx != nil {
 			select {
@@ -234,14 +247,12 @@ func relayChunkedSpliceCopy(ctx context.Context, dst, src *net.TCPConn, record f
 			}
 		}
 
-		lr := &io.LimitedReader{
-			R: src,
-			N: relaySpliceAccountingChunkSize,
-		}
+		lr.N = relaySpliceAccountingChunkSize
 		n, err := io.Copy(dst, lr)
 		if n > 0 {
 			written += n
 			record(n)
+			onActive(n)
 		}
 		if err != nil {
 			return written, err

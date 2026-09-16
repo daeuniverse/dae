@@ -34,30 +34,32 @@ type Global struct {
 	AllowInsecure         bool          `mapstructure:"allow_insecure" default:"false"`
 	DialMode              string        `mapstructure:"dial_mode" default:"domain"`
 	DisableWaitingNetwork bool          `mapstructure:"disable_waiting_network" default:"false"`
-	DisableTHP            bool          `mapstructure:"disable_thp" default:"true"`
+	DisableTHP            bool          `mapstructure:"disable_thp" default:"false"`
 	// Deprecated: not used as of https://github.com/daeuniverse/dae/pull/912.
 	EnableLocalTcpFastRedirect bool `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
 	AutoConfigKernelParameter  bool `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	// Deprecated: not used as of https://github.com/daeuniverse/dae/pull/458.
 	AutoConfigFirewallRule bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
 	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"30ms"`
-	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
-	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
-	TlsFragment            bool          `mapstructure:"tls_fragment" default:"false"`
-	TlsFragmentLength      string        `mapstructure:"tls_fragment_length" default:"50-100"`
-	TlsFragmentInterval    string        `mapstructure:"tls_fragment_interval" default:"10-20"`
-	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
-	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
-	BootstrapResolver      string        `mapstructure:"bootstrap_resolver"`
-	FallbackResolver       string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
-	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
-	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
-	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
-	BpfConnStateMapSize    uint32        `mapstructure:"bpf_conn_state_map_size" default:"262144"`
-}
-
-type Utls struct {
-	Imitate string `mapstructure:"imitate"`
+	// AutoSniffPunt injects kernel-space-only sniff-punt lines for
+	// device-scoped whitelist shapes (selector && domain -> group with a
+	// later selector -> direct/block fallback) so the whitelist still
+	// applies when the client's DNS bypasses dae. Requires sniffing to be
+	// enabled (sniffing_timeout > 0 and dial_mode != ip).
+	AutoSniffPunt       bool          `mapstructure:"auto_sniff_punt" default:"true"`
+	TlsImplementation   string        `mapstructure:"tls_implementation" default:"tls"`
+	UtlsImitate         string        `mapstructure:"utls_imitate" default:"chrome_auto"`
+	TlsFragment         bool          `mapstructure:"tls_fragment" default:"false"`
+	TlsFragmentLength   string        `mapstructure:"tls_fragment_length" default:"50-100"`
+	TlsFragmentInterval string        `mapstructure:"tls_fragment_interval" default:"10-20"`
+	PprofPort           uint16        `mapstructure:"pprof_port" default:"0"`
+	Mptcp               bool          `mapstructure:"mptcp" default:"false"`
+	BootstrapResolver   string        `mapstructure:"bootstrap_resolver"`
+	FallbackResolver    string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
+	BandwidthMaxTx      string        `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx      string        `mapstructure:"bandwidth_max_rx" default:"0"`
+	UDPHopInterval      time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	BpfConnStateMapSize uint32        `mapstructure:"bpf_conn_state_map_size" default:"262144"`
 }
 
 type FunctionOrString any
@@ -80,17 +82,6 @@ func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error)
 	}
 }
 
-// FunctionOrStringToFunction converts a function-or-string config value into a
-// function. It preserves the historical panic-on-invalid-input API for external
-// callers; new internal call sites should use ParseFunctionOrString.
-func FunctionOrStringToFunction(fs FunctionOrString) *config_parser.Function {
-	f, err := ParseFunctionOrString(fs)
-	if err != nil {
-		panic(err)
-	}
-	return f
-}
-
 type FunctionListOrString any
 
 // ParseFunctionListOrString converts a config value that may be either a string
@@ -106,18 +97,6 @@ func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Functi
 	default:
 		return nil, fmt.Errorf("unsupported function-list-or-string value type: %T", fs)
 	}
-}
-
-// FunctionListOrStringToFunctionList converts a function-list-or-string config
-// value into a function list. It preserves the historical panic-on-invalid-input
-// API for external callers; new internal call sites should use
-// ParseFunctionListOrString.
-func FunctionListOrStringToFunctionList(fs FunctionListOrString) []*config_parser.Function {
-	f, err := ParseFunctionListOrString(fs)
-	if err != nil {
-		panic(err)
-	}
-	return f
 }
 
 type Group struct {
@@ -149,8 +128,12 @@ type DnsRouting struct {
 type KeyableString string
 
 // Dns is intentionally mirrored by cmd.dnsConfigFingerprint for staged reload
-// DNS reuse decisions. Keep that fingerprint in sync with any new top-level
-// fields; TestDNSConfigFingerprintCoversAllDnsFields guards the contract.
+// DNS reuse decisions. Only routing-affecting fields are covered by the
+// fingerprint; runtime-tunable parameters (OptimisticCache, OptimisticCacheTtl,
+// MaxCacheSize) are excluded because they are hot-updated via
+// DnsController.UpdateRuntime. Keep the fingerprint in sync with any new
+// routing-affecting top-level fields; TestDNSConfigFingerprintCoversAllDnsFields
+// guards the contract.
 type Dns struct {
 	IpVersionPrefer    int             `mapstructure:"ipversion_prefer"`
 	FixedDomainTtl     []KeyableString `mapstructure:"fixed_domain_ttl"`
@@ -159,7 +142,10 @@ type Dns struct {
 	Bind               string          `mapstructure:"bind"`
 	OptimisticCache    bool            `mapstructure:"optimistic_cache" default:"true"`
 	OptimisticCacheTtl int             `mapstructure:"optimistic_cache_ttl" default:"60"`
-	MaxCacheSize       int             `mapstructure:"max_cache_size" default:"0"`
+	// OptimisticStaleReplyTtl bounds the TTL advertised when a stale (RFC
+	// 8767) response is served. 0 keeps the previously packed TTL.
+	OptimisticStaleReplyTtl int `mapstructure:"optimistic_stale_reply_ttl" default:"30"`
+	MaxCacheSize            int `mapstructure:"max_cache_size" default:"65536"`
 }
 
 type Routing struct {
@@ -213,7 +199,15 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	for _, spec := range configSectionSpecs {
 		section, ok := nameToSection[spec.name]
 		if !ok {
-			continue
+			// Optional section that the user did not write. It must still be
+			// decoded from an empty section, otherwise the documented
+			// `default:` tags on its fields never run and the whole section
+			// silently keeps its Go zero values (e.g. a missing dns section
+			// left MaxCacheSize == 0, which means "unlimited" rather than the
+			// documented default). Decoding an empty section only applies
+			// defaults and required-param checks; it never invents a value for
+			// a field the user did provide.
+			section = &Section{Val: &config_parser.Section{Name: spec.name}}
 		}
 		if err := decodeConfigSection(conf, spec.name, section.Val); err != nil {
 			return nil, fmt.Errorf("failed to parse \"%v\": %w", spec.name, err)

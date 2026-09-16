@@ -28,6 +28,26 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// offloadSkipLog state rate-limits the per-connection "Skip TCP relay eBPF
+// offload" debug line: when the offload is unavailable for a stable reason
+// (e.g. "offload disabled"), every connection would otherwise spam the log.
+var (
+	offloadSkipLogMu    sync.Mutex
+	offloadSkipLogAt    = map[string]time.Time{}
+	offloadSkipInterval = time.Minute
+)
+
+func logOffloadSkipRateLimited(l *logrus.Logger, reason string) {
+	now := time.Now()
+	offloadSkipLogMu.Lock()
+	defer offloadSkipLogMu.Unlock()
+	if last, ok := offloadSkipLogAt[reason]; ok && now.Sub(last) < offloadSkipInterval {
+		return
+	}
+	offloadSkipLogAt[reason] = now
+	l.Debugf("Skip TCP relay eBPF offload: %s", reason)
+}
+
 const (
 	// tcpRoutingLookupRetryAttempts keeps TCP on the kernel-derived routing
 	// path across very short conn-state publication windows. The steady-state
@@ -107,7 +127,7 @@ func retryRetrieveRoutingResult(ctx context.Context, retrieve func() (*bpfRoutin
 	return nil, lastErr
 }
 
-func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err error) {
+func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn, ownership *incomingConnectionLease) (err error) {
 	defer func() { _ = lConn.Close() }()
 
 	// Get tuples and outbound first so we can decide whether sniffing is needed.
@@ -132,9 +152,42 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 				}).WithError(err).Debug("Routing tuple missing; fallback to userspace routing")
 			}
 		} else {
-			return fmt.Errorf("failed to retrieve target info %v: %v", dst.String(), err)
+			return fmt.Errorf("failed to retrieve target info %v: %w", dst.String(), err)
 		}
 	}
+	owner, ownerErr := c.routingEpochExecutionOwner(routingResult)
+	if ownerErr != nil {
+		return fmt.Errorf("select TCP routing epoch owner: %w", ownerErr)
+	}
+	if owner != c {
+		if ownership != nil {
+			if !ownership.transferRoutingEpoch(owner, routingResult) {
+				return fmt.Errorf("transfer TCP routing epoch owner: %w", errRoutingEpochOwnerUnavailable)
+			}
+		} else {
+			release, ok := owner.acquireRoutingEpochExecutionLeaseFor(routingResult)
+			if !ok {
+				return fmt.Errorf("acquire TCP routing epoch owner: %w", errRoutingEpochOwnerUnavailable)
+			}
+			defer release()
+		}
+		return owner.handleConnWithRoutingResultOwned(owner.ctx, lConn, src, dst, routingResult, ownership)
+	}
+	return c.handleConnWithRoutingResultOwned(ctx, lConn, src, dst, routingResult, ownership)
+}
+
+func (c *ControlPlane) handleConnWithRoutingResultOwned(
+	ctx context.Context,
+	lConn net.Conn,
+	src netip.AddrPort,
+	dst netip.AddrPort,
+	routingResult *bpfRoutingResult,
+	ownership *incomingConnectionLease,
+) (err error) {
+	// Keep the accepted connection for lifecycle indexing even when DNS probing
+	// or sniffing wraps the relay-side reader below.
+	ingressConn := lConn
+
 	// DNS Fast Path: Check for DNS-over-TCP traffic (port 53).
 	// DNS is a stateless protocol and doesn't need the connection tracking
 	// features that TCP relay provides. This optimization handles DNS queries
@@ -143,7 +196,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 	// allowing proper fallback if this isn't DNS traffic.
 	if dst.Port() == 53 {
 		bufReader := bufio.NewReader(lConn)
-		handled, dnsErr := c.handleTCPDnsFastPath(ctx, lConn, bufReader, src, dst, routingResult)
+		handled, dnsErr := c.handleTCPDnsFastPathOwned(ctx, lConn, bufReader, src, dst, routingResult, ownership)
 		if handled {
 			// Connection was handled as DNS - any errors are already logged
 			return dnsErr
@@ -183,7 +236,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 				lRelayConn = probeConn
 			default:
 				// ConnSniffer should be used later, so we cannot close it now.
-				sniffer := sniffing.NewConnSniffer(probeConn, c.sniffingTimeout)
+				sniffer := sniffing.NewConnSniffer(probeConn, c.sniffingTimeout, c.log)
 				defer func() { _ = sniffer.Close() }()
 				lRelayConn = sniffer
 
@@ -217,17 +270,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 	}
 
-	dialParam := &proxyDialParam{
-		Outbound:    consts.OutboundIndex(routingResult.Outbound),
-		Domain:      domain,
-		Mac:         routingResult.Mac,
-		ProcessName: routingResult.Pname,
-		Dscp:        routingResult.Dscp,
-		Src:         src,
-		Dest:        dst,
-		Mark:        routingResult.Mark,
-		Network:     "tcp",
-	}
+	dialParam := tcpProxyDialParamFromRoutingResult(routingResult, domain, src, dst)
 	// Dial and relay.
 	rConn, res, err := c.routeDial(ctx, dialParam)
 	if err != nil {
@@ -247,31 +290,70 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
-	defer func() { _ = rConn.Close() }()
+	if ownership != nil {
+		ownership.storePendingEgress(rConn)
+	}
+	binding := newTcpFlowBinding(c.PolicyEpoch(), res)
+	flow, err := c.adoptTCPFlow(ctx, ownership, ingressConn, rConn, binding, src, dst)
+	if err != nil {
+		if stderrors.Is(err, ErrSessionManagerClosed) || stderrors.Is(err, errRoutingEpochOwnerUnavailable) {
+			return nil
+		}
+		return fmt.Errorf("adopt TCP flow runtime: %w", err)
+	}
+	defer closeEstablishedTCPFlow(rConn, flow)
 
-	offloaded := false
-	offloadReason := ""
-	annotateOffload := false
+	// Attempt kernel-side splice via fast_sock/sk_skb before falling back to
+	// the user-space relay. A registered offload session blocks until both
+	// sockets close; any pre-registration failure falls through silently.
+	offloaded, offloadReason, offloadErr := c.tryOffloadTCPRelay(flow.Context(), lRelayConn, rConn, RecordDownloadTraffic, RecordUploadTraffic)
+	if offloadErr != nil {
+		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
+	}
+	annotateOffload := canResolveTCPRelayOffloadConn(rConn)
+	if !offloaded && offloadReason != "" && c.log.IsLevelEnabled(logrus.DebugLevel) {
+		logOffloadSkipRateLimited(c.log, offloadReason)
+	}
 
-	// Log new TCP connections at Info level for visibility (consistent with UDP behavior)
-	// Note: TCP connections are inherently "new" at this point, unlike UDP endpoints which may be reused
-	if c.log.IsLevelEnabled(logrus.InfoLevel) {
-		c.log.WithFields(buildTCPLinkLogFields(res, dialParam, dst, domain, annotateOffload, offloaded, offloadReason)).Infof("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
+	// Per-flow routing traces are Debug: at Info they dominate CPU/allocs
+	// under high connection rates. Raise log_level to debug to restore them.
+	if c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.WithFields(buildTCPLinkLogFields(res, dialParam, dst, domain, annotateOffload, offloaded, offloadReason)).Debugf("%v <-> %v", RefineSourceToShow(src, dst.Addr()), res.DialTarget)
 	}
 
 	if offloaded {
 		return nil
 	}
 
-	if err = RelayTCPContextWithRecords(ctx, lRelayConn, rConn, c.runtimeDownloadRecorder(), c.runtimeUploadRecorder()); err != nil {
+	return relayEstablishedTCPFlow(flow, lRelayConn, rConn, c.log, src, dst)
+}
+
+func closeEstablishedTCPFlow(egress netproxy.Conn, flow *FlowRuntime) {
+	if egress != nil {
+		_ = egress.Close()
+	}
+	if flow != nil {
+		flow.finish()
+	}
+}
+
+func relayEstablishedTCPFlow(
+	flow *FlowRuntime,
+	ingress netproxy.Conn,
+	egress netproxy.Conn,
+	log *logrus.Logger,
+	src netip.AddrPort,
+	dst netip.AddrPort,
+) error {
+	if err := RelayTCPContextWithRecords(flow.Context(), ingress, egress, RecordDownloadTraffic, RecordUploadTraffic); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}
 		return fmt.Errorf("handleTCP relay error: %w", err)
 	}
 
-	if c.log.IsLevelEnabled(logrus.DebugLevel) {
-		c.log.WithFields(logrus.Fields{
+	if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
 			"src": src.String(),
 			"dst": dst.String(),
 		}).Debug("TCP relay completed")
@@ -282,6 +364,7 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 
 type RouteDialParam struct {
 	Outbound    consts.OutboundIndex
+	Must        bool
 	Domain      string
 	Mac         [6]uint8
 	Dscp        uint8
@@ -296,8 +379,29 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 }
 
 func (c *ControlPlane) RouteDialTcpContext(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
-	dialParam := &proxyDialParam{
+	conn, _, err = c.routeDial(ctx, p.toProxyDialParam())
+	return conn, err
+}
+
+func tcpProxyDialParamFromRoutingResult(routingResult *bpfRoutingResult, domain string, src, dst netip.AddrPort) *proxyDialParam {
+	return &proxyDialParam{
+		Outbound:    consts.OutboundIndex(routingResult.Outbound),
+		Must:        routingResult.Must != 0,
+		Domain:      domain,
+		Mac:         routingResult.Mac,
+		Dscp:        routingResult.Dscp,
+		ProcessName: routingResult.Pname,
+		Src:         src,
+		Dest:        dst,
+		Mark:        routingResult.Mark,
+		Network:     "tcp",
+	}
+}
+
+func (p *RouteDialParam) toProxyDialParam() *proxyDialParam {
+	return &proxyDialParam{
 		Outbound:    p.Outbound,
+		Must:        p.Must,
 		Domain:      p.Domain,
 		Mac:         p.Mac,
 		Dscp:        p.Dscp,
@@ -307,29 +411,34 @@ func (c *ControlPlane) RouteDialTcpContext(ctx context.Context, p *RouteDialPara
 		Mark:        p.Mark,
 		Network:     "tcp",
 	}
-	conn, _, err = c.routeDial(ctx, dialParam)
-	return conn, err
 }
 
 type WriteCloser interface {
 	CloseWrite() error
 }
 
-// RelayTCP copies data bidirectionally between two connections.
-// A relayCore orchestrates shared cancellation and force-close fallback.
-func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
-	return RelayTCPContext(context.Background(), lConn, rConn)
+// closeWriteRelayConn half-closes the write side of a relay destination.
+// Wrappers used on the sniff / DNS-probe path embed net.Conn and therefore
+// hide *net.TCPConn.CloseWrite; peel them with the same unwrap used by splice.
+func closeWriteRelayConn(conn netproxy.Conn) {
+	if conn == nil {
+		return
+	}
+	if tcp, ok := unwrapRelayTCPConn(conn); ok {
+		_ = tcp.CloseWrite()
+		return
+	}
+	if wc, ok := conn.(WriteCloser); ok {
+		_ = wc.CloseWrite()
+	}
 }
 
-// RelayTCPContext copies data bidirectionally between two connections with
-// the given context. The context can be used to cancel the relay operation
-// or set a deadline. A nil context is treated as context.Background().
-func RelayTCPContext(ctx context.Context, lConn, rConn netproxy.Conn) (err error) {
-	return RelayTCPContextWithRecords(ctx, lConn, rConn, RecordDownloadTraffic, RecordUploadTraffic)
-}
-
+// RelayTCPContextWithRecords copies data bidirectionally between two
+// connections. The context can be used to cancel the relay operation or set
+// a deadline. A nil context is treated as context.Background(). A relayCore
+// orchestrates shared cancellation and force-close fallback.
 func RelayTCPContextWithRecords(ctx context.Context, lConn, rConn netproxy.Conn, leftRecord func(int64), rightRecord func(int64)) (err error) {
-	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{}, leftRecord, rightRecord)
+	core := newRelayCore(lConn, rConn, leftRecord, rightRecord)
 	return core.run(ctx)
 }
 
@@ -341,6 +450,11 @@ const (
 	// TCPDNSNextReadTimeout is the timeout for reading subsequent queries
 	// on an established DNS-over-TCP connection.
 	TCPDNSNextReadTimeout = 60 * time.Second
+	// TCPDNSWriteTimeout bounds a DNS-over-TCP response write. Without it,
+	// a client that fills the kernel send buffer and then stops reading
+	// while holding the connection open blocks Write forever, pinning the
+	// fastpath goroutine, its fd, and the adopted SessionManager entry.
+	TCPDNSWriteTimeout = 10 * time.Second
 	// TCPDNSMaxMessageSize is the maximum allowed DNS message size (64KB).
 	TCPDNSMaxMessageSize = 65535
 )
@@ -373,6 +487,18 @@ func (w *tcpDnsResponseWriter) RemoteAddr() net.Addr {
 	return w.conn.RemoteAddr()
 }
 
+// write performs one deadline-bounded frame write on the underlying
+// connection and records the traffic on success.
+func (w *tcpDnsResponseWriter) write(buf []byte) (int, error) {
+	_ = w.conn.SetWriteDeadline(time.Now().Add(TCPDNSWriteTimeout))
+	n, err := w.conn.Write(buf)
+	_ = w.conn.SetWriteDeadline(time.Time{})
+	if n > 0 {
+		w.record(int64(n))
+	}
+	return n, err
+}
+
 func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 	data, err := m.Pack()
 	if err != nil {
@@ -388,10 +514,7 @@ func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 		buf := (*bufPtr)[:totalLen]
 		binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
 		copy(buf[2:], data)
-		n, err := w.conn.Write(buf)
-		if n > 0 {
-			w.record(int64(n))
-		}
+		_, err = w.write(buf)
 		return err
 	}
 
@@ -399,10 +522,7 @@ func (w *tcpDnsResponseWriter) WriteMsg(m *dnsmessage.Msg) error {
 	buf := make([]byte, totalLen)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(data)))
 	copy(buf[2:], data)
-	n, err := w.conn.Write(buf)
-	if n > 0 {
-		w.record(int64(n))
-	}
+	_, err = w.write(buf)
 	return err
 }
 
@@ -417,21 +537,19 @@ func (w *tcpDnsResponseWriter) Write(b []byte) (int, error) {
 		buf := (*bufPtr)[:totalLen]
 		binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
 		copy(buf[2:], b)
-		n, err := w.conn.Write(buf)
-		if n > 0 {
-			w.record(int64(n))
+		if _, err := w.write(buf); err != nil {
+			return 0, err
 		}
-		return len(b), err
+		return len(b), nil
 	}
 
 	buf := make([]byte, totalLen)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(b)))
 	copy(buf[2:], b)
-	n, err := w.conn.Write(buf)
-	if n > 0 {
-		w.record(int64(n))
+	if _, err := w.write(buf); err != nil {
+		return 0, err
 	}
-	return len(b), err
+	return len(b), nil
 }
 
 func (w *tcpDnsResponseWriter) TsigStatus() error {
@@ -444,9 +562,14 @@ func (w *tcpDnsResponseWriter) Hijack() {}
 
 // readDnsMsgFromBufio reads a single DNS message from a buffered reader.
 // DNS-over-TCP messages are prefixed with a 2-byte length field.
-// Returns the message, framed byte length, or error. Does not consume data on
-// parse failure.
-func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.Conn) (*dnsmessage.Msg, int, error) {
+// Returns the message, framed byte length, or error.
+//
+// With consumeLarge=false nothing is consumed on failure, which is what the
+// first-frame probe needs to fall back to the plain relay. Once the session is
+// known to be DNS there is no fallback left to preserve, so consumeLarge=true
+// additionally accepts frames larger than the reader's buffer — RFC 7766
+// allows up to 65535 bytes while the probe reader stays small.
+func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.Conn, consumeLarge bool) (*dnsmessage.Msg, int, error) {
 	// Set read deadline
 	if timeout > 0 {
 		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
@@ -472,6 +595,9 @@ func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.C
 	// Now read and consume the full message (length prefix + data)
 	fullData, err := reader.Peek(int(2 + length))
 	if err != nil {
+		if consumeLarge && stderrors.Is(err, bufio.ErrBufferFull) {
+			return readLargeDnsMsgFromBufio(reader, int(length))
+		}
 		return nil, 0, err
 	}
 	data := fullData[2:]
@@ -489,6 +615,25 @@ func readDnsMsgFromBufio(reader *bufio.Reader, timeout time.Duration, conn net.C
 	}
 
 	return &msg, int(2 + length), nil
+}
+
+// readLargeDnsMsgFromBufio consumes one DNS frame that exceeds the reader's
+// peek window. Consuming is safe here because the caller is inside an
+// established DNS session: on any error the session closes, exactly as it did
+// before, but a valid large frame is now served instead of being dropped.
+func readLargeDnsMsgFromBufio(reader *bufio.Reader, length int) (*dnsmessage.Msg, int, error) {
+	if _, err := reader.Discard(2); err != nil {
+		return nil, 0, err
+	}
+	data := make([]byte, length)
+	if _, err := io.ReadFull(reader, data); err != nil {
+		return nil, 0, err
+	}
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(data); err != nil {
+		return nil, 0, err
+	}
+	return &msg, 2 + length, nil
 }
 
 // bufioConn wraps a net.Conn with a bufio.Reader, allowing buffered data
@@ -535,12 +680,12 @@ func (c *bufioConn) TakeRelayPrefix() []byte {
 	return prefix
 }
 
-func (c *bufioConn) CopyRelayRemainder(dst io.Writer, buf []byte, record func(int64)) (int64, error) {
+func (c *bufioConn) CopyRelayRemainder(ctx context.Context, dst io.Writer, buf []byte, record func(int64), onActive func(int64)) (int64, error) {
 	if c == nil {
 		return 0, nil
 	}
 	if c.reader == nil {
-		return relayCopyDirect(dst, c.Conn, buf, record)
+		return relayCopyDirect(ctx, dst, c.Conn, buf, record, onActive)
 	}
 
 	// Once buffered bytes are drained we can resume directly on the underlying
@@ -549,17 +694,14 @@ func (c *bufioConn) CopyRelayRemainder(dst io.Writer, buf []byte, record func(in
 		if dstConn, ok := dst.(netproxy.Conn); ok {
 			if dstTCP, ok := unwrapRelayTCPConn(dstConn); ok {
 				if srcTCP, ok := unwrapRelayTCPConn(c.Conn); ok {
-					if record != nil {
-						return relaySpliceCopyExact(context.Background(), dstTCP, srcTCP, record)
-					}
-					return io.Copy(dstTCP, srcTCP)
+					return relaySpliceCopyExact(ctx, dstTCP, srcTCP, record, onActive)
 				}
 			}
 		}
-		return relayCopyDirect(dst, c.Conn, buf, record)
+		return relayCopyDirect(ctx, dst, c.Conn, buf, record, onActive)
 	}
 
-	return relayCopyDirect(dst, c.reader, buf, record)
+	return relayCopyDirect(ctx, dst, c.reader, buf, record, onActive)
 }
 
 func (c *bufioConn) Read(b []byte) (int, error) {
@@ -594,84 +736,139 @@ func (c *bufioConn) SetWriteDeadline(t time.Time) error {
 	return c.Conn.SetWriteDeadline(t)
 }
 
-// handleTCPDnsFastPath handles DNS-over-TCP transparent proxy.
-// It reads DNS queries from the connection, processes them through the DNS controller,
-// and writes responses back. Returns true if the connection was handled as DNS.
-// Uses bufio.Reader to support peeking at data without consuming it,
-// allowing proper fallback to normal TCP handling if this isn't DNS traffic.
-func (c *ControlPlane) handleTCPDnsFastPath(ctx context.Context, lConn net.Conn, bufReader *bufio.Reader, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (handled bool, err error) {
+func (c *ControlPlane) handleTCPDnsFastPathOwned(
+	ctx context.Context,
+	lConn net.Conn,
+	bufReader *bufio.Reader,
+	src, dst netip.AddrPort,
+	routingResult *bpfRoutingResult,
+	ownership *incomingConnectionLease,
+) (handled bool, err error) {
 	// Try to read the first DNS query to verify this is actually DNS traffic
-	msg, frameLen, err := readDnsMsgFromBufio(bufReader, TCPDNSFirstReadTimeout, lConn)
+	msg, frameLen, err := readDnsMsgFromBufio(bufReader, TCPDNSFirstReadTimeout, lConn, false)
 	if err != nil {
 		// Not a valid DNS query - not DNS traffic, fall through to normal TCP handling
 		// The bufio.Reader has buffered but not consumed the data, so the caller
 		// should use a bufioConn wrapper to preserve the buffered data.
+		//
+		// The probe armed a read deadline on lConn. This function owns that
+		// deadline, so it must disarm it here: the relay never re-arms read
+		// deadlines, and a leftover probe deadline would kill a healthy
+		// non-DNS port-53 connection a few seconds in. A conn that cannot
+		// clear its deadline is unusable, so report it handled to stop the
+		// caller from relaying on it.
+		if clearErr := lConn.SetReadDeadline(time.Time{}); clearErr != nil {
+			return true, clearErr
+		}
 		return false, nil
 	}
 
 	// Verify it's a query, not a response
 	if msg.Response {
-		// Received a response instead of a query - not DNS client traffic
-		return false, nil
+		// The valid frame was already consumed, so it cannot fall back to the
+		// ordinary TCP relay without losing bytes.
+		if c.log.IsLevelEnabled(logrus.DebugLevel) {
+			c.log.WithFields(logrus.Fields{
+				"src": src.String(),
+				"dst": dst.String(),
+			}).Debug("TCP DNS fast path consumed a response-shaped frame on port 53; closing the flow")
+		}
+		return true, nil
 	}
 	// This is DNS-over-TCP traffic - handle all queries on this connection
-	if routingResult.Mark == 0 {
-		routingResult.Mark = c.soMarkFromDae
+	flowRoutingResult := new(bpfRoutingResult)
+	if routingResult != nil {
+		*flowRoutingResult = *routingResult
 	}
+	if flowRoutingResult.Mark == 0 {
+		flowRoutingResult.Mark = c.soMarkFromDae
+	}
+	binding := TcpFlowBinding{Route: TcpRouteBinding{
+		PolicyEpoch: c.PolicyEpoch(),
+		Outbound:    consts.OutboundIndex(flowRoutingResult.Outbound),
+		Mark:        flowRoutingResult.Mark,
+		Must:        flowRoutingResult.Must != 0,
+	}}
+	flow, err := c.adoptTCPFlow(ctx, ownership, lConn, nil, binding, src, dst)
+	if err != nil {
+		return true, fmt.Errorf("adopt TCP DNS flow runtime: %w", err)
+	}
+	defer flow.finish()
 
-	writer := &tcpDnsResponseWriter{conn: lConn, record: c.runtimeDownloadRecorder()}
+	// Standalone callers have no active publication and use their private
+	// control plane. Each DNS message is a new logical request, so a persistent
+	// DNS-over-TCP transport uses the active DNS policy without changing its
+	// immutable transport binding. Process-owned sessions never fall back to a
+	// retired plane.
+	fallback := c
+	if _, managerOwned := c.controlPlaneSessionManager(); !managerOwned {
+		fallback = nil
+	}
+	log := c.log
+
+	writer := &tcpDnsResponseWriter{conn: lConn, record: RecordDownloadTraffic}
 	req := &udpRequest{
 		realSrc:        src,
 		realDst:        dst,
 		src:            src,
 		lConn:          nil,
-		routingResult:  routingResult,
-		uploadRecord:   c.runtimeUploadRecorder(),
-		downloadRecord: c.runtimeDownloadRecorder(),
+		routingResult:  flowRoutingResult,
+		uploadRecord:   RecordUploadTraffic,
+		downloadRecord: RecordDownloadTraffic,
 	}
-	recordUpload := req.uploadRecorder()
 	if frameLen > 0 {
-		recordUpload(int64(frameLen))
+		RecordUploadTraffic(int64(frameLen))
 	}
 
 	// Handle DNS queries in a loop (TCP connections can be persistent)
 	for {
-		// Handle the query
-		dnsController := c.ActiveDnsController()
-		if dnsController == nil {
-			return false, fmt.Errorf("dns controller is not available")
-		}
-		err := dnsController.HandleWithResponseWriter_(c.dnsRequestContext(ctx, dnsController), msg, req, writer)
+		var activeController *DnsController
+		err := withActiveDNSController(fallback, flow.Context(), func(queryCtx context.Context, dnsController *DnsController) error {
+			activeController = dnsController
+			return dnsController.HandleWithResponseWriter_(queryCtx, msg, req, writer)
+		})
 		if err != nil {
-			if stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
-				// REFUSED was already sent by the controller
-				return true, nil
+			switch {
+			case stderrors.Is(err, ErrDNSQueryConcurrencyLimitExceeded):
+				// REFUSED response has already been written by the controller.
+			case stderrors.Is(err, ErrDNSTruncated) && activeController != nil:
+				// The upstream answer did not fit a single upstream datagram
+				// and no TCP upgrade delivered it. RFC 7766 §5 keeps the query
+				// on TCP and reports TC=1; SERVFAIL would claim the name does
+				// not resolve instead of that the answer did not fit.
+				activeController.noteDnsTruncatedReplyToClient()
+				if writeErr := activeController.sendDnsTruncatedResponse_(msg, req, writer); writeErr != nil {
+					return true, nil
+				}
+			default:
+				// A single failed query must not tear down a persistent DNS/TCP
+				// session. Report SERVFAIL and continue with the next frame.
+				errMsg := new(dnsmessage.Msg)
+				errMsg.SetRcode(msg, dnsmessage.RcodeServerFailure)
+				if writeErr := writer.WriteMsg(errMsg); writeErr != nil {
+					return true, nil
+				}
+				if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
+					log.WithError(err).Debug("TCP DNS fast path failed; SERVFAIL sent")
+				}
 			}
-			// Send SERVFAIL for other errors
-			errMsg := new(dnsmessage.Msg)
-			errMsg.SetRcode(msg, dnsmessage.RcodeServerFailure)
-			_ = writer.WriteMsg(errMsg)
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithError(err).Debug("TCP DNS fast path failed; SERVFAIL sent")
-			}
-			return true, nil
 		}
 
 		// Try to read next query
-		msg, frameLen, err = readDnsMsgFromBufio(bufReader, TCPDNSNextReadTimeout, lConn)
+		msg, frameLen, err = readDnsMsgFromBufio(bufReader, TCPDNSNextReadTimeout, lConn, true)
 		if err != nil {
 			// Connection closed or timeout - normal termination
 			if daerrors.IsIgnorableConnectionError(err) || err == io.EOF {
 				return true, nil
 			}
 			// Other errors - log and close
-			if c.log.IsLevelEnabled(logrus.DebugLevel) {
-				c.log.WithError(err).Debug("TCP DNS connection read error")
+			if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
+				log.WithError(err).Debug("TCP DNS connection read error")
 			}
 			return true, nil
 		}
 		if frameLen > 0 {
-			recordUpload(int64(frameLen))
+			RecordUploadTraffic(int64(frameLen))
 		}
 
 		if msg.Response {

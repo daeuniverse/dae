@@ -9,10 +9,12 @@ package control
 
 import (
 	"fmt"
+	"net"
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // NetkitConfig holds configuration options for Netkit device creation.
@@ -21,10 +23,10 @@ type NetkitConfig struct {
 	PeerName string
 	TxQLen   int
 	// ScrubNone controls whether to disable skb->mark scrubbing.
-	// NOTE: bpf_redirect_peer() is currently DISABLED in C code due to kernel panic issues.
-	// This configuration is preserved for potential future re-enabling.
-	// When true, skb->mark is preserved across netkit boundaries.
-	// This requires kernel support (Linux 6.6+ with CONFIG_NETKIT).
+	// When true, skb->mark is preserved across netkit boundaries, which is
+	// required for bpf_redirect_peer(). The loader only enables
+	// bpf_redirect_peer() on kernels containing the CVE-2025-37959 fix.
+	// This requires kernel support (Linux 6.13+ with CONFIG_NETKIT).
 	ScrubNone bool
 }
 
@@ -35,8 +37,8 @@ type NetkitConfig struct {
 // 3. It provides better error handling
 // 4. It works on systems where ip command doesn't support netkit
 //
-// It supports configuring scrub behavior when the kernel supports it.
-// NOTE: bpf_redirect_peer() optimization is currently DISABLED in C code.
+// It supports configuring scrub behavior when the kernel supports it
+// (scrub=NONE is required for bpf_redirect_peer()).
 func createNetkitDeviceViaNetlink(log *logrus.Logger, cfg *NetkitConfig) error {
 	log.Debug("Attempting to create Netkit device via netlink API")
 
@@ -57,9 +59,8 @@ func createNetkitDeviceViaNetlink(log *logrus.Logger, cfg *NetkitConfig) error {
 		PeerPolicy: netlink.NETKIT_POLICY_FORWARD,
 	}
 
-	// Configure scrub behavior
-	// NOTE: bpf_redirect_peer() optimization is currently DISABLED in C code.
-	// Scrub configuration is preserved for potential future re-enabling.
+	// Configure scrub behavior (scrub=NONE is required for bpf_redirect_peer(),
+	// which the loader only enables on CVE-2025-37959-fixed kernels).
 	if cfg.ScrubNone {
 		netkit.Scrub = netlink.NETKIT_SCRUB_NONE
 		netkit.PeerScrub = netlink.NETKIT_SCRUB_NONE
@@ -86,8 +87,44 @@ func createNetkitDeviceViaNetlink(log *logrus.Logger, cfg *NetkitConfig) error {
 	return nil
 }
 
-// checkNetkitScrubSupport checks if the kernel supports the scrub configuration option.
-// Linux 6.6+ has scrub support in the kernel.
+func isZeroMAC(addr net.HardwareAddr) bool {
+	if len(addr) == 0 {
+		return true
+	}
+	for _, b := range addr {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// requireNetkitL2WithMAC rejects a netkit pair that landed in L3 (kernel
+// default) or without Ethernet addresses. dae's IPv6 datapath installs a
+// permanent NDP neighbor using dae0's MAC; L3 netkit sets IFF_NOARP and
+// leaves HardwareAddr empty, which makes that neighbor unusable.
+func requireNetkitL2WithMAC(primary, peer netlink.Link) error {
+	nk, ok := primary.(*netlink.Netkit)
+	if !ok {
+		return fmt.Errorf("link %s is %T, want netkit", primary.Attrs().Name, primary)
+	}
+	if nk.Mode != netlink.NETKIT_MODE_L2 {
+		return fmt.Errorf("netkit %s mode is %v, want L2", nk.Attrs().Name, nk.Mode)
+	}
+	if primary.Attrs().RawFlags&unix.IFF_NOARP != 0 {
+		return fmt.Errorf("netkit %s still has IFF_NOARP; L2 mode did not take effect", primary.Attrs().Name)
+	}
+	if isZeroMAC(primary.Attrs().HardwareAddr) {
+		return fmt.Errorf("netkit %s has empty MAC; L2 Ethernet datapath is unusable", primary.Attrs().Name)
+	}
+	if isZeroMAC(peer.Attrs().HardwareAddr) {
+		return fmt.Errorf("netkit %s has empty MAC; L2 Ethernet datapath is unusable", peer.Attrs().Name)
+	}
+	return nil
+}
+
+// checkNetkitScrubSupport checks if the kernel supports netkit scrub attributes.
+// The attributes landed in Linux 6.13, after the initial netkit release.
 func checkNetkitScrubSupport(log *logrus.Logger) bool {
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
@@ -95,17 +132,20 @@ func checkNetkitScrubSupport(log *logrus.Logger) bool {
 		return false
 	}
 
-	// Linux 6.6+ has scrub support
-	scrubSupportThreshold := internal.Version{6, 6, 0}
+	scrubSupportThreshold := internal.Version{6, 13, 0}
 	supportsScrub := !kernelVersion.Less(scrubSupportThreshold)
 
 	if supportsScrub {
-		log.Debugf("Kernel %s supports netkit scrub (6.6+)", kernelVersion.String())
+		log.Debugf("Kernel %s supports netkit scrub (6.13+)", kernelVersion.String())
 	} else {
-		log.Debugf("Kernel %s may not support netkit scrub (< 6.6)", kernelVersion.String())
+		log.Debugf("Kernel %s may not support netkit scrub (< 6.13)", kernelVersion.String())
 	}
 
 	return supportsScrub
+}
+
+func netkitScrubNone(supports bool, primary, peer netlink.NetkitScrub) bool {
+	return supports && primary == netlink.NETKIT_SCRUB_NONE && peer == netlink.NETKIT_SCRUB_NONE
 }
 
 // checkExistingNetkitScrubConfig checks if an existing netkit device
@@ -121,8 +161,9 @@ func checkExistingNetkitScrubConfig(log *logrus.Logger, ifname string) (bool, er
 		return false, fmt.Errorf("link %s is not a netkit device", ifname)
 	}
 
-	// Check if scrub is set to NONE (0)
-	scrubNone := netkit.Scrub == netlink.NETKIT_SCRUB_NONE
+	// Attribute absence decodes to zero as well, so presence and both ends
+	// must be checked before treating scrub as NONE.
+	scrubNone := netkitScrubNone(netkit.SupportsScrub(), netkit.Scrub, netkit.PeerScrub)
 	log.Debugf("Netkit device %s: scrub=%v, peer_scrub=%v, supportsScrub=%v",
 		ifname, netkit.Scrub, netkit.PeerScrub, netkit.SupportsScrub())
 

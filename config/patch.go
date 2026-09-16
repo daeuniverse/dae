@@ -6,9 +6,11 @@
 package config
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/daeuniverse/dae/common"
 	"github.com/sirupsen/logrus"
-	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -18,6 +20,7 @@ type patch func(params *Config) error
 
 var patches = []patch{
 	patchBootstrapResolver,
+	patchCheckInterval,
 	patchTcpCheckHttpMethod,
 	patchEmptyDns,
 	patchMustOutbound,
@@ -32,6 +35,25 @@ func patchTcpCheckHttpMethod(params *Config) error {
 	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
 		logrus.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
 		params.Global.TcpCheckHttpMethod = "CONNECT"
+	}
+	return nil
+}
+
+// patchCheckInterval rejects intervals that can panic the connectivity check
+// scheduler when passed to the random phase spread.
+func patchCheckInterval(params *Config) error {
+	if params.Global.CheckInterval <= 0 {
+		return fmt.Errorf(
+			"global check_interval must be a positive duration (got \"%v\")",
+			params.Global.CheckInterval)
+	}
+	for _, group := range params.Group {
+		// Zero means inherit the validated global interval.
+		if group.CheckInterval < 0 {
+			return fmt.Errorf(
+				"group %q check_interval must not be negative (got \"%v\")",
+				group.Name, group.CheckInterval)
+		}
 	}
 	return nil
 }
@@ -63,8 +85,8 @@ func patchMustOutbound(params *Config) error {
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(f.Name, "must_") {
-		f.Name = strings.TrimPrefix(f.Name, "must_")
+	if after, ok := strings.CutPrefix(f.Name, "must_"); ok {
+		f.Name = after
 		f.Params = append(f.Params, &config_parser.Param{
 			Val: "must",
 		})

@@ -45,11 +45,9 @@ func TestAliveDialerSet_GetRandExcludedConcurrent(t *testing.T) {
 	errCh := make(chan error, 32)
 	var wg sync.WaitGroup
 
-	for i := 0; i < 32; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 1000; j++ {
+	for range 32 {
+		wg.Go(func() {
+			for range 1000 {
 				selected := set.GetRandExcluded(excluded)
 				if selected == nil {
 					errCh <- fmt.Errorf("GetRandExcluded returned nil")
@@ -60,7 +58,7 @@ func TestAliveDialerSet_GetRandExcludedConcurrent(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

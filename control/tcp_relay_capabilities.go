@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"io"
 	"net"
 
@@ -18,12 +19,34 @@ type relaySegmentSource interface {
 }
 
 type relayContinuationSource interface {
-	CopyRelayRemainder(dst io.Writer, buf []byte, record func(int64)) (int64, error)
+	// CopyRelayRemainder receives the owning relay's ctx so long-running
+	// fast paths inside implementers observe cancellation instead of
+	// outliving the flow.
+	CopyRelayRemainder(ctx context.Context, dst io.Writer, buf []byte, record func(int64), onActive func(int64)) (int64, error)
 }
 
 type relayPrefixSource interface {
 	TakeRelayPrefix() []byte
 }
+
+// The relay capability interfaces are satisfied structurally, so a signature
+// drift in an implementer is not a compile error on its own — it just makes
+// the type assertion fail and silently changes which relay path runs. These
+// assertions pin the intended set of implementers.
+//
+// sniffing.ConnSniffer is intentionally absent from relayContinuationSource:
+// its remainder must be read through Sniffer.Read, so it stays on
+// relayCopyLoop. See ConnSniffer.CopyRelayRemainder.
+var (
+	_ relaySegmentSource      = (*sniffing.ConnSniffer)(nil)
+	_ relayPrefixSource       = (*sniffing.ConnSniffer)(nil)
+	_ relaySegmentSource      = (*bufioConn)(nil)
+	_ relayContinuationSource = (*bufioConn)(nil)
+	_ relayPrefixSource       = (*bufioConn)(nil)
+	_ relaySegmentSource      = (*prefixedConn)(nil)
+	_ relayContinuationSource = (*prefixedConn)(nil)
+	_ relayPrefixSource       = (*prefixedConn)(nil)
+)
 
 const relayConnChainMaxDepth = 8
 

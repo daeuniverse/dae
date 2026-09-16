@@ -24,9 +24,33 @@ on:
       build-type:
         type: string
         description: "[pr-build,main-build,daily-build,release-build]"
+    secrets:
+      # Needed only by the report-check-run step, which is itself skipped for
+      # pull requests from forks (those runs receive no secrets).
+      GH_APP_ID:
+        required: false
+      GH_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
 
 jobs:
+  preflight:
+    name: Asset name preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.ref }}
+      # Every matrix leg resolves its own name below with `jq -er`; this checks
+      # the other half of the invariant, that no two keys share a friendlyName.
+      - name: Assert release asset names are unique
+        run: ./scripts/check-asset-names.sh install/friendly-filenames.json
+
   build:
+    needs: [preflight]
     strategy:
       matrix:
         goos: [ linux ]
@@ -54,6 +78,14 @@ jobs:
             goarch: amd64
             goamd64: v3
           # END Linux AMD64 v1 v2 v3
+          # NOTE : GitHub currently runs a single `linux, riscv64` job
+          # for these three entries (upstream Build (Main) run 32984376230 and
+          # dae-linux-riscv64.zip), so the rva22u64/rva23u64 builds these
+          # entries declare are never produced at all. All four possible
+          # GORISCV64 keys are nevertheless present in
+          # install/friendly-filenames.json, because the per-leg `jq -er`
+          # lookup now fails the build instead of publishing `dae-null.zip`
+          # when a leg carries a value the JSON does not know.
           # BEGIN Linux RISCV64 rva20u64 rva22u64 rva23u64
           - goos: linux
             goarch: riscv64
@@ -78,7 +110,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -103,15 +135,42 @@ jobs:
       - name: Show workflow information
         id: get_filename
         run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
+          set -euo pipefail
+          key="$GOOS-$GOARCH$GOARM$GOAMD64$GORISCV64"
+          if ! _NAME=$(jq -er --arg k "$key" '.[$k].friendlyName' < install/friendly-filenames.json); then
+            echo "::error::no friendly filename for matrix key '$key' in install/friendly-filenames.json; add it with a unique friendlyName before publishing"
+            exit 1
+          fi
+          # Printing the lookup key makes it self-evident in the log which
+          # GORISCV64/GOARM/GOAMD64 values a matrix leg resolved with (the
+          # riscv64 include entries collapse to one leg, so this is the only
+          # place the surviving value becomes visible).
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, GOAMD64: $GOAMD64, GORISCV64: $GORISCV64"
+          echo "matrix key: $key -> RELEASE_NAME: $_NAME"
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go 1.26
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 1.26
+          cache: false
+
+      - name: Cache Go modules
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-mod-1.26-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-mod-1.26-
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-1.26-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-${{ hashFiles('go.sum', 'Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-1.26-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-
 
       - name: Install Dependencies
         run: |
@@ -121,16 +180,15 @@ jobs:
       - name: Get project dependencies
         run: |
           git submodule update --init --recursive
-          GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
-          find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
-          sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
+          go mod download -modcacherw
 
       - name: Build dae
+        env:
+          # Build inputs are passed to the build, never written into the
+          # Makefile: an edited Makefile is no longer the tag being released.
+          GOFLAGS: "-modcacherw"
         run: |
           mkdir -p ./build/
-          export GOFLAGS="-trimpath -modcacherw"
-          # Go 1.26 optimization: newinliner, simd, heapminimum512kib, and randomizedheapbase64.
-          export GOEXPERIMENT="newinliner,simd,heapminimum512kib,randomizedheapbase64"
           export OUTPUT=build/dae-$ASSET_NAME
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export CLANG=clang-15
@@ -138,21 +196,26 @@ jobs:
           make
           cp ./install/dae.service ./build/
           cp ./example.dae ./build/
-          curl -L -o ./build/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./build/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          ./scripts/fetch-geo-data.sh ./build
+
+      - name: Assert artifact build inputs (trace tag, GOEXPERIMENT)
+        run: ./scripts/check-artifact-build-env.sh "build/dae-$ASSET_NAME" "$GOARCH"
 
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
         run: ./build/dae-$ASSET_NAME --version
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
           path: build/*
 
       - name: Report result
-        uses: daeuniverse/ci-seed-jobs/common/report-check-run@master
+        # Cross-repository reference pinned to a 40-hex commit . The
+        # previous `@master` moved with the upstream repository on every run.
+        # daeuniverse/ci-seed-jobs@5d0b8710ae2b7fcc2051e5e9379671c6662b278e
+        uses: daeuniverse/ci-seed-jobs/common/report-check-run@5d0b8710ae2b7fcc2051e5e9379671c6662b278e
         if: always() && inputs.build-type == 'pr-build' && startsWith(github.event.pull_request.head.repo.full_name, github.repository_owner)
         with:
           app_id: ${{ secrets.GH_APP_ID }}

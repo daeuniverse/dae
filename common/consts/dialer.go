@@ -51,16 +51,6 @@ const (
 	L4ProtoStr_UDP L4ProtoStr = "udp"
 )
 
-func (l L4ProtoStr) ToL4Proto() uint8 {
-	switch l {
-	case L4ProtoStr_TCP:
-		return IPPROTO_TCP
-	case L4ProtoStr_UDP:
-		return IPPROTO_UDP
-	}
-	panic("unsupported l4proto")
-}
-
 func (l L4ProtoStr) ToL4ProtoType() L4ProtoType {
 	switch l {
 	case L4ProtoStr_TCP:
@@ -80,16 +70,6 @@ const (
 	// IpVersionStr_6 represents IPv6.
 	IpVersionStr_6 IpVersionStr = "6"
 )
-
-func (v IpVersionStr) ToIpVersion() uint8 {
-	switch v {
-	case IpVersionStr_4:
-		return 4
-	case IpVersionStr_6:
-		return 6
-	}
-	panic("unsupported ipversion")
-}
 
 func (v IpVersionStr) ToIpVersionType() IpVersionType {
 	switch v {

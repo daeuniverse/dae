@@ -14,19 +14,13 @@ import (
 )
 
 const (
-	QuicFlag_PacketNumberLength = 0
-	QuicFlag_Reserved           = 2
-	QuicFlag_LongPacketType     = 4
-	QuicFlag_FixedBit           = 6
-	QuicFlag_HeaderForm         = 7
+	QuicFlag_LongPacketType = 4
+	QuicFlag_FixedBit       = 6
+	QuicFlag_HeaderForm     = 7
 )
 const (
 	QuicFlag_HeaderForm_LongHeader  = 1
 	QuicFlag_LongPacketType_Initial = 0
-)
-
-const (
-	QuicVersion1 = 0x00000001
 )
 
 // IsLikelyQuicInitialPacket checks if the buffer appears to be a QUIC Initial packet.
@@ -42,6 +36,9 @@ func IsLikelyQuicInitialPacket(buf []byte) bool {
 	}
 	protectedFlag := buf[0]
 
+	// Gate masks only bit0 (header form); sniffQuicBlock below also includes
+	// the Reserved bit in its mask — behaviorally identical for byte 0 today,
+	// kept loose so a future flag widening fails closed here.
 	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b1) != QuicFlag_HeaderForm_LongHeader {
 		return false
 	}
@@ -86,7 +83,15 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 	}
 	// Is quic.
 	s.quicNextRead = s.buf.Len()
-	sni, err := extractSniFromTls(quicutils.NewLinearLocator(s.quicCryptos))
+	// Reuse the per-Sniffer LinearLocator across SniffQuic calls instead of
+	// allocating a new one each time (NewLinearLocator was a leading QUIC
+	// allocation). Reset repoints it at the current crypto frame offsets.
+	if s.quicLocator == nil {
+		s.quicLocator = quicutils.NewLinearLocator(s.quicCryptos)
+	} else {
+		s.quicLocator.Reset(s.quicCryptos)
+	}
+	sni, err := extractSniFromTls(s.quicLocator)
 	if err != nil {
 		s.needMore = true
 		return "", ErrNotFound
@@ -106,6 +111,8 @@ func sniffQuicBlock(s *Sniffer, cryptos []*quicutils.CryptoFrameOffset, buf []by
 	// Long header: 4 bits masked
 	// High 4 bits are not protected, so we can access QuicFlag_HeaderForm and QuicFlag_LongPacketType without decryption.
 	protectedFlag := buf[0]
+	// 0b11 covers HeaderForm + Reserved so an unexpected high nibble shape
+	// bails early; only bit0 currently matters for this check.
 	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b11) != QuicFlag_HeaderForm_LongHeader {
 		return cryptos, nil, ErrNotApplicable
 	}

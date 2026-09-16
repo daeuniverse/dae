@@ -34,6 +34,12 @@ type Keys struct {
 }
 
 func (k *Keys) Close() error {
+	// Zero the key material before the buffers re-enter the pool: a later
+	// pool consumer must not be able to observe stale Initial secret, key,
+	// IV, or header-protection key bytes.
+	for _, buf := range [][]byte{k.clientInitialSecret, k.key, k.iv, k.headerProtectionKey} {
+		clear(buf)
+	}
 	pool.Put(k.clientInitialSecret)
 	pool.Put(k.headerProtectionKey)
 	pool.Put(k.iv)

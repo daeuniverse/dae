@@ -22,15 +22,7 @@ import (
 	dnsmessage "github.com/miekg/dns"
 )
 
-var (
-	systemDnsMu              sync.Mutex
-	systemDns                netip.AddrPort
-	systemDnsNextUpdateAfter time.Time
-
-	ErrBadDnsAns = fmt.Errorf("bad dns answer")
-
-	FallbackDns netip.AddrPort
-)
+var ErrBadDnsAns = fmt.Errorf("bad dns answer")
 
 const maxDNSMessageSize = 65535
 
@@ -39,58 +31,82 @@ type dnsResolveResult struct {
 	err error
 }
 
-func TryUpdateSystemDns() (err error) {
-	systemDnsMu.Lock()
-	err = tryUpdateSystemDns()
-	systemDnsMu.Unlock()
-	return err
+// SystemDNSResolver caches the host resolver independently for one runtime generation.
+type SystemDNSResolver struct {
+	mu              sync.Mutex
+	dns             netip.AddrPort
+	nextUpdateAfter time.Time
+	fallback        netip.AddrPort
+	readConfig      func(string) *dnsConfig
 }
 
-// TryUpdateSystemDnsElapse will update system DNS if duration has elapsed since the last TryUpdateSystemDns1s call.
-func TryUpdateSystemDnsElapse(k time.Duration) (err error) {
-	systemDnsMu.Lock()
-	defer systemDnsMu.Unlock()
-	return tryUpdateSystemDnsElapse(k)
+// NewSystemDNSResolver creates a generation-scoped system DNS resolver.
+func NewSystemDNSResolver(fallback netip.AddrPort) *SystemDNSResolver {
+	return &SystemDNSResolver{fallback: fallback, readConfig: dnsReadConfig}
 }
-func tryUpdateSystemDnsElapse(k time.Duration) (err error) {
-	if time.Now().Before(systemDnsNextUpdateAfter) {
+
+// TryUpdateElapse updates the cached system DNS if the minimum interval elapsed.
+func (r *SystemDNSResolver) TryUpdateElapse(k time.Duration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tryUpdateElapse(k)
+}
+
+func (r *SystemDNSResolver) tryUpdateElapse(k time.Duration) error {
+	if time.Now().Before(r.nextUpdateAfter) {
 		return fmt.Errorf("update too quickly")
 	}
-	err = tryUpdateSystemDns()
-	if err != nil {
+	if err := r.update(); err != nil {
 		return err
 	}
-	systemDnsNextUpdateAfter = time.Now().Add(k)
+	r.nextUpdateAfter = time.Now().Add(k)
 	return nil
 }
 
-func tryUpdateSystemDns() (err error) {
-	dnsConf := dnsReadConfig("/etc/resolv.conf")
-	systemDns = netip.AddrPort{}
+func (r *SystemDNSResolver) update() error {
+	readConfig := r.readConfig
+	if readConfig == nil {
+		readConfig = dnsReadConfig
+	}
+	dnsConf := readConfig("/etc/resolv.conf")
+	r.dns = netip.AddrPort{}
 	for _, s := range dnsConf.servers {
 		ipPort := netip.MustParseAddrPort(s)
 		if !ipPort.Addr().IsLoopback() {
-			systemDns = ipPort
+			r.dns = ipPort
 			break
 		}
 	}
-	if !systemDns.IsValid() {
-		systemDns = FallbackDns
+	if !r.dns.IsValid() {
+		r.dns = r.fallback
 	}
 	return nil
 }
 
-func SystemDns() (dns netip.AddrPort, err error) {
-	systemDnsMu.Lock()
-	defer systemDnsMu.Unlock()
-	if !systemDns.IsValid() {
-		if err = tryUpdateSystemDns(); err != nil {
+// SystemDNS returns the current generation's cached system DNS server.
+func (r *SystemDNSResolver) SystemDNS() (netip.AddrPort, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.dns.IsValid() {
+		if err := r.update(); err != nil {
 			return netip.AddrPort{}, err
 		}
 	}
-	// To avoid environment changing.
-	_ = tryUpdateSystemDnsElapse(5 * time.Second)
-	return systemDns, nil
+	// Refresh periodically so environment changes are eventually observed.
+	_ = r.tryUpdateElapse(5 * time.Second)
+	return r.dns, nil
+}
+
+var defaultSystemDNSResolver = NewSystemDNSResolver(netip.AddrPort{})
+
+// TryUpdateSystemDnsElapse updates the process-default resolver for compatibility.
+func TryUpdateSystemDnsElapse(k time.Duration) error {
+	return defaultSystemDNSResolver.TryUpdateElapse(k)
+}
+
+// SystemDns returns the process-default resolver for compatibility.
+func SystemDns() (netip.AddrPort, error) {
+	return defaultSystemDNSResolver.SystemDNS()
 }
 
 func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
@@ -266,7 +282,9 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	}()
 	select {
 	case <-ctx.Done():
-		return nil, fmt.Errorf("timeout")
+		// Wrap ctx.Err() so callers can distinguish cancellation from a
+		// real deadline via errors.Is while the message stays readable.
+		return nil, fmt.Errorf("timeout: %w", ctx.Err())
 	case res := <-ch:
 		if res.err != nil {
 			return nil, res.err

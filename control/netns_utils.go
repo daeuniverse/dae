@@ -6,6 +6,7 @@
 package control
 
 import (
+	stderrors "errors"
 	"fmt"
 	"net"
 	"os"
@@ -29,15 +30,10 @@ const (
 	DaeVethTxQLen = 1000
 )
 
-// ptrToUint32 returns a pointer to the given uint32 value.
-// Used for netlink Rule.Mask field which requires *uint32.
-func ptrToUint32(v uint32) *uint32 {
-	return &v
-}
-
 var (
-	daeNetns *DaeNetns
-	once     sync.Once
+	daeNetns     *DaeNetns
+	once         sync.Once
+	setNetnsFunc = netns.Set
 )
 
 type DaeNetns struct {
@@ -48,22 +44,33 @@ type DaeNetns struct {
 	setupDone atomic.Bool
 	mu        sync.Mutex
 
+	handlesInitialized bool
+
 	dae0, dae0peer netlink.Link
 	hostNs, daeNs  netns.NsHandle
 }
 
 func InitDaeNetns(log *logrus.Logger) {
 	once.Do(func() {
-		daeNetns = &DaeNetns{}
+		daeNetns = &DaeNetns{
+			hostNs: netns.None(),
+			daeNs:  netns.None(),
+		}
 	})
-	daeNetns.log = log
+	ns := GetDaeNetns()
+	// The shared instance stays reachable by the previous control-plane
+	// generation while a reload builds the next one, so every mutable field
+	// is written under ns.mu and all readers take the same mutex.
 	// Initialize kernel version for Netkit support detection
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
 		log.WithError(err).Warn("Failed to get kernel version, Netkit support disabled")
 		kernelVersion = internal.Version{0, 0, 0}
 	}
-	daeNetns.kernelVersion = &kernelVersion
+	ns.mu.Lock()
+	ns.log = log
+	ns.kernelVersion = &kernelVersion
+	ns.mu.Unlock()
 }
 
 func GetDaeNetns() *DaeNetns {
@@ -71,20 +78,30 @@ func GetDaeNetns() *DaeNetns {
 }
 
 func (ns *DaeNetns) NetnsID() (int, error) {
-	return netlink.GetNetNsIdByFd(int(ns.daeNs))
+	ns.mu.Lock()
+	daeNs := ns.daeNs
+	ns.mu.Unlock()
+	return netlink.GetNetNsIdByFd(int(daeNs))
 }
 
 func (ns *DaeNetns) Dae0() netlink.Link {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
 	return ns.dae0
 }
 
 func (ns *DaeNetns) Dae0Peer() netlink.Link {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
 	return ns.dae0peer
 }
 
 // DeviceType returns the type of the dae0 device ("netkit" or "veth").
 func (ns *DaeNetns) DeviceType() string {
-	if ns.useNetkit {
+	ns.mu.Lock()
+	useNetkit := ns.useNetkit
+	ns.mu.Unlock()
+	if useNetkit {
 		return "netkit"
 	}
 	return "veth"
@@ -92,52 +109,200 @@ func (ns *DaeNetns) DeviceType() string {
 
 // IsUsingNetkit returns true if Netkit device is being used.
 func (ns *DaeNetns) IsUsingNetkit() bool {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
 	return ns.useNetkit
 }
 
 func (ns *DaeNetns) Setup() (err error) {
+	_, err = ns.SetupWithOwnership()
+	return err
+}
+
+// SetupWithOwnership creates the dae network namespace when needed and reports
+// whether this call created it. Callers that own the created namespace can
+// release it if a later construction step fails.
+func (ns *DaeNetns) SetupWithOwnership() (created bool, err error) {
 	if ns.setupDone.Load() {
-		return
+		return false, nil
 	}
 
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
 	if ns.setupDone.Load() {
-		return
+		return false, nil
+	}
+	if !ns.handlesInitialized {
+		ns.hostNs = netns.None()
+		ns.daeNs = netns.None()
+		ns.handlesInitialized = true
 	}
 	if err = ns.setup(); err != nil {
-		return
+		return true, err
 	}
 	ns.setupDone.Store(true)
-	return nil
+	return true, nil
 }
 
 func (ns *DaeNetns) Close() (err error) {
 	if ns == nil {
 		return nil
 	}
+
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+
+	if !ns.handlesInitialized {
+		ns.setupDone.Store(false)
+		return nil
+	}
 	_ = DeleteNamedNetns(NsName)
 	_ = DeleteLink(HostVethName)
-	return
+
+	var errs []error
+	if ns.daeNs.IsOpen() {
+		if e := ns.daeNs.Close(); e != nil {
+			errs = append(errs, e)
+		}
+	}
+	if ns.hostNs.IsOpen() {
+		if e := ns.hostNs.Close(); e != nil {
+			errs = append(errs, e)
+		}
+	}
+	ns.dae0 = nil
+	ns.dae0peer = nil
+	ns.hostNs = netns.None()
+	ns.daeNs = netns.None()
+	ns.useNetkit = false
+	ns.handlesInitialized = false
+	ns.setupDone.Store(false)
+	return stderrors.Join(errs...)
 }
 
-func (ns *DaeNetns) With(f func() error) (err error) {
-	if err = ns.Setup(); err != nil {
-		return fmt.Errorf("failed to setup dae netns: %v", err)
+func duplicateNetnsHandle(handle netns.NsHandle) (netns.NsHandle, error) {
+	if !handle.IsOpen() {
+		return netns.None(), fmt.Errorf("network namespace handle is closed")
+	}
+	fd, err := unix.FcntlInt(uintptr(handle), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return netns.None(), err
+	}
+	return netns.NsHandle(fd), nil
+}
+
+func (ns *DaeNetns) snapshotHandles() (hostNs, daeNs netns.NsHandle, err error) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if !ns.setupDone.Load() || !ns.handlesInitialized {
+		return netns.None(), netns.None(), fmt.Errorf("dae netns is not initialized")
+	}
+	hostNs, err = duplicateNetnsHandle(ns.hostNs)
+	if err != nil {
+		return netns.None(), netns.None(), fmt.Errorf("duplicate host netns handle: %w", err)
+	}
+	daeNs, err = duplicateNetnsHandle(ns.daeNs)
+	if err != nil {
+		_ = hostNs.Close()
+		return netns.None(), netns.None(), fmt.Errorf("duplicate dae netns handle: %w", err)
+	}
+	return hostNs, daeNs, nil
+}
+
+// With runs f synchronously on a dedicated OS thread in dae netns and restores
+// the host namespace before returning.
+func (ns *DaeNetns) With(f func() error) error {
+	if f == nil {
+		return fmt.Errorf("dae netns callback is nil")
+	}
+	if err := ns.Setup(); err != nil {
+		return fmt.Errorf("failed to setup dae netns: %w", err)
+	}
+	hostNs, daeNs, err := ns.snapshotHandles()
+	if err != nil {
+		return fmt.Errorf("snapshot dae netns handles: %w", err)
 	}
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+	type result struct {
+		err        error
+		panicValue any
 	}
-	defer func() { _ = netns.Set(ns.hostNs) }()
+	resultCh := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		var (
+			switchErr        error
+			callbackErr      error
+			switched         bool
+			callbackStarted  bool
+			callbackReturned bool
+		)
+		defer func() {
+			panicValue := recover()
+			if callbackStarted && !callbackReturned && panicValue == nil {
+				callbackErr = stderrors.New("dae netns callback exited without returning")
+			}
+			var restoreErr error
+			if switched {
+				restoreErr = setNetnsFunc(hostNs)
+			}
+			closeErr := stderrors.Join(
+				closeNetnsSnapshot("dae", daeNs),
+				closeNetnsSnapshot("host", hostNs),
+			)
+			if !switched || restoreErr == nil {
+				runtime.UnlockOSThread()
+			}
+			// A goroutine that exits while locked causes the runtime to discard its
+			// OS thread. This prevents a failed restore from returning a daens-bound
+			// thread to the scheduler.
+			resultCh <- result{
+				err: stderrors.Join(
+					switchErr,
+					wrapDaeNetnsCallbackError(callbackErr),
+					wrapDaeNetnsRestoreError(restoreErr),
+					closeErr,
+				),
+				panicValue: panicValue,
+			}
+		}()
 
-	if err = f(); err != nil {
-		return fmt.Errorf("failed to run func in dae netns: %v", err)
+		if err := setNetnsFunc(daeNs); err != nil {
+			switchErr = fmt.Errorf("failed to switch to daens: %w", err)
+			return
+		}
+		switched = true
+		callbackStarted = true
+		callbackErr = f()
+		callbackReturned = true
+	}()
+
+	callResult := <-resultCh
+	if callResult.panicValue != nil {
+		panic(callResult.panicValue)
 	}
-	return
+	return callResult.err
+}
+
+func closeNetnsSnapshot(name string, handle netns.NsHandle) error {
+	if err := handle.Close(); err != nil {
+		return fmt.Errorf("close %s netns snapshot: %w", name, err)
+	}
+	return nil
+}
+
+func wrapDaeNetnsCallbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("failed to run func in dae netns: %w", err)
+}
+
+func wrapDaeNetnsRestoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("failed to restore host netns: %w", err)
 }
 
 // WithRequired runs f in dae netns and wraps the error with operation context.
@@ -153,13 +318,21 @@ func (ns *DaeNetns) WithRequired(op string, f func() error) error {
 
 // WithBestEffort runs f in dae netns and only logs debug info on failure.
 func (ns *DaeNetns) WithBestEffort(op string, f func() error) {
-	if err := ns.With(f); err != nil && ns.log != nil {
-		if op == "" {
-			ns.log.WithError(err).Debug("best-effort dae netns operation failed")
-			return
-		}
-		ns.log.WithError(err).Debugf("best-effort dae netns operation failed: %s", op)
+	err := ns.With(f)
+	if err == nil {
+		return
 	}
+	ns.mu.Lock()
+	log := ns.log
+	ns.mu.Unlock()
+	if log == nil {
+		return
+	}
+	if op == "" {
+		log.WithError(err).Debug("best-effort dae netns operation failed")
+		return
+	}
+	log.WithError(err).Debugf("best-effort dae netns operation failed: %s", op)
 }
 
 // supportsNetkit checks if the kernel supports Netkit devices (requires 6.7+).
@@ -191,7 +364,10 @@ func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 	}
 
 	// Fall back to veth
-	ns.log.Info("Falling back to veth device creation")
+	// The fallback itself is already reported by the Warn above (or by the
+	// kernel-version Info below when Netkit was never attempted); this line
+	// only adds the step to the debug trace.
+	ns.log.Debug("Falling back to veth device creation")
 	ns.useNetkit = false
 	if err := ns.setupVeth(); err != nil {
 		return fmt.Errorf("failed to create veth device: %w", err)
@@ -207,7 +383,7 @@ func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 }
 
 // tryCreateNetkit attempts to create a Netkit device pair.
-// It uses the ip command which has Netkit support in iproute2 6.7.0+.
+// createNetkitDevice prefers netlink and falls back to iproute2.
 func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	ns.log.Debug("Starting Netkit device creation")
 
@@ -216,11 +392,15 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	_ = DeleteLink(HostVethName)
 
 	// Try to create Netkit device
-	// Configure scrub=NONE to preserve skb->mark across netkit boundary (safe optimization).
-	// Note: bpf_redirect_peer() is intentionally disabled in C code to avoid CVE-2025-37959.
+	// Configure scrub=NONE to preserve skb->mark across the netkit boundary.
+	// bpf_redirect_peer() is only enabled on kernels containing the
+	// CVE-2025-37959 fix (checked by the loader at BPF load time).
 	ns.log.Debugf("Creating Netkit device pair: %s <-> %s", HostVethName, NsVethName)
 	if err := createNetkitDevice(ns.log, HostVethName, NsVethName, DaeVethTxQLen, true); err != nil {
-		ns.log.Infof("createNetkitDevice failed: %v", err)
+		// The wrapped error is reported (with its cause) by setupVethOrNetkit
+		// and, on a real failure, by the caller of DaeNetns setup. Logging it
+		// here as well would print the same failure twice per level.
+		ns.log.Debugf("createNetkitDevice failed: %v", err)
 		return fmt.Errorf("failed to create Netkit device: %w", err)
 	}
 	ns.log.Debug("Netkit device created successfully")
@@ -228,23 +408,34 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 	// Get link references
 	ns.log.Debugf("Getting link reference for %s", HostVethName)
 	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
-		ns.log.Errorf("Failed to get link %s: %v", HostVethName, err)
-		return fmt.Errorf("failed to get link dae0: %v", err)
+		// The returned error carries this cause (%w) and is reported once by
+		// the caller of DaeNetns setup (With/WithRequired -> the serve loop),
+		// so the inner line only adds the same failure a second time.
+		ns.log.Debugf("Failed to get link %s: %v", HostVethName, err)
+		return fmt.Errorf("failed to get link dae0: %w", err)
 	}
 	ns.log.Debug("Got link reference for dae0")
 
 	ns.log.Debugf("Getting link reference for %s", NsVethName)
 	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
-		ns.log.Errorf("Failed to get link %s: %v", NsVethName, err)
-		return fmt.Errorf("failed to get link dae0peer: %v", err)
+		ns.log.Debugf("Failed to get link %s: %v", NsVethName, err)
+		return fmt.Errorf("failed to get link dae0peer: %w", err)
 	}
 	ns.log.Debug("Got link reference for dae0peer")
+
+	if err = requireNetkitL2WithMAC(ns.dae0, ns.dae0peer); err != nil {
+		ns.log.Warnf("Rejecting Netkit pair: %v", err)
+		_ = DeleteLink(HostVethName)
+		ns.dae0 = nil
+		ns.dae0peer = nil
+		return err
+	}
 
 	// Set link up
 	ns.log.Debug("Setting link dae0 up")
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
-		ns.log.Errorf("Failed to set link dae0 up: %v", err)
-		return fmt.Errorf("failed to set link dae0 up: %v", err)
+		ns.log.Debugf("Failed to set link dae0 up: %v", err)
+		return fmt.Errorf("failed to set link dae0 up: %w", err)
 	}
 	ns.log.Debug("Netkit device setup completed successfully")
 
@@ -254,38 +445,89 @@ func (ns *DaeNetns) tryCreateNetkit() (err error) {
 func (ns *DaeNetns) setup() (err error) {
 	ns.log.Trace("setting up dae netns")
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	// Capture the host namespace on the caller's thread before spawning the
+	// worker below: goroutines may start on any OS thread, and the setup
+	// steps switch namespaces, so the worker needs an explicit host reference
+	// to start from and restore into.
+	hostNs, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("failed to get host netns: %w", err)
+	}
+	ns.hostNs = hostNs // persistent handle; released by Close
 
-	if ns.hostNs, err = netns.Get(); err != nil {
-		return fmt.Errorf("failed to get host netns: %v", err)
+	type setupResult struct {
+		err        error
+		panicValue any
 	}
-	defer func() { _ = netns.Set(ns.hostNs) }()
+	resultCh := make(chan setupResult, 1)
+	go func() {
+		runtime.LockOSThread()
+		var setupErr error
+		restored := false
+		defer func() {
+			panicValue := recover()
+			if restored {
+				runtime.UnlockOSThread()
+			} else if restoreErr := setNetnsFunc(hostNs); restoreErr != nil {
+				// Last authoritative restore attempt. If it fails (e.g.
+				// setns(2) ENOMEM), keep the thread locked and exit: a
+				// goroutine that exits while still locked makes the runtime
+				// discard its OS thread, quarantining a thread that would
+				// otherwise run arbitrary code in the dae namespace.
+				ns.log.WithError(restoreErr).Errorln("Failed to restore host netns after dae netns setup; quarantining setup thread")
+				setupErr = stderrors.Join(setupErr, fmt.Errorf("failed to restore host netns: %w", restoreErr))
+			} else {
+				runtime.UnlockOSThread()
+			}
+			resultCh <- setupResult{err: setupErr, panicValue: panicValue}
+		}()
 
-	if err = ns.setupVethOrNetkit(); err != nil {
-		return
+		// Start deterministically in the host namespace regardless of which
+		// OS thread the scheduler picked for this goroutine. This is the
+		// setup's namespace prerequisite: without it the destructive link
+		// setup below would run in whatever namespace the worker thread was
+		// in. Fail closed instead of continuing (the deferred restore above
+		// also publishes the error before the caller waits on resultCh).
+		if setupErr = setNetnsFunc(hostNs); setupErr != nil {
+			setupErr = fmt.Errorf("failed to switch setup thread to host netns: %w", setupErr)
+			return
+		}
+
+		if setupErr = ns.setupVethOrNetkit(); setupErr != nil {
+			return
+		}
+		if setupErr = ns.setupNetns(); setupErr != nil {
+			return
+		}
+		if setupErr = ns.setupSysctl(); setupErr != nil {
+			return
+		}
+		if setupErr = ns.setupIPv4Datapath(); setupErr != nil {
+			return
+		}
+		if setupErr = ns.setupIPv6Datapath(); setupErr != nil {
+			return
+		}
+		if setupErr = ns.setupRoutingPolicy(); setupErr != nil {
+			return
+		}
+		// Success: re-enter the host namespace on this worker before it is
+		// released back to the scheduler.
+		if setupErr = setNetnsFunc(hostNs); setupErr == nil {
+			restored = true
+		}
+	}()
+
+	res := <-resultCh
+	if res.panicValue != nil {
+		panic(res.panicValue)
 	}
-	if err = ns.setupNetns(); err != nil {
-		return
-	}
-	if err = ns.setupSysctl(); err != nil {
-		return
-	}
-	if err = ns.setupIPv4Datapath(); err != nil {
-		return
-	}
-	if err = ns.setupIPv6Datapath(); err != nil {
-		return
-	}
-	if err = ns.setupRoutingPolicy(); err != nil {
-		return
-	}
-	return
+	return res.err
 }
 
 func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer func() { _ = netns.Set(ns.hostNs) }()
 
@@ -339,7 +581,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Family:            unix.AF_INET,
 		Table:             table,
 		Mark:              consts.TproxyMark,
-		Mask:              ptrToUint32(consts.TproxyMark),
+		Mask:              new(consts.TproxyMark),
 	}, {
 		SuppressIfgroup:   -1,
 		SuppressPrefixlen: -1,
@@ -349,7 +591,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Family:            unix.AF_INET6,
 		Table:             table,
 		Mark:              consts.TproxyMark,
-		Mask:              ptrToUint32(consts.TproxyMark),
+		Mask:              new(consts.TproxyMark),
 	}}
 
 	for _, rule := range rules {
@@ -375,17 +617,17 @@ func (ns *DaeNetns) setupVeth() (err error) {
 		PeerName:   NsVethName,
 		PeerTxQLen: DaeVethTxQLen,
 	}); err != nil {
-		return fmt.Errorf("failed to add veth pair: %v", err)
+		return fmt.Errorf("failed to add veth pair: %w", err)
 	}
 	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
-		return fmt.Errorf("failed to get link dae0: %v", err)
+		return fmt.Errorf("failed to get link dae0: %w", err)
 	}
 	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
-		return fmt.Errorf("failed to get link dae0peer: %v", err)
+		return fmt.Errorf("failed to get link dae0peer: %w", err)
 	}
 	// ip l s dae0 up
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
-		return fmt.Errorf("failed to set link dae0 up: %v", err)
+		return fmt.Errorf("failed to set link dae0 up: %w", err)
 	}
 	return
 }
@@ -395,36 +637,36 @@ func (ns *DaeNetns) setupNetns() (err error) {
 	_ = DeleteNamedNetns(NsName)
 	ns.daeNs, err = netns.NewNamed(NsName)
 	if err != nil {
-		return fmt.Errorf("failed to create netns: %v", err)
+		return fmt.Errorf("failed to create netns: %w", err)
 	}
 	// NewNamed() will switch to the new netns, switch back to host netns
 	if err = netns.Set(ns.hostNs); err != nil {
-		return fmt.Errorf("failed to switch to host netns: %v", err)
+		return fmt.Errorf("failed to switch to host netns: %w", err)
 	}
 	// ip l s dae0peer netns daens
 	if err = netlink.LinkSetNsFd(ns.dae0peer, int(ns.daeNs)); err != nil {
-		return fmt.Errorf("failed to move dae0peer to daens: %v", err)
+		return fmt.Errorf("failed to move dae0peer to daens: %w", err)
 	}
 
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer func() { _ = netns.Set(ns.hostNs) }()
 	// (ip net e daens) ip l s dae0peer up
 	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
-		return fmt.Errorf("failed to set link dae0peer up: %v", err)
+		return fmt.Errorf("failed to set link dae0peer up: %w", err)
 	}
 	// re-fetch dae0peer to make sure we have the latest mac address
 	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
-		return fmt.Errorf("failed to get link dae0peer: %v", err)
+		return fmt.Errorf("failed to get link dae0peer: %w", err)
 	}
 	lo, err := netlink.LinkByName("lo")
 	if err != nil {
-		return fmt.Errorf("failed to get link lo: %v", err)
+		return fmt.Errorf("failed to get link lo: %w", err)
 	}
 	// (ip net e daens) ip l s lo up
 	if err = netlink.LinkSetUp(lo); err != nil {
-		return fmt.Errorf("failed to set link lo up: %v", err)
+		return fmt.Errorf("failed to set link lo up: %w", err)
 	}
 	return
 }
@@ -435,32 +677,32 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	// with a remote source address, so host routing and ARP validation must not
 	// treat them as martian or filter them back to the wrong interface.
 	if err = sysctl.Keyf("net.ipv4.conf.%s.rp_filter", HostVethName).Set("0", true); err != nil {
-		return fmt.Errorf("failed to set rp_filter for dae0: %v", err)
+		return fmt.Errorf("failed to set rp_filter for dae0: %w", err)
 	}
 	if err = sysctl.Keyf("net.ipv4.conf.all.rp_filter").Set("0", true); err != nil {
-		return fmt.Errorf("failed to set rp_filter for all: %v", err)
+		return fmt.Errorf("failed to set rp_filter for all: %w", err)
 	}
 	if err = sysctl.Keyf("net.ipv4.conf.%s.arp_filter", HostVethName).Set("0", true); err != nil {
-		return fmt.Errorf("failed to set arp_filter for dae0: %v", err)
+		return fmt.Errorf("failed to set arp_filter for dae0: %w", err)
 	}
 	if err = sysctl.Keyf("net.ipv4.conf.all.arp_filter").Set("0", true); err != nil {
-		return fmt.Errorf("failed to set arp_filter for all: %v", err)
+		return fmt.Errorf("failed to set arp_filter for all: %w", err)
 	}
 	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", HostVethName).Set("1", true); err != nil {
-		return fmt.Errorf("failed to set accept_local for dae0: %v", err)
+		return fmt.Errorf("failed to set accept_local for dae0: %w", err)
 	}
 
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
 	if err = sysctl.Keyf("net.ipv6.conf.%s.disable_ipv6", HostVethName).Set("0", true); err != nil {
-		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
+		return fmt.Errorf("failed to set disable_ipv6 for dae0: %w", err)
 	}
 	// sysctl net.ipv6.conf.dae0.forwarding=1
 	if err = sysctl.Keyf("net.ipv6.conf.%s.forwarding", HostVethName).Set("1", true); err != nil {
-		return fmt.Errorf("failed to set forwarding for dae0: %v", err)
+		return fmt.Errorf("failed to set forwarding for dae0: %w", err)
 	}
 
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer func() { _ = netns.Set(ns.hostNs) }()
 
@@ -471,14 +713,14 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
 	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
 	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", NsVethName).Set("1", false); err != nil {
-		return fmt.Errorf("failed to set accept_local for dae0peer: %v", err)
+		return fmt.Errorf("failed to set accept_local for dae0peer: %w", err)
 	}
 	return
 }
 
 func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer func() { _ = netns.Set(ns.hostNs) }()
 
@@ -487,10 +729,10 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 	ip, ipNet, err := net.ParseCIDR("169.254.0.11/32")
 	ipNet.IP = ip
 	if err != nil {
-		return fmt.Errorf("failed to parse ip 169.254.0.11: %v", err)
+		return fmt.Errorf("failed to parse ip 169.254.0.11: %w", err)
 	}
 	if err = netlink.AddrAdd(ns.dae0peer, &netlink.Addr{IPNet: ipNet}); err != nil {
-		return fmt.Errorf("failed to add v4 addr to dae0peer: %v", err)
+		return fmt.Errorf("failed to add v4 addr to dae0peer: %w", err)
 	}
 	// (ip net e daens) ip r a 169.254.0.1 dev dae0peer
 	// 169.254.0.1 is the link-local address used for ARP caching
@@ -500,7 +742,7 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 		Gw:        nil,
 		Scope:     netlink.SCOPE_LINK,
 	}); err != nil {
-		return fmt.Errorf("failed to add v4 route1 to dae0peer: %v", err)
+		return fmt.Errorf("failed to add v4 route1 to dae0peer: %w", err)
 	}
 	// (ip net e daens) ip r a default via 169.254.0.1 dev dae0peer
 	if err = netlink.RouteAdd(&netlink.Route{
@@ -508,7 +750,7 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 		Dst:       &net.IPNet{IP: net.IPv4(0, 0, 0, 0), Mask: net.CIDRMask(0, 32)},
 		Gw:        net.ParseIP("169.254.0.1"),
 	}); err != nil {
-		return fmt.Errorf("failed to add v4 route2 to dae0peer: %v", err)
+		return fmt.Errorf("failed to add v4 route2 to dae0peer: %w", err)
 	}
 	// (ip net e daens) ip n r 169.254.0.1 dev dae0peer lladdr $mac_dae0 nud permanent
 	if err = netlink.NeighSet(&netlink.Neigh{
@@ -517,25 +759,33 @@ func (ns *DaeNetns) setupIPv4Datapath() (err error) {
 		LinkIndex:    ns.dae0peer.Attrs().Index,
 		State:        netlink.NUD_PERMANENT,
 	}); err != nil {
-		return fmt.Errorf("failed to add neigh to dae0peer: %v", err)
+		return fmt.Errorf("failed to add neigh to dae0peer: %w", err)
 	}
 	return
 }
 
-func (ns *DaeNetns) setupIPv6Datapath() (err error) {
-	// ip -6 a a fe80::ecee:eeff:feee:eeee/128 dev dae0 scope link
-	// fe80::ecee:eeff:feee:eeee/128 is the link-local address used for L2 NDP addressing
-	if err = netlink.AddrAdd(ns.dae0, &netlink.Addr{
+// dae0IPv6LinkLocal is the hardcoded next-hop used by dae netns IPv6 NDP.
+// IFA_F_NODAD skips Duplicate Address Detection so the address is usable
+// immediately; a tentative LL on netkit delays or blocks the default route.
+func dae0IPv6LinkLocal() *netlink.Addr {
+	return &netlink.Addr{
 		IPNet: &net.IPNet{
 			IP:   net.ParseIP("fe80::ecee:eeff:feee:eeee"),
 			Mask: net.CIDRMask(128, 128),
 		},
-	}); err != nil {
-		return fmt.Errorf("failed to add v6 addr to dae0: %v", err)
+		Flags: unix.IFA_F_NODAD,
+	}
+}
+
+func (ns *DaeNetns) setupIPv6Datapath() (err error) {
+	// ip -6 a a fe80::ecee:eeff:feee:eeee/128 dev dae0 scope link nodad
+	// fe80::ecee:eeff:feee:eeee/128 is the link-local address used for L2 NDP addressing
+	if err = netlink.AddrAdd(ns.dae0, dae0IPv6LinkLocal()); err != nil {
+		return fmt.Errorf("failed to add v6 addr to dae0: %w", err)
 	}
 
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer func() { _ = netns.Set(ns.hostNs) }()
 
@@ -545,7 +795,7 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 		Dst:       &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
 		Gw:        net.ParseIP("fe80::ecee:eeff:feee:eeee"),
 	}); err != nil {
-		return fmt.Errorf("failed to add v6 route to dae0peer: %v", err)
+		return fmt.Errorf("failed to add v6 route to dae0peer: %w", err)
 	}
 	// (ip net e daens) ip n r fe80::ecee:eeff:feee:eeee dev dae0peer lladdr $mac_dae0 nud permanent
 	if err = netlink.NeighSet(&netlink.Neigh{
@@ -554,14 +804,20 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 		LinkIndex:    ns.dae0peer.Attrs().Index,
 		State:        netlink.NUD_PERMANENT,
 	}); err != nil {
-		return fmt.Errorf("failed to add neigh to dae0peer: %v", err)
+		return fmt.Errorf("failed to add neigh to dae0peer: %w", err)
 	}
 	return
 }
 
 func DeleteNamedNetns(name string) error {
 	namedPath := path.Join("/run/netns", name)
-	_ = unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
+	// Try a synchronous unmount first; MNT_DETACH alone is lazy and may leave
+	// the mount point behind (os.Remove then fails with EBUSY), which leaks
+	// /run/netns/<name> and breaks a subsequent restart. Fall back to lazy
+	// unmount only if the synchronous one fails (e.g. device busy).
+	if err := unix.Unmount(namedPath, 0); err != nil {
+		_ = unix.Unmount(namedPath, unix.MNT_DETACH)
+	}
 	return os.Remove(namedPath)
 }
 

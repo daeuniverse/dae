@@ -7,6 +7,7 @@ package control
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -87,8 +88,8 @@ func (c *prefixedConn) TakeRelaySegments() [][]byte {
 	return [][]byte{prefix}
 }
 
-func (c *prefixedConn) CopyRelayRemainder(dst io.Writer, buf []byte, record func(int64)) (int64, error) {
-	return relayCopyDirect(dst, c.Conn, buf, record)
+func (c *prefixedConn) CopyRelayRemainder(ctx context.Context, dst io.Writer, buf []byte, record func(int64), onActive func(int64)) (int64, error) {
+	return relayCopyDirect(ctx, dst, c.Conn, buf, record, onActive)
 }
 
 // TakeRelayPrefix returns the remaining prefetched bytes and marks them as
@@ -303,8 +304,7 @@ func prefetchForTcpSniff(conn net.Conn, wait time.Duration, maxBytes int) (wrapp
 	if readErr == nil || errors.Is(readErr, io.EOF) {
 		return conn, nil, false, nil
 	}
-	var netErr net.Error
-	if errors.As(readErr, &netErr) && netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](readErr); ok && netErr.Timeout() {
 		return conn, nil, false, nil
 	}
 	return conn, nil, false, readErr

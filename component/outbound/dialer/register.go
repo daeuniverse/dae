@@ -19,21 +19,24 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
-	return NewFromLinkContext(context.Background(), gOption, iOption, link, subscriptionTag)
-}
-
 func NewFromLinkContext(ctx context.Context, gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
-	return NewFromLinkWithProxyCacheContext(ctx, gOption, iOption, link, subscriptionTag, globalProxyIpCache)
+	// Each dialer owns an independent sticky-IP cache. A shared cache keyed by
+	// proxy address would be thrashed by per-dialer health-check cycles when
+	// the same server appears under two nodes (see sticky_cache.go).
+	return NewFromLinkWithProxyCacheContext(ctx, gOption, iOption, link, subscriptionTag, NewProxyIpCache())
 }
 
 func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string, proxyCache *ProxyIpCache) (*Dialer, error) {
 	if proxyCache == nil {
-		proxyCache = globalProxyIpCache
+		proxyCache = NewProxyIpCache()
 	}
 
 	normalizedLink := normalizeShadowTLSPluginOptions(link)
-	baseDialer := newDefaultNetworkDialer(direct.SymmetricDirect, gOption.SoMarkFromDae, gOption.Mptcp)
+	baseDirectDialer := gOption.DirectDialer
+	if baseDirectDialer == nil {
+		baseDirectDialer = direct.SymmetricDirect
+	}
+	baseDialer := newDefaultNetworkDialer(baseDirectDialer, gOption.SoMarkFromDae, gOption.Mptcp)
 	scopedBaseDialer := scopeTransportCacheDialer(baseDialer, gOption.TransportCacheNamespace)
 
 	// First, create the protocol dialer with direct dialer to get the property
@@ -41,11 +44,21 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 	if err != nil {
 		return nil, err
 	}
+	// Temporary protocol dialers can own background workers before any dial.
+	// Keep ownership until replacement or transfer to the returned Dialer.
+	releaseDialer := func() {
+		if closer, ok := d.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		d = nil
+	}
+	defer releaseDialer()
 	p := Property{
 		Property:        *_p,
 		SubscriptionTag: subscriptionTag,
 	}
 	proxyHost := controlPlaneAddressHost(p.Address)
+	var metadataRetirer establishedFlowMetadataRetirer
 
 	if gOption.DaeDNS != nil {
 		baseDialer, err = gOption.DaeDNS.WrapNodeDialer(baseDialer, daedns.NodeMeta{
@@ -57,7 +70,9 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 		if err != nil {
 			return nil, err
 		}
+		metadataRetirer, _ = baseDialer.(establishedFlowMetadataRetirer)
 		scopedBaseDialer = scopeTransportCacheDialer(baseDialer, gOption.TransportCacheNamespace)
+		releaseDialer()
 		d, _p, err = D.NewNetproxyDialerFromLink(scopedBaseDialer, &gOption.ExtraOption, normalizedLink)
 		if err != nil {
 			return nil, err
@@ -89,7 +104,8 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 		stickyWrapper = stickyip.NewStickyIpDialer(baseDialer, p.Address, proxyCache)
 		scopedStickyWrapper := scopeTransportCacheDialer(stickyWrapper, gOption.TransportCacheNamespace)
 
-		// Re-create the protocol dialer with sticky wrapper as base
+		// Re-create the protocol dialer with sticky wrapper as base.
+		releaseDialer()
 		d, _p, err = D.NewNetproxyDialerFromLink(scopedStickyWrapper, &gOption.ExtraOption, normalizedLink)
 		if err != nil {
 			return nil, err
@@ -106,6 +122,8 @@ func NewFromLinkWithProxyCacheContext(ctx context.Context, gOption *GlobalOption
 	}
 
 	daeDialer := NewDialerContext(ctx, d, gOption, iOption, &p)
+	d = nil
+	daeDialer.metadataRetirer = metadataRetirer
 
 	// Store reference to sticky wrapper for health check cycle management
 	if stickyWrapper != nil {

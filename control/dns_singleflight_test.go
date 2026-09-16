@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ */
+
 package control
 
 import (
@@ -8,42 +13,55 @@ import (
 	dnsmessage "github.com/miekg/dns"
 )
 
-func TestMsgCapturer_WriteMsg(t *testing.T) {
-	capturer := &msgCapturer{}
+// A singleflight leader must re-check the cache before going upstream: another
+// request may have populated the entry between the outer miss and the moment
+// this leader started resolving, and resolving again would send a duplicate
+// query for an answer that is already cached.
+func TestResolveForSingleflightRechecksCache(t *testing.T) {
+	controller := newTestDnsController()
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 0x4321
 
-	if capturer.msg != nil {
-		t.Fatal("initial msg should be nil")
+	cache := &DnsCache{
+		Answer: []dnsmessage.RR{&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   "example.com.",
+				Rrtype: dnsmessage.TypeA,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    300,
+			},
+			A: []byte{93, 184, 216, 34},
+		}},
+		Deadline: time.Now().Add(time.Minute),
 	}
-
-	msg := new(dnsmessage.Msg)
-	msg.SetQuestion("example.com.", dnsmessage.TypeA)
-	msg.SetReply(msg)
-	msg.Answer = append(msg.Answer, &dnsmessage.A{
-		Hdr: dnsmessage.RR_Header{
-			Name:   "example.com.",
-			Rrtype: dnsmessage.TypeA,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    300,
-		},
-		A: []byte{93, 184, 216, 34},
-	})
-
-	if err := capturer.WriteMsg(msg); err != nil {
-		t.Fatalf("WriteMsg failed: %v", err)
+	if err := cache.PrepackResponse("example.com.", dnsmessage.TypeA); err != nil {
+		t.Fatalf("PrepackResponse() error = %v", err)
 	}
-	if capturer.msg == nil {
-		t.Fatal("msg should be captured, but it's nil")
-	}
-	if len(capturer.msg.Answer) != 1 {
-		t.Fatalf("answer count = %d, want 1", len(capturer.msg.Answer))
-	}
-}
+	const cacheKey = "singleflight-cache-key"
+	// Publish through the controller's store so the base-key index stays in sync.
+	controller.storeDnsCache(cacheKey, cache)
 
-func TestMsgCapturer_NilWhenNotWritten(t *testing.T) {
-	capturer := &msgCapturer{}
-
-	if capturer.msg != nil {
-		t.Fatal("msg should be nil when WriteMsg is never called")
+	response, err := controller.resolveForSingleflight(
+		context.Background(),
+		query,
+		&udpRequest{},
+		0,
+		nil,
+		cacheKey,
+	)
+	if err != nil {
+		t.Fatalf("resolveForSingleflight() error = %v", err)
+	}
+	if response == nil {
+		t.Fatal("resolveForSingleflight() returned no DNS response")
+		return
+	}
+	if response.Id != query.Id {
+		t.Fatalf("response ID = %d, want %d", response.Id, query.Id)
+	}
+	if len(response.Answer) != 1 {
+		t.Fatalf("answer count = %d, want 1", len(response.Answer))
 	}
 }
 

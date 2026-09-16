@@ -31,6 +31,7 @@ const ttlRefreshMinInterval = int64(200 * time.Millisecond)
 type Anyfrom struct {
 	*net.UDPConn
 	ttl           time.Duration
+	soMark        uint32
 	expiresAtNano atomic.Int64
 	// lastRefreshNano tracks the last TTL refresh time for throttling.
 	// Reduces atomic store frequency under high QPS from every I/O to ~5/sec max.
@@ -52,9 +53,11 @@ type Anyfrom struct {
 // afterWrite handles post-write logic (GSO error tracking and TTL refresh).
 // This is thread-safe because gotGSOError is atomic and refreshTtl uses atomics.
 func (a *Anyfrom) afterWrite(err error) {
-	// CAS-style: only pay the atomic-store cost when transitioning false→true.
-	if !a.gotGSOError.Load() && isGSOError(err) {
-		a.gotGSOError.Store(true)
+	// Only a GSO-related failure flips the flag, and CompareAndSwap keeps the
+	// transition strictly false→true so concurrent writers pay the store cost
+	// at most once per connection.
+	if isGSOError(err) {
+		a.gotGSOError.CompareAndSwap(false, true)
 	}
 	a.refreshTtl()
 }
@@ -263,27 +266,32 @@ func isGSOSupported(uc *net.UDPConn) bool {
 	return serr == nil
 }
 func isGSOError(err error) bool {
-	var serr *os.SyscallError
-	if errors.As(err, &serr) {
+	if serr, ok := errors.AsType[*os.SyscallError](err); ok {
 		// EIO is returned by udp_send_skb() if the device driver does not have tx checksums enabled,
 		// which is a hard requirement of UDP_SEGMENT. See:
 		// https://git.kernel.org/pub/scm/docs/man-pages/man-pages.git/tree/man7/udp.7?id=806eabd74910447f21005160e90957bde4db0183#n228
 		// https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/udp.c?h=v6.2&id=c9c3395d5e3dcc6daee66c6908354d47bf98cb0c#n942
-		return serr.Err == unix.EIO || serr.Err == unix.EINVAL
+		return errors.Is(serr.Err, unix.EIO) || errors.Is(serr.Err, unix.EINVAL)
 	}
 	return false
 }
 
 // AnyfromPool is a full-cone udp listener pool
 const (
-	anyfromPoolShardCount = 64
-	anyfromJanitorPeriod  = 500 * time.Millisecond
+	anyfromPoolShardCount   = 64
+	anyfromJanitorPeriod    = 500 * time.Millisecond
+	anyfromJanitorMaxPeriod = 30 * time.Second
 )
 
 type anyfromPoolShard struct {
 	mu       sync.RWMutex
 	createMu sync.Mutex
-	pool     map[netip.AddrPort]*Anyfrom
+	pool     map[anyfromPoolKey]*Anyfrom
+}
+
+type anyfromPoolKey struct {
+	lAddr  netip.AddrPort
+	soMark uint32
 }
 
 type AnyfromPool struct {
@@ -307,7 +315,7 @@ func NewAnyfromPool() *AnyfromPool {
 		janitorDone: make(chan struct{}),
 	}
 	for i := range anyfromPoolShardCount {
-		p.shards[i].pool = make(map[netip.AddrPort]*Anyfrom, 16)
+		p.shards[i].pool = make(map[anyfromPoolKey]*Anyfrom, 16)
 	}
 	p.startJanitor()
 	return p
@@ -315,15 +323,17 @@ func NewAnyfromPool() *AnyfromPool {
 
 // Reset clears all cached anyfrom connections.
 // Called on reload to prevent stale connections from using pre-reload routing state.
-// Uses two-phase deletion to avoid race with concurrent GetOrCreate:
+// The creation lock prevents an already in-flight socket creation from being
+// published after its shard has been cleared. Uses two-phase deletion:
 // 1. Collect all keys under lock
 // 2. Delete and close each entry
 func (p *AnyfromPool) Reset() {
 	for i := range anyfromPoolShardCount {
 		shard := &p.shards[i]
+		shard.createMu.Lock()
 		shard.mu.Lock()
 		// Phase 1: Collect keys to avoid modifying map during iteration
-		keys := make([]netip.AddrPort, 0, len(shard.pool))
+		keys := make([]anyfromPoolKey, 0, len(shard.pool))
 		for key := range shard.pool {
 			keys = append(keys, key)
 		}
@@ -335,6 +345,7 @@ func (p *AnyfromPool) Reset() {
 			}
 		}
 		shard.mu.Unlock()
+		shard.createMu.Unlock()
 	}
 }
 
@@ -356,12 +367,13 @@ func (p *AnyfromPool) Close() {
 	p.Reset()
 }
 
-func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
-	shard := p.shardFor(lAddr)
+func (p *AnyfromPool) getOrCreateWithMark(lAddr netip.AddrPort, soMark uint32) (conn *Anyfrom, isNew bool, err error) {
+	key := anyfromPoolKey{lAddr: lAddr, soMark: soMark}
+	shard := p.shardForKey(key)
 
 	// Fast path: existing socket
 	shard.mu.RLock()
-	af, ok := shard.pool[lAddr]
+	af, ok := shard.pool[key]
 	if ok {
 		if af.failed.Load() {
 			if !af.IsExpired(time.Now().UnixNano()) {
@@ -376,7 +388,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 	}
 	shard.mu.RUnlock()
 
-	// Slow path: serialize creation for the same lAddr using a creation shard lock.
+	// Slow path: serialize creation within the identity shard.
 	// This prevents a thundering herd of concurrent bind() syscalls when many
 	// packets arrive for the same unseen address simultaneously.
 	shard.createMu.Lock()
@@ -384,7 +396,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	// Double-check under creation lock: another goroutine may have created it.
 	shard.mu.RLock()
-	af, ok = shard.pool[lAddr]
+	af, ok = shard.pool[key]
 	if ok {
 		if af.failed.Load() {
 			if !af.IsExpired(time.Now().UnixNano()) {
@@ -400,8 +412,8 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 	}
 	shard.mu.RUnlock()
 
-	// Only one goroutine per lAddr reaches here — safe to create.
-	newAf, err := p.createAnyfromSocket(lAddr, ttl)
+	// Only one goroutine per identity shard reaches here, so creation is safe.
+	newAf, err := p.createAnyfromSocket(lAddr, soMark)
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -409,30 +421,31 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 	if err != nil {
 		// Negative cache the failure to prevent bind storms under load.
 		failedAf := &Anyfrom{
-			ttl: 2 * time.Second,
+			ttl:    2 * time.Second,
+			soMark: soMark,
 		}
 		failedAf.failed.Store(true)
 		failedAf.expiresAtNano.Store(time.Now().Add(2 * time.Second).UnixNano())
-		shard.pool[lAddr] = failedAf
+		shard.pool[key] = failedAf
 		return nil, true, err
 	}
 
-	shard.pool[lAddr] = newAf
+	shard.pool[key] = newAf
 	return newAf, true, nil
 }
 
 // createAnyfromSocket creates a new Anyfrom socket without holding any pool locks.
-// This is called by GetOrCreate after a cache miss, allowing concurrent socket
-// creation for different addresses without blocking on the shard lock.
-func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, ttl time.Duration) (*Anyfrom, error) {
+// This is called after a cache miss, allowing concurrent socket creation for
+// identities assigned to different shards without holding the map lock.
+func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, soMark uint32) (*Anyfrom, error) {
+	ttl := AnyfromTimeout
 	d := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
 			if err := dialer.TransparentControl(c); err != nil {
 				return err
 			}
-			mark := soMarkFromDae.Load()
-			if mark != 0 {
-				if err := dialer.SoMarkControl(c, int(mark)); err != nil {
+			if soMark != 0 {
+				if err := dialer.SoMarkControl(c, int(soMark)); err != nil {
 					return err
 				}
 			}
@@ -452,6 +465,7 @@ func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, ttl time.Duratio
 	af := &Anyfrom{
 		UDPConn: uConn,
 		ttl:     ttl,
+		soMark:  soMark,
 		gso:     isGSOSupported(uConn),
 		// gotGSOError zero-value (false) is correct; set atomically on first error.
 	}
@@ -462,15 +476,20 @@ func (p *AnyfromPool) createAnyfromSocket(lAddr netip.AddrPort, ttl time.Duratio
 	return af, nil
 }
 
-func (p *AnyfromPool) shardFor(lAddr netip.AddrPort) *anyfromPoolShard {
-	idx := int(hashAddrPort(lAddr) & uint64(anyfromPoolShardCount-1))
+func (p *AnyfromPool) shardForKey(key anyfromPoolKey) *anyfromPoolShard {
+	hash := hashAddrPort(key.lAddr)
+	if key.soMark != 0 {
+		hash ^= wyMix(uint64(key.soMark)^wyHashP0, wyHashP1)
+	}
+	idx := int(hash & uint64(anyfromPoolShardCount-1))
 	return &p.shards[idx]
 }
 
 func (p *AnyfromPool) startJanitor() {
 	p.janitorOnce.Do(func() {
 		go func() {
-			ticker := time.NewTicker(anyfromJanitorPeriod)
+			interval := anyfromJanitorPeriod
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			defer close(p.janitorDone)
 
@@ -483,11 +502,14 @@ func (p *AnyfromPool) startJanitor() {
 					return
 				case now := <-ticker.C:
 					nowNano := now.UnixNano()
+					cleaned := 0
+					entriesSeen := 0
 					for i := range anyfromPoolShardCount {
 						shard := &p.shards[i]
 						// Collect expired connections under lock, close after release.
 						// This minimizes lock hold time even with many expired entries.
 						shard.mu.Lock()
+						entriesSeen += len(shard.pool)
 						toClose = toClose[:0] // reset without reallocating
 						for key, af := range shard.pool {
 							if af.IsPinned() {
@@ -503,7 +525,21 @@ func (p *AnyfromPool) startJanitor() {
 						for _, af := range toClose {
 							_ = af.Close()
 						}
+						cleaned += len(toClose)
 					}
+					// Back off only while the pool is completely empty, so an
+					// idle dae does not wake up to no-op scans. Any entries at
+					// all (pinned or fresh) keep the base cadence so their
+					// expiry is reaped promptly.
+					if cleaned > 0 || entriesSeen > 0 {
+						interval = anyfromJanitorPeriod
+					} else if interval < anyfromJanitorMaxPeriod {
+						interval *= 2
+						if interval > anyfromJanitorMaxPeriod {
+							interval = anyfromJanitorMaxPeriod
+						}
+					}
+					ticker.Reset(interval)
 				}
 			}
 		}()

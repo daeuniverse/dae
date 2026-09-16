@@ -17,9 +17,20 @@ import (
 )
 
 type controlPlaneDNSRuntime struct {
-	dnsController             *DnsController
-	dnsRouting                *dns.Dns
-	dnsFixedDomainTtl         map[string]int
+	dnsController     *DnsController
+	dnsRouting        *dns.Dns
+	dnsFixedDomainTtl map[string]int
+	// The config-derived controller tunables are retained here so that every
+	// dnsControllerOption() caller — the initial build, reload reuse, and the
+	// staged handoff — assembles the same behaviour. Patching them onto the
+	// option at one call site silently resets them to zero at the others,
+	// which turned the cache size limit off after a reload.
+	dnsOptimisticCache         bool
+	dnsOptimisticCacheTtl      int
+	dnsOptimisticStaleReplyTtl int
+	dnsMaxCacheSize            int
+	dnsIpVersionPrefer         int
+
 	dnsListener               *DNSListener
 	dnsListenerStopRegistered bool
 	delayDNSListenerStart     bool
@@ -55,15 +66,6 @@ func (r *controlPlaneDNSRuntime) activeController(handoff *atomic.Pointer[DnsCon
 		}
 	}
 	return r.dnsController
-}
-
-func (r *controlPlaneDNSRuntime) detachController() *DnsController {
-	if r == nil {
-		return nil
-	}
-	controller := r.dnsController
-	r.dnsController = nil
-	return controller
 }
 
 func (r *controlPlaneDNSRuntime) registerListenerStop(deferFuncs *[]func() error, stop func() error) {
@@ -130,15 +132,16 @@ func (r *controlPlaneDNSRuntime) reuseDNSControllerFrom(previous *controlPlaneDN
 	}
 
 	oldController := previous.dnsController
-	if r.dnsController != nil {
-		_ = r.dnsController.Close()
-	}
+	replacementController := r.dnsController
 	reusedController, err := oldController.ReuseForReload(option, routing)
 	if err != nil {
 		if log != nil {
 			log.WithError(err).Warn("failed to reuse DNS controller for reload")
 		}
 		return false
+	}
+	if replacementController != nil && replacementController != oldController {
+		_ = replacementController.Close()
 	}
 	if publishHandoff != nil {
 		publishHandoff(reusedController)
@@ -221,14 +224,16 @@ func (r *controlPlaneDNSRuntime) noteDNSUpstreamAvailable() {
 	})
 }
 
-func (r *controlPlaneDNSRuntime) startPreparedDNSListener(ctx context.Context, log *logrus.Logger, deferFuncs *[]func() error, stop func() error) error {
+func (r *controlPlaneDNSRuntime) startPreparedDNSListener(ctx context.Context, deferFuncs *[]func() error, stop func() error) error {
+	return r.startPreparedDNSListenerWithWarmupTimeout(ctx, deferFuncs, stop, preparedDNSWarmupTimeout)
+}
+
+func (r *controlPlaneDNSRuntime) startPreparedDNSListenerWithWarmupTimeout(ctx context.Context, deferFuncs *[]func() error, stop func() error, warmupTimeout time.Duration) error {
 	if r == nil || !r.delayDNSListenerStart {
 		return nil
 	}
-	if err := r.waitDNSUpstreamAvailable(ctx, preparedDNSWarmupTimeout); err != nil {
-		if log != nil {
-			log.WithError(err).Warnln("[Reload] DNS upstream availability did not finish before DNS cutover")
-		}
+	if err := r.waitDNSUpstreamAvailable(ctx, warmupTimeout); err != nil {
+		return fmt.Errorf("wait for DNS upstream availability before prepared cutover: %w", err)
 	}
 	if r.preparedDNSReuseHook != nil {
 		if err := r.preparedDNSReuseHook(); err != nil {
@@ -255,19 +260,58 @@ func (r *controlPlaneDNSRuntime) startPreparedDNSListener(ctx context.Context, l
 	return nil
 }
 
-func (r *controlPlaneDNSRuntime) releaseRetainedState() {
-	if r == nil {
-		return
+// RestorePreparedDNSRuntimeForRollback returns DNS resources transferred to a
+// prepared candidate back to the still-active previous generation.
+func (c *ControlPlane) RestorePreparedDNSRuntimeForRollback(
+	previous *ControlPlane,
+	restoreController bool,
+	restoreListener bool,
+) (listenerRestoredActive bool, err error) {
+	if c == nil || previous == nil {
+		return false, fmt.Errorf("restore prepared DNS runtime: both control planes are required")
 	}
-	r.dnsController = nil
-	r.dnsRouting = nil
-	r.dnsFixedDomainTtl = nil
-	r.dnsListener = nil
-	r.dnsListenerStopRegistered = false
-	r.delayDNSListenerStart = false
-	r.preparedDNSReuseHook = nil
-	r.preparedDNSStartHook = nil
-	r.dnsUpstreamsReady = nil
-	r.dnsUpstreamAvailable = nil
-	r.dnsUpstreamAvailableOnce = sync.Once{}
+	activeControlPlanePublication.mu.Lock()
+	defer activeControlPlanePublication.mu.Unlock()
+
+	if restoreController {
+		if c.dnsController == nil {
+			return false, fmt.Errorf("restore prepared DNS runtime: candidate controller is unavailable")
+		}
+		if previous.dnsController != nil {
+			return false, fmt.Errorf("restore prepared DNS runtime: previous controller still owns a controller")
+		}
+	}
+	if restoreListener {
+		if c.dnsListener == nil {
+			return false, fmt.Errorf("restore prepared DNS runtime: candidate listener is unavailable")
+		}
+		if previous.dnsListener != nil {
+			return false, fmt.Errorf("restore prepared DNS runtime: previous listener still owns a listener")
+		}
+	}
+
+	if restoreController {
+		transferred := c.dnsController
+		restored, restoreErr := transferred.ReuseForReload(previous.dnsControllerOption(), previous.dnsRouting)
+		if restoreErr != nil {
+			return false, fmt.Errorf("restore prepared DNS controller: %w", restoreErr)
+		}
+		if restored == nil {
+			return false, fmt.Errorf("restore prepared DNS controller: restored controller is nil")
+		}
+		c.dnsController = nil
+		previous.dnsController = restored
+		previous.clearDNSHandoffControllerIfMatch(transferred)
+	}
+
+	if restoreListener {
+		listener := c.dnsListener
+		c.dnsListener = nil
+		c.dnsListenerStopRegistered = false
+		previous.dnsListener = listener
+		listener.SwapController(previous)
+		listenerRestoredActive = true
+	}
+
+	return listenerRestoredActive, nil
 }

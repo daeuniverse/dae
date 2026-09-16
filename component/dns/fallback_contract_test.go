@@ -8,29 +8,23 @@ package dns
 import (
 	"testing"
 
-	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRequestMatcherBuilderRejectsInvalidFallbackType(t *testing.T) {
-	_, err := NewRequestMatcherBuilder(logrus.New(), nil, map[string]uint8{}, 123)
+	program, err := NewNormalizedRequestRoutingProgram(nil, 123)
+	require.NoError(t, err)
+	_, err = NewRequestMatcherBuilderFromProgram(logrus.New(), program, map[string]uint8{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported function-or-string value type")
 }
 
 func TestResponseMatcherBuilderRejectsInvalidFallbackType(t *testing.T) {
-	_, err := NewResponseMatcherBuilder(logrus.New(), nil, map[string]uint8{}, 123)
+	program, err := routing.NewNormalizedProgram(nil, 123)
+	require.NoError(t, err)
+	_, err = NewResponseMatcherBuilderFromProgram(logrus.New(), program, map[string]uint8{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported function-or-string value type")
-}
-
-func TestRequestMatcherBuilderRejectsInternalSelectorsWithoutExplicitSplit(t *testing.T) {
-	_, err := NewRequestMatcherBuilder(logrus.New(), []*config_parser.RoutingRule{
-		{
-			AndFunctions: []*config_parser.Function{{Name: "sub"}},
-		},
-	}, map[string]uint8{}, "asis")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "explicit request-rule splitting")
 }

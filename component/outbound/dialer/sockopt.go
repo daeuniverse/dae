@@ -7,7 +7,6 @@ package dialer
 
 import (
 	"fmt"
-	"net/netip"
 	"runtime"
 	"syscall"
 
@@ -104,61 +103,4 @@ func TransparentControl(c syscall.RawConn) error {
 		return fmt.Errorf("error invoking socket control function: %w", controlErr)
 	}
 	return sockOptErr
-}
-
-func BindControl(c syscall.RawConn, lAddrPort netip.AddrPort) error {
-	var sockOptErr error
-	controlErr := c.Control(func(fd uintptr) {
-		if err := setTransparentSocketOptions(int(fd)); err != nil {
-			sockOptErr = err
-			return
-		}
-		if err := bindAddr(fd, lAddrPort); err != nil {
-			sockOptErr = fmt.Errorf("error bindAddr %v: %w", lAddrPort.String(), err)
-			return
-		}
-	})
-	if controlErr != nil {
-		return fmt.Errorf("error invoking socket control function: %w", controlErr)
-	}
-	return sockOptErr
-}
-
-func bindAddr(fd uintptr, addrPort netip.AddrPort) error {
-	if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		return fmt.Errorf("error setting SO_REUSEADDR socket option: %w", err)
-	}
-
-	if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
-		return fmt.Errorf("error setting SO_REUSEPORT socket option: %w", err)
-	}
-
-	var sockAddr syscall.Sockaddr
-
-	addr := addrPort.Addr()
-	switch {
-	case addr.Is4() || addr.Is4In6():
-		a4 := &syscall.SockaddrInet4{
-			Port: int(addrPort.Port()),
-		}
-		a4.Addr = addr.As4()
-		sockAddr = a4
-	case addr.Is6():
-		a6 := &syscall.SockaddrInet6{
-			Port: int(addrPort.Port()),
-		}
-		zone := addrPort.Addr().Zone()
-		if zone != "" {
-			// if link, e := netlink.LinkByName(zone); e == nil {
-			// 	a6.ZoneId = uint32(link.Attrs().Index)
-			// }
-			return fmt.Errorf("unsupported ipv6 zone")
-		}
-		a6.Addr = addr.As16()
-		sockAddr = a6
-	default:
-		return fmt.Errorf("unexpected length of ip")
-	}
-
-	return syscall.Bind(int(fd), sockAddr)
 }

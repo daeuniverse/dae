@@ -11,7 +11,6 @@ on:
   push:
     branches:
       - main
-      - kdae
     paths:
       - "**/*.go"
       - "go.mod"
@@ -26,27 +25,122 @@ jobs:
     name: Go Unit Test
     runs-on: ubuntu-22.04
     env:
-      GOEXPERIMENT: heapminimum512kib,randomizedheapbase64
+      CGO_ENABLED: 0
+    # The experiment set is owned by the Makefile (DEFAULT_GOEXPERIMENT); the
+    # step below applies it without restating it (scripts/check-build-env.sh
+    # rejects a literal assignment under .github/).
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Go 1.26
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 1.26
+          cache: false
+
+      - name: "Apply the canonical build experiments (single owner: Makefile)"
+        # this job runs `go test` directly, so it must take the value
+        # from the Makefile instead of restating it (scripts/check-build-env.sh
+        # rejects a literal assignment under .github/). Without this step the
+        # unit tests would compile with the toolchain defaults while the
+        # released binary carries the experiment set - a silent divergence.
+        run: |
+          set -euo pipefail
+          target="${GITHUB_ENV:?GITHUB_ENV is only set inside GitHub Actions}"
+          make -s print-goexperiment-env | tee -a "$target"
 
       - name: Go cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-unit-1.26-${{ hashFiles('**/go.sum', 'Makefile') }}
           restore-keys: |
-            ${{ runner.os }}-go-
+            ${{ runner.os }}-go-unit-1.26-
 
       - name: Run tests
         run: |
           git submodule update --init --recursive
           go test -tags dae_stub_ebpf ./...
+
+  go_test_race:
+    # Reload, UDP dispatch and connectivity checking are concurrent by
+    # construction. Their tests only mean something under the race detector.
+    name: Go Race Detector
+    runs-on: ubuntu-22.04
+    env:
+      # The race detector on Linux uses cgo; make that choice explicit.
+      CGO_ENABLED: 1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26
+          cache: false
+
+      - name: Apply the canonical build experiments
+        run: make -s print-goexperiment-env >> "$GITHUB_ENV"
+
+      - name: Go cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-race-1.26-${{ hashFiles('**/go.sum', 'Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-go-race-1.26-
+
+      - name: Run tests with race detector
+        run: |
+          git submodule update --init --recursive
+          go test -race -tags dae_stub_ebpf -timeout 30m ./control/... ./component/... ./cmd/...
+
+  go_vet_real_datapath:
+    # go_test builds everything with dae_stub_ebpf, which excludes the real
+    # datapath sources. Without this job a compile error in any !dae_stub_ebpf
+    # file reaches main unnoticed.
+    name: Go Vet (real eBPF datapath)
+    runs-on: ubuntu-22.04
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26
+          cache: false
+
+      - name: Apply the canonical build experiments
+        run: make -s print-goexperiment-env >> "$GITHUB_ENV"
+
+      - name: Install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+
+      - name: Go cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-ebpf-1.26-${{ hashFiles('**/go.sum', 'Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-go-ebpf-1.26-
+
+      - name: Generate eBPF bindings
+        run: |
+          git submodule update --init --recursive
+          make ebpf
+
+      - name: Vet real datapath
+        run: go vet ./...

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 const relayBufSize = 32 << 10 // 32 KB, matches control.relayCopyBufferSize
@@ -24,14 +26,22 @@ var relayBufPool = sync.Pool{
 }
 
 type ConnSniffer struct {
+	// log defaults to the standard logger; callers owning a configured
+	// control-plane logger should inject it via NewConnSniffer.
+	log *logrus.Logger
 	net.Conn
 	*Sniffer
 }
 
-func NewConnSniffer(conn net.Conn, timeout time.Duration) *ConnSniffer {
+func NewConnSniffer(conn net.Conn, timeout time.Duration, log ...*logrus.Logger) *ConnSniffer {
 	s := &ConnSniffer{
 		Conn:    conn,
 		Sniffer: NewStreamSniffer(conn, timeout),
+	}
+	if len(log) > 0 && log[0] != nil {
+		s.log = log[0]
+	} else {
+		s.log = logrus.StandardLogger()
 	}
 	return s
 }
@@ -45,6 +55,15 @@ func (s *ConnSniffer) Read(p []byte) (n int, err error) {
 	return s.Sniffer.Read(p)
 }
 
+// CopyRelayRemainder streams the rest of the connection to dst by reading the
+// underlying conn directly, skipping the Sniffer.
+//
+// It deliberately does NOT match control's relayContinuationSource signature,
+// so control's gather-write path keeps falling back to relayCopyLoop, which
+// reads through Sniffer.Read. Do not "align" it: reading s.Conn directly loses
+// Sniffer state (buffered bytes and dataError) that Read still owns, and doing
+// so breaks proxied TCP. Only bufioConn and prefixedConn, whose prefixes are
+// fully drained before the continuation runs, may implement that interface.
 func (s *ConnSniffer) CopyRelayRemainder(dst io.Writer, buf []byte) (int64, error) {
 	return copyDirect(dst, s.Conn, buf)
 }
@@ -66,7 +85,19 @@ func (s *ConnSniffer) TakeRelayPrefix() []byte {
 	if s.Sniffer == nil {
 		return nil
 	}
-	<-s.dataReady
+	// Relay runs strictly after sniffing completed synchronously in
+	// handleConn, so dataReady is normally already closed here and the
+	// receive below returns immediately. If it is NOT closed (abnormal
+	// sniff state), waiting would block the relay direction forever and
+	// leak the whole relayCore (observed: 522 leaked relayCores after a
+	// reconnect storm, ~2k goroutines). Skip the wait, log the abnormal
+	// state once for root-cause diagnostics, and let relay proceed with
+	// whatever is already buffered.
+	select {
+	case <-s.dataReady:
+	default:
+		s.log.Warn("TakeRelayPrefix: dataReady not closed (abnormal sniff state); skipping wait to avoid relay deadlock")
+	}
 
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
@@ -168,6 +199,7 @@ func (s *ConnSniffer) ReadFrom(r io.Reader) (int64, error) {
 // copyDirect copies from src to dst using the provided buf without delegating
 // to io.WriterTo or io.ReaderFrom interfaces. This prevents stdlib wrappers
 // (e.g. net.TCPConn.ReadFrom) from silently heap-allocating their own buffers.
+// record, when non-nil, observes every successfully written chunk.
 func copyDirect(dst io.Writer, src io.Reader, buf []byte) (written int64, err error) {
 	for {
 		nr, er := src.Read(buf)

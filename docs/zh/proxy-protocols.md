@@ -3,9 +3,11 @@
 > **Note**: dae 目前支持以下代理协议
 
 - [x] HTTP(S), naiveproxy
+
   ```
   https://[[user:]pass@]hostname:port/
   ```
+
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
@@ -53,7 +55,7 @@
   - [x] Trojan-gfw
   - [x] Trojan-go
 
-  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url/)
+  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url)
 
 - [x] Tuic (v5)
 
@@ -98,3 +100,27 @@
    这里的 pname 的含义是进程名。你可通过启动时的命令，或运行时通过 `ps -ef` 命令或者观察 dae 的日志来确定 naiveproxy 的进程名。must_direct 的含义是所有流量，包括 dns 查询都放行直连，不重定向至 dae。
 
    只绑定 LAN 接口的用户不需要做这一步。
+
+## 兼容性说明
+
+### VLESS XTLS Vision 与畸形 ServerHello
+
+XTLS Vision 只有在客户端从服务端 `ServerHello` 中读出密码套件后才能启用：Vision 的填充策略由该套件决定，猜测套件会破坏数据流。因此 outbound 层中的 VLESS 实现仅在握手消息格式正确时解析密码套件，即 `legacy_session_id` 长度在 RFC 8446 第 4.1.2 节允许的 0..32 字节范围内、且消息长度足以包含该字段时。
+
+当 `ServerHello` 畸形（session ID 超过 32 字节、握手被截断或超长）时，密码套件保持未设置，**该连接不会启用 XTLS Vision，而是退回普通 VLESS 中继**：不施加 Vision 填充，也不产生协议错误。这个失败方向是刻意选择的：从畸形消息推断密码套件会给出错误的填充，直接破坏连接。
+
+该行为位于 dae 依赖的 outbound 库中；dae 自身不解析该握手。
+
+### 基于 QUIC 的协议的拥塞控制覆盖
+
+`tuic`、`juicity`、`hysteria2` 节点链接支持客户端本地的 `cc_override` 查询参数，用于指定客户端安装的拥塞控制算法。该参数不会发送给服务端，且优先于服务端下发的算法：
+
+```
+tuic://<uuid>:<password>@<server>:<port>?congestion_control=bbr&cc_override=bbr3
+juicity://<uuid>:<password>@<server>:<port>?congestion_control=bbr&cc_override=bbr3
+hysteria2://<auth>:<password>@<server>:443?upmbps=20&downmbps=100&cc_override=bbr3
+```
+
+`tuic` 与 `juicity` 支持 `bbr`、`cubic`、`new_reno`、`brutal`、`bbr3`；`hysteria2` 支持 `bbr`、`brutal`、`bbr3`。取值在匹配前统一转为小写并去除首尾空白；不受支持的值会在构造 dialer 时使该节点直接失败，而不是静默回退。
+
+不设置 `cc_override` 时，这三个协议安装 `bbr3`；在链接上写 `cc_override=bbr` 可让该节点恢复此前的稳定默认。

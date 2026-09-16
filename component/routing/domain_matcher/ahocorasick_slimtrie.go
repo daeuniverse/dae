@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -33,6 +34,22 @@ type AhocorasickSlimtrie struct {
 	toBuildAc   [][][]byte
 	toBuildTrie [][]string
 	err         error
+
+	// skippedDomains counts routing patterns that were rejected as invalid and
+	// therefore never entered the trie. A rejected pattern silently changes
+	// routing for every name it would have matched, so the count is
+	// correctness information, not a log-volume detail: the first rejection is
+	// reported with its offending character and the per-call total is reported
+	// in one aggregate line.
+	skippedDomains uint64
+
+	// matchCache memoizes the most recent qname resolutions. A single DNS
+	// query otherwise recomputes the same domain bitmap up to six times
+	// (request select, response select, and once per ip-version x protocol
+	// dialer iteration). Capacity-bounded, scan on overflow.
+	matchMu       sync.RWMutex
+	matchCache    map[string][]uint32
+	matchCacheOrd []string
 }
 
 func NewAhocorasickSlimtrie(log *logrus.Logger, bitLength int) *AhocorasickSlimtrie {
@@ -49,13 +66,48 @@ func (n *AhocorasickSlimtrie) AddSet(bitIndex int, patterns []string, typ consts
 	if n.err != nil {
 		return
 	}
+	// Rule indices come from len(builder.rules) and index the per-rule slices
+	// allocated with bitLength (= consts.MaxMatchSetLen). An out-of-range
+	// index would panic on the slice writes below; record it as a build error
+	// so oversized configurations fail with a message instead of crashing.
+	if bitIndex < 0 || bitIndex >= len(n.toBuildTrie) {
+		n.err = fmt.Errorf("domain rule index %d is out of range [0, %d): too many routing rules", bitIndex, len(n.toBuildTrie))
+		return
+	}
+	// Pre-grow slices to avoid repeated growslice when appending many patterns.
+	maxTrieEntries := 0
+	maxAcEntries := 0
+	switch typ {
+	case consts.RoutingDomainKey_Full:
+		maxTrieEntries = len(patterns)
+	case consts.RoutingDomainKey_Suffix:
+		maxTrieEntries = len(patterns) * 2
+	case consts.RoutingDomainKey_Keyword:
+		maxAcEntries = len(patterns)
+	}
+	if maxTrieEntries > 0 {
+		n.toBuildTrie[bitIndex] = slices.Grow(n.toBuildTrie[bitIndex], maxTrieEntries)
+	}
+	if maxAcEntries > 0 {
+		n.toBuildAc[bitIndex] = slices.Grow(n.toBuildAc[bitIndex], maxAcEntries)
+	}
+	skippedInThisSet := uint64(0)
 nextPattern:
 	for _, d := range patterns {
+		switch typ {
+		case consts.RoutingDomainKey_Full,
+			consts.RoutingDomainKey_Suffix,
+			consts.RoutingDomainKey_Keyword:
+			// DNS names are case-insensitive, matching the normalization used
+			// by MatchDomainBitmap. Regex patterns keep their original case.
+			d = strings.ToLower(d)
+		}
 		switch typ {
 		case consts.RoutingDomainKey_Full:
 			for _, r := range []byte(d) {
 				if !ValidDomainChars.IsValidChar(r) {
-					n.log.Warnf("DomainMatcher: skip bad full domain: %v: unexpected char: %v", d, string(r))
+					skippedInThisSet++
+					n.noteSkippedDomain("full", bitIndex, d, r)
 					continue nextPattern
 				}
 			}
@@ -63,7 +115,8 @@ nextPattern:
 		case consts.RoutingDomainKey_Suffix:
 			for _, r := range []byte(d) {
 				if !ValidDomainChars.IsValidChar(r) {
-					n.log.Warnf("DomainMatcher: skip bad suffix domain: %v: unexpected char: %v", d, string(r))
+					skippedInThisSet++
+					n.noteSkippedDomain("suffix", bitIndex, d, r)
 					continue nextPattern
 				}
 			}
@@ -93,8 +146,107 @@ nextPattern:
 			return
 		}
 	}
+	n.logSkippedDomainSummary(bitIndex, typ, skippedInThisSet)
 }
+
+// noteSkippedDomain records one routing pattern rejected as invalid. The first
+// rejection is a warning with its offending character (so the user can fix the
+// rule); every later one keeps its detail at debug. Either way the pattern
+// never enters the trie, so routing silently changes for the names it would
+// have matched — the count below is what keeps that visible.
+func (n *AhocorasickSlimtrie) noteSkippedDomain(kind string, bitIndex int, domain string, offending byte) {
+	n.skippedDomains++
+	skipped := n.skippedDomains
+	if n.log == nil {
+		return
+	}
+	if skipped == 1 {
+		n.log.WithFields(logrus.Fields{
+			"rule_index": bitIndex,
+			"domain":     domain,
+			"char":       string(offending),
+			"key_type":   kind,
+			"total":      skipped,
+		}).Warnf("DomainMatcher: bad %v domain rejected and NOT applied to routing (unexpected char %q); later rejections are reported at debug and counted in the per-rule summary",
+			kind, string(offending))
+		return
+	}
+	n.log.WithFields(logrus.Fields{
+		"rule_index": bitIndex,
+		"domain":     domain,
+		"char":       string(offending),
+		"key_type":   kind,
+		"total":      skipped,
+	}).Debugf("DomainMatcher: bad %v domain rejected and NOT applied to routing", kind)
+}
+
+// logSkippedDomainSummary emits the one line that closes an AddSet call when
+// patterns were dropped, so a rule that loses many patterns is one warning
+// plus this count instead of one warning per pattern. total_skipped keeps the
+// lifetime magnitude visible across rules and reloads.
+func (n *AhocorasickSlimtrie) logSkippedDomainSummary(bitIndex int, typ consts.RoutingDomainKey, skipped uint64) {
+	if skipped == 0 || n.log == nil {
+		return
+	}
+	n.log.WithFields(logrus.Fields{
+		"rule_index":    bitIndex,
+		"key_type":      string(typ),
+		"skipped":       skipped,
+		"total_skipped": n.skippedDomains,
+	}).Warnf("DomainMatcher: %d pattern(s) of this rule were rejected and are NOT used for routing; routing decisions for the names they would match are unaffected by this rule",
+		skipped)
+}
+
+// SkippedDomainCount reports how many routing patterns were rejected as
+// invalid across this matcher's lifetime.
+func (n *AhocorasickSlimtrie) SkippedDomainCount() uint64 {
+	if n == nil {
+		return 0
+	}
+	return n.skippedDomains
+}
+
+// matchCacheCap bounds the per-matcher qname->bitmap memo (small: sequential
+// DNS traffic has high temporal locality).
+const matchCacheCap = 512
+
+// MatchDomainBitmap returns the routing bitmap for domain. The returned
+// slice is immutable and may alias the memo; callers must not write it
+// in place (an in-place OR would poison every later DnsCache lookup).
+// The hit path does not clone: that would undo the memo.
 func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32) {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+	// Hit path takes only a read lock: concurrent flow establishments must
+	// not serialize behind this cache (that regressed CPU once already).
+	n.matchMu.RLock()
+	if cached, ok := n.matchCache[domain]; ok {
+		n.matchMu.RUnlock()
+		return cached
+	}
+	n.matchMu.RUnlock()
+
+	bitmap = n.matchDomainBitmapUncached(domain)
+
+	// Insert under the write lock; a concurrent builder of the same domain
+	// (stampede) kept its own result, last writer wins, values are identical.
+	n.matchMu.Lock()
+	if n.matchCache == nil {
+		n.matchCache = make(map[string][]uint32, 64)
+	}
+	if _, exists := n.matchCache[domain]; !exists {
+		if len(n.matchCacheOrd) >= matchCacheCap {
+			evict := n.matchCacheOrd[0]
+			n.matchCacheOrd = n.matchCacheOrd[1:]
+			delete(n.matchCache, evict)
+		}
+		n.matchCache[domain] = bitmap
+		n.matchCacheOrd = append(n.matchCacheOrd, domain)
+	}
+	n.matchMu.Unlock()
+	return bitmap
+}
+
+func (n *AhocorasickSlimtrie) matchDomainBitmapUncached(domain string) (bitmap []uint32) {
 	N := len(n.ac) / 32
 	if len(n.ac)%32 != 0 {
 		N++
@@ -164,6 +316,11 @@ func ToSuffixTrieStrings(s []string) []string {
 	return to
 }
 func (n *AhocorasickSlimtrie) Build() (err error) {
+	n.matchMu.Lock()
+	n.matchCache = nil
+	n.matchCacheOrd = nil
+	n.matchMu.Unlock()
+
 	if n.err != nil {
 		return n.err
 	}
@@ -262,5 +419,9 @@ func (n *AhocorasickSlimtrie) Build() (err error) {
 	// Release unused data.
 	n.toBuildAc = nil
 	n.toBuildTrie = nil
+
+	// Reclaim temporary build allocations (BFS queues, transformed string
+	// slices) immediately so peak memory does not linger into steady state.
+	runtime.GC()
 	return nil
 }

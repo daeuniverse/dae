@@ -9,36 +9,32 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"io"
-	"net"
 	"net/netip"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pool"
 	"github.com/sirupsen/logrus"
 )
 
 var (
-	UdpRoutingResultCacheTtl = 300 * time.Millisecond
-	ErrEndpointFailed        = fmt.Errorf("endpoint creation recently failed (negative cache)")
+	ErrEndpointFailed             = fmt.Errorf("endpoint creation recently failed (negative cache)")
+	errUdpEndpointAdmissionClosed = stderrors.New("udp endpoint admission closed")
 )
 
 // udpEndpointCreateShardCount is the number of sharded mutexes that guard
-// concurrent endpoint creation. 64 shards provide near-zero contention even
-// under high concurrent-create rates.
+// concurrent endpoint creation. Because a creation lock is held across the
+// dial (up to DefaultDialTimeout), unrelated keys hashing to the same shard
+// queue behind it; a larger shard count keeps
+// that head-of-line blocking negligible under high concurrent-create rates.
 const (
-	udpEndpointCreateShardCount      = 64
+	udpEndpointCreateShardCount      = 1024
 	udpEndpointJanitorInterval       = 250 * time.Millisecond
+	udpEndpointJanitorMaxInterval    = 30 * time.Second
 	udpEndpointPendingReplyPeerLimit = 8
 	udpEndpointReplyCacheSlots       = 4
 )
@@ -47,12 +43,15 @@ type UdpHandler func(ue *UdpEndpoint, data []byte, from netip.AddrPort) error
 
 type udpConnStateOwner interface {
 	RetainUdpConnStateTuples(keys []bpfTuplesKey)
-	TransferRetainedUdpConnStateTuplesFrom(previous udpConnStateOwner, keys []bpfTuplesKey)
 	ReleaseUdpConnStateTuples(keys []bpfTuplesKey) error
 }
 
 type UdpEndpoint struct {
-	conn          netproxy.PacketConn
+	conn netproxy.PacketConn
+	// writeBatch, when non-nil, aggregates outgoing datagrams and flushes
+	// them through the transport's batched writer (netproxy.PacketBatchWriter,
+	// e.g. sendmmsg on direct UDP). See udp_write_batch.go.
+	writeBatch    *udpWriteBatchAggregator
 	expiresAtNano atomic.Int64
 	handler       UdpHandler
 	// NatTimeout is guarded by natTimeoutMu after endpoint creation.
@@ -65,16 +64,41 @@ type UdpEndpoint struct {
 	// Reduces atomic store + time.Now() frequency under high QPS from every packet to ~5/sec max.
 	lastRefreshNano atomic.Int64
 
+	// writeDeadlineArmedAtNano tracks when the proxy-side write deadline was
+	// last armed, so the hot path pays one SetWriteDeadline per half-interval
+	// window instead of one syscall per packet.
+	writeDeadlineArmedAtNano atomic.Int64
+
 	// hasReply indicates the upstream side has replied at least once.
 	// Before this flips true, the endpoint is still probing and must not
 	// use the normal sliding NAT lifetime.
 	hasReply atomic.Bool
+	// lastSendNano records the last time the client successfully sent a
+	// packet through this endpoint, and lastReplyNano the last time the
+	// upstream replied. A session that was established (hasReply) but whose
+	// BOTH directions went silent for sendStaleTimeout() is presumed to be
+	// starting a new round after an inter-round pause: the remote (e.g. a
+	// game server) may have reaped the old session, so the old hy2
+	// forwarding source port is no longer recognized. Rebuilding the endpoint
+	// allocates a fresh hy2 session with a new forwarding port the peer treats
+	// as a new client. The check uses the newer of the two timestamps, so
+	// active gameplay — where the server keeps replying even if the client
+	// briefly pauses — never rebuilds mid-round. Sniffed QUIC/H3 flows use
+	// a longer window (udpEndpointQuicSendStaleTimeout) so video segment
+	// gaps do not look like a new round.
+	lastSendNano  atomic.Int64
+	lastReplyNano atomic.Int64
 	// hasSent indicates the endpoint has already forwarded at least one client
 	// packet successfully. Once a flow reaches this point, control-plane health
 	// probes should not tear it down proactively; only data-plane errors,
 	// transport lifecycle end, or NAT timeout should retire it.
-	hasSent    atomic.Bool
-	respConnMu sync.Mutex
+	hasSent atomic.Bool
+	// initialWriteMu serializes the transition from a probing endpoint to one
+	// that has forwarded traffic. Health invalidation must not retire an
+	// endpoint between a successful first socket write and hasSent becoming true.
+	initialWriteMu       sync.Mutex
+	initialWritesPending atomic.Int32
+	respConnMu           sync.Mutex
 
 	// pendingReplyPeers keeps a small ring of recently written upstream peers
 	// while the endpoint is still probing. The first reply must match one of
@@ -84,8 +108,12 @@ type UdpEndpoint struct {
 	pendingReplyPeerCount int
 	pendingReplyPeerNext  int
 
-	Dialer   *dialer.Dialer
-	Outbound *outbound.DialerGroup
+	Dialer            *dialer.Dialer
+	Outbound          *outbound.DialerGroup
+	flowRouteBinding  UdpRouteBinding
+	flowNetwork       string
+	flowBindingSet    bool
+	flowBindingDialIP bool
 
 	// Non-empty indicates this UDP Endpoint is related with a sniffed domain.
 	SniffedDomain string
@@ -94,7 +122,6 @@ type UdpEndpoint struct {
 	routingMu         sync.RWMutex
 	routingCacheDst   netip.AddrPort
 	routingCacheProto uint8
-	routingCacheAt    time.Time
 	routingCache      bpfRoutingResult
 	hasRoutingCache   bool
 
@@ -110,6 +137,7 @@ type UdpEndpoint struct {
 	fullConeRespCacheNext int
 	udpConnStateMu        sync.Mutex
 	udpConnStateTuples    map[bpfTuplesKey]struct{}
+	udpConnStateLastPair  atomic.Pointer[udpConnStateTuplePairSnapshot]
 	udpConnStateClosed    bool
 	udpConnStateOwner     udpConnStateOwner
 	drainTracker          *controlPlaneDrainTracker
@@ -117,10 +145,39 @@ type UdpEndpoint struct {
 
 	log *logrus.Logger
 
+	// sentReporter, when non-nil, owns the upload accounting and traffic health
+	// reporting for datagrams this endpoint hands to the batch aggregator:
+	// WriteTo only queues them, so the caller cannot report them at submission
+	// time. It is invoked with the endpoint, the number of datagrams actually
+	// handed to the transport, and their payload bytes, and only when that
+	// count is > 0. Nil for non-batched endpoints (the caller reports inline)
+	// and for endpoints built without a control plane (tests, pool-only use).
+	sentReporter func(sent *UdpEndpoint, datagrams int, bytes int)
+
+	// batchFlushFailureCount counts failed asynchronous flushes. The flush runs
+	// off the caller's stack, so without this counter (and its rate-limited
+	// warn) a failing batched transport was completely invisible.
+	batchFlushFailureCount atomic.Uint64
+
 	dead   atomic.Bool
 	failed atomic.Bool
 
 	softErrorCount int
+
+	// Transport-owned packet receiver ("push mode"): when the conn supports
+	// netproxy.PacketReceiver it delivers packets through handleReceivedPacket
+	// instead of a blocking ReadFrom loop, and the bounded reply queue below
+	// feeds the shared replySender goroutine. ReadFrom-loop endpoints keep
+	// their queue as read-loop locals and never touch these fields.
+	receiverMu   sync.Mutex // guards receiverStop
+	receiverStop func()
+	receiveMu    sync.Mutex // serializes concurrent receiver deliveries
+
+	replyQueueMu     sync.Mutex // guards replyQueueCh vs teardown
+	replyQueueCh     chan *udpEndpointReply
+	replyQueueDone   chan struct{}
+	replyQueueStop   chan struct{} // sender error signal; nobody listens in this mode
+	replyQueueClosed bool
 
 	// poolRef and poolKey allow hard-failure paths to self-remove from the pool
 	// immediately. Soft read-loop exits intentionally keep the endpoint cached so
@@ -132,968 +189,16 @@ type UdpEndpoint struct {
 	dialerGenerationRef *atomic.Uint64
 	endpointNetworkType dialer.NetworkType
 	lifecycleProfile    UdpLifecycleProfile
-	transportDone       <-chan struct{}
-}
-
-type udpEndpointResponseCacheEntry struct {
-	bindAddr netip.AddrPort
-	conn     *Anyfrom
-}
-
-type udpEndpointResponseConnSlot interface {
-	Load() *Anyfrom
-	Swap(next *Anyfrom)
-}
-
-type udpEndpointSymmetricResponseConnSlot struct {
-	endpoint *UdpEndpoint
-}
-
-func (s udpEndpointSymmetricResponseConnSlot) Load() *Anyfrom {
-	if s.endpoint == nil {
-		return nil
-	}
-	return s.endpoint.loadResponseConn()
-}
-
-func (s udpEndpointSymmetricResponseConnSlot) Swap(next *Anyfrom) {
-	if s.endpoint == nil {
-		return
-	}
-	s.endpoint.swapResponseConn(next)
-}
-
-func (ue *UdpEndpoint) responseConnSlot() udpEndpointResponseConnSlot {
-	if ue == nil {
-		return nil
-	}
-	// Only fixed-destination sessions (Symmetric NAT) may reuse a cached
-	// Anyfrom response socket. Full-Cone sessions must re-resolve on every
-	// packet because the remote source can legitimately change.
-	if ue.poolKey.Dst.Port() == 0 {
-		return nil
-	}
-	return udpEndpointSymmetricResponseConnSlot{endpoint: ue}
-}
-
-func (ue *UdpEndpoint) cachedResponseConn(bindAddr netip.AddrPort) *Anyfrom {
-	if ue == nil || !bindAddr.IsValid() || ue.poolKey.Dst.Port() != 0 {
-		return nil
-	}
-	ue.fullConeRespCacheMu.Lock()
-	defer ue.fullConeRespCacheMu.Unlock()
-	for i := range ue.fullConeRespCache {
-		entry := ue.fullConeRespCache[i]
-		if entry.bindAddr == bindAddr {
-			return entry.conn
-		}
-	}
-	return nil
-}
-
-func (ue *UdpEndpoint) storeCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
-	if ue == nil || !bindAddr.IsValid() || conn == nil || ue.poolKey.Dst.Port() != 0 {
-		return
-	}
-	ue.fullConeRespCacheMu.Lock()
-	defer ue.fullConeRespCacheMu.Unlock()
-	for i := range ue.fullConeRespCache {
-		if ue.fullConeRespCache[i].bindAddr == bindAddr {
-			if ue.fullConeRespCache[i].conn == conn {
-				return
-			}
-			conn.Pin()
-			if old := ue.fullConeRespCache[i].conn; old != nil {
-				old.Unpin()
-			}
-			ue.fullConeRespCache[i].conn = conn
-			return
-		}
-	}
-	conn.Pin()
-	if old := ue.fullConeRespCache[ue.fullConeRespCacheNext].conn; old != nil {
-		old.Unpin()
-	}
-	ue.fullConeRespCache[ue.fullConeRespCacheNext] = udpEndpointResponseCacheEntry{
-		bindAddr: bindAddr,
-		conn:     conn,
-	}
-	ue.fullConeRespCacheNext = (ue.fullConeRespCacheNext + 1) % len(ue.fullConeRespCache)
-}
-
-func (ue *UdpEndpoint) clearCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
-	if ue == nil || !bindAddr.IsValid() || ue.poolKey.Dst.Port() != 0 {
-		return
-	}
-	ue.fullConeRespCacheMu.Lock()
-	defer ue.fullConeRespCacheMu.Unlock()
-	for i := range ue.fullConeRespCache {
-		entry := &ue.fullConeRespCache[i]
-		if entry.bindAddr == bindAddr && (conn == nil || entry.conn == conn) {
-			if entry.conn != nil {
-				entry.conn.Unpin()
-			}
-			entry.bindAddr = netip.AddrPort{}
-			entry.conn = nil
-		}
-	}
-}
-
-func (ue *UdpEndpoint) prewarmResponseConn(target string) {
-	if ue == nil || !ue.lAddr.IsValid() {
-		return
-	}
-
-	replyPeer := ue.poolKey.Dst
-	if !replyPeer.IsValid() || replyPeer.Port() == 0 {
-		parsedTarget, err := netip.ParseAddrPort(target)
-		if err != nil || !parsedTarget.IsValid() || parsedTarget.Port() == 0 {
-			return
-		}
-		replyPeer = parsedTarget
-	}
-
-	bindAddr, _ := normalizeSendPktAddrFamily(replyPeer, ue.lAddr)
-	var af *Anyfrom
-	if DefaultAnyfromPool != nil {
-		shard := DefaultAnyfromPool.shardFor(bindAddr)
-		nowNano := time.Now().UnixNano()
-		shard.mu.RLock()
-		if cached, ok := shard.pool[bindAddr]; ok && cached != nil && !cached.failed.Load() && !cached.IsExpired(nowNano) {
-			af = cached
-		}
-		shard.mu.RUnlock()
-		if af != nil {
-			af.RefreshTtlWithTime(nowNano)
-		}
-	}
-
-	if af == nil {
-		if GetDaeNetns() == nil || DefaultAnyfromPool == nil {
-			return
-		}
-		var err error
-		af, _, err = DefaultAnyfromPool.GetOrCreate(bindAddr, AnyfromTimeout)
-		if err != nil {
-			return
-		}
-	}
-
-	if ue.poolKey.Dst.Port() != 0 {
-		ue.swapResponseConn(af)
-		return
-	}
-	ue.storeCachedResponseConn(bindAddr, af)
-}
-
-type udpEndpointResponseConnCache interface {
-	CachedResponseConn(bindAddr netip.AddrPort) *Anyfrom
-	StoreCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom)
-	ClearCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom)
-}
-
-func (ue *UdpEndpoint) CachedResponseConn(bindAddr netip.AddrPort) *Anyfrom {
-	return ue.cachedResponseConn(bindAddr)
-}
-
-func (ue *UdpEndpoint) StoreCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
-	ue.storeCachedResponseConn(bindAddr, conn)
-}
-
-func (ue *UdpEndpoint) ClearCachedResponseConn(bindAddr netip.AddrPort, conn *Anyfrom) {
-	ue.clearCachedResponseConn(bindAddr, conn)
-}
-
-func (ue *UdpEndpoint) loadResponseConn() *Anyfrom {
-	if ue == nil {
-		return nil
-	}
-	ue.respConnMu.Lock()
-	defer ue.respConnMu.Unlock()
-	return ue.respConn
-}
-
-func (ue *UdpEndpoint) swapResponseConn(next *Anyfrom) {
-	if ue == nil {
-		return
-	}
-	ue.respConnMu.Lock()
-	defer ue.respConnMu.Unlock()
-	swapPinnedAnyfrom(&ue.respConn, next)
-}
-
-func (ue *UdpEndpoint) refreshCachedResponseConnsWithTime(deadlineNano int64) {
-	if ue == nil {
-		return
-	}
-	if conn := ue.loadResponseConn(); conn != nil {
-		conn.ExtendExpiryTo(deadlineNano)
-	}
-	ue.fullConeRespCacheMu.Lock()
-	defer ue.fullConeRespCacheMu.Unlock()
-	for i := range ue.fullConeRespCache {
-		if conn := ue.fullConeRespCache[i].conn; conn != nil {
-			conn.ExtendExpiryTo(deadlineNano)
-		}
-	}
-}
-
-func (ue *UdpEndpoint) releaseCachedResponseConns() {
-	if ue == nil {
-		return
-	}
-	ue.swapResponseConn(nil)
-	ue.fullConeRespCacheMu.Lock()
-	defer ue.fullConeRespCacheMu.Unlock()
-	for i := range ue.fullConeRespCache {
-		if ue.fullConeRespCache[i].conn != nil {
-			ue.fullConeRespCache[i].conn.Unpin()
-			ue.fullConeRespCache[i].conn = nil
-		}
-		ue.fullConeRespCache[i].bindAddr = netip.AddrPort{}
-	}
-}
-
-func (ue *UdpEndpoint) TrackUdpConnStateTuplePair(src, dst netip.AddrPort) {
-	if ue == nil || !src.IsValid() || !dst.IsValid() {
-		return
-	}
-
-	forward := bpfTuplesKeyFromAddrPorts(src, dst, uint8(syscall.IPPROTO_UDP))
-	reverse := bpfTuplesKeyFromAddrPorts(dst, src, uint8(syscall.IPPROTO_UDP))
-
-	ue.udpConnStateMu.Lock()
-	defer ue.udpConnStateMu.Unlock()
-
-	if ue.udpConnStateClosed || ue.udpConnStateOwner == nil {
-		return
-	}
-	if ue.udpConnStateTuples == nil {
-		ue.udpConnStateTuples = make(map[bpfTuplesKey]struct{}, 4)
-	}
-	newKeys := make([]bpfTuplesKey, 0, 2)
-	if _, ok := ue.udpConnStateTuples[forward]; !ok {
-		ue.udpConnStateTuples[forward] = struct{}{}
-		newKeys = append(newKeys, forward)
-	}
-	if _, ok := ue.udpConnStateTuples[reverse]; !ok {
-		ue.udpConnStateTuples[reverse] = struct{}{}
-		newKeys = append(newKeys, reverse)
-	}
-	if len(newKeys) > 0 {
-		ue.udpConnStateOwner.RetainUdpConnStateTuples(newKeys)
-	}
-}
-
-func (ue *UdpEndpoint) releaseTrackedUdpConnState() {
-	if ue == nil {
-		return
-	}
-
-	ue.udpConnStateMu.Lock()
-	owner := ue.udpConnStateOwner
-	if ue.udpConnStateClosed {
-		ue.udpConnStateMu.Unlock()
-		return
-	}
-	ue.udpConnStateClosed = true
-	if owner == nil || len(ue.udpConnStateTuples) == 0 {
-		ue.udpConnStateMu.Unlock()
-		return
-	}
-	keys := make([]bpfTuplesKey, 0, len(ue.udpConnStateTuples))
-	for key := range ue.udpConnStateTuples {
-		keys = append(keys, key)
-	}
-	ue.udpConnStateTuples = nil
-	ue.udpConnStateMu.Unlock()
-
-	if err := owner.ReleaseUdpConnStateTuples(keys); err != nil &&
-		ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-		ue.log.WithError(err).Debug("[UdpEndpoint] Failed to release tracked UDP conn-state tuples")
-	}
-}
-
-func (ue *UdpEndpoint) adoptGeneration(owner udpConnStateOwner, tracker *controlPlaneDrainTracker) {
-	if ue == nil {
-		return
-	}
-
-	var oldRelease func()
-
-	ue.udpConnStateMu.Lock()
-	if ue.udpConnStateClosed {
-		ue.udpConnStateMu.Unlock()
-		return
-	}
-	if owner != nil {
-		if owner != ue.udpConnStateOwner && len(ue.udpConnStateTuples) > 0 {
-			keys := make([]bpfTuplesKey, 0, len(ue.udpConnStateTuples))
-			for key := range ue.udpConnStateTuples {
-				keys = append(keys, key)
-			}
-			owner.TransferRetainedUdpConnStateTuplesFrom(ue.udpConnStateOwner, keys)
-		}
-		ue.udpConnStateOwner = owner
-	}
-	if tracker == nil || tracker == ue.drainTracker {
-		ue.udpConnStateMu.Unlock()
-		return
-	}
-	newRelease := tracker.Acquire()
-	oldRelease = ue.drainRelease
-	ue.drainTracker = tracker
-	ue.drainRelease = newRelease
-	ue.udpConnStateMu.Unlock()
-
-	if oldRelease != nil {
-		oldRelease()
-	}
-}
-
-func isProxyBackedDialer(d *dialer.Dialer) bool {
-	if d == nil {
-		return false
-	}
-	property := d.Property()
-	return property != nil && property.Address != ""
-}
-
-func isStatelessProxyBackedUdpProtocol(d *dialer.Dialer) bool {
-	if !isProxyBackedDialer(d) {
-		return false
-	}
-	property := d.Property()
-	if property == nil {
-		return false
-	}
-	switch strings.ToLower(property.Protocol) {
-	case "shadowsocks", "shadowsocksr", "socks4", "socks5":
-		return true
-	default:
-		return false
-	}
-}
-
-func proxyBackedUdpNatTimeout(requested time.Duration) time.Duration {
-	if requested <= 0 {
-		return requested
-	}
-	// Proxy-backed UDP sessions are multiplexed over a longer-lived transport.
-	// Recreating them too aggressively causes avoidable session churn and log
-	// spam for interactive traffic such as games.
-	if requested < QuicNatTimeout {
-		return QuicNatTimeout
-	}
-	return requested
-}
-
-func effectiveUdpEndpointNatTimeout(d *dialer.Dialer, requested time.Duration) time.Duration {
-	if !isProxyBackedDialer(d) || isStatelessProxyBackedUdpProtocol(d) {
-		return requested
-	}
-	return proxyBackedUdpNatTimeout(requested)
-}
-
-func isTransientLocalUdpDialCreateError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if stderrors.Is(err, syscall.EADDRINUSE) ||
-		stderrors.Is(err, syscall.EADDRNOTAVAIL) ||
-		stderrors.Is(err, syscall.EAGAIN) ||
-		stderrors.Is(err, syscall.ENOBUFS) ||
-		stderrors.Is(err, syscall.EMFILE) ||
-		stderrors.Is(err, syscall.ENFILE) {
-		return true
-	}
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "bind: address already in use") ||
-		strings.Contains(errStr, "cannot assign requested address")
-}
-
-func udpEndpointIgnoresDialerHealth(ue *UdpEndpoint) bool {
-	return ue != nil &&
-		ue.Outbound != nil &&
-		ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed
-}
-
-func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {
-	if ue.log == nil {
-		return
-	}
-	natTimeout := ue.natTimeout()
-	fields := logrus.Fields{
-		"lAddr":       ue.lAddr.String(),
-		"dialer":      ue.Dialer.Property().Name,
-		"proxy_addr":  ue.DialTarget,
-		"sniffed":     ue.SniffedDomain,
-		"nat_timeout": natTimeout.String(),
-	}
-	entry := ue.log.WithFields(fields).WithError(err)
-	if err == nil || errors.IsUDPEndpointNormalClose(err) {
-		entry.Debugln("UdpEndpoint " + msg + " closed normally")
-	} else {
-		if opErr, ok := err.(*net.OpError); ok {
-			fields["op"] = opErr.Op
-			fields["err_type"] = fmt.Sprintf("%T", err)
-		}
-		entry.WithFields(fields).Warnln("UdpEndpoint " + msg + " exited with error")
-	}
-}
-
-func (ue *UdpEndpoint) shouldRetireOnReadError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// Connection-refused class errors must still retire the endpoint so proxy IP
-	// failure handling can evict the bad upstream target immediately.
-	if ue.isConnectionRefused(err) {
-		return true
-	}
-	if !errors.IsUDPEndpointNormalClose(err) {
-		return true
-	}
-	// Delegate the "normal close" policy to the lifecycle model so all UDP
-	// session managers use the same rule.
-	if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
-		return lifecycle.shouldRetireOnNormalClose(err)
-	}
-	return false
-}
-
-// udpEndpointReplyQueueSize is the buffer depth for the async reply dispatch
-// channel in UdpEndpoint.start(). This decouples the protocol-layer read loop
-// (which must drain the upstream ReceiveCh as fast as possible) from the
-// potentially slower sendPkt path (Anyfrom bind, tproxy write). The value is
-// generous enough to absorb burst game server ticks without dropping, while
-// still bounded to avoid unbounded memory under pathological conditions.
-const udpEndpointReplyQueueSize = 256
-
-type udpEndpointReply struct {
-	data pool.PB
-	from netip.AddrPort
-}
-
-// putUdpEndpointReplyData is a package-local seam for tests that need to observe
-// reply-buffer release without changing the production hot path.
-var putUdpEndpointReplyData = func(data pool.PB) {
-	data.Put()
-}
-
-func releaseUdpEndpointReplies(replies []udpEndpointReply) {
-	for i := range replies {
-		putUdpEndpointReplyData(replies[i].data)
-	}
-}
-
-func (ue *UdpEndpoint) start() {
-	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-		ue.log.WithFields(logrus.Fields{
-			"lAddr":      ue.lAddr.String(),
-			"dialer":     ue.Dialer.Property().Name,
-			"proxy_addr": ue.DialTarget,
-		}).Debug("[UdpEndpoint] Read loop started")
-	}
-
-	// Async reply dispatch: the read loop pushes replies into this channel
-	// and a dedicated sender goroutine drains it. This prevents slow sendPkt
-	// operations (Anyfrom cache miss → bind syscall) from stalling the read
-	// loop during short bursts. Once the burst buffer fills, we intentionally
-	// backpressure the read loop instead of introducing a second lossy queue in
-	// dae itself. Generic UDP traffic cannot assume that older packets are safe
-	// to discard.
-	replyCh := make(chan udpEndpointReply, udpEndpointReplyQueueSize)
-	senderStop := make(chan struct{})
-	senderDone := make(chan struct{})
-	go ue.replySender(replyCh, senderStop, senderDone)
-
-	buf := pool.GetFullCap(consts.EthernetMtu)
-	defer func() {
-		pool.Put(buf)
-		close(replyCh)
-		<-senderDone
-	}()
-	for {
-		n, from, err := ue.conn.ReadFrom(buf[:])
-		if err != nil {
-			// Fast path for soft errors (authentication failures/replay attacks from network noise)
-			if errors.IsReplayAttackError(err) || errors.IsAuthError(err) {
-				// Dynamic threshold:
-				// If we haven't received any valid packet yet, keep threshold low (3) to fail fast on wrong passwords/nodes.
-				// If we have successfully received packets, the proxy works. Subsequent errors are likely network noise, so use high threshold (100).
-				threshold := 3
-				if ue.hasReply.Load() {
-					threshold = 100
-				}
-
-				if ue.softErrorCount < threshold {
-					ue.softErrorCount++
-					// Optimize logging condition to avoid unnecessary log object allocation when debug is off
-					if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) && ue.softErrorCount%10 == 1 {
-						ue.log.WithFields(logrus.Fields{
-							"lAddr":      ue.lAddr.String(),
-							"dialer":     ue.Dialer.Property().Name,
-							"proxy_addr": ue.DialTarget,
-							"sniffed":    ue.SniffedDomain,
-						}).WithError(err).Debugf("UdpEndpoint read loop soft error (hit %d/%d, ignored)", ue.softErrorCount, threshold)
-					}
-					continue
-				}
-			}
-
-			if ue.shouldRetireOnReadError(err) {
-				ue.retire()
-
-				// Check if this is a connection refused error from proxy server
-				// If so, invalidate the cached proxy IP so we can try a different one
-				if ue.isConnectionRefused(err) {
-					ue.handleProxyServerFailure()
-				}
-			}
-
-			ue.logEndpointExit(err, "read loop")
-			break
-		}
-		ue.softErrorCount = 0
-		if !ue.hasReply.Load() && !ue.acceptsInitialReplyFrom(from) {
-			if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-				ue.log.WithFields(logrus.Fields{
-					"lAddr":      ue.lAddr.String(),
-					"dialer":     ue.Dialer.Property().Name,
-					"proxy_addr": ue.DialTarget,
-					"from":       from.String(),
-				}).Debug("[UdpEndpoint] Dropped unmatched initial UDP reply during probing")
-			}
-			continue
-		}
-		if lifecycle, ok := newUdpSessionLifecycleContext(ue, consts.IpVersionFromAddr(from.Addr())); ok {
-			lifecycle.handleReply(ue, time.Now().UnixNano())
-		} else {
-			ue.markReplied(time.Now().UnixNano())
-		}
-		// Dispatch reply asynchronously by transferring ownership of the current
-		// read buffer to the sender goroutine. This removes one per-packet copy
-		// from the hot reply path while keeping the same backpressure semantics.
-		select {
-		case replyCh <- udpEndpointReply{data: buf[:n], from: from}:
-			buf = pool.GetFullCap(consts.EthernetMtu)
-		case <-senderStop:
-			return
-		}
-	}
-}
-
-// replySender is the dedicated goroutine that drains the reply channel and
-// calls the handler (which invokes sendPkt). Running this off the read loop
-// avoids blocking the upstream protocol layer's ReceiveCh.
-func (ue *UdpEndpoint) replySender(replyCh <-chan udpEndpointReply, stop chan<- struct{}, done chan<- struct{}) {
-	defer close(done)
-	batch := make([]udpEndpointReply, 0, 8)
-	for reply := range replyCh {
-		batch = append(batch[:0], reply)
-		for len(batch) < cap(batch) {
-			select {
-			case next, ok := <-replyCh:
-				if !ok {
-					replyCh = nil
-					goto drainBatch
-				}
-				batch = append(batch, next)
-			default:
-				goto drainBatch
-			}
-		}
-
-	drainBatch:
-		for i := range batch {
-			queued := batch[i]
-			// Do NOT skip queued replies when dead: these were already received
-			// from the upstream before the read loop exited, and must be forwarded
-			// to the client. The handler (forwardUdpEndpointReplyToClient) only
-			// writes to the local tproxy socket, which is independent of the
-			// upstream endpoint's liveness.
-			if err := ue.handler(ue, queued.data, queued.from); err != nil {
-				releaseUdpEndpointReplies(batch[i:])
-				ue.retire()
-				close(stop)
-				ue.logEndpointExit(err, "reply sender")
-				// Drain remaining queued replies to release pool buffers.
-				if replyCh != nil {
-					for r := range replyCh {
-						putUdpEndpointReplyData(r.data)
-					}
-				}
-				return
-			}
-			putUdpEndpointReplyData(queued.data)
-		}
-		if replyCh == nil {
-			return
-		}
-	}
-}
-
-// isConnectionRefused checks if the error indicates connection was refused.
-// Uses typed syscall matching first (handles kernel ICMP errors), then falls
-// back to string matching for wrapped errors from SOCKS5 and other proxy protocols.
-func (ue *UdpEndpoint) isConnectionRefused(err error) bool {
-	if err == nil {
-		return false
-	}
-	// Fast path: typed syscall errors from kernel ICMP responses.
-	if stderrors.Is(err, syscall.ECONNREFUSED) || stderrors.Is(err, syscall.EHOSTUNREACH) {
-		return true
-	}
-	var sysErr *os.SyscallError
-	if stderrors.As(err, &sysErr) {
-		if stderrors.Is(sysErr.Err, syscall.ECONNREFUSED) || stderrors.Is(sysErr.Err, syscall.EHOSTUNREACH) {
-			return true
-		}
-	}
-	// Slow path: string matching for proxy-protocol wrapped errors (e.g. SOCKS5 replies).
-	errStr := errStrLower(err)
-	return strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "port unreachable") ||
-		strings.Contains(errStr, "host unreachable")
-}
-
-// handleProxyServerFailure is called when the proxy server refuses the connection.
-// It invalidates the cached proxy IP so that subsequent connections can try a different IP.
-func (ue *UdpEndpoint) handleProxyServerFailure() {
-	if ue.Dialer == nil {
-		return
-	}
-
-	// Get the proxy address from the dialer property
-	proxyAddr := ue.Dialer.Property().Address
-	if proxyAddr == "" {
-		return
-	}
-
-	// Notify the dialer about the proxy server failure.
-	// This invalidates the failed UDP family cache so retries can pivot immediately.
-	networkType := udpEndpointNetworkType(ue)
-	ue.Dialer.NotifyProxyFailure(proxyAddr, &networkType)
-
-	if ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-		ue.log.WithFields(logrus.Fields{
-			"proxy_addr": proxyAddr,
-			"dialer":     ue.Dialer.Property().Name,
-		}).Debug("[UdpEndpoint] Proxy server UDP connection refused - invalidated cached IP")
-	}
-}
-
-// errStrLower returns the lowercased error message. Used as a helper for
-// case-insensitive string matching in fallback error detection.
-func errStrLower(err error) string {
-	return strings.ToLower(err.Error())
-}
-
-// selfRemoveFromPool performs a best-effort CAS delete of this endpoint from
-// its owning pool. It is called by the read loop on exit so that the dead entry
-// is evicted immediately — before any writer goroutine has a chance to observe
-// it and be forced through the slower dead-check recovery path.
-func (ue *UdpEndpoint) selfRemoveFromPool() {
-	if ue.poolRef == nil {
-		return
-	}
-	shard := ue.poolRef.shardFor(ue.poolKey)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-
-	if v, ok := shard.pool[ue.poolKey]; ok && v == ue {
-		delete(shard.pool, ue.poolKey)
-	}
-}
-
-func (ue *UdpEndpoint) retire() {
-	ue.dead.Store(true)
-	ue.expiresAtNano.Store(1)
-	ue.selfRemoveFromPool()
-	_ = ue.Close()
-}
-
-func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
-	// Fast dead check: avoid work on an already-dead endpoint.
-	if ue.dead.Load() {
-		return 0, net.ErrClosed
-	}
-
-	if !ue.hasReply.Load() {
-		ue.rememberPendingReplyPeer(addr)
-	}
-
-	// Refresh TTL on write to keep endpoint alive for active connections
-	ue.RefreshTtl()
-
-	// Check again - endpoint may have died.
-	// The underlying conn.WriteTo is thread-safe; we accept a small race window
-	// for performance. Write errors will mark the endpoint dead for cleanup.
-	n, err := ue.conn.WriteTo(b, addr)
-	if err != nil {
-		ue.retire()
-		if ue.isConnectionRefused(err) {
-			ue.handleProxyServerFailure()
-		}
-		return n, err
-	}
-	ue.hasSent.Store(true)
-	if n != len(b) {
-		ue.retire()
-		return n, fmt.Errorf("%w: udp endpoint wrote %d/%d bytes to %s", io.ErrShortWrite, n, len(b), addr)
-	}
-	return n, nil
-}
-
-func (ue *UdpEndpoint) Close() error {
-	ue.closeOnce.Do(func() {
-		ue.expiresAtNano.Store(0)
-		ue.releaseCachedResponseConns()
-		if ue.poolRef != nil {
-			ue.poolRef.unregisterEndpoint(ue)
-		}
-
-		ue.routingMu.Lock()
-		ue.hasRoutingCache = false
-		ue.routingMu.Unlock()
-		ue.releaseTrackedUdpConnState()
-
-		// conn is nil for negatively-cached failure entries; guard against panic.
-		if ue.conn != nil {
-			ue.closeErr = ue.conn.Close()
-		}
-
-		ue.udpConnStateMu.Lock()
-		drainRelease := ue.drainRelease
-		ue.drainRelease = nil
-		ue.drainTracker = nil
-		ue.udpConnStateMu.Unlock()
-		if drainRelease != nil {
-			drainRelease()
-		}
-	})
-	return ue.closeErr
-}
-
-// RefreshTtl updates the expiration time. Uses throttling to reduce atomic
-// store overhead.
-func (ue *UdpEndpoint) RefreshTtl() {
-	ue.RefreshTtlWithTime(0)
-}
-
-func (ue *UdpEndpoint) natTimeout() time.Duration {
-	ue.natTimeoutMu.RLock()
-	defer ue.natTimeoutMu.RUnlock()
-	return ue.NatTimeout
-}
-
-func (ue *UdpEndpoint) setNatTimeout(timeout time.Duration) {
-	ue.natTimeoutMu.Lock()
-	ue.NatTimeout = timeout
-	ue.natTimeoutMu.Unlock()
-}
-
-// requiresInitialReplyGuard reports whether dae needs to verify the first
-// upstream reply itself before promoting the endpoint to established state.
-// Proxy-backed PacketConn implementations already demultiplex packets by
-// protocol session, so an extra address-based guard here is redundant and can
-// incorrectly strand valid flows whose first reply address is rewritten by the
-// proxy layer.
-func (ue *UdpEndpoint) requiresInitialReplyGuard() bool {
-	return ue == nil || !isProxyBackedDialer(ue.Dialer)
-}
-
-// markReplied promotes the endpoint from probing to established state.
-// Once a reply has been observed, the normal sliding NAT timeout applies.
-func (ue *UdpEndpoint) markReplied(nowNano int64) {
-	if nowNano == 0 {
-		nowNano = time.Now().UnixNano()
-	}
-	if !ue.hasReply.Swap(true) {
-		ue.clearPendingReplyPeers()
-		ue.lastRefreshNano.Store(nowNano)
-		ue.expiresAtNano.Store(nowNano + int64(ue.natTimeout()))
-		return
-	}
-	ue.RefreshTtlWithTime(nowNano)
-}
-
-func (ue *UdpEndpoint) rememberPendingReplyPeer(addr string) {
-	addrPort, err := netip.ParseAddrPort(addr)
-	if err != nil || !addrPort.IsValid() {
-		return
-	}
-
-	ue.pendingReplyMu.Lock()
-	defer ue.pendingReplyMu.Unlock()
-
-	for i := 0; i < ue.pendingReplyPeerCount; i++ {
-		if ue.pendingReplyPeers[i] == addrPort {
-			return
-		}
-	}
-
-	if ue.pendingReplyPeerCount < len(ue.pendingReplyPeers) {
-		ue.pendingReplyPeers[ue.pendingReplyPeerCount] = addrPort
-		ue.pendingReplyPeerCount++
-		return
-	}
-
-	ue.pendingReplyPeers[ue.pendingReplyPeerNext] = addrPort
-	ue.pendingReplyPeerNext = (ue.pendingReplyPeerNext + 1) % len(ue.pendingReplyPeers)
-}
-
-func (ue *UdpEndpoint) clearPendingReplyPeers() {
-	ue.pendingReplyMu.Lock()
-	defer ue.pendingReplyMu.Unlock()
-
-	ue.pendingReplyPeerCount = 0
-	ue.pendingReplyPeerNext = 0
-	for i := range ue.pendingReplyPeers {
-		ue.pendingReplyPeers[i] = netip.AddrPort{}
-	}
-}
-
-func (ue *UdpEndpoint) acceptsInitialReplyFrom(from netip.AddrPort) bool {
-	if !from.IsValid() {
-		return false
-	}
-	if !ue.requiresInitialReplyGuard() {
-		return true
-	}
-
-	ue.pendingReplyMu.Lock()
-	defer ue.pendingReplyMu.Unlock()
-
-	if ue.pendingReplyPeerCount == 0 {
-		return ue.poolKey.Dst.IsValid() && from == ue.poolKey.Dst
-	}
-
-	allowSameIPFallback := ue.poolKey.Dst.Port() == 0
-	for i := 0; i < ue.pendingReplyPeerCount; i++ {
-		expected := ue.pendingReplyPeers[i]
-		if from == expected {
-			return true
-		}
-		if allowSameIPFallback && from.Addr() == expected.Addr() {
-			return true
-		}
-	}
-
-	if ue.poolKey.Dst.IsValid() && from == ue.poolKey.Dst {
-		return true
-	}
-	return false
-}
-
-func (ue *UdpEndpoint) setExpiry(deadlineNano int64, refreshCachedResponseConns bool) {
-	ue.expiresAtNano.Store(deadlineNano)
-	if refreshCachedResponseConns {
-		ue.refreshCachedResponseConnsWithTime(deadlineNano)
-	}
-}
-
-// RefreshTtlWithTime updates the expiration time using a pre-calculated
-// timestamp (Unix nanoseconds). If nowNano is 0, time.Now() is used.
-func (ue *UdpEndpoint) RefreshTtlWithTime(nowNano int64) {
-	timeout := ue.natTimeout()
-	if timeout <= 0 {
-		return
-	}
-	if nowNano == 0 {
-		nowNano = time.Now().UnixNano()
-	}
-	last := ue.lastRefreshNano.Load()
-	// Throttle: skip if refreshed recently.
-	// For long TTLs, use TTL/50 as interval; for short TTLs, use minimum.
-	minInterval := ttlRefreshMinInterval
-	if ttlNano := int64(timeout); ttlNano > 10*ttlRefreshMinInterval {
-		minInterval = ttlNano / 50
-	}
-	if nowNano-last < minInterval {
-		return
-	}
-	// CAS to avoid thundering herd on the same connection.
-	if ue.lastRefreshNano.CompareAndSwap(last, nowNano) {
-		deadlineNano := nowNano + int64(timeout)
-		ue.setExpiry(deadlineNano, true)
-		// Keep cached reply sockets alive as long as the endpoint is alive.
-		// Without this, Anyfrom entries can expire before the owning UDP
-		// endpoint does, forcing a bind syscall on a later reply and causing
-		// a latency spike for active proxy-backed sessions whose
-		// server->client traffic is sparse on a given source address.
-	}
-}
-
-// UpdateNatTimeout updates the NAT timeout and refreshes TTL with the new timeout.
-// This allows the timeout to adapt to changing forwarding state (e.g., QUIC upgrade, fixed policy).
-func (ue *UdpEndpoint) UpdateNatTimeout(timeout time.Duration) {
-	if timeout <= 0 {
-		return
-	}
-	ue.setNatTimeout(timeout)
-	now := time.Now().UnixNano()
-	// Force immediate refresh on timeout change (bypass throttling).
-	ue.lastRefreshNano.Store(now)
-	ue.setExpiry(now+int64(timeout), true)
-}
-
-func (ue *UdpEndpoint) IsExpired(nowNano int64) bool {
-	expiresAt := ue.expiresAtNano.Load()
-	return expiresAt > 0 && nowNano >= expiresAt
-}
-
-// IsDead returns true if the endpoint's read loop has exited and should not be reused.
-func (ue *UdpEndpoint) IsDead() bool {
-	return ue.dead.Load()
-}
-
-func (ue *UdpEndpoint) GetCachedRoutingResult(dst netip.AddrPort, l4proto uint8) (*bpfRoutingResult, bool) {
-	ttl := UdpRoutingResultCacheTtl
-	if ttl <= 0 {
-		return nil, false
-	}
-
-	ue.routingMu.RLock()
-	defer ue.routingMu.RUnlock()
-
-	if !ue.hasRoutingCache {
-		return nil, false
-	}
-	if ue.routingCacheProto != l4proto || ue.routingCacheDst != dst {
-		return nil, false
-	}
-	if time.Since(ue.routingCacheAt) > ttl {
-		return nil, false
-	}
-
-	result := ue.routingCache
-	return &result, true
-}
-
-func (ue *UdpEndpoint) UpdateCachedRoutingResult(dst netip.AddrPort, l4proto uint8, result *bpfRoutingResult) {
-	if result == nil {
-		return
-	}
-	if UdpRoutingResultCacheTtl <= 0 {
-		return
-	}
-
-	ue.routingMu.Lock()
-	ue.routingCacheDst = dst
-	ue.routingCacheProto = l4proto
-	ue.routingCacheAt = time.Now()
-	ue.routingCache = *result
-	ue.hasRoutingCache = true
-	ue.routingMu.Unlock()
+	// transportDone stores a <-chan struct{} once the transport lifecycle is
+	// indexed. atomic.Value avoids carrying a mutex in every endpoint.
+	transportDone  atomic.Value
+	sessionRuntime *UDPFlowRuntime
 }
 
 // UdpEndpointKey is the pool key. Dst=0 for Full-Cone NAT, non-zero for
 // destination-affine flows such as QUIC or userspace-routed UDP. RouteScope is
 // only populated when UDP routing depends on packet metadata that userspace
 // cannot safely infer from payload reuse alone.
-
 type UdpEndpointKey struct {
 	Src        netip.AddrPort
 	Dst        netip.AddrPort
@@ -1115,6 +220,10 @@ type udpEndpointTransportBucket struct {
 	mu        sync.RWMutex
 	endpoints map[*UdpEndpoint]struct{}
 	watchOnce sync.Once
+	stop      chan struct{}
+	stopOnce  sync.Once
+	done      chan struct{}
+	closed    bool
 }
 
 type udpEndpointDialerNetworkKey struct {
@@ -1124,13 +233,54 @@ type udpEndpointDialerNetworkKey struct {
 
 // UdpEndpointPool is a UDP connection pool.
 type UdpEndpointPool struct {
-	shards         [udpEndpointCreateShardCount]udpEndpointPoolShard
-	janitorOnce    sync.Once
-	janitorStop    chan struct{}
-	janitorDone    chan struct{}
-	dialerIndex    sync.Map // map[udpEndpointDialerNetworkKey]*udpEndpointDialerBucket
-	dialerEpoch    sync.Map // map[udpEndpointDialerNetworkKey]*atomic.Uint64
-	transportIndex sync.Map // map[<-chan struct{}]*udpEndpointTransportBucket
+	shards           [udpEndpointCreateShardCount]udpEndpointPoolShard
+	janitorOnce      sync.Once
+	janitorStop      chan struct{}
+	janitorDone      chan struct{}
+	dialerIndex      sync.Map // map[udpEndpointDialerNetworkKey]*udpEndpointDialerBucket
+	dialerEpoch      sync.Map // map[udpEndpointDialerNetworkKey]*atomic.Uint64
+	transportIndex   sync.Map // map[<-chan struct{}]*udpEndpointTransportBucket
+	transportWatchMu sync.RWMutex
+}
+
+// udpEndpointAdmissionGate keeps endpoint publication ordered with forced
+// control-plane retirement. GetOrCreate holds a read lease for its full
+// operation, while CloseAndWait prevents later leases and drains earlier ones.
+type udpEndpointAdmissionGate struct {
+	mu     sync.RWMutex
+	closed atomic.Bool
+}
+
+func (g *udpEndpointAdmissionGate) tryAcquire() bool {
+	if g == nil {
+		return true
+	}
+	if g.closed.Load() {
+		return false
+	}
+	g.mu.RLock()
+	if g.closed.Load() {
+		g.mu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (g *udpEndpointAdmissionGate) release() {
+	if g != nil {
+		g.mu.RUnlock()
+	}
+}
+
+func (g *udpEndpointAdmissionGate) closeAndWait() {
+	if g == nil {
+		return
+	}
+	g.closed.Store(true)
+	g.mu.Lock()
+	// This lock/unlock pair waits for in-flight admission checks to finish.
+	//nolint:staticcheck // The empty critical section is an intentional synchronization barrier.
+	g.mu.Unlock()
 }
 
 type UdpEndpointOptions struct {
@@ -1139,9 +289,12 @@ type UdpEndpointOptions struct {
 	NatTimeout time.Duration
 	// ConnStateOwner releases eBPF UDP conn-state tuples when the endpoint exits.
 	ConnStateOwner udpConnStateOwner
-	// DrainTracker keeps the owning generation alive while the endpoint remains
-	// active. Reused endpoints may transfer this ownership to the next generation.
+	// DrainTracker keeps the creating generation alive while the endpoint remains
+	// active. Reusing an endpoint never transfers this ownership.
 	DrainTracker *controlPlaneDrainTracker
+	// admissionGate prevents endpoint creation after its control plane begins
+	// forced retirement and keeps in-flight creation visible to retirement.
+	admissionGate *udpEndpointAdmissionGate
 	// GetTarget is useful only if the underlay does not support Full-cone.
 	GetDialOption func(ctx context.Context) (option *DialOption, err error)
 	// Log is the logger to use for endpoint lifecycle events.
@@ -1150,6 +303,14 @@ type UdpEndpointOptions struct {
 	// NowNano is an optional pre-calculated timestamp to avoid calling time.Now()
 	// in the hot path. If 0, time.Now() will be used.
 	NowNano int64
+	// sessionManager promotes a successfully dialed endpoint into the
+	// process-owned session lifecycle before it is published in the pool.
+	sessionManager *SessionManager
+	egressRuntime  *egressRuntime
+	// SentReporter reports datagrams actually sent by the batch aggregator,
+	// which is the only place that knows the real sent count. Nil keeps the
+	// caller-side inline accounting (non-batched endpoints).
+	SentReporter func(sent *UdpEndpoint, datagrams int, bytes int)
 }
 
 var DefaultUdpEndpointPool = NewUdpEndpointPool()
@@ -1178,12 +339,6 @@ func (p *UdpEndpointPool) Len() int {
 		shard.mu.RUnlock()
 	}
 	return total
-}
-
-// Count returns the number of active UDP endpoints in the pool.
-// It is an alias for Len() and is provided for backward compatibility.
-func (p *UdpEndpointPool) Count() int {
-	return p.Len()
 }
 
 func normalizeUdpEndpointPoolNetworkType(networkType dialer.NetworkType) dialer.NetworkType {
@@ -1231,6 +386,28 @@ func (p *UdpEndpointPool) currentDialerGeneration(d *dialer.Dialer, networkType 
 	return counter.Load()
 }
 
+func (p *UdpEndpointPool) forgetDialerEpochs(dialers []*dialer.Dialer) {
+	if p == nil || len(dialers) == 0 {
+		return
+	}
+	retired := make(map[*dialer.Dialer]struct{}, len(dialers))
+	for _, d := range dialers {
+		if d != nil {
+			retired[d] = struct{}{}
+		}
+	}
+	p.dialerEpoch.Range(func(rawKey, _ any) bool {
+		key, ok := rawKey.(udpEndpointDialerNetworkKey)
+		if !ok {
+			return true
+		}
+		if _, exists := retired[key.dialer]; exists {
+			p.dialerEpoch.Delete(rawKey)
+		}
+		return true
+	})
+}
+
 func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
 	if ue == nil || ue.Dialer == nil {
 		return true
@@ -1242,81 +419,6 @@ func (p *UdpEndpointPool) endpointGenerationCurrent(ue *UdpEndpoint) bool {
 		return ue.dialerGeneration == p.currentDialerGeneration(ue.Dialer, udpEndpointNetworkType(ue))
 	}
 	return ue.dialerGeneration == ue.dialerGenerationRef.Load()
-}
-
-// endpointSurvivesDialerInvalidation reports whether an endpoint should remain
-// reusable after its dialer transitions to not alive.
-//
-// Control-plane health is an admission signal for new selections, not a hard
-// kill switch for live sessions. Once an endpoint has successfully forwarded at
-// least one packet, proactively retiring it based only on health probes causes
-// avoidable redials and session churn. Real failures are still surfaced by
-// WriteTo/ReadFrom errors, transport lifecycle end, or NAT timeout expiry.
-func (p *UdpEndpointPool) endpointSurvivesDialerInvalidation(ue *UdpEndpoint) bool {
-	if ue == nil {
-		return false
-	}
-	return ue.hasSent.Load() || ue.hasReply.Load()
-}
-
-func endpointTransportDoneChannel(ue *UdpEndpoint) <-chan struct{} {
-	if ue == nil {
-		return nil
-	}
-	if ue.transportDone != nil {
-		return ue.transportDone
-	}
-	if ue.conn == nil {
-		return nil
-	}
-	lifecycle, ok := ue.conn.(netproxy.TransportLifecycle)
-	if !ok {
-		return nil
-	}
-	return lifecycle.TransportDone()
-}
-
-func (p *UdpEndpointPool) registerTransportEndpoint(ue *UdpEndpoint) {
-	transportDone := endpointTransportDoneChannel(ue)
-	if transportDone == nil {
-		return
-	}
-	ue.transportDone = transportDone
-
-	actual, _ := p.transportIndex.LoadOrStore(transportDone, &udpEndpointTransportBucket{
-		endpoints: make(map[*UdpEndpoint]struct{}),
-	})
-	bucket := actual.(*udpEndpointTransportBucket)
-	bucket.mu.Lock()
-	bucket.endpoints[ue] = struct{}{}
-	bucket.mu.Unlock()
-
-	bucket.watchOnce.Do(func() {
-		go p.watchTransportLifecycle(transportDone, bucket)
-	})
-}
-
-func (p *UdpEndpointPool) watchTransportLifecycle(transportDone <-chan struct{}, bucket *udpEndpointTransportBucket) {
-	<-transportDone
-	p.transportIndex.CompareAndDelete(transportDone, bucket)
-
-	bucket.mu.RLock()
-	endpoints := make([]*UdpEndpoint, 0, len(bucket.endpoints))
-	for ue := range bucket.endpoints {
-		endpoints = append(endpoints, ue)
-	}
-	bucket.mu.RUnlock()
-
-	for _, ue := range endpoints {
-		if ue != nil && ue.log != nil && ue.log.IsLevelEnabled(logrus.DebugLevel) {
-			ue.log.WithFields(logrus.Fields{
-				"lAddr": ue.lAddr.String(),
-			}).Debug("[UdpEndpoint] Retiring endpoint after transport lifecycle ended")
-		}
-		if ue != nil {
-			ue.retire()
-		}
-	}
 }
 
 func (p *UdpEndpointPool) registerEndpoint(ue *UdpEndpoint) {
@@ -1362,8 +464,21 @@ func (p *UdpEndpointPool) unregisterEndpoint(ue *UdpEndpoint) {
 	}
 	bucket := actual.(*udpEndpointTransportBucket)
 	bucket.mu.Lock()
+	if bucket.closed {
+		bucket.mu.Unlock()
+		return
+	}
 	delete(bucket.endpoints, ue)
+	empty := len(bucket.endpoints) == 0
+	if empty {
+		bucket.closed = true
+	}
 	bucket.mu.Unlock()
+	if empty {
+		bucket.stopWatching()
+		p.transportIndex.CompareAndDelete(transportDone, bucket)
+		<-bucket.done
+	}
 }
 
 func (p *UdpEndpointPool) InvalidateDialerNetworkType(d *dialer.Dialer, networkType *dialer.NetworkType) int {
@@ -1389,13 +504,43 @@ func (p *UdpEndpointPool) InvalidateDialerNetworkType(d *dialer.Dialer, networkT
 
 	removed := 0
 	for _, ue := range endpoints {
-		if p.endpointSurvivesDialerInvalidation(ue) {
-			continue
+		if ue.retireIfUnforwardedForDialerHealth() {
+			removed++
 		}
-		ue.retire()
-		removed++
 	}
 	return removed
+}
+
+// AbortEndpointsOwnedBy closes endpoints whose BPF conn-state tuples belong to
+// owner. It is used only after a generation has been forced to retire; normal
+// reload draining intentionally leaves existing endpoints owned by their
+// creating generation.
+func (p *UdpEndpointPool) AbortEndpointsOwnedBy(owner udpConnStateOwner) error {
+	if p == nil || owner == nil {
+		return nil
+	}
+
+	var endpoints []*UdpEndpoint
+	for i := range p.shards {
+		shard := &p.shards[i]
+		shard.mu.Lock()
+		for key, ue := range shard.pool {
+			if ue == nil || !ue.markDeadIfOwnedBy(owner) {
+				continue
+			}
+			delete(shard.pool, key)
+			endpoints = append(endpoints, ue)
+		}
+		shard.mu.Unlock()
+	}
+
+	var errs []error
+	for _, ue := range endpoints {
+		if err := ue.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return stderrors.Join(errs...)
 }
 
 // Reset clears all cached UDP endpoints.
@@ -1405,19 +550,17 @@ func (p *UdpEndpointPool) Reset() {
 	for i := range udpEndpointCreateShardCount {
 		shard := &p.shards[i]
 		shard.mu.Lock()
-		// Phase 1: Collect keys to avoid modifying map during iteration
-		var keys []UdpEndpointKey
-		for key := range shard.pool {
-			keys = append(keys, key)
-		}
-		// Phase 2: Delete and close each entry
-		for _, key := range keys {
-			if ue, ok := shard.pool[key]; ok {
-				delete(shard.pool, key)
-				_ = ue.Close()
+		toClose := make([]*UdpEndpoint, 0, len(shard.pool))
+		for key, ue := range shard.pool {
+			delete(shard.pool, key)
+			if ue != nil {
+				toClose = append(toClose, ue)
 			}
 		}
 		shard.mu.Unlock()
+		for _, ue := range toClose {
+			_ = ue.Close()
+		}
 	}
 	// Clear index maps by deleting entries rather than reassigning a new
 	// sync.Map struct. Struct assignment races with background goroutines
@@ -1431,10 +574,7 @@ func (p *UdpEndpointPool) Reset() {
 		p.dialerEpoch.Delete(key)
 		return true
 	})
-	p.transportIndex.Range(func(key, _ any) bool {
-		p.transportIndex.Delete(key)
-		return true
-	})
+	p.stopTransportWatchers()
 }
 
 // Close stops the janitor goroutine and clears all pooled endpoints.
@@ -1459,18 +599,25 @@ func (p *UdpEndpointPool) Close() {
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey, udpEndpoint *UdpEndpoint) (err error) {
 	shard := p.shardFor(key)
 	shard.mu.Lock()
-	defer shard.mu.Unlock()
-
 	if ue, ok := shard.pool[key]; !ok || ue != udpEndpoint {
+		shard.mu.Unlock()
 		_ = udpEndpoint.Close()
 		return fmt.Errorf("target udp endpoint is not in the pool")
 	}
 	delete(shard.pool, key)
-	_ = udpEndpoint.Close()
-	return nil
+	shard.mu.Unlock()
+	// Close waits for the reply sender; never hold shard.mu across it.
+	return udpEndpoint.Close()
 }
 
+// udpEndpointPoolGetObserver, when non-nil, is invoked on every Get. Tests
+// use it to count per-packet pool lookups; production leaves it nil.
+var udpEndpointPoolGetObserver func(UdpEndpointKey)
+
 func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok bool) {
+	if observe := udpEndpointPoolGetObserver; observe != nil {
+		observe(key)
+	}
 	shard := p.shardFor(key)
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
@@ -1566,7 +713,7 @@ dialSuccess:
 		udpConnStateOwner: createOption.ConnStateOwner,
 		drainTracker:      createOption.DrainTracker,
 		lifecycleProfile:  newDataSessionLifecycleProfile(dialOption.Dialer),
-		endpointNetworkType: normalizeUdpEndpointPoolNetworkType(func() dialer.NetworkType {
+		endpointNetworkType: func() dialer.NetworkType {
 			if dialOption.NetworkType != nil {
 				return *dialOption.NetworkType
 			}
@@ -1576,7 +723,21 @@ dialSuccess:
 				IsDns:           false,
 				UdpHealthDomain: dialer.UdpHealthDomainData,
 			}
-		}()),
+		}(),
+	}
+	if udpWriteBatchOptedIn() {
+		if _, ok := packetConn.(netproxy.PacketBatchWriter); ok {
+			ue.writeBatch = newUDPWriteBatchAggregator(ue)
+			ue.sentReporter = createOption.SentReporter
+		}
+	}
+	if createOption.sessionManager != nil {
+		if _, err := createOption.sessionManager.adoptUDP(ue, dialOption.Binding, createOption.egressRuntime); err != nil {
+			_ = packetConn.Close()
+			return nil, err
+		}
+	} else {
+		ue.setFlowBinding(dialOption.Binding)
 	}
 	if createOption.DrainTracker != nil {
 		ue.drainRelease = createOption.DrainTracker.Acquire()
@@ -1601,8 +762,12 @@ dialSuccess:
 	shard.mu.Unlock()
 	p.registerEndpoint(ue)
 
-	// Receive UDP messages.
-	go ue.start()
+	// Receive UDP messages. Transports that own a packet receiver register
+	// synchronously and reuse the protocol's existing reader; everything else
+	// gets a dedicated blocking ReadFrom loop.
+	if !ue.startTransportReceiver() {
+		go ue.startReadLoop()
+	}
 	return ue, nil
 }
 
@@ -1664,85 +829,113 @@ func (p *UdpEndpointPool) cacheFailureLocked(key UdpEndpointKey, log *logrus.Log
 	shard.mu.Unlock()
 }
 
+// udpEndpointHitClass classifies an endpoint found by GetOrCreate.
+type udpEndpointHitClass int
+
+const (
+	udpEndpointHitUsable udpEndpointHitClass = iota
+	udpEndpointHitFailed
+	udpEndpointHitStale
+)
+
+// classifyUdpEndpointHit applies the shared existing-endpoint policy: usable
+// entries get their TTL/NAT timeout refreshed in place; fresh failures are
+// hard errors; expired failures, dead and generation-stale entries are stale
+// and eligible for replacement. Callers hold the shard lock appropriate to
+// their path.
+func (p *UdpEndpointPool) classifyUdpEndpointHit(ue *UdpEndpoint, createOption *UdpEndpointOptions) udpEndpointHitClass {
+	switch {
+	case ue.failed.Load():
+		if !ue.IsExpired(time.Now().UnixNano()) {
+			return udpEndpointHitFailed
+		}
+		return udpEndpointHitStale
+	case ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)):
+		return udpEndpointHitStale
+	default:
+		if createOption != nil && createOption.NatTimeout > 0 {
+			ue.UpdateNatTimeout(effectiveUdpEndpointNatTimeout(ue.Dialer, createOption.NatTimeout))
+		} else {
+			var nowNano int64
+			if createOption != nil {
+				nowNano = createOption.NowNano
+			}
+			ue.RefreshTtlWithTime(nowNano)
+		}
+		return udpEndpointHitUsable
+	}
+}
+
 func (p *UdpEndpointPool) GetOrCreate(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
+	var admissionGate *udpEndpointAdmissionGate
+	if createOption != nil {
+		admissionGate = createOption.admissionGate
+	}
+	if !admissionGate.tryAcquire() {
+		return nil, false, errUdpEndpointAdmissionClosed
+	}
+	defer admissionGate.release()
+
 	shard := p.shardFor(key)
 
 	// Fast path: existing socket
 	shard.mu.RLock()
 	ue, ok := shard.pool[key]
 	if ok {
-		switch {
-		case ue.failed.Load():
-			if !ue.IsExpired(time.Now().UnixNano()) {
-				shard.mu.RUnlock()
-				return nil, false, ErrEndpointFailed
-			}
-			// Expired failure entry — fall through to lock and replace.
-		case ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)):
-		// Expired dead entry — fall through to lock and replace.
-		default:
-			// Update NAT timeout based on current forwarding state
-			if createOption != nil && createOption.NatTimeout > 0 {
-				ue.UpdateNatTimeout(effectiveUdpEndpointNatTimeout(ue.Dialer, createOption.NatTimeout))
-			} else {
-				var nowNano int64
-				if createOption != nil {
-					nowNano = createOption.NowNano
-				}
-				ue.RefreshTtlWithTime(nowNano)
-			}
-			if createOption != nil {
-				ue.adoptGeneration(createOption.ConnStateOwner, createOption.DrainTracker)
-			}
+		switch p.classifyUdpEndpointHit(ue, createOption) {
+		case udpEndpointHitFailed:
+			shard.mu.RUnlock()
+			return nil, false, ErrEndpointFailed
+		case udpEndpointHitUsable:
 			shard.mu.RUnlock()
 			return ue, false, nil
 		}
+		// Stale entry — fall through to the write-locked path for replacement.
 	}
 	shard.mu.RUnlock()
 
 	// Slow path: serialize creation for the same key using a creation shard lock.
-	shard.createMu.Lock()
-	defer shard.createMu.Unlock()
-
 	var staleToClose *UdpEndpoint
+	shard.createMu.Lock()
+	createMuLocked := true
+	defer func() {
+		// GetOrCreate is called from panic-recovering packet workers. Preserve
+		// unlock and stale cleanup on unwind so one panic cannot strand this shard.
+		if createMuLocked {
+			shard.createMu.Unlock()
+		}
+		if staleToClose != nil {
+			_ = staleToClose.Close()
+		}
+	}()
 	shard.mu.Lock()
 	ue, ok = shard.pool[key]
 	if ok {
-		switch {
-		case ue.failed.Load():
-			if !ue.IsExpired(time.Now().UnixNano()) {
-				shard.mu.Unlock()
-				return nil, false, ErrEndpointFailed
-			}
-			delete(shard.pool, key)
-			staleToClose = ue
-		case ue.IsDead() || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)):
-			delete(shard.pool, key)
-			staleToClose = ue
-		default:
-			if createOption != nil && createOption.NatTimeout > 0 {
-				ue.UpdateNatTimeout(effectiveUdpEndpointNatTimeout(ue.Dialer, createOption.NatTimeout))
-			} else {
-				var nowNano int64
-				if createOption != nil {
-					nowNano = createOption.NowNano
-				}
-				ue.RefreshTtlWithTime(nowNano)
-			}
-			if createOption != nil {
-				ue.adoptGeneration(createOption.ConnStateOwner, createOption.DrainTracker)
-			}
+		switch p.classifyUdpEndpointHit(ue, createOption) {
+		case udpEndpointHitFailed:
+			shard.mu.Unlock()
+			return nil, false, ErrEndpointFailed
+		case udpEndpointHitUsable:
 			shard.mu.Unlock()
 			return ue, false, nil
+		default:
+			delete(shard.pool, key)
+			staleToClose = ue
 		}
 	}
 	shard.mu.Unlock()
-	if staleToClose != nil {
-		_ = staleToClose.Close()
-	}
 
 	// Create a new endpoint under the creation lock.
 	newUe, createErr := p.createEndpointLocked(key, createOption)
+	shard.createMu.Unlock()
+	createMuLocked = false
+
+	// Close the stale endpoint outside createMu: Close waits on the
+	// transport receiver and must not extend the shard-wide creation hold.
+	if staleToClose != nil {
+		_ = staleToClose.Close()
+		staleToClose = nil
+	}
 	if createErr != nil {
 		return nil, true, createErr
 	}
@@ -1757,7 +950,8 @@ func (p *UdpEndpointPool) shardFor(key UdpEndpointKey) *udpEndpointPoolShard {
 func (p *UdpEndpointPool) startJanitor() {
 	p.janitorOnce.Do(func() {
 		go func() {
-			ticker := time.NewTicker(udpEndpointJanitorInterval)
+			interval := udpEndpointJanitorInterval
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			defer close(p.janitorDone)
 
@@ -1769,9 +963,12 @@ func (p *UdpEndpointPool) startJanitor() {
 					return
 				case now := <-ticker.C:
 					nowNano := now.UnixNano()
+					cleaned := 0
+					entriesSeen := 0
 					for i := range udpEndpointCreateShardCount {
 						shard := &p.shards[i]
 						shard.mu.Lock()
+						entriesSeen += len(shard.pool)
 						toClose = toClose[:0]
 						for key, ue := range shard.pool {
 							if ue.IsExpired(nowNano) || (!p.endpointGenerationCurrent(ue) && !p.endpointSurvivesDialerInvalidation(ue)) {
@@ -1783,7 +980,21 @@ func (p *UdpEndpointPool) startJanitor() {
 						for _, ue := range toClose {
 							_ = ue.Close()
 						}
+						cleaned += len(toClose)
 					}
+					// Back off only while the pool is completely empty, so an
+					// idle dae does not wake up to no-op scans. Any entries at
+					// all keep the base cadence so their expiry is reaped
+					// promptly.
+					if cleaned > 0 || entriesSeen > 0 {
+						interval = udpEndpointJanitorInterval
+					} else if interval < udpEndpointJanitorMaxInterval {
+						interval *= 2
+						if interval > udpEndpointJanitorMaxInterval {
+							interval = udpEndpointJanitorMaxInterval
+						}
+					}
+					ticker.Reset(interval)
 				}
 			}
 		}()
