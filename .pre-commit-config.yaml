@@ -28,3 +28,12 @@ repos:
         entry: ./hack/maintenance/append_license_signature.sh
         language: script
         files: \.go$
+      # the eBPF C style gate used to exist only in CI, so a C change
+      # could be committed and pushed before anyone learned it fails. Requires
+      # perl on PATH (same prerequisite as `make ebpf-lint`).
+      - id: ebpf-lint
+        name: ebpf-lint (checkpatch)
+        entry: make ebpf-lint
+        language: system
+        pass_filenames: false
+        files: ^(control/kern/.*\.[ch]|trace/kern/.*\.[ch])$

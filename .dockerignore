@@ -1,0 +1,25 @@
+# The Docker build receives initialized submodule contents from CI.
+.git
+.github
+
+# Local Go caches and generated build outputs.
+go-mod
+dae
+build
+bundled
+pkgdir
+zip
+*.o
+*.tmp
+*.log
+
+# Local development and documentation artifacts.
+.vscode
+.idea
+node_modules
+venv
+tmp
+prof
+.mimosa
+.playwright-mcp
+kix-discipline
