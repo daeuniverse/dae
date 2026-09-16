@@ -8,6 +8,7 @@
 package geodata
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,10 @@ var (
 	errCodeNotFound                 = errors.New("code not found")
 )
 
+// maxGeoEntryLength bounds a single varint-declared record length so that a
+// corrupted or hostile .dat file cannot request a huge allocation.
+const maxGeoEntryLength = 1 << 28 // 256 MiB
+
 func emitBytes(f io.ReadSeeker, code string) ([]byte, error) {
 	count := 1
 	isInner := false
@@ -39,6 +44,9 @@ Loop:
 		container := make([]byte, advancedN)
 		bytesRead, err := f.Read(container)
 		if err == io.EOF {
+			if len(tempContainer) != 0 {
+				return nil, errInvalidGeodataVarintLength
+			}
 			return nil, errCodeNotFound
 		}
 		if err != nil {
@@ -57,6 +65,9 @@ Loop:
 			count++
 		case 2, 4: // data length
 			tempContainer = append(tempContainer, container...)
+			if len(tempContainer) > binary.MaxVarintLen64 {
+				return nil, errInvalidGeodataVarintLength
+			}
 			if container[0] > 127 { // max one-byte-length byte `7F`(0FFF FFFF) equals to `127` in decimal
 				advancedN = 1
 				goto Loop
@@ -69,10 +80,16 @@ Loop:
 			if !isInner {
 				isInner = true
 				geoDataVarintLength = lenVarint
+				if geoDataVarintLength > maxGeoEntryLength {
+					return nil, errInvalidGeodataVarintLength
+				}
 				advancedN = 1
 			} else {
 				isInner = false
 				codeVarintLength = lenVarint
+				if codeVarintLength > maxGeoEntryLength {
+					return nil, errInvalidGeodataVarintLength
+				}
 				varintLenByteLen = uint64(n)
 				advancedN = codeVarintLength
 			}

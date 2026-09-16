@@ -252,7 +252,8 @@ func (w *Walker) parseRoutingRule(ctx dae_config.IRoutingRuleContext) *RoutingRu
 	} else if f := outboundExpr.FunctionPrototype(); f != nil {
 		outbound = w.parseFunctionPrototype(f.(*dae_config.FunctionPrototypeContext), nil)
 	} else {
-		panic("unknown outboundExpr")
+		w.ReportError(ctx, ErrorType_Unsupported, "unknown outboundExpr: "+ctx.GetText())
+		return nil
 	}
 	return &RoutingRule{
 		AndFunctions: andFunctions,

@@ -31,6 +31,9 @@ func UnmarshalGeoIp(log *logrus.Logger, filepath, code string) (*GeoIP, error) {
 
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
 		errInvalidGeodataFile, errInvalidGeodataVarintLength:
+		if fi, statErr := os.Stat(filepath); statErr == nil && fi.Size() > maxGeoEntryLength {
+			return nil, fmt.Errorf("geoip file %v is too large (%d bytes)", filepath, fi.Size())
+		}
 		log.Warnln("failed to decode geoip file: ", filepath, ", fallback to the original ReadFile method")
 		geoipBytes, err = os.ReadFile(filepath)
 		if err != nil {
@@ -68,6 +71,9 @@ func UnmarshalGeoSite(log *logrus.Logger, filepath, code string) (*GeoSite, erro
 
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
 		errInvalidGeodataFile, errInvalidGeodataVarintLength:
+		if fi, statErr := os.Stat(filepath); statErr == nil && fi.Size() > maxGeoEntryLength {
+			return nil, fmt.Errorf("geosite file %v is too large (%d bytes)", filepath, fi.Size())
+		}
 		log.Warnln("failed to decode geosite file: ", filepath, ", fallback to the original ReadFile method")
 		geositeBytes, err = os.ReadFile(filepath)
 		if err != nil {
