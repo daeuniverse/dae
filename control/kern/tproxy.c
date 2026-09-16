@@ -2286,7 +2286,13 @@ static __always_inline bool is_short_lived_udp_traffic(struct tuples_key *key)
 
 // mark_udp_seen: update/create UDP conn state with optional routing metadata.
 // Expired entries are pruned on lookup. Map overflow increments bpf_stats_map.
+// UDP_CONN_STATE_TIMEOUT_NS is overridable so test builds can shorten the
+// backstop: with the 300-second value the expired-state path is unreachable on
+// a host whose uptime is below it, because a seeded past timestamp wraps and
+// udp_conn_state_expired() then treats the entry as live.
+#ifndef UDP_CONN_STATE_TIMEOUT_NS
 #define UDP_CONN_STATE_TIMEOUT_NS 300000000000ULL        // 300-second backstop, aligned with QuicNatTimeout; userspace endpoint teardown is the primary owner
+#endif
 #define UDP_CONN_STATE_UPDATE_INTERVAL_NS 1000000000ULL  // 1 second
 
 enum udp_conn_state_status {

@@ -13,6 +13,12 @@ TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
 MAX_MATCH_SET_LEN ?= 1024
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
+# Test-only override of the UDP conn-state backstop. With the production 300s
+# value the expired-state path is unreachable on a host whose uptime is below
+# it -- every freshly booted CI runner -- because the seeded timestamp wraps and
+# the datapath's future-timestamp guard keeps the entry alive. 5s is far above
+# any intra-test interval and far below any realistic uptime at test time.
+UDP_CONN_STATE_TEST_TIMEOUT_NS ?= 5000000000ULL
 # Single owner of the GOEXPERIMENT set used to build released artifacts.
 # CI must not restate this value: read it with `make -s print-goexperiment`
 # (scripts/check-build-env.sh rejects any copy under .github/ or Dockerfile).
@@ -193,7 +199,7 @@ ebpf-lint:
 
 ebpf-test: export BPF_CLANG := $(CLANG)
 ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf-test: export BPF_CFLAGS := $(CFLAGS)
+ebpf-test: export BPF_CFLAGS := $(CFLAGS) -DUDP_CONN_STATE_TIMEOUT_NS=$(UDP_CONN_STATE_TEST_TIMEOUT_NS)
 ebpf-test: export BPF_TARGET := $(TARGET)
 ebpf-test: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf-test: ebpf-sync submodule clean-ebpf-test
@@ -208,7 +214,7 @@ ebpf-test: ebpf-sync submodule clean-ebpf-test
 
 ebpf-test-tagged: export BPF_CLANG := $(CLANG)
 ebpf-test-tagged: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf-test-tagged: export BPF_CFLAGS := $(CFLAGS)
+ebpf-test-tagged: export BPF_CFLAGS := $(CFLAGS) -DUDP_CONN_STATE_TIMEOUT_NS=$(UDP_CONN_STATE_TEST_TIMEOUT_NS)
 ebpf-test-tagged: export BPF_TARGET := $(TARGET)
 ebpf-test-tagged: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf-test-tagged: ebpf-sync submodule clean-ebpf-test
@@ -223,7 +229,7 @@ ebpf-test-tagged: ebpf-sync submodule clean-ebpf-test
 
 ebpf-test-debug: export BPF_CLANG := $(CLANG)
 ebpf-test-debug: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf-test-debug: export BPF_CFLAGS := $(CFLAGS) -D__BPF_TEST_ENABLE_DEBUG
+ebpf-test-debug: export BPF_CFLAGS := $(CFLAGS) -D__BPF_TEST_ENABLE_DEBUG -DUDP_CONN_STATE_TIMEOUT_NS=$(UDP_CONN_STATE_TEST_TIMEOUT_NS)
 ebpf-test-debug: export BPF_TARGET := $(TARGET)
 ebpf-test-debug: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf-test-debug: ebpf-sync submodule clean-ebpf-test
@@ -238,7 +244,7 @@ ebpf-test-debug: ebpf-sync submodule clean-ebpf-test
 
 ebpf-test-debug-tagged: export BPF_CLANG := $(CLANG)
 ebpf-test-debug-tagged: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf-test-debug-tagged: export BPF_CFLAGS := $(CFLAGS) -D__BPF_TEST_ENABLE_DEBUG
+ebpf-test-debug-tagged: export BPF_CFLAGS := $(CFLAGS) -D__BPF_TEST_ENABLE_DEBUG -DUDP_CONN_STATE_TIMEOUT_NS=$(UDP_CONN_STATE_TEST_TIMEOUT_NS)
 ebpf-test-debug-tagged: export BPF_TARGET := $(TARGET)
 ebpf-test-debug-tagged: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf-test-debug-tagged: ebpf-sync submodule clean-ebpf-test

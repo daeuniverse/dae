@@ -855,10 +855,12 @@ int testsetup_wan_egress_udp_expired_state_recreates_handoff(
 	state = bpf_map_lookup_elem(&conn_state_map, &ctx->key);
 	if (!state)
 		return TC_ACT_SHOT;
-	/* Anchor staleness to the monotonic clock instead of an absolute 0:
-	 * BPF_PROG_TEST_RUN may run on a freshly booted host whose uptime is
-	 * still below UDP_CONN_STATE_TIMEOUT_NS, which would make 0 look fresh
-	 * and take the existing-state path instead of the expired-state path.
+	/* Seed a state that is expired by exactly one nanosecond. Test builds
+	 * shorten UDP_CONN_STATE_TIMEOUT_NS (see the Makefile) so this stays a
+	 * real past timestamp on a freshly booted host: with the production
+	 * 300-second backstop the subtraction wraps, and the future-timestamp
+	 * guard in udp_conn_state_expired() then keeps the entry alive, which
+	 * would silently exercise the existing-state path instead.
 	 */
 	state->last_seen_ns =
 		bpf_ktime_get_ns() - UDP_CONN_STATE_TIMEOUT_NS - 1;
