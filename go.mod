@@ -5,17 +5,16 @@ go 1.26.0
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df
-	github.com/bits-and-blooms/bloom/v3 v3.7.1
-	github.com/cilium/ebpf v0.20.0
+	github.com/cilium/ebpf v0.22.0
 	github.com/daeuniverse/dae-config-dist/go/dae_config v0.0.0-20230604120805-1c27619b592d
-	github.com/daeuniverse/outbound v0.0.0-sticky-ip.0.20260401154811-cc1a217490f9
+	github.com/daeuniverse/outbound v0.0.0-sticky-ip.0.20260911162531-896954f65c52
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/json-iterator/go v1.1.12
 	github.com/mholt/archives v0.1.5
 	github.com/miekg/dns v1.1.72
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
 	github.com/okzk/sdnotify v0.0.0-20240725214427-1c1fdd37c5ac
-	github.com/olicesx/quic-go v0.0.0-20260226044315-bb65418d151a
+	github.com/olicesx/quic-go v0.0.0-20260910141758-62d80bbebb5b
 	github.com/panjf2000/ants/v2 v2.11.5
 	github.com/safchain/ethtool v0.7.0
 	github.com/shirou/gopsutil/v4 v4.26.1
@@ -26,11 +25,12 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2
+	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.48.0
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa
 	golang.org/x/net v0.50.0
-	golang.org/x/sync v0.19.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/sync v0.20.0
+	golang.org/x/sys v0.43.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
@@ -46,7 +46,7 @@ require (
 	github.com/bodgit/sevenzip v1.6.1 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rc2 v0.0.0-20150621095337-8a9021637152 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/ebitengine/purego v0.9.1 // indirect
@@ -62,11 +62,11 @@ require (
 	github.com/minio/minlz v1.0.1 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
+	github.com/olicesx/qpack v0.6.1-0.20260910092525-3d8903e3255f // indirect
 	github.com/onsi/ginkgo/v2 v2.28.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.25 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/sagernet/sing v0.6.0 // indirect
 	github.com/sagernet/sing-shadowtls v0.2.0 // indirect
 	github.com/samber/lo v1.52.0 // indirect
@@ -87,7 +87,6 @@ require (
 )
 
 require (
-	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/dgryski/go-camellia v0.0.0-20191119043421-69a8a13fb23d // indirect
 	github.com/dgryski/go-idea v0.0.0-20170306091226-d2fb45a411fb // indirect
 	github.com/dgryski/go-metro v0.0.0-20250106013310-edb8663e5e33 // indirect
@@ -112,11 +111,13 @@ require (
 	google.golang.org/grpc v1.79.1 // indirect
 )
 
-// Use optimized quic-go with B-tree node pooling + upstream cherry-picks on enhanced-with-fixes baseline.
-replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260428161614-e0d255ff807c
+// Custom quic-go fork: GSO write paths, key-update handling, congestion
+// control, and explicit transport-address behavior.
+replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260910141758-62d80bbebb5b
 
 //replace github.com/cilium/ebpf v0.20.0
 //replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
 
-// Use the pushed perf/complete-optimizations fork head with QUIC window tuning + upstream cherry-picks.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260518034804-52c26f8e759e
+// Custom outbound fork: protocol lifecycle and framing hardening, cancellable
+// dial queues, UDP write-path cmsg preservation, and congestion-control fixes.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260915172050-1187d577a58e
