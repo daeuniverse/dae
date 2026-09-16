@@ -10,10 +10,11 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// PurgeStaleTCFilters removes all dae-related TC (Traffic Control) filters from
-// every network interface. Called at initial startup to ensure no filters from a
-// previous process remain active before the new BPF programs are loaded.
+// PurgeStaleTCFilters removes dae classic-TC filters left by an older process.
+// Unpinned TCX links detach automatically when their owner exits, while classic
+// filters persist and therefore require this startup sweep before HookSet load.
 func PurgeStaleTCFilters(log *logrus.Logger) {
+	log.Infof("purging stale TC filters before startup")
 	links, err := netlink.LinkList()
 	if err != nil {
 		log.Errorf("failed to list links for TC filter purge: %v", err)

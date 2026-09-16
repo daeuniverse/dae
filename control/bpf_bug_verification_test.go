@@ -49,8 +49,7 @@ func collectBpfTestPrograms(t *testing.T) (obj *bpftestObjects, progsets []testP
 	}
 
 	if err = spec.LoadAndAssign(obj, &ebpf.CollectionOptions{}); err != nil {
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) {
+		if ve, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 			t.Logf("Verifier error: %+v\n", ve)
 		}
 		return nil, nil, fmt.Errorf("failed to load objects: %w", err)
