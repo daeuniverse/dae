@@ -80,12 +80,20 @@ func ResolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 		return nil, fmt.Errorf("does not seems like a standard sip008 subscription")
 	}
 	for _, server := range sip.Servers {
+		query := make(url.Values)
+		if server.Plugin != "" {
+			plugin := server.Plugin
+			if server.PluginOpts != "" {
+				plugin += ";" + server.PluginOpts
+			}
+			query.Set("plugin", plugin)
+		}
 		userinfo := base64.RawURLEncoding.EncodeToString([]byte(server.Method + ":" + server.Password))
 		u := url.URL{
 			Scheme:   "ss",
 			User:     url.User(userinfo),
 			Host:     net.JoinHostPort(server.Server, strconv.Itoa(server.ServerPort)),
-			RawQuery: url.Values{"plugin": []string{server.PluginOpts}}.Encode(),
+			RawQuery: query.Encode(),
 			Fragment: server.Remarks,
 		}
 		nodes = append(nodes, u.String())
@@ -174,7 +182,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		subscription = strings.Replace(subscription, "-file", "", 1)
 	default:
 	}
-	req, err = http.NewRequest("GET", subscription, nil)
+	req, err = http.NewRequest(http.MethodGet, subscription, nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -201,6 +209,26 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		return "", nil, err
 	}
 
+resolve:
+	// Resolve nodes BEFORE touching the persisted cache. A subscription server
+	// that is broken / returns garbage / comes back empty must NOT overwrite a
+	// previously-good cached subscription: the cached nodes may still be alive
+	// and forwarding fine, so clobbering persist.d/<tag>.sub would cut proxied
+	// traffic until the next successful fetch.
+	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
+		if len(nodes) == 0 {
+			return "", nil, fmt.Errorf("subscription resolved to 0 nodes")
+		}
+	} else {
+		log.Debugln(err)
+		nodes = ResolveSubscriptionAsBase64(log, b)
+		if len(nodes) == 0 {
+			return "", nil, fmt.Errorf("subscription resolved to 0 nodes")
+		}
+	}
+
+	// Only now, with a non-empty node list in hand, is it safe to persist
+	// the fetched payload over the previous cached copy.
 	if persistToFile {
 		path := filepath.Join(configDir, "persist.d")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -222,11 +250,5 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 			return "", nil, err
 		}
 	}
-resolve:
-	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
-		return tag, nodes, nil
-	} else {
-		log.Debugln(err)
-	}
-	return tag, ResolveSubscriptionAsBase64(log, b), nil
+	return tag, nodes, nil
 }

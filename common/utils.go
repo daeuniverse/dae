@@ -234,7 +234,9 @@ func EnsureFileInSubDir(filePath string, dir string) (err error) {
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(rel, "..") {
+	// Only a parent component escapes the dir. A plain ".." prefix would also
+	// reject legitimate siblings such as "...hidden".
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("file is out of scope: %v", rel)
 	}
 	return nil
@@ -261,13 +263,6 @@ var GetTagFromLinkLikePlaintext = obcommon.GetTagFromLinkLikePlaintext
 
 // BoolToString re-exports from outbound/common to eliminate duplication.
 var BoolToString = obcommon.BoolToString
-
-func ConvergeAddr(addr netip.Addr) netip.Addr {
-	if addr.Is4In6() {
-		addr = netip.AddrFrom4(addr.As4())
-	}
-	return addr
-}
 
 func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
 	if addrPort.Addr().Is4In6() {
@@ -389,14 +384,6 @@ func IsValidHttpMethod(method string) bool {
 	default:
 		return false
 	}
-}
-
-func StringSet(list []string) map[string]struct{} {
-	m := make(map[string]struct{})
-	for _, s := range list {
-		m[s] = struct{}{}
-	}
-	return m
 }
 
 // GenerateCertChainHash re-exports from outbound/common to eliminate duplication.
