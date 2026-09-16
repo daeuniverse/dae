@@ -10,15 +10,19 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/okzk/sdnotify"
 	"github.com/sirupsen/logrus"
 )
 
@@ -37,18 +41,34 @@ type reloadManager struct {
 	pendingRetirementDone        <-chan struct{}
 	pendingReloadRequestedAt     time.Time
 	pendingReloadRequestedAtMono uint64
+	transitionMu                 sync.Mutex
+	transitionCond               *sync.Cond
+	transitionActive             bool
+	shutdownStarted              bool
+	activeRetirement             *activeRetirementTask
+}
+
+// activeRetirementTask transfers cleanup ownership of one published
+// generation to the retirement worker. The generation identity is required
+// when a canceled worker completes after a newer reload has started.
+type activeRetirementTask struct {
+	generation *runtimeGeneration
+	cancel     context.CancelFunc
+	done       chan struct{}
 }
 
 func newReloadManager(reloadReqs chan reloadRequest, runStateChanges chan struct{}, sigs <-chan os.Signal) *reloadManager {
-	return &reloadManager{
+	m := &reloadManager{
 		reloadReqs:      reloadReqs,
 		runStateChanges: runStateChanges,
 		sigs:            sigs,
 	}
+	m.transitionCond = sync.NewCond(&m.transitionMu)
+	return m
 }
 
-func (m *reloadManager) queueReloadRequest(log *logrus.Logger, req reloadRequest) bool {
-	return tryQueueReloadRequest(log, m.reloadReqs, &m.reloadActive, &m.reloadPending, req)
+func (m *reloadManager) queueReloadRequest(log *logrus.Logger, req reloadRequest) {
+	tryQueueReloadRequest(log, m.reloadReqs, &m.reloadActive, &m.reloadPending, req)
 }
 
 func (m *reloadManager) beginHandoff() {
@@ -166,8 +186,10 @@ func (m *reloadManager) buildShutdownHandoff() *signalShutdownStagedHandoff {
 	return &signalShutdownStagedHandoff{
 		oldListener:     m.pendingStagedHandoff.oldListener,
 		oldControlPlane: m.pendingStagedHandoff.oldControlPlane,
+		oldCancel:       m.pendingStagedHandoff.oldCancel,
 		newListener:     m.pendingStagedHandoff.newListener,
 		newControlPlane: m.pendingStagedHandoff.newControlPlane,
+		newCancel:       m.pendingStagedHandoff.newCancel,
 	}
 }
 
@@ -177,6 +199,7 @@ func (m *reloadManager) pendingDNSHandoffActive(current *control.ControlPlane) b
 	}
 	handoff := m.currentPendingStagedHandoff()
 	return handoff != nil &&
+		!handoff.freshDatapath &&
 		handoff.oldControlPlane != nil &&
 		handoff.oldControlPlane.SharesActiveDnsControllerWith(current)
 }
@@ -196,8 +219,8 @@ func buildPreparedDNSHandoffHooks(log *logrus.Logger, enableReuse bool, callback
 	var hooks preparedDNSHandoffHooks
 	if enableReuse {
 		hooks.reuseHook = func() error {
-			if callbacks.reuseController != nil {
-				_ = callbacks.reuseController()
+			if callbacks.reuseController == nil || !callbacks.reuseController() {
+				return fmt.Errorf("reuse DNS controller for prepared handoff")
 			}
 			if callbacks.reuseListener != nil && callbacks.reuseListener() {
 				return nil
@@ -228,15 +251,19 @@ func (m *reloadManager) installPreparedDNSHandoffHooks(log *logrus.Logger, curre
 		return
 	}
 	handoff := m.currentPendingStagedHandoff()
-	if handoff == nil {
+	if handoff == nil || handoff.freshDatapath {
 		return
 	}
 	hooks := buildPreparedDNSHandoffHooks(log, dnsConfigEqual(handoff.oldConf, conf), preparedDNSHandoffHookCallbacks{
 		reuseController: func() bool {
-			return current.ReuseDNSControllerFrom(handoff.oldControlPlane)
+			reused := current.ReuseDNSControllerFrom(handoff.oldControlPlane)
+			handoff.dnsControllerMoved = reused
+			return reused
 		},
 		reuseListener: func() bool {
-			return current.ReuseDNSListenerFrom(handoff.oldControlPlane)
+			reused := current.ReuseDNSListenerFrom(handoff.oldControlPlane)
+			handoff.dnsListenerMoved = reused
+			return reused
 		},
 		stopOldListener: handoff.oldControlPlane.StopDNSListener,
 	})
@@ -252,10 +279,126 @@ func (m *reloadManager) finishReloadFailure() {
 	clearReloadPending(&m.reloadPending)
 }
 
+// failPublishedReloadAttempt reports a recoverable post-handoff failure to
+// the service manager and progress file, then clears the same busy flags as
+// finishReloadFailure. Unlike failReloadAttempt, reloading is already true
+// (beginHandoff ran) so it must be cleared here.
+func (m *reloadManager) failPublishedReloadAttempt(reloadErr error) {
+	if reloadErr != nil {
+		_ = sdnotify.Ready()
+		_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+	}
+	m.finishReloadFailure()
+}
+
+// failReloadAttempt reports a failed reload attempt to the service manager
+// and the progress file, then clears the busy/pending bookkeeping so the
+// live generation keeps serving and the next reload request is accepted.
+func (m *reloadManager) failReloadAttempt(reloadErr error) {
+	if reloadErr != nil {
+		_ = sdnotify.Ready()
+		_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+	}
+	m.reloadActive.Store(false)
+	clearReloadPending(&m.reloadPending)
+}
+
 func (m *reloadManager) finishReloadSuccess() {
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
 	releaseReloadPendingAfterRetirement(&m.reloadPending, m.takePendingRetirementDone())
+}
+
+// beginReloadTransition reserves the cutover critical section. Shutdown uses
+// the same barrier so it cannot transfer generation ownership while a reload
+// is between datapath preparation and publication.
+func (m *reloadManager) beginReloadTransition() bool {
+	if m == nil {
+		return false
+	}
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+	if m.shutdownStarted || m.transitionActive {
+		return false
+	}
+	m.transitionActive = true
+	return true
+}
+
+func (m *reloadManager) endReloadTransition() {
+	if m == nil {
+		return
+	}
+	m.transitionMu.Lock()
+	if m.transitionActive {
+		m.transitionActive = false
+		m.transitionCond.Broadcast()
+	}
+	m.transitionMu.Unlock()
+}
+
+// shutdownSupervisor freezes new reload transitions, joins the current
+// retirement worker, and then atomically transfers any remaining generation
+// ownership to the shutdown caller.
+func (m *reloadManager) shutdownSupervisor(supervisor *runtimeSupervisor) runtimeSupervisorSnapshot {
+	if m == nil {
+		if supervisor == nil {
+			return runtimeSupervisorSnapshot{}
+		}
+		return supervisor.shutdown()
+	}
+	m.transitionMu.Lock()
+	m.shutdownStarted = true
+	for m.transitionActive {
+		m.transitionCond.Wait()
+	}
+	m.transitionMu.Unlock()
+
+	m.lastRetirementMu.Lock()
+	task := m.activeRetirement
+	if task != nil && task.cancel != nil {
+		task.cancel()
+	}
+	m.lastRetirementMu.Unlock()
+	if task != nil {
+		<-task.done
+		if supervisor != nil {
+			// A shutdown-owned worker may be joined after its completion
+			// notification but before it releases supervisor retirement state.
+			// The generation identity makes this cleanup idempotent.
+			supervisor.markRetirementComplete(task.generation)
+		}
+	}
+	if supervisor == nil {
+		return runtimeSupervisorSnapshot{}
+	}
+	return supervisor.shutdown()
+}
+
+func (m *reloadManager) buildShutdownHandoffWithSupervisor(snapshot runtimeSupervisorSnapshot, current *runtimeGeneration) *signalShutdownStagedHandoff {
+	if m == nil {
+		return nil
+	}
+	var handoff signalShutdownStagedHandoff
+	if snapshot.retiring != nil {
+		handoff.oldListener = snapshot.retiring.listener
+		handoff.oldControlPlane = snapshot.retiring.controlPlane
+		handoff.oldCancel = snapshot.retiring.cancel
+	}
+	if snapshot.prepared != nil {
+		handoff.newListener = snapshot.prepared.listener
+		handoff.newControlPlane = snapshot.prepared.controlPlane
+		handoff.newCancel = snapshot.prepared.cancel
+	}
+	if snapshot.active != nil && snapshot.active != current && handoff.newControlPlane == nil {
+		handoff.newListener = snapshot.active.listener
+		handoff.newControlPlane = snapshot.active.controlPlane
+		handoff.newCancel = snapshot.active.cancel
+	}
+	if handoff.oldListener == nil && handoff.oldControlPlane == nil && handoff.oldCancel == nil && handoff.newListener == nil && handoff.newControlPlane == nil && handoff.newCancel == nil {
+		return nil
+	}
+	return &handoff
 }
 
 func (m *reloadManager) startControlPlaneRetirement(
@@ -264,9 +407,13 @@ func (m *reloadManager) startControlPlaneRetirement(
 	successor *control.ControlPlane,
 	oldCancel context.CancelFunc,
 	abortConnections bool,
-	hasOverlap bool,
+	supervisor *runtimeSupervisor,
+	retiringGeneration *runtimeGeneration,
 ) {
 	if m == nil || oldControlPlane == nil {
+		return
+	}
+	if supervisor == nil || retiringGeneration == nil || !supervisor.ownsRetiring(retiringGeneration) {
 		return
 	}
 	m.lastRetirementMu.Lock()
@@ -275,12 +422,18 @@ func (m *reloadManager) startControlPlaneRetirement(
 	}
 	retireCtx, retireCancel := context.WithCancel(context.Background())
 	m.lastRetirementCancel = retireCancel
+	retirementDone := make(chan struct{})
+	task := &activeRetirementTask{
+		generation: retiringGeneration,
+		cancel:     retireCancel,
+		done:       retirementDone,
+	}
+	m.activeRetirement = task
 	m.lastRetirementMu.Unlock()
 
 	if log != nil {
-		log.Warnln("[Reload] Retiring old control plane")
+		log.Infoln("[Reload] Retiring old control plane")
 	}
-	retirementDone := make(chan struct{})
 	// lastRetirementMu only serializes cancellation/replacement of the previous
 	// retirement goroutine. The timing metadata below belongs to the reload
 	// manager state itself, so it is read under m.mu instead. This split is safe
@@ -291,11 +444,19 @@ func (m *reloadManager) startControlPlaneRetirement(
 	staleBeforeNs := m.pendingReloadRequestedAtMono
 	m.mu.Unlock()
 
-	go func(done chan struct{}) {
-		defer close(done)
+	go func(task *activeRetirementTask) {
+		defer close(task.done)
+		defer func() {
+			m.lastRetirementMu.Lock()
+			if m.activeRetirement == task {
+				m.activeRetirement = nil
+				m.lastRetirementCancel = nil
+			}
+			m.lastRetirementMu.Unlock()
+		}()
 
 		oldControlPlane.MarkRetired()
-		retireControlPlaneConnections(log, retireCtx, oldControlPlane, abortConnections, hasOverlap, drainBudget)
+		retireControlPlaneConnections(log, retireCtx, oldControlPlane, abortConnections, drainBudget)
 
 		if oldCancel != nil {
 			oldCancel()
@@ -306,13 +467,14 @@ func (m *reloadManager) startControlPlaneRetirement(
 		if successor != nil {
 			successor.RunReloadRetirementCleanup(staleBeforeNs)
 		}
+		supervisor.markRetirementComplete(task.generation)
 		if log != nil {
-			log.Warnln("[Reload] Retired old control plane")
+			log.Infoln("[Reload] Retired old control plane")
 		}
-	}(retirementDone)
+	}(task)
 }
 
-func (m *reloadManager) refreshPprofServer(log *logrus.Logger, server **http.Server, port uint16) {
+func (m *reloadManager) refreshPprofServer(server **http.Server, port uint16) {
 	if server == nil {
 		return
 	}
@@ -336,9 +498,99 @@ func dnsConfigEqual(oldConf *config.Config, newConf *config.Config) bool {
 	return dnsConfigFingerprint(oldConf.Dns) == dnsConfigFingerprint(newConf.Dns)
 }
 
-// dnsConfigFingerprint must be kept in sync with config.Dns. The companion
-// TestDNSConfigFingerprintCoversAllDnsFields fails when new top-level DNS
-// fields are added without updating this fingerprint.
+// bpfDatapathChanged returns true only when a config diff changes kernel
+// datapath inputs that cannot be applied via the staged-hot-handoff path —
+// namely BPF program constants (so_mark), TC hook attach points (interfaces),
+// or map dimensions (conn_state_map_size). These require a fresh BPF object
+// load while reusing the process-owned flow-state maps.
+//
+// Policy-level changes — routing rules, fallback, outbound groups, and DNS
+// routing — do NOT require a BPF reload: they are delivered via BPF map
+// updates (routing_map, domain_routing_map) and Go-side dialer rebuilds.
+// The staged-hot-handoff path handles them seamlessly through
+// CommitPreparedDatapath, which atomically applies the new routing_map,
+// clears+replays domain_routing_map, and flips TC hooks while established
+// connections remain owned by the process-level session manager.
+func bpfDatapathChanged(oldConf, newConf *config.Config) bool {
+	if oldConf == nil || newConf == nil {
+		return true
+	}
+	// Interface changes require TC hook re-attachment to different devices.
+	if !reflect.DeepEqual(oldConf.Global.LanInterface, newConf.Global.LanInterface) {
+		return true
+	}
+	if !reflect.DeepEqual(oldConf.Global.WanInterface, newConf.Global.WanInterface) {
+		return true
+	}
+	// Map dimensions are fixed at BPF load time.
+	if oldConf.Global.BpfConnStateMapSize != newConf.Global.BpfConnStateMapSize {
+		return true
+	}
+	// so_mark_from_dae is a BPF program constant (set via spec.Variables).
+	if oldConf.Global.SoMarkFromDae != newConf.Global.SoMarkFromDae ||
+		oldConf.Global.SoMarkFromDaeSet != newConf.Global.SoMarkFromDaeSet {
+		return true
+	}
+	return false
+}
+
+func preserveReloadInterfaceBindings(oldConf, newConf *config.Config) []string {
+	if oldConf == nil || newConf == nil {
+		return nil
+	}
+	lan := append([]string(nil), newConf.Global.LanInterface...)
+	wan := append([]string(nil), newConf.Global.WanInterface...)
+	remove := func(values []string, target string) []string {
+		result := values[:0]
+		for _, value := range values {
+			if value != target {
+				result = append(result, value)
+			}
+		}
+		return result
+	}
+
+	var deferred []string
+	oldLAN := make(map[string]struct{}, len(oldConf.Global.LanInterface))
+	for _, iface := range oldConf.Global.LanInterface {
+		oldLAN[iface] = struct{}{}
+		changed := !slices.Contains(lan, iface) || slices.Contains(wan, iface)
+		wan = remove(wan, iface)
+		if !slices.Contains(lan, iface) {
+			lan = append(lan, iface)
+		}
+		if changed {
+			deferred = append(deferred, "lan:"+iface)
+		}
+	}
+	for _, iface := range oldConf.Global.WanInterface {
+		if _, isLAN := oldLAN[iface]; isLAN {
+			continue
+		}
+		changed := !slices.Contains(wan, iface) || slices.Contains(lan, iface)
+		lan = remove(lan, iface)
+		if !slices.Contains(wan, iface) {
+			wan = append(wan, iface)
+		}
+		if changed {
+			deferred = append(deferred, "wan:"+iface)
+		}
+	}
+	newConf.Global.LanInterface = lan
+	newConf.Global.WanInterface = wan
+	return deferred
+}
+
+// dnsConfigFingerprint captures only the DNS fields that affect BPF datapath
+// state (domain_routing_map, routing rules, upstream resolution). Runtime-tunable
+// parameters (OptimisticCache, OptimisticCacheTtl, MaxCacheSize) are intentionally
+// excluded because they are atomic-tunable via DnsController.UpdateRuntime and do
+// not require BPF map changes. Including them would cause unnecessary
+// domain_routing_map clear+replay during staged handoff, creating a race window
+// where the old control plane loses domain routing (see dae#1013).
+//
+// Must be kept in sync with config.Dns routing-affecting fields.
+// TestDNSConfigFingerprintCoversAllDnsFields guards the contract.
 func dnsConfigFingerprint(dns config.Dns) string {
 	var b strings.Builder
 	writeKeyableStrings := func(name string, values []config.KeyableString) {
@@ -356,7 +608,11 @@ func dnsConfigFingerprint(dns config.Dns) string {
 			b.WriteString("<nil>")
 			return
 		}
-		b.WriteString(f.String(true, true, false))
+		// MarshalString (not String): the display form ellipsizes params from
+		// index 5 on, so a DNS rule function with six or more params would
+		// fingerprint identical to a different one and the reload would skip
+		// the domain_routing_map clear+replay, leaving the new rule inactive.
+		b.WriteString(f.MarshalString(true, false, true))
 	}
 	writeFunctionOrString := func(name string, value config.FunctionOrString) {
 		b.WriteString(name)
@@ -413,15 +669,6 @@ func dnsConfigFingerprint(dns config.Dns) string {
 	writeRouting("routing", dns.Routing)
 	b.WriteString("bind=")
 	b.WriteString(strconv.Quote(dns.Bind))
-	b.WriteByte(';')
-	b.WriteString("optimistic_cache=")
-	b.WriteString(strconv.FormatBool(dns.OptimisticCache))
-	b.WriteByte(';')
-	b.WriteString("optimistic_cache_ttl=")
-	b.WriteString(strconv.Itoa(dns.OptimisticCacheTtl))
-	b.WriteByte(';')
-	b.WriteString("max_cache_size=")
-	b.WriteString(strconv.Itoa(dns.MaxCacheSize))
 	b.WriteByte(';')
 	return b.String()
 }

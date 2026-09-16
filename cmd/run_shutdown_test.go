@@ -1,8 +1,21 @@
+/*
+*  SPDX-License-Identifier: AGPL-3.0-only
+*  Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ */
+
+// Unit tests for the reload state machine, reload manager bookkeeping, and
+// signal shutdown teardown. Recovered from the run_shutdown_test.go pruned in
+// the Sprint 5 test reduction and adapted to the current tree:
+//   - shutdownAfterSignal was folded into shutdownAfterSignalWithHandoff, so
+//     its tests pass a nil handoff;
+//   - shutdown now tears down the dae netns even on fast exit, so fast-exit
+//     expectations include one netns.Close call.
 package cmd
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -16,6 +29,8 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
+	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 )
 
@@ -174,8 +189,8 @@ func TestShutdownAfterSignalFastExitSkipsGracefulTeardown(t *testing.T) {
 	plane := &fakeShutdownControlPlane{recorder: recorder}
 	netns := &fakeShutdownNetns{recorder: recorder}
 
-	if err := shutdownAfterSignal(newDiscardLogger(), listener, plane, netns, true); err != nil {
-		t.Fatalf("shutdownAfterSignal() error = %v", err)
+	if err := shutdownAfterSignalWithHandoff(newDiscardLogger(), listener, plane, netns, true, nil); err != nil {
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v", err)
 	}
 
 	if plane.detachCalls != 1 {
@@ -187,13 +202,14 @@ func TestShutdownAfterSignalFastExitSkipsGracefulTeardown(t *testing.T) {
 	if plane.closeCalls != 0 {
 		t.Fatalf("Close calls = %d, want 0", plane.closeCalls)
 	}
-	if netns.closeCalls != 0 {
-		t.Fatalf("netns.Close calls = %d, want 0", netns.closeCalls)
+	if netns.closeCalls != 1 {
+		t.Fatalf("netns.Close calls = %d, want 1 (netns is torn down even on fast exit)", netns.closeCalls)
 	}
 
 	wantOrder := []string{
 		"listener.Close",
 		"control.DetachBpfHooks",
+		"netns.Close",
 	}
 	if !reflect.DeepEqual(recorder.order, wantOrder) {
 		t.Fatalf("call order = %v, want %v", recorder.order, wantOrder)
@@ -211,9 +227,9 @@ func TestShutdownAfterSignalGracefulExitRunsFullTeardown(t *testing.T) {
 	}
 	netns := &fakeShutdownNetns{recorder: recorder}
 
-	err := shutdownAfterSignal(newDiscardLogger(), listener, plane, netns, false)
+	err := shutdownAfterSignalWithHandoff(newDiscardLogger(), listener, plane, netns, false, nil)
 	if err == nil || err.Error() != "close control plane: close failed" {
-		t.Fatalf("shutdownAfterSignal() error = %v, want close control plane: close failed", err)
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v, want close control plane: close failed", err)
 	}
 
 	if plane.detachCalls != 1 {
@@ -241,6 +257,38 @@ func TestShutdownAfterSignalGracefulExitRunsFullTeardown(t *testing.T) {
 	}
 }
 
+func TestShutdownAfterSignalGracefulExitCancelsGenerationContexts(t *testing.T) {
+	isolateGlobalUdpState(t)
+
+	var oldCancelCalls atomic.Int32
+	var newCancelCalls atomic.Int32
+	handoff := &signalShutdownStagedHandoff{
+		oldListener:     &fakeShutdownListener{},
+		oldControlPlane: &fakeShutdownControlPlane{},
+		oldCancel:       func() { oldCancelCalls.Add(1) },
+		newListener:     &fakeShutdownListener{},
+		newControlPlane: &fakeShutdownControlPlane{},
+		newCancel:       func() { newCancelCalls.Add(1) },
+	}
+
+	if err := shutdownAfterSignalWithHandoff(
+		newDiscardLogger(),
+		&fakeShutdownListener{},
+		&fakeShutdownControlPlane{},
+		&fakeShutdownNetns{},
+		false,
+		handoff,
+	); err != nil {
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v", err)
+	}
+	if got := oldCancelCalls.Load(); got != 1 {
+		t.Fatalf("old generation cancel calls = %d, want 1", got)
+	}
+	if got := newCancelCalls.Load(); got != 1 {
+		t.Fatalf("new generation cancel calls = %d, want 1", got)
+	}
+}
+
 func TestShutdownAfterSignalGracefulExitResetsGlobalUdpStateAfterClose(t *testing.T) {
 	isolateGlobalUdpState(t)
 
@@ -253,8 +301,8 @@ func TestShutdownAfterSignalGracefulExitResetsGlobalUdpStateAfterClose(t *testin
 		},
 	}
 
-	if err := shutdownAfterSignal(newDiscardLogger(), &fakeShutdownListener{}, plane, &fakeShutdownNetns{}, false); err != nil {
-		t.Fatalf("shutdownAfterSignal() error = %v", err)
+	if err := shutdownAfterSignalWithHandoff(newDiscardLogger(), &fakeShutdownListener{}, plane, &fakeShutdownNetns{}, false, nil); err != nil {
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v", err)
 	}
 
 	if plane.closeCalls != 1 {
@@ -270,8 +318,8 @@ func TestShutdownAfterSignalFastExitDoesNotResetGlobalUdpState(t *testing.T) {
 
 	key := seedPacketSnifferSession(t)
 
-	if err := shutdownAfterSignal(newDiscardLogger(), &fakeShutdownListener{}, &fakeShutdownControlPlane{}, &fakeShutdownNetns{}, true); err != nil {
-		t.Fatalf("shutdownAfterSignal() error = %v", err)
+	if err := shutdownAfterSignalWithHandoff(newDiscardLogger(), &fakeShutdownListener{}, &fakeShutdownControlPlane{}, &fakeShutdownNetns{}, true, nil); err != nil {
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v", err)
 	}
 
 	if got := control.DefaultPacketSnifferSessionMgr.Get(key); got == nil {
@@ -284,8 +332,8 @@ func TestShutdownAfterSignalTypedNilResourcesAreSkipped(t *testing.T) {
 	var plane *control.ControlPlane
 	var netns *control.DaeNetns
 
-	if err := shutdownAfterSignal(newDiscardLogger(), listener, plane, netns, true); err != nil {
-		t.Fatalf("shutdownAfterSignal() error = %v, want nil", err)
+	if err := shutdownAfterSignalWithHandoff(newDiscardLogger(), listener, plane, netns, true, nil); err != nil {
+		t.Fatalf("shutdownAfterSignalWithHandoff() error = %v, want nil", err)
 	}
 }
 
@@ -326,8 +374,8 @@ func TestShutdownAfterSignalWithPendingHandoffFastExitDetachesBothGenerations(t 
 	if newPlane.closeCalls != 0 || oldPlane.closeCalls != 0 {
 		t.Fatalf("Close calls = (%d, %d), want (0, 0)", newPlane.closeCalls, oldPlane.closeCalls)
 	}
-	if netns.closeCalls != 0 {
-		t.Fatalf("netns.Close calls = %d, want 0", netns.closeCalls)
+	if netns.closeCalls != 1 {
+		t.Fatalf("netns.Close calls = %d, want 1 (netns is torn down even on fast exit)", netns.closeCalls)
 	}
 
 	wantOrder := []string{
@@ -335,6 +383,7 @@ func TestShutdownAfterSignalWithPendingHandoffFastExitDetachesBothGenerations(t 
 		"listener.Close",
 		"control.DetachBpfHooks",
 		"control.DetachBpfHooks",
+		"netns.Close",
 	}
 	if !reflect.DeepEqual(recorder.order, wantOrder) {
 		t.Fatalf("call order = %v, want %v", recorder.order, wantOrder)
@@ -468,10 +517,15 @@ func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
 	var reloadPending atomic.Bool
 	reloadPending.Store(true)
 	retirementDone := make(chan struct{})
+	reloadReqs := make(chan reloadRequest, 1)
+	var reloadActive atomic.Bool
 
 	releaseReloadPendingAfterRetirement(&reloadPending, retirementDone)
 	if !reloadPending.Load() {
 		t.Fatal("expected reloadPending to remain set before retirement completes")
+	}
+	if tryQueueReloadRequest(newDiscardLogger(), reloadReqs, &reloadActive, &reloadPending, reloadRequest{}) {
+		t.Fatal("expected a third staged reload to stay blocked while retirement holds an epoch slot")
 	}
 	close(retirementDone)
 	deadline := time.After(time.Second)
@@ -493,6 +547,10 @@ func TestReleaseReloadPendingAfterRetirementWaitsForCompletion(t *testing.T) {
 		case <-ticker.C:
 		}
 	}
+	if !tryQueueReloadRequest(newDiscardLogger(), reloadReqs, &reloadActive, &reloadPending, reloadRequest{}) {
+		t.Fatal("expected reload request to be accepted after retirement releases epoch slots")
+	}
+	clearReloadPending(&reloadPending)
 }
 
 func TestRemainingReloadRetirementBudgetUsesElapsedTime(t *testing.T) {
@@ -555,6 +613,185 @@ func TestReloadManagerBuildShutdownHandoffUsesPendingStagedHandoff(t *testing.T)
 	}
 }
 
+func TestReloadManagerTransitionReleaseAllowsNextTransitionAndShutdown(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	supervisor := newRuntimeSupervisor(newTestRuntimeGeneration())
+
+	if !manager.beginReloadTransition() {
+		t.Fatal("first beginReloadTransition() = false, want true")
+	}
+	manager.endReloadTransition()
+	if !manager.beginReloadTransition() {
+		t.Fatal("second beginReloadTransition() = false after release, want true")
+	}
+	manager.endReloadTransition()
+
+	_ = manager.shutdownSupervisor(supervisor)
+	if manager.beginReloadTransition() {
+		manager.endReloadTransition()
+		t.Fatal("beginReloadTransition() succeeded after shutdown")
+	}
+}
+
+func TestReloadManagerShutdownSupervisorWaitsForTransition(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	active := newTestRuntimeGeneration()
+	supervisor := newRuntimeSupervisor(active)
+	if !manager.beginReloadTransition() {
+		t.Fatal("beginReloadTransition() = false, want true")
+	}
+
+	shutdownDone := make(chan runtimeSupervisorSnapshot, 1)
+	go func() {
+		shutdownDone <- manager.shutdownSupervisor(supervisor)
+	}()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("shutdownSupervisor() returned before the reload transition released")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	manager.endReloadTransition()
+	select {
+	case snapshot := <-shutdownDone:
+		if snapshot.active != active {
+			t.Fatal("shutdownSupervisor() did not return the active generation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdownSupervisor() did not finish after transition release")
+	}
+}
+
+func TestReloadManagerShutdownSupervisorExcludesWorkerOwnedRetirement(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	oldGeneration := newTestRuntimeGeneration()
+	newGeneration := newTestRuntimeGeneration()
+	supervisor := newRuntimeSupervisor(oldGeneration)
+	if err := supervisor.installPrepared(newGeneration); err != nil {
+		t.Fatalf("installPrepared() error = %v", err)
+	}
+	retiring, err := supervisor.publishPrepared(newGeneration)
+	if err != nil {
+		t.Fatalf("publishPrepared() error = %v", err)
+	}
+
+	canceled := make(chan struct{})
+	task := &activeRetirementTask{
+		generation: retiring,
+		cancel:     func() { close(canceled) },
+		done:       make(chan struct{}),
+	}
+	manager.lastRetirementMu.Lock()
+	manager.activeRetirement = task
+	manager.lastRetirementMu.Unlock()
+
+	shutdownDone := make(chan runtimeSupervisorSnapshot, 1)
+	go func() {
+		shutdownDone <- manager.shutdownSupervisor(supervisor)
+	}()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("shutdownSupervisor() did not cancel the active retirement task")
+	}
+	select {
+	case <-shutdownDone:
+		t.Fatal("shutdownSupervisor() returned before the worker-owned retirement completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(task.done)
+	var snapshot runtimeSupervisorSnapshot
+	select {
+	case snapshot = <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("shutdownSupervisor() did not join the retirement task")
+	}
+	if snapshot.retiring != nil {
+		t.Fatal("worker-owned retiring generation remained in the shutdown snapshot")
+	}
+	if handoff := manager.buildShutdownHandoffWithSupervisor(snapshot, newGeneration); handoff != nil {
+		t.Fatal("worker-owned retiring generation was returned for duplicate shutdown cleanup")
+	}
+}
+
+func TestBuildRunShutdownHandoffFastExitBypassesSupervisorFreeze(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	active := newTestRuntimeGeneration()
+	supervisor := newRuntimeSupervisor(active)
+
+	if handoff := buildRunShutdownHandoff(manager, supervisor, active, true); handoff != nil {
+		t.Fatal("fast-exit shutdown unexpectedly built supervisor cleanup handoff")
+	}
+	if snapshot := supervisorSnapshotForTest(supervisor); snapshot.active != active {
+		t.Fatal("fast-exit shutdown froze the active supervisor generation")
+	}
+	if !manager.beginReloadTransition() {
+		t.Fatal("fast-exit shutdown closed the reload transition barrier")
+	}
+	manager.endReloadTransition()
+}
+
+func TestBuildRunShutdownHandoffCarriesCurrentGenerationCancel(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	var cancelCalls atomic.Int32
+	active := newTestRuntimeGeneration()
+	active.cancel = func() { cancelCalls.Add(1) }
+	supervisor := newRuntimeSupervisor(active)
+
+	handoff := buildRunShutdownHandoff(manager, supervisor, active, false)
+	if handoff == nil || handoff.newCancel == nil {
+		t.Fatal("graceful shutdown handoff omitted current generation cancel")
+	}
+	handoff.newCancel()
+	if got := cancelCalls.Load(); got != 1 {
+		t.Fatalf("current generation cancel calls = %d, want 1", got)
+	}
+}
+
+func TestReloadManagerShutdownSupervisorIncludesUnclaimedRetirement(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	oldGeneration := newTestRuntimeGeneration()
+	newGeneration := newTestRuntimeGeneration()
+	supervisor := newRuntimeSupervisor(oldGeneration)
+	if err := supervisor.installPrepared(newGeneration); err != nil {
+		t.Fatalf("installPrepared() error = %v", err)
+	}
+	if _, err := supervisor.publishPrepared(newGeneration); err != nil {
+		t.Fatalf("publishPrepared() error = %v", err)
+	}
+
+	snapshot := manager.shutdownSupervisor(supervisor)
+	handoff := manager.buildShutdownHandoffWithSupervisor(snapshot, newGeneration)
+	if handoff == nil || handoff.oldControlPlane != oldGeneration.controlPlane || handoff.oldListener != oldGeneration.listener {
+		t.Fatal("unclaimed retiring generation is missing from shutdown cleanup")
+	}
+}
+
+func TestReloadManagerStartRetirementSkipsClosedSupervisor(t *testing.T) {
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	oldGeneration := newTestRuntimeGeneration()
+	newGeneration := newTestRuntimeGeneration()
+	supervisor := newRuntimeSupervisor(oldGeneration)
+	if err := supervisor.installPrepared(newGeneration); err != nil {
+		t.Fatalf("installPrepared() error = %v", err)
+	}
+	retiring, err := supervisor.publishPrepared(newGeneration)
+	if err != nil {
+		t.Fatalf("publishPrepared() error = %v", err)
+	}
+	_ = supervisor.shutdown()
+
+	manager.startControlPlaneRetirement(newDiscardLogger(), oldGeneration.controlPlane, nil, oldGeneration.cancel, false, supervisor, retiring)
+	manager.lastRetirementMu.Lock()
+	task := manager.activeRetirement
+	manager.lastRetirementMu.Unlock()
+	if task != nil {
+		t.Fatal("startControlPlaneRetirement() started work after supervisor shutdown")
+	}
+}
+
 func TestReloadManagerCoalesceReloadRequestKeepsLatestQueuedRequest(t *testing.T) {
 	reloadReqs := make(chan reloadRequest, 2)
 	manager := newReloadManager(reloadReqs, make(chan struct{}, 1), make(chan os.Signal, 1))
@@ -600,20 +837,34 @@ func TestDNSConfigEqualUsesStableFingerprint(t *testing.T) {
 }
 
 func TestDNSConfigFingerprintCoversAllDnsFields(t *testing.T) {
+	// Fields that MUST be covered by dnsConfigFingerprint because they
+	// affect BPF datapath state (domain_routing_map, routing rules, upstream).
 	covered := map[string]struct{}{
-		"IpVersionPrefer":    {},
-		"FixedDomainTtl":     {},
-		"Upstream":           {},
-		"Routing":            {},
-		"Bind":               {},
-		"OptimisticCache":    {},
-		"OptimisticCacheTtl": {},
-		"MaxCacheSize":       {},
+		"IpVersionPrefer": {},
+		"FixedDomainTtl":  {},
+		"Upstream":        {},
+		"Routing":         {},
+		"Bind":            {},
 	}
 
-	dnsType := reflect.TypeOf(config.Dns{})
-	for i := 0; i < dnsType.NumField(); i++ {
-		name := dnsType.Field(i).Name
+	// Fields that are intentionally EXCLUDED from dnsConfigFingerprint
+	// because they are runtime-tunable via DnsController.UpdateRuntime
+	// (atomic stores) and do not affect BPF map state. Including them
+	// would cause unnecessary domain_routing_map clear+replay during
+	// staged handoff (dae#1013).
+	excluded := map[string]struct{}{
+		"OptimisticCache":         {},
+		"OptimisticCacheTtl":      {},
+		"OptimisticStaleReplyTtl": {},
+		"MaxCacheSize":            {},
+	}
+
+	dnsType := reflect.TypeFor[config.Dns]()
+	for field := range dnsType.Fields() {
+		name := field.Name
+		if _, isExcluded := excluded[name]; isExcluded {
+			continue
+		}
 		if _, ok := covered[name]; !ok {
 			t.Fatalf("dnsConfigFingerprint does not cover config.Dns.%s", name)
 		}
@@ -621,6 +872,168 @@ func TestDNSConfigFingerprintCoversAllDnsFields(t *testing.T) {
 	}
 	for name := range covered {
 		t.Fatalf("dnsConfigFingerprint coverage references missing config.Dns.%s", name)
+	}
+}
+
+func baseReloadDatapathConfig() *config.Config {
+	return &config.Config{
+		Global: config.Global{
+			TproxyPort:            12345,
+			LanInterface:          []string{"eth0"},
+			WanInterface:          []string{"wan0"},
+			BpfConnStateMapSize:   262144,
+			SoMarkFromDae:         0x8000000,
+			SoMarkFromDaeSet:      true,
+			FallbackResolver:      "8.8.8.8:53",
+			DialMode:              "ip",
+			DisableWaitingNetwork: true,
+		},
+		Group: []config.Group{
+			{Name: "proxy", Policy: config.FunctionListOrString("fixed(0)")},
+		},
+		Routing: config.Routing{
+			Fallback: "direct",
+		},
+		Dns: config.Dns{
+			Bind:               "127.0.0.1:53",
+			IpVersionPrefer:    4,
+			Upstream:           []config.KeyableString{"google:udp://8.8.8.8:53"},
+			OptimisticCache:    true,
+			OptimisticCacheTtl: 60,
+			MaxCacheSize:       1024,
+		},
+	}
+}
+
+func TestBpfDatapathChangedIgnoresDnsRuntimeParameters(t *testing.T) {
+	oldConf := baseReloadDatapathConfig()
+	newConf := deepcopy.Copy(oldConf).(*config.Config)
+	newConf.Dns.OptimisticCache = !oldConf.Dns.OptimisticCache
+	newConf.Dns.OptimisticCacheTtl = oldConf.Dns.OptimisticCacheTtl + 30
+	newConf.Dns.MaxCacheSize = oldConf.Dns.MaxCacheSize + 2048
+
+	if bpfDatapathChanged(oldConf, newConf) {
+		t.Fatal("DNS runtime-only changes must stay on shared staged handoff")
+	}
+}
+
+func TestBpfDatapathChangedDetectsKernelDatapathInputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{
+			name: "lan interface",
+			mutate: func(conf *config.Config) {
+				conf.Global.LanInterface = []string{"eth1"}
+			},
+		},
+		{
+			name: "wan interface",
+			mutate: func(conf *config.Config) {
+				conf.Global.WanInterface = []string{"ppp0"}
+			},
+		},
+		{
+			name: "conn state map size",
+			mutate: func(conf *config.Config) {
+				conf.Global.BpfConnStateMapSize *= 2
+			},
+		},
+		{
+			name: "socket mark",
+			mutate: func(conf *config.Config) {
+				conf.Global.SoMarkFromDae++
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldConf := baseReloadDatapathConfig()
+			newConf := deepcopy.Copy(oldConf).(*config.Config)
+			tt.mutate(newConf)
+			if !bpfDatapathChanged(oldConf, newConf) {
+				t.Fatal("expected datapath-affecting change")
+			}
+		})
+	}
+}
+
+func TestPreserveReloadInterfaceBindingsOnlyAddsDuringHotReload(t *testing.T) {
+	oldConf := &config.Config{Global: config.Global{
+		LanInterface: []string{"lan0", "shared0"},
+		WanInterface: []string{"wan0"},
+	}}
+	newConf := &config.Config{Global: config.Global{
+		LanInterface: []string{"lan1", "wan0"},
+		WanInterface: []string{"wan1", "lan0"},
+	}}
+
+	deferred := preserveReloadInterfaceBindings(oldConf, newConf)
+	if got, want := fmt.Sprint(deferred), "[lan:lan0 lan:shared0 wan:wan0]"; got != want {
+		t.Fatalf("deferred bindings = %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprint(newConf.Global.LanInterface), "[lan1 lan0 shared0]"; got != want {
+		t.Fatalf("effective LAN interfaces = %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprint(newConf.Global.WanInterface), "[wan1 wan0]"; got != want {
+		t.Fatalf("effective WAN interfaces = %s, want %s", got, want)
+	}
+}
+
+// TestBpfDatapathChangedRoutesPolicyChangesViaStagedHandoff verifies that
+// policy-level config changes (routing rules, fallback, groups, DNS upstream)
+// do NOT trigger a fresh BPF reload. These changes are delivered via BPF map
+// updates and Go-side rebuilds, so the staged-hot-handoff path handles them
+// without aborting established connections.
+func TestBpfDatapathChangedRoutesPolicyChangesViaStagedHandoff(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{
+			name: "dns upstream",
+			mutate: func(conf *config.Config) {
+				conf.Dns.Upstream = []config.KeyableString{"cloudflare:udp://1.1.1.1:53"}
+			},
+		},
+		{
+			name: "routing rules",
+			mutate: func(conf *config.Config) {
+				conf.Routing.Rules = []*config_parser.RoutingRule{
+					{
+						AndFunctions: []*config_parser.Function{
+							{Name: "domain", Params: []*config_parser.Param{{Key: "suffix", Val: "new.com"}}},
+						},
+						Outbound: config_parser.Function{Name: "proxy"},
+					},
+				}
+			},
+		},
+		{
+			name: "routing fallback",
+			mutate: func(conf *config.Config) {
+				conf.Routing.Fallback = "block"
+			},
+		},
+		{
+			name: "group definition",
+			mutate: func(conf *config.Config) {
+				conf.Group = append(conf.Group, config.Group{Name: "backup", Policy: config.FunctionListOrString("fixed(0)")})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldConf := baseReloadDatapathConfig()
+			newConf := deepcopy.Copy(oldConf).(*config.Config)
+			tt.mutate(newConf)
+			if bpfDatapathChanged(oldConf, newConf) {
+				t.Fatal("policy-level change must route through staged handoff, not fresh datapath reload")
+			}
+		})
 	}
 }
 
@@ -648,6 +1061,26 @@ func TestBuildPreparedDNSHandoffHooksReuseHookReusesControllerAndListener(t *tes
 	}
 	if reuseListenerCalls != 1 {
 		t.Fatalf("reuseListenerCalls = %d, want 1", reuseListenerCalls)
+	}
+}
+
+func TestBuildPreparedDNSHandoffHooksReuseHookRejectsControllerFailure(t *testing.T) {
+	var reuseListenerCalls int
+	hooks := buildPreparedDNSHandoffHooks(newDiscardLogger(), true, preparedDNSHandoffHookCallbacks{
+		reuseController: func() bool { return false },
+		reuseListener: func() bool {
+			reuseListenerCalls++
+			return true
+		},
+	})
+	if hooks.reuseHook == nil {
+		t.Fatal("reuseHook = nil, want non-nil")
+	}
+	if err := hooks.reuseHook(); err == nil {
+		t.Fatal("reuseHook() error = nil after controller reuse failure")
+	}
+	if reuseListenerCalls != 0 {
+		t.Fatalf("reuseListenerCalls = %d, want 0 after controller failure", reuseListenerCalls)
 	}
 }
 
@@ -687,7 +1120,18 @@ func TestReloadManagerStartControlPlaneRetirementCompletesAndCancelsOldContext(t
 	manager.setPendingReloadMetadata(time.Now(), 0)
 
 	oldCtx, oldCancel := context.WithCancel(context.Background())
-	manager.startControlPlaneRetirement(newDiscardLogger(), &control.ControlPlane{}, nil, oldCancel, false, false)
+	oldGeneration := newTestRuntimeGeneration()
+	oldGeneration.cancel = oldCancel
+	newGeneration := newTestRuntimeGeneration()
+	supervisor := newRuntimeSupervisor(oldGeneration)
+	if err := supervisor.installPrepared(newGeneration); err != nil {
+		t.Fatalf("installPrepared() error = %v", err)
+	}
+	retiringGeneration, err := supervisor.publishPrepared(newGeneration)
+	if err != nil {
+		t.Fatalf("publishPrepared() error = %v", err)
+	}
+	manager.startControlPlaneRetirement(newDiscardLogger(), oldGeneration.controlPlane, nil, oldCancel, false, supervisor, retiringGeneration)
 
 	manager.mu.Lock()
 	retirementDone := manager.pendingRetirementDone
@@ -706,6 +1150,69 @@ func TestReloadManagerStartControlPlaneRetirementCompletesAndCancelsOldContext(t
 	case <-oldCtx.Done():
 	default:
 		t.Fatal("expected old generation cancel function to be called")
+	}
+	if snapshot := supervisorSnapshotForTest(supervisor); snapshot.retiring != nil {
+		t.Fatal("expected retirement completion to release the exact supervisor generation")
+	}
+}
+
+func TestReloadManagerRepeatedRetirementLifecycleReclaimsGeneration(t *testing.T) {
+	for iteration := range 64 {
+		manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+		manager.setPendingReloadMetadata(time.Now(), 0)
+
+		oldContext, oldCancel := context.WithCancel(context.Background())
+		oldGeneration := newTestRuntimeGeneration()
+		oldGeneration.cancel = oldCancel
+		newGeneration := newTestRuntimeGeneration()
+		supervisor := newRuntimeSupervisor(oldGeneration)
+		if err := supervisor.installPrepared(newGeneration); err != nil {
+			t.Fatalf("iteration %d installPrepared() error = %v", iteration, err)
+		}
+		retiring, err := supervisor.publishPrepared(newGeneration)
+		if err != nil {
+			t.Fatalf("iteration %d publishPrepared() error = %v", iteration, err)
+		}
+
+		manager.startControlPlaneRetirement(
+			newDiscardLogger(),
+			oldGeneration.controlPlane,
+			nil,
+			oldCancel,
+			false,
+			supervisor,
+			retiring,
+		)
+		manager.mu.Lock()
+		retirementDone := manager.pendingRetirementDone
+		manager.mu.Unlock()
+		if retirementDone == nil {
+			t.Fatalf("iteration %d pendingRetirementDone = nil", iteration)
+		}
+		select {
+		case <-retirementDone:
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d retirement did not complete", iteration)
+		}
+
+		select {
+		case <-oldContext.Done():
+		default:
+			t.Fatalf("iteration %d old generation context was not canceled", iteration)
+		}
+		if snapshot := supervisorSnapshotForTest(supervisor); snapshot.active != newGeneration || snapshot.prepared != nil || snapshot.retiring != nil {
+			t.Fatalf("iteration %d supervisor retained stale ownership: %#v", iteration, snapshot)
+		}
+		manager.lastRetirementMu.Lock()
+		activeRetirement := manager.activeRetirement
+		manager.lastRetirementMu.Unlock()
+		if activeRetirement != nil {
+			t.Fatalf("iteration %d manager retained active retirement task", iteration)
+		}
+		manager.finishReloadSuccess()
+		if pending := manager.takePendingRetirementDone(); pending != nil {
+			t.Fatalf("iteration %d pending retirement channel remained after success", iteration)
+		}
 	}
 }
 
@@ -769,6 +1276,97 @@ func TestWaitReloadReadyOrSignalReturnsTimeout(t *testing.T) {
 	}
 }
 
+func TestReloadManagerFailReloadAttemptClearsBusyState(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	oldWriter := setRunSignalProgress
+	setRunSignalProgress = func(code byte, content string) error {
+		return writeSignalProgressFile(progressPath, code, content)
+	}
+	t.Cleanup(func() { setRunSignalProgress = oldWriter })
+
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager.reloadActive.Store(true)
+	manager.reloadPending.Store(true)
+
+	manager.failReloadAttempt(errors.New("boom"))
+
+	if manager.reloadActive.Load() {
+		t.Fatal("expected reloadActive to be cleared")
+	}
+	if manager.reloadPending.Load() {
+		t.Fatal("expected reloadPending to be cleared")
+	}
+	code, content, err := readSignalProgressFile(progressPath)
+	if err != nil {
+		t.Fatalf("readSignalProgressFile() error = %v", err)
+	}
+	if code != consts.ReloadError || content != "boom" {
+		t.Fatalf("progress = (%d, %q), want (ReloadError, %q)", code, content, "boom")
+	}
+}
+
+func TestReloadManagerFailPublishedReloadAttemptClearsHandoffState(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "dae.progress")
+	oldWriter := setRunSignalProgress
+	setRunSignalProgress = func(code byte, content string) error {
+		return writeSignalProgressFile(progressPath, code, content)
+	}
+	t.Cleanup(func() { setRunSignalProgress = oldWriter })
+
+	manager := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+	manager.reloading.Store(true)
+	manager.reloadActive.Store(true)
+	manager.reloadPending.Store(true)
+
+	manager.failPublishedReloadAttempt(errors.New("publish failed"))
+
+	if manager.reloading.Load() {
+		t.Fatal("expected reloading to be cleared after a published-path failure")
+	}
+	if manager.reloadActive.Load() {
+		t.Fatal("expected reloadActive to be cleared")
+	}
+	if manager.reloadPending.Load() {
+		t.Fatal("expected reloadPending to be cleared")
+	}
+	code, content, err := readSignalProgressFile(progressPath)
+	if err != nil {
+		t.Fatalf("readSignalProgressFile() error = %v", err)
+	}
+	if code != consts.ReloadError || content != "publish failed" {
+		t.Fatalf("progress = (%d, %q), want (ReloadError, %q)", code, content, "publish failed")
+	}
+}
+
+func TestShouldUseStagedHotHandoff(t *testing.T) {
+	if !shouldUseStagedHotHandoff(false, true) {
+		t.Fatal("same-port reload with a live listener must use staged hot handoff")
+	}
+	if shouldUseStagedHotHandoff(true, true) {
+		t.Fatal("fresh datapath reload must not overlap generations")
+	}
+	if shouldUseStagedHotHandoff(false, false) {
+		t.Fatal("cold start without a listener cannot stage a hot handoff")
+	}
+}
+
+func TestCanRecoverReloadReadinessFailureOnlyAfterServeReturns(t *testing.T) {
+	tests := []struct {
+		result reloadReadyWaitResult
+		want   bool
+	}{
+		{result: reloadReadyWaitReady},
+		{result: reloadReadyWaitFailed, want: true},
+		{result: reloadReadyWaitSignal},
+		{result: reloadReadyWaitTimeout},
+	}
+	for _, test := range tests {
+		if got := canRecoverReloadReadinessFailure(test.result); got != test.want {
+			t.Fatalf("canRecoverReloadReadinessFailure(%d) = %t, want %t", test.result, got, test.want)
+		}
+	}
+}
+
 func TestWaitForControlPlaneDrainReturnsIdleImmediately(t *testing.T) {
 	result := waitForControlPlaneDrain(newDiscardLogger(), context.Background(), newFakeRetirementControlPlane(0), time.Second, 0)
 	if result != controlPlaneDrainIdle {
@@ -816,29 +1414,59 @@ func TestWaitForControlPlaneDrainReturnsTimeout(t *testing.T) {
 // abort → !overlap → drain.
 type retirementBehaviorPlane struct {
 	*fakeRetirementControlPlane
-	abortCalled atomic.Bool
+	abortCalled         atomic.Bool
+	pendingAbortCalled  atomic.Bool
+	stopExecutionCalled atomic.Bool
+	abortErr            error
+	pendingAbortErr     error
+}
+
+type blockingStopRetirementPlane struct {
+	*retirementBehaviorPlane
+	stopStarted chan struct{}
+	stopRelease chan struct{}
+}
+
+func (r *blockingStopRetirementPlane) StopRoutingEpochExecution() {
+	r.StopRoutingEpochExecutionWithTimeout(0)
+}
+
+func (r *blockingStopRetirementPlane) StopRoutingEpochExecutionWithTimeout(time.Duration) {
+	close(r.stopStarted)
+	<-r.stopRelease
+	r.retirementBehaviorPlane.StopRoutingEpochExecution()
 }
 
 func (r *retirementBehaviorPlane) AbortConnections() error {
 	r.abortCalled.Store(true)
-	return nil
+	return r.abortErr
+}
+
+func (r *retirementBehaviorPlane) AbortPendingConnections() error {
+	r.pendingAbortCalled.Store(true)
+	return r.pendingAbortErr
+}
+
+func (r *retirementBehaviorPlane) StopRoutingEpochExecution() {
+	r.stopExecutionCalled.Store(true)
+}
+
+func (r *retirementBehaviorPlane) StopRoutingEpochExecutionWithTimeout(time.Duration) {
+	r.StopRoutingEpochExecution()
 }
 
 func TestReloadRetirementBehavior(t *testing.T) {
+	// The retired address-overlap dimension is gone: retirement is two-stage
+	// and no longer varies with whether the generations share listen addresses.
 	tests := []struct {
 		name        string
-		overlap     bool
 		abort       bool
 		expectDrain bool
 	}{
-		{"staged_overlap_no_abortfile_graceful", true, false, true},
-		{"staged_no_overlap_no_abortfile_immediate_abort", false, false, false},
-		{"staged_overlap_abortfile_immediate_abort", true, true, false},
-		{"staged_no_overlap_abortfile_immediate_abort", false, true, false},
-		{"nonstaged_overlap_no_abortfile_graceful", true, false, true},
-		{"nonstaged_no_overlap_no_abortfile_immediate_abort", false, false, false},
-		{"nonstaged_overlap_abortfile_immediate_abort", true, true, false},
-		{"nonstaged_no_overlap_abortfile_immediate_abort", false, true, false},
+		{"staged_no_abortfile_graceful", false, true},
+		{"staged_abortfile_immediate_abort", true, false},
+		{"nonstaged_no_abortfile_graceful", false, true},
+		{"nonstaged_abortfile_immediate_abort", true, false},
 	}
 
 	for _, tt := range tests {
@@ -850,7 +1478,7 @@ func TestReloadRetirementBehavior(t *testing.T) {
 
 			go func() {
 				defer close(done)
-				retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, tt.abort, tt.overlap, 10*time.Second)
+				retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, tt.abort, 10*time.Second)
 			}()
 
 			if tt.expectDrain {
@@ -866,6 +1494,9 @@ func TestReloadRetirementBehavior(t *testing.T) {
 				case <-time.After(time.Second):
 					t.Fatal("graceful retirement did not complete after drain release")
 				}
+				if !plane.stopExecutionCalled.Load() {
+					t.Fatal("graceful retirement did not seal routing epoch execution")
+				}
 			} else {
 				select {
 				case <-done:
@@ -875,33 +1506,71 @@ func TestReloadRetirementBehavior(t *testing.T) {
 				if !plane.abortCalled.Load() {
 					t.Fatal("expected AbortConnections to be called for immediate-abort case")
 				}
+				if !plane.stopExecutionCalled.Load() {
+					t.Fatal("immediate-abort retirement did not seal routing epoch execution")
+				}
 			}
 		})
 	}
 }
 
-func TestReloadRetirementAbortsAfterDrainTimeout(t *testing.T) {
+func TestReloadRetirementAbortWaitsForRoutingExecutionLeases(t *testing.T) {
+	plane := &blockingStopRetirementPlane{
+		retirementBehaviorPlane: &retirementBehaviorPlane{
+			fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
+		},
+		stopStarted: make(chan struct{}),
+		stopRelease: make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() {
+		retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, true, time.Second)
+		close(done)
+	}()
+
+	select {
+	case <-plane.stopStarted:
+	case <-time.After(time.Second):
+		t.Fatal("abort retirement did not begin routing execution shutdown")
+	}
+	if !plane.abortCalled.Load() {
+		t.Fatal("abort retirement reached execution shutdown before AbortConnections")
+	}
+	select {
+	case <-done:
+		t.Fatal("abort retirement returned before routing execution leases drained")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(plane.stopRelease)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("abort retirement did not finish after routing execution leases drained")
+	}
+}
+
+func TestReloadRetirementAbortsPendingWorkAfterDrainTimeout(t *testing.T) {
 	plane := &retirementBehaviorPlane{
 		fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
 	}
 
-	retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, false, true, 10*time.Millisecond)
+	retireControlPlaneConnections(newDiscardLogger(), context.Background(), plane, false, 10*time.Millisecond)
 
-	if !plane.abortCalled.Load() {
-		t.Fatal("expected AbortConnections to be called after drain timeout")
+	if !plane.pendingAbortCalled.Load() || plane.abortCalled.Load() {
+		t.Fatal("expected only AbortPendingConnections after drain timeout")
 	}
 }
 
-func TestReloadRetirementAbortsAfterDrainCancel(t *testing.T) {
+func TestReloadRetirementAbortsPendingWorkAfterDrainCancel(t *testing.T) {
 	plane := &retirementBehaviorPlane{
 		fakeRetirementControlPlane: newFakeRetirementControlPlane(1),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	retireControlPlaneConnections(newDiscardLogger(), ctx, plane, false, true, time.Second)
+	retireControlPlaneConnections(newDiscardLogger(), ctx, plane, false, time.Second)
 
-	if !plane.abortCalled.Load() {
-		t.Fatal("expected AbortConnections to be called after drain cancellation")
+	if !plane.pendingAbortCalled.Load() || plane.abortCalled.Load() {
+		t.Fatal("expected only AbortPendingConnections after drain cancellation")
 	}
 }

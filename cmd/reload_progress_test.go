@@ -4,6 +4,7 @@ import (
 	stderrors "errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -159,5 +160,64 @@ func TestWaitReloadCompletionTimesOut(t *testing.T) {
 
 	if _, _, err := waitReloadCompletion(progressPath, 0, 5*time.Millisecond, 20*time.Millisecond); err == nil {
 		t.Fatal("waitReloadCompletion() error = nil, want timeout")
+	}
+}
+
+func TestReloadCommandResultOnlySucceedsForReloadDone(t *testing.T) {
+	tests := []struct {
+		name        string
+		code        byte
+		content     string
+		wantResult  string
+		wantErrText string
+	}{
+		{name: "done", code: consts.ReloadDone, content: "complete", wantResult: "complete"},
+		{name: "empty done", code: consts.ReloadDone, wantResult: "OK"},
+		{name: "error", code: consts.ReloadError, content: "bad config", wantErrText: "bad config"},
+		{name: "busy", code: consts.ReloadBusy, content: "retiring", wantErrText: "retiring"},
+		{name: "unexpected", code: 0xff, wantErrText: "unexpected reload result code"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := reloadCommandResult(test.code, test.content)
+			if test.wantErrText == "" {
+				if err != nil || result != test.wantResult {
+					t.Fatalf("reloadCommandResult() = (%q, %v), want (%q, nil)", result, err, test.wantResult)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErrText) {
+				t.Fatalf("reloadCommandResult() error = %v, want text %q", err, test.wantErrText)
+			}
+		})
+	}
+}
+
+func TestReloadAbortMarkerIsPrivateAndCleanedAfterFailure(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), "dae.abort")
+	if err := createReloadAbortMarker(markerPath); err != nil {
+		t.Fatalf("createReloadAbortMarker() error = %v", err)
+	}
+	info, err := os.Stat(markerPath)
+	if err != nil {
+		t.Fatalf("Stat(abort marker) error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("abort marker mode = %o, want 600", got)
+	}
+
+	wantErr := stderrors.New("reload request failed")
+	if err := cleanupReloadAbortMarker(markerPath, true, wantErr); !stderrors.Is(err, wantErr) {
+		t.Fatalf("cleanupReloadAbortMarker() error = %v, want %v", err, wantErr)
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("abort marker remains after cleanup: %v", err)
+	}
+}
+
+func TestCreateReloadAbortMarkerReportsCreateFailure(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), "missing", "dae.abort")
+	if err := createReloadAbortMarker(markerPath); err == nil {
+		t.Fatal("createReloadAbortMarker() error = nil, want missing-directory failure")
 	}
 }

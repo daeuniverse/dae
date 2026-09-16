@@ -105,8 +105,7 @@ func run(objectPath string, outputDir string, hold bool) error {
 	})
 	if err != nil {
 		_ = os.WriteFile(filepath.Join(outputDir, "load-error.txt"), []byte(err.Error()+"\n"), 0o644)
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) {
+		if ve, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 			_ = os.WriteFile(filepath.Join(verifierDir, "load-main-bpf.log"), fmt.Appendf(nil, "%+v\n", ve), 0o644)
 		}
 		return err
