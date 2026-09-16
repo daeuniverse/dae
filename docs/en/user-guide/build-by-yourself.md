@@ -19,7 +19,7 @@ cd dae
 git submodule update --init
 ## Minimal dependency build
 make GOFLAGS="-buildvcs=false" \
-  CC=clang
+  CLANG=clang
 
 ## Normal build
 #make

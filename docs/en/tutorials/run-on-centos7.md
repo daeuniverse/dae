@@ -16,30 +16,33 @@ Update the kernel that supports `BTF`
 ```bash
 curl -s https://repo.cooluc.com/mailbox.repo > /etc/yum.repos.d/mailbox.repo
 yum makecache
-yum update kernel
+yum --enablerepo=mailbox-kernel update kernel
 ```
 
 > [!NOTE]
-> The kernel is based on Linux 6.1 LTS, rebuilt to support `BBRv2`, and enables `eBPF` support. It can also be compiled by yourself, and the source package is available at <https://repo.cooluc.com/kernel/7/SRPMS/>
+> `mailbox.repo` ships the kernel in the `mailbox-kernel` section, which is disabled by default; `--enablerepo` turns it on for this command. The kernel is an LTS release rebuilt to support `BBRv2` and `eBPF`. It can also be compiled by yourself, and the source package is available at <https://repo.cooluc.com/kernel/7/SRPMS/>
 
 ### Mount BPF
 
 ```bash
-curl -s https://repo.cooluc.com/kernel/files/sys-fs-bpf.mount > /etc/systemd/system/sys-fs-bpf.mount
+curl -fsS https://repo.cooluc.com/kernel/files/sys-fs-bpf.mount > /etc/systemd/system/sys-fs-bpf.mount
 systemctl enable sys-fs-bpf.mount
 ```
 
 ### Mount Control Group v2
 
+> [!NOTE]
+> The address below no longer serves `mount-cgroup2.service` (HTTP 404 when this page was last checked). `curl -f` makes the failure visible instead of writing the error page into the unit file; supply your own unit that mounts cgroup v2 if the download fails.
+
 ```bash
-curl -s https://repo.cooluc.com/kernel/mount-cgroup2.service > /etc/systemd/system/mount-cgroup2.service
+curl -fsS https://repo.cooluc.com/kernel/mount-cgroup2.service > /etc/systemd/system/mount-cgroup2.service
 systemctl enable mount-cgroup2.service
 ```
 
 ### Reboot the system to make the kernel effective
 
 > [!NOTE]
-> Check the kernel version. If the version is `6.1.xx-1.el7.x86_64`, it means that the operation is successful.
+> Check the kernel version. A version newer than 5.17 that ends in `-1.el7.x86_64` means that the operation is successful.
 
 ```bash
 uname -r

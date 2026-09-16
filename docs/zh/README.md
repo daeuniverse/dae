@@ -69,7 +69,7 @@ bash 和其他 POSIX 兼容的 shell:
 fish shell:
 
 ```fish
-begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+begin; zcat /proc/config.gz || cat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
 > **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
@@ -163,6 +163,7 @@ sudo dnf install dae
 
 ```shell
 git clone --depth=1 https://github.com/daeuniverse/dae
+cd dae
 docker compose up -d --build
 ```
 

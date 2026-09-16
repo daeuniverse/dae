@@ -53,10 +53,8 @@ Reference: [https://www.itsfoss.net/installing-linux-5-14-kernel-on-debian-11/](
 > **Note**: Please modify the following line if your system is NOT on Debian11: `Pin: release a=bullseye` - e.g. `Pin: release a=buster` (Debian10)
 
 ```shell
-# Sync databases.
-sudo apt update
 # Add unstable source
-cat <<EOF | sudo tee -a /etc/apt/sources.list/
+cat <<EOF | sudo tee /etc/apt/sources.list.d/unstable.list
 deb http://deb.debian.org/debian unstable main contrib non-free
 deb-src http://deb.debian.org/debian unstable main contrib non-free
 EOF
@@ -76,6 +74,8 @@ Pin: release a=unstable
 Pin-Priority: 100
 EOF
 
+# Sync databases, including the source added above.
+sudo apt update
 # Perform full dist-upgrade
 sudo apt dist-upgrade
 ```
