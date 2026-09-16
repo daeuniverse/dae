@@ -71,6 +71,8 @@ type DNSListener struct {
 	log       *logrus.Logger
 	tcpServer *dnsmessage.Server
 	udpServer *dnsmessage.Server
+	udpConn   net.PacketConn
+	tcpLn     net.Listener
 	endpoint  Endpoint
 	mu        sync.Mutex
 
@@ -113,6 +115,35 @@ func (d *DNSListener) SwapController(controller *ControlPlane) {
 	d.controller.Store(controller)
 }
 
+func (d *DNSListener) activateServer(server *dnsmessage.Server, network string) error {
+	started := make(chan struct{})
+	exited := make(chan error, 1)
+	server.NotifyStartedFunc = func() {
+		close(started)
+	}
+
+	go func() {
+		exited <- server.ActivateAndServe()
+	}()
+
+	select {
+	case <-started:
+		// Keep the server pointer local to this goroutine. Start waits for the
+		// readiness callback, so Stop cannot race an unstarted server.
+		go func() {
+			if err := <-exited; err != nil {
+				d.log.Errorf("Failed to serve DNS %s listener: %v", network, err)
+			}
+		}()
+		return nil
+	case err := <-exited:
+		if err == nil {
+			return fmt.Errorf("DNS %s listener stopped before becoming ready", network)
+		}
+		return fmt.Errorf("failed to serve DNS %s listener: %w", network, err)
+	}
+}
+
 // Start starts the DNS listener
 func (d *DNSListener) Start() error {
 	d.mu.Lock()
@@ -130,39 +161,67 @@ func (d *DNSListener) Start() error {
 		listener: d,
 		log:      d.log,
 	}
+	rollbackUDP := func() {
+		if d.udpServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), dnsListenerShutdownTimeout)
+			_ = d.udpServer.ShutdownContext(ctx)
+			cancel()
+			d.udpServer = nil
+		}
+		if d.udpConn != nil {
+			_ = d.udpConn.Close()
+			d.udpConn = nil
+		}
+	}
 
 	if d.endpoint.UDP {
-		// create dns servers
-		d.udpServer = &dnsmessage.Server{
-			Addr:    d.Addr(),
-			Net:     "udp",
-			Handler: handler,
-			UDPSize: 65535,
+		// Bind synchronously so that Start reports bind failures to its
+		// caller instead of surfacing them later from a goroutine.
+		udpConn, err := net.ListenPacket("udp", d.Addr())
+		if err != nil {
+			return fmt.Errorf("failed to bind DNS UDP listener on %s: %w", d.Addr(), err)
 		}
-
-		// Start UDP server in goroutine
-		go func() {
-			d.log.Infof("Starting DNS UDP listener on %s", d.udpServer.Addr)
-			if err := d.udpServer.ListenAndServe(); err != nil {
-				d.log.Errorf("Failed to start DNS UDP listener: %v", err)
-			}
-		}()
-
+		udpServer := &dnsmessage.Server{
+			Addr:       d.Addr(),
+			Net:        "udp",
+			Handler:    handler,
+			UDPSize:    65535,
+			PacketConn: udpConn,
+		}
+		d.udpConn = udpConn
+		d.udpServer = udpServer
+		d.log.Infof("Starting DNS UDP listener on %s", d.Addr())
+		if err = d.activateServer(udpServer, "UDP"); err != nil {
+			_ = udpConn.Close()
+			d.udpConn = nil
+			d.udpServer = nil
+			return err
+		}
 	}
-	// also for tcp server
+
 	if d.endpoint.TCP {
-		d.tcpServer = &dnsmessage.Server{
-			Addr:    d.Addr(),
-			Net:     "tcp",
-			Handler: handler,
+		tcpLn, err := net.Listen("tcp", d.Addr())
+		if err != nil {
+			// Roll back the already-active UDP server.
+			rollbackUDP()
+			return fmt.Errorf("failed to bind DNS TCP listener on %s: %w", d.Addr(), err)
 		}
-		// Start TCP server in goroutine
-		go func() {
-			d.log.Infof("Starting DNS TCP listener on %s", d.tcpServer.Addr)
-			if err := d.tcpServer.ListenAndServe(); err != nil {
-				d.log.Errorf("Failed to start DNS TCP listener: %v", err)
-			}
-		}()
+		tcpServer := &dnsmessage.Server{
+			Addr:     d.Addr(),
+			Net:      "tcp",
+			Handler:  handler,
+			Listener: tcpLn,
+		}
+		d.tcpLn = tcpLn
+		d.tcpServer = tcpServer
+		d.log.Infof("Starting DNS TCP listener on %s", d.Addr())
+		if err = d.activateServer(tcpServer, "TCP"); err != nil {
+			_ = tcpLn.Close()
+			d.tcpLn = nil
+			d.tcpServer = nil
+			rollbackUDP()
+			return err
+		}
 	}
 
 	return nil
@@ -182,6 +241,10 @@ func (d *DNSListener) Stop() error {
 			errs = append(errs, err)
 		}
 		cancel()
+		if d.udpConn != nil {
+			_ = d.udpConn.Close()
+			d.udpConn = nil
+		}
 		d.udpServer = nil
 	}
 
@@ -192,6 +255,10 @@ func (d *DNSListener) Stop() error {
 			errs = append(errs, err)
 		}
 		cancel()
+		if d.tcpLn != nil {
+			_ = d.tcpLn.Close()
+			d.tcpLn = nil
+		}
 		d.tcpServer = nil
 	}
 
@@ -246,14 +313,55 @@ func parseDNSListenerAddrPort(raw string, preferV6 bool) (netip.AddrPort, error)
 type dnsHandler struct {
 	listener *DNSListener
 	log      *logrus.Logger
+
+	// badClientAddrAlert paces the unusable-client-address report. The address
+	// is client-controlled, so one broken or hostile peer would otherwise draw
+	// one error line per request; the observation count carried by each
+	// emitted line is the number of requests answered with SERVFAIL for this
+	// reason, and the per-request detail stays available at debug.
+	badClientAddrAlert pacedAlert
+}
+
+// dnsListenerBadClientAddrLogInterval paces the unusable-client-address
+// warning. A peer whose address never parses keeps failing every request it
+// sends, so an unpaced report is one line per request for as long as the peer
+// keeps asking.
+const dnsListenerBadClientAddrLogInterval = 30 * time.Second
+
+// answerUnusableClientAddr answers SERVFAIL for a request whose client address
+// could not be turned into an IP:port, and reports it once per pace instead of
+// once per request. It is the single reporting point for every address-parsing
+// failure in the listener path, so the failures cannot be counted per site and
+// then lose their total.
+func (h *dnsHandler) answerUnusableClientAddr(w dnsmessage.ResponseWriter, r *dnsmessage.Msg, reason string, detail error) {
+	if h == nil {
+		return
+	}
+	if h.log != nil {
+		entry := h.log.WithField("reason", reason)
+		if detail != nil {
+			entry = entry.WithError(detail)
+		}
+		if h.log.IsLevelEnabled(logrus.DebugLevel) {
+			entry.Debug("DNS listener: unusable client address; answering SERVFAIL")
+		}
+		if dropped, emit := h.badClientAddrAlert.observe(time.Now(), dnsListenerBadClientAddrLogInterval); emit {
+			entry.Warnf("DNS listener: answering SERVFAIL for a request with an unusable client address (%s); "+
+				"dropped=%d, reporting at most one line per %v", reason, dropped, dnsListenerBadClientAddrLogInterval)
+		}
+	}
+	if w != nil && r != nil {
+		m := new(dnsmessage.Msg)
+		m.SetRcode(r, dnsmessage.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+	}
 }
 
 func isDNSClientWriteGoneError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "write" {
+	if opErr, ok := errors.AsType[*net.OpError](err); ok && opErr.Op == "write" {
 		return daerrors.IsIgnorableConnectionError(err) || daerrors.IsClosedConnection(err)
 	}
 	// Fallback for wrapped errors where net.OpError is lost.
@@ -285,6 +393,15 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	if w == nil || r == nil {
 		return
 	}
+	// A message with the QR bit set is a response, not a query. The UDP and
+	// TCP fast paths reject these before routing; without the same gate here
+	// a client could feed a response-formed message to the listener and have
+	// its question section misrouted through request routing (a Reject
+	// verdict would even evict a live cache family). Drop it silently, same
+	// as the fast paths.
+	if r.Response {
+		return
+	}
 	controller := h.listener.Controller()
 	uploadRecord := RecordUploadTraffic
 	downloadRecord := RecordDownloadTraffic
@@ -298,10 +415,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	// Create a fake udpRequest to pass to the DNS controller
 	clientAddr := w.RemoteAddr()
 	if clientAddr == nil {
-		h.log.Errorf("Failed to parse client address: nil RemoteAddr")
-		m := new(dnsmessage.Msg)
-		m.SetRcode(r, dnsmessage.RcodeServerFailure)
-		_ = w.WriteMsg(m)
+		h.answerUnusableClientAddr(w, r, "nil RemoteAddr", nil)
 		return
 	}
 	var clientIPPort netip.AddrPort
@@ -309,19 +423,13 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 	// Parse client address
 	host, portStr, err := net.SplitHostPort(clientAddr.String())
 	if err != nil {
-		h.log.Errorf("Failed to parse client address: %v", err)
-		m := new(dnsmessage.Msg)
-		m.SetRcode(r, dnsmessage.RcodeServerFailure)
-		_ = w.WriteMsg(m)
+		h.answerUnusableClientAddr(w, r, "split host and port", err)
 		return
 	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		h.log.Errorf("Failed to parse client port: %v", err)
-		m := new(dnsmessage.Msg)
-		m.SetRcode(r, dnsmessage.RcodeServerFailure)
-		_ = w.WriteMsg(m)
+		h.answerUnusableClientAddr(w, r, "parse port", err)
 		return
 	}
 
@@ -331,10 +439,7 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 
 	clientIP, err := netip.ParseAddr(host)
 	if err != nil {
-		h.log.Errorf("Failed to parse client IP: %v", err)
-		m := new(dnsmessage.Msg)
-		m.SetRcode(r, dnsmessage.RcodeServerFailure)
-		_ = w.WriteMsg(m)
+		h.answerUnusableClientAddr(w, r, "parse IP", err)
 		return
 	}
 
@@ -350,7 +455,8 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		realDst = netip.AddrPortFrom(dnsFallbackAddr(preferV6), 53)
 	}
 
-	// Create routing result (fake)
+	// DNS listener traffic has no transparent-flow handoff, so it supplies
+	// fixed control-plane routing facts to the compatibility request adapter.
 	routingResult := &bpfRoutingResult{
 		Outbound: uint8(consts.OutboundControlPlaneRouting),
 		Mark:     0,
@@ -361,35 +467,27 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		Dscp:     0,
 	}
 
-	// Handle the DNS request using the existing DNS controller
 	udpReq := &udpRequest{
 		realSrc:        clientIPPort,
 		realDst:        realDst,
 		src:            clientIPPort,
-		lConn:          nil, // Not used in this context
+		lConn:          nil,
 		routingResult:  routingResult,
 		uploadRecord:   uploadRecord,
 		downloadRecord: downloadRecord,
 	}
 
-	ctx := context.Background()
-	if controller != nil && controller.ctx != nil {
-		ctx = controller.ctx
-	}
 	if controller == nil {
 		m := new(dnsmessage.Msg)
 		m.SetRcode(r, dnsmessage.RcodeServerFailure)
 		_ = w.WriteMsg(m)
 		return
 	}
-	dnsController := controller.ActiveDnsController()
-	if dnsController == nil {
-		m := new(dnsmessage.Msg)
-		m.SetRcode(r, dnsmessage.RcodeServerFailure)
-		_ = w.WriteMsg(m)
-		return
-	}
-	err = dnsController.HandleWithResponseWriter_(controller.dnsRequestContext(ctx, dnsController), r, udpReq, w)
+	var activeController *DnsController
+	err = withActiveDNSController(controller, nil, func(queryCtx context.Context, dnsController *DnsController) error {
+		activeController = dnsController
+		return dnsController.HandleWithResponseWriter_(queryCtx, r, udpReq, w)
+	})
 	if err != nil {
 		if errors.Is(err, ErrDNSQueryConcurrencyLimitExceeded) {
 			// REFUSED response has been written by DNS controller.
@@ -398,6 +496,19 @@ func (h *dnsHandler) ServeDNS(w dnsmessage.ResponseWriter, r *dnsmessage.Msg) {
 		if isDNSClientWriteGoneError(err) {
 			if h.log.IsLevelEnabled(logrus.DebugLevel) {
 				h.log.WithError(err).Debug("Drop DNS response because client connection is already gone")
+			}
+			return
+		}
+		if errors.Is(err, ErrDNSTruncated) && activeController != nil {
+			// The upstream answer did not fit a single upstream datagram and no
+			// TCP upgrade delivered it. RFC 7766 §5 keeps the query on TCP and
+			// reports TC=1; answering SERVFAIL would tell the client the name
+			// does not resolve instead of that the answer did not fit.
+			activeController.noteDnsTruncatedReplyToClient()
+			if writeErr := activeController.sendDnsTruncatedResponse_(r, udpReq, w); writeErr != nil && !isDNSClientWriteGoneError(writeErr) {
+				if h.log.IsLevelEnabled(logrus.DebugLevel) {
+					h.log.WithError(writeErr).Debug("Failed to write DNS truncated response")
+				}
 			}
 			return
 		}

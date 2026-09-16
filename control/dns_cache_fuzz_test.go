@@ -32,26 +32,6 @@ func FuzzDnsCache_FillIntoWithTTL(f *testing.F) {
 	f.Fuzz(func(t *testing.T, qname string, qtype uint16) {
 		req := new(dnsmessage.Msg)
 		req.SetQuestion(qname, qtype)
-		_ = cache.FillIntoWithTTL(req, now)
-	})
-}
-
-func FuzzDnsCache_FillInto(f *testing.F) {
-	cache := &DnsCache{
-		Answer: []dnsmessage.RR{
-			&dnsmessage.A{
-				Hdr: dnsmessage.RR_Header{Name: "example.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 300},
-				A:   []byte{1, 2, 3, 4},
-			},
-		},
-		Deadline: time.Now().Add(5 * time.Minute),
-	}
-	f.Add("example.com.", uint16(1))
-	f.Add("", uint16(0))
-
-	f.Fuzz(func(t *testing.T, qname string, qtype uint16) {
-		req := new(dnsmessage.Msg)
-		req.SetQuestion(qname, qtype)
-		cache.FillInto(req)
+		_, _ = cache.FillIntoWithTTL(req, now)
 	})
 }
