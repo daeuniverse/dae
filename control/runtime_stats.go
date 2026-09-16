@@ -6,7 +6,6 @@
 package control
 
 import (
-	"context"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -48,8 +47,7 @@ type runtimeBucket struct {
 }
 
 type runtimeStats struct {
-	mu         sync.Mutex
-	rollerOnce sync.Once
+	mu sync.Mutex
 
 	currentBucketStartUnixNano atomic.Int64
 	currentUploadBytes         atomic.Uint64
@@ -116,20 +114,6 @@ func RecordDownloadTraffic(n int64) {
 	}
 }
 
-// Deprecated: prefer (*ControlPlane).SnapshotRuntimeStats for per-instance stats.
-// SnapshotRuntimeStats returns the current runtime traffic snapshot.
-func SnapshotRuntimeStats(activeConnections int, udpSessions int, windowSec int, maxPoints int) RuntimeStatsSnapshot {
-	now := time.Now()
-	if store := currentRuntimeStatsStore(); store != nil {
-		return store.snapshot(activeConnections, udpSessions, windowSec, maxPoints, now)
-	}
-	return RuntimeStatsSnapshot{
-		UpdatedAt:         now,
-		ActiveConnections: activeConnections,
-		UDPSessions:       udpSessions,
-	}
-}
-
 func (c *ControlPlane) publishRuntimeStats() {
 	if c == nil {
 		return
@@ -158,37 +142,10 @@ func (s *runtimeStats) record(upload uint64, download uint64) {
 	}
 }
 
-func (s *runtimeStats) startRoller(ctx context.Context) {
-	if s == nil || ctx == nil {
-		return
-	}
-	s.rollerOnce.Do(func() {
-		s.roll(time.Now())
-		go func() {
-			ticker := time.NewTicker(runtimeBucketDuration)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case now := <-ticker.C:
-					s.roll(now)
-				case <-ctx.Done():
-					s.roll(time.Now())
-					return
-				}
-			}
-		}()
-	})
-}
-
-func (s *runtimeStats) roll(now time.Time) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rollLocked(now)
-}
+// startRoller was removed: rollLocked is fully lazy. The bucket window only
+// advances when traffic is recorded or a snapshot is requested, so no
+// periodic goroutine is needed. An empty-window ticker previously woke up
+// ~4x/second on idle just to perform a no-op rotation.
 
 func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSec int, maxPoints int, now time.Time) RuntimeStatsSnapshot {
 	if s == nil {
@@ -353,10 +310,7 @@ func bucketizeRuntimeSamples(samples []RuntimeTrafficSample, maxPoints int) []Ru
 	result := make([]RuntimeTrafficSample, 0, maxPoints)
 
 	for start := 0; start < len(samples); start += bucketSize {
-		end := start + bucketSize
-		if end > len(samples) {
-			end = len(samples)
-		}
+		end := min(start+bucketSize, len(samples))
 		bucket := samples[start:end]
 		last := bucket[len(bucket)-1]
 

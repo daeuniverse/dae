@@ -11,6 +11,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
@@ -34,18 +35,21 @@ func newTestControlPlaneWithMacRule(t *testing.T, literal string, not bool) *Con
 		},
 	}
 
-	builder, err := NewRoutingMatcherBuilder(
+	program, err := routing.NewNormalizedProgram(rules, config.FunctionOrString("direct"))
+	if err != nil {
+		t.Fatalf("NewNormalizedProgram(%q, not=%v): %v", literal, not, err)
+	}
+	builder, err := NewRoutingMatcherBuilderFromProgram(
 		logrus.New(),
-		rules,
+		program,
 		map[string]uint8{
 			"direct": uint8(consts.OutboundDirect),
 			"proxy":  uint8(consts.OutboundUserDefinedMin),
 		},
 		nil,
-		config.FunctionOrString("direct"),
 	)
 	if err != nil {
-		t.Fatalf("NewRoutingMatcherBuilder(%q, not=%v): %v", literal, not, err)
+		t.Fatalf("NewRoutingMatcherBuilderFromProgram(%q, not=%v): %v", literal, not, err)
 	}
 
 	matcher, err := builder.BuildUserspace()

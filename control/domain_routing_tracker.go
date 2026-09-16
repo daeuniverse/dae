@@ -6,12 +6,24 @@
 package control
 
 import (
+	stderrors "errors"
 	"fmt"
 	"sync"
+	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 )
+
+// ErrBpfMapFull reports that a BPF map rejected an insertion because it is at
+// max_entries. domain_routing_map is a plain hash so that userspace accounting
+// stays authoritative, which means a full map surfaces here instead of being
+// papered over by LRU eviction.
+var ErrBpfMapFull = stderrors.New("bpf map is full")
+
+func isBpfMapFullError(err error) bool {
+	return stderrors.Is(err, syscall.E2BIG) || stderrors.Is(err, syscall.ENOSPC)
+}
 
 type domainRoutingOwnerSnapshot struct {
 	bitmap bpfDomainRouting
@@ -154,13 +166,17 @@ func (t *domainRoutingTracker) applyOwnerSnapshotLocked(ownerKey string, snapsho
 	}
 }
 
-func (t *domainRoutingTracker) syncOwner(
+func (t *domainRoutingTracker) syncOwnerForSlot(
 	m *ebpf.Map,
+	slot uint32,
 	ownerKey string,
 	snapshot domainRoutingOwnerSnapshot,
 ) error {
 	if ownerKey == "" {
 		return fmt.Errorf("empty domain routing owner key")
+	}
+	if !validRoutingEpochSlot(slot) {
+		return fmt.Errorf("invalid domain routing epoch slot %d", slot)
 	}
 
 	t.mu.Lock()
@@ -175,9 +191,9 @@ func (t *domainRoutingTracker) syncOwner(
 		affected[key] = struct{}{}
 	}
 
-	keysToUpdate := make([][4]uint32, 0, len(affected))
+	keysToUpdate := make([]bpfRoutingEpochIp, 0, len(affected))
 	valuesToUpdate := make([]bpfDomainRouting, 0, len(affected))
-	keysToDelete := make([][4]uint32, 0, len(affected))
+	keysToDelete := make([]bpfRoutingEpochIp, 0, len(affected))
 
 	for key := range affected {
 		desiredBitmap, present := t.desiredBitmapForKeyLocked(key, ownerKey, snapshot)
@@ -185,25 +201,34 @@ func (t *domainRoutingTracker) syncOwner(
 		switch {
 		case !present:
 			if current != nil {
-				keysToDelete = append(keysToDelete, key)
+				keysToDelete = append(keysToDelete, bpfRoutingEpochIp{Slot: slot, Addr: key})
 			}
 		case current == nil || current.merged != desiredBitmap:
-			keysToUpdate = append(keysToUpdate, key)
+			keysToUpdate = append(keysToUpdate, bpfRoutingEpochIp{Slot: slot, Addr: key})
 			valuesToUpdate = append(valuesToUpdate, desiredBitmap)
 		}
 	}
 
 	if m != nil {
+		// Delete before update: retiring stale entries frees room in a map that
+		// is close to full, so the update below is more likely to fit.
+		if len(keysToDelete) > 0 {
+			if _, err := BpfMapBatchDelete(m, keysToDelete); err != nil {
+				return fmt.Errorf("delete domain_routing_map: %w", err)
+			}
+		}
 		if len(keysToUpdate) > 0 {
 			if _, err := BpfMapBatchUpdate(m, keysToUpdate, valuesToUpdate, &ebpf.BatchOptions{
 				ElemFlags: uint64(ebpf.UpdateAny),
 			}); err != nil {
+				if isBpfMapFullError(err) {
+					// Leave the tracker untouched so the desired state is
+					// recomputed and retried once DNS cache expiry frees
+					// entries. Reporting a distinguishable error lets the
+					// caller keep serving the answer instead of failing it.
+					return fmt.Errorf("update domain_routing_map: %w: %w", ErrBpfMapFull, err)
+				}
 				return fmt.Errorf("update domain_routing_map: %w", err)
-			}
-		}
-		if len(keysToDelete) > 0 {
-			if _, err := BpfMapBatchDelete(m, keysToDelete); err != nil {
-				return fmt.Errorf("delete domain_routing_map: %w", err)
 			}
 		}
 	}

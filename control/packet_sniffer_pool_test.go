@@ -23,7 +23,7 @@ func TestPacketSnifferFlowFamilyReleaseRemovesLastEntry(t *testing.T) {
 		t.Fatal("expected retained flow family session to be visible")
 	}
 
-	pool.releaseFlowFamily(key)
+	pool.releaseFlowFamilyRef(key, pool.loadFlowFamily(key))
 	if pool.HasFlowFamilySession(key) {
 		t.Fatal("expected released flow family session to disappear")
 	}
@@ -42,7 +42,7 @@ func TestPacketSnifferFlowFamilyReleaseKeepsEntryWhileRefsRemain(t *testing.T) {
 
 	pool.retainFlowFamily(key)
 	pool.retainFlowFamily(key)
-	pool.releaseFlowFamily(key)
+	pool.releaseFlowFamilyRef(key, pool.loadFlowFamily(key))
 
 	if !pool.HasFlowFamilySession(key) {
 		t.Fatal("expected flow family session to remain after releasing one of two refs")
@@ -185,7 +185,7 @@ func BenchmarkPacketSnifferPool_ObserveFlowFamilyQuicInitial(b *testing.B) {
 		b.Fatal("expected target sniffer to be created")
 	}
 
-	for i := 0; i < 2048; i++ {
+	for i := range 2048 {
 		src := mustParseAddrPort(fmt.Sprintf("192.0.2.60:%d", 44000+i))
 		dst := mustParseAddrPort(fmt.Sprintf("198.51.100.60:%d", 45000+i))
 		key := NewPacketSnifferKey(src, dst, makeLikelyQuicInitialPayload(byte(i%200+1)))
@@ -211,7 +211,7 @@ func BenchmarkPacketSnifferPool_RemoveFlowFamilySessions(b *testing.B) {
 	targetSrc := mustParseAddrPort("192.0.2.71:46001")
 	targetDst := mustParseAddrPort("198.51.100.71:443")
 
-	for i := 0; i < 2048; i++ {
+	for i := range 2048 {
 		src := mustParseAddrPort(fmt.Sprintf("192.0.2.80:%d", 47000+i))
 		dst := mustParseAddrPort(fmt.Sprintf("198.51.100.80:%d", 48000+i))
 		key := NewPacketSnifferKey(src, dst, makeLikelyQuicInitialPayload(byte(i%200+1)))
@@ -222,7 +222,7 @@ func BenchmarkPacketSnifferPool_RemoveFlowFamilySessions(b *testing.B) {
 
 	repopulate := func() PacketSnifferKey {
 		var firstKey PacketSnifferKey
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			key := NewPacketSnifferKey(targetSrc, targetDst, makeLikelyQuicInitialPayload(byte(0xa0+i)))
 			if i > 0 {
 				key.DCID[0] += byte(i)
