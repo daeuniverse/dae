@@ -1697,7 +1697,14 @@ udp_wan_egress_handoff_mandatory(const struct tuples *tuples,
 static __always_inline bool
 udp_conn_state_expired(const struct conn_state *state, __u64 now)
 {
-	return state && now - state->last_seen_ns > UDP_CONN_STATE_TIMEOUT_NS;
+	if (!state)
+		return false;
+
+	/* Another CPU may refresh the entry after now was sampled. */
+	__u64 last_seen_ns = state->last_seen_ns;
+
+	return now > last_seen_ns &&
+	       now - last_seen_ns > UDP_CONN_STATE_TIMEOUT_NS;
 }
 
 static __noinline struct conn_state *

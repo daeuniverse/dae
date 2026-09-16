@@ -437,3 +437,7 @@ func TestWanEgressUdpRedirectTrack(t *testing.T) {
 func TestConntrackArgsScratchReset(t *testing.T) {
 	runProgramSetByID(t, "ConntrackArgsScratchReset")
 }
+
+func TestUdpFutureTimestamp(t *testing.T) {
+	runProgramSetByID(t, "UdpFutureTimestamp")
+}

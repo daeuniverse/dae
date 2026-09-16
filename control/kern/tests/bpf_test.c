@@ -1685,3 +1685,49 @@ int testcheck_not_mismtach(struct __sk_buff *skb)
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
+
+static __noinline int seed_future_udp_state(void)
+{
+	struct tuples_key key = {};
+	struct conn_state state = {};
+	struct match_set rule = {
+		.type = MatchType_Fallback,
+		.outbound = OUTBOUND_DIRECT,
+	};
+
+	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.sip.u6_addr32[3] = bpf_htonl(IPV4(192,168,0,1));
+	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.dip.u6_addr32[3] = bpf_htonl(IPV4(1,1,1,1));
+	key.sport = bpf_htons(32002);
+	key.dport = bpf_htons(27015);
+	key.l4proto = IPPROTO_UDP;
+	state.last_seen_ns = bpf_ktime_get_ns() + 1000000000ULL;
+	state.meta = build_routing_meta(OUTBOUND_BLOCK, 0, 0, 0);
+	if (bpf_map_update_elem(&conn_state_map, &key, &state, BPF_ANY))
+		return -1;
+	return bpf_map_update_elem(&routing_map, &zero_key, &rule, BPF_ANY);
+}
+
+SEC("tc/pktgen/udp_future_timestamp")
+int testpktgen_udp_future_timestamp(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb,
+		IPV4(192,168,0,1), IPV4(1,1,1,1), 32002, 27015, 0);
+}
+
+SEC("tc/setup/udp_future_timestamp")
+int testsetup_udp_future_timestamp(struct __sk_buff *skb)
+{
+	if (seed_future_udp_state())
+		return TC_ACT_UNSPEC;
+	return do_tproxy_wan_egress(skb, 14);
+}
+
+SEC("tc/check/udp_future_timestamp")
+int testcheck_udp_future_timestamp(struct __sk_buff *skb)
+{
+	return check_udp_conn_state_ipv4_udp_dscp(skb, TC_ACT_SHOT,
+		IPV4(192,168,0,1), IPV4(1,1,1,1), 32002, 27015,
+		OUTBOUND_BLOCK, 0, 0, true);
+}
