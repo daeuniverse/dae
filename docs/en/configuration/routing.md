@@ -98,6 +98,9 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 # >> ip route add default dev wg0 scope global table 1145
 # >> ip -6 route add default dev wg0 scope global table 1145
 # Notice that interface wg0, mark 0x800, table 1145 can be set by preferences, but cannot conflict.
+# Notice also that dae marks its own egress traffic with an internal mark (0x100) unless
+# so_mark_from_dae sets another one: a rule written for *unmarked* traffic does not match
+# dae's own egress, and a rule that matches 0x100 affects dae's own traffic as well.
 # 3. Set routing rules in dae config file.
 domain(geosite:disney) -> direct(mark: 0x800)
 
@@ -109,3 +112,22 @@ ip(geoip:cn) -> direct
 domain(geosite:cn) -> direct
 fallback: my_group
 ```
+
+## Device-scoped domain whitelist (auto sniff-punt)
+
+```shell
+mac('aa:bb:cc:dd:ee:ff') && domain(geosite:docker, suffix:quay.io, geosite:github) -> my_group
+mac('aa:bb:cc:dd:ee:ff') -> direct
+```
+
+Domain conditions need domain knowledge that only exists when the device's DNS
+goes through dae. If the device uses encrypted DNS (DoH/DoT), the whitelist
+would silently degrade and all of its traffic would land on the fallback. dae
+detects this shape (single-host `mac`/`sip` selector + positive `domain`
+conditions + a later selector-only `direct`/`block` fallback) and automatically
+inserts a kernel-space-only sniff-punt line before the fallback: connections
+without domain knowledge are sent to userspace, sniffed (TLS SNI / HTTP host /
+QUIC), and re-routed over the same rule set with the sniffed domain.
+Non-whitelisted traffic of that device still lands on the fallback, relayed
+through userspace. Requires sniffing to be enabled (`sniffing_timeout > 0`,
+`dial_mode != ip`); disable with `auto_sniff_punt: false`.

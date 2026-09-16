@@ -389,7 +389,7 @@ go test -race ./control/... ./component/dns/... ./component/outbound/... ./confi
 
 结论：
 
-- `ControlPlane` 已进一步从“所有 generation / datapath 状态都直接堆在根对象上”的形态，推进到“根对象组合 generation state、dns runtime、datapath janitor” 的形态。
+- `ControlPlane` 已进一步从“所有 generation / datapath 状态都直接堆在根对象上”的形态，推进到“根对象组合 generation state、dns runtime、datapath janitor”的形态。
 - 这一步仍然是所有权与生命周期边界重排，没有引入新的 datapath 清理语义；普通回归和 `-race` 回归均通过。
 
 ## 当前已落地的第九步
@@ -420,7 +420,7 @@ go test -race ./cmd/... ./control/... ./component/dns/... ./component/outbound/.
 本次继续完成：
 
 - 新增 [component/routing/ir.go](/root/dae/component/routing/ir.go) 和 [component/routing/normalize.go](/root/dae/component/routing/normalize.go)，引入共享的 `routing.NormalizedProgram`
-- 新增 [component/dns/routing_program.go](/root/dae/component/dns/routing_program.go)，把 DNS request routing 的“优化 + internal selector split” 收口为 `NormalizedRequestRoutingProgram`
+- 新增 [component/dns/routing_program.go](/root/dae/component/dns/routing_program.go)，把 DNS request routing 的“优化 + internal selector split”收口为 `NormalizedRequestRoutingProgram`
 - 在以下 builder 中新增 `FromProgram` 入口，使 backend 从共享 program 降低，而不是各自直接解释 parser 规则：
   - [component/dns/request_routing.go](/root/dae/component/dns/request_routing.go)
   - [component/dns/response_routing.go](/root/dae/component/dns/response_routing.go)

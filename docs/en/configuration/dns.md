@@ -2,7 +2,7 @@
 
 dae will intercept all UDP traffic to port 53 and sniff DNS. Here gives some examples and templates for DNS configuration.
 
-# Schema
+## Schema
 
 DoH3
 
@@ -63,6 +63,13 @@ tcp+udp://<host>:<port>
 default port: 53
 ```
 
+A truncated answer (`TC=1`, RFC 1035 §4.2.1) is retried over TCP, as RFC 7766
+§5 requires: an `udp://` upstream retries that query over TCP, while a
+`tcp+udp://` upstream always did. The built-in `asis` destination is not
+retried — the answer the destination sent is passed to the client as it
+arrived, so the client decides whether to retry, exactly as it would without
+dae in the path. Every other scheme keeps its declared transport.
+
 ## Examples
 
 ```shell
@@ -112,6 +119,8 @@ dns {
         # Match rules from top to bottom.
         request {
             # Built-in outbounds in 'request': asis, reject.
+            # asis queries the server the request was addressed to, as the request arrived.
+            # Do not point other LAN devices at dae:53 (loop risk).
             # You can also use user-defined upstreams.
 
             # Available functions for ordinary DNS requests: qname, qtype.
@@ -163,6 +172,20 @@ dns {
         }
     }
 
+}
+```
+
+## Bootstrap resolver (`global`)
+
+`global.bootstrap_resolver` covers only the lookups that must succeed before
+dae's own DNS routing exists: resolving DNS upstream hostnames and
+`dial_mode: real-domain` probes. Left unset, dae falls back to `119.29.29.29:53`
+and then `223.5.5.5:53`; setting the option replaces those defaults entirely and
+is used alone. A host outside mainland China usually wants a closer resolver:
+
+```shell
+global {
+  bootstrap_resolver: '9.9.9.9:53'
 }
 ```
 

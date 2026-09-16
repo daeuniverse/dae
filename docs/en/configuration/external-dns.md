@@ -71,7 +71,7 @@ You should configure dae as follows:
    ```python
    sip(192.168.30.3) && l4proto(udp) && dport(53) -> must_direct
    # Or use MAC address if in the same link:
-   # mac(8c:16:45:36:1c:5a) && l4proto(udp) && dport(53) -> must_direct
+   # mac('8c:16:45:36:1c:5a') && l4proto(udp) && dport(53) -> must_direct
    ```
 
    And make sure domain `dns.google` will be proxied in routing rules.

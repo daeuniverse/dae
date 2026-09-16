@@ -23,6 +23,8 @@ dae 支持以域名、源 IP、目的 IP、源端口、目的端口、TCP/UDP、
 
 因此，当 DNS 请求无法通过 dae 时，基于 domain 的分流将会失效。
 
+嗅探本身有时间窗：dae 只等待 `sniffing_timeout`（默认 30ms）以从客户端首个报文中取得域名，超时则退回按 IP 分流；同一流签名连续 3 次嗅探失败后，该签名在 10 分钟内不再嗅探（负缓存），因此始终不在连接起始处携带域名的流会停止被按域名分流，而不是每次连接都重试。对于「单设备域名白名单 + 该设备自建加密 DNS」这种形状，dae 会自动插入内核态的嗅探兜底（`auto_sniff_punt`，见 [路由配置](configuration/routing.md)），使白名单在该设备的 DNS 不经 dae 时仍然生效。
+
 > 为了降低 DNS 污染，以及获得更好的 CDN 连接速度，dae 在用户空间实现了域名嗅探。在 `dial_mode` 为 domain 或 domain 的变体，且流量需要被代理时，将嗅探的 domain 发送给代理服务器，而不是发送 IP，这样在代理服务器侧会对域名重新进行解析并使用最优 IP 进行连接，从而解决了 DNS 污染的问题，并获得了更好的 CDN 连接速度。
 >
 > 同时，当高级用户已经使用了其他的分流方案，且不希望将 DNS 请求通过 dae，但希望被代理的那部分流量可以基于域名进行分流（例如基于目标域名，一部分分流到奈飞节点，一部分分流到下载节点，当然，也可以一部分通过 core 直连），可以通过 `dial_mode: domain++` 来强制使用嗅探的域名重新分流。
@@ -34,6 +36,8 @@ dae 会通过在 tc 挂载点的程序将流量分流，根据分流结果决定
 dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时，dae 通过 eBPF 将 tc 挂载点的需代理流量的 socket buffer 直接关联至 dae 的 tproxy 侦听端口的 socket；在绑定 WAN 接口时，dae 将需代理流量 socket buffer 从网卡出队列移动至网卡的入队列，禁用其 checksum，并修改目的地址为 tproxy 侦听端口。
 
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
+
+自 [PR:implement stack bypass](https://github.com/daeuniverse/dae/pull/458) 起，劫持数据路径改为绕过网络栈，以获得更好的性能、减少网络栈的影响（例如 netfilter、systemd-sysctl）。详见该 PR 的说明。
 
 ### 直连原理
 

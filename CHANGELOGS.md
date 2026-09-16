@@ -49,6 +49,87 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - [v0.1.0](#v010)
 <!-- BEGIN NEW CHANGELOGS -->
 
+### Unreleased
+
+#### Behavior changes / Upgrade notes
+
+Existing config files keep parsing, but the following defaults and semantics
+changed. Review them before upgrading:
+
+- The `DAE_SEMANTIC_REFACTOR_FEATURES` environment variable was removed. The
+  routing epoch (lossless reload) is now the only publication path, and the
+  experimental bounded UDP dispatchers were deleted in favour of the per-flow
+  convoy task pool; setting the variable now has no effect. Convoy tasks also
+  gained per-task panic isolation with rate-limited reporting.
+- Transports implementing the fork's push-mode packet receiver
+  (`netproxy.PacketReceiver`: direct via a shared epoll loop, QUIC-family via
+  their existing transport readers) now deliver upstream UDP replies through
+  that receiver by default instead of one blocking `ReadFrom` goroutine per
+  endpoint. Replies are still ordered per endpoint through a bounded queue,
+  and overload drops only the excess packet.
+- `sniffing_timeout` default lowered from `100ms` to `30ms`. Slow first-packet
+  clients that previously sniffed successfully may now fall back to non-sniffed
+  routing; combined with the sniff negative cache this makes domain-based
+  splitting silently stop applying to such flows. Set
+  `sniffing_timeout: 100ms` explicitly to restore the old behavior.
+- New `bootstrap_resolver` option. When DNS upstream hostnames need resolving
+  before any upstream is ready, dae now defaults to `119.29.29.29:53` and
+  `223.5.5.5:53`. Users outside mainland China likely want to set
+  `bootstrap_resolver` to a closer resolver.
+- `so_mark_from_dae` semantics: when the option is absent, dae now
+  auto-selects an internal fwmark for its own egress traffic instead of
+  leaving it unset. Setups whose policy routing matched on "no mark" must set
+  `so_mark_from_dae: 0` explicitly (an explicit `0` keeps the old behavior).
+- New `disable_thp` option (default `false`) can opt the dae process out of
+  transparent huge pages via `prctl(PR_SET_THP_DISABLE)`. The default leaves
+  kernel memory policy untouched; enable it if you observe RSS inflation on
+  `THP=always` systems.
+- Routing optimizer no longer merges single-function `!`-negated rules into
+  combined match sets. Merging negated sets changed match semantics
+  (`!a` + `!b` merged is not `!a && !b`); affected configs may observe routing
+  results narrowing back to what the rules literally say.
+- The bundled systemd unit no longer sets `MemoryHigh=512M` and restarts only
+  on abnormal exits (`Restart=on-abnormal`) with a crash-loop limit. dae also
+  no longer derives `GOMEMLIMIT` from `memory.high` — only `memory.max`
+  participates, and an explicit `GOMEMLIMIT` environment variable always wins.
+- A named parameter is now rejected on the routing functions that take bare
+  values (`pname`, `port`/`dport`, `sport`, `dscp`, `ip`/`dip`, `sip`,
+  `ipversion`, `l4proto`, `mac`, `qtype`, and the response-routing `upstream`).
+  The grammar accepts `key: value` inside every function call, and these
+  parsers used to ignore the key, so a mistyped parameter name was read as one
+  more operand: `port(bogus_param: 443)` silently built the same match set as
+  `port(443)` and `pname(bogus_param: 1)` matched a process named `1`, on both
+  the `dae run` and the `dae validate` path. Such a rule now fails with
+  `unsupported parameter key "bogus_param"` and names the accepted form. The
+  documented short form (`pname(NetworkManager)`, `port(443)`,
+  `dip(geoip:cn)`, `domain(geosite:cn, suffix:quay.io)`) is unaffected.
+
+  This one does not merely change a default: a config that used a parameter
+  name on these functions stops starting until the name is removed. That is the
+  point — the previous behaviour was a different rule, not the one written —
+  but it has to be reviewed before upgrading.
+- A truncated (TC=1) answer is now retried over TCP for the DNS upstreams that
+  can carry it, and only for those. RFC 7766 §5 requires a forwarder to retry a
+  truncated answer over TCP, and RFC 1035 §4.2.1 permits a server to answer
+  TC=1 when the answer does not fit one datagram; dae used to lose that signal:
+
+  - `udp://`: the retry is now performed, and the TCP forwarder is built from
+    the rewritten transport (it used to be rejected with `unexpected scheme:
+    udp`, so the retry never left the process and the client got TC=1);
+  - `tcp+udp://`: unchanged, it already retried on every UDP failure;
+  - as-is (the built-in transparent destination, or any other scheme): not
+    retried. As-is means "ask the server the request was addressed to, as the
+    request arrived" (see `docs/*/configuration/dns.md`), so the TC=1 answer the
+    destination sent is passed to the client verbatim, with no TCP connection
+    opened on the client's behalf and no second upstream selection. The client
+    decides for itself whether to retry over TCP, exactly as it would without
+    dae in the path. When the client's own UDP size limit is what truncated the
+    answer, the existing client-facing TC=1 path is unchanged.
+
+  A successful upgrade delivers the complete answer where the client used to
+  receive TC=1, so no configuration change is needed; the observable difference
+  is that these answers now resolve on the first query.
+
 ### v2.0.0 (Latest)
 
 > Release date: 2026/07/08

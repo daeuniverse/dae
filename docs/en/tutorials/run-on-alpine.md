@@ -1,6 +1,7 @@
 # Run on Alpine Linux
 
-**Note:** 
+**Note:**
+
 1. Alpine Linux 3.18 or newer verison has full eBPF support out-of-box, older version of Alpine Linux need to build kernel by yourself.
 2. From version 3.20, Alpine Linux has officially disabled some features dae needed beacuse of Alpine Linux's cross CPU architectures compatibility, so only `linux-virt` can be used to run dae defaultly. For `linux-lts` or `linux-edge`, you should build the kernel by yourself.
 3. This tutorial is for Alpine Linux 3.20 and newer.
