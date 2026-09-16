@@ -131,3 +131,33 @@ QUIC), and re-routed over the same rule set with the sniffed domain.
 Non-whitelisted traffic of that device still lands on the fallback, relayed
 through userspace. Requires sniffing to be enabled (`sniffing_timeout > 0`,
 `dial_mode != ip`); disable with `auto_sniff_punt: false`.
+
+## Parameter names and negated rules
+
+The functions that take bare values — `pname`, `port`/`dport`, `sport`, `dscp`,
+`ip`/`dip`, `sip`, `ipversion`, `l4proto`, `mac`, `qtype`, and the
+response-routing `upstream` — reject an unsupported parameter name. The grammar
+accepts `key: value` inside every call, and these parsers used to ignore an
+unknown key, so `port(bogus_param: 443)` silently built the same match set as
+`port(443)` and `pname(bogus_param: 1)` matched a process named `1`. Such a rule
+now fails with `unsupported parameter key "bogus_param"` and names the accepted
+form. The value prefixes these functions do understand — `geoip:`, `geosite:`
+and `ext:` in `dip(geoip:cn)` or `dip(ext:"file.dat:tag")` — are unaffected,
+as are the plain forms `pname(NetworkManager)` and `port(443)`. A configuration
+that carries a mistyped parameter name on one of these functions stops
+starting until the name is removed, so review the routing section before
+upgrading.
+
+The optimizer no longer merges single-function negated rules that share an
+outbound. Rules are tried in order, so two lines
+
+```shell
+!domain(geosite:a) -> my_group
+!domain(geosite:b) -> my_group
+```
+
+send traffic to `my_group` when it misses `a` **or** misses `b`. The merged form
+`!domain(geosite:a, geosite:b)` inverts the whole set and only matches traffic
+that misses **both**, which is narrower. dae now keeps the two lines as
+written, so a configuration that relied on the merged behaviour sees those
+rules match more traffic than before.
