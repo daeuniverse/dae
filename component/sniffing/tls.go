@@ -103,22 +103,24 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
-	// Search SNI
-	extensions, err := search.Slice(boundary-extensionsLength, boundary)
-	if err != nil {
-		return "", err
-	}
-	return findSniExtension(extensions)
+	// Search SNI. Operate over the extensions region with absolute indices
+	// instead of slicing the locator: slicing would box a new value into the
+	// Locator interface on every call (BuiltinBytesLocator.Slice and
+	// LinearLocator.Slice were a leading source of TLS/QUIC allocations).
+	// base is the absolute offset where the extensions block starts and length
+	// is its size; findSniExtension bounds iteration against length.
+	base := boundary - extensionsLength
+	return findSniExtension(search, base, extensionsLength)
 }
 
-func findSniExtension(search quicutils.Locator) (d string, err error) {
+func findSniExtension(search quicutils.Locator, base, length int) (d string, err error) {
 	i := 0
 	var b []byte
 	for {
-		if i+4 >= search.Len() {
+		if i+4 >= length {
 			return "", ErrNotFound
 		}
-		b, err = search.Range(i, i+4)
+		b, err = search.Range(base+i, base+i+4)
 		if err != nil {
 			return "", err
 		}
@@ -126,11 +128,11 @@ func findSniExtension(search quicutils.Locator) (d string, err error) {
 		extLength := int(binary.BigEndian.Uint16(b[2:]))
 
 		iNextField := i + 4 + extLength
-		if iNextField > search.Len() {
+		if iNextField > length {
 			return "", ErrNotApplicable
 		}
 		if typ == TlsExtension_ServerName {
-			b, err = search.Range(i+4, i+6)
+			b, err = search.Range(base+i+4, base+i+6)
 			if err != nil {
 				return "", err
 			}
@@ -140,7 +142,7 @@ func findSniExtension(search quicutils.Locator) (d string, err error) {
 			}
 			// Search HostName type SNI.
 			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += 3 + indicatorLen {
-				b, err = search.Range(j, j+3)
+				b, err = search.Range(base+j, base+j+3)
 				if err != nil {
 					return "", err
 				}
@@ -151,7 +153,7 @@ func findSniExtension(search quicutils.Locator) (d string, err error) {
 				if j+3+indicatorLen > iNextField {
 					return "", ErrNotApplicable
 				}
-				b, err = search.Range(j+3, j+3+indicatorLen)
+				b, err = search.Range(base+j+3, base+j+3+indicatorLen)
 				if err != nil {
 					return "", err
 				}
