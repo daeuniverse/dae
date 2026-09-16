@@ -8,8 +8,83 @@ on:
         type: string
         required: true
 
+permissions:
+  contents: read
+
 jobs:
+  preflight:
+    name: Preflight (tag commit, gates, asset names)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+
+      # The release must be built from the tag, not from a modified tree: the
+      # workflow used to `sed -i` the Makefile before packing dae-full-src.zip,
+      # so the published "corresponding source" no longer matched the tag.
+      - name: Assert the working tree matches the tag
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree differs from tag ${{ inputs.tag }}"
+            git status --porcelain
+            exit 1
+          fi
+
+      # The tag is only releasable when the gate check runs on that exact
+      # commit are green: the build job previously had no `needs:` at all, so a
+      # tag could be published from a commit whose tests never ran or failed.
+      - name: Assert required gates are green on the tag commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" > /tmp/check-runs.json
+          # `name:` matches a check run exactly, `prefix:` matches the matrix
+          # jobs whose check runs carry their matrix values in the name (the
+          # real names are "BPF Unit Test (15)" ... "(19)", never the bare job
+          # name). Every distinct name matching a gate must be green, so one
+          # failed matrix leg fails the preflight.
+          # "Lint" is the workflow name; its jobs are go-lint/ebpf-lint.
+          for gate in \
+            "name:Go Unit Test" \
+            "name:Go Race Detector" \
+            "name:Go Vet (real eBPF datapath)" \
+            "prefix:BPF Unit Test" \
+            "name:go-lint" \
+            "name:ebpf-lint" \
+            "name:build-env"; do
+            mode="${gate%%:*}"
+            pattern="${gate#*:}"
+            conclusion="$(jq -r --arg n "$pattern" --arg m "$mode" '
+              [ .[].check_runs[]
+                | select(if $m == "prefix" then (.name | startswith($n)) else .name == $n end) ]
+              | group_by(.name)
+              | map(sort_by(.started_at // "") | last)
+              | if length == 0 then "absent"
+                elif (map(select(.status != "completed")) | length) > 0 then "incomplete"
+                else (map(.conclusion // "unknown") | unique | join(",")) end' /tmp/check-runs.json)"
+            echo "gate '$pattern' ($mode) on ${sha}: ${conclusion}"
+            if [ "$conclusion" != "success" ]; then
+              echo "::error::gate '$pattern' ($mode) on ${sha} is '${conclusion}', expected 'success'"
+              exit 1
+            fi
+          done
+
+      # Every matrix leg resolves its own name in the build job with `jq -er`;
+      # this is the other half of the invariant (no two keys share a name).
+      - name: Assert release asset names are unique
+        run: ./scripts/check-asset-names.sh install/friendly-filenames.json
+
   build:
+    needs: [preflight]
     strategy:
       matrix:
         goos: [ linux ]
@@ -37,6 +112,14 @@ jobs:
             goarch: amd64
             goamd64: v3
           # END Linux AMD64 v1 v2 v3
+          # NOTE : GitHub currently runs a single `linux, riscv64` job
+          # for these three entries (upstream Build (Main) run 32984376230 and
+          # dae-linux-riscv64.zip), so the rva22u64/rva23u64 builds these
+          # entries declare are never produced at all. All four possible
+          # GORISCV64 keys are nevertheless present in
+          # install/friendly-filenames.json, because the per-leg `jq -er`
+          # lookup now fails the build instead of publishing `dae-null.zip`
+          # when a leg carries a value the JSON does not know.
           # BEGIN Linux RISCV64 rva20u64 rva22u64 rva23u64
           - goos: linux
             goarch: riscv64
@@ -61,7 +144,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag }}
@@ -78,25 +161,42 @@ jobs:
       - name: Show workflow information
         id: get_filename
         run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
+          set -euo pipefail
+          key="$GOOS-$GOARCH$GOARM$GOAMD64$GORISCV64"
+          if ! _NAME=$(jq -er --arg k "$key" '.[$k].friendlyName' < install/friendly-filenames.json); then
+            echo "::error::no friendly filename for matrix key '$key' in install/friendly-filenames.json; add it with a unique friendlyName before publishing"
+            exit 1
+          fi
+          # Printing the lookup key makes it self-evident in the log which
+          # GORISCV64/GOARM/GOAMD64 values a matrix leg resolved with (the
+          # riscv64 include entries collapse to one leg, so this is the only
+          # place the surviving value becomes visible).
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, GOAMD64: $GOAMD64, GORISCV64: $GORISCV64"
+          echo "matrix key: $key -> RELEASE_NAME: $_NAME"
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go 1.26
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 1.26
+          cache: false
 
-      - name: Go cache
-        uses: actions/cache@v5
+      - name: Cache Go modules
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-mod-1.26-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-
+            ${{ runner.os }}-go-mod-1.26-
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-1.26-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-${{ hashFiles('go.sum', 'Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-1.26-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-
 
       - name: Install Dependencies
         run: |
@@ -106,9 +206,7 @@ jobs:
       - name: Get project dependencies
         run: |
           git submodule update --init --recursive
-          GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
-          find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
-          sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
+          go mod download -modcacherw
 
       - name: Create directory for placing archives & packages temporarily
         run: mkdir -p ./bundled/
@@ -120,11 +218,13 @@ jobs:
           tar -I 'xz -9' -cvf ./bundled/dae-full-src.tar.xz --exclude .git --exclude bundled .
 
       - name: Build dae
+        env:
+          # Build inputs are passed to the build, never written into the
+          # Makefile: an edited Makefile is no longer the tag being released
+          # (the full-source archive above is packed from the same checkout).
+          GOFLAGS: "-modcacherw"
         run: |
           export CGO_ENABLED=0
-          export GOFLAGS="-trimpath -modcacherw"
-          # Go 1.26 optimization: newinliner, simd, heapminimum512kib, and randomizedheapbase64.
-          export GOEXPERIMENT="newinliner,simd,heapminimum512kib,randomizedheapbase64"
           export OUTPUT=pkgdir/usr/bin/dae
           export VERSION=${{ env.VERSION }}
           export CLANG=clang-15
@@ -133,10 +233,12 @@ jobs:
           install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
           install -Dm640 ./example.dae -t ./pkgdir/etc/dae/
           install -d ./pkgdir/usr/share/dae/
-          curl -L -o ./pkgdir/usr/share/dae/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./pkgdir/usr/share/dae/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          ./scripts/fetch-geo-data.sh ./pkgdir/usr/share/dae
           install -D pkgdir/usr/share/dae/geo{ip,site}.dat install/{dae.service,empty.dae} example.dae -t ./zip/
           install -D pkgdir/usr/bin/dae ./zip/dae-$ASSET_NAME
+
+      - name: Assert artifact build inputs (trace tag, GOEXPERIMENT)
+        run: ./scripts/check-artifact-build-env.sh "pkgdir/usr/bin/dae" "$GOARCH"
 
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
@@ -171,7 +273,7 @@ jobs:
                 case $pkg_mgr in
                   'deb') pkg_arch='i386' ;;
                   'rpm') pkg_arch='x86' ;;
-                  'pacman') pkg_arch'i486' ;;
+                  'pacman') pkg_arch='i486' ;;
                 esac ;;
               'arm64')
                 if [ $pkg_mgr == 'deb' ]; then
@@ -232,7 +334,7 @@ jobs:
           done
 
       - name: Upload files to Artifacts
-        uses: nanoufo/action-upload-artifacts-and-release-assets@v2
+        uses: nanoufo/action-upload-artifacts-and-release-assets@aa7eaa0c3c20b6bd65f8eba0634e555e59efc57a # v2
         with:
           if-no-files-found: ignore
           path: ./bundled/*
@@ -240,9 +342,12 @@ jobs:
   upload-release:
     needs: [build]
     runs-on: ubuntu-latest
+    # Only this job may write: action-gh-release attaches the assets to the tag.
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4.1.4
+        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
         with:
           path: release/
 
@@ -253,7 +358,7 @@ jobs:
           ls -lh */*
 
       - name: Upload full source and artifacts to GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.tag }}
           files: release/*/*

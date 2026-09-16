@@ -8,32 +8,49 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - "Makefile"
+      - "Dockerfile"
+      - "scripts/check-build-env.sh"
+      - "hack/maintenance/append_license_signature.sh"
+      - ".github/workflows/**"
       - ".github/workflows/lint.yml"
   push:
     branches:
       - main
-      - kdae
     paths:
       - "**/*.go"
       - "**/*.c"
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - "Makefile"
+      - "Dockerfile"
+      - "scripts/check-build-env.sh"
+      - "hack/maintenance/append_license_signature.sh"
+      - ".github/workflows/**"
       - ".github/workflows/lint.yml"
+
+permissions:
+  contents: read
 
 jobs:
   go-lint:
     runs-on: ubuntu-22.04
+    env:
+      CGO_ENABLED: 0
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
     - name: Set up Go 1.26
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
       with:
         go-version: "1.26.0"
 
+    - name: Apply the canonical build experiments
+      run: make -s print-goexperiment-env >> "$GITHUB_ENV"
+
     - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v9
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
       with:
         version: v2.11.0
         args: --timeout=10m --build-tags=dae_stub_ebpf
@@ -41,12 +58,49 @@ jobs:
   ebpf-lint:
     runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
     - name: Set up Perl
-      uses: shogo82148/actions-setup-perl@v1
+      uses: shogo82148/actions-setup-perl@ac3202722f5744e62a8fa3af3e1aaaebb08861f3 # v1
       with:
         perl-version: "5.38"
 
     - name: Run lint
       run: make ebpf-lint
+
+  build-env:
+    name: Build env single owner
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+    # /build inputs (GOEXPERIMENT, geo data pins) are owned by the
+    # Makefile and scripts/fetch-geo-data.sh; a second copy in .github/ or in
+    # the Dockerfile forks the released configuration and fails this gate.
+    - name: Assert build inputs have a single owner
+      run: ./scripts/check-build-env.sh
+
+  spdx-headers:
+    name: SPDX headers (changed files)
+    # Incremental by design: only the *.go files this pull request adds or
+    # modifies are checked, so the 58-file pre-existing backlog is
+    # triaged separately instead of turning every PR red.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        fetch-depth: 0
+
+    - name: Check SPDX headers on files changed by this PR
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        set -euo pipefail
+        mapfile -t files < <(git diff --diff-filter=ACMR --name-only "$BASE_SHA"...HEAD -- '*.go')
+        if [ "${#files[@]}" -eq 0 ]; then
+          echo "no changed .go files"
+          exit 0
+        fi
+        printf 'changed: %s\n' "${files[@]}"
+        ./hack/maintenance/append_license_signature.sh --check "${files[@]}"

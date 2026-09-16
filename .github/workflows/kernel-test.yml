@@ -8,46 +8,66 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - "scripts/semantic-refactor-*.sh"
+      - "scripts/semantic-refactor-*/**"
+      - "install/empty.dae"
       - ".github/workflows/kernel-test.yml"
   push:
     branches:
       - main
-      - kdae
     paths:
       - "**/*.go"
       - "**/*.c"
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - "scripts/semantic-refactor-*.sh"
+      - "scripts/semantic-refactor-*/**"
+      - "install/empty.dae"
       - ".github/workflows/kernel-test.yml"
+
+permissions:
+  contents: read
 
 jobs:
 
   build:
     runs-on: ubuntu-22.04
+    env:
+      CGO_ENABLED: 0
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
     - name: Set up Go 1.26
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
       with:
         go-version: 1.26
+        cache: false
+
+    - name: Apply the canonical build experiments
+      run: make -s print-goexperiment-env >> "$GITHUB_ENV"
 
     - name: Go cache
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-kernel-1.26-${{ hashFiles('**/go.sum', 'Makefile') }}
         restore-keys: |
-          ${{ runner.os }}-go-
+          ${{ runner.os }}-go-kernel-1.26-
+
+    - name: Validate semantic-refactor scripts
+      run: |
+        set -euo pipefail
+        find scripts -type f -name 'semantic-refactor-*.sh' -exec bash -n {} +
 
     - name: Generate and build
       run: |
         git submodule update --init
-        # Go 1.26 optimization: newinliner, simd, heapminimum512kib, and randomizedheapbase64.
-        export GOEXPERIMENT="newinliner,simd,heapminimum512kib,randomizedheapbase64"
+        # The Go experiment set is owned by the Makefile (DEFAULT_GOEXPERIMENT,
+        # read with `make -s print-goexperiment`); `make` below exports it, so
+        # this workflow must not carry a second copy (scripts/check-build-env.sh).
         make GOFLAGS="-buildvcs=false" CC=clang
 
     - name: Verify built binary is real eBPF (not stub)
@@ -58,8 +78,14 @@ jobs:
           exit 1
         fi
 
+    - name: Verify generated eBPF and kernel C sources
+      run: |
+        set -euo pipefail
+        make ebpf-sync-check
+        make ebpf-lint
+
     - name: Store executable
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
       with:
         name: dae
         path: dae
@@ -79,13 +105,23 @@ jobs:
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
 
       - name: Retrieve stored executable
-        uses: actions/download-artifact@v4.1.4
+        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
         with:
           name: dae
           path: dae
 
+      # NOTE: do NOT pre-install the LVH host dependencies (qemu, libvirt,
+      # virtinst, ...) before the Provision step. find-lvh-cli inside
+      # little-vm-helper derives a cache key via
+      #   apt-get -s install $dep | grep "Inst $dep"
+      # under bash -e -o pipefail; an already-installed package emits no Inst
+      # line, the grep exits 1, and provisioning dies silently (~3s, exit 1,
+      # both matrix legs). install-dependencies: 'true' lets LVH install the
+      # set itself. The 2026-08-14 "held broken packages" apt skew that once
+      # motivated a pre-install bypass was a live jammy-updates resolution
+      # breakage (the failing step ran only on cache miss) and has healed.
       - name: Provision LVH VMs
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           test-name: dae-test
           image-version: ${{ matrix.kernel }}
@@ -95,10 +131,33 @@ jobs:
             chmod +x /host/dae/dae
 
             apt update
-            apt install -y unzip
+            apt install -y unzip python3
 
+      - name: Check real-BPF reload lifecycle
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
+        with:
+          provision: 'false'
+          cmd: |
+            set -euo pipefail
+            /host/scripts/semantic-refactor-smoke.sh lifecycle /host/dae/dae /host/install/empty.dae 16
+            test ! -e /sys/fs/bpf/dae
+            ! ip link show dae0 >/dev/null 2>&1
+            ! ip netns list 2>/dev/null | grep -q '^daens'
+
+      - name: Check local UDP reload lifecycle
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
+        with:
+          provision: 'false'
+          cmd: |
+            set -euo pipefail
+            /host/scripts/semantic-refactor-smoke.sh udp-local /host/dae/dae 8
+            test ! -e /sys/fs/bpf/dae
+            ! ip link show dae0 >/dev/null 2>&1
+            ! ip netns list 2>/dev/null | grep -q '^daens'
+            ! ip link show dsmoke-udp0 >/dev/null 2>&1
+            ! ip netns list 2>/dev/null | grep -q '^dae-semantic-udp-server'
       - name: Setup network
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -109,7 +168,7 @@ jobs:
             docker run -td --name dae --privileged --network dae -v /host:/host -v /sys:/sys ubuntu:22.04 bash
 
       - name: Setup v2ray server
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -157,7 +216,7 @@ jobs:
             echo '{"v":"2","ps":"test","add":"v2ray","port":"23333","id":"b004539e-0d7b-7996-c378-fb040e42de70","aid":"0","net":"tcp","tls":"","type":"none","path":"","host":"v2ray"}' > vmess.json
 
       - name: Setup dae server
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -211,29 +270,27 @@ jobs:
             cat dae.log
 
       - name: Check WAN IPv4 TCP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
             set -ex
 
             docker exec dae curl 1.1.1.1:443
-            cat /host/dae.log | grep -F -- '-> 1.1.1.1:443'
             cat /host/v2ray.access.log | grep -q 'accepted tcp:1.1.1.1:443'
 
       - name: Check WAN IPv4 UDP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
             set -ex
 
             docker exec dae dig @1.1.1.1 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
 
       - name: Check WAN IPv6 TCP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -241,10 +298,10 @@ jobs:
 
             docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
             cat /host/nc.log | grep -q 'succeeded!'
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
+            cat /host/v2ray.access.log | grep -F -- 'accepted tcp' | grep -F -- '2606:4700:4700::1111' | grep -F -- ':443'
 
       - name: Check WAN IPv6 UDP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -254,10 +311,10 @@ jobs:
               docker exec dae dig @2606:4700:4700::1111 one.one.one.one && break
               sleep 2
             done
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+            cat /host/v2ray.access.log | grep -F -- 'accepted udp' | grep -F -- '2606:4700:4700::1111' | grep -F -- ':53'
 
       - name: Setup WAN UDP port conflict
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -280,18 +337,17 @@ jobs:
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check WAN IPv4 UDP with port conflict
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
             set -ex
 
             docker exec dae dig @1.1.1.1 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> 1.1.1.1:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:1.1.1.1:53'
 
       - name: Check WAN IPv6 UDP with port conflict
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -301,10 +357,10 @@ jobs:
               docker exec dae dig @2606:4700:4700::1111 one.one.one.one && break
               sleep 2
             done
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+            cat /host/v2ray.access.log | grep -F -- 'accepted udp' | grep -F -- '2606:4700:4700::1111' | grep -F -- ':53'
 
       - name: Setup LAN
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -390,29 +446,27 @@ jobs:
             cat dae.log
 
       - name: Check LAN IPv4 TCP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
             set -ex
 
             docker exec dae ip net e dae curl 1.0.0.1
-            cat /host/dae.log | grep -F -- '-> 1.0.0.1:80'
             cat /host/v2ray.access.log | grep -q 'accepted tcp:1.0.0.1:80'
 
       - name: Check LAN IPv4 UDP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
             set -ex
 
             docker exec dae ip net e dae dig @8.8.4.4 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
 
       - name: Check LAN IPv6 TCP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -420,10 +474,10 @@ jobs:
 
             docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80 &> /host/nc.log
             cat /host/nc.log | grep -q 'succeeded!'
-            cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1001]:80'
+            cat /host/v2ray.access.log | grep -F -- 'accepted tcp' | grep -F -- '2606:4700:4700::1001' | grep -F -- ':80'
 
       - name: Check LAN IPv6 UDP
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -433,10 +487,10 @@ jobs:
               docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one && break
               sleep 2
             done
-            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+            cat /host/v2ray.access.log | grep -F -- 'accepted udp' | grep -F -- '2001:4860:4860::8844' | grep -F -- ':53'
 
       - name: Setup LAN UDP port conflict
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -469,18 +523,17 @@ jobs:
             docker exec dae ping -c1 fd00:ffff::1
 
       - name: Check LAN IPv4 UDP with port conflict
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
             set -ex
 
             docker exec dae ip net e dae dig @8.8.4.4 one.one.one.one
-            cat /host/dae.log | grep -F -- '-> 8.8.4.4:53'
             cat /host/v2ray.access.log | grep -q 'accepted udp:8.8.4.4:53'
 
       - name: Check LAN IPv6 UDP with port conflict
-        uses: cilium/little-vm-helper@v0.0.28
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           provision: 'false'
           cmd: |
@@ -490,4 +543,4 @@ jobs:
               docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one && break
               sleep 2
             done
-            cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+            cat /host/v2ray.access.log | grep -F -- 'accepted udp' | grep -F -- '2001:4860:4860::8844' | grep -F -- ':53'
