@@ -127,5 +127,9 @@ replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260910
 // CONNECT is denied, out-of-bounds naive padding on 32-bit builds, vmess UDP
 // targets encoded with the IPv6 addr type, the missing shadowsocks-2022
 // response request-salt verification, and the simple-obfs response-header
-// bound ordering.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260917223728-6a44445c9106
+// bound ordering. This revision also authenticates REALITY handshakes with
+// AES-GCM, the algorithm both reference servers decrypt with, instead of
+// deriving it from the offered cipher suites, reports fingerprints that provide
+// no usable TLS 1.3 key share, and resolves fingerprint names the way Xray and
+// sing-box do.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260918071756-f0fdbaa1125b
