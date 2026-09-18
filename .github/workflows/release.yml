@@ -13,22 +13,22 @@ permissions:
 
 jobs:
   preflight:
-    name: Preflight (tag commit, gates, asset names)
+    name: Preflight (tag commit, asset names)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: read
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
     steps:
       - name: Checkout codebase
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
+          ref: refs/tags/${{ inputs.tag }}
 
       # The release must be built from the tag, not from a modified tree: the
       # workflow used to `sed -i` the Makefile before packing dae-full-src.zip,
       # so the published "corresponding source" no longer matched the tag.
       - name: Assert the working tree matches the tag
+        id: tag
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ]; then
@@ -36,55 +36,34 @@ jobs:
             git status --porcelain
             exit 1
           fi
-
-      # The tag is only releasable when the gate check runs on that exact
-      # commit are green: the build job previously had no `needs:` at all, so a
-      # tag could be published from a commit whose tests never ran or failed.
-      - name: Assert required gates are green on the tag commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          sha="$(git rev-parse HEAD)"
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" > /tmp/check-runs.json
-          # `name:` matches a check run exactly, `prefix:` matches the matrix
-          # jobs whose check runs carry their matrix values in the name (the
-          # real names are "BPF Unit Test (15)" ... "(19)", never the bare job
-          # name). Every distinct name matching a gate must be green, so one
-          # failed matrix leg fails the preflight.
-          # "Lint" is the workflow name; its jobs are go-lint/ebpf-lint.
-          for gate in \
-            "name:Go Unit Test" \
-            "name:Go Race Detector" \
-            "name:Go Vet (real eBPF datapath)" \
-            "prefix:BPF Unit Test" \
-            "name:go-lint" \
-            "name:ebpf-lint" \
-            "name:build-env"; do
-            mode="${gate%%:*}"
-            pattern="${gate#*:}"
-            conclusion="$(jq -r --arg n "$pattern" --arg m "$mode" '
-              [ .[].check_runs[]
-                | select(if $m == "prefix" then (.name | startswith($n)) else .name == $n end) ]
-              | group_by(.name)
-              | map(sort_by(.started_at // "") | last)
-              | if length == 0 then "absent"
-                elif (map(select(.status != "completed")) | length) > 0 then "incomplete"
-                else (map(.conclusion // "unknown") | unique | join(",")) end' /tmp/check-runs.json)"
-            echo "gate '$pattern' ($mode) on ${sha}: ${conclusion}"
-            if [ "$conclusion" != "success" ]; then
-              echo "::error::gate '$pattern' ($mode) on ${sha} is '${conclusion}', expected 'success'"
-              exit 1
-            fi
-          done
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Every matrix leg resolves its own name in the build job with `jq -er`;
       # this is the other half of the invariant (no two keys share a name).
       - name: Assert release asset names are unique
         run: ./scripts/check-asset-names.sh install/friendly-filenames.json
 
-  build:
+  # Run gates on the resolved tag commit: path-filtered push checks may be absent.
+  go-test:
     needs: [preflight]
+    uses: ./.github/workflows/go-test.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+
+  bpf-test:
+    needs: [preflight]
+    uses: ./.github/workflows/bpf-test.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+
+  lint:
+    needs: [preflight]
+    uses: ./.github/workflows/lint.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+
+  build:
+    needs: [preflight, go-test, bpf-test, lint]
     strategy:
       matrix:
         goos: [ linux ]
@@ -147,7 +126,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.preflight.outputs.sha }}
 
       - name: Get the version
         id: get_version
