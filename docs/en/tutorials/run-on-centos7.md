@@ -1,67 +1,71 @@
 # Run on CentOS 7
 
 > [!WARNING]
-> CentOS 7 and RHEL 6.5/7 do not support eBPF out of the box; in other words, you must build the kernel (>= 5.17) yourself and install it.
+> CentOS 7 and RHEL 6.5/7 do not support eBPF out of the box. You must build and install kernel version 5.17 or later.
 
 ## Introduction
 
-CentOS 7 is a veteran Linux distribution, although its life cycle is not long, but there should still be some people using it. This article documents the steps to run dae on CentOS 7 or RHEL 6.5.
+Run dae on CentOS 7 or RHEL 6.5 with the following steps.
 
 ## Upgrade process
 
-### Updating the kernel
+### Update the kernel
 
-Update the kernel that supports `BTF`
+Install a kernel with BTF support:
 
 ```bash
 curl -s https://repo.cooluc.com/mailbox.repo > /etc/yum.repos.d/mailbox.repo
 yum makecache
-yum update kernel
+yum --enablerepo=mailbox-kernel update kernel
 ```
 
 > [!NOTE]
-> The kernel is based on Linux 6.1 LTS, rebuilt to support `BBRv2`, and enables `eBPF` support. It can also be compiled by yourself, and the source package is available at <https://repo.cooluc.com/kernel/7/SRPMS/>
+> `mailbox.repo` ships the kernel in the `mailbox-kernel` section, which is disabled by default; `--enablerepo` turns it on for this command. The kernel is an LTS release rebuilt with BBRv2 and eBPF support. To compile it yourself, get the source package from <https://repo.cooluc.com/kernel/7/SRPMS>.
 
 ### Mount BPF
 
 ```bash
-curl -s https://repo.cooluc.com/kernel/files/sys-fs-bpf.mount > /etc/systemd/system/sys-fs-bpf.mount
+curl -fsS https://repo.cooluc.com/kernel/files/sys-fs-bpf.mount > /etc/systemd/system/sys-fs-bpf.mount
 systemctl enable sys-fs-bpf.mount
 ```
 
-### Mount Control Group v2
+### Mount control group v2
+
+> [!NOTE]
+> The address below no longer serves `mount-cgroup2.service` (HTTP 404 when this page was last checked). `curl -f` makes the failure visible instead of writing the error page into the unit file; supply your own unit that mounts cgroup v2 if the download fails.
 
 ```bash
-curl -s https://repo.cooluc.com/kernel/mount-cgroup2.service > /etc/systemd/system/mount-cgroup2.service
+curl -fsS https://repo.cooluc.com/kernel/mount-cgroup2.service > /etc/systemd/system/mount-cgroup2.service
 systemctl enable mount-cgroup2.service
 ```
 
-### Reboot the system to make the kernel effective
+### Reboot to use the new kernel
 
 > [!NOTE]
-> Check the kernel version. If the version is `6.1.xx-1.el7.x86_64`, it means that the operation is successful.
+> Check the kernel version. A version newer than 5.17 that ends in `-1.el7.x86_64` confirms the upgrade:
 
 ```bash
 uname -r
 ```
 
-If the kernel version does not change, it means that the kernel has been updated before, and you need to rebuild the grub2 bootloader to make the new kernel the highest priority.
+If the version has not changed, the kernel was updated previously. Rebuild the
+grub2 bootloader configuration to give the new kernel the highest priority.
 
-To set the latest kernel as the default:
+Set the latest kernel as the default:
 
 ```bash
 grub2-set-default 0
 ```
 
-To rebuild the kernel bootloader configuration:
+Rebuild the bootloader configuration:
 
 ```bash
 grub2-mkconfig -o /boot/grub2/grub.cfg
 ```
 
-### Running dae
+### Run dae
 
-Now you can download dae and run it as usual
+Download and run dae:
 
 ```bash
 mkdir -p /opt/dae && cd /opt/dae

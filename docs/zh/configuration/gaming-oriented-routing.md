@@ -1,8 +1,8 @@
-# Gaming-oriented routing
+# 面向游戏的路由
 
-## 1. Configure dae
+## 1. 配置 dae
 
-DAE configuration (for example, `/etc/dae/config.dae`):
+dae 配置，例如 `/etc/dae/config.dae`：
 
 ```
 routing {            
@@ -15,11 +15,11 @@ dscp(8) -> direct(mark:0x800)
 
 ```
 
-## 2. Configure the OpenWrt network
+## 2. 配置 OpenWrt 网络
 
-OpenWrt network configuration (for example, `/etc/config/network`):
+OpenWrt 网络配置，例如 `/etc/config/network`：
 
-Choose the tunnel MTU carefully. CS2 requires an MTU greater than 1300 because its UDP ping packets are 1300 bytes.
+请谨慎选择隧道 MTU。CS2 的 UDP Ping 为 1300 字节，因此要求 MTU > 1300。
 
 ```
 config interface 'wg100'                                                 
@@ -56,9 +56,9 @@ config rule6
         option mark '0x800/0x800'
 ```
 
-## 3. Configure the OpenWrt firewall
+## 3. 配置 OpenWrt 防火墙
 
-OpenWrt firewall configuration (for example, `/etc/config/firewall`):
+OpenWrt 防火墙配置，例如 `/etc/config/firewall`：
 
 ```
 config nat                       

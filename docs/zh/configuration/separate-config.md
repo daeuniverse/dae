@@ -1,13 +1,13 @@
-# Separate Configuration Files
+# 拆分配置文件
 
-Split your configuration into several files when you want to:
+以下情况适合将配置拆分为多个文件：
 
-- Switch nodes by modifying a configuration file with tools such as `sed`.
-- Override parts of someone else's configuration.
+- 通过 `sed` 等工具修改配置文件来切换节点。
+- 复制他人的配置文件后，覆盖其中的某些部分。
 
-## Example
+## 示例
 
-Directory structure:
+目录结构：
 
 ```sh
 # tree /etc/dae
@@ -19,11 +19,16 @@ Directory structure:
 └── config.dae
 ```
 
-`include` paths follow these rules:
+入口配置文件是传递给 `dae -c ...` 的文件。`include` 路径按以下规则处理：
 
-- Relative paths, such as `config.d/*.dae`, resolve relative to the entry configuration file's directory, not the current working directory. The entry file is the file passed to `dae -c ...`.
-- Absolute paths, such as `/etc/dae/config.d/*.dae`, are used as-is.
-- For security, dae only allows included files under the entry configuration directory.
+| 路径类型 | 示例 | 处理方式 |
+| --- | --- | --- |
+| 相对路径 | `config.d/*.dae` | 相对于入口配置文件所在目录解析，而非当前工作目录 |
+| 绝对路径 | `/etc/dae/config.d/*.dae` | 按原样使用 |
+
+出于安全原因，dae 仅允许包含入口配置目录下的文件。
+
+配置文件如下：
 
 ```jsonc
 # config.dae
@@ -124,7 +129,7 @@ routing {
 }
 ```
 
-Run dae with the entry configuration file:
+然后通过以下命令运行 `dae`：
 
 ```sh
 dae run -c /etc/dae/config.dae

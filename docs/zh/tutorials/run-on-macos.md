@@ -1,18 +1,18 @@
-# Run on macOS
+# 在 macOS 上运行
 
-## Install Homebrew
+## 安装 Homebrew
 
-### For x86
+### x86
 
-Install Homebrew using the [official instructions](https://docs.brew.sh/Installation):
+按照[官方文档](https://docs.brew.sh/Installation)安装 Homebrew：
 
 ```shell
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
 ```
 
-### For ARM64
+### ARM64
 
-To install ARM64 packages, install Homebrew in `/opt/homebrew`:
+要安装 ARM64 架构的软件包，应将 Homebrew 安装在 `/opt/homebrew`：
 
 ```shell
 cd /opt
@@ -23,12 +23,11 @@ curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C ho
 
 ## Lima
 
-### Setup
+### 配置
 
-Run dae in a [Lima](https://github.com/lima-vm/lima) virtual machine to proxy the
-macOS host's entire network.
+通过 [Lima](https://github.com/lima-vm/lima) 虚拟机运行 dae，可代理整个 macOS 主机的网络。
 
-#### 1. Install Lima and socket_vmnet
+#### 1. 安装 Lima 和 socket_vmnet
 
 ```shell
 # Install lima for VM and socket_vmnet for bridge.
@@ -39,7 +38,7 @@ limactl sudoers >etc_sudoers.d_lima
 sudo install -o root etc_sudoers.d_lima /etc/sudoers.d/lima
 ```
 
-#### 2. Configure Lima and the dae VM
+#### 2. 配置 Lima 和 dae 虚拟机
 
 ```shell
 # Configure lima networks.
@@ -65,12 +64,14 @@ disk: "3GiB"
 EOF
 ```
 
-#### 3. Start and configure the dae VM
+#### 3. 启动并配置 dae 虚拟机
 
 ```shell
 # Start dae VM.
 limactl start dae
 ```
+
+进入虚拟机，配置网络并安装 dae：
 
 ```shell
 # Enter the dae VM.
@@ -165,12 +166,9 @@ sudo systemctl enable --now dae.service
 exit
 ```
 
-#### 4. Set the macOS default route to the dae VM
+#### 4. 将 macOS 默认路由指向 dae 虚拟机
 
-> **Note**
-> You may need to run this command each time you connect to a network.
->
-> To automate it, see [Auto set route and DNS](#auto-set-route-and-dns).
+> **注意**：每次连接网络后，可能都需要执行此命令。如需自动执行，请参阅[自动设置路由和 DNS](#自动设置路由和-dns)。
 
 ```shell
 # Get IP of dae VM.
@@ -181,16 +179,16 @@ sudo route delete default; sudo route add default $dae_ip
 networksetup -setdnsservers Wi-Fi $dae_ip
 ```
 
-#### 5. Verify connectivity
+#### 5. 验证连通性
 
 ```shell
 # Verify.
 curl -v ipinfo.io
 ```
 
-### Auto set route and DNS
+### 自动设置路由和 DNS
 
-#### 1. Create the network update script
+#### 1. 创建网络更新脚本
 
 ```shell
 # The script to execute.
@@ -213,13 +211,13 @@ EOF
 chmod +x /Users/Shared/bin/dae-network-update.sh
 ```
 
-#### 2. Allow `route` to run without a password
+#### 2. 允许免密码执行 `route`
 
 ```shell
 if [ $(id -u) -eq "0" ]; then echo 'Do not use root!!'; else echo "$(whoami) ALL=(ALL) NOPASSWD: $(which route)" | sudo tee /etc/sudoers.d/"$(whoami)"-route; fi
 ```
 
-#### 3. Create the plist service file
+#### 3. 创建 plist 服务文件
 
 ```shell
 cat << 'EOF' > ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist
@@ -253,7 +251,7 @@ cat << 'EOF' > ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist
 EOF
 ```
 
-#### 4. Load the plist service
+#### 4. 加载 plist 服务
 
 ```shell
 launchctl load ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist

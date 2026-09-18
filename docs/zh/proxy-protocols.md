@@ -1,119 +1,94 @@
-# 其他代理协议
+# 代理协议
 
-> **Note**: dae 目前支持以下代理协议
+dae 支持以下代理协议：
 
-- [x] HTTP(S), naiveproxy
+| 协议 | 支持细节 | URI 格式 |
+| --- | --- | --- |
+| HTTP(S)、naiveproxy | — | [HTTP(S)](#https) |
+| Socks | **版本**： Socks4 / Socks4a / Socks5 | [Socks](#socks) |
+| VMess / VLESS | **VMess**： AEAD, alterID=0<br>**传输**： TCP / WS / gRPC / Meek / HTTPUpgrade<br>**TLS**：支持 Reality | [v2rayN](https://github.com/2dust/v2rayN/wiki/%E5%88%86%E4%BA%AB%E9%93%BE%E6%8E%A5%E6%A0%BC%E5%BC%8F%E8%AF%B4%E6%98%8E(ver-2))<br>[DuckSoft](https://github.com/XTLS/Xray-core/discussions/716) |
+| Shadowsocks | **加密**： AEAD / Stream Ciphers<br>**插件**： simple-obfs / shadow-tls (SIP003)，参阅[插件说明](#shadowsocks-插件) | [SIP002](https://shadowsocks.org/doc/sip002.html)<br>[SIP008](https://shadowsocks.org/doc/sip008.html) |
+| ShadowsocksR | — | — |
+| Trojan | Trojan-gfw / Trojan-go | [trojan/trojan-go](https://p4gefau1t.github.io/trojan-go/developer/url) |
+| Tuic | **版本**： v5 | [Tuic](https://github.com/daeuniverse/dae/discussions/182) |
+| Juicity | — | [Juicity](https://github.com/juicity/juicity?tab=readme-ov-file#link-format) |
+| Hysteria2 | — | [Hysteria2](https://v2.hysteria.network/docs/developers/URI-Scheme) |
+| AnyTLS | — | [AnyTLS](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md) |
+| 代理链（灵活协议） | — | [Proxy chain](https://github.com/daeuniverse/dae/discussions/236) |
+
+表中协议均已支持。“—”表示原文未列出细分信息或 URI 参考链接。
+
+## URI 示例
+
+### HTTP(S)
 
   ```
   https://[[user:]pass@]hostname:port/
   ```
 
-- [x] Socks
-  - [x] Socks4
-  - [x] Socks4a
-  - [x] Socks5
+### Socks
 
   ```
   socks4://[[user:]pass@]hostname:port/
   socks5://[[user:]pass@]hostname:port/
   ```
 
-- [x] VMess(AEAD, alterID=0) / VLESS
-  - [x] TCP
-  - [x] WS
-  - [x] TLS
-    - [x] Reality
-  - [x] gRPC
-  - [x] Meek
-  - [x] HTTPUpgrade
+## Shadowsocks 插件
 
-  [v2rayN URI Schema](https://github.com/2dust/v2rayN/wiki/%E5%88%86%E4%BA%AB%E9%93%BE%E6%8E%A5%E6%A0%BC%E5%BC%8F%E8%AF%B4%E6%98%8E(ver-2))
+v2ray-plugin 未标记为支持，但其 Websocket（+TLS）子项已标记为支持。
 
-  [DuckSoft URI Schema](https://github.com/XTLS/Xray-core/discussions/716)
+ShadowTLS v3 链接也可直接使用 `shadowtls://`。
 
-- [x] Shadowsocks
-  - [x] AEAD Ciphers
-  - [x] Stream Ciphers
-  - [x] simple-obfs
-  - [x] shadow-tls (SIP003 plugin)
-  - [ ] v2ray-plugin
-    - [x] Websocket (+TLS)
+需要浏览器式 TLS 指纹的节点可采用以下任一配置方式：
 
-  ShadowTLS v3 链接也可以直接使用 `shadowtls://`。
-  对于需要浏览器指纹的节点，建议设置 `global.tls_implementation: utls`，
-  并保持 `global.utls_imitate` 默认值 `chrome_auto`，或者在链接查询参数中追加
-  `tlsImplementation=utls&utlsImitate=chrome`。
-  如果服务端不希望带自定义 SNI，请省略 `sni`，或明确写成空值。
+- 设置 `global.tls_implementation: utls`，并保留 `global.utls_imitate` 的默认值 `chrome_auto`。
+- 在链接的查询参数中附加 `tlsImplementation=utls&utlsImitate=chrome`。
 
-  [SIP002](https://shadowsocks.org/doc/sip002.html)
+如果提供商要求不使用自定义 SNI，请省略 `sni`，或将其值明确设为空。
 
-  [SIP008](https://shadowsocks.org/doc/sip008.html)
+## 外部代理程序
 
-- [x] ShadowsocksR
+可使用外部代理程序扩展协议支持。以下以 naiveproxy 为例。
 
-- [x] Trojan
-  - [x] Trojan-gfw
-  - [x] Trojan-go
-
-  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url)
-
-- [x] Tuic (v5)
-
-  [Tuic URI Schema](https://github.com/daeuniverse/dae/discussions/182)
-
-- [x] Juicity
-
-  [Juicity URI Schema](https://github.com/juicity/juicity?tab=readme-ov-file#link-format)
-
-- [x] Hysteria2
-
-  [Hysteria2 URI Schema](https://v2.hysteria.network/zh/docs/developers/URI-Scheme)
-
-- [x] AnyTLS
-
-  [AnyTLS URI Schema](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md)
-
-- [x] Proxy chain (flexible protocol)
-
-  [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
-
-有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
-
-尽管 dae 等代理程序支持 HTTPS 协议，但由于并不使用 chromium 网络栈，削弱了 naiveproxy 的伪装效果，因此可以选择外接 naiveproxy 程序来实现。
+dae 和其他代理程序虽支持 HTTPS 协议，却不使用 Chromium 网络栈，因而会削弱 naiveproxy 的伪装效果。因此，建议使用外部 naiveproxy 程序。
 
 1. 启动 naiveproxy：
 
-   样例使用 naiveproxy 开启一个 HTTP 监听端口。注意，HTTP 代理不支持代理 udp 流量，所以如果你外接其他代理程序，建议优先考虑使用 socks5 端口。
+   本示例让 naiveproxy 监听 HTTP 端口。HTTP 代理不支持 UDP 流量，因此使用外部代理程序时，建议优先使用 SOCKS5 端口。
 
    ```bash
    naiveproxy --listen=http://127.0.0.1:1090 --proxy=https://yourlink
    ```
 
-2. 在 dae 配置的 node 一节中，新增一行：`http://127.0.0.1:1090`，并记得在所使用的组中使用该节点。
+2. 在 dae 配置的节点部分添加 `http://127.0.0.1:1090`，并在所用组中使用此节点。
 
-3. 如果你绑定了 WAN 接口，即在 `global.wan_interface` 填写了内容，确保在 routing 一节的靠上位置增加一行，以避免流量从 dae 流向 naiveproxy 之后再次流向 dae，造成回环：
+3. 若已绑定 WAN 接口，即填写了 `global.wan_interface`，请在 `routing` 部分靠前的位置添加以下规则。这可防止流量经 naiveproxy 后回到 dae，造成环路：
 
    ```shell
    pname(naiveproxy) -> must_direct
    ```
 
-   这里的 pname 的含义是进程名。你可通过启动时的命令，或运行时通过 `ps -ef` 命令或者观察 dae 的日志来确定 naiveproxy 的进程名。must_direct 的含义是所有流量，包括 dns 查询都放行直连，不重定向至 dae。
+   此处 `pname` 匹配进程名。可通过查看启动命令、运行时执行 `ps -ef` 命令，或查看 dae 日志确定 naiveproxy 的进程名。
 
-   只绑定 LAN 接口的用户不需要做这一步。
+   `must_direct` 表示允许包括 DNS 查询在内的全部流量直接通过，不重定向至 dae。
+
+   仅绑定 LAN 接口的用户无需执行此步骤。
 
 ## 兼容性说明
 
-### VLESS XTLS Vision 与畸形 ServerHello
+### VLESS 的 XTLS Vision 与格式错误的 ServerHello
 
-XTLS Vision 只有在客户端从服务端 `ServerHello` 中读出密码套件后才能启用：Vision 的填充策略由该套件决定，猜测套件会破坏数据流。因此 outbound 层中的 VLESS 实现仅在握手消息格式正确时解析密码套件，即 `legacy_session_id` 长度在 RFC 8446 第 4.1.2 节允许的 0..32 字节范围内、且消息长度足以包含该字段时。
+flow 为 `xtls-rprx-vision` 时，客户端从第一次写入起就发送 Vision 帧：先是填充头，随后是随机填充。TLS 负载短于 900 字节时，会填充到总长 900 至 1399 字节；其他负载填充 0 至 255 字节。这种帧格式不等待服务器的 `ServerHello`。从 `ServerHello` 读取的密码套件只决定客户端随后是否切换到 XTLS direct 模式；在该模式下，客户端把内层 TLS 记录直接写入底层连接。
 
-当 `ServerHello` 畸形（session ID 超过 32 字节、握手被截断或超长）时，密码套件保持未设置，**该连接不会启用 XTLS Vision，而是退回普通 VLESS 中继**：不施加 Vision 填充，也不产生协议错误。这个失败方向是刻意选择的：从畸形消息推断密码套件会给出错误的填充，直接破坏连接。
+出站层的 VLESS 实现在完成本地边界检查后，才从 `ServerHello` 读取密码套件。读到的数据块从记录起始处算起必须至少有 79 字节，记录长度字段加 5 必须不小于 79。`legacy_session_id` 长度必须符合 RFC 8446 第 4.1.2 节规定的 0 至 32 字节范围，密码套件的两个字节必须落在该数据块内。解析器不校验 24 位握手长度，不限制记录长度上限，也不等待整条记录到齐。
 
-该行为位于 dae 依赖的 outbound 库中；dae 自身不解析该握手。
+如果某项检查失败，例如会话 ID 超过 32 字节，或数据块太短而放不下密码套件，则不设置密码套件。`ServerHello` 协商出 TLS 1.2，或密码套件不是 TLS 1.3 套件，或密码套件为 `TLS_AES_128_CCM_8_SHA256` 时，同样跳过 direct 模式。此后客户端一旦写入 TLS 应用数据，或过滤器检查过 6 个数据包，就用命令 `0x01`（填充结束）结束填充阶段；该帧本身仍带填充。之后的流量在外层 TLS 之上的 Vision 流中不加填充地转发，也不报告协议错误。
 
-### 基于 QUIC 的协议的拥塞控制覆盖
+此行为由 dae 依赖的出站库实现；dae 本身不解析握手消息。
 
-`tuic`、`juicity`、`hysteria2` 节点链接支持客户端本地的 `cc_override` 查询参数，用于指定客户端安装的拥塞控制算法。该参数不会发送给服务端，且优先于服务端下发的算法：
+### 覆盖基于 QUIC 的协议的拥塞控制算法
+
+`tuic`、`juicity` 和 `hysteria2` 节点链接支持仅作用于客户端的 `cc_override` 查询参数，用于选择客户端使用的拥塞控制算法。该参数不会发送给服务器。在 `tuic` 和 `juicity` 上，它优先于链接的 `congestion_control` 参数；在 `hysteria2` 上，它优先于服务器应答的 `rx`：
 
 ```
 tuic://<uuid>:<password>@<server>:<port>?congestion_control=bbr&cc_override=bbr3
@@ -121,6 +96,11 @@ juicity://<uuid>:<password>@<server>:<port>?congestion_control=bbr&cc_override=b
 hysteria2://<auth>:<password>@<server>:443?upmbps=20&downmbps=100&cc_override=bbr3
 ```
 
-`tuic` 与 `juicity` 支持 `bbr`、`cubic`、`new_reno`、`brutal`、`bbr3`；`hysteria2` 支持 `bbr`、`brutal`、`bbr3`。取值在匹配前统一转为小写并去除首尾空白；不受支持的值会在构造 dialer 时使该节点直接失败，而不是静默回退。
+| 协议 | `cc_override` 支持的值 |
+| --- | --- |
+| `tuic`、`juicity` | `bbr`、`cubic`、`new_reno`、`brutal`、`bbr3` |
+| `hysteria2` | `bbr`、`brutal`、`bbr3` |
 
-不设置 `cc_override` 时，这三个协议安装 `bbr3`；在链接上写 `cc_override=bbr` 可让该节点恢复此前的稳定默认。
+匹配前会将参数值转为小写，并去除首尾空白。如果参数值不受支持，节点会在构造 dialer 时失败，而不是静默回退。在 `tuic` 和 `juicity` 上，只有 `brutal` 和 `bbr3` 会安装各自的 sender；`bbr`、`cubic` 和 `new_reno` 安装的都是同一个 BBR sender，因为出站库没有 CUBIC 和 NewReno 实现。`cc_override=brutal` 只在已知发送速率时才安装 Brutal：在 `tuic` 和 `juicity` 上，链接必须带有正值的 `cwnd`（单位为每秒字节数）；在 `hysteria2` 上，必须按下文所述声明正值的上传速率。没有速率时，连接会安装 BBR（不是 `bbr3`），既不报错，也不写日志。
+
+未设置 `cc_override` 时，`tuic` 和 `juicity` 只在链接设置了 `congestion_control=brutal` 且 `cwnd` 为正值时安装 `brutal`。其他情况一律安装 `bbr3`。`hysteria2` 在服务器未应答 `rx=auto` 且已声明上传速率时，按服务器 `rx` 与客户端上传速率中的较小者安装 `brutal`；否则安装 `bbr3`。上传速率来自链接的 `upmbps` 与 `downmbps`，或 `maxTx` 与 `maxRx`，否则来自全局的 `bandwidth_max_tx` 与 `bandwidth_max_rx`；每对参数必须两个值都设置。在链接中添加 `cc_override=bbr`，可为该节点恢复先前稳定版本的默认算法。

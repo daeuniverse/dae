@@ -2,46 +2,38 @@
 
 [**简体中文**](../zh/README.md) | [**English**](README.md)
 
-## Linux Kernel Requirement
+## Linux Kernel Requirements
 
-## Kernel Version
+### Kernel Version
 
 Use `uname -r` to check the kernel version on your machine.
 
 > **Note**
-> If you find your kernel version is `< 5.17`, follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to the minimum required version.
+> If your kernel version is below 5.17, follow the [Upgrade Guide](user-guide/kernel-upgrade.md) to reach the minimum required version.
 
-`Bind to LAN: >= 5.17`
+| Use case | Minimum kernel version | Traffic affected |
+| --- | --- | --- |
+| Bind to LAN | 5.17 | Traffic from LAN devices when dae acts as an intermediate device; local programs are unaffected if only LAN is bound. |
+| Bind to WAN | 5.17 | Traffic from local programs; traffic arriving on other interfaces is unaffected if only WAN is bound. |
+| Run `dae trace` | 5.15 | Network connectivity troubleshooting. |
 
-You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
+The `trace` build tag is unavailable for `arm`, `mips`, `mips64`, `mips64le`,
+`mipsle`, and `s390x` builds, so these builds do not include `dae trace`.
+See the [Build Guide](user-guide/build-by-yourself.md#trace-support-per-architecture).
 
-This feature requires the kernel version of machine on which dae install >= 5.17.
+### Kernel Configurations
 
-Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
+Mainstream desktop distributions usually enable the required options.
+Distributions for embedded devices, such as OpenWrt and Armbian, disable some
+of them by default to reduce kernel size.
 
-`Bind to WAN: >= 5.17`
-
-You need bind dae to WAN interface, if you want dae to provide network service for local programs.
-
-This feature requires kernel version of the machine >= 5.17.
-
-Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
-
-`Use trace command`
-
-If you want to use `dae trace` command to triage network connectivity issue, the kernel version is required to be >= 5.15. The `trace` build tag is not available for `arm`, `mips`, `mips64`, `mips64le`, `mipsle` and `s390x` builds (see [Build Guide](user-guide/build-by-yourself.md#trace-support-per-architecture)), so `dae trace` is missing there.
-
-## Kernel Configurations
-
-Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
-
-Use following command to show kernel configuration items on your machine.
+Show your machine's kernel configuration:
 
 ```shell
 zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
 ```
 
-dae needs:
+dae requires:
 
 ```
 CONFIG_BPF=y
@@ -62,31 +54,98 @@ CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 ```
 
-Check them using command like:
+Check the required options with the following commands.
 
-for bash and other POSIX compliant shell:
+For Bash and other POSIX-compliant shells:
 
 ```shell
 (zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-for fish shell:
+For fish:
 
 ```fish
-begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+begin; zcat /proc/config.gz || cat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
-> **Note**: `Armbian` users can follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
+> **Note**: Armbian users can follow the [Upgrade Guide](user-guide/kernel-upgrade.md) to meet the kernel configuration requirements.
 >
-> `Arch Linux ARM` users can use [`linux-aarch64-7ji`](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) which meets the kernel configuration requirement of dae.
+> Arch Linux ARM users can use [`linux-aarch64-7ji`](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji), which meets dae's kernel configuration requirements.
 
 ## Installation
 
+| System | Source | Section |
+| --- | --- | --- |
+| Debian / Ubuntu | Dae Universe APT repository | [Debian / Ubuntu](#debian--ubuntu) |
+| Fedora / RHEL | Dae Universe RPM repository | [Fedora / RHEL](#fedora--rhel) |
+| Fedora | Copr | [Fedora Copr](#fedora-copr) |
+| openSUSE | Dae Universe RPM repository | [openSUSE](#opensuse) |
+| Arch Linux | Official repository, AUR, archlinuxcn | [Arch Linux / Manjaro](#arch-linux--manjaro) |
+| Manjaro | AUR / archlinuxcn | [Arch Linux / Manjaro](#arch-linux--manjaro) |
+| Gentoo / Calculate | gentoo-zh overlay | [Gentoo Linux](#gentoo-linux) |
+| Nix / NixOS | daeuniverse/flake.nix | [Nix / NixOS](#nix--nixos) |
+| Alpine | dae-installer | [Alpine](#alpine) |
+| macOS | Platform tutorial | [macOS](#macos) |
+| Docker | Pre-built images or Docker Compose | [Docker](#docker) |
+| Manual installation | Installation script or source build | [Manual Installation](#manual-installation) |
+
+### Debian / Ubuntu
+
+For Debian, Ubuntu, and other APT-based distributions, use the Dae Universe
+repository at <https://daeuniverse.pages.dev>.
+The commands below assume sudo is configured for your account.
+
+#### 1. Install curl
+
+```sh
+sudo apt update
+sudo apt install curl
+```
+
+#### 2. Add the APT Repository
+
+Download the source configuration directly from the repository.
+Choose one of the following alternatives to match your APT version.
+
+For APT 3.0 or later:
+
+```sh
+sudo curl -fsSL -o /etc/apt/sources.list.d/daeuniverse.sources https://daeuniverse.pages.dev/daeuniverse.sources
+```
+
+For APT earlier than 3.0:
+
+```sh
+sudo curl -fsSL -o /etc/apt/sources.list.d/daeuniverse.list https://daeuniverse.pages.dev/daeuniverse.list
+```
+
+#### 3. Import the GPG Key
+
+```sh
+sudo curl -fsSL -o /usr/share/keyrings/daeuniverse-archive-goose.gpg https://daeuniverse.pages.dev/daeuniverse-archive-goose.gpg
+```
+
+#### 4. Install dae
+
+```sh
+sudo apt update
+sudo apt install dae
+```
+
+The package includes a systemd service and an example at `/etc/dae/example.dae`.
+Save your configuration as `/etc/dae/config.dae`.
+Complete [Minimal Configuration](#minimal-configuration), then see
+[Service Management](#service-management).
+
 ### Arch Linux / Manjaro
 
-You can install dae directly from the official repository.
+Install dae from the official repository, or choose an alternative package:
 
-Alternatively, get the latest AVX2-optimized binary package or the latest Git version from [AUR](https://aur.archlinux.org) or [archlinuxcn](https://github.com/archlinuxcn/repo).
+| Source | Packages |
+| --- | --- |
+| Official repository | dae |
+| [AUR](https://aur.archlinux.org) | Latest AVX2-optimized binary package or latest Git version |
+| [archlinuxcn](https://github.com/archlinuxcn/repo) | Latest AVX2-optimized binary package or latest Git version |
 
 #### Official Repository
 
@@ -122,7 +181,7 @@ sudo pacman -S dae-avx2-bin
 sudo pacman -S dae-git
 ```
 
-After installation, use systemctl to control it.
+After installation, manage dae with `systemctl`:
 
 ```shell
 # start dae
@@ -134,9 +193,8 @@ sudo systemctl enable dae
 
 ### Gentoo Linux
 
-dae has been released on [gentoo-zh](https://github.com/microcai/gentoo-zh)
-
-use `app-eselect/eselect-repository` to enable this overlay:
+dae is available in the [gentoo-zh](https://github.com/microcai/gentoo-zh) overlay.
+Enable the overlay with `app-eselect/eselect-repository`:
 
 ```shell
 eselect repository enable gentoo-zh
@@ -144,58 +202,236 @@ emaint sync -r gentoo-zh
 emerge -a net-proxy/dae
 ```
 
-### Fedora
+### Fedora / RHEL
 
-dae has been released on [Fedora Copr](https://copr.fedorainfracloud.org/coprs/zhullyb/v2rayA/package/dae).
+#### Dae Universe RPM Repository
+
+For Fedora and RHEL, use the Dae Universe repository at <https://daeuniverse.pages.dev>.
+The commands below assume sudo is configured for your account.
+
+##### 1. Add the DNF Repository
+
+The repository configuration file includes the GPG key address.
+DNF asks to import the key the first time it is used.
+
+```sh
+sudo curl -fsSL -o /etc/yum.repos.d/daeuniverse.repo https://daeuniverse.pages.dev/daeuniverse.repo
+```
+
+##### 2. Install dae
+
+```sh
+sudo dnf install dae
+```
+
+The package includes a systemd service and an example at `/etc/dae/example.dae`.
+Save your configuration as `/etc/dae/config.dae`.
+Complete [Minimal Configuration](#minimal-configuration), then see
+[Service Management](#service-management).
+
+#### Fedora Copr
+
+For Fedora only, use [Fedora Copr](https://copr.fedorainfracloud.org/coprs/zhullyb/v2rayA/package/dae)
+instead of the Dae Universe repository.
+`zhullyb/v2rayA` is the Copr project name; the package installed is `dae`.
 
 ```shell
 sudo dnf copr enable zhullyb/v2rayA
 sudo dnf install dae
 ```
 
+### openSUSE
+
+Use the Dae Universe repository at <https://daeuniverse.pages.dev>.
+The commands below assume sudo is configured for your account.
+
+#### 1. Add the Zypper Repository
+
+The repository configuration file includes the GPG key address.
+Zypper asks whether to trust the key the first time it is used.
+
+```sh
+sudo curl -fsSL -o /etc/zypp/repos.d/daeuniverse.repo https://daeuniverse.pages.dev/daeuniverse.repo
+```
+
+#### 2. Install dae
+
+```sh
+sudo zypper install dae
+```
+
+The package includes a systemd service and an example at `/etc/dae/example.dae`.
+Save your configuration as `/etc/dae/config.dae`.
+Complete [Minimal Configuration](#minimal-configuration), then see
+[Service Management](#service-management).
+
+### Nix / NixOS
+
+Use an existing NixOS flake configuration.
+Retain your current Nixpkgs, system, and hardware modules.
+
+#### 1. Import the NixOS Module
+
+Replace `HOSTNAME` with your configuration name.
+This example imports the dae module.
+
+```nix
+# flake.nix
+
+{
+  inputs.daeuniverse.url = "github:daeuniverse/flake.nix";
+  # ...
+
+  outputs = {nixpkgs, ...} @ inputs: {
+    nixosConfigurations.HOSTNAME = nixpkgs.lib.nixosSystem {
+      modules = [
+        inputs.daeuniverse.nixosModules.dae
+      ];
+    };
+  };
+}
+```
+
+#### 2. Enable dae
+
+```nix
+# nixos configuration module
+{
+  # ...
+
+  services.dae = {
+      enable = true;
+
+      openFirewall = {
+        enable = true;
+        port = 12345;
+      };
+
+      # `configFile` or `config` must be set
+
+      /* default options
+
+      package = inputs.daeuniverse.packages.x86_64-linux.dae;
+      disableTxChecksumIpGeneric = false;
+      assets = with pkgs; [ v2ray-geoip v2ray-domain-list-community ];
+
+      */
+
+      # alternative of `assets`, a dir contains geo database.
+      # assetsPath = "/etc/dae";
+  };
+}
+```
+
+Set exactly one of `configFile` and `config`.
+To use an external file, add this option inside `services.dae` and prepare
+the file before applying the configuration:
+
+```nix
+configFile = "/etc/dae/config.dae";
+```
+
+Inline `config` is readable by all users through the Nix store.
+The firewall port must match `tproxy_port`.
+See [Minimal Configuration](#minimal-configuration) and the
+[dae module options](https://github.com/daeuniverse/flake.nix/blob/main/dae/module.nix).
+
+#### 3. Apply the System Configuration
+
+In the system flake directory, replace `HOSTNAME` and run:
+
+```shell
+sudo nixos-rebuild switch --flake .#HOSTNAME
+```
+
+The module manages systemd boot enablement; no separate `systemctl enable` is needed.
+
+#### Alternative: Global Packages
+
+Use this instead of the service module.
+Do not install another dae through `environment.systemPackages` while enabling `services.dae`.
+Replace `x86_64-linux` with `aarch64-linux` when appropriate.
+
+```nix
+# nixos configuration module
+{
+  environment.systemPackages =
+    with inputs.daeuniverse.packages.x86_64-linux;
+      [ dae ]; # or dae-unstable
+}
+```
+
+#### Package Variants
+
+| Package | Purpose |
+| --- | --- |
+| `dae` / `dae-release` | Release; `dae` aliases `dae-release` |
+| `dae-unstable` | Tracks the dae main branch |
+
+```shell
+nix flake show github:daeuniverse/flake.nix
+```
+
+#### Optional: Binary Cache
+
+The upstream garnix cache serves `x86_64-linux` and `aarch64-linux` builds.
+Merge these settings into the NixOS configuration.
+
+```nix
+nix.settings = {
+  substituters = ["https://cache.garnix.io"];
+  trusted-public-keys = [
+    "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
+  ];
+};
+```
+
+See the [daeuniverse/flake.nix README](https://github.com/daeuniverse/flake.nix#readme).
+
 ### Alpine
 
-See [run on alpine](tutorials/run-on-alpine.md).
+See [Run on Alpine](tutorials/run-on-alpine.md).
 
 ### macOS
 
-We provide a hacky way to run dae on your macOS. See [run on macOS](tutorials/run-on-macos.md).
+A workaround is available to run dae on macOS. See [Run on macOS](tutorials/run-on-macos.md).
 
 ### Docker
 
-Pre-built image and related docs can be found at <https://hub.docker.com/r/daeuniverse/dae>.
+Pre-built images and documentation are available at <https://hub.docker.com/r/daeuniverse/dae>.
 
-Alternatively, you can use `docker compose`:
+Alternatively, use `docker compose`:
 
 ```shell
 git clone --depth=1 https://github.com/daeuniverse/dae
+cd dae
 docker compose up -d --build
 ```
 
-## Manual installation
+## Manual Installation
 
-> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, do it at your own risk.
+> **Note**: Manual installation is recommended only for advanced users. It lets you test different dae versions, but new features may contain bugs. Proceed at your own risk.
 
-dae can run as a daemon (systemd) service. See [run-as-daemon](user-guide/run-as-daemon.md)
+To run dae as a systemd service, see [Run dae as a Daemon Service](user-guide/run-as-daemon.md).
 
 ### Installation Script
 
 See [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer) (or [mirror](https://hubmirror.v2raya.org/daeuniverse/dae-installer)).
 
-### Build from scratch
+### Build from Scratch
 
 See [Build Guide](user-guide/build-by-yourself.md).
 
 ## Minimal Configuration
 
-For minimal bootable config:
+The smallest configuration that starts dae is:
 
 ```shell
 global{}
 routing{}
 ```
 
-However, this config leaves dae no-load state. If you want dae to be in working state, following is a best practice for small config:
+This configuration leaves dae idle. For a small working configuration, use:
 
 ```shell
 global {
@@ -255,8 +491,8 @@ routing {
 }
 ```
 
-If you do not care about extreme speed but care more about privacy and DNS
-leakage, replace the `dns` part above with:
+If privacy and preventing DNS leaks matter more than maximum speed,
+replace the `dns` section above with:
 
 ```shell
 dns {
@@ -273,18 +509,30 @@ dns {
 }
 ```
 
-See more at [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
+For more options, see [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
 If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
 
+## Service Management
+
+For systemd installations, complete [Minimal Configuration](#minimal-configuration)
+first, then choose the action you need.
+Enabling the service at boot does not start it immediately.
+
+| Action | Command |
+| --- | --- |
+| Start now | `sudo systemctl start dae` |
+| Enable at boot | `sudo systemctl enable dae` |
+
 ## PPPoE Interface
 
-If you want to proxy PPPoE interface, please set wan/lan_interface to the interface generated by pppd (i.e., ppp0 / pppoe-wan) instead of the physical interface.
-If you just using PPPoE interface for wan, simply set wan_interface to "auto".
+To proxy a PPPoE interface, set `wan_interface` or `lan_interface` to the
+interface created by pppd (such as `ppp0` or `pppoe-wan`), not the physical interface.
+If you use PPPoE only for WAN, set `wan_interface` to `auto`.
 
-## Reload and suspend
+## Reload and Suspend
 
-When the configuration changes, it is convenient to use command to hot reload the configuration, and the existing connection will not be interrupted in the process. When you want to suspend dae, you can use command to pause.
+Reload the configuration without interrupting existing connections, or suspend dae temporarily.
 
 See [Reload and suspend](user-guide/reload-and-suspend.md).
 

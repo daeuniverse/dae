@@ -2,11 +2,10 @@
 
 ## No network after `dae suspend`
 
-Do not set dae as the DNS in DHCP setting. For example, you can set `223.5.5.5` as DNS in your DHCP setting.
+Do not advertise dae as the DNS server in your DHCP settings: suspended dae
+does not intercept DNS requests. Advertise a server such as `223.5.5.5` instead.
 
-Because dae will not hijack any DNS request if it was suspended.
-
-## PVE related
+## PVE
 
 - [PVE NIC Hardware passthrough](https://github.com/daeuniverse/dae/issues/43)
 
@@ -14,13 +13,20 @@ Because dae will not hijack any DNS request if it was suspended.
 
 ### Troubleshoot local DNS service
 
-If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](configuration/external-dns.md).
+If you use AdGuardHome or mosdns in the `dns` section, see [Use external DNS](configuration/external-dns.md).
 
 ### Troubleshoot firewall
 
-If you bind to wan, make sure firewall is stopped or mark `0x8000000` is allowed by firewall. Don't worry about the security of this port because this port has its own firewall rule.
+dae redirects hijacked packets from the WAN egress and LAN ingress tc hooks over the `dae0` device into its private `daens` network namespace.
+Inside `daens`, `tproxy_dae0peer_ingress` sets mark `0x8000000`, and a namespace-local policy route (table `2023`) delivers the packet to the tproxy listener on `tproxy_port` (default `12345`).
+The host `INPUT` chain never sees these packets or that mark, so a host firewall rule for the mark or for the port does not affect them.
+dae installs no firewall rule for the port and ignores the deprecated `auto_config_firewall_rule` option.
+The host firewall does see dae's own outbound connections and the replies dae injects back on the WAN interface.
+A ruleset that accepts established and related traffic passes both.
+If you bind to WAN and lose network, stop the firewall to confirm that the firewall is the cause.
+Then check that its ruleset accepts established and related traffic, as the default ufw and firewalld rulesets do.
 
-Usual firewalls on Linux:
+Common Linux firewalls:
 
 ```bash
 ufw
@@ -29,9 +35,10 @@ firewalld
 
 #### ufw
 
-UFW users may need some extra steps to make sure `Binding to LAN` working.
-
-Such as adding as follows to `/etc/ufw/before*.rules`:
+The default `/etc/ufw/before*.rules` accept established and related traffic, which covers the replies dae injects on the WAN interface.
+Older guides add the following mark rules to `/etc/ufw/before*.rules`.
+These rules match no packet on the host, because hijacked packets carry mark `0x8000000` only inside `daens`.
+dae does not need them:
 
 ```bash
 # before.rules
@@ -43,7 +50,10 @@ Such as adding as follows to `/etc/ufw/before*.rules`:
 
 #### firewalld
 
-If you use firewalld, it is hard to add mark support. You have to execute following commands every time machine boot and firewall rule changes:
+The default firewalld zones accept established and related traffic, which covers the replies dae injects on the WAN interface.
+Older guides run the following command after every boot and firewall rule change.
+The command matches no packet on the host, because hijacked packets carry mark `0x8000000` only inside `daens`.
+dae does not need it:
 
 ```bash
 sudo nft 'insert rule inet firewalld filter_INPUT mark 0x8000000 accept'
@@ -51,26 +61,27 @@ sudo nft 'insert rule inet firewalld filter_INPUT mark 0x8000000 accept'
 
 ### Troubleshoot PPPoE
 
-Old version of dae does not support PPPoE, Please use latest version.
+Older dae versions do not support PPPoE. Use the latest version.
 
-## Binding to LAN but bad DNS in other machines
+## Binding to LAN but DNS fails on other machines
 
-### Troubleshoot config of dae
+### Check dae's configuration
 
-Make sure you have bind to the correct LAN interfaces.
+Make sure dae is bound to the correct LAN interfaces.
 
-For example, if your use the same interface eth1 for WAN and LAN, write it as `wan_interface: eth1` and also in `lan_interface: eth1`. If the LAN interfaces you want to proxy are eth1 and docker0, write them both as `lan_interface: eth1,docker0`.
+- If `eth1` serves both WAN and LAN, set both `wan_interface: eth1` and `lan_interface: eth1`.
+- If you want to proxy `eth1` and `docker0` as LAN interfaces, set `lan_interface: eth1,docker0`.
 
 ### Troubleshoot DNS
 
-To verify on another machine in LAN:
+Run these commands on another LAN machine:
 
 ```bash
 curl -i 1.1.1.1
 curl -i google.com
 ```
 
-If the first line has a response and the second line doesn't, check whether port `53` is occupied by others on dae's machine.
+If only the first command gets a response, check whether another service occupies port `53` on the dae host:
 
 ```bash
 netstat -ulpen|grep 53
@@ -78,15 +89,15 @@ netstat -ulpen|grep 53
 # lsof -i:53 -n
 ```
 
-If does, stop the service process or change its listening port from 53 to others. Do not forget to modify `/etc/resolv.conf` to make DNS accessible (for example, with content `nameserver 223.5.5.5`, but do not use `nameserver 127.0.0.1`).
+If another service uses port 53, stop it or change its listening port.
+Update `/etc/resolv.conf` so DNS remains accessible. For example, use
+`nameserver 223.5.5.5`, not `nameserver 127.0.0.1`.
 
-## Fail to load eBPF objects
+## Failed to load eBPF objects
 
 > FATA[0022] load eBPF objects: field TproxyWanEgress: program tproxy_wan_egress: load program: argument list too long: 1617: (bf) r2 = r6: 1618: (85) call bpf_map_loo (truncated, 992 line(s) omitted)
 
-If you use `clang-13` to compile dae, you may encounter this problem.
-
-There are ways to resolve it:
-
-1. Method 1: Use `clang-15` or higher versions to compile dae. Or just download dae from [releases](https://github.com/daeuniverse/dae/releases).
-2. Method 2: Add CFLAGS `-D__UNROLL_ROUTE_LOOP` while compiling. However, it will increse memory occupation (or swap space) at the eBPF loading stage (about 180MB). For example, compile dae to ARM64 using `make CGO_ENABLED=0 GOARCH=arm64 CFLAGS="-D__UNROLL_ROUTE_LOOP"`.
+This error occurs when `clang-13` compiles dae.
+Compile with `clang-15` or later, or download a binary from [releases](https://github.com/daeuniverse/dae/releases).
+`-D__UNROLL_ROUTE_LOOP` has no effect: the macro is a commented-out define in `control/kern/tproxy.c` with no code behind it.
+Routing always uses `bpf_loop`, and dae refuses to start on kernels older than `5.17.0`.
