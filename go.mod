@@ -130,6 +130,7 @@ replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260910
 // bound ordering. This revision also authenticates REALITY handshakes with
 // AES-GCM, the algorithm both reference servers decrypt with, instead of
 // deriving it from the offered cipher suites, reports fingerprints that provide
-// no usable TLS 1.3 key share, and resolves fingerprint names the way Xray and
-// sing-box do.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260918071756-f0fdbaa1125b
+// no usable TLS 1.3 key share, rebuilds the ClientHello up to sixteen times
+// while a randomized fingerprint has not produced one, and resolves fingerprint
+// names the way Xray and sing-box do.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260918080803-29060b6733c7
