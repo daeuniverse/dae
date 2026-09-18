@@ -120,4 +120,12 @@ replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260910
 
 // Custom outbound fork: protocol lifecycle and framing hardening, cancellable
 // dial queues, UDP write-path cmsg preservation, and congestion-control fixes.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260915172050-1187d577a58e
+// This revision resolves optional conn capabilities through every wrapper
+// layer (SSR obfs cipher hooks, XTLS/vision absorption, TLS ALPN checks) and
+// adds end-to-end suites for every protocol in the repository. It also fixes
+// the dropped close_notify on TLS half-close, a dial-path panic when an h2
+// CONNECT is denied, out-of-bounds naive padding on 32-bit builds, vmess UDP
+// targets encoded with the IPv6 addr type, the missing shadowsocks-2022
+// response request-salt verification, and the simple-obfs response-header
+// bound ordering.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260917223728-6a44445c9106
