@@ -120,4 +120,17 @@ replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260910
 
 // Custom outbound fork: protocol lifecycle and framing hardening, cancellable
 // dial queues, UDP write-path cmsg preservation, and congestion-control fixes.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260915172050-1187d577a58e
+// This revision resolves optional conn capabilities through every wrapper
+// layer (SSR obfs cipher hooks, XTLS/vision absorption, TLS ALPN checks) and
+// adds end-to-end suites for every protocol in the repository. It also fixes
+// the dropped close_notify on TLS half-close, a dial-path panic when an h2
+// CONNECT is denied, out-of-bounds naive padding on 32-bit builds, vmess UDP
+// targets encoded with the IPv6 addr type, the missing shadowsocks-2022
+// response request-salt verification, and the simple-obfs response-header
+// bound ordering. This revision also authenticates REALITY handshakes with
+// AES-GCM, the algorithm both reference servers decrypt with, instead of
+// deriving it from the offered cipher suites, reports fingerprints that provide
+// no usable TLS 1.3 key share, rebuilds the ClientHello up to sixteen times
+// while a randomized fingerprint has not produced one, and resolves fingerprint
+// names the way Xray and sing-box do.
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260918090140-cc86ced2e683
