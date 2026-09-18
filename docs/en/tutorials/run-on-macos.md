@@ -1,10 +1,10 @@
 # Run on macOS
 
-## Install brew
+## Install Homebrew
 
 ### For x86
 
-You can install brew referring to official docs <https://docs.brew.sh/Installation>:
+Install Homebrew using the [official instructions](https://docs.brew.sh/Installation):
 
 ```shell
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
@@ -12,7 +12,7 @@ You can install brew referring to official docs <https://docs.brew.sh/Installati
 
 ### For ARM64
 
-To install ARM64 architecture packages, homebrew should be installed in `/opt/homebrew`:
+To install ARM64 packages, install Homebrew in `/opt/homebrew`:
 
 ```shell
 cd /opt
@@ -25,9 +25,10 @@ curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C ho
 
 ### Setup
 
-This section intruduces how to use [lima](https://github.com/lima-vm/lima) virtual machine to run dae, and proxy whole macOS host network.
+Run dae in a [Lima](https://github.com/lima-vm/lima) virtual machine to proxy the
+macOS host's entire network.
 
-First, we should install `lima` and `socket_vmnet`.
+#### 1. Install Lima and socket_vmnet
 
 ```shell
 # Install lima for VM and socket_vmnet for bridge.
@@ -38,7 +39,7 @@ limactl sudoers >etc_sudoers.d_lima
 sudo install -o root etc_sudoers.d_lima /etc/sudoers.d/lima
 ```
 
-Then, configure lima configuration and dae VM configuration.
+#### 2. Configure Lima and the dae VM
 
 ```shell
 # Configure lima networks.
@@ -64,7 +65,7 @@ disk: "3GiB"
 EOF
 ```
 
-Start dae VM and configure it.
+#### 3. Start and configure the dae VM
 
 ```shell
 # Start dae VM.
@@ -164,12 +165,12 @@ sudo systemctl enable --now dae.service
 exit
 ```
 
-Set default route of macOS to dae VM.
+#### 4. Set the macOS default route to the dae VM
 
 > **Note**
-> You may need to execute this command every time you connect to network.
+> You may need to run this command each time you connect to a network.
 >
-> Refer to [Auto set route and DNS](#auto-set-route-and-dns) if you want to auto execute it.
+> To automate it, see [Auto set route and DNS](#auto-set-route-and-dns).
 
 ```shell
 # Get IP of dae VM.
@@ -180,7 +181,7 @@ sudo route delete default; sudo route add default $dae_ip
 networksetup -setdnsservers Wi-Fi $dae_ip
 ```
 
-Verify that we were successful.
+#### 5. Verify connectivity
 
 ```shell
 # Verify.
@@ -189,7 +190,7 @@ curl -v ipinfo.io
 
 ### Auto set route and DNS
 
-Write a script to execute.
+#### 1. Create the network update script
 
 ```shell
 # The script to execute.
@@ -212,13 +213,13 @@ EOF
 chmod +x /Users/Shared/bin/dae-network-update.sh
 ```
 
-Give no-password permission for route.
+#### 2. Allow `route` to run without a password
 
 ```shell
 if [ $(id -u) -eq "0" ]; then echo 'Do not use root!!'; else echo "$(whoami) ALL=(ALL) NOPASSWD: $(which route)" | sudo tee /etc/sudoers.d/"$(whoami)"-route; fi
 ```
 
-Write a plist service file.
+#### 3. Create the plist service file
 
 ```shell
 cat << 'EOF' > ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist
@@ -252,7 +253,7 @@ cat << 'EOF' > ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist
 EOF
 ```
 
-Load the plist service.
+#### 4. Load the plist service
 
 ```shell
 launchctl load ~/Library/LaunchAgents/org.v2raya.dae.networkchanging.plist

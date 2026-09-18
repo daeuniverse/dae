@@ -28,15 +28,17 @@ feat: add hat wobble
 
 Example `<type>` values:
 
-- `feat`: (new feature for the user, not a new feature for build script)
-- `fix`: (bug fix for the user, not a fix to a build script)
-- `docs`: (changes to the documentation)
-- `style`: (formatting, missing semi colons, etc; no production code change)
-- `refactor`: (refactoring production code, eg. renaming a variable)
-- `test`: (adding missing tests, refactoring tests; no production code change)
-- `chore`: (updating grunt tasks etc; no production code change, e.g. dependencies upgrade)
-- `perf`: (perfomance improvement change, e.g. better concurrency performance)
-- `ci`: (updating CI configuration files and scripts e.g. `.gitHub/workflows/*.yml` )
+| Type | Meaning |
+| --- | --- |
+| `feat` | new feature for the user, not a new feature for build script |
+| `fix` | bug fix for the user, not a fix to a build script |
+| `docs` | changes to the documentation |
+| `style` | formatting, missing semi colons, etc; no production code change |
+| `refactor` | refactoring production code, eg. renaming a variable |
+| `test` | adding missing tests, refactoring tests; no production code change |
+| `chore` | updating grunt tasks etc; no production code change, e.g. dependencies upgrade |
+| `perf` | performance improvement change, e.g. better concurrency performance |
+| `ci` | updating CI configuration files and scripts e.g. `.gitHub/workflows/*.yml` |
 
 Example `<Scope>` values:
 

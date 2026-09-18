@@ -2,7 +2,12 @@
 
 [**简体中文**](../zh/how-it-works.md) | [**English**](./how-it-works.md)
 
-dae operates by loading a program into the tc (traffic control) mount point in the Linux kernel using [eBPF](https://en.wikipedia.org/wiki/EBPF). This program performs traffic splitting before the traffic enters the TCP/IP network stack. The position of tc in the Linux network protocol stack is illustrated in the diagram below (the diagram illustrates the receiving path, while the sending path is in the opposite direction), where netfilter represents the location of iptables/nftables.
+dae uses [eBPF](https://en.wikipedia.org/wiki/EBPF) to load a program at the Linux
+kernel's tc (traffic control) hook. The program splits traffic before it enters
+the TCP/IP network stack.
+
+The diagram shows tc's position on the receive path; the send path runs in the
+opposite direction. netfilter marks the location of iptables/nftables.
 
 ![Network Stack Path](../netstack-path.webp)
 
@@ -12,62 +17,159 @@ dae operates by loading a program into the tc (traffic control) mount point in t
 
 dae supports traffic splitting based on domain name, source IP, destination IP, source port, destination port, TCP/UDP, IPv4/IPv6, process name, MAC address, and other factors.
 
-Among these, source IP, destination IP, source port, destination port, TCP/UDP, IPv4/IPv6, and MAC address can be obtained by parsing MACv2 frames.
+| Criterion | Source |
+| --- | --- |
+| Source and destination IP, source and destination port, TCP/UDP, IPv4/IPv6, MAC address | Parsed from MACv2 frames |
+| Process name | Local `socket`, `connect`, and `sendmsg` system calls monitored at the cgroupv2 hook; the command line is read and parsed from the process control block |
+| Domain name | Intercepted DNS requests associate the requested domain with its IP address |
 
-The **process name** is obtained by monitoring local process socket, connect, and sendmsg system calls in the cgroupv2 mount point. It then reads and parses the command line from the process control block. This method is significantly faster than user-space programs like Clash that scan the entire procfs to obtain process information (the latter might take even tens of milliseconds).
+Obtaining process names this way is significantly faster than scanning all of
+procfs, as userspace programs such as Clash do. A full procfs scan can take tens
+of milliseconds.
 
-The **domain name** is obtained by intercepting DNS requests and associating the requested domain name with the corresponding IP address. However, this method has some potential issues:
+Associating domains with DNS responses has two limitations:
 
-1. It might lead to misjudgment. For example, if a domestic and a foreign website sharing the same IP address are accessed simultaneously within a short period, or if the browser employs DNS caching.
-2. The user's DNS requests must traverse dae. This can be achieved by setting dae as the DNS server or using a public DNS while dae serves as the gateway.
+- It can misclassify traffic. For example, a domestic and a foreign website may
+  share an IP address and be accessed close together, or the browser may cache DNS.
+- DNS requests must pass through dae. Set dae as the DNS server, or use a public
+  DNS server with dae as the gateway.
 
-Despite these challenges, this approach is already an optimal solution compared to other methods. For instance, the Fake IP approach cannot perform IP-based splitting and is plagued by severe cache pollution issues. Similarly, domain sniffing can only intercept traffic like TLS/HTTP. While SNI sniffing for traffic splitting is effective, eBPF's limitations on program complexity and its lack of support for loops prevent us from implementing domain sniffing in the kernel space.
+Despite these limitations, this approach remains preferable to the alternatives.
+Fake IP cannot support IP-based splitting and has severe cache pollution issues.
+Domain sniffing can only inspect traffic such as TLS, HTTP and QUIC. SNI
+sniffing can support traffic splitting, but eBPF's program complexity limits
+keep domain sniffing in userspace. The eBPF program itself uses `bpf_loop` for
+rule matching and process-name parsing, which is why dae requires kernel 5.17
+or later.
 
-Hence, if DNS requests cannot pass through dae, domain-based splitting will not succeed.
+Without DNS requests passing through dae, DNS-based domain splitting cannot work.
 
-Sniffing is time-boxed. dae waits `sniffing_timeout` (30ms by default) for the domain
-to appear in the client's first packet and falls back to IP-based splitting when it
-does not; after three consecutive sniff failures on the same flow signature, that
-signature is left alone for ten minutes (the negative cache), so a flow that never
-carries a domain at its start stops being domain-matched instead of being retried on
-every connection. For the shape where one device's domain whitelist meets that
-device's own encrypted DNS, dae inserts a kernel-space sniff fallback of its own
-(`auto_sniff_punt`, see [routing](configuration/routing.md)) so the whitelist keeps
-applying even though the device's DNS never reaches dae.
+TCP sniffing has a time limit. `sniffing_timeout` (30ms by default) and
+`dial_mode: ip` govern only TCP sniffing and the automatic sniff-punt lines. dae
+first waits up to `sniffing_timeout` for the first 16 bytes of the client's TCP
+payload. If none arrive, or they do not look like a TLS handshake or an HTTP
+request, dae uses IP-based splitting. Otherwise dae starts a sniffer with a
+fresh `sniffing_timeout` deadline and keeps reading TCP segments until the TLS
+ClientHello is complete or the deadline passes, so the SNI need not be in the
+first segment. dae checks HTTP once, in the bytes already read. If dae finds no
+domain, it falls back to IP-based splitting. dae never sniffs TCP to destination
+ports 20, 21, 22, 25, 53, 119, 123, 161, 3306, 5432, 6379, 9200, 27017 and
+11211.
 
-> To mitigate DNS pollution and achieve improved CDN connection speeds, dae employs domain sniffing in user space. When `dial_mode` is set to "domain" or its variants and proxied traffic needs to be processed, dae sends the sniffed domain to the proxy server instead of sending the IP address. Consequently, the proxy server re-resolves the domain and connects using the optimal IP. This approach addresses DNS pollution and enhances CDN connection speed.
+UDP sniffing ignores `sniffing_timeout` and `dial_mode: ip`. dae sniffs a UDP
+packet only when its source or destination port is 443 or 8443 and the packet
+looks like a QUIC Initial. dae holds such packets in a per-connection (DCID)
+sniffer until it parses the SNI, bounded by a 5-second session TTL. Under
+`dial_mode: ip` dae does not use the sniffed QUIC domain to choose the dial
+target.
+
+For TCP, after 3 consecutive sniff failures for the same flow signature
+(destination address and port, process name, MAC address and DSCP), dae skips
+sniffing that signature for 10 minutes. This negative cache prevents repeated
+attempts to match a domain on every connection when the flow never carries one
+at its start. A successful sniff clears the entry. UDP uses a separate per-DCID
+policy. Four consecutive no-SNI results pause sniffing for one second. Two
+consecutive decrypt failures give up on that DCID. dae then bypasses a failed
+DCID for 15 seconds (no SNI), 30 seconds (decrypt failure) or 1 minute (sniffer
+panic), doubling on repeat up to a 5-minute cap.
+
+When a device's domain whitelist is combined with that device's encrypted DNS,
+dae inserts its own kernel-space sniff fallback. This keeps the whitelist
+working even when the device's DNS never reaches dae, but only for connections
+dae can sniff. Those are TCP connections outside the excluded ports above with a
+TLS or HTTP first segment, and UDP on port 443 or 8443 carrying a QUIC Initial.
+When dae skips a punted connection or finds no domain, it re-routes the
+connection without a domain, so the connection takes the device's selector-only
+fallback, still relayed through userspace. See `auto_sniff_punt` in
+[routing](configuration/routing.md).
+
+> dae sniffs domains in userspace to mitigate DNS pollution and improve CDN
+> connection speeds. With `dial_mode: domain` (the default), dae sends the
+> sniffed domain to the proxy server instead of the IP address only in two
+> cases. Either dae's DNS cache already holds an `A` or `AAAA` record for that
+> domain, or an earlier background probe confirmed that the domain resolves. On
+> the first connection to an unknown domain, dae dials the original IP and
+> starts a background probe through `bootstrap_resolver`. dae caches a name with
+> no answer as negative for 10 seconds. `domain+` and `domain++` skip this check
+> and always send the sniffed domain. The proxy server resolves the domain again
+> and connects to the optimal IP address.
 >
-> Additionally, advanced users who have used alternative splitting solutions and don't wish to route DNS requests through dae but still want certain traffic to be split based on domain (e.g., splitting traffic to Netflix nodes and download nodes based on the target domain, with some directly connecting via the core) can enforce the use of sniffed domains for splitting by setting `dial_mode: domain++`.
+> Advanced users with other splitting solutions can set `dial_mode: domain++`
+> to force routing by sniffed domain without sending DNS requests through dae.
+> For example, this can route Netflix and download traffic to different nodes
+> by target domain, with some traffic connecting directly through the core.
 
-dae achieves traffic splitting by redirecting traffic using the program in the tc mount point. The redirection is based on the splitting result, either redirecting the traffic to dae's tproxy port or allowing it to bypass dae and go directly.
+The tc program uses the splitting result to redirect traffic to dae's tproxy
+port or let it bypass dae and connect directly.
 
 ### Proxy Mechanism
 
-The proxy mechanism of dae is akin to other programs. However, when binding to the LAN interface, dae leverages eBPF to directly associate the socket buffer of the traffic to be proxied in the tc mount point with the socket of dae's tproxy listening port. While binding to the WAN interface, dae transfers the socket buffer of the traffic to be proxied from the egress queue of the network card to the ingress queue. It also disables checksums and modifies the destination address to the tproxy listening port.
+dae's proxy mechanism is similar to that of other proxy programs:
 
-In terms of benchmarking, dae's proxy performance slightly surpasses that of other proxy programs, but the difference is not significant.
+| Binding | Packet handling |
+| --- | --- |
+| LAN | At tc ingress on the bound interface, eBPF rewrites only the Ethernet header (destination MAC set to `dae0peer`), records the flow in `redirect_track`, and sets `skb->cb[0]` to `TPROXY_MARK` (`0x8000000`). It then redirects the unchanged IP packet into `dae0` with `bpf_redirect`. On a netkit pair with a kernel that carries the CVE-2025-37959 fix (mainline 6.14.7 or later), it skips the MAC rewrite and uses `bpf_redirect_peer` instead. |
+| WAN | At tc egress on the bound interface, eBPF applies the same MAC rewrite, `redirect_track` entry and cb mark, then calls `bpf_redirect` into `dae0`. Replies come back through `dae0` ingress, which restores the original MACs and redirects them to the interface's ingress queue with `BPF_F_INGRESS`. |
 
-As of [PR:implement stack bypass](https://github.com/daeuniverse/dae/pull/458), the hijack datapath has been changed to bypass stack for better performance and less stack influence (e.g. netfilter, systemd-sysctl). Please refer to the PR description for better understanding.
+Both paths keep the destination address, ports and checksums intact. dae's
+tproxy listener runs on `tproxy_port` (default 12345) inside the `daens` network
+namespace. At `dae0peer` ingress, eBPF drops packets without the cb mark. eBPF
+sets `skb->mark` to `0x8000000` so the policy rule
+`fwmark 0x8000000/0x8000000 table 2023` delivers the packets to
+`local default dev lo`. eBPF then calls `bpf_sk_assign` to attach UDP datagrams
+and TCP SYNs to the listener. Established TCP segments reach the socket through
+that local route without an assignment.
+
+Benchmarks show slightly higher proxy performance than other proxy programs,
+but the difference is small.
+
+Since [PR: implement stack bypass](https://github.com/daeuniverse/dae/pull/458),
+the hijack datapath bypasses the stack to improve performance and reduce the
+influence of components such as netfilter and systemd-sysctl. See the PR description.
 
 ### Direct Connection Mechanism
 
-Conventionally, traffic splitting involves passing traffic through a proxy program, navigating the splitting module, and then determining whether to use a proxy or establish a direct connection. This process requires parsing, processing, and copying traffic through the network stack, delivering it to the proxy program, and subsequently copying, processing, and encapsulating it through the network stack before sending it out. This consumes substantial resources. Particularly in scenarios like BitTorrent downloads, even if a direct connection is set, it still consumes numerous connections, ports, memory, and CPU resources. It might even impact NAT type in gaming situations due to the proxy program's inadequate handling, resulting in connection errors.
+Conventional traffic splitting sends traffic through a proxy program before
+deciding whether to proxy it or connect directly. The network stack parses,
+processes, and copies traffic to the proxy program, then copies, processes,
+and encapsulates it again for transmission.
 
-dae performs traffic splitting at an earlier kernel stage, forwarding directly connected traffic through layer 3 routing. This approach reduces overhead by minimizing transitions between kernel and user space. At this point, Linux functions as a pure switch or router.
+This consumes resources even for direct connections. BitTorrent downloads can
+use many connections, ports, memory, and CPU resources. In games, inadequate
+handling by the proxy program can affect NAT type and cause connection errors.
 
-> For effective direct connection, advanced users with specific network topologies should ensure that, after configuring the [kernel parameters](user-guide/kernel-parameters.md) and **disabling** dae, other devices can access the network normally when the device with dae is set as the gateway. For instance, accessing 223.5.5.5 should yield a "UrlPathError" response. When performing tcpdump on the dae-equipped device, request packets from client devices should be visible.
+dae splits traffic earlier in the kernel and forwards direct traffic through
+layer 3 routing. Fewer transitions between kernel and userspace reduce overhead.
+Linux then acts as a switch or router. LAN traffic routed to `direct` always
+takes this kernel path, with `skb->mark` set to the rule's mark. For the dae
+host's own traffic, only `direct` with mark 0 bypasses the proxy program. dae's
+userspace direct dialer, with the mark set as `SO_MARK`, dials connections
+matched by `direct(mark: N)` with a non-zero mark, DNS queries to a non-`must`
+outbound, and connections that userspace re-routes to `direct` after sniffing.
 
-Consequently, dae does not perform SNAT for directly connected traffic. In setups with a "side-router," this leads to asymmetric routing. In this scenario, when sent out, traffic from client devices passes through dae to the gateway, but when received, traffic goes directly from the gateway to client devices, bypassing dae.
+> For custom network topologies, verify direct connectivity after configuring
+> the [kernel parameters](user-guide/kernel-parameters.md) and disabling dae.
+> Other devices should be able to access the network with the dae host as their
+> gateway. For example, accessing 223.5.5.5 should return "UrlPathError", and
+> tcpdump on the dae host should show client request packets.
 
-> Here, "side-router" refers to: 1) functioning as the gateway, 2) performing SNAT on TCP/UDP, and 3) having the LAN and WAN interfaces in the same network segment.
+dae does not perform SNAT on direct traffic. With a side-router, this produces
+asymmetric routing: outgoing client traffic passes through dae to the gateway,
+but return traffic goes from the gateway directly to the client.
+
+> A side-router acts as a gateway, performs SNAT on TCP/UDP, and has LAN and WAN
+> interfaces in the same subnet.
 >
-> For example, if a laptop is at 192.168.0.3, the side-router is at 192.168.0.2, and the router is at 192.168.0.1, the logical three-layer topology would be: laptop -> side-router -> router. On the router side, only TCP/UDP traffic with a source IP of 192.168.0.2 would be visible, and no TCP/UDP traffic with a source IP of 192.168.0.3 would be present.
->
-> To our knowledge, we are the pioneers of this "side-router" definition (laughter).
+> For example, a laptop at 192.168.0.3 connects through a side-router at
+> 192.168.0.2 to a router at 192.168.0.1. The logical layer 3 topology is
+> laptop -> side-router -> router. The router sees TCP/UDP traffic from
+> 192.168.0.2, not from 192.168.0.3.
 
-Asymmetric routing brings an advantage and a potential issue:
+Asymmetric routing has two effects:
 
-1. It can enhance performance. Since return traffic doesn't traverse dae, direct connection performance becomes as swift as without a side-router, reducing the path.
-2. It might disrupt stateful firewall's state maintenance and lead to packet loss (e.g., Sophos Firewall). However, this issue generally doesn't occur in home networks.
+- Return traffic bypasses dae, shortening the path and making direct connections
+  as fast as they would be without a side-router.
+- It can disrupt state tracking in firewalls such as Sophos Firewall and cause
+  packet loss. This generally does not affect home networks.
 
-From a benchmark perspective, dae's direct connectivity performance is formidable compared to other proxy solutions.
+Benchmarks show higher direct-connection performance than other proxy solutions.

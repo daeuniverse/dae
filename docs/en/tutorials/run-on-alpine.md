@@ -1,14 +1,13 @@
 # Run on Alpine Linux
 
-**Note:**
+This tutorial covers Alpine Linux 3.20 and later.
 
-1. Alpine Linux 3.18 or newer verison has full eBPF support out-of-box, older version of Alpine Linux need to build kernel by yourself.
-2. From version 3.20, Alpine Linux has officially disabled some features dae needed beacuse of Alpine Linux's cross CPU architectures compatibility, so only `linux-virt` can be used to run dae defaultly. For `linux-lts` or `linux-edge`, you should build the kernel by yourself.
-3. This tutorial is for Alpine Linux 3.20 and newer.
+- Alpine Linux 3.18 and later have full eBPF support out of the box. Earlier versions require a custom kernel build.
+- Starting with Alpine Linux 3.20, some features required by dae are disabled for cross-architecture compatibility. Only `linux-virt` runs dae by default; `linux-lts` and `linux-edge` require a custom kernel build.
 
 ## Enable Community Repo
 
-Run `setup-apkrepos` command, then you'll get a menu list like this:
+Run `setup-apkrepos` to open this menu:
 
 ```
  (f)    Find and use fastest mirror
@@ -19,17 +18,17 @@ Run `setup-apkrepos` command, then you'll get a menu list like this:
  (skip) Skip setting up apk repositories
 ```
 
-Then input `c` to enable community repo.
+Enter `c` to enable the community repository.
 
 ## Enable CGroups
 
-Enable `cgroups` service:
+Enable the `cgroups` service:
 
 ```sh
 rc-update add cgroups boot
 ```
 
-## Mount bpf
+## Mount BPF
 
 Edit `/etc/init.d/sysfs`:
 
@@ -50,27 +49,27 @@ Add the following to the `mount_misc` section:
         fi
 ```
 
-Be careful that the format of the script `/etc/init.d/sysfs` must be correct, or `sysfs` service will be failed.
+Check the syntax in `/etc/init.d/sysfs`. Errors will cause the `sysfs` service to fail.
 
 ## Install dae
 
-Installer: <https://github.com/daeuniverse/dae-installer/>
-
-This installer offered an OpenRC service script of dae, after installation, you should add a config file to `/usr/local/etc/dae/config.dae`, then set its permission to 600 or 640:
+Use [dae-installer](https://github.com/daeuniverse/dae-installer), which provides
+an OpenRC service script. After installation, create
+`/usr/local/etc/dae/config.dae` and set its permissions to 600 or 640:
 
 ```sh
 chmod 640 /usr/local/etc/dae/config.dae
 ```
 
-If your config file is ready to work, then you can start dae service:
+Once the configuration is ready, start dae:
 
 ```sh
 rc-service dae start
 ```
 
-## Start dae at boot
+## Start dae at Boot
 
-Use `rc-update` to enable dae service:
+Use `rc-update` to enable the dae service:
 
 ```sh
 rc-update add dae
