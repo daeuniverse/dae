@@ -133,4 +133,4 @@ replace github.com/olicesx/quic-go => github.com/olicesx/quic-go v0.0.0-20260910
 // no usable TLS 1.3 key share, rebuilds the ClientHello up to sixteen times
 // while a randomized fingerprint has not produced one, and resolves fingerprint
 // names the way Xray and sing-box do.
-replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260918080803-29060b6733c7
+replace github.com/daeuniverse/outbound => github.com/olicesx/outbound v0.0.0-sticky-ip.0.20260918090140-cc86ced2e683
