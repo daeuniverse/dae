@@ -2690,6 +2690,158 @@ int test_ab_lan_ingress_udp_host_listener(struct __sk_buff *skb)
 }
 
 /* ---------------------------------------------------------------------------
+ * LAN-ingress local-service bypass matrix.
+ *
+ * Before routing, the datapath looks for a host-netns UDP socket matching the
+ * packet and passes the packet through when it finds one. These cases pin
+ * which combinations may take that path:
+ *
+ *   - a service bound to the packet's exact destination address is the
+ *     NAT-loopback case the bypass exists for;
+ *   - a wildcard-bound socket must not swallow traffic addressed elsewhere;
+ *   - DNS (:53) must always reach the routing pass, where the router punts it
+ *     to the control plane, so a :53 listener never wins.
+ *
+ * The runner installs a live proxy fallback: a bypassed packet returns
+ * TC_ACT_OK (0), a routed one returns TC_ACT_REDIRECT (7).
+ * --------------------------------------------------------------------------- */
+#define AB_TEST_SERVICE_UDP_PORT 54322
+#define AB_TEST_SERVICE_ADDR IPV4(192, 0, 2, 1)
+#define AB_TEST_LAN_SADDR IPV4(192, 168, 0, 1)
+#define AB_TEST_OTHER_ADDR IPV4(8, 8, 8, 8)
+
+SEC("tc/ab_test/lan_ingress_udp_service_remote_pktgen")
+int test_ab_lan_ingress_udp_service_remote_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_OTHER_ADDR, 25001,
+					       AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_service_local_pktgen")
+int test_ab_lan_ingress_udp_service_local_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_SERVICE_ADDR, 25002,
+					       AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+/* One packet generator per case, each with its own 5-tuple: the datapath caches
+ * routing decisions per flow, so a shared tuple would let one case read the
+ * previous case's cached decision. */
+SEC("tc/ab_test/lan_ingress_udp_wildcard_local_service_pktgen")
+int test_ab_lan_ingress_udp_wildcard_local_service_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_SERVICE_ADDR, 25012,
+					       AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_block_rule_pktgen")
+int test_ab_lan_ingress_udp_block_rule_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_SERVICE_ADDR, 25016,
+					       AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_no_listener_pktgen")
+int test_ab_lan_ingress_udp_no_listener_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_SERVICE_ADDR, 25013,
+					       AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_direct_fallback_pktgen")
+int test_ab_lan_ingress_udp_direct_fallback_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_SERVICE_ADDR, 25014,
+					       AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_dns_local_pktgen")
+int test_ab_lan_ingress_udp_dns_local_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_SERVICE_ADDR, 25003, 53, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_dns_remote_pktgen")
+int test_ab_lan_ingress_udp_dns_remote_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fastpath_with_dscp(skb, AB_TEST_LAN_SADDR,
+					       AB_TEST_OTHER_ADDR, 25004, 53, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp_local_service_runner")
+int test_ab_lan_ingress_udp_local_service_runner(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, true);
+	return do_tproxy_lan_ingress(skb, ETH_HLEN);
+}
+
+/* Same runner, but the routing decision is "block": this is what a user rule
+ * like `l4proto(udp) && dport(9999) -> block` produces. It tells us whether the
+ * user's rule is what decides, or whether the datapath pre-empts it. */
+SEC("tc/ab_test/lan_ingress_udp_local_service_block_runner")
+int test_ab_lan_ingress_udp_local_service_block_runner(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_BLOCK, true);
+	return do_tproxy_lan_ingress(skb, ETH_HLEN);
+}
+
+/* Same runner with the shipped default routing fallback (direct): a packet that
+ * reaches routing and is routed direct must still be delivered, which is what
+ * the bypass used to do implicitly for a wildcard-bound local service. */
+SEC("tc/ab_test/lan_ingress_udp_local_service_direct_runner")
+int test_ab_lan_ingress_udp_local_service_direct_runner(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+	return do_tproxy_lan_ingress(skb, ETH_HLEN);
+}
+
+/* 2001:db8:1::1 (the service address) and 2001:db8:1::100 (the client). */
+#define AB_TEST_SERVICE_ADDR6_0 0x20010db8u
+#define AB_TEST_SERVICE_ADDR6_1 0x00010000u
+#define AB_TEST_SERVICE_ADDR6_2 0x00000000u
+#define AB_TEST_SERVICE_ADDR6_3 0x00000001u
+#define AB_TEST_LAN_SADDR6_3 0x00000100u
+
+SEC("tc/ab_test/lan_ingress_udp6_service_local_pktgen")
+int test_ab_lan_ingress_udp6_service_local_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fastpath_with_dscp(
+		skb, AB_TEST_SERVICE_ADDR6_0, AB_TEST_SERVICE_ADDR6_1,
+		AB_TEST_SERVICE_ADDR6_2, AB_TEST_LAN_SADDR6_3,
+		AB_TEST_SERVICE_ADDR6_0, AB_TEST_SERVICE_ADDR6_1,
+		AB_TEST_SERVICE_ADDR6_2, AB_TEST_SERVICE_ADDR6_3, 25005,
+		AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp6_wildcard_local_service_pktgen")
+int test_ab_lan_ingress_udp6_wildcard_local_service_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fastpath_with_dscp(
+		skb, AB_TEST_SERVICE_ADDR6_0, AB_TEST_SERVICE_ADDR6_1,
+		AB_TEST_SERVICE_ADDR6_2, AB_TEST_LAN_SADDR6_3,
+		AB_TEST_SERVICE_ADDR6_0, AB_TEST_SERVICE_ADDR6_1,
+		AB_TEST_SERVICE_ADDR6_2, AB_TEST_SERVICE_ADDR6_3, 25015,
+		AB_TEST_SERVICE_UDP_PORT, 0);
+}
+
+SEC("tc/ab_test/lan_ingress_udp6_dns_local_pktgen")
+int test_ab_lan_ingress_udp6_dns_local_pktgen(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fastpath_with_dscp(
+		skb, AB_TEST_SERVICE_ADDR6_0, AB_TEST_SERVICE_ADDR6_1,
+		AB_TEST_SERVICE_ADDR6_2, AB_TEST_LAN_SADDR6_3,
+		AB_TEST_SERVICE_ADDR6_0, AB_TEST_SERVICE_ADDR6_1,
+		AB_TEST_SERVICE_ADDR6_2, AB_TEST_SERVICE_ADDR6_3, 25006, 53, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * D4 datapath visibility / robustness regression tests.
  *
  * Each program returns 0 on success and a distinct non-zero code on failure

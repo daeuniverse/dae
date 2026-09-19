@@ -472,6 +472,35 @@ static __always_inline bool bpf_sock_is_dae_socket(const struct bpf_sock *sk)
 	return fullsock && fullsock->mark == PARAM.dae_socket_mark;
 }
 
+/* Whether the matched host socket is bound to the packet's exact destination
+ * address. A wildcard-bound socket (bound address zero) answers for every
+ * destination, so its presence says nothing about whether the packet was
+ * addressed to this host; only an exact match is proof that the packet is
+ * addressed to a service this host runs. */
+static __always_inline bool
+sock_bound_to_daddr(const struct bpf_sock *sk, const struct tuples *tuples,
+		    __be16 h_proto)
+{
+	if (h_proto == bpf_htons(ETH_P_IP)) {
+		__u32 bound = sk->src_ip4; // inet_rcv_saddr, 0 == wildcard
+
+		return bound != 0 && bound == tuples->five.dip.u6_addr32[3];
+	}
+
+	if (h_proto == bpf_htons(ETH_P_IPV6)) {
+		const __u32 *bound = sk->src_ip6;
+		bool wildcard = !(bound[0] | bound[1] | bound[2] | bound[3]);
+
+		return !wildcard &&
+		       bound[0] == tuples->five.dip.u6_addr32[0] &&
+		       bound[1] == tuples->five.dip.u6_addr32[1] &&
+		       bound[2] == tuples->five.dip.u6_addr32[2] &&
+		       bound[3] == tuples->five.dip.u6_addr32[3];
+	}
+
+	return false;
+}
+
 struct conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
@@ -2998,11 +3027,14 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 			  (__u32)pkt->ethh.h_source[5]),
 	};
 
-	// Socket lookup before routing to detect local services (NAT loopback).
-	// UDP only: any matching socket indicates a local service. TCP is not
-	// looked up here because every non-SYN TCP packet already returned above,
-	// so only SYNs reach this point and a SYN must go through routing.
-	if (pkt->l4proto == IPPROTO_UDP) {
+	// Socket lookup before routing to detect a service on this host that the
+	// packet is addressed to (NAT loopback). Only a socket bound to the
+	// packet's exact destination address proves that: a wildcard-bound socket
+	// answers for any destination, so it must not capture traffic addressed
+	// elsewhere, and it must never capture DNS. TCP is not looked up here
+	// because every non-SYN TCP packet already returned above.
+	if (pkt->l4proto == IPPROTO_UDP &&
+	    pkt->tuples.five.dport != bpf_htons(53)) {
 		struct bpf_sock_tuple tuple = { 0 };
 		__u32 tuple_size;
 		struct bpf_sock *sk;
@@ -3033,10 +3065,12 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
 				       (__u64)(s32)-1, 0);
 		if (sk) {
-			if (!bpf_sock_is_dae_socket(sk)) {
+			if (!bpf_sock_is_dae_socket(sk) &&
+			    sock_bound_to_daddr(sk, &pkt->tuples,
+						pkt->ethh.h_proto)) {
 				bpf_sk_release(sk);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-				bpf_printk("udp(lan): local socket found, pass through");
+				bpf_printk("udp(lan): local socket bound to the destination, pass through");
 #endif
 				return TC_ACT_OK;
 			}

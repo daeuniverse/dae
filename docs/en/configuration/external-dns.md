@@ -61,12 +61,13 @@ Configure dae as follows:
    reboot. If this happens, uninstall the service or run
    `sudo chattr +i /etc/resolv.conf`.
 
-5. If you bind to LAN, have the DHCP server advertise a public resolver, not
-   the dae host, as the DNS server. A UDP query from a LAN client to the dae
-   host's port 53 is delivered to AdGuardHome before routing, so dae never sees
-   the answer and its `domain()` rules do not match that client's traffic. dae
-   intercepts a query to any other address, answers it through AdGuardHome and
-   sees the answer.
+5. If you bind to LAN, a UDP query from a LAN client to the dae host's own port
+   53 is routed like any other packet and then handed to the resolver configured
+   in the `dns` section, so dae sees the answer and its `domain()` rules match
+   that client's traffic too. Advertising the dae host as the DNS server in DHCP
+   therefore works. If you want the host's own resolver to answer those queries
+   instead of dae, express it as a routing rule, for example
+   `l4proto(udp) && dport(53) && dip(<address of the dae host>) -> must_direct`.
 
 6. If DNS still fails without warning or error logs, move AdGuardHome off port
    53. Another program on port 53 breaks interception on NICs that cannot
