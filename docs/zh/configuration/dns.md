@@ -1,6 +1,6 @@
 # DNS
 
-dae 会拦截所有经它路由或从本机发出、发往 53 端口的 UDP 和 TCP 流量，并嗅探 DNS。只有命中 `must_direct` 的流量不经过 dae；仅写 `direct` 仍会交给 DNS 模块处理。两种情况不会进入 DNS 模块。局域网客户端发往 dae 主机自身 socket（例如本机监听 53 端口的 dnsmasq）的 UDP 查询，在路由之前就交给该 socket。经 loopback 接口的查询不会经过 dae 的任何 hook。局域网客户端发往该本机 socket 的 TCP 查询仍会经过路由。
+dae 会拦截所有经它路由或从本机发出、发往 53 端口的 UDP 和 TCP 流量，并嗅探 DNS。只有命中 `must_direct` 的流量不经过 dae；仅写 `direct` 仍会交给 DNS 模块处理。局域网客户端发往 dae 主机自身 socket（例如本机监听 53 端口的 dnsmasq）的查询和其它报文一样走路由，UDP 与 TCP 都会进入 DNS 模块。要把这类查询直接交给该 socket（dae 看不到应答），靠的是 `must_direct` 规则，例如 `l4proto(udp) && dport(53) && dip(<dae 主机地址>) -> must_direct`。只有经 loopback 接口的查询不会经过 dae 的任何 hook。
 
 dae 不重组 IP 分片：只处理数据报的第一个分片，后续分片原样放行，因此被分片的 UDP DNS 报文无法被正确拦截。若为局域网客户端应答的解析器自己的上游查询走了 `must_direct` 规则，dae 看不到这些应答，也就学不到返回 IP 对应的域名，`domain()` 规则不会匹配客户端的流量。
 
