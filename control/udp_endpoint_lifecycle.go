@@ -462,35 +462,6 @@ func (ue *UdpEndpoint) markRetiredFromReceiver() {
 // merely-full datagram queue must be absorbed as a dropped datagram instead.
 const udpEndpointWriteTimeout = 10 * time.Second
 
-// udpEndpointSendStaleTimeout is how long an established game-like endpoint
-// may go without traffic in either direction before the next write rebuilds
-// it. A pause this long means the client is starting a new round after an
-// inter-round silence (e.g. between two game matches). Proxy transports (hy2)
-// multiplex many UDP sessions over one QUIC connection and reuse a single
-// forwarding source port per session: when the remote peer reaped the session
-// during the pause, the old source port is no longer recognized and new-round
-// packets are silently ignored. Rebuilding the endpoint allocates a fresh hy2
-// session and therefore a fresh forwarding port, which the peer treats as a
-// new client. Active gameplay sends heartbeats every tens of milliseconds, so
-// 5s of client silence is a safe "new round" signal and never fires mid-round.
-const udpEndpointSendStaleTimeout = 5 * time.Second
-
-// udpEndpointQuicSendStaleTimeout is the equivalent silence window for
-// sniffed flows, whose inner protocol is QUIC (H3/DASH/HLS video, QUIC
-// games). The classification key is not the traffic genre but the inner-QUIC
-// break sensitivity: rebuilding the hy2 session changes the forwarding
-// source port, i.e. the inner connection's 4-tuple, so the QUIC peer treats
-// the flow as a new client and collapses cwnd. Video segment gaps of 6-15s
-// are normal, so the 5s game window would rebuild on every pause; 30s covers
-// those gaps while still catching a peer that actually reaped the session,
-// well under QuicNatTimeout. Known edges (accepted tradeoffs): a SNI-carrying
-// QUIC game gets the 30s window, delaying inter-round recovery by up to 30s;
-// a QUIC flow whose SNI sniff failed keeps the 5s window and can churn on
-// video pauses (unchanged pre-refactor behavior). Both are information-
-// theoretic limits: without application-layer visibility the flow genre is
-// not observable.
-const udpEndpointQuicSendStaleTimeout = 30 * time.Second
-
 // udpEndpointWriteToleratedError wraps a transient transport write error that
 // the endpoint absorbed without retiring. Callers must drop the datagram and
 // keep the session alive instead of removing/redialing it.
@@ -518,21 +489,6 @@ func (ue *UdpEndpoint) dialTargetForWrite(realDst netip.AddrPort) string {
 		return ue.DialTarget
 	}
 	return realDst.String()
-}
-
-// sendStaleTimeout is the bidirectional-silence window that triggers a
-// session rebuild on the next write. The key is the flow's inner-QUIC break
-// sensitivity: sniffed QUIC flows use the 30s window so video segment gaps
-// do not look like a new round, everything else keeps the 5s inter-round
-// signal even when the transport is QUIC-backed (hy2/tuic game tunnels).
-func (ue *UdpEndpoint) sendStaleTimeout() time.Duration {
-	if ue == nil {
-		return udpEndpointSendStaleTimeout
-	}
-	if ue.SniffedDomain != "" {
-		return udpEndpointQuicSendStaleTimeout
-	}
-	return udpEndpointSendStaleTimeout
 }
 
 func (ue *UdpEndpoint) armWriteDeadline(now time.Time) {
@@ -584,41 +540,9 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 	// Refresh TTL on write to keep endpoint alive for active connections
 	ue.RefreshTtl()
 
-	// Single wall-clock sample shared by the stale-session check and the write
-	// deadline arming below; the post-write timestamp is sampled separately so
-	// lastSendNano reflects the actual send completion.
-	now := time.Now()
-
-	// A session that was established (hasReply) but whose both directions
-	// went silent for the flow's stale timeout is presumed to be starting a
-	// new round after an inter-round pause. The remote (e.g. a game server)
-	// may have reaped the old session, so rebuilding the endpoint yields a
-	// fresh hy2 session with a new forwarding source port that the peer
-	// recognizes as a new client. Without this, dae keeps writing to the same
-	// hy2 session whose source port the peer no longer answers, and the next
-	// round never starts. The check uses the newer of the client-send and
-	// upstream-reply timestamps, so active gameplay — where the server keeps
-	// replying even if the client briefly pauses — never rebuilds mid-round.
-	// This runs before the write refreshes lastSendNano, firing only on the
-	// first packet after the silence. Sniffed QUIC/H3 flows use a longer
-	// window so DASH/HLS segment gaps do not look like a new round.
-	if ue.hasReply.Load() {
-		lastSend := ue.lastSendNano.Load()
-		lastReply := ue.lastReplyNano.Load()
-		last := max(lastReply, lastSend)
-		if last != 0 {
-			staleTimeout := ue.sendStaleTimeout()
-			if now.UnixNano()-last >= int64(staleTimeout) {
-				ue.retire()
-				// ErrClosedConnection is classified as a normal UDP endpoint
-				// closure, so the retry removes the stale endpoint and dials a
-				// fresh hy2 session without penalizing the underlying dialer.
-				return 0, fmt.Errorf("%w: both directions silent for %s, rebuilding session", errors.ErrClosedConnection, staleTimeout)
-			}
-		}
-	}
-
-	ue.armWriteDeadline(now)
+	// Silence alone does not invalidate an established UDP session. Keep its
+	// forwarding address stable until NAT expiry or an actual transport failure.
+	ue.armWriteDeadline(time.Now())
 
 	if ue.writeBatch != nil {
 		// Aggregated path: copy into the batch buffer and return immediately;
