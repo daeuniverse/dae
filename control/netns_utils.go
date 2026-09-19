@@ -676,8 +676,9 @@ type staleNetnsError struct {
 }
 
 // Error renders on one line on purpose: errors.Join separates causes with a
-// newline, which splits a daemon log entry in two. The %v rendering matches
-// the previous %w chain verbatim.
+// newline, which splits a daemon log entry in two. The %v rendering keeps the
+// three stage errnos in the order the operations run; Unwrap keeps every one
+// of them matchable through errors.Is.
 func (e *staleNetnsError) Error() string {
 	if e.lazyErr != nil {
 		return fmt.Sprintf("unmount %s: %v; lazy unmount: %v; %v", e.path, e.syncErr, e.lazyErr, e.removeErr)

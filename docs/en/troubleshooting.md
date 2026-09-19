@@ -25,20 +25,30 @@ The cover persists until the next reboot — that is intentional; removing it
 would expose the stale entry again. Older builds reported the misleading
 `failed to create netns: open /run/netns/daens: file exists`.
 
-Only when the environment denies the recovery mount does dae fail, with
-`failed to clean up the stale named netns daens: ...` carrying the real errnos
-and the manual command:
+dae recovers only for that exact signature. Any other refusal — a different
+errno, or an environment where dae itself may not mount (for example a missing
+capability in the surrounding container) — fails fast with
+`failed to clean up the stale named netns daens: ...`, which carries the real
+errnos. When the refusal is a privilege problem, the fallback below needs the
+same privilege:
 
 ```bash
 sudo mount -t tmpfs -o mode=755 tmpfs /run/netns
 sudo systemctl start dae
 ```
 
-The tmpfs hides every named netns in that mount namespace (`ip netns list` reads
-the same directory), so `ip netns exec` for names other than `daens` stops
-working. Nothing in `/run` survives a reboot: it clears the cover and the
-stale entry, and the other named netns return only when the tools that own
-them recreate them. See
+Run that mount inside the same mount namespace as dae; in a container, run it
+from inside the container rather than from the host.
+
+The tmpfs hides every named netns in that mount namespace: `ip netns list`
+reads the same directory, so names other than `daens` disappear from it, and
+`ip netns exec`, `ip netns pids` and `ip netns delete` stop finding them. The
+hidden namespaces and their processes keep running; only their names become
+unreachable. The cover is a mount in dae's mount namespace, so it also
+outlives dae itself until then, including a start that later fails for an
+unrelated reason. Nothing in `/run` survives a reboot: the reboot clears the
+cover and the stale entry, and the other named netns return when the tools
+that own them recreate them. See
 [issue #1109](https://github.com/daeuniverse/dae/issues/1109).
 
 ## Binding to WAN but no network
