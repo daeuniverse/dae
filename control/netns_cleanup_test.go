@@ -473,10 +473,12 @@ func TestCloseIsSilentWhenNamedNetnsCleanupSucceeds(t *testing.T) {
 
 // The #1086 contract that every following startup depends on: try a
 // synchronous unmount, fall back to the lazy MNT_DETACH one only when it
-// fails. The fallback is what carries a real shutdown — the caller still holds
-// ns.daeNs open, so the synchronous unmount cannot complete — so a regression
-// here would leak the mount point on every clean shutdown while the suite
-// stayed green.
+// fails. The fallback covers a mount point that is genuinely busy — another
+// process holding a reference through the /run/netns path. dae itself does not
+// hold one: its handles come from /proc/<pid>/task/<tid>/ns/net rather than
+// from the bind mount, so a clean shutdown takes the synchronous path. A
+// regression here would leak the mount point whenever the synchronous unmount
+// is the one that cannot complete, while the suite stayed green.
 func TestDeleteNamedNetnsFallsBackToLazyUnmount(t *testing.T) {
 	dir := redirectNetnsNamedDir(t)
 	if err := os.WriteFile(filepath.Join(dir, "dae-test-busy"), nil, 0o644); err != nil {
@@ -629,33 +631,56 @@ func tailLines(msg string) string {
 // cleanup with the real errnos (any other refusal) — never NewNamed's
 // misleading "file exists".
 func testNetns1109Child(t *testing.T) {
-	// Deleting first costs nothing when the shape is absent: nil means the
-	// kernel did not lock the inherited mount, so the incident cannot be
-	// reproduced here. When it returns non-nil the entry provably survived
-	// (only a failed removal produces one), which is also why the setupNetns
-	// probe below cannot reach a real NewNamed through a half-cleaned state.
+	namedPath := filepath.Join(netnsNamedDir, NsName)
 	delErr := DeleteNamedNetns(NsName)
+
+	// Confirm the incident shape from the filesystem, not from the returned
+	// error: the shape is a surviving nsfs mount point. A kernel that refuses
+	// with another errno (EPERM) still has it; a leftover that is not a mount
+	// does not. Reading the shape first is what keeps a swallowed cleanup
+	// failure (the secondary defect of issue #1109) from being reported as a
+	// kernel that does not lock the inherited mount.
+	var st unix.Statfs_t
+	statErr := unix.Statfs(namedPath, &st)
+	survivor := statErr == nil && st.Type == unix.NSFS_MAGIC
 	if delErr == nil {
+		if survivor {
+			// Only a successful removal clears the entry, so a mount point
+			// that is still there means the deletion lost its own failure.
+			fmt.Printf("%s: DeleteNamedNetns reported success but %s is still an nsfs mount point\n", netns1109Fail, namedPath)
+			return
+		}
 		fmt.Printf("%s: the inherited mount was not locked by this kernel\n", netns1109Skip)
 		return
 	}
-	// Confirm the incident shape independently of the errno this kernel chose
-	// for its refusal: the shape is a surviving nsfs mount point. A kernel
-	// that refuses with another errno (EPERM) still has it; a leftover that is
-	// not a mount does not.
-	namedPath := filepath.Join(netnsNamedDir, NsName)
-	var st unix.Statfs_t
-	if err := unix.Statfs(namedPath, &st); err != nil || st.Type != unix.NSFS_MAGIC {
-		fmt.Printf("%s: the surviving entry is not an nsfs mount point (err=%v type=%#x)\n", netns1109Skip, err, st.Type)
+	if !survivor {
+		fmt.Printf("%s: the surviving entry is not an nsfs mount point (err=%v type=%#x)\n", netns1109Skip, statErr, st.Type)
 		return
 	}
 
+	// The kernel just produced the incident shape, so this is the one place
+	// where the shipped gate meets a real refusal instead of a hand-built
+	// error: read the documented signature from the raw per-stage errnos and
+	// require isKernelLockedMount to agree with it. Without that equivalence
+	// check, a tightened gate would silently degrade auto-recovery to
+	// fail-fast and the branch below would keep passing, while a loosened one
+	// would hide /run/netns for a condition a retry or a manual cleanup
+	// fixes. Kernels that refuse with another errno (EPERM) leave both sides
+	// false and still exercise the fail-fast branch.
+	rawLocked := false
+	var stale *staleNetnsError
+	if stderrors.As(delErr, &stale) {
+		rawLocked = stderrors.Is(stale.syncErr, unix.EINVAL) &&
+			stderrors.Is(stale.lazyErr, unix.EINVAL) &&
+			stderrors.Is(stale.removeErr, unix.EBUSY)
+	}
+	lockedGate := isKernelLockedMount(delErr)
+	if lockedGate != rawLocked {
+		t.Fatalf("%s: the kernel's refusal (locked signature=%v) and the shipped recovery gate (gated=%v) disagree: %v", netns1109Fail, rawLocked, lockedGate, delErr)
+	}
+
 	setupErr := (&DaeNetns{log: logrus.New()}).setupNetns()
-	// Branch on the production predicate, not a local copy of it: the child
-	// must pin whichever gate the daemon actually ships, or a tightened
-	// isKernelLockedMount would silently degrade auto-recovery to fail-fast
-	// while this test keeps passing on the other branch.
-	if isKernelLockedMount(delErr) {
+	if lockedGate {
 		// The locked signature engages the automatic recovery: the tmpfs
 		// cover hides the locked entry, so setupNetns must get past the
 		// cleanup and past NewNamed, and stop only on this bare harness's
