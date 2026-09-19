@@ -187,8 +187,7 @@ func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstr
 	var qtype uint16
 	var ips []netip.Addr
 	if len(msg.Question) == 0 {
-		qname = ""
-		qtype = 0
+		return 0, nil, fmt.Errorf("DNS response without question section (rcode=%v, answers=%d)", msg.Rcode, len(msg.Answer))
 	} else {
 		q := msg.Question[0]
 		qname = q.Name
