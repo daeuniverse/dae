@@ -9,6 +9,38 @@ does not intercept DNS requests. Advertise a server such as `223.5.5.5` instead.
 
 - [PVE NIC Hardware passthrough](https://github.com/daeuniverse/dae/issues/43)
 
+## dae fails to start with a leftover `/run/netns/daens`
+
+A previous run left the named netns mount point `/run/netns/daens` behind. On
+hosts where dae runs inside a user namespace context (LXC guests such as a
+Proxmox VE container, sandboxed services), the kernel can lock that mount point
+(`MNT_LOCKED`): `umount`, `umount -l` and `umount -f` all fail with `EINVAL`
+while `rm` reports `EBUSY`, so no retry or flag combination clears it. The
+namespace itself is gone; only the mount point survives.
+
+Current builds detect exactly this signature and recover automatically: dae
+covers `/run/netns` with a fresh tmpfs, logs a warning that names the recovery
+and every other named netns the cover hides, and starts on the clean directory.
+The cover persists until the next reboot — that is intentional; removing it
+would expose the stale entry again. Older builds reported the misleading
+`failed to create netns: open /run/netns/daens: file exists`.
+
+Only when the environment denies the recovery mount does dae fail, with
+`failed to clean up the stale named netns daens: ...` carrying the real errnos
+and the manual command:
+
+```bash
+sudo mount -t tmpfs -o mode=755 tmpfs /run/netns
+sudo systemctl start dae
+```
+
+The tmpfs hides every named netns in that mount namespace (`ip netns list` reads
+the same directory), so `ip netns exec` for names other than `daens` stops
+working. Nothing in `/run` survives a reboot: it clears the cover and the
+stale entry, and the other named netns return only when the tools that own
+them recreate them. See
+[issue #1109](https://github.com/daeuniverse/dae/issues/1109).
+
 ## Binding to WAN but no network
 
 ### Troubleshoot local DNS service
