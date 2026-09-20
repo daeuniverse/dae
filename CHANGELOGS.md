@@ -130,6 +130,10 @@ changed. Review them before upgrading:
   receive TC=1, so no configuration change is needed; the observable difference
   is that these answers now resolve on the first query.
 
+#### Bug Fixes
+
+- fix(control): flush short TCP splice writes without corking
+
 ### v2.0.0 (Latest)
 
 > Release date: 2026/07/08
