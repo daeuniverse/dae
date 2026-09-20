@@ -24,17 +24,17 @@ func TestSplicePipeToSocketFlushesShortWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	client, err := net.DialTCP("tcp4", nil, listener.Addr().(*net.TCPAddr))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	server, err := listener.AcceptTCP()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	raw, err := server.SyscallConn()
 	if err != nil {
 		t.Fatal(err)
