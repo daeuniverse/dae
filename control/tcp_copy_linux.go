@@ -24,7 +24,10 @@ const (
 	relaySplicePipeTargetSize      = 256 << 10
 	relaySpliceMaxStep             = relaySplicePipeTargetSize
 	relaySplicePipePoolLimit       = 64
-	relaySpliceFlags               = unix.SPLICE_F_MOVE | unix.SPLICE_F_MORE | unix.SPLICE_F_NONBLOCK
+	// Do not promise a subsequent write with SPLICE_F_MORE: the next read
+	// may wait for the peer's response. Corking that response adds ~200 ms
+	// to each short exchange, even when TCP_NODELAY is enabled.
+	relaySpliceFlags = unix.SPLICE_F_MOVE | unix.SPLICE_F_NONBLOCK
 )
 
 type relaySplicePipe struct {
