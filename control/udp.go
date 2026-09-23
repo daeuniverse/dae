@@ -1154,6 +1154,7 @@ getNew:
 	// reportFlushed. Counting here would meter datagrams that a later failed or
 	// never-run flush dropped, and mark the dialer healthy for them.
 	batchOwnsAccounting := ue.sentReporter != nil
+	datagramAccepted := false
 
 	for packetIndex < len(payloads) {
 		_, err = ue.WriteTo(payloads[packetIndex], dialTarget)
@@ -1195,12 +1196,16 @@ getNew:
 		if !batchOwnsAccounting {
 			c.recordUploadTraffic(int64(len(payloads[packetIndex])))
 		}
+		datagramAccepted = true
 		packetIndex++
 	}
 	if !batchOwnsAccounting {
 		if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
 			lifecycle.reportTrafficSuccess()
 		}
+	}
+	if isNew && datagramAccepted && ue != nil && ue.Outbound != nil {
+		c.AddUdpConnectionTotal(networkType.StringWithoutDns(), ue.Outbound.Name)
 	}
 
 	// Per-flow routing traces are Debug, and only for new endpoints.

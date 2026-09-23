@@ -272,6 +272,12 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	c.requireStore()
+	c.dnsQueryTotal.Add(1)
+	c.dnsConcurrencyInFlight.Add(1)
+	defer c.dnsConcurrencyInFlight.Add(-1)
+	start := time.Now()
+	defer func() { c.observeDnsResponseLatency(time.Since(start)) }()
+	var cacheDelivery dnsCacheDelivery
 	if responseWriter != nil && !dnsResponseWriterUsesTCP(responseWriter) {
 		responseWriter = &dnsUDPResponseWriter{ResponseWriter: responseWriter, limit: dnsUDPResponseSizeLimit(dnsMessage)}
 	}
@@ -327,7 +333,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		// Check cache after routing (non-reject case). Cache hits return
 		// immediately without singleflight; stale entries background-refresh.
 		if handled, herr := c.serveFromRespCacheWithRefresh_(dnsMessage, req, responseWriter,
-			responseCacheKey, upstreamIndex, upstream); handled {
+			responseCacheKey, upstreamIndex, upstream, &cacheDelivery); handled {
 			return herr
 		}
 
@@ -342,15 +348,19 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 
 			// This goroutine performs the actual resolution.
 			// It returns the DNS response message, or an error.
-			return c.resolveForSingleflight(resCtx, dnsMessage, req, upstreamIndex, upstream, responseCacheKey)
+			msg, fromCache, lazy, resolveErr := c.resolveForSingleflight(resCtx, dnsMessage, req, upstreamIndex, upstream, responseCacheKey)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			return dnsSingleflightResult{msg: msg, fromCache: fromCache, lazy: lazy}, nil
 		})
 
 		if err != nil {
 			return err
 		}
 
-		// res is the *dnsmessage.Msg
-		respMsg := res.(*dnsmessage.Msg)
+		result := res.(dnsSingleflightResult)
+		respMsg := result.msg
 
 		// RFC 8305 resolution delay runs here, outside the singleflight leader:
 		// the shared resolution is complete, so waiting for the preferred
@@ -358,15 +368,10 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		// follower behind the same key.
 		respMsg = c.applyPreferenceWait(respMsg)
 
-		// Optimization: Try to get pre-packed response from cache after singleflight.
-		// This avoids another Pack() call which is common in high-concurrency scenarios.
-		if responseCacheKey != "" {
-			if resp, _ := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false); resp != nil {
-				if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter, dnsMessage); err != nil {
-					return err
-				}
-				return nil
-			}
+		// The packed entry avoids another Pack(). The leader stores it after an
+		// upstream exchange, so its presence is not a cache hit.
+		if handled, herr := c.deliverSingleflightPackedCache(dnsMessage, req, responseWriter, responseCacheKey, result, &cacheDelivery); handled {
+			return herr
 		}
 
 		// Write response.
@@ -374,7 +379,13 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if responseWriter != nil {
 			respMsgUnique := respMsg.Copy()
 			respMsgUnique.Id = dnsMessage.Id
-			return responseWriter.WriteMsg(respMsgUnique)
+			if err = responseWriter.WriteMsg(respMsgUnique); err != nil {
+				return err
+			}
+			if result.fromCache {
+				c.noteDNSCacheServed(&cacheDelivery, result.lazy)
+			}
+			return nil
 		}
 
 		// If no responseWriter (internal UDP path), pack and send directly.
@@ -400,10 +411,13 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if err = sendRuntimeTrackedPkt(c.log, data, req.realDst, req.realSrc, req.replySoMark(), req.downloadRecorder()); err != nil {
 			return err
 		}
+		if result.fromCache {
+			c.noteDNSCacheServed(&cacheDelivery, result.lazy)
+		}
 		return nil
 	}
 
-	return c.handleWithResponseWriter_(ctx, dnsMessage, req, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey)
+	return c.handleWithResponseWriter_(ctx, dnsMessage, req, responseWriter, upstreamIndex, upstream, responseCacheKey, baseCacheKey, &cacheDelivery)
 }
 
 func (c *DnsController) resolveForSingleflight(
@@ -413,7 +427,7 @@ func (c *DnsController) resolveForSingleflight(
 	upstreamIndex consts.DnsRequestOutboundIndex,
 	upstream *dns.Upstream,
 	responseCacheKey string,
-) (*dnsmessage.Msg, error) {
+) (msg *dnsmessage.Msg, fromCache bool, lazy bool, err error) {
 	// Preserve the second cache lookup from the former response-writer path.
 	// Another request may have populated the entry after the outer cache miss
 	// and before this singleflight leader starts upstream resolution.
@@ -423,19 +437,19 @@ func (c *DnsController) resolveForSingleflight(
 		}
 		respMsg := new(dnsmessage.Msg)
 		if err := respMsg.Unpack(resp); err != nil {
-			return nil, fmt.Errorf("unpack cached DNS response: %w", err)
+			return nil, false, false, fmt.Errorf("unpack cached DNS response: %w", err)
 		}
 		respMsg.Id = dnsMessage.Id
-		return respMsg, nil
+		return respMsg, true, needRefresh, nil
 	}
 
 	data, err := dnsMessage.Pack()
 	if err != nil {
-		return nil, fmt.Errorf("pack DNS packet: %w", err)
+		return nil, false, false, fmt.Errorf("pack DNS packet: %w", err)
 	}
 	resolution, err := c.resolveDNSUpstream(ctx, 0, req, data, upstream)
 	if err != nil {
-		return nil, err
+		return nil, false, false, err
 	}
 
 	respMsg := resolution.response
@@ -444,7 +458,7 @@ func (c *DnsController) resolveForSingleflight(
 	if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
 		c.noteDnsCacheStoreFailure("controller response", err)
 	}
-	return respMsg, nil
+	return respMsg, false, false, nil
 }
 
 // serveRejectWithWriter_ applies a routing-reject verdict if one was selected.
@@ -464,6 +478,7 @@ func (c *DnsController) serveRejectWithWriter_(dnsMessage *dnsmessage.Msg, req *
 func (c *DnsController) serveFromRespCacheWithRefresh_(dnsMessage *dnsmessage.Msg, req *udpRequest,
 	responseWriter dnsmessage.ResponseWriter, responseCacheKey string,
 	upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream,
+	delivery *dnsCacheDelivery,
 ) (bool, error) {
 	resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false)
 	if resp == nil {
@@ -489,6 +504,7 @@ func (c *DnsController) serveFromRespCacheWithRefresh_(dnsMessage *dnsmessage.Ms
 	if err := c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter, dnsMessage); err != nil {
 		return true, err
 	}
+	c.noteDNSCacheServed(delivery, needRefresh)
 	if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		l := c.log.WithFields(logrus.Fields{
@@ -516,6 +532,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	upstream *dns.Upstream,
 	responseCacheKey string,
 	baseCacheKey string,
+	delivery *dnsCacheDelivery,
 ) (err error) {
 	// Prepare qname, qtype.
 	var qname string
@@ -550,7 +567,7 @@ func (c *DnsController) handleWithResponseWriter_(
 	}
 
 	if handled, herr := c.serveFromRespCacheWithRefresh_(dnsMessage, req, responseWriter,
-		responseCacheKey, upstreamIndex, upstream); handled {
+		responseCacheKey, upstreamIndex, upstream, delivery); handled {
 		return herr
 	}
 
@@ -571,6 +588,40 @@ func (c *DnsController) handleWithResponseWriter_(
 		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	return c.dialSend(ctx, req, data, dnsMessage.Id, upstream, responseWriter, responseCacheKey)
+}
+
+type dnsSingleflightResult struct {
+	msg       *dnsmessage.Msg
+	fromCache bool
+	lazy      bool
+}
+
+// deliverSingleflightPackedCache writes a pre-packed cache entry when one
+// exists. A hit is recorded only when the singleflight result itself came
+// from the leader's cache short-circuit. Packed bytes stored by that leader
+// after an upstream exchange are a Pack() optimisation, not a hit.
+func (c *DnsController) deliverSingleflightPackedCache(
+	dnsMessage *dnsmessage.Msg,
+	req *udpRequest,
+	responseWriter dnsmessage.ResponseWriter,
+	responseCacheKey string,
+	result dnsSingleflightResult,
+	delivery *dnsCacheDelivery,
+) (handled bool, err error) {
+	if responseCacheKey == "" {
+		return false, nil
+	}
+	resp, _ := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false)
+	if resp == nil {
+		return false, nil
+	}
+	if err = c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter, dnsMessage); err != nil {
+		return true, err
+	}
+	if result.fromCache {
+		c.noteDNSCacheServed(delivery, result.lazy)
+	}
+	return true, nil
 }
 
 type dnsUpstreamResolution struct {
@@ -637,6 +688,9 @@ func (c *DnsController) resolveDNSUpstream(
 	}
 
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
+	// A selection failure is not an upstream exchange: queryTotal starts at
+	// the forward, and errTotal counts only a failed exchange or a
+	// question-echo mismatch.
 	dialArg, err := c.runtime().chooseBestDnsDialer(ctx, dnsRequestSnapshotFromUDPRequest(req), upstream)
 	if err != nil {
 		return nil, err
@@ -645,12 +699,14 @@ func (c *DnsController) resolveDNSUpstream(
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
 	var usedDialArg *dialArgument
+	upstreamMetric := c.getOrCreateDnsUpstreamMetric(upstreamName)
+	upstreamMetric.queryTotal.Add(1)
+	upstreamMetric.inFlight.Add(1)
+	forwardStart := time.Now()
 	respMsg, usedDialArg, err = c.forwardWithFallback(ctx, req, upstream, dialArg, data, isAsIs)
-	if err != nil {
-		return nil, err
-	}
-	if reqQuestion.Name != "" && !questionEchoMatches(reqQuestion, respMsg) {
-		return nil, fmt.Errorf("upstream %v reply does not echo the request question (possible spoofing or upstream cross-talk); dropped", upstreamName)
+	upstreamMetric.inFlight.Add(-1)
+	if exchangeErr := c.finishDNSUpstreamExchange(upstreamMetric, upstreamName, forwardStart, reqQuestion, respMsg, err); exchangeErr != nil {
+		return nil, exchangeErr
 	}
 
 	networkType := &dialer.NetworkType{
