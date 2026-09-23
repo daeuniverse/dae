@@ -301,6 +301,9 @@ func (c *ControlPlane) handleConnWithRoutingResultOwned(
 		}
 		return fmt.Errorf("adopt TCP flow runtime: %w", err)
 	}
+	if res != nil && res.Outbound != nil && res.OrigNetworkTypeObj != nil {
+		c.AddTcpConnectionTotal(res.OrigNetworkTypeObj.StringWithoutDns(), res.Outbound.Name)
+	}
 	defer closeEstablishedTCPFlow(rConn, flow)
 
 	// Attempt kernel-side splice via fast_sock/sk_skb before falling back to
@@ -379,8 +382,15 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 }
 
 func (c *ControlPlane) RouteDialTcpContext(ctx context.Context, p *RouteDialParam) (conn netproxy.Conn, err error) {
-	conn, _, err = c.routeDial(ctx, p.toProxyDialParam())
-	return conn, err
+	var res *proxyDialResult
+	conn, res, err = c.routeDial(ctx, p.toProxyDialParam())
+	if err != nil {
+		return conn, err
+	}
+	if res != nil && res.Outbound != nil && res.OrigNetworkTypeObj != nil {
+		c.AddTcpConnectionTotal(res.OrigNetworkTypeObj.StringWithoutDns(), res.Outbound.Name)
+	}
+	return conn, nil
 }
 
 func tcpProxyDialParamFromRoutingResult(routingResult *bpfRoutingResult, domain string, src, dst netip.AddrPort) *proxyDialParam {
