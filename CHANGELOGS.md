@@ -51,6 +51,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### Unreleased
 
+#### Build and release
+
+- Add a 20:00 UTC+8 nightly build for days with new commits, publishing only to `nightly`.
+- Include Go modules in full-source archives and use the bundled cache automatically.
+
 #### Behavior changes / Upgrade notes
 
 Existing config files keep parsing, but the following defaults and semantics

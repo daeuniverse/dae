@@ -31,6 +31,15 @@ make GOFLAGS="-buildvcs=false" \
 #make CGO_ENABLED=0 GOARCH=mips
 ```
 
+### Full-source Release Archives
+
+Both full-source archives include Git submodules and a `go-mod/` cache, which
+the Makefile uses automatically. With the build toolchain installed:
+
+```shell
+make GOFLAGS="-buildvcs=false" GOPROXY=off GOSUMDB=off
+```
+
 ### Trace Support per Architecture
 
 `make` builds the optional `dae trace` eBPF program when the toolchain supports
