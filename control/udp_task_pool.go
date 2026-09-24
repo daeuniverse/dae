@@ -472,6 +472,15 @@ func NewUdpTaskPool() *UdpTaskPool {
 	}
 }
 
+func (p *UdpTaskPool) Count() int {
+	n := 0
+	p.queues.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
 // EmitTask makes sure accepted packets with the same UDP flow key run in order.
 // It returns false when the pool is closed or that flow's bounded queue is full;
 // the caller retains ownership and must discard the rejected task.
