@@ -1,0 +1,42 @@
+name: Publish Nightly
+
+on:
+  schedule:
+    # 20:00 UTC+8, every day (GitHub cron uses UTC).
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+# A previous nightly must finish publishing before the next one starts.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+      sha: ${{ steps.changes.outputs.sha }}
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for commits today in UTC+8
+        id: changes
+        run: bash scripts/check-nightly-changes.sh >> "$GITHUB_OUTPUT"
+
+  nightly:
+    needs: [changes]
+    if: needs.changes.outputs.changed == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/prerelease.yml
+    with:
+      ref: ${{ needs.changes.outputs.sha }}
