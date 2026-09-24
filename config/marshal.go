@@ -42,6 +42,12 @@ type Marshaller struct {
 	buf         bytes.Buffer
 }
 
+// Bytes returns the marshalled sections written so far. Embedding callers
+// such as dae-wing marshal a single section and need the raw output.
+func (m *Marshaller) Bytes() []byte {
+	return m.buf.Bytes()
+}
+
 func (m *Marshaller) writeLine(depth int, line string) {
 	if depth < 0 {
 		depth = 0
