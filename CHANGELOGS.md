@@ -139,6 +139,7 @@ changed. Review them before upgrading:
 
 - fix(control): flush short TCP splice writes without corking
 - fix(config): restore `Marshaller.Bytes` for embedding callers such as dae-wing
+- fix(config): quote the whole `name: value` entry in the digit-prefix hint, and dry-run `fixed_domain_ttl` parsing from `dae validate` so a malformed entry no longer exits 0 and then aborts daemon startup
 
 ### v2.0.0 (Latest)
 

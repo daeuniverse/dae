@@ -52,6 +52,16 @@ var (
 				fmt.Println(err)
 				os.Exit(1)
 			}
+			// dns.fixed_domain_ttl is the remaining run-path parse the DNS
+			// block owns: control.ParseFixedDomainTtl runs inside
+			// NewControlPlane and aborts the whole control plane on a bad
+			// entry, so 'name:' (empty TTL), a missing ':' or a non-numeric
+			// TTL used to exit 0 here and then refuse to start the daemon -
+			// the same shape of bug the DNS routing dry-run above fixes.
+			if err := validateFixedDomainTtl(conf); err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
 		},
 	}
 )
@@ -127,6 +137,21 @@ func validateRoutingRules(log *logrus.Logger, conf *config.Config, externGeoData
 	})
 	if err != nil {
 		return fmt.Errorf("invalid routing rules: %w", err)
+	}
+	return nil
+}
+
+// validateFixedDomainTtl is the dry-run of the dns.fixed_domain_ttl parsing
+// that only the run path used to perform. control.ParseFixedDomainTtl is
+// reused verbatim - the same way control.RegisterRoutingProgramParsers is
+// above - so validate and run cannot drift apart: anything accepted here must
+// still build a control plane there.
+func validateFixedDomainTtl(conf *config.Config) error {
+	if conf == nil {
+		return fmt.Errorf("nil config")
+	}
+	if _, err := control.ParseFixedDomainTtl(conf.Dns.FixedDomainTtl); err != nil {
+		return fmt.Errorf("invalid fixed_domain_ttl: %w", err)
 	}
 	return nil
 }

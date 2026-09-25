@@ -15,13 +15,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ParseFixedDomainTtl parses dns.fixed_domain_ttl entries of the form
+// "name: ttl" (quoted as a whole, see pkg/config_parser). It is the only
+// consumer of that config field and runs the run path only, so `dae validate`
+// dry-runs it too via cmd.validateFixedDomainTtl to keep "validate exits 0 =>
+// the daemon starts" true.
 func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 	m := make(map[string]int)
 	for _, k := range ks {
 		key, value, _ := strings.Cut(string(k), ":")
 		ttl, err := strconv.ParseInt(strings.TrimSpace(value), 0, strconv.IntSize)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse ttl: %w", err)
+			return nil, fmt.Errorf("failed to parse ttl of entry %q: %w", string(k), err)
 		}
 		m[strings.TrimSpace(key)] = int(ttl)
 	}
