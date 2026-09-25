@@ -138,6 +138,7 @@ changed. Review them before upgrading:
 #### Bug Fixes
 
 - fix(control): flush short TCP splice writes without corking
+- fix(control): disable `send_redirects` on `conf/all` too, so LAN redirects actually stop
 - fix(config): restore `Marshaller.Bytes` for embedding callers such as dae-wing
 
 ### v2.0.0 (Latest)

@@ -34,6 +34,17 @@ EOF
 sudo sysctl --system
 ```
 
+`send_redirects` is read as the OR of `conf/all/send_redirects` and
+`conf/<interface>/send_redirects`, so the per-interface entry above changes
+nothing on its own: `conf/all/send_redirects` defaults to `1`, and the kernel
+keeps offering downstream clients a direct route to the upstream router, which
+bypasses dae. Disable the global node as well:
+
+```shell
+printf 'net.ipv4.conf.all.send_redirects = 0\n' | sudo tee /etc/sysctl.d/60-dae-send-redirects.conf
+sudo sysctl --system
+```
+
 ## 2. Enable Global Forwarding
 
 Enable global IPv4 and IPv6 forwarding to avoid unexpected behavior:

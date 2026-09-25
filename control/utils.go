@@ -325,16 +325,52 @@ func SetForwarding(ifname string, val string) {
 	_ = setForwarding(ifname, consts.IpVersionStr_6, val)
 }
 
+// procSysNet is the sysctl tree the kernel-parameter helpers read and write. It
+// is a variable rather than a literal so tests can point it at a fixture tree:
+// /proc/sys/net is only writable as root, so the write/check pair below would
+// otherwise have to ship without an executable contract.
+var procSysNet = "/proc/sys/net"
+
+// sendRedirectsSysctls returns the sysctl nodes that together decide whether the
+// kernel sends an ICMP redirect out of ifname.
+//
+// The decision is OR-ed, not AND-ed, and that is the whole point of listing more
+// than one node. ip_forward() hands the packet to ip_rt_send_redirect() when
+// IN_DEV_TX_REDIRECTS(in_dev) is set, and include/linux/inetdevice.h defines it
+// as IN_DEV_ORCONF, i.e.
+//
+//	IPV4_DEVCONF_ALL_RO(net, SEND_REDIRECTS) || IN_DEV_CONF_GET(in_dev, SEND_REDIRECTS)
+//
+// Documentation/networking/ip-sysctl.rst states the same in words: redirects for
+// an interface are enabled if at least one of conf/{all,interface}/send_redirects
+// is TRUE. So the two nodes are alternatives and both have to be 0 to stop them;
+// touching only conf/<ifname> is inert while conf/all keeps the kernel default of
+// 1, which is a state where the kernel still offers downstream clients a direct
+// path around dae.
+//
+// IPv4 only: there is no IPv6 send_redirects node to mirror this onto.
+func sendRedirectsSysctls(ifname string, ipversion consts.IpVersionStr) []string {
+	return []string{
+		fmt.Sprintf("%v/ipv%v/conf/%v/send_redirects", procSysNet, ipversion, ifname),
+		fmt.Sprintf("%v/ipv%v/conf/all/send_redirects", procSysNet, ipversion),
+	}
+}
+
+// checkSendRedirects fails unless every node that can enable redirects for
+// ifname is off. Reading only the per-interface node would inspect the value dae
+// itself just wrote and never look at conf/all, so the check could not fail
+// while redirects were still being sent.
 func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
-	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
+	for _, path := range sendRedirectsSysctls(ifname, ipversion) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
+			return fmt.Errorf("send_redirects is on for %v: %v; see docs of dae for help", ifname, path)
+		}
 	}
-	if bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
-		return nil
-	}
-	return fmt.Errorf("send_directs on %v is on: %v; see docs of dae for help", ifname, path)
+	return nil
 }
 
 func CheckSendRedirects(ifname string) error {
@@ -344,9 +380,18 @@ func CheckSendRedirects(ifname string) error {
 	return nil
 }
 
+// setSendRedirects writes val to every node that decides redirection for ifname,
+// so that one call actually takes effect; see sendRedirectsSysctls for why the
+// per-interface node alone is not enough. Every node is attempted even if an
+// earlier write fails, and the first error is returned.
 func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) error {
-	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
-	return os.WriteFile(path, []byte(val), 0644)
+	var firstErr error
+	for _, path := range sendRedirectsSysctls(ifname, ipversion) {
+		if err := os.WriteFile(path, []byte(val), 0644); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func SetSendRedirects(ifname string, val string) {
