@@ -24,6 +24,13 @@ EOF
 sudo sysctl --system
 ```
 
+`send_redirects` 取 `conf/all/send_redirects` 与 `conf/<接口>/send_redirects` 的**或**，因此上面那条接口级设置单独无效：`conf/all/send_redirects` 默认为 `1`，内核仍会向下游客户端通告一条直连上游路由器的路径，使其绕过 dae。还需一并关闭全局节点：
+
+```shell
+printf 'net.ipv4.conf.all.send_redirects = 0\n' | sudo tee /etc/sysctl.d/60-dae-send-redirects.conf
+sudo sysctl --system
+```
+
 ## 2. 启用全局转发
 
 启用全局 IPv4 和 IPv6 转发，以避免异常情况：
