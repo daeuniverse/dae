@@ -107,6 +107,14 @@ func (p *UdpEndpointPool) Get(lAddr netip.AddrPort) (udpEndpoint *UdpEndpoint, o
 	return _ue.(*UdpEndpoint), ok
 }
 
+func (p *UdpEndpointPool) Count() (n int) {
+	p.pool.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
 func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, isNew bool, err error) {
 	_ue, ok := p.pool.Load(lAddr)
 begin:

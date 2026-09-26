@@ -92,6 +92,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 		if err != nil {
 			return err
 		}
+		RecordUploadTraffic(int64(len(data)))
 		return nil
 	}
 
@@ -202,7 +203,11 @@ getNew:
 		// Handler handles response packets and send it to the client.
 		Handler: func(data []byte, from netip.AddrPort) (err error) {
 			// Do not return conn-unrelated err in this func.
-			return sendPkt(c.log, data, from, realSrc, src, lConn)
+			if err = sendPkt(c.log, data, from, realSrc, src, lConn); err != nil {
+				return err
+			}
+			RecordDownloadTraffic(int64(len(data)))
+			return nil
 		},
 		NatTimeout: natTimeout,
 		GetDialOption: func() (option *DialOption, err error) {
@@ -302,6 +307,7 @@ getNew:
 		retry++
 		goto getNew
 	}
+	RecordUploadTraffic(int64(len(data)))
 
 	// Print log.
 	// Only print routing for new connection to avoid the log exploded (Quic and BT).

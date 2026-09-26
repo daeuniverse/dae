@@ -18,6 +18,7 @@ func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, sub
 	p := Property{
 		Property:        *_p,
 		SubscriptionTag: subscriptionTag,
+		Link:            link,
 	}
 	return NewDialer(d, gOption, iOption, &p), nil
 }

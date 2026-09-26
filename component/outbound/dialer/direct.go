@@ -15,5 +15,6 @@ func NewDirectDialer(option *GlobalOption, fullcone bool) (netproxy.Dialer, *Pro
 	return d, &Property{
 		Property:        *_p,
 		SubscriptionTag: "",
+		Link:            "",
 	}
 }
