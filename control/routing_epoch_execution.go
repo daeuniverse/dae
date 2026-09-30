@@ -513,17 +513,38 @@ func (c *ControlPlane) StopRoutingEpochExecutionWithTimeout(timeout time.Duratio
 	if c == nil {
 		return
 	}
+	// A non-positive timeout must still bound the wait: an unbounded wait would
+	// pin retirement forever and block every later reload.
+	if timeout <= 0 {
+		timeout = controlPlaneDeferredCleanupTimeout
+	}
 	c.closeRoutingEpochExecution()
-	c.udpIngressAdmission.closeAndWait()
+
+	ingressDone := make(chan struct{})
+	go func() {
+		c.udpIngressAdmission.closeAndWait()
+		close(ingressDone)
+	}()
+	timer := time.NewTimer(timeout)
+	select {
+	case <-ingressDone:
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	case <-timer.C:
+		if c.log != nil {
+			c.log.Warnln("udp ingress admission drain timed out; continuing retirement")
+		}
+	}
+
 	if c.drainTracker == nil {
 		return
 	}
 	idle := c.drainTracker.IdleCh()
-	if timeout <= 0 {
-		<-idle
-		return
-	}
-	timer := time.NewTimer(timeout)
+	timer = time.NewTimer(timeout)
 	select {
 	case <-idle:
 		if !timer.Stop() {

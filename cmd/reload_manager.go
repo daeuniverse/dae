@@ -401,6 +401,11 @@ func (m *reloadManager) buildShutdownHandoffWithSupervisor(snapshot runtimeSuper
 	return &handoff
 }
 
+// retirementCloseTimeout bounds the retirement of an old control plane so a
+// stuck Close cannot pin the reload state machine (and every later reload)
+// forever.
+const retirementCloseTimeout = 15 * time.Second
+
 func (m *reloadManager) startControlPlaneRetirement(
 	log *logrus.Logger,
 	oldControlPlane *control.ControlPlane,
@@ -461,8 +466,17 @@ func (m *reloadManager) startControlPlaneRetirement(
 		if oldCancel != nil {
 			oldCancel()
 		}
-		if closeErr := oldControlPlane.Close(); closeErr != nil && log != nil {
-			log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
+		closeDone := make(chan error, 1)
+		go func() { closeDone <- oldControlPlane.Close() }()
+		select {
+		case closeErr := <-closeDone:
+			if closeErr != nil && log != nil {
+				log.WithError(closeErr).Warnln("[Reload] Old control plane close did not finish cleanly")
+			}
+		case <-time.After(retirementCloseTimeout):
+			if log != nil {
+				log.Warnf("[Reload] Old control plane close exceeded %v; continuing retirement", retirementCloseTimeout)
+			}
 		}
 		if successor != nil {
 			successor.RunReloadRetirementCleanup(staleBeforeNs)
