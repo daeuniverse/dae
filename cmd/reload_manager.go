@@ -347,12 +347,26 @@ func (m *reloadManager) shutdownSupervisor(supervisor *runtimeSupervisor) runtim
 		}
 		return supervisor.shutdown()
 	}
+	// Bound every join: a stuck transition or retirement must not hang
+	// shutdown, or systemd SIGKILLs at TimeoutStopSec and leaves BPF state
+	// behind.
 	m.transitionMu.Lock()
 	m.shutdownStarted = true
-	for m.transitionActive {
-		m.transitionCond.Wait()
-	}
+	transitionDone := make(chan struct{})
+	go func() {
+		m.transitionMu.Lock()
+		for m.transitionActive {
+			m.transitionCond.Wait()
+		}
+		m.transitionMu.Unlock()
+		close(transitionDone)
+	}()
 	m.transitionMu.Unlock()
+	select {
+	case <-transitionDone:
+	case <-time.After(retirementCloseTimeout):
+		logrus.Warnln("[Reload] shutdown: reload transition did not settle in time; proceeding")
+	}
 
 	m.lastRetirementMu.Lock()
 	task := m.activeRetirement
@@ -361,12 +375,16 @@ func (m *reloadManager) shutdownSupervisor(supervisor *runtimeSupervisor) runtim
 	}
 	m.lastRetirementMu.Unlock()
 	if task != nil {
-		<-task.done
-		if supervisor != nil {
-			// A shutdown-owned worker may be joined after its completion
-			// notification but before it releases supervisor retirement state.
-			// The generation identity makes this cleanup idempotent.
-			supervisor.markRetirementComplete(task.generation)
+		select {
+		case <-task.done:
+			if supervisor != nil {
+				// A shutdown-owned worker may be joined after its completion
+				// notification but before it releases supervisor retirement
+				// state. The generation identity makes this cleanup idempotent.
+				supervisor.markRetirementComplete(task.generation)
+			}
+		case <-time.After(retirementCloseTimeout):
+			logrus.Warnln("[Reload] shutdown: retirement did not finish in time; proceeding")
 		}
 	}
 	if supervisor == nil {

@@ -3115,6 +3115,25 @@ func (c *ControlPlane) releaseRetainedState() {
 	c.ClearReloadDnsCacheSource()
 }
 
+// closeStepWithTimeout runs one non-critical Close step under a deadline so a
+// stuck step cannot make Close hang. The step may keep running afterwards; the
+// deadline only bounds how long Close waits for it.
+func (c *ControlPlane) closeStepWithTimeout(what string, fn func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	timer := time.NewTimer(controlPlaneDeferredCleanupTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		if c.log != nil {
+			c.log.Warnf("ControlPlane.Close: %s timed out after %v; continuing", what, controlPlaneDeferredCleanupTimeout)
+		}
+		return nil
+	}
+}
+
 func (c *ControlPlane) Close() (err error) {
 	if c == nil {
 		return nil
@@ -3129,9 +3148,12 @@ func (c *ControlPlane) Close() (err error) {
 			c.cancel()
 		}
 		if manager, owned := c.controlPlaneSessionManager(); owned && manager != nil {
-			c.closeErr = stderrors.Join(c.closeErr, manager.Close())
+			c.closeErr = stderrors.Join(c.closeErr, c.closeStepWithTimeout("session manager close", manager.Close))
 		}
-		c.udpIngressAdmission.closeAndWait()
+		_ = c.closeStepWithTimeout("udp ingress admission drain", func() error {
+			c.udpIngressAdmission.closeAndWait()
+			return nil
+		})
 
 		var stopWg sync.WaitGroup
 		stopWg.Add(2)
@@ -3143,7 +3165,10 @@ func (c *ControlPlane) Close() (err error) {
 			defer stopWg.Done()
 			c.stopConnStateJanitor()
 		}()
-		stopWg.Wait()
+		_ = c.closeStepWithTimeout("janitor stop", func() error {
+			stopWg.Wait()
+			return nil
+		})
 
 		// Close the core (BPF hooks + maps) synchronously WITHOUT timeout.
 		// core.Close detaches BPF hooks via netlink and must complete before
