@@ -44,11 +44,18 @@ func shouldTryRawUDPFallback(err error, from, realTo netip.AddrPort) bool {
 	if stderrors.Is(err, unix.EADDRINUSE) || stderrors.Is(err, unix.EADDRNOTAVAIL) {
 		return true
 	}
+	// EINVAL is what the kernel returns when the bind address cannot be used as
+	// a source for this destination, e.g. a loopback bind address writing to a
+	// non-loopback client. That is exactly the case this fallback exists for.
+	if stderrors.Is(err, unix.EINVAL) {
+		return true
+	}
 	// Some net stack paths wrap errno and lose Is(err, errno) matching.
 	// Match common bind/send failures conservatively.
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "address already in use") ||
-		strings.Contains(errStr, "cannot assign requested address")
+		strings.Contains(errStr, "cannot assign requested address") ||
+		strings.Contains(errStr, "sendto: invalid argument")
 }
 
 func tryRawUDPFallback(log *logrus.Logger, data []byte, from, realTo netip.AddrPort, soMark uint32, debugEnabled, errorEnabled bool, reason string, err error) bool {
@@ -414,6 +421,7 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 		}
 		if errorEnabled {
 			log.WithFields(logrus.Fields{
+				"bind_addr":  bindAddr.String(),
 				"write_addr": writeAddr.String(),
 				"data_size":  len(data),
 				"error":      err.Error(),
