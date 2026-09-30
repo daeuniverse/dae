@@ -14,7 +14,7 @@ dae 支持以下代理协议：
 | Juicity | — | [Juicity](https://github.com/juicity/juicity?tab=readme-ov-file#link-format) |
 | Hysteria2 | — | [Hysteria2](https://v2.hysteria.network/docs/developers/URI-Scheme) |
 | AnyTLS | — | [AnyTLS](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md) |
-| 代理链（灵活协议） | — | [Proxy chain](https://github.com/daeuniverse/dae/discussions/236) |
+| 代理链（灵活协议） | — | [Proxy chain](#代理链) |
 
 表中协议均已支持。“—”表示原文未列出细分信息或 URI 参考链接。
 
@@ -32,6 +32,18 @@ dae 支持以下代理协议：
   socks4://[[user:]pass@]hostname:port/
   socks5://[[user:]pass@]hostname:port/
   ```
+
+## 代理链
+
+节点链接可以用 `->` 串联多个代理。链路从右向左应用：最右侧的链接被直接拨号，其左侧的每一跳都通过右边的那一跳到达。因此 `A -> B` 表示经由 A 连接目标，而到达 A 的服务器要经由 B。
+
+  ```
+  node {
+    chain: 'trojan://PASSWORD@a.example:443/?sni=a.example -> socks5://user:pass@b.example:1080'
+  }
+  ```
+
+每一跳都接受与普通节点相同的链接。串联会增加延迟，仅在确实需要中转时使用。
 
 ## Shadowsocks 插件
 

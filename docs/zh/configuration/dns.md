@@ -192,6 +192,8 @@ global {
 }
 ```
 
+对于上述三类查询，dae 会先查系统 hosts 文件（`/etc/hosts`），再使用引导解析器：写在 hosts 里的节点、订阅或 `dns.upstream` 主机名无需 DNS 即可解析；不在 hosts 中的名称仍按所选解析器解析。
+
 ## 模板
 
 根据所需的 DNS 行为选择一种模板。

@@ -188,6 +188,10 @@ node {
     mylink: 'ss://LINK'
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
+    # Proxy chain: links are applied right to left. The rightmost link is dialed
+    # directly and each link to its left is reached through the one on its
+    # right, so 'A -> B' connects to the target through A, reaching A's server
+    # through B.
     chains: 'tuic://LINK -> vmess://LINK'
     hysteria2: 'hysteria2://password@server-ip:port/?sni=domain'
 }
@@ -321,6 +325,12 @@ group {
 
         # Select the first node from the group for every connection.
         #policy: fixed(0)
+
+        # Select the first alive node in node order. Local nodes keep their
+        # config order and subscription tags are sorted, so the order is stable.
+        # A filter annotation "priority" orders nodes explicitly: annotated
+        # nodes come first (ascending), then unannotated ones in node order.
+        #policy: priority
 
         # Select the node with min last latency from the group for every connection.
         #policy: min

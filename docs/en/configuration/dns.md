@@ -230,6 +230,11 @@ global {
 }
 ```
 
+dae consults the system hosts file (`/etc/hosts`) before the bootstrap resolver
+for all three lookups, so a node, subscription, or `dns.upstream` hostname mapped
+there resolves without DNS. Names absent from the hosts file are still resolved
+with the selected resolver.
+
 ## Templates
 
 ```shell

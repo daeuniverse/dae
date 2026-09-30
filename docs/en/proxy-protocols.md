@@ -14,7 +14,7 @@ dae supports the following proxy protocols:
 | Juicity | | [Juicity](https://github.com/juicity/juicity?tab=readme-ov-file#link-format) |
 | Hysteria2 | | [Hysteria2](https://v2.hysteria.network/docs/developers/URI-Scheme) |
 | AnyTLS | | [AnyTLS](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md) |
-| Proxy chain (flexible protocol) | | [Proxy chain](https://github.com/daeuniverse/dae/discussions/236) |
+| Proxy chain (flexible protocol) | | [Proxy chain](#proxy-chain) |
 
 ## URI examples
 
@@ -30,6 +30,22 @@ dae supports the following proxy protocols:
   socks4://[[user:]pass@]hostname:port/
   socks5://[[user:]pass@]hostname:port/
   ```
+
+## Proxy chain
+
+A node link can chain several proxies with `->`. The links are applied right
+to left: the rightmost link is dialed directly and each link to its left is
+reached through the one on its right. So `A -> B` connects to the target
+through A while reaching A's server through B.
+
+  ```
+  node {
+    chain: 'trojan://PASSWORD@a.example:443/?sni=a.example -> socks5://user:pass@b.example:1080'
+  }
+  ```
+
+Every hop accepts the same links as a normal node. Chaining adds latency, so
+use it only when a hop is actually required.
 
 ## Shadowsocks plugins
 
