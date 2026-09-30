@@ -645,6 +645,12 @@ func groupParamValuesByKey(params []*config_parser.Param) (map[string][]string, 
 }
 
 func (r *Router) resolveBootstrap(ctx context.Context, host string, network string) (*netutils.Ip46, error, error) {
+	// Static host entries take precedence over any resolver, so node/subscription
+	// server hostnames and dns.upstream hosts mapped in /etc/hosts resolve even
+	// when the bootstrap resolver cannot know them.
+	if ip46, ok := netutils.HostsResolveIp46(host); ok {
+		return &ip46, nil, nil
+	}
 	if len(r.bootstrapDns) == 0 {
 		err := fmt.Errorf("bootstrap resolver is not configured")
 		return &netutils.Ip46{}, err, err
@@ -687,6 +693,49 @@ func (r *Router) resolveBootstrap(ctx context.Context, host string, network stri
 	return &netutils.Ip46{}, firstErr4, firstErr6
 }
 
+// ipAddrsFromIp46 converts a resolved Ip46 into net.IPAddr values. When a
+// specific family is requested and absent, the other family is returned as a
+// fallback so an IPv4-only or IPv6-only link still makes progress instead of
+// failing outright.
+func ipAddrsFromIp46(ip46 *netutils.Ip46, family string) []net.IPAddr {
+	toIPAddr := func(a netip.Addr) net.IPAddr { return net.IPAddr{IP: net.IP(a.AsSlice())} }
+	var v4, v6 net.IPAddr
+	has4 := ip46 != nil && ip46.Ip4.IsValid()
+	has6 := ip46 != nil && ip46.Ip6.IsValid()
+	if has4 {
+		v4 = toIPAddr(ip46.Ip4)
+	}
+	if has6 {
+		v6 = toIPAddr(ip46.Ip6)
+	}
+	switch family {
+	case "4":
+		if has4 {
+			return []net.IPAddr{v4}
+		}
+		if has6 {
+			return []net.IPAddr{v6}
+		}
+	case "6":
+		if has6 {
+			return []net.IPAddr{v6}
+		}
+		if has4 {
+			return []net.IPAddr{v4}
+		}
+	default:
+		addrs := make([]net.IPAddr, 0, 2)
+		if has4 {
+			addrs = append(addrs, v4)
+		}
+		if has6 {
+			addrs = append(addrs, v6)
+		}
+		return addrs
+	}
+	return nil
+}
+
 func (r *Router) lookupBootstrapIPAddr(ctx context.Context, network, host string) ([]net.IPAddr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []net.IPAddr{{IP: net.IP(addr.AsSlice())}}, nil
@@ -702,24 +751,7 @@ func (r *Router) lookupBootstrapIPAddr(ctx context.Context, network, host string
 	// is still honoured when filtering the answers below.
 	dnsNetwork := common.MagicNetwork("udp", r.soMark, r.mptcp)
 	ip46, err4, err6 := r.resolveBootstrap(ctx, host, dnsNetwork)
-	addrs := make([]net.IPAddr, 0, 2)
-	switch requestedIPVersion(network) {
-	case "4":
-		if ip46 != nil && ip46.Ip4.IsValid() {
-			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip4.AsSlice())})
-		}
-	case "6":
-		if ip46 != nil && ip46.Ip6.IsValid() {
-			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip6.AsSlice())})
-		}
-	default:
-		if ip46 != nil && ip46.Ip4.IsValid() {
-			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip4.AsSlice())})
-		}
-		if ip46 != nil && ip46.Ip6.IsValid() {
-			addrs = append(addrs, net.IPAddr{IP: net.IP(ip46.Ip6.AsSlice())})
-		}
-	}
+	addrs := ipAddrsFromIp46(ip46, requestedIPVersion(network))
 	if len(addrs) != 0 {
 		return addrs, nil
 	}
