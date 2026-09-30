@@ -1155,7 +1155,13 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 		return update
 	}
 	// UDP/TCP robustness: only mark unavailable after consecutive failures.
-	// This protects against transient network interference.
+	// This protects against transient network interference. Health-check
+	// failures use the configured check_failures; traffic failures keep their
+	// own, higher thresholds.
+	checkFailures := d.CheckFailures
+	if checkFailures <= 0 {
+		checkFailures = 3
+	}
 	threshold := 1
 	switch typ.L4Proto {
 	case consts.L4ProtoStr_UDP:
@@ -1163,17 +1169,14 @@ func (d *Dialer) markUnavailableInternal(typ *NetworkType, force bool, isTraffic
 			// Higher threshold for data traffic to avoid flipping during transient jitter.
 			threshold = 50
 		} else {
-			// UDP health checks use DNS queries which are more susceptible to
-			// transient packet loss than TCP HTTP checks. A single dropped DNS
-			// response should not tear down all established UDP endpoints (game
-			// sessions, QUIC connections, etc.). Require 3 consecutive failures
-			// before declaring the dialer dead for UDP.
-			threshold = 3
+			threshold = checkFailures
 		}
 	case consts.L4ProtoStr_TCP:
 		if isTraffic {
 			// Balance "fast discovery" of failures with resilience to noise.
 			threshold = 10
+		} else {
+			threshold = checkFailures
 		}
 	}
 

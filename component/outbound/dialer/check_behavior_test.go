@@ -77,6 +77,7 @@ func TestCheck_TeardownClosedErrorKeepsAlive(t *testing.T) {
 // the session, so punishing here is what lets a dead mux node be detected.
 func TestCheck_ClosedErrorWhileAliveMarksUnavailable(t *testing.T) {
 	d := newNamedTestDialer(t, "mux-death-node")
+	d.CheckFailures = 1 // This test exercises the mark-unavailable path, not the threshold.
 	typ := newTestNetworkType()
 
 	opts := &CheckOption{
@@ -99,6 +100,7 @@ func TestCheck_ClosedErrorWhileAliveMarksUnavailable(t *testing.T) {
 // above cannot mask real outages.
 func TestCheck_RealNodeFailureMarksUnavailable(t *testing.T) {
 	d := newNamedTestDialer(t, "real-fail-node")
+	d.CheckFailures = 1 // This test exercises the mark-unavailable path, not the threshold.
 	typ := newTestNetworkType()
 
 	opts := &CheckOption{
@@ -112,6 +114,36 @@ func TestCheck_RealNodeFailureMarksUnavailable(t *testing.T) {
 	}
 	if d.MustGetAlive(typ) {
 		t.Fatal("genuine probe failure should mark the dialer unavailable")
+	}
+}
+
+// TestCheck_RequiresConsecutiveFailures pins the check_failures threshold: a
+// node stays alive until the configured number of consecutive health-check
+// failures, so a transient link spike is absorbed.
+func TestCheck_RequiresConsecutiveFailures(t *testing.T) {
+	d := newNamedTestDialer(t, "threshold-node")
+	d.CheckFailures = 3
+	typ := newTestNetworkType()
+
+	opts := &CheckOption{
+		networkType: typ,
+		CheckFunc: func(ctx context.Context, typ *NetworkType) (bool, error) {
+			return false, fmt.Errorf("timeout")
+		},
+	}
+	for i := 1; i < 3; i++ {
+		if _, err := d.check(opts, false, nil); err == nil {
+			t.Fatal("expected the underlying error to be propagated")
+		}
+		if !d.MustGetAlive(typ) {
+			t.Fatalf("dialer marked unavailable after %d failure(s), want alive until %d", i, 3)
+		}
+	}
+	if _, err := d.check(opts, false, nil); err == nil {
+		t.Fatal("expected the underlying error to be propagated")
+	}
+	if d.MustGetAlive(typ) {
+		t.Fatal("dialer should be marked unavailable after 3 consecutive failures")
 	}
 }
 
