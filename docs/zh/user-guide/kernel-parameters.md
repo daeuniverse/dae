@@ -31,6 +31,8 @@ printf 'net.ipv4.conf.all.send_redirects = 0\n' | sudo tee /etc/sysctl.d/60-dae-
 sudo sysctl --system
 ```
 
+反过来也一样：`conf/all/send_redirects = 0` 单独同样无效，接口自己的节点仍为 `1` 时照样发送。只有两个节点都为 `0` 才停，也就是 dae 实际配置的那些 LAN 口；dae 未配置的接口（如 WAN）自己的节点仍是默认值 `1`，仍会继续发送。
+
 ## 2. 启用全局转发
 
 启用全局 IPv4 和 IPv6 转发，以避免异常情况：

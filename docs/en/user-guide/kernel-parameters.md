@@ -45,6 +45,12 @@ printf 'net.ipv4.conf.all.send_redirects = 0\n' | sudo tee /etc/sysctl.d/60-dae-
 sudo sysctl --system
 ```
 
+The reverse is also true: `conf/all/send_redirects = 0` is not enough on its own
+either, because an interface whose own node is still `1` keeps sending redirects.
+They stop only where both nodes are `0`, which is the case for the LAN interfaces
+dae actually configures. Interfaces dae leaves alone - WAN, for example - keep
+their own node at the default `1` and go on sending them.
+
 ## 2. Enable Global Forwarding
 
 Enable global IPv4 and IPv6 forwarding to avoid unexpected behavior:
