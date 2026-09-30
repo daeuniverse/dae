@@ -49,12 +49,15 @@ func TestBestDialerChangeLogsOneInfoLineAndTableAtDebug(t *testing.T) {
 		d2.UnregisterAliveDialerSet(set)
 	})
 
-	// Both dialers are alive on an optimistic 0-latency key. A real probe
-	// latency for d1 re-ranks the group onto d2, which is the path under test.
+	// d1 gets a real latency and becomes best (unprobed peers now rank last).
+	// d2 then gets a lower latency, re-ranking the group onto it: the change
+	// under test.
 	appendLatencyLocked(d1, networkType, 100*time.Millisecond)
+	set.NotifyLatencyChange(d1, true)
+	appendLatencyLocked(d2, networkType, 50*time.Millisecond)
 
 	hook.Reset()
-	set.NotifyLatencyChange(d1, true)
+	set.NotifyLatencyChange(d2, true)
 
 	infoLines := 0
 	debugTables := 0
@@ -89,11 +92,11 @@ func TestBestDialerChangeLogsOneInfoLineAndTableAtDebug(t *testing.T) {
 	// The table is not deleted, only demoted: debug must carry it.
 	logger.SetLevel(logrus.DebugLevel)
 	hook.Reset()
-	// Force the next change: d2's real latency makes d1 (recorded at 100ms)
-	// the best again. appendLatencyLocked keeps the collection lock discipline
-	// the render depends on.
-	appendLatencyLocked(d2, networkType, 500*time.Millisecond)
-	set.NotifyLatencyChange(d2, true)
+	// Force the next change: a lower real latency for d1 makes it best again.
+	// appendLatencyLocked keeps the collection lock discipline the render
+	// depends on.
+	appendLatencyLocked(d1, networkType, 10*time.Millisecond)
+	set.NotifyLatencyChange(d1, true)
 
 	debugTables = 0
 	infoLines = 0

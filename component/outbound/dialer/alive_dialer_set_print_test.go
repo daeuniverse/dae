@@ -94,15 +94,19 @@ func TestNotifyLatencyDoesNotHoldWriteLockDuringFormatting(t *testing.T) {
 	// the level that actually reaches the renderer.
 	d1.Log.SetLevel(logrus.DebugLevel)
 
-	// The constructor already registered both dialers as alive with an
-	// optimistic 0-latency sort key. Giving d1 a real probe latency makes the
-	// group re-rank onto d2 (whose optimistic key is still smaller), which is
-	// the path that renders the listing.
+	// d1 gets a real latency and becomes best (unprobed peers rank last). A
+	// lower latency for d2 then re-ranks the group onto it, which is the path
+	// that renders the listing.
 	d1.collectionFineMu.Lock()
 	d1.mustGetCollection(networkType).Latencies10.AppendLatency(100 * time.Millisecond)
 	d1.collectionFineMu.Unlock()
-	before := probe.countsRenders()
 	set.NotifyLatencyChange(d1, true)
+
+	d2.collectionFineMu.Lock()
+	d2.mustGetCollection(networkType).Latencies10.AppendLatency(50 * time.Millisecond)
+	d2.collectionFineMu.Unlock()
+	before := probe.countsRenders()
+	set.NotifyLatencyChange(d2, true)
 	if probe.countsRenders() == before {
 		t.Fatal("the latency listing was not rendered; the probe observed nothing")
 	}

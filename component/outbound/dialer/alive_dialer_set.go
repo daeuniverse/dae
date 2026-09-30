@@ -165,6 +165,14 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 		return nextBest, nextBestSortingLatency
 	}
 
+	// No ranked dialer yet: keep the first alive (non-excluded) dialer
+	// selectable so cold start does not fail before the first sample.
+	for i := range a.aliveEntries {
+		if a.aliveEntries[i].dialer != excluded {
+			return a.aliveEntries[i].dialer, a.aliveEntries[i].sortingLatency
+		}
+	}
+
 	// No dialer available
 	return nil, time.Hour
 }
@@ -480,10 +488,14 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			}
 		}
 	} else if alive && minPolicy {
-		// No active latency probe for this network type (e.g. data-UDP), so
-		// hasLatency is false here. Honor add_latency as a manual weight and
-		// let it override the optimistic first-dialer selection.
-		sortingLatency = rawLatency + a.dialerToLatencyOffset[dialer]
+		// No latency sample yet. For a probe-backed type the dialer ranks last
+		// until it produces one, so add_latency cannot make an unprobed dialer
+		// outrank a probed peer. For a type without a probe (e.g. data-UDP) the
+		// offset is the ranking signal.
+		sortingLatency = time.Hour
+		if !a.hasLatencyProbe() {
+			sortingLatency = rawLatency + a.dialerToLatencyOffset[dialer]
+		}
 		if index := a.dialerToIndex[dialer]; index >= 0 {
 			a.aliveEntries[index].sortingLatency = sortingLatency
 		}
@@ -520,6 +532,11 @@ func (a *AliveDialerSet) calcMinLatency() {
 			minLatency = a.aliveEntries[i].sortingLatency
 			minDialer = a.aliveEntries[i].dialer
 		}
+	}
+	if minDialer == nil && len(a.aliveEntries) > 0 {
+		// No sample yet: keep the first alive dialer selectable.
+		minLatency = a.aliveEntries[0].sortingLatency
+		minDialer = a.aliveEntries[0].dialer
 	}
 	if a.minLatency.dialer == nil {
 		a.minLatency.sortingLatency = minLatency
@@ -559,10 +576,13 @@ func (a *AliveDialerSet) recomputeSelectionStateLocked() {
 		if hasLatency {
 			a.dialerToLatency[entry.dialer] = rawLatency
 		}
-		// Always apply the manual latency offset. For network types without
-		// an active latency probe (e.g. data-UDP) the offset is the only
-		// ranking signal, so add_latency acts as a true manual weight.
+		// Apply the manual offset. A sample-less dialer on a probe-backed type
+		// ranks last so it cannot outrank a probed peer; a type without a
+		// probe (e.g. data-UDP) keeps the offset as its ranking signal.
 		entry.sortingLatency = rawLatency + a.dialerToLatencyOffset[entry.dialer]
+		if !hasLatency && a.hasLatencyProbe() {
+			entry.sortingLatency = time.Hour
+		}
 	}
 
 	a.calcMinLatency()
@@ -577,4 +597,15 @@ func isMinLatencyPolicy(policy consts.DialerSelectionPolicy) bool {
 	default:
 		return false
 	}
+}
+
+// hasLatencyProbe reports whether this set's network type produces latency
+// samples. The data-UDP health domain has no probe of its own; every other
+// type is probe-backed.
+func (a *AliveDialerSet) hasLatencyProbe() bool {
+	t := a.CheckTyp
+	if t == nil || t.L4Proto != consts.L4ProtoStr_UDP {
+		return true
+	}
+	return t.EffectiveUdpHealthDomain() == UdpHealthDomainDns
 }
