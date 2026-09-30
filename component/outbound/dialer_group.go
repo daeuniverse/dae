@@ -404,6 +404,20 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 		}
 		return nil, time.Hour, nil, ErrNoAliveDialer
 
+	case consts.DialerSelectionPolicy_Priority:
+		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
+		for i := range count {
+			a := state.aliveDialerSets[networkTypes[i].Index()]
+			if a == nil {
+				continue
+			}
+			if d := a.GetFirstAlive(excluded); d != nil {
+				selected := preferAlternateSelectionNetworkType(d, &networkTypes[i])
+				return d, 0, selected, nil
+			}
+		}
+		return nil, time.Hour, nil, ErrNoAliveDialer
+
 	default:
 		return nil, 0, nil, fmt.Errorf("unsupported DialerSelectionPolicy: %v", policy)
 	}
@@ -566,7 +580,8 @@ func policyRevalidatesAliveState(policy consts.DialerSelectionPolicy) bool {
 	switch policy {
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
-		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		consts.DialerSelectionPolicy_Priority:
 		return true
 	default:
 		return false
@@ -592,6 +607,7 @@ func (g *DialerGroup) unregisterAliveDialerSets(aliveDialerSets [8]*dialer.Alive
 func policyNeedsAliveState(policy consts.DialerSelectionPolicy) bool {
 	switch policy {
 	case consts.DialerSelectionPolicy_Random,
+		consts.DialerSelectionPolicy_Priority,
 		consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:

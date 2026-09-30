@@ -7,6 +7,7 @@ package dialer
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -14,10 +15,15 @@ import (
 
 const (
 	AnnotationKey_AddLatency = "add_latency"
+	AnnotationKey_Priority   = "priority"
 )
 
 type Annotation struct {
 	AddLatency time.Duration
+	// Priority orders dialers under the priority selection policy: annotated
+	// dialers come first, in ascending priority, before unannotated ones.
+	Priority    int
+	HasPriority bool
 }
 
 func NewAnnotation(annotation []*config_parser.Param) (*Annotation, error) {
@@ -32,6 +38,15 @@ func NewAnnotation(annotation []*config_parser.Param) (*Annotation, error) {
 			// Only the first setting is valid.
 			if anno.AddLatency == 0 {
 				anno.AddLatency = latency
+			}
+		case AnnotationKey_Priority:
+			priority, err := strconv.Atoi(param.Val)
+			if err != nil {
+				return nil, fmt.Errorf("incorrect priority format: %w", err)
+			}
+			if !anno.HasPriority {
+				anno.Priority = priority
+				anno.HasPriority = true
 			}
 		default:
 			return nil, fmt.Errorf("unknown filter annotation: %v", param.Key)

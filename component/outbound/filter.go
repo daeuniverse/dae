@@ -153,8 +153,15 @@ func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOpti
 		dialers:      make([]*dialer.Dialer, 0),
 		nodeToTagMap: make(map[*dialer.Dialer]string),
 	}
-	for subscriptionTag, nodes := range tagToNodeList {
-		for _, node := range nodes {
+	// Iterate tags in a stable order so the group's node order (used by the
+	// priority policy and fixed(n)) is reproducible across runs.
+	tags := make([]string, 0, len(tagToNodeList))
+	for subscriptionTag := range tagToNodeList {
+		tags = append(tags, subscriptionTag)
+	}
+	sort.Strings(tags)
+	for _, subscriptionTag := range tags {
+		for _, node := range tagToNodeList[subscriptionTag] {
 			d, err := dialer.NewFromLinkContext(ctx, option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
 			if err != nil {
 				s.noteParseFailure(subscriptionTag, err)
@@ -298,7 +305,31 @@ nextDialerLoop:
 			}
 		}
 	}
-	return dialers, filterAnnotations, nil
+
+	// Order for the priority policy: annotated dialers first, ascending by
+	// priority, then unannotated dialers in their existing order. dialers and
+	// filterAnnotations are kept index-aligned.
+	order := make([]int, len(dialers))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		ax, ay := filterAnnotations[order[x]], filterAnnotations[order[y]]
+		if ax.HasPriority != ay.HasPriority {
+			return ax.HasPriority
+		}
+		if ax.HasPriority {
+			return ax.Priority < ay.Priority
+		}
+		return false
+	})
+	sortedDialers := make([]*dialer.Dialer, len(dialers))
+	sortedAnnotations := make([]*dialer.Annotation, len(dialers))
+	for newIndex, oldIndex := range order {
+		sortedDialers[newIndex] = dialers[oldIndex]
+		sortedAnnotations[newIndex] = filterAnnotations[oldIndex]
+	}
+	return sortedDialers, sortedAnnotations, nil
 }
 
 func (s *DialerSet) Close() error {

@@ -54,6 +54,11 @@ type AliveDialerSet struct {
 	// This is the primary data structure for hot path operations (GetMinLatency, GetRandExcluded).
 	// Using a slice of structs provides better cache locality and eliminates map lookups.
 	aliveEntries []aliveEntry
+	// orderedDialers is the configured order, used by the priority policy.
+	orderedDialers []*Dialer
+	// priorityAlive tracks the last published membership edge for the priority
+	// policy, which has no latency ranking to drive the group callback.
+	priorityAlive bool
 
 	selectionPolicy consts.DialerSelectionPolicy
 	minLatency      minLatency
@@ -88,6 +93,7 @@ func NewAliveDialerSet(
 		dialerToLatency:       make(map[*Dialer]time.Duration),
 		dialerToLatencyOffset: dialerToLatencyOffset,
 		aliveEntries:          make([]aliveEntry, 0, len(dialers)),
+		orderedDialers:        dialers,
 		selectionPolicy:       selectionPolicy,
 		minLatency: minLatency{
 			// Initiate the latency with a very big value.
@@ -175,6 +181,22 @@ func (a *AliveDialerSet) GetMinLatency(excluded *Dialer) (d *Dialer, latency tim
 
 	// No dialer available
 	return nil, time.Hour
+}
+
+// GetFirstAlive returns the first alive dialer in configured order, skipping
+// the excluded dialer. It is the selection primitive for the priority policy.
+func (a *AliveDialerSet) GetFirstAlive(excluded *Dialer) *Dialer {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, d := range a.orderedDialers {
+		if d == excluded {
+			continue
+		}
+		if idx, ok := a.dialerToIndex[d]; ok && idx >= 0 {
+			return d
+		}
+	}
+	return nil
 }
 
 // latencySnapshotEntry is one dialer's display state copied by value while
@@ -388,6 +410,18 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 					}
 				}
 			}
+		}
+	}
+
+	if a.selectionPolicy == consts.DialerSelectionPolicy_Priority {
+		// Priority has no latency ranking to piggyback the group callback on,
+		// so publish the empty<->non-empty membership edge here.
+		nowAlive := len(a.aliveEntries) > 0
+		if nowAlive != a.priorityAlive {
+			a.priorityAlive = nowAlive
+			a.mu.Unlock()
+			a.aliveChangeCallback(nowAlive)
+			a.mu.Lock()
 		}
 	}
 
