@@ -6,10 +6,9 @@
 package cmd
 
 import (
+	stderrors "errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"syscall"
 
 	"github.com/daeuniverse/dae/cmd/internal"
@@ -20,20 +19,15 @@ var (
 	suspendCmd = &cobra.Command{
 		Use:   "suspend [pid]",
 		Short: "To suspend dae. This command puts dae into no-load state. Recover it by 'dae reload'.",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			internal.AutoSu()
-			if len(args) == 0 {
-				_pid, err := os.ReadFile(PidFilePath)
-				if err != nil {
-					fmt.Println("Failed to read pid file:", err)
-					os.Exit(1)
-				}
-				args = []string{strings.TrimSpace(string(_pid))}
-			}
-			pid, err := strconv.Atoi(args[0])
+			pid, err := resolveReloadPID(args)
 			if err != nil {
 				_ = cmd.Help()
-				os.Exit(1)
+				return err
+			}
+			if err := ensureDaemonAlive(pid); err != nil {
+				return err
 			}
 			if abort {
 				if f, err := os.Create(AbortFile); err == nil {
@@ -41,10 +35,14 @@ var (
 				}
 			}
 			if err = syscall.Kill(pid, syscall.SIGUSR2); err != nil {
-				fmt.Println(err)
-				os.Exit(1)
+				if stderrors.Is(err, syscall.ESRCH) {
+					cleanupStaleDaemonFiles()
+					return fmt.Errorf("dae is not running (pid %d no longer exists)", pid)
+				}
+				return err
 			}
-			fmt.Println("OK")
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), "OK")
+			return err
 		},
 	}
 )

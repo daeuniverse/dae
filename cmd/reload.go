@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -149,21 +148,19 @@ var (
 		Short: "To reload config file without interrupt connections.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			internal.AutoSu()
-			if len(args) == 0 {
-				_pid, err := os.ReadFile(PidFilePath)
-				if err != nil {
-					return fmt.Errorf("failed to read pid file: %w", err)
-				}
-				args = []string{strings.TrimSpace(string(_pid))}
-			}
-			pid, err := strconv.Atoi(args[0])
+			pid, err := resolveReloadPID(args)
 			if err != nil {
 				_ = cmd.Help()
-				return fmt.Errorf("invalid pid %q: %w", args[0], err)
+				return err
 			}
-			// Read the first line of SignalProgressFilePath.
-			code, content, err := readSignalProgressFile(SignalProgressFilePath)
-			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
+			if err := ensureDaemonAlive(pid); err != nil {
+				return err
+			}
+			// Refuse only while the daemon reports it is actively working. A
+			// leftover ReloadSend (the previous CLI was killed before the
+			// signal was delivered) is stale and may be overwritten.
+			if code, content, readErr := readSignalProgressFile(SignalProgressFilePath); readErr == nil &&
+				(code == consts.ReloadProcessing || code == consts.ReloadBusy) {
 				if content != "" {
 					return fmt.Errorf("reload not started: %s", content)
 				}
@@ -179,9 +176,13 @@ var (
 			// Set the progress as ReloadSend and roll it back if signaling fails.
 			if err = writeReloadSendAndSignal(SignalProgressFilePath, pid, syscall.Kill); err != nil {
 				requestErr := fmt.Errorf("failed to request reload: %w", err)
+				if stderrors.Is(err, syscall.ESRCH) {
+					cleanupStaleDaemonFiles()
+					requestErr = fmt.Errorf("dae is not running (pid %d no longer exists)", pid)
+				}
 				return cleanupReloadAbortMarker(AbortFile, abortMarkerCreated, requestErr)
 			}
-			code, content, err = waitReloadCompletion(
+			code, content, err := waitReloadCompletion(
 				SignalProgressFilePath,
 				500*time.Millisecond,
 				200*time.Millisecond,
