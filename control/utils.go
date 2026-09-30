@@ -25,6 +25,11 @@ import (
 // Route resolves a routing input with the userspace matcher. An empty domain
 // means no domain is known for this invocation.
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+	if routingResult == nil {
+		// Callers that route without a triggering flow's identity (e.g. dae's
+		// own upstream sockets) pass nil; treat it as an empty routing result.
+		routingResult = &bpfRoutingResult{}
+	}
 	var ipVersion consts.IpVersionType
 	if dst.Addr().Is4() || dst.Addr().Is4In6() {
 		ipVersion = consts.IpVersion_4

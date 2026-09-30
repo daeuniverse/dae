@@ -2864,12 +2864,15 @@ func (c *ControlPlane) chooseBestDnsDialerSnapshot(
 			default:
 				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
 			}
+			// Route the upstream by its own address/hostname. The triggering
+			// flow's Pname/Mac/Dscp must not be inherited: this socket belongs
+			// to dae, so process-scoped rules must not apply to it.
 			outboundIndex, mark, _, err := c.Route(
 				snapshot.RealSrc,
 				netip.AddrPortFrom(dAddr, dnsUpstream.Port),
 				dnsUpstream.Hostname,
 				proto.ToL4ProtoType(),
-				snapshot.routingResultForRoute(),
+				nil,
 			)
 			if err != nil {
 				return nil, err
