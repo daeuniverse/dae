@@ -26,6 +26,7 @@ type OutboundIndex uint8
 const (
 	OutboundDirect              OutboundIndex = 0x0
 	OutboundBlock               OutboundIndex = 0x1
+	OutboundReject              OutboundIndex = 0xFB
 	OutboundMustRules           OutboundIndex = 0xFC
 	OutboundControlPlaneRouting OutboundIndex = 0xFD
 	OutboundLogicalOr           OutboundIndex = 0xFE

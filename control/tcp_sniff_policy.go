@@ -139,7 +139,7 @@ func (c *ControlPlane) shouldTryTcpSniff(dst netip.AddrPort, routingResult *bpfR
 	}
 	outbound := consts.OutboundIndex(routingResult.Outbound)
 	// Reserved outbounds that don't benefit from sniffed domains.
-	if outbound == consts.OutboundDirect || outbound == consts.OutboundBlock {
+	if outbound == consts.OutboundDirect || outbound == consts.OutboundBlock || outbound == consts.OutboundReject {
 		return false
 	}
 	// Skip sniffing for ports known to carry non-HTTP/TLS traffic.

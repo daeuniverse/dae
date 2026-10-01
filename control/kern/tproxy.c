@@ -2956,7 +2956,8 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 			skb->mark = mark;
 			return TC_ACT_OK;
 		}
-		if (unlikely(outbound == OUTBOUND_BLOCK))
+		if (unlikely(outbound == OUTBOUND_BLOCK ||
+			     outbound == OUTBOUND_REJECT))
 			return TC_ACT_SHOT;
 		pkt->datapath_generation = tcp_state->datapath_generation;
 		return redirect_lan_packet_to_control_plane(
@@ -3000,9 +3001,19 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 				if (outbound == OUTBOUND_DIRECT) {
 					skb->mark = mark;
 					goto direct;
-				} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
-					goto block;
-				}
+			} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+				goto block;
+			} else if (unlikely(outbound == OUTBOUND_REJECT)) {
+				/* Hand the packet to the control plane so it can inject
+				 * an ICMP port-unreachable for instant QUIC downgrade. */
+				pkt->handoff_required = 1;
+				pkt->datapath_generation =
+					udp_state->datapath_generation;
+				return redirect_lan_packet_to_control_plane(
+					skb, link_h_len, pkt,
+					udp_state->meta.raw,
+					udp_state->routing_epoch_slot);
+			}
 
 				/* last_seen_ns already refreshed by mark_udp_seen. */
 				pkt->datapath_generation = udp_state->datapath_generation;
@@ -3164,6 +3175,19 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 				   pkt->tuples.five.dip.u6_addr32,
 				   pkt->tuples.five.sport, pkt->tuples.five.dport);
 		goto block;
+	} else if (unlikely(outbound == OUTBOUND_REJECT)) {
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("HANDOFF OUTBOUND_REJECT -> control plane");
+#endif
+		/* Hand the original packet to the control plane, which injects an
+		 * ICMP port-unreachable (spoofed from the destination) so the
+		 * client's QUIC handshake fails instantly and falls back to TCP. */
+		pkt->handoff_required = 1;
+		return redirect_lan_packet_to_control_plane(
+			skb, link_h_len, pkt,
+			build_routing_meta(outbound, mark, must,
+					   pkt->tuples.dscp).raw,
+			routing_epoch_slot);
 	}
 
 	if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
@@ -3594,9 +3618,10 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 #endif
 		skb->mark = mark;
 		return DAE_TC_CONTINUE;
-	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
+	} else if (unlikely(outbound == OUTBOUND_BLOCK ||
+			    outbound == OUTBOUND_REJECT)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("SHOT OUTBOUND_BLOCK");
+		bpf_printk("SHOT OUTBOUND_BLOCK/REJECT");
 #endif
 		return TC_ACT_SHOT;
 	}
@@ -3751,7 +3776,8 @@ fast_path_skip_routing:
 
 	if (!wan_egress_needs_control_plane(outbound, mark))
 		return DAE_TC_CONTINUE;
-	else if (unlikely(outbound == OUTBOUND_BLOCK))
+	else if (unlikely(outbound == OUTBOUND_BLOCK ||
+			 outbound == OUTBOUND_REJECT))
 		return TC_ACT_SHOT;
 
 	if (!cached_routing &&

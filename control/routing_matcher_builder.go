@@ -334,6 +334,11 @@ func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 		// whitelist to userspace for sniffed-domain re-routing. They carry no
 		// group and must never register as a health-checked reference.
 		outboundId = uint8(consts.OutboundControlPlaneRouting)
+	case consts.OutboundReject.String():
+		// reject is an eBPF-level action (inject ICMP port-unreachable from the
+		// control plane for instant QUIC downgrade), not a health-checked dialer
+		// group, so it must not register as a referenced outbound.
+		outboundId = uint8(consts.OutboundReject)
 	default:
 		var ok bool
 		outboundId, ok = b.outboundName2Id[outbound]

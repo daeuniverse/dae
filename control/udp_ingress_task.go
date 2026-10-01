@@ -343,6 +343,26 @@ func (t *udpIngressTask) Run() {
 		}
 	}
 
+	// L3 reject: inject an ICMP port-unreachable so the client's QUIC handshake
+	// fails instantly and falls back to TCP (instant downgrade). The original
+	// packet was already consumed by the dataplane handoff, so it is dropped.
+	if routingResult != nil && routingResult.Outbound == uint8(consts.OutboundReject) {
+		if !rejectAllowed(convergeSrc) {
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithField("src", convergeSrc.String()).
+					Debug("reject: per-client ICMP budget exhausted; silently dropping")
+			}
+		} else if e := sendICMPPortUnreachable(data, convergeSrc); e != nil {
+			if c.log.IsLevelEnabled(logrus.WarnLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src": convergeSrc.String(),
+					"dst": realDst.String(),
+				}).WithError(e).Warn("reject: failed to inject ICMP port-unreachable")
+			}
+		}
+		return
+	}
+
 	if e := c.handlePktWithPrefetch(data, convergeSrc, realDst, routingResult, flowDecision, cacheLookup.prefetch, cacheLookup.prefetchKey, cacheLookup.prefetchOK); e != nil {
 		// Both branches report a condition that repeats per packet: the
 		// reload-window routing-epoch ownership loss, and any other failure
