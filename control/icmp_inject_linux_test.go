@@ -36,11 +36,15 @@ func TestBuildICMPv4PortUnreachable(t *testing.T) {
 		t.Fatalf("unused field must be zero, got %v", msg[4:8])
 	}
 	// Quoted IPv4 header mirrors the original datagram: src = client, dst = originalDst.
-	if msg[12] != 192 || msg[13] != 168 || msg[14] != 2 || msg[15] != 3 {
-		t.Fatalf("quoted IP source must be 192.168.2.3 (client), got %d.%d.%d.%d", msg[12], msg[13], msg[14], msg[15])
+	// The ICMPv4 message is an 8-byte header (type/code/checksum/unused) followed by
+	// the 28-byte quoted datagram, so the quoted IP header starts at msg[8]; this
+	// mirrors the indexing used by TestBuildICMPv6PortUnreachable below.
+	quoted := msg[8:36]
+	if got := netip.AddrFrom4([4]byte(quoted[12:16])); got != client.Addr() {
+		t.Fatalf("quoted IP source must be %s (client), got %s", client.Addr(), got)
 	}
-	if msg[16] != 1 || msg[17] != 1 || msg[18] != 1 || msg[19] != 1 {
-		t.Fatalf("quoted IP destination must be 1.1.1.1 (original destination), got %d.%d.%d.%d", msg[16], msg[17], msg[18], msg[19])
+	if got := netip.AddrFrom4([4]byte(quoted[16:20])); got != originalDst.Addr() {
+		t.Fatalf("quoted IP destination must be %s (original destination), got %s", originalDst.Addr(), got)
 	}
 	// Quoted UDP header: src port = client.Port(), dst port = originalDst.Port().
 	if got := binary.BigEndian.Uint16(msg[28:30]); got != 47305 {
