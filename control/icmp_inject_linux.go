@@ -8,6 +8,7 @@
 package control
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -71,6 +72,19 @@ func sendICMPPortUnreachable(data []byte, client netip.AddrPort) error {
 	if len(data) < 1 {
 		return errors.New("icmp_inject: empty packet")
 	}
+	// The control plane receives the full L2 frame from the eBPF handoff, so the
+	// IP header does not necessarily start at offset 0. Skip the link-layer
+	// header (14 bytes for plain Ethernet, or 18/22 with 802.1Q/802.1ad VLAN
+	// tags) before reading the IP version. This matches dae's
+	// controlPlaneCore.linkHdrLen, which returns consts.LinkHdrLen_Ethernet (14)
+	// for "ether" interfaces.
+	l2 := linkHeaderLen(data)
+	if l2 > 0 {
+		if l2 >= len(data) {
+			return errors.New("icmp_inject: packet shorter than link header")
+		}
+		data = data[l2:]
+	}
 	version := data[0] >> 4
 	switch version {
 	case 4:
@@ -78,8 +92,45 @@ func sendICMPPortUnreachable(data []byte, client netip.AddrPort) error {
 	case 6:
 		return sendICMPv6PortUnreachable(data, client)
 	default:
-		return fmt.Errorf("icmp_inject: unsupported IP version %d", version)
+		return fmt.Errorf("icmp_inject: unsupported IP version %d (after skipping %d-byte link header)", version, l2)
 	}
+}
+
+// linkHeaderLen returns the number of leading bytes that belong to the
+// link-layer (Ethernet) header, so the caller can reach the IP header. It
+// inspects the EtherType field: a plain Ethernet frame is 14 bytes, and VLAN
+// tagging (802.1Q / 802.1ad) adds 4 bytes per tag. If the buffer already starts
+// with a valid-looking IP header (no L2), it returns 0.
+func linkHeaderLen(data []byte) int {
+	if len(data) < 14 {
+		return 0
+	}
+	// Already at the IP layer? (IPv4 with a sane IHL, or IPv6.)
+	v := data[0] >> 4
+	if (v == 4 && data[0]&0x0f >= 5) || v == 6 {
+		return 0
+	}
+	ethType := binary.BigEndian.Uint16(data[12:14])
+	switch ethType {
+	case 0x0800, 0x86dd: // IPv4 / IPv6
+		return 14
+	case 0x8100, 0x88a8: // 802.1Q / 802.1ad VLAN
+		if len(data) >= 18 {
+			inner := binary.BigEndian.Uint16(data[16:18])
+			if inner == 0x0800 || inner == 0x86dd {
+				return 18
+			}
+			if len(data) >= 22 { // stacked (QinQ) tag
+				inner2 := binary.BigEndian.Uint16(data[20:22])
+				if inner2 == 0x0800 || inner2 == 0x86dd {
+					return 22
+				}
+			}
+		}
+	}
+	// Unknown/edge case: fall back to the Ethernet minimum, which is also what
+	// dae's linkHdrLen returns for "ether".
+	return 14
 }
 
 func sendICMPv4PortUnreachable(data []byte, client netip.AddrPort) error {

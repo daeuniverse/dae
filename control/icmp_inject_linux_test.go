@@ -8,6 +8,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 )
@@ -106,5 +107,72 @@ func TestSendICMPPortUnreachableRejectsGarbage(t *testing.T) {
 	}
 	if _, err := buildICMPv6PortUnreachable([]byte{0x60}); err == nil {
 		t.Fatal("short IPv6 packet should error")
+	}
+}
+
+// wrapEthernet prepends an Ethernet header to a payload. If vlan is true a single
+// 802.1Q tag (TPID 0x8100) is inserted before the EtherType.
+func wrapEthernet(payload []byte, vlan bool) []byte {
+	var hdr []byte
+	if vlan {
+		hdr = make([]byte, 18) // dst(6)+src(6)+0x8100(2)+tag(2)+0x0800(2)
+		binary.BigEndian.PutUint16(hdr[12:], 0x8100)
+		binary.BigEndian.PutUint16(hdr[16:], 0x0800)
+	} else {
+		hdr = make([]byte, 14) // dst(6)+src(6)+0x0800(2)
+		binary.BigEndian.PutUint16(hdr[12:], 0x0800)
+	}
+	return append(hdr, payload...)
+}
+
+func TestLinkHeaderLen(t *testing.T) {
+	v4 := fakeV4UDPPacket([4]byte{192, 168, 2, 100}, [4]byte{142, 250, 190, 20}, 54321, 443)
+	cases := []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"plain ethernet", wrapEthernet(v4, false), 14},
+		{"vlan tagged", wrapEthernet(v4, true), 18},
+		{"already ipv4 (no L2)", v4, 0},
+		{"short buffer", v4[:10], 0},
+	}
+	for _, c := range cases {
+		if got := linkHeaderLen(c.in); got != c.want {
+			t.Fatalf("%s: linkHeaderLen=%d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestRejectStripsLinkHeader verifies that the L2-stripping applied inside
+// sendICMPPortUnreachable yields a correct IPv4 header for the ICMP quote. This
+// is the exact path that was broken in production: the handed-off packet carries
+// an Ethernet header, and without stripping, buildICMPv4PortUnreachable read the
+// MAC byte as the IP version and aborted with "unsupported IP version".
+func TestRejectStripsLinkHeader(t *testing.T) {
+	v4 := fakeV4UDPPacket([4]byte{192, 168, 2, 100}, [4]byte{142, 250, 190, 20}, 54321, 443)
+	framed := wrapEthernet(v4, false)
+
+	l2 := linkHeaderLen(framed)
+	if l2 != 14 {
+		t.Fatalf("expected L2 offset 14, got %d", l2)
+	}
+	stripped := framed[l2:]
+	if !bytes.Equal(stripped, v4) {
+		t.Fatal("stripped payload does not equal the original IPv4 datagram")
+	}
+	msg, err := buildICMPv4PortUnreachable(stripped)
+	if err != nil {
+		t.Fatalf("buildICMPv4PortUnreachable after strip: %v", err)
+	}
+	// The quoted datagram must be the original IP header (20) + UDP header (8).
+	if !bytes.Equal(msg[8:28], v4[0:20]) {
+		t.Fatal("quoted IP header mismatch after L2 strip")
+	}
+	if !bytes.Equal(msg[28:36], v4[20:28]) {
+		t.Fatal("quoted UDP header mismatch after L2 strip")
+	}
+	if got := internetChecksum(msg); got != 0x0000 {
+		t.Fatalf("invalid ICMP checksum after strip: 0x%04x", got)
 	}
 }
