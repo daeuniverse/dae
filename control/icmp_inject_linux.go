@@ -113,8 +113,10 @@ func buildICMPv4PortUnreachable(client, originalDst netip.AddrPort) ([]byte, err
 	ip[8] = 64 // TTL
 	ip[9] = uint8(unix.IPPROTO_UDP)
 	// ip[10:12] header checksum (filled below)
-	copy(ip[12:16], client.Addr().AsSlice())      // source = client (datagram source)
-	copy(ip[16:20], originalDst.Addr().AsSlice()) // destination = original destination
+	c4 := client.Addr().As4()
+	copy(ip[12:16], c4[:]) // source = client (datagram source)
+	o4 := originalDst.Addr().As4()
+	copy(ip[16:20], o4[:]) // destination = original destination
 	binary.BigEndian.PutUint16(ip[10:12], internetChecksum(ip))
 
 	// Quoted original UDP header (8 bytes).
@@ -171,11 +173,13 @@ func buildICMPv6PortUnreachable(client, originalDst netip.AddrPort) ([]byte, err
 	ip := make([]byte, 40)
 	ip[0] = 0x60 // version 6
 	// ip[1:4] traffic class / flow label = 0
-	binary.BigEndian.PutUint16(ip[4:6], 8)        // payload length = quoted UDP header (8)
-	ip[6] = uint8(unix.IPPROTO_UDP)               // next header = UDP
-	ip[7] = 64                                    // hop limit
-	copy(ip[8:24], client.Addr().AsSlice())       // source = client (datagram source)
-	copy(ip[24:40], originalDst.Addr().AsSlice()) // destination = original destination
+	binary.BigEndian.PutUint16(ip[4:6], 8) // payload length = quoted UDP header (8)
+	ip[6] = uint8(unix.IPPROTO_UDP)        // next header = UDP
+	ip[7] = 64                             // hop limit
+	c6 := client.Addr().As16()
+	copy(ip[8:24], c6[:]) // source = client (datagram source)
+	o6 := originalDst.Addr().As16()
+	copy(ip[24:40], o6[:]) // destination = original destination
 
 	// Quoted original UDP header (8 bytes).
 	udp := make([]byte, 8)
