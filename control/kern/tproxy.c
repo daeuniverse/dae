@@ -3180,8 +3180,9 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		bpf_printk("HANDOFF OUTBOUND_REJECT -> control plane");
 #endif
 		/* Hand the original packet to the control plane, which injects an
-		 * ICMP port-unreachable (spoofed from the destination) so the
-		 * client's QUIC handshake fails instantly and falls back to TCP. */
+		 * ICMP port-unreachable (sourced from the dae host's own egress
+		 * address) so the client's QUIC handshake fails instantly and falls
+		 * back to TCP. */
 		pkt->handoff_required = 1;
 		return redirect_lan_packet_to_control_plane(
 			skb, link_h_len, pkt,
