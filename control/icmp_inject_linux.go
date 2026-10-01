@@ -61,80 +61,87 @@ func rejectAllowed(client netip.AddrPort) bool {
 // QUIC stack correlates the error and immediately falls back to TCP (RFC 9000
 // §9.3 / RFC 792 / RFC 4443).
 //
-// The ICMP source is the dae host's own egress address, chosen by the kernel
-// from the route to the client. This is sufficient: QUIC associates the ICMP
-// error with a connection by the embedded original-datagram header (the quoted
-// IP/UDP tuple), not by the ICMP message's own source address. Spoofing the
-// original destination as the source would also be valid but requires
-// IP_TRANSPARENT and reverse-path-filter care, so it is intentionally left as a
-// follow-up.
-func sendICMPPortUnreachable(data []byte, client netip.AddrPort) error {
-	if len(data) < 1 {
-		return errors.New("icmp_inject: empty packet")
+// Unlike TCP RST, the ICMP error is not delivered to the socket that sent the
+// datagram by the kernel; instead the client matches it by the embedded
+// original-datagram header (the quoted IP/UDP 4-tuple). The tproxy data plane
+// hands the control plane the UDP *payload* only, so the quoted IP/UDP headers
+// cannot be recovered from the packet buffer — we reconstruct them from the
+// routing 4-tuple we already resolved: client is the datagram's source, and
+// originalDst is the datagram's original destination (the rejected target).
+//
+// The ICMP message itself is sent from the dae host's own egress address
+// (chosen by the kernel from the route to the client); that outer source is
+// irrelevant to correlation. Spoofing the original destination as the source
+// would also be valid but requires IP_TRANSPARENT and reverse-path-filter care,
+// so it is intentionally left as a follow-up.
+func sendICMPPortUnreachable(client, originalDst netip.AddrPort) error {
+	if !client.Addr().IsValid() || !originalDst.Addr().IsValid() {
+		return errors.New("icmp_inject: missing client or original destination address")
 	}
-	// The control plane receives the full L2 frame from the eBPF handoff, so the
-	// IP header does not necessarily start at offset 0. Skip the link-layer
-	// header (14 bytes for plain Ethernet, or 18/22 with 802.1Q/802.1ad VLAN
-	// tags) before reading the IP version. This matches dae's
-	// controlPlaneCore.linkHdrLen, which returns consts.LinkHdrLen_Ethernet (14)
-	// for "ether" interfaces.
-	l2 := linkHeaderLen(data)
-	if l2 > 0 {
-		if l2 >= len(data) {
-			return errors.New("icmp_inject: packet shorter than link header")
+	if client.Addr().Is4() {
+		if !originalDst.Addr().Is4() {
+			return fmt.Errorf("icmp_inject: address family mismatch: client %s vs dst %s", client, originalDst)
 		}
-		data = data[l2:]
+		return sendICMPv4PortUnreachable(client, originalDst)
 	}
-	version := data[0] >> 4
-	switch version {
-	case 4:
-		return sendICMPv4PortUnreachable(data, client)
-	case 6:
-		return sendICMPv6PortUnreachable(data, client)
-	default:
-		return fmt.Errorf("icmp_inject: unsupported IP version %d (after skipping %d-byte link header)", version, l2)
+	if !originalDst.Addr().Is6() {
+		return fmt.Errorf("icmp_inject: address family mismatch: client %s vs dst %s", client, originalDst)
 	}
+	return sendICMPv6PortUnreachable(client, originalDst)
 }
 
-// linkHeaderLen returns the number of leading bytes that belong to the
-// link-layer (Ethernet) header, so the caller can reach the IP header. It
-// inspects the EtherType field: a plain Ethernet frame is 14 bytes, and VLAN
-// tagging (802.1Q / 802.1ad) adds 4 bytes per tag. If the buffer already starts
-// with a valid-looking IP header (no L2), it returns 0.
-func linkHeaderLen(data []byte) int {
-	if len(data) < 14 {
-		return 0
+// buildICMPv4PortUnreachable constructs the ICMPv4 Destination Port
+// Unreachable message (RFC 792) without sending it. The quoted "original
+// datagram" is the IPv4 + UDP headers of the rejected packet, rebuilt from the
+// routing 4-tuple: the embedded IP source is the client (the datagram's source)
+// and the embedded IP destination is the original destination (the rejected
+// target), exactly mirroring the original datagram; the embedded UDP ports are
+// the client port (source) and the original destination port respectively. This
+// is what lets the client's QUIC stack associate the error with the connection
+// it opened to originalDst.
+func buildICMPv4PortUnreachable(client, originalDst netip.AddrPort) ([]byte, error) {
+	if !client.Addr().Is4() || !originalDst.Addr().Is4() {
+		return nil, fmt.Errorf("icmp_inject: IPv4 ICMP requires IPv4 addresses, got client %s dst %s", client, originalDst)
 	}
-	// Already at the IP layer? (IPv4 with a sane IHL, or IPv6.)
-	v := data[0] >> 4
-	if (v == 4 && data[0]&0x0f >= 5) || v == 6 {
-		return 0
-	}
-	ethType := binary.BigEndian.Uint16(data[12:14])
-	switch ethType {
-	case 0x0800, 0x86dd: // IPv4 / IPv6
-		return 14
-	case 0x8100, 0x88a8: // 802.1Q / 802.1ad VLAN
-		if len(data) >= 18 {
-			inner := binary.BigEndian.Uint16(data[16:18])
-			if inner == 0x0800 || inner == 0x86dd {
-				return 18
-			}
-			if len(data) >= 22 { // stacked (QinQ) tag
-				inner2 := binary.BigEndian.Uint16(data[20:22])
-				if inner2 == 0x0800 || inner2 == 0x86dd {
-					return 22
-				}
-			}
-		}
-	}
-	// Unknown/edge case: fall back to the Ethernet minimum, which is also what
-	// dae's linkHdrLen returns for "ether".
-	return 14
+	// Quoted original IPv4 header (20 bytes, no options).
+	ip := make([]byte, 20)
+	ip[0] = 0x45 // version 4, IHL 5
+	// ip[1] TOS = 0
+	binary.BigEndian.PutUint16(ip[2:4], 28) // total length = IP(20) + UDP(8)
+	// ip[4:6] identification = 0
+	// ip[6:8] flags/fragment offset = 0
+	ip[8] = 64 // TTL
+	ip[9] = uint8(unix.IPPROTO_UDP)
+	// ip[10:12] header checksum (filled below)
+	copy(ip[12:16], client.Addr().AsSlice())      // source = client (datagram source)
+	copy(ip[16:20], originalDst.Addr().AsSlice()) // destination = original destination
+	binary.BigEndian.PutUint16(ip[10:12], internetChecksum(ip))
+
+	// Quoted original UDP header (8 bytes).
+	udp := make([]byte, 8)
+	binary.BigEndian.PutUint16(udp[0:2], client.Port())      // source port = client
+	binary.BigEndian.PutUint16(udp[2:4], originalDst.Port()) // destination port = original destination
+	binary.BigEndian.PutUint16(udp[4:6], 8)                  // length = just the header
+	// udp[6:8] checksum = 0
+
+	quoted := make([]byte, 0, 28)
+	quoted = append(quoted, ip...)
+	quoted = append(quoted, udp...)
+
+	// ICMPv4 message: type(1) code(1) checksum(2) unused(4) + quoted datagram.
+	msg := make([]byte, 8+len(quoted))
+	msg[0] = 3 // type: destination unreachable
+	msg[1] = 3 // code: port unreachable
+	// msg[2:4] checksum and msg[4:8] unused are already zero.
+	copy(msg[8:], quoted)
+	cs := internetChecksum(msg)
+	msg[2] = byte(cs >> 8)
+	msg[3] = byte(cs & 0xff)
+	return msg, nil
 }
 
-func sendICMPv4PortUnreachable(data []byte, client netip.AddrPort) error {
-	msg, err := buildICMPv4PortUnreachable(data)
+func sendICMPv4PortUnreachable(client, originalDst netip.AddrPort) error {
+	msg, err := buildICMPv4PortUnreachable(client, originalDst)
 	if err != nil {
 		return err
 	}
@@ -142,7 +149,7 @@ func sendICMPv4PortUnreachable(data []byte, client netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("icmp_inject: socket: %w", err)
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 
 	sa := &unix.SockaddrInet4{}
 	sa.Addr = client.Addr().As4()
@@ -152,38 +159,46 @@ func sendICMPv4PortUnreachable(data []byte, client netip.AddrPort) error {
 	return nil
 }
 
-// buildICMPv4PortUnreachable constructs the ICMPv4 Destination Port
-// Unreachable message (RFC 792) without sending it. The message quotes the
-// original IP header and the first 8 bytes of the original payload (the UDP
-// header) so the client can correlate the error with its sent packet.
-func buildICMPv4PortUnreachable(data []byte) ([]byte, error) {
-	if len(data) < 20 {
-		return nil, fmt.Errorf("icmp_inject: packet too short for IPv4 header: %d", len(data))
+// buildICMPv6PortUnreachable constructs the ICMPv6 Port Unreachable message
+// (RFC 4443) without sending it. The kernel fills the ICMPv6 checksum for raw
+// sockets, so it is left zero here. The quoted header is rebuilt from the
+// routing 4-tuple exactly as for IPv4 (see buildICMPv4PortUnreachable).
+func buildICMPv6PortUnreachable(client, originalDst netip.AddrPort) ([]byte, error) {
+	if !client.Addr().Is6() || !originalDst.Addr().Is6() {
+		return nil, fmt.Errorf("icmp_inject: IPv6 ICMP requires IPv6 addresses, got client %s dst %s", client, originalDst)
 	}
-	ihl := int(data[0]&0x0f) * 4
-	if ihl < 20 {
-		ihl = 20
-	}
-	quoteLen := ihl + 8 // original IP header + first 8 bytes of original payload (UDP header)
-	if quoteLen > len(data) {
-		quoteLen = len(data)
-	}
-	quoted := data[:quoteLen]
+	// Quoted original IPv6 header (40 bytes).
+	ip := make([]byte, 40)
+	ip[0] = 0x60 // version 6
+	// ip[1:4] traffic class / flow label = 0
+	binary.BigEndian.PutUint16(ip[4:6], 8)        // payload length = quoted UDP header (8)
+	ip[6] = uint8(unix.IPPROTO_UDP)               // next header = UDP
+	ip[7] = 64                                    // hop limit
+	copy(ip[8:24], client.Addr().AsSlice())       // source = client (datagram source)
+	copy(ip[24:40], originalDst.Addr().AsSlice()) // destination = original destination
 
-	// ICMP message: type(1) code(1) checksum(2) unused(4) + quoted datagram.
+	// Quoted original UDP header (8 bytes).
+	udp := make([]byte, 8)
+	binary.BigEndian.PutUint16(udp[0:2], client.Port())      // source port = client
+	binary.BigEndian.PutUint16(udp[2:4], originalDst.Port()) // destination port = original destination
+	binary.BigEndian.PutUint16(udp[4:6], 8)                  // length = just the header
+	// udp[6:8] checksum = 0
+
+	quoted := make([]byte, 0, 48)
+	quoted = append(quoted, ip...)
+	quoted = append(quoted, udp...)
+
+	// ICMPv6 message: type(1) code(1) checksum(2) unused(4) + quoted datagram.
 	msg := make([]byte, 8+len(quoted))
-	msg[0] = 3 // type: destination unreachable
-	msg[1] = 3 // code: port unreachable
-	// msg[2:4] checksum, msg[4:8] unused (zero) are already zero.
+	msg[0] = 1 // type: destination unreachable
+	msg[1] = 4 // code: port unreachable
+	// msg[2:4] checksum is filled by the kernel for raw ICMPv6 sockets.
 	copy(msg[8:], quoted)
-	cs := internetChecksum(msg)
-	msg[2] = byte(cs >> 8)
-	msg[3] = byte(cs & 0xff)
 	return msg, nil
 }
 
-func sendICMPv6PortUnreachable(data []byte, client netip.AddrPort) error {
-	msg, err := buildICMPv6PortUnreachable(data)
+func sendICMPv6PortUnreachable(client, originalDst netip.AddrPort) error {
+	msg, err := buildICMPv6PortUnreachable(client, originalDst)
 	if err != nil {
 		return err
 	}
@@ -191,7 +206,7 @@ func sendICMPv6PortUnreachable(data []byte, client netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("icmp_inject: socket: %w", err)
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 
 	sa := &unix.SockaddrInet6{}
 	sa.Addr = client.Addr().As16()
@@ -199,25 +214,4 @@ func sendICMPv6PortUnreachable(data []byte, client netip.AddrPort) error {
 		return fmt.Errorf("icmp_inject: sendto: %w", err)
 	}
 	return nil
-}
-
-// buildICMPv6PortUnreachable constructs the ICMPv6 Port Unreachable message
-// (RFC 4443) without sending it. The kernel fills the ICMPv6 checksum for raw
-// sockets, so it is left zero here.
-func buildICMPv6PortUnreachable(data []byte) ([]byte, error) {
-	if len(data) < 40 {
-		return nil, fmt.Errorf("icmp_inject: packet too short for IPv6 header: %d", len(data))
-	}
-	quoteLen := 40 + 8 // original IPv6 header + first 8 bytes of original payload (UDP header)
-	if quoteLen > len(data) {
-		quoteLen = len(data)
-	}
-	quoted := data[:quoteLen]
-
-	// ICMPv6 message: type(1) code(1) checksum(2) unused(4) + quoted datagram.
-	msg := make([]byte, 8+len(quoted))
-	msg[0] = 1 // type: destination unreachable
-	msg[1] = 4 // code: port unreachable
-	copy(msg[8:], quoted)
-	return msg, nil
 }

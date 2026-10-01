@@ -2957,7 +2957,7 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 			return TC_ACT_OK;
 		}
 		if (unlikely(outbound == OUTBOUND_BLOCK ||
-			     outbound == OUTBOUND_REJECT))
+	       outbound == OUTBOUND_REJECT))
 			return TC_ACT_SHOT;
 		pkt->datapath_generation = tcp_state->datapath_generation;
 		return redirect_lan_packet_to_control_plane(
@@ -3620,7 +3620,7 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 		skb->mark = mark;
 		return DAE_TC_CONTINUE;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK ||
-			    outbound == OUTBOUND_REJECT)) {
+		     outbound == OUTBOUND_REJECT)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK/REJECT");
 #endif
@@ -3778,7 +3778,7 @@ fast_path_skip_routing:
 	if (!wan_egress_needs_control_plane(outbound, mark))
 		return DAE_TC_CONTINUE;
 	else if (unlikely(outbound == OUTBOUND_BLOCK ||
-			 outbound == OUTBOUND_REJECT))
+		   outbound == OUTBOUND_REJECT))
 		return TC_ACT_SHOT;
 
 	if (!cached_routing &&

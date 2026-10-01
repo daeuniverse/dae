@@ -8,37 +8,20 @@
 package control
 
 import (
-	"bytes"
 	"encoding/binary"
+	"net/netip"
 	"testing"
 )
 
-// fakeV4UDPPacket builds a minimal IPv4/UDP datagram: 20-byte IP header + 8-byte
-// UDP header + 4-byte payload.
-func fakeV4UDPPacket(src, dst [4]byte, sport, dport uint16) []byte {
-	udp := make([]byte, 8+4)
-	binary.BigEndian.PutUint16(udp[0:], sport)
-	binary.BigEndian.PutUint16(udp[2:], dport)
-	binary.BigEndian.PutUint16(udp[4:], uint16(len(udp)))
-	binary.BigEndian.PutUint16(udp[6:], 0) // checksum
-
-	ip := make([]byte, 20+len(udp))
-	ip[0] = 0x45 // version 4, IHL 5
-	binary.BigEndian.PutUint16(ip[2:], uint16(len(ip)))
-	ip[8] = 64 // TTL
-	ip[9] = 17 // protocol: UDP
-	copy(ip[12:16], src[:])
-	copy(ip[16:20], dst[:])
-	copy(ip[20:], udp)
-	return ip
-}
-
+// TestBuildICMPv4PortUnreachable verifies the quoted header is rebuilt from the
+// routing 4-tuple: the embedded IP source is the original destination (the
+// rejected target) and the embedded IP destination is the client, so the
+// client's QUIC stack can correlate the error with the connection it opened.
 func TestBuildICMPv4PortUnreachable(t *testing.T) {
-	src := [4]byte{192, 168, 2, 100}
-	dst := [4]byte{142, 250, 190, 20}
-	pkt := fakeV4UDPPacket(src, dst, 54321, 443)
+	client := netip.MustParseAddrPort("192.168.2.3:47305")
+	originalDst := netip.MustParseAddrPort("1.1.1.1:443")
 
-	msg, err := buildICMPv4PortUnreachable(pkt)
+	msg, err := buildICMPv4PortUnreachable(client, originalDst)
 	if err != nil {
 		t.Fatalf("buildICMPv4PortUnreachable: %v", err)
 	}
@@ -52,12 +35,19 @@ func TestBuildICMPv4PortUnreachable(t *testing.T) {
 	if msg[4] != 0 || msg[5] != 0 || msg[6] != 0 || msg[7] != 0 {
 		t.Fatalf("unused field must be zero, got %v", msg[4:8])
 	}
-	// The quoted datagram must be the original IP header (20) + UDP header (8).
-	if string(msg[8:28]) != string(pkt[0:20]) {
-		t.Fatalf("quoted IP header mismatch")
+	// Quoted IPv4 header mirrors the original datagram: src = client, dst = originalDst.
+	if msg[12] != 192 || msg[13] != 168 || msg[14] != 2 || msg[15] != 3 {
+		t.Fatalf("quoted IP source must be 192.168.2.3 (client), got %d.%d.%d.%d", msg[12], msg[13], msg[14], msg[15])
 	}
-	if string(msg[28:36]) != string(pkt[20:28]) {
-		t.Fatalf("quoted UDP header mismatch")
+	if msg[16] != 1 || msg[17] != 1 || msg[18] != 1 || msg[19] != 1 {
+		t.Fatalf("quoted IP destination must be 1.1.1.1 (original destination), got %d.%d.%d.%d", msg[16], msg[17], msg[18], msg[19])
+	}
+	// Quoted UDP header: src port = client.Port(), dst port = originalDst.Port().
+	if got := binary.BigEndian.Uint16(msg[28:30]); got != 47305 {
+		t.Fatalf("quoted UDP source port must be 47305 (client), got %d", got)
+	}
+	if got := binary.BigEndian.Uint16(msg[30:32]); got != 443 {
+		t.Fatalf("quoted UDP destination port must be 443 (original destination), got %d", got)
 	}
 	// ICMP checksum must be valid: a correctly checksummed message verifies to 0.
 	if got := internetChecksum(msg); got != 0x0000 {
@@ -65,23 +55,12 @@ func TestBuildICMPv4PortUnreachable(t *testing.T) {
 	}
 }
 
+// TestBuildICMPv6PortUnreachable mirrors the IPv4 test for the IPv6 path.
 func TestBuildICMPv6PortUnreachable(t *testing.T) {
-	src := [16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
-	dst := [16]byte{0x20, 0x01, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbe, 0x14}
-	// Minimal IPv6 header (40 bytes) + 8-byte UDP header.
-	udp := make([]byte, 8)
-	binary.BigEndian.PutUint16(udp[0:], 54321)
-	binary.BigEndian.PutUint16(udp[2:], 443)
-	ip := make([]byte, 40+len(udp))
-	ip[0] = 0x60 // version 6
-	binary.BigEndian.PutUint16(ip[4:], uint16(len(udp)))
-	ip[6] = 17 // next header: UDP
-	ip[7] = 64 // hop limit
-	copy(ip[8:24], src[:])
-	copy(ip[24:40], dst[:])
-	copy(ip[40:], udp)
+	client := netip.MustParseAddrPort("[fe80::3]:47305")
+	originalDst := netip.MustParseAddrPort("[2606:4700::1111]:443")
 
-	msg, err := buildICMPv6PortUnreachable(ip)
+	msg, err := buildICMPv6PortUnreachable(client, originalDst)
 	if err != nil {
 		t.Fatalf("buildICMPv6PortUnreachable: %v", err)
 	}
@@ -91,88 +70,30 @@ func TestBuildICMPv6PortUnreachable(t *testing.T) {
 	if msg[0] != 1 || msg[1] != 4 {
 		t.Fatalf("want type=1 code=4, got type=%d code=%d", msg[0], msg[1])
 	}
-	if string(msg[8:48]) != string(ip[0:40]) {
-		t.Fatalf("quoted IPv6 header mismatch")
+	// Quoted IPv6 header (40 bytes) mirrors the original datagram: src = client, dst = originalDst.
+	quoted := msg[8:48]
+	if got := netip.AddrFrom16([16]byte(quoted[8:24])); got != client.Addr() {
+		t.Fatalf("quoted IPv6 source must be %s (client), got %s", client.Addr(), got)
 	}
-	if string(msg[48:56]) != string(ip[40:48]) {
-		t.Fatalf("quoted UDP header mismatch")
+	if got := netip.AddrFrom16([16]byte(quoted[24:40])); got != originalDst.Addr() {
+		t.Fatalf("quoted IPv6 destination must be %s (original destination), got %s", originalDst.Addr(), got)
 	}
-}
-
-// TestSendICMPPortUnreachableRejectsGarbage ensures the builder fails gracefully
-// on packets too short to carry the headers we need to quote.
-func TestSendICMPPortUnreachableRejectsGarbage(t *testing.T) {
-	if _, err := buildICMPv4PortUnreachable([]byte{0x45, 0, 0, 10}); err == nil {
-		t.Fatal("short IPv4 packet should error")
+	// Quoted UDP header: src port = client.Port(), dst port = originalDst.Port().
+	if got := binary.BigEndian.Uint16(quoted[40:42]); got != 47305 {
+		t.Fatalf("quoted UDP source port must be 47305 (client), got %d", got)
 	}
-	if _, err := buildICMPv6PortUnreachable([]byte{0x60}); err == nil {
-		t.Fatal("short IPv6 packet should error")
+	if got := binary.BigEndian.Uint16(quoted[42:44]); got != 443 {
+		t.Fatalf("quoted UDP destination port must be 443 (original destination), got %d", got)
 	}
 }
 
-// wrapEthernet prepends an Ethernet header to a payload. If vlan is true a single
-// 802.1Q tag (TPID 0x8100) is inserted before the EtherType.
-func wrapEthernet(payload []byte, vlan bool) []byte {
-	var hdr []byte
-	if vlan {
-		hdr = make([]byte, 18) // dst(6)+src(6)+0x8100(2)+tag(2)+0x0800(2)
-		binary.BigEndian.PutUint16(hdr[12:], 0x8100)
-		binary.BigEndian.PutUint16(hdr[16:], 0x0800)
-	} else {
-		hdr = make([]byte, 14) // dst(6)+src(6)+0x0800(2)
-		binary.BigEndian.PutUint16(hdr[12:], 0x0800)
-	}
-	return append(hdr, payload...)
-}
-
-func TestLinkHeaderLen(t *testing.T) {
-	v4 := fakeV4UDPPacket([4]byte{192, 168, 2, 100}, [4]byte{142, 250, 190, 20}, 54321, 443)
-	cases := []struct {
-		name string
-		in   []byte
-		want int
-	}{
-		{"plain ethernet", wrapEthernet(v4, false), 14},
-		{"vlan tagged", wrapEthernet(v4, true), 18},
-		{"already ipv4 (no L2)", v4, 0},
-		{"short buffer", v4[:10], 0},
-	}
-	for _, c := range cases {
-		if got := linkHeaderLen(c.in); got != c.want {
-			t.Fatalf("%s: linkHeaderLen=%d, want %d", c.name, got, c.want)
-		}
-	}
-}
-
-// TestRejectStripsLinkHeader verifies that the L2-stripping applied inside
-// sendICMPPortUnreachable yields a correct IPv4 header for the ICMP quote. This
-// is the exact path that was broken in production: the handed-off packet carries
-// an Ethernet header, and without stripping, buildICMPv4PortUnreachable read the
-// MAC byte as the IP version and aborted with "unsupported IP version".
-func TestRejectStripsLinkHeader(t *testing.T) {
-	v4 := fakeV4UDPPacket([4]byte{192, 168, 2, 100}, [4]byte{142, 250, 190, 20}, 54321, 443)
-	framed := wrapEthernet(v4, false)
-
-	l2 := linkHeaderLen(framed)
-	if l2 != 14 {
-		t.Fatalf("expected L2 offset 14, got %d", l2)
-	}
-	stripped := framed[l2:]
-	if !bytes.Equal(stripped, v4) {
-		t.Fatal("stripped payload does not equal the original IPv4 datagram")
-	}
-	msg, err := buildICMPv4PortUnreachable(stripped)
-	if err != nil {
-		t.Fatalf("buildICMPv4PortUnreachable after strip: %v", err)
-	}
-	// The quoted datagram must be the original IP header (20) + UDP header (8).
-	if !bytes.Equal(msg[8:28], v4[0:20]) {
-		t.Fatal("quoted IP header mismatch after L2 strip")
-	}
-	if !bytes.Equal(msg[28:36], v4[20:28]) {
-		t.Fatal("quoted UDP header mismatch after L2 strip")
-	}
-	if got := internetChecksum(msg); got != 0x0000 {
-		t.Fatalf("invalid ICMP checksum after strip: 0x%04x", got)
+// TestSendICMPPortUnreachableFamilyMismatch ensures a family mismatch between
+// the client and the original destination is rejected rather than producing a
+// malformed datagram.
+func TestSendICMPPortUnreachableFamilyMismatch(t *testing.T) {
+	client := netip.MustParseAddrPort("192.168.2.3:47305")          // IPv4
+	originalDst := netip.MustParseAddrPort("[2606:4700::1111]:443") // IPv6
+	if _, err := buildICMPv4PortUnreachable(client, originalDst); err == nil {
+		t.Fatal("IPv4 build with IPv6 destination should error")
 	}
 }

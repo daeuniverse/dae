@@ -352,7 +352,7 @@ func (t *udpIngressTask) Run() {
 				c.log.WithField("src", convergeSrc.String()).
 					Debug("reject: per-client ICMP budget exhausted; silently dropping")
 			}
-		} else if e := sendICMPPortUnreachable(data, convergeSrc); e != nil {
+		} else if e := sendICMPPortUnreachable(convergeSrc, realDst); e != nil {
 			if c.log.IsLevelEnabled(logrus.WarnLevel) {
 				c.log.WithFields(logrus.Fields{
 					"src": convergeSrc.String(),
