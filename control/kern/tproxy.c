@@ -2957,7 +2957,7 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 			return TC_ACT_OK;
 		}
 		if (unlikely(outbound == OUTBOUND_BLOCK ||
-		     outbound == OUTBOUND_REJECT))
+			     outbound == OUTBOUND_REJECT))
 			return TC_ACT_SHOT;
 		pkt->datapath_generation = tcp_state->datapath_generation;
 		return redirect_lan_packet_to_control_plane(
